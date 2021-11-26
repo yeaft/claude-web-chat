@@ -1,0 +1,293 @@
+心得：
+    等量操作追求期望
+    杠杆操作追求胜率
+    追求期望出来的，很可能是专项调优出来的
+    在选择盈利多的selection情况下，找胜率高，同时avgRes高的，
+    出现个数，总数，胜率，结果，平均交易，最高盈利，最大亏损
+    1. 盈利
+    2. 每年均匀 （出现次数和盈利情况）
+    3. 方差小  
+        3.1均值减两个标准差大于零=  97%盈利
+        3.2均值减一个标准差大于零= 85%盈利
+        3.3均值减0.5个标准差大于零= 70%盈利
+
+需要确定：
+    模拟要增加borrow限制
+    每日交易可以多次
+    交易存在资金不足的场景
+
+    所有低于0.96的cut per都不能考虑
+    合并操作列表
+
+    win rate opt的筛选
+
+
+    动态平仓策略，可能没用，那么要出来那个factor起作用
+    factor的简易参数写法
+    同样结果的factor筛选
+    jsp第二天有机会交易到
+    近五年成功是否可以用于下一年
+    1. -6到-1年，试试今年
+    2. 是否是每年都均匀出现
+    3. 是否每年的胜率都是相似的，而不是突然一年爆发
+    100% 0.02 = 66% 0.06 （和止损有关系，如果是0.97，那么可以用到三倍杠杆）
+
+1. 锤子
+    要结合大趋势，一年上涨趋势的上吊线，比较弱，一年下跌趋势的锤子线比较弱，尤其是近三日不是最值点：
+        i 2019-10-30，2019-07-10 上涨趋势中的上吊线
+    总是会有错误的：
+        i 2017-11-28，2017-09-11，2017-09-18
+    也需要结合窗口的情况
+        i 2016-03-08
+
+    两个条件在临界值，是不是就不成立？
+
+2. 吞没
+    趋势越大，当前日的结算价为最高，则越准,以ru作为分析：
+    可能需要按年分析，有一年爆炸，其他一般也有可能
+    因素项：
+        筛选部分：pastDay,bodyRate,trendPer,peakDay
+            1. peakDay，判断是否为最值，这个为0最为有用，如果为1，那么需要考虑，大于1几乎没有机会
+            2. pastDay和peakDay，这个确定是几日内的最值，确定了之前的趋势。在peakDay不变的情况下，pastDay越大，满足的蜡烛图越少
+            3. bodyRate几乎没啥用，不过当peakDay=0时，可以放宽bodyRate，但是peakDay=1时，bodyRate开始起作用，在0.0005-0.0007之间
+            4. trendPer在peakDay=0时，完全无用，在peakDay=1时，看起来越大越好，目前测到的是0.035
+            
+        
+        策略部分：winJspPer,winDiffPer,cutPeakDay,cutPeakPer
+            1. winJspPer, 决定了与当前的收盘价的盈利比例
+            2. winDiffPer, 决定了设定的"盈利点"与"历史x日（peakDay）最高最底价差值之间"的占比
+            3. cutPeakDay, 决定与过去cutPeakDay之间的相反峰值
+            4. cutPeakPer, 决定与过去cutPeakDay之间的相反峰值的比例
+    
+    结论：
+    ru:
+        如果是peakDay = 0, 那么pastDay为5, winJspPer:0.06, winDiffPer:0.5(不重要), cutPeakDay:0, cutPeakPer:0.015
+        如果是peakDay = 1, 那么pastDay为4同时trendPer为0.035, winJspPer:0.05, winDiffPer:0.5(不重要), cutPeakDay:0, cutPeakPer:0.015
+        python .\candle_stick_analysis.py -a s -t ru -ct abs -pd 5 -pkd 0 -wjp 6 -tp 1 -cpp 15 -cpd 0 -o f
+        python .\candle_stick_analysis.py -a s -t ru -ct abs -pd 4 -pkd 1 -wjp 5 -tp 35 -cpp 15 -cpd 0 -o f
+    i:
+        不适合交易
+    ap:
+
+    sf:
+        15年是爆照年，其他基本上就是一波1.06赚一辈子
+        python .\candle_stick_analysis.py -a s -t sr -ct abs -pd 4 -tp 10 -pkd 2 -wjp 6 -cpp 15
+    bu:
+
+    jm:
+
+    ma:
+1. 大背景
+1. 合约整体的单日幅度
+2. 近3个交易日的幅度
+3. 方向相关与jsp的diff 和方向无关 zgdj-dff
+4. 某一个选择下，是不是满足一个方向的diff
+5. 重复计算的可能性
+6. 未来X日的zgzd-diff是不是和过去x日的近似
+7. 找到无压力操作区间 确定selection的 min和max的交易值，与过去x日的平均值的期望，确定操作区间
+
+days   diffAvg diffStdev
+1      2.54    1.2336
+2      4.6     3.6069
+3      5.8     4.0619
+5      7.59    5.3102  
+7      8.97    6.219
+
+3-0.4-0.4-0.03-0.01-0.2	chz_sh_s	ru-20190528|ru-20190722|ru-20200214
+3-0.4-0.4-0.03-0.01-0.3	chz_sh_r	ru-20190412|ru-20190724|ru-20190911
+bad  ru-20100930|ru-20101224|ru-20110608|ru-20110621|ru-20121121|ru-20130207|ru-20130722|ru-20140513|ru-20160906|ru-20161214|ru-20181109|ru-20190911
+good ru-20100929|ru-20101119|ru-20101221|ru-20130619|ru-20130618|ru-20130724|ru-20130827|ru-20140313|ru-20161026|ru-20170214|ru-20190722|ru-20200214
+
+
+
+ru,ni chz 不好用，说明大的方向是有影响的
+ap sh 不好用，说明大的方向是有影响的
+
+1. 确定filter factors （chz done）
+2. 生成factors的对照表  （chz done）
+3. 根据type设置当前趋势（也就是一些特例场景）
+4. 得到满足factor合约
+5. 计算该合约过去3个月的P75幅度
+6. 对照factor对照表，确定止损和止盈点，并根据P75换算成最终止损止盈点
+7. 输出交易信息
+
+1. 上涨缓于下跌
+2. 单日幅度？
+3. 所以上涨小，下跌大？
+
+1. 连续p3n0crest的期望
+2. 以p60n3为peak，第四日为反向，第一次出现peak不考虑
+
+1. type type: drive/adjust according diff per in one year
+2. p60n60 peak to determine direction, use p60n10 peak to make sure whether change in small
+
+1. bigTrend, currentStatus, waveDirection
+2. P70 matched target
+
+1. near days diff
+2. similar history diff
+
+1. constrain zgj zdj
+2. constrain p90 diff
+乙二醇 eg 大连
+液化石油气 pg 大连
+粳米 rr 大连
+苯乙烯 eb 大连
+
+1. avoid two many continuous loss, (wait trade, jump other direction, using big trend?)
+2. avoid missing trade. not peak or in streight dicrection
+3. choose better direction
+
+
+1. only 12
+2. 1 next day per
+3. alert and trade method
+4. add 偏移系数
+5. avg大的，方差大的，可以考虑另一个方向
+6. 找过往
+
+1. daily add similar
+2. weekly update similar factor
+
+
+1. Frequency t:
+
+
+
+2. non-Frequency t:
+
+
+past 20 trade days' statistic max min diff is useful
+
+
+
+At least next 30days
+1. known (up for instance)
+    1. past 200days， real trend 
+    2. how many days, useful , jkp >= 90% zjs, jsp >= 2%jkp, 
+    3. how many days, adjust, first day less than last day diff or even reverse. base on contract, max min diff is in a perticular range
+    3. how many days, on contract
+
+
+2. unknown
+
+真实crest的概率15%
+15crest = 30 crest的概率 80%
+15 trough = 30 trough的概率 50-70%，跟大趋势相关
+
+
+1. p30n30 and p3n3 same with key 是一个均衡器
+2. win cut is 3.14 or the day meet other key peak's jsp
+3. loss cut is meet opposite key peak
+
+1. list all possible trade for dates
+2. given one date, output trade list, include cut condition
+3. collect best key pair and worst key pair for each years, and select good pairs
+
+add trade days constrain?
+add fix loss cut not by reverse peak?
+
+
+every day jkp trade condition:
+past 3 months open and close diff are big, say larger than 0.8
+past 3 months jkp is zdj or zgj, the frequency is the higher the better, say arround 20%
+good types:
+b, sf
+
+
+1. trend start
+2. trend during
+3. trend finish reverse
+
+1. for down: p3n0 upTrend
+2. for up: p5n0 crest and downTrend p7n0 crest
+
+b is not a good selection, since the big rate is down
+cs is better one
+
+
+1. jkp jsp both larger than 0.005 0.01, 0.015
+2. zgj zdj rate
+3. can we trade p7n7?
+4. 
+
+
+已知条件：
+1. 出现最值后必然会走向相反的放向
+2. 长时间趋于稳定，必然会出现一个放向的大趋势
+3. 不同合约涨跌幅是不一样的
+4. 成交量越大的合约，随机性越明显
+5. 放向对，怎么持有都很盈利，放向不对，就很容易亏损。
+6. 任何一个交易点位，极大概率在未来的某个时刻，有盈利的时候
+7. 下跌的幅度大于上涨的幅度，上涨的时间长于下跌的时间
+
+
+
+当出现第一个p30n0的peak时，说明大方向已经确定？一旦出现相反的p3n0就可以做大方向？
+
+
+以前的做法：
+wave1， pnnn 确定后，且在n内没有出现假peak，那么尝试，取正或者反向的操作
+
+wave2， pnn0 确定后，向同向操作，plus可以以上一级pn+n0为方向参考
+
+
+1. 斜率
+2. 连续peak合并
+3. 一个柱子之后继续
+4. system
+5. 必然到达点
+6. Anlysis why rm is bad up reverse in 2020
+
+3. 猜测一个合理的仓位变化是 仓位+ 甚至++ （乱战时期），  仓位持平（确定方向时期）， 仓位减少（收割时期）
+
+基础定义：
+1. 波动率 (越高说明上下波动，越低说明一条直线，三个指标：周期，波动范围，波动范围可根据过往计算出最小最大影响值，波动频率)
+2. 能量 (单位时间的路程，能量越大，越有交易价值)
+3. 走向背景 (上涨，回调，二次上涨，二次回调)
+4. 仓位情况 (成交量，持仓量变化，只能描述激烈程度)
+5. 日内背景 (下跌连续性强于上涨)
+
+在波动率的场景下， 根据之前，预测一个点，这个点不一定准，但是任何的区别，都可以有不同的应对方法
+1. 总是会有起伏，不会吃全身
+2. 靠预测，来猜测点位，最好留三轮交易机会
+3. 可以错，但是也要在确定一个peak后，预测止损价位
+4. 持仓量大增后，必然会大减反向。这是一个可以抓的点
+5. 两个策略，一个是抓一次大龙，一个是抓大龙的回调
+6. 必须等待fluctuation值出现后，才确定方向。
+7. 大龙定义：
+    1. 成交量大涨
+    2. 持仓量大涨
+    3. 价格急剧变化
+
+1. avg diff 大于2倍flucuation保证平均盈利
+2. min diff 大于1.2?倍flucuation保证最低盈利
+3. 满足以上条件，取最小的frequency
+
+
+1. 选择flucuation的因素：
+    1. changeLevel max， 意味着极限越大，平均越大，最值越小越好，也就是方差小
+    2. flucuation越大，意味着单次盈利越高，周期越长，可能的单词亏损越大
+    3. 每日变化波动率 or 稳定波动率交易？ 选择第一个
+
+
+1. 将所有可以开仓超过10手的合约找到
+2. 将所有stdev低，且avg diff高的 fluctuation找到
+3. 跑历史数据，确定准确性（通过历史的确定fluction，再跑，比如过去2年，然后跑1个月）
+
+
+ 1. 不存在开平仓，只有买和卖的触发
+ 2. 目前是开仓确定值，之后确定的值百分比不断加，平仓确定值。
+ 3. 可以修改为，空信号和多信号，并稳定交易。无所谓开平仓
+ 4. 本质为，在一个给定的波动率，越偏移波动率，那么越大的盈利空间，且不是线性的
+
+ fluctuation小了会导致盈利不够，大了会导致出现不能平仓
+
+ 1. 开仓差异越大，止盈则可以越大，不行，因为是先交易，后统计。
+
+ 黑天鹅事件：
+ 1. 多次出现同一方向大幅波动 （统计黑天鹅的波动次数）
+ 2. 不断追加持仓 （修改加仓函数）
+ 3. 反弹波动很小 （提前，将止盈波动缩小？）
+ 4. 结果重仓，亏损 
+ 

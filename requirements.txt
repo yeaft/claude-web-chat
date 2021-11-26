@@ -1,0 +1,6 @@
+click
+pymongo
+pyyaml
+requests
+# pandas
+# matplotlib
