@@ -5,6 +5,39 @@ from ..helper import constance, date_utils, analysis_helper, domain_utils, file_
 import click
 import time
 
+def retreive_data(path):
+    main_paths, second_paths = get_paths(path)
+    save_data_2_disk(main_paths, "main")
+    save_data_2_disk(second_paths, "second")    
+
+def save_data_2_disk(paths, contract_type):
+    headers = ["market","code","time","zxj","ccl","zjl","cje","cjl"]
+    datas = []    
+    for p in paths:
+        with open(p, "r") as f:
+            for line in f.readlines():
+                data_str = line.replace("\r", "").replace("\n", "")
+                data_arr = data_str.split(",")
+                data = {}
+                for i, v in headers:
+                    data[headers[i]] = data_arr[i]
+                datas.append(data)
+
+    utils.convert_dic_to_csv(contract_type, datas)
+    
+
+
+
+def get_paths(path):
+    main_paths, second_paths = [], []
+    paths = file_utils.get_files_from_directory(path)
+    for p in paths:
+        if "次主力连续" in p:
+            second_paths.append(p)
+        elif "主力连续" in p:
+            main_paths.append(p)
+    return main_paths, second_paths
+
 def import_to_db(path):
     with open(path, "r") as f:
         count = 0
