@@ -1,5 +1,4 @@
 import math
-
 from constance import *
 from statistics import mean, variance, stdev
 

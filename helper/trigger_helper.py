@@ -1,11 +1,11 @@
-from click.utils import echo
-from futurestimulate.constance import MAIN_COL, active_contracts, calculate_statistic_value, convert_dic_to_csv, echo_dic, echo_dics
 import click
 import math
 import time
 import json
-
-from constance import *
+import constance
+import utils
+import domain_utils
+import date_utils
 from pymongo import MongoClient, DESCENDING, ASCENDING
 from statistics import mean, variance, stdev
 
@@ -175,13 +175,14 @@ def calculate_fluctuation_frequecy(ticks, fluctuation_range, need_peaks = False,
         for i in peak_infos:
             i['power'] = i['power'] + i['suffix']
             del i['suffix']
-        echo_dics(peak_infos[1:])
-        echo_dics(up_infos)
-        up_statistic_info = calculate_statistic_value(list(x['diff'] for x in up_infos if x['diff'] > 0))
-        echo_dic(up_statistic_info)
-        echo_dics(down_infos)        
-        down_statistic_info = calculate_statistic_value(list(x['diff'] for x in down_infos))        
-        echo_dic(down_statistic_info)
+        utils.echo_dics(peak_infos[1:])
+        utils.echo_dics(up_infos)
+        up_statistic_info = domain_utils.calculate_statistic_value(list(x['diff'] for x in up_infos if x['diff'] > 0))
+        utils.echo_dic(up_statistic_info)
+        utils.echo_dics(down_infos)
+        down_statistic_info = domain_utils.calculate_statistic_value(
+            list(x['diff'] for x in down_infos))
+        utils.echo_dic(down_statistic_info)
     
     if need_peaks:
         res = {
@@ -215,7 +216,7 @@ def calculate_fluctuation_frequecy(ticks, fluctuation_range, need_peaks = False,
 
 def statistic_peaks(contracts):
     infos = []
-    days = len(list(MAIN_COL.find({"type":contracts[0], "date":{"$gte":"20210104", "$lte":"20210226"}})))
+    days = len(list(constance.MAIN_COL.find({"type":contracts[0], "date":{"$gte":"20210104", "$lte":"20210226"}})))
     for contract in contracts:
         file_name = 'fluctuation_peaks_{}_{}_{}.json'.format(contract, "20210104", "20210226")
         with open(file_name) as json_file:
@@ -225,7 +226,7 @@ def statistic_peaks(contracts):
         for fluctuation, peaks in fluctuation_peaks.items():
             datas = peaks[1:]
             change_levels = list(x['changeLevel'] for x in datas if "changeLevel" in x)
-            statistics = calculate_statistic_value(change_levels)
+            statistics = domain_utils.calculate_statistic_value(change_levels)
             info = {
                 "contract": contract,
                 "fluctuation": fluctuation,
@@ -239,7 +240,7 @@ def statistic_peaks(contracts):
         infos.extend(sub_infos[:3])
     
     infos.sort(key=lambda x: x['Stdev'])
-    echo_dics(infos)
+    utils.echo_dics(infos)
 
 def statistic_peaks_v2(contracts):
     infos = []
@@ -255,8 +256,8 @@ def statistic_peaks_v2(contracts):
                 if len(datas) == 0:
                     continue
                 change_levels = list(x['changeLevel'] for x in datas if "changeLevel" in x)
-                statistics = calculate_statistic_value(change_levels)
-                days = len(list(MAIN_COL.find({"code":code, "date":{"$gte":"20170101", "$lte":"20210226"}})))
+                statistics = domain_utils.calculate_statistic_value(change_levels)
+                days = len(list(constance.MAIN_COL.find({"code":code, "date":{"$gte":"20170101", "$lte":"20210226"}})))
                 appPer = round(len(datas) / days, 2) if days > 0 else -1
                 info = {
                     "contract": contract,
@@ -272,12 +273,12 @@ def statistic_peaks_v2(contracts):
             # infos.extend(sub_infos[:3])
 
     infos.sort(key=lambda x: x['Stdev'])
-    convert_dic_to_csv("fluctuation", infos)
+    utils.convert_dic_to_csv("fluctuation", infos)
     # echo_dics(infos)
     
 
 def calculate_fluctuation_ratio_by_types(contracts, end_date, period):
-    start_date = datestr_add_trade_days(end_date, -1 * (period + 1))
+    start_date = date_utils.datestr_add_trade_days(end_date, -1 * (period + 1))
     basic_frequency = period * 2
     start_time = "{} 210000.000".format(start_date)
     end_time = "{} 150000.000".format(end_date)    
@@ -285,8 +286,9 @@ def calculate_fluctuation_ratio_by_types(contracts, end_date, period):
     click.echo("Start time {}, end time {} period {}".format(start_time, end_time, period))
     for contract in contracts:
         process_start_time = time.time()
-        code = MAIN_COL.find_one({"type":contract, "date":start_date})['code']
-        tick_main_col = MongoClient(MONGODB_CONNECTION_STRING).future["tick_{}_main".format(contract)]
+        code = constance.MAIN_COL.find_one({"type":contract, "date":start_date})['code']
+        tick_main_col = MongoClient(
+            constance.MONGODB_CONNECTION_STRING).future["tick_{}_main".format(contract)]
         ticks = list(tick_main_col.find({"code": code, "time": {"$gte": start_time, "$lte": end_time}}).sort("time", ASCENDING))
         if len(ticks) == 0:
             continue
@@ -328,11 +330,11 @@ def calculate_energy(ticks):
     return mean(diffs)
 
 def check_daily_fluction(contract, start_time, end_time, fluction_rate):
-    tick_main_col = MongoClient(MONGODB_CONNECTION_STRING).future["tick_{}_main".format(contract)]
+    tick_main_col = MongoClient(constance.MONGODB_CONNECTION_STRING).future["tick_{}_main".format(contract)]
     ticks = list(tick_main_col.find({"time": {"$gte": start_time, "$lte": end_time}}).sort("time", ASCENDING))
     if len(ticks) > 0:
         obj = calculate_fluctuation_frequecy(ticks, fluction_rate, True)
-        echo_dic(obj)
+        utils.echo_dic(obj)
 
 def get_types_daily_fluction():
     # period = 5
@@ -353,17 +355,17 @@ def get_types_daily_fluction():
     # c. big peak?
 def analysis(end_date, types, period = 5):
     if types == "":
-        types = active_contracts()
+        types = domain_utils.active_contracts()
     else:
         types = types.split(",")
 
     results = []
     if end_date != "":
-        dates = list(x['date'] for x in MAIN_COL.find({"type": types[0], "date":{"$gte":end_date}}))
+        dates = list(x['date'] for x in constance.MAIN_COL.find({"type": types[0], "date":{"$gte":end_date}}))
     for d in dates:
         res = calculate_fluctuation_ratio_by_types(types, d, period)
         results.extend(res)
-    echo_dics(results)
+    utils.echo_dics(results)
     return results
 
 def check_tick_data(types):
@@ -372,7 +374,7 @@ def check_tick_data(types):
     for contract_type in types:
         last_date = ""       
         count = 0
-        tick_main_col = MongoClient(MONGODB_CONNECTION_STRING).future["tick_{}_main".format(contract_type)]
+        tick_main_col = MongoClient(constance.MONGODB_CONNECTION_STRING).future["tick_{}_main".format(contract_type)]
         for tick in list(tick_main_col.find().sort("time",ASCENDING)):
             date = tick["time"][:8]            
             if last_date != date:
@@ -391,7 +393,7 @@ def check_tick_data(types):
             missing_infos.append(info)
     
     click.echo("Finish using {}s".format(round(time.time() - start_time, 2)))
-    convert_dic_to_csv("tick_info", missing_infos)
+    utils.convert_dic_to_csv("tick_info", missing_infos)
 
 @click.command()
 @click.option('--action', '-a', default='a', help='new Tip')
@@ -426,7 +428,7 @@ def get_good_types():
             })
 
     result.sort(key=lambda x: x['result'], reverse=True)
-    echo_dics(result)
+    utils.echo_dics(result)
 
 
 if __name__ == "__main__":
