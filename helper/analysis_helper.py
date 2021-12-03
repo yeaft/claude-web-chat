@@ -1,5 +1,6 @@
 import math
-from constance import *
+import click
+import constance, utils
 from statistics import mean, variance, stdev
 
 
@@ -24,7 +25,7 @@ def predict_base(res, up_type, down_type, datas, data, position, factor, print_d
         predict['cutPrice'] = get_past_n_day_max(datas, position, cut_peak_day) * (1 + cut_peak_per)
         predict['cutPer'] = 2 - predict['cutPrice'] / data['jsp']
     if print_data:
-        echo_dic(predict)
+        utils.echo_dic(predict)
 
     return predict
 
@@ -42,7 +43,7 @@ def convert_predict_price_to_current(data, predict):
 
 
 def get_current_price(data):
-    return INFO_COL.find_one({'code': data['code'], 'date': data['date']})
+    return constance.INFO_COL.find_one({'code': data['code'], 'date': data['date']})
 
 def verify_trade(datas, data, position, next_range, predict, predict_price, cut_price, need_max = False):
     future_datas = datas[position + 1:position + next_range + 1]
@@ -90,7 +91,7 @@ def verify_trade_inner(future_datas, data, next_range, predict, predict_price, c
         else:
             trade_result = 1
 
-    verify_res = VERIFY_COL.find_one({"type": data['type'], "date": data['date'], "range": next_range}) if need_max else None
+    verify_res = constance.VERIFY_COL.find_one({"type": data['type'], "date": data['date'], "range": next_range}) if need_max else None
     min_per = verify_res['minPer'] if verify_res != None else 0
     max_per = verify_res['maxPer'] if verify_res != None else 0
 
@@ -146,7 +147,7 @@ def statistic_candle(results, with_all = True, echo = True):
 
     statistic_arr.sort(key=lambda x: x['tradeRes'], reverse=True)
     if echo and len(statistic_arr) > 0:
-        echo_dics(statistic_arr)
+        utils.echo_dics(statistic_arr)
 
     return statistic_arr
 
@@ -178,14 +179,14 @@ def get_past_n_day_min(data, i, n, price_type = "zdj"):
     if i - n >= 0:
         return min(list(d[price_type] for d in data[i - n:i + 1] if d[price_type] != 0))
     else:
-        LOGGER.info("{} {} {}".format(n, i, data))
+        click.echo("{} {} {}".format(n, i, data))
 
 
 def get_past_n_day_max(data, i, n, price_type="zgj"):
     if i - n >= 0:
         return max(list(d[price_type] for d in data[i - n:i + 1]))
     else:
-        LOGGER.info("{} {} {}".format(n, i, data))
+        click.echo("{} {} {}".format(n, i, data))
 
 def convert_array_to_obj(keys, vals):
     obj = {}
@@ -292,7 +293,7 @@ def expect_optmise_filter(candle_type, factor_strs, select_trade_factor_count = 
         v_res = round(variance(trade_res_list), 4)
         stdev_res = round(stdev(trade_res_list), 8)
         if avg_res - stdev_res < 1:
-            LOGGER.info("{} not a good selection".format(factor_id))
+            click.echo("{} not a good selection".format(factor_id))
         # if res_gt_one * 100 / len(trade_res_list) < 60 and avg_res < avg_res_threshold:
         #     record[factor_id] = {}
             continue
@@ -369,9 +370,9 @@ def expect_optmise_filter(candle_type, factor_strs, select_trade_factor_count = 
         if len(opt_res) > 0:
             contract_type = opt_res[0]['type']
             opt_res.sort(key=lambda x: x['selectionAvgRes'], reverse=True)
-            convert_dic_to_csv("{}/{}_{}_{}_best_factors_stdev".format(output_path, optmise_type, contract_type, candle_type), opt_res)
+            utils.convert_dic_to_csv("{}/{}_{}_{}_best_factors_stdev".format(output_path, optmise_type, contract_type, candle_type), opt_res)
         else:
-            LOGGER.info("There is no optmised data")
+            click.echo("There is no optmised data")
         
 
 def initialize_factor_optmise_record(factor_id):
@@ -409,9 +410,10 @@ def analysis_max_min_for_select_datas(datas, next_range):
     mins = []
     select_datas = []
     for data in datas:
-        verify = VERIFY_COL.find_one({"type": data['type'], "date": data['date'], "range": next_range})
+        verify = constance.VERIFY_COL.find_one({"type": data['type'], "date": data['date'], "range": next_range})
         if verify == None:
-            LOGGER.info("None verify data: {}, {}, {}".format(data['type'], data['date'], next_range))
+            click.echo("None verify data: {}, {}, {}".format(
+                data['type'], data['date'], next_range))
             continue
 
         maxs.append(verify['maxPer'])
@@ -450,16 +452,18 @@ def analysis_max_min_for_select_datas(datas, next_range):
     
 
 def available_types():
-    max_date = MAIN_COL.find_one({"type": "ru"}, sort=[('date', DESCENDING)])['date']
-    available_contracts = list(MAIN_COL.find({"date": max_date, "cjl": {"$gt": 50000}}))
+    max_date = constance.MAIN_COL.find_one({"type": "ru"}, sort=[('date', -1)])['date']
+    available_contracts = list(constance.MAIN_COL.find(
+        {"date": max_date, "cjl": {"$gt": 50000}}))
     types = list(x['type'] for x in available_contracts)
     types.sort()
     return types
 
 
 def available_codes():
-    max_date = MAIN_COL.find_one({"type": "ru"}, sort=[('date', DESCENDING)])['date']
-    available_contracts = list(MAIN_COL.find({"date": max_date, "cjl": {"$gt": 50000}}))
+    max_date = constance.MAIN_COL.find_one(
+        {"type": "ru"}, sort=[('date', -1)])['date']
+    available_contracts = list(constance.MAIN_COL.find({"date": max_date, "cjl": {"$gt": 50000}}))
     types = list(x['code'] for x in available_contracts)
     types.sort()
     return types

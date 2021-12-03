@@ -1,9 +1,8 @@
 #!/usr/bin/python3
 
 # from ..helper.constance import MAIN_COL, TICK5M_COL, TICK5Main_COL
-from ..helper.constance import *
+from ..helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
 import click
-
 import time
 
 def import_to_db(path):
@@ -31,15 +30,15 @@ def import_to_db(path):
             }
             datas.append(data)
             if count % 100000 == 0:
-                TICK5M_COL.insert_many(datas)
+                constance.TICK5M_COL.insert_many(datas)
                 datas = []
                 click.echo("Upload {}, using {}s".format(count, round(time.time()-start_time, 2)))
 
         if len(datas) > 0:
-            TICK5M_COL.insert_many(datas)
+            constance.TICK5M_COL.insert_many(datas)
 
 def to_all_file():
-    files = get_files_from_directory("E:/BaiduNetdiskDownload")
+    files = file_utils.get_files_from_directory("E:/BaiduNetdiskDownload")
     # click.echo("{}".format(len(files)))
     csv_path_format = "E:/data/all.csv"
     count = 0
@@ -54,7 +53,7 @@ def to_all_file():
         number_str = ""
         contract_type = ""
         for c in file_name:
-            if is_number(c):
+            if utils.is_number(c):
                 number_str += c
             else:
                 contract_type += c
@@ -99,9 +98,10 @@ def to_all_file():
     click.echo("All data size {}".format(count))
 
 def tick_5m_to_main():
-    types = MAIN_COL.distinct("type")
+    types = constance.MAIN_COL.distinct("type")
     for t in types:
-        infos = list(MAIN_COL.find({"type":t, "date":{"$gte":"20110101"}}).sort("date", ASCENDING))
+        infos = list(constance.MAIN_COL.find(
+            {"type": t, "date": {"$gte": "20110101"}}).sort("date", 1))
         start_date = infos[0]['date']
         end_date = ""
         last_code = infos[0]['code'].replace("\t","")
@@ -112,19 +112,20 @@ def tick_5m_to_main():
             if code != last_code:
                 end_date = infos[i-1]['date']
                 for c in last_code:
-                    if is_number(c):
+                    if utils.is_number(c):
                         number_count += 1
                 if number_count >= 4:
                     real_code = info['type'].lower() + code[-4:]
                 else:
                     real_code = info['type'].lower() + end_date[2:3] + code[-3:]
 
-                ticks_5m = list(TICK5M_COL.find({"code": real_code, "time": {"$gte": "{} 000000".format(start_date), "$lte": "{} 240000".format(end_date)}}))
+                ticks_5m = list(constance.TICK5M_COL.find({"code": real_code, "time": {
+                                "$gte": "{} 000000".format(start_date), "$lte": "{} 240000".format(end_date)}}))
                 if len(ticks_5m) < 1:
                     click.echo("Error {}-{}, code {} real code {}".format(start_date, end_date, code, real_code))
                     click.echo("Query: {}".format({"code": real_code, "time": {"$gte": "{} 000000".format(start_date), "$lte": "{} 240000".format(end_date)}}))
                 else:
-                    TICK5Main_COL.insert_many(ticks_5m)
+                    constance.TICK5Main_COL.insert_many(ticks_5m)
 
                 last_code = code
                 start_date = info['date']
@@ -134,19 +135,20 @@ def tick_5m_to_main():
             code = infos[-1]['code'].replace("\t", "")
             number_count = 0
             for c in last_code:
-                if is_number(c):
+                if utils.is_number(c):
                     number_count += 1
             if number_count >= 4:
                 real_code = infos[-1]['type'].lower() + code[-4:]
             else:
                 real_code = infos[-1]['type'].lower() + end_date[2:3] + code[-3:]
 
-            ticks_5m = list(TICK5M_COL.find({"code": real_code, "time": {"$gte": "{} 000000".format(start_date), "$lte": "{} 240000".format(end_date)}}))
+            ticks_5m = list(constance.TICK5M_COL.find({"code": real_code, "time": {
+                            "$gte": "{} 000000".format(start_date), "$lte": "{} 240000".format(end_date)}}))
             if len(ticks_5m) < 1:
                 click.echo("Error {}-{}, code {} real code {}".format(start_date, end_date, code, real_code))
                 click.echo("Query: {}".format({"code": real_code, "time": {"$gte": "{} 000000".format(start_date), "$lte": "{} 240000".format(end_date)}}))
             else:
-                TICK5Main_COL.insert_many(ticks_5m)
+                constance.TICK5Main_COL.insert_many(ticks_5m)
     
 def fitler_past_trade_info(files, out_path):
     # files = get_files_from_directory("D:/Others/data")
