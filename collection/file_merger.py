@@ -1,45 +1,10 @@
 #!/usr/bin/python3
 
-from futurestimulate.constance import MAIN_COL, TICK5M_COL, TICK5Main_COL
+# from ..helper.constance import MAIN_COL, TICK5M_COL, TICK5Main_COL
+from ..helper.constance import *
 import click
-import os
-import pathlib
-import glob
+
 import time
-
-from constance import *
-
-
-def get_files_from_directory(path):
-    if ":/" not in path:
-        if path[0] != "/":
-            if path[0:2] == "./":
-                path = str(pathlib.Path(__file__).parent.absolute()) + "/" + path[2:]
-            else:
-                path = str(pathlib.Path(__file__).parent.absolute()) + "/" + path
-
-    if os.path.isfile(path):
-        return [path]
-
-    if path[-1] != "/":
-        path += "/"
-    files = [f for f in glob.glob(path + "**/*.csv", recursive=True)]
-    if len(files) == 0:
-        files.append(path)
-
-    return files
-
-
-def is_number(s):
-    try:
-        int(s)  # for int, long and float
-    except ValueError:
-        # try:
-        #     complex(s)  # for complex
-        # except ValueError:
-        return False
-
-    return True
 
 def import_to_db(path):
     with open(path, "r") as f:
