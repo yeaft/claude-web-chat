@@ -2,10 +2,7 @@ import click
 import math
 import time
 import json
-import constance
-import utils
-import domain_utils
-import date_utils
+from . import constance, utils, domain_utils, date_utils
 from pymongo import MongoClient, DESCENDING, ASCENDING
 from statistics import mean, variance, stdev
 

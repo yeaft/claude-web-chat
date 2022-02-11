@@ -1,5 +1,5 @@
-import constance
-import utils
+
+from . import constance, utils
 from statistics import mean, variance, stdev
 from pymongo import MongoClient, DESCENDING, ASCENDING
 

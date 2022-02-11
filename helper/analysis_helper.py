@@ -1,6 +1,6 @@
 import math
 import click
-import constance, utils
+from . import constance, utils
 from statistics import mean, variance, stdev
 
 

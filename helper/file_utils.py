@@ -2,7 +2,7 @@ import click
 import os
 import pathlib
 import glob
-import utils
+from . import utils
 
 def get_files_from_directory(path):
     if ":/" not in path:

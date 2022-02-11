@@ -1,7 +1,7 @@
 
-import constance
 import calendar
 
+from . import constance
 from datetime import datetime, timedelta, date
 from pymongo import MongoClient, DESCENDING, ASCENDING
 

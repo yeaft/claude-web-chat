@@ -1,8 +1,3 @@
-import os
-import pathlib
-import glob
-import socket
-import constance
 import time
 import click
 import json
@@ -11,6 +6,7 @@ import hashlib
 import base64
 import urllib.parse
 import requests
+from . import constance
 
 
 def echo_dics(datas, output_head=True, output_val=True, min_head_length=6, max_size=-1):
