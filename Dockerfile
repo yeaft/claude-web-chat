@@ -1,6 +1,6 @@
-FROM python:3.7.1-alpine
-WORKDIR /app
-ADD ./requirements.txt /app/requirements.txt
-RUN pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
-ADD . /app
-CMD [ "python", "./futurestimulate/run.py" ]
+FROM python:3.9.7-alpine
+WORKDIR /collection
+ADD ./requirements.txt /collection/requirements.txt
+RUN pip install -r requirements.txt
+ADD . /collection
+CMD [ "python", "./collection/real_time_tick.py" ]

@@ -1,4 +1,5 @@
 import time
+import datetime
 import click
 import json
 import hmac
@@ -8,6 +9,10 @@ import urllib.parse
 import requests
 from . import constance
 
+def log(msg):    
+    format = "[%Y-%m-%d %H:%M:%S]"
+    current_time = datetime.datetime.now().strftime(format)
+    click.echo("{}: {}".format(current_time, msg))
 
 def echo_dics(datas, output_head=True, output_val=True, min_head_length=6, max_size=-1):
     if len(datas) < 1:

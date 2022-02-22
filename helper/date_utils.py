@@ -3,6 +3,7 @@ import calendar
 
 from . import constance
 from datetime import datetime, timedelta, date
+from chinese_calendar import is_holiday, is_workday
 from pymongo import MongoClient, DESCENDING, ASCENDING
 
 def get_today_date_string():
@@ -25,17 +26,7 @@ def convert_str_to_date(date_str):
 
 
 def is_work_day(date_str):
-    if date_str in constance.WORK_DATES:
-        return True
-    if date_str in constance.HOLIDAY_DATES:
-        return False
-
-    week_day = convert_str_to_date(date_str).weekday()
-    if week_day < 5:
-        return True
-    else:
-        return False
-
+    return is_workday(convert_str_to_date(date_str))
 
 def date_add_days(time, days):
     delta = timedelta(days=days)

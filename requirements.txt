@@ -2,5 +2,6 @@ click
 pymongo
 pyyaml
 requests
+chinesecalendar
 # pandas
 # matplotlib
