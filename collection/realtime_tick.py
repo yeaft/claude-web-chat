@@ -88,7 +88,7 @@ def collect_tick_data():
     cols["secondNorCode"] = constance.REAL_TIME_TICK_SECOND_COL
     last_datas = {}
     for key_code in ["norCode", "secondNorCode"]:
-        last_one = cols[key_code].find_one({}, sort=[("time", DESCENDING)])['time']        
+        last_one = cols[key_code].find_one({}, sort=[("time", DESCENDING)])     
         last_datas[key_code] = list(cols[key_code].find({"time": last_one['time']})) if last_one != None else []    
     
     while True:
