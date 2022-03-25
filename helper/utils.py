@@ -7,11 +7,13 @@ import hashlib
 import base64
 import urllib.parse
 import requests
+import pytz
+
 from . import constance
 
 def log(msg):    
     format = "[%Y-%m-%d %H:%M:%S]"
-    current_time = datetime.datetime.now().strftime(format)
+    current_time = datetime.datetime.now(pytz.timezone("Asia/Shanghai")).strftime(format)
     click.echo("{}: {}".format(current_time, msg))
 
 def echo_dics(datas, output_head=True, output_val=True, min_head_length=6, max_size=-1):
