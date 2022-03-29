@@ -123,7 +123,8 @@ def collect_tick_data():
                             click.echo("error raw text {}".format(raw_text))
                 
                 last_datas[code_key] = current_datas
-
+        
+        last_trade_status = current_trade_status
         time.sleep(4)
 
 # tick {"time" : "20200526 140750", "type" : "ag", "code" : "ag2012", "jkp" : 4195, "zgj" : 4319, "zdj" : 4180, "zxj" : 4299, "ccl" : 482064, "cjl" : 872750 }
