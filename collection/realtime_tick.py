@@ -138,7 +138,7 @@ def valid_data(data, last_datas):
                 if data['code'] == l['code'] and abs(data['zxj'] - l['zxj']) / l['zxj'] > 0.08:
                     correct_data = False
                     data['zxj'] = l['zxj']
-
+                data['cjlDiff'] = data['cjl'] - l['cjl']
                 break    
     return correct_data
 
