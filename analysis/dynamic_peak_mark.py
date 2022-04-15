@@ -20,24 +20,26 @@ def start_mark(ticks, context, peaks, factor, is_pre = False):
         return
     if len(peaks) == 0:
         pre_peak_find(ticks, peaks)
-    if "cjl2TimesThreshold" not in factor:
-        if is_pre:
-            past_ticks = get_yesterday_day_ticks_by_date(ticks[0]['code'], ticks[0]['time'][:8], "133000", "233000")
-        else:
-            past_ticks = get_yesterday_day_ticks_by_date(ticks[0]['code'], ticks[0]['time'][:8])
-        update_factors(past_ticks, factor)
+    # if "cjl2TimesThreshold" not in factor:
+    #     if is_pre:
+    #         past_ticks = get_yesterday_day_ticks_by_date(ticks[0]['code'], ticks[0]['time'][:8], "133000", "233000")
+    #     else:
+    #         past_ticks = get_yesterday_day_ticks_by_date(ticks[0]['code'], ticks[0]['time'][:8])
+    #     update_factors(past_ticks, factor)
     if "popTimes" not in context:
         context['popTimes'] = 0
+        context['position'] = {}
         context['priceChange'] = False
         context['priceChangeDetectIndex'] = 0
         context['cjlChange'] = False
         context['cjlChangeDetectIndex'] = 0
         context['observeBigCjl'] = 0
+        context['fakePeaks'] = []
         
     
     # if ticks[-1]['time'] >= "20220413 112430":
     #     utils.log("Stop here")
-
+    false_peak_check(ticks, peaks, context)
     peak = peaks[-1]
     # if ticks[-1] == None:
     #     utils.log("Stop") 
@@ -47,15 +49,14 @@ def start_mark(ticks, context, peaks, factor, is_pre = False):
     # except:
     #     utils.log("{}".format(peaks))
     #     return 
-    if "observePass" in peak['status']:
-        if not false_peak_check(ticks, peaks, context):
-            peak = peaks[-1]
+    if "observePass" in peak['status']:        
         price_change_detect(ticks, peak, context)
         if context['priceChange']:            
             peak = {}
             peak['type'] = "crest" if context['direction'] == "up" else "trough"
             peak['detectedIndex'] = len(ticks) - 1
             peak['time'] = ticks[-1]['time']
+            peak['pre'] = is_pre
             peaks.append(peak)
             update_peak_status(ticks[-1], peak, peak["type"])
             update_peak_status(ticks[-1], peak, "detected")
@@ -97,6 +98,7 @@ def pre_peak_find(ticks, peaks):
     peak['peakIndex'] = start_index    
     peak['tradeIndex'] = start_index
     peak['confirmIndex'] = start_index
+    peak['pre'] = True
 
     temp_peaks = [peak]
     utils.log("First peak: {}".format(peak))
@@ -114,21 +116,24 @@ def pre_peak_find(ticks, peaks):
 # 1. If current price same with last_peak, then we should 
 def false_peak_check(ticks, peaks, context):
     peak = peaks[-1]
+    if peak['status'] != "observePass":
+        peak = peaks[-2]
     zxj = ticks[-1]['zxj']
-    if (peak['type'] == "crest" and zxj > peak['price']) or \
-        (peak['type'] == "trough" and zxj < peak['price']):
+    if (peak['type'] == "crest" and zxj > 1.001 * peak['price']) or \
+        (peak['type'] == "trough" and zxj < 0.999 * peak['price']):
         if context['popTimes'] == 1:
             recover_false_negative_peak(ticks, peaks)
             context['popTimes'] = 0
         else:
-            utils.log("Current tick: {}".format(ticks[-1]))
-            utils.log("Fake peak: {}".format(peak))
-            if ticks[-1]['time'][:8] == peak['time'][:8]:
-                ticks[peak['confirmIndex']]['status'] += "-adjustFalsePeak-{}-{}".format(ticks[-1]['time'][-6:], ticks[-1]['zxj'])
-            if 'status' in ticks[-1]:
-                ticks[-1]['status'] += "findError-cut"
+            context['fakePeaks'].append(peak)
+            direction = "up" if peak['type'] == "trough" else "down"
+            cut_position(context, ticks[-1], direction)
+            if not peak['pre']:
+                update_peak_status(ticks[peak['tradeIndex']], peak, "-adjust-cut-{}-{}".format(ticks[-1]['time'][-6:], ticks[-1]['zxj'])) 
             peaks.pop()
             context['popTimes'] += 1
+            if 'status' in ticks[-1]:
+                ticks[-1]['status'] += "findError-target-{}".format("crest" if peak['type'] == "trough" else "trough")
             return False
     return True
 
@@ -139,10 +144,10 @@ def price_change_detect(ticks, peak, context):
     
     direction = "up" if peak['type'] == "trough" else "down"
     context['direction'] = direction
-    if direction == "up" and tick['zxj'] >= 1.002 * min(sub_prices):
+    if direction == "up" and tick['zxj'] >= 1.002 * min(sub_prices) and tick['zxj'] > peak['price'] * 1.007:
         context['priceChange'] = True
         context['priceChangeDetectIndex'] = len(ticks) - 1
-    elif direction == "down" and tick['zxj'] <= 0.998 * max(sub_prices):
+    elif direction == "down" and tick['zxj'] <= 0.998 * max(sub_prices) and tick['zxj'] < peak['price'] * 0.993:
         context['priceChange'] = True
         context['priceChangeDetectIndex'] = len(ticks) - 1
     else:
@@ -169,26 +174,33 @@ def cjl_max_volume_check(ticks, peaks, context, factor):
     # if len(ticks) > context['detectedIndex'] + 4:
     #     context['priceChange'] = False
     #     ticks[peak['detectedIndex']]['status'] += "-falseDetect"
+
     peak = peaks[-1]
-    cjl2TimesThreshold = factor['cjl2TimesThreshold'] if ticks[-1]['time'][-6:] < "210000" else (factor['cjl2TimesThreshold'] * 0.75)
-    cjl4TimesThreshold = factor['cjl4TimesThreshold'] if ticks[-1]['time'][-6:] < "210000" else (factor['cjl4TimesThreshold'] * 0.75)    
+    get_factor(factor, ticks, 2, 12)
+    # cjl2TimesThreshold = factor['cjl2TimesThreshold'] if ticks[-1]['time'][-6:] < "210000" else (factor['cjl2TimesThreshold'] * 0.75)
+    # cjl4TimesThreshold = factor['cjl4TimesThreshold'] if ticks[-1]['time'][-6:] < "210000" else (factor['cjl4TimesThreshold'] * 0.75)    
 
-    # if ticks[-1]['cjlDiff'] >= cjl4TimesThreshold or \
-    #     (ticks[-1]['cjlDiff'] >= cjl2TimesThreshold and ticks[-2]['cjlDiff'] >= cjl2TimesThreshold):
-    #     update_peak_status(ticks[-1], peak, "increasingPass", context, "cjlVolume")
-    if len(ticks) > 30 and len(ticks) - peak['detectedIndex'] < 4:
-        latest_6_units_cjl_diff = sum(x['cjlDiff'] for x in ticks[-6:])
-        latest_18_units_cjl_diff = sum(x['cjlDiff'] for x in ticks[-24:-6])
-        if latest_6_units_cjl_diff >= latest_18_units_cjl_diff:
-            if 'status' not in ticks[-1]:
-                ticks[-1]['status'] = "volumePass"
-            else:
-                ticks[-1]['status'] += "-volumePass"
+    cjl2TimesThreshold = factor['cjl2TimesThreshold'] 
+    cjl4TimesThreshold = factor['cjl4TimesThreshold']
 
-            peak['status'] = "increasingPass"
-            context['cjlVolume'] = True
+    if ticks[-1]['cjlDiff'] >= cjl4TimesThreshold or \
+        (ticks[-1]['cjlDiff'] >= cjl2TimesThreshold and ticks[-2]['cjlDiff'] >= cjl2TimesThreshold):
+        update_peak_status(ticks[-1], peak, "increasingPass", context, "cjlVolume")
+        ticks[-1]['status'] += "-{}".format(cjl2TimesThreshold)
+    # elif len(ticks) > 30 and len(ticks) - peak['detectedIndex'] < 4:
+    #     latest_6_units_cjl_diff = sum(x['cjlDiff'] for x in ticks[-6:])
+    #     latest_18_units_cjl_diff = sum(x['cjlDiff'] for x in ticks[-24:-6])
+    #     if latest_6_units_cjl_diff >= latest_18_units_cjl_diff:
+    #         if 'status' not in ticks[-1]:
+    #             ticks[-1]['status'] = "volumePass"
+    #         else:
+    #             ticks[-1]['status'] += "-volumePass"
+
+    #         peak['status'] = "increasingPass"
+    #         context['cjlVolume'] = True
     elif len(ticks) - peak['detectedIndex'] >= 4:
         update_peak_status(ticks[-1], peak, "cjlVolumeFailed")
+        ticks[-1]['status'] += "-{}".format(cjl2TimesThreshold)
         update_peak_status(ticks[peak['detectedIndex']], peak, "detectFalse")
         context['priceChange'] = False
         peaks.pop()
@@ -213,7 +225,11 @@ def cjl_reduce_check(ticks, peak, context, factor):
             context['cjlReduce'] = True
             context['observeBigCjl'] = 0
             update_peak_status(ticks[-1], peak, "reducePass", context, "cjlReduce")
+            direction = "up" if peak['type'] == "trough" else "down"
+            ticks[-1]['status'] += "-trade-{}-{}".format(cjlReduceThreshold,direction)
             peak['tradeIndex'] = len(ticks) - 1
+            cut_position(context, ticks[-1], direction)
+            open_position(context, ticks[-1], direction)
             # Calculate peak index
             peak_price = 0
             if peak['type'] == "crest":
@@ -243,26 +259,28 @@ def cjl_reduce_check(ticks, peak, context, factor):
 # Update position here
 # Update cut logic here, last peak or next peak
 def observe_peak(ticks, peaks, peak, context, factor):
-    cjl2TimesThreshold = factor['cjl2TimesThreshold'] if ticks[-1]['time'][-6:] < "210000" else (factor['cjl2TimesThreshold'] * 0.75)
+    cjl2TimesThreshold = factor['cjl2TimesThreshold']
+    direction = "up" if peak['type'] == "trough" else "down"
     if ticks[-1]['cjlDiff'] >= cjl2TimesThreshold:
         context['observeBigCjl'] += 1
         #TODO send cut message
         if context['observeBigCjl'] > 2:
+            cut_position(context, ticks[-1], direction)
+            open_position(context, ticks[-1], direction)
             peak['status'] = "increasingPass"
-            ticks[-1]['status'] = "falseReduce"
+            ticks[-1]['status'] = "falseReduce-cut-{}".format(cjl2TimesThreshold)
             context['cjlReduce'] = False
     else:
-        check_index = peak['tradeIndex'] + 12
-        direction = "up" if peak['type'] == "trough" else "down"
+        check_index = peak['tradeIndex'] + 12        
         if len(ticks) > check_index:            
             peak_tick = ticks[peak['peakIndex']]
             check_tick = ticks[check_index]
-
-            if (direction == "up" and check_tick['zxj'] >= 1.001 * peak_tick['zxj']) or \
-                (direction == "down" and check_tick['zxj'] <= 0.999 * peak_tick['zxj']):
+            if ticks[-1]['time'] == "20220412 093835":
+                utils.log("stop here")
+            if (direction == "up" and check_tick['zxj'] > peak_tick['zxj']) or \
+                (direction == "down" and check_tick['zxj'] < peak_tick['zxj']):
                 #TODO update loss cut price
                 update_peak_status(ticks[-1], peak, "observePass")
-                ticks[-1]['status'] += "-trade-{}".format("up" if peak['type'] == "trough" else "down")
                 context['observePass'] = True
                 peak['confirmIndex'] = check_index
                 context['popTimes'] = 0
@@ -270,19 +288,23 @@ def observe_peak(ticks, peaks, peak, context, factor):
             else:
                 # Fake peak:
                 # 1. TODO: cut position
-                ticks[-1]['status'] = "finalPriceObserveFalse"
+                ticks[-1]['status'] = "finalPriceObserveFalse-cut"
                 peaks.pop()
                 context['popTimes'] += 1
                 context['observeBigCjl'] = 0
+                cut_position(context, ticks[-1], direction)
+                open_position(context, ticks[-1], direction)
         else:
             if (direction == "up" and ticks[-1]['zxj'] < 0.999 * peak['price']) or \
                 (direction == "down" and ticks[-1]['zxj'] > 1.001 * peak['price']):
                 # Fake peak:
                 # TODO cut position
-                ticks[-1]['status'] = "middleObserveFalsePeak"
+                ticks[-1]['status'] = "middleObserveFalsePeak-cut"
                 peaks.pop()
                 context['popTimes'] += 1 
-                context['observeBigCjl'] = 0   
+                context['observeBigCjl'] = 0 
+                cut_position(context, ticks[-1], direction)
+                open_position(context, ticks[-1], direction)  
 
 # calculate last day, cjl avg, stdev,
 # Factor
@@ -297,6 +319,18 @@ def update_factors(ticks, factor):
     factor['cjl4TimesThreshold'] = avg_cjl_diff + 4 * stdev_cjl_diff
     factor['cjlReduceThreshold'] = avg_cjl_diff + 1.5 *stdev_cjl_diff
     utils.log("Factor: {}".format(factor))
+
+def get_factor(factor, ticks, ignore_units, units):
+    cjl_diff_arr = list(x['cjlDiff'] for x in ticks[-1 * (ignore_units+units): -1 * ignore_units])
+    avg_cjl_diff = int(mean(cjl_diff_arr))
+    stdev_cjl_diff = int(stdev(cjl_diff_arr))
+
+    factor['cjl2TimesThreshold'] = sorted([int(3* avg_cjl_diff), 2500])[0]
+    factor['cjl4TimesThreshold'] = sorted([int(3 * avg_cjl_diff), 4000])[0]
+    factor['cjlReduceThreshold'] = sorted([int(3 * avg_cjl_diff), 1000])[0]
+    return factor
+    
+
 
 def get_yesterday_day_ticks_by_date(code, date, st = "090000", et = "150000"):
     infos = list(constance.INFO_COL.find({"code":code, "date":{"$lt":date}}).sort("date", DESCENDING).limit(1))
@@ -336,6 +370,7 @@ def recover_false_negative_peak(ticks, peaks):
     missing_peak['detectedIndex'] = missing_peak['peakIndex'] 
     missing_peak['tradeIndex'] = missing_peak['peakIndex']
     missing_peak['confirmIndex'] = missing_peak['peakIndex']
+    missing_peak['pre'] = False
     peaks.append(missing_peak)
 
 def calculate_last_day_cjl_diff_stdev(code, date):
@@ -357,6 +392,28 @@ def calculate_last_day_cjl_diff_stdev(code, date):
     utils.log("variance: {0}, stdev: {1}, mean: {2}, sum: {3}, 99Per: {4}, num: {5}".format(cjl_diff_variance, cjl_diff_stdev, cjl_diff_mean, sum(cjl_diff_arr), round(count_larger_2_stdev * 100 / all_num, 2), all_num))
     utils.log(selected_times)
 
+def cut_position(context, tick, direction):
+    if "position" in context and 'price' in context['position']:
+        position = context['position']
+        if position['direction'] == direction:
+            utils.log("Cut error!")
+            return
+        if position['direction'] == "down":
+            context['tradeResult'] += position['price'] - tick['zxj']
+        else:
+            context['tradeResult'] += tick['zxj'] - position
+        context['position'] = {}
+
+def open_position(context, tick, direction):
+    if "position" in context and 'price' in context['position']:
+        utils.log("Open error!")
+    
+    context['position'] = {
+        'time': tick['time'],
+        'price': tick['zxj'],
+        'direction': direction
+    }
+
 
 if __name__ == "__main__":
     # day_ticks = get_yesterday_day_ticks_by_date("sa209", "20220408", "090000", "150000")
@@ -371,6 +428,7 @@ if __name__ == "__main__":
         t['status'] = ""
     factor = {}
     context = {}
+    context['tradeResult'] = 0
     peaks = []
     for i in range(3, len(ticks)):
         # if i == 100:
@@ -379,6 +437,7 @@ if __name__ == "__main__":
     
     utils.log("Peaks: {}".format(peaks))
     utils.convert_dic_to_csv("t_real_peaks", peaks, is_new = False)
+    utils.convert_dic_to_csv("t_fake_peaks", context['fakePeaks'], is_new = False)
     trade_record = []
     for t in ticks:
         if 'trade' in t['status']:
@@ -387,3 +446,4 @@ if __name__ == "__main__":
             t['status'] = t['status'][1:]
     utils.convert_dic_to_csv("t_ticks_record", ticks, is_new = False)
     utils.convert_dic_to_csv("t_trade_record", trade_record, is_new = False)
+    utils.log("Result: {}".format(context['tradeResult']))
