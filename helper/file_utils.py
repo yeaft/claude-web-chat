@@ -1,8 +1,18 @@
+#!/usr/bin/python
+
 import click
 import os
 import pathlib
 import glob
 import utils
+from rarfile import RarFile
+
+def unzip_file(file_name, password):
+    with RarFile('test2.rar', 'r') as myrar:
+        if password != None:
+            myrar.extractall(pwd=password)
+        else:
+            myrar.extractall()
 
 def get_files_from_directory(path):
     if ":/" not in path:
