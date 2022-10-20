@@ -30,6 +30,8 @@ WAVE_RANGE_MAP_COL = MongoClient(MONGODB_CONNECTION_STRING).future.waveRangeMap
 WAVE_STATUS_COL = MongoClient(MONGODB_CONNECTION_STRING).future.waveStatus
 TICK_COL = MongoClient(MONGODB_CONNECTION_STRING).future.tick
 TICK_SECOND_COL = MongoClient(MONGODB_CONNECTION_STRING).future.tickSecond
+REAL_TIME_TICK_COL = MongoClient(MONGODB_CONNECTION_STRING).future.realTimeTick
+REAL_TIME_TICK_SECOND_COL = MongoClient(MONGODB_CONNECTION_STRING).future.realTimeTickSecond
 TICK5M_COL = MongoClient(MONGODB_CONNECTION_STRING).future.tick5m
 TICK5MTEMP_COL = MongoClient(MONGODB_CONNECTION_STRING).future.tick5mTemp
 TICK5Main_COL = MongoClient(MONGODB_CONNECTION_STRING).future.tick5Main
@@ -41,6 +43,7 @@ SIMILAR_FACTOR_COL = MongoClient(MONGODB_CONNECTION_STRING).future.similarFactor
 TRADE_INFO_COL = MongoClient(MONGODB_CONNECTION_STRING).future.tradeInfo
 TRADE_INFO_HISTORY_COL = MongoClient(MONGODB_CONNECTION_STRING).future.tradeInfoHistory
 GUIDE_COL = MongoClient(MONGODB_CONNECTION_STRING).future.guide
+HISTORY_PEAK_COL = MongoClient(MONGODB_CONNECTION_STRING).future.historyPeakInfo
 
 WORK_DATES = ["20206028", "20200927", "20201008"]
 HOLIDAY_DATES = ["20200625", "20200626", "20200627", "20201001", "20201002", "20201003", "20201004", "20201005", "20201006", "20201007", "20210101", "20210103", "20210102",
@@ -62,6 +65,8 @@ CONTRACT_CODE_MAP = {'ic': '中证500指数', 'if': '沪深300指数', 'ih': '�
                      'bb': '胶合板', 'c': '玉米', 'cs': '玉米淀粉', 'fb': '纤维板', 'i': '铁矿石', 'j': '焦炭', 'jd': '鸡蛋', 'jm': '焦煤', 'l': '聚乙烯', 'm': '豆粕', 'p': '棕榈油', 'pp': '聚丙烯', 'v': '聚氯乙烯', 'y': '豆油', 'sc': '原油', 'ag': '白银', 'al': '铝', 'au': '黄金', 'bu': '石油沥青', 'cu': '铜', 'fu': '燃料油', 'hc': '热轧卷板', 'ni': '镍', 'pb': '铅', 'rb': '螺纹钢', 'ru': '天然橡胶', 'sn': '锡', 'sp': '纸浆期货', 'wr': '线材', 'zn': '锌', 'lh':'生猪'}
 DING_URL_FORMAT = "https://oapi.dingtalk.com/robot/send?access_token=69b270ec15aae80e9fe16a5b8d1cee97093aa59fbfefa1b8bc4c2417314d116f&timestamp={}&sign={}"
 
+MAIN_NAME = "主力连续"
+SECOND_NAME = "次主力连续"
 
 TYPE_BIG_TREND = {
     "ru": "down",

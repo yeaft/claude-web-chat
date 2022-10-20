@@ -5,6 +5,7 @@ import os
 import pathlib
 import glob
 import utils
+from . import utils
 from rarfile import RarFile
 
 def unzip_file(file_name, password):
