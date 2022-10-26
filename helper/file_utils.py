@@ -1,19 +1,11 @@
 #!/usr/bin/python
 
+import imp
 import click
 import os
 import pathlib
 import glob
-import utils
-from . import utils
-from rarfile import RarFile
-
-def unzip_file(file_name, password):
-    with RarFile('test2.rar', 'r') as myrar:
-        if password != None:
-            myrar.extractall(pwd=password)
-        else:
-            myrar.extractall()
+from helper import utils
 
 def get_files_from_directory(path):
     if ":/" not in path:
@@ -92,3 +84,7 @@ def read_data_with_num(path):
     return datas
 
 
+if __name__ == "__main__":
+    source_path = "C:/Projects/FutAC_Tick_PanKou_Daily_202103.rar"
+    target_path = "C:/Projects/Temp/"
+    unzip_file(source_path, target_path, "www.jinshuyuan.net")
