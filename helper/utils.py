@@ -7,11 +7,12 @@ import hashlib
 import base64
 import urllib.parse
 import requests
-from . import constance
+import pytz
+# from helper import constance
 
 def log(msg):    
     format = "[%Y-%m-%d %H:%M:%S]"
-    current_time = datetime.datetime.now().strftime(format)
+    current_time = datetime.datetime.now(pytz.timezone("Asia/Shanghai")).strftime(format)
     click.echo("{}: {}".format(current_time, msg))
 
 def echo_dics(datas, output_head=True, output_val=True, min_head_length=6, max_size=-1):
@@ -117,21 +118,28 @@ def convert_dic_to_csv(name, data, replace_head_pair={}, is_new=True):
     with open(name, "w") as f:
         if len(data) > 0:
             head = ""
+            keys = []
             for key, val in data[0].items():
                 if key in replace_head_pair:
                     head += replace_head_pair[key] + ","
+                    keys.append(replace_head_pair[key])
                 else:
                     head += str(key) + ","
+                    keys.append(str(key))
             head = head[:-1]
             f.write(head + "\n")
 
             for d in data:
                 line = ""
-                for key, val in d.items():
-                    if isinstance(val, list):
-                        line += "-".join(val) + ","
+                for key in keys:
+                    if key not in d:
+                        line += ","
                     else:
-                        line += str(val) + ","
+                        val = d[key]
+                        if isinstance(val, list):
+                            line += "-".join(val) + ","
+                        else:
+                            line += str(val) + ","
                 line = line[:-1]
                 f.write(line + "\n")
 

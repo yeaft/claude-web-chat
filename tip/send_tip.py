@@ -4,6 +4,7 @@ import math
 import yaml
 import socket
 import click
+import pytz
 
 from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
 from datetime import datetime, timedelta
@@ -12,7 +13,7 @@ from pymongo import MongoClient, DESCENDING, ASCENDING
 def send_tips(types, ):
     # align time
     while True:
-        current_sec = datetime.now().strftime('%S')
+        current_sec = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%S')
         if current_sec >= "30":
             break
         time.sleep(5)

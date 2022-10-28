@@ -1,8 +1,11 @@
+#!/usr/bin/python
+
+import imp
 import click
 import os
 import pathlib
 import glob
-from . import utils
+from helper import utils
 
 def get_files_from_directory(path):
     if ":/" not in path:
@@ -81,3 +84,7 @@ def read_data_with_num(path):
     return datas
 
 
+if __name__ == "__main__":
+    source_path = "C:/Projects/FutAC_Tick_PanKou_Daily_202103.rar"
+    target_path = "C:/Projects/Temp/"
+    unzip_file(source_path, target_path, "www.jinshuyuan.net")

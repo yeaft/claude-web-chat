@@ -51,3 +51,18 @@ def convert_code_to_standard_code(info):
         ten_year = date[2:3]
     real_code = contract_type.lower() + ten_year + number_str[-3:]
     return real_code
+
+def convert_code_to_contract_type(code):
+    contract_type = ""
+    for c in code:
+        if not utils.is_number(c):
+            contract_type += c
+
+    return contract_type.lower()
+
+def collect_ticks_by_code(main_col, second_col, code):
+    main_ticks = list(main_col.find({"code": code}).sort("time", ASCENDING))
+    end_time = main_ticks[0]['time']
+    ticks = list(second_col.find({"code": code, "time": {"$lt": end_time}}).sort("time", ASCENDING))
+    ticks.extend(main_ticks)
+    return ticks

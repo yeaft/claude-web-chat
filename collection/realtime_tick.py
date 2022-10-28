@@ -4,6 +4,7 @@ import math
 import yaml
 import socket
 import click
+import pytz
 
 from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
 from datetime import datetime, timedelta
@@ -14,7 +15,7 @@ DATA_5M_URL = "http://stock2.finance.sina.com.cn/futures/api/json.php/IndexServi
 START_TIMES = [["085959", "101500"], ["103000", "113000"], ["133000", "150000"], ["205955", "240000"], ["000000", "013000"]]
 
 def get_types():
-    max_date = constance.MAIN_COL.find_one({"type": "ma"}, sort=[('date', DESCENDING)])['date']
+    max_date = constance.MAIN_COL.find_one({}, sort=[('date', DESCENDING)])['date']
     available_contracts = list(constance.MAIN_COL.find({"date": max_date, "cjl": {"$gt": 5000}}))
     types = {}
     
@@ -39,7 +40,7 @@ def convert_code_to_standard_code(source_code, contract):
     return contract + year_p + month
 
 def get_all_types():
-    max_date = constance.MAIN_COL.find_one({"type": "sr"}, sort=[('date', DESCENDING)])['date']
+    max_date = constance.MAIN_COL.find_one({}, sort=[('date', DESCENDING)])['date']
     available_contracts = list(constance.INFO_COL.find({"date": max_date, "cjl": {"$gt": 0}}))
     types = {}
 
@@ -56,9 +57,9 @@ def get_all_types():
 
 def get_current_data(types, code_key = "norCode"):
     normalised_codes = list(("nf_" + v[code_key]) for k, v in types.items())
-    current_time = datetime.now().strftime('%Y%m%d %H%M%S')
-    url = DATA_URL + ",".join(normalised_codes)    
-    r = requests.get(url, proxies=constance.PROXIES) if constance.ONLINE else requests.get(url)
+    current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y%m%d %H%M%S')
+    url = DATA_URL + ",".join(normalised_codes)
+    r = requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'}, proxies=constance.PROXIES) if constance.ONLINE else requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'})
     datas = []
     for line in r.text.split("\n"):
         data_array = line.split("=")
@@ -74,7 +75,6 @@ def get_current_data(types, code_key = "norCode"):
             if code == "":
                 continue
 
-            # LOGGER.info(line)
             data_str = data_array[1].replace("\"", "").replace(";", "")
             data = convert_str_to_ticker_data(current_time, t, code, data_str)
             datas.append(data)
@@ -89,18 +89,26 @@ def collect_tick_data():
     cols["secondNorCode"] = constance.REAL_TIME_TICK_SECOND_COL
     last_datas = {}
     for key_code in ["norCode", "secondNorCode"]:
-        last_one = cols[key_code].find_one({}, sort=[("time", DESCENDING)])['time']        
+        last_one = cols[key_code].find_one({}, sort=[("time", DESCENDING)])     
         last_datas[key_code] = list(cols[key_code].find({"time": last_one['time']})) if last_one != None else []    
     
+    last_trade_status = False
+    utils.log("Start collect realtime tick")
+    # utils.log("Types {0}".format(types))
     while True:
         # align time
         while True:
-            current_sec = datetime.now().strftime('%S')[-1]
+            current_sec = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%S')[-1]
             if current_sec == "0" or current_sec == "5":
                 break
             time.sleep(0.2)
-
-        if is_trading():
+        
+        current_trade_status = is_trading()
+        if last_trade_status != current_trade_status:
+            if not current_trade_status:
+                types = get_types()
+            utils.log("Change trade status, current {0}".format("trading" if current_trade_status else "close"))
+        if current_trade_status:
             for code_key in ["norCode", "secondNorCode"]:
             # get main tick info 
                 current_datas, raw_text = get_current_data(types)
@@ -115,7 +123,8 @@ def collect_tick_data():
                             click.echo("error raw text {}".format(raw_text))
                 
                 last_datas[code_key] = current_datas
-
+        
+        last_trade_status = current_trade_status
         time.sleep(4)
 
 # tick {"time" : "20200526 140750", "type" : "ag", "code" : "ag2012", "jkp" : 4195, "zgj" : 4319, "zdj" : 4180, "zxj" : 4299, "ccl" : 482064, "cjl" : 872750 }
@@ -129,12 +138,12 @@ def valid_data(data, last_datas):
                 if data['code'] == l['code'] and abs(data['zxj'] - l['zxj']) / l['zxj'] > 0.08:
                     correct_data = False
                     data['zxj'] = l['zxj']
-
+                data['cjlDiff'] = (data['cjl'] - l['cjl']) if data['cjl'] >= l['cjl'] else data['cjl']
                 break    
     return correct_data
 
 def is_trading():
-    current_time = datetime.now().strftime('%H%M%S')
+    current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%H%M%S')
     today_str = date_utils.get_today_date_string()
     working = date_utils.is_work_day(today_str)
     if not working and current_time <= "013000":
@@ -145,8 +154,8 @@ def is_trading():
         for time_pair in START_TIMES:
             if current_time >= time_pair[0] and current_time <= time_pair[1]:
                 return True
-
-    return False    
+    
+    return False
 
 def convert_str_to_ticker_data(current_time, contract_type, code, data_str):
     str_s = data_str.split(",")

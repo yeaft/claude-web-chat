@@ -1,13 +1,14 @@
 
 import calendar
-
+import pytz
 from . import constance
 from datetime import datetime, timedelta, date
 from chinese_calendar import is_holiday, is_workday
 from pymongo import MongoClient, DESCENDING, ASCENDING
 
+
 def get_today_date_string():
-    now = datetime.now()
+    now = datetime.now(pytz.timezone("Asia/Shanghai"))
     return convert_date_to_str(now)
 
 
