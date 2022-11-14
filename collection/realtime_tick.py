@@ -60,6 +60,7 @@ def get_current_data(types, code_key = "norCode"):
     current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y%m%d %H%M%S')
     url = DATA_URL + ",".join(normalised_codes)
     r = requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'}, proxies=constance.PROXIES) if constance.ONLINE else requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'})
+    utils.log(r.text)
     datas = []
     for line in r.text.split("\n"):
         data_array = line.split("=")
@@ -192,3 +193,5 @@ def collect_data(collect_type):
 
 if __name__ == "__main__":
     collect_data()
+    # get_current_data({"rb": {"norCode":"RB2301"}})
+ 

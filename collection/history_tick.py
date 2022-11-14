@@ -7,6 +7,7 @@ from helper import constance, date_utils, analysis_helper, domain_utils, file_ut
 
 def save_data_2_db(paths, col_name):
     headers = ["market","code","time","zxj","ccl","zjl","cje","cjl"]
+    number_headers = ["zxj", "ccl", "zjl", "cje", "cjl"]
     datas = []    
     start_time, count, batch_size  = time.time(), 1, 10000
     utils.log("File number {}".format(len(paths)))
@@ -17,29 +18,29 @@ def save_data_2_db(paths, col_name):
                 data_arr = data_str.split(",")
                 data = {}
                 for i in range(len(headers)):
-                    data[headers[i]] = data_arr[i] if i != 1 else data_arr[i].lower()                
+                    data[headers[i]] = float(data_arr[i]) if headers[i] in number_headers else (
+                        data_arr[i] if i != 1 else data_arr[i].lower())
+                data['date'] = data['time'][:10]
                 datas.append(data)
 
                 if len(datas) >= batch_size:
                     utils.log("Start insert to db, number {}".format(
                         count * batch_size))
                     count += 1
-                    # constance.FUTURE_DB[col_name].insert_many(datas)
-                    datas = []
-
-    
-    
+                    constance.FUTURE_DB[col_name].insert_many(datas)
+                    datas = []   
     
     if len(datas) > 0:
         utils.log("Start insert to db, number {}".format(
             count * batch_size + len(datas)))
-        # constance.FUTURE_DB[col_name].insert_many(datas)
+        constance.FUTURE_DB[col_name].insert_many(datas)
     
     using_time = round(time.time() - start_time, 2)
     utils.log("Finish insert to database now. using {}ms".format(using_time))    
 
 def save_data_2_disk(paths, contract_type):
     headers = ["market","code","time","zxj","ccl","zjl","cje","cjl"]
+    number_headers = ["zxj", "ccl", "zjl", "cje", "cjl"]
     datas = []    
     for p in paths:
         with open(p, "r") as f:
@@ -48,7 +49,8 @@ def save_data_2_disk(paths, contract_type):
                 data_arr = data_str.split(",")
                 data = {}
                 for i in range(len(headers)):
-                    data[headers[i]] = data_arr[i] if i != 1 else data_arr[i].lower()                
+                    data[headers[i]] = float(data_arr[i]) if headers[i] in number_headers else (
+                        data_arr[i] if i != 1 else data_arr[i].lower())              
                 datas.append(data)    
     utils.log("Finish collect '{}' data, Start insert to database now.".format(contract_type))
     start_time = time.time()
@@ -60,6 +62,9 @@ def save_data_2_disk(paths, contract_type):
         constance.TICK_SECOND_COL.insert_many(datas)
     using_time = round(time.time() - start_time, 2)
     utils.log("Finish insert to database now. using {}ms".format(using_time))
+
+# def get_arbitrage_diff(contract_type):
+#     main_col = 
 
 def get_paths(path, pattern):
     final_paths = []
@@ -74,9 +79,10 @@ def get_contract_file_pattern(contract_type):
     return ".*{0}\d+_\d+.csv".format(contract_type)
 
 if __name__ == "__main__":
-    path = "E:/Data/zc"
-    contract_type = "SA"
-    col_name = "tickInfo{}".format(contract_type)
-    pattern = get_contract_file_pattern("SA")
+    path = "E:/Data/sc"
+    contract_type = "RB"    
+    # pattern = get_contract_file_pattern("SA")
+    pattern = ".*rb次主力连续_\d+.csv"
+    col_name = "tick_{}_sec".format(contract_type.lower())
     paths = get_paths(path, pattern)
     save_data_2_db(paths, col_name)
