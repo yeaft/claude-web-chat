@@ -12,9 +12,9 @@ def get_today_date_string():
     return convert_date_to_str(now)
 
 
-def convert_date_to_str(time):
+def convert_date_to_str(time, splitor = ""):
     date = datetime(time.year, time.month, time.day, 8)
-    return date.strftime('%Y%m%d')
+    return date.strftime('%Y{}%m{}%d'.format(splitor, splitor))
 
 
 def convert_date_to_time_str(time):
@@ -22,6 +22,8 @@ def convert_date_to_time_str(time):
 
 
 def convert_str_to_date(date_str):
+    if "-" in date_str:
+        date_str = date_str.replace("-","")
     date = datetime(int(date_str[0:4]), int(date_str[4:6]), int(date_str[6:8]))
     return date
 
@@ -35,10 +37,10 @@ def date_add_days(time, days):
     return new_time
 
 
-def datestr_add_days(datestr, days):
+def datestr_add_days(datestr, days, splitor = ""):
     time = convert_str_to_date(datestr)
     new_time = date_add_days(time, days)
-    return convert_date_to_str(new_time)
+    return convert_date_to_str(new_time, splitor)
 
 
 def datestr_add_trade_days(datestr, days):
