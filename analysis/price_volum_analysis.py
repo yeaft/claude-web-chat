@@ -32,7 +32,7 @@ def output_csv(contract_type):
             # if c >= 300000:
             #     return
 
-def daily_min_max_ccl(contract_type, start_date, end_date):
+def daily_ccl_analysis(contract_type, start_date, end_date):
     main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
     current_date = start_date
     results = []
@@ -48,31 +48,54 @@ def daily_min_max_ccl(contract_type, start_date, end_date):
                 current_date = date_utils.datestr_add_days(current_date, 1, "-")
 
             end_time = "{} 15:00:00.000".format(current_date)
-            min_ccls = list(main_col.find({'time':{"$lte": end_time, "$gte": start_time}}).sort("ccl",1).limit(1))
-            if len(min_ccls) <1:
+            ticks = list(main_col.find({'time': {"$gte": start_time, "$lte": end_time}}))
+            if len(ticks) < 10:
                 continue
-            max_ccls = list(main_col.find({'time':{"$lte": end_time, "$gte": start_time}}).sort("ccl",-1).limit(1))
-            min_sum_ccls = list(main_col.find({'time':{"$lte": end_time, "$gte": start_time}}).sort("sum_ccl",1).limit(1))
-            max_sum_ccls = list(main_col.find({'time':{"$lte": end_time, "$gte": start_time}}).sort("sum_ccl",-1).limit(1))
+
+            ccls = list(t['ccl'] for t in ticks)
+            sum_ccls = list(t['sum_ccl'] for t in ticks)
+            # min_ccls = list(main_col.find({'time':{"$lte": end_time, "$gte": start_time}}).sort("ccl",1).limit(1))
+            # if len(min_ccls) <1:
+            #     continue
+            # max_ccls = list(main_col.find({'time':{"$lte": end_time, "$gte": start_time}}).sort("ccl",-1).limit(1))
+            # min_sum_ccls = list(main_col.find({'time':{"$lte": end_time, "$gte": start_time}}).sort("sum_ccl",1).limit(1))
+            # max_sum_ccls = list(main_col.find({'time':{"$lte": end_time, "$gte": start_time}}).sort("sum_ccl",-1).limit(1))
+            zjl = ticks[-1]['ccl'] - ticks[0]["ccl"]
+            zjl_per = round(zjl * 100.00 / ticks[0]['ccl'], 2)
+            price_diff = ticks[-1]['zxj'] - ticks[0]['zxj']
+            price_diff_per = round(price_diff * 100 / ticks[0]['zxj'], 2)
+            ccl_impact = round((ticks[-1]['zxj'] - ticks[0]['zxj']) * 10000.00 / zjl, 2)
             result = {
                 "date": current_date,
                 "type": contract_type,
-                "code": min_ccls[0]['code'],
-                "min_ccl": min_ccls[0]['ccl'],
-                "max_ccl": max_ccls[0]['ccl'],
-                "min_sum_ccl": min_sum_ccls[0]['sum_ccl'],
-                "max_sum_ccl": max_sum_ccls[0]['sum_ccl'],
-                "sum_ccl_diff": max_sum_ccls[0]['sum_ccl'] - min_sum_ccls[0]['sum_ccl'],
+                "code": ticks[0]['code'],
+                "start_ccl": ticks[0]['ccl'],
+                "end_ccl": ticks[-1]['ccl'],
+                "zjl": zjl,
+                "zjl_per": zjl_per,
+                "price_diff": price_diff,
+                "price_diff_per": price_diff_per,
+                "start_price": ticks[0]['zxj'],
+                "end_price": ticks[-1]['zxj'],
+                "ccl_impact": ccl_impact,
+                "min_ccl": int(min(ccls)),
+                "avg_ccl": int(mean(ccls)),
+                "max_ccl": int(max(ccls)),
+                "min_sum_ccl": int(min(sum_ccls)),
+                "avg_sum_ccl": int(mean(sum_ccls)),
+                "max_sum_ccl": int(max(sum_ccls)),
                 # "min_ccl_time": min_ccls[0]['time'],
                 # "max_ccl_time": max_ccls[0]['time'],
                 # "min_sum_ccl_time": min_sum_ccls[0]['time'],
                 # "max_sum_ccl_time": max_sum_ccls[0]['time'],                
             }
+            result["ccl_diff"] = result['max_ccl'] - result['min_ccl']
+            result["sum_ccl_diff"] = result['max_sum_ccl'] - result['min_sum_ccl']
             results.append(result)
             utils.log("Finish {} - {}".format(start_time, end_time))
         if len(results) > 0:
             ccl_statistic_daily_col = constance.FUTURE_DB['ccl_statistic_daily']
-            ccl_statistic_daily_col.delete_many({"type": contract_type, "date": {"$gte": start_date, "$lt": end_date}})
+            ccl_statistic_daily_col.delete_many({"type": contract_type, "date": {"$gte": results[0]['date'], "$lte": results[-1]['date']}})
             ccl_statistic_daily_col.insert_many(results)
         utils.convert_dic_to_csv("ccl_min_max", results)        
     except Exception as e:
@@ -176,14 +199,19 @@ def ccl_abnormal(ticks, current_index,  look_back_days = 5):
     tick = ticks[current_index]
     day_status = "day" if tick['time'] >= "08:59:00.000" and tick['time'] <= "15:00:00.500" else "night"
     current_date = tick['date']
+    # Get tick static information
     if current_date not in daily_statistic_info_map:
         daily_statistic_info_map[current_date] = {}
         daily_statistic_info_map[current_date]["day"] = constance.DAILY_STATISTIC_INFO_COL.find_one({"type": tick['type'], "date": tick['date'], "look_back_days": look_back_days, "is_day": True })
         daily_statistic_info_map[current_date]["night"] = constance.DAILY_STATISTIC_INFO_COL.find_one({"type": tick['type'], "date": tick['date'], "look_back_days": look_back_days, "is_day": False })
 
     statistic_info = daily_statistic_info_map[current_date][day_status]
+    if not statistic_info:
+        return False
 
-    
+    # Get past 30 days min max ccl
+
+
 
     
     return
@@ -290,12 +318,13 @@ if __name__ == "__main__":
     # update_sum_ccl("rb", "2021-11-30 21:00:00.000")
     # output_csv("rb")
     # cjl_avg_dev("rb", "2020-01-01")
-    # daily_min_max_ccl("rb", "2020-01-01", "2022-12-31")
+    daily_ccl_analysis("rb", "2020-01-01", "2022-12-31")
     # ccl_cjl_price_avg_dev("rb")
-    start_date = "2020-01-10"
-    while start_date < "2023-01-01":
-        start_date = date_utils.datestr_add_days(start_date, 1, "-")
-        if date_utils.is_work_day(start_date):
-            get_daily_statistic_info("rb", start_date)
+
+    # start_date = "2020-01-10"
+    # while start_date < "2023-01-01":
+    #     start_date = date_utils.datestr_add_days(start_date, 1, "-")
+    #     if date_utils.is_work_day(start_date):
+    #         get_daily_statistic_info("rb", start_date)
         
 
