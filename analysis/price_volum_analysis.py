@@ -17,7 +17,7 @@ def update_sum_ccl(contract_type):
         
         count +=1
     
-        if count % 10000 == 1:
+        if count % 100000 == 1:
             utils.log("Finish {}".format(count))
 
 def output_csv(contract_type):
@@ -67,6 +67,9 @@ def daily_min_max_ccl(contract_type, start_date, end_date):
         utils.log("Results: {}".format(results))
         
     return
+
+def dehydrate(contract_type, current_date, meet_last_days = 10):
+    return 
 
 def ccl_abnormal():
     return
@@ -124,8 +127,8 @@ def time_filter(start_time, end_time):
     }
     
 if __name__ == "__main__":
-    # update_sum_ccl("rb")
+    update_sum_ccl("rb")
     # output_csv("rb")
     # cjl_avg_dev("rb", "2020-01-01")
-    daily_min_max_ccl("rb", "2021-12-01", "2021-04-03")
+    daily_min_max_ccl("rb", "2020-01-01", "2021-12-31")
 
