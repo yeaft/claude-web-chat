@@ -112,7 +112,7 @@ def collect_tick_data():
         if current_trade_status:
             for code_key in ["norCode", "secondNorCode"]:
             # get main tick info 
-                current_datas, raw_text = get_current_data(types)
+                current_datas, raw_text = get_current_data(types, code_key=code_key)
                 # click.echo(types)
                 # click.echo(raw_text)
                 for d in current_datas:

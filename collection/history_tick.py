@@ -9,7 +9,7 @@ def save_data_2_db(paths, col_name):
     headers = ["market","code","time","zxj","ccl","zjl","cje","cjl"]
     number_headers = ["zxj", "ccl", "zjl", "cje", "cjl"]
     datas = []    
-    start_time, count, batch_size  = time.time(), 1, 10000
+    start_time, count, batch_size  = time.time(), 1, 100000
     utils.log("File number {}".format(len(paths)))
     for p in paths:
         with open(p, "r") as f:
@@ -36,7 +36,7 @@ def save_data_2_db(paths, col_name):
         constance.FUTURE_DB[col_name].insert_many(datas)
     
     using_time = round(time.time() - start_time, 2)
-    utils.log("Finish insert to database now. using {}ms".format(using_time))    
+    utils.log("Finish insert to database {}, using {}ms".format(col_name, using_time))    
 
 def save_data_2_disk(paths, contract_type):
     headers = ["market","code","time","zxj","ccl","zjl","cje","cjl"]
@@ -81,8 +81,12 @@ def get_contract_file_pattern(contract_type):
 if __name__ == "__main__":
     path = "E:/Data/sc"
     contract_type = "RB"    
+    patterns = [".*rb主力连续_\d+.csv", ".*rb次主力连续_\d+.csv"]
+    col_formats = ["tick_{}_main", "tick_{}_sec"]
     # pattern = get_contract_file_pattern("SA")
-    pattern = ".*rb次主力连续_\d+.csv"
-    col_name = "tick_{}_sec".format(contract_type.lower())
-    paths = get_paths(path, pattern)
-    save_data_2_db(paths, col_name)
+    for i in range(0, len(patterns)):        
+        col_format = col_formats[i]
+        col_name = col_format.format(contract_type.lower())
+        pattern = patterns[i]
+        paths = get_paths(path, pattern)
+        save_data_2_db(paths, col_name)
