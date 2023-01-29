@@ -54,6 +54,9 @@ GUIDE_COL = MongoClient(MONGODB_CONNECTION_STRING).future.guide
 HISTORY_PEAK_COL = MongoClient(
     MONGODB_CONNECTION_STRING).future.historyPeakInfo
 FUTURE_DB = MongoClient(MONGODB_CONNECTION_STRING).future
+CCL_CJL_ZXJ_STATISTIC_COL = MongoClient(MONGODB_CONNECTION_STRING).future.ccl_cjl_price_statistic
+DAILY_STATISTIC_INFO_COL = MongoClient(
+    MONGODB_CONNECTION_STRING).future.daily_statistic_info
 
 WORK_DATES = ["20206028", "20200927", "20201008"]
 HOLIDAY_DATES = ["20200625", "20200626", "20200627", "20201001", "20201002", "20201003", "20201004", "20201005", "20201006", "20201007", "20210101", "20210103", "20210102",
@@ -71,6 +74,7 @@ CANDLE_TYPES_TEST = ['abs']
 MIN_MEANINGFUL_NUMBER = 60
 MAX_PAST_ORDER = 30
 MAX_NEXT_ORDER = 180
+# Real time is 100 / times_map
 TIMES_MAP = {'ap': 13.0, 'cf': 12.0, 'cy': 12.0, 'fg': 12.0, 'jr': 35.0, 'lr': 15.0, 'ma': 12.0, 'oi': 12.0, 'pm': 35.0, 'ri': 35.0, 'rm': 12.0, 'rs': 50.0, 'sf': 12.0, 'sm': 12.0, 'sr': 12.0, 'ta': 12.0, 'wh': 23.0, 'zc': 12.0, 'a': 12.0, 'b': 12.0, 'bb': 50.0, 'c': 12.0, 'cs': 12.0, 'eg': 12.0, 'fb': 50.0,
              'i': 15.0, 'j': 13.0, 'jd': 12.0, 'jm': 13.0, 'l': 12.0, 'm': 12.0, 'p': 12.0, 'pp': 12.0, 'v': 12.0, 'y': 12.0, 'sc': 15.0, 'ag': 12.0, 'al': 13.0, 'au': 11.0, 'bu': 15.0, 'cu': 13.0, 'fu': 16.0, 'hc': 14.0, 'ni': 14.0, 'pb': 13.0, 'rb': 14.0, 'ru': 15.0, 'sn': 13.0, 'sp': 13.0, 'wr': 14.0, 'zn': 13.0}
 

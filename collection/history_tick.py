@@ -78,6 +78,15 @@ def get_paths(path, pattern):
 def get_contract_file_pattern(contract_type):
     return ".*{0}\d+_\d+.csv".format(contract_type)
 
+def extra_filter_files(paths, start_date):
+    new_paths = []
+    for path in paths:
+        date = path.split("_")[1].split(".")[0]
+        if date >= start_date:
+            new_paths.append(path)
+    
+    return new_paths
+
 if __name__ == "__main__":
     path = "E:/Data/sc"
     contract_type = "RB"    
@@ -89,4 +98,6 @@ if __name__ == "__main__":
         col_name = col_format.format(contract_type.lower())
         pattern = patterns[i]
         paths = get_paths(path, pattern)
+        paths = extra_filter_files(paths, "20211201")
+        # utils.log("new paths: {}".format(paths))
         save_data_2_db(paths, col_name)

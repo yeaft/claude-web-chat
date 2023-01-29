@@ -6,3 +6,6 @@ python3 ./termination/realtime_tick.py
 # 2. Setup real time data collection
 sudo docker build -t realtime-collector .
 sudo docker run --name realtime-collector --network host --restart=unless-stopped -d realtime-collector
+
+# 3. Stop and remove image
+sudo docker stop realtime-collector && sudo docker rm realtime-collector
