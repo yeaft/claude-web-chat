@@ -4,3 +4,5 @@ dist/*
 **.pyc
 **.csv
 ~$*.*
+**.json
+**.xlsx

@@ -54,7 +54,7 @@ GUIDE_COL = MongoClient(MONGODB_CONNECTION_STRING).future.guide
 HISTORY_PEAK_COL = MongoClient(
     MONGODB_CONNECTION_STRING).future.historyPeakInfo
 FUTURE_DB = MongoClient(MONGODB_CONNECTION_STRING).future
-CCL_CJL_ZXJ_STATISTIC_COL = MongoClient(MONGODB_CONNECTION_STRING).future.ccl_cjl_price_statistic
+CCL_CJL_ZXJ_STATISTIC_COL = MongoClient(MONGODB_CONNECTION_STRING).future.ccl_cjl_zxj_statistic
 DAILY_STATISTIC_INFO_COL = MongoClient(
     MONGODB_CONNECTION_STRING).future.daily_statistic_info
 

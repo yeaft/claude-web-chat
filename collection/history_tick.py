@@ -27,12 +27,15 @@ def save_data_2_db(paths, col_name):
                     utils.log("Start insert to db, number {}".format(
                         count * batch_size))
                     count += 1
+                    constance.FUTURE_DB[col_name].delete_many(
+                        {"time": {"$gte": datas[0]['time'], "$lte": datas[-1]['time']}})
                     constance.FUTURE_DB[col_name].insert_many(datas)
                     datas = []   
     
     if len(datas) > 0:
         utils.log("Start insert to db, number {}".format(
             count * batch_size + len(datas)))
+        constance.FUTURE_DB[col_name].delete_many({"time": {"$gte": datas[0]['time'], "$lte": datas[-1]['time']}})
         constance.FUTURE_DB[col_name].insert_many(datas)
     
     using_time = round(time.time() - start_time, 2)
@@ -87,17 +90,46 @@ def extra_filter_files(paths, start_date):
     
     return new_paths
 
-if __name__ == "__main__":
-    path = "E:/Data/sc"
-    contract_type = "RB"    
-    patterns = [".*rb主力连续_\d+.csv", ".*rb次主力连续_\d+.csv"]
-    col_formats = ["tick_{}_main", "tick_{}_sec"]
+def extract_second_from_main(contract_type, start_date = "2020-01-02"):
+    main_col = constance.FUTURE_DB["tick_{}_main".format(contract_type)]
+    sec_col = constance.FUTURE_DB["tick_{}_sec".format(contract_type)]
+    type_col = constance.FUTURE_DB["tick_{}".format(contract_type)]
+    main_dates = main_col.distinct("date")
+    start_index = main_dates.index(start_date) if start_date in main_dates else 0
+    for i in range(start_index, len(main_dates)):        
+        start_date = main_dates[i]
+        main_tick = main_col.find_one({"date": start_date})
+        main_code = main_tick['code']
+        second_code = list(type_col.find({"code": {"$ne": main_code}, "time": {"$gte": "{} 14:59:00.000".format(
+            start_date), "$lte": "{} 15:00:00.500".format(start_date)}}).sort("ccl", -1).limit(1))[0]['code']
+        
+        utils.log("Date {}, main code {}, second code {}".format(start_date, main_code, second_code))
+        
+        start_time = "{} 21:00:00.000".format(main_dates[i-1]) if i > 0 else "{} 09:00:00.000".format(start_date)
+        sec_ticks = list(type_col.find({"code": second_code, "time": {
+                         "$gte": start_time, "$lte": "{} 15:00:00.000".format(start_date)}}, {"_id":0}))
+        
+        # sec_col.delete_many({"time": {"$gte": sec_ticks[0]['time'], "$lte": sec_ticks[-1]['time']}})
+        sec_col.insert_many(sec_ticks)
+        utils.log("Finish insert {} sec data on {}".format(len(sec_ticks), start_date))
+    return
+
+
+def collect_data(contract_type = "rb", path="E:/Data/sc"):    
+    # patterns = [".*rb主力连续_\d+.csv", ".*rb次主力连续_\d+.csv"]
+    # col_formats = ["tick_{}_main", "tick_{}_sec"]
+    patterns = [".*rb\d+_\d+.csv"]
+    col_formats = ["tick_{}"]
     # pattern = get_contract_file_pattern("SA")
     for i in range(0, len(patterns)):        
         col_format = col_formats[i]
         col_name = col_format.format(contract_type.lower())
         pattern = patterns[i]
         paths = get_paths(path, pattern)
-        paths = extra_filter_files(paths, "20211201")
+        # paths = extra_filter_files(paths, "20211201")
         # utils.log("new paths: {}".format(paths))
         save_data_2_db(paths, col_name)
+
+if __name__ == "__main__":
+    # collect_data()
+    extract_second_from_main("rb")

@@ -468,6 +468,257 @@ def available_codes():
     types.sort()
     return types
 
+def get_percentage(start, end):
+    return round((end - start) * 100 / end, 4)
+
+
+def get_zxj_trend_value(minute, percentage):
+    trend_point = 0
+    abs_per = abs(percentage)
+    positive = 1 if percentage >= 0 else -1
+    if minute == 2:
+        if abs_per <= 0.025:
+            trend_point = 1
+        elif abs_per <= 0.05:
+            trend_point = 2
+        elif abs_per <= 0.08:
+            trend_point = 3
+        elif abs_per <= 0.1:
+            trend_point = 4
+        elif abs_per <= 0.15:
+            trend_point = 5
+        elif abs_per <= 0.2:
+            trend_point = 6
+        elif abs_per <= 0.3:
+            trend_point = 7
+        elif abs_per <= 0.4:
+            trend_point = 8
+        elif abs_per <= 0.5:
+            trend_point = 9
+        else:
+            trend_point = 10
+    elif minute == 5:
+        if abs_per <= 0.05:
+            trend_point = 1
+        elif abs_per <= 0.10:
+            trend_point = 2
+        elif abs_per <= 0.15:
+            trend_point = 3
+        elif abs_per <= 0.25:
+            trend_point = 4
+        elif abs_per <= 0.4:
+            trend_point = 5
+        elif abs_per <= 0.6:
+            trend_point = 6
+        elif abs_per <= 0.8:
+            trend_point = 7
+        elif abs_per <= 1:
+            trend_point = 8
+        elif abs_per <= 1.5:
+            trend_point = 9
+        else:
+            trend_point = 10
+    elif minute == 20:
+        if abs_per <= 0.1:
+            trend_point = 1
+        elif abs_per <= 0.20:
+            trend_point = 2
+        elif abs_per <= 0.35:
+            trend_point = 3
+        elif abs_per <= 0.6:
+            trend_point = 4
+        elif abs_per <= 0.8:
+            trend_point = 5
+        elif abs_per <= 1.1:
+            trend_point = 6
+        elif abs_per <= 1.5:
+            trend_point = 7
+        elif abs_per <= 2:
+            trend_point = 8
+        elif abs_per <= 3:
+            trend_point = 9
+        else:
+            trend_point = 10
+    elif minute == 60:
+        if abs_per <= 0.2:
+            trend_point = 1
+        elif abs_per <= 0.30:
+            trend_point = 2
+        elif abs_per <= 0.45:
+            trend_point = 3
+        elif abs_per <= 0.7:
+            trend_point = 4
+        elif abs_per <= 1:
+            trend_point = 5
+        elif abs_per <= 1.5:
+            trend_point = 6
+        elif abs_per <= 2.1:
+            trend_point = 7
+        elif abs_per <= 2.8:
+            trend_point = 8
+        elif abs_per <= 4:
+            trend_point = 9
+        else:
+            trend_point = 10
+    elif minute == 120:
+        if abs_per <= 0.2:
+            trend_point = 1
+        elif abs_per <= 0.30:
+            trend_point = 2
+        elif abs_per <= 0.45:
+            trend_point = 3
+        elif abs_per <= 0.7:
+            trend_point = 4
+        elif abs_per <= 1:
+            trend_point = 5
+        elif abs_per <= 1.5:
+            trend_point = 6
+        elif abs_per <= 2.1:
+            trend_point = 7
+        elif abs_per <= 2.8:
+            trend_point = 8
+        elif abs_per <= 6:
+            trend_point = 9
+        else:
+            trend_point = 10
+
+    return positive * trend_point
+
+
+def get_ccl_trend_value(minute, percentage):
+    trend_point = 0
+    abs_per = abs(percentage)
+    positive = 1 if percentage >= 0 else -1
+    if minute == 2:
+        if abs_per <= 0.005:
+            trend_point = 1
+        elif abs_per <= 0.01:
+            trend_point = 2
+        elif abs_per <= 0.02:
+            trend_point = 3
+        elif abs_per <= 0.03:
+            trend_point = 4
+        elif abs_per <= 0.05:
+            trend_point = 5
+        elif abs_per <= 0.1:
+            trend_point = 6
+        elif abs_per <= 0.2:
+            trend_point = 7
+        elif abs_per <= 0.3:
+            trend_point = 8
+        elif abs_per <= 0.4:
+            trend_point = 9
+        else:
+            trend_point = 10
+    elif minute == 5:
+        if abs_per <= 0.02:
+            trend_point = 1
+        elif abs_per <= 0.05:
+            trend_point = 2
+        elif abs_per <= 0.10:
+            trend_point = 3
+        elif abs_per <= 0.15:
+            trend_point = 4
+        elif abs_per <= 0.2:
+            trend_point = 5
+        elif abs_per <= 0.3:
+            trend_point = 6
+        elif abs_per <= 0.4:
+            trend_point = 7
+        elif abs_per <= 0.5:
+            trend_point = 8
+        elif abs_per <= 0.6:
+            trend_point = 9
+        else:
+            trend_point = 10
+    elif minute == 10:
+        if abs_per <= 0.03:
+            trend_point = 1
+        elif abs_per <= 0.075:
+            trend_point = 2
+        elif abs_per <= 0.15:
+            trend_point = 3
+        elif abs_per <= 0.225:
+            trend_point = 4
+        elif abs_per <= 0.3:
+            trend_point = 5
+        elif abs_per <= 0.45:
+            trend_point = 6
+        elif abs_per <= 0.6:
+            trend_point = 7
+        elif abs_per <= 0.75:
+            trend_point = 8
+        elif abs_per <= 0.9:
+            trend_point = 9
+        else:
+            trend_point = 10
+    elif minute == 20:
+        if abs_per <= 0.05:
+            trend_point = 1
+        elif abs_per <= 0.1:
+            trend_point = 2
+        elif abs_per <= 0.2:
+            trend_point = 3
+        elif abs_per <= 0.35:
+            trend_point = 4
+        elif abs_per <= 0.4:
+            trend_point = 5
+        elif abs_per <= 0.6:
+            trend_point = 6
+        elif abs_per <= 0.8:
+            trend_point = 7
+        elif abs_per <= 1:
+            trend_point = 8
+        elif abs_per <= 1.5:
+            trend_point = 9
+        else:
+            trend_point = 10
+    elif minute == 60:
+        if abs_per <= 0.15:
+            trend_point = 1
+        elif abs_per <= 0.25:
+            trend_point = 2
+        elif abs_per <= 0.5:
+            trend_point = 3
+        elif abs_per <= 0.8:
+            trend_point = 4
+        elif abs_per <= 1.2:
+            trend_point = 5
+        elif abs_per <= 2:
+            trend_point = 6
+        elif abs_per <= 3:
+            trend_point = 7
+        elif abs_per <= 5:
+            trend_point = 8
+        elif abs_per <= 8:
+            trend_point = 9
+        else:
+            trend_point = 10
+    elif minute == 120:
+        if abs_per <= 0.3:
+            trend_point = 1
+        elif abs_per <= 0.55:
+            trend_point = 2
+        elif abs_per <= 0.9:
+            trend_point = 3
+        elif abs_per <= 1.5:
+            trend_point = 4
+        elif abs_per <= 2.5:
+            trend_point = 5
+        elif abs_per <= 4:
+            trend_point = 6
+        elif abs_per <= 6:
+            trend_point = 7
+        elif abs_per <= 9:
+            trend_point = 8
+        elif abs_per <= 12:
+            trend_point = 9
+        else:
+            trend_point = 10
+
+    return positive * trend_point
+
+
 if __name__ == "__main__":
     # LOGGER.info(convert_val("0.5"))
     # LOGGER.info(convert_val("5"))
