@@ -4,19 +4,12 @@ from statistics import mean, variance, stdev
 
 DAILY_STATISTIC_INFO_MAP = {}
 MAIN_DATES = []
-TIME_WEIGHT = {
-    2: 0.25,
-    5: 0.4,
-    20: 0.15,
-    60: 0.15,
-    120: 0.05
-}
 
 def update_sum_ccl(contract_type, start_time = "2022-00-00 00:00:00.000"):
     main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
     sec_col = constance.FUTURE_DB['tick_{}_sec'.format(contract_type)]
     count = 0
-    for t in main_col.find({"time":{"$lte": start_time}}):        
+    for t in main_col.find({"time":{"$gte": start_time}}):        
     # for t in main_col.find({"sum_ccl":{"$exists": False}}):        
         sec_info = sec_col.find_one({'time': {"$lte": t['time']}}, sort=[('time', -1)])
         if sec_info:
@@ -55,11 +48,14 @@ def daily_ccl_analysis(contract_type, start_date, end_date):
             # max_sum_ccls = list(main_col.find({'time':{"$lte": end_time, "$gte": start_time}}).sort("sum_ccl",-1).limit(1))
             zjl = ticks[-1]['ccl'] - ticks[0]["ccl"]
             zjl_per = round(zjl * 100.00 / ticks[0]['ccl'], 2)
+            sum_zjl = ticks[-1]['sum_ccl'] - ticks[0]['sum_ccl'] 
+            sum_zjl_per = round(sum_zjl * 100.00 / ticks[0]['sum_ccl'], 2)
+            
             price_diff = ticks[-1]['zxj'] - ticks[0]['zxj']
             price_diff_per = round(price_diff * 100 / ticks[0]['zxj'], 2)
             ccl_impact = round((ticks[-1]['zxj'] - ticks[0]['zxj']) * 10000.00 / zjl, 2)
             result = {
-                "date": current_date,
+                "date": MAIN_DATES[i+1],
                 "type": contract_type,
                 "code": ticks[0]['code'],
                 "start_ccl": ticks[0]['ccl'],
@@ -74,8 +70,12 @@ def daily_ccl_analysis(contract_type, start_date, end_date):
                 "min_ccl": int(min(ccls)),
                 "avg_ccl": int(mean(ccls)),
                 "max_ccl": int(max(ccls)),
+                "start_sum_ccl": ticks[0]['sum_ccl'],
+                "end_sum_ccl": ticks[-1]['sum_ccl'],
+                "sum_zjl": sum_zjl,
+                "sum_zjl_per": sum_zjl_per,
                 "min_sum_ccl": int(min(sum_ccls)),
-                "avg_sum_ccl": int(mean(sum_ccls)),
+                "avg_sum_ccl": int(mean(sum_ccls)),                
                 "max_sum_ccl": int(max(sum_ccls)),
                 # "min_ccl_time": min_ccls[0]['time'],
                 # "max_ccl_time": max_ccls[0]['time'],
@@ -87,10 +87,13 @@ def daily_ccl_analysis(contract_type, start_date, end_date):
             results.append(result)
             utils.log("Finish {} - {}".format(start_time, end_time))
         if len(results) > 0:
+            utils.convert_dic_to_csv("ccl_min_max", results)
             ccl_statistic_daily_col = constance.FUTURE_DB['ccl_statistic_daily']
+            utils.log("date: {}".format(
+                {"$gte": results[0]['date'], "$lte": results[-1]['date']}))
             ccl_statistic_daily_col.delete_many({"type": contract_type, "date": {"$gte": results[0]['date'], "$lte": results[-1]['date']}})
             ccl_statistic_daily_col.insert_many(results)
-        utils.convert_dic_to_csv("ccl_min_max", results)        
+                
     except Exception as e:
         utils.log(e)
         utils.log("Results: {}".format(results))
@@ -184,6 +187,7 @@ def get_daily_statistic_info(contract_type, look_back_days = 5):
             utils.log("Daily statistic {} finished".format(end_date))
     return
 
+# !!! CJL abnormal is only used to cut position
 # 1. continous 3 > avg + stdev
 # 2. past 5 larger than 10000
 # 3. ticks must be 5 sec span
@@ -232,7 +236,9 @@ def ccl_status_analysis():
 def get_percentage(start, end):
     return round((end - start) * 100 / end, 2)
 
-def ccl_abnormal_signal(ccl_trend_data):
+# There is no open trend during retracement day.
+def ccl_abnormal_signal(tick, ccl_trend_data, contract_type = "rb"):
+    ccl_statistic_daily_col = constance.FUTURE_DB['ccl_statistic_daily']
     signal = "None"
     # strong signal
     # Cut's logic is totally different with open. Cut should be steep, and open will be more like wait and go    
@@ -242,14 +248,35 @@ def ccl_abnormal_signal(ccl_trend_data):
         # elif ccl_trend_data[20] > 3 and ccl_trend_data[60] > 3:
         #     signal = "ReverseToCut"        
     # el
+    # if ccl_trend_data[2] + ccl_trend_data[5] >= 11:
+    #     if ccl_trend_data[20] >= -1 and ccl_trend_data[20] <= 4 and ccl_trend_data[60] >= -1 and ccl_trend_data[60] <= 4:
+    #         if ccl_trend_data[20] + ccl_trend_data[60] < 7:
+    #             ccl_history = ccl_statistic_daily_col.find({"type": tick['type'], "date": {"$lt": tick['date']}}).sort("date", -1).limit(20)
+
+
+
+    #             signal = "StartOpenTrend"
+    #         else:
+    #             if ccl_trend_data[2] + ccl_trend_data[5] >= 12:
+    #                 signal = "StartOpenTrend"
+
     if ccl_trend_data[2] + ccl_trend_data[5] >= 11:
-        if ccl_trend_data[20] >= -1 and ccl_trend_data[20] <=4 and ccl_trend_data[60] >= -1 and ccl_trend_data[60] <= 4:
+        # ccl_history = list(ccl_statistic_daily_col.find(
+        #     {"type": contract_type, "date": {"$lt": tick['date']}}).sort("date", -1).limit(30))
+        # if ccl_history[0]['sum_zjl_per'] <= -0.5 and sum(x["sum_zjl_per"] for x in ccl_history[1:5]) < -1.5:
+            # min_sum_ccl = min(list(x['min_sum_ccl'] for x in ccl_history))
+            # max_sum_ccl = max(list(x['max_sum_ccl'] for x in ccl_history))
+            # if (tick['sum_ccl'] - min_sum_ccl) * 1.00 / (max_sum_ccl - min_sum_ccl) < 0.3:
+        if ccl_trend_data[20] >= -1 and ccl_trend_data[20] <= 4 and ccl_trend_data[60] >= -1 and ccl_trend_data[60] <= 4:
             if ccl_trend_data[20] + ccl_trend_data[60] < 7:
+                # signal = "StartOpenTrend:{}|{}|{}|{}".format(max_sum_ccl, min_sum_ccl, tick['sum_ccl'], round(
+                #     (tick['sum_ccl'] - min_sum_ccl) * 1.00 / (max_sum_ccl - min_sum_ccl), 2))
                 signal = "StartOpenTrend"
             else:
                 if ccl_trend_data[2] + ccl_trend_data[5] >= 12:
-                    signal = "StartOpenTrend"
-            
+                    # signal = "StartOpenTrend:{}|{}|{}|{}".format(max_sum_ccl, min_sum_ccl, tick['sum_ccl'], round(
+                    #     (tick['sum_ccl'] - min_sum_ccl) * 1.00 / (max_sum_ccl - min_sum_ccl), 2)) 
+                    signal = "StartOpenTrend"         
         # elif ccl_trend_data[20] < -3 and ccl_trend_data[60] < -3:
         #     signal = "ReverseToOpen"
     
@@ -276,7 +303,8 @@ def verify_ccl_trend_point(contract_type, current_time, is_log = False):
     # utils.log("price trend value {}".format(zxj_final_value))
     # utils.log("ccl trend value {}".format(ccl_final_value))
     if is_log:
-        utils.log("Signal is {}".format(ccl_abnormal_signal(ccl_trend_data)))
+        utils.log("Signal is {}".format(
+            ccl_abnormal_signal(end_tick, ccl_trend_data)))
     return ccl_trend_data, price_trend_data
 
 def ccl_cjl_price_avg_dev(contract_type):
@@ -395,7 +423,7 @@ def check_trend_accuracy(contract_type, start_date, end_date):
             cjl_status = cjl_abnormal_signal(contract_type, tick['time'])
         else:        
             
-            signal = ccl_abnormal_signal(ccl_trend_data)
+            signal = ccl_abnormal_signal(tick, ccl_trend_data, contract_type)
             if signal != "None":
                 trend_str = ""
                 for k,v in ccl_trend_data.items():
@@ -408,16 +436,126 @@ def check_trend_accuracy(contract_type, start_date, end_date):
     results = list(results)
     results.sort()
     utils.log("{}".format(results))
+
+def ccl_day_filter(contract_type, start_date):
+    main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
+    MAIN_DATES = main_col.distinct("date")
+    current_index = MAIN_DATES.index(start_date)
+
+    ccl_statistic_daily_col = constance.FUTURE_DB['ccl_statistic_daily']
+    available_days = []
+    for i in range(current_index, len(MAIN_DATES)):        
+        ccl_history = list(ccl_statistic_daily_col.find({"type": contract_type, "date": {"$lt": MAIN_DATES[i]}}).sort("date", -1).limit(5))
+        sum_zjl_per = max(-1, ccl_history[0]['sum_zjl_per'])
+        if sum_zjl_per <= -0.5:
+            for h_i in range(1, 5):
+                sum_zjl_per += ccl_history[h_i]['sum_zjl_per']
+                if sum_zjl_per <= -0.5 * (h_i + 1):
+                    available_days.append(MAIN_DATES[i])
+                    break
+            # and (sum(x["sum_zjl_per"] for x in ccl_history[1:3]) < -1 or sum(x["sum_zjl_per"] for x in ccl_history[1:4]) < -1.5 or sum(x["sum_zjl_per"] for x in ccl_history[1:5]) < -1.5):
+            # available_days.append(MAIN_DATES[i])
+    
+    utils.log("Available dates {}".format(available_days))
+    return available_days
+
+def check_open_ccl_accurate(contract_type, start_date, end_date):
+    available_days = ccl_day_filter(contract_type, start_date)
+    main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(contract_type)]
+    main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
+    MAIN_DATES = main_col.distinct("date")
+    utils.log("Start check")
+    skip_count = 0    
+    ticks = list(main_col.find({"date": {"$gte": start_date, "$lte": end_date}}).sort("time", 1))
+    utils.log("We get {} ticks".format(len(ticks)))
+    statistics = []
+    
+    for i in range(0, len(ticks) - 600 * 12):
+
+        if skip_count > 0:
+            skip_count -= 1
+            continue
+        tick = ticks[i]
+        tick_time = tick['time'].split(" ")[-1]
+        if tick_time >= "21:00:00.000":
+            current_index = MAIN_DATES.index(tick['date'])
+            next_date = MAIN_DATES[current_index + 1]
+            if next_date not in available_days:
+                continue
+        else:
+            if tick['date'] not in available_days:
+                continue
+
+        ccl_trend_data, price_trend_data = verify_ccl_trend_point(contract_type, tick['time'])
+        signal = ccl_abnormal_signal(tick, ccl_trend_data)
+        if signal != "None":
+            min_ccl, min_index = 9999999999, i
+            max_ccl, max_index = 0, i
+            min_zxj, min_zxj_index = 9999999, i
+            max_zxj, max_zxj_index = 0, i
+            for n_i in range(i+1, i + 60*12 + 1):
+                t = ticks[n_i]
+                if t['ccl'] < min_ccl:
+                    min_index = n_i
+                    min_ccl = t['ccl']
+                if t['ccl'] > max_ccl:
+                    max_index = n_i
+                    max_ccl = t['ccl']
+                if t['zxj'] < min_zxj:
+                    min_zxj_index = n_i
+                    min_zxj = t['zxj']
+                if t['zxj'] > max_zxj:
+                    max_zxj_index = n_i
+                    max_zxj = t['zxj']
+                
+            # past_30_zxjs = list(x['zxj'] for x in ticks[i - 30*12-1:i])
+            # past_30_avg = mean(past_30_avg)
+            statistics.append(
+                {
+                    "time": tick['time'],                   
+                    "code": tick['code'],                    
+                    "min_ccl_time": round((min_index - i) / 12, 0),
+                    "max_ccl_time": round((max_index - i) / 12, 0),
+                    "min_zxj_time": round((min_zxj_index - i) / 12, 0),
+                    "max_zxj_time": round((max_zxj_index - i) / 12, 0),
+                    "ccl": tick['ccl'],
+                    "min_ccl": ticks[min_index]['ccl'],
+                    "max_ccl": ticks[max_index]['ccl'],
+                    "min_ccl_per": round((ticks[min_index]['ccl'] - tick['ccl']) * 100 / tick['ccl'], 2),
+                    "max_ccl_per": round((ticks[max_index]['ccl'] - tick['ccl']) * 100 / tick['ccl'], 2),
+                    "direction_2": price_trend_data[2],
+                    "direction_5": price_trend_data[5],
+                    "direction_20": price_trend_data[20],
+                    "direction_60": price_trend_data[60],
+                    "signal": signal.split(":")[-1],
+                    "zxj": tick['zxj'],
+                    # "min_zxj": ticks[min_zxj_index]['zxj'],
+                    # "max_zxj": ticks[max_zxj_index]['zxj'],
+                    "min_zxj_per": round((ticks[min_zxj_index]['zxj'] - tick['zxj']) * 100 / tick['zxj'], 2),
+                    "max_zxj_per": round((ticks[max_zxj_index]['zxj'] - tick['zxj']) * 100 / tick['zxj'], 2),
+                    "min_ccl_zxj_per": round((ticks[min_index]['zxj'] - tick['zxj']) * 100 / tick['zxj'], 2),
+                    "max_ccl_zxj_per": round((ticks[max_index]['zxj'] - tick['zxj']) * 100 / tick['zxj'], 2),                    
+                }
+            )
+            skip_count = 120
+            continue
+        
+        skip_count = 12
+    utils.log("Finished")
+    utils.convert_dic_to_csv("ccl_next_statistic", statistics)
+
     
 if __name__ == "__main__":
-    # update_sum_ccl("rb", "2021-11-30 21:00:00.000")
+    # update_sum_ccl("rb", "2020-01-01 21:00:00.000")
     # output_csv("rb")
     # cjl_avg_dev("rb", "2020-01-01")
     # daily_ccl_analysis("rb", "2020-01-08", "2022-12-31")
     # ccl_cjl_price_avg_dev("rb")
     # get_daily_statistic_info("rb")
-    verify_ccl_trend_point("rb", "2022-12-09 09:02:00.500", True)
+    # verify_ccl_trend_point("rb", "2022-12-20 11:05:53.000", True)
     # check_trend_accuracy("rb", "2022-12-01", "2022-12-31")
+    # check_open_ccl_accurate("rb", "2022-12-01", "2022-12-31")
+    ccl_day_filter("rb", "2022-12-01")
     # missing: "2022-12-08 22:40:00" "12-13 21:11" "12-26 21:40" "12-15 11:02"
 
 

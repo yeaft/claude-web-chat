@@ -109,7 +109,7 @@ def extract_second_from_main(contract_type, start_date = "2020-01-02"):
         sec_ticks = list(type_col.find({"code": second_code, "time": {
                          "$gte": start_time, "$lte": "{} 15:00:00.000".format(start_date)}}, {"_id":0}))
         
-        # sec_col.delete_many({"time": {"$gte": sec_ticks[0]['time'], "$lte": sec_ticks[-1]['time']}})
+        sec_col.delete_many({"time": {"$gte": sec_ticks[0]['time'], "$lte": sec_ticks[-1]['time']}})
         sec_col.insert_many(sec_ticks)
         utils.log("Finish insert {} sec data on {}".format(len(sec_ticks), start_date))
     return
