@@ -172,8 +172,9 @@ def test_data():
         if d['cjl'] > 0 and (d['cjl'] != types[d['type']]['cjl'] or d['ccl'] != types[d['type']]['ccl']):
             results.append(d)
     
-    utils.log("Raw data {}".format(raw_text))
-    file_utils.echo_dics(results)
+    utils.log("{}".format(raw_text))
+    utils.log("----------------------------------------")
+    utils.log("{}".format(results))
 
 @click.command()
 @click.option('--collect-type', '-c', default="s", help='collect data time span 5s  s|m')
