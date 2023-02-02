@@ -28,8 +28,6 @@ def get_contract_map():
         types[x['type']]['norCode'] = main_code.upper()
         types[x['type']]['secondCode'] = second_code
         types[x['type']]['secondNorCode'] = second_code.upper()
-        types[x['type']]['cjl'] = 0
-        types[x['type']]['ccl'] = 0
     return types
 
 def convert_code_to_standard_code(source_code, contract):
@@ -107,7 +105,7 @@ def collect_tick_data():
                 # click.echo(types)
                 # click.echo(raw_text)
                 for d in current_datas:
-                    if d['cjl'] > 0 and (d['cjl'] != types[d['type']]['cjl'] or d['ccl'] != types[d['type']]['ccl']):
+                    if d['cjl'] > 0 and d['ccl'] > 0:
                         if valid_data(d, last_datas[code_key]):
                             cols[code_key].insert_one(d)
                         else:
