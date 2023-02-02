@@ -45,8 +45,8 @@ def get_current_data(types, code_key = "norCode"):
     url = DATA_URL + ",".join(normalised_codes)
     r = requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'}, proxies=constance.PROXIES) if constance.ONLINE else requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'})
     # utils.log(r.text)
-    with open("/log.txt", "a") as f:
-        f.write("{} \n".format(r.text))
+    # with open("/log.txt", "a") as f:
+    #     f.write("{} \n".format(r.text))
 
     datas = []
     for line in r.text.split("\n"):
@@ -67,8 +67,8 @@ def get_current_data(types, code_key = "norCode"):
             data = convert_str_to_ticker_data(current_time, t, code, data_str)
             datas.append(data)
     
-    with open("/data.txt", "a") as f:
-        f.write("{} \n".format(datas))
+    # with open("/data.txt", "a") as f:
+    #     f.write("{} \n".format(datas))
     # echo_dics(datas, min_head_length=12)
     return datas,r.text
 
