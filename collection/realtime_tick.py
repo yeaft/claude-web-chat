@@ -23,7 +23,7 @@ def get_contract_map():
         types[x['type']] = {}
         types[x['type']]['code'] = x['code']
         main_code = convert_code_to_standard_code(x['code'], x['type'])
-        second_info = list(constance.INFO_COL.find({"date": max_date, "type": x['type'], "code": {"$gt": x['code']}}).sort("cjl", DESCENDING).limit(1))[0]
+        second_info = list(constance.INFO_COL.find({"date": max_date, "type": x['type'], "code": {"$gt": x['code']}}).sort("ccl", DESCENDING).limit(1))[0]
         second_code = convert_code_to_standard_code(second_info['code'], x['type'])
         types[x['type']]['norCode'] = main_code.upper()
         types[x['type']]['secondCode'] = second_code
