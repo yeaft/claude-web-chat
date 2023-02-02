@@ -553,10 +553,10 @@ def check_open_ccl_accurate(contract_type, start_date, end_date):
 
     
 if __name__ == "__main__":
-    # update_sum_ccl("rb", "2020-01-01 21:00:00.000")
+    update_sum_ccl("rb", "2020-01-01 21:00:00.000")
     # output_csv("rb")
     # cjl_avg_dev("rb", "2020-01-01")
-    daily_ccl_analysis("rb", "2020-01-20", "2022-12-31")
+    # daily_ccl_analysis("rb", "2020-01-20", "2022-12-31")
     # ccl_cjl_price_avg_dev("rb")
     # get_daily_statistic_info("rb")
     # verify_ccl_trend_point("rb", "2022-12-20 11:05:53.000", True)

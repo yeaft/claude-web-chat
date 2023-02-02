@@ -72,8 +72,10 @@ def save_data_2_disk(paths, contract_type):
 def get_paths(path, pattern):
     final_paths = []
     paths = file_utils.get_files_from_directory(path)
+    # utils.log(paths)
     prog = re.compile(pattern)
     for p in paths:
+        p = p.replace("\\", "/")
         if prog.match(p):
             final_paths.append(p)
     return final_paths
@@ -100,9 +102,13 @@ def extract_second_from_main(contract_type, start_date = "2020-01-02"):
         start_date = main_dates[i]
         main_tick = main_col.find_one({"date": start_date})
         main_code = main_tick['code']
-        second_code = list(type_col.find({"code": {"$ne": main_code}, "time": {"$gte": "{} 14:59:00.000".format(
-            start_date), "$lte": "{} 15:00:00.500".format(start_date)}}).sort("ccl", -1).limit(1))[0]['code']
-        
+        second_codes = list(type_col.find({"code": {"$ne": main_code}, "time": {"$gte": "{} 14:57:00.000".format(
+            start_date), "$lte": "{} 15:00:00.500".format(start_date)}}).sort("ccl", -1).limit(1))
+        if len(second_codes) == 0:
+            utils.log("Date {}, main code {}, do not have second code".format(
+                start_date, main_code, second_code))
+            continue
+        second_code = second_codes[0]['code']        
         utils.log("Date {}, main code {}, second code {}".format(start_date, main_code, second_code))
         
         start_time = "{} 21:00:00.000".format(main_dates[i-1]) if i > 0 else "{} 09:00:00.000".format(start_date)
@@ -119,7 +125,7 @@ def extract_second_from_main(contract_type, start_date = "2020-01-02"):
 def collect_data(contract_type = "rb", path="E:/Data/sc"):    
     # patterns = [".*rb主力连续_\d+.csv", ".*rb次主力连续_\d+.csv"]
     # col_formats = ["tick_{}_main", "tick_{}_sec"]
-    patterns = [".*{}\d+_\d+.csv", ".*{}主力连续_\d+.csv"]
+    patterns = [".*/{}\d+_\d+.csv", ".*/{}主力连续_\d+.csv"]
     col_formats = ["tick_{}", "tick_{}_main"]
     # pattern = get_contract_file_pattern("SA")
     for i in range(0, len(patterns)):        
@@ -128,7 +134,7 @@ def collect_data(contract_type = "rb", path="E:/Data/sc"):
         pattern = patterns[i].format(contract_type)
         paths = get_paths(path, pattern)
         # paths = extra_filter_files(paths, "20211201")
-        # utils.log("new paths: {}".format(paths))
+        # utils.log("paths: {}".format(paths))
         save_data_2_db(paths, col_name)
 
 

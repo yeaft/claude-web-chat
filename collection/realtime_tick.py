@@ -14,7 +14,7 @@ DATA_URL = "https://hq.sinajs.cn/list="
 DATA_5M_URL = "http://stock2.finance.sina.com.cn/futures/api/json.php/IndexService.getInnerFuturesMiniKLine5m?symbol="
 START_TIMES = [["085959", "101500"], ["103000", "113000"], ["133000", "150000"], ["205955", "240000"], ["000000", "013000"]]
 
-def get_types():
+def get_contract_map():
     max_date = constance.MAIN_COL.find_one({}, sort=[('date', DESCENDING)])['date']
     available_contracts = list(constance.MAIN_COL.find({"date": max_date, "cjl": {"$gt": 5000}}))
     types = {}
@@ -38,22 +38,6 @@ def convert_code_to_standard_code(source_code, contract):
     year_p = code_date[:-2]
     year_p = "2" + year_p[-1]
     return contract + year_p + month
-
-def get_all_types():
-    max_date = constance.MAIN_COL.find_one({}, sort=[('date', DESCENDING)])['date']
-    available_contracts = list(constance.INFO_COL.find({"date": max_date, "cjl": {"$gt": 0}}))
-    types = {}
-
-    for x in available_contracts:
-        if x['type'] not in types:
-            types[x['type']] = []
-        code_date = x['code'].replace(x['type'], "")
-        month = code_date[-2:]
-        year_p = code_date[:-2]
-        year_p = "2" + year_p[-1]
-        code = x['type'] + year_p + month
-        types[x['type']].append(code)
-    return types
 
 def get_current_data(types, code_key = "norCode"):
     normalised_codes = list(("nf_" + v[code_key]) for k, v in types.items())
@@ -88,8 +72,13 @@ def get_current_data(types, code_key = "norCode"):
     # echo_dics(datas, min_head_length=12)
     return datas,r.text
 
+def is_end_with_5_sec():
+    current_sec = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%S')[-1]
+    return current_sec == "0" or current_sec == "5"
+
 def collect_tick_data():
-    types = get_types()
+    # Contract map
+    types = get_contract_map()
     cols = {}
     cols["norCode"] = constance.REAL_TIME_TICK_COL
     cols["secondNorCode"] = constance.REAL_TIME_TICK_SECOND_COL
@@ -103,16 +92,13 @@ def collect_tick_data():
     # utils.log("Types {0}".format(types))
     while True:
         # align time
-        while True:
-            current_sec = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%S')[-1]
-            if current_sec == "0" or current_sec == "5":
-                break
-            time.sleep(0.2)
+        while not is_end_with_5_sec():
+            time.sleep(0.4)            
         
         current_trade_status = is_trading()
         if last_trade_status != current_trade_status:
             if not current_trade_status:
-                types = get_types()
+                types = get_contract_map()
             utils.log("Change trade status, current {0}".format("trading" if current_trade_status else "close"))
         if current_trade_status:
             for code_key in ["norCode", "secondNorCode"]:
@@ -178,14 +164,15 @@ def convert_str_to_ticker_data(current_time, contract_type, code, data_str):
     return data
 
 def test_data():
-    types = get_types()
+    types = get_contract_map()
+    utils.log("{}".format(types))
     current_datas, raw_text = get_current_data(types)
     results = []
     for d in current_datas:
         if d['cjl'] > 0 and (d['cjl'] != types[d['type']]['cjl'] or d['ccl'] != types[d['type']]['ccl']):
             results.append(d)
     
-    click.echo("error raw text {}".format(raw_text))
+    utils.log("Raw data {}".format(raw_text))
     file_utils.echo_dics(results)
 
 @click.command()

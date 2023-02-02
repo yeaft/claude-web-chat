@@ -25,7 +25,6 @@ def get_files_from_directory(path):
     files = [f for f in glob.glob(path + "**/*.csv", recursive=True)]
     if len(files) == 0:
         files.append(path)
-
     return files
 
 
