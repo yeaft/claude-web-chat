@@ -166,15 +166,16 @@ def convert_str_to_ticker_data(current_time, contract_type, code, data_str):
 def test_data():
     types = get_contract_map()
     utils.log("{}".format(types))
-    current_datas, raw_text = get_current_data(types)
-    results = []
-    for d in current_datas:
-        if d['cjl'] > 0 and (d['cjl'] != types[d['type']]['cjl'] or d['ccl'] != types[d['type']]['ccl']):
-            results.append(d)
+    for code_key in ["norCode", "secondNorCode"]:
+        current_datas, raw_text = get_current_data(types, code_key)
+        results = []
+        for d in current_datas:
+            if d['cjl'] > 0 and (d['cjl'] != types[d['type']]['cjl'] or d['ccl'] != types[d['type']]['ccl']):
+                results.append(d)
     
-    utils.log("{}".format(raw_text))
-    utils.log("----------------------------------------")
-    utils.log("{}".format(results))
+        utils.log("{}".format(raw_text))
+        utils.log("----------------------------------------")
+        utils.log("{}".format(results))
 
 @click.command()
 @click.option('--collect-type', '-c', default="s", help='collect data time span 5s  s|m')
