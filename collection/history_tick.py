@@ -115,21 +115,82 @@ def extract_second_from_main(contract_type, start_date = "2020-01-02"):
     return
 
 
+
 def collect_data(contract_type = "rb", path="E:/Data/sc"):    
     # patterns = [".*rb主力连续_\d+.csv", ".*rb次主力连续_\d+.csv"]
     # col_formats = ["tick_{}_main", "tick_{}_sec"]
-    patterns = [".*rb\d+_\d+.csv"]
-    col_formats = ["tick_{}"]
+    patterns = [".*{}\d+_\d+.csv", ".*{}主力连续_\d+.csv"]
+    col_formats = ["tick_{}", "tick_{}_main"]
     # pattern = get_contract_file_pattern("SA")
     for i in range(0, len(patterns)):        
         col_format = col_formats[i]
         col_name = col_format.format(contract_type.lower())
-        pattern = patterns[i]
+        pattern = patterns[i].format(contract_type)
         paths = get_paths(path, pattern)
         # paths = extra_filter_files(paths, "20211201")
         # utils.log("new paths: {}".format(paths))
         save_data_2_db(paths, col_name)
 
+
+def tick_5_sec(contract_type, start_time="0000-00-00 00:00:00.000", end_time="9999-99-99 99:99:99.999"):
+    main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
+    five_sec_main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(
+        contract_type)]
+    cjl = 0
+    ticks = []
+    allowed_sec = ["00.000", "05.000", "10.000", "15.000", "20.000",
+                   "25.000", "30.000", "35.000", "40.000", "45.000", "50.000", "55.000"]
+    for tick in main_col.find({"time": {"$gte": start_time, "$lt": end_time}}).sort("time", 1):
+        # If change code, then ignore existed data
+        second = tick["time"].split(":")[-1]
+        if second in allowed_sec:
+            tick['cjl'] += cjl
+            ticks.append(tick)
+            cjl = 0
+        else:
+            cjl += tick['cjl']
+
+        if len(ticks) >= 100000:
+            five_sec_main_col.delete_many(
+                {"time": {"$gte": ticks[0]['time'], "$lte": ticks[-1]['time']}})
+            five_sec_main_col.insert_many(ticks)
+            utils.log("Finish batch data {} from {} to {}".format(
+                len(ticks), ticks[0]['time'], ticks[-1]['time']))
+            ticks = []
+
+    if len(ticks) > 0:
+        five_sec_main_col.delete_many(
+            {"time": {"$gte": ticks[0]['time'], "$lte": ticks[-1]['time']}})
+        five_sec_main_col.insert_many(ticks)
+
+    utils.log("Finish all data")
+
+def create_tick_index(col_name):    
+    # create a compund index
+    col = constance.FUTURE_DB[col_name]
+    col.create_index("time")
+    col.create_index(
+        [
+            ("date", 1),
+            ("time", 1)
+        ]
+    )    
+    utils.log("Finish create {} index".format(col_name))
+
+def collect_new_contract(contract_type, path):
+    collect_data(contract_type, path)
+    extract_second_from_main(contract_type)
+    create_tick_index("tick_{}".format(contract_type))
+    create_tick_index("tick_{}_main".format(contract_type))    
+    tick_5_sec(contract_type)
+    create_tick_index("tick_{}_sec".format(contract_type))
+
 if __name__ == "__main__":
     # collect_data()
-    extract_second_from_main("rb")
+    # extract_second_from_main("rb")
+    # collect_data("i", "E:/Data/dc")
+    # extract_second_from_main("i")
+    # collect_data("m", "E:/Data/dc")
+    # extract_second_from_main("m")
+    collect_new_contract("m", "E:/Data/dc")
+    collect_new_contract("i", "E:/Data/dc")

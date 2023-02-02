@@ -27,8 +27,8 @@ def update_sum_ccl(contract_type, start_time = "2022-00-00 00:00:00.000"):
 def daily_ccl_analysis(contract_type, start_date, end_date):
     main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
     MAIN_DATES = main_col.distinct("date")
-    current_date = start_date
     current_index = MAIN_DATES.index(start_date)
+    available_days = ccl_day_filter("rb", start_date)
     results = []
     try:
         for i in range(current_index, len(MAIN_DATES)-1):
@@ -74,6 +74,7 @@ def daily_ccl_analysis(contract_type, start_date, end_date):
                 "end_sum_ccl": ticks[-1]['sum_ccl'],
                 "sum_zjl": sum_zjl,
                 "sum_zjl_per": sum_zjl_per,
+                "is_available_trade": MAIN_DATES[i+1] in available_days,
                 "min_sum_ccl": int(min(sum_ccls)),
                 "avg_sum_ccl": int(mean(sum_ccls)),                
                 "max_sum_ccl": int(max(sum_ccls)),
@@ -450,7 +451,13 @@ def ccl_day_filter(contract_type, start_date):
         if sum_zjl_per <= -0.5:
             for h_i in range(1, 5):
                 sum_zjl_per += ccl_history[h_i]['sum_zjl_per']
-                if sum_zjl_per <= -0.5 * (h_i + 1):
+                if sum_zjl_per <= -0.5 * (h_i ):
+                    available_days.append(MAIN_DATES[i])
+                    break
+        elif sum_zjl_per <= 1:
+            for h_i in range(1, 5):
+                sum_zjl_per += ccl_history[h_i]['sum_zjl_per']
+                if sum_zjl_per <= -1 * (h_i + 1):
                     available_days.append(MAIN_DATES[i])
                     break
             # and (sum(x["sum_zjl_per"] for x in ccl_history[1:3]) < -1 or sum(x["sum_zjl_per"] for x in ccl_history[1:4]) < -1.5 or sum(x["sum_zjl_per"] for x in ccl_history[1:5]) < -1.5):
@@ -549,13 +556,13 @@ if __name__ == "__main__":
     # update_sum_ccl("rb", "2020-01-01 21:00:00.000")
     # output_csv("rb")
     # cjl_avg_dev("rb", "2020-01-01")
-    # daily_ccl_analysis("rb", "2020-01-08", "2022-12-31")
+    daily_ccl_analysis("rb", "2020-01-20", "2022-12-31")
     # ccl_cjl_price_avg_dev("rb")
     # get_daily_statistic_info("rb")
     # verify_ccl_trend_point("rb", "2022-12-20 11:05:53.000", True)
     # check_trend_accuracy("rb", "2022-12-01", "2022-12-31")
     # check_open_ccl_accurate("rb", "2022-12-01", "2022-12-31")
-    ccl_day_filter("rb", "2022-12-01")
+    # ccl_day_filter("rb", "2022-12-01")
     # missing: "2022-12-08 22:40:00" "12-13 21:11" "12-26 21:40" "12-15 11:02"
 
 
