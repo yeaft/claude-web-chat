@@ -16,14 +16,14 @@ START_TIMES = [["085959", "101500"], ["103000", "113000"], ["133000", "150000"],
 
 def get_contract_map():
     max_date = constance.MAIN_COL.find_one({}, sort=[('date', DESCENDING)])['date']
-    available_contracts = list(constance.MAIN_COL.find({"date": max_date, "cjl": {"$gt": 5000}}))
+    available_contracts = list(constance.MAIN_COL.find({"date": max_date, "kpl": {"$gt": 200000}}))
     types = {}
     
     for x in available_contracts:
         types[x['type']] = {}
         types[x['type']]['code'] = x['code']
         main_code = convert_code_to_standard_code(x['code'], x['type'])
-        second_info = list(constance.INFO_COL.find({"date": max_date, "type": x['type'], "code": {"$gt": x['code']}}).sort("ccl", DESCENDING).limit(1))[0]
+        second_info = list(constance.INFO_COL.find({"date": max_date, "type": x['type'], "code": {"$gt": x['code']}}).sort("kpl", DESCENDING).limit(1))[0]
         second_code = convert_code_to_standard_code(second_info['code'], x['type'])
         types[x['type']]['norCode'] = main_code.upper()
         types[x['type']]['secondCode'] = second_code
