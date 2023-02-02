@@ -19,14 +19,14 @@ def tick_5_sec(contract_type, start_time = "0000-00-00 00:00:00.000", end_time =
             cjl += tick['cjl']
         
         if len(ticks) >= 100000:
-            # five_sec_main_col.delete_many({"time": {"$gte": ticks[0]['time'], "$lte": ticks[-1]['time']}})
+            five_sec_main_col.delete_many({"time": {"$gte": ticks[0]['time'], "$lte": ticks[-1]['time']}})
             five_sec_main_col.insert_many(ticks)
             utils.log("Finish batch data {} from {} to {}".format(len(ticks), ticks[0]['time'], ticks[-1]['time']))
             ticks = []
     
     if len(ticks) > 0:
-        # five_sec_main_col.delete_many(
-        #     {"time": {"$gte": ticks[0]['time'], "$lte": ticks[-1]['time']}})
+        five_sec_main_col.delete_many(
+            {"time": {"$gte": ticks[0]['time'], "$lte": ticks[-1]['time']}})
         five_sec_main_col.insert_many(ticks)
     
     utils.log("Finish all data")
