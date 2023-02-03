@@ -183,13 +183,41 @@ def create_tick_index(col_name):
     )    
     utils.log("Finish create {} index".format(col_name))
 
+
+def update_sum_ccl(contract_type, start_time="0000-00-00 00:00:00.000"):
+    main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
+    sec_col = constance.FUTURE_DB['tick_{}_sec'.format(contract_type)]
+    count = 0
+    for t in main_col.find({"time": {"$gte": start_time}}):
+        # for t in main_col.find({"sum_ccl":{"$exists": False}}):
+        sec_info = sec_col.find_one(
+            {'time': {"$lte": t['time']}}, sort=[('time', -1)])
+        if sec_info:
+            filter = {'time': t['time']}
+            newvalues = {"$set": {'sum_ccl': t['ccl'] + sec_info['ccl']}}
+            main_col.update_one(filter, newvalues)
+        else:
+            utils.log("No sec data {}".format(t['time']))
+
+        count += 1
+
+        if count % 100000 == 1:
+            utils.log("Finish {}".format(count))
+
 def collect_new_contract(contract_type, path):
-    collect_data(contract_type, path)
-    extract_second_from_main(contract_type)
+    if contract_type != "m":
+        collect_data(contract_type, path)
+
     create_tick_index("tick_{}".format(contract_type))
-    create_tick_index("tick_{}_main".format(contract_type))    
-    tick_5_sec(contract_type)
+    create_tick_index("tick_{}_main".format(contract_type))
+
+    extract_second_from_main(contract_type)  
     create_tick_index("tick_{}_sec".format(contract_type))
+
+    update_sum_ccl(contract_type)
+    tick_5_sec(contract_type)
+    create_tick_index("tick_{}_mian_5_sec".format(contract_type))
+    
 
 if __name__ == "__main__":
     # collect_data()
@@ -198,5 +226,7 @@ if __name__ == "__main__":
     # extract_second_from_main("i")
     # collect_data("m", "E:/Data/dc")
     # extract_second_from_main("m")
-    collect_new_contract("m", "E:/Data/dc")
-    collect_new_contract("i", "E:/Data/dc")
+    # collect_new_contract("m", "E:/Data/dc")
+    # collect_new_contract("i", "E:/Data/dc")
+    tick_5_sec("rb")
+    create_tick_index("tick_{}_mian_5_sec".format("rb"))

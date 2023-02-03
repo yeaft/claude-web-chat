@@ -5,25 +5,6 @@ from statistics import mean, variance, stdev
 DAILY_STATISTIC_INFO_MAP = {}
 MAIN_DATES = []
 
-def update_sum_ccl(contract_type, start_time = "2022-00-00 00:00:00.000"):
-    main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
-    sec_col = constance.FUTURE_DB['tick_{}_sec'.format(contract_type)]
-    count = 0
-    for t in main_col.find({"time":{"$gte": start_time}}):        
-    # for t in main_col.find({"sum_ccl":{"$exists": False}}):        
-        sec_info = sec_col.find_one({'time': {"$lte": t['time']}}, sort=[('time', -1)])
-        if sec_info:
-            filter = {'time': t['time']}
-            newvalues = {"$set": {'sum_ccl': t['ccl'] + sec_info['ccl']}}
-            main_col.update_one(filter, newvalues)
-        else:
-            utils.log("No sec data {}".format(t['time']))
-        
-        count +=1
-    
-        if count % 100000 == 1:
-            utils.log("Finish {}".format(count))
-
 def daily_ccl_analysis(contract_type, start_date, end_date):
     main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
     MAIN_DATES = main_col.distinct("date")
@@ -54,6 +35,13 @@ def daily_ccl_analysis(contract_type, start_date, end_date):
             price_diff = ticks[-1]['zxj'] - ticks[0]['zxj']
             price_diff_per = round(price_diff * 100 / ticks[0]['zxj'], 2)
             ccl_impact = round((ticks[-1]['zxj'] - ticks[0]['zxj']) * 10000.00 / zjl, 2)
+            good_selected = "None"
+            if MAIN_DATES[i+1] in available_days:
+                if sum_zjl_per >= 1.5:
+                    good_selected = "Good"
+                else:
+                    good_selected = "Bad"
+                
             result = {
                 "date": MAIN_DATES[i+1],
                 "type": contract_type,
@@ -75,6 +63,7 @@ def daily_ccl_analysis(contract_type, start_date, end_date):
                 "sum_zjl": sum_zjl,
                 "sum_zjl_per": sum_zjl_per,
                 "is_available_trade": MAIN_DATES[i+1] in available_days,
+                "is_good_to_open": good_selected,
                 "min_sum_ccl": int(min(sum_ccls)),
                 "avg_sum_ccl": int(mean(sum_ccls)),                
                 "max_sum_ccl": int(max(sum_ccls)),
@@ -268,7 +257,7 @@ def ccl_abnormal_signal(tick, ccl_trend_data, contract_type = "rb"):
             # min_sum_ccl = min(list(x['min_sum_ccl'] for x in ccl_history))
             # max_sum_ccl = max(list(x['max_sum_ccl'] for x in ccl_history))
             # if (tick['sum_ccl'] - min_sum_ccl) * 1.00 / (max_sum_ccl - min_sum_ccl) < 0.3:
-        if ccl_trend_data[20] >= -1 and ccl_trend_data[20] <= 4 and ccl_trend_data[60] >= -1 and ccl_trend_data[60] <= 4:
+        if ccl_trend_data[20] >= -1 and ccl_trend_data[20] <= 4 and ccl_trend_data[60] >= -1 and ccl_trend_data[60] <= 4 and ccl_trend_data[120] > 0:
             if ccl_trend_data[20] + ccl_trend_data[60] < 7:
                 # signal = "StartOpenTrend:{}|{}|{}|{}".format(max_sum_ccl, min_sum_ccl, tick['sum_ccl'], round(
                 #     (tick['sum_ccl'] - min_sum_ccl) * 1.00 / (max_sum_ccl - min_sum_ccl), 2))
@@ -445,9 +434,10 @@ def ccl_day_filter(contract_type, start_date):
 
     ccl_statistic_daily_col = constance.FUTURE_DB['ccl_statistic_daily']
     available_days = []
+    # zjl 的 diff
     for i in range(current_index, len(MAIN_DATES)):        
         ccl_history = list(ccl_statistic_daily_col.find({"type": contract_type, "date": {"$lt": MAIN_DATES[i]}}).sort("date", -1).limit(5))
-        sum_zjl_per = max(-1, ccl_history[0]['sum_zjl_per'])
+        sum_zjl_per = max(-2, ccl_history[0]['sum_zjl_per'])
         if sum_zjl_per <= -0.5:
             for h_i in range(1, 5):
                 sum_zjl_per += ccl_history[h_i]['sum_zjl_per']
@@ -477,7 +467,7 @@ def check_open_ccl_accurate(contract_type, start_date, end_date):
     utils.log("We get {} ticks".format(len(ticks)))
     statistics = []
     
-    for i in range(0, len(ticks) - 600 * 12):
+    for i in range(0, len(ticks) - 180 * 12):
 
         if skip_count > 0:
             skip_count -= 1
@@ -500,7 +490,7 @@ def check_open_ccl_accurate(contract_type, start_date, end_date):
             max_ccl, max_index = 0, i
             min_zxj, min_zxj_index = 9999999, i
             max_zxj, max_zxj_index = 0, i
-            for n_i in range(i+1, i + 60*12 + 1):
+            for n_i in range(i+1, i + 180*12 + 1):
                 t = ticks[n_i]
                 if t['ccl'] < min_ccl:
                     min_index = n_i
@@ -530,11 +520,8 @@ def check_open_ccl_accurate(contract_type, start_date, end_date):
                     "max_ccl": ticks[max_index]['ccl'],
                     "min_ccl_per": round((ticks[min_index]['ccl'] - tick['ccl']) * 100 / tick['ccl'], 2),
                     "max_ccl_per": round((ticks[max_index]['ccl'] - tick['ccl']) * 100 / tick['ccl'], 2),
-                    "direction_2": price_trend_data[2],
-                    "direction_5": price_trend_data[5],
-                    "direction_20": price_trend_data[20],
-                    "direction_60": price_trend_data[60],
-                    "signal": signal.split(":")[-1],
+                    # "signal": signal.split(":")[-1],
+                    "price_treand": "{}|{}|{}|{}".format(price_trend_data[2], price_trend_data[5], price_trend_data[20], price_trend_data[60]),
                     "zxj": tick['zxj'],
                     # "min_zxj": ticks[min_zxj_index]['zxj'],
                     # "max_zxj": ticks[max_zxj_index]['zxj'],
@@ -553,15 +540,15 @@ def check_open_ccl_accurate(contract_type, start_date, end_date):
 
     
 if __name__ == "__main__":
-    update_sum_ccl("rb", "2020-01-01 21:00:00.000")
+    # update_sum_ccl("rb", "2020-01-01 21:00:00.000")
     # output_csv("rb")
     # cjl_avg_dev("rb", "2020-01-01")
-    # daily_ccl_analysis("rb", "2020-01-20", "2022-12-31")
+    daily_ccl_analysis("rb", "2020-01-20", "2022-12-31")
     # ccl_cjl_price_avg_dev("rb")
     # get_daily_statistic_info("rb")
     # verify_ccl_trend_point("rb", "2022-12-20 11:05:53.000", True)
-    # check_trend_accuracy("rb", "2022-12-01", "2022-12-31")
-    # check_open_ccl_accurate("rb", "2022-12-01", "2022-12-31")
+    # check_trend_accuracy("rb", "2022-01-10", "2022-12-31")
+    # check_open_ccl_accurate("rb", "2022-05-10", "2022-6-31")
     # ccl_day_filter("rb", "2022-12-01")
     # missing: "2022-12-08 22:40:00" "12-13 21:11" "12-26 21:40" "12-15 11:02"
 
