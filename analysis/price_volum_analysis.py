@@ -456,14 +456,46 @@ def ccl_day_filter(contract_type, start_date):
     utils.log("Available dates {}".format(available_days))
     return available_days
 
+def get_direction_from_past_zxj_ccl_relation(ticks, current_index):
+    if current_index < 120 * 12:
+        return "None"
+    
+    min_ccl, min_ccl_index, max_ccl, max_ccl_index = 999999999, 0, 0, 0
+    for i in range(current_index - 120 * 12 + 1, current_index + 1):
+        tick = ticks[i]
+        if tick['ccl'] < min_ccl:
+            min_ccl = tick['ccl']
+            min_ccl_index = i
+        elif tick['ccl'] > max_ccl:
+            max_ccl = tick['ccl']
+            max_ccl_index = i
+    
+    min_ccl_price = ticks[min_ccl_index]['zxj']
+    max_ccl_price = ticks[max_ccl_index]['zxj']
+    current_price = ticks[current_index]['zxj']
+    ccl_up_price_direction = "Irrelavant"
+    if min_ccl_index <= max_ccl_index:
+        if min_ccl_price <= max_ccl_price * 1.0005 and max_ccl_price >= current_price * 0.9995 :
+            ccl_up_price_direction = "Up"
+        elif min_ccl_price * 1.0005 > max_ccl_price and max_ccl_price * 0.9995 <= current_price:
+            ccl_up_price_direction = "Down"
+    elif min_ccl_index > max_ccl_index:
+        if min_ccl_price < max_ccl_price * 1.0005 and min_ccl_price >= current_price * 0.9995:
+            ccl_up_price_direction = "Up"
+        elif min_ccl_price * 1.0005 > max_ccl_price and min_ccl_price * 0.9995 <= current_price:
+            ccl_up_price_direction = "Down"
+    
+    return ccl_up_price_direction
+
 def check_open_ccl_accurate(contract_type, start_date, end_date):
     available_days = ccl_day_filter(contract_type, start_date)
-    main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(contract_type)]
+    main_5_sec_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(contract_type)]
     main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
     MAIN_DATES = main_col.distinct("date")
     utils.log("Start check")
     skip_count = 0    
-    ticks = list(main_col.find({"date": {"$gte": start_date, "$lte": end_date}}).sort("time", 1))
+    ticks = list(main_5_sec_col.find(
+        {"date": {"$gte": start_date, "$lte": end_date}}).sort("time", 1))
     utils.log("We get {} ticks".format(len(ticks)))
     statistics = []
     
@@ -473,15 +505,17 @@ def check_open_ccl_accurate(contract_type, start_date, end_date):
             skip_count -= 1
             continue
         tick = ticks[i]
-        tick_time = tick['time'].split(" ")[-1]
-        if tick_time >= "21:00:00.000":
-            current_index = MAIN_DATES.index(tick['date'])
-            next_date = MAIN_DATES[current_index + 1]
-            if next_date not in available_days:
-                continue
-        else:
-            if tick['date'] not in available_days:
-                continue
+
+        # Daily filter verify
+        # tick_time = tick['time'].split(" ")[-1]
+        # if tick_time >= "21:00:00.000":
+        #     current_index = MAIN_DATES.index(tick['date'])
+        #     next_date = MAIN_DATES[current_index + 1]
+        #     if next_date not in available_days:
+        #         continue
+        # else:
+        #     if tick['date'] not in available_days:
+        #         continue
 
         ccl_trend_data, price_trend_data = verify_ccl_trend_point(contract_type, tick['time'])
         signal = ccl_abnormal_signal(tick, ccl_trend_data)
@@ -522,6 +556,8 @@ def check_open_ccl_accurate(contract_type, start_date, end_date):
                     "max_ccl_per": round((ticks[max_index]['ccl'] - tick['ccl']) * 100 / tick['ccl'], 2),
                     # "signal": signal.split(":")[-1],
                     "price_treand": "{}|{}|{}|{}".format(price_trend_data[2], price_trend_data[5], price_trend_data[20], price_trend_data[60]),
+                    "predict_direction": get_direction_from_past_zxj_ccl_relation(ticks, i),
+                    "real_direction": "Up" if ticks[max_zxj_index]['zxj'] - ticks[min_zxj_index]['zxj'] >= 0 else "Down",
                     "zxj": tick['zxj'],
                     # "min_zxj": ticks[min_zxj_index]['zxj'],
                     # "max_zxj": ticks[max_zxj_index]['zxj'],
@@ -543,12 +579,12 @@ if __name__ == "__main__":
     # update_sum_ccl("rb", "2020-01-01 21:00:00.000")
     # output_csv("rb")
     # cjl_avg_dev("rb", "2020-01-01")
-    daily_ccl_analysis("rb", "2020-01-20", "2022-12-31")
+    # daily_ccl_analysis("rb", "2020-01-20", "2022-12-31")
     # ccl_cjl_price_avg_dev("rb")
     # get_daily_statistic_info("rb")
-    # verify_ccl_trend_point("rb", "2022-12-20 11:05:53.000", True)
+    # verify_ccl_trend_point("rb", "2022-08-23 10:41:00.000", True)
     # check_trend_accuracy("rb", "2022-01-10", "2022-12-31")
-    # check_open_ccl_accurate("rb", "2022-05-10", "2022-6-31")
+    check_open_ccl_accurate("rb", "2022-12-01", "2022-12-31")
     # ccl_day_filter("rb", "2022-12-01")
     # missing: "2022-12-08 22:40:00" "12-13 21:11" "12-26 21:40" "12-15 11:02"
 
