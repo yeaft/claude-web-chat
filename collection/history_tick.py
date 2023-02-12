@@ -20,6 +20,7 @@ def save_data_2_db(paths, col_name):
                 for i in range(len(headers)):
                     data[headers[i]] = float(data_arr[i]) if headers[i] in number_headers else (
                         data_arr[i] if i != 1 else data_arr[i].lower())
+                data['time'] = date_utils.round_datetime(data['time'])
                 data['date'] = data['time'][:10]
                 datas.append(data)
 
@@ -205,8 +206,8 @@ def update_sum_ccl(contract_type, start_time="0000-00-00 00:00:00.000"):
             utils.log("Finish {}".format(count))
 
 def collect_new_contract(contract_type, path):
-    if contract_type != "m":
-        collect_data(contract_type, path)
+    # if contract_type != "m":
+    collect_data(contract_type, path)
 
     create_tick_index("tick_{}".format(contract_type))
     create_tick_index("tick_{}_main".format(contract_type))
@@ -216,7 +217,7 @@ def collect_new_contract(contract_type, path):
 
     update_sum_ccl(contract_type)
     tick_5_sec(contract_type)
-    create_tick_index("tick_{}_mian_5_sec".format(contract_type))
+    create_tick_index("tick_{}_main_5_sec".format(contract_type))
     
 
 if __name__ == "__main__":
@@ -226,7 +227,9 @@ if __name__ == "__main__":
     # extract_second_from_main("i")
     # collect_data("m", "E:/Data/dc")
     # extract_second_from_main("m")
+    # collect_new_contract("rb", "E:/Data/dc")
+    create_tick_index("tick_{}_main_5_sec".format("i"))
     # collect_new_contract("m", "E:/Data/dc")
     # collect_new_contract("i", "E:/Data/dc")
-    tick_5_sec("rb")
-    create_tick_index("tick_{}_mian_5_sec".format("rb"))
+    # tick_5_sec("rb")
+    # create_tick_index("tick_{}_main_5_sec".format("rb"))

@@ -1,11 +1,18 @@
 
 import calendar
 import pytz
-from . import constance
+# from . import constance
 from datetime import datetime, timedelta, date
 from chinese_calendar import is_holiday, is_workday
 from pymongo import MongoClient, DESCENDING, ASCENDING
 
+
+def round_datetime(dt_str):
+    dt = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S.%f')
+    timestamp = (dt - datetime(1970, 1, 1)).total_seconds()
+    rounded_timestamp = round(timestamp / 0.5) * 0.5
+    rounded_dt = datetime(1970, 1, 1) + timedelta(seconds=rounded_timestamp)
+    return rounded_dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:23]
 
 def get_today_date_string():
     now = datetime.now(pytz.timezone("Asia/Shanghai"))
@@ -72,3 +79,9 @@ def datestr_add_months(datestr, months):
 
 def day_diff(d1, d2):
     return (datetime.strptime(d1, '%Y%m%d') - datetime.strptime(d2, '%Y%m%d')).days
+
+
+# if __name__ == "__main__":
+    # dt_str = "2020-01-23 14:02:23.627"
+    # rounded_dt_str = round_datetime(dt_str)
+    # print(rounded_dt_str)

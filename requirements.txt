@@ -4,5 +4,9 @@ pyyaml
 pytz
 requests
 chinesecalendar
+numpy
+matplotlib
+scipy
+
 # pandas
 # matplotlib

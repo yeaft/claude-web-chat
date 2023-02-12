@@ -1,6 +1,7 @@
 import click
 from helper import constance, utils, date_utils, analysis_helper
 from statistics import mean, variance, stdev
+import numpy as np
 
 DAILY_STATISTIC_INFO_MAP = {}
 MAIN_DATES = []
@@ -273,11 +274,13 @@ def ccl_abnormal_signal(tick, ccl_trend_data, contract_type = "rb"):
     return signal
     
 def verify_ccl_trend_point(contract_type, current_time, is_log = False):
-    five_sec_main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
+    five_sec_main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(contract_type)]
     end_tick = five_sec_main_col.find_one({"time": {"$lte": current_time}}, sort=[('time', -1)])
     ccl_trend_data, price_trend_data = {}, {}
     for i in [2, 5, 20, 60, 120]:
-        start_tick = list(five_sec_main_col.find({"time": {"$lt": current_time}}).sort('time', -1).skip(i*120).limit(1))[0]
+        skip_time = i * 12
+        start_tick = list(five_sec_main_col.find({"time": {"$lt": current_time}}).sort(
+            'time', -1).skip(skip_time).limit(1))[0]
         percentage = analysis_helper.get_percentage(start_tick['ccl'], end_tick['ccl'])
         zxj_percentage = analysis_helper.get_percentage(start_tick['zxj'], end_tick['zxj'])
         ccl_trend_data[i] = analysis_helper.get_ccl_trend_value(i, percentage)
@@ -296,6 +299,53 @@ def verify_ccl_trend_point(contract_type, current_time, is_log = False):
         utils.log("Signal is {}".format(
             ccl_abnormal_signal(end_tick, ccl_trend_data)))
     return ccl_trend_data, price_trend_data
+
+def zxj_ccl_correlation(ticks):
+    zxjs, ccls = [], []
+    for x in ticks:
+        zxjs.append(x['zxj'])
+        ccls.append(x['sum_ccl'])
+
+    if len(zxjs) < 10 or len(ccls) < 10:
+        return 0
+    
+    correlation = np.corrcoef(zxjs, ccls)
+    return correlation[0][1]
+
+def zxj_ccl_correlation(contract_type, start_date, end_date):
+    five_sec_main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(
+        contract_type)]
+    ticks = five_sec_main_col.find({"date": {"$gte": start_date, "$lte": end_date}}).sort("time", 1)
+    zxjs, ccls = [], []
+    code = ""
+    for x in ticks:
+        code = x['code']
+        zxjs.append(x['zxj'])
+        ccls.append(x['sum_ccl'])
+
+    if len(zxjs) < 10 or len(ccls) < 10:
+        return None
+    
+    correlation = np.corrcoef(zxjs, ccls)
+    utils.log("{}-{} correlation: {}".format(start_date, end_date, correlation[0][1]))
+    return {
+        "startDate": start_date,
+        "endDate": end_date,
+        "code": code,
+        "correlation": correlation[0][1]
+    }
+        
+
+def zxj_ccl_correlation_statistic(contract_type):
+    main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
+    MAIN_DATES = main_col.distinct("date")
+    results = []
+    for date in MAIN_DATES:
+        corre = zxj_ccl_correlation(contract_type, date, date)
+        if corre != None:
+            results.append(corre)
+        
+    utils.convert_dic_to_csv("correlation_{}".format(contract_type), results)
 
 def ccl_cjl_price_avg_dev(contract_type):
     main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
@@ -488,7 +538,7 @@ def get_direction_from_past_zxj_ccl_relation(ticks, current_index):
     return ccl_up_price_direction
 
 def check_open_ccl_accurate(contract_type, start_date, end_date):
-    available_days = ccl_day_filter(contract_type, start_date)
+    # available_days = ccl_day_filter(contract_type, start_date)
     main_5_sec_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(contract_type)]
     main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
     MAIN_DATES = main_col.distinct("date")
@@ -584,9 +634,12 @@ if __name__ == "__main__":
     # get_daily_statistic_info("rb")
     # verify_ccl_trend_point("rb", "2022-08-23 10:41:00.000", True)
     # check_trend_accuracy("rb", "2022-01-10", "2022-12-31")
-    check_open_ccl_accurate("rb", "2022-12-01", "2022-12-31")
+    # check_open_ccl_accurate("i", "2022-11-01", "2022-11-31")
     # ccl_day_filter("rb", "2022-12-01")
     # missing: "2022-12-08 22:40:00" "12-13 21:11" "12-26 21:40" "12-15 11:02"
+    # zxj_ccl_correlation("rb", "2022-08-01", "2022-08-01")
+    # zxj_ccl_correlation_statistic("rb")
+    zxj_ccl_correlation_statistic("i")
 
 
 
