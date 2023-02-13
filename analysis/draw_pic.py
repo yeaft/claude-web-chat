@@ -93,6 +93,8 @@ def find_ccl_period(ticks):
 
     # 找到数据中最明显的周期性波动
     peaks, _ = find_peaks(fft)
+    
+    # peaks, _ = find_peaks(fft, prominence = -1)
 
     # 计算周期
     period = 1 / freq[peaks[np.argmax(fft[peaks])]]
@@ -110,9 +112,19 @@ def prepare_ticks(contract_type, start_date, end_date):
         {"date": {"$gte": start_date, "$lte": end_date}}).sort("time", 1)
     return ticks
 
+def peaks_test():
+    data = np.array([0, 1, 2, 1, 2, 3, 2, 1, 0, 1, 2, 1, 0, 0, -1, -2, -1, -2])
+    high_peaks, _ = find_peaks(data)
+    low_peaks, _ = find_peaks(-data, prominence = -1)
+    utils.log("Len: {}, high: {}, low: {}".format(len(data), high_peaks, low_peaks))
+    
+
+
+
 if __name__ == "__main__":
-    ticks = prepare_ticks("rb", "2022-12-21", "2022-12-26")
-    find_ccl_period(ticks)
+    # ticks = prepare_ticks("rb", "2022-12-21", "2022-12-26")
+    # find_ccl_period(ticks)
+    peaks_test()
     # ccl_abnormal("rb", "2022-08-01", "2022-08-21")
 
     # zxj_ccl_pic("rb", "2022-08-01", "2022-08-21")
