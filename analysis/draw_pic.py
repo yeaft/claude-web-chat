@@ -6,12 +6,88 @@ from statistics import mean, variance, stdev
 
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.fftpack import fft
 
-def zxj_ccl_pic(contract_type, start_date, end_date):
-    five_sec_main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(
-        contract_type)]
-    ticks = five_sec_main_col.find(
-        {"date": {"$gte": start_date, "$lte": end_date}}).sort("time", 1)
+
+def calculate_height(data, factor):
+    return np.mean(data) + factor * np.std(data)
+
+
+def calculate_prominence(data, factor):
+    return -np.mean(data) + factor * np.std(data)
+
+
+def zxj_ccl_pic_v2(ticks):
+    price, volume, times = [], [], []
+    for x in ticks:
+        price.append(x['zxj'])
+        volume.append(x['sum_ccl'])
+        # times.append(x['time'])
+
+    times = np.arange(len(price))
+    volume_arr = np.array(volume)
+    peaks, _ = find_peaks(volume_arr)
+
+    # 创建图表
+    fig, ax = plt.subplots()
+
+    # 绘制最新价
+    ax.plot(times, price, color='grey', label='Price')
+
+    # 设置右边的y轴
+    ax2 = ax.twinx()
+
+    # 绘制持仓量
+    ax2.plot(times, volume, color='blue', label='Volume')
+
+    # ax2.plot(peaks, volume_arr[peaks], "x")
+
+    # 设置参考线
+    # ax.axvline(x=3, color='black', linestyle='--', label='Reference')
+
+    vline = ax.axvline(x=0, color='black')
+
+
+    def on_move(event):
+        if not event.inaxes:
+            return
+        vline.set_xdata(event.xdata)
+        fig.canvas.draw()
+
+
+    fig.canvas.mpl_connect('motion_notify_event', on_move)
+
+    # 设置图例
+    ax.legend(loc='upper left')
+    ax2.legend(loc='upper right')
+
+    # 显示图表
+    plt.show()
+
+def analysis_peak(ticks):
+    zxjs, volume_data, times = [], [], []
+    for x in ticks:
+        zxjs.append(x['zxj'])
+        volume_data.append(x['sum_ccl'])
+    # 假设持仓量数据为列表 volume_data
+    # volume_data = [1, 2, 3, 4, 3, 2, 1, 2, 3, 4, 3, 2, 1]
+    N = len(volume_data)
+    T = 0.5
+
+    # 计算FFT变换
+    y = np.array(volume_data)
+    yf = np.abs(fft(y))
+    xf = np.linspace(0.0, 1.0/(2.0*T), N//2)
+
+    # 绘制FFT图
+    plt.plot(xf, 2.0/N * yf[0:N//2])
+    plt.xlabel('Frequency')
+    plt.ylabel('Amplitude')
+    plt.title('FFT Analysis of Volume Data')
+    plt.show()
+
+
+def zxj_ccl_pic(ticks, peaks = [], valleys = []):
     zxjs, ccls, times = [], [], []
     for x in ticks:
         zxjs.append(x['zxj'])
@@ -30,7 +106,49 @@ def zxj_ccl_pic(contract_type, start_date, end_date):
     plt.legend()
 
     # 创建第二个子图
-    ax2 = plt.subplot(2, 1, 2, sharex=ax1)
+    
+
+    # 找出顶点的位置
+    # factor = 1
+    # data = np.array(ccls)
+    # data_relative = data - min(data)
+    # peaks, _ = find_peaks(data_relative, rel_height=0.6)
+    # v_1, valleys = find_peaks(-data,
+    #                         prominence=calculate_prominence(data, factor), distance=1)
+
+    # print("peaks {}".format(peaks))
+
+    # print("valleys {}".format(valleys))
+    # print("valleys 2{}".format(v_1))
+    
+    
+
+    fig, ax = plt.subplots(2, 1, 2)
+
+    vert_line = ax.axvline(0, color='gray', alpha=0.5)
+    horz_line = ax.axhline(0, color='gray', alpha=0.5)
+
+    def onmove(event):
+        if not event.inaxes:
+            return
+        x, y = event.xdata, event.ydata
+        vert_line.set_data([x, x], [0, 1])
+        horz_line.set_data([0, 1], [y, y])
+        fig.canvas.draw()
+
+    fig.canvas.mpl_connect('motion_notify_event', onmove)
+
+    if peaks:
+        for peak_index in peaks:
+            # 添加文本标签
+            plt.annotate(f'Peak ({times[peak_index]}, {ccls[peak_index]})', xy=(times[peak_index], ccls[peak_index]), xytext=(times[peak_index] + 0.5, ccls[peak_index] + 5),
+                         arrowprops=dict(facecolor='black', shrink=0.05))
+
+    if valleys:
+        for peak_index in valleys:
+            # 添加文本标签
+            plt.annotate(f'Peak ({times[peak_index]}, {ccls[peak_index]})', xy=(times[peak_index], ccls[peak_index]), xytext=(times[peak_index] + 0.5, ccls[peak_index] + 5),
+                         arrowprops=dict(facecolor='black', shrink=0.05))
 
     # 绘制持仓量图像
     plt.plot(times, ccls, label='volume')
@@ -86,6 +204,7 @@ def find_ccl_period(ticks):
         ccls.append(x['sum_ccl'])
     # 生成模拟的时序数据
     t =  np.array(times)
+    t_x = np.arange(len(times))
     data = np.array(ccls)
     # 计算傅里叶变换
     fft = np.abs(np.fft.fft(data))
@@ -101,7 +220,7 @@ def find_ccl_period(ticks):
 
     # 可视化结果
     utils.log("Period: {:.2f}".format(period/12))
-    plt.plot(t, data)
+    plt.plot(t_x, data)
     plt.title("Period: {:.2f}".format(period))
     plt.show()
 
@@ -122,9 +241,14 @@ def peaks_test():
 
 
 if __name__ == "__main__":
-    # ticks = prepare_ticks("rb", "2022-12-21", "2022-12-26")
+    ticks = prepare_ticks("rb", "2022-12-01", "2022-12-26")
+    # zxj_ccl_pic(ticks)
+    # analysis_peak(ticks)
+    zxj_ccl_pic_v2(ticks)
     # find_ccl_period(ticks)
-    peaks_test()
+    # peaks_test()
+
+    
     # ccl_abnormal("rb", "2022-08-01", "2022-08-21")
 
     # zxj_ccl_pic("rb", "2022-08-01", "2022-08-21")

@@ -172,6 +172,41 @@ def tick_5_sec(contract_type, start_time="0000-00-00 00:00:00.000", end_time="99
 
     utils.log("Finish all data")
 
+
+def tick_1_min(contract_type, start_time="0000-00-00 00:00:00.000", end_time="9999-99-99 99:99:99.999", is_first_run = False):
+    main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
+    five_sec_main_col = constance.FUTURE_DB['tick_{}_main_1_min'.format(
+        contract_type)]
+    cjl = 0
+    ticks = []
+    allowed_sec = ["00.000"]
+    for tick in main_col.find({"time": {"$gte": start_time, "$lt": end_time}}).sort("time", 1):
+        # If change code, then ignore existed data
+        second = tick["time"].split(":")[-1]
+        if second in allowed_sec:
+            tick['cjl'] += cjl
+            ticks.append(tick)
+            cjl = 0
+        else:
+            cjl += tick['cjl']
+
+        if len(ticks) >= 100000:
+            if not is_first_run:
+                five_sec_main_col.delete_many(
+                    {"time": {"$gte": ticks[0]['time'], "$lte": ticks[-1]['time']}})
+            five_sec_main_col.insert_many(ticks)
+            utils.log("Finish batch data {} from {} to {}".format(
+                len(ticks), ticks[0]['time'], ticks[-1]['time']))
+            ticks = []
+
+    if len(ticks) > 0:
+        if not is_first_run:
+            five_sec_main_col.delete_many(
+                {"time": {"$gte": ticks[0]['time'], "$lte": ticks[-1]['time']}})
+        five_sec_main_col.insert_many(ticks)
+
+    utils.log("Finish all data")
+
 def create_tick_index(col_name):    
     # create a compund index
     col = constance.FUTURE_DB[col_name]
@@ -228,7 +263,8 @@ if __name__ == "__main__":
     # collect_data("m", "E:/Data/dc")
     # extract_second_from_main("m")
     # collect_new_contract("rb", "E:/Data/dc")
-    create_tick_index("tick_{}_main_5_sec".format("i"))
+    tick_1_min("rb", is_first_run=True)
+    # create_tick_index("tick_{}_main_5_sec".format("i"))
     # collect_new_contract("m", "E:/Data/dc")
     # collect_new_contract("i", "E:/Data/dc")
     # tick_5_sec("rb")
