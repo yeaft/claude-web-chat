@@ -8,6 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.fftpack import fft
 
+TEXT = None
 
 def calculate_height(data, factor):
     return np.mean(data) + factor * np.std(data)
@@ -17,12 +18,41 @@ def calculate_prominence(data, factor):
     return -np.mean(data) + factor * np.std(data)
 
 
+class Cursor(object):
+    def __init__(self, ax, dates):
+        self.ax = ax
+        self.lx = ax.axhline(color='k')  # the horiz line
+        self.ly = ax.axvline(color='k')  # the vert line
+
+        # text location in axes coords
+        self.txt = ax.text(0.7, 0.9, '', transform=ax.transAxes)
+        self.dates = dates
+        self.date_format = '%Y-%m-%d %H:%M:%S'
+
+    def mouse_move(self, event):
+        if not event.inaxes:
+            return
+
+        x, y = event.xdata, event.ydata
+        self.lx.set_ydata(y)
+        self.ly.set_xdata(x)
+        self.txt.set_text('x=%s, y=%s' % (x, y))
+
+        # 在竖线上添加日期
+        if x in self.dates.values:
+            index = np.where(self.dates == x)[0][0]
+            date_str = self.dates[index].strftime(self.date_format)
+            self.txt.set_text('x=%s, y=%s, date=%s' % (x, y, date_str))
+
+        self.ax.figure.canvas.draw()
+
 def zxj_ccl_pic_v2(ticks):
-    price, volume, times = [], [], []
+    price, volume, times, times_arr, codes = [], [], [], [], []
     for x in ticks:
         price.append(x['zxj'])
         volume.append(x['sum_ccl'])
-        # times.append(x['time'])
+        times_arr.append(x['time'])
+        codes.append(x['code'])
 
     times = np.arange(len(price))
     volume_arr = np.array(volume)
@@ -47,11 +77,28 @@ def zxj_ccl_pic_v2(ticks):
 
     vline = ax.axvline(x=0, color='black')
 
+    
 
+    # 绘制新的文字对象
     def on_move(event):
+        global TEXT
         if not event.inaxes:
             return
         vline.set_xdata(event.xdata)
+        
+        # utils.log("{}".format(event.xdata))
+        index = int(event.xdata)
+        if index < len(times_arr):
+            information = "{} {} {}".format(codes[index], price[index], times_arr[index])
+            # if text:
+            #     text.remove()
+            if TEXT:
+                TEXT.remove()
+            TEXT = ax.text(0.3, 1.05, information, transform=ax.transAxes)
+            # ax.text(0.7, 0.9, date_str, transform=ax.transAxes)
+            # ax.text(event.xdata, event.data, date_str, transform=ax.transData)
+            # text.set_text(date_str)
+            # text.set_text('x=%s, y=%s, date=%s' % (event.xdata, event.ydata, ))
         fig.canvas.draw()
 
 
@@ -225,7 +272,9 @@ def find_ccl_period(ticks):
     plt.show()
 
 def prepare_ticks(contract_type, start_date, end_date):
-    five_sec_main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(
+    # five_sec_main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(
+    #     contract_type)]
+    five_sec_main_col = constance.FUTURE_DB['tick_{}_main_1_min'.format(
         contract_type)]
     ticks = five_sec_main_col.find(
         {"date": {"$gte": start_date, "$lte": end_date}}).sort("time", 1)
@@ -241,7 +290,7 @@ def peaks_test():
 
 
 if __name__ == "__main__":
-    ticks = prepare_ticks("rb", "2022-12-01", "2022-12-26")
+    ticks = prepare_ticks("rb", "2021-01-01", "2022-12-26")
     # zxj_ccl_pic(ticks)
     # analysis_peak(ticks)
     zxj_ccl_pic_v2(ticks)
