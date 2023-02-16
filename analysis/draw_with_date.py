@@ -46,7 +46,7 @@ def draw_data(ticks):
     price_arr, volume_arr, times_arr = [], [], []
     for x in ticks:
         price_arr.append(x['zxj'])
-        volume_arr.append(x['sum_ccl'])
+        volume_arr.append(x['sum_ccl'] if "sum_ccl" in x else x['ccl'])
         times_arr.append(pd.to_datetime(x['time']))
 
     dates = np.array(times_arr)
