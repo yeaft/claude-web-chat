@@ -97,6 +97,8 @@ def prepare_ticks(contract_type, start_date, end_date, is_real_tick=False):
         yesterday = date_utils.datestr_add_days(start_date, -1)
         start_time = "{} 210000".format(yesterday)
         end_time = "{} 150000".format(end_date)
+        utils.log("Filter {}".format({"type": contract_type,
+                                      "date": {"$gte": start_time, "$lte": end_time}}))
         ticks = cols.find({"type": contract_type, "date": {"$gte": start_time, "$lte": end_time}}).sort("time", 1)
     # five_sec_main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(
     #     contract_type)]
@@ -110,6 +112,6 @@ def prepare_ticks(contract_type, start_date, end_date, is_real_tick=False):
 
 if __name__ == "__main__":
     # ticks = prepare_ticks("rb", "2022-12-01", "2022-12-26")
-    ticks = list(prepare_ticks("rb", "2023-02-14", "2023-02-16"))
+    ticks = list(prepare_ticks("rb", "20230214", "20230216"))
     utils.log(len(ticks))
     draw_data(ticks)
