@@ -112,6 +112,6 @@ def prepare_ticks(contract_type, start_date, end_date, is_real_tick=False):
 
 if __name__ == "__main__":
     # ticks = prepare_ticks("rb", "2022-12-01", "2022-12-26")
-    ticks = list(prepare_ticks("rb", "20230214", "20230216"))
+    ticks = list(prepare_ticks("rb", "20230214", "20230216", is_real_tick=True))
     utils.log(len(ticks))
     draw_data(ticks)
