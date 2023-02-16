@@ -89,13 +89,22 @@ def draw_data(ticks):
     plt.show()
 
 
-def prepare_ticks(contract_type, start_date, end_date):
+def prepare_ticks(contract_type, start_date, end_date, is_real_tick=False):
+    if is_real_tick:
+        cols = constance.FUTURE_DB['realTimeTick']
+        start_date.replace("-", "")
+        end_date.replace("-", "")
+        yesterday = date_utils.datestr_add_days(start_date, -1)
+        start_time = "{} 21:00:00".format(yesterday)
+        end_time = "{} 15:00:00".format(end_date)
+        ticks = cols.find({"type": contract_type, "date": {"$gte": start_time, "$lte": end_time}}).sort("time", 1)
     # five_sec_main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(
     #     contract_type)]
-    five_sec_main_col = constance.FUTURE_DB['tick_{}_main_1_min'.format(
-        contract_type)]
-    ticks = five_sec_main_col.find(
-        {"date": {"$gte": start_date, "$lte": end_date}}).sort("time", 1)
+    else:
+        five_sec_main_col = constance.FUTURE_DB['tick_{}_main_1_min'.format(
+            contract_type)]
+        ticks = five_sec_main_col.find(
+            {"date": {"$gte": start_date, "$lte": end_date}}).sort("time", 1)
     return ticks
 
 
