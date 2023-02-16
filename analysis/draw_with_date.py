@@ -95,8 +95,8 @@ def prepare_ticks(contract_type, start_date, end_date, is_real_tick=False):
         start_date.replace("-", "")
         end_date.replace("-", "")
         yesterday = date_utils.datestr_add_days(start_date, -1)
-        start_time = "{} 21:00:00".format(yesterday)
-        end_time = "{} 15:00:00".format(end_date)
+        start_time = "{} 210000".format(yesterday)
+        end_time = "{} 150000".format(end_date)
         ticks = cols.find({"type": contract_type, "date": {"$gte": start_time, "$lte": end_time}}).sort("time", 1)
     # five_sec_main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(
     #     contract_type)]
