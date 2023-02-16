@@ -111,4 +111,5 @@ def prepare_ticks(contract_type, start_date, end_date, is_real_tick=False):
 if __name__ == "__main__":
     # ticks = prepare_ticks("rb", "2022-12-01", "2022-12-26")
     ticks = prepare_ticks("rb", "2023-02-14", "2023-02-16")
+    utils.log(len(ticks))
     draw_data(ticks)
