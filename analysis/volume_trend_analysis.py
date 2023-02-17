@@ -1,4 +1,4 @@
-from helper import constance, utils, date_utils, analysis_helper
+from helper import constance, utils, date_utils, analysis_helper, ticks_helper
 from statistics import mean, variance, stdev
 import numpy as np
 
@@ -22,61 +22,73 @@ def zxj_ccl_correlation(ticks):
         "code": code,
         "correlation": correlation[0][1]
     }
-    
-def get_ticks(start_date, end_date, contract_type = "", col_type = "5sec"):
-    col_name = ""
-    
-    yesterday = date_utils.datestr_add_days(start_date, -1)
-    if col_type == "real":
-        col_name = "realTimeTick"
-        start_date.replace("-", "")
-        end_date.replace("-", "")
-        yesterday = date_utils.datestr_add_days(start_date, -1)
-        start_time = "{} 210000".format(yesterday)
-        end_time = "{} 150000".format(end_date)
-    else:
-        yesterday = date_utils.datestr_add_days(start_date, -1, "-")
-        start_time = "{} 21:00:00.000".format(yesterday)
-        end_time = "{} 15:00:00.000".format(end_date)
-        if col_type == "main":
-            col_name = "tick_{}_main".format(contract_type)
-        elif col_type == "5sec":
-            col_name = "tick_{}_main_5_sec".format(contract_type)
-        elif col_type == "1min":
-            col_name = "tick_{}_main_1_min".format(contract_type)
-    
-    cols = constance.FUTURE_DB[col_name]   
-    ticks = list(cols.find({"type": contract_type,"time": {"$gte": start_time, "$lte": end_time}}).sort("time", 1))
-    utils.log("get ticks {}".format(ticks))
-    return ticks
-    
-    
-        
 
-def zxj_ccl_correlation_statistic(contract_type):
-    main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
-    MAIN_DATES = main_col.distinct("date")
+def zxj_ccl_correlation_statistic(contract_type):    
+    dates = ticks_helper.get_ticks_dates(contract_type)
     results = []
-    for date in MAIN_DATES:
-        corre = zxj_ccl_correlation(contract_type, date, date)
+    for date in dates:
+        ticks = ticks_helper.get_ticks(date, date, contract_type, "5sec")
+        corre = zxj_ccl_correlation(ticks)
         if corre != None:
             results.append(corre)
         
     utils.convert_dic_to_csv("correlation_{}".format(contract_type), results)
 
+
+def ccl_percentile_distribute(ccls):
+    min_ccl = np.min(ccls)
+    q1 = np.percentile(ccls, 25)
+    median = np.percentile(ccls, 50)
+    q3 = np.percentile(ccls, 75)
+    max_ccl = np.max(ccls)
+    utils.log("min {}, q1 {}, median {}, q3 {}, max {}".format(min_ccl, q1, median, q3, max_ccl))
+    return q1
+    # plt.boxplot(ccls)
+    # plt.show()    
+    
+def volume_trend_analysis(ticks):
+    #Detect the begin of a open trend
+    zxjs = [x['zxjs'] for x in ticks]
+    ccls = [x['sum_ccl'] for x in ticks]
+    
+    #1. have enough bullet    
+    percentile_index = ticks_helper.get_x_ago_tick_index(ticks, len(ticks)- 1, 5, unit="d")
+    volume_floor = ccl_percentile_distribute(ccls[percentile_index:])
+    if ticks['sum_ccl'] < volume_floor:
+        return False
+    utils.log("Pass volume floor check")
+    
+    #2. have correlation with zxj latest 2 hours
+    correlation_index = ticks_helper.get_x_ago_tick_index(ticks, len(ticks)- 1, 2, unit="h")
+    correlation_value = zxj_ccl_correlation(ticks[correlation_index:])
+    if correlation_value < 0.6:
+        utils.log("Correlation value is too low: {}".format(correlation_value))
+        return False
+    utils.log("Pass correlation check")
+    
+    #3. Trend is start to up
+    end_tick = ticks[-1]
+    ccl_trend_data, price_trend_data = {}, {}
+    for i in [2, 5, 20, 60, 120]:
+        start_tick_index = ticks_helper.get_x_ago_tick_index(ticks, len(ticks)- 1, i, unit="m")
+        start_tick = ticks[start_tick_index]
+        percentage = analysis_helper.get_percentage(start_tick['ccl'], end_tick['ccl'])
+        ccl_trend_data[i] = analysis_helper.get_ccl_trend_value(i, percentage)
+    
+    signal = ""
+    if ccl_trend_data[2] + ccl_trend_data[5] >= 11:
+        if ccl_trend_data[20] >= -1 and ccl_trend_data[20] <= 4 and ccl_trend_data[60] >= -1 and ccl_trend_data[60] <= 4 and ccl_trend_data[120] > 0:
+            if ccl_trend_data[20] + ccl_trend_data[60] < 7:
+                signal = "StartOpenTrend"
+            else:
+                if ccl_trend_data[2] + ccl_trend_data[5] >= 12:
+                    signal = "StartOpenTrend"         
+    if signal == "":
+        return False
+    
+    utils.log("Pass trend check")
+    
+
 if __name__ == "__main__":
-    # update_sum_ccl("rb", "2020-01-01 21:00:00.000")
-    # output_csv("rb")
-    # cjl_avg_dev("rb", "2020-01-01")
-    # daily_ccl_analysis("rb", "2020-01-20", "2022-12-31")
-    # ccl_cjl_price_avg_dev("rb")
-    # get_daily_statistic_info("rb")
-    # verify_ccl_trend_point("rb", "2022-08-23 10:41:00.000", True)
-    # check_trend_accuracy("rb", "2022-01-10", "2022-12-31")
-    # check_open_ccl_accurate("i", "2022-11-01", "2022-11-31")
-    # ccl_day_filter("rb", "2022-12-01")
-    # missing: "2022-12-08 22:40:00" "12-13 21:11" "12-26 21:40" "12-15 11:02"
-    # zxj_ccl_correlation("rb", "2022-08-01", "2022-08-01")
-    # zxj_ccl_correlation_statistic("rb")
-    # zxj_ccl_correlation_statistic("i")
+    ticks = ticks_helper.get_ticks("2022-12-01", "2022-12-11", "rb", "5sec")
     utils.log("")
