@@ -10,3 +10,6 @@ sudo docker run --name realtime-collector --network host --restart=unless-stoppe
 
 # 3. Stop and remove image
 sudo docker stop realtime-collector && sudo docker rm realtime-collector && sudo docker image rm realtime-collector
+
+# 4. Remove all useless time data
+db.realTimeTick.deleteMany({"type":"rb", "time": { "$regex": ".* 23.*|.* 00.*|.* 01.*"}})

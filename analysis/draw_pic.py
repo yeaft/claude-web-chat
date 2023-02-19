@@ -50,7 +50,7 @@ def zxj_ccl_pic_v2(ticks):
     price, volume, times, times_arr, codes = [], [], [], [], []
     for x in ticks:
         price.append(x['zxj'])
-        volume.append(x['sum_ccl'])
+        volume.append(x['sum_ccl'] if "sum_ccl" in x else x['ccl'])
         times_arr.append(x['time'])
         codes.append(x['code'])
 
@@ -271,13 +271,26 @@ def find_ccl_period(ticks):
     plt.title("Period: {:.2f}".format(period))
     plt.show()
 
-def prepare_ticks(contract_type, start_date, end_date):
+
+def prepare_ticks(contract_type, start_date, end_date, is_real_tick=False):
+    if is_real_tick:
+        cols = constance.FUTURE_DB['realTimeTick']
+        start_date.replace("-", "")
+        end_date.replace("-", "")
+        yesterday = date_utils.datestr_add_days(start_date, -1)
+        start_time = "{} 210000".format(yesterday)
+        end_time = "{} 150000".format(end_date)
+        utils.log("Filter {}".format({"type": contract_type,
+                                      "time": {"$gte": start_time, "$lte": end_time}}))
+        ticks = cols.find({"type": contract_type, "time": {
+                          "$gte": start_time, "$lte": end_time}}).sort("time", 1)
     # five_sec_main_col = constance.FUTURE_DB['tick_{}_main_5_sec'.format(
     #     contract_type)]
-    five_sec_main_col = constance.FUTURE_DB['tick_{}_main_1_min'.format(
-        contract_type)]
-    ticks = five_sec_main_col.find(
-        {"date": {"$gte": start_date, "$lte": end_date}}).sort("time", 1)
+    else:
+        five_sec_main_col = constance.FUTURE_DB['tick_{}_main_1_min'.format(
+            contract_type)]
+        ticks = five_sec_main_col.find(
+            {"date": {"$gte": start_date, "$lte": end_date}}).sort("time", 1)
     return ticks
 
 def peaks_test():
@@ -290,7 +303,10 @@ def peaks_test():
 
 
 if __name__ == "__main__":
-    ticks = prepare_ticks("rb", "2021-01-01", "2022-12-26")
+    # ticks = prepare_ticks("rb", "2021-01-01", "2022-12-26")
+    ticks = list(prepare_ticks("rb", "20230214",
+                               "20230216", is_real_tick=True))
+    utils.log("Len: {}".format(len(ticks)))
     # zxj_ccl_pic(ticks)
     # analysis_peak(ticks)
     zxj_ccl_pic_v2(ticks)
