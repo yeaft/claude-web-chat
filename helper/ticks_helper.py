@@ -8,7 +8,7 @@ def get_ticks(start_date, end_date, contract_type = "", col_type = "5sec"):
     yesterday = date_utils.datestr_add_days(start_date, -1)
     if col_type == "real":
         col_name = "realTimeTick"         
-    elif col_type == "main":
+    elif col_type == "1sec":
         col_name = "tick_{}_main".format(contract_type)
     elif col_type == "5sec":
         col_name = "tick_{}_main_5_sec".format(contract_type)
@@ -29,7 +29,7 @@ def get_ticks_dates(contract_type):
     return main_col.distinct("date")
 
 # 1 workday = 5.75 hour
-def get_x_ago_tick_index(ticks, current_index, x, unit="h"):    
+def get_x_span_number(x, span_type = "1sec", unit="h"):    
     if unit == "m":        
         unit_in_sec = 60
     elif unit == "h":
@@ -37,9 +37,14 @@ def get_x_ago_tick_index(ticks, current_index, x, unit="h"):
     elif unit == "d":
         unit_in_sec = 3600 * 5.75
     # get the span
-    sec_diff = date_utils.sec_diff(ticks[current_index]["time"], ticks[current_index - 1]["time"])
-    steps = int(unit_in_sec / sec_diff) * x
-    return current_index - steps
+    if span_type in ("1sec", "main"):
+        sec_diff = 1
+    elif span_type in ("5sec", "real"):
+        sec_diff = 5
+    elif span_type == "1min":
+        sec_diff = 60
+
+    return int(unit_in_sec / sec_diff) * x
     
             
     

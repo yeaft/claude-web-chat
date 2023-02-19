@@ -46,20 +46,22 @@ def ccl_percentile_distribute(ccls):
     # plt.boxplot(ccls)
     # plt.show()    
     
-def volume_trend_analysis(ticks):
+def volume_trend_analysis(ticks, span_type="5sec", current_status = {}):
     #Detect the begin of a open trend
     zxjs = [x['zxjs'] for x in ticks]
     ccls = [x['sum_ccl'] for x in ticks]
     
     #1. have enough bullet    
-    percentile_index = ticks_helper.get_x_ago_tick_index(ticks, len(ticks)- 1, 5, unit="d")
+    five_days_span = ticks_helper.get_x_ago_tick_index(5, span_type=span_type, unit="d")
+    percentile_index = len(ticks) - 1 - five_day_span
     volume_floor = ccl_percentile_distribute(ccls[percentile_index:])
     if ticks['sum_ccl'] < volume_floor:
         return False
     utils.log("Pass volume floor check")
     
     #2. have correlation with zxj latest 2 hours
-    correlation_index = ticks_helper.get_x_ago_tick_index(ticks, len(ticks)- 1, 2, unit="h")
+    two_hours_span = ticks_helper.get_x_ago_tick_index(2, span_type=span_type, unit="h")
+    correlation_index = len(ticks) - 1 - two_hours_span
     correlation_value = zxj_ccl_correlation(ticks[correlation_index:])
     if correlation_value < 0.6:
         utils.log("Correlation value is too low: {}".format(correlation_value))
@@ -70,7 +72,8 @@ def volume_trend_analysis(ticks):
     end_tick = ticks[-1]
     ccl_trend_data, price_trend_data = {}, {}
     for i in [2, 5, 20, 60, 120]:
-        start_tick_index = ticks_helper.get_x_ago_tick_index(ticks, len(ticks)- 1, i, unit="m")
+        i_mins_span = ticks_helper.get_x_span_number(i, span_type=span_type, unit="m")
+        start_tick_index = len(ticks) - 1 - i_mins_span
         start_tick = ticks[start_tick_index]
         percentage = analysis_helper.get_percentage(start_tick['ccl'], end_tick['ccl'])
         ccl_trend_data[i] = analysis_helper.get_ccl_trend_value(i, percentage)
@@ -87,8 +90,20 @@ def volume_trend_analysis(ticks):
         return False
     
     utils.log("Pass trend check")
+    return True
+
+def sitimulate_trend(ticks, span_type):
+    one_hour_span = ticks_helper.get_x_ago_tick_index(1, span_type=span_type, unit="h")
+    five_days_span = ticks_helper.get_x_ago_tick_index(5, span_type=span_type, unit="d")
+    i = five_days_span
+    while i < len(ticks):
+        if volume_trend_analysis(ticks[i - five_days_span:i+1], span_type):
+            i += one_hour_span
+            utils.log("Trend start at {}".format(ticks[i]['time']))
+            return True
     
 
 if __name__ == "__main__":
-    ticks = ticks_helper.get_ticks("2022-12-01", "2022-12-11", "rb", "5sec")
+    span_type = "5sec"
+    ticks = ticks_helper.get_ticks("2022-12-01", "2022-12-11", "rb", span_type)
     utils.log("")
