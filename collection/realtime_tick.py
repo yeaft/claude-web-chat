@@ -98,6 +98,12 @@ def collect_tick_data():
         if last_trade_status != current_trade_status:
             if not current_trade_status:
                 types = get_contract_map()
+            elif current_trade_status:
+                current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.000')
+                if current_time.split(" ")[1] >= "20:55:00.000":
+                    for t, v in types.items():
+                        utils.log("Type {0} code {1} secondCode {2}".format(t, v['code'], v['secondCode']))
+
             utils.log("Change trade status, current {0}".format("trading" if current_trade_status else "close"))
         if current_trade_status:
             current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.000')
