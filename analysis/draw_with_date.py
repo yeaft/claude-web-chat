@@ -115,3 +115,6 @@ if __name__ == "__main__":
     ticks = list(prepare_ticks("rb", "20230214", "20230216", is_real_tick=True))
     utils.log(len(ticks))
     draw_data(ticks)
+
+
+ 
