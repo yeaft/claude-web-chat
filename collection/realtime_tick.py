@@ -37,9 +37,10 @@ def convert_code_to_standard_code(source_code, contract):
     year_p = "2" + year_p[-1]
     return contract + year_p + month
 
-def get_current_data(types, code_key = "norCode"):
+def get_current_data(types, code_key = "norCode", current_time = ""):
     normalised_codes = list(("nf_" + v[code_key]) for k, v in types.items())
-    current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y%m%d %H%M%S')
+    if current_time == "":
+        current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.000')
     url = DATA_URL + ",".join(normalised_codes)
     r = requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'}, proxies=constance.PROXIES) if constance.ONLINE else requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'})
     # utils.log(r.text)
@@ -99,9 +100,10 @@ def collect_tick_data():
                 types = get_contract_map()
             utils.log("Change trade status, current {0}".format("trading" if current_trade_status else "close"))
         if current_trade_status:
+            current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.000')
             for code_key in ["norCode", "secondNorCode"]:
             # get main tick info 
-                current_datas, raw_text = get_current_data(types, code_key=code_key)
+                current_datas, raw_text = get_current_data(types, code_key=code_key, current_time=current_time)
                 # click.echo(types)
                 # click.echo(raw_text)
                 for d in current_datas:
@@ -113,7 +115,19 @@ def collect_tick_data():
                             click.echo("error raw text {}".format(raw_text))
                 
                 last_datas[code_key] = current_datas
-        
+                
+            # Update sum_ccl for real time tick
+            # "norCode", "secondNorCode"
+            for t in cols["norCode"].find({"time": current_time}):
+                sec_info = cols["secondNorCode"].find_one(
+                    {'type': t['type'], 'time': {"$lte": t['time']}}, sort=[('time', -1)])
+                if sec_info:
+                    filter = {'type': t['type'], 'time': t['time']}
+                    newvalues = {"$set": {'sum_ccl': t['ccl'] + sec_info['ccl']}}
+                    cols["norCode"].update_one(filter, newvalues)
+                else:
+                    utils.log("No sec data {} {}".format(t['type'], t['time']))
+                
         last_trade_status = current_trade_status
         time.sleep(4)
 
@@ -150,9 +164,10 @@ def is_trading():
 def convert_str_to_ticker_data(current_time, contract_type, code, data_str):
     str_s = data_str.split(",")
     data = {}
-    data['time'] = current_time
+    data['time'] = ""
     data['type'] = contract_type
     data['code'] = code
+    data['date'] = current_time.split(" ")[0]
     data['jkp'] = float(str_s[2]) if len(str_s) > 2 else 0
     data['zgj'] = float(str_s[3]) if len(str_s) > 3 else 0
     data['zdj'] = float(str_s[4]) if len(str_s) > 4 else 0

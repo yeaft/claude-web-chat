@@ -80,6 +80,9 @@ def datestr_add_months(datestr, months):
 def day_diff(d1, d2):
     return (datetime.strptime(d1, '%Y%m%d') - datetime.strptime(d2, '%Y%m%d')).days
 
+def sec_diff(start, end):
+    time_format = "%Y-%m-%d %H:%M:%S.%f"
+    return  (datetime.strptime(end, time_format) - datetime.strptime(start, time_format)).total_seconds()
 
 # if __name__ == "__main__":
     # dt_str = "2020-01-23 14:02:23.627"
