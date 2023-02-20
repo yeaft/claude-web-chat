@@ -15,7 +15,7 @@ def zxj_ccl_correlation(ticks):
         return None
     
     correlation = np.corrcoef(zxjs, ccls)
-    utils.log("{}-{} correlation: {}".format(ticks[0]['time'], ticks[-1]['time'], correlation[0][1]))
+    # utils.log("{}-{} correlation: {}".format(ticks[0]['time'], ticks[-1]['time'], correlation[0][1]))
     return {
         "startTime": ticks[0]['time'],
         "endTime": ticks[-1]['time'],
@@ -41,32 +41,41 @@ def ccl_percentile_distribute(ccls):
     median = np.percentile(ccls, 50)
     q3 = np.percentile(ccls, 75)
     max_ccl = np.max(ccls)
-    utils.log("min {}, q1 {}, median {}, q3 {}, max {}".format(min_ccl, q1, median, q3, max_ccl))
-    return q1
+    # utils.log("min {}, q1 {}, median {}, q3 {}, max {}".format(min_ccl, q1, median, q3, max_ccl))
+    return {
+        "min": min_ccl,
+        "q1": q1,
+        "median": median,
+        "q3": q3,
+        "max": max_ccl
+    }
     # plt.boxplot(ccls)
     # plt.show()    
     
-def volume_trend_analysis(ticks, span_type="5sec", current_status = {}):
+def volume_trend_analysis(ticks, span_type="5sec", current_status = {}, is_log = False):
     #Detect the begin of a open trend
-    zxjs = [x['zxjs'] for x in ticks]
+    zxjs = [x['zxj'] for x in ticks]
     ccls = [x['sum_ccl'] for x in ticks]
     
     #1. have enough bullet    
-    five_days_span = ticks_helper.get_x_ago_tick_index(5, span_type=span_type, unit="d")
-    percentile_index = len(ticks) - 1 - five_day_span
-    volume_floor = ccl_percentile_distribute(ccls[percentile_index:])
-    if ticks['sum_ccl'] < volume_floor:
-        return False
-    utils.log("Pass volume floor check")
+    five_days_span = ticks_helper.get_x_span_number(5, span_type=span_type, unit="d")
+    percentile_index = len(ticks) - 1 - five_days_span
+    volume_floor = ccl_percentile_distribute(ccls[percentile_index:])['median']
+    if ticks[-1]['sum_ccl'] < volume_floor:
+        return False, 0
+
+    if is_log:
+        utils.log("Pass volume floor check")
     
     #2. have correlation with zxj latest 2 hours
-    two_hours_span = ticks_helper.get_x_ago_tick_index(2, span_type=span_type, unit="h")
+    two_hours_span = ticks_helper.get_x_span_number(2, span_type=span_type, unit="h")
     correlation_index = len(ticks) - 1 - two_hours_span
-    correlation_value = zxj_ccl_correlation(ticks[correlation_index:])
-    if correlation_value < 0.6:
+    correlation_value = zxj_ccl_correlation(ticks[correlation_index:])['correlation']
+    if abs(correlation_value) < 0.6:
         utils.log("Correlation value is too low: {}".format(correlation_value))
-        return False
-    utils.log("Pass correlation check")
+        return False, correlation_value
+    if is_log:
+        utils.log("Pass correlation check")
     
     #3. Trend is start to up
     end_tick = ticks[-1]
@@ -87,23 +96,52 @@ def volume_trend_analysis(ticks, span_type="5sec", current_status = {}):
                 if ccl_trend_data[2] + ccl_trend_data[5] >= 12:
                     signal = "StartOpenTrend"         
     if signal == "":
-        return False
+        return False, correlation_value
     
-    utils.log("Pass trend check")
-    return True
+    if is_log:
+        utils.log("Pass trend check")
+    return True, correlation_value
 
 def sitimulate_trend(ticks, span_type):
-    one_hour_span = ticks_helper.get_x_ago_tick_index(1, span_type=span_type, unit="h")
-    five_days_span = ticks_helper.get_x_ago_tick_index(5, span_type=span_type, unit="d")
+    one_hour_span = ticks_helper.get_x_span_number(1, span_type=span_type, unit="h")
+    five_days_span = ticks_helper.get_x_span_number(5, span_type=span_type, unit="d")
     i = five_days_span
+    results = []
     while i < len(ticks):
-        if volume_trend_analysis(ticks[i - five_days_span:i+1], span_type):
-            i += one_hour_span
-            utils.log("Trend start at {}".format(ticks[i]['time']))
-            return True
+        is_trend, correlation = volume_trend_analysis(ticks[i - five_days_span:i+1], span_type)
+        if is_trend:
+            next_2_hours_correlation = next_x_hours_correlation(ticks, i, span_type, x=2)
+            result = {
+                "time": ticks[i]['time'],
+                "code": ticks[i]['code'],
+                "zxj": ticks[i]['zxj'],
+                "ccl": ticks[i]['sum_ccl'],
+                "correlation": correlation,
+                "next_correlation": next_2_hours_correlation,
+                "is_trend": (correlation > 0.6 and next_2_hours_correlation > 0.5) or (correlation < -0.6 and next_2_hours_correlation < -0.5)
+            }
+            results.append(result)
+            i += one_hour_span        
+            continue
+            # utils.log("Trend start at {}".format(ticks[i]['time']))
+    
+        i += 1
+    
+    utils.convert_dic_to_csv("trend_{}_verify".format(span_type), results)
+        
+def next_x_hours_correlation(ticks, current_index, span_type, x=1):
+    x_hour_span = ticks_helper.get_x_span_number(x, span_type=span_type, unit="h")
+    if current_index + x_hour_span > len(ticks):
+        return None
+    
+    zxjs = [x['zxj'] for x in ticks[current_index + 1:current_index+x_hour_span]]
+    ccls = [x['sum_ccl'] for x in ticks[current_index + 1:current_index+x_hour_span]]
+    return np.corrcoef(zxjs, ccls)[0][1]
     
 
 if __name__ == "__main__":
     span_type = "5sec"
     ticks = ticks_helper.get_ticks("2022-12-01", "2022-12-11", "rb", span_type)
-    utils.log("")
+    utils.log("get {} ticks".format(len(ticks)))
+    sitimulate_trend(ticks, span_type)
+    

@@ -19,9 +19,10 @@ def get_ticks(start_date, end_date, contract_type = "", col_type = "5sec"):
     start_time = "{} 21:00:00.000".format(yesterday)
     end_time = "{} 15:00:00.000".format(end_date)
     
-    cols = constance.FUTURE_DB[col_name]   
-    ticks = list(cols.find({"type": contract_type,"time": {"$gte": start_time, "$lte": end_time}}).sort("time", 1))
-    utils.log("get ticks {}".format(ticks))
+    cols = constance.FUTURE_DB[col_name]
+    filter = {"time": {"$gte": start_time, "$lte": end_time}}
+    utils.log("filter: {}".format(filter))
+    ticks = list(cols.find(filter).sort("time", 1))
     return ticks
 
 def get_ticks_dates(contract_type):

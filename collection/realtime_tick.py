@@ -115,6 +115,7 @@ def collect_tick_data():
                 for d in current_datas:
                     if d['cjl'] > 0 and d['ccl'] > 0:
                         if valid_data(d, last_datas[code_key]):
+                            d['time'] = current_time
                             cols[code_key].insert_one(d)
                         else:
                             click.echo("error data {}".format(d))
