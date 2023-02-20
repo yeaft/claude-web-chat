@@ -125,15 +125,15 @@ def collect_tick_data():
                 
             # Update sum_ccl for real time tick
             # "norCode", "secondNorCode"
-            for t in cols["norCode"].find({"time": current_time}):
-                sec_info = cols["secondNorCode"].find_one(
-                    {'type': t['type'], 'time': {"$lte": t['time']}}, sort=[('time', -1)])
-                if sec_info:
-                    filter = {'type': t['type'], 'time': t['time']}
-                    newvalues = {"$set": {'sum_ccl': t['ccl'] + sec_info['ccl']}}
-                    cols["norCode"].update_one(filter, newvalues)
-                else:
-                    utils.log("No sec data {} {}".format(t['type'], t['time']))
+            # for t in cols["norCode"].find({"time": current_time}):
+            #     sec_info = cols["secondNorCode"].find_one(
+            #         {'type': t['type'], 'time': {"$lte": t['time']}}, sort=[('time', -1)])
+            #     if sec_info:
+            #         filter = {'type': t['type'], 'time': t['time']}
+            #         newvalues = {"$set": {'sum_ccl': t['ccl'] + sec_info['ccl']}}
+            #         cols["norCode"].update_one(filter, newvalues)
+            #     else:
+            #         utils.log("No sec data {} {}".format(t['type'], t['time']))
                 
         last_trade_status = current_trade_status
         time.sleep(4)
