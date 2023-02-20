@@ -1,6 +1,6 @@
 from scipy.signal import find_peaks
 from datetime import datetime
-from helper import constance, utils, date_utils, analysis_helper
+from helper import constance, utils, date_utils, analysis_helper, ticks_helper
 from matplotlib.animation import FuncAnimation
 from statistics import mean, variance, stdev
 
@@ -303,9 +303,8 @@ def peaks_test():
 
 
 if __name__ == "__main__":
-    # ticks = prepare_ticks("rb", "2021-01-01", "2022-12-26")
-    ticks = list(prepare_ticks("rb", "20230214",
-                               "20230216", is_real_tick=True))
+    span_type = "5sec"
+    ticks = ticks_helper.get_ticks("2022-12-01", "2022-12-11", "rb", span_type)
     utils.log("Len: {}".format(len(ticks)))
     # zxj_ccl_pic(ticks)
     # analysis_peak(ticks)
