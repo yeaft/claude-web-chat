@@ -92,13 +92,13 @@ def volume_trend_analysis(ticks, span_type="5sec", current_status = {}, is_log =
     
     signal = ""
     if ccl_trend_data[2] + ccl_trend_data[5] >= 11:
-        signal = "StartOpenTrend"
-        # if ccl_trend_data[20] >= -1 and ccl_trend_data[20] <= 4 and ccl_trend_data[60] >= -1 and ccl_trend_data[60] <= 4 and ccl_trend_data[120] > 0:
-        #     if ccl_trend_data[20] + ccl_trend_data[60] < 7:
-        #         signal = "StartOpenTrend"
-        #     else:
-        #         if ccl_trend_data[2] + ccl_trend_data[5] >= 12:
-        #             signal = "StartOpenTrend"         
+        # signal = "StartOpenTrend"
+        if ccl_trend_data[20] >= -1 and ccl_trend_data[20] <= 4 and ccl_trend_data[60] >= -1 and ccl_trend_data[60] <= 4 and ccl_trend_data[120] > 0:
+            if ccl_trend_data[20] + ccl_trend_data[60] < 7:
+                signal = "StartOpenTrend"
+            else:
+                if ccl_trend_data[2] + ccl_trend_data[5] >= 12:
+                    signal = "StartOpenTrend"         
     if signal == "":
         return False, correlation_value
     
@@ -131,9 +131,10 @@ def sitimulate_trend(ticks, span_type):
             # utils.log("Trend start at {}".format(ticks[i]['time']))
     
         i += 1
-    
-    return results
+    utils.log("Get {} tips".format(len(results)))
     utils.convert_dic_to_csv("trend_{}_verify".format(span_type), results)
+    return results
+    
         
 def next_x_hours_correlation(ticks, current_index, span_type, x=1):
     x_hour_span = ticks_helper.get_x_span_number(x, span_type=span_type, unit="h")
@@ -146,8 +147,10 @@ def next_x_hours_correlation(ticks, current_index, span_type, x=1):
     
 
 if __name__ == "__main__":
-    span_type = "5sec"
-    ticks = ticks_helper.get_ticks("2022-12-01", "2022-12-11", "rb", span_type)
+    span_type = "1min"
+    # ticks = ticks_helper.get_ticks("2022-11-01", "2022-12-11", "rb", span_type)
+    ticks = ticks_helper.get_ticks_by_time("2022-12-05 10:05:00.000", "rb", span_type)
     utils.log("get {} ticks".format(len(ticks)))
-    sitimulate_trend(ticks, span_type)
+    volume_trend_analysis(ticks, span_type, is_log=True)
+    # sitimulate_trend(ticks, span_type)
     

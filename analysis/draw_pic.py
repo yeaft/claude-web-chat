@@ -4,6 +4,7 @@ from helper import constance, utils, date_utils, analysis_helper, ticks_helper
 from matplotlib.animation import FuncAnimation
 from statistics import mean, variance, stdev
 
+import volume_trend_analysis
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.fftpack import fft
@@ -46,7 +47,7 @@ class Cursor(object):
 
         self.ax.figure.canvas.draw()
 
-def zxj_ccl_pic_v2(ticks):
+def zxj_ccl_pic_v2(ticks, span_type):
     price, volume, times, times_arr, codes = [], [], [], [], []
     for x in ticks:
         price.append(x['zxj'])
@@ -71,6 +72,12 @@ def zxj_ccl_pic_v2(ticks):
     ax2.plot(times, volume, color='blue', label='Volume')
 
     # ax2.plot(peaks, volume_arr[peaks], "x")
+    # Draw volume trend
+    red_infos = volume_trend_analysis.sitimulate_trend(ticks=ticks, span_type=span_type)
+    plt.scatter([times[i['index']] for i in red_infos], [volume[i['index']] for i in red_infos], color='red')
+    for info in red_infos:
+        ax2.text(times[info['index']] - 2, volume[info['index']] + 50,
+                 str(round(info['correlation'], 2)))
 
     # 设置参考线
     # ax.axvline(x=3, color='black', linestyle='--', label='Reference')
@@ -303,12 +310,12 @@ def peaks_test():
 
 
 if __name__ == "__main__":
-    span_type = "5sec"
-    ticks = ticks_helper.get_ticks("2022-12-01", "2022-12-11", "rb", span_type)
+    span_type = "1min"
+    ticks = ticks_helper.get_ticks("2022-11-01", "2022-12-11", "rb", span_type)
     utils.log("Len: {}".format(len(ticks)))
     # zxj_ccl_pic(ticks)
     # analysis_peak(ticks)
-    zxj_ccl_pic_v2(ticks)
+    zxj_ccl_pic_v2(ticks, span_type=span_type)
     # find_ccl_period(ticks)
     # peaks_test()
 
