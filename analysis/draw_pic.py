@@ -47,7 +47,7 @@ class Cursor(object):
 
         self.ax.figure.canvas.draw()
 
-def zxj_ccl_pic_v2(ticks, span_type):
+def zxj_ccl_pic_v2(ticks, span_type, with_correlation_value = False):
     price, volume, times, times_arr, codes = [], [], [], [], []
     for x in ticks:
         price.append(x['zxj'])
@@ -73,11 +73,12 @@ def zxj_ccl_pic_v2(ticks, span_type):
 
     # ax2.plot(peaks, volume_arr[peaks], "x")
     # Draw volume trend
-    red_infos = volume_trend_analysis.sitimulate_trend(ticks=ticks, span_type=span_type)
-    plt.scatter([times[i['index']] for i in red_infos], [volume[i['index']] for i in red_infos], color='red')
-    for info in red_infos:
-        ax2.text(times[info['index']] - 2, volume[info['index']] + 50,
-                 str(round(info['correlation'], 2)))
+    if with_correlation_value:
+        red_infos = volume_trend_analysis.sitimulate_trend(ticks=ticks, span_type=span_type)
+        plt.scatter([times[i['index']] for i in red_infos], [volume[i['index']] for i in red_infos], color='red')
+        for info in red_infos:
+            ax2.text(times[info['index']] - 2, volume[info['index']] + 50,
+                    str(round(info['correlation'], 2)))
 
     # 设置参考线
     # ax.axvline(x=3, color='black', linestyle='--', label='Reference')
@@ -310,12 +311,12 @@ def peaks_test():
 
 
 if __name__ == "__main__":
-    span_type = "1min"
+    span_type = "5sec"
     ticks = ticks_helper.get_ticks("2022-11-01", "2022-12-11", "rb", span_type)
     utils.log("Len: {}".format(len(ticks)))
     # zxj_ccl_pic(ticks)
     # analysis_peak(ticks)
-    zxj_ccl_pic_v2(ticks, span_type=span_type)
+    zxj_ccl_pic_v2(ticks, span_type=span_type, with_correlation_value=True)
     # find_ccl_period(ticks)
     # peaks_test()
 
