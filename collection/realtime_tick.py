@@ -31,12 +31,9 @@ def get_contract_map():
     return types
 
 def convert_code_to_standard_code(source_code, contract):
-    code_date = source_code.replace(contract, "")
-    month = code_date[-2:]
-    year_p = code_date[:-2]
-    year_p = "2" + year_p[-1]
-    utils.log("{}-{}-{}-{}-{}".format(source_code, contract, code_date, year_p, month))
-    return contract + year_p + month
+    code_date = ''.join(filter(str.isdigit, source_code))
+    code_normalized = contract + (code_date if len(code_date) > 3 else "2" + code_date)
+    return code_normalized
 
 def get_current_data(types, code_key = "norCode", current_time = ""):
     normalised_codes = list(("nf_" + v[code_key]) for k, v in types.items())
@@ -216,7 +213,9 @@ def collect_data(collect_type):
         test_data()
 
 if __name__ == "__main__":
-    # collect_data()
-    get_contract_map()
+    collect_data()
+    
+    # Test
+    # get_contract_map()
     # get_current_data({"rb": {"norCode":"RB2301"}})
  
