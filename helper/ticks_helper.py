@@ -25,6 +25,25 @@ def get_ticks(start_date, end_date, contract_type = "", col_type = "5sec"):
     ticks = list(cols.find(filter).sort("time", 1))
     return ticks
 
+
+def get_ticks_by_time(time, contract_type="", col_type="5sec"):
+    col_name = ""
+    if col_type == "real":
+        col_name = "realTimeTick"
+    elif col_type == "1sec":
+        col_name = "tick_{}_main".format(contract_type)
+    elif col_type == "5sec":
+        col_name = "tick_{}_main_5_sec".format(contract_type)
+    elif col_type == "1min":
+        col_name = "tick_{}_main_1_min".format(contract_type)
+
+    cols = constance.FUTURE_DB[col_name]
+    filter = {"time": {"$lte": time}}
+    utils.log("filter: {}".format(filter))
+    num = get_x_span_number(5, col_type, "d")
+    ticks = list(cols.find(filter).sort("time", 1).limit(num))
+    return ticks
+
 def get_ticks_dates(contract_type):
     main_col = constance.FUTURE_DB['tick_{}_main'.format(contract_type)]
     return main_col.distinct("date")
