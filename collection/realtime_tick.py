@@ -35,6 +35,7 @@ def convert_code_to_standard_code(source_code, contract):
     month = code_date[-2:]
     year_p = code_date[:-2]
     year_p = "2" + year_p[-1]
+    utils.log("{}-{}-{}-{}-{}".format(source_code, contract, code_date, year_p, month))
     return contract + year_p + month
 
 def get_current_data(types, code_key = "norCode", current_time = ""):
@@ -105,29 +106,39 @@ def collect_tick_data():
                         utils.log("Type {0}: code {1} secondCode {2}".format(t, v['code'], v['secondCode']))
 
             utils.log("Change trade status, current {0}".format("trading" if current_trade_status else "close"))
+            last_trade_status = current_trade_status
+            
         if current_trade_status:
             current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.000')
+            sec_results = {}
             for code_key in ["norCode", "secondNorCode"]:
             # get main tick info 
                 current_datas, raw_text = get_current_data(types, code_key=code_key, current_time=current_time)
                 # click.echo(types)
                 # click.echo(raw_text)
+                results = []
                 for d in current_datas:
                     if d['cjl'] > 0 and d['ccl'] > 0:
                         if valid_data(d, last_datas[code_key]):
                             d['time'] = current_time
-                            cols[code_key].insert_one(d)
+                            if code_key == "secondNorCode":
+                                sec_results[d['type']] = d
+                            results.append(d)
                         else:
                             click.echo("error data {}".format(d))
                             click.echo("error raw text {}".format(raw_text))
                 
+                cols[code_key].insert_many(results)
                 last_datas[code_key] = current_datas
                 
             # Update sum_ccl for real time tick
             # "norCode", "secondNorCode"
             for t in cols["norCode"].find({"time": current_time}):
-                sec_info = cols["secondNorCode"].find_one(
-                    {'type': t['type'], 'time': {"$lte": t['time']}}, sort=[('time', -1)])
+                if t['type'] in sec_results:
+                    sec_info = sec_results[t['type']]
+                else:                
+                    sec_info = cols["secondNorCode"].find_one({'type': t['type'], 'time': {"$lte": t['time']}}, sort=[('time', -1)])
+                    
                 if sec_info:
                     filter = {'type': t['type'], 'time': t['time']}
                     newvalues = {"$set": {'sum_ccl': t['ccl'] + sec_info['ccl']}}
@@ -135,7 +146,6 @@ def collect_tick_data():
                 else:
                     utils.log("No sec data {} {}".format(t['type'], t['time']))
                 
-        last_trade_status = current_trade_status
         time.sleep(4)
 
 # tick {"time" : "20200526 140750", "type" : "ag", "code" : "ag2012", "jkp" : 4195, "zgj" : 4319, "zdj" : 4180, "zxj" : 4299, "ccl" : 482064, "cjl" : 872750 }
@@ -206,6 +216,7 @@ def collect_data(collect_type):
         test_data()
 
 if __name__ == "__main__":
-    collect_data()
+    # collect_data()
+    get_contract_map()
     # get_current_data({"rb": {"norCode":"RB2301"}})
  
