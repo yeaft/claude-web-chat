@@ -11,14 +11,6 @@ from scipy.fftpack import fft
 
 TEXT = None
 
-def calculate_height(data, factor):
-    return np.mean(data) + factor * np.std(data)
-
-
-def calculate_prominence(data, factor):
-    return -np.mean(data) + factor * np.std(data)
-
-
 class Cursor(object):
     def __init__(self, ax, dates):
         self.ax = ax
@@ -57,7 +49,9 @@ def zxj_ccl_pic_v2(ticks, span_type, with_correlation_value = False):
 
     times = np.arange(len(price))
     volume_arr = np.array(volume)
-    peaks, _ = find_peaks(volume_arr)
+    two_hour_span = ticks_helper.get_x_span_number(2, span_type=span_type, unit="h")
+    peaks, _ = find_peaks(volume_arr, width=two_hour_span)
+    valleys, _ = find_peaks(-volume_arr, width=two_hour_span)
 
     # 创建图表
     fig, ax = plt.subplots()
@@ -79,6 +73,10 @@ def zxj_ccl_pic_v2(ticks, span_type, with_correlation_value = False):
         for info in red_infos:
             ax2.text(times[info['index']] - 2, volume[info['index']] + 50,
                     str(round(info['correlation'], 2)))
+    
+    # 绘制峰值
+    ax2.plot(peaks, volume_arr[peaks], "x", color='red')
+    ax2.plot(valleys, volume_arr[valleys], "x", color='blue')
 
     # 设置参考线
     # ax.axvline(x=3, color='black', linestyle='--', label='Reference')

@@ -1,5 +1,6 @@
 from helper import constance, utils, date_utils, analysis_helper, ticks_helper
 from statistics import mean, variance, stdev
+from scipy.signal import find_peaks
 import numpy as np
 
 # check correlation
@@ -55,7 +56,7 @@ def ccl_percentile_distribute(ccls):
 def volume_trend_analysis(ticks, span_type="5sec", current_status = {}, is_log = False):
     #Detect the begin of a open trend
     # zxjs = [x['zxj'] for x in ticks]
-    # ccls = [x['sum_ccl'] for x in ticks]
+    ccls = [x['sum_ccl'] for x in ticks]
     
     #1. have enough bullet    
     # five_days_span = ticks_helper.get_x_span_number(5, span_type=span_type, unit="d")
@@ -81,8 +82,21 @@ def volume_trend_analysis(ticks, span_type="5sec", current_status = {}, is_log =
     #     utils.log("Pass correlation check")
     correlation_value = 0
 
-    #3. Trend is start to up
+    #3. Position check
+    volume_arr = np.array(ccls)
+    two_hour_span = ticks_helper.get_x_span_number(
+        2, span_type=span_type, unit="h")
+    peaks, _ = find_peaks(volume_arr, width=two_hour_span)
+    valleys, _ = find_peaks(-volume_arr, width=two_hour_span)
+    # if len(peaks) <= 0:
+    #     return False, correlation_value
+    
+    # peak = ticks[peaks.tolist()[-1]]
+    # utils.log("peak: {}, end_tick: {}".format(peak['sum_ccl'], end_tick['sum_ccl']))
+
     end_tick = ticks[-1]
+    
+    #4. Trend is start to up
     ccl_trend_data, price_trend_data = {}, {}
     for i in [2, 5, 10, 20, 60, 120]:
         i_mins_span = ticks_helper.get_x_span_number(i, span_type=span_type, unit="m")
@@ -92,16 +106,16 @@ def volume_trend_analysis(ticks, span_type="5sec", current_status = {}, is_log =
         ccl_trend_data[i] = analysis_helper.get_ccl_trend_value(i, percentage)
     
     signal = ""
-    if ccl_trend_data[2] - ccl_trend_data[5] >=8 and ccl_trend_data[2] >= 4:
+    if ccl_trend_data[2] - ccl_trend_data[5] >=7 and ccl_trend_data[2] >= 3:
         # signal = "StartOpenTrend"
         if ccl_trend_data[60] < -4:
             # and ccl_trend_data[60] <= 2:
             signal = "StartOpenTrend"
             correlation_value = 1
-    elif ccl_trend_data[2] - ccl_trend_data[5] <= -9 and ccl_trend_data[2] <= -4:
-        if ccl_trend_data[60] > 4:
-            signal = "StartCutTrend"
-            correlation_value = 0
+    # elif ccl_trend_data[2] - ccl_trend_data[5] <= -9 and ccl_trend_data[2] <= -4:
+    #     if ccl_trend_data[60] > 4:
+    #         signal = "StartCutTrend"
+    #         correlation_value = 0
 
         # if ccl_trend_data[20] >= -1 and ccl_trend_data[20] <= 4 and ccl_trend_data[60] >= -1 and ccl_trend_data[60] <= 4 and ccl_trend_data[120] > 0:
         #     if ccl_trend_data[20] + ccl_trend_data[60] < 7:
@@ -137,7 +151,7 @@ def sitimulate_trend(ticks, span_type):
                 "is_trend": next_2_hours_correlation != None and ((correlation > 0.5 and next_2_hours_correlation > 0.5) or (correlation < -0.5 and next_2_hours_correlation < -0.5))
             }
             results.append(result)
-            i += one_hour_span        
+            i += one_minute_span        
             continue
             # utils.log("Trend start at {}".format(ticks[i]['time']))
     
