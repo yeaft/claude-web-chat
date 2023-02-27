@@ -310,7 +310,7 @@ def peaks_test():
 
 if __name__ == "__main__":
     span_type = "5sec"
-    ticks = ticks_helper.get_ticks("2022-11-01", "2022-12-11", "rb", span_type)
+    ticks = ticks_helper.get_ticks("2022-11-01", "2022-12-01", "rb", span_type)
     utils.log("Len: {}".format(len(ticks)))
     # zxj_ccl_pic(ticks)
     # analysis_peak(ticks)

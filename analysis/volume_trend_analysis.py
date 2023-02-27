@@ -84,17 +84,32 @@ def volume_trend_analysis(ticks, span_type="5sec", current_status = {}, is_log =
 
     #3. Position check
     volume_arr = np.array(ccls)
+    # ninty_min_span = ticks_helper.get_x_span_number(
+    #     90, span_type=span_type, unit="m")
+    # peaks, _ = find_peaks(volume_arr, width=ninty_min_span)
+    # valleys, _ = find_peaks(-volume_arr, width=ninty_min_span)
+
     two_hour_span = ticks_helper.get_x_span_number(
         2, span_type=span_type, unit="h")
     peaks, _ = find_peaks(volume_arr, width=two_hour_span)
     valleys, _ = find_peaks(-volume_arr, width=two_hour_span)
-    # if len(peaks) <= 0:
-    #     return False, correlation_value
+                            
+    if len(peaks) <= 0 or len(valleys) <= 0:
+        return False, correlation_value
     
-    # peak = ticks[peaks.tolist()[-1]]
-    # utils.log("peak: {}, end_tick: {}".format(peak['sum_ccl'], end_tick['sum_ccl']))
-
+    last_peak_index = peaks.tolist()[-1]
+    last_valley_index = valleys.tolist()[-1]
+    peak = ticks[last_peak_index]
+    valley = ticks[last_valley_index]
+    ccl_max_diff = peak['sum_ccl'] - valley['sum_ccl']
     end_tick = ticks[-1]
+
+    if last_peak_index > last_valley_index:
+        if peak['sum_ccl'] - end_tick['sum_ccl'] <= ccl_max_diff * 0.6:
+            return False, correlation_value
+    else:
+        if end_tick['sum_ccl'] - valley['sum_ccl'] >= ccl_max_diff * 0.6:
+            return False, correlation_value
     
     #4. Trend is start to up
     ccl_trend_data, price_trend_data = {}, {}
@@ -107,11 +122,11 @@ def volume_trend_analysis(ticks, span_type="5sec", current_status = {}, is_log =
     
     signal = ""
     if ccl_trend_data[2] - ccl_trend_data[5] >=7 and ccl_trend_data[2] >= 3:
-        # signal = "StartOpenTrend"
-        if ccl_trend_data[60] < -4:
+        signal = "StartOpenTrend"
+        # if ccl_trend_data[60] < -4:
             # and ccl_trend_data[60] <= 2:
-            signal = "StartOpenTrend"
-            correlation_value = 1
+            # signal = "StartOpenTrend"
+            # correlation_value = 1
     # elif ccl_trend_data[2] - ccl_trend_data[5] <= -9 and ccl_trend_data[2] <= -4:
     #     if ccl_trend_data[60] > 4:
     #         signal = "StartCutTrend"
@@ -128,6 +143,9 @@ def volume_trend_analysis(ticks, span_type="5sec", current_status = {}, is_log =
     
     if is_log:
         utils.log("Pass trend check")
+
+    # last peaks
+    utils.log("Last peak time: {}, last valley time: {}, current time {}".format(peak['time'], valley['time'], end_tick['time']))
     return True, correlation_value
 
 def sitimulate_trend(ticks, span_type):
