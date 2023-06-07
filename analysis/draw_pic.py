@@ -69,7 +69,13 @@ def zxj_ccl_pic_v2(ticks, span_type, with_correlation_value = False):
     # Draw volume trend
     if with_correlation_value:
         red_infos = volume_trend_analysis.sitimulate_trend(ticks=ticks, span_type=span_type)
-        plt.scatter([times[i['index']] for i in red_infos], [volume[i['index']] for i in red_infos], color='red')
+        down_trend = [i for i in red_infos if i['correlation'] < 0]
+        up_trend = [i for i in red_infos if i['correlation'] > 0]
+        plt.scatter([times[i['index']] for i in up_trend], [
+                    volume[i['index']] for i in up_trend], color='red')
+        plt.scatter([times[i['index']] for i in down_trend], [volume[i['index']]
+                                                              for i in down_trend], color='green')
+        
         for info in red_infos:
             ax2.text(times[info['index']] - 2, volume[info['index']] + 50,
                     str(round(info['correlation'], 2)))
@@ -82,8 +88,6 @@ def zxj_ccl_pic_v2(ticks, span_type, with_correlation_value = False):
     # ax.axvline(x=3, color='black', linestyle='--', label='Reference')
 
     vline = ax.axvline(x=0, color='black')
-
-    
 
     # 绘制新的文字对象
     def on_move(event):

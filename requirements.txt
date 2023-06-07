@@ -4,6 +4,7 @@ pyyaml
 pytz
 requests
 chinesecalendar
+TA-Lib
 # numpy
 # matplotlib
 # scipy

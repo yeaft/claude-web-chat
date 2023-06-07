@@ -1,6 +1,7 @@
 from helper import constance, utils, date_utils, analysis_helper, ticks_helper
 from statistics import mean, variance, stdev
 from scipy.signal import find_peaks
+import pandas as pd
 import numpy as np
 
 # check correlation
@@ -52,7 +53,39 @@ def ccl_percentile_distribute(ccls):
     }
     # plt.boxplot(ccls)
     # plt.show()    
-    
+
+
+def calculate_macd(data, short_window, long_window, field_name, span=9):
+    """Calculate MACD, MACD Signal and MACD difference
+
+    :param data: DataFrame which contains 'close' column to calculate MACD
+    :param short_window: length of short moving average
+    :param long_window: length of long moving average
+    :return: original DataFrame with new 'macd', 'signal' and 'histogram' columns
+    """
+    short_ema = data[field_name].ewm(span=short_window, adjust=False).mean()
+    long_ema = data[field_name].ewm(span=long_window, adjust=False).mean()
+
+    data['MACD'] = short_ema - long_ema
+    data['Signal'] = data['MACD'].ewm(span= span, adjust=False).mean()
+    data['MACD_Histogram'] = data['MACD'] - data['Signal']
+
+    return data
+def volume_trend_analysis_macd(ticks, span_type="5sec", current_status = {}, is_log = False):
+    # Convert list of ticks to DataFrame
+    df = pd.DataFrame(ticks)
+    df['time'] = pd.to_datetime(df['time'])
+    df.set_index('time', inplace=True)
+
+    # Calculate MACD
+    two_mins_span = ticks_helper.get_x_span_number(1, span_type=span_type, unit="m")
+    five_mins_span = ticks_helper.get_x_span_number(30, span_type=span_type, unit="s")
+    twelve_mins_span = ticks_helper.get_x_span_number(5, span_type=span_type, unit="m")
+
+    df = calculate_macd(df, two_mins_span, twelve_mins_span, "sum_ccl", five_mins_span)
+    return round(df['MACD_Histogram'][-1], 2)
+
+# We need to catch the trend, it should be start or middle of a trend    
 def volume_trend_analysis(ticks, span_type="5sec", current_status = {}, is_log = False):
     #Detect the begin of a open trend
     # zxjs = [x['zxj'] for x in ticks]
@@ -104,11 +137,12 @@ def volume_trend_analysis(ticks, span_type="5sec", current_status = {}, is_log =
     ccl_max_diff = peak['sum_ccl'] - valley['sum_ccl']
     end_tick = ticks[-1]
 
+    # If lateast ccl diff with last peak or valley is too small, then it is not a good time to open
     if last_peak_index > last_valley_index:
         if peak['sum_ccl'] - end_tick['sum_ccl'] <= ccl_max_diff * 0.6:
             return False, correlation_value
     else:
-        if end_tick['sum_ccl'] - valley['sum_ccl'] >= ccl_max_diff * 0.6:
+        if end_tick['sum_ccl'] - valley['sum_ccl'] <= ccl_max_diff * 0.6:
             return False, correlation_value
     
     #4. Trend is start to up
@@ -151,29 +185,41 @@ def volume_trend_analysis(ticks, span_type="5sec", current_status = {}, is_log =
 def sitimulate_trend(ticks, span_type):
     one_hour_span = ticks_helper.get_x_span_number(1, span_type=span_type, unit="h")
     one_minute_span = ticks_helper.get_x_span_number(1, span_type=span_type, unit="m")
+    five_minute_span = ticks_helper.get_x_span_number(5, span_type=span_type, unit="m")
     five_days_span = ticks_helper.get_x_span_number(2, span_type=span_type, unit="d")
     i = five_days_span
     results = []
+    macds = []
     while i < len(ticks):
-        is_trend, correlation = volume_trend_analysis(ticks[i - five_days_span:i+1], span_type)
-        if is_trend:
-            next_2_hours_correlation = next_x_hours_correlation(ticks, i, span_type, x=2)
+        # is_trend, correlation = volume_trend_analysis(ticks[i - five_days_span:i+1], span_type)
+        macd = volume_trend_analysis_macd(
+            ticks[i - five_days_span:i+1], span_type)
+        macds.append({ "time": ticks[i]['time'], "macd": macd })
+        correlation = 0
+        if macd > 300 or macd < -300:
+            # next_2_hours_correlation = next_x_hours_correlation(ticks, i, span_type, x=2)
             result = {
                 "time": ticks[i]['time'],
                 "code": ticks[i]['code'],
                 "index": i,
                 "zxj": ticks[i]['zxj'],
                 "ccl": ticks[i]['sum_ccl'],
-                "correlation": correlation,
-                "next_correlation": next_2_hours_correlation,
-                "is_trend": next_2_hours_correlation != None and ((correlation > 0.5 and next_2_hours_correlation > 0.5) or (correlation < -0.5 and next_2_hours_correlation < -0.5))
+                "correlation": macd,
+                # "next_correlation": next_2_hours_correlation,
+                # "is_trend": next_2_hours_correlation != None and ((correlation > 0.5 and next_2_hours_correlation > 0.5) or (correlation < -0.5 and next_2_hours_correlation < -0.5))
+                "is_trend": macd > 2 or macd < -2
             }
             results.append(result)
-            i += one_minute_span        
+            i += one_minute_span
             continue
             # utils.log("Trend start at {}".format(ticks[i]['time']))
     
         i += one_minute_span
+    
+    macd_vals = [x['macd'] for x in macds]
+    avg_macd = sum(macd_vals) / len(macd_vals)
+    stdev_macd = np.std(macd_vals)
+    utils.log("Avg macd: {}, stdev: {}".format(avg_macd, stdev_macd))
     utils.log("Get {} tips".format(len(results)))
     utils.convert_dic_to_csv("trend_{}_verify".format(span_type), results)
     return results
