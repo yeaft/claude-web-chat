@@ -67,18 +67,18 @@ def zxj_ccl_pic_v2(ticks, span_type, with_correlation_value = False):
 
     # ax2.plot(peaks, volume_arr[peaks], "x")
     # Draw volume trend
-    if with_correlation_value:
-        red_infos = volume_trend_analysis.sitimulate_trend(ticks=ticks, span_type=span_type)
-        down_trend = [i for i in red_infos if i['correlation'] < 0]
-        up_trend = [i for i in red_infos if i['correlation'] > 0]
-        plt.scatter([times[i['index']] for i in up_trend], [
-                    volume[i['index']] for i in up_trend], color='red')
-        plt.scatter([times[i['index']] for i in down_trend], [volume[i['index']]
-                                                              for i in down_trend], color='green')
+    # if with_correlation_value:
+    #     red_infos = volume_trend_analysis.sitimulate_trend(ticks=ticks, span_type=span_type)
+    #     down_trend = [i for i in red_infos if i['correlation'] < 0]
+    #     up_trend = [i for i in red_infos if i['correlation'] > 0]
+    #     plt.scatter([times[i['index']] for i in up_trend], [
+    #                 volume[i['index']] for i in up_trend], color='red')
+    #     plt.scatter([times[i['index']] for i in down_trend], [volume[i['index']]
+    #                                                           for i in down_trend], color='green')
         
-        for info in red_infos:
-            ax2.text(times[info['index']] - 2, volume[info['index']] + 50,
-                    str(round(info['correlation'], 2)))
+    #     for info in red_infos:
+    #         ax2.text(times[info['index']] - 2, volume[info['index']] + 50,
+    #                 str(round(info['correlation'], 2)))
     
     # 绘制峰值
     ax2.plot(peaks, volume_arr[peaks], "x", color='red')
