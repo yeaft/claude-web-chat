@@ -9,6 +9,7 @@ class RealtimePeakTroughFinder:
     def __init__(self):
         self.candidate_peaks = deque()
         self.candidate_troughs = deque()
+        self.data = []
         self.confirmed_peaks = []
         self.confirmed_troughs = []
         self.overridden_peaks = []
@@ -22,6 +23,7 @@ class RealtimePeakTroughFinder:
 
     def process_new_data(self, new_data):
         # 初始化新数据
+        self.data.append(new_data)
         new_time = pd.to_datetime(new_data["time"])
         new_value = new_data["ccl"]
 

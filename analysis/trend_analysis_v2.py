@@ -1,129 +1,149 @@
-from helper import constance, utils, date_utils, analysis_helper, ticks_helper
-from collections import deque
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from scipy import stats
 
 
-class RealtimePeakTroughFinder:
+class WaveAnalyzer:
     def __init__(self):
-        self.candidate_peaks = deque()
-        self.candidate_troughs = deque()
-        self.confirmed_peaks = []
-        self.confirmed_troughs = []
-        self.overridden_peaks = []
-        self.overridden_troughs = []
-        self.slope_thresholds_peaks = []
-        self.slope_thresholds_troughs = []
-        self.window_size = int(timedelta(hours=2).total_seconds() / 5)
+        # 初始化变量
+        self.candidate_peaks = []  # 候选波峰
+        self.candidate_troughs = []  # 候选波谷
+        self.confirmed_peaks = []  # 确定的波峰
+        self.confirmed_troughs = []  # 确定的波谷
+        self.pairs = []  # 波峰和波谷的配对
 
-    def process_new_data(self, new_data):
-            # 初始化新数据
-        new_time = pd.to_datetime(new_data["time"])
-        new_value = new_data["ccl"]
+    def update(self, new_data):
+        # 更新数据
+        self.update_candidates(new_data)
+        self.confirm_peaks_and_troughs()
+        self.filter_invalid_waves()
+        self.get_pairs()
 
-        # 处理候选波峰
-        while self.candidate_peaks and self.candidate_peaks[0][1] < new_value:
-            overridden_peak = self.candidate_peaks.popleft()
-            self.overridden_peaks.append(overridden_peak)
-        self.candidate_peaks.append((new_time, new_value))
+    def update_candidates(self, new_data):
+        # 更新候选波峰和波谷
+        # latest_data是最新的数据，它包含了当前的时间和价值（交易量）
+        latest_data = new_data.iloc[-1]
+        current_time = latest_data.name
+        current_value = latest_data['volume']
 
-        # 如果有足够的数据，并且最后一个确认的点不是波峰，确认新的波峰
-        if len(self.candidate_peaks) > self.window_size and (not self.confirmed_peaks or self.confirmed_peaks[-1][0] < self.confirmed_troughs[-1][0]):
-            confirmed_peak = self.candidate_peaks.popleft()
-            self.confirmed_peaks.append(confirmed_peak)
+        # 更新候选波峰
+        self.update_peak_candidates(current_time, current_value)
 
-        # 检查并处理连续的波峰
-        if len(self.confirmed_peaks) > 1 and self.confirmed_peaks[-1][0] < self.confirmed_troughs[-1][0]:
-            if self.confirmed_peaks[-1][1] > self.confirmed_peaks[-2][1]:
-                overridden_peak = self.confirmed_peaks.pop(-2)
+        # 更新候选波谷
+        self.update_trough_candidates(current_time, current_value)
+
+    def update_peak_candidates(self, current_time, current_value):
+        # 如果有足够的候选波峰，对它们进行比较和更新
+        if len(self.candidate_peaks) >= 2:
+            # 获取最后两个候选波峰的时间和价值
+            last_peak_time, last_peak_value = self.candidate_peaks[-1]
+            second_last_peak_time, second_last_peak_value = self.candidate_peaks[-2]
+
+            # 比较候选波峰和当前价值，更新候选波峰
+            if last_peak_value > second_last_peak_value:
+                if current_value < last_peak_value:
+                    self.candidate_peaks[-1] = (current_time, current_value)
             else:
-                overridden_peak = self.confirmed_peaks.pop(-1)
-            self.overridden_peaks.append(overridden_peak)
+                if current_value > second_last_peak_value:
+                    self.candidate_peaks[-2] = (current_time, current_value)
+                elif current_value < last_peak_value:
+                    self.candidate_peaks[-1] = (current_time, current_value)
 
-        # 类似地，处理候选波谷
-        while self.candidate_troughs and self.candidate_troughs[0][1] > new_value:
-            overridden_trough = self.candidate_troughs.popleft()
-            self.overridden_troughs.append(overridden_trough)
-        self.candidate_troughs.append((new_time, new_value))
+    def update_trough_candidates(self, current_time, current_value):
+        # 如果有足够的候选波谷，对它们进行比较和更新
+        if len(self.candidate_troughs) >= 2:
+            # 获取最后两个候选波谷的时间和价值
+            last_trough_time, last_trough_value = self.candidate_troughs[-1]
+            second_last_trough_time, second_last_trough_value = self.candidate_troughs[-2]
 
-        # 如果有足够的数据，并且最后一个确认的点不是波谷，确认新的波谷
-        if len(self.candidate_troughs) > self.window_size and (not self.confirmed_troughs or self.confirmed_troughs[-1][0] < self.confirmed_peaks[-1][0]):
-            confirmed_trough = self.candidate_troughs.popleft()
-            self.confirmed_troughs.append(confirmed_trough)
-
-        # 检查并处理连续的波谷
-        if len(self.confirmed_troughs) > 1 and self.confirmed_troughs[-1][0] < self.confirmed_peaks[-1][0]:
-            if self.confirmed_troughs[-1][1] < self.confirmed_troughs[-2][1]:
-                overridden_trough = self.confirmed_troughs.pop(-2)
+            # 比较候选波谷和当前价值，更新候选波谷
+            if last_trough_value < second_last_trough_value:
+                if current_value > last_trough_value:
+                    self.candidate_troughs[-1] = (current_time, current_value)
             else:
-                overridden_trough = self.confirmed_troughs.pop(-1)
-            self.overridden_troughs.append(overridden_trough)
+                if current_value < second_last_trough_value:
+                    self.candidate_troughs[-2] = (current_time, current_value)
+                elif current_value > last_trough_value:
+                    self.candidate_troughs[-1] = (current_time, current_value)
 
-    def calculate_thresholds(self, volume_series):
-        for confirmed_peak in self.confirmed_peaks[-5:]:
-            window_start = confirmed_peak[0] - timedelta(minutes=30)
-            window_end = confirmed_peak[0] + timedelta(minutes=30)
-            volume_max_loc = volume_series.loc[window_start:window_end].idxmax(
-            )
-            slope = (confirmed_peak[1] - volume_series.loc[volume_max_loc]) / \
-                ((confirmed_peak[0] - volume_max_loc).total_seconds() / 60)
-            self.slope_thresholds_peaks.append(slope)
-
-        for confirmed_trough in self.confirmed_troughs[-5:]:
-            window_start = confirmed_trough[0] - timedelta(minutes=30)
-            window_end = confirmed_trough[0] + timedelta(minutes=30)
-            volume_max_loc = volume_series.loc[window_start:window_end].idxmax(
-            )
-            slope = (confirmed_trough[1] - volume_series.loc[volume_max_loc]) / (
-                (confirmed_trough[0] - volume_max_loc).total_seconds() / 60)
-            self.slope_thresholds_troughs.append(slope)
-
-        return {
-            "slope_thresholds_peaks": self.slope_thresholds_peaks,
-            "slope_thresholds_troughs": self.slope_thresholds_troughs,
-        }
-
-    def get_trends(self):
-        # 初始化趋势状态
-        overall_trend = "无趋势"
-        intra_wave_trend = "无趋势"
-
-        # 如果有足够的确认的波峰和波谷，确定整体趋势
-        if len(self.confirmed_peaks) >= 2 and len(self.confirmed_troughs) >= 2:
-            # 获取最近的两个确认的波峰和波谷
-            last_two_peaks = self.confirmed_peaks[-2:]
-            last_two_troughs = self.confirmed_troughs[-2:]
-
-            # 检查波峰和波谷的移动方向
-            peak_trend = last_two_peaks[1][1] - last_two_peaks[0][1]
-            trough_trend = last_two_troughs[1][1] - last_two_troughs[0][1]
-
-            # 判断整体趋势
-            if peak_trend > np.mean(self.slope_thresholds_peaks) and trough_trend > np.mean(self.slope_thresholds_troughs):
-                overall_trend = "上升趋势"
-            elif peak_trend < -np.mean(self.slope_thresholds_peaks) and trough_trend < -np.mean(self.slope_thresholds_troughs):
-                overall_trend = "下降趋势"
-
-        # 如果有最新的候选波峰和候选波谷，确定波内趋势
-        if self.candidate_peaks and self.candidate_troughs:
-            # 获取最新的数据点时间和价值
+    def confirm_peaks_and_troughs(self):
+        # 确定波峰和波谷
+        if len(self.candidate_peaks) >= 2 and len(self.candidate_troughs) >= 2:
+            # 获取最后的候选波峰和候选波谷
             latest_peak_time, latest_peak_value = self.candidate_peaks[-1]
             latest_trough_time, latest_trough_value = self.candidate_troughs[-1]
 
-            # 如果最新的数据点距离现在超过半小时，且当前价值高于最新的候选波谷，认为是波内上升趋势
-            if (datetime.now() - latest_peak_time).total_seconds() > timedelta(minutes=30).total_seconds() \
-                    and latest_peak_value > latest_trough_value:
-                intra_wave_trend = "波内上升趋势"
-            elif (datetime.now() - latest_trough_time).total_seconds() > timedelta(minutes=30).total_seconds() \
-                    and latest_peak_value < latest_trough_value:
-                intra_wave_trend = "波内下降趋势"
+            # 如果最后的候选波峰早于最后的候选波谷，且其价值高于最后的候选波谷，确认最后的候选波峰
+            if latest_peak_time < latest_trough_time and latest_peak_value > latest_trough_value:
+                self.confirmed_peaks.append(self.candidate_peaks.pop(-1))
 
-        return overall_trend, intra_wave_trend
+            # 如果最后的候选波谷早于最后的候选波峰，且其价值低于最后的候选波峰，确认最后的候选波谷
+            elif latest_trough_time < latest_peak_time and latest_trough_value < latest_peak_value:
+                self.confirmed_troughs.append(self.candidate_troughs.pop(-1))
+
+    def filter_invalid_waves(self):
+        # 滤除无效的波动
+        if len(self.confirmed_peaks) >= 2 and len(self.confirmed_troughs) >= 2:
+            # 获取最近的两个确认的波峰和波谷
+            latest_peak_time, latest_peak_value = self.confirmed_peaks[-1]
+            second_latest_peak_time, second_latest_peak_value = self.confirmed_peaks[-2]
+            latest_trough_time, latest_trough_value = self.confirmed_troughs[-1]
+            second_latest_trough_time, second_latest_trough_value = self.confirmed_troughs[-2]
+
+            # 如果最新的波峰是在最新的波谷之后，比较它与上一个波峰的价值，选择价值更高的一个
+            if latest_peak_time > latest_trough_time:
+                if latest_peak_value <= second_latest_peak_value:
+                    self.confirmed_peaks.pop(-1)
+                else:
+                    self.confirmed_peaks.pop(-2)
+
+            # 如果最新的波谷是在最新的波峰之后，比较它与上一个波谷的价值，选择价值更低的一个
+            else:
+                if latest_trough_value >= second_latest_trough_value:
+                    self.confirmed_troughs.pop(-1)
+                else:
+                    self.confirmed_troughs.pop(-2)
+
+    def get_pairs(self):
+        # 更新波峰和波谷的配对
+        self.pairs = [(peak, trough) for peak, trough in zip(
+            self.confirmed_peaks, self.confirmed_troughs)]
+
+    def get_segments(self):
+        # 获取每个上升段和下降段
+        segments = []
+        for i in range(len(self.confirmed_peaks)-1):
+            if self.confirmed_peaks[i][0] < self.confirmed_troughs[i][0] and self.confirmed_peaks[i+1][0] > self.confirmed_troughs[i][0]:
+                segments.append(
+                    ('increase', self.confirmed_peaks[i][0], self.confirmed_peaks[i+1][0]))
+            else:
+                segments.append(
+                    ('decrease', self.confirmed_peaks[i][0], self.confirmed_troughs[i+1][0]))
+        return segments
 
 
-if __name__ == "__main__":
-    span_type = "5sec"
-    ticks = ticks_helper.get_ticks("2022-11-01", "2022-12-11", "rb", span_type)
-    # ticks = ticks_helper.get_ticks_by_time("2022-12-05 10:05:00.000", "rb", span_type)
-    utils.log("get {} ticks".format(len(ticks)))
+def get_price_trend_during_volume_change(df, segments):
+    # 计算在每个交易量变化阶段的价格趋势
+    trends = []
+    for segment in segments:
+        direction, start_time, end_time = segment
+        segment_df = df.loc[start_time:end_time]
+        slope, intercept, r_value, p_value, std_err = stats.linregress(
+            range(len(segment_df)), segment_df['price'])
+        if slope > 0:
+            trends.append(('increase', slope))
+        else:
+            trends.append(('decrease', slope))
+    return trends
+
+
+def get_overall_trend(df, segments, N):
+    # 获取N个连续阶段的总体价格趋势
+    if len(segments) < N:
+        return None
+    else:
+        trends = get_price_trend_during_volume_change(df, segments[-N:])
+        increase_trends = [trend for trend in trends if trend[0] == 'increase']
+        decrease_trends = [trend for trend in trends if trend[0] == 'decrease']
+        return len(increase_trends), np.mean([trend[1] for trend in increase_trends]), len(decrease_trends), np.mean([trend[1] for trend in decrease_trends])
