@@ -4,10 +4,10 @@ pyyaml
 pytz
 requests
 chinesecalendar
-TA-Lib
-# numpy
-# matplotlib
-# scipy
- 
-# pandas
+numpy
+matplotlib
+mplcursors
+scipy 
+pandas
+# TA-Lib
 # matplotlib
