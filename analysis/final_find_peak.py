@@ -23,16 +23,27 @@ class DataProcessor:
         self.check_column_name = check_column_name
     
     def print_extreme_points(self):
+        
+        min_correct_count = len(
+            [extreme_point for extreme_point in self.extreme_points if extreme_point["extreme_type"] == "min"])
+        max_correct_count = len(
+            [extreme_point for extreme_point in self.extreme_points if extreme_point["extreme_type"] == "max"])
+        min_error_count = len(
+            [error_point for error_point in self.error_points if error_point["extreme_type"] == "min"])
+        max_error_count = len(
+            [error_point for error_point in self.error_points if error_point["extreme_type"] == "max"])
+        
+        utils.log(f"{self.past_x_hours}-{self.next_x_min}: All count {len(self.extreme_points)+len(self.error_points)}, Correct rate: {round(len(self.extreme_points) * 100.00/(len(self.extreme_points)+len(self.error_points)), 2)}, min count: {min_correct_count+min_error_count}, max count: {max_correct_count+max_error_count}, min rate: {round(min_correct_count*100.00/(min_correct_count+min_error_count), 2)}, max rate: {round(max_correct_count*100.00/(max_correct_count+max_error_count), 2)}")
+
         for extreme_point in self.extreme_points:
-            print(
-                f'{self.past_x_hours}-{self.next_x_min}: Correct {extreme_point["time"]} {extreme_point["extreme_type"]} {extreme_point[self.check_column_name]}')
+            utils.log(
+                f'{self.past_x_hours}-{self.next_x_min}: Correct {extreme_point["code"]} {extreme_point["time"]} {extreme_point["extreme_type"]} {extreme_point[self.check_column_name]}')
             
-        for error_point in self.error_points:
-            print(
-                f'{self.past_x_hours}-{self.next_x_min}: Error {error_point["time"]} {error_point["extreme_type"]} {error_point[self.check_column_name]}')
         
-        print(f'{self.past_x_hours}-{self.next_x_min}: Correct {len(self.extreme_points)}, Error {len(self.error_points)}, Correct rate: {round(len(self.extreme_points) * 100.00/(len(self.extreme_points)+len(self.error_points)), 2)}')
-        
+
+        for error_point in self.error_points:           
+            utils.log(
+                f'{self.past_x_hours}-{self.next_x_min}: Error {error_point["code"]} {error_point["time"]} {error_point["extreme_type"]} {error_point[self.check_column_name]}')                  
 
     def process_new_data(self, tick):
         self.data.append(tick)
@@ -86,66 +97,91 @@ class DataProcessor:
                 else:
                     self.error_points.append(candidate)
 
-def test(dps, test_data, check_column_name="zxj"):
-
-    # 用于生成测试数据的函数
-    def generate_test_data(start_time, num_points, value_initial=2000):
-        time = start_time
-        value = value_initial
-        for _ in range(num_points):
-            ccl = random.uniform(0, 100)
-            value += random.uniform(-2, 2)  # 限制价格变动范围在[-2, 2]之间
-            yield {'time': time, 'ccl': ccl, check_column_name: value}
-            time += timedelta(seconds=5)
-
-
-    # 测试数据：生成2小时的随机数据，每五秒一个数据点，总共1440个数据点
-    test_data = list(generate_test_data(datetime.now(), 20000))
-
-
 
 def draw_image(dps, ticks, check_column_name="zxj"):
-
     # 提取时间和价格
-    times = [mdates.date2num(data['time']) for data in ticks]
+    times = [data['time'].strftime('%Y-%m-%d %H:%M:%S') for data in ticks]
     values = [data[check_column_name] for data in ticks]
+    zxj_values = [data['zxj'] for data in ticks]
 
-    fig, axs = plt.subplots(len(dps), 1, figsize=(10, 15))
+    fig, axs = plt.subplots(
+        len(dps) + 1, 1, figsize=(10, 15))
 
-    for i, dp in enumerate(dps):
-        axs[i].plot_date(times, values, fmt='-', label=check_column_name)
-        extreme_times = [mdates.date2num(point['time'])
-                         for point in dp.extreme_points]
-        extreme_values = [point[check_column_name] for point in dp.extreme_points]
+    # 绘制zxj的子图
+    zxj_plot, = axs[0].plot(times, zxj_values, color='purple', label='zxj')
+    axs[0].set_title('zxj data')
+    axs[0].xaxis.set_major_locator(plt.MaxNLocator(10))
+    axs[0].tick_params(axis='x', which='both', bottom=False,
+                       top=False, labelbottom=False)
+
+    # cursor0 = mplcursors.cursor(zxj_plot, hover=True)
+    # cursor0.connect("add", lambda sel: sel.annotation.set_text(
+    #     f'Date: {times[sel.target.index]}, Value: {sel.target[1]}'))
+
+    for i, dp in enumerate(dps, start=1):
+        ccl_plot, = axs[i].plot(times, values, label=check_column_name)
+
+        extreme_times = [data['time'].strftime(
+            '%Y-%m-%d %H:%M:%S') for data in dp.extreme_points]
+        extreme_values = [point[check_column_name]
+                          for point in dp.extreme_points]
         axs[i].scatter(extreme_times, extreme_values,
                        color='blue', label='Extreme Points')
-        candidate_times = [mdates.date2num(
-            point['time']) for point in dp.candidate_points]
-        candidate_values = [point[check_column_name] for point in dp.candidate_points]
+
+        candidate_times = [data['time'].strftime(
+            '%Y-%m-%d %H:%M:%S') for data in dp.candidate_points]
+        candidate_values = [point[check_column_name]
+                            for point in dp.candidate_points]
         axs[i].scatter(candidate_times, candidate_values,
                        color='green', label='Candidate Points')
-        error_times = [mdates.date2num(point['time'])
-                       for point in dp.error_points]
+
+        error_times = [data['time'].strftime(
+            '%Y-%m-%d %H:%M:%S') for data in dp.error_points]
         error_values = [point[check_column_name] for point in dp.error_points]
         axs[i].scatter(error_times, error_values,
                        color='red', label='Error Points')
 
-        # 添加标题
         axs[i].set_title(f'{dp.past_x_hours} hours range - {dp.next_x_min} mins check - right rate: {round(len(dp.extreme_points) * 100 / (len(dp.extreme_points) + len(dp.error_points)), 2)}%, extreme num: {len(dp.extreme_points)}')
+        axs[i].xaxis.set_major_locator(plt.MaxNLocator(10))
+        axs[i].tick_params(axis='x', which='both', bottom=False,
+                           top=False, labelbottom=False)
 
-    plt.subplots_adjust(hspace=0.5)
+        # cursor = mplcursors.cursor(ccl_plot, hover=True)
+        # cursor.connect("add", lambda sel: sel.annotation.set_text(
+        #     f'Date: {times[int(sel.index)]}, Value: {sel.target[1]}'))
+
+    def on_move(event):
+        # 如果事件发生在子图之外，则不做任何操作
+        if event.inaxes is None:
+            return
+        # 获取当前鼠标的x坐标1
+        x = event.xdata
+        # 在每个子图上绘制一条垂直线
+        for ax in axs:
+            # 清除当前子图上的所有垂直线
+            [line.remove() for line in ax.lines if line.get_gid() == 'cursor_line']
+            ax.axvline(x=x, color='gray', linestyle='--', gid='cursor_line')
+        
+        plt.draw()
+
+    fig.canvas.mpl_connect('motion_notify_event', on_move)
+    plt.tight_layout()
     plt.show()
+
+
 
 
 if __name__ == "__main__":
     span_type = "5sec"
-    ticks = ticks_helper.get_ticks("2022-09-01", "2022-11-01", "rb", span_type)
+    ticks = ticks_helper.get_ticks("2022-09-05", "2022-11-01", "rb", span_type)
     check_column_name = "ccl"
     # ticks = ticks_helper.get_ticks_by_time("2022-12-05 10:05:00.000", "rb", span_type)
     utils.log("get {} ticks".format(len(ticks)))
     # 创建一个DataProcessor实例
-    dps = [DataProcessor(2, 15, check_column_name = check_column_name), DataProcessor(
-        2, 20, check_column_name=check_column_name), DataProcessor(3, 20, check_column_name=check_column_name), DataProcessor(3, 30, check_column_name=check_column_name)]
+    # dps = [DataProcessor(
+    #     2, 20, check_column_name=check_column_name), DataProcessor(3, 20, check_column_name=check_column_name), DataProcessor(3, 30, check_column_name=check_column_name)]
+    
+    dps = [DataProcessor(3, 30, check_column_name=check_column_name)]
 
     # 处理测试数据
     for data in ticks:
@@ -155,5 +191,4 @@ if __name__ == "__main__":
     for dp in dps:
         dp.print_extreme_points()
     
-    # draw_image(dps, ticks, check_column_name)
-    # draw_abnormal(ad)
+    draw_image(dps, ticks, check_column_name)
