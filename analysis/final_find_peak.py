@@ -7,10 +7,11 @@ import matplotlib.dates as mdates
 import heapq
 from helper import constance, utils, date_utils, analysis_helper, ticks_helper
 import pytz
+import numpy as np
 
 
 class DataProcessor:
-    def __init__(self, past_x_hour = 1, next_x_min=3, extreme_point_threshold=0.02, check_column_name="zxj"):
+    def __init__(self, past_x_hour = 1, next_x_min=3, extreme_point_threshold=0.02, check_column_name="zxj", x_days = 10):
         self.data = []
         self.candidate_points = []
         self.extreme_points = []
@@ -21,6 +22,9 @@ class DataProcessor:
         self.next_x_min_num = int(next_x_min * 60 / 5)
         self.extreme_point_threshold = extreme_point_threshold
         self.check_column_name = check_column_name
+        self.x_days = x_days
+        self.daily_max_values = {}
+        self.daily_min_values = {}
     
     def print_extreme_points(self):
         
@@ -47,6 +51,20 @@ class DataProcessor:
 
     def process_new_data(self, tick):
         self.data.append(tick)
+        # Assuming tick has a 'date' field in 'YYYY-MM-DD' format
+        date_str = tick['date']
+        current_value = tick[self.check_column_name]
+
+        # Update daily max and min values
+        self.daily_max_values[date_str] = max(
+            self.daily_max_values.get(date_str, float('-inf')),
+            current_value
+        )
+
+        self.daily_min_values[date_str] = min(
+            self.daily_min_values.get(date_str, float('inf')),
+            current_value
+        )
 
         # Parse time
         if type(tick['time']) == str:
@@ -58,6 +76,77 @@ class DataProcessor:
         if n < self.past_x_hours_num+self.next_x_min_num:  # We don't have enough data for a 2-hour window and additional 3 minutes
             return
         self.update_extreme_points(n)
+
+    def is_absolute_high(self, tick):
+        if len(self.daily_max_values) < self.x_days:
+            return False
+
+        date_str = tick['date']
+        delta = (self.daily_max_values[date_str] -
+                 self.daily_min_values[date_str]) * 0.05
+        return tick[self.check_column_name] >= self.daily_max_values[date_str] - delta
+    
+    def is_relative_high(self, tick):
+        if len(self.daily_max_values) < self.x_days:
+            return False
+
+        date_str = tick['date']
+        current_date = datetime.strptime(date_str, '%Y-%m-%d')
+
+        # Get past 10 days of min data
+        date_range = [(current_date - timedelta(days=i)
+                       ).strftime('%Y-%m-%d') for i in range(1, 14)]
+        past_data = [self.daily_min_values[date]
+                     for date in date_range if date in self.daily_max_values]
+
+        if not past_data:
+            return False
+
+        # Calculate mean and standard deviation of the past 10 days
+        mean_value = np.mean(past_data)
+        stdev_value = np.std(past_data)
+
+        threshold = mean_value + 1 * stdev_value
+
+        return tick[self.check_column_name] >= threshold
+
+    def is_relative_low(self, tick):
+        if len(self.daily_min_values) < self.x_days:
+            return False
+        
+        date_str = tick['date']
+        current_date = datetime.strptime(date_str, '%Y-%m-%d')
+
+        # Get past 10 days of min data
+        date_range = [(current_date - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(1, 14)]
+        past_data = [self.daily_min_values[date]
+                     for date in date_range if date in self.daily_min_values]
+
+        if not past_data:
+            return False
+
+        # Calculate mean and standard deviation of the past 10 days
+        mean_value = np.mean(past_data)
+        stdev_value = np.std(past_data)
+
+        threshold = mean_value - 0.4 * stdev_value
+
+        return tick[self.check_column_name] <= threshold
+    
+    def calculate_correlation(self, n, hours=10):
+        """ 
+        为当前数据点计算窗口内的相关性 
+        hours：我们应该查看之前多少个小时的数据点
+        """
+        window_size = int(hours * 3600 / 5)
+        subset = self.data[n-window_size:n]
+
+        zxj_values = [tick['zxj'] for tick in subset]
+        ccl_values = [tick['ccl'] for tick in subset]
+
+        correlation = np.corrcoef(zxj_values, ccl_values)[0, 1]
+
+        return correlation
 
     def update_extreme_points(self, n):
         check_point = self.data[n-self.next_x_min_num]
@@ -75,13 +164,32 @@ class DataProcessor:
         min_value_point = min(
             last_2_hours_and_next_x_min_data, key=lambda x: x[self.check_column_name])
 
-        if check_point[self.check_column_name] == max_value_point[self.check_column_name]:
-            check_point['extreme_type'] = 'max'
-            self.candidate_points.append(check_point)
-        elif check_point[self.check_column_name] == min_value_point[self.check_column_name]:
-            check_point['extreme_type'] = 'min'
-            self.candidate_points.append(check_point)
+        
 
+        # Absolute high or relative low check
+        is_candidate = False
+        if self.is_relative_high(check_point) and check_point[self.check_column_name] == max_value_point[self.check_column_name]:
+                check_point['extreme_type'] = 'max'
+                self.candidate_points.append(check_point)
+                is_candidate = True
+        elif self.is_relative_low(check_point) and check_point[self.check_column_name] == min_value_point[self.check_column_name]:
+                check_point['extreme_type'] = 'min'
+                self.candidate_points.append(check_point)
+                is_candidate = True
+        
+        if is_candidate:
+            correlation = self.calculate_correlation(n)
+            if correlation >= 0.6:
+                if check_point['extreme_type'] == 'max':
+                    check_point['next_direct'] = 'down'
+                elif check_point['extreme_type'] == 'min':
+                    check_point['next_direct'] = 'up'
+            else:
+                if check_point['extreme_type'] == 'max':
+                    check_point['next_direct'] = 'up'
+                elif check_point['extreme_type'] == 'min':
+                    check_point['next_direct'] = 'down'
+                
         for candidate in self.candidate_points.copy():
             if candidate['time'] < self.data[-1]['time'] - timedelta(hours=self.past_x_hours):
                 self.candidate_points.remove(candidate)
@@ -173,7 +281,7 @@ def draw_image(dps, ticks, check_column_name="zxj"):
 
 if __name__ == "__main__":
     span_type = "5sec"
-    ticks = ticks_helper.get_ticks("2022-09-05", "2022-11-01", "rb", span_type)
+    ticks = ticks_helper.get_ticks("2022-05-01", "2022-08-01", "rb", span_type)
     check_column_name = "ccl"
     # ticks = ticks_helper.get_ticks_by_time("2022-12-05 10:05:00.000", "rb", span_type)
     utils.log("get {} ticks".format(len(ticks)))
