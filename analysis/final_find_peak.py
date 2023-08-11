@@ -184,7 +184,7 @@ class DataProcessor:
                     check_point['next_direct'] = 'down'
                 elif check_point['extreme_type'] == 'min':
                     check_point['next_direct'] = 'up'
-            else:
+            elif correlation <= -0.6:
                 if check_point['extreme_type'] == 'max':
                     check_point['next_direct'] = 'up'
                 elif check_point['extreme_type'] == 'min':
@@ -233,15 +233,41 @@ def draw_image(dps, ticks, check_column_name="zxj"):
             '%Y-%m-%d %H:%M:%S') for data in dp.extreme_points]
         extreme_values = [point[check_column_name]
                           for point in dp.extreme_points]
-        axs[i].scatter(extreme_times, extreme_values,
-                       color='blue', label='Extreme Points')
+        
+        # axs[i].scatter(extreme_times, extreme_values,
+        #                color='blue', label='Extreme Points')
+        for t, v, point in zip(extreme_times, extreme_values, dp.extreme_points):
+            axs[i].scatter(t, v, color='blue', label='Candidate Points')
+
+            # 加入箭头部分的代码
+            if point['next_direction'] == 'up':
+                axs[i].arrow(t, v, 0, 0.5, head_width=0.1,
+                             head_length=0.2, fc='red', ec='red')
+            elif point['next_direction'] == 'down':
+                axs[i].arrow(t, v, 0, -0.5, head_width=0.1,
+                             head_length=0.2, fc='green', ec='green')
+
+        
 
         candidate_times = [data['time'].strftime(
             '%Y-%m-%d %H:%M:%S') for data in dp.candidate_points]
         candidate_values = [point[check_column_name]
                             for point in dp.candidate_points]
-        axs[i].scatter(candidate_times, candidate_values,
-                       color='green', label='Candidate Points')
+        
+        # axs[i].scatter(candidate_times, candidate_values,
+        #                color='green', label='Candidate Points')
+        
+        for t, v, point in zip(candidate_times, candidate_values, dp.candidate_points):
+            axs[i].scatter(t, v, color='green', label='Candidate Points')
+
+            # 加入箭头部分的代码
+            if point['next_direction'] == 'up':
+                axs[i].arrow(t, v, 0, 0.5, head_width=0.1,
+                             head_length=0.2, fc='red', ec='red')
+            elif point['next_direction'] == 'down':
+                axs[i].arrow(t, v, 0, -0.5, head_width=0.1,
+                             head_length=0.2, fc='green', ec='green')
+                
 
         error_times = [data['time'].strftime(
             '%Y-%m-%d %H:%M:%S') for data in dp.error_points]
