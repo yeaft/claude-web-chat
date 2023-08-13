@@ -27,7 +27,12 @@ class DataProcessor:
         self.daily_min_values = {}
     
     def print_extreme_points(self):
-        
+        for extreme_point in self.extreme_points:
+            utils.log(
+                f'{self.past_x_hours}-{self.next_x_min}: Correct {extreme_point["code"]} {extreme_point["time"]} {extreme_point["extreme_type"]} {extreme_point["next_direction"]} {extreme_point["correlation"]} {extreme_point["zxj"]} {extreme_point[self.check_column_name]}')
+            
+
+    def print_error_points(self):        
         min_correct_count = len(
             [extreme_point for extreme_point in self.extreme_points if extreme_point["extreme_type"] == "min"])
         max_correct_count = len(
@@ -148,6 +153,7 @@ class DataProcessor:
 
         return correlation
 
+    # TODO 增加斜率判断j
     def update_extreme_points(self, n):
         check_point = self.data[n-self.next_x_min_num]
         last_2_hours_and_next_x_min_data = self.data[n-self.past_x_hours_num-self.next_x_min_num:n]
@@ -179,16 +185,19 @@ class DataProcessor:
         
         if is_candidate:
             correlation = self.calculate_correlation(n)
+            check_point['correlation'] = round(correlation,2)
             if correlation >= 0.6:
                 if check_point['extreme_type'] == 'max':
-                    check_point['next_direct'] = 'down'
+                    check_point['next_direction'] = 'down'
                 elif check_point['extreme_type'] == 'min':
-                    check_point['next_direct'] = 'up'
+                    check_point['next_direction'] = 'up'
             elif correlation <= -0.6:
                 if check_point['extreme_type'] == 'max':
-                    check_point['next_direct'] = 'up'
+                    check_point['next_direction'] = 'up'
                 elif check_point['extreme_type'] == 'min':
-                    check_point['next_direct'] = 'down'
+                    check_point['next_direction'] = 'down'
+            else:
+                check_point['next_direction'] = 'unknown'
                 
         for candidate in self.candidate_points.copy():
             if candidate['time'] < self.data[-1]['time'] - timedelta(hours=self.past_x_hours):
