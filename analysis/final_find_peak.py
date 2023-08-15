@@ -1,6 +1,6 @@
 import random
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import matplotlib.pyplot as plt
 import mplcursors
 import matplotlib.dates as mdates
@@ -8,14 +8,18 @@ import heapq
 from helper import constance, utils, date_utils, analysis_helper, ticks_helper
 import pytz
 import numpy as np
+import math
 
 
 class DataProcessor:
     def __init__(self, past_x_hour = 1, next_x_min=3, extreme_point_threshold=0.02, check_column_name="zxj", x_days = 10):
         self.data = []
-        self.candidate_points = []
-        self.extreme_points = []
+        self.candidate_points = []        
+        self.extreme_points = []        
         self.error_points = []
+        self.filtered_candidate_points = []
+        self.filtered_extreme_points = []
+        self.filtered_error_points = []
         self.past_x_hours = past_x_hour
         self.past_x_hours_num = int(past_x_hour * 3600 / 5)
         self.next_x_min = next_x_min
@@ -25,6 +29,8 @@ class DataProcessor:
         self.x_days = x_days
         self.daily_max_values = {}
         self.daily_min_values = {}
+        self.records = []
+        
     
     def print_extreme_points(self):
         for extreme_point in self.extreme_points:
@@ -56,6 +62,7 @@ class DataProcessor:
 
     def process_new_data(self, tick):
         self.data.append(tick)
+        tick['index'] = len(self.data) - 1
         # Assuming tick has a 'date' field in 'YYYY-MM-DD' format
         date_str = tick['date']
         current_value = tick[self.check_column_name]
@@ -138,6 +145,22 @@ class DataProcessor:
 
         return tick[self.check_column_name] <= threshold
     
+    # 改为找上一个extrem和自己不一样的peak类型的相关性
+    def calculate_correlation_by_extreme(self, check_point):
+        for i in range(len(self.extreme_points)-1, 0, -1):
+            extreme_point = self.extreme_points[i]
+            if extreme_point['extreme_type'] != check_point['extreme_type']:
+                subset = self.data[extreme_point['index']:check_point['index']]
+
+                zxj_values = [tick['zxj'] for tick in subset]
+                ccl_values = [tick['ccl'] for tick in subset]
+
+                correlation = np.corrcoef(zxj_values, ccl_values)[0, 1]
+
+                return correlation
+        
+        return 0
+
     def calculate_correlation(self, n, hours=10):
         """ 
         为当前数据点计算窗口内的相关性 
@@ -153,38 +176,56 @@ class DataProcessor:
 
         return correlation
 
-    # TODO 增加斜率判断j
+    # TODO 增加斜率判断
     def update_extreme_points(self, n):
         check_point = self.data[n-self.next_x_min_num]
-        last_2_hours_and_next_x_min_data = self.data[n-self.past_x_hours_num-self.next_x_min_num:n]
+        check_point['index'] = n-self.next_x_min_num
+        last_x_hours_and_next_y_min_data = self.data[n-self.past_x_hours_num-self.next_x_min_num:n]       
         
-        if self.extreme_points:
-            last_extreme_value = self.extreme_points[-1][self.check_column_name]
-            last_extreme_type = self.extreme_points[-1]['extreme_type']
-            if (last_extreme_type == "max" and last_extreme_value - check_point[self.check_column_name] / last_extreme_value < self.extreme_point_threshold) \
-              or (last_extreme_type == "min" and check_point[self.check_column_name] - last_extreme_value / last_extreme_value < self.extreme_point_threshold) :
-                return  # The value difference is less than 2%, ignore this point
             
         max_value_point = max(
-            last_2_hours_and_next_x_min_data, key=lambda x: x[self.check_column_name])
+            last_x_hours_and_next_y_min_data, key=lambda x: x[self.check_column_name])
         min_value_point = min(
-            last_2_hours_and_next_x_min_data, key=lambda x: x[self.check_column_name])
-
-        
+            last_x_hours_and_next_y_min_data, key=lambda x: x[self.check_column_name])        
 
         # Absolute high or relative low check
         is_candidate = False
-        if self.is_relative_high(check_point) and check_point[self.check_column_name] == max_value_point[self.check_column_name]:
+        if check_point[self.check_column_name] == max_value_point[self.check_column_name]:
                 check_point['extreme_type'] = 'max'
+                check_point['detect_time'] = self.data[-1]['time']
+                check_point['detect_zxj'] = self.data[-1]['zxj']
+                check_point['detect_index'] = n
                 self.candidate_points.append(check_point)
                 is_candidate = True
-        elif self.is_relative_low(check_point) and check_point[self.check_column_name] == min_value_point[self.check_column_name]:
+        elif check_point[self.check_column_name] == min_value_point[self.check_column_name]:
                 check_point['extreme_type'] = 'min'
+                check_point['detect_time'] = self.data[-1]['time']
+                check_point['detect_zxj'] = self.data[-1]['zxj']
+                check_point['detect_index'] = n
                 self.candidate_points.append(check_point)
                 is_candidate = True
         
         if is_candidate:
-            correlation = self.calculate_correlation(n)
+            # Filter 1, far way from last extreme point, need to fix the continuous same direction extreme point issue
+            # if self.extreme_points:
+            #     last_extreme_value = self.extreme_points[-1][self.check_column_name]
+            #     last_extreme_type = self.extreme_points[-1]['extreme_type']
+            #     if (last_extreme_type == "max" and (last_extreme_value - check_point[self.check_column_name]) / last_extreme_value < self.extreme_point_threshold) \
+            #       or (last_extreme_type == "min" and (check_point[self.check_column_name] - last_extreme_value) / last_extreme_value < self.extreme_point_threshold) :
+            #         return  # The value difference is less than 2%, ignore this point
+            # Filter 2, add relative check
+            # if check_point['extreme_type'] == 'max' and self.is_relative_high(check_point):
+            #     self.filtered_candidate_points.append(check_point)
+            # elif check_point['extreme_type'] == 'min' and self.is_relative_low(check_point):
+            #     self.filtered_candidate_points.append(check_point)
+            
+            # Filter 3, add trend rate check
+            if self.filter_by_slope(check_point):
+                self.filtered_candidate_points.append(check_point)
+
+            # Add correlation value
+            # correlation = self.calculate_correlation_by_extreme(check_point)
+            correlation = self.calculate_correlation(n, 10)
             check_point['correlation'] = round(correlation,2)
             if correlation >= 0.6:
                 if check_point['extreme_type'] == 'max':
@@ -198,6 +239,17 @@ class DataProcessor:
                     check_point['next_direction'] = 'down'
             else:
                 check_point['next_direction'] = 'unknown'
+
+            # Add slope and angle
+
+            before_slope = self.slope_angle(self.data[check_point['index'] - self.next_x_min_num], check_point)
+            check_point['before_slope'] = round(before_slope, 2)
+
+            after_slope = self.slope_angle(
+                check_point, self.data[check_point['index'] + self.next_x_min_num - 1])
+            check_point['after_slope'] = round(after_slope, 2)
+
+            self.records.append(check_point)
                 
         for candidate in self.candidate_points.copy():
             if candidate['time'] < self.data[-1]['time'] - timedelta(hours=self.past_x_hours):
@@ -211,9 +263,70 @@ class DataProcessor:
                 if (candidate['extreme_type'] == 'max' and candidate[self.check_column_name] >= max_value_point[self.check_column_name]) or \
                    (candidate['extreme_type'] == 'min' and candidate[self.check_column_name] <= min_value_point[self.check_column_name]):
                     self.extreme_points.append(candidate)
+                    candidate['extreme'] = True
+                    if candidate in self.filtered_candidate_points:
+                        self.filtered_candidate_points.remove(candidate)
+                        self.filtered_extreme_points.append(candidate)
+                        candidate['filtered_extreme'] = True
                 else:
                     self.error_points.append(candidate)
+                    if candidate in self.filtered_candidate_points:
+                        self.filtered_candidate_points.remove(candidate)
+                        self.filtered_error_points.append(candidate)
 
+    def slope_angle(self, start, end):
+        """
+        Given two data points, compute the slope and angle in degrees.
+        """
+        delta_y = end[self.check_column_name] - start[self.check_column_name]
+        delta_x = (end['index'] - start['index']) * 5 / \
+            60  # Convert index difference to hours
+        slope = delta_y / delta_x
+        return slope
+
+    def filter_by_slope(self, check_point):
+        """
+        Use slope and angle as criteria to filter out data points.
+        """
+        n = check_point['index']
+
+        # Getting data points for 30 mins before and after the check_point
+        before_point = self.data[n - int(30 * 60 / 5)]
+        after_point = self.data[min(n + int(30 * 60 / 5), len(self.data) - 1)]
+
+        # Calculating slope and angle for both points
+        before_slope = self.slope_angle(before_point, check_point)
+        after_slope = self.slope_angle(check_point, after_point)
+
+        # Checking the conditions, 350 is only for RB, need to check for other contracts
+        if (abs(after_slope) > abs(before_slope) and abs(after_slope) >= 350) or abs(after_slope) >= 600:
+            return True
+        return False
+    
+    def print_slope_angle(self):
+        for data in self.records:
+            utils.log(f"{data['code']} {data['time']} {data['extreme_type']} {data['before_slope']} {data['after_slope']}")
+
+    # 1. 缓慢持续下跌趋势找波峰，缓慢持续上涨趋势找波谷，调整区间两头都要找
+    # 2. 收盘时，必然会出现持仓量下跌，从而引起价格变化，可以不予理会
+    # 3. 有可能有连续的波峰或波谷，所以超过30分钟之后，发现并没有走远，那么可以考虑观望
+    def print_verify_check(self):
+        for i in range(0, len(self.data)):
+            if 'filtered_extreme' in self.data[i]:
+                extreme_point = self.data[i]
+                while i < len(self.data)-1:
+                    i += 1
+                    if "extreme" in self.data[i]:
+                        if extreme_point['next_direction'] == "up":
+                            result = self.data[i]['detect_zxj'] - extreme_point['detect_zxj']
+                        elif extreme_point['next_direction'] == "down":
+                            result = extreme_point['detect_zxj'] - self.data[i]['detect_zxj']
+                        else:
+                            result = 0
+                        utils.log(
+                            f'{extreme_point["detect_time"]} {extreme_point["code"]} {extreme_point["extreme_type"]} {extreme_point["detect_zxj"]} {extreme_point["correlation"]} {extreme_point["next_direction"]} {self.data[i]["zxj"]} {self.data[i]["detect_zxj"]} {result}')
+                        i -= 1
+                        break
 
 def draw_image(dps, ticks, check_column_name="zxj"):
     # 提取时间和价格
@@ -241,41 +354,56 @@ def draw_image(dps, ticks, check_column_name="zxj"):
         extreme_times = [data['time'].strftime(
             '%Y-%m-%d %H:%M:%S') for data in dp.extreme_points]
         extreme_values = [point[check_column_name]
-                          for point in dp.extreme_points]
+                          for point in dp.extreme_points]        
+        axs[i].scatter(extreme_times, extreme_values,
+                       color='blue', label='Extreme Points')
         
-        # axs[i].scatter(extreme_times, extreme_values,
-        #                color='blue', label='Extreme Points')
-        for t, v, point in zip(extreme_times, extreme_values, dp.extreme_points):
-            axs[i].scatter(t, v, color='blue', label='Candidate Points')
 
-            # 加入箭头部分的代码
-            if point['next_direction'] == 'up':
-                axs[i].arrow(t, v, 0, 0.5, head_width=0.1,
-                             head_length=0.2, fc='red', ec='red')
-            elif point['next_direction'] == 'down':
-                axs[i].arrow(t, v, 0, -0.5, head_width=0.1,
-                             head_length=0.2, fc='green', ec='green')
+        filtered_extreme_times = [data['time'].strftime(
+            '%Y-%m-%d %H:%M:%S') for data in dp.filtered_extreme_points]
+        filtered_extreme_values = [point[check_column_name]
+                                   for point in dp.filtered_extreme_points]
+        axs[i].scatter(filtered_extreme_times, filtered_extreme_values,
+                       color='blueviolet', label='Extreme Points')
+        
+        # for t, v, point in zip(extreme_times, extreme_values, dp.extreme_points):
+        #     axs[i].scatter(t, v, color='blue', label='Candidate Points')
+
+        #     # 加入箭头部分的代码
+        #     if point['next_direction'] == 'up':
+        #         axs[i].arrow(t, v, 0, 0.5, head_width=0.1,
+        #                      head_length=0.2, fc='red', ec='red')
+        #     elif point['next_direction'] == 'down':
+        #         axs[i].arrow(t, v, 0, -0.5, head_width=0.1,
+        #                      head_length=0.2, fc='green', ec='green')
 
         
 
         candidate_times = [data['time'].strftime(
             '%Y-%m-%d %H:%M:%S') for data in dp.candidate_points]
         candidate_values = [point[check_column_name]
-                            for point in dp.candidate_points]
+                            for point in dp.candidate_points]        
+        axs[i].scatter(candidate_times, candidate_values,
+                       color='green', label='Candidate Points')
         
-        # axs[i].scatter(candidate_times, candidate_values,
-        #                color='green', label='Candidate Points')
-        
-        for t, v, point in zip(candidate_times, candidate_values, dp.candidate_points):
-            axs[i].scatter(t, v, color='green', label='Candidate Points')
 
-            # 加入箭头部分的代码
-            if point['next_direction'] == 'up':
-                axs[i].arrow(t, v, 0, 0.5, head_width=0.1,
-                             head_length=0.2, fc='red', ec='red')
-            elif point['next_direction'] == 'down':
-                axs[i].arrow(t, v, 0, -0.5, head_width=0.1,
-                             head_length=0.2, fc='green', ec='green')
+        filtered_candidate_times = [data['time'].strftime(
+            '%Y-%m-%d %H:%M:%S') for data in dp.filtered_candidate_points]
+        filtered_candidate_values = [point[check_column_name]
+                            for point in dp.filtered_candidate_points]
+        axs[i].scatter(filtered_candidate_times, filtered_candidate_values,
+                       color='lime', label='Candidate Points')
+        
+        # for t, v, point in zip(candidate_times, candidate_values, dp.candidate_points):
+        #     axs[i].scatter(t, v, color='green', label='Candidate Points')
+
+        #     # 加入箭头部分的代码
+        #     if point['next_direction'] == 'up':
+        #         axs[i].arrow(t, v, 0, 0.5, head_width=0.1,
+        #                      head_length=0.2, fc='red', ec='red')
+        #     elif point['next_direction'] == 'down':
+        #         axs[i].arrow(t, v, 0, -0.5, head_width=0.1,
+        #                      head_length=0.2, fc='green', ec='green')
                 
 
         error_times = [data['time'].strftime(
@@ -284,7 +412,14 @@ def draw_image(dps, ticks, check_column_name="zxj"):
         axs[i].scatter(error_times, error_values,
                        color='red', label='Error Points')
 
-        axs[i].set_title(f'{dp.past_x_hours} hours range - {dp.next_x_min} mins check - right rate: {round(len(dp.extreme_points) * 100 / (len(dp.extreme_points) + len(dp.error_points)), 2)}%, extreme num: {len(dp.extreme_points)}')
+        filtered_error_times = [data['time'].strftime(
+            '%Y-%m-%d %H:%M:%S') for data in dp.filtered_error_points]
+        filtered_error_values = [point[check_column_name]
+                        for point in dp.filtered_error_points]
+        axs[i].scatter(filtered_error_times, filtered_error_values,
+                       color='black', label='Error Points')
+
+        axs[i].set_title(f'{dp.past_x_hours} hours range - {dp.next_x_min} mins check - right rate: {round(len(dp.filtered_extreme_points) * 100 / (len(dp.filtered_extreme_points) + len(dp.filtered_error_points)), 2)}%, extreme num: {len(dp.filtered_extreme_points)}')
         axs[i].xaxis.set_major_locator(plt.MaxNLocator(10))
         axs[i].tick_params(axis='x', which='both', bottom=False,
                            top=False, labelbottom=False)
@@ -317,6 +452,7 @@ def draw_image(dps, ticks, check_column_name="zxj"):
 if __name__ == "__main__":
     span_type = "5sec"
     ticks = ticks_helper.get_ticks("2022-05-01", "2022-08-01", "rb", span_type)
+    # ticks = ticks_helper.get_ticks("2022-05-15", "2022-06-10", "rb", span_type)
     check_column_name = "ccl"
     # ticks = ticks_helper.get_ticks_by_time("2022-12-05 10:05:00.000", "rb", span_type)
     utils.log("get {} ticks".format(len(ticks)))
@@ -324,7 +460,8 @@ if __name__ == "__main__":
     # dps = [DataProcessor(
     #     2, 20, check_column_name=check_column_name), DataProcessor(3, 20, check_column_name=check_column_name), DataProcessor(3, 30, check_column_name=check_column_name)]
     
-    dps = [DataProcessor(3, 30, check_column_name=check_column_name)]
+    dps = [DataProcessor(3, 25, check_column_name=check_column_name)]
+    # dps = [DataProcessor(1, 15, check_column_name=check_column_name)]
 
     # 处理测试数据
     for data in ticks:
@@ -332,6 +469,9 @@ if __name__ == "__main__":
             dp.process_new_data(data)
 
     for dp in dps:
-        dp.print_extreme_points()
+        # dp.print_extreme_points()
+        dp.print_verify_check()
+        utils.log("--------------------------------------------------")
+        dp.print_slope_angle()
     
     draw_image(dps, ticks, check_column_name)
