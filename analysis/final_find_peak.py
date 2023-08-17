@@ -8,11 +8,13 @@ import heapq
 from helper import constance, utils, date_utils, analysis_helper, ticks_helper
 import pytz
 import numpy as np
+from scipy.stats import linregress
 import math
+import copy
 
 
 class DataProcessor:
-    def __init__(self, past_x_hour = 1, next_x_min=3, extreme_point_threshold=0.02, check_column_name="zxj", x_days = 10):
+    def __init__(self, past_x_hour = 1, next_x_min=3, extreme_point_threshold=0.02, check_column_name="zxj", cut_times = 1):
         self.data = []
         self.candidate_points = []        
         self.extreme_points = []        
@@ -26,10 +28,8 @@ class DataProcessor:
         self.next_x_min_num = int(next_x_min * 60 / 5)
         self.extreme_point_threshold = extreme_point_threshold
         self.check_column_name = check_column_name
-        self.x_days = x_days
-        self.daily_max_values = {}
-        self.daily_min_values = {}
         self.records = []
+        self.cut_times = cut_times
         
     
     def print_extreme_points(self):
@@ -63,20 +63,6 @@ class DataProcessor:
     def process_new_data(self, tick):
         self.data.append(tick)
         tick['index'] = len(self.data) - 1
-        # Assuming tick has a 'date' field in 'YYYY-MM-DD' format
-        date_str = tick['date']
-        current_value = tick[self.check_column_name]
-
-        # Update daily max and min values
-        self.daily_max_values[date_str] = max(
-            self.daily_max_values.get(date_str, float('-inf')),
-            current_value
-        )
-
-        self.daily_min_values[date_str] = min(
-            self.daily_min_values.get(date_str, float('inf')),
-            current_value
-        )
 
         # Parse time
         if type(tick['time']) == str:
@@ -88,63 +74,7 @@ class DataProcessor:
         if n < self.past_x_hours_num+self.next_x_min_num:  # We don't have enough data for a 2-hour window and additional 3 minutes
             return
         self.update_extreme_points(n)
-
-    def is_absolute_high(self, tick):
-        if len(self.daily_max_values) < self.x_days:
-            return False
-
-        date_str = tick['date']
-        delta = (self.daily_max_values[date_str] -
-                 self.daily_min_values[date_str]) * 0.05
-        return tick[self.check_column_name] >= self.daily_max_values[date_str] - delta
-    
-    def is_relative_high(self, tick):
-        if len(self.daily_max_values) < self.x_days:
-            return False
-
-        date_str = tick['date']
-        current_date = datetime.strptime(date_str, '%Y-%m-%d')
-
-        # Get past 10 days of min data
-        date_range = [(current_date - timedelta(days=i)
-                       ).strftime('%Y-%m-%d') for i in range(1, 14)]
-        past_data = [self.daily_min_values[date]
-                     for date in date_range if date in self.daily_max_values]
-
-        if not past_data:
-            return False
-
-        # Calculate mean and standard deviation of the past 10 days
-        mean_value = np.mean(past_data)
-        stdev_value = np.std(past_data)
-
-        threshold = mean_value + 1 * stdev_value
-
-        return tick[self.check_column_name] >= threshold
-
-    def is_relative_low(self, tick):
-        if len(self.daily_min_values) < self.x_days:
-            return False
-        
-        date_str = tick['date']
-        current_date = datetime.strptime(date_str, '%Y-%m-%d')
-
-        # Get past 10 days of min data
-        date_range = [(current_date - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(1, 14)]
-        past_data = [self.daily_min_values[date]
-                     for date in date_range if date in self.daily_min_values]
-
-        if not past_data:
-            return False
-
-        # Calculate mean and standard deviation of the past 10 days
-        mean_value = np.mean(past_data)
-        stdev_value = np.std(past_data)
-
-        threshold = mean_value - 0.4 * stdev_value
-
-        return tick[self.check_column_name] <= threshold
-    
+   
     # 改为找上一个extrem和自己不一样的peak类型的相关性
     def calculate_correlation_by_extreme(self, check_point):
         for i in range(len(self.extreme_points)-1, 0, -1):
@@ -176,6 +106,18 @@ class DataProcessor:
 
         return correlation
 
+    def linear_regression(self, start_index, end_index, column_name, unit = 1):
+        # 假设你有一个价格的时间序列数据，存储在名为prices的列表或数组中
+        values = [data[column_name]
+                  for data in self.data[start_index:end_index]]
+        # 为时间序列数据创建一个时间索引
+        time_index = np.arange(len(values))
+
+        # 使用scipy进行线性回归
+        slope, intercept, r_value, p_value, std_err = linregress(time_index, values)
+
+        return round(slope * unit, 2)
+    
     # TODO 增加斜率判断
     def update_extreme_points(self, n):
         check_point = self.data[n-self.next_x_min_num]
@@ -223,7 +165,8 @@ class DataProcessor:
             if self.filter_by_slope(check_point):
                 self.filtered_candidate_points.append(check_point)
 
-            # Add correlation value
+            # Collect extra information
+            # 1. Add correlation value
             # correlation = self.calculate_correlation_by_extreme(check_point)
             correlation = self.calculate_correlation(n, 10)
             check_point['correlation'] = round(correlation,2)
@@ -240,15 +183,17 @@ class DataProcessor:
             else:
                 check_point['next_direction'] = 'unknown'
 
-            # Add slope and angle
-
+            # 2. Add slope
             before_slope = self.slope_angle(self.data[check_point['index'] - self.next_x_min_num], check_point)
             check_point['before_slope'] = round(before_slope, 2)
-
-            after_slope = self.slope_angle(
-                check_point, self.data[check_point['index'] + self.next_x_min_num - 1])
+            after_slope = self.slope_angle(check_point, self.data[check_point['index'] + self.next_x_min_num - 1])
             check_point['after_slope'] = round(after_slope, 2)
 
+            # 3. Add linear regression
+            check_point['lr_zxj'] = self.linear_regression(n - self.next_x_min_num, n, "zxj", 100)
+            check_point['lr_ccl'] = self.linear_regression(n - self.next_x_min_num, n, "ccl")
+
+            # add record information
             self.records.append(check_point)
                 
         for candidate in self.candidate_points.copy():
@@ -303,13 +248,53 @@ class DataProcessor:
             return True
         return False
     
-    def print_slope_angle(self):
-        for data in self.records:
-            utils.log(f"{data['code']} {data['time']} {data['extreme_type']} {data['before_slope']} {data['after_slope']}")
+    def print_metrics(self):
+        prefix = f"{self.past_x_hours}-{self.next_x_min}-{self.cut_times}"
+        results = []
+        for i in range(0, len(self.records)):
+            data = self.records[i]
+            result, max_value, min_value = 0, 0, 0
+            is_overlap = False
+            trade_time = "9999"
+            if len(self.data) > data['index'] + int(self.cut_times * self.past_x_hours_num):
+                future_data = self.data[data['index'] + int(self.cut_times * self.past_x_hours_num)]
+                future_zxj = future_data["zxj"]
+                trade_time = future_data['time'].strftime('%Y-%m-%d_%H:%M:%S')
+                j = i+1
+
+                while j < len(self.records):
+                    if 'filtered_extreme' in data:
+                        is_overlap = future_data['index'] > self.records[j]['index']
+                        break
+                    j+=1
+                result = 0
+                sub_datas = self.data[data['index'] +
+                                    1:data['index'] + int(self.cut_times * self.past_x_hours_num)+1]
+                max_value = max(data['zxj'] for data in sub_datas)
+                min_value = min(data['zxj'] for data in sub_datas)
+                if future_zxj != 0:            
+                    if data['next_direction'] == "up" or data['lr_zxj'] > 5:
+                        result = future_zxj - data['detect_zxj']
+                        max_win = max_value - data['detect_zxj']
+                        max_loss = min_value - data['detect_zxj']
+                    elif data['next_direction'] == "down" or data['lr_zxj'] < -5:
+                        result = data['detect_zxj'] - future_zxj
+                        max_win = data['detect_zxj'] - min_value
+                        max_loss = data['detect_zxj'] - max_value
+                 
+            # utils.log(
+            #     f"{data['code']} {data['time']} {data['extreme_type']} {'filtered_extreme' in data} {data['zxj']} {data['detect_zxj']} {future_zxj} {result} {max_win} {max_loss} {data['before_slope']} {data['after_slope']} {data['correlation']} {data['lr_zxj']} {data['lr_ccl']}")
+            
+            results.append(f"{prefix} {data['code']} {data['time'].strftime('%Y-%m-%d %H:%M:%S')} {data['detect_time'].strftime('%H:%M:%S')} {trade_time} {data['extreme_type']} {'filtered_extreme' in data} {is_overlap} {data['zxj']} {data['detect_zxj']} {future_zxj} {result} {max_win} {max_loss} {data['before_slope']} {data['after_slope']} {data['correlation']} {data['lr_zxj']} {data['lr_ccl']}")
+
+        utils.log(f"{prefix} correct {len(dp.filtered_extreme_points)}, rate: {round(len(dp.filtered_extreme_points) * 100 / (len(dp.filtered_extreme_points) + len(dp.filtered_error_points)), 2)}%")
+            
+        return results
 
     # 1. 缓慢持续下跌趋势找波峰，缓慢持续上涨趋势找波谷，调整区间两头都要找
     # 2. 收盘时，必然会出现持仓量下跌，从而引起价格变化，可以不予理会
     # 3. 有可能有连续的波峰或波谷，所以超过30分钟之后，发现并没有走远，那么可以考虑观望
+    # 4. 实时检测异常情况
     def print_verify_check(self):
         for i in range(0, len(self.data)):
             if 'filtered_extreme' in self.data[i]:
@@ -324,7 +309,7 @@ class DataProcessor:
                         else:
                             result = 0
                         utils.log(
-                            f'{extreme_point["detect_time"]} {extreme_point["code"]} {extreme_point["extreme_type"]} {extreme_point["detect_zxj"]} {extreme_point["correlation"]} {extreme_point["next_direction"]} {self.data[i]["zxj"]} {self.data[i]["detect_zxj"]} {result}')
+                            f'{extreme_point["code"]} {extreme_point["time"]} {extreme_point["extreme_type"]} {extreme_point["zxj"]} {extreme_point["detect_zxj"]} {extreme_point["correlation"]} {extreme_point["lr_zxj"]} {extreme_point["next_direction"]} {self.data[i]["zxj"]} {self.data[i]["detect_zxj"]} {result}')
                         i -= 1
                         break
 
@@ -335,7 +320,7 @@ def draw_image(dps, ticks, check_column_name="zxj"):
     zxj_values = [data['zxj'] for data in ticks]
 
     fig, axs = plt.subplots(
-        len(dps) + 1, 1, figsize=(10, 15))
+        2, 1, figsize=(10, 15))
 
     # 绘制zxj的子图
     zxj_plot, = axs[0].plot(times, zxj_values, color='purple', label='zxj')
@@ -427,6 +412,7 @@ def draw_image(dps, ticks, check_column_name="zxj"):
         # cursor = mplcursors.cursor(ccl_plot, hover=True)
         # cursor.connect("add", lambda sel: sel.annotation.set_text(
         #     f'Date: {times[int(sel.index)]}, Value: {sel.target[1]}'))
+        break
 
     def on_move(event):
         # 如果事件发生在子图之外，则不做任何操作
@@ -451,27 +437,43 @@ def draw_image(dps, ticks, check_column_name="zxj"):
 
 if __name__ == "__main__":
     span_type = "5sec"
-    ticks = ticks_helper.get_ticks("2022-05-01", "2022-08-01", "rb", span_type)
+    # ticks = ticks_helper.get_ticks("2022-05-01", "2022-08-01", "rb", span_type)
     # ticks = ticks_helper.get_ticks("2022-05-15", "2022-06-10", "rb", span_type)
     check_column_name = "ccl"
     # ticks = ticks_helper.get_ticks_by_time("2022-12-05 10:05:00.000", "rb", span_type)
-    utils.log("get {} ticks".format(len(ticks)))
     # 创建一个DataProcessor实例
     # dps = [DataProcessor(
     #     2, 20, check_column_name=check_column_name), DataProcessor(3, 20, check_column_name=check_column_name), DataProcessor(3, 30, check_column_name=check_column_name)]
     
-    dps = [DataProcessor(3, 25, check_column_name=check_column_name)]
+    # dps = [DataProcessor(3, 25, check_column_name=check_column_name)]
+    dps = [
+        DataProcessor(past_x_hour=2, next_x_min=15, check_column_name=check_column_name, cut_times=1),
+        DataProcessor(past_x_hour=2, next_x_min=20, check_column_name=check_column_name, cut_times=1.5),
+        DataProcessor(past_x_hour=3, next_x_min=15, check_column_name=check_column_name, cut_times=1.5),
+        DataProcessor(past_x_hour=3, next_x_min=15, check_column_name=check_column_name, cut_times=2),
+        DataProcessor(past_x_hour=3, next_x_min=30, check_column_name=check_column_name, cut_times=2),
+        DataProcessor(past_x_hour=6, next_x_min=30, check_column_name=check_column_name, cut_times=1),
+        DataProcessor(past_x_hour=6, next_x_min=30, check_column_name=check_column_name, cut_times=1.5)]
     # dps = [DataProcessor(1, 15, check_column_name=check_column_name)]
 
     # 处理测试数据
-    for data in ticks:
-        for dp in dps:
-            dp.process_new_data(data)
-
+    
+    results = []
     for dp in dps:
-        # dp.print_extreme_points()
-        dp.print_verify_check()
-        utils.log("--------------------------------------------------")
-        dp.print_slope_angle()
+        ticks = ticks_helper.get_ticks(
+            "2022-05-01", "2022-08-01", "rb", span_type)
+        # utils.log("get {} ticks".format(len(ticks)))
+        for data in ticks:
+            dp.process_new_data(data)
+        results.extend(dp.print_metrics())
+    
+    utils.convert_list_to_csv("verify", results)
+
+    # for dp in dps:
+    #     # # dp.print_extreme_points()
+    #     # dp.print_verify_check()
+    #     # utils.log("--------------------------------------------------")
+    #     dp.print_metrics()
+
     
     draw_image(dps, ticks, check_column_name)
