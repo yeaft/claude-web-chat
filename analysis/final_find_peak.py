@@ -14,7 +14,7 @@ import copy
 
 
 class DataProcessor:
-    def __init__(self, past_x_hour = 1, next_x_min=3, extreme_point_threshold=0.02, check_column_name="zxj", cut_times = 1):
+    def __init__(self, past_x_hour = 1, next_x_min=3, extreme_point_threshold=0.02, check_column_name="zxj", cut_hour = 3, min_slope_value = 350, accept_slope_value = 600):
         self.data = []
         self.candidate_points = []        
         self.extreme_points = []        
@@ -29,7 +29,11 @@ class DataProcessor:
         self.extreme_point_threshold = extreme_point_threshold
         self.check_column_name = check_column_name
         self.records = []
-        self.cut_times = cut_times
+        self.cut_hour = cut_hour
+        self.cut_x_hours_num = int(cut_hour * 3600 / 5)
+        self.min_slope_value = min_slope_value
+        self.accept_slope_value = accept_slope_value
+
         
     
     def print_extreme_points(self):
@@ -244,32 +248,32 @@ class DataProcessor:
         after_slope = self.slope_angle(check_point, after_point)
 
         # Checking the conditions, 350 is only for RB, need to check for other contracts
-        if (abs(after_slope) > abs(before_slope) and abs(after_slope) >= 350) or abs(after_slope) >= 600:
+        if (abs(after_slope) > abs(before_slope) and abs(after_slope) >= self.min_slope_value) or abs(after_slope) >= self.accept_slope_value:
             return True
         return False
     
     def print_metrics(self):
-        prefix = f"{self.past_x_hours}-{self.next_x_min}-{self.cut_times}"
+        prefix = f"{self.past_x_hours}_{self.next_x_min}_{self.cut_hour}"
         results = []
         for i in range(0, len(self.records)):
             data = self.records[i]
-            result, max_value, min_value = 0, 0, 0
+            result, max_value, min_value, max_win, max_loss = 0, 0, 0, 0, 0
             is_overlap = False
             trade_time = "9999"
-            if len(self.data) > data['index'] + int(self.cut_times * self.past_x_hours_num):
-                future_data = self.data[data['index'] + int(self.cut_times * self.past_x_hours_num)]
+            if len(self.data) > data['index'] + self.cut_x_hours_num:
+                future_data = self.data[data['index'] + self.cut_x_hours_num]
                 future_zxj = future_data["zxj"]
                 trade_time = future_data['time'].strftime('%Y-%m-%d_%H:%M:%S')
                 j = i+1
-
-                while j < len(self.records):
-                    if 'filtered_extreme' in data:
-                        is_overlap = future_data['index'] > self.records[j]['index']
-                        break
-                    j+=1
+                if 'filtered_extreme' in data:
+                    while j < len(self.records):
+                        if 'filtered_extreme' in self.records[j]:
+                            is_overlap = future_data['index'] > self.records[j]['index']
+                            break
+                        j+=1
                 result = 0
                 sub_datas = self.data[data['index'] +
-                                    1:data['index'] + int(self.cut_times * self.past_x_hours_num)+1]
+                                    1:data['index'] + self.cut_x_hours_num + 1]
                 max_value = max(data['zxj'] for data in sub_datas)
                 min_value = min(data['zxj'] for data in sub_datas)
                 if future_zxj != 0:            
@@ -285,11 +289,49 @@ class DataProcessor:
             # utils.log(
             #     f"{data['code']} {data['time']} {data['extreme_type']} {'filtered_extreme' in data} {data['zxj']} {data['detect_zxj']} {future_zxj} {result} {max_win} {max_loss} {data['before_slope']} {data['after_slope']} {data['correlation']} {data['lr_zxj']} {data['lr_ccl']}")
             
-            results.append(f"{prefix} {data['code']} {data['time'].strftime('%Y-%m-%d %H:%M:%S')} {data['detect_time'].strftime('%H:%M:%S')} {trade_time} {data['extreme_type']} {'filtered_extreme' in data} {is_overlap} {data['zxj']} {data['detect_zxj']} {future_zxj} {result} {max_win} {max_loss} {data['before_slope']} {data['after_slope']} {data['correlation']} {data['lr_zxj']} {data['lr_ccl']}")
-
-        utils.log(f"{prefix} correct {len(dp.filtered_extreme_points)}, rate: {round(len(dp.filtered_extreme_points) * 100 / (len(dp.filtered_extreme_points) + len(dp.filtered_error_points)), 2)}%")
+            results.append({
+                "prefix": prefix,
+                "code": data['code'],
+                "date": data['time'].strftime('%Y-%m-%d'),
+                "time": data['time'].strftime('%H:%M:%S'),
+                "detect_time": data['detect_time'].strftime('%H:%M:%S'),
+                "trade_time": trade_time,
+                "extreme_type": data['extreme_type'],
+                "filtered_extreme": 'filtered_extreme' in data,
+                "is_overlap": is_overlap,
+                "zxj": data['zxj'],
+                "detect_zxj": data['detect_zxj'],
+                "future_zxj": future_zxj,
+                "result": result,
+                "max_win": max_win,
+                "max_loss": max_loss,
+                "before_slope": data['before_slope'],
+                "after_slope": data['after_slope'],
+                "correlation": data['correlation'],
+                "lr_zxj": data['lr_zxj'],
+                "lr_ccl": data['lr_ccl']
+            })
             
-        return results
+                # f"{prefix} {data['code']} {data['time'].strftime('%Y-%m-%d %H:%M:%S')} {data['detect_time'].strftime('%H:%M:%S')} {trade_time} {data['extreme_type']} {'filtered_extreme' in data} {is_overlap} {data['zxj']} {data['detect_zxj']} {future_zxj} {result} {max_win} {max_loss} {data['before_slope']} {data['after_slope']} {data['correlation']} {data['lr_zxj']} {data['lr_ccl']}")
+        result_win = sum([result['result'] for result in results])
+        result_true_win = sum([result['result'] for result in results if result['filtered_extreme']])
+        statistic = {
+            "prefix": prefix,
+            "all_count": len(results),
+            "filtered_count": len(self.filtered_extreme_points) + len(self.filtered_error_points),
+            "correct_count": len(self.filtered_extreme_points),
+            "correct_rate": round(len(self.filtered_extreme_points) * 100 / (len(self.filtered_extreme_points) + len(self.filtered_error_points)), 2),
+            "result_win": round(result_win, 2),
+            "result_avg": round(result_win / len(results), 2),
+            "true_result_win": round(result_true_win, 2),
+            "true_result_avg": round(result_true_win / len([result for result in results if result['filtered_extreme']]), 2),
+            "over_lap_count": len([result for result in results if result['is_overlap']]),
+            "over_lag_rate": round(len([result for result in results if result['is_overlap']]) * 100 / len([result for result in results if result['filtered_extreme']]), 2)
+        }
+        utils.log(
+            f"{prefix} all count {len(results)} correct {len(self.filtered_extreme_points)}, rate: {round(len(self.filtered_extreme_points) * 100 / (len(self.filtered_extreme_points) + len(self.filtered_error_points)), 2)}%, result: {round(result_win, 2)}, avg: {round(result_win / len(results), 2)} true result: {round(result_true_win, 2)} true avg: {round(result_true_win / len([result['result'] for result in results if result['filtered_extreme']]), 2)} over lap: {len([result for result in results if result['is_overlap']])}")
+            
+        return results, statistic
 
     # 1. 缓慢持续下跌趋势找波峰，缓慢持续上涨趋势找波谷，调整区间两头都要找
     # 2. 收盘时，必然会出现持仓量下跌，从而引起价格变化，可以不予理会
@@ -433,47 +475,73 @@ def draw_image(dps, ticks, check_column_name="zxj"):
     plt.show()
 
 
+def prepare_dps(check_column_name="ccl"):
+    dps = []
+    for past_x_hour in [3, 6]:
+        for cut_hour in [3, 6, 8]:
+            for next_x_min in [10, 30]:
+                if next_x_min == 30:
+                    min_slope_value = 350
+                    accept_slope_value = 600
+                elif next_x_min == 20:
+                    min_slope_value = 380
+                    accept_slope_value = 650
+                elif next_x_min == 15:
+                    min_slope_value = 450
+                    accept_slope_value = 750
+                elif next_x_min == 10:
+                    min_slope_value = 500
+                    accept_slope_value = 800
+                # for min_slope_value in [, 1, 2]:
+                #     for accept_slope_value in [0.5, 1, 2]:
+                dps.append(DataProcessor(past_x_hour, next_x_min, check_column_name=check_column_name,
+                                         cut_hour=cut_hour, min_slope_value=min_slope_value, accept_slope_value=accept_slope_value))
+    return dps
 
 
-if __name__ == "__main__":
+def prepare_dps_simple(check_column_name="ccl"):
+    dps = []
+    dps.append(DataProcessor(past_x_hour = 6, next_x_min = 30, check_column_name=check_column_name,
+                                     cut_hour=6, min_slope_value=350, accept_slope_value=600))
+    return dps
+
+
+def process_data(dps, start_date, end_date, contract_type="rb", verify_name="verify", is_draw_image=False, check_column_name="ccl"):
     span_type = "5sec"
-    # ticks = ticks_helper.get_ticks("2022-05-01", "2022-08-01", "rb", span_type)
-    # ticks = ticks_helper.get_ticks("2022-05-15", "2022-06-10", "rb", span_type)
-    check_column_name = "ccl"
-    # ticks = ticks_helper.get_ticks_by_time("2022-12-05 10:05:00.000", "rb", span_type)
-    # 创建一个DataProcessor实例
-    # dps = [DataProcessor(
-    #     2, 20, check_column_name=check_column_name), DataProcessor(3, 20, check_column_name=check_column_name), DataProcessor(3, 30, check_column_name=check_column_name)]
     
-    # dps = [DataProcessor(3, 25, check_column_name=check_column_name)]
-    dps = [
-        DataProcessor(past_x_hour=2, next_x_min=15, check_column_name=check_column_name, cut_times=1),
-        DataProcessor(past_x_hour=2, next_x_min=20, check_column_name=check_column_name, cut_times=1.5),
-        DataProcessor(past_x_hour=3, next_x_min=15, check_column_name=check_column_name, cut_times=1.5),
-        DataProcessor(past_x_hour=3, next_x_min=15, check_column_name=check_column_name, cut_times=2),
-        DataProcessor(past_x_hour=3, next_x_min=30, check_column_name=check_column_name, cut_times=2),
-        DataProcessor(past_x_hour=6, next_x_min=30, check_column_name=check_column_name, cut_times=1),
-        DataProcessor(past_x_hour=6, next_x_min=30, check_column_name=check_column_name, cut_times=1.5)]
-    # dps = [DataProcessor(1, 15, check_column_name=check_column_name)]
-
-    # 处理测试数据
-    
-    results = []
+    final_results = []
+    statistics = []
     for dp in dps:
         ticks = ticks_helper.get_ticks(
-            "2022-05-01", "2022-08-01", "rb", span_type)
+            start_date, end_date, contract_type, span_type)
         # utils.log("get {} ticks".format(len(ticks)))
         for data in ticks:
             dp.process_new_data(data)
-        results.extend(dp.print_metrics())
-    
-    utils.convert_list_to_csv("verify", results)
 
-    # for dp in dps:
-    #     # # dp.print_extreme_points()
-    #     # dp.print_verify_check()
-    #     # utils.log("--------------------------------------------------")
-    #     dp.print_metrics()
+        result, statistic = dp.print_metrics()
+        final_results.extend(result)
+        statistics.append(statistic)
 
+    utils.echo_dics(statistics)
+    utils.convert_dic_to_csv(f"{verify_name}", final_results)
+    utils.convert_dic_to_csv(f"{verify_name}_statistic", statistics)
+    if is_draw_image:
+        draw_image(dps, ticks, check_column_name=check_column_name)
+
+if __name__ == "__main__":    
+    # process_data("2022-05-01", "2022-08-01")
+    check_column_name = "ccl"
     
-    draw_image(dps, ticks, check_column_name)
+    # 处理测试数据
+    # round 1
+    # dps = prepare_dps(check_column_name)
+    # process_data(dps, "2022-04-20", "2022-08-01",verify_name="verify_05_08", check_column_name=check_column_name)
+
+    # round 2
+    dps = prepare_dps_simple(check_column_name)
+    process_data(dps, "2022-09-01", "2022-11-20", verify_name="verify_09_12", check_column_name=check_column_name, is_draw_image=True)
+    # round 3
+    # dps = prepare_dps(check_column_name)
+    # process_data(dps, "2021-12-01", "2022-03-10", verify_name="verify_12_03", check_column_name=check_column_name)
+
+    # draw_image(dps, ticks, check_column_name)

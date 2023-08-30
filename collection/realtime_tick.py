@@ -99,8 +99,12 @@ def collect_tick_data():
             elif current_trade_status:
                 current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.000')
                 if current_time.split(" ")[1] >= "20:55:00.000":
+                    msg = "{0}:\n".format(current_time)
                     for t, v in types.items():
                         utils.log("Type {0}: code {1} secondCode {2}".format(t, v['code'], v['secondCode']))
+                        if t.lower() in ["rb", "i", "sa", "m", "fg", "y", "p", "hc"]:
+                            msg += "{0} {1} {2}\n".format(v['code'], v['secondCode'], v['norCode'])
+                    utils.send_ding_msg(msg)
 
             utils.log("Change trade status, current {0}".format("trading" if current_trade_status else "close"))
             last_trade_status = current_trade_status

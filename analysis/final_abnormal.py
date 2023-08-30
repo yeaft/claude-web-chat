@@ -16,9 +16,9 @@ class AnomalyDetector:
         self.five_days_data = {}  # 5 days data, key is timestamp, value is deque of data
         self.current_30s_data = []  # current 30 seconds data
         self.current_30s_start_time = None  # start time of the current 30 seconds
+        self.last_30s_start_time = None  # start time of the current 30 seconds
+        self.anomaly = None
         self.anomalies = []
-        self.anomalies_time = None
-        self.previous_anomaly = False
         self.cjl_threshold = 8000
     
     def print_anomalies(self):
@@ -39,6 +39,7 @@ class AnomalyDetector:
 
         # Process 30 seconds data
         if self.current_30s_start_time is None or current_30s_start_time > self.current_30s_start_time:
+            # Calculate the abnormal
             if self.current_30s_data:
                 summary = {'time': self.current_30s_start_time, 'cjl': sum(
                     [d['cjl'] for d in self.current_30s_data]) / len(self.current_30s_data) * 6}
@@ -48,35 +49,37 @@ class AnomalyDetector:
                     self.five_days_data[timestamp] = deque(maxlen=6)
                 self.five_days_data[timestamp].append(summary)
 
+            # TODO Modify the anomaly detection algorithm, add an anomaly object
+            if not self.anomaly:
+                if len(self.ten_minute_data) > 19:
+                    past_10_minute_cjl = [d['cjl']
+                                          for d in list(self.ten_minute_data)[0:-1]]
+                    ten_minute_mean = np.mean(past_10_minute_cjl)
+                    ten_minute_std = np.std(past_10_minute_cjl)
+                    timestamp = (self.current_30s_start_time -
+                                 timedelta(seconds=30)).time()
+                    if timestamp in self.five_days_data and len(self.five_days_data[timestamp]) > 2:
+                        past_5_days_cjl = [d['cjl'] for d in list(
+                            self.five_days_data[timestamp])[:-1]]
+                        five_days_mean = np.mean(past_5_days_cjl)
+                        five_days_std = np.std(past_5_days_cjl)
+
+                        last_30s_cjl = sum(
+                            [d['cjl'] for d in self.current_30s_data]) / len(self.current_30s_data) * 6
+                        if not self.previous_anomaly and abs(last_30s_cjl - ten_minute_mean) > 3 * ten_minute_std and abs(last_30s_cjl - five_days_mean) > 3 * five_days_std and last_30s_cjl > self.cjl_threshold:
+                            self.anomalies.append(
+                                {'time': self.current_30s_start_time, 'cjl': last_30s_cjl, 'code': data['code'], 'zxj': data['zxj']})
+                            data['anomaly'] = True
+                            self.previous_anomaly = True
+                            self.anomalies_time = data['time']
+                        elif self.previous_anomaly and abs(last_30s_cjl - ten_minute_mean) <= 3 * ten_minute_std and abs(last_30s_cjl - five_days_mean) <= 3 * five_days_std:
+                            self.previous_anomaly = False
+
+            # refresh the data
             self.current_30s_data = [data]
             self.current_30s_start_time = current_30s_start_time
         else:
-            self.current_30s_data.append(data)
-
-        if not self.anomalies_time or data['time'] - self.anomalies_time > timedelta(minutes=10):
-            if len(self.ten_minute_data) > 19:
-                past_10_minute_cjl = [d['cjl']
-                                      for d in list(self.ten_minute_data)[0:-1]]
-                ten_minute_mean = np.mean(past_10_minute_cjl)
-                ten_minute_std = np.std(past_10_minute_cjl)
-                timestamp = (self.current_30s_start_time -
-                             timedelta(seconds=30)).time()
-                if timestamp in self.five_days_data and len(self.five_days_data[timestamp]) > 2:
-                    past_5_days_cjl = [d['cjl'] for d in list(
-                        self.five_days_data[timestamp])[:-1]]
-                    five_days_mean = np.mean(past_5_days_cjl)
-                    five_days_std = np.std(past_5_days_cjl)
-
-                    last_30s_cjl = sum(
-                        [d['cjl'] for d in self.current_30s_data]) / len(self.current_30s_data) * 6
-                    if not self.previous_anomaly and abs(last_30s_cjl - ten_minute_mean) > 3 * ten_minute_std and abs(last_30s_cjl - five_days_mean) > 3 * five_days_std and last_30s_cjl > self.cjl_threshold:
-                        self.anomalies.append(
-                            {'time': self.current_30s_start_time, 'cjl': last_30s_cjl, 'code': data['code'], 'zxj': data['zxj']})
-                        data['anomaly'] = True
-                        self.previous_anomaly = True
-                        self.anomalies_time = data['time']
-                    elif self.previous_anomaly and abs(last_30s_cjl - ten_minute_mean) <= 3 * ten_minute_std and abs(last_30s_cjl - five_days_mean) <= 3 * five_days_std:
-                        self.previous_anomaly = False
+            self.current_30s_data.append(data)        
 
 
 def draw_abnormal(ad):
@@ -143,5 +146,5 @@ if __name__ == "__main__":
     
     ad.print_anomalies()
     
-    # draw_abnormal(ad)
+    draw_abnormal(ad)
 
