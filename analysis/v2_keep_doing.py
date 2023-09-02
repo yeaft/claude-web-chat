@@ -42,7 +42,9 @@ class DataProcessor:
         self.cut_x_hours_num = int(cut_hour * 3600 / 5)
         self.new_check_point = False
         self.last_check_point = {}
+        self.last_check_points = []
         self.check_point = {}
+        self.trade_list = []
 
     def process_new_data(self, tick):
         self.data.append(tick)
@@ -92,59 +94,82 @@ class DataProcessor:
 
         return round(slope * unit, 2)
 
+    def set_last_to_current_extrem_slope(self):
+        last_peak_index = 0
+        for last_passed_point in self.observe_passed_points[::-1]:
+            if last_passed_point['extreme_type'] != self.check_point['extreme_type']:
+                last_peak_index = last_passed_point['index']
+                break
+        
+        if last_peak_index == 0:
+            for last_extreme_point in self.extreme_points[::-1]:
+                if last_extreme_point['extreme_type'] != self.check_point['extreme_type']:
+                    last_peak_index = last_extreme_point['index']
+                    break
+        
+        if last_peak_index == 0:
+            self.check_point['last_to_current_slope'] = 9999999999
+            return
+        
+        self.check_point['last_to_current_slope'] =  round(self.slope_angle(self.data[last_peak_index], self.check_point), 2)
+
     def add_candidate_information(self):
         # Collect extra information
         # 1. Add correlation value
         # 2. Initial mark result
-        # 3. Initial observe threshold, two conditions, one is the slope >= before in 1/3 time, the other is the value exceeed 30%~50% x time
+        # 3. Initial observe threshold, two conditions, one is the next 1/3 time slope >= before whole slope , the other is the value exceeed 30%~50% x time
         correlation = self.calculate_correlation(10)
         self.check_point['correlation'] = correlation
         self.check_point['next_direction'] = 'unknown'
         self.check_point['mark_result'] = "unknown"
+        self.set_last_to_current_extrem_slope()
+        
         past_x_hours_data = self.data[self.check_point['index'] - self.past_x_hours_num:self.check_point['index']]
-
         if self.check_point['extreme_type'] == 'max':
             # Add next direction
             if correlation >= 0.6:            
                 self.check_point['next_direction'] = 'down'
             elif correlation <= -0.6:
-                self.check_point['next_direction'] = 'up'
-            
+                self.check_point['next_direction'] = 'up'            
             # Add observe threshold a - (a-b) * 0.33
-            self.check_point['observe_ccl_threshold'] = int(self.check_point[self.check_column_name] - (self.check_point[self.check_column_name] - min([data[self.check_column_name] for data in past_x_hours_data])) * 0.33)
-            
-
+            self.check_point['observe_ccl_threshold'] = int(self.check_point[self.check_column_name] - (self.check_point[self.check_column_name] - min([data[self.check_column_name] for data in past_x_hours_data])) * 0.33)           
         elif self.check_point['extreme_type'] == 'min':
-
             if correlation >= 0.6:                        
                 self.check_point['next_direction'] = 'up'
             elif correlation <= -0.6:
                 self.check_point['next_direction'] = 'down'
-
             # Add observe threshold a + (b-a) * 0.33
             self.check_point['observe_ccl_threshold'] = int(self.check_point[self.check_column_name] + (max([data[self.check_column_name] for data in past_x_hours_data]) - self.check_point[self.check_column_name]) * 0.33)
                 
-    def process_precheck(self):
+    def process_precheck(self, n):
         # analysis, add trend rate check
-        if self.check_by_slope(self.precheck_x_min_num):
-            self.precheck_candidate_points.append(self.check_point)
+        past_num = n - self.check_point['index'] - 1
+        if past_num >= self.precheck_x_min_num:
+            if self.check_by_slope(self.precheck_x_min_num, True):
+                self.check_point['mark_result'] = "precheck_pass"
 
-        # If pass precheck
-        #   if before is observe pass
-        #   if before is observe fail
-        #   if before is precheck pass
-        return
+        # Pre
+        
+        if  past_num >= int(self.past_x_hours_num / 3):
+            current_slope = round(self.slope_angle(self.check_point, self.data[n-1]), 2)
+            if abs(current_slope) >= abs(self.check_point['last_to_current_slope']):
+                self.check_point['mark_result'] = "precheck_pass"
 
     # 1. Need to record pass or fail time
     # 2. It is the final result, if not pass, need to change back check point
     def process_observe(self, n):
-        observe_num = int(self.past_x_hours_num / 3)
-        if self.check_point['index'] + observe_num < n:
-            if self.check_by_slope(n - self.check_point['index']):
+        current_data = self.data[n-1]
+        if self.check_point['extreme_type'] == 'max':
+            if  current_data[self.check_column_name] > self.check_point[self.check_column_name]:
+                self.check_point['mark_result'] = "observe_fail"
+            elif current_data[self.check_column_name] < self.check_point['observe_ccl_threshold']:
                 self.check_point['mark_result'] = "observe_pass"
-
-        return
-        #
+        elif self.check_point['extreme_type'] == 'min':
+            if current_data[self.check_column_name] < self.check_point[self.check_column_name]:
+                self.check_point['mark_result'] = "observe_fail"
+            elif current_data[self.check_column_name] > self.check_point['observe_ccl_threshold']:
+                self.check_point['mark_result'] = "observe_pass"
+        
 
     def start_analyse(self, n):
         if self.new_check_point:
@@ -160,11 +185,29 @@ class DataProcessor:
             return
         elif self.check_point["mark_result"] != "observe_pass":
             self.process_observe(n)
+            # If pass observe
+            #   if before is observe pass
+            #   if before is observe fail
+            #   if before is precheck pass
             if "precheck" not in self.check_point["mark_result"]:
-                self.process_precheck()
+                self.process_precheck(n)
+                if self.check_point['mark_result'] == "precheck_pass":
+                    self.precheck_candidate_points.append(self.check_point)
+                    last_check_point = self.last_check_points[-1] if len(self.last_check_points) > 0 else None
+                    if last_check_point:
+                        if last_check_point['mark_result'] == "observe_pass":
+                            # TODO do the trade
+                        elif last_check_point['mark_result'] == "precheck_pass":
+                            # If last check point status is precheck_pass, which mean the ccl is still between pass or fail, so we need to check the slope
+                            # Which means current check point is fake, just keep same with last one.
+                            if last_check_point['extreme_type'] == self.check_point['extreme_type']:                                # TODO do the trade
+                                self.check_point = last_check_point
+                                self.last_check_points.remove(last_check_point)
+                    # If pass precheck
+                    #   if before is observe pass
+                    #   if before is observe fail
+                    #   if before is precheck pass
         
-        
-
     def check_candidate(self, n):
         last_x_hours_and_next_y_min_data = self.data[n - self.past_x_hours_num - self.candidate_x_min_num:n]
 
@@ -174,7 +217,7 @@ class DataProcessor:
         extreme_type = "max" if self.check_point[self.check_column_name] == max_value_point[self.check_column_name] else ("min" if self.check_point[self.check_column_name] == min_value_point[self.check_column_name] else "")
 
         if extreme_type != "":
-            self.last_check_point = self.check_point
+            self.last_check_points.append(self.check_point)
             self.check_point = self.data[n-self.candidate_x_min_num]
             self.check_point['extreme_type'] = extreme_type
             self.check_point['add_candidate_time'] = self.data[-1]['time']
@@ -224,7 +267,7 @@ class DataProcessor:
         slope = delta_y / delta_x
         return slope
 
-    def check_by_slope(self, check_num):
+    def check_by_slope(self, check_num, is_record_slope=False):
         """
         Use slope and angle as criteria to filter out data points.
         """
@@ -238,8 +281,9 @@ class DataProcessor:
         before_slope = self.slope_angle(before_point, self.check_point)
         after_slope = self.slope_angle(self.check_point, after_point)
 
-        self.check_point['before_slope'] = round(before_slope, 2)
-        self.check_point['after_slope'] = round(after_slope, 2)
+        if is_record_slope:
+            self.check_point['before_slope'] = round(before_slope, 2)
+            self.check_point['after_slope'] = round(after_slope, 2)
 
         # Checking the conditions, 350 is only for RB, need to check for other contracts
         if (abs(after_slope) > abs(before_slope) and abs(after_slope) >= self.precheck_min_slope_value) or abs(after_slope) >= self.precheck_accept_slope_value:
