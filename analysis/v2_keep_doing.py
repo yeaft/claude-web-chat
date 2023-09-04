@@ -41,8 +41,8 @@ class DataProcessor:
         self.cut_hour = cut_hour
         self.cut_x_hours_num = int(cut_hour * 3600 / 5)
         self.new_check_point = False
-        self.last_check_point = {}
-        self.last_check_points = []
+        self.last_valid_check_point = {}
+        self.check_points = []
         self.check_point = {}
         self.trade_list = []
 
@@ -123,7 +123,14 @@ class DataProcessor:
         self.check_point['next_direction'] = 'unknown'
         self.check_point['mark_result'] = "unknown"
         self.set_last_to_current_extrem_slope()
-        
+
+
+        # 查看上一个
+            # 如果是不同向observ pass不重要，修改observe通过条件为上一个的不通过条件即可，且还要看上一个同向是否为observe pass
+            # 如果不是，那么依旧要对上一个做observe的判断？
+            # 如果是同向
+            #   如果上一个是observe pass，那么当前也是observe pass
+            #   如果上一个是observe fail，那么找到上一个非同向的        
         past_x_hours_data = self.data[self.check_point['index'] - self.past_x_hours_num:self.check_point['index']]
         if self.check_point['extreme_type'] == 'max':
             # Add next direction
@@ -174,7 +181,7 @@ class DataProcessor:
     def start_analyse(self, n):
         if self.new_check_point:
             # 1. Check do we need to give up previous observed extreme point
-            if self.last_check_point["mark_result"] != "observe_pass":            
+            if self.last_valid_check_point["mark_result"] != "observe_pass":            
                 a = 1
             # 2. Add some information to the check point
             self.add_candidate_information()           
@@ -193,16 +200,15 @@ class DataProcessor:
                 self.process_precheck(n)
                 if self.check_point['mark_result'] == "precheck_pass":
                     self.precheck_candidate_points.append(self.check_point)
-                    last_check_point = self.last_check_points[-1] if len(self.last_check_points) > 0 else None
-                    if last_check_point:
-                        if last_check_point['mark_result'] == "observe_pass":
+                    if self.last_valid_check_point:
+                        if self.last_valid_check_point['mark_result'] == "observe_pass":
                             # TODO do the trade
-                        elif last_check_point['mark_result'] == "precheck_pass":
+                        elif self.last_valid_check_point['mark_result'] == "precheck_pass":
                             # If last check point status is precheck_pass, which mean the ccl is still between pass or fail, so we need to check the slope
                             # Which means current check point is fake, just keep same with last one.
-                            if last_check_point['extreme_type'] == self.check_point['extreme_type']:                                # TODO do the trade
-                                self.check_point = last_check_point
-                                self.last_check_points.remove(last_check_point)
+                            # if last_check_point['extreme_type'] == self.check_point['extreme_type']:                                # TODO do the trade
+                            #     self.check_point = last_check_point
+                            #     self.check_points.remove(last_check_point)
                     # If pass precheck
                     #   if before is observe pass
                     #   if before is observe fail
@@ -217,7 +223,7 @@ class DataProcessor:
         extreme_type = "max" if self.check_point[self.check_column_name] == max_value_point[self.check_column_name] else ("min" if self.check_point[self.check_column_name] == min_value_point[self.check_column_name] else "")
 
         if extreme_type != "":
-            self.last_check_points.append(self.check_point)
+            self.check_points.append(self.check_point)
             self.check_point = self.data[n-self.candidate_x_min_num]
             self.check_point['extreme_type'] = extreme_type
             self.check_point['add_candidate_time'] = self.data[-1]['time']
