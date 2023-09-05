@@ -85,6 +85,13 @@ class DataProcessor:
         ccl_values = [tick['ccl'] for tick in subset]
         correlation = np.corrcoef(zxj_values, ccl_values)[0, 1]
         return round(correlation, 2)
+    
+    def calculate_correlation_by_index(self, start_index, end_index):
+        subset = self.data[start_index:end_index]
+        zxj_values = [tick['zxj'] for tick in subset]
+        ccl_values = [tick['ccl'] for tick in subset]
+        correlation = np.corrcoef(zxj_values, ccl_values)[0, 1]
+        return round(correlation, 2)
 
     def linear_regression(self, start_index, end_index, column_name, unit=1):
         values = [data[column_name] for data in self.data[start_index:end_index]]
@@ -93,6 +100,21 @@ class DataProcessor:
             time_index, values)
 
         return round(slope * unit, 2)
+
+    def set_next_direction(self):
+        correlation = self.calculate_correlation(10)
+        self.check_point['correlation'] = correlation
+        self.check_point['next_direction'] = 'unknown'
+        if self.check_point['extreme_type'] == 'max':
+            if correlation >= 0.6:            
+                self.check_point['next_direction'] = 'down'
+            elif correlation <= -0.6:
+                self.check_point['next_direction'] = 'up'
+        elif self.check_point['extreme_type'] == 'min':
+            if correlation >= 0.6:                        
+                self.check_point['next_direction'] = 'up'
+            elif correlation <= -0.6:
+                self.check_point['next_direction'] = 'down'
 
     def set_last_to_current_extrem_slope(self):
         last_peak_index = 0
@@ -113,40 +135,21 @@ class DataProcessor:
         
         self.check_point['last_to_current_slope'] =  round(self.slope_angle(self.data[last_peak_index], self.check_point), 2)
 
-    def add_candidate_information(self):
-        # Collect extra information
-        # 1. Add correlation value
-        # 2. Initial mark result
-        # 3. Initial observe threshold, two conditions, one is the next 1/3 time slope >= before whole slope , the other is the value exceeed 30%~50% x time
-        correlation = self.calculate_correlation(10)
-        self.check_point['correlation'] = correlation
-        self.check_point['next_direction'] = 'unknown'
-        self.check_point['mark_result'] = "unknown"
-        self.set_last_to_current_extrem_slope()
-
-
-        # 查看上一个
-            # 如果是不同向observ pass不重要，修改observe通过条件为上一个的不通过条件即可，且还要看上一个同向是否为observe pass
-            # 如果不是，那么依旧要对上一个做observe的判断？
-            # 如果是同向
-            #   如果上一个是observe pass，那么当前也是observe pass
-            #   如果上一个是observe fail，那么找到上一个非同向的        
+    #Initial observe threshold, two conditions, one is the next 1/3 time slope >= before whole slope , the other is the value exceeed 30%~50% x time
+    def set_observe_pass_threashold(self):
         past_x_hours_data = self.data[self.check_point['index'] - self.past_x_hours_num:self.check_point['index']]
         if self.check_point['extreme_type'] == 'max':
-            # Add next direction
-            if correlation >= 0.6:            
-                self.check_point['next_direction'] = 'down'
-            elif correlation <= -0.6:
-                self.check_point['next_direction'] = 'up'            
             # Add observe threshold a - (a-b) * 0.33
             self.check_point['observe_ccl_threshold'] = int(self.check_point[self.check_column_name] - (self.check_point[self.check_column_name] - min([data[self.check_column_name] for data in past_x_hours_data])) * 0.33)           
         elif self.check_point['extreme_type'] == 'min':
-            if correlation >= 0.6:                        
-                self.check_point['next_direction'] = 'up'
-            elif correlation <= -0.6:
-                self.check_point['next_direction'] = 'down'
             # Add observe threshold a + (b-a) * 0.33
             self.check_point['observe_ccl_threshold'] = int(self.check_point[self.check_column_name] + (max([data[self.check_column_name] for data in past_x_hours_data]) - self.check_point[self.check_column_name]) * 0.33)
+
+    def add_candidate_information(self):
+        self.set_next_direction()
+        self.set_last_to_current_extrem_slope()
+        self.set_observe_pass_threashold()
+        self.check_point['mark_result'] = "checking"        
                 
     def process_precheck(self, n):
         # analysis, add trend rate check
@@ -155,12 +158,28 @@ class DataProcessor:
             if self.check_by_slope(self.precheck_x_min_num, True):
                 self.check_point['mark_result'] = "precheck_pass"
 
-        # Pre
-        
+        # Pre        
         if  past_num >= int(self.past_x_hours_num / 3):
             current_slope = round(self.slope_angle(self.check_point, self.data[n-1]), 2)
             if abs(current_slope) >= abs(self.check_point['last_to_current_slope']):
                 self.check_point['mark_result'] = "precheck_pass"
+
+
+        if self.check_point["mark_result"] == "precheck_pass":
+            self.precheck_candidate_points.append(self.check_point)
+            if self.last_valid_check_point:
+                if self.last_valid_check_point['mark_result'] == "observe_pass":
+                    # TODO do the trade
+                elif self.last_valid_check_point['mark_result'] == "precheck_pass":
+                    # If last check point status is precheck_pass, which mean the ccl is still between pass or fail, so we need to check the slope
+                    # Which means current check point is fake, just keep same with last one.
+                    # if last_check_point['extreme_type'] == self.check_point['extreme_type']:                                # TODO do the trade
+                    #     self.check_point = last_check_point
+                    #     self.check_points.remove(last_check_point)
+            # If pass precheck
+            #   if before is observe pass
+            #   if before is observe fail
+            #   if before is precheck pass
 
     # 1. Need to record pass or fail time
     # 2. It is the final result, if not pass, need to change back check point
@@ -177,42 +196,49 @@ class DataProcessor:
             elif current_data[self.check_column_name] > self.check_point['observe_ccl_threshold']:
                 self.check_point['mark_result'] = "observe_pass"
         
-
-    def start_analyse(self, n):
-        if self.new_check_point:
-            # 1. Check do we need to give up previous observed extreme point
-            if self.last_valid_check_point["mark_result"] != "observe_pass":            
-                a = 1
-            # 2. Add some information to the check point
-            self.add_candidate_information()           
-        
-        # It is not the first time, start normal analysis
-        if self.check_point["mark_result"] == "observe_fail":
-            utils.log("error status!")
-            return
-        elif self.check_point["mark_result"] != "observe_pass":
-            self.process_observe(n)
+        if self.check_point['mark_result'] == "observe_pass":
+            self.observe_passed_points.append(self.check_point)
+            self.last_valid_check_point = self.check_point
             # If pass observe
             #   if before is observe pass
             #   if before is observe fail
             #   if before is precheck pass
-            if "precheck" not in self.check_point["mark_result"]:
+
+    def start_analyse(self, n):
+        last_check_point = self.candidate_points[-2]
+        # 查看上一个
+            # 如果是不同向
+            #   observ pass不重要，修改observe通过条件为上一个的不通过条件即可，且还要看上一个同向是否为observe pass
+            #   如果不是，那么依旧要对上一个做observe的判断？
+            # 如果是同向
+            #   如果上一个是observe pass，那么当前的是放向加强，顺势，继续不变, 不应该把当前的check point加入到observe pass的列表中
+            #   如果上一个是observe fail，那么大概率是强趋势，中间有个调整的check point但是没有发现，可以增加一个cjl的判断用来避免大趋势的错判
+            #   如果上一个是其他状态，说明有可能是双头顶或者双底，趋势可以考虑，因为没有observe fail，依旧以上一个为准做判断
+        if self.new_check_point:
+            self.add_candidate_information()
+            # 1. Check do we need to give up previous observed extreme point
+            if last_check_point["extreme_type"] == self.check_point["extreme_type"]:            
+                # 有可能是双头顶，有可能是前面放向的大趋势，如果要改变方向，必须要有足够的能力来反转
+                if last_check_point["mark_result"] == "observe_fail":
+                    self.check_point["add_cjl_check"] = True
+                else: # (observe_pass, checking or precheck_pass)
+                    self.check_point = last_check_point
+                    self.candidate_points.pop()
+            else:
+                if last_check_point["mark_result"] == "observe_fail":
+                    utils.log(f"Cannot image how this happend! {last_check_point['time']} - {self.check_point['time']}")
+                elif last_check_point["mark_result"] in ["checking", "precheck_pass"]:
+                    self.check_point["observe_ccl_threshold"] = last_check_point["ccl"]            
+        
+        # Normal analysis
+        if self.check_point["mark_result"] == "observe_fail":
+            return
+          
+        elif self.check_point["mark_result"] != "observe_pass":
+            self.process_observe(n)
+            if self.check_point["mark_result"] != "precheck_pass":
                 self.process_precheck(n)
-                if self.check_point['mark_result'] == "precheck_pass":
-                    self.precheck_candidate_points.append(self.check_point)
-                    if self.last_valid_check_point:
-                        if self.last_valid_check_point['mark_result'] == "observe_pass":
-                            # TODO do the trade
-                        elif self.last_valid_check_point['mark_result'] == "precheck_pass":
-                            # If last check point status is precheck_pass, which mean the ccl is still between pass or fail, so we need to check the slope
-                            # Which means current check point is fake, just keep same with last one.
-                            # if last_check_point['extreme_type'] == self.check_point['extreme_type']:                                # TODO do the trade
-                            #     self.check_point = last_check_point
-                            #     self.check_points.remove(last_check_point)
-                    # If pass precheck
-                    #   if before is observe pass
-                    #   if before is observe fail
-                    #   if before is precheck pass
+                
         
     def check_candidate(self, n):
         last_x_hours_and_next_y_min_data = self.data[n - self.past_x_hours_num - self.candidate_x_min_num:n]
@@ -221,18 +247,19 @@ class DataProcessor:
         min_value_point = min(last_x_hours_and_next_y_min_data, key=lambda x: x[self.check_column_name])
 
         extreme_type = "max" if self.check_point[self.check_column_name] == max_value_point[self.check_column_name] else ("min" if self.check_point[self.check_column_name] == min_value_point[self.check_column_name] else "")
-
+        self.new_check_point = False
         if extreme_type != "":
-            self.check_points.append(self.check_point)
-            self.check_point = self.data[n-self.candidate_x_min_num]
-            self.check_point['extreme_type'] = extreme_type
-            self.check_point['add_candidate_time'] = self.data[-1]['time']
-            self.check_point['add_candidate_zxj'] = self.data[-1]['zxj']
-            self.check_point['add_candidate_index'] = n
-            self.new_check_point = True
-            self.candidate_points.append(self.check_point)
-        else:
-            self.new_check_point = False
+            candidate_correlation = self.calculate_correlation_by_index(n-self.candidate_x_min_num, n)
+            if abs(candidate_correlation) >= 0.6:
+                self.check_points.append(self.check_point)
+                self.check_point = self.data[n-self.candidate_x_min_num]
+                self.check_point['extreme_type'] = extreme_type
+                self.check_point['candidate_correlation'] = candidate_correlation
+                self.check_point['add_candidate_time'] = self.data[-1]['time']
+                self.check_point['add_candidate_zxj'] = self.data[-1]['zxj']
+                self.check_point['add_candidate_index'] = n
+                self.new_check_point = True
+                self.candidate_points.append(self.check_point)
 
     def record_extreme_point(self, n):
         for candidate in self.candidate_points.copy():
@@ -263,9 +290,6 @@ class DataProcessor:
 
         # Record the extreme point
         self.record_extreme_point(data_length)
-
-        # add record information
-        self.records.append(self.check_point)
 
     def slope_angle(self, start, end):
         delta_y = end[self.check_column_name] - start[self.check_column_name]
