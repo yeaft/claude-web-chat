@@ -19,7 +19,7 @@ import copy
 
 
 class DataProcessor:
-    def __init__(self, past_x_hour=1, precheck_x_min=3, candidate_x_min=3, check_column_name="zxj", cut_hour=3, precheck_min_slope_value=350, precheck_accept_slope_value=600):
+    def __init__(self, past_x_hour=3, candidate_x_min=5, precheck_x_min=10, check_column_name="ccl", precheck_min_slope_value=350, precheck_accept_slope_value=600):
         self.data = []
         self.past_x_hours = past_x_hour
         self.past_x_hours_num = int(past_x_hour * 3600 / 5)
@@ -36,10 +36,9 @@ class DataProcessor:
         self.precheck_min_slope_value = precheck_min_slope_value
         self.precheck_accept_slope_value = precheck_accept_slope_value
         self.observe_passed_points = []
+        self.observe_failed_points = []
         self.check_column_name = check_column_name
         self.records = []
-        self.cut_hour = cut_hour
-        self.cut_x_hours_num = int(cut_hour * 3600 / 5)
         self.new_check_point = False
         self.last_valid_check_point = {}
         self.check_points = []
@@ -61,22 +60,6 @@ class DataProcessor:
             return
 
         self.start_process(n)
-
-    # 改为找上一个extrem和自己不一样的peak类型的相关性
-    def calculate_correlation_by_extreme(self):
-        for i in range(len(self.extreme_points)-1, 0, -1):
-            extreme_point = self.extreme_points[i]
-            if extreme_point['extreme_type'] != self.check_point['extreme_type']:
-                subset = self.data[extreme_point['index']:self.check_point['index']]
-
-                zxj_values = [tick['zxj'] for tick in subset]
-                ccl_values = [tick['ccl'] for tick in subset]
-
-                correlation = np.corrcoef(zxj_values, ccl_values)[0, 1]
-
-                return correlation
-
-        return 0
 
     def calculate_correlation(self, hours=10):
         window_size = int(hours * 3600 / 5)
@@ -159,27 +142,17 @@ class DataProcessor:
                 self.check_point['mark_result'] = "precheck_pass"
 
         # Pre        
-        if  past_num >= int(self.past_x_hours_num / 3):
+        if past_num >= int(self.past_x_hours_num / 3):
             current_slope = round(self.slope_angle(self.check_point, self.data[n-1]), 2)
             if abs(current_slope) >= abs(self.check_point['last_to_current_slope']):
                 self.check_point['mark_result'] = "precheck_pass"
 
 
         if self.check_point["mark_result"] == "precheck_pass":
+            self.check_point['precheck_index'] = n-1
             self.precheck_candidate_points.append(self.check_point)
-            if self.last_valid_check_point:
-                if self.last_valid_check_point['mark_result'] == "observe_pass":
-                    # TODO do the trade
-                elif self.last_valid_check_point['mark_result'] == "precheck_pass":
-                    # If last check point status is precheck_pass, which mean the ccl is still between pass or fail, so we need to check the slope
-                    # Which means current check point is fake, just keep same with last one.
-                    # if last_check_point['extreme_type'] == self.check_point['extreme_type']:                                # TODO do the trade
-                    #     self.check_point = last_check_point
-                    #     self.check_points.remove(last_check_point)
-            # If pass precheck
-            #   if before is observe pass
-            #   if before is observe fail
-            #   if before is precheck pass
+            # TODO the trade operation for precheck
+            self.action_for_precheck_pass()
 
     # 1. Need to record pass or fail time
     # 2. It is the final result, if not pass, need to change back check point
@@ -197,9 +170,34 @@ class DataProcessor:
                 self.check_point['mark_result'] = "observe_pass"
         
         if self.check_point['mark_result'] == "observe_pass":
+            self.check_point['observe_check_index'] = n-1
+            self.check_point['observe_zxj'] = self.data[-1]['zxj']
             self.observe_passed_points.append(self.check_point)
             self.last_valid_check_point = self.check_point
-            # If pass observe
+            self.action_for_observe_pass()
+        elif self.check_point['mark_result'] == "observe_fail":
+            self.check_point['observe_check_index'] = n-1
+            self.observe_failed_points.append(self.check_point)
+    
+    def action_for_precheck_pass(self): 
+        return       
+        # if self.last_valid_check_point:
+        #     if self.last_valid_check_point['mark_result'] == "observe_pass":
+                # TODO do the trade
+            # elif self.last_valid_check_point['mark_result'] == "precheck_pass":
+                # If last check point status is precheck_pass, which mean the ccl is still between pass or fail, so we need to check the slope
+                # Which means current check point is fake, just keep same with last one.
+                # if last_check_point['extreme_type'] == self.check_point['extreme_type']:                                # TODO do the trade
+                #     self.check_point = last_check_point
+                #     self.check_points.remove(last_check_point)
+        # If pass precheck
+        #   if before is observe pass
+        #   if before is observe fail
+        #   if before is precheck pass
+    
+    def action_for_observe_pass(self):
+        return
+        # If pass observe
             #   if before is observe pass
             #   if before is observe fail
             #   if before is precheck pass
@@ -252,12 +250,12 @@ class DataProcessor:
             candidate_correlation = self.calculate_correlation_by_index(n-self.candidate_x_min_num, n)
             if abs(candidate_correlation) >= 0.6:
                 self.check_points.append(self.check_point)
-                self.check_point = self.data[n-self.candidate_x_min_num]
+                self.check_point = self.data[n-self.candidate_x_min_num-1]
                 self.check_point['extreme_type'] = extreme_type
                 self.check_point['candidate_correlation'] = candidate_correlation
                 self.check_point['add_candidate_time'] = self.data[-1]['time']
                 self.check_point['add_candidate_zxj'] = self.data[-1]['zxj']
-                self.check_point['add_candidate_index'] = n
+                self.check_point['add_candidate_index'] = n-1
                 self.new_check_point = True
                 self.candidate_points.append(self.check_point)
 
@@ -320,40 +318,84 @@ class DataProcessor:
             return True
         return False
 
-    def print_metrics(self):
-        prefix = f"{self.past_x_hours}_{self.precheck_x_min}_{self.cut_hour}"
+    def verify_check_points(self, n):
+        for i in range(0, len(self.check_points)):
+            check_point = self.check_points[i]
+            self.percentage_check(check_point, check_point['add_candidate_index'], 1, 'candidate', n)
+            self.percentage_check(check_point, check_point['add_candidate_index'], 2, 'candidate', n)
+            self.percentage_check(check_point, check_point['add_candidate_index'], 3, 'candidate', n)
+            if 'precheck_index' in check_point:
+                self.percentage_check(check_point, check_point['precheck_index'], 1, 'precheck', n)
+                self.percentage_check(check_point, check_point['precheck_index'], 2, 'precheck', n)
+                self.percentage_check(check_point, check_point['precheck_index'], 3, 'precheck', n)
+            if 'observe_check_index' in check_point:
+                self.percentage_check(check_point, check_point['observe_check_index'], 1, 'observe', n)
+                self.percentage_check(check_point, check_point['observe_check_index'], 2, 'observe', n)
+                self.percentage_check(check_point, check_point['observe_check_index'], 3, 'observe', n)       
+
+        for i in range(0, len(self.observe_passed_points) - 1):
+            current_point = self.observe_passed_points[i]
+            next_point = self.observe_passed_points[i+1]
+            observe_percentage_diff = round((next_point['observe_zxj'] - current_point['observe_zxj']) / current_point['observe_zxj'] * 100, 2)
+            current_point['observe_percentage_diff'] = observe_percentage_diff
+            if current_point['next_direction'] == 'up':
+                if observe_percentage_diff > 0:
+                    current_point['win_observe_only'] = True
+                else:
+                    current_point['win_observe_only'] = False
+            elif current_point['next_direction'] == 'down':
+                if observe_percentage_diff < 0:
+                    current_point['win_observe_only'] = True
+                else:
+                    current_point['win_observe_only'] = False
+                
+    
+    def percentage_check(self, check_point, start_index, percentage, verify_name, n):
+        price = self.data[start_index]['zxj']
+        up_per = int((1 + percentage/100) * price)
+        down_per = int((1 - percentage/100) * price)
+        for i in range(start_index+1, n):
+            if self.data[i]['zxj'] >= up_per:
+                check_point[f'up_index_{verify_name}_{percentage}'] = i
+            if self.data[i]['zxj'] <= down_per:
+                check_point[f'down_index_{verify_name}_{percentage}'] = i
+            
+            if f'up_{percentage}_index' in check_point and f'down_{percentage}_index' in check_point:
+                col_name = f'win_{verify_name}_{percentage}_per'
+                if check_point['next_direction'] == 'up':
+                    if check_point[f'up_{percentage}_index'] < check_point[f'down_{percentage}_index']:
+                        check_point[col_name] = True
+                    else:
+                        check_point[col_name] = False
+                elif check_point['next_direction'] == 'down':
+                    if check_point[f'up_{percentage}_index'] > check_point[f'down_{percentage}_index']:
+                        check_point[col_name] = True
+                    else:
+                        check_point[col_name] = False
+                        
+                break
+
+    def output_metrics(self):
+        prefix = f"{self.past_x_hours}_{self.candidate_x_min}_{self.precheck_x_min}"
         results = []
-        for i in range(0, len(self.records)):
-            data = self.records[i]
+        for i in range(0, len(self.check_points)):
+            data = self.check_points[i]
+            result = {"prefix": prefix}
+            result.update(data)
+            result['date'] = data['time'].strftime('%Y-%m-%d')
+            result["time"] = data['time'].strftime('%H:%M:%S')
+            result['add_candidate_time'] = data['add_candidate_time'].strftime('%H:%M:%S')
+            results.append(result)
+        return results
+
+    def print_metrics(self):
+        prefix = f"{self.past_x_hours}_{self.precheck_x_min}"
+        results = []
+        for i in range(0, len(self.check_points)):
+            data = self.check_points[i]
             result, max_value, min_value, max_win, max_loss, future_zxj = 0, 0, 0, 0, 0, 0
             is_overlap = False
             trade_time = "9999"
-            if len(self.data) > data['index'] + self.cut_x_hours_num:
-                future_data = self.data[data['index'] + self.cut_x_hours_num]
-                future_zxj = future_data["zxj"]
-                trade_time = future_data['time'].strftime('%Y-%m-%d_%H:%M:%S')
-                j = i+1
-                if 'precheck_extreme' in data:
-                    while j < len(self.records):
-                        if 'precheck_extreme' in self.records[j]:
-                            is_overlap = future_data['index'] > self.records[j]['index']
-                            break
-                        j += 1
-                result = 0
-                sub_datas = self.data[data['index'] +
-                                      1:data['index'] + self.cut_x_hours_num + 1]
-                max_value = max(data['zxj'] for data in sub_datas)
-                min_value = min(data['zxj'] for data in sub_datas)
-                if future_zxj != 0:
-                    if data['next_direction'] == "up" or data['lr_zxj'] > 5:
-                        result = future_zxj - data['add_candidate_zxj']
-                        max_win = max_value - data['add_candidate_zxj']
-                        max_loss = min_value - data['add_candidate_zxj']
-                    elif data['next_direction'] == "down" or data['lr_zxj'] < -5:
-                        result = data['add_candidate_zxj'] - future_zxj
-                        max_win = data['add_candidate_zxj'] - min_value
-                        max_loss = data['add_candidate_zxj'] - max_value
-
             # utils.log(
             #     f"{data['code']} {data['time']} {data['extreme_type']} {'precheck_extreme' in data} {data['zxj']} {data['add_candidate_zxj']} {future_zxj} {result} {max_win} {max_loss} {data['before_slope']} {data['after_slope']} {data['correlation']} {data['lr_zxj']} {data['lr_ccl']}")
 
@@ -496,34 +538,31 @@ def draw_image(dps, ticks, check_column_name="zxj"):
 def prepare_dps(check_column_name="ccl"):
     dps = []
     for past_x_hour in [3, 6]:
-        for cut_hour in [3, 6, 8]:
-            for precheck_x_min in [10, 30]:
-                if precheck_x_min == 30:
-                    precheck_min_slope_value = 350
-                    precheck_accept_slope_value = 600
-                elif precheck_x_min == 20:
-                    precheck_min_slope_value = 380
-                    precheck_accept_slope_value = 650
-                elif precheck_x_min == 15:
-                    precheck_min_slope_value = 450
-                    precheck_accept_slope_value = 750
-                elif precheck_x_min == 10:
-                    precheck_min_slope_value = 500
-                    precheck_accept_slope_value = 800
-                else:
-                    precheck_min_slope_value = 350
-                    precheck_accept_slope_value = 600
-                # for precheck_min_slope_value in [, 1, 2]:
-                #     for precheck_accept_slope_value in [0.5, 1, 2]:
-                dps.append(DataProcessor(past_x_hour, precheck_x_min, check_column_name=check_column_name,
-                                         cut_hour=cut_hour, precheck_min_slope_value=precheck_min_slope_value, precheck_accept_slope_value=precheck_accept_slope_value))
+        for precheck_x_min in [10, 30]:
+            if precheck_x_min == 30:
+                precheck_min_slope_value = 350
+                precheck_accept_slope_value = 600
+            elif precheck_x_min == 20:
+                precheck_min_slope_value = 380
+                precheck_accept_slope_value = 650
+            elif precheck_x_min == 15:
+                precheck_min_slope_value = 450
+                precheck_accept_slope_value = 750
+            elif precheck_x_min == 10:
+                precheck_min_slope_value = 500
+                precheck_accept_slope_value = 800
+            else:
+                precheck_min_slope_value = 350
+                precheck_accept_slope_value = 600
+            # for precheck_min_slope_value in [, 1, 2]:
+            #     for precheck_accept_slope_value in [0.5, 1, 2]:
+            dps.append(DataProcessor(past_x_hour, precheck_x_min, check_column_name=check_column_name, precheck_min_slope_value=precheck_min_slope_value, precheck_accept_slope_value=precheck_accept_slope_value))
     return dps
 
 
 def prepare_dps_simple(check_column_name="ccl"):
     dps = []
-    dps.append(DataProcessor(past_x_hour=6, precheck_x_min=30, check_column_name=check_column_name,
-                             cut_hour=6, precheck_min_slope_value=350, precheck_accept_slope_value=600))
+    dps.append(DataProcessor(past_x_hour=6, precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600))
     return dps
 
 
@@ -540,13 +579,13 @@ def process_data(dps, start_date, end_date, contract_type="rb", verify_name="ver
         for data in ticks:
             dp.process_new_data(data)
 
-        result, statistic = dp.print_metrics()
-        final_results.extend(result)
-        statistics.append(statistic)
+        dp.verify_check_points(len(ticks))
+        results = dp.print_metrics()
+        final_results.extend(results)
 
-    utils.echo_dics(statistics)
+    # utils.echo_dics(statistics)
     utils.convert_dic_to_csv(f"{verify_name}", final_results)
-    utils.convert_dic_to_csv(f"{verify_name}_statistic", statistics)
+    # utils.convert_dic_to_csv(f"{verify_name}_statistic", statistics)
     if is_draw_image:
         draw_image(dps, ticks, check_column_name=check_column_name)
 
@@ -561,7 +600,10 @@ if __name__ == "__main__":
     # process_data(dps, "2022-04-20", "2022-08-01",verify_name="verify_05_08", check_column_name=check_column_name)
 
     # round 2
-    dps = prepare_dps_simple(check_column_name)
+    # dps = prepare_dps_simple(check_column_name)
+    dps = [
+        DataProcessor(past_x_hour=3, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600),
+    ]
     process_data(dps, "2022-09-01", "2022-11-20", verify_name="verify_09_12",
                  check_column_name=check_column_name, is_draw_image=True)
     # round 3
