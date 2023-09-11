@@ -56,7 +56,7 @@ class DataProcessor:
 
         n = len(self.data)
         # We don't have enough data for a 2-hour window and additional 3 minutes
-        if n < self.past_x_hours_num+self.precheck_x_min_num:
+        if n < self.past_x_hours_num+self.candidate_x_min_num+1:
             return
 
         self.start_process(n)
@@ -213,7 +213,6 @@ class DataProcessor:
             #   如果上一个是observe fail，那么大概率是强趋势，中间有个调整的check point但是没有发现，可以增加一个cjl的判断用来避免大趋势的错判
             #   如果上一个是其他状态，说明有可能是双头顶或者双底，趋势可以考虑，因为没有observe fail，依旧以上一个为准做判断
         if self.new_check_point:
-            self.add_candidate_information()
             # 1. Check do we need to give up previous observed extreme point
             if last_check_point["extreme_type"] == self.check_point["extreme_type"]:            
                 # 有可能是双头顶，有可能是前面放向的大趋势，如果要改变方向，必须要有足够的能力来反转
@@ -229,40 +228,45 @@ class DataProcessor:
                     self.check_point["observe_ccl_threshold"] = last_check_point["ccl"]            
         
         # Normal analysis
-        if self.check_point["mark_result"] == "observe_fail":
-            return
-          
-        elif self.check_point["mark_result"] != "observe_pass":
-            self.process_observe(n)
-            if self.check_point["mark_result"] != "precheck_pass":
-                self.process_precheck(n)
+        try:
+            if self.check_point["mark_result"] == "observe_fail":
+                return
+            
+            elif self.check_point["mark_result"] != "observe_pass":
+                self.process_observe(n)
+                if self.check_point["mark_result"] != "precheck_pass":
+                    self.process_precheck(n)
+        except Exception as e:
+            utils.log(f"Exception: {e}")
+            utils.log(f"Check point: {self.check_point}")
                 
         
     def check_candidate(self, n):
-        last_x_hours_and_next_y_min_data = self.data[n - self.past_x_hours_num - self.candidate_x_min_num:n]
+        check_point = self.data[n-self.candidate_x_min_num-1]
+        last_x_hours_and_next_y_min_data = self.data[n - self.past_x_hours_num - self.candidate_x_min_num-1:n]
 
         max_value_point = max(last_x_hours_and_next_y_min_data, key=lambda x: x[self.check_column_name])
         min_value_point = min(last_x_hours_and_next_y_min_data, key=lambda x: x[self.check_column_name])
 
-        extreme_type = "max" if self.check_point[self.check_column_name] == max_value_point[self.check_column_name] else ("min" if self.check_point[self.check_column_name] == min_value_point[self.check_column_name] else "")
+        extreme_type = "max" if check_point[self.check_column_name] == max_value_point[self.check_column_name] else ("min" if check_point[self.check_column_name] == min_value_point[self.check_column_name] else "")
         self.new_check_point = False
         if extreme_type != "":
             candidate_correlation = self.calculate_correlation_by_index(n-self.candidate_x_min_num, n)
             if abs(candidate_correlation) >= 0.6:
+                self.check_point = check_point
                 self.check_points.append(self.check_point)
-                self.check_point = self.data[n-self.candidate_x_min_num-1]
                 self.check_point['extreme_type'] = extreme_type
                 self.check_point['candidate_correlation'] = candidate_correlation
                 self.check_point['add_candidate_time'] = self.data[-1]['time']
                 self.check_point['add_candidate_zxj'] = self.data[-1]['zxj']
                 self.check_point['add_candidate_index'] = n-1
-                self.new_check_point = True
+                self.add_candidate_information()
+                self.new_check_point = True                
                 self.candidate_points.append(self.check_point)
 
     def record_extreme_point(self, n):
         for candidate in self.candidate_points.copy():
             if candidate['time'] < self.data[-1]['time'] - timedelta(hours=self.past_x_hours):
-                self.candidate_points.remove(candidate)
                 next_x_hours_data = self.data[n-self.past_x_hours_num:n]
                 max_value_point = max(next_x_hours_data, key=lambda x: x[self.check_column_name])
                 min_value_point = min(next_x_hours_data, key=lambda x: x[self.check_column_name])
@@ -271,19 +275,14 @@ class DataProcessor:
                    (candidate['extreme_type'] == 'min' and candidate[self.check_column_name] <= min_value_point[self.check_column_name]):
                     self.extreme_points.append(candidate)
                     candidate['extreme'] = True
-                    if candidate in self.precheck_candidate_points:
-                        self.precheck_candidate_points.remove(candidate)
-                        candidate['pre_checked'] = True
                 else:
                     self.error_points.append(candidate)
-                    if candidate in self.precheck_candidate_points:
-                        self.precheck_candidate_points.remove(candidate)
 
     def start_process(self, data_length):
         self.check_candidate(data_length)
 
         # Only have more than extreme points, to do the futher analysis
-        if len(self.extreme_points) > 1:
+        if len(self.extreme_points) > 2:
             self.start_analyse(data_length)
 
         # Record the extreme point
@@ -398,29 +397,8 @@ class DataProcessor:
             trade_time = "9999"
             # utils.log(
             #     f"{data['code']} {data['time']} {data['extreme_type']} {'precheck_extreme' in data} {data['zxj']} {data['add_candidate_zxj']} {future_zxj} {result} {max_win} {max_loss} {data['before_slope']} {data['after_slope']} {data['correlation']} {data['lr_zxj']} {data['lr_ccl']}")
-
-            results.append({
-                "prefix": prefix,
-                "code": data['code'],
-                "date": data['time'].strftime('%Y-%m-%d'),
-                "time": data['time'].strftime('%H:%M:%S'),
-                "add_candidate_time": data['add_candidate_time'].strftime('%H:%M:%S'),
-                "trade_time": trade_time,
-                "extreme_type": data['extreme_type'],
-                "precheck_extreme": 'precheck_extreme' in data,
-                "is_overlap": is_overlap,
-                "zxj": data['zxj'],
-                "add_candidate_zxj": data['add_candidate_zxj'],
-                "future_zxj": future_zxj,
-                "result": result,
-                "max_win": max_win,
-                "max_loss": max_loss,
-                "before_slope": data['before_slope'],
-                "after_slope": data['after_slope'],
-                "correlation": data['correlation'],
-                "lr_zxj": data['lr_zxj'],
-                "lr_ccl": data['lr_ccl']
-            })
+            data['prefix'] = prefix
+            results.append(data)
 
             # f"{prefix} {data['code']} {data['time'].strftime('%Y-%m-%d %H:%M:%S')} {data['add_candidate_time'].strftime('%H:%M:%S')} {trade_time} {data['extreme_type']} {'precheck_extreme' in data} {is_overlap} {data['zxj']} {data['add_candidate_zxj']} {future_zxj} {result} {max_win} {max_loss} {data['before_slope']} {data['after_slope']} {data['correlation']} {data['lr_zxj']} {data['lr_ccl']}")
         result_win = sum([result['result'] for result in results])
@@ -469,18 +447,11 @@ def draw_image(dps, ticks, check_column_name="zxj"):
     for i, dp in enumerate(dps, start=1):
         ccl_plot, = axs[i].plot(times, values, label=check_column_name)   # type: ignore
 
-        extreme_times = [data['time'].strftime(
-            '%Y-%m-%d %H:%M:%S') for data in dp.extreme_points]
-        extreme_values = [point[check_column_name]
-                          for point in dp.extreme_points]
-        axs[i].scatter(extreme_times, extreme_values, color='blue', label='Extreme Points')   # type: ignore
-
-        precheck_extreme_times = [data['time'].strftime(
-            '%Y-%m-%d %H:%M:%S') for data in dp.precheck_extreme_points]
-        precheck_extreme_values = [point[check_column_name]
-                                   for point in dp.precheck_extreme_points]
-        axs[i].scatter(precheck_extreme_times, precheck_extreme_values,   # type: ignore
-                       color='blueviolet', label='Extreme Points')
+        observe_passed_times = [data['time'].strftime(
+            '%Y-%m-%d %H:%M:%S') for data in dp.observe_passed_points]
+        observe_passed_values = [point[check_column_name]
+                          for point in dp.observe_passed_points]
+        axs[i].scatter(observe_passed_times, observe_passed_values, color='blue', label='Observe Passed Points')   # type: ignore
 
         candidate_times = [data['time'].strftime(
             '%Y-%m-%d %H:%M:%S') for data in dp.candidate_points]
@@ -496,20 +467,7 @@ def draw_image(dps, ticks, check_column_name="zxj"):
         axs[i].scatter(precheck_candidate_times, precheck_candidate_values, # type: ignore
                        color='lime', label='Candidate Points')
 
-        error_times = [data['time'].strftime(
-            '%Y-%m-%d %H:%M:%S') for data in dp.error_points]
-        error_values = [point[check_column_name] for point in dp.error_points]
-        axs[i].scatter(error_times, error_values, # type: ignore
-                       color='red', label='Error Points')
-
-        precheck_error_times = [data['time'].strftime(
-            '%Y-%m-%d %H:%M:%S') for data in dp.precheck_error_points]
-        precheck_error_values = [point[check_column_name]
-                                 for point in dp.precheck_error_points]
-        axs[i].scatter(precheck_error_times, precheck_error_values, # type: ignore
-                       color='black', label='Error Points')
-
-        axs[i].set_title(f'{dp.past_x_hours} hours range - {dp.precheck_x_min} mins check - right rate: {round(len(dp.precheck_extreme_points) * 100 / (len(dp.precheck_extreme_points) + len(dp.precheck_error_points)), 2)}%, extreme num: {len(dp.precheck_extreme_points)}') # type: ignore
+        axs[i].set_title(f'{dp.past_x_hours} hours range - {dp.precheck_x_min} mins check:  Observe pass num: {len(dp.observe_passed_values)}') # type: ignore
         axs[i].xaxis.set_major_locator(plt.MaxNLocator(10))  # type: ignore
         axs[i].tick_params(axis='x', which='both', bottom=False, # type: ignore
                            top=False, labelbottom=False)
@@ -580,7 +538,7 @@ def process_data(dps, start_date, end_date, contract_type="rb", verify_name="ver
             dp.process_new_data(data)
 
         dp.verify_check_points(len(ticks))
-        results = dp.print_metrics()
+        results = dp.output_metrics()
         final_results.extend(results)
 
     # utils.echo_dics(statistics)
