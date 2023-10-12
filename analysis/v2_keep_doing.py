@@ -23,14 +23,14 @@ class DataProcessor:
         self.data = []
         self.past_x_hours = past_x_hour
         self.past_x_hours_num = int(past_x_hour * 3600 / 5)
-        self.candidate_points = []
+        self.check_points = []
         self.candidate_x_min = candidate_x_min
         self.candidate_x_min_num = int(candidate_x_min * 60 / 5)
         self.extreme_points = []
         self.error_points = []
         # Two reasons, one is not pass current check point, anothere is there is no check point before pass the check
         self.change_back_points = []
-        self.precheck_candidate_points = []
+        self.precheck_check_points = []
         self.precheck_x_min = precheck_x_min
         self.precheck_x_min_num = int(precheck_x_min * 60 / 5)
         self.precheck_min_slope_value = precheck_min_slope_value
@@ -48,6 +48,8 @@ class DataProcessor:
     def process_new_data(self, tick):
         self.data.append(tick)
         tick['index'] = len(self.data) - 1
+        if len(self.data) % 10000 == 0:
+            utils.log(f"Processed {len(self.data)} ticks")
 
         # Parse time
         if type(tick['time']) == str:
@@ -137,12 +139,12 @@ class DataProcessor:
     def process_precheck(self, n):
         # analysis, add trend rate check
         past_num = n - self.check_point['index'] - 1
-        if past_num >= self.precheck_x_min_num:
+        if past_num == self.precheck_x_min_num:
             if self.check_by_slope(self.precheck_x_min_num, True):
                 self.check_point['mark_result'] = "precheck_pass"
 
         # Pre        
-        if past_num >= int(self.past_x_hours_num / 3):
+        if past_num >= int(self.past_x_hours_num / 3) and past_num < int(self.past_x_hours_num / 2 ):
             current_slope = round(self.slope_angle(self.check_point, self.data[n-1]), 2)
             if abs(current_slope) >= abs(self.check_point['last_to_current_slope']):
                 self.check_point['mark_result'] = "precheck_pass"
@@ -150,7 +152,7 @@ class DataProcessor:
 
         if self.check_point["mark_result"] == "precheck_pass":
             self.check_point['precheck_index'] = n-1
-            self.precheck_candidate_points.append(self.check_point)
+            self.precheck_check_points.append(self.check_point)
             # TODO the trade operation for precheck
             self.action_for_precheck_pass()
 
@@ -173,7 +175,6 @@ class DataProcessor:
             self.check_point['observe_check_index'] = n-1
             self.check_point['observe_zxj'] = self.data[-1]['zxj']
             self.observe_passed_points.append(self.check_point)
-            self.last_valid_check_point = self.check_point
             self.action_for_observe_pass()
         elif self.check_point['mark_result'] == "observe_fail":
             self.check_point['observe_check_index'] = n-1
@@ -203,7 +204,7 @@ class DataProcessor:
             #   if before is precheck pass
 
     def start_analyse(self, n):
-        last_check_point = self.candidate_points[-2]
+        last_check_point = self.check_points[-2]
         # 查看上一个
             # 如果是不同向
             #   observ pass不重要，修改observe通过条件为上一个的不通过条件即可，且还要看上一个同向是否为observe pass
@@ -220,7 +221,7 @@ class DataProcessor:
                     self.check_point["add_cjl_check"] = True
                 else: # (observe_pass, checking or precheck_pass)
                     self.check_point = last_check_point
-                    self.candidate_points.pop()
+                    self.check_points.pop()
             else:
                 if last_check_point["mark_result"] == "observe_fail":
                     utils.log(f"Cannot image how this happend! {last_check_point['time']} - {self.check_point['time']}")
@@ -234,7 +235,7 @@ class DataProcessor:
             
             elif self.check_point["mark_result"] != "observe_pass":
                 self.process_observe(n)
-                if self.check_point["mark_result"] != "precheck_pass":
+                if self.check_point["mark_result"] != "observe_pass" and self.check_point["mark_result"] != "precheck_pass":
                     self.process_precheck(n)
         except Exception as e:
             utils.log(f"Exception: {e}")
@@ -262,10 +263,10 @@ class DataProcessor:
                 self.check_point['add_candidate_index'] = n-1
                 self.add_candidate_information()
                 self.new_check_point = True                
-                self.candidate_points.append(self.check_point)
+                self.check_points.append(self.check_point)
 
     def record_extreme_point(self, n):
-        for candidate in self.candidate_points.copy():
+        for candidate in (c for c in self.check_points if 'extreme' not in c):            
             if candidate['time'] < self.data[-1]['time'] - timedelta(hours=self.past_x_hours):
                 next_x_hours_data = self.data[n-self.past_x_hours_num:n]
                 max_value_point = max(next_x_hours_data, key=lambda x: x[self.check_column_name])
@@ -273,9 +274,10 @@ class DataProcessor:
 
                 if (candidate['extreme_type'] == 'max' and candidate[self.check_column_name] >= max_value_point[self.check_column_name]) or \
                    (candidate['extreme_type'] == 'min' and candidate[self.check_column_name] <= min_value_point[self.check_column_name]):
-                    self.extreme_points.append(candidate)
                     candidate['extreme'] = True
+                    self.extreme_points.append(candidate)
                 else:
+                    candidate['extreme'] = False
                     self.error_points.append(candidate)
 
     def start_process(self, data_length):
@@ -318,6 +320,7 @@ class DataProcessor:
         return False
 
     def verify_check_points(self, n):
+        utils.log(f"Verify check points {len(self.check_points)}")
         for i in range(0, len(self.check_points)):
             check_point = self.check_points[i]
             self.percentage_check(check_point, check_point['add_candidate_index'], 1, 'candidate', n)
@@ -330,8 +333,9 @@ class DataProcessor:
             if 'observe_check_index' in check_point:
                 self.percentage_check(check_point, check_point['observe_check_index'], 1, 'observe', n)
                 self.percentage_check(check_point, check_point['observe_check_index'], 2, 'observe', n)
-                self.percentage_check(check_point, check_point['observe_check_index'], 3, 'observe', n)       
+                self.percentage_check(check_point, check_point['observe_check_index'], 3, 'observe', n)      
 
+        utils.log(f"Verify observe passed points {len(self.observe_passed_points)}")
         for i in range(0, len(self.observe_passed_points) - 1):
             current_point = self.observe_passed_points[i]
             next_point = self.observe_passed_points[i+1]
@@ -339,38 +343,42 @@ class DataProcessor:
             current_point['observe_percentage_diff'] = observe_percentage_diff
             if current_point['next_direction'] == 'up':
                 if observe_percentage_diff > 0:
-                    current_point['win_observe_only'] = True
+                    current_point['win_observe_only'] = 1
                 else:
-                    current_point['win_observe_only'] = False
+                    current_point['win_observe_only'] = 0
             elif current_point['next_direction'] == 'down':
                 if observe_percentage_diff < 0:
-                    current_point['win_observe_only'] = True
+                    current_point['win_observe_only'] = 1
                 else:
-                    current_point['win_observe_only'] = False
+                    current_point['win_observe_only'] = 0
                 
     
     def percentage_check(self, check_point, start_index, percentage, verify_name, n):
         price = self.data[start_index]['zxj']
         up_per = int((1 + percentage/100) * price)
         down_per = int((1 - percentage/100) * price)
+        up_col_name = f'up_index_{verify_name}_{percentage}'
+        down_col_name = f'down_index_{verify_name}_{percentage}'
+        if verify_name == "observe":
+            utils.log(up_col_name)
         for i in range(start_index+1, n):
-            if self.data[i]['zxj'] >= up_per:
-                check_point[f'up_index_{verify_name}_{percentage}'] = i
-            if self.data[i]['zxj'] <= down_per:
-                check_point[f'down_index_{verify_name}_{percentage}'] = i
+            if self.data[i]['zxj'] >= up_per and up_col_name not in check_point:
+                check_point[up_col_name] = i
+            if self.data[i]['zxj'] <= down_per and down_col_name not in check_point:
+                check_point[down_col_name] = i
             
-            if f'up_{percentage}_index' in check_point and f'down_{percentage}_index' in check_point:
+            if up_col_name in check_point and down_col_name in check_point:
                 col_name = f'win_{verify_name}_{percentage}_per'
                 if check_point['next_direction'] == 'up':
-                    if check_point[f'up_{percentage}_index'] < check_point[f'down_{percentage}_index']:
-                        check_point[col_name] = True
+                    if check_point[up_col_name] < check_point[down_col_name]:
+                        check_point[col_name] = 1
                     else:
-                        check_point[col_name] = False
+                        check_point[col_name] = 0
                 elif check_point['next_direction'] == 'down':
-                    if check_point[f'up_{percentage}_index'] > check_point[f'down_{percentage}_index']:
-                        check_point[col_name] = True
+                    if check_point[up_col_name] > check_point[down_col_name]:
+                        check_point[col_name] = 1
                     else:
-                        check_point[col_name] = False
+                        check_point[col_name] = 0
                         
                 break
 
@@ -385,6 +393,7 @@ class DataProcessor:
             result["time"] = data['time'].strftime('%H:%M:%S')
             result['add_candidate_time'] = data['add_candidate_time'].strftime('%H:%M:%S')
             results.append(result)
+        
         return results
 
     def print_metrics(self):
@@ -407,7 +416,7 @@ class DataProcessor:
         statistic = {
             "prefix": prefix,
             "all_count": len(results),
-            "precheck_count": len(self.precheck_candidate_points),
+            "precheck_count": len(self.precheck_check_points),
             "result_win": round(result_win, 2),
             "result_avg": round(result_win / len(results), 2),
             "true_result_win": round(result_true_win, 2),
@@ -451,23 +460,23 @@ def draw_image(dps, ticks, check_column_name="zxj"):
             '%Y-%m-%d %H:%M:%S') for data in dp.observe_passed_points]
         observe_passed_values = [point[check_column_name]
                           for point in dp.observe_passed_points]
-        axs[i].scatter(observe_passed_times, observe_passed_values, color='blue', label='Observe Passed Points')   # type: ignore
+        axs[i].scatter(observe_passed_times, observe_passed_values, color='red', label='Observe Passed Points')   # type: ignore
 
         candidate_times = [data['time'].strftime(
-            '%Y-%m-%d %H:%M:%S') for data in dp.candidate_points]
+            '%Y-%m-%d %H:%M:%S') for data in dp.check_points]
         candidate_values = [point[check_column_name]
-                            for point in dp.candidate_points]
+                            for point in dp.check_points]
         axs[i].scatter(candidate_times, candidate_values,   # type: ignore
-                       color='green', label='Candidate Points')
+                       color='blue', label='Candidate Points')
 
-        precheck_candidate_times = [data['time'].strftime(
-            '%Y-%m-%d %H:%M:%S') for data in dp.precheck_candidate_points]
-        precheck_candidate_values = [point[check_column_name]
-                                     for point in dp.precheck_candidate_points]
-        axs[i].scatter(precheck_candidate_times, precheck_candidate_values, # type: ignore
-                       color='lime', label='Candidate Points')
+        # precheck_candidate_times = [data['time'].strftime(
+        #     '%Y-%m-%d %H:%M:%S') for data in dp.precheck_check_points]
+        # precheck_candidate_values = [point[check_column_name]
+        #                              for point in dp.precheck_check_points]
+        # axs[i].scatter(precheck_candidate_times, precheck_candidate_values, # type: ignore
+        #                color='lime', label='Candidate Points')
 
-        axs[i].set_title(f'{dp.past_x_hours} hours range - {dp.precheck_x_min} mins check:  Observe pass num: {len(dp.observe_passed_values)}') # type: ignore
+        axs[i].set_title(f'{dp.past_x_hours} hours range - {dp.precheck_x_min} mins check:  Observe pass num: {len(dp.observe_passed_points)}') # type: ignore
         axs[i].xaxis.set_major_locator(plt.MaxNLocator(10))  # type: ignore
         axs[i].tick_params(axis='x', which='both', bottom=False, # type: ignore
                            top=False, labelbottom=False)
@@ -533,10 +542,11 @@ def process_data(dps, start_date, end_date, contract_type="rb", verify_name="ver
     for dp in dps:
         ticks = ticks_helper.get_ticks(
             start_date, end_date, contract_type, span_type)
-        # utils.log("get {} ticks".format(len(ticks)))
+        utils.log("get {} ticks".format(len(ticks)))
         for data in ticks:
             dp.process_new_data(data)
 
+        utils.log("Finish process data")
         dp.verify_check_points(len(ticks))
         results = dp.output_metrics()
         final_results.extend(results)

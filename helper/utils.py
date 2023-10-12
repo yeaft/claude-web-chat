@@ -115,6 +115,7 @@ def echo_dic(data, output_head=True, output_val=True, min_head_length=6):
 
 
 def convert_dic_to_csv(name, data, replace_head_pair={}, is_new=True):
+    # results.sort(key=lambda x: len(x), reverse=True)
     name = name + ("_" + str(time.time()) + ".csv" if is_new else ".csv")
     with open(name, "w") as f:
         if len(data) > 0:
