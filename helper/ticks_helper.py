@@ -58,6 +58,8 @@ def get_x_span_number(x, span_type = "1sec", unit="h"):
         unit_in_sec = 3600 * 5.75
     elif unit == "s":
         unit_in_sec = 1
+    else:
+        unit_in_sec = 3600
     # get the span
     if span_type in ("1sec", "main"):
         sec_diff = 1
@@ -65,6 +67,8 @@ def get_x_span_number(x, span_type = "1sec", unit="h"):
         sec_diff = 5
     elif span_type == "1min":
         sec_diff = 60
+    else:
+        sec_diff = 1
 
     return int(x * unit_in_sec / sec_diff)
     

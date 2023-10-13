@@ -19,13 +19,15 @@ import copy
 
 
 class DataProcessor:
-    def __init__(self, cjl_period_min_threshold = 5800, cjl_period_pass_threshold=8000,  cjl_past_num=60, cjl_period_num=3, past_x_hour=3, candidate_x_min=5, precheck_x_min=10, check_column_name="ccl", precheck_min_slope_value=350, precheck_accept_slope_value=600):
+    def __init__(self, cjl_hot_threshold = 1000, cjl_period_min_threshold = 5800, cjl_period_pass_threshold=8000,  cjl_past_num=60, cjl_period_num=3, past_x_hour=3, candidate_x_min=5, precheck_x_min=10, check_column_name="ccl", precheck_min_slope_value=350, precheck_accept_slope_value=600):
         self.data = []
         # cjl abnormal
         self.cjl_period_min_threshold = cjl_period_min_threshold
         self.cjl_period_pass_threshold = cjl_period_pass_threshold
         self.cjl_past_num = cjl_past_num
         self.cjl_period_num = cjl_period_num
+        self.cjl_hot_threshold = 1000
+        self.must_away_cjl_threshold = 40000
 
 
         self.past_x_hours = past_x_hour
@@ -210,6 +212,39 @@ class DataProcessor:
             #   if before is observe fail
             #   if before is precheck pass
 
+    def trade_analysis(self):
+        # 1. check if current after a cjl abnormal
+        # 2. must know:
+        #   1. Current ccl overall trend, the next possible direction
+        #   2. the relation between current ccl and price
+        #   3. ccl threshold and cjl abnormal and price direction will be the cut condition
+        #   4. consider current trade time, near 23:00 will be a small ccl drop, near 15:00 will be a large ccl drop, this will reflect the in day impact
+        # 3. according to the information, make the decision
+        # 4. big trend won't lie, but it is posible there is some reverse trend in shot time.
+        is_abnomal_end = True
+        for i in range(len(self.data)-1, len(self.data)-4, -1):
+            if 'anomaly' in self.data[i] and self.data[i]['anomaly'] != "cold":
+                is_abnomal_end = False
+                break
+        
+        if not is_abnomal_end:
+            return
+        
+        one_day_span = ticks_helper.get_x_span_number(1, span_type="5sec", unit="d")
+        if len(self.data) < one_day_span:
+            return 
+
+        past_one_day_data = self.data[len(self.data)-one_day_span]
+        ccl_diff = self.data[-1]['ccl'] - past_one_day_data['ccl']
+        # 长期ccl趋势
+        #   1. 一天前的5min平均数和当前的5min平均数比较，如果当前的5min平均数大，那么长期趋势是上升，反之下降，且差值要超过一个阈值
+        #   1. 如果看不出来，就找两天前的以此类推
+        # 短期ccl趋势
+        #   1. 如果当前ccl是过去1min最大或者最小， 那么短期趋势是上升或者下降
+        #   2. 如果看不出来，那么就用过去30sec的平均数和过去3min的平均数比较，如果过去30sec的平均数大，那么短期趋势是上升，反之下降
+
+
+
     def start_analyse(self, n):
         last_check_point = self.check_points[-2]
         # 查看上一个
@@ -260,17 +295,16 @@ class DataProcessor:
         self.new_check_point = False
         if extreme_type != "":
             candidate_correlation = self.calculate_correlation_by_index(n-self.candidate_x_min_num, n)
-            if abs(candidate_correlation) >= 0.6:
-                self.check_point = check_point
-                self.check_points.append(self.check_point)
-                self.check_point['extreme_type'] = extreme_type
-                self.check_point['candidate_correlation'] = candidate_correlation
-                self.check_point['add_candidate_time'] = self.data[-1]['time']
-                self.check_point['add_candidate_zxj'] = self.data[-1]['zxj']
-                self.check_point['add_candidate_index'] = n-1
-                self.add_candidate_information()
-                self.new_check_point = True                
-                self.check_points.append(self.check_point)
+            self.check_point = check_point
+            self.check_points.append(self.check_point)
+            self.check_point['extreme_type'] = extreme_type
+            self.check_point['candidate_correlation'] = candidate_correlation
+            self.check_point['add_candidate_time'] = self.data[-1]['time']
+            self.check_point['add_candidate_zxj'] = self.data[-1]['zxj']
+            self.check_point['add_candidate_index'] = n-1
+            self.add_candidate_information()
+            self.new_check_point = True                
+            self.check_points.append(self.check_point)
 
     def record_extreme_point(self, n):
         for candidate in (c for c in self.check_points if 'extreme' not in c):            
@@ -295,15 +329,28 @@ class DataProcessor:
             last_period_cjl_sum = sum([d['cjl'] for d in self.data[-self.cjl_period_num:]])
             last_period_cjl = int(last_period_cjl_sum / self.cjl_period_num)
             if (last_period_cjl - past_cjl_mean > 5 * past_cjl_std and last_period_cjl_sum > self.cjl_period_min_threshold) or last_period_cjl_sum > self.cjl_period_pass_threshold:
-                self.data[-1]['anomaly'] = True
+                self.data[-1]['anomaly'] = "start"
+                # Check past 2 mins slope
+                self.data[-1]['past_2_mins_slope'] = round(self.slope_angle(self.data[-24], self.data[-1]), 2)
+            else:
+                contains_anomaly = False
+                for i in range(len(self.data) -1, len(self.data) -4, -1):
+                    if 'anomaly' in self.data[i] and self.data[i]['anomaly'] != "cold":
+                        contains_anomaly = True
+                        break
+                if contains_anomaly:
+                    if self.data[-1]['cjl'] >= self.cjl_hot_threshold:
+                        self.data[-1]['anomaly'] = "hot"
+                    elif 'anomaly' in self.data[-2] and 'anomaly' in self.data[-3] and (self.data[-2]['anomaly'] in ["hot", "start"] or self.data[-3]['anomaly'] in ["hot", "start"]):
+                        self.data[-1]['anomaly'] = "cold"
                 
     def start_process(self, data_length):
         self.check_cjl_abnormal()
         self.check_candidate(data_length)
 
         # Only have more than extreme points, to do the futher analysis
-        if len(self.extreme_points) > 2:
-            self.start_analyse(data_length)
+        # if len(self.extreme_points) > 2:
+        #     self.start_analyse(data_length)
 
         # Record the extreme point
         self.record_extreme_point(data_length)
@@ -474,11 +521,20 @@ def draw_image(dps, ticks, check_column_name="zxj"):
     for i, dp in enumerate(dps, start=1):
         ccl_plot, = axs[i].plot(times, values, label=check_column_name)   # type: ignore
 
-        observe_passed_times = [data['time'].strftime(
-            '%Y-%m-%d %H:%M:%S') for data in dp.observe_passed_points]
-        observe_passed_values = [point[check_column_name]
-                          for point in dp.observe_passed_points]
-        axs[i].scatter(observe_passed_times, observe_passed_values, color='red', label='Observe Passed Points')   # type: ignore
+        abnormal_data = [d for d in dp.data if 'anomaly' in d and d['anomaly'] == "start"]
+        abnormal_times = [data['time'].strftime(
+            '%Y-%m-%d %H:%M:%S') for data in abnormal_data]
+        abnormal_values = [point[check_column_name]
+                          for point in abnormal_data]
+        axs[i].scatter(abnormal_times, abnormal_values, color='green', label='Abnormal Points')   # type: ignore
+
+        abnormal_cold_data = [d for d in dp.data if 'anomaly' in d and d['anomaly'] == "cold"]
+        abnormal_cold_times = [data['time'].strftime(
+            '%Y-%m-%d %H:%M:%S') for data in abnormal_cold_data]
+        abnormal_cold_values = [point[check_column_name]
+                          for point in abnormal_cold_data]
+        axs[i].scatter(abnormal_cold_times, abnormal_cold_values, color='red', label='Abnormal Points')   # type: ignore
+
 
         candidate_times = [data['time'].strftime(
             '%Y-%m-%d %H:%M:%S') for data in dp.check_points]
@@ -486,7 +542,7 @@ def draw_image(dps, ticks, check_column_name="zxj"):
                             for point in dp.check_points]
         axs[i].scatter(candidate_times, candidate_values,   # type: ignore
                        color='blue', label='Candidate Points')
-
+        
         # precheck_candidate_times = [data['time'].strftime(
         #     '%Y-%m-%d %H:%M:%S') for data in dp.precheck_check_points]
         # precheck_candidate_values = [point[check_column_name]
@@ -554,8 +610,8 @@ def prepare_dps_simple(check_column_name="ccl"):
 def process_data(dps, start_date, end_date, contract_type="rb", verify_name="verify", is_draw_image=False, check_column_name="ccl"):
     span_type = "5sec"
 
-    final_results = []
-    statistics = []
+    # final_results = []
+    # statistics = []
     ticks = []
     for dp in dps:
         ticks = ticks_helper.get_ticks(
@@ -565,16 +621,28 @@ def process_data(dps, start_date, end_date, contract_type="rb", verify_name="ver
             dp.process_new_data(data)
 
         utils.log("Finish process data")
-        dp.verify_check_points(len(ticks))
-        results = dp.output_metrics()
-        final_results.extend(results)
+        useful_data = [d for d in dp.data if len(d) > 12]
+        utils.convert_dic_to_csv(f"v3_useful", useful_data)
+        utils.convert_dic_to_csv(f"v3_all", dp.data)
 
     # utils.echo_dics(statistics)
-    utils.convert_dic_to_csv(f"{verify_name}", final_results)
+    # utils.convert_dic_to_csv(f"{verify_name}", final_results)
     # utils.convert_dic_to_csv(f"{verify_name}_statistic", statistics)
     if is_draw_image:
         draw_image(dps, ticks, check_column_name=check_column_name)
 
+def output_data(dp, start_date, end_date, contract_type = "rb", check_column_name="ccl"):
+    span_type = "5sec"
+    ticks = ticks_helper.get_ticks(
+        start_date, end_date, contract_type, span_type)
+    utils.log("get {} ticks".format(len(ticks)))
+    for data in ticks:
+        dp.process_new_data(data)
+
+
+    # utils.convert_dic_to_csv(f"v3_with_abnormal", dp.data)
+    useful_data = [d for d in dp.data if len(d) > 12]
+    utils.convert_dic_to_csv(f"v3_useful", useful_data)
 
 if __name__ == "__main__":
     # process_data("2022-05-01", "2022-08-01")
@@ -587,11 +655,18 @@ if __name__ == "__main__":
 
     # round 2
     # dps = prepare_dps_simple(check_column_name)
+
+
+
     dps = [
-        DataProcessor(past_x_hour=3, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600),
+        DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600),
     ]
-    process_data(dps, "2022-09-01", "2022-11-20", verify_name="verify_09_12",
+    process_data(dps, "2022-11-01", "2022-11-11", verify_name="verify_09_12",
                  check_column_name=check_column_name, is_draw_image=True)
+    
+
+    # dp = DataProcessor(past_x_hour=3, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600)
+    # output_data(dp=dp, start_date="2022-11-01", end_date="2022-11-20", contract_type="rb", check_column_name=check_column_name)
     # round 3
     # dps = prepare_dps(check_column_name)
     # process_data(dps, "2021-12-01", "2022-03-10", verify_name="verify_12_03", check_column_name=check_column_name)

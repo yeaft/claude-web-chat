@@ -115,13 +115,14 @@ def echo_dic(data, output_head=True, output_val=True, min_head_length=6):
 
 
 def convert_dic_to_csv(name, data, replace_head_pair={}, is_new=True):
-    # results.sort(key=lambda x: len(x), reverse=True)
+    # data.sort(key=lambda x: len(x), reverse=True)
+    longest_data = max(data, key=lambda x: len(x))
     name = name + ("_" + str(time.time()) + ".csv" if is_new else ".csv")
     with open(name, "w") as f:
         if len(data) > 0:
             head = ""
             keys = []
-            for key, val in data[0].items():
+            for key, val in longest_data.items():
                 if key in replace_head_pair:
                     head += replace_head_pair[key] + ","
                     keys.append(replace_head_pair[key])
