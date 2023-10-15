@@ -11,6 +11,7 @@ import numpy as np
 from scipy.stats import linregress
 import math
 import copy
+from statistics import mean, variance, stdev
 
 # contract status => [available,extremDetected, holding]
 # mark result => [precheck pass, precheck fail, observe pass, observe fail]
@@ -28,6 +29,10 @@ class DataProcessor:
         self.cjl_period_num = cjl_period_num
         self.cjl_hot_threshold = 1000
         self.must_away_cjl_threshold = 40000
+
+        # ccl trend analysis
+        self.ccl_day_diff_threshold = 1000
+        self.zxj_day_diff_threshold = 0.5
 
 
         self.past_x_hours = past_x_hour
@@ -221,30 +226,127 @@ class DataProcessor:
         #   4. consider current trade time, near 23:00 will be a small ccl drop, near 15:00 will be a large ccl drop, this will reflect the in day impact
         # 3. according to the information, make the decision
         # 4. big trend won't lie, but it is posible there is some reverse trend in shot time.
-        is_abnomal_end = True
-        for i in range(len(self.data)-1, len(self.data)-4, -1):
-            if 'anomaly' in self.data[i] and self.data[i]['anomaly'] != "cold":
-                is_abnomal_end = False
-                break
-        
-        if not is_abnomal_end:
+
+
+        # cjl abnormal analysis
+        if 'anomaly' not in self.data[-1] or self.data[-1]['anomaly'] != "end":
             return
         
-        one_day_span = ticks_helper.get_x_span_number(1, span_type="5sec", unit="d")
-        if len(self.data) < one_day_span:
+        # Find anbormal start index
+        abnormal_start_data = None
+        for i in range(len(self.data)-1, -1, -1):
+            if 'anomaly' in self.data[i] and self.data[i]['anomaly'] == "start":
+                if len(self.data) - i >= 500:
+                    print(f"too many hot trade {self.data[i]['time']} - {self.data[-1]['time']}")
+                    return
+                abnormal_start_data = self.data[i]
+                break
+        
+        if not abnormal_start_data:
             return 
+        
+        # Open trade time
+        if self.data[-1]['time'].time() >= time(21, 0, 0) and self.data[-1]['time'].time() <= time(21, 10, 0):
+            current_trade_time = "night_start"
+        elif self.data[-1]['time'].time() >= time(9, 0, 0) and self.data[-1]['time'].time() <= time(9, 10, 0):
+            current_trade_time = "morning_start"        
+        elif self.data[-1]['time'].time() >= time(14, 30, 0) and self.data[-1]['time'].time() <= time(15, 00, 0):
+            current_trade_time = "afternoon_end"
+        elif self.data[-1]['time'].time() >= time(22, 30, 0) and self.data[-1]['time'].time() <= time(23, 00, 0):
+            current_trade_time = "night_end"
+        else:
+            current_trade_time = "normal"
 
-        past_one_day_data = self.data[len(self.data)-one_day_span]
-        ccl_diff = self.data[-1]['ccl'] - past_one_day_data['ccl']
+        self.data[-1]['trade_time_type'] = current_trade_time
+
         # 长期ccl趋势
         #   1. 一天前的5min平均数和当前的5min平均数比较，如果当前的5min平均数大，那么长期趋势是上升，反之下降，且差值要超过一个阈值
         #   1. 如果看不出来，就找两天前的以此类推
+        five_min_span = ticks_helper.get_x_span_number(5, span_type="5sec", unit="m")        
+        ccl_trend = "unknown"
+        price_trend = "unknown"
+        ccl_diff = 0
+        price_diff_rate = 0
+        for day in range(1, 4):
+            day_span = ticks_helper.get_x_span_number(day, span_type="5sec", unit="d")
+            if len(self.data) < day_span + five_min_span:
+                print(f"not enough data for {day} day, {len(self.data)}, days {day_span}, 5min {five_min_span}")
+                break 
+
+            past_day_ccl_avg = mean([d['ccl'] for d in self.data[-day_span - five_min_span:-day_span]])
+            past_ccl_avg = mean([d['ccl'] for d in self.data[- five_min_span:]])
+            ccl_diff = past_ccl_avg - past_day_ccl_avg
+
+            if ccl_diff > self.ccl_day_diff_threshold:
+                ccl_trend = "up"
+                past_day_zxj_avg = mean([d['zxj'] for d in self.data[-day_span - five_min_span:-day_span]])
+                past_zxj_avg = mean([d['zxj'] for d in self.data[-five_min_span:]])
+                price_diff_rate = round((past_zxj_avg - past_day_zxj_avg) * 1.00 / past_day_zxj_avg, 2)
+                if price_diff_rate >= self.zxj_day_diff_threshold:
+                    price_trend = "up"
+                elif price_diff_rate <= -self.zxj_day_diff_threshold:
+                    price_trend = "down"
+                break
+            elif ccl_diff < -self.ccl_day_diff_threshold:
+                ccl_trend = "down"
+                past_day_zxj_avg = mean([d['zxj'] for d in self.data[-day_span - five_min_span:-day_span]])
+                past_zxj_avg = mean([d['zxj'] for d in self.data[-five_min_span:]])
+                price_diff_rate = round((past_zxj_avg - past_day_zxj_avg) * 100.00 / past_day_zxj_avg, 2)
+                if price_diff_rate >= self.zxj_day_diff_threshold:
+                    price_trend = "up"
+                elif price_diff_rate <= -self.zxj_day_diff_threshold:
+                    price_trend = "down"
+                break
+
+        
         # 短期ccl趋势
         #   1. 如果当前ccl是过去1min最大或者最小， 那么短期趋势是上升或者下降
         #   2. 如果看不出来，那么就用过去30sec的平均数和过去3min的平均数比较，如果过去30sec的平均数大，那么短期趋势是上升，反之下降
         # 有两个触发器，一个是成交量异常，止损是下一个异常和当前放向不一样，一个是ccl趋势，止损是ccl趋势改变+上面的止损逻辑
+        one_min_span = ticks_helper.get_x_span_number(1, span_type="5sec", unit="m")
+        ccl_short_trend = "unknown"
+        if len(self.data) > one_min_span * 3:
+            past_1_min_ccl = [d['ccl'] for d in self.data[-one_min_span:]]            
+            if self.data[-1]['ccl'] == max(past_1_min_ccl):
+                ccl_short_trend = "up"
+            elif self.data[-1]['ccl'] == min(past_1_min_ccl):
+                ccl_short_trend = "down"
+            else:
+                thirty_sec_span = ticks_helper.get_x_span_number(30, span_type="5sec", unit="s")
+                past_30_sec_ccl = [d['ccl'] for d in self.data[-thirty_sec_span:]]
+                past_30_sec_ccl_avg = mean(past_30_sec_ccl)
+                past_3_min_ccl = [d['ccl'] for d in self.data[-(one_min_span * 3):]]
+                past_3_min_ccl_avg = mean(past_3_min_ccl)
+                if past_30_sec_ccl_avg > past_3_min_ccl_avg:
+                    ccl_short_trend = "up"
+                elif past_30_sec_ccl_avg < past_3_min_ccl_avg:
+                    ccl_short_trend = "down"
+        
+        self.data[-1]['ccl_trend'] = ccl_trend
+        self.data[-1]['ccl_diff'] = ccl_diff        
+        self.data[-1]['price_trend'] = price_trend
+        self.data[-1]['price_diff_rate'] = price_diff_rate
+        self.data[-1]['short_ccl_trend'] = ccl_short_trend
+        self.data[-1]['ab_start_zxj_direction'] = abnormal_start_data['anomaly_zxj_direction']
+        self.data[-1]['ab_end_zxj_direction'] = "up" if self.data[-1]['zxj'] - abnormal_start_data['zxj'] > 0 else "down"
+        self.data[-1]['ab_end_zxj_diff_rate'] = round(self.data[-1]['zxj'] * 100.00 / abnormal_start_data['zxj'] - 100, 4)
+        self.data[-1]['ab_start_ccl_direction'] = abnormal_start_data['anomaly_ccl_direction']
+        self.data[-1]['ab_end_ccl_direction'] = "up" if self.data[-1]['ccl'] - abnormal_start_data['ccl'] >0 else "down"
+        self.data[-1]['ab_end_ccl_diff_rate'] = round(self.data[-1]['ccl'] * 100.00 / abnormal_start_data['ccl'] - 100, 4)
+        
+        
+        # 1. Up is slow, down is fast. 
+        # 2. ccl abnormal should be detect
+        
+        # Attribution current abnormal 
+        # Give the future view
 
-
+        # 1. 必须分析已过日期的状态，比如是大上涨趋势，还是下跌趋势。
+        # 2. 收盘的ccl回落和价格走势有很大的指导意义
+        #    2.1 如果子弹够，且趋势强硬，日内ccl提出后，价格依旧是追随趋势，那么第二天很有可能是继续强硬
+        #    2.2 如果子弹以用满，且ccl大幅下滑，且价格大幅波动，那么第二天大概率是ccl下将的调整
+        # 2. 把第二天的走势全部预测出来，比如如果要继续搞是怎么样，如果是休息等
+        # 3. 检查前一天ccl和价格的相关性，也要看前一个相关性，用来判断交易的情况
 
     def start_analyse(self, n):
         last_check_point = self.check_points[-2]
@@ -330,31 +432,47 @@ class DataProcessor:
             last_period_cjl_sum = sum([d['cjl'] for d in self.data[-self.cjl_period_num:]])
             last_period_cjl = int(last_period_cjl_sum / self.cjl_period_num)
             if (last_period_cjl - past_cjl_mean > 5 * past_cjl_std and last_period_cjl_sum > self.cjl_period_min_threshold) or last_period_cjl_sum > self.cjl_period_pass_threshold:
-                self.data[-1]['anomaly'] = "start"
-                # Check past 2 mins slope
-                self.data[-1]['past_2_mins_slope'] = round(self.slope_angle(self.data[-24], self.data[-1]), 2)
+                if 'anomaly' not in self.data[-2]:
+                    self.data[-1]['anomaly'] = "start"
+                    # Check past 2 mins slope
+                    self.data[-1]['anomaly_zxj_direction'] = "up" if self.data[-1]['zxj'] > mean([d['zxj'] for d in self.data[-6:-1]]) else "down"
+                    self.data[-1]['anomaly_ccl_direction'] = "up" if self.data[-1]['ccl'] > mean([d['ccl'] for d in self.data[-6:-1]]) else "down"
+                    self.data[-1]['past_2_mins_slope'] = round(self.slope_angle(self.data[-24], self.data[-1]), 2)
+                else:
+                    self.data[-1]['anomaly'] = "hot"                
+                
             else:
                 contains_anomaly = False
                 for i in range(len(self.data) -1, len(self.data) -4, -1):
-                    if 'anomaly' in self.data[i] and self.data[i]['anomaly'] != "cold":
-                        contains_anomaly = True
-                        break
+                    if 'anomaly' in self.data[i]:
+                        if self.data[i]['anomaly'] == "end":
+                            break
+                        elif self.data[i]['anomaly'] != "code":
+                            contains_anomaly = True
+                            break
+
                 if contains_anomaly:
                     if self.data[-1]['cjl'] >= self.cjl_hot_threshold:
                         self.data[-1]['anomaly'] = "hot"
-                    elif 'anomaly' in self.data[-2] and 'anomaly' in self.data[-3] and (self.data[-2]['anomaly'] in ["hot", "start"] or self.data[-3]['anomaly'] in ["hot", "start"]):
-                        self.data[-1]['anomaly'] = "cold"
+                    else:
+                        if 'anomaly' in self.data[-2]:
+                            if (self.data[-2]['anomaly'] in ["hot", "start"] or "anomaly" not in self.data[-3] or ('anomaly' in self.data[-3] and self.data[-3]['anomaly'] in ["hot", "start"])):
+                                self.data[-1]['anomaly'] = "cold"
+                            else:
+                                self.data[-1]['anomaly'] = "end"
+
                 
     def start_process(self, data_length):
         self.check_cjl_abnormal()
-        self.check_candidate(data_length)
+        # self.check_candidate(data_length)
 
+        self.trade_analysis()
         # Only have more than extreme points, to do the futher analysis
         # if len(self.extreme_points) > 2:
         #     self.start_analyse(data_length)
 
         # Record the extreme point
-        self.record_extreme_point(data_length)
+        # self.record_extreme_point(data_length)
 
     def slope_angle(self, start, end):
         delta_y = end[self.check_column_name] - start[self.check_column_name]
@@ -663,7 +781,7 @@ if __name__ == "__main__":
         DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600),
     ]
     process_data(dps, "2022-11-01", "2022-11-11", verify_name="verify_09_12",
-                 check_column_name=check_column_name, is_draw_image=True)
+                 check_column_name=check_column_name, is_draw_image=False)
     
 
     # dp = DataProcessor(past_x_hour=3, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600)
