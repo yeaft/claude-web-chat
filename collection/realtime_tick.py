@@ -7,6 +7,7 @@ import click
 import pytz
 
 from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
+from analysis import v3_keep_doing
 from datetime import datetime, timedelta
 from pymongo import MongoClient, DESCENDING, ASCENDING
 
@@ -75,6 +76,9 @@ def is_end_with_5_sec():
 
 def collect_tick_data():
     # Contract map
+    rb_dp = v3_keep_doing.DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name='ccl', precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=True)
+    y_dp = v3_keep_doing.DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name='ccl', precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=True)
+
     types = get_contract_map()
     cols = {}
     cols["norCode"] = constance.REAL_TIME_TICK_COL
@@ -131,6 +135,13 @@ def collect_tick_data():
                 
                 cols[code_key].insert_many(results)
                 last_datas[code_key] = current_datas
+
+                # TODO Prepare to send the abnormal information
+                for info in results:
+                    if info['type'] == "rb":
+                        rb_dp.process_new_data(info)
+                    elif info['type'] == "y":
+                        y_dp.process_new_data(info)
                 
             # Update sum_ccl for real time tick
             # "norCode", "secondNorCode"
