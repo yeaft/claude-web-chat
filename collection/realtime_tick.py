@@ -14,6 +14,10 @@ from pymongo import MongoClient, DESCENDING, ASCENDING
 DATA_URL = "https://hq.sinajs.cn/list="
 DATA_5M_URL = "http://stock2.finance.sina.com.cn/futures/api/json.php/IndexService.getInnerFuturesMiniKLine5m?symbol="
 START_TIMES = [["085959", "101500"], ["103000", "113000"], ["133000", "150000"], ["205955", "240000"], ["000000", "013000"]]
+CONTRACT_DP_MAP = {
+    "rb": None,
+    "y": None
+}
 
 def get_contract_map():
     max_date = constance.MAIN_COL.find_one({}, sort=[('date', DESCENDING)])['date']
@@ -73,6 +77,9 @@ def get_current_data(types, code_key = "norCode", current_time = ""):
 def is_end_with_5_sec():
     current_sec = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%S')[-1]
     return current_sec == "0" or current_sec == "5"
+
+def initial_dp_data():
+    return
 
 def collect_tick_data():
     # Contract map
@@ -136,7 +143,7 @@ def collect_tick_data():
                 cols[code_key].insert_many(results)
                 last_datas[code_key] = current_datas
 
-                # TODO Prepare to send the abnormal information
+                # Prepare to send the abnormal information
                 for info in results:
                     if info['type'] == "rb":
                         rb_dp.process_new_data(info)

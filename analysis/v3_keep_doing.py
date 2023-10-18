@@ -43,6 +43,7 @@ class DataProcessor:
         self.past_5day_ccl_std = 0
         self.past_5day_ccl_max = 0
         self.past_5day_ccl_min = 0
+        self.ccl_abnormal_direction = "NA"
         self.ccl_abnormal_data = deque(maxlen=10)
 
         self.ccl_day_diff_threshold = 1000
@@ -483,7 +484,7 @@ class DataProcessor:
         message += f"{self.data[-1]['code']} CCL abnormal\n"
 
         for d in self.ccl_abnormal_data:
-            message += f"{d['time'].time()} {int(d['ccl']):<7} {d['zxj']}\n"        
+            message += f"{str(d['time'].time())[:5]:<5} {int(d['ccl']):<7} {d['ab_ccl_direction']} {d['zxj']}\n"        
 
         utils.send_ding_msg(msg=message)
 
@@ -503,8 +504,8 @@ class DataProcessor:
                     # self.data[-1]['past_2_mins_slope'] = round(self.slope_angle(self.data[-24], self.data[-1]), 2)
 
                     # Generate suggestion
-                    if self.send_message:
-                        self.send_cjl_abnormal_signal()
+                    # if self.send_message:
+                    #     self.send_cjl_abnormal_signal()
 
                 else:
                     self.data[-1]['anomaly'] = "hot"                
@@ -530,12 +531,20 @@ class DataProcessor:
                                 self.data[-1]['anomaly'] = "end"
 
     def ccl_abnormal_check(self):
-        ccls = [d['ccl'] for d in self.data[-6:]]
-        if abs(sum(ccls)) >= 1500:
-            self.ccl_abnormal_data.append(self.data[-1])
-            if self.send_message:
-                self.send_ccl_abnormal_signal()
-        return
+        if len(self.data) < 8:
+            return
+        
+        direction = "U" if self.data[-1]['ccl'] - self.data[-7]['ccl'] > 0 else "D"
+        if not self.ccl_abnormal_data or direction != self.ccl_abnormal_data[-1]['ab_ccl_direction']:
+            ccl_diffs = []
+            for i in range(-7, -1):
+                ccl_diffs.append(self.data[i+1]['ccl'] - self.data[i]['ccl'])
+            
+            if abs(sum(ccl_diffs)) >= 1500:
+                self.data[-1]['ab_ccl_direction'] = direction                
+                self.ccl_abnormal_data.append(self.data[-1])
+                if self.send_message:
+                    self.send_ccl_abnormal_signal()
 
     def start_process(self, data_length):
         self.cjl_abnormal_check()
