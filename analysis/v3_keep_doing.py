@@ -21,17 +21,30 @@ from statistics import mean, variance, stdev
 
 class DataProcessor:
     def __init__(self, cjl_hot_threshold = 1000, cjl_period_min_threshold = 5800, cjl_period_pass_threshold=8000,  cjl_past_num=60, cjl_period_num=3, past_x_hour=3, candidate_x_min=5, precheck_x_min=10, check_column_name="ccl", precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False):
+        
         self.data = []
+        self.max_data_size = 12 * 60 * 5.5 * 10  # ten days data
         self.send_message = send_message
         # cjl abnormal
         self.cjl_period_min_threshold = cjl_period_min_threshold
         self.cjl_period_pass_threshold = cjl_period_pass_threshold
         self.cjl_past_num = cjl_past_num
         self.cjl_period_num = cjl_period_num
-        self.cjl_hot_threshold = 1000
-        self.must_away_cjl_threshold = 40000
+        self.cjl_hot_threshold = 1000 # threshold should be related to real money, 1000 * 4000 = 4 million
+        self.must_away_cjl_threshold = 40000 # 40000 * 4000 = 160 million
+
+        self.past_30min_ccl_trend = "NA"
+        self.past_30min_ccl_diff = 0
+        self.past_30min_price_trend = "NA"
+        self.past_30min_price_diff_rate = 0
 
         # ccl trend analysis
+        self.past_5day_ccl_avg = 0
+        self.past_5day_ccl_std = 0
+        self.past_5day_ccl_max = 0
+        self.past_5day_ccl_min = 0
+        self.ccl_abnormal_data = deque(maxlen=10)
+
         self.ccl_day_diff_threshold = 1000
         self.zxj_day_diff_threshold = 0.5
 
@@ -62,6 +75,9 @@ class DataProcessor:
 
     def process_new_data(self, tick):
         self.data.append(tick)
+        if self.send_message and len(self.data) > self.max_data_size:
+            self.data = self.data[-int(self.max_data_size/2):]
+
         tick['index'] = len(self.data) - 1
         if len(self.data) % 10000 == 0:
             utils.log(f"Processed {len(self.data)} ticks")
@@ -244,29 +260,41 @@ class DataProcessor:
         
         self.data[-1]['ccl_short_trend'] = ccl_short_trend
 
-    def get_big_trend(self):
+    def get_ccl_metric(self):
+        day_span = ticks_helper.get_x_span_number(5, span_type="5sec", unit="d")
+        if len(self.data) < day_span:
+            return
+        
+        past_day_ccl = [d['ccl'] for d in self.data[-day_span:]]
+        self.past_5day_ccl_avg = mean(past_day_ccl)
+        self.past_5day_ccl_std = stdev(past_day_ccl)
+        self.past_5day_ccl_max = max(past_day_ccl)
+        self.past_5day_ccl_min = min(past_day_ccl)
+
+            
+    def get_big_trend(self, is_record_in_data = False):
         # 长期ccl趋势
         #   1. 一天前的5min平均数和当前的5min平均数比较，如果当前的5min平均数大，那么长期趋势是上升，反之下降，且差值要超过一个阈值
         #   1. 如果看不出来，就找两天前的以此类推
-        five_min_span = ticks_helper.get_x_span_number(5, span_type="5sec", unit="m")        
+        min_span = ticks_helper.get_x_span_number(30, span_type="5sec", unit="m")        
         ccl_trend = "unknown"
         price_trend = "unknown"
         ccl_diff = 0
         price_diff_rate = 0
         for day in range(1, 4):
             day_span = ticks_helper.get_x_span_number(day, span_type="5sec", unit="d")
-            if len(self.data) < day_span + five_min_span:
-                print(f"not enough data for {day} day, {len(self.data)}, days {day_span}, 5min {five_min_span}")
+            if len(self.data) < day_span + min_span:
+                print(f"not enough data for {day} day, {len(self.data)}, days {day_span}, 5min {min_span}")
                 break 
 
-            past_day_ccl_avg = mean([d['ccl'] for d in self.data[-day_span - five_min_span:-day_span]])
-            past_ccl_avg = mean([d['ccl'] for d in self.data[- five_min_span:]])
+            past_day_ccl_avg = mean([d['ccl'] for d in self.data[-day_span - min_span:-day_span]])
+            past_ccl_avg = mean([d['ccl'] for d in self.data[- min_span:]])
             ccl_diff = past_ccl_avg - past_day_ccl_avg
 
             if ccl_diff > self.ccl_day_diff_threshold:
                 ccl_trend = "up"
-                past_day_zxj_avg = mean([d['zxj'] for d in self.data[-day_span - five_min_span:-day_span]])
-                past_zxj_avg = mean([d['zxj'] for d in self.data[-five_min_span:]])
+                past_day_zxj_avg = mean([d['zxj'] for d in self.data[-day_span - min_span:-day_span]])
+                past_zxj_avg = mean([d['zxj'] for d in self.data[-min_span:]])
                 price_diff_rate = round((past_zxj_avg - past_day_zxj_avg) * 1.00 / past_day_zxj_avg, 2)
                 if price_diff_rate >= self.zxj_day_diff_threshold:
                     price_trend = "up"
@@ -275,8 +303,8 @@ class DataProcessor:
                 break
             elif ccl_diff < -self.ccl_day_diff_threshold:
                 ccl_trend = "down"
-                past_day_zxj_avg = mean([d['zxj'] for d in self.data[-day_span - five_min_span:-day_span]])
-                past_zxj_avg = mean([d['zxj'] for d in self.data[-five_min_span:]])
+                past_day_zxj_avg = mean([d['zxj'] for d in self.data[-day_span - min_span:-day_span]])
+                past_zxj_avg = mean([d['zxj'] for d in self.data[-min_span:]])
                 price_diff_rate = round((past_zxj_avg - past_day_zxj_avg) * 100.00 / past_day_zxj_avg, 2)
                 if price_diff_rate >= self.zxj_day_diff_threshold:
                     price_trend = "up"
@@ -284,10 +312,16 @@ class DataProcessor:
                     price_trend = "down"
                 break
         
-        self.data[-1]['ccl_trend'] = ccl_trend
-        self.data[-1]['ccl_diff'] = ccl_diff        
-        self.data[-1]['price_trend'] = price_trend
-        self.data[-1]['price_diff_rate'] = price_diff_rate
+        self.past_30min_ccl_trend = ccl_trend
+        self.past_30min_ccl_diff = ccl_diff        
+        self.past_30min_price_trend = price_trend
+        self.past_30min_price_diff_rate = price_diff_rate
+
+        if is_record_in_data:
+            self.data[-1]['ccl_trend'] = ccl_trend
+            self.data[-1]['ccl_diff'] = ccl_diff
+            self.data[-1]['price_trend'] = price_trend
+            self.data[-1]['price_diff_rate'] = price_diff_rate
 
 
     def cjl_abnormal_end_analysis(self):
@@ -430,12 +464,26 @@ class DataProcessor:
                     candidate['extreme'] = False
                     self.error_points.append(candidate)
 
-    def send_abnormal_signal(self):
+    def send_cjl_abnormal_signal(self):
 
-        message = f"{self.data[-1]['code']}:\n"
-        for i in range(len(self.data)-5, len(self.data)):
-            message += f"{self.data[i]['time']}, {self.data[i]['zxj']}, {self.data[i]['cjl']}, {self.data[i]['ccl']}\n"
-        
+        message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
+        message += f"{self.data[-1]['code']} CJL abnormal\n"
+        message += f"     long short\n"
+        message += f"ZXJ {self.past_30min_price_trend:<4} {self.data[-1]['ab_zxj_direction']:<5}\n"
+        message += f"CCL {self.past_30min_ccl_trend:<4} {self.data[-1]['ab_ccl_direction']:<5}\n"
+
+        for i in range(len(self.data)-8, len(self.data)):
+            message += f"{self.data[i]['zxj']:<6} {int(self.data[i]['cjl']):<5} {int(self.data[i]['ccl']):<7}\n"        
+
+        utils.send_ding_msg(msg=message)
+
+    def send_ccl_abnormal_signal(self):
+
+        message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
+        message += f"{self.data[-1]['code']} CCL abnormal\n"
+
+        for d in self.ccl_abnormal_data:
+            message += f"{d['time'].time()} {int(d['ccl']):<7} {d['zxj']}\n"        
 
         utils.send_ding_msg(msg=message)
 
@@ -453,8 +501,10 @@ class DataProcessor:
                     self.data[-1]['ab_zxj_direction'] = "up" if self.data[-1]['zxj'] > mean([d['zxj'] for d in self.data[-6:-1]]) else "down"
                     self.data[-1]['ab_ccl_direction'] = "up" if self.data[-1]['ccl'] > mean([d['ccl'] for d in self.data[-6:-1]]) else "down"
                     # self.data[-1]['past_2_mins_slope'] = round(self.slope_angle(self.data[-24], self.data[-1]), 2)
+
+                    # Generate suggestion
                     if self.send_message:
-                        self.send_abnormal_signal()
+                        self.send_cjl_abnormal_signal()
 
                 else:
                     self.data[-1]['anomaly'] = "hot"                
@@ -479,18 +529,28 @@ class DataProcessor:
                             else:
                                 self.data[-1]['anomaly'] = "end"
 
-                
+    def ccl_abnormal_check(self):
+        ccls = [d['ccl'] for d in self.data[-6:]]
+        if abs(sum(ccls)) >= 1500:
+            self.ccl_abnormal_data.append(self.data[-1])
+            if self.send_message:
+                self.send_ccl_abnormal_signal()
+        return
+
     def start_process(self, data_length):
         self.cjl_abnormal_check()
-        # self.check_candidate(data_length)
-
         self.cjl_abnormal_end_analysis()
+        self.ccl_abnormal_check()
+        # self.check_candidate(data_length)
         # Only have more than extreme points, to do the futher analysis
         # if len(self.extreme_points) > 2:
         #     self.start_analyse(data_length)
 
         # Record the extreme point
         # self.record_extreme_point(data_length)
+        if len(self.data) % (12 * 30) == 0:
+            self.get_big_trend()
+            self.get_ccl_metric()
 
     def slope_angle(self, start, end):
         delta_y = end[self.check_column_name] - start[self.check_column_name]
@@ -796,9 +856,9 @@ if __name__ == "__main__":
 
 
     dps = [
-        DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600),
+        DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=True),
     ]
-    process_data(dps, "2022-11-01", "2022-11-11", verify_name="verify_09_12",
+    process_data(dps, "2022-11-01", "2022-11-01", verify_name="verify_09_12",
                  check_column_name=check_column_name, is_draw_image=False)
     
 
