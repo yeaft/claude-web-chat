@@ -540,7 +540,7 @@ class DataProcessor:
             ccl_diffs.append(self.data[i+1]['ccl'] - self.data[i]['ccl'])
         
         if abs(sum(ccl_diffs)) >= 1500:
-            if self.ccl_abnormal_data and direction == self.ccl_abnormal_data[-1]['ab_ccl_direction']:
+            if self.ccl_abnormal_data and direction in self.ccl_abnormal_data[-1]['ab_ccl_direction']:
                 self.ccl_abnormal_data[-1]['ab_ccl_count'] += 1
             else:
                 ccls = [d['ccl'] for d in self.data[-7:]]
