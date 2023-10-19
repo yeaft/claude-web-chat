@@ -482,9 +482,9 @@ class DataProcessor:
 
         message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
         message += f"{self.data[-1]['code']} CCL abnormal\n"
-
+        message += f"Avg: {int(self.past_5day_ccl_avg)}\nStd: {int(self.past_5day_ccl_std)}\nMin: {int(self.past_5day_ccl_min)}\nMax: {int(self.past_5day_ccl_max)}\n"
         for d in self.ccl_abnormal_data:
-            message += f"{str(d['time'].time())[:5]:<5} {int(d['ccl']):<7} {d['ab_ccl_direction']} {d['zxj']}\n"        
+            message += f"{str(d['time'].time())[:5]:<5} {int(d['ccl']):<7} {d['ab_ccl_direction']} {int(d['ab_ccl_count'])} {d['zxj']}\n"        
 
         utils.send_ding_msg(msg=message)
 
@@ -535,16 +535,34 @@ class DataProcessor:
             return
         
         direction = "U" if self.data[-1]['ccl'] - self.data[-7]['ccl'] > 0 else "D"
-        if not self.ccl_abnormal_data or direction != self.ccl_abnormal_data[-1]['ab_ccl_direction']:
-            ccl_diffs = []
-            for i in range(-7, -1):
-                ccl_diffs.append(self.data[i+1]['ccl'] - self.data[i]['ccl'])
-            
-            if abs(sum(ccl_diffs)) >= 1500:
-                self.data[-1]['ab_ccl_direction'] = direction                
+        ccl_diffs = []
+        for i in range(-7, -1):
+            ccl_diffs.append(self.data[i+1]['ccl'] - self.data[i]['ccl'])
+        
+        if abs(sum(ccl_diffs)) >= 1500:
+            if self.ccl_abnormal_data and direction == self.ccl_abnormal_data[-1]['ab_ccl_direction']:
+                self.ccl_abnormal_data[-1]['ab_ccl_count'] += 1
+            else:
+                ccls = [d['ccl'] for d in self.data[-7:]]
+                self.data[-1]['ab_ccl_direction'] = direction
+                self.data[-1]['ab_ccl_threshold'] = max(ccls) if direction == "D" else min(ccls)
+                self.data[-1]['ab_ccl_count'] = 1
                 self.ccl_abnormal_data.append(self.data[-1])
                 if self.send_message:
                     self.send_ccl_abnormal_signal()
+        else:
+            # Last wrong check
+            if self.ccl_abnormal_data:
+                if self.ccl_abnormal_data[-1]['ab_ccl_direction'] == "U" and self.data[-1]['ccl'] <= self.ccl_abnormal_data[-1]['ab_ccl_threshold']:
+                    self.ccl_abnormal_data[-1]['ab_ccl_direction'] = "U-"
+                    self.data[-1]['ab_ccl_direction'] = "RD"
+                    self.data[-1]['ab_ccl_count'] = 1
+                    self.ccl_abnormal_data.append(self.data[-1])
+                elif self.ccl_abnormal_data[-1]['ab_ccl_direction'] == "D" and self.data[-1]['ccl'] >= self.ccl_abnormal_data[-1]['ab_ccl_threshold']:
+                    self.ccl_abnormal_data[-1]['ab_ccl_direction'] = "D-"
+                    self.data[-1]['ab_ccl_direction'] = "RU"
+                    self.data[-1]['ab_ccl_count'] = 1
+                    self.ccl_abnormal_data.append(self.data[-1])
 
     def start_process(self, data_length):
         self.cjl_abnormal_check()
