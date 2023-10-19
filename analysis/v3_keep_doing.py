@@ -474,7 +474,7 @@ class DataProcessor:
         message += f"CCL {self.past_30min_ccl_trend:<4} {self.data[-1]['ab_ccl_direction']:<5}\n"
 
         for i in range(len(self.data)-8, len(self.data)):
-            message += f"{self.data[i]['zxj']:<6} {int(self.data[i]['cjl']):<5} {int(self.data[i]['ccl']):<7}\n"        
+            message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i]['cjl']):<5} {int(self.data[i]['ccl']):<7}\n"        
 
         utils.send_ding_msg(msg=message)
 
@@ -484,7 +484,7 @@ class DataProcessor:
         message += f"{self.data[-1]['code']} CCL abnormal\n"
         message += f"Avg: {int(self.past_5day_ccl_avg)}\nStd: {int(self.past_5day_ccl_std)}\nMin: {int(self.past_5day_ccl_min)}\nMax: {int(self.past_5day_ccl_max)}\n"
         for d in self.ccl_abnormal_data:
-            message += f"{str(d['time'].time())[:5]:<5} {int(d['ccl']):<7} {d['ab_ccl_direction']} {int(d['ab_ccl_count'])} {d['zxj']}\n"        
+            message += f"{str(d['time'].time())[:5]:<5} {int(d['ccl']):<7} {d['ab_ccl_direction']} {int(d['ab_ccl_count'])} {int(d['zxj'])}\n"        
 
         utils.send_ding_msg(msg=message)
 
