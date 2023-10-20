@@ -13,11 +13,9 @@ from pymongo import MongoClient, DESCENDING, ASCENDING
 
 DATA_URL = "https://hq.sinajs.cn/list="
 DATA_5M_URL = "http://stock2.finance.sina.com.cn/futures/api/json.php/IndexService.getInnerFuturesMiniKLine5m?symbol="
-START_TIMES = [["085959", "101500"], ["103000", "113000"], ["133000", "150000"], ["205955", "240000"], ["000000", "013000"]]
-CONTRACT_DP_MAP = {
-    "rb": None,
-    "y": None
-}
+START_TIMES = [["085959", "101500"], ["103000", "113000"], ["133000", "150000"], ["205955", "230000"]]
+MONITOR_CONTRACTS = ["rb"]
+CONTRACT_DP_MAP = {}
 
 def get_contract_map():
     max_date = constance.MAIN_COL.find_one({}, sort=[('date', DESCENDING)])['date']
@@ -79,13 +77,25 @@ def is_end_with_5_sec():
     return current_sec == "0" or current_sec == "5"
 
 def initial_dp_data():
+    # Contract map
+    for c in MONITOR_CONTRACTS:
+        CONTRACT_DP_MAP[c] = v3_keep_doing.DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name='ccl', precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False, real_send_message=False)
+        current_time = date_utils.date_add_days(datetime.now(), -10)
+        current_time_str = date_utils.convert_date_to_str(current_time, "-")
+
+        ticks = constance.REAL_TIME_TICK_COL.find({'type': c, 'date': {"$gte": current_time_str}}, sort=[('time', -1)])
+        for t in ticks:
+            CONTRACT_DP_MAP[c].process_new_data(t)
+
+        CONTRACT_DP_MAP[c].send_message = True
+        CONTRACT_DP_MAP[c].real_send_message = True
+        utils.log("Initial dp data {} for {}".format(len(CONTRACT_DP_MAP[c].data), c))
+
     return
 
 def collect_tick_data():
-    # Contract map
-    rb_dp = v3_keep_doing.DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name='ccl', precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=True)
-    y_dp = v3_keep_doing.DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name='ccl', precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=True)
 
+    initial_dp_data()
     types = get_contract_map()
     cols = {}
     cols["norCode"] = constance.REAL_TIME_TICK_COL
@@ -145,10 +155,11 @@ def collect_tick_data():
 
                 # Prepare to send the abnormal information
                 for info in results:
-                    if info['type'] == "rb":
-                        rb_dp.process_new_data(info)
-                    elif info['type'] == "y":
-                        y_dp.process_new_data(info)
+                    if info['type'] in MONITOR_CONTRACTS:
+                        try:
+                            CONTRACT_DP_MAP[info['type']].process_new_data(info)
+                        except Exception as e:
+                            utils.log(e)
                 
             # Update sum_ccl for real time tick
             # "norCode", "secondNorCode"
@@ -165,7 +176,7 @@ def collect_tick_data():
                 else:
                     utils.log("No sec data {} {}".format(t['type'], t['time']))
                 
-        time.sleep(4)
+        time.sleep(2)
 
 # tick {"time" : "20200526 140750", "type" : "ag", "code" : "ag2012", "jkp" : 4195, "zgj" : 4319, "zdj" : 4180, "zxj" : 4299, "ccl" : 482064, "cjl" : 872750 }
 #tick5m{"time" : "20210127 094000", "type" : "cu", "code" : "cu2102", "kpj" : "58800.000", "zgj" : "58800.000", "zdj" : "58790.000", "spj" : "58790.000", "cjl" : "263" }
@@ -238,6 +249,8 @@ if __name__ == "__main__":
     collect_data()
     
     # Test
+    # Initial data
+    # initial_dp_data()
     # get_contract_map()
     # get_current_data({"rb": {"norCode":"RB2301"}})
  

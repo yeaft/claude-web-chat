@@ -20,7 +20,7 @@ from statistics import mean, variance, stdev
 
 
 class DataProcessor:
-    def __init__(self, cjl_hot_threshold = 1000, cjl_period_min_threshold = 5800, cjl_period_pass_threshold=8000,  cjl_past_num=60, cjl_period_num=3, past_x_hour=3, candidate_x_min=5, precheck_x_min=10, check_column_name="ccl", precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False):
+    def __init__(self, cjl_hot_threshold = 1000, cjl_period_min_threshold = 5800, cjl_period_pass_threshold=8000,  cjl_past_num=60, cjl_period_num=3, past_x_hour=3, candidate_x_min=5, precheck_x_min=10, check_column_name="ccl", precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False, real_send_message=False):
         
         self.data = []
         self.max_data_size = 12 * 60 * 5.5 * 10  # ten days data
@@ -32,6 +32,7 @@ class DataProcessor:
         self.cjl_period_num = cjl_period_num
         self.cjl_hot_threshold = 1000 # threshold should be related to real money, 1000 * 4000 = 4 million
         self.must_away_cjl_threshold = 40000 # 40000 * 4000 = 160 million
+        self.real_send_message = real_send_message  
 
         self.past_30min_ccl_trend = "NA"
         self.past_30min_ccl_diff = 0
@@ -78,6 +79,7 @@ class DataProcessor:
         self.data.append(tick)
         if self.send_message and len(self.data) > self.max_data_size:
             self.data = self.data[-int(self.max_data_size/2):]
+            utils.log(f"too many data, cut to {len(self.data)}")
 
         tick['index'] = len(self.data) - 1
         if len(self.data) % 10000 == 0:
@@ -375,6 +377,9 @@ class DataProcessor:
         self.data[-1]['ab_end_ccl_direction'] = "up" if self.data[-1]['ccl'] - abnormal_start_data['ccl'] >0 else "down"
         self.data[-1]['ab_end_ccl_diff_rate'] = round(self.data[-1]['ccl'] * 100.00 / abnormal_start_data['ccl'] - 100, 4)
         
+        if self.send_message:
+            self.send_cjl_abnormal_end_signal(abnormal_start_data, is_send=self.real_send_message)
+
         
         # 1. Up is slow, down is fast. 
         # 2. ccl abnormal should be detect
@@ -465,31 +470,40 @@ class DataProcessor:
                     candidate['extreme'] = False
                     self.error_points.append(candidate)
 
-    def send_cjl_abnormal_signal(self):
+    def send_cjl_abnormal_signal(self, is_send = False):
 
         message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
         message += f"{self.data[-1]['code']} CJL abnormal\n"
-        message += f"     long short\n"
-        message += f"ZXJ {self.past_30min_price_trend:<4} {self.data[-1]['ab_zxj_direction']:<5}\n"
-        message += f"CCL {self.past_30min_ccl_trend:<4} {self.data[-1]['ab_ccl_direction']:<5}\n"
+        message += f"ZXJ L:{self.past_30min_price_trend:<4} S:{self.data[-1]['ab_zxj_direction']:<5}\n"
+        message += f"CCL L:{self.past_30min_ccl_trend:<4} S:{self.data[-1]['ab_ccl_direction']:<5}\n"
 
-        for i in range(len(self.data)-8, len(self.data)):
+        for i in range(len(self.data)-5, len(self.data)):
             message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i]['cjl']):<5} {int(self.data[i]['ccl']):<7}\n"        
 
-        # utils.send_ding_msg(msg=message, is_real_send=False)
-        utils.send_ding_msg(msg=message)
+        utils.send_ding_msg(msg=message, is_real_send=is_send)
 
-    def send_ccl_abnormal_signal(self):
+    def send_cjl_abnormal_end_signal(self, abnormal_start_data, is_send=False):
+        message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
+        message += f"{self.data[-1]['code']} CJL abnormal end\n"
+        duration_seconds = (self.data[-1]['time'] - abnormal_start_data['time']).total_seconds()
+        message += f"{int(duration_seconds)}s, {int(self.data[-1]['cjl']-abnormal_start_data['cjl'])}, {int(self.data[-1]['ccl'] - abnormal_start_data['ccl'])}\n"
+        message += f"ZXJ L:{self.past_30min_price_trend:<4} S:{self.data[-1]['ab_end_zxj_direction']:<5}\n"
+        message += f"CCL L:{self.past_30min_ccl_trend:<4} S:{self.data[-1]['ab_end_ccl_direction']:<5}\n"
+        for i in range(len(self.data)-5, len(self.data)):
+            message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i]['cjl']):<5} {int(self.data[i]['ccl']):<7}\n"        
+
+        utils.send_ding_msg(msg=message, is_real_send=is_send)
+
+    def send_ccl_abnormal_signal(self, is_send=False):
 
         message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
-        message += f"{self.data[-1]['code']} CCL abnormal\n"
+        message += f"{self.data[-1]['code']} CCL Abnormal {self.data[-1]['ab_ccl_direction']}\n"
         message += f"Avg: {int(self.past_5day_ccl_avg)}\nStd: {int(self.past_5day_ccl_std)}\nMin: {int(self.past_5day_ccl_min)}\nMax: {int(self.past_5day_ccl_max)}\n"
         for d in self.ccl_abnormal_data:
             if d['ab_ccl_count'] > 1 or d == self.ccl_abnormal_data[-1]:
                 message += f"{str(d['time'].time())[:5]:<5} {int(d['ccl']):<7} {d['ab_ccl_direction']} {int(d['ab_ccl_count'])} {int(d['zxj'])}\n"
 
-        # utils.send_ding_msg(msg=message, is_real_send=False)
-        utils.send_ding_msg(msg=message)
+        utils.send_ding_msg(msg=message, is_real_send=is_send)
 
     def cjl_abnormal_check(self):
         if len(self.data) > self.cjl_past_num + self.cjl_period_num:
@@ -508,7 +522,7 @@ class DataProcessor:
 
                     # Generate suggestion
                     if self.send_message:
-                        self.send_cjl_abnormal_signal()
+                        self.send_cjl_abnormal_signal(is_send=self.real_send_message)
 
                 else:
                     self.data[-1]['anomaly'] = "hot"                
@@ -551,13 +565,13 @@ class DataProcessor:
                         self.data[-1]['ab_ccl_count'] = 1
                         self.ccl_abnormal_data.append(self.data[-1])
                         if self.send_message:
-                            self.send_ccl_abnormal_signal()
+                            self.send_ccl_abnormal_signal(is_send=self.real_send_message)
 
                 elif direction in self.ccl_abnormal_data[-1]['ab_ccl_direction']:
                     self.ccl_abnormal_data[-1]['ab_ccl_count'] += 1
                     if self.ccl_abnormal_data[-1]['ab_ccl_count'] == 2:
                         if self.send_message:
-                            self.send_ccl_abnormal_signal()
+                            self.send_ccl_abnormal_signal(is_send=self.real_send_message)
                         
                 else:
                     ccls = [d['ccl'] for d in self.data[-7:]]
@@ -566,7 +580,7 @@ class DataProcessor:
                     self.data[-1]['ab_ccl_count'] = 1
                     self.ccl_abnormal_data.append(self.data[-1])
                     if self.send_message:
-                        self.send_ccl_abnormal_signal()
+                        self.send_ccl_abnormal_signal(is_send=self.real_send_message)
             else:
                 ccls = [d['ccl'] for d in self.data[-7:]]
                 self.data[-1]['ab_ccl_direction'] = direction
@@ -574,7 +588,7 @@ class DataProcessor:
                 self.data[-1]['ab_ccl_count'] = 1
                 self.ccl_abnormal_data.append(self.data[-1])
                 if self.send_message:
-                    self.send_ccl_abnormal_signal()
+                    self.send_ccl_abnormal_signal(is_send=self.real_send_message)
         else:
             # Last wrong check
             if self.ccl_abnormal_data:
@@ -584,14 +598,14 @@ class DataProcessor:
                     self.data[-1]['ab_ccl_count'] = 1
                     self.ccl_abnormal_data.append(self.data[-1])
                     if self.send_message:
-                        self.send_ccl_abnormal_signal()
+                        self.send_ccl_abnormal_signal(is_send=self.real_send_message)
                 elif self.ccl_abnormal_data[-1]['ab_ccl_direction'] == "D" and self.data[-1]['ccl'] >= self.ccl_abnormal_data[-1]['ab_ccl_threshold']:
                     self.ccl_abnormal_data[-1]['ab_ccl_direction'] = "D-"
                     self.data[-1]['ab_ccl_direction'] = "RU"
                     self.data[-1]['ab_ccl_count'] = 1
                     self.ccl_abnormal_data.append(self.data[-1])
                     if self.send_message:
-                        self.send_ccl_abnormal_signal()
+                        self.send_ccl_abnormal_signal(is_send=self.real_send_message)
 
     def start_process(self, data_length):
         day_span = ticks_helper.get_x_span_number(5, span_type="5sec", unit="d")
