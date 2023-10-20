@@ -213,22 +213,24 @@ def is_number(s):
 #     - d '{"msgtype": "text","text": {"content": "我就是我, 是不一样的烟火"}}'
 
 
-def send_ding_msg(msg, log_message=True):
-    timestamp = str(round(time.time() * 1000))
-    secret = 'SECc7fae5d4a91c7f001d6964edcb509ddea421a0ffe5521e8e72e70a1cf130f322'
-    secret_enc = secret.encode('utf-8')
-    string_to_sign = '{}\n{}'.format(timestamp, secret)
-    string_to_sign_enc = string_to_sign.encode('utf-8')
-    hmac_code = hmac.new(secret_enc, string_to_sign_enc,
-                         digestmod=hashlib.sha256).digest()
-    sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
-    headers = {"Content-Type": "application/json"}
-    r = requests.post(constance.DING_URL_FORMAT.format(timestamp, sign),
-                      headers=headers, data=json.dumps(ding_msg(msg)))
+def send_ding_msg(msg, log_message=True, is_real_send = True):    
+    if is_real_send:
+        timestamp = str(round(time.time() * 1000))
+        secret = 'SECc7fae5d4a91c7f001d6964edcb509ddea421a0ffe5521e8e72e70a1cf130f322'
+        secret_enc = secret.encode('utf-8')
+        string_to_sign = '{}\n{}'.format(timestamp, secret)
+        string_to_sign_enc = string_to_sign.encode('utf-8')
+        hmac_code = hmac.new(secret_enc, string_to_sign_enc,
+                            digestmod=hashlib.sha256).digest()
+        sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+        headers = {"Content-Type": "application/json"}
+        r = requests.post(constance.DING_URL_FORMAT.format(timestamp, sign),
+                        headers=headers, data=json.dumps(ding_msg(msg)))
+        
+        click.echo("Send result {}".format(r.text))
+
     if log_message:
         click.echo("Send message {}".format(msg))
-
-    click.echo("Send result {}".format(r.text))
 
 
 def ding_msg(msg):
