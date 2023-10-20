@@ -83,7 +83,7 @@ def initial_dp_data():
         current_time = date_utils.date_add_days(datetime.now(), -10)
         current_time_str = date_utils.convert_date_to_str(current_time, "-")
 
-        ticks = constance.REAL_TIME_TICK_COL.find({'type': c, 'date': {"$gte": current_time_str}}, sort=[('time', -1)])
+        ticks = constance.REAL_TIME_TICK_COL.find({'type': c, 'date': {"$gte": current_time_str}}, sort=[('time', 1)])
         for t in ticks:
             CONTRACT_DP_MAP[c].process_new_data(t)
 
