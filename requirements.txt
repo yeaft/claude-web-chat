@@ -5,8 +5,8 @@ pytz
 requests
 chinesecalendar
 numpy
-# matplotlib
-# mplcursors
+matplotlib
+mplcursors
 scipy 
 pandas
 # TA-Lib
