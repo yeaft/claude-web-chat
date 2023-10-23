@@ -80,6 +80,7 @@ def initial_dp_data():
     # Contract map
     for c in MONITOR_CONTRACTS:
         CONTRACT_DP_MAP[c] = v3_keep_doing.DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name='ccl', precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False, real_send_message=False)
+        CONTRACT_DP_MAP[c].cjl_column_name = "cjlDiff"
         current_time = date_utils.date_add_days(datetime.now(), -10)
         current_time_str = date_utils.convert_date_to_str(current_time, "-")
 

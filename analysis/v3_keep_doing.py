@@ -32,7 +32,8 @@ class DataProcessor:
         self.cjl_period_num = cjl_period_num
         self.cjl_hot_threshold = 1000 # threshold should be related to real money, 1000 * 4000 = 4 million
         self.must_away_cjl_threshold = 40000 # 40000 * 4000 = 160 million
-        self.real_send_message = real_send_message  
+        self.real_send_message = real_send_message
+        self.cjl_column_name = "cjl"  
 
         self.past_30min_ccl_trend = "NA"
         self.past_30min_ccl_diff = 0
@@ -478,7 +479,7 @@ class DataProcessor:
         message += f"CCL L:{self.past_30min_ccl_trend:<4} S:{self.data[-1]['ab_ccl_direction']:<5}\n"
 
         for i in range(len(self.data)-5, len(self.data)):
-            message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i]['cjl']):<5} {int(self.data[i]['ccl']):<7}\n"        
+            message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i][self.cjl_column_name]):<5} {int(self.data[i]['ccl']):<7}\n"        
 
         utils.send_ding_msg(msg=message, is_real_send=is_send)
 
@@ -486,11 +487,11 @@ class DataProcessor:
         message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
         message += f"{self.data[-1]['code']} CJL abnormal end\n"
         duration_seconds = (self.data[-1]['time'] - abnormal_start_data['time']).total_seconds()
-        message += f"{int(duration_seconds)}s, {int(self.data[-1]['cjl']-abnormal_start_data['cjl'])}, {int(self.data[-1]['ccl'] - abnormal_start_data['ccl'])}\n"
+        message += f"{int(duration_seconds)}s, {int(self.data[-1][self.cjl_column_name]-abnormal_start_data[self.cjl_column_name])}, {int(self.data[-1]['ccl'] - abnormal_start_data['ccl'])}\n"
         message += f"ZXJ L:{self.past_30min_price_trend:<4} S:{self.data[-1]['ab_end_zxj_direction']:<5}\n"
         message += f"CCL L:{self.past_30min_ccl_trend:<4} S:{self.data[-1]['ab_end_ccl_direction']:<5}\n"
         for i in range(len(self.data)-5, len(self.data)):
-            message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i]['cjl']):<5} {int(self.data[i]['ccl']):<7}\n"        
+            message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i][self.cjl_column_name]):<5} {int(self.data[i]['ccl']):<7}\n"        
 
         utils.send_ding_msg(msg=message, is_real_send=is_send)
 
@@ -507,10 +508,10 @@ class DataProcessor:
 
     def cjl_abnormal_check(self):
         if len(self.data) > self.cjl_past_num + self.cjl_period_num:
-            past_cjl = [d['cjl'] for d in self.data[-self.cjl_past_num-self.cjl_period_num:-self.cjl_period_num]]
+            past_cjl = [d[self.cjl_column_name] for d in self.data[-self.cjl_past_num-self.cjl_period_num:-self.cjl_period_num]]
             past_cjl_mean = np.mean(past_cjl)
             past_cjl_std = np.std(past_cjl)
-            last_period_cjl_sum = sum([d['cjl'] for d in self.data[-self.cjl_period_num:]])
+            last_period_cjl_sum = sum([d[self.cjl_column_name] for d in self.data[-self.cjl_period_num:]])
             last_period_cjl = int(last_period_cjl_sum / self.cjl_period_num)
             if (last_period_cjl - past_cjl_mean > 5 * past_cjl_std and last_period_cjl_sum > self.cjl_period_min_threshold) or last_period_cjl_sum > self.cjl_period_pass_threshold:
                 if 'anomaly' not in self.data[-2]:
@@ -538,7 +539,7 @@ class DataProcessor:
                             break
 
                 if contains_anomaly:
-                    if self.data[-1]['cjl'] >= self.cjl_hot_threshold:
+                    if self.data[-1][self.cjl_column_name] >= self.cjl_hot_threshold:
                         self.data[-1]['anomaly'] = "hot"
                     else:
                         if 'anomaly' in self.data[-2]:
