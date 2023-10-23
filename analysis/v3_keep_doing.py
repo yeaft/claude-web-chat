@@ -76,7 +76,7 @@ class DataProcessor:
         self.check_point = {}
         self.trade_list = []
 
-    def validate_date(self, data):
+    def validate_data(self, data):
         if self.cjl_column_name not in data:
             return False
         
