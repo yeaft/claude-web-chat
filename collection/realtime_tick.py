@@ -14,7 +14,7 @@ from pymongo import MongoClient, DESCENDING, ASCENDING
 DATA_URL = "https://hq.sinajs.cn/list="
 DATA_5M_URL = "http://stock2.finance.sina.com.cn/futures/api/json.php/IndexService.getInnerFuturesMiniKLine5m?symbol="
 START_TIMES = [["085959", "101500"], ["103000", "113000"], ["133000", "150000"], ["205955", "230000"]]
-MONITOR_CONTRACTS = ["rb"]
+MONITOR_CONTRACTS = ["rb", "oi"]
 CONTRACT_DP_MAP = {}
 
 def get_contract_map():
