@@ -557,7 +557,7 @@ class DataProcessor:
         for i in range(-7, -1):
             ccl_diffs.append(self.data[i+1]['ccl'] - self.data[i]['ccl'])
         
-        if abs(sum(ccl_diffs)) >= 1500:
+        if abs(sum(ccl_diffs)) >= 2000:
             if self.ccl_abnormal_data:
                 if self.data[-1]['time'] - self.ccl_abnormal_data[-1]['time'] < timedelta(minutes=2):
                     if direction not in self.ccl_abnormal_data[-1]['ab_ccl_direction']:
