@@ -76,7 +76,16 @@ class DataProcessor:
         self.check_point = {}
         self.trade_list = []
 
+    def validate_date(self, data):
+        if self.cjl_column_name not in data:
+            return False
+        
+        return True
+        
     def process_new_data(self, tick):
+        if not self.validate_data(tick):
+            return
+        
         self.data.append(tick)
         if self.send_message and len(self.data) > self.max_data_size:
             self.data = self.data[-int(self.max_data_size/2):]
