@@ -33,7 +33,8 @@ class DataProcessor:
         self.cjl_hot_threshold = 1000 # threshold should be related to real money, 1000 * 4000 = 4 million
         self.must_away_cjl_threshold = 40000 # 40000 * 4000 = 160 million
         self.real_send_message = real_send_message
-        self.cjl_column_name = "cjl"  
+        self.cjl_column_name = "cjl"
+        self.cjl_ab_start_data = None
 
         self.past_30min_ccl_trend = "NA"
         self.past_30min_ccl_diff = 0
@@ -353,16 +354,16 @@ class DataProcessor:
             return
         
         # Find anbormal start index
-        abnormal_start_data = None
-        for i in range(len(self.data)-1, -1, -1):
-            if 'anomaly' in self.data[i] and self.data[i]['anomaly'] == "start":
-                if len(self.data) - i >= 500:
-                    print(f"too many hot trade {self.data[i]['time']} - {self.data[-1]['time']}")
-                    return
-                abnormal_start_data = self.data[i]
-                break
+        # abnormal_start_data = None
+        # for i in range(len(self.data)-1, -1, -1):
+        #     if 'anomaly' in self.data[i] and self.data[i]['anomaly'] == "start":
+        #         if len(self.data) - i >= 500:
+        #             print(f"too many hot trade {self.data[i]['time']} - {self.data[-1]['time']}")
+        #             return
+        #         abnormal_start_data = self.data[i]
+        #         break
         
-        if not abnormal_start_data:
+        if self.cjl_ab_start_data:
             return 
         
         # Open trade time
@@ -382,13 +383,15 @@ class DataProcessor:
         self.get_big_trend()
         self.get_short_trend()
         
-        self.data[-1]['ab_end_zxj_direction'] = "up" if self.data[-1]['zxj'] - abnormal_start_data['zxj'] > 0 else "down"
-        self.data[-1]['ab_end_zxj_diff_rate'] = round(self.data[-1]['zxj'] * 100.00 / abnormal_start_data['zxj'] - 100, 4)
-        self.data[-1]['ab_end_ccl_direction'] = "up" if self.data[-1]['ccl'] - abnormal_start_data['ccl'] >0 else "down"
-        self.data[-1]['ab_end_ccl_diff_rate'] = round(self.data[-1]['ccl'] * 100.00 / abnormal_start_data['ccl'] - 100, 4)
+        self.data[-1]['ab_end_zxj_direction'] = "up" if self.data[-1]['zxj'] - self.cjl_ab_start_data['zxj'] > 0 else "down"
+        self.data[-1]['ab_end_zxj_diff_rate'] = round(self.data[-1]['zxj'] * 100.00 / self.cjl_ab_start_data['zxj'] - 100, 4)
+        self.data[-1]['ab_end_ccl_direction'] = "up" if self.data[-1]['ccl'] - self.cjl_ab_start_data['ccl'] >0 else "down"
+        self.data[-1]['ab_end_ccl_diff_rate'] = round(self.data[-1]['ccl'] * 100.00 / self.cjl_ab_start_data['ccl'] - 100, 4)
         
         if self.send_message:
-            self.send_cjl_abnormal_end_signal(abnormal_start_data, is_send=self.real_send_message)
+            self.send_cjl_abnormal_signal(is_send=self.real_send_message)
+            
+        self.cjl_ab_start_data = None
 
         
         # 1. Up is slow, down is fast. 
@@ -483,22 +486,13 @@ class DataProcessor:
     def send_cjl_abnormal_signal(self, is_send = False):
 
         message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
-        message += f"{self.data[-1]['code']} CJL abnormal\n"
+        message += f"{self.data[-1]['code']} CJL abnormal {self.data[-1]['anomaly']}\n"
+        if self.data[-1]['anomaly'] != "start":
+            duration_seconds = (self.data[-1]['time'] - self.cjl_ab_start_data['time']).total_seconds()
+            message += f"Duration: {int(duration_seconds)}s\nPrice Diff: {int(self.data[-1]['zxj'] - self.cjl_ab_start_data['zxj'])}\nCJL Diff: {int(self.data[-1][self.cjl_column_name]- self.cjl_ab_start_data[self.cjl_column_name])},CCL Diff: {int(self.data[-1]['ccl'] - self.cjl_ab_start_data['ccl'])}\n"
         message += f"ZXJ L:{self.past_30min_price_trend:<4} S:{self.data[-1]['ab_zxj_direction']:<5}\n"
         message += f"CCL L:{self.past_30min_ccl_trend:<4} S:{self.data[-1]['ab_ccl_direction']:<5}\n"
 
-        for i in range(len(self.data)-5, len(self.data)):
-            message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i][self.cjl_column_name]):<5} {int(self.data[i]['ccl']):<7}\n"        
-
-        utils.send_ding_msg(msg=message, is_real_send=is_send)
-
-    def send_cjl_abnormal_end_signal(self, abnormal_start_data, is_send=False):
-        message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
-        message += f"{self.data[-1]['code']} CJL abnormal end\n"
-        duration_seconds = (self.data[-1]['time'] - abnormal_start_data['time']).total_seconds()
-        message += f"{int(duration_seconds)}s, {int(self.data[-1][self.cjl_column_name]-abnormal_start_data[self.cjl_column_name])}, {int(self.data[-1]['ccl'] - abnormal_start_data['ccl'])}\n"
-        message += f"ZXJ L:{self.past_30min_price_trend:<4} S:{self.data[-1]['ab_end_zxj_direction']:<5}\n"
-        message += f"CCL L:{self.past_30min_ccl_trend:<4} S:{self.data[-1]['ab_end_ccl_direction']:<5}\n"
         for i in range(len(self.data)-5, len(self.data)):
             message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i][self.cjl_column_name]):<5} {int(self.data[i]['ccl']):<7}\n"        
 
@@ -529,7 +523,7 @@ class DataProcessor:
                     self.data[-1]['ab_zxj_direction'] = "up" if self.data[-1]['zxj'] > mean([d['zxj'] for d in self.data[-6:-1]]) else "down"
                     self.data[-1]['ab_ccl_direction'] = "up" if self.data[-1]['ccl'] > mean([d['ccl'] for d in self.data[-6:-1]]) else "down"
                     # self.data[-1]['past_2_mins_slope'] = round(self.slope_angle(self.data[-24], self.data[-1]), 2)
-
+                    self.cjl_ab_start_data = self.data[-1]
                     # Generate suggestion
                     if self.send_message:
                         self.send_cjl_abnormal_signal(is_send=self.real_send_message)
@@ -549,10 +543,40 @@ class DataProcessor:
 
                 if contains_anomaly:
                     if self.data[-1][self.cjl_column_name] >= self.cjl_hot_threshold:
-                        self.data[-1]['anomaly'] = "hot"
+                        is_colding = True
+                        for i in range(2,5):
+                            is_colding = 'anomaly' in self.data[-i-1] and self.data[-i][self.cjl_column_name] < self.data[-i-1][self.cjl_column_name]
+                            if not is_colding:
+                                break
+                        
+                        if is_colding:
+                            self.data[-1]['anomaly'] = "colding"
+                            self.send_cjl_abnormal_signal(self.real_send_message)
+                            
+                        else:
+                            contains_cold = False
+                            for i in range(2, 5):
+                                if 'anomaly' in self.data[-i] and self.data[-i]['anomaly'] in ["cold", "colding"]:
+                                    contains_cold = True
+                                    break
+                                
+                            if contains_cold:
+                                is_hotting = True
+                                for i in range(2, 5):
+                                    is_hotting = 'anomaly' in self.data[-i-1] and self.data[-i][self.cjl_column_name] > self.data[-i-1][self.cjl_column_name]
+                                    if not is_colding:
+                                        break
+                                
+                                if is_hotting:
+                                    self.send_cjl_abnormal_signal(self.real_send_message)
+                                    self.data[-1]['anomaly'] = "hotting"
+                                else:
+                                    self.data[-1]['anomaly'] = "hot"
+                            else:
+                                self.data[-1]['anomaly'] = "hot"
                     else:
                         if 'anomaly' in self.data[-2]:
-                            if (self.data[-2]['anomaly'] in ["hot", "start"] or "anomaly" not in self.data[-3] or ('anomaly' in self.data[-3] and self.data[-3]['anomaly'] in ["hot", "start"])):
+                            if (self.data[-2]['anomaly'] in ["hotting", "colding", "hot", "start"] or "anomaly" not in self.data[-3] or ('anomaly' in self.data[-3] and self.data[-3]['anomaly'] in ["hotting", "colding", "hot", "start"])):
                                 self.data[-1]['anomaly'] = "cold"
                             else:
                                 self.data[-1]['anomaly'] = "end"
@@ -566,7 +590,7 @@ class DataProcessor:
         for i in range(-7, -1):
             ccl_diffs.append(self.data[i+1]['ccl'] - self.data[i]['ccl'])
         
-        if abs(sum(ccl_diffs)) >= 2000:
+        if abs(sum(ccl_diffs)) >= 1800:
             if self.ccl_abnormal_data:
                 if self.data[-1]['time'] - self.ccl_abnormal_data[-1]['time'] < timedelta(minutes=2):
                     if direction not in self.ccl_abnormal_data[-1]['ab_ccl_direction']:

@@ -155,12 +155,13 @@ def collect_tick_data():
                 last_datas[code_key] = current_datas
 
                 # Prepare to send the abnormal information
-                for info in results:
-                    if info['type'] in MONITOR_CONTRACTS:
-                        try:
-                            CONTRACT_DP_MAP[info['type']].process_new_data(info)
-                        except Exception as e:
-                            utils.log(e)
+                if code_key == "norCode":
+                    for info in results:
+                        if info['type'] in MONITOR_CONTRACTS:
+                            try:
+                                CONTRACT_DP_MAP[info['type']].process_new_data(info)
+                            except Exception as e:
+                                utils.log(e)
                 
             # Update sum_ccl for real time tick
             # "norCode", "secondNorCode"
