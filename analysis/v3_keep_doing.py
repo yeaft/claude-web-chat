@@ -568,8 +568,8 @@ class DataProcessor:
                                         break
                                 
                                 if is_hotting:
-                                    self.send_cjl_abnormal_signal(self.real_send_message)
                                     self.data[-1]['anomaly'] = "hotting"
+                                    self.send_cjl_abnormal_signal(self.real_send_message)                                    
                                 else:
                                     self.data[-1]['anomaly'] = "hot"
                             else:
