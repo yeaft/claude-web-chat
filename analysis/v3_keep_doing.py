@@ -516,12 +516,12 @@ class DataProcessor:
             past_cjl_std = np.std(past_cjl)
             last_period_cjl_sum = sum([d[self.cjl_column_name] for d in self.data[-self.cjl_period_num:]])
             last_period_cjl = int(last_period_cjl_sum / self.cjl_period_num)
+            self.data[-1]['ab_zxj_direction'] = "up" if self.data[-1]['zxj'] > mean([d['zxj'] for d in self.data[-6:-1]]) else "down"
+            self.data[-1]['ab_ccl_direction'] = "up" if self.data[-1]['ccl'] > mean([d['ccl'] for d in self.data[-6:-1]]) else "down"
             if (last_period_cjl - past_cjl_mean > 5 * past_cjl_std and last_period_cjl_sum > self.cjl_period_min_threshold) or last_period_cjl_sum > self.cjl_period_pass_threshold:
                 if 'anomaly' not in self.data[-2]:
                     self.data[-1]['anomaly'] = "start"
                     # Check past 2 mins slope
-                    self.data[-1]['ab_zxj_direction'] = "up" if self.data[-1]['zxj'] > mean([d['zxj'] for d in self.data[-6:-1]]) else "down"
-                    self.data[-1]['ab_ccl_direction'] = "up" if self.data[-1]['ccl'] > mean([d['ccl'] for d in self.data[-6:-1]]) else "down"
                     # self.data[-1]['past_2_mins_slope'] = round(self.slope_angle(self.data[-24], self.data[-1]), 2)
                     self.cjl_ab_start_data = self.data[-1]
                     # Generate suggestion
