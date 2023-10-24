@@ -489,9 +489,12 @@ class DataProcessor:
         message += f"{self.data[-1]['code']} CJL abnormal {self.data[-1]['anomaly']}\n"
         if self.data[-1]['anomaly'] != "start":
             duration_seconds = (self.data[-1]['time'] - self.cjl_ab_start_data['time']).total_seconds()
-            message += f"Duration: {int(duration_seconds)}s\nPrice Diff: {int(self.data[-1]['zxj'] - self.cjl_ab_start_data['zxj'])}\nCJL Diff: {int(self.data[-1][self.cjl_column_name]- self.cjl_ab_start_data[self.cjl_column_name])},CCL Diff: {int(self.data[-1]['ccl'] - self.cjl_ab_start_data['ccl'])}\n"
-        message += f"ZXJ L:{self.past_30min_price_trend:<4} S:{self.data[-1]['ab_zxj_direction']:<5}\n"
-        message += f"CCL L:{self.past_30min_ccl_trend:<4} S:{self.data[-1]['ab_ccl_direction']:<5}\n"
+            message += f"Duration: {int(duration_seconds)}s\n"
+            message += f"Price Diff: {int(self.data[-1]['zxj'] - self.cjl_ab_start_data['zxj'])}\n"            
+            message += f"CJL 30s sum: {int(sum([self.data[-d][self.cjl_column_name] for d in range(1, 6) ]))}\n"
+            message += f"CCL Diff: {int(self.data[-1]['ccl'] - self.cjl_ab_start_data['ccl'])}\n"
+        # message += f"ZXJ L:{self.past_30min_price_trend:<4} S:{self.data[-1]['ab_zxj_direction']:<5}\n"
+        # message += f"CCL L:{self.past_30min_ccl_trend:<4} S:{self.data[-1]['ab_ccl_direction']:<5}\n"
 
         for i in range(len(self.data)-5, len(self.data)):
             message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i][self.cjl_column_name]):<5} {int(self.data[i]['ccl']):<7}\n"        
@@ -502,7 +505,8 @@ class DataProcessor:
 
         message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
         message += f"{self.data[-1]['code']} CCL Abnormal {self.data[-1]['ab_ccl_direction']}\n"
-        message += f"Avg: {int(self.past_5day_ccl_avg)}\nStd: {int(self.past_5day_ccl_std)}\nMin: {int(self.past_5day_ccl_min)}\nMax: {int(self.past_5day_ccl_max)}\n"
+        # TODO ccl 单位增长率更重要
+        message += f"Avg: {int(self.past_5day_ccl_avg)}\nMin: {int(self.past_5day_ccl_min)}\nMax: {int(self.past_5day_ccl_max)}\n"
         for d in self.ccl_abnormal_data:
             if d['ab_ccl_count'] > 1 or d == self.ccl_abnormal_data[-1]:
                 message += f"{str(d['time'].time())[:5]:<5} {int(d['ccl']):<7} {d['ab_ccl_direction']} {int(d['ab_ccl_count'])} {int(d['zxj'])}\n"
@@ -554,13 +558,13 @@ class DataProcessor:
                             self.send_cjl_abnormal_signal(self.real_send_message)
                             
                         else:
-                            contains_cold = False
+                            contains_colding = False
                             for i in range(2, 5):
-                                if 'anomaly' in self.data[-i] and self.data[-i]['anomaly'] in ["cold", "colding"]:
-                                    contains_cold = True
+                                if 'anomaly' in self.data[-i] and self.data[-i]['anomaly'] == "colding":
+                                    contains_colding = True
                                     break
                                 
-                            if contains_cold:
+                            if contains_colding:
                                 is_hotting = True
                                 for i in range(2, 5):
                                     is_hotting = 'anomaly' in self.data[-i-1] and self.data[-i][self.cjl_column_name] > self.data[-i-1][self.cjl_column_name]
