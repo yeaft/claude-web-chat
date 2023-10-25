@@ -49,8 +49,8 @@ class DataProcessor:
         self.ccl_abnormal_direction = "NA"
         self.ccl_abnormal_data = deque(maxlen=20)
 
-        self.ccl_day_diff_threshold = 1000
-        self.zxj_day_diff_threshold = 0.5
+        self.ccl_day_diff_threshold = 3000
+        self.zxj_day_diff_threshold = 0.5 # 0.5 percentage
 
 
         self.past_x_hours = past_x_hour
@@ -309,7 +309,7 @@ class DataProcessor:
                 ccl_trend = "up"
                 past_day_zxj_avg = mean([d['zxj'] for d in self.data[-day_span - min_span:-day_span]])
                 past_zxj_avg = mean([d['zxj'] for d in self.data[-min_span:]])
-                price_diff_rate = round((past_zxj_avg - past_day_zxj_avg) * 1.00 / past_day_zxj_avg, 2)
+                price_diff_rate = round((past_zxj_avg - past_day_zxj_avg) * 100.00 / past_day_zxj_avg, 2)
                 if price_diff_rate >= self.zxj_day_diff_threshold:
                     price_trend = "up"
                 elif price_diff_rate <= -self.zxj_day_diff_threshold:
