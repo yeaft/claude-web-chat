@@ -81,10 +81,12 @@ def initial_dp_data():
     for c in MONITOR_CONTRACTS:
         CONTRACT_DP_MAP[c] = v3_keep_doing.DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name='ccl', precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False, real_send_message=False)
         if c == "oi":
+            CONTRACT_DP_MAP[c].cjl_period_min_threshold = 2100
+            CONTRACT_DP_MAP[c].cjl_period_pass_threshold = 3800
             CONTRACT_DP_MAP[c].cjl_hot_threshold = 300 # threshold should be related to real money, 1000 * 4000 = 4 million
             CONTRACT_DP_MAP[c].must_away_cjl_threshold = 10000 # 40000 * 4000 = 160 million
             CONTRACT_DP_MAP[c].ccl_day_diff_threshold = 1000
-            CONTRACT_DP_MAP[c].ccl_hot_threshold = 555
+            CONTRACT_DP_MAP[c].ccl_hot_threshold = 555            
                         
         CONTRACT_DP_MAP[c].cjl_column_name = "cjlDiff"
         current_time = date_utils.date_add_days(datetime.now(), -10)

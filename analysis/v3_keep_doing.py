@@ -30,7 +30,7 @@ class DataProcessor:
         self.cjl_period_pass_threshold = cjl_period_pass_threshold
         self.cjl_past_num = cjl_past_num
         self.cjl_period_num = cjl_period_num
-        self.cjl_hot_threshold = 1000 # threshold should be related to real money, 1000 * 4000 = 4 million
+        self.cjl_hot_threshold = cjl_hot_threshold # threshold should be related to real money, 1000 * 4000 = 4 million
         self.must_away_cjl_threshold = 40000 # 40000 * 4000 = 160 million
         self.real_send_message = real_send_message
         self.cjl_column_name = "cjl"
@@ -538,11 +538,11 @@ class DataProcessor:
                 
             else:
                 contains_anomaly = False
-                for i in range(len(self.data) -1, len(self.data) -4, -1):
-                    if 'anomaly' in self.data[i]:
-                        if self.data[i]['anomaly'] == "end":
+                for i in range(2, 5):
+                    if 'anomaly' in self.data[-i]:
+                        if self.data[-i]['anomaly'] == "end":
                             break
-                        elif self.data[i]['anomaly'] != "code":
+                        elif self.data[-i]['anomaly'] != "cold":
                             contains_anomaly = True
                             break
 
@@ -585,6 +585,8 @@ class DataProcessor:
                                 self.data[-1]['anomaly'] = "cold"
                             else:
                                 self.data[-1]['anomaly'] = "end"
+                        else:
+                            self.data[-1]['anomaly'] = "end"
 
     def ccl_abnormal_check(self):
         if len(self.data) < 8:
