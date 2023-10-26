@@ -3,6 +3,7 @@ pymongo
 pyyaml
 pytz
 requests
+Flask
 chinesecalendar
 numpy
 matplotlib

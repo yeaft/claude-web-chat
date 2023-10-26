@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Table</title>
+    <script>
+        function refreshData(){
+            setTimeout(function(){
+                location.reload();
+            }, 5000);
+        }
+
+        function selectType() {
+            const type = document.getElementById("typeSelect").value;
+            window.location.href = "/getLatestData?type=" + type;
+        }
+    </script>
+</head>
+<body onload="refreshData()">
+    <label for="typeSelect">Select type: </label>
+    <select id="typeSelect" onchange="selectType()">
+        <option value="rb" {% if request.args.get('type') == 'rb' %}selected{% endif %}>rb</option>
+        <option value="oi" {% if request.args.get('type') == 'oi' %}selected{% endif %}>oi</option>
+    </select>
+
+    <table border="1">
+        <thead>
+            <tr>
+                <!-- Dynamically generate table headers -->
+                {% if data %}
+                    {% for header in data[0].keys() %}
+                        <th>{{ header }}</th>
+                    {% endfor %}
+                {% endif %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in data %}
+            <tr>
+                <!-- Dynamically generate table cells -->
+                {% for value in item.values() %}
+                    <td>{{ value }}</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>

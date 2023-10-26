@@ -1,0 +1,22 @@
+FROM python:3.9.7-alpine
+# Set timezone
+RUN apk update && apk add tzdata && echo "Asia/Shanghai" > /etc/localtime
+
+# Set the working directory
+WORKDIR /
+
+# Install requirements
+ADD ./requirements.txt /
+RUN pip install -r /requirements.txt
+
+# Copy all files (be sure not to include sensitive files or large data)
+ADD . /
+
+# This step seems unnecessary if you're just running a Flask app, so I'd omit the pip install -e . line.
+# If you have a specific reason for it, keep it.
+
+# Set Flask specific environment variables for better Docker compatibility
+ENV FLASK_RUN_HOST=0.0.0.0
+
+# Command to run the Flask app
+CMD [ "python", "/server/api.py" ]
