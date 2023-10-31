@@ -15,7 +15,7 @@ def get_latest_data():
         data_type = "rb"
     
     # Query the latest data based on the 'type'
-    data = list(constance.REAL_TIME_TICK_COL.find({'type': data_type}).sort([('time', -1)]).limit(10) )
+    data = list(constance.REAL_TIME_TICK_COL.find({'type': data_type}).sort([('time', -1)]).limit(12) )
     results = []
     for d in data:
         results.append(
