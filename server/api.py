@@ -34,4 +34,4 @@ def get_latest_data():
         return "No data found for the given type", 404
 
 if __name__ == '__main__':
-    app.run(debug=False)
+    app.run(debug=False, port=8080)
