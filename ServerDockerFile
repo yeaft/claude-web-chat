@@ -7,14 +7,14 @@ WORKDIR /
 
 # Install requirements
 ADD ./requirements.txt /
-RUN pip install -r /requirements.txt
+RUN pip install -r /requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # Copy all files (be sure not to include sensitive files or large data)
 ADD . /
 
 # This step seems unnecessary if you're just running a Flask app, so I'd omit the pip install -e . line.
 # If you have a specific reason for it, keep it.
-
+RUN pip install -e .
 # Set Flask specific environment variables for better Docker compatibility
 ENV FLASK_RUN_HOST=0.0.0.0
 

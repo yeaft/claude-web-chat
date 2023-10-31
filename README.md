@@ -1,3 +1,4 @@
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 # 0. Install package
 pip install -m ./
 # 1. Collection 5s tick data
