@@ -8,28 +8,28 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def get_latest_data():
-    data_type = request.args.get('type')  # Get 'type' parameter from the query
-
     # Check if the type is one of the allowed types
-    if data_type not in ['rb', 'oi']:
-        data_type = "rb"
+    results = {}
+    data_types = ['rb', 'oi']
+    for data_type in data_types:
+        data = list(constance.REAL_TIME_TICK_COL.find({'type': data_type}).sort([('time', -1)]).limit(10))
+        if data:
+            result = []
+            for record in data:
+                result.append(
+                    {
+                        "time": record['time'].split(" ")[-1],
+                        "code": record['code'],
+                        "zxj": record['zxj'] if data_type == 'i' else int(record['zxj']),
+                        "cjl": int(record['cjlDiff'] if "cjlDiff" in record else record['cjl']),
+                        "ccl": int(record['ccl'])
+                    }
+                )
+            sorted_result = sorted(result, key=lambda x: x['time'])
+            results[data_type] = sorted_result
     
-    # Query the latest data based on the 'type'
-    data = list(constance.REAL_TIME_TICK_COL.find({'type': data_type}).sort([('time', -1)]).limit(12) )
-    results = []
-    for d in data:
-        results.append(
-            {
-                "time": d['time'],
-                "code": d['code'],
-                "zxj": d['zxj'],
-                "cjl": d['cjlDiff'] if "cjlDiff" in d else d['cjl'],
-                "ccl": d['ccl']
-            }
-        )
-    if results:
-        sorted_results = sorted(results, key=lambda x: x['time'])
-        return render_template('data.html', data=list(sorted_results))
+    if results:        
+        return render_template('data.html', data=results)
     else:
         return "No data found for the given type", 404
 

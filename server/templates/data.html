@@ -4,47 +4,63 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Data Table</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        h3 {
+            color: #333;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+    </style>
     <script>
         function refreshData(){
             setTimeout(function(){
                 location.reload();
             }, 5000);
         }
-
-        function selectType() {
-            const type = document.getElementById("typeSelect").value;
-            window.location.href = "/?type=" + type;
-        }
     </script>
 </head>
 <body onload="refreshData()">
-    <label for="typeSelect">Select type: </label>
-    <select id="typeSelect" onchange="selectType()">
-        <option value="rb" {% if request.args.get('type') == 'rb' %}selected{% endif %}>rb</option>
-        <option value="oi" {% if request.args.get('type') == 'oi' %}selected{% endif %}>oi</option>
-    </select>
-
-    <table border="1">
-        <thead>
-            <tr>
-                <!-- Dynamically generate table headers -->
-                {% if data %}
-                    {% for header in data[0].keys() %}
-                        <th>{{ header }}</th>
+    {% for type_name, type_data in data.items() %}
+        <h3>{{ type_name.upper() }} Data</h3>
+        <table>
+            <thead>
+                <tr>
+                    {% if type_data %}
+                        {% for header in type_data[0].keys() %}
+                            <th>{{ header }}</th>
+                        {% endfor %}
+                    {% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in type_data %}
+                <tr>
+                    {% for value in item.values() %}
+                        <td>{{ value }}</td>
                     {% endfor %}
-                {% endif %}
-            </tr>
-        </thead>
-        <tbody>
-            {% for item in data %}
-            <tr>
-                <!-- Dynamically generate table cells -->
-                {% for value in item.values() %}
-                    <td>{{ value }}</td>
+                </tr>
                 {% endfor %}
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+            </tbody>
+        </table>
+    {% endfor %}
 </body>
 </html>
