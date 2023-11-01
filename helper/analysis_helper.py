@@ -1,8 +1,105 @@
 import math
 import click
-from . import constance, utils
+import constance
+import utils
+import date_utils
 from statistics import mean, variance, stdev
 
+def find_history(ticks, value, column='ccl', similar_count = 3):
+    i, j = 0, 0
+    similar_ticks = []
+    if column == "ccl":
+        ccl_error = int(100000 / (ticks[-1]['zxj'] * 1.25)) + 1
+    else:
+        ccl_error = 0
+    while j < similar_count and i < len(ticks):
+        if ticks[i][column] <= value + ccl_error and ticks[i][column] >= value - ccl_error:
+            similar_ticks.append(ticks[i])
+            j += 1
+            if column == "ccl":
+                i += 12 * 30
+            elif column == "zxj":
+                i += 12 * 30
+            else:
+                i += 1
+        else:
+            i += 1
+    
+    return similar_ticks
+
+def find_extrema(ticks, window=720, column='ccl'):
+    extremas = []
+    n = len(ticks)
+
+    for i in range(720, n):
+        current_ccl = ticks[i][column]
+        left_window = ticks[max(0, i-window):i]
+        right_window = ticks[i+1:min(n, i+1+window)]
+
+        max_left = max(left_window, key=lambda x: x[column], default={column: -float('inf')})[column]
+        min_left = min(left_window, key=lambda x: x[column], default={column: float('inf')})[column]
+        max_right = max(right_window, key=lambda x: x[column], default={column: -float('inf')})[column]
+        min_right = min(right_window, key=lambda x: x[column], default={column: float('inf')})[column]
+
+        if current_ccl >= max_left and current_ccl >= max_right:
+            ticks[i]['extrema'] = f'{column}_highest'
+            ticks[i]['index'] = i
+            if extremas and extremas[-1]['extrema'] == f'{column}_highest':
+                if extremas[-1][column] < ticks[i][column]:
+                    extremas[-1] = ticks[i]
+            else:
+                extremas.append(ticks[i])
+        elif current_ccl <= min_left and current_ccl <= min_right:
+            ticks[i]['extrema'] = f'{column}_lowest'
+            ticks[i]['index'] = i
+            if extremas and extremas[-1]['extrema'] == f'{column}_lowest':
+                if extremas[-1][column] > ticks[i][column]:
+                    extremas[-1] = ticks[i]
+            else:
+                extremas.append(ticks[i])
+
+        
+    for e in extremas:
+        utils.log(f"{e['time']} {e['extrema']} {e['ccl']} {e['zxj']}")
+    return extremas
+
+def extrema_ccl_price_rate(extremas):
+    up_up_rates = []
+    up_down_rates = []
+    down_up_rates = []
+    down_down_rates = []    
+    for i in range(0, len(extremas)-2):
+        zxj_diff = extremas[i+1]['zxj'] - extremas[i]['zxj']
+        ccl_diff = extremas[i+1]['ccl'] - extremas[i]['ccl']
+        ccl_price_rate = int(ccl_diff / zxj_diff)
+        data = {
+            'time_range': f"{extremas[i]['time']}-{extremas[i+1]['time']}",
+            'zxj_diff': zxj_diff,
+            'rate': ccl_price_rate
+        }
+        utils.log(f"{data['time_range']} {data['zxj_diff']} {data['rate']}")
+        if zxj_diff > 0:
+            if ccl_diff > 0:
+                data['rate_type'] = "up_up"
+                up_up_rates.append(data)
+            else:
+                data['rate_type'] = "up_down"
+                up_down_rates.append(data)
+        else:
+            if ccl_diff > 0:
+                data['rate_type'] = "down_up"
+                down_up_rates.append(data)
+            else:
+                data['rate_type'] = "down_down"
+                down_down_rates.append(data)
+    
+    rates = [up_up_rates, up_down_rates, down_up_rates, down_down_rates]
+    for rate in rates:
+        if len(rate) < 2:
+            continue
+        avg_rate = mean(list(x['rate'] for x in rate))
+        stdev_rate = stdev(list(x['rate'] for x in rate))
+        utils.log(f'{rate[0]["rate_type"]} avg: {avg_rate} stdev: {stdev_rate} count: {len(rate)}')
 
 def predict_base(res, up_type, down_type, datas, data, position, factor, print_data=False):
     past_day_span = factor['pastDay']
@@ -724,4 +821,21 @@ if __name__ == "__main__":
     # LOGGER.info(convert_val("5"))
     # LOGGER.info(convert_val("a"))
     # click.echo(pow_times(1.045, 300))
-    click.echo(pow_base(9, 3.44))
+    # click.echo(pow_base(9, 3.44))
+    ticks = list(constance.REAL_TIME_TICK_COL.find({"type":"oi"}).sort([("time", -1)]).limit(int(12 * 60 * 5.5 * 5)))
+    similar_ticks = find_history(ticks[60:], 340000, 'ccl', 5)
+    utils.log(f'{ticks[0]["time"]} {ticks[0]["zxj"]} {ticks[0]["ccl"]}')
+    for tick in similar_ticks:
+        utils.log(f'{tick["time"]} {tick["zxj"]} {tick["ccl"]}')
+    
+    utils.log("=====================================")   
+    similar_ticks = find_history(ticks[60:], 8398, 'zxj', 5)
+    utils.log(f'{ticks[0]["time"]} {ticks[0]["zxj"]} {ticks[0]["ccl"]}')
+    for tick in similar_ticks:
+        utils.log(f'{tick["time"]} {tick["zxj"]} {tick["ccl"]}')
+    # sorted_ticks = sorted(ticks, key=lambda x: x['time'])
+    # extremas =  find_extrema(sorted_ticks, window=720, column='zxj')
+    # extrema_ccl_price_rate(extremas)
+    
+    # extremas =  find_extrema(sorted_ticks, window=720, column='ccl')
+    # extrema_ccl_price_rate(extremas)
