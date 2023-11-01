@@ -10,23 +10,28 @@ app = Flask(__name__)
 def get_latest_data():
     # Check if the type is one of the allowed types
     results = {}
-    data_types = ['rb', 'oi']
+    data_types = ['rb', 'oi', 'y']
     for data_type in data_types:
-        data = list(constance.REAL_TIME_TICK_COL.find({'type': data_type}).sort([('time', -1)]).limit(10))
+        data = list(constance.REAL_TIME_TICK_COL.find({'type': data_type}).sort([('time', -1)]).limit(9))
+        
         if data:
+            sorted_data = sorted(data, key=lambda x: x['time'])
             result = []
-            for record in data:
+            for i in range(1, len(sorted_data)):
+                record = sorted_data[i]
                 result.append(
                     {
                         "time": record['time'].split(" ")[-1],
                         "code": record['code'],
                         "zxj": record['zxj'] if data_type == 'i' else int(record['zxj']),
                         "cjl": int(record['cjlDiff'] if "cjlDiff" in record else record['cjl']),
-                        "ccl": int(record['ccl'])
+                        "zjl": sorted_data[i]['ccl'] - sorted_data[i - 1]['ccl'],
+                        "ccl": int(record['ccl']),
+                        
                     }
                 )
-            sorted_result = sorted(result, key=lambda x: x['time'])
-            results[data_type] = sorted_result
+            
+            results[data_type] = result
     
     if results:        
         return render_template('data.html', data=results)
