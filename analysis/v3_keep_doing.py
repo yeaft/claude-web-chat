@@ -20,20 +20,15 @@ from statistics import mean, variance, stdev
 
 
 class DataProcessor:
-    def __init__(self, cjl_hot_threshold = 1000, cjl_period_min_threshold = 5800, cjl_period_pass_threshold=8000,  cjl_past_num=60, cjl_period_num=3, past_x_hour=3, candidate_x_min=5, precheck_x_min=10, check_column_name="ccl", precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False, real_send_message=False):
-        
+    def __init__(self,cjl_column_name="cjl", cjl_past_num=60, cjl_period_num=3, past_x_hour=3, candidate_x_min=5, precheck_x_min=10, check_column_name="ccl", precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False, real_send_message=False):
         self.data = []
         self.max_data_size = 12 * 60 * 5.5 * 10  # ten days data
         self.send_message = send_message
         # cjl abnormal
-        self.cjl_period_min_threshold = cjl_period_min_threshold
-        self.cjl_period_pass_threshold = cjl_period_pass_threshold
         self.cjl_past_num = cjl_past_num
         self.cjl_period_num = cjl_period_num
-        self.cjl_hot_threshold = cjl_hot_threshold # threshold should be related to real money, 1000 * 4000 = 4 million
-        self.must_away_cjl_threshold = 40000 # 40000 * 4000 = 160 million
         self.real_send_message = real_send_message
-        self.cjl_column_name = "cjl"
+        self.cjl_column_name = cjl_column_name
         self.cjl_ab_start_data = None
 
         self.past_30min_ccl_trend = "NA"
@@ -49,8 +44,7 @@ class DataProcessor:
         self.ccl_abnormal_direction = "NA"
         self.ccl_abnormal_data = deque(maxlen=20)
 
-        self.ccl_day_diff_threshold = 3000
-        self.ccl_hot_threshold = 1800 # threshold should be related to real money, 1000 * 4000 = 4 million
+        
         self.zxj_day_diff_threshold = 0.5 # 0.5 percentage
 
 
@@ -77,6 +71,20 @@ class DataProcessor:
         self.check_points = []
         self.check_point = {}
         self.trade_list = []
+        
+    def initial_threshold(self):
+        if self.data[-1]['type'] != "i":
+            reference_price = int (self.data[-1]['zxj'] * 1.2)
+        else:
+            reference_price = int (self.data[-1]['zxj'] * 12)
+            
+        self.cjl_period_min_threshold = int(23000000/reference_price)
+        self.cjl_period_pass_threshold = int(34000000/reference_price)
+        self.cjl_hot_threshold = int(4500000 / reference_price) # threshold should be related to real money, 1000 * 4000 = 4 million
+        self.must_away_cjl_threshold = int(240000000 / reference_price) # 40000 * 4000 = 160 million
+        self.ccl_day_diff_threshold = int(14000000/reference_price)
+        self.ccl_hot_threshold = int(9000000/reference_price)
+        utils.log(f"Initial threshold: {self.cjl_period_min_threshold}, {self.cjl_period_pass_threshold}, {self.cjl_hot_threshold}, {self.must_away_cjl_threshold}, {self.ccl_day_diff_threshold}, {self.ccl_hot_threshold}")
 
     def validate_data(self, data):
         if self.cjl_column_name not in data:
@@ -89,20 +97,23 @@ class DataProcessor:
             return
         
         self.data.append(tick)
-        if self.send_message and len(self.data) > self.max_data_size:
+        n = len(self.data)
+        
+        if n == 1:
+            self.initial_threshold()        
+        elif self.send_message and n > self.max_data_size:
             self.data = self.data[-int(self.max_data_size/2):]
-            utils.log(f"too many data, cut to {len(self.data)}")
+            utils.log(f"too many data, cut to {n}")
+        elif n % 10000 == 0:
+            utils.log(f"Processed {n} ticks") 
 
-        tick['index'] = len(self.data) - 1
-        if len(self.data) % 10000 == 0:
-            utils.log(f"Processed {len(self.data)} ticks")
-
+        tick['index'] = n - 1
         # Parse time
         if type(tick['time']) == str:
             tick['time'] = datetime.strptime(
                 tick['time'], '%Y-%m-%d %H:%M:%S.%f').replace(tzinfo=pytz.UTC)
 
-        n = len(self.data)
+        
         # We don't have enough data for a 2-hour window and additional 3 minutes
         if n < self.past_x_hours_num+self.candidate_x_min_num+1:
             return
@@ -488,17 +499,27 @@ class DataProcessor:
 
         message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
         message += f"{self.data[-1]['code']} CJL abnormal {self.data[-1]['anomaly']}\n"
-        if self.data[-1]['anomaly'] != "start":
-            duration_seconds = (self.data[-1]['time'] - self.cjl_ab_start_data['time']).total_seconds()
-            message += f"Duration: {int(duration_seconds)}s\n"
-            message += f"Price Diff: {int(self.data[-1]['zxj'] - self.cjl_ab_start_data['zxj'])}\n"            
-            message += f"CJL 30s sum: {int(sum([self.data[-d][self.cjl_column_name] for d in range(1, 6) ]))}\n"
+        duration_seconds = (self.data[-1]['time'] - self.cjl_ab_start_data['time']).total_seconds()
+        index_diff = int(duration_seconds / 5) + 3
+        if self.data[-1]['anomaly'] == "end":
+            
+            
+            if self.data[-1]['type'] != "i":
+                message += f"Dur: {int(duration_seconds)}s PD: {int(self.data[-1]['zxj'] - self.data[-index_diff]['zxj'])}\n"            
+                message += f"{int(self.data[-index_diff]['zxj'])} {int(self.data[-1]['zxj'])} {int(max([d['zxj'] for d in self.data[-index_diff:]]))} {int(min([d['zxj'] for d in self.data[-index_diff:]]))}\n"
+            else:
+                message += f"Dur: {int(duration_seconds)}s PD: {round(self.data[-1]['zxj'] - self.data[-index_diff]['zxj'], 1)}\n"            
+                message += f"{round(self.data[-index_diff]['zxj'], 1)} {round(self.data[-1]['zxj'],1)} {round(max([d['zxj'] for d in self.data[-index_diff:]]), 1)} {round(min([d['zxj'] for d in self.data[-index_diff:]]), 1)}\n"
+            message += f"CJL sum: {int(sum([d[self.cjl_column_name] for d in self.data[-index_diff:]]))}\n"
             message += f"CCL Diff: {int(self.data[-1]['ccl'] - self.cjl_ab_start_data['ccl'])}\n"
         # message += f"ZXJ L:{self.past_30min_price_trend:<4} S:{self.data[-1]['ab_zxj_direction']:<5}\n"
         # message += f"CCL L:{self.past_30min_ccl_trend:<4} S:{self.data[-1]['ab_ccl_direction']:<5}\n"
 
-        for i in range(len(self.data)-5, len(self.data)):
-            message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i][self.cjl_column_name]):<5} {int(self.data[i]['ccl']):<7}\n"        
+        for i in range(len(self.data)-index_diff, len(self.data)):
+            if self.data[-1]['type'] != "i":
+                message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i][self.cjl_column_name]):<5} {(self.data[i]['anomaly'] if 'anomaly' in self.data[i] else ''):<7}\n"        
+            else:
+                message += f"{round(self.data[i]['zxj'], 1):<5} {int(self.data[i][self.cjl_column_name]):<5} {(self.data[i]['anomaly'] if 'anomaly' in self.data[i] else ''):<7}\n"        
 
         utils.send_ding_msg(msg=message, is_real_send=is_send)
 
@@ -507,10 +528,22 @@ class DataProcessor:
         message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
         message += f"{self.data[-1]['code']} CCL Abnormal {self.data[-1]['ab_ccl_direction']}\n"
         # TODO ccl 单位增长率更重要
-        message += f"Avg: {int(self.past_5day_ccl_avg)}\nMin: {int(self.past_5day_ccl_min)}\nMax: {int(self.past_5day_ccl_max)}\n"
+        # message += f"Avg: {int(self.past_5day_ccl_avg)}\nMin: {int(self.past_5day_ccl_min)}\nMax: {int(self.past_5day_ccl_max)}\n"
+        # Only select last 5 abnormal data
+        count = 0
         for d in self.ccl_abnormal_data:
             if d['ab_ccl_count'] > 1 or d == self.ccl_abnormal_data[-1]:
                 message += f"{str(d['time'].time())[:5]:<5} {int(d['ccl']):<7} {d['ab_ccl_direction']} {int(d['ab_ccl_count'])} {int(d['zxj'])}\n"
+                count += 1
+            if count >= 5:                
+                break               
+
+        message += "-------------------------------------------\n"
+        for i in range(len(self.data)-7, len(self.data)):
+            if self.data[-1]['type'] != "i":
+                message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i][self.cjl_column_name]):<5} {self.data[i]['ccl']:<7}\n"        
+            else:
+                message += f"{round(self.data[i]['zxj'], 1):<5} {int(self.data[i][self.cjl_column_name]):<5} {self.data[i]['ccl']:<7}\n"        
 
         utils.send_ding_msg(msg=message, is_real_send=is_send)
 
@@ -521,9 +554,9 @@ class DataProcessor:
             past_cjl_std = np.std(past_cjl)
             last_period_cjl_sum = sum([d[self.cjl_column_name] for d in self.data[-self.cjl_period_num:]])
             last_period_cjl = int(last_period_cjl_sum / self.cjl_period_num)
-            self.data[-1]['ab_zxj_direction'] = "up" if self.data[-1]['zxj'] > mean([d['zxj'] for d in self.data[-6:-1]]) else "down"
-            self.data[-1]['ab_ccl_direction'] = "up" if self.data[-1]['ccl'] > mean([d['ccl'] for d in self.data[-6:-1]]) else "down"
-            if (last_period_cjl - past_cjl_mean > 5 * past_cjl_std and last_period_cjl_sum > self.cjl_period_min_threshold) or last_period_cjl_sum > self.cjl_period_pass_threshold:
+            # self.data[-1]['ab_zxj_direction'] = "up" if self.data[-1]['zxj'] > mean([d['zxj'] for d in self.data[-6:-1]]) else "down"
+            # self.data[-1]['ab_ccl_direction'] = "up" if self.data[-1]['ccl'] > mean([d['ccl'] for d in self.data[-6:-1]]) else "down"
+            if (last_period_cjl - past_cjl_mean > 3 * past_cjl_std and last_period_cjl_sum > self.cjl_period_min_threshold) or last_period_cjl_sum > self.cjl_period_pass_threshold:
                 if 'anomaly' not in self.data[-2]:
                     self.data[-1]['anomaly'] = "start"
                     # Check past 2 mins slope
@@ -534,8 +567,10 @@ class DataProcessor:
                         self.send_cjl_abnormal_signal(is_send=self.real_send_message)
 
                 else:
-                    self.data[-1]['anomaly'] = "hot"                
-                
+                    if self.data[-1][self.cjl_column_name] >= self.cjl_hot_threshold:
+                        self.data[-1]['anomaly'] = "hot"
+                    else:
+                        self.data[-1]['anomaly'] = "cold"                
             else:
                 contains_anomaly = False
                 for i in range(2, 5):
@@ -556,7 +591,7 @@ class DataProcessor:
                         
                         if is_colding:
                             self.data[-1]['anomaly'] = "colding"
-                            self.send_cjl_abnormal_signal(self.real_send_message)
+                            # self.send_cjl_abnormal_signal(self.real_send_message)
                             
                         else:
                             contains_colding = False
@@ -574,7 +609,7 @@ class DataProcessor:
                                 
                                 if is_hotting:
                                     self.data[-1]['anomaly'] = "hotting"
-                                    self.send_cjl_abnormal_signal(self.real_send_message)                                    
+                                    # self.send_cjl_abnormal_signal(self.real_send_message)                                    
                                 else:
                                     self.data[-1]['anomaly'] = "hot"
                             else:
@@ -585,8 +620,12 @@ class DataProcessor:
                                 self.data[-1]['anomaly'] = "cold"
                             else:
                                 self.data[-1]['anomaly'] = "end"
+                                if self.send_message:
+                                    self.send_cjl_abnormal_signal(is_send=self.real_send_message)
                         else:
                             self.data[-1]['anomaly'] = "end"
+                            if self.send_message:
+                                    self.send_cjl_abnormal_signal(is_send=self.real_send_message)
 
     def ccl_abnormal_check(self):
         if len(self.data) < 8:
@@ -599,17 +638,28 @@ class DataProcessor:
         
         if abs(sum(ccl_diffs)) >= self.ccl_hot_threshold:
             if self.ccl_abnormal_data:
-                if self.data[-1]['time'] - self.ccl_abnormal_data[-1]['time'] < timedelta(minutes=2):
+                if self.data[-1]['time'] - self.ccl_abnormal_data[-1]['time'] < timedelta(minutes=2) or ("last_time" in self.ccl_abnormal_data[-1] and (self.data[-1]['time'] - self.ccl_abnormal_data[-1]['last_time'] < timedelta(minutes=2))):
                     if direction not in self.ccl_abnormal_data[-1]['ab_ccl_direction']:
-                        self.ccl_abnormal_data[-1]['ab_ccl_direction'] += "-"
-                        self.data[-1]['ab_ccl_direction'] = "R" + direction
+                        if self.ccl_abnormal_data[-1]['ab_ccl_count'] == 1:
+                            self.ccl_abnormal_data[-1]['ab_ccl_direction'] += "-"
+                            self.data[-1]['ab_ccl_direction'] = "R" + direction
+                        else:
+                            self.data[-1]['ab_ccl_direction'] = direction
+                            
+                        ccls = [d['ccl'] for d in self.data[-7:]]
                         self.data[-1]['ab_ccl_count'] = 1
+                        self.data[-1]['ab_ccl_threshold'] = max(ccls) if direction == "D" else min(ccls)
                         self.ccl_abnormal_data.append(self.data[-1])
                         if self.send_message:
                             self.send_ccl_abnormal_signal(is_send=self.real_send_message)
 
                 elif direction in self.ccl_abnormal_data[-1]['ab_ccl_direction']:
+                    ccls = [d['ccl'] for d in self.data[-7:]]
                     self.ccl_abnormal_data[-1]['ab_ccl_count'] += 1
+                    self.ccl_abnormal_data[-1]['last_time'] = self.data[-1]['time']
+                    self.data[-1]['ab_ccl_direction'] = direction
+                    self.data[-1]['ab_ccl_threshold'] = max(ccls) if direction == "D" else min(ccls)
+                    self.data[-1]['ab_ccl_count'] = self.ccl_abnormal_data[-1]['ab_ccl_count']
                     if self.ccl_abnormal_data[-1]['ab_ccl_count'] == 2:
                         if self.send_message:
                             self.send_ccl_abnormal_signal(is_send=self.real_send_message)
@@ -649,12 +699,11 @@ class DataProcessor:
                         self.send_ccl_abnormal_signal(is_send=self.real_send_message)
 
     def start_process(self, data_length):
-        day_span = ticks_helper.get_x_span_number(5, span_type="5sec", unit="d")
-        if len(self.data) < day_span:
-            return
+        
         self.cjl_abnormal_check()
-        self.cjl_abnormal_end_analysis()
         self.ccl_abnormal_check()
+        # self.cjl_abnormal_end_analysis()
+        
         # self.check_candidate(data_length)
         # Only have more than extreme points, to do the futher analysis
         # if len(self.extreme_points) > 2:
@@ -662,9 +711,13 @@ class DataProcessor:
 
         # Record the extreme point
         # self.record_extreme_point(data_length)
-        if len(self.data) % (12 * 30) == 0:
-            self.get_big_trend()
-            self.get_ccl_metric()
+        # day_span = ticks_helper.get_x_span_number(5, span_type="5sec", unit="d")
+        # if len(self.data) < day_span:
+        #     return
+        
+        # if len(self.data) % (12 * 30) == 0:
+        #     self.get_big_trend()
+        #     self.get_ccl_metric()
 
     def slope_angle(self, start, end):
         delta_y = end[self.check_column_name] - start[self.check_column_name]
@@ -926,15 +979,15 @@ def process_data(dps, start_date, end_date, contract_type="rb", verify_name="ver
     ticks = []
     for dp in dps:
         ticks = ticks_helper.get_ticks(
-            start_date, end_date, contract_type, span_type)
+            start_date, end_date, contract_type, "real")
         utils.log("get {} ticks".format(len(ticks)))
         for data in ticks:
             dp.process_new_data(data)
 
         utils.log("Finish process data")
-        useful_data = [d for d in dp.data if len(d) > 12]
-        utils.convert_dic_to_csv(f"v3_useful", useful_data)
-        utils.convert_dic_to_csv(f"v3_all", dp.data)
+        useful_data = [d for d in dp.data if len(d) > 14]
+        utils.convert_dic_to_csv(f"/mnt/c/Users/12282/Documents/v3_useful", useful_data)
+        utils.convert_dic_to_csv(f"/mnt/c/Users/12282/Documents/v3_all", dp.data)
 
     # utils.echo_dics(statistics)
     # utils.convert_dic_to_csv(f"{verify_name}", final_results)
@@ -970,9 +1023,9 @@ if __name__ == "__main__":
 
 
     dps = [
-        DataProcessor(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=True),
+        DataProcessor(cjl_column_name="cjlDiff", past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=True),
     ]
-    process_data(dps, "2022-10-25", "2022-11-01", verify_name="verify_09_12",
+    process_data(dps, "2023-10-20", "2023-11-01", contract_type="i", verify_name="verify_09_12",
                  check_column_name=check_column_name, is_draw_image=False)
     
 
