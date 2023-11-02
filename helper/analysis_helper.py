@@ -820,7 +820,8 @@ if __name__ == "__main__":
     # LOGGER.info(convert_val("a"))
     # click.echo(pow_times(1.045, 300))
     # click.echo(pow_base(9, 3.44))
-    ticks = list(constance.REAL_TIME_TICK_COL.find({"type":"oi"}).sort([("time", -1)]).limit(int(12 * 60 * 5.5 * 5)))
+    ticks = list(constance.REAL_TIME_TICK_COL.find({"type":"oi"}).sort([("time", -1)]).limit(int(12 * 60 * 5.5 * 3)))
+    utils.log(f"start time {ticks[0]['time']} end time {ticks[-1]['time']}")
     similar_ticks = find_history(ticks[60:], 340000, 'ccl', 5)
     utils.log(f'{ticks[0]["time"]} {ticks[0]["zxj"]} {ticks[0]["ccl"]}')
     for tick in similar_ticks:

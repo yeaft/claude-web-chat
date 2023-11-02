@@ -10,10 +10,9 @@ app = Flask(__name__)
 def get_latest_data():
     # Check if the type is one of the allowed types
     results = {}
-    data_types = ['rb', 'oi', 'y']
+    data_types = ['rb', 'oi', 'i', 'y']
     for data_type in data_types:
-        data = list(constance.REAL_TIME_TICK_COL.find({'type': data_type}).sort([('time', -1)]).limit(9))
-        
+        data = list(constance.REAL_TIME_TICK_COL.find({'type': data_type}).sort([('time', -1)]).limit(9))        
         if data:
             sorted_data = sorted(data, key=lambda x: x['time'])
             result = []
