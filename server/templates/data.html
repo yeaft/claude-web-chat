@@ -29,6 +29,14 @@
         tr:nth-child(even) {
             background-color: #f9f9f9;
         }
+
+        tr.even {
+            background-color: #f9f9f9;
+        }
+
+        tr.odd {
+            background-color: #FFF; /* Or any color you prefer for odd rows */
+        }
     </style>
     <script>
         function refreshData(){
@@ -39,28 +47,31 @@
     </script>
 </head>
 <body onload="refreshData()">
+    <p>Current time: {{ current_time }}, processing: {{ processing_time }} ms</p>
     {% for type_name, type_data in data.items() %}
-        <h3>{{ type_name.upper() }} Data</h3>
-        <table>
-            <thead>
-                <tr>
-                    {% if type_data %}
-                        {% for header in type_data[0].keys() %}
-                            <th>{{ header }}</th>
-                        {% endfor %}
-                    {% endif %}
+    <h3>{{ type_name.upper() }} Data</h3>
+    <table>
+        <tbody>
+            {% set row_counter = namespace(value=0) %}
+            {% for ins in infos[type_name] %}
+                {% set row_counter.value = row_counter.value + 1 %}
+                <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
+                    {% for info in ins %}
+                        <td>{{ info }}</td>
+                    {% endfor %}
                 </tr>
-            </thead>
-            <tbody>
-                {% for item in type_data %}
-                <tr>
+            {% endfor %}
+            {% for item in type_data %}
+                {% set row_counter.value = row_counter.value + 1 %}
+                <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
                     {% for value in item.values() %}
                         <td>{{ value }}</td>
                     {% endfor %}
                 </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+            {% endfor %}
+        </tbody>
+    </table>
     {% endfor %}
+
 </body>
 </html>

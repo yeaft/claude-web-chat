@@ -2,7 +2,7 @@
 import calendar
 import pytz
 # from . import constance
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, time
 from chinese_calendar import is_holiday, is_workday
 from pymongo import MongoClient, DESCENDING, ASCENDING
 
@@ -84,7 +84,25 @@ def sec_diff(start, end):
     time_format = "%Y-%m-%d %H:%M:%S.%f"
     return  (datetime.strptime(end, time_format) - datetime.strptime(start, time_format)).total_seconds()
 
-# if __name__ == "__main__":
+def min_diff(start, end):
+    time_format = "%Y-%m-%d %H:%M:%S.%f"
+    return round((datetime.strptime(end, time_format) - datetime.strptime(start, time_format)).total_seconds()/60, 1)
+
+def get_kp_time_string(target_date = ""):
+    now = datetime.now()
+    if target_date:
+        date_str = target_date
+    else:
+        date_str = now.strftime('%Y-%m-%d')
+    
+    if now.time() < time(21, 0, 0):
+        return f"{date_str} 09:00:00.000"
+    else:
+        return f"{date_str} 21:00:00.000"
+
+
+if __name__ == "__main__":
     # dt_str = "2020-01-23 14:02:23.627"
     # rounded_dt_str = round_datetime(dt_str)
     # print(rounded_dt_str)
+    print(get_kp_time_string())
