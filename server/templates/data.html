@@ -22,6 +22,7 @@
             border: 1px solid #ddd;
             padding: 3px;
             text-align: left;
+            height: 10px;
         }
         th {
             background-color: #f2f2f2;
@@ -37,41 +38,99 @@
         tr.odd {
             background-color: #FFF; /* Or any color you prefer for odd rows */
         }
+        .header-container {
+            display: flex;
+            align-items: center; /* This will vertically center align the h3 and p */
+            justify-content: start;
+            flex-wrap: wrap;
+        }
+
+        .header-container h3 {
+            margin-right: 10px; /* Add some spacing between the h3 and p */
+        }
+        
+        /* Styles to ensure that the p tag doesn't take the full width and stays inline */
+        .header-container p {
+            margin: 0;
+            flex-grow: 1;
+            white-space: nowrap;
+        }
     </style>
     <script>
-        function refreshData(){
-            setTimeout(function(){
+        function scheduleRefresh() {
+            var now = new Date();
+            var seconds = now.getSeconds();
+            var milliseconds = now.getMilliseconds();
+            var waitTime = ((5 - (seconds % 5) + 1) % 5) * 1000 - milliseconds;
+            if (waitTime <= 0) {
+                waitTime += 5000; // If the calculation ends up at 0 or negative, add 5 seconds
+            }
+            
+            setTimeout(function() {
                 location.reload();
-            }, 5000);
+            }, waitTime);
         }
     </script>
 </head>
-<body onload="refreshData()">
-    <p>Current time: {{ current_time }}, processing: {{ processing_time }} ms</p>
-    {% for type_name, type_data in data.items() %}
-    <h3>{{ type_name.upper() }} Data</h3>
+<body onload="scheduleRefresh()">
+    <p>{{ current_time }}, using: {{ processing_time }} ms</p>   
     <table>
-        <tbody>
+        {% for type_name, type_data in data.items() %}
             {% set row_counter = namespace(value=0) %}
-            {% for ins in infos[type_name] %}
-                {% set row_counter.value = row_counter.value + 1 %}
-                <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
-                    {% for info in ins %}
-                        <td>{{ info }}</td>
-                    {% endfor %}
+            <tbody>
+                <tr class="even' }}">
+                    <td>{{ type_name.upper() }}</td>
+                    <td colspan="5">{{ cp_infos[type_name] }}</td>                    
                 </tr>
-            {% endfor %}
-            {% for item in type_data %}
-                {% set row_counter.value = row_counter.value + 1 %}
-                <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
-                    {% for value in item.values() %}
-                        <td>{{ value }}</td>
-                    {% endfor %}
-                </tr>
-            {% endfor %}
-        </tbody>
+                <tr class = "odd"><td style="height: 8px;" colspan="6"></td></tr>   
+            </tbody>
+            <tbody>                
+                {% for ins in infos[type_name] %}
+                    {% set row_counter.value = row_counter.value + 1 %}
+                    <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
+                        {% for info in ins %}
+                            <td>{{ info }}</td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
+            </tbody>
+            <tr><td style="height: 8px;" colspan="6"></td></tr>
+            <tbody>
+                {% for d in stable_ccl_datas[type_name] %}
+                    {% set row_counter.value = row_counter.value + 1 %}
+                    <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
+                        {% for info in d %}
+                            <td>{{ info }}</td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %} 
+            </tbody>
+            <tr><td style="height: 8px;" colspan="6"></td></tr>
+            <tbody>
+                {% for d in daily_ccl_datas[type_name] %}
+                    {% set row_counter.value = row_counter.value + 1 %}
+                    <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
+                        {% for value in d.values() %}
+                            <td>{{ value }}</td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
+            </tbody>
+            <tr><td style="height: 8px;" colspan="6"></td></tr>
+            <tbody>
+                {% for item in type_data %}
+                    {% set row_counter.value = row_counter.value + 1 %}
+                    <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
+                        {% for value in item.values() %}
+                            <td>{{ value }}</td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
+            </tbody>
+            <tr><td style="height: 8px;" colspan="6"></td></tr>
+        {% endfor %}
     </table>
-    {% endfor %}
+
 
 </body>
 </html>

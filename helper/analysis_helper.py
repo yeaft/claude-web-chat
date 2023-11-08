@@ -2,6 +2,7 @@ import math
 import click
 from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
 from statistics import mean, variance, stdev
+import datetime
 
 def find_history(ticks, value, column='ccl', similar_count = 3):
     i, j = 0, 0
@@ -29,7 +30,11 @@ def find_extrema(ticks, window=720, column='ccl'):
     extremas = []
     n = len(ticks)
 
-    for i in range(720, n):
+    for i in range(0, n):
+        ticks[i]['index'] = i
+        if i < window:
+            continue
+        
         current_ccl = ticks[i][column]
         left_window = ticks[max(0, i-window):i]
         right_window = ticks[i+1:min(n, i+1+window)]
@@ -57,47 +62,248 @@ def find_extrema(ticks, window=720, column='ccl'):
                 extremas.append(ticks[i])
 
         
-    for e in extremas:
-        utils.log(f"{e['time']} {e['extrema']} {e['ccl']} {e['zxj']}")
+    # for e in extremas:
+    #     utils.log(f"{e['time']} {e['extrema']} {e['ccl']} {e['zxj']}")
     return extremas
 
-def extrema_ccl_price_rate(extremas):
-    up_up_rates = []
-    up_down_rates = []
-    down_up_rates = []
-    down_down_rates = []    
-    for i in range(0, len(extremas)-2):
-        zxj_diff = extremas[i+1]['zxj'] - extremas[i]['zxj']
-        ccl_diff = extremas[i+1]['ccl'] - extremas[i]['ccl']
-        ccl_price_rate = int(ccl_diff / zxj_diff)
+def get_continuous_status(ticks, column="ccl", time_span = 12 * 5, avg_span = 12):
+    start_index = (len(ticks)-avg_span) % time_span
+    if start_index < avg_span:
+        start_index += time_span
+    datas = []
+    for i in range(start_index, len(ticks) - avg_span, time_span):
+        next_index = i + time_span
+        mean_ccl = mean(t['ccl'] for t in ticks[i-avg_span:i+avg_span])
+        mean_zxj = mean(t['zxj'] for t in ticks[i-avg_span:i+avg_span])
+        mean_next_ccl = mean(t['ccl'] for t in ticks[next_index-avg_span:next_index+avg_span])
+        mean_next_zxj = mean(t['zxj'] for t in ticks[next_index-avg_span:next_index+avg_span])
+        
+        mean_zxj_diff = int(mean_next_zxj - mean_zxj) if ticks[0]['type'] != "i" else round((mean_next_zxj - mean_zxj)*2)/2
+        mean_ccl_diff = int(mean_next_ccl - mean_ccl)
+        ccl_price_rate = int(mean_ccl_diff / mean_zxj_diff if mean_zxj_diff != 0 else mean_ccl_diff)
         data = {
-            'time_range': f"{extremas[i]['time']}-{extremas[i+1]['time']}",
-            'zxj_diff': zxj_diff,
-            'rate': ccl_price_rate
+            'time_range': f"{ticks[i]['time']}-{ticks[next_index]['time']}",
+            'start_time': ticks[i]['time'],
+            'start_index': i,
+            'end_time': ticks[next_index]['time'],
+            'end_index': next_index,
+            'zxj_diff': mean_zxj_diff,
+            'zxj_diff_rate': round(mean_zxj_diff * 1000 / ticks[i]['zxj'], 2),
+            'ccl_diff': mean_ccl_diff,
+            'ccl_diff_rate': round(mean_ccl_diff * 10000 / ticks[i]['ccl'],2),
+            'cp_rate': ccl_price_rate
         }
-        utils.log(f"{data['time_range']} {data['zxj_diff']} {data['rate']}")
-        if zxj_diff > 0:
-            if ccl_diff > 0:
-                data['rate_type'] = "up_up"
-                up_up_rates.append(data)
+        # utils.log(f"{data['time_range']} {data['zxj_diff']} {data['zxj_diff_rate']}‰ {data['ccl_diff']} {data['ccl_diff_rate']}%% {data['cp_rate']}")
+        datas.append(data)
+    
+    return datas
+
+from statistics import mean
+
+from statistics import mean
+
+def find_stable_sublists(ticks, data, by="ccl"):
+    n = len(data)
+    valid_sublists = []
+
+    start = 0
+    while start < n:
+        sum_ccl = 0
+        sum_zxj = 0
+        size = 0
+        last_valid_end = -1  # Track the last valid end index
+
+        # Expand the window
+        for end in range(start, n):
+            sum_ccl += data[end]['ccl_diff_rate']
+            sum_zxj += data[end]['zxj_diff_rate']
+            size += 1
+
+            if by == "ccl":
+                # Check if the current window satisfies the conditions
+                if size >= 3 and (abs(sum_ccl) <= 3 or abs(sum_ccl) <= size * 1.2) and abs(sum_zxj) <= 3:
+                    last_valid_end = end  # Update the last valid end
+                elif size >= 3:  # If the condition is not met and we have a sublist of at least size 3, break
+                    break
             else:
-                data['rate_type'] = "up_down"
-                up_down_rates.append(data)
+                # Check if the current window satisfies the conditions
+                if size >= 3 and (abs(sum_zxj) <= 1 or abs(sum_zxj) <= size * 0.3) and (abs(sum_ccl) <= 5 or abs(sum_ccl) <= size * 1.5):
+                    last_valid_end = end  # Update the last valid end
+                elif size >= 3:  # If the condition is not met and we have a sublist of at least size 3, break
+                    break
+
+        # If we found a valid sublist, add it
+        if last_valid_end != -1:
+            avg_zxj = mean(t['zxj'] for t in ticks[data[start]['start_index']:data[last_valid_end]['end_index']+1])
+            sub_data = {
+                "start_time": data[start]['start_time'],
+                "end_time": data[last_valid_end]['end_time'],
+                "size": last_valid_end - start + 1,
+                "sum_ccl_rate": round(sum(d['ccl_diff_rate'] for d in data[start: last_valid_end+1]), 2),
+                "avg_zxj": round(avg_zxj * 2) / 2 if ticks[0]['type'] == "i" else int(avg_zxj),
+                "avg_ccl": int(mean(t['ccl'] for t in ticks[data[start]['start_index']:data[last_valid_end]['end_index']+1]))
+            }
+            valid_sublists.append(sub_data)
+            # Move start to after the last valid end
+            start = last_valid_end + 1
+        else:
+            # Move start to the next position if no valid sublist was found
+            start += 1
+
+    return valid_sublists
+
+def statistic_sublists(results):
+    up_up_cps = []
+    up_down_cps = []
+    down_up_cps = []
+    down_down_cps = []
+    for i in range(len(results)-2):
+        next = i + 1
+        ccl_diff = results[next]['avg_ccl'] - results[i]['avg_ccl']
+        zxj_diff = results[next]['avg_zxj'] - results[i]['avg_zxj']
+        if zxj_diff == 0:
+            continue
+        cp_rate = int(ccl_diff / zxj_diff)
+        # utils.log(f"{results[i]['start_time']} to {results[next]['start_time']} {zxj_diff} {ccl_diff} {cp_rate}")
+        if zxj_diff > 0:
+            if ccl_diff > 0:     
+                up_up_cps.append(cp_rate)
+            else:
+                up_down_cps.append(cp_rate)
         else:
             if ccl_diff > 0:
-                data['rate_type'] = "down_up"
-                down_up_rates.append(data)
+                down_up_cps.append(cp_rate)
             else:
-                data['rate_type'] = "down_down"
-                down_down_rates.append(data)
+                down_down_cps.append(cp_rate)
+        
+    statistic = {
+        "up_up_avg_cp": int(mean(up_up_cps)),
+        "up_up_stdev_cp": int(stdev(up_up_cps)),
+        "up_up_count": len(up_up_cps),
+        "up_down_avg_cp": int(mean(up_down_cps)),
+        "up_down_stdev_cp": int(stdev(up_down_cps)),
+        "up_down_count": len(up_down_cps),
+        "down_up_avg_cp": int(mean(down_up_cps)),
+        "down_up_stdev_cp": int(stdev(down_up_cps)),
+        "down_up_count": len(down_up_cps),
+        "down_down_avg_cp": int(mean(down_down_cps)),
+        "down_down_stdev_cp": int(stdev(down_down_cps)),
+        "down_down_count": len(down_down_cps)
+    }
+    return statistic
     
-    rates = [up_up_rates, up_down_rates, down_up_rates, down_down_rates]
+def extrema_ccl_price_rate(ticks, extremas):
+    u_u_rates = []
+    u_d_rates = []
+    d_u_rates = []
+    d_d_rates = []    
+    for i in range(0, len(extremas)-1):
+        two_mins_span = 12 * 2
+        mean_extrema_next_index = extremas[i+1]['index']        
+        mean_extrema_next_zxj = round(mean(t['zxj'] for t in ticks[mean_extrema_next_index - two_mins_span: mean_extrema_next_index + two_mins_span]), 2)
+        mean_extrema_next_ccl = mean(t['ccl'] for t in ticks[mean_extrema_next_index - two_mins_span: mean_extrema_next_index + two_mins_span])
+        
+        mean_extrema_cur_index = extremas[i]['index']
+        mean_extrema_cur_zxj = round(mean(t['zxj'] for t in ticks[mean_extrema_cur_index - two_mins_span: mean_extrema_cur_index + two_mins_span]), 2)
+        mean_extrema_cur_ccl = mean(t['ccl'] for t in ticks[mean_extrema_cur_index - two_mins_span: mean_extrema_cur_index + two_mins_span])
+        
+        mean_zxj_diff = int(mean_extrema_next_zxj - mean_extrema_cur_zxj) if extremas[0]['type'] != "i" else round((mean_extrema_next_zxj - mean_extrema_cur_zxj)*2)/2
+        mean_ccl_diff = mean_extrema_next_ccl - mean_extrema_cur_ccl
+        ccl_price_rate = int(mean_ccl_diff / mean_zxj_diff if mean_zxj_diff != 0 else mean_ccl_diff)
+        data = {
+            'time_range': f"{extremas[i]['time']}-{extremas[i+1]['time']}",
+            'zxj_diff': mean_zxj_diff,
+            'rate': ccl_price_rate
+        }
+        if mean_zxj_diff > 0:
+            if mean_ccl_diff > 0:
+                data['rate_type'] = "u_u"
+                u_u_rates.append(data)
+            else:
+                data['rate_type'] = "u_d"
+                u_d_rates.append(data)
+        else:
+            if mean_ccl_diff > 0:
+                data['rate_type'] = "d_u"
+                d_u_rates.append(data)
+            else:
+                data['rate_type'] = "d_d"
+                d_d_rates.append(data)
+        
+        # Add five mins data trend
+        # j = extremas[i]['index']
+        # while j < extremas[i+1]['index']:
+        #     next = j + 12 * 5
+        #     if next >= extremas[i+1]['index']:
+        #         j = extremas[i+1]['index'] - 12 * 5
+        #         next = extremas[i+1]['index']
+            
+        #     sec_30_span = 6
+            
+        #             # two_mins_span = 12 * 2
+        #     # mean_extrema_next_index = extremas[i+1]['index']        
+        #     # mean_extrema_next_zxj = round(mean(t['zxj'] for t in ticks[mean_extrema_next_index - two_mins_span: mean_extrema_next_index + two_mins_span]), 2)
+        #     # mean_extrema_next_ccl = mean(t['ccl'] for t in ticks[mean_extrema_next_index - two_mins_span: mean_extrema_next_index + two_mins_span])
+            
+        #     # mean_extrema_cur_index = extremas[i]['index']
+        #     # mean_extrema_cur_zxj = round(mean(t['zxj'] for t in ticks[mean_extrema_cur_index - two_mins_span: mean_extrema_cur_index + two_mins_span]), 2)
+        #     # mean_extrema_cur_ccl = mean(t['ccl'] for t in ticks[mean_extrema_cur_index - two_mins_span: mean_extrema_cur_index + two_mins_span])
+        
+                
+        #     inside_mean_extrema_next_zxj = round(mean(t['zxj'] for t in ticks[next - sec_30_span: next + sec_30_span]), 2)
+        #     inside_mean_extrema_next_ccl = mean(t['ccl'] for t in ticks[next - sec_30_span: next + sec_30_span])
+            
+        #     inside_mean_extrema_cur_zxj = round(mean(t['zxj'] for t in ticks[j - sec_30_span: j + sec_30_span]), 2)
+        #     inside_mean_extrema_cur_ccl= mean(t['ccl'] for t in ticks[j - sec_30_span: j + sec_30_span])
+            
+        #     inside_mean_zxj_diff = int(inside_mean_extrema_next_zxj - inside_mean_extrema_cur_zxj) if extremas[0]['type'] != "i" else round((inside_mean_extrema_next_zxj - inside_mean_extrema_cur_zxj)*2)/2
+        #     inside_mean_ccl_diff = inside_mean_extrema_next_ccl - inside_mean_extrema_cur_ccl
+        #     inside_ccl_price_rate = int(inside_mean_ccl_diff / inside_mean_zxj_diff if inside_mean_zxj_diff != 0 else inside_mean_ccl_diff)
+        
+        #     inside_data = {
+        #         'zxj_diff': inside_mean_zxj_diff,
+        #         'rate': inside_ccl_price_rate
+        #     }
+            
+        #     # inside_zxj_threashold = 1 if extremas[0]['type'] != "i" else 0.5
+            
+        #     if abs(inside_mean_zxj_diff) == 0:
+        #         if inside_mean_ccl_diff > 0:
+        #             inside_data['rate_type'] = "n_u"
+        #         else:
+        #             inside_data['rate_type'] = "n_d"
+        #     elif inside_mean_zxj_diff > 0:
+        #         if inside_mean_ccl_diff > 0:
+        #             inside_data['rate_type'] = "u_u"
+        #         else:
+        #             inside_data['rate_type'] = "u_d"
+        #     else:
+        #         if inside_mean_ccl_diff > 0:
+        #             inside_data['rate_type'] = "d_u"
+        #         else:
+        #             inside_data['rate_type'] = "d_d"
+                        
+        #     utils.log(f"inside: {ticks[j]['time']}-5min {inside_data['rate_type']} {inside_data['zxj_diff']} {inside_data['rate']}")
+        #     j = next
+        
+        data['trade_time_diff'] = int((extremas[i+1]['index'] - extremas[i]['index']) / 12)
+        # utils.log(f"{data['time_range']} {data['rate_type']} {data['zxj_diff']} {data['rate']} {data['trade_time_diff']}m")
+    
+    rates = [u_u_rates, u_d_rates, d_u_rates, d_d_rates]
+    results = []
     for rate in rates:
         if len(rate) < 2:
             continue
-        avg_rate = mean(list(x['rate'] for x in rate))
-        stdev_rate = stdev(list(x['rate'] for x in rate))
-        utils.log(f'{rate[0]["rate_type"]} avg: {avg_rate} stdev: {stdev_rate} count: {len(rate)}')
+        avg_rate = int(mean(list(x['rate'] for x in rate)))
+        stdev_rate = int(stdev(list(x['rate'] for x in rate)))
+        results.append({
+            'rate_type': rate[0]['rate_type'],
+            'cp_avg': avg_rate,
+            'cp_std': stdev_rate,
+            'count': len(rate)
+        })
+        # utils.log(f'{rate[0]["rate_type"]} avg: {avg_rate} stdev: {stdev_rate} count: {len(rate)}')
+    return results
 
 def predict_base(res, up_type, down_type, datas, data, position, factor, print_data=False):
     past_day_span = factor['pastDay']
@@ -813,28 +1019,140 @@ def get_ccl_trend_value(minute, percentage):
 
     return positive * trend_point
 
+CCL_LIMIT={
+    "rb": 1200000,
+    "i": 600000,
+    "oi": 250000,
+    "y": 350000
+}
 
+def get_past_n_days_ccl_min_max(type, days = 4):
+    # current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    # Perform the aggregation
+    pipeline = [
+        {
+        "$match": {
+            "type": type  # Apply filter to only include documents with type 'rb'
+            }
+        },
+        {
+            "$group": {
+                "_id": "$date",  # Replace with your actual field name
+                "latest": {"$max": "$date"}  # Assuming the date field is unique
+            }
+        },
+        {"$sort": {"latest": -1}},
+        {"$limit": days},
+        {
+            "$project": {
+                "_id": 0,
+                "date": "$_id"
+            }
+        }
+    ]
+
+    latest_dates = [d['date'] for d in constance.REAL_TIME_TICK_COL.aggregate(pipeline)]
+    latest_dates.sort()
+    daily_info = {}
+    
+    for i in range(0, len(latest_dates) - 1):
+        start_time = latest_dates[i] + "21:00:00"
+        end_time = latest_dates[i + 1] + "15:00:00"
+        start_tick = constance.REAL_TIME_TICK_COL.find_one({"type": type, "time" :{"$gte": start_time},"ccl": {"$gt": CCL_LIMIT[type]}}, sort=[("time", 1)])
+        end_tick = constance.REAL_TIME_TICK_COL.find_one({"type": type, "time" :{"$lte": end_time}, "ccl": {"$gt": CCL_LIMIT[type]}}, sort=[("time", -1)])
+        static_pipeline = [
+            {
+                "$match": {
+                    "type": type,
+                    "time": {"$gte": start_time, "$lte": end_time},  # Greater than or equal to the filter date,
+                    "ccl": {"$gt": CCL_LIMIT[type]}
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,  # Group all matching documents together
+                    # "average": {"$avg": f"$ccl"},
+                    # "average_zxj": {"$avg": f"$zxj"},
+                    "minimum": {"$min": f"$ccl"},
+                    "maximum": {"$max": f"$ccl"},
+                }
+            }
+        ]
+            # Execute the aggregation pipeline
+        stats = list(constance.REAL_TIME_TICK_COL.aggregate(static_pipeline))
+        
+        daily_info[latest_dates[i+1]] = {}
+        daily_info[latest_dates[i+1]]["start"] = start_tick['ccl']
+        daily_info[latest_dates[i+1]]["end"] = end_tick['ccl']
+        # Display the results
+        for stat in stats:
+            daily_info[latest_dates[i+1]]["min"] = stat['minimum']
+            daily_info[latest_dates[i+1]]["max"] = stat['maximum']
+        
+        daily_info[latest_dates[i+1]]["close_diff"] = end_tick['ccl'] - start_tick['ccl']
+        daily_info[latest_dates[i+1]]["minmax_diff"] = daily_info[latest_dates[i+1]]["max"] - daily_info[latest_dates[i+1]]["min"]
+
+    # utils.log(daily_info)
+    return daily_info
+    
+    # datas = list(constance.INFO_COL.find({"type": type}).sort([("date", -1)]).limit())
+    # maxs = list(x['ccl'] for x in datas)
+    # mins = list(x['ccl'] for x in datas)
+    # return max(maxs), min(mins)
+
+
+def get_stable_ccl_time(ticks):
+    # sorted_ticks = sorted(ticks, key=lambda x: x['time'])
+    data = get_continuous_status(ticks)
+    results = find_stable_sublists(ticks, data, by="ccl")
+    return results
+    # return {
+    #     current_date: statistic_sublists(results)
+    # }
+    
+def get_cp_rate_by_exrema_price(ticks):
+    extremas =  find_extrema(ticks, window=720, column='zxj')
+    return extrema_ccl_price_rate(ticks, extremas)
+    
 if __name__ == "__main__":
     # LOGGER.info(convert_val("0.5"))
     # LOGGER.info(convert_val("5"))
     # LOGGER.info(convert_val("a"))
     # click.echo(pow_times(1.045, 300))
     # click.echo(pow_base(9, 3.44))
-    ticks = list(constance.REAL_TIME_TICK_COL.find({"type":"oi"}).sort([("time", -1)]).limit(int(12 * 60 * 5.5 * 3)))
-    utils.log(f"start time {ticks[0]['time']} end time {ticks[-1]['time']}")
-    similar_ticks = find_history(ticks[60:], 340000, 'ccl', 5)
-    utils.log(f'{ticks[0]["time"]} {ticks[0]["zxj"]} {ticks[0]["ccl"]}')
-    for tick in similar_ticks:
-        utils.log(f'{tick["time"]} {tick["zxj"]} {tick["ccl"]}')
+    # get_past_n_days_ccl_min_max("rb")
     
-    utils.log("=====================================")   
-    similar_ticks = find_history(ticks[60:], 8398, 'zxj', 5)
-    utils.log(f'{ticks[0]["time"]} {ticks[0]["zxj"]} {ticks[0]["ccl"]}')
-    for tick in similar_ticks:
-        utils.log(f'{tick["time"]} {tick["zxj"]} {tick["ccl"]}')
-    # sorted_ticks = sorted(ticks, key=lambda x: x['time'])
-    # extremas =  find_extrema(sorted_ticks, window=720, column='zxj')
-    # extrema_ccl_price_rate(extremas)
+    
+    ticks = list(constance.REAL_TIME_TICK_COL.find({"type":"i", "date":{"$gte":"2023-10-20", "$lte":"2023-11-01"}}).sort([("time", -1)]).limit(int(12 * 60 * 5.5 * 30)))
+    # utils.log(f"start time {ticks[0]['time']} end time {ticks[-1]['time']}")
+    # similar_ticks = find_history(ticks[60:], 340000, 'ccl', 5)
+    # utils.log(f'{ticks[0]["time"]} {ticks[0]["zxj"]} {ticks[0]["ccl"]}')
+    # for tick in similar_ticks:
+    #     utils.log(f'{tick["time"]} {tick["zxj"]} {tick["ccl"]}')
+    
+    # utils.log("=====================================")   
+    # similar_ticks = find_history(ticks[60:], 8398, 'zxj', 5)
+    # utils.log(f'{ticks[0]["time"]} {ticks[0]["zxj"]} {ticks[0]["ccl"]}')
+    # for tick in similar_ticks:
+    #     utils.log(f'{tick["time"]} {tick["zxj"]} {tick["ccl"]}')
+    
+    
+    
+        
+    sorted_ticks = sorted(ticks, key=lambda x: x['time'])
+    data = get_continuous_status(sorted_ticks)
+    results = find_stable_sublists(sorted_ticks, data, by="ccl")
+    
+    # statistic_sublists(results)
+    
+    # results = find_stable_sublists(sorted_ticks, data, by="zxj")
+    # statistic_sublists(results)
+    for res in results:
+        utils.log(res)
+    
+    
+    extremas =  find_extrema(sorted_ticks, window=720, column='zxj')
+    extrema_ccl_price_rate(sorted_ticks, extremas)
     
     # extremas =  find_extrema(sorted_ticks, window=720, column='ccl')
-    # extrema_ccl_price_rate(extremas)
+    # extrema_ccl_price_rate(sorted_ticks, extremas)

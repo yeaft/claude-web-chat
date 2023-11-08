@@ -509,7 +509,7 @@ class DataProcessor:
                 message += f"{int(self.data[-index_diff]['zxj'])} {int(self.data[-1]['zxj'])} {int(max([d['zxj'] for d in self.data[-index_diff:]]))} {int(min([d['zxj'] for d in self.data[-index_diff:]]))}\n"
             else:
                 message += f"Dur: {int(duration_seconds)}s PD: {round(self.data[-1]['zxj'] - self.data[-index_diff]['zxj'], 1)}\n"            
-                message += f"{round(self.data[-index_diff]['zxj'], 1)} {round(self.data[-1]['zxj'],1)} {round(max([d['zxj'] for d in self.data[-index_diff:]]), 1)} {round(min([d['zxj'] for d in self.data[-index_diff:]]), 1)}\n"
+                message += f"{round(self.data[-index_diff]['zxj'] * 2)/2} {round(self.data[-1]['zxj']*2)/2} {round(max([d['zxj'] for d in self.data[-index_diff:]]) * 2)/2} {round(min([d['zxj'] for d in self.data[-index_diff:]])*2)/2}\n"
             message += f"CJL sum: {int(sum([d[self.cjl_column_name] for d in self.data[-index_diff:]]))}\n"
             message += f"CCL Diff: {int(self.data[-1]['ccl'] - self.cjl_ab_start_data['ccl'])}\n"
         # message += f"ZXJ L:{self.past_30min_price_trend:<4} S:{self.data[-1]['ab_zxj_direction']:<5}\n"
@@ -519,7 +519,7 @@ class DataProcessor:
             if self.data[-1]['type'] != "i":
                 message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i][self.cjl_column_name]):<5} {(self.data[i]['anomaly'] if 'anomaly' in self.data[i] else ''):<7}\n"        
             else:
-                message += f"{round(self.data[i]['zxj'], 1):<5} {int(self.data[i][self.cjl_column_name]):<5} {(self.data[i]['anomaly'] if 'anomaly' in self.data[i] else ''):<7}\n"        
+                message += f"{round(self.data[i]['zxj']*2)/2:<5} {int(self.data[i][self.cjl_column_name]):<5} {(self.data[i]['anomaly'] if 'anomaly' in self.data[i] else ''):<7}\n"        
 
         utils.send_ding_msg(msg=message, is_real_send=is_send)
 
@@ -543,7 +543,7 @@ class DataProcessor:
             if self.data[-1]['type'] != "i":
                 message += f"{int(self.data[i]['zxj']):<5} {int(self.data[i][self.cjl_column_name]):<5} {self.data[i]['ccl']:<7}\n"        
             else:
-                message += f"{round(self.data[i]['zxj'], 1):<5} {int(self.data[i][self.cjl_column_name]):<5} {self.data[i]['ccl']:<7}\n"        
+                message += f"{round(self.data[i]['zxj']*2)/2:<5} {int(self.data[i][self.cjl_column_name]):<5} {self.data[i]['ccl']:<7}\n"        
 
         utils.send_ding_msg(msg=message, is_real_send=is_send)
 
