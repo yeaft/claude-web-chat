@@ -73,7 +73,7 @@
     </script>
 </head>
 <body onload="scheduleRefresh()">
-    <p>{{ current_time }}, using: {{ processing_time }} ms</p>   
+    <p>Cur: {{ current_time }}, kp: {{ openning_time }}, using: {{ processing_time }} ms</p> 
     <table>
         {% for type_name, type_data in data.items() %}
             {% set row_counter = namespace(value=0) %}

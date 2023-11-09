@@ -26,9 +26,9 @@ def get_latest_data():
     results = {}
     infos = {}
     list_size = 6
-    data_types = ['rb', 'oi', 'i']
+    data_types = ['rb', 'i', 'oi']
     # data_types = ['rb']
-    kp_time = date_utils.get_kp_time_string("2023-10-31")
+    kp_time = date_utils.get_kp_time_string()
     current_str = datetime.now().strftime('%Y-%m-%d')
     daily_ccl_datas = {}
     cp_infos = {}
@@ -166,7 +166,7 @@ def get_latest_data():
     processing_time = int((time.time() - start_time) * 1000)  # in milliseconds
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
     if results:        
-        return render_template('data.html', daily_ccl_datas= daily_ccl_datas, cp_infos =cp_infos, stable_ccl_datas= stable_ccl_datas, infos=infos, data=results, processing_time=processing_time, openning_time=kp_time, current_time=current_time)
+        return render_template('data.html', daily_ccl_datas= daily_ccl_datas, cp_infos =cp_infos, stable_ccl_datas= stable_ccl_datas, infos=infos, data=results, processing_time=processing_time, openning_time=kp_time[5:-4], current_time=current_time[5:-4])
     else:
         return "No data found for the given type", 404
 
