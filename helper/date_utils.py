@@ -89,7 +89,7 @@ def min_diff(start, end):
     return round((datetime.strptime(end, time_format) - datetime.strptime(start, time_format)).total_seconds()/60, 1)
 
 def get_kp_time_string(target_date = ""):
-    now = datetime.now()
+    now = datetime.now(pytz.timezone("Asia/Shanghai"))
     if target_date:
         date_str = target_date
     else:

@@ -73,37 +73,23 @@
     </script>
 </head>
 <body onload="scheduleRefresh()">
-    <p>Cur: {{ current_time }}, kp: {{ openning_time }}, using: {{ processing_time }} ms</p> 
+    <p>Current: {{ current_time }}, using: {{ processing_time }} ms</p> 
     <table>
         {% for type_name, type_data in data.items() %}
             {% set row_counter = namespace(value=0) %}
             <tbody>
                 <tr class="even' }}">
                     <td>{{ type_name.upper() }}</td>
-                    <td colspan="5">{{ cp_infos[type_name] }}</td>                    
+                    <td colspan="5">{{ sum_infos[type_name] }}</td>                    
                 </tr>
-                <tr class = "odd"><td style="height: 8px;" colspan="6"></td></tr>   
             </tbody>
-            <tbody>                
-                {% for ins in infos[type_name] %}
-                    {% set row_counter.value = row_counter.value + 1 %}
-                    <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
-                        {% for info in ins %}
-                            <td>{{ info }}</td>
-                        {% endfor %}
-                    </tr>
-                {% endfor %}
-            </tbody>
-            <tr><td style="height: 8px;" colspan="6"></td></tr>
             <tbody>
-                {% for d in stable_ccl_datas[type_name] %}
-                    {% set row_counter.value = row_counter.value + 1 %}
-                    <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
-                        {% for info in d %}
-                            <td>{{ info }}</td>
-                        {% endfor %}
-                    </tr>
-                {% endfor %} 
+                {% set row_counter.value = row_counter.value + 1 %} 
+                <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
+                    {% for v in kp_info[type_name].values() %}
+                        <td>{{v}}</td>
+                    {% endfor %}
+                </tr>
             </tbody>
             <tr><td style="height: 8px;" colspan="6"></td></tr>
             <tbody>
@@ -117,6 +103,28 @@
                 {% endfor %}
             </tbody>
             <tr><td style="height: 8px;" colspan="6"></td></tr>
+            <tbody>                
+                {% for ins in zxj_infos[type_name] %}
+                    {% set row_counter.value = row_counter.value + 1 %}
+                    <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
+                        {% for info in ins %}
+                            <td>{{ info }}</td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
+            </tbody>
+            <tr><td style="height: 8px;" colspan="6"></td></tr>
+            <tbody>                
+                {% for ins in ccl_infos[type_name] %}
+                    {% set row_counter.value = row_counter.value + 1 %}
+                    <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
+                        {% for info in ins %}
+                            <td>{{ info }}</td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
+            </tbody>
+            <tr><td style="height: 8px;" colspan="6"></td></tr>            
             <tbody>
                 {% for item in type_data %}
                     {% set row_counter.value = row_counter.value + 1 %}

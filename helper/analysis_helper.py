@@ -1113,6 +1113,45 @@ def get_stable_ccl_time(ticks):
 def get_cp_rate_by_exrema_price(ticks):
     extremas =  find_extrema(ticks, window=720, column='zxj')
     return extrema_ccl_price_rate(ticks, extremas)
+
+def get_past_min_max_infor(ticks, column="zxj"):
+    start_tick = None
+    for d in ticks:
+        if d['cjl'] > 0:
+            start_tick = d
+            break
+    
+    max_data = max(ticks, key=lambda x: x[column])
+    min_data = min(ticks, key=lambda x: x[column])        
+    
+    if max_data['time'] > min_data['time']:            
+        start_to_min_duration = int(date_utils.min_diff(start_tick['time'], min_data['time']))
+        min_to_max_duration = int(date_utils.min_diff(min_data['time'], max_data['time']))
+        max_to_current_duration = int(date_utils.min_diff(max_data['time'], ticks[-1]['time']))
+        start_to_current_duration = int(date_utils.min_diff(start_tick['time'], ticks[-1]['time']))
+        
+        titles =[f"View({column.upper()})", f"Start {start_tick['time'][11:-4]}", f"Min {start_to_min_duration}m", f"Max {min_to_max_duration}m", f"Now {max_to_current_duration}m", f"S2Now {start_to_current_duration}m"]
+        price_info = ["ZXJ", f"{start_tick['zxj']}", f"{min_data['zxj']}", f"{max_data['zxj']}", f"{ticks[-1]['zxj']}", f"{ticks[-1]['zxj']}"]
+        ccl_info = ["CCL", f"{start_tick['ccl']}", f"{min_data['ccl']}", f"{max_data['ccl']}", f"{ticks[-1]['ccl']}", f"{ticks[-1]['ccl'] - start_tick['ccl']}"]
+        # price_ccl_power = ["C/P", "", f"{int((min_data['ccl'] - start_tick['ccl'])/(min_data['zxj'] - start_tick['zxj'])) if min_data['zxj'] - start_tick['zxj'] != 0 else 0}", f"{int((max_data['ccl'] - min_data['ccl'])/(max_data['zxj'] - min_data['zxj'])) if max_data['zxj'] - min_data['zxj'] != 0 else 0}", f"{int((ticks[-1]['ccl'] - max_data['ccl'])/(ticks[-1]['zxj'] - max_data['zxj'])) if ticks[-1]['zxj'] - max_data['zxj'] != 0 else 0}"]
+
+    elif max_data['time'] < min_data['time']:
+        start_to_max_duration = int(date_utils.min_diff(start_tick['time'], max_data['time']))
+        max_to_min_duration = int(date_utils.min_diff(max_data['time'], min_data['time']))
+        min_to_current_duration = int(date_utils.min_diff(min_data['time'], ticks[-1]['time']))
+        start_to_current_duration = int(date_utils.min_diff(start_tick['time'], ticks[-1]['time']))
+        
+        titles = [f"View({column.upper()})", f"Start {start_tick['time'][11:-4]}", f"Max {start_to_max_duration}m", f"Min {max_to_min_duration}m", f"Now {min_to_current_duration}m", f"S2Now {start_to_current_duration}m"]
+        price_info = ["ZXJ", f"{start_tick['zxj']}", f"{max_data['zxj']}", f"{min_data['zxj']}", f"{ticks[-1]['zxj']}", f"{ticks[-1]['zxj']}"]
+        ccl_info = ["CCL", f"{start_tick['ccl']}", f"{max_data['ccl']}", f"{min_data['ccl']}", f"{ticks[-1]['ccl']}", f"{ticks[-1]['ccl'] - start_tick['ccl']}"]
+        # price_ccl_power = ["C/P", "", f"{int((max_data['ccl'] - start_tick['ccl'])/(max_data['zxj'] - start_tick['zxj'])) if max_data['zxj'] - start_tick['zxj'] != 0 else 0}", f"{int((min_data['ccl'] - max_data['ccl'])/(min_data['zxj'] - max_data['zxj'])) if min_data['zxj'] - max_data['zxj'] != 0 else 0}", f"{int((ticks[-1]['ccl'] - min_data['ccl'])/(ticks[-1]['zxj'] - min_data['zxj'])) if ticks[-1]['zxj'] - min_data['zxj'] != 0 else 0}"]
+        # price_info = f"ZXJ: {start_tick['zxj']} - {max_data['zxj']}({int(max_data['zxj'] - start_tick['zxj'])}/{start_to_max_duration}m) - {min_data['zxj']}({int(min_data['zxj'] - max_data['zxj'])}/{max_to_min_duration}m) - {ticks[-1]['zxj']}({int(ticks[-1]['zxj'] - min_data['zxj'])}/{min_to_current_duration}m)"
+        # ccl_info = f"CCL: {start_tick['ccl']} - {max_data['ccl']}({int(max_data['ccl'] - start_tick['ccl'])}) - {min_data['ccl']}({int(min_data['ccl'] - max_data['ccl'])}) - {ticks[-1]['ccl']}({int(ticks[-1]['ccl'] - min_data['ccl'])})"
+        # price_ccl_power = f"C/P: {int((max_data['ccl'] - start_tick['ccl'])/(max_data['zxj'] - start_tick['zxj'])) if max_data['zxj'] - start_tick['zxj'] != 0 else 0} - {int((min_data['ccl'] - max_data['ccl'])/(min_data['zxj'] - max_data['zxj'])) if min_data['zxj'] - max_data['zxj'] != 0 else 0} - {int((ticks[-1]['ccl'] - min_data['ccl'])/(ticks[-1]['zxj'] - min_data['zxj'])) if ticks[-1]['zxj'] - min_data['zxj'] != 0 else 0}"
+        
+    return [
+        titles, price_info, ccl_info
+    ]
     
 if __name__ == "__main__":
     # LOGGER.info(convert_val("0.5"))

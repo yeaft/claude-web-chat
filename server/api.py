@@ -24,14 +24,16 @@ def get_latest_data():
     
     start_time = time.time()
     results = {}
-    infos = {}
+    zxj_infos = {}
+    ccl_infos = {}
     list_size = 6
     data_types = ['rb', 'i', 'oi']
     # data_types = ['rb']
     kp_time = date_utils.get_kp_time_string()
+    kp_info = {}
     current_str = datetime.now().strftime('%Y-%m-%d')
     daily_ccl_datas = {}
-    cp_infos = {}
+    sum_infos = {}
     stable_ccl_datas = {}
     
             
@@ -59,7 +61,7 @@ def get_latest_data():
         for k, v in CACHE_DAILY_CCL_DATA[data_type].items():
             if k != current_str:
                 daily_ccl_datas[data_type].append({
-                    "date": k,
+                    "date": k[5:],
                     "start": v["start"],
                     "close_d": v["close_diff"],
                     "min": v["min"],
@@ -68,30 +70,31 @@ def get_latest_data():
                 })
         
         # Get CP rate
-        if data_type not in CACHE_CP_RATE_DATA or current_str not in CACHE_CP_RATE_DATA[data_type]:
-            CACHE_CP_RATE_DATA[data_type] = {}
-            CACHE_CP_RATE_DATA[data_type][current_str] = analysis_helper.get_cp_rate_by_exrema_price(CACHE_TICKS[data_type])
-            # utils.log("CACHE_CP_RATE_DATA: {}".format(CACHE_CP_RATE_DATA[data_type]))
+        # if data_type not in CACHE_CP_RATE_DATA or current_str not in CACHE_CP_RATE_DATA[data_type]:
+        #     CACHE_CP_RATE_DATA[data_type] = {}
+        #     CACHE_CP_RATE_DATA[data_type][current_str] = analysis_helper.get_cp_rate_by_exrema_price(CACHE_TICKS[data_type])
+        #     # utils.log("CACHE_CP_RATE_DATA: {}".format(CACHE_CP_RATE_DATA[data_type]))
 
-        cp_infos[data_type] = ""
-        for cp_rate in CACHE_CP_RATE_DATA[data_type][current_str]:
-            cp_infos[data_type] += f"{cp_rate['rate_type']}: {cp_rate['cp_avg']},{cp_rate['cp_std']},{cp_rate['count']} | "
+        # cp_infos[data_type] = ""
+        # for cp_rate in CACHE_CP_RATE_DATA[data_type][current_str]:
+        #     cp_infos[data_type] += f"{cp_rate['rate_type']}: {cp_rate['cp_avg']},{cp_rate['cp_std']},{cp_rate['count']} | "
         
-        cp_infos[data_type] = cp_infos[data_type][:-3]
-                            
-        # source_data = list(constance.REAL_TIME_TICK_COL.find({'type': data_type, 'time': {'$gte': kp_time}}).sort([('time', 1)]))       
+        # cp_infos[data_type] = cp_infos[data_type][:-3]
         
-        if data_type not in PAST_CCL_STABLE_DATA or "00:00.000" in CACHE_TICKS[data_type][-1]['time'] :
-            PAST_CCL_STABLE_DATA[data_type] = analysis_helper.get_stable_ccl_time(CACHE_TICKS[data_type])
+        # Calculate stable data
+        # if data_type not in PAST_CCL_STABLE_DATA or "00:00.000" in CACHE_TICKS[data_type][-1]['time'] :
+        #     PAST_CCL_STABLE_DATA[data_type] = analysis_helper.get_stable_ccl_time(CACHE_TICKS[data_type])
         
-        stable_ccl_datas[data_type] = [[],[],[],[]]
-        for i in range(-min(6, len(PAST_CCL_STABLE_DATA[data_type])), 0):
-            stable_ccl = PAST_CCL_STABLE_DATA[data_type][i]
-            last_stable_ccl = PAST_CCL_STABLE_DATA[data_type][i - 1]
-            stable_ccl_datas[data_type][0].append(stable_ccl['end_time'][11:-4])
-            stable_ccl_datas[data_type][1].append(stable_ccl['avg_zxj'])
-            stable_ccl_datas[data_type][2].append(stable_ccl['avg_ccl'])
-            stable_ccl_datas[data_type][3].append(f"{stable_ccl['avg_ccl'] - last_stable_ccl['avg_ccl']}/{int(stable_ccl['avg_zxj'] - last_stable_ccl['avg_zxj'])}")
+        # stable_ccl_datas[data_type] = [[],[],[],[]]
+        # for i in range(-min(6, len(PAST_CCL_STABLE_DATA[data_type])), 0):
+        #     stable_ccl = PAST_CCL_STABLE_DATA[data_type][i]
+        #     last_stable_ccl = PAST_CCL_STABLE_DATA[data_type][i - 1]
+        #     stable_ccl_datas[data_type][0].append(stable_ccl['end_time'][11:-4])
+        #     stable_ccl_datas[data_type][1].append(stable_ccl['avg_zxj'])
+        #     stable_ccl_datas[data_type][2].append(stable_ccl['avg_ccl'])
+        #     stable_ccl_datas[data_type][3].append(f"{stable_ccl['avg_ccl'] - last_stable_ccl['avg_ccl']}/{int(stable_ccl['avg_zxj'] - last_stable_ccl['avg_zxj'])}")
+            
+            
             
         if kp_time != LAST_KP_TIME:
             index_diff = min(int(date_utils.sec_diff(kp_time, CACHE_TICKS[data_type][-1]['time']) / 5) + 12 * 60 * 3, len(CACHE_TICKS[data_type]))
@@ -104,45 +107,21 @@ def get_latest_data():
             LAST_KP_TIME = kp_time
             KP_INDEX = kp_index
         
-        source_data = CACHE_TICKS[data_type][KP_INDEX:]
-        start_tick = None
-        for d in source_data:
-            if d['cjl'] > 0:
-                start_tick = d
-                break
+        # KP info
+        kp_tick = CACHE_TICKS[data_type][KP_INDEX]
+        kp_info[data_type] = {
+            "kp_zxj": kp_tick['zxj'],
+            "cur_zxj": CACHE_TICKS[data_type][-1]['zxj'],
+            "kp_ccl": kp_tick['ccl'],
+            "cur_ccl": CACHE_TICKS[data_type][-1]['ccl'],
+            "zxj_diff": int(CACHE_TICKS[data_type][-1]['zxj'] - kp_tick['zxj']) if data_type != 'i' else round((CACHE_TICKS[data_type][-1]['zxj'] - kp_tick['zxj'])*2)/2,
+            "ccl_diff": int(CACHE_TICKS[data_type][-1]['ccl'] - kp_tick['ccl']),
+        }
         
-        max_zxj_data = max(source_data, key=lambda x: x['zxj'])
-        min_zxj_data = min(source_data, key=lambda x: x['zxj'])        
-        
-        if max_zxj_data['time'] > min_zxj_data['time']:            
-            start_to_min_duration = date_utils.min_diff(start_tick['time'], min_zxj_data['time'])
-            min_to_max_duration = date_utils.min_diff(min_zxj_data['time'], max_zxj_data['time'])
-            max_to_current_duration = date_utils.min_diff(max_zxj_data['time'], source_data[-1]['time'])
-            start_to_current_duration = date_utils.min_diff(start_tick['time'], source_data[-1]['time'])
-            
-            titles =["Item", f"Start", f"Min {start_to_min_duration}m", f"Max {min_to_max_duration}m", f"Now {max_to_current_duration}m", f"S2Now {start_to_current_duration}m"]
-            price_info = ["ZXJ", f"{start_tick['zxj']}", f"{min_zxj_data['zxj']}", f"{max_zxj_data['zxj']}", f"{source_data[-1]['zxj']}", f"{source_data[-1]['zxj']}"]
-            ccl_info = ["CCL", f"{start_tick['ccl']}", f"{min_zxj_data['ccl']}", f"{max_zxj_data['ccl']}", f"{source_data[-1]['ccl']}", f"{source_data[-1]['ccl'] - start_tick['ccl']}"]
-            # price_ccl_power = ["C/P", "", f"{int((min_zxj_data['ccl'] - start_tick['ccl'])/(min_zxj_data['zxj'] - start_tick['zxj'])) if min_zxj_data['zxj'] - start_tick['zxj'] != 0 else 0}", f"{int((max_zxj_data['ccl'] - min_zxj_data['ccl'])/(max_zxj_data['zxj'] - min_zxj_data['zxj'])) if max_zxj_data['zxj'] - min_zxj_data['zxj'] != 0 else 0}", f"{int((source_data[-1]['ccl'] - max_zxj_data['ccl'])/(source_data[-1]['zxj'] - max_zxj_data['zxj'])) if source_data[-1]['zxj'] - max_zxj_data['zxj'] != 0 else 0}"]
-
-        elif max_zxj_data['time'] < min_zxj_data['time']:
-            start_to_max_duration = date_utils.min_diff(start_tick['time'], max_zxj_data['time'])
-            max_to_min_duration = date_utils.min_diff(max_zxj_data['time'], min_zxj_data['time'])
-            min_to_current_duration = date_utils.min_diff(min_zxj_data['time'], source_data[-1]['time'])
-            start_to_current_duration = date_utils.min_diff(start_tick['time'], source_data[-1]['time'])
-            
-            titles = ["Item", f"Start", f"Max {start_to_max_duration}m", f"Min {max_to_min_duration}m", f"Now {min_to_current_duration}m", f"S2Now {start_to_current_duration}m"]
-            price_info = ["ZXJ", f"{start_tick['zxj']}", f"{max_zxj_data['zxj']}", f"{min_zxj_data['zxj']}", f"{source_data[-1]['zxj']}", f"{source_data[-1]['zxj']}"]
-            ccl_info = ["CCL", f"{start_tick['ccl']}", f"{max_zxj_data['ccl']}", f"{min_zxj_data['ccl']}", f"{source_data[-1]['ccl']}", f"{source_data[-1]['ccl'] - start_tick['ccl']}"]
-            # price_ccl_power = ["C/P", "", f"{int((max_zxj_data['ccl'] - start_tick['ccl'])/(max_zxj_data['zxj'] - start_tick['zxj'])) if max_zxj_data['zxj'] - start_tick['zxj'] != 0 else 0}", f"{int((min_zxj_data['ccl'] - max_zxj_data['ccl'])/(min_zxj_data['zxj'] - max_zxj_data['zxj'])) if min_zxj_data['zxj'] - max_zxj_data['zxj'] != 0 else 0}", f"{int((source_data[-1]['ccl'] - min_zxj_data['ccl'])/(source_data[-1]['zxj'] - min_zxj_data['zxj'])) if source_data[-1]['zxj'] - min_zxj_data['zxj'] != 0 else 0}"]
-            # price_info = f"ZXJ: {start_tick['zxj']} - {max_zxj_data['zxj']}({int(max_zxj_data['zxj'] - start_tick['zxj'])}/{start_to_max_duration}m) - {min_zxj_data['zxj']}({int(min_zxj_data['zxj'] - max_zxj_data['zxj'])}/{max_to_min_duration}m) - {source_data[-1]['zxj']}({int(source_data[-1]['zxj'] - min_zxj_data['zxj'])}/{min_to_current_duration}m)"
-            # ccl_info = f"CCL: {start_tick['ccl']} - {max_zxj_data['ccl']}({int(max_zxj_data['ccl'] - start_tick['ccl'])}) - {min_zxj_data['ccl']}({int(min_zxj_data['ccl'] - max_zxj_data['ccl'])}) - {source_data[-1]['ccl']}({int(source_data[-1]['ccl'] - min_zxj_data['ccl'])})"
-            # price_ccl_power = f"C/P: {int((max_zxj_data['ccl'] - start_tick['ccl'])/(max_zxj_data['zxj'] - start_tick['zxj'])) if max_zxj_data['zxj'] - start_tick['zxj'] != 0 else 0} - {int((min_zxj_data['ccl'] - max_zxj_data['ccl'])/(min_zxj_data['zxj'] - max_zxj_data['zxj'])) if min_zxj_data['zxj'] - max_zxj_data['zxj'] != 0 else 0} - {int((source_data[-1]['ccl'] - min_zxj_data['ccl'])/(source_data[-1]['zxj'] - min_zxj_data['zxj'])) if source_data[-1]['zxj'] - min_zxj_data['zxj'] != 0 else 0}"
-            
-        infos[data_type] = [
-            titles, price_info, ccl_info
-        ]
-            
+        # Three hours ago
+        source_data = CACHE_TICKS[data_type][- 12 * 60 * 3:]
+        zxj_infos[data_type] = analysis_helper.get_past_min_max_infor(source_data, column="zxj")
+        ccl_infos[data_type] = analysis_helper.get_past_min_max_infor(source_data, column="ccl")
         
             
         data = CACHE_TICKS[data_type][-list_size:]
@@ -151,7 +130,7 @@ def get_latest_data():
             record = data[i]
             result.append(
                 {
-                    "time": record['time'].split(" ")[-1],
+                    "time": record['time'][11:-4],
                     "code": record['code'],
                     "zxj": record['zxj'] if data_type == 'i' else int(record['zxj']),
                     "cjl": int(record['cjlDiff'] if "cjlDiff" in record else record['cjl']),
@@ -162,11 +141,13 @@ def get_latest_data():
         
         results[data_type] = result
         
+        sum_infos[data_type] = f"Open time {kp_tick['time'][5:-4]}"
+        
     
     processing_time = int((time.time() - start_time) * 1000)  # in milliseconds
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
     if results:        
-        return render_template('data.html', daily_ccl_datas= daily_ccl_datas, cp_infos =cp_infos, stable_ccl_datas= stable_ccl_datas, infos=infos, data=results, processing_time=processing_time, openning_time=kp_time[5:-4], current_time=current_time[5:-4])
+        return render_template('data.html', sum_infos = sum_infos, kp_info = kp_info, daily_ccl_datas= daily_ccl_datas, zxj_infos=zxj_infos, ccl_infos = ccl_infos, data=results, processing_time=processing_time, openning_time=kp_time[5:-4], current_time=current_time[5:-4])
     else:
         return "No data found for the given type", 404
 
