@@ -1089,8 +1089,13 @@ def get_past_n_days_ccl_min_max(type, days = 4):
             daily_info[latest_dates[i+1]]["min"] = stat['minimum']
             daily_info[latest_dates[i+1]]["max"] = stat['maximum']
         
+        min_tick = constance.REAL_TIME_TICK_COL.find_one({"type": type, "time": {"$gte": start_time, "$lte": end_time}, "ccl": daily_info[latest_dates[i+1]]["min"]})
+        max_tick = constance.REAL_TIME_TICK_COL.find_one({"type": type, "time": {"$gte": start_time, "$lte": end_time}, "ccl": daily_info[latest_dates[i+1]]["max"]})
+        zxj_diff = int(max_tick['zxj'] - min_tick['zxj']) if type != "i" else round((max_tick['zxj'] - min_tick['zxj'])*2)/2
+        
         daily_info[latest_dates[i+1]]["close_diff"] = end_tick['ccl'] - start_tick['ccl']
-        daily_info[latest_dates[i+1]]["minmax_diff"] = daily_info[latest_dates[i+1]]["max"] - daily_info[latest_dates[i+1]]["min"]
+        daily_info[latest_dates[i+1]]["diff"] = f"{daily_info[latest_dates[i+1]]['max'] - daily_info[latest_dates[i+1]]['min']}/{zxj_diff}"
+        
 
     # utils.log(daily_info)
     return daily_info
@@ -1130,9 +1135,9 @@ def get_past_min_max_infor(ticks, column="zxj"):
         max_to_current_duration = int(date_utils.min_diff(max_data['time'], ticks[-1]['time']))
         start_to_current_duration = int(date_utils.min_diff(start_tick['time'], ticks[-1]['time']))
         
-        titles =[f"View({column.upper()})", f"Start {start_tick['time'][11:-4]}", f"Min {start_to_min_duration}m", f"Max {min_to_max_duration}m", f"Now {max_to_current_duration}m", f"S2Now {start_to_current_duration}m"]
-        price_info = ["ZXJ", f"{start_tick['zxj']}", f"{min_data['zxj']}", f"{max_data['zxj']}", f"{ticks[-1]['zxj']}", f"{ticks[-1]['zxj']}"]
-        ccl_info = ["CCL", f"{start_tick['ccl']}", f"{min_data['ccl']}", f"{max_data['ccl']}", f"{ticks[-1]['ccl']}", f"{ticks[-1]['ccl'] - start_tick['ccl']}"]
+        titles =[f"{column.upper()} {start_tick['time'][11:-4]}", f"Min {start_to_min_duration}m", f"Max {min_to_max_duration}m", f"Now {max_to_current_duration}m", f"S2Now {start_to_current_duration}m"]
+        price_info = [f"{start_tick['zxj']}", f"{min_data['zxj']}", f"{max_data['zxj']}", f"{ticks[-1]['zxj']}", f"{int(ticks[-1]['zxj'] - start_tick['zxj']) if ticks[-1]['type'] != 'i' else round((ticks[-1]['zxj'] - start_tick['zxj'])*2)/2}"]
+        ccl_info = [f"{start_tick['ccl']}", f"{min_data['ccl']}", f"{max_data['ccl']}", f"{ticks[-1]['ccl']}", f"{ticks[-1]['ccl'] - start_tick['ccl']}"]
         # price_ccl_power = ["C/P", "", f"{int((min_data['ccl'] - start_tick['ccl'])/(min_data['zxj'] - start_tick['zxj'])) if min_data['zxj'] - start_tick['zxj'] != 0 else 0}", f"{int((max_data['ccl'] - min_data['ccl'])/(max_data['zxj'] - min_data['zxj'])) if max_data['zxj'] - min_data['zxj'] != 0 else 0}", f"{int((ticks[-1]['ccl'] - max_data['ccl'])/(ticks[-1]['zxj'] - max_data['zxj'])) if ticks[-1]['zxj'] - max_data['zxj'] != 0 else 0}"]
 
     elif max_data['time'] < min_data['time']:
@@ -1141,9 +1146,9 @@ def get_past_min_max_infor(ticks, column="zxj"):
         min_to_current_duration = int(date_utils.min_diff(min_data['time'], ticks[-1]['time']))
         start_to_current_duration = int(date_utils.min_diff(start_tick['time'], ticks[-1]['time']))
         
-        titles = [f"View({column.upper()})", f"Start {start_tick['time'][11:-4]}", f"Max {start_to_max_duration}m", f"Min {max_to_min_duration}m", f"Now {min_to_current_duration}m", f"S2Now {start_to_current_duration}m"]
-        price_info = ["ZXJ", f"{start_tick['zxj']}", f"{max_data['zxj']}", f"{min_data['zxj']}", f"{ticks[-1]['zxj']}", f"{ticks[-1]['zxj']}"]
-        ccl_info = ["CCL", f"{start_tick['ccl']}", f"{max_data['ccl']}", f"{min_data['ccl']}", f"{ticks[-1]['ccl']}", f"{ticks[-1]['ccl'] - start_tick['ccl']}"]
+        titles = [f"{column.upper()} {start_tick['time'][11:-4]}", f"Max {start_to_max_duration}m", f"Min {max_to_min_duration}m", f"Now {min_to_current_duration}m", f"S2Now {start_to_current_duration}m"]
+        price_info = [f"{start_tick['zxj']}", f"{max_data['zxj']}", f"{min_data['zxj']}", f"{ticks[-1]['zxj']}", f"{int(ticks[-1]['zxj'] - start_tick['zxj']) if ticks[-1]['type'] != 'i' else round((ticks[-1]['zxj'] - start_tick['zxj'])*2)/2}"]
+        ccl_info = [f"{start_tick['ccl']}", f"{max_data['ccl']}", f"{min_data['ccl']}", f"{ticks[-1]['ccl']}", f"{ticks[-1]['ccl'] - start_tick['ccl']}"]
         # price_ccl_power = ["C/P", "", f"{int((max_data['ccl'] - start_tick['ccl'])/(max_data['zxj'] - start_tick['zxj'])) if max_data['zxj'] - start_tick['zxj'] != 0 else 0}", f"{int((min_data['ccl'] - max_data['ccl'])/(min_data['zxj'] - max_data['zxj'])) if min_data['zxj'] - max_data['zxj'] != 0 else 0}", f"{int((ticks[-1]['ccl'] - min_data['ccl'])/(ticks[-1]['zxj'] - min_data['zxj'])) if ticks[-1]['zxj'] - min_data['zxj'] != 0 else 0}"]
         # price_info = f"ZXJ: {start_tick['zxj']} - {max_data['zxj']}({int(max_data['zxj'] - start_tick['zxj'])}/{start_to_max_duration}m) - {min_data['zxj']}({int(min_data['zxj'] - max_data['zxj'])}/{max_to_min_duration}m) - {ticks[-1]['zxj']}({int(ticks[-1]['zxj'] - min_data['zxj'])}/{min_to_current_duration}m)"
         # ccl_info = f"CCL: {start_tick['ccl']} - {max_data['ccl']}({int(max_data['ccl'] - start_tick['ccl'])}) - {min_data['ccl']}({int(min_data['ccl'] - max_data['ccl'])}) - {ticks[-1]['ccl']}({int(ticks[-1]['ccl'] - min_data['ccl'])})"
@@ -1162,7 +1167,7 @@ if __name__ == "__main__":
     # get_past_n_days_ccl_min_max("rb")
     
     
-    ticks = list(constance.REAL_TIME_TICK_COL.find({"type":"i", "date":{"$gte":"2023-10-20", "$lte":"2023-11-01"}}).sort([("time", -1)]).limit(int(12 * 60 * 5.5 * 30)))
+    ticks = list(constance.REAL_TIME_TICK_COL.find({"type":"i", "date":{"$gte":"2023-10-20", "$lte":"2023-11-01"}}).sort([("time", -1)]).limit(int(12 * 60 * 5.8 * 30)))
     # utils.log(f"start time {ticks[0]['time']} end time {ticks[-1]['time']}")
     # similar_ticks = find_history(ticks[60:], 340000, 'ccl', 5)
     # utils.log(f'{ticks[0]["time"]} {ticks[0]["zxj"]} {ticks[0]["ccl"]}')

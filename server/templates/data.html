@@ -73,25 +73,24 @@
     </script>
 </head>
 <body onload="scheduleRefresh()">
-    <p>Current: {{ current_time }}, using: {{ processing_time }} ms</p> 
+    <p>Current: {{ current_time }}, opening {{openning_time}} using: {{ processing_time }} ms</p> 
     <table>
         {% for type_name, type_data in data.items() %}
             {% set row_counter = namespace(value=0) %}
             <tbody>
-                <tr class="even' }}">
-                    <td>{{ type_name.upper() }}</td>
+                <tr class="{{ 'odd' }}">
                     <td colspan="5">{{ sum_infos[type_name] }}</td>                    
                 </tr>
             </tbody>
             <tbody>
                 {% set row_counter.value = row_counter.value + 1 %} 
-                <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
+                <tr class="{{ 'even' }}">
                     {% for v in kp_info[type_name].values() %}
                         <td>{{v}}</td>
                     {% endfor %}
                 </tr>
             </tbody>
-            <tr><td style="height: 8px;" colspan="6"></td></tr>
+            <tr><td style="height: 8px;" colspan="5"></td></tr>
             <tbody>
                 {% for d in daily_ccl_datas[type_name] %}
                     {% set row_counter.value = row_counter.value + 1 %}
@@ -102,7 +101,7 @@
                     </tr>
                 {% endfor %}
             </tbody>
-            <tr><td style="height: 8px;" colspan="6"></td></tr>
+            <tr><td style="height: 8px;" colspan="5"></td></tr>
             <tbody>                
                 {% for ins in zxj_infos[type_name] %}
                     {% set row_counter.value = row_counter.value + 1 %}
@@ -113,7 +112,7 @@
                     </tr>
                 {% endfor %}
             </tbody>
-            <tr><td style="height: 8px;" colspan="6"></td></tr>
+            <tr><td style="height: 8px;" colspan="5"></td></tr>
             <tbody>                
                 {% for ins in ccl_infos[type_name] %}
                     {% set row_counter.value = row_counter.value + 1 %}
@@ -124,9 +123,9 @@
                     </tr>
                 {% endfor %}
             </tbody>
-            <tr><td style="height: 8px;" colspan="6"></td></tr>            
+            <tr><td style="height: 8px;" colspan="5"></td></tr>            
             <tbody>
-                {% for item in type_data %}
+                {% for item in type_data %}                    
                     {% set row_counter.value = row_counter.value + 1 %}
                     <tr class="{{ 'even' if row_counter.value % 2 == 0 else 'odd' }}">
                         {% for value in item.values() %}
@@ -135,7 +134,7 @@
                     </tr>
                 {% endfor %}
             </tbody>
-            <tr><td style="height: 8px;" colspan="6"></td></tr>
+            <tr><td style="height: 8px;" colspan="5"></td></tr>
         {% endfor %}
     </table>
 

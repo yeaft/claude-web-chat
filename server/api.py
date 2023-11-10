@@ -12,7 +12,7 @@ CACHE_TICKS = {}
 CACHE_DAILY_CCL_DATA = {}
 CACHE_CP_RATE_DATA = {}
 PAST_CCL_STABLE_DATA = {}
-FIVE_DAYS_SIZE = 12 * 60 * 5.5 * 5
+FIVE_DAYS_SIZE = 12 * 60 * 5.8 * 5
 KP_INDEX = 0
 LAST_KP_TIME = ""
 
@@ -29,7 +29,8 @@ def get_latest_data():
     list_size = 6
     data_types = ['rb', 'i', 'oi']
     # data_types = ['rb']
-    kp_time = date_utils.get_kp_time_string()
+    kp_time = date_utils.get_kp_time_string("2023-10-31")
+    # kp_time = date_utils.get_kp_time_string()
     kp_info = {}
     current_str = datetime.now().strftime('%Y-%m-%d')
     daily_ccl_datas = {}
@@ -59,15 +60,14 @@ def get_latest_data():
 
         daily_ccl_datas[data_type] = []
         for k, v in CACHE_DAILY_CCL_DATA[data_type].items():
-            if k != current_str:
-                daily_ccl_datas[data_type].append({
-                    "date": k[5:],
-                    "start": v["start"],
-                    "close_d": v["close_diff"],
-                    "min": v["min"],
-                    "max": v["max"],
-                    "mm_c": v["minmax_diff"]           
-                })
+            daily_ccl_datas[data_type].append({
+                # "date": k[5:],
+                "start": v["start"],
+                "close_d": v["close_diff"],
+                "min": v["min"],
+                "max": v["max"],
+                "mm_c": v["diff"]           
+            })
         
         # Get CP rate
         # if data_type not in CACHE_CP_RATE_DATA or current_str not in CACHE_CP_RATE_DATA[data_type]:
@@ -97,11 +97,8 @@ def get_latest_data():
             
             
         if kp_time != LAST_KP_TIME:
-            index_diff = min(int(date_utils.sec_diff(kp_time, CACHE_TICKS[data_type][-1]['time']) / 5) + 12 * 60 * 3, len(CACHE_TICKS[data_type]))
-            utils.log(f"{date_utils.sec_diff(kp_time, CACHE_TICKS[data_type][-1]['time']) / 5} {index_diff}")
-            kp_index = len(CACHE_TICKS[data_type]) - 12 * 60 * 4
-            for i in range(len(CACHE_TICKS[data_type]) - 12 * 60 * 4, index_diff):
-                if CACHE_TICKS[data_type][i]['time'] <= kp_time:
+            for i in range(int(len(CACHE_TICKS[data_type]) - 12 * 60 * 5.8), len(CACHE_TICKS[data_type])):
+                if CACHE_TICKS[data_type][i]['time'] >= kp_time:
                     kp_index = i
                     break
             LAST_KP_TIME = kp_time
@@ -110,9 +107,10 @@ def get_latest_data():
         # KP info
         kp_tick = CACHE_TICKS[data_type][KP_INDEX]
         kp_info[data_type] = {
-            "kp_zxj": kp_tick['zxj'],
+            # "kp_zxj": kp_tick['zxj'],
+            "code": CACHE_TICKS[data_type][-1]['code'],
             "cur_zxj": CACHE_TICKS[data_type][-1]['zxj'],
-            "kp_ccl": kp_tick['ccl'],
+            # "kp_ccl": kp_tick['ccl'],
             "cur_ccl": CACHE_TICKS[data_type][-1]['ccl'],
             "zxj_diff": int(CACHE_TICKS[data_type][-1]['zxj'] - kp_tick['zxj']) if data_type != 'i' else round((CACHE_TICKS[data_type][-1]['zxj'] - kp_tick['zxj'])*2)/2,
             "ccl_diff": int(CACHE_TICKS[data_type][-1]['ccl'] - kp_tick['ccl']),
@@ -131,7 +129,7 @@ def get_latest_data():
             result.append(
                 {
                     "time": record['time'][11:-4],
-                    "code": record['code'],
+                    # "code": record['code'],
                     "zxj": record['zxj'] if data_type == 'i' else int(record['zxj']),
                     "cjl": int(record['cjlDiff'] if "cjlDiff" in record else record['cjl']),
                     "zjl": int(data[i]['ccl'] - data[i - 1]['ccl']),
@@ -141,7 +139,7 @@ def get_latest_data():
         
         results[data_type] = result
         
-        sum_infos[data_type] = f"Open time {kp_tick['time'][5:-4]}"
+        sum_infos[data_type] = f"open time {kp_tick['time'][5:-4]}"
         
     
     processing_time = int((time.time() - start_time) * 1000)  # in milliseconds
