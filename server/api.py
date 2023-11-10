@@ -29,8 +29,8 @@ def get_latest_data():
     list_size = 6
     data_types = ['rb', 'i', 'oi']
     # data_types = ['rb']
-    kp_time = date_utils.get_kp_time_string("2023-10-31")
-    # kp_time = date_utils.get_kp_time_string()
+    # kp_time = date_utils.get_kp_time_string("2023-10-31")
+    kp_time = date_utils.get_kp_time_string()
     kp_info = {}
     current_str = datetime.now().strftime('%Y-%m-%d')
     daily_ccl_datas = {}
