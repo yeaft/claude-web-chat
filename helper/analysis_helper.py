@@ -1026,87 +1026,50 @@ CCL_LIMIT={
     "y": 350000
 }
 
-def get_past_n_days_ccl_min_max(type, days = 4):
+def get_past_n_days_ccl_min_max(ticks, type, days=4):
     start_t = time.time()
-    # current_date = datetime.datetime.now().strftime("%Y-%m-%d")
-    # Perform the aggregation
-    pipeline = [
-        {
-        "$match": {
-            "type": type  # Apply filter to only include documents with type 'rb'
-            }
-        },
-        {
-            "$group": {
-                "_id": "$date",  # Replace with your actual field name
-                "latest": {"$max": "$date"}  # Assuming the date field is unique
-            }
-        },
-        {"$sort": {"latest": -1}},
-        {"$limit": days},
-        {
-            "$project": {
-                "_id": 0,
-                "date": "$_id"
-            }
-        }
-    ]
 
-    latest_dates = [d['date'] for d in constance.REAL_TIME_TICK_COL.aggregate(pipeline)]
+    latest_dates = list(set({tick['date'] for tick in ticks}))
     latest_dates.sort()
+    latest_dates = latest_dates[-days:]
+
     daily_info = {}
-    
+
     for i in range(0, len(latest_dates) - 1):
-        start_time = latest_dates[i] + "21:00:00"
-        end_time = latest_dates[i + 1] + "15:00:00"
-        start_tick = constance.REAL_TIME_TICK_COL.find_one({"type": type, "time" :{"$gte": start_time},"ccl": {"$gt": CCL_LIMIT[type]}}, sort=[("time", 1)])
-        end_tick = constance.REAL_TIME_TICK_COL.find_one({"type": type, "time" :{"$lte": end_time}, "ccl": {"$gt": CCL_LIMIT[type]}}, sort=[("time", -1)])
-        static_pipeline = [
-            {
-                "$match": {
-                    "type": type,
-                    "time": {"$gte": start_time, "$lte": end_time},  # Greater than or equal to the filter date,
-                    "ccl": {"$gt": CCL_LIMIT[type]}
-                }
-            },
-            {
-                "$group": {
-                    "_id": None,  # Group all matching documents together
-                    # "average": {"$avg": f"$ccl"},
-                    # "average_zxj": {"$avg": f"$zxj"},
-                    "minimum": {"$min": f"$ccl"},
-                    "maximum": {"$max": f"$ccl"},
-                }
-            }
-        ]
-            # Execute the aggregation pipeline
-        stats = list(constance.REAL_TIME_TICK_COL.aggregate(static_pipeline))
+        start_time = latest_dates[i] + " 21:00:00.000"
+        end_time = latest_dates[i + 1] + " 15:00:00.000"
         
-        daily_info[latest_dates[i+1]] = {}
-        daily_info[latest_dates[i+1]]["start"] = start_tick['ccl']
-        daily_info[latest_dates[i+1]]["end"] = end_tick['ccl']
-        # Display the results
-        for stat in stats:
-            daily_info[latest_dates[i+1]]["min"] = stat['minimum']
-            daily_info[latest_dates[i+1]]["max"] = stat['maximum']
+        # Filter ticks for the current range
+        range_ticks = [tick for tick in ticks if start_time <= tick['time'] <= end_time and tick['ccl'] >= CCL_LIMIT[type]]
         
-        min_tick = constance.REAL_TIME_TICK_COL.find_one({"type": type, "time": {"$gte": start_time, "$lte": end_time}, "ccl": daily_info[latest_dates[i+1]]["min"]})
-        max_tick = constance.REAL_TIME_TICK_COL.find_one({"type": type, "time": {"$gte": start_time, "$lte": end_time}, "ccl": daily_info[latest_dates[i+1]]["max"]})
-        zxj_diff = int(max_tick['zxj'] - min_tick['zxj']) if type != "i" else round((max_tick['zxj'] - min_tick['zxj'])*2)/2
-        
-        daily_info[latest_dates[i+1]]["close_diff"] = end_tick['ccl'] - start_tick['ccl']
-        daily_info[latest_dates[i+1]]["diff"] = f"{daily_info[latest_dates[i+1]]['max'] - daily_info[latest_dates[i+1]]['min']}/{zxj_diff}"
-        
+        if not range_ticks:
+            continue
 
-    # utils.log(daily_info)
-    utils.log(f"Done get_past_n_days_ccl_min_max({type}, {days}), using {int((time.time() - start_t)*1000)}ms")
+        # Compute start and end ticks
+        start_tick = min(range_ticks, key=lambda x: x['time'])
+        end_tick = max(range_ticks, key=lambda x: x['time'])
+        
+        # Compute min and max CCL within the range
+        min_ccl = min(tick['ccl'] for tick in range_ticks)
+        max_ccl = max(tick['ccl'] for tick in range_ticks)
+
+        # Find corresponding ticks for min and max CCL
+        min_tick = next(tick for tick in range_ticks if tick['ccl'] == min_ccl)
+        max_tick = next(tick for tick in range_ticks if tick['ccl'] == max_ccl)
+
+        zxj_diff = int(max_tick['zxj'] - min_tick['zxj']) if type != "i" else round((max_tick['zxj'] - min_tick['zxj']) * 2) / 2
+
+        daily_info[latest_dates[i+1]] = {
+            "start": start_tick['ccl'],
+            "end": end_tick['ccl'],
+            "min": min_ccl,
+            "max": max_ccl,
+            "close_diff": end_tick['ccl'] - start_tick['ccl'],
+            "diff": f"{max_ccl - min_ccl}/{zxj_diff}"
+        }
+
+    utils.log(f"Done get_past_n_days_ccl_min_max_v2({type}, {days}), using {int((time.time() - start_t)*1000)}ms")
     return daily_info
-    
-    # datas = list(constance.INFO_COL.find({"type": type}).sort([("date", -1)]).limit())
-    # maxs = list(x['ccl'] for x in datas)
-    # mins = list(x['ccl'] for x in datas)
-    # return max(maxs), min(mins)
-
 
 def get_stable_ccl_time(ticks):
     # sorted_ticks = sorted(ticks, key=lambda x: x['time'])
@@ -1122,7 +1085,7 @@ def get_cp_rate_by_exrema_price(ticks):
     return extrema_ccl_price_rate(ticks, extremas)
 
 def get_past_min_max_infor(ticks, column="zxj"):
-    start_time = time.time()
+    # start_time = time.time()
     start_tick = None
     for d in ticks:
         if d['cjl'] > 0:
@@ -1157,7 +1120,7 @@ def get_past_min_max_infor(ticks, column="zxj"):
         # ccl_info = f"CCL: {start_tick['ccl']} - {max_data['ccl']}({int(max_data['ccl'] - start_tick['ccl'])}) - {min_data['ccl']}({int(min_data['ccl'] - max_data['ccl'])}) - {ticks[-1]['ccl']}({int(ticks[-1]['ccl'] - min_data['ccl'])})"
         # price_ccl_power = f"C/P: {int((max_data['ccl'] - start_tick['ccl'])/(max_data['zxj'] - start_tick['zxj'])) if max_data['zxj'] - start_tick['zxj'] != 0 else 0} - {int((min_data['ccl'] - max_data['ccl'])/(min_data['zxj'] - max_data['zxj'])) if min_data['zxj'] - max_data['zxj'] != 0 else 0} - {int((ticks[-1]['ccl'] - min_data['ccl'])/(ticks[-1]['zxj'] - min_data['zxj'])) if ticks[-1]['zxj'] - min_data['zxj'] != 0 else 0}"
     
-    utils.log(f"Done get_past_min_max_infor({len(ticks)}, {column}), using {int((time.time() - start_time)*1000)}ms")    
+    # utils.log(f"Done get_past_min_max_infor({len(ticks)}, {column}), using {int((time.time() - start_time)*1000)}ms")    
     return [
         titles, price_info, ccl_info
     ]
