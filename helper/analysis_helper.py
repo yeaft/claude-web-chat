@@ -2,7 +2,7 @@ import math
 import click
 from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
 from statistics import mean, variance, stdev
-import datetime
+import datetime, time
 
 def find_history(ticks, value, column='ccl', similar_count = 3):
     i, j = 0, 0
@@ -1027,6 +1027,7 @@ CCL_LIMIT={
 }
 
 def get_past_n_days_ccl_min_max(type, days = 4):
+    start_t = time.time()
     # current_date = datetime.datetime.now().strftime("%Y-%m-%d")
     # Perform the aggregation
     pipeline = [
@@ -1098,6 +1099,7 @@ def get_past_n_days_ccl_min_max(type, days = 4):
         
 
     # utils.log(daily_info)
+    utils.log(f"Done get_past_n_days_ccl_min_max({type}, {days}), using {int((time.time() - start_t)*1000)}ms")
     return daily_info
     
     # datas = list(constance.INFO_COL.find({"type": type}).sort([("date", -1)]).limit())
@@ -1120,6 +1122,7 @@ def get_cp_rate_by_exrema_price(ticks):
     return extrema_ccl_price_rate(ticks, extremas)
 
 def get_past_min_max_infor(ticks, column="zxj"):
+    start_time = time.time()
     start_tick = None
     for d in ticks:
         if d['cjl'] > 0:
@@ -1153,7 +1156,8 @@ def get_past_min_max_infor(ticks, column="zxj"):
         # price_info = f"ZXJ: {start_tick['zxj']} - {max_data['zxj']}({int(max_data['zxj'] - start_tick['zxj'])}/{start_to_max_duration}m) - {min_data['zxj']}({int(min_data['zxj'] - max_data['zxj'])}/{max_to_min_duration}m) - {ticks[-1]['zxj']}({int(ticks[-1]['zxj'] - min_data['zxj'])}/{min_to_current_duration}m)"
         # ccl_info = f"CCL: {start_tick['ccl']} - {max_data['ccl']}({int(max_data['ccl'] - start_tick['ccl'])}) - {min_data['ccl']}({int(min_data['ccl'] - max_data['ccl'])}) - {ticks[-1]['ccl']}({int(ticks[-1]['ccl'] - min_data['ccl'])})"
         # price_ccl_power = f"C/P: {int((max_data['ccl'] - start_tick['ccl'])/(max_data['zxj'] - start_tick['zxj'])) if max_data['zxj'] - start_tick['zxj'] != 0 else 0} - {int((min_data['ccl'] - max_data['ccl'])/(min_data['zxj'] - max_data['zxj'])) if min_data['zxj'] - max_data['zxj'] != 0 else 0} - {int((ticks[-1]['ccl'] - min_data['ccl'])/(ticks[-1]['zxj'] - min_data['zxj'])) if ticks[-1]['zxj'] - min_data['zxj'] != 0 else 0}"
-        
+    
+    utils.log(f"Done get_past_min_max_infor({len(ticks)}, {column}), using {int((time.time() - start_time)*1000)}ms")    
     return [
         titles, price_info, ccl_info
     ]

@@ -2,7 +2,7 @@ from flask import Flask, request, render_template
 from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
 from analysis import v3_keep_doing
 from datetime import datetime, timedelta
-import time
+import time, pytz
 from pymongo import MongoClient, DESCENDING, ASCENDING
 
 app = Flask(__name__)
@@ -31,8 +31,9 @@ def get_latest_data():
     # data_types = ['rb']
     # kp_time = date_utils.get_kp_time_string("2023-10-31")
     kp_time = date_utils.get_kp_time_string()
+    is_working_day = date_utils.is_work_day(kp_time[:10])
     kp_info = {}
-    current_str = datetime.now().strftime('%Y-%m-%d')
+    current_str = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d')
     daily_ccl_datas = {}
     sum_infos = {}
     stable_ccl_datas = {}
@@ -55,7 +56,8 @@ def get_latest_data():
             
         
         if data_type not in CACHE_DAILY_CCL_DATA or current_str not in CACHE_DAILY_CCL_DATA[data_type]:
-            CACHE_DAILY_CCL_DATA[data_type] = analysis_helper.get_past_n_days_ccl_min_max(data_type, 4)
+            if data_type not in CACHE_DAILY_CCL_DATA or is_working_day:                
+                CACHE_DAILY_CCL_DATA[data_type] = analysis_helper.get_past_n_days_ccl_min_max(data_type, 4)
             # utils.log("CACHE_DAILY_CCL_DATA: {}".format(CACHE_DAILY_CCL_DATA[data_type]))
 
         daily_ccl_datas[data_type] = []
@@ -95,14 +97,16 @@ def get_latest_data():
         #     stable_ccl_datas[data_type][3].append(f"{stable_ccl['avg_ccl'] - last_stable_ccl['avg_ccl']}/{int(stable_ccl['avg_zxj'] - last_stable_ccl['avg_zxj'])}")
             
             
-            
-        if kp_time != LAST_KP_TIME:
-            for i in range(int(len(CACHE_TICKS[data_type]) - 12 * 60 * 5.8), len(CACHE_TICKS[data_type])):
-                if CACHE_TICKS[data_type][i]['time'] >= kp_time:
-                    kp_index = i
-                    break
-            LAST_KP_TIME = kp_time
-            KP_INDEX = kp_index
+        if is_working_day:    
+            if kp_time != LAST_KP_TIME:
+                for i in range(int(len(CACHE_TICKS[data_type]) - 12 * 60 * 5.8), len(CACHE_TICKS[data_type])):
+                    if CACHE_TICKS[data_type][i]['time'] >= kp_time:
+                        kp_index = i
+                        break
+                LAST_KP_TIME = kp_time
+                KP_INDEX = kp_index
+        else:
+            KP_INDEX = len(CACHE_TICKS[data_type]) - 1
         
         # KP info
         kp_tick = CACHE_TICKS[data_type][KP_INDEX]
@@ -143,7 +147,7 @@ def get_latest_data():
         
     
     processing_time = int((time.time() - start_time) * 1000)  # in milliseconds
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+    current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
     if results:        
         return render_template('data.html', sum_infos = sum_infos, kp_info = kp_info, daily_ccl_datas= daily_ccl_datas, zxj_infos=zxj_infos, ccl_infos = ccl_infos, data=results, processing_time=processing_time, openning_time=kp_time[5:-4], current_time=current_time[5:-4])
     else:
