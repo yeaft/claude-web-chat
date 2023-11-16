@@ -1,9 +1,10 @@
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template,Response
 from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
 from analysis import v3_keep_doing
 from datetime import datetime, timedelta
 import time, pytz
 from pymongo import MongoClient, DESCENDING, ASCENDING
+from functools import wraps
 
 app = Flask(__name__)
 
@@ -12,12 +13,32 @@ CACHE_TICKS = {}
 CACHE_DAILY_CCL_DATA = {}
 CACHE_CP_RATE_DATA = {}
 PAST_CCL_STABLE_DATA = {}
-FIVE_DAYS_SIZE = 12 * 60 * 5.8 * 5
+FIVE_DAYS_SIZE = int(12 * 60 * 5.8 * 5)
 KP_INDEX = 0
 LAST_KP_TIME = ""
 
+def check_auth(username, password):
+    """Check if a username / password combination is valid."""
+    return username == 'hermes' and password == '1qaz@WSX'  # Replace with your credentials
+
+def authenticate():
+    """Sends a 401 response to request authentication."""
+    return Response(
+        'Could not verify your access level for that URL.\n'
+        'You have to login with proper credentials', 401,
+        {'WWW-Authenticate': 'Basic realm="Login Required"'})
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
 
 @app.route('/', methods=['GET'])
+@requires_auth
 def get_latest_data():
     global CACHE_TICKS, CACHE_DAILY_CCL_DATA, CACHE_CP_RATE_DATA, PAST_CCL_STABLE_DATA, KP_INDEX, LAST_KP_TIME
     # Check if the type is one of the allowed types
@@ -28,6 +49,7 @@ def get_latest_data():
     ccl_infos = {}
     list_size = 6
     data_types = ['rb', 'i', 'oi']
+    kp_index = -1
     # data_types = ['rb']
     # kp_time = date_utils.get_kp_time_string("2023-10-31")
     kp_time = date_utils.get_kp_time_string()
@@ -42,7 +64,7 @@ def get_latest_data():
     for data_type in data_types:
         
         if data_type not in CACHE_TICKS:
-            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(int(FIVE_DAYS_SIZE))
+            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(FIVE_DAYS_SIZE)
             sorted_ticks = sorted(ticks, key=lambda x: x['time'])
             CACHE_TICKS[data_type] = sorted_ticks
         
