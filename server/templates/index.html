@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dynamic Futures Stock Charts with Custom Series Colors</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 10px;
+        }
+        h3 {
+            color: #333;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 10px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 3px;
+            text-align: left;
+            height: 10px;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        tr.even {
+            background-color: #f9f9f9;
+        }
+
+        tr.odd {
+            background-color: #FFF; /* Or any color you prefer for odd rows */
+        }
+        .header-container {
+            display: flex;
+            align-items: center; /* This will vertically center align the h3 and p */
+            justify-content: start;
+            flex-wrap: wrap;
+        }
+
+        .header-container h3 {
+            margin-right: 10px; /* Add some spacing between the h3 and p */
+        }
+        
+        /* Styles to ensure that the p tag doesn't take the full width and stays inline */
+        .header-container p {
+            margin: 0;
+            flex-grow: 1;
+            white-space: nowrap;
+        }
+    </style>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://code.highcharts.com/stock/highstock.js"></script>
+</head>
+<body>
+
+<!-- Containers for Combined Chart and Table for Each Type -->
+<div id="combinedContainers">
+    <!-- Dynamically generated chart and table containers will be placed here -->
+</div>
+
+<script>
+    var charts = {};
+
+    function createChartContainer(type) {
+        var containerId = 'container_' + type;
+        $('<div>').attr('id', containerId)
+                  .css({ height: '600px', minWidth: '310px' })
+                  .appendTo('#chartContainer');
+        return containerId;
+    }
+
+    function createChart(containerId, title) {
+        return Highcharts.stockChart(containerId, {
+            chart: {
+                zoomType: '' // Disabling zooming
+            },
+            plotOptions: {
+                series: {
+                    turboThreshold: 0 // Disables turboThreshold for all series
+                    // Other common series options can be set here
+                }
+            },
+            rangeSelector: { 
+                enabled: false // Disabling range selector
+            },
+            navigator: {
+                enabled: false
+            },
+            scrollbar: {
+                enabled: false
+            },
+            title: { text: title },
+            xAxis: {
+                type: 'datetime',
+                tickInterval: 60000 // One minute in milliseconds
+            },
+            yAxis: [{
+                title: { text: 'Price (zxj)' },
+                height: '60%',
+                resize: { enabled: true }
+            }, {
+                title: { text: 'Open Positions (ccl)' },
+                top: '65%',
+                height: '35%',
+                offset: 0
+            }, {
+                title: { text: 'Volume (cjl)' },
+                top: '65%',
+                height: '35%',
+                opposite: true
+            }],
+            tooltip: {
+                shared: true,
+                split: false,
+                formatter: function () {
+                    var utcOffset = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
+                    var adjustedTime = this.x + utcOffset;
+                    var tooltipText = Highcharts.dateFormat('%b %e, %H:%M', adjustedTime);
+                    this.points.forEach(function (point) {
+                        var value = point.y;
+                        // Custom formatting based on series name
+                        if (title === "I" && (point.series.name === 'Max ZXJ' || point.series.name === 'Min ZXJ')) {
+                            value = roundToHalf(value); // Format as integer
+                        } else {
+                            value = Highcharts.numberFormat(value, 0); // Format as integer
+                        }
+                        tooltipText += '<br/><span style="color:' + point.series.color + '">●</span> ' + point.series.name + ': ' + value;
+                    });
+                    return tooltipText;
+                }
+            },
+            series: [{
+                name: 'Max ZXJ',
+                data: [],
+                type: 'line',
+                color: '#FF8A80', // Max Price color
+                yAxis: 0,
+                dataGrouping: {
+                    enabled: false // Disabling data grouping
+                }
+            }, {
+                name: 'Min ZXJ',
+                data: [],
+                type: 'line',
+                color: '#81C784', // Min Price color
+                yAxis: 0,
+                dataGrouping: {
+                    enabled: false // Disabling data grouping
+                }
+            }, {
+                name: 'CCL',
+                data: [],
+                type: 'line',
+                yAxis: 1,
+                dataGrouping: {
+                    enabled: false // Disabling data grouping
+                }
+            }, {
+                name: 'CJL',
+                data: [],
+                type: 'column',
+                color: '#CE93D8', // Volume color
+                yAxis: 2,
+                dataGrouping: {
+                    enabled: false // Disabling data grouping
+                }
+            }]
+        });
+    }
+
+    function roundToHalf(num) {
+        return Math.round(num * 2) / 2;
+    }
+
+    function updateChartData(chart, typeData) {
+        if (typeData && Array.isArray(typeData)) {
+            chart.series[0].setData(typeData.map(d => [new Date(d.time).getTime(), d.max_zxj]));
+            chart.series[1].setData(typeData.map(d => [new Date(d.time).getTime(), d.min_zxj]));
+            chart.series[2].setData(typeData.map(d => [new Date(d.time).getTime(), d.ccl]));
+            chart.series[3].setData(typeData.map(d => [new Date(d.time).getTime(), d.cjl]));
+        } else {
+            console.error('Invalid or missing data for', chart.title.textStr);
+        }
+    }
+
+    function createCombinedContainer(type) {
+        var combinedContainerId = 'combined_' + type;
+        var combinedDiv = $('<div>').attr('id', combinedContainerId);
+        $('#combinedContainers').append(combinedDiv);
+        return combinedContainerId;
+    }
+
+    function createChartAndTable(type) {
+        var combinedContainerId = createCombinedContainer(type);
+
+        // Create and append the chart container
+        var chartContainerId = 'chart_' + type;
+        $('<div>').attr('id', chartContainerId)
+                .css({ height: '600px', minWidth: '310px' })
+                .appendTo('#' + combinedContainerId);
+
+        // Create and append the table container
+        var tableContainerId = 'table_' + type;
+        $('<div>').attr('id', tableContainerId)
+                .appendTo('#' + combinedContainerId);
+
+        return {
+            chartContainerId: chartContainerId,
+            tableContainerId: tableContainerId
+        };
+    }
+
+    function fetchDataForCharts() {
+        $.getJSON('/ticks', function(chartData) {
+            $.each(chartData, function(type) {
+                if (!charts[type]) {
+                    var containerId = createChartContainer(type);
+                    charts[type] = createChart(containerId, type.toUpperCase());
+                }
+                updateChartData(charts[type], chartData[type]);
+            });
+        });
+    }
+
+    function createTableContainer(type) {
+        var tableContainerId = 'table_' + type;
+        var tableDiv = $('<div>').attr('id', tableContainerId);
+        $('#chartsAndTables').append(tableDiv);
+        return tableContainerId;
+    }
+
+    function renderTable(type, data) {
+        var tableHtml = '<table>';
+
+        // Render sum_infos
+        tableHtml += '<tr class="odd"><td colspan="5">' + data.sum_infos + '</td></tr>';
+
+        // Function to add rows from an array of objects
+        function addRowsFromArray(arr, className) {
+            $.each(arr, function(index, row) {
+                tableHtml += '<tr class="' + className + '">';
+                $.each(row, function(key, value) {
+                    tableHtml += '<td>' + value + '</td>';
+                });
+                tableHtml += '</tr>';
+            });
+        }
+
+        // Render daily_ccl_datas, zxj_infos, ccl_infos, ticks
+        addRowsFromArray(data.kp_info, 'even');
+        addRowsFromArray(data.daily_ccl_datas, 'even');
+        addRowsFromArray(data.zxj_infos, 'odd');
+        addRowsFromArray(data.ccl_infos, 'even');
+        addRowsFromArray(data.ticks, 'odd');
+
+        tableHtml += '</table>';
+        $('#table_' + type).html(tableHtml);
+    }
+
+
+    function fetchDataForTables() {
+        $.getJSON('/info', function(tableData) {
+            $.each(tableData, function(type, data) {
+                if ($('#table_' + type).length === 0) {
+                    createTableContainer(type);
+                }
+                renderTable(type, data);
+            });
+        });
+    }
+
+    function fetchDataAndUpdateUI() {
+        $.getJSON('/ticks', function(chartData) {
+            $.each(chartData, function(type) {
+                if (!$('#chart_' + type).length) {
+                    var containers = createChartAndTable(type);
+                    charts[type] = createChart(containers.chartContainerId, type.toUpperCase());
+                }
+                updateChartData(charts[type], chartData[type]);
+            });
+        });
+
+        $.getJSON('/info', function(tableData) {
+            $.each(tableData, function(type, data) {
+                if ($('#table_' + type).length === 0) {
+                    createChartAndTable(type); // Ensure containers are created
+                }
+                renderTable(type, data);
+            });
+        });
+    }
+
+    // Set intervals for fetching data
+    setInterval(fetchDataForCharts, 60000); // 1 minute for charts
+    setInterval(fetchDataForTables, 5000); // 5 seconds for tables
+
+    // Initial data fetch
+    fetchDataAndUpdateUI();
+</script>
+
+</body>
+</html>

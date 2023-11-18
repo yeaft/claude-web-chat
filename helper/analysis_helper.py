@@ -1068,7 +1068,7 @@ def get_past_n_days_ccl_min_max(ticks, type, days=4):
             "diff": f"{max_ccl - min_ccl}/{zxj_diff}"
         }
 
-    utils.log(f"Done get_past_n_days_ccl_min_max_v2({type}, {days}), using {int((time.time() - start_t)*1000)}ms")
+    # utils.log(f"Done get_past_n_days_ccl_min_max_v2({type}, {days}), using {int((time.time() - start_t)*1000)}ms")
     return daily_info
 
 def get_stable_ccl_time(ticks):
