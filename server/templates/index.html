@@ -220,8 +220,8 @@
         $.getJSON('/ticks', function(chartData) {
             $.each(chartData, function(type) {
                 if (!charts[type]) {
-                    var containerId = createChartContainer(type);
-                    charts[type] = createChart(containerId, type.toUpperCase());
+                    var containers = createChartAndTable(type);
+                    charts[type] = createChart(containers.chartContainerId, type.toUpperCase());
                 }
                 updateChartData(charts[type], chartData[type]);
             });
