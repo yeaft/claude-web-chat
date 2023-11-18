@@ -282,6 +282,9 @@
                     var containers = createChartAndTable(type);
                     charts[type] = createChart(containers.chartContainerId, type.toUpperCase());
                 }
+                while (!charts[type]) {
+                    sleep(1000);
+                }
                 updateChartData(charts[type], chartData[type]);
             });
         });
