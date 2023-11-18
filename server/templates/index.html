@@ -179,7 +179,7 @@
     }
 
     function updateChartData(chart, typeData) {
-        if (typeData && Array.isArray(typeData)) {
+        if (chart && typeData && Array.isArray(typeData)) {
             chart.series[0].setData(typeData.map(d => [new Date(d.time).getTime(), d.max_zxj]));
             chart.series[1].setData(typeData.map(d => [new Date(d.time).getTime(), d.min_zxj]));
             chart.series[2].setData(typeData.map(d => [new Date(d.time).getTime(), d.ccl]));
