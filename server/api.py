@@ -18,7 +18,7 @@ FIVE_DAYS_SIZE = int(12 * 60 * 5.8 * 5)
 LAST_DAY_SIZE = int(12 * 60 * 5.8)
 KP_INDEX = 0
 LAST_KP_TIME = ""
-DATA_TYPES= ['rb', 'i', 'oi']
+DATA_TYPES= ['rb', 'i', 'oi', 'y']
     
 def check_auth(username, password):
     """Check if a username / password combination is valid."""
@@ -162,7 +162,7 @@ def get_info():
                     
         if is_working_day:    
             if kp_time != LAST_KP_TIME:
-                for i in range(int(len(CACHE_TICKS[data_type]) - 12 * 60 * 5.8), len(CACHE_TICKS[data_type])):
+                for i in range(int(len(CACHE_TICKS[data_type]) - LAST_DAY_SIZE), len(CACHE_TICKS[data_type])):
                     if CACHE_TICKS[data_type][i]['time'] >= kp_time:
                         kp_index = i
                         break

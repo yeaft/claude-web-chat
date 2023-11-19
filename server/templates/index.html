@@ -223,12 +223,6 @@
         }
     }
 
-    /*function createCombinedContainer(type) {
-        var combinedContainerId = 'combined_' + type;
-        var combinedDiv = $('<div>').attr('id', combinedContainerId);
-        $('#combinedContainers').append(combinedDiv);
-        return combinedContainerId;
-    }*/
 
     function createCombinedContainer(type) {
         var combinedContainerId = 'combined_' + type;
@@ -326,8 +320,8 @@
     }
 
     function fetchDataAndUpdateUI() {
-        fetchDataForCharts();
         fetchDataForTables();
+        fetchDataForCharts();        
     }
 
     function isMobileDevice() {
