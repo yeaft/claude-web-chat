@@ -256,6 +256,8 @@
         var tableHtml = '<table>';
         tableHtml += '<tr class="odd"><td colspan="5">' + data.sum_infos + '</td></tr>';
         tableHtml += addRowsFromArray(data.kp_info);
+        tableHtml += addRowsFromArray(data.zxj_infos);
+        tableHtml += addRowsFromArray(data.ccl_infos);
         tableHtml += addRowsFromArray(data.ticks);
         tableHtml += '</table>';
         $('#ticks_' + type).html(tableHtml);
@@ -283,8 +285,6 @@
         var tableHtml = '<table>';
         tableHtml += addRowsFromArray(data.kp_info);
         tableHtml += addRowsFromArray(data.daily_ccl_datas);
-        tableHtml += addRowsFromArray(data.zxj_infos);
-        tableHtml += addRowsFromArray(data.ccl_infos);
         tableHtml += '</table>';
         $('#table_' + type).html(tableHtml);
     }
@@ -335,7 +335,7 @@
     }
 
     function adjustTableFontSize() {
-        var fontSize = isMobileDevice() ? '3.5vw' : '1.3vw'; // Using the same isMobileDevice function
+        var fontSize = isMobileDevice() ? '4vw' : '1.3vw'; // Using the same isMobileDevice function
 
         // Apply the font size to th and td elements
         $('th, td').css('font-size', fontSize);
