@@ -20,7 +20,6 @@
             border: 1px solid #ddd;
             padding: 3px;
             text-align: left;
-            font-size: 3vw; /* Adjust the value as needed */
         }
         th {
             background-color: #f2f2f2;
@@ -81,6 +80,7 @@
     }
 
     function createChart(containerId, title) {
+        var tooltipFontSize = isMobileDevice() ? '3.5vw' : '1.5vw';
         return new Promise((resolve, reject) => {
             var chart = Highcharts.stockChart(containerId, {
                 chart: {
@@ -129,7 +129,7 @@
                     shared: true,
                     split: false,
                     style: {
-                        fontSize: '3vw' // Set the font size for the tooltip
+                        fontSize: tooltipFontSize // Set the font size for the tooltip
                     },
                     formatter: function () {
                         /* var utcOffset = 8 * 60 * 60 * 1000;
@@ -284,6 +284,7 @@
                     createTableContainer(type);
                 }
                 renderTable(type, data);
+                adjustTableFontSize();
             });
         });
     }
@@ -291,6 +292,18 @@
     function fetchDataAndUpdateUI() {
         fetchDataForCharts();
         fetchDataForTables();
+    }
+
+    function isMobileDevice() {
+        console.log("Width: " + window.innerWidth);
+        return window.innerWidth <= 1080; // or another threshold you prefer
+    }
+
+    function adjustTableFontSize() {
+        var fontSize = isMobileDevice() ? '3.5vw' : '1.5vw'; // Using the same isMobileDevice function
+
+        // Apply the font size to th and td elements
+        $('th, td').css('font-size', fontSize);
     }
 
     setInterval(fetchDataForCharts, 60000); // 1 minute for charts
