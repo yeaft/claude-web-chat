@@ -75,105 +75,107 @@
         return containerId;
     }
 
-    function createChart(containerId, title, callback) {
-        return Highcharts.stockChart(containerId, {
-            chart: {
-                zoomType: '', // Disabling zooming
-                events: {
-                    load: callback // Callback when the chart is loaded
-                }
-            },
-            plotOptions: {
-                series: {
-                    turboThreshold: 0 // Disables turboThreshold for all series
-                    // Other common series options can be set here
-                }
-            },
-            rangeSelector: { 
-                enabled: false // Disabling range selector
-            },
-            navigator: {
-                enabled: false
-            },
-            scrollbar: {
-                enabled: false
-            },
-            title: { text: title },
-            xAxis: {
-                type: 'datetime',
-                tickInterval: 60000 // One minute in milliseconds
-            },
-            yAxis: [{
-                title: { text: 'Price (zxj)' },
-                height: '60%',
-                resize: { enabled: true }
-            }, {
-                title: { text: 'Open Positions (ccl)' },
-                top: '65%',
-                height: '35%',
-                offset: 0
-            }, {
-                title: { text: 'Volume (cjl)' },
-                top: '65%',
-                height: '35%',
-                opposite: true
-            }],
-            tooltip: {
-                shared: true,
-                split: false,
-                formatter: function () {
-                    var utcOffset = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
-                    var adjustedTime = this.x + utcOffset;
-                    var tooltipText = Highcharts.dateFormat('%b %e, %H:%M', adjustedTime);
-                    this.points.forEach(function (point) {
-                        var value = point.y;
-                        // Custom formatting based on series name
-                        if (title === "I" && (point.series.name === 'Max ZXJ' || point.series.name === 'Min ZXJ')) {
-                            value = roundToHalf(value); // Format as integer
-                        } else {
-                            value = Highcharts.numberFormat(value, 0); // Format as integer
+    function createChart(containerId, title) {
+        return new Promise((resolve, reject) => {
+            var chart = Highcharts.stockChart(containerId, {
+                chart: {
+                    zoomType: '',
+                    events: {
+                        load: function () {
+                            resolve(this);
                         }
-                        tooltipText += '<br/><span style="color:' + point.series.color + '">●</span> ' + point.series.name + ': ' + value;
-                    });
-                    return tooltipText;
-                }
-            },
-            series: [{
-                name: 'Max ZXJ',
-                data: [],
-                type: 'line',
-                color: '#FF8A80', // Max Price color
-                yAxis: 0,
-                dataGrouping: {
-                    enabled: false // Disabling data grouping
-                }
-            }, {
-                name: 'Min ZXJ',
-                data: [],
-                type: 'line',
-                color: '#81C784', // Min Price color
-                yAxis: 0,
-                dataGrouping: {
-                    enabled: false // Disabling data grouping
-                }
-            }, {
-                name: 'CCL',
-                data: [],
-                type: 'line',
-                yAxis: 1,
-                dataGrouping: {
-                    enabled: false // Disabling data grouping
-                }
-            }, {
-                name: 'CJL',
-                data: [],
-                type: 'column',
-                color: '#CE93D8', // Volume color
-                yAxis: 2,
-                dataGrouping: {
-                    enabled: false // Disabling data grouping
-                }
-            }]
+                    }
+                },
+                plotOptions: {
+                    series: {
+                        turboThreshold: 0
+                    }
+                },
+                rangeSelector: { 
+                    enabled: false
+                },
+                navigator: {
+                    enabled: false
+                },
+                scrollbar: {
+                    enabled: false
+                },
+                title: { text: title },
+                xAxis: {
+                    type: 'datetime',
+                    tickInterval: 60000
+                },
+                yAxis: [{
+                    title: { text: 'Price (zxj)' },
+                    height: '60%',
+                    resize: { enabled: true }
+                }, {
+                    title: { text: 'Open Positions (ccl)' },
+                    top: '65%',
+                    height: '35%',
+                    offset: 0
+                }, {
+                    title: { text: 'Volume (cjl)' },
+                    top: '65%',
+                    height: '35%',
+                    opposite: true
+                }],
+                tooltip: {
+                    shared: true,
+                    split: false,
+                    formatter: function () {
+                        var utcOffset = 8 * 60 * 60 * 1000;
+                        var adjustedTime = this.x + utcOffset;
+                        var tooltipText = Highcharts.dateFormat('%b %e, %H:%M', adjustedTime);
+                        this.points.forEach(function (point) {
+                            var value = point.y;
+                            if (title === "I" && (point.series.name === 'Max ZXJ' || point.series.name === 'Min ZXJ')) {
+                                value = roundToHalf(value);
+                            } else {
+                                value = Highcharts.numberFormat(value, 0);
+                            }
+                            tooltipText += '<br/><span style="color:' + point.series.color + '">●</span> ' + point.series.name + ': ' + value;
+                        });
+                        return tooltipText;
+                    }
+                },
+                series: [{
+                    name: 'Max ZXJ',
+                    data: [],
+                    type: 'line',
+                    color: '#FF8A80',
+                    yAxis: 0,
+                    dataGrouping: {
+                        enabled: false
+                    }
+                }, {
+                    name: 'Min ZXJ',
+                    data: [],
+                    type: 'line',
+                    color: '#81C784',
+                    yAxis: 0,
+                    dataGrouping: {
+                        enabled: false
+                    }
+                }, {
+                    name: 'CCL',
+                    data: [],
+                    type: 'line',
+                    yAxis: 1,
+                    dataGrouping: {
+                        enabled: false
+                    }
+                }, {
+                    name: 'CJL',
+                    data: [],
+                    type: 'column',
+                    color: '#CE93D8',
+                    yAxis: 2,
+                    dataGrouping: {
+                        enabled: false
+                    }
+                }]
+            });
         });
     }
 
@@ -202,13 +204,11 @@
     function createChartAndTable(type) {
         var combinedContainerId = createCombinedContainer(type);
 
-        // Create and append the chart container
         var chartContainerId = 'chart_' + type;
         $('<div>').attr('id', chartContainerId)
                 .css({ height: '600px', minWidth: '310px' })
                 .appendTo('#' + combinedContainerId);
 
-        // Create and append the table container
         var tableContainerId = 'table_' + type;
         $('<div>').attr('id', tableContainerId)
                 .appendTo('#' + combinedContainerId);
@@ -224,34 +224,24 @@
             $.each(chartData, function(type, data) {
                 if (!charts[type]) {
                     var containers = createChartAndTable(type);
-                    // Create the chart and assign it to the charts object
-                    charts[type] = createChart(containers.chartContainerId, type.toUpperCase(), function() {
-                        // Update the chart data after the chart is created
-                        updateChartData(charts[type], data);
+                    createChart(containers.chartContainerId, type.toUpperCase()).then(function(chart) {
+                        charts[type] = chart;
+                        updateChartData(chart, data);
+                    }).catch(function(error) {
+                        console.error('Error creating chart:', error);
                     });
                 } else {
-                    // If the chart already exists, update its data
                     updateChartData(charts[type], data);
                 }
             });
         });
     }
 
-
-    function createTableContainer(type) {
-        var tableContainerId = 'table_' + type;
-        var tableDiv = $('<div>').attr('id', tableContainerId);
-        $('#chartsAndTables').append(tableDiv);
-        return tableContainerId;
-    }
-
     function renderTable(type, data) {
         var tableHtml = '<table>';
 
-        // Render sum_infos
         tableHtml += '<tr class="odd"><td colspan="5">' + data.sum_infos + '</td></tr>';
 
-        // Function to add rows from an array of objects
         function addRowsFromArray(arr, className) {
             $.each(arr, function(index, row) {
                 tableHtml += '<tr class="' + className + '">';
@@ -262,7 +252,6 @@
             });
         }
 
-        // Render daily_ccl_datas, zxj_infos, ccl_infos, ticks
         addRowsFromArray(data.kp_info, 'even');
         addRowsFromArray(data.daily_ccl_datas, 'even');
         addRowsFromArray(data.zxj_infos, 'odd');
@@ -272,7 +261,6 @@
         tableHtml += '</table>';
         $('#table_' + type).html(tableHtml);
     }
-
 
     function fetchDataForTables() {
         $.getJSON('/info', function(tableData) {
@@ -286,37 +274,13 @@
     }
 
     function fetchDataAndUpdateUI() {
-        $.getJSON('/ticks', function(chartData) {
-            $.each(chartData, function(type) {
-                if (!$('#chart_' + type).length) {
-                    var containers = createChartAndTable(type);
-                    // Create the chart and assign it to the charts object
-                    charts[type] = createChart(containers.chartContainerId, type.toUpperCase(), function() {
-                        // Update the chart data after the chart is created
-                        updateChartData(charts[type], chartData[type]);
-                    });
-                } else {
-                    // If the chart already exists, update its data
-                    updateChartData(charts[type], chartData[type]);
-                }                
-            });
-        });
-
-        $.getJSON('/info', function(tableData) {
-            $.each(tableData, function(type, data) {
-                if ($('#table_' + type).length === 0) {
-                    createChartAndTable(type); // Ensure containers are created
-                }
-                renderTable(type, data);
-            });
-        });
+        fetchDataForCharts();
+        fetchDataForTables();
     }
 
-    // Set intervals for fetching data
     setInterval(fetchDataForCharts, 60000); // 1 minute for charts
     setInterval(fetchDataForTables, 5000); // 5 seconds for tables
 
-    // Initial data fetch
     fetchDataAndUpdateUI();
 </script>
 
