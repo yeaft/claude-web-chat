@@ -80,7 +80,7 @@ def get_latest_1min_ticks():
     for data_type in DATA_TYPES:   
         # Update new data     
         last_tick = CACHE_TICKS_1MIN[data_type][-1]
-        new_ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gte": last_tick["time"]}}).sort("time", 1)
+        new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gte": last_tick["time"]}}).sort("time", 1))
         if len(new_ticks) >= 12:
             m_ticks = []
             start_index = 1
