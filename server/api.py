@@ -18,6 +18,7 @@ CACHE_CP_RATE_DATA = {}
 PAST_CCL_STABLE_DATA = {}
 FIVE_DAYS_SIZE = int(12 * 60 * 5.8 * 5)
 LAST_DAY_SIZE = int(12 * 60 * 5.8)
+HALF_DAY_SIZE = int(12 * 60 * 3)
 KP_INDEX = 0
 LAST_KP_TIME = ""
 DATA_TYPES= ['rb', 'i', 'oi', 'y']
@@ -50,8 +51,8 @@ def initial_ticks():
             CACHE_TICKS[data_type] = sorted_ticks
             
             m_ticks = []
-            start_index = len(sorted_ticks) - LAST_DAY_SIZE
-            for i in range(len(sorted_ticks) - LAST_DAY_SIZE, len(sorted_ticks)):
+            start_index = len(sorted_ticks) - HALF_DAY_SIZE
+            for i in range(len(sorted_ticks) - HALF_DAY_SIZE, len(sorted_ticks)):
                 if sorted_ticks[i]['time'][-6:] == "00.000":
                     if i - start_index > 10:
                         zxjs = [x['zxj'] for x in sorted_ticks[start_index:i+1]]
@@ -106,7 +107,8 @@ def get_latest_1min_ticks():
                         })
                         
                     start_index = i + 1
-                
+            
+            CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][len(m_ticks):]
             CACHE_TICKS_1MIN[data_type].extend(m_ticks)
         
         # return from cache
