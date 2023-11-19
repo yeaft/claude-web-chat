@@ -238,13 +238,31 @@
 
     function createChartAndTable(type) {
         var combinedContainerId = createCombinedContainer(type);
+
+        // Check if chart container exists before creating
         var chartContainerId = 'chart_' + type;
-        $('<div>').attr('id', chartContainerId).css({ height: '600px', minWidth: '310px' }).appendTo('#' + combinedContainerId);
+        if ($('#' + chartContainerId).length === 0) {
+            $('<div>').attr('id', chartContainerId)
+                .css({ height: '600px', minWidth: '310px' })
+                .appendTo('#' + combinedContainerId);
+        }
+
+        // Check if table container exists before creating
         var tableContainerId = 'table_' + type;
-        $('<div>').attr('id', tableContainerId).appendTo('#' + combinedContainerId);
-        createTicksContainer(type); // Create a container for ticks tables
+        if ($('#' + tableContainerId).length === 0) {
+            $('<div>').attr('id', tableContainerId)
+                .appendTo('#' + combinedContainerId);
+        }
+
+        // Check if ticks container exists before creating
+        var ticksContainerId = 'ticks_' + type;
+        if ($('#' + ticksContainerId).length === 0) {
+            createTicksContainer(type);
+        }
+
         return { chartContainerId, tableContainerId };
     }
+
 
     function renderTicksTable(type, data) {
         var tableHtml = '<table>';
@@ -334,11 +352,9 @@
         // Apply the font size to th and td elements
         $('th, td').css('font-size', fontSize);
     }
-
-    setInterval(fetchDataForCharts, 60000); // 1 minute for charts
-    setInterval(fetchDataForTables, 5000); // 5 seconds for tables
-
     fetchDataAndUpdateUI();
+    setInterval(fetchDataForCharts, 60000); // 1 minute for charts
+    setInterval(fetchDataForTables, 5000); // 5 seconds for tables    
 </script>
 
 </body>
