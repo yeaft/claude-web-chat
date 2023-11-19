@@ -51,8 +51,8 @@ def initial_ticks():
             CACHE_TICKS[data_type] = sorted_ticks
             
             m_ticks = []
-            start_index = len(sorted_ticks) - HALF_DAY_SIZE
-            for i in range(len(sorted_ticks) - HALF_DAY_SIZE, len(sorted_ticks)):
+            start_index = len(sorted_ticks) - LAST_DAY_SIZE
+            for i in range(len(sorted_ticks) - LAST_DAY_SIZE, len(sorted_ticks)):
                 if sorted_ticks[i]['time'][-6:] == "00.000":
                     if i - start_index > 10:
                         zxjs = [x['zxj'] for x in sorted_ticks[start_index:i+1]]
