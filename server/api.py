@@ -6,8 +6,10 @@ import time, pytz
 from pymongo import MongoClient, DESCENDING, ASCENDING
 from functools import wraps
 from statistics import mean
+from flask_compress import Compress
 
 app = Flask(__name__)
+Compress(app)
 
 CACHE_TICKS = {}
 CACHE_TICKS_1MIN = {}

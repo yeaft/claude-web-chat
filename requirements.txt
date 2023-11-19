@@ -4,6 +4,7 @@ pyyaml
 pytz
 requests
 Flask
+flask-compress
 chinesecalendar
 numpy
 matplotlib
