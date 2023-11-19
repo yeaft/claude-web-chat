@@ -75,10 +75,13 @@
         return containerId;
     }
 
-    function createChart(containerId, title) {
+    function createChart(containerId, title, callback) {
         return Highcharts.stockChart(containerId, {
             chart: {
-                zoomType: '' // Disabling zooming
+                zoomType: '', // Disabling zooming
+                events: {
+                    load: callback // Callback when the chart is loaded
+                }
             },
             plotOptions: {
                 series: {
@@ -179,13 +182,13 @@
     }
 
     function updateChartData(chart, typeData) {
-        if (typeData && Array.isArray(typeData)) {
+        if (chart && chart.series && typeData && Array.isArray(typeData)) {
             chart.series[0].setData(typeData.map(d => [new Date(d.time).getTime(), d.max_zxj]));
             chart.series[1].setData(typeData.map(d => [new Date(d.time).getTime(), d.min_zxj]));
             chart.series[2].setData(typeData.map(d => [new Date(d.time).getTime(), d.ccl]));
             chart.series[3].setData(typeData.map(d => [new Date(d.time).getTime(), d.cjl]));
         } else {
-            console.error('Invalid or missing data for', chart.title.textStr);
+            console.error('Chart not initialized or invalid data for', typeData);
         }
     }
 
@@ -218,15 +221,22 @@
 
     function fetchDataForCharts() {
         $.getJSON('/ticks', function(chartData) {
-            $.each(chartData, function(type) {
+            $.each(chartData, function(type, data) {
                 if (!charts[type]) {
                     var containers = createChartAndTable(type);
-                    charts[type] = createChart(containers.chartContainerId, type.toUpperCase());
+                    // Create the chart and assign it to the charts object
+                    charts[type] = createChart(containers.chartContainerId, type.toUpperCase(), function() {
+                        // Update the chart data after the chart is created
+                        updateChartData(charts[type], data);
+                    });
+                } else {
+                    // If the chart already exists, update its data
+                    updateChartData(charts[type], data);
                 }
-                updateChartData(charts[type], chartData[type]);
             });
         });
     }
+
 
     function createTableContainer(type) {
         var tableContainerId = 'table_' + type;
@@ -280,9 +290,15 @@
             $.each(chartData, function(type) {
                 if (!$('#chart_' + type).length) {
                     var containers = createChartAndTable(type);
-                    charts[type] = createChart(containers.chartContainerId, type.toUpperCase());
-                }
-                updateChartData(charts[type], chartData[type]);
+                    // Create the chart and assign it to the charts object
+                    charts[type] = createChart(containers.chartContainerId, type.toUpperCase(), function() {
+                        // Update the chart data after the chart is created
+                        updateChartData(charts[type], chartData[type]);
+                    });
+                } else {
+                    // If the chart already exists, update its data
+                    updateChartData(charts[type], chartData[type]);
+                }                
             });
         });
 
