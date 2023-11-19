@@ -68,7 +68,7 @@ def initial_ticks():
                             "cjl": int(cjl),
                         })
                         
-                    start_index = i
+                    start_index = i + 1
             
             CACHE_TICKS_1MIN[data_type] = m_ticks
             
@@ -77,8 +77,36 @@ def initial_ticks():
 @app.route('/ticks', methods=['GET'])
 def get_latest_1min_ticks():
     data = {}
-    for data_type in DATA_TYPES:
-        # Update new data
+    for data_type in DATA_TYPES:   
+        # Update new data     
+        last_tick = CACHE_TICKS_1MIN[data_type][-1]
+        new_ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gte": last_tick["time"]}}).sort("time", 1)
+        if len(new_ticks) >= 12:
+            m_ticks = []
+            start_index = 1
+            for i in range(start_index, len(new_ticks)):
+                if new_ticks[i]['time'][-6:] == "00.000":
+                    if i - start_index > 10:
+                        zxjs = [x['zxj'] for x in new_ticks[start_index:i+1]]
+                        ccls = [x['ccl'] for x in new_ticks[start_index:i+1]]
+                        min_zxj = min(zxjs)
+                        avg_ccl = mean(ccls)                        
+                        max_zxj = max(zxjs)
+                        cjl = sum([x['cjlDiff'] for x in new_ticks[start_index:i+1]])
+                        
+                        m_ticks.append({
+                            "time": new_ticks[i]['time'][:-4],
+                            "code": new_ticks[i]['code'],
+                            "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                            "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                            "ccl": int(avg_ccl),
+                            "cjl": int(cjl),
+                        })
+                        
+                    start_index = i + 1
+                
+            CACHE_TICKS_1MIN[data_type].extend(m_ticks)
+        
         # return from cache
         data[data_type] = CACHE_TICKS_1MIN[data_type]
     
@@ -99,8 +127,7 @@ def get_info():
     kp_time = date_utils.get_kp_time_string()
     is_working_day = date_utils.is_work_day(kp_time[:10])
     current_str = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d')
-    result = {}
-    
+    result = {}    
             
     for data_type in DATA_TYPES:
         result[data_type] = {}    
