@@ -261,6 +261,13 @@
         tableHtml += '</table>';
         $('#table_' + type).html(tableHtml);
     }
+    
+    function createTableContainer(type) {
+        var tableContainerId = 'table_' + type;
+        var tableDiv = $('<div>').attr('id', tableContainerId);
+        $('#chartsAndTables').append(tableDiv);
+        return tableContainerId;
+    }
 
     function fetchDataForTables() {
         $.getJSON('/info', function(tableData) {
