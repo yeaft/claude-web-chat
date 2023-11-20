@@ -1,5 +1,6 @@
-from flask import Flask, request, render_template,Response
+from flask import Flask, request, render_template,Response, abort
 from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
+import ipaddress
 from analysis import v3_keep_doing
 from datetime import datetime, timedelta
 import time, pytz
@@ -7,6 +8,7 @@ from pymongo import MongoClient, DESCENDING, ASCENDING
 from functools import wraps
 from statistics import mean
 from flask_compress import Compress
+from functools import wraps
 
 app = Flask(__name__)
 Compress(app)
@@ -22,6 +24,38 @@ HALF_DAY_SIZE = int(12 * 60 * 3)
 KP_INDEX = 0
 LAST_KP_TIME = ""
 DATA_TYPES= ['rb', 'i', 'oi', 'y']
+BLOCKED_PATTERNS = [
+    "45.128.*.*",
+    "141.98.*.*"
+]
+
+def block_ip():
+    def decorator(f):
+        @wraps(f)  # This preserves the original function's name and docstring
+        def decorated_function(*args, **kwargs):
+            if is_ip_blocked(request.remote_addr):
+                abort(403)  # Forbidden
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+def is_ip_blocked(ip_addr):
+    for pattern in BLOCKED_PATTERNS:
+        if '*' in pattern:  # Simple wildcard matching
+            base_ip = pattern.replace('*', '0')
+            try:
+                network = ipaddress.ip_network(base_ip)
+                if ipaddress.ip_address(ip_addr) in network:
+                    return True
+            except ValueError:
+                continue
+        else:  # CIDR notation
+            try:
+                if ipaddress.ip_address(ip_addr) in ipaddress.ip_network(pattern, strict=False):
+                    return True
+            except ValueError:
+                continue
+    return False
     
 def check_auth(username, password):
     """Check if a username / password combination is valid."""
@@ -78,6 +112,7 @@ def initial_ticks():
     utils.log("Finish inital ticks data")
 
 @app.route('/ticks', methods=['GET'])
+@block_ip()
 def get_latest_1min_ticks():
     data = {}
     for data_type in DATA_TYPES:   
@@ -117,12 +152,14 @@ def get_latest_1min_ticks():
     return data
 
 @app.route('/')
+@block_ip()
 @requires_auth
 def index():
     return render_template('index.html')
 
 
 @app.route('/info', methods=['GET'])
+@block_ip()
 def get_info():
     global LAST_KP_TIME, KP_INDEX
     # Check if the type is one of the allowed types    
