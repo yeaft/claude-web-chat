@@ -124,6 +124,7 @@ def index():
 
 @app.route('/info', methods=['GET'])
 def get_info():
+    global LAST_KP_TIME, KP_INDEX
     # Check if the type is one of the allowed types    
     start_time = time.time()
     list_size = 6
