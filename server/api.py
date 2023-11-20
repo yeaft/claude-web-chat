@@ -23,7 +23,7 @@ LAST_DAY_SIZE = int(12 * 60 * 5.8)
 HALF_DAY_SIZE = int(12 * 60 * 3)
 KP_INDEX = 0
 LAST_KP_TIME = ""
-DATA_TYPES= ['rb', 'i', 'oi', 'y']
+DATA_TYPES= ['rb', 'i', 'y', 'oi']
 BLOCKED_PATTERNS = [
     "45.128.*.*",
     "141.98.*.*"
