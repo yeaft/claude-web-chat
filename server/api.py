@@ -1,10 +1,8 @@
 from flask import Flask, request, render_template,Response, abort
 from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
 import ipaddress
-from analysis import v3_keep_doing
 from datetime import datetime, timedelta
 import time, pytz
-from pymongo import MongoClient, DESCENDING, ASCENDING
 from functools import wraps
 from statistics import mean
 from flask_compress import Compress
@@ -160,10 +158,7 @@ def index():
 @app.route('/info', methods=['GET'])
 @block_ip()
 def get_info():
-    # Check if the type is one of the allowed types    
-    start_time = time.time()
     list_size = 6
-    kp_index = -1
     kp_time = date_utils.get_kp_time_string()
     is_working_day = date_utils.is_work_day(kp_time[:10])
     current_str = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d')
@@ -202,16 +197,6 @@ def get_info():
         if is_working_day or data_type not in KP_TICKS:    
             if data_type not in KP_TICKS or kp_time != KP_TICKS[data_type]['time']:
                 KP_TICKS[data_type] = constance.REAL_TIME_TICK_COL.find_one({"type": data_type, "time": {"$lte": kp_time}}, sort=[("time", -1)])
-        
-        # result[data_type]['kp_info'] = {
-        #     # "kp_zxj": kp_tick['zxj'],
-        #     "code": CACHE_TICKS[data_type][-1]['code'],
-        #     "cur_zxj": CACHE_TICKS[data_type][-1]['zxj'],
-        #     # "kp_ccl": kp_tick['ccl'],
-        #     "cur_ccl": CACHE_TICKS[data_type][-1]['ccl'],
-        #     "zxj_diff": int(CACHE_TICKS[data_type][-1]['zxj'] - kp_tick['zxj']) if data_type != 'i' else round((CACHE_TICKS[data_type][-1]['zxj'] - kp_tick['zxj'])*2)/2,
-        #     "ccl_diff": int(CACHE_TICKS[data_type][-1]['ccl'] - kp_tick['ccl']),
-        # }
         
         result[data_type]['kp_info'] = [[CACHE_TICKS[data_type][-1]['code'],
             CACHE_TICKS[data_type][-1]['zxj'],
