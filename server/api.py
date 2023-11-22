@@ -21,7 +21,7 @@ PAST_CCL_STABLE_DATA = {}
 FIVE_DAYS_SIZE = int(12 * 60 * 5.8 * 5)
 LAST_DAY_SIZE = int(12 * 60 * 5.8)
 HALF_DAY_SIZE = int(12 * 60 * 3)
-KP_INDEX = 0
+KP_TICKS = {}
 LAST_KP_TIME = ""
 DATA_TYPES= ['rb', 'i', 'y', 'oi']
 BLOCKED_PATTERNS = [
@@ -202,19 +202,11 @@ def get_info():
                 v["diff"]                    
             ])
                     
-        if is_working_day:    
-            if kp_time != LAST_KP_TIME:
-                for i in range(int(len(CACHE_TICKS[data_type]) - LAST_DAY_SIZE), len(CACHE_TICKS[data_type])):
-                    if CACHE_TICKS[data_type][i]['time'] >= kp_time:
-                        kp_index = i
-                        break
+        if is_working_day or data_type not in KP_TICKS:    
+            if kp_time != LAST_KP_TIME or data_type not in KP_TICKS:
+                KP_TICKS[data_type] = constance.REAL_TIME_TICK_COL.find_one({"type": data_type, "time": {"$lte": kp_time}}, sort=[("time", -1)])
                 LAST_KP_TIME = kp_time
-                KP_INDEX = kp_index
-        else:
-            KP_INDEX = len(CACHE_TICKS[data_type]) - 1
         
-        # KP info
-        kp_tick = CACHE_TICKS[data_type][KP_INDEX]
         # result[data_type]['kp_info'] = {
         #     # "kp_zxj": kp_tick['zxj'],
         #     "code": CACHE_TICKS[data_type][-1]['code'],
@@ -228,8 +220,8 @@ def get_info():
         result[data_type]['kp_info'] = [[CACHE_TICKS[data_type][-1]['code'],
             CACHE_TICKS[data_type][-1]['zxj'],
             CACHE_TICKS[data_type][-1]['ccl'],
-            int(CACHE_TICKS[data_type][-1]['zxj'] - kp_tick['zxj']) if data_type != 'i' else round((CACHE_TICKS[data_type][-1]['zxj'] - kp_tick['zxj'])*2)/2,
-            int(CACHE_TICKS[data_type][-1]['ccl'] - kp_tick['ccl'])]]
+            int(CACHE_TICKS[data_type][-1]['zxj'] - KP_TICKS[data_type]['zxj']) if data_type != 'i' else round((CACHE_TICKS[data_type][-1]['zxj'] - KP_TICKS[data_type]['zxj'])*2)/2,
+            int(CACHE_TICKS[data_type][-1]['ccl'] - KP_TICKS[data_type]['ccl'])]]
         
         # Three hours ago
         source_data = CACHE_TICKS[data_type][- 12 * 60 * 3:]
@@ -247,7 +239,7 @@ def get_info():
         
         result[data_type]['ticks'] = latest_ticks
         
-        result[data_type]['sum_infos'] = f"open time {kp_tick['time'][5:-4]}"
+        result[data_type]['sum_infos'] = f"open time {KP_TICKS[data_type]['time'][5:-4]}"
         
     
     # processing_time = int((time.time() - start_time) * 1000)  # in milliseconds
