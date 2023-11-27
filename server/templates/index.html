@@ -95,7 +95,7 @@
     function createChartContainer(type) {
         var containerId = 'container_' + type;
         $('<div>').attr('id', containerId)
-                  .css({ height: '700px', minWidth: '310px' })
+                  .css({ height: '850px', minWidth: '310px' })
                   .appendTo('#chartContainer');
         return containerId;
     }
@@ -243,7 +243,7 @@
         var chartContainerId = 'chart_' + type;
         if ($('#' + chartContainerId).length === 0) {
             $('<div>').attr('id', chartContainerId)
-                .css({ height: '700px', minWidth: '310px' })
+                .css({ height: '850px', minWidth: '310px' })
                 .appendTo('#' + combinedContainerId);
         }
 
