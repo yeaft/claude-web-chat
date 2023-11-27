@@ -95,7 +95,7 @@
     function createChartContainer(type) {
         var containerId = 'container_' + type;
         $('<div>').attr('id', containerId)
-                  .css({ height: '600px', minWidth: '310px' })
+                  .css({ height: '700px', minWidth: '310px' })
                   .appendTo('#chartContainer');
         return containerId;
     }
@@ -137,13 +137,13 @@
                     resize: { enabled: true }
                 }, {
                     title: { text: 'Open Positions (ccl)' },
-                    top: '65%',
-                    height: '35%',
+                    top: '60%',
+                    height: '40%',
                     offset: 0
                 }, {
                     title: { text: 'Volume (cjl)' },
-                    top: '65%',
-                    height: '35%',
+                    top: '60%',
+                    height: '40%',
                     opposite: true
                 }],
                 tooltip: {
@@ -243,7 +243,7 @@
         var chartContainerId = 'chart_' + type;
         if ($('#' + chartContainerId).length === 0) {
             $('<div>').attr('id', chartContainerId)
-                .css({ height: '600px', minWidth: '310px' })
+                .css({ height: '700px', minWidth: '310px' })
                 .appendTo('#' + combinedContainerId);
         }
 
