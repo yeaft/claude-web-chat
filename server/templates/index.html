@@ -47,7 +47,7 @@
             margin-right: auto;
             height: 800px; /* Default height, adjust as needed */
             min-width: 310px; /* Minimum width */
-            max-width: 1200px; /* Maximum width */
+            max-width: 1250px; /* Maximum width */
         }
 
         @media screen and (max-width: 1080px) { /* Adjust for mobile devices */
@@ -156,6 +156,7 @@
                 yAxis: [{
                     height: '60%',
                     labels: {
+                        reserveSpace: true, 
                         style: {
                             fontSize: labelFontSize
                         }
@@ -165,6 +166,7 @@
                     top: '60%',
                     height: '40%',
                     labels: {
+                        reserveSpace: true, 
                         style: {
                             fontSize: labelFontSize
                         }
@@ -175,8 +177,7 @@
                     height: '40%',
                     opposite: false,
                     labels: {
-                        reserveSpace: false, 
-                        x: 45, // Adjust this value to move labels inside the chart
+                        reserveSpace: true, 
                         style: {
                             fontSize: labelFontSize
                         }
