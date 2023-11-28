@@ -42,6 +42,21 @@
             flex-wrap: wrap;
         }
 
+        .chart-container {
+            margin-left: auto;
+            margin-right: auto;
+            height: 600px; /* Default height, adjust as needed */
+            min-width: 310px; /* Minimum width */
+            max-width: 900px; /* Maximum width */
+        }
+
+        @media screen and (max-width: 1080px) { /* Adjust for mobile devices */
+            .chart-container {
+                height: 1200px; /* Height for mobile */
+                max-width: 1000px; /* Max width for mobile */
+            }
+        }
+
         .header-container h3 {
             margin-right: 10px; /* Add some spacing between the h3 and p */
         }
@@ -95,13 +110,14 @@
     function createChartContainer(type) {
         var containerId = 'container_' + type;
         $('<div>').attr('id', containerId)
-                  .css({ height: '1000px', minWidth: '310px' })
+                  .addClass('chart-container') // Add the chart-container class
                   .appendTo('#chartContainer');
         return containerId;
     }
 
     function createChart(containerId, title) {
         var tooltipFontSize = isMobileDevice() ? '3.5vw' : '1.5vw';
+        var labelFontSize = isMobileDevice() ? '3vw' : '1.2vw';
         return new Promise((resolve, reject) => {
             var chart = Highcharts.stockChart(containerId, {
                 chart: {
@@ -129,22 +145,46 @@
                 title: { text: title },
                 xAxis: {
                     type: 'datetime',
-                    tickInterval: 60000
+                    tickInterval: 60000,
+                    labels: {
+                        style: {
+                            fontSize: labelFontSize // Set font size for the xAxis labels
+                        }
+                    }
                 },
                 yAxis: [{
                     title: { text: 'Price (zxj)' },
                     height: '60%',
+                    labels: {
+                        style: {
+                            fontSize: labelFontSize
+                        }
+                    },
                     resize: { enabled: true }
                 }, {
                     title: { text: 'Open Positions (ccl)' },
                     top: '60%',
                     height: '40%',
+                    labels: {
+                        style: {
+                            fontSize: labelFontSize
+                        }
+                    },
                     offset: 0
                 }, {
-                    title: { text: 'Volume (cjl)' },
+                    title: {
+                        text: 'Volume (cjl)',
+                        align: 'left',  // Align the title to the left
+                        x: -10         // Adjust the horizontal position to move the title inside the chart
+                    },
                     top: '60%',
                     height: '40%',
-                    opposite: true
+                    opposite: false,
+                    labels: {
+                        style: {
+                            fontSize: labelFontSize
+                        }
+                    }
                 }],
                 tooltip: {
                     shared: true,
@@ -173,6 +213,7 @@
                     data: [],
                     type: 'line',
                     color: '#FF8A80',
+                    lineWidth: 3,
                     yAxis: 0,
                     dataGrouping: {
                         enabled: false
@@ -182,6 +223,7 @@
                     data: [],
                     type: 'line',
                     color: '#81C784',
+                    lineWidth: 3,
                     yAxis: 0,
                     dataGrouping: {
                         enabled: false
@@ -190,6 +232,7 @@
                     name: 'CCL',
                     data: [],
                     type: 'line',
+                    lineWidth: 3,
                     yAxis: 1,
                     dataGrouping: {
                         enabled: false
@@ -198,6 +241,7 @@
                     name: 'CJL',
                     data: [],
                     type: 'column',
+                    lineWidth: 3,
                     color: '#CE93D8',
                     yAxis: 2,
                     dataGrouping: {
@@ -238,12 +282,10 @@
 
     function createChartAndTable(type) {
         var combinedContainerId = createCombinedContainer(type);
-
-        // Check if chart container exists before creating
         var chartContainerId = 'chart_' + type;
         if ($('#' + chartContainerId).length === 0) {
             $('<div>').attr('id', chartContainerId)
-                .css({ height: '1000px', minWidth: '310px' })
+                .addClass('chart-container') // Add the chart-container class
                 .appendTo('#' + combinedContainerId);
         }
 
