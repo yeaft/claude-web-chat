@@ -45,14 +45,14 @@
         .chart-container {
             margin-left: auto;
             margin-right: auto;
-            height: 600px; /* Default height, adjust as needed */
+            height: 800px; /* Default height, adjust as needed */
             min-width: 310px; /* Minimum width */
-            max-width: 900px; /* Maximum width */
+            max-width: 1100px; /* Maximum width */
         }
 
         @media screen and (max-width: 1080px) { /* Adjust for mobile devices */
             .chart-container {
-                height: 1200px; /* Height for mobile */
+                height: 1100px; /* Height for mobile */
                 max-width: 1000px; /* Max width for mobile */
             }
         }
@@ -116,8 +116,9 @@
     }
 
     function createChart(containerId, title) {
-        var tooltipFontSize = isMobileDevice() ? '3.5vw' : '1.5vw';
-        var labelFontSize = isMobileDevice() ? '3vw' : '1.2vw';
+        var tooltipFontSize = isMobileDevice() ? '4vw' : '1.5vw';
+        var labelFontSize = isMobileDevice() ? '3.5vw' : '1.2vw';
+        var lineWidth = isMobileDevice() ? 4 : 2;
         return new Promise((resolve, reject) => {
             var chart = Highcharts.stockChart(containerId, {
                 chart: {
@@ -153,7 +154,6 @@
                     }
                 },
                 yAxis: [{
-                    title: { text: 'Price (zxj)' },
                     height: '60%',
                     labels: {
                         style: {
@@ -162,7 +162,6 @@
                     },
                     resize: { enabled: true }
                 }, {
-                    title: { text: 'Open Positions (ccl)' },
                     top: '60%',
                     height: '40%',
                     labels: {
@@ -172,15 +171,12 @@
                     },
                     offset: 0
                 }, {
-                    title: {
-                        text: 'Volume (cjl)'
-                    },
                     top: '60%',
                     height: '40%',
                     opposite: false,
                     labels: {
                         reserveSpace: false, 
-                        x: 30, // Adjust this value to move labels inside the chart
+                        x: 40, // Adjust this value to move labels inside the chart
                         style: {
                             fontSize: labelFontSize
                         }
@@ -213,7 +209,7 @@
                     data: [],
                     type: 'line',
                     color: '#FF8A80',
-                    lineWidth: 3,
+                    lineWidth: lineWidth,
                     yAxis: 0,
                     dataGrouping: {
                         enabled: false
@@ -223,7 +219,7 @@
                     data: [],
                     type: 'line',
                     color: '#81C784',
-                    lineWidth: 3,
+                    lineWidth: lineWidth,
                     yAxis: 0,
                     dataGrouping: {
                         enabled: false
@@ -232,7 +228,7 @@
                     name: 'CCL',
                     data: [],
                     type: 'line',
-                    lineWidth: 3,
+                    lineWidth: lineWidth,
                     yAxis: 1,
                     dataGrouping: {
                         enabled: false
@@ -241,7 +237,7 @@
                     name: 'CJL',
                     data: [],
                     type: 'column',
-                    lineWidth: 3,
+                    lineWidth: lineWidth,
                     color: '#CE93D8',
                     yAxis: 2,
                     dataGrouping: {
