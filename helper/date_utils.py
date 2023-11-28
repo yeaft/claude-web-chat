@@ -95,7 +95,7 @@ def get_kp_time_string(target_date = ""):
     else:
         date_str = now.strftime('%Y-%m-%d')
     
-    if now.time() < time(21, 0, 0):
+    if now.time() < time(21, 0, 0) and now.time() >= time(9, 0, 0):
         return f"{date_str} 09:00:00.000"
     else:
         return f"{date_str} 21:00:00.000"

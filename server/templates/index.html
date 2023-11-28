@@ -314,17 +314,24 @@
 
     function fetchDataForCharts() {
         $.getJSON('/ticks', function(chartData) {
-            $.each(chartData, function(type, data) {
-                if (!charts[type]) {
-                    var containers = createChartAndTable(type);
-                    createChart(containers.chartContainerId, type.toUpperCase()).then(function(chart) {
-                        charts[type] = chart;
-                        updateChartData(chart, data);
-                    }).catch(function(error) {
-                        console.error('Error creating chart:', error);
-                    });
-                } else {
-                    updateChartData(charts[type], data);
+            // Define the desired order of the keys
+            var orderedKeys = ["rb", "i", "oi", "y"];
+
+            // Iterate over the ordered keys
+            $.each(orderedKeys, function(index, type) {
+                var data = chartData[type];
+                if (data) { // Check if the data for the key exists
+                    if (!charts[type]) {
+                        var containers = createChartAndTable(type);
+                        createChart(containers.chartContainerId, type.toUpperCase()).then(function(chart) {
+                            charts[type] = chart;
+                            updateChartData(chart, data);
+                        }).catch(function(error) {
+                            console.error('Error creating chart:', error);
+                        });
+                    } else {
+                        updateChartData(charts[type], data);
+                    }
                 }
             });
         });
