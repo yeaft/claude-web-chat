@@ -117,7 +117,7 @@
 
     function createChart(containerId, title) {
         var tooltipFontSize = isMobileDevice() ? '4vw' : '1.5vw';
-        var labelFontSize = isMobileDevice() ? '3.5vw' : '1.2vw';
+        var labelFontSize = isMobileDevice() ? '3vw' : '1.2vw';
         var lineWidth = isMobileDevice() ? 4 : 2;
         return new Promise((resolve, reject) => {
             var chart = Highcharts.stockChart(containerId, {
@@ -176,7 +176,7 @@
                     opposite: false,
                     labels: {
                         reserveSpace: false, 
-                        x: 40, // Adjust this value to move labels inside the chart
+                        x: 45, // Adjust this value to move labels inside the chart
                         style: {
                             fontSize: labelFontSize
                         }
