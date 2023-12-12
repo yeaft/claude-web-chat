@@ -196,6 +196,7 @@ def get_info():
                     
         if is_working_day or data_type not in KP_TICKS:    
             if data_type not in KP_TICKS or kp_time != KP_TICKS[data_type]['time']:
+                utils.log("kp_time: {}".format(kp_time))
                 KP_TICKS[data_type] = constance.REAL_TIME_TICK_COL.find_one({"type": data_type, "time": {"$lte": kp_time}}, sort=[("time", -1)])
         
         result[data_type]['kp_info'] = [[CACHE_TICKS[data_type][-1]['code'],
