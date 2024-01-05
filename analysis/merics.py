@@ -6,16 +6,67 @@ class Metric:
     __price_trend_values = ["DownEnd", "Down", "UpAdjust", "Adjust", "DownAjust", "Up", "UpEnd"]
     __price_micro_trend_values = ["Down", "Adjust", "Up"]
     __cjl_status_values = ["Lowest", "Low", "Normal", "High", "Highest"]
-    __contract_status_values = ["ShortToLong", "Long", "LongToShort", "Short", "Balance"]
-    __contract_trend_values = ["Long", "Short", "Balance"]
+    __contract_status_values = ["Long", "LongPullback", "Adjust", "ShortPullback", "Short"]
+    __contract_trend_values = ["Long", "LongPullback", "Balance", "ShortPullback", "Short"]
     __close_ccl_trend_values = ["Down", "Adjust", "Up"]
     __close_price_trend_values = ["Down", "Adjust", "Up"]
+
+    # if self.data[-1]['type'] != "i":
+    #         reference_price = int (self.data[-1]['zxj'] * 1.2)
+    #     else:
+    #         reference_price = int (self.data[-1]['zxj'] * 12)
+            
+    #     self.cjl_period_min_threshold = int(23000000/reference_price)
+    #     self.cjl_period_pass_threshold = int(34000000/reference_price)
+    #     self.cjl_hot_threshold = int(4500000 / reference_price) # threshold should be related to real money, 1000 * 4000 = 4 million
+    #     self.must_away_cjl_threshold = int(240000000 / reference_price) # 40000 * 4000 = 160 million
+    #     self.ccl_day_diff_threshold = int(14000000/reference_price)
+    #     self.ccl_hot_threshold = int(9000000/reference_price)
+    
+    __low_cjl_minute_threshold = 2000
+    __five_minute_check_point_count = 5 * 12
+    __balance_avg_to_min_max_price_diff_rate = 0.0008
+    __balance_avg_to_min_max_ccl_diff = 100
+
+    '''
+    定义：
+        1. 状态分为平衡态和事件中，事件与事件之间平衡态可能很短暂
+        2. 平衡态为低成交量，稳定的ccl变化，稳定的price变化
+        3. 事件中则是ccl变化引导的price的变化
+        4. 事件中的分类：
+            1. 与当前大方向一致，顺势事件
+            2. 与当前大方向不一致，回调事件
+            3. 大方向的定义：ccl变化带动的price的变化的方向就是大方向：
+                3.1 比如如果ccl变大，price也变大，那么就是看多的大方向。
+                3.2 ccl变大，price变小，那么就是看空的大方向。
+                3.3 ccl变小，price变大，那么就是大方向看空，但是现在是空调整，所以当前是多。
+                3.4 ccl变小，price变小，那么就是大方向看多，但是现在是多调整，所以当前是空。
+        4. 事件中又分为两个过程，第一个为正向过程，也就真正事件。第二个为逆向过程，ccl可能依旧是持续的但是价格放向却是相反（非健康走势的过热补偿），或者ccl相反，价格也相反（健康走势的回落）
+        5. 价格和ccl的比值称为pc_rate，平衡态的pc_rate叫做平衡pc_rate
+        6. 健康走势就是pc_rate在一定范围内
+        7. 非健康走势就是pc_rate过大（多少是过大？），也就是ccl还没有跟着上涨cjl就开始回落了
+        8. 非健康走势的结束就是pc_rate回归到健康走势的范围内或者cjl结束
+        9. cjl结束为这次分钟的sum cjl低于高潮的分钟sum cjl的四分之一且低于一个阈值，每个点往前看1分钟
+
+    预测：
+        1. 事件过程中：
+            1. 健康走势应该继续持有
+            2. 非健康走势应该做反到回归正常的pc_rate或者cjl结束
+            3. 每次的cjl结束后都应该平仓，或者开反
+            4. cjl结束后可能是新的事件开始，也可能是进入平衡态
+        2. 平衡态：
+            1. 查看上一个cjl结束到当前平衡态的趋势，只要没有反转，那么就保持同向
+        3. 额外补充：
+            1. 如果每次cjl异常都是一个放向，那么说明当日的趋势很明显
+            2. 无量走平又是高点，就是空的信号,有一定可能是的就是后面的大量交易，显得之前是无量，但是后面的大量交易必定是3日方向的
+    '''
 
 
     def __init__(self):
         self.ccl_status = None
         self.ccl_space = None # transfer to money
         self.ccl_trend = None
+
 
 
     def calculate_ccl_status(self, tick_infos, day_infos):
@@ -42,7 +93,34 @@ class Metric:
         pass
 
     def calculate_contract_trend(self, tick_infos, day_infos):
+
         pass
+
+    def is_balance(self, tick_infos, day_infos):
+        if len(tick_infos) < self.__five_minute_check_point_count:
+            return False
+        
+        sub_ticks = tick_infos[-self.__five_minute_check_point_count:]
+        cjls = [tick['cjlDiff'] for tick in sub_ticks]
+        for i in range(0, 5):
+            if sum(cjls[i * 12 : (i + 1) * 12]) > self.__low_cjl_minute_threshold:
+                return False
+        
+        prices = [tick['zxj'] for tick in sub_ticks]
+        avg_price = sum(prices) / len(prices)
+        min_price = min(prices)
+        max_price = max(prices)
+        if (max_price - avg_price) / avg_price > self.__balance_avg_to_min_max_price_diff_rate or (avg_price - min_price) / avg_price > self.__balance_avg_to_min_max_price_diff_rate:
+            return False   
+
+        ccls = [tick['ccl'] for tick in sub_ticks]
+        avg_ccl = sum(ccls) / len(ccls)
+        min_ccl = min(ccls)
+        max_ccl = max(ccls)
+        if max_ccl - avg_ccl > self.__balance_avg_to_min_max_ccl_diff or avg_ccl - min_ccl > self.__balance_avg_to_min_max_ccl_diff:
+            return False
+        
+        return True
 
     def calculate_close_ccl_trend(self, tick_infos, day_infos):
         pass
