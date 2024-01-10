@@ -20,7 +20,7 @@ FIVE_DAYS_SIZE = int(12 * 60 * 5.8 * 5)
 LAST_DAY_SIZE = int(12 * 60 * 5.8)
 HALF_DAY_SIZE = int(12 * 60 * 3)
 KP_TICKS = {}
-DATA_TYPES= ['rb', 'i', 'y', 'oi']
+DATA_TYPES= ['rb', 'i']
 BLOCKED_PATTERNS = [
     "45.128.*.*",
     "141.98.*.*"
@@ -113,7 +113,9 @@ def initial_ticks():
 def get_latest_1min_ticks():
     data = {}
     for data_type in DATA_TYPES:   
-        # Update new data     
+        # Update new data
+        if len(CACHE_TICKS_1MIN[data_type]) >= HALF_DAY_SIZE:
+            CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][-HALF_DAY_SIZE:]
         last_tick = CACHE_TICKS_1MIN[data_type][-1]
         new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gte": last_tick["time"]}}).sort("time", 1))
         if len(new_ticks) >= 12:
