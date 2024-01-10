@@ -303,14 +303,14 @@
     }
 
 
-    function renderTicksTable(type, data) {
+    /* function renderTicksTable(type, data) {
         var tableHtml = '<table>';
         tableHtml += '<tr class="odd"><td colspan="5">' + data.sum_infos + '</td></tr>';
         tableHtml += addRowsFromArray(data.kp_info);
-        tableHtml += addRowsFromArray(data.ticks);
+        
         tableHtml += '</table>';
         $('#ticks_' + type).html(tableHtml);
-    }
+    } */
 
     function fetchDataForCharts() {
         $.getJSON('/ticks', function(chartData) {
@@ -343,6 +343,7 @@
         tableHtml += addRowsFromArray(data.daily_ccl_datas);
         tableHtml += addRowsFromArray(data.zxj_infos);
         tableHtml += addRowsFromArray(data.ccl_infos);
+        tableHtml += addRowsFromArray(data.ticks);
         tableHtml += '</table>';
         $('#table_' + type).html(tableHtml);
     }
@@ -377,7 +378,7 @@
                     createChartAndTable(type);
                 }
                 renderTable(type, data); // Render the main table
-                renderTicksTable(type, data); // Render the ticks table
+                //renderTicksTable(type, data); // Render the ticks table
                 adjustTableFontSize();
             });
         });

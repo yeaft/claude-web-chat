@@ -1102,8 +1102,8 @@ def get_past_min_max_infor(ticks, column="zxj"):
         start_to_current_duration = int(date_utils.min_diff(start_tick['time'], ticks[-1]['time']))
         
         titles =[f"{column.upper()} {start_tick['time'][11:-4]}", f"Min {start_to_min_duration}m", f"Max {min_to_max_duration}m", f"Now {max_to_current_duration}m", f"S2Now {start_to_current_duration}m"]
-        price_info = [f"{start_tick['zxj']}", f"{min_data['zxj']}", f"{max_data['zxj']}", f"{ticks[-1]['zxj']}", f"{int(ticks[-1]['zxj'] - start_tick['zxj']) if ticks[-1]['type'] != 'i' else round((ticks[-1]['zxj'] - start_tick['zxj'])*2)/2}"]
-        ccl_info = [f"{start_tick['ccl']}", f"{min_data['ccl']}", f"{max_data['ccl']}", f"{ticks[-1]['ccl']}", f"{ticks[-1]['ccl'] - start_tick['ccl']}"]
+        price_info = [f"{start_tick['time'][11:-4]}", f"{start_tick['zxj']}", f"{min_data['zxj']}", f"{max_data['zxj']}", f"{ticks[-1]['zxj']}"]
+        ccl_info = [f"{start_tick['time'][11:-4]}", f"{start_tick['ccl']}", f"{min_data['ccl']}", f"{max_data['ccl']}", f"{ticks[-1]['ccl']}"]
         # price_ccl_power = ["C/P", "", f"{int((min_data['ccl'] - start_tick['ccl'])/(min_data['zxj'] - start_tick['zxj'])) if min_data['zxj'] - start_tick['zxj'] != 0 else 0}", f"{int((max_data['ccl'] - min_data['ccl'])/(max_data['zxj'] - min_data['zxj'])) if max_data['zxj'] - min_data['zxj'] != 0 else 0}", f"{int((ticks[-1]['ccl'] - max_data['ccl'])/(ticks[-1]['zxj'] - max_data['zxj'])) if ticks[-1]['zxj'] - max_data['zxj'] != 0 else 0}"]
 
     elif max_data['time'] < min_data['time']:
@@ -1113,8 +1113,8 @@ def get_past_min_max_infor(ticks, column="zxj"):
         start_to_current_duration = int(date_utils.min_diff(start_tick['time'], ticks[-1]['time']))
         
         titles = [f"{column.upper()} {start_tick['time'][11:-4]}", f"Max {start_to_max_duration}m", f"Min {max_to_min_duration}m", f"Now {min_to_current_duration}m", f"S2Now {start_to_current_duration}m"]
-        price_info = [f"{start_tick['zxj']}", f"{max_data['zxj']}", f"{min_data['zxj']}", f"{ticks[-1]['zxj']}", f"{int(ticks[-1]['zxj'] - start_tick['zxj']) if ticks[-1]['type'] != 'i' else round((ticks[-1]['zxj'] - start_tick['zxj'])*2)/2}"]
-        ccl_info = [f"{start_tick['ccl']}", f"{max_data['ccl']}", f"{min_data['ccl']}", f"{ticks[-1]['ccl']}", f"{ticks[-1]['ccl'] - start_tick['ccl']}"]
+        price_info = [f"{start_tick['time'][11:-4]}", f"{start_tick['zxj']}", f"{min_data['zxj']}", f"{max_data['zxj']}", f"{ticks[-1]['zxj']}"]
+        ccl_info = [f"{start_tick['time'][11:-4]}", f"{start_tick['ccl']}", f"{min_data['ccl']}", f"{max_data['ccl']}", f"{ticks[-1]['ccl']}"]
         # price_ccl_power = ["C/P", "", f"{int((max_data['ccl'] - start_tick['ccl'])/(max_data['zxj'] - start_tick['zxj'])) if max_data['zxj'] - start_tick['zxj'] != 0 else 0}", f"{int((min_data['ccl'] - max_data['ccl'])/(min_data['zxj'] - max_data['zxj'])) if min_data['zxj'] - max_data['zxj'] != 0 else 0}", f"{int((ticks[-1]['ccl'] - min_data['ccl'])/(ticks[-1]['zxj'] - min_data['zxj'])) if ticks[-1]['zxj'] - min_data['zxj'] != 0 else 0}"]
         # price_info = f"ZXJ: {start_tick['zxj']} - {max_data['zxj']}({int(max_data['zxj'] - start_tick['zxj'])}/{start_to_max_duration}m) - {min_data['zxj']}({int(min_data['zxj'] - max_data['zxj'])}/{max_to_min_duration}m) - {ticks[-1]['zxj']}({int(ticks[-1]['zxj'] - min_data['zxj'])}/{min_to_current_duration}m)"
         # ccl_info = f"CCL: {start_tick['ccl']} - {max_data['ccl']}({int(max_data['ccl'] - start_tick['ccl'])}) - {min_data['ccl']}({int(min_data['ccl'] - max_data['ccl'])}) - {ticks[-1]['ccl']}({int(ticks[-1]['ccl'] - min_data['ccl'])})"

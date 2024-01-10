@@ -189,7 +189,7 @@ def get_info():
         result[data_type]['daily_ccl_datas'] = []
         for k, v in CACHE_DAILY_CCL_DATA[data_type].items():
             result[data_type]['daily_ccl_datas'].append([
-                v['start'],
+                k,
                 v["close_diff"],
                 v["min"],
                 v["max"],
@@ -208,9 +208,9 @@ def get_info():
             int(CACHE_TICKS[data_type][-1]['ccl'] - KP_TICKS[data_type]['ccl'])]]
         
         # Three hours ago
-        source_data = CACHE_TICKS[data_type][- 12 * 60 * 3:]
-        result[data_type]['zxj_infos'] = analysis_helper.get_past_min_max_infor(source_data, column="zxj")
-        result[data_type]['ccl_infos'] = analysis_helper.get_past_min_max_infor(source_data, column="ccl")
+        source_data = CACHE_TICKS[data_type][-LAST_DAY_SIZE:]
+        result[data_type]['zxj_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="zxj")[1]]
+        result[data_type]['ccl_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="ccl")[2]]
         
             
         data = CACHE_TICKS[data_type][-list_size:]
