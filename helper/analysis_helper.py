@@ -1021,7 +1021,7 @@ def get_ccl_trend_value(minute, percentage):
 
 CCL_LIMIT={
     "rb": 1200000,
-    "i": 600000,
+    "i": 400000,
     "oi": 250000,
     "y": 350000
 }
