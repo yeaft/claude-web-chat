@@ -20,7 +20,7 @@ FIVE_DAYS_SIZE = int(12 * 60 * 5.8 * 5)
 LAST_DAY_SIZE = int(12 * 60 * 5.8)
 HALF_DAY_SIZE = int(12 * 60 * 3)
 KP_TICKS = {}
-DATA_TYPES= ['rb', 'i']
+DATA_TYPES= ['rb']
 BLOCKED_PATTERNS = [
     "45.128.*.*",
     "141.98.*.*"
@@ -208,9 +208,9 @@ def get_info():
             int(CACHE_TICKS[data_type][-1]['ccl'] - KP_TICKS[data_type]['ccl'])]]
         
         # Three hours ago
-        source_data = CACHE_TICKS[data_type][-LAST_DAY_SIZE:]
-        result[data_type]['zxj_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="zxj")[1]]
-        result[data_type]['ccl_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="ccl")[2]]
+        result[data_type]['peak_infos'] = analysis_helper.get_past_peaks_info(CACHE_TICKS[data_type][-FIVE_DAYS_SIZE:])
+        # result[data_type]['zxj_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="zxj")[1]]
+        # result[data_type]['ccl_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="ccl")[2]]
         
             
         data = CACHE_TICKS[data_type][-list_size:]

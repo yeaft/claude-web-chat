@@ -1122,7 +1122,42 @@ def get_past_min_max_infor(ticks, column="zxj"):
     return [
         titles, price_info, ccl_info
     ]
-    
+
+def get_past_peaks_info(ticks, column="zxj", span=30 * 12):
+    extremes = []
+    for i in range(len(ticks)):
+        start = max(0, i - span)
+        end = min(len(ticks), i + span + 1)
+
+        # 当前值
+        current_value = ticks[i][column]
+        min_value = min(t[column] for t in ticks[start:end])
+        max_value = max(t[column] for t in ticks[start:end])
+        # 检查是否为最高或最低值
+        if current_value == max_value:
+            ticks[i]['extreme'] = 'max'
+            if len(extremes) > 0 and extremes[-1]['extreme'] == 'max' and current_value >= extremes[-1][column]:
+                extremes[-1] = ticks[i]
+            else:
+                extremes.append(ticks[i])
+        elif current_value == min_value:
+            ticks[i]['extreme'] = 'min'
+            if len(extremes) > 0 and extremes[-1]['extreme'] == 'min' and current_value <= extremes[-1][column]:
+                extremes[-1] = ticks[i]
+            else:
+                extremes.append(ticks[i])
+    last_five_extremes = extremes[-6:]
+    title, zxj_info, ccl_info, diff_info = [], [], [], []
+    for i in range(1, len(last_five_extremes)):
+        extreme = last_five_extremes[i]
+        last_extreme = last_five_extremes[i - 1]
+        title.append(f"{extreme['time'][11:-4]} {'↑' if extreme['extreme'] == 'max' else '↓'}")
+        zxj_diff = extreme['zxj'] - last_extreme['zxj']
+        zxj_diff = int(zxj_diff) if ticks[-1]['type'] != "i" else round(zxj_diff*2)/2
+        zxj_info.append(int(extreme['zxj']) if ticks[-1]['type'] != "i" else round(extreme['zxj']*2)/2)
+        ccl_info.append(extreme['ccl'])
+        diff_info.append(f"{extreme['ccl'] - last_extreme['ccl']}/{zxj_diff}")
+    return [title, zxj_info, ccl_info, diff_info]
 if __name__ == "__main__":
     # LOGGER.info(convert_val("0.5"))
     # LOGGER.info(convert_val("5"))
