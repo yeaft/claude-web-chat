@@ -1028,13 +1028,11 @@ CCL_LIMIT={
 
 def get_past_n_days_ccl_min_max(ticks, type, days=4):
     start_t = time.time()
-    utils.log(f"ticks size: {len(ticks)} for {type}")
     latest_dates = list(set({tick['date'] for tick in ticks}))
     latest_dates.sort()
     latest_dates = latest_dates[-days:]
 
     daily_info = {}
-    utils.log(f"latest_dates: {latest_dates} for {type}")
     for i in range(0, len(latest_dates) - 1):
         start_time = latest_dates[i] + " 21:00:00.000"
         end_time = latest_dates[i + 1] + " 15:00:00.000"
