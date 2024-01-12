@@ -1026,7 +1026,7 @@ CCL_LIMIT={
     "y": 350000
 }
 
-def get_past_n_days_ccl_min_max(ticks, type, days=4):
+def get_past_n_days_ccl_min_max(ticks, type, days=6):
     start_t = time.time()
     latest_dates = list(set({tick['date'] for tick in ticks}))
     latest_dates.sort()
@@ -1146,7 +1146,8 @@ def get_past_peaks_info(ticks, column="zxj", span=30 * 12):
                 extremes[-1] = ticks[i]
             else:
                 extremes.append(ticks[i])
-    last_five_extremes = extremes[-6:]
+    last_five_extremes = extremes[-5:]
+    last_five_extremes.append(ticks[-1])
     title, zxj_info, ccl_info, diff_info = [], [], [], []
     for i in range(1, len(last_five_extremes)):
         extreme = last_five_extremes[i]
@@ -1154,7 +1155,8 @@ def get_past_peaks_info(ticks, column="zxj", span=30 * 12):
         title.append(f"{extreme['time'][11:-4]}")
         zxj_diff = extreme['zxj'] - last_extreme['zxj']
         zxj_diff = int(zxj_diff) if ticks[-1]['type'] != "i" else round(zxj_diff*2)/2
-        zxj_info.append(f"{int(extreme['zxj']) if ticks[-1]['type'] != 'i' else round(extreme['zxj']*2)/2} {'↑' if extreme['extreme'] == 'max' else '↓'}")
+        zxj_mark = "↑" if extreme['extreme'] == 'max' else ("↓" if extreme['extreme'] == 'min' else "")
+        zxj_info.append(f"{int(extreme['zxj']) if ticks[-1]['type'] != 'i' else round(extreme['zxj']*2)/2} {zxj_mark}")
         ccl_info.append(extreme['ccl'])
         diff_info.append(f"{extreme['ccl'] - last_extreme['ccl']}/{zxj_diff}")
     return [title, zxj_info, ccl_info, diff_info]

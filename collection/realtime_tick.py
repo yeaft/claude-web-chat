@@ -19,7 +19,8 @@ MONITOR_CONTRACTS = ["rb"]
 CONTRACT_DP_MAP = {}
 
 def get_contract_map():
-    max_date = constance.MAIN_COL.find_one({"type":"rb"}, sort=[('date', DESCENDING)])['date']
+    # max_date = constance.MAIN_COL.find_one({"type":"rb"}, sort=[('date', DESCENDING)])['date']
+    max_date = "20240109"
     available_contracts = list(constance.MAIN_COL.find({"date": max_date, "kpl": {"$gt": 200000}}))
     types = {}
     

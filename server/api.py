@@ -16,7 +16,7 @@ CACHE_TICKS_1MIN = {}
 CACHE_DAILY_CCL_DATA = {}
 CACHE_CP_RATE_DATA = {}
 PAST_CCL_STABLE_DATA = {}
-FIVE_DAYS_SIZE = int(12 * 60 * 5.8 * 5)
+SIX_DAYS_SIZE = int(12 * 60 * 5.8 * 6)
 LAST_DAY_SIZE = int(12 * 60 * 5.8)
 HALF_DAY_SIZE = int(12 * 60 * 3)
 KP_TICKS = {}
@@ -77,7 +77,7 @@ def requires_auth(f):
 def initial_ticks():
     for data_type in DATA_TYPES:        
         if data_type not in CACHE_TICKS:
-            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(FIVE_DAYS_SIZE)
+            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(SIX_DAYS_SIZE)
             sorted_ticks = sorted(ticks, key=lambda x: x['time'])
             CACHE_TICKS[data_type] = sorted_ticks
             
@@ -169,12 +169,12 @@ def get_info():
     for data_type in DATA_TYPES:
         result[data_type] = {}    
         if data_type not in CACHE_TICKS:
-            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(FIVE_DAYS_SIZE)
+            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(SIX_DAYS_SIZE)
             sorted_ticks = sorted(ticks, key=lambda x: x['time'])
             CACHE_TICKS[data_type] = sorted_ticks
         
-        if len(CACHE_TICKS[data_type]) >= 1.5 * FIVE_DAYS_SIZE:
-            CACHE_TICKS[data_type] = CACHE_TICKS[data_type][-FIVE_DAYS_SIZE:]
+        if len(CACHE_TICKS[data_type]) >= 1.2 * SIX_DAYS_SIZE:
+            CACHE_TICKS[data_type] = CACHE_TICKS[data_type][-SIX_DAYS_SIZE:]
             
         new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gt": CACHE_TICKS[data_type][-1]['time']}}).sort([("time", 1)]))
         if new_ticks:
@@ -183,7 +183,7 @@ def get_info():
         
         if data_type not in CACHE_DAILY_CCL_DATA or current_str not in CACHE_DAILY_CCL_DATA[data_type]:
             if data_type not in CACHE_DAILY_CCL_DATA or is_working_day:
-                CACHE_DAILY_CCL_DATA[data_type] = analysis_helper.get_past_n_days_ccl_min_max(CACHE_TICKS[data_type], data_type, 4)
+                CACHE_DAILY_CCL_DATA[data_type] = analysis_helper.get_past_n_days_ccl_min_max(CACHE_TICKS[data_type], data_type, 6)
             utils.log("CACHE_DAILY_CCL_DATA: {}".format(CACHE_DAILY_CCL_DATA[data_type]))
 
         result[data_type]['daily_ccl_datas'] = []
@@ -208,7 +208,7 @@ def get_info():
             int(CACHE_TICKS[data_type][-1]['ccl'] - KP_TICKS[data_type]['ccl'])]]
         
         # Three hours ago
-        result[data_type]['peak_infos'] = analysis_helper.get_past_peaks_info(CACHE_TICKS[data_type][-FIVE_DAYS_SIZE:])
+        result[data_type]['peak_infos'] = analysis_helper.get_past_peaks_info(CACHE_TICKS[data_type][-SIX_DAYS_SIZE:])
         # result[data_type]['zxj_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="zxj")[1]]
         # result[data_type]['ccl_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="ccl")[2]]
         
