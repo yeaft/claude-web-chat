@@ -185,7 +185,7 @@ def get_info():
         if data_type not in CACHE_DAILY_CCL_DATA or current_str not in CACHE_DAILY_CCL_DATA[data_type]:
             if data_type not in CACHE_DAILY_CCL_DATA or is_working_day:
                 CACHE_DAILY_CCL_DATA[data_type] = analysis_helper.get_past_n_days_ccl_min_max(CACHE_TICKS[data_type], data_type, 6)
-            utils.log("CACHE_DAILY_CCL_DATA: {}".format(CACHE_DAILY_CCL_DATA[data_type]))
+            # utils.log("CACHE_DAILY_CCL_DATA: {}".format(CACHE_DAILY_CCL_DATA[data_type]))
 
         result[data_type]['daily_ccl_datas'] = CACHE_DAILY_CCL_DATA[data_type]
                             
