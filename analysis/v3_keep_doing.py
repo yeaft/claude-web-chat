@@ -701,7 +701,7 @@ class DataProcessor:
     def start_process(self, data_length):
         
         self.cjl_abnormal_check()
-        self.ccl_abnormal_check()
+        # self.ccl_abnormal_check()
         # self.cjl_abnormal_end_analysis()
         
         # self.check_candidate(data_length)
