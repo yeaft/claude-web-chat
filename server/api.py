@@ -201,7 +201,7 @@ def get_info():
             int(CACHE_TICKS[data_type][-1]['ccl'] - KP_TICKS[data_type]['ccl'])]]
         
         # Three hours ago
-        result[data_type]['peak_infos'] = analysis_helper.get_past_peaks_info(CACHE_TICKS[data_type][-SIX_DAYS_SIZE:])
+        result[data_type]['peak_infos'] = analysis_helper.get_past_peaks_info(CACHE_TICKS[data_type][-HALF_DAY_SIZE:])
         # result[data_type]['zxj_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="zxj")[1]]
         # result[data_type]['ccl_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="ccl")[2]]
         
