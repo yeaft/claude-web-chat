@@ -186,16 +186,8 @@ def get_info():
                 CACHE_DAILY_CCL_DATA[data_type] = analysis_helper.get_past_n_days_ccl_min_max(CACHE_TICKS[data_type], data_type, 6)
             utils.log("CACHE_DAILY_CCL_DATA: {}".format(CACHE_DAILY_CCL_DATA[data_type]))
 
-        result[data_type]['daily_ccl_datas'] = []
-        for k, v in CACHE_DAILY_CCL_DATA[data_type].items():
-            result[data_type]['daily_ccl_datas'].append([
-                k,
-                v["close_diff"],
-                v["min"],
-                v["max"],
-                v["diff"]                    
-            ])
-                    
+        result[data_type]['daily_ccl_datas'] = CACHE_DAILY_CCL_DATA[data_type]
+                            
         if is_working_day or data_type not in KP_TICKS:    
             if data_type not in KP_TICKS or kp_time != KP_TICKS[data_type]['time']:
                 utils.log("kp_time: {}".format(kp_time))

@@ -1032,7 +1032,7 @@ def get_past_n_days_ccl_min_max(ticks, type, days=6):
     latest_dates.sort()
     latest_dates = latest_dates[-days:]
 
-    daily_info = {}
+    title, min_ccl_info, max_ccl_info, diff_info = [], [], [], []
     for i in range(0, len(latest_dates) - 1):
         start_time = latest_dates[i] + " 21:00:00.000"
         end_time = latest_dates[i + 1] + " 15:00:00.000"
@@ -1057,17 +1057,13 @@ def get_past_n_days_ccl_min_max(ticks, type, days=6):
 
         zxj_diff = int(max_tick['zxj'] - min_tick['zxj']) if type != "i" else round((max_tick['zxj'] - min_tick['zxj']) * 2) / 2
 
-        daily_info[latest_dates[i+1]] = {
-            "start": start_tick['ccl'],
-            "end": end_tick['ccl'],
-            "min": min_ccl,
-            "max": max_ccl,
-            "close_diff": end_tick['ccl'] - start_tick['ccl'],
-            "diff": f"{max_ccl - min_ccl}/{zxj_diff}"
-        }
-
+        title.append(latest_dates[i+1][-5:])
+        min_ccl_info.append(min_ccl)
+        max_ccl_info.append(max_ccl)
+        diff_info.append(f"{max_ccl - min_ccl}/{zxj_diff}")
+        
     # utils.log(f"Done get_past_n_days_ccl_min_max_v2({type}, {days}), using {int((time.time() - start_t)*1000)}ms")
-    return daily_info
+    return [title, min_ccl_info, max_ccl_info, diff_info]
 
 def get_stable_ccl_time(ticks):
     # sorted_ticks = sorted(ticks, key=lambda x: x['time'])
@@ -1155,7 +1151,7 @@ def get_past_peaks_info(ticks, column="zxj", span=30 * 12):
         title.append(f"{extreme['time'][11:-4]}")
         zxj_diff = extreme['zxj'] - last_extreme['zxj']
         zxj_diff = int(zxj_diff) if ticks[-1]['type'] != "i" else round(zxj_diff*2)/2
-        zxj_mark = "↑" if extreme['extreme'] == 'max' else ("↓" if extreme['extreme'] == 'min' else "")
+        zxj_mark = "" if 'extreme' not in extreme else ("↑" if extreme['extreme'] == 'max' else "↓")
         zxj_info.append(f"{int(extreme['zxj']) if ticks[-1]['type'] != 'i' else round(extreme['zxj']*2)/2} {zxj_mark}")
         ccl_info.append(extreme['ccl'])
         diff_info.append(f"{extreme['ccl'] - last_extreme['ccl']}/{zxj_diff}")
