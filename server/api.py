@@ -160,6 +160,7 @@ def index():
 @app.route('/info', methods=['GET'])
 @block_ip()
 def get_info():
+    start_time = time.time()
     list_size = 8
     kp_time = date_utils.get_kp_time_string()
     is_working_day = date_utils.is_work_day(kp_time[:10])
@@ -218,10 +219,10 @@ def get_info():
         result[data_type]['sum_infos'] = f"open time {KP_TICKS[data_type]['time'][5:-4]}"
         
     
-    # processing_time = int((time.time() - start_time) * 1000)  # in milliseconds
+    processing_time = int((time.time() - start_time) * 1000)  # in milliseconds
     # current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
     
-         
+    utils.log("processing_time: {}".format(processing_time))
     return result
 
 if __name__ == '__main__':

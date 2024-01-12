@@ -1120,6 +1120,7 @@ def get_past_min_max_infor(ticks, column="zxj"):
     ]
 
 def get_past_peaks_info(ticks, column="zxj", span=30 * 12):
+    start_time = time.time()
     extremes = []
     for i in range(len(ticks)):
         start = max(0, i - span)
@@ -1155,6 +1156,7 @@ def get_past_peaks_info(ticks, column="zxj", span=30 * 12):
         zxj_info.append(f"{int(extreme['zxj']) if ticks[-1]['type'] != 'i' else round(extreme['zxj']*2)/2} {zxj_mark}")
         ccl_info.append(extreme['ccl'])
         diff_info.append(f"{extreme['ccl'] - last_extreme['ccl']}/{zxj_diff}")
+    utils.log(f"Done get_past_peaks_info({len(ticks)}, {column}), using {int((time.time() - start_time)*1000)}ms")
     return [title, zxj_info, ccl_info, diff_info]
 if __name__ == "__main__":
     # LOGGER.info(convert_val("0.5"))
