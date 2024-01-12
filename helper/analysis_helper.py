@@ -1151,10 +1151,10 @@ def get_past_peaks_info(ticks, column="zxj", span=30 * 12):
     for i in range(1, len(last_five_extremes)):
         extreme = last_five_extremes[i]
         last_extreme = last_five_extremes[i - 1]
-        title.append(f"{extreme['time'][11:-4]} {'↑' if extreme['extreme'] == 'max' else '↓'}")
+        title.append(f"{extreme['time'][11:-4]}")
         zxj_diff = extreme['zxj'] - last_extreme['zxj']
         zxj_diff = int(zxj_diff) if ticks[-1]['type'] != "i" else round(zxj_diff*2)/2
-        zxj_info.append(int(extreme['zxj']) if ticks[-1]['type'] != "i" else round(extreme['zxj']*2)/2)
+        zxj_info.append(f"{int(extreme['zxj']) if ticks[-1]['type'] != 'i' else round(extreme['zxj']*2)/2} {'↑' if extreme['extreme'] == 'max' else '↓'}")
         ccl_info.append(extreme['ccl'])
         diff_info.append(f"{extreme['ccl'] - last_extreme['ccl']}/{zxj_diff}")
     return [title, zxj_info, ccl_info, diff_info]
