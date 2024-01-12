@@ -160,7 +160,7 @@ def index():
 @app.route('/info', methods=['GET'])
 @block_ip()
 def get_info():
-    list_size = 10
+    list_size = 8
     kp_time = date_utils.get_kp_time_string()
     is_working_day = date_utils.is_work_day(kp_time[:10])
     current_str = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d')
