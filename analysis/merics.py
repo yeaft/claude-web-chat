@@ -164,31 +164,43 @@ class Metric:
         
         start_sub = tick_infos[start_index-6:start_index+6]
         peak_sub = tick_infos[peak_index-6: peak_index+6]
+        end_sub = tick_infos[end_index-6: end_index+6]
+        now_sub = tick_infos[-6:]
         start_ccl_avg = mean([t['ccl'] for t in start_sub])
-        end_ccl_avg = mean([t['ccl'] for t in peak_sub])
-        if end_ccl_avg > start_ccl_avg:
+        peak_ccl_avg = mean([t['ccl'] for t in peak_sub])
+        end_ccl_avg = mean([t['ccl'] for t in end_sub])
+        now_ccl_avg = mean([t['ccl'] for t in now_sub])
+        peak_zxj_avg = mean([t['zxj'] for t in peak_sub])
+        now_zxj_avg = mean([t['zxj'] for t in now_sub])
+        end_zxj_avg = mean([t['zxj'] for t in end_sub])
+        
+        if peak_ccl_avg > start_ccl_avg:
             ccl_trend = "Up"
         else:
             ccl_trend = "Down"
         
-        
+        now_zxj_trend = "Up" if now_zxj_avg > peak_zxj_avg else "Down"
+        # TODO use pc rate，peak past 1min avg vs now past 1min avg
+        now_ccl_trend = "Up" if now_ccl_avg > peak_ccl_avg else "Down"
+                
         # 如果在进行中
         __ccl_trend_values = ["DownEnd", "Down", "UpAdjust", "Adjust", "DownAdjust", "Up", "UpEnd"]
         past_1_min_cjl = sum([tick['cjlDiff'] for tick in tick_infos[-12:]])
         index_diff = len(tick_infos) - end_index
-        contract_trend = ""
+        last_event_trend = self.get_status_by_ccl_zxj_metric(ccl_trend, price_trend)
         if past_1_min_cjl > self.__hot_cjl_minute_threshold:
             if index_diff <= 12:
                 # Hot, Keep status
-                contract_trend = price_trend
-                if 
+                contract_trend = last_event_trend
             else:
                 contract_trend = "Error"
-                # Error
         elif past_1_min_cjl > self.__low_cjl_minute_threshold:
             if index_diff <= 12:                
                 # Warming
-                contract_trend = "UpPullBack" if price_trend == "Up" else "DownPullBack"
+                
+                
+                    
+                contract_trend = "UpPullBack" if price_trend == "Up" else "DownPullBack"1
             else:
                 # New trend start, Check if trend is same?
                 zxj_sub = [tick['zxj'] for tick in tick_infos[-12*5:]]
@@ -208,6 +220,16 @@ class Metric:
     
         
         pass
+    
+    def get_status_by_ccl_zxj_metric(self, ccl_trend, zxj_trend):
+        if ccl_trend == "Up":
+            if zxj_trend == "Up":
+                return "Up"
+            return "Down"
+
+        if zxj_trend == "Down":
+            return "UpPullBack"
+        return "DownPullBack"                
         
     def get_lastest_max_cjl_range(self, tick_infos):
         max_cjl_index = 0
