@@ -1,5 +1,6 @@
 import numpy as np
 from sklearn.linear_model import LinearRegression
+from statistics import mean, variance, stdev
 
 class Metric:
     # Lowest means today is has the lowest value in the last 10 days, and current is not higher than 10% of daily waves
@@ -161,11 +162,47 @@ class Metric:
                     peak_index = i
                     break
         
+        start_sub = tick_infos[start_index-6:start_index+6]
+        peak_sub = tick_infos[peak_index-6: peak_index+6]
+        start_ccl_avg = mean([t['ccl'] for t in start_sub])
+        end_ccl_avg = mean([t['ccl'] for t in peak_sub])
+        if end_ccl_avg > start_ccl_avg:
+            ccl_trend = "Up"
+        else:
+            ccl_trend = "Down"
+        
         
         # 如果在进行中
+        __ccl_trend_values = ["DownEnd", "Down", "UpAdjust", "Adjust", "DownAdjust", "Up", "UpEnd"]
         past_1_min_cjl = sum([tick['cjlDiff'] for tick in tick_infos[-12:]])
+        index_diff = len(tick_infos) - end_index
+        contract_trend = ""
         if past_1_min_cjl > self.__hot_cjl_minute_threshold:
-            
+            if index_diff <= 12:
+                # Hot, Keep status
+                contract_trend = price_trend
+                if 
+            else:
+                contract_trend = "Error"
+                # Error
+        elif past_1_min_cjl > self.__low_cjl_minute_threshold:
+            if index_diff <= 12:                
+                # Warming
+                contract_trend = "UpPullBack" if price_trend == "Up" else "DownPullBack"
+            else:
+                # New trend start, Check if trend is same?
+                zxj_sub = [tick['zxj'] for tick in tick_infos[-12*5:]]
+                contract_trend = self.get_trend(zxj_sub, 6, 12 * 3).replaceAll("Fast", "")
+                
+        elif past_1_min_cjl < self.__low_cjl_minute_threshold:
+            if index_diff <= 12:
+                # Cold
+                
+            elif index_diff <= 12 * 5:
+                # Posible reverse
+            else:
+                # Stable
+        
         # 刚进行完
         # 早已进行完
     
