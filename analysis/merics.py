@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from statistics import mean, variance, stdev
+import helper.statistic_utils as statistic_utils
 
 class Metric:
     # Lowest means today is has the lowest value in the last 10 days, and current is not higher than 10% of daily waves
@@ -137,6 +138,16 @@ class Metric:
         else:          
             return "Adjust"
     
+    def get_trend_by_std(self, longs, shorts, rate):
+        long_avg = mean(longs)
+        long_stdev = stdev(longs)
+        short_avg = mean(shorts)
+        if short_avg > long_avg + rate * long_stdev:
+            return "Up"
+        if short_avg < long_avg - rate * long_stdev:
+            return "Down"
+        return "Adjust"
+    
     def get_event_trend(self, tick_infos):
         # cjl abnormal range, ccl peak, price peak
         # 先找到最近的一个cjl异常点，并得到大量成交范围，确定方向
@@ -148,46 +159,62 @@ class Metric:
         sub_ticks = tick_infos[start_index:end_index]
         max_cjl_tick = max(sub_ticks, key=lambda x: x['cjlDiff'])
         if max_cjl_tick['zxj'] > tick_infos[start_index]['zxj']:
-            price_trend = "Up"
+            zxj_trend = "Up"
             max_zxj = max(sub_ticks, key=lambda x: x['zxj'])
             for i in range(tick_infos[start_index:end_index]):
                 if tick_infos[i]['zxj'] == max_zxj:
                     peak_index = i
                     break
         else:
-            price_trend = "Down"
+            zxj_trend = "Down"
             min_zxj = min(sub_ticks, key=lambda x: x['zxj'])
             for i in range(tick_infos[start_index:end_index]):
                 if tick_infos[i]['zxj'] == min_zxj:
                     peak_index = i
                     break
         
-        start_sub = tick_infos[start_index-6:start_index+6]
-        peak_sub = tick_infos[peak_index-6: peak_index+6]
-        end_sub = tick_infos[end_index-6: end_index+6]
-        now_sub = tick_infos[-6:]
-        start_ccl_avg = mean([t['ccl'] for t in start_sub])
-        peak_ccl_avg = mean([t['ccl'] for t in peak_sub])
-        end_ccl_avg = mean([t['ccl'] for t in end_sub])
-        now_ccl_avg = mean([t['ccl'] for t in now_sub])
-        peak_zxj_avg = mean([t['zxj'] for t in peak_sub])
-        now_zxj_avg = mean([t['zxj'] for t in now_sub])
-        end_zxj_avg = mean([t['zxj'] for t in end_sub])
+        start_ccls, start_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, start_index-6, start_index+6)
+        peak_ccls, peak_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, peak_index-6, peak_index+6)
+        end_ccls, end_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, end_index-6, end_index+6)
+        now_ccls, now_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, -6, len(tick_infos))
+        last_3mins_ccls, last_3mins_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, -36, len(tick_infos)) 
+        start_ccl_avg = mean(start_ccls)
+        peak_ccl_avg = mean(peak_ccls)
+        now_ccl_avg = mean([t['ccl'] for t in now_ccls])
+        peak_zxj_avg = mean(peak_zxjs)
+        peak_zxj_std = stdev(peak_zxjs)
+        now_zxj_avg = mean(now_zxjs)
+        ccl_trend = "Up" if peak_ccl_avg > start_ccl_avg else "Down"
         
-        if peak_ccl_avg > start_ccl_avg:
-            ccl_trend = "Up"
-        else:
-            ccl_trend = "Down"
-        
-        now_zxj_trend = "Up" if now_zxj_avg > peak_zxj_avg else "Down"
-        # TODO use pc rate，peak past 1min avg vs now past 1min avg
-        now_ccl_trend = "Up" if now_ccl_avg > peak_ccl_avg else "Down"
+        if zxj_trend == "Up":
+            if now_zxj_avg >= peak_zxj_avg - 0.5 * peak_zxj_std:
+                peak_2_now_zxj_trend = "Up"
+            else:
+                peak_2_now_zxj_trend = "Down"
+        elif zxj_trend == "Down":
+            if now_zxj_avg <= peak_zxj_avg + 0.5 * peak_zxj_std:
+                peak_2_now_zxj_trend = "Down"
+            else:
+                peak_2_now_zxj_trend = "Up"
                 
+        peak_2_now_ccl_trend = "Up" if now_ccl_avg > peak_ccl_avg else "Down"
+        last_3mins_zxj_trend = self.get_trend_by_std(last_3mins_zxjs, now_zxjs, 0.5)
+        last_3mins_ccl_trend = self.get_trend_by_std(last_3mins_ccls, now_ccls, 0.3)
+            
+        
+        start_peak_ccls, start_peak_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, start_index, peak_index)
+        past_30_sec_ccls, past_30_sec_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, -6, len(tick_infos))
+        start_peak_cp_rates = statistic_utils.calculate_diff_rate(start_peak_zxjs, start_peak_ccls)
+        start_peak_cp_rates_avg = mean(start_peak_cp_rates)
+        start_peak_cp_rates_std = stdev(start_peak_cp_rates)
+        past_30_sec_cp_rates = statistic_utils.calculate_diff_rate(past_30_sec_zxjs, past_30_sec_ccls)
+        past_30_sec_cp_rates_avg = mean(past_30_sec_cp_rates)
+        extra_info = ""    
         # 如果在进行中
         __ccl_trend_values = ["DownEnd", "Down", "UpAdjust", "Adjust", "DownAdjust", "Up", "UpEnd"]
         past_1_min_cjl = sum([tick['cjlDiff'] for tick in tick_infos[-12:]])
         index_diff = len(tick_infos) - end_index
-        last_event_trend = self.get_status_by_ccl_zxj_metric(ccl_trend, price_trend)
+        last_event_trend = self.get_status_by_ccl_zxj_metric(ccl_trend, zxj_trend)
         if past_1_min_cjl > self.__hot_cjl_minute_threshold:
             if index_diff <= 12:
                 # Hot, Keep status
@@ -197,13 +224,23 @@ class Metric:
         elif past_1_min_cjl > self.__low_cjl_minute_threshold:
             if index_diff <= 12:                
                 # Warming
-                
-                
-                    
-                contract_trend = "UpPullBack" if price_trend == "Up" else "DownPullBack"1
+                if peak_2_now_zxj_trend == zxj_trend:
+                    contract_trend = last_event_trend
+                    if start_peak_cp_rates_avg > 0:
+                        if past_30_sec_cp_rates_avg < start_peak_cp_rates_avg - start_peak_cp_rates_std:
+                            extra_info = "MayTurnover"
+                    else:
+                        if past_30_sec_cp_rates_avg > start_peak_cp_rates_avg + start_peak_cp_rates_std:
+                            extra_info = "MayTurnover"
+                else:
+                    # TODO add reverse
+                    contract_trend = "UpPullBack" if zxj_trend == "Up" else "DownPullBack"
             else:
                 # New trend start, Check if trend is same?
-                zxj_sub = [tick['zxj'] for tick in tick_infos[-12*5:]]
+                last_3mins_trend = self.get_status_by_ccl_zxj_metric(last_3mins_ccl_trend, last_3mins_zxj_trend)
+                if last_3mins_trend == last_event_trend:
+                    contract_trend = last_event_trend
+                    
                 contract_trend = self.get_trend(zxj_sub, 6, 12 * 3).replaceAll("Fast", "")
                 
         elif past_1_min_cjl < self.__low_cjl_minute_threshold:
@@ -222,6 +259,8 @@ class Metric:
         pass
     
     def get_status_by_ccl_zxj_metric(self, ccl_trend, zxj_trend):
+        if ccl_trend == "Adjust" or ccl_trend == "Adjust":
+            return "Unknown"
         if ccl_trend == "Up":
             if zxj_trend == "Up":
                 return "Up"
@@ -265,6 +304,14 @@ class Metric:
             next_start_index, next_end_index = self.get_lastest_max_cjl_range(tick_infos[:-start_index])
             return next_start_index+start_index, next_end_index+start_index
         return start_index, end_index
+    
+    def get_tick_infos_ccl_and_zxj(self, tick_infos, start, end):
+        ccls = []
+        zxjs = []
+        for tick in tick_infos[start:end]:
+            ccls.append(tick['ccl'])
+            zxjs.append(tick['zxj'])
+        return ccls, zxjs
     
     def fit_linear_equation(prices, ccls):
         """
