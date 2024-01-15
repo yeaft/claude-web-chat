@@ -1,3 +1,6 @@
+import numpy as np
+from sklearn.linear_model import LinearRegression
+
 class Metric:
     # Lowest means today is has the lowest value in the last 10 days, and current is not higher than 10% of daily waves
     # Highest is similar
@@ -23,12 +26,12 @@ class Metric:
     #     self.ccl_day_diff_threshold = int(14000000/reference_price)
     #     self.ccl_hot_threshold = int(9000000/reference_price)
     
-    __low_cjl_minute_threshold = 2000
-    __hot_cjl_minute_threshold = 6000
+    __low_cjl_minute_threshold = 3000
+    __hot_cjl_minute_threshold = 7700
     __five_minute_check_point_count = 5 * 12
     __six_hours_check_point_count = 6 * 60 * 12
     __balance_avg_to_min_max_price_diff_rate = 0.0008
-    __balance_avg_to_min_max_ccl_diff = 100
+    __balance_avg_to_min_max_ccl_diff_rate = 0.001
 
     '''
     定义：
@@ -102,9 +105,8 @@ class Metric:
         if len(tick_infos) < self.__six_hours_check_point_count:
             return 
 
-        extrems = self.find_extremes(tick_infos[-self.__six_hours_check_point_count:])
         # 确定大方向
-        contract_status = self.get_contract_status(tick_infos, extrems)
+        contract_status = self.get_contract_status(tick_infos)
         metric['contractStatus'] = contract_status
         
         past_five_mins_ticks = tick_infos[-self.__five_minute_check_point_count:]
@@ -112,12 +114,120 @@ class Metric:
         metric['cjlStatus'] = self.get_cjl_status(cjls)
 
         prices = [tick['zxj'] for tick in past_five_mins_ticks]
+        metric['zxjTrend'] = self.get_trend(prices, 9, 12 * 5, self.__balance_avg_to_min_max_price_diff_rate)
+        
         ccls = [tick['ccl'] for tick in past_five_mins_ticks]
+        metric['cclTrend'] = self.get_trend(ccls, 9, 12 * 5, self.__balance_avg_to_min_max_ccl_diff_rate)
+        
         if metric['cjlStatus'] == "Cold" and self.is_balance(ccls, prices, cjls):
             metric['contractTrend'] = "Balance"
     
-    def get_zxj_trend(self, prices):
+    def get_trend(self, data, short_count, long_count, threshold):
+        short_avg = sum(data[-short_count:]) / short_count
+        long_avg = sum(data[-long_count:]) / long_count
+        if short_avg > long_avg * (1 + threshold):
+            if short_avg > long_avg * (1 + threshold * 3):
+                return "FastUp"
+            return "Up"
+        elif short_avg < long_avg * (1 - threshold):
+            if short_avg < long_avg * (1 - threshold * 3):
+                return "FastDown"
+            return "Down"
+        else:          
+            return "Adjust"
+    
+    def get_event_trend(self, tick_infos):
+        # cjl abnormal range, ccl peak, price peak
+        # 先找到最近的一个cjl异常点，并得到大量成交范围，确定方向
+        # 成交范围前可能就是平衡态
+        start_index, end_index = self.get_lastest_max_cjl_range(tick_infos)
+        if end_index - start_index < 12:
+            return
         
+        sub_ticks = tick_infos[start_index:end_index]
+        max_cjl_tick = max(sub_ticks, key=lambda x: x['cjlDiff'])
+        if max_cjl_tick['zxj'] > tick_infos[start_index]['zxj']:
+            price_trend = "Up"
+            max_zxj = max(sub_ticks, key=lambda x: x['zxj'])
+            for i in range(tick_infos[start_index:end_index]):
+                if tick_infos[i]['zxj'] == max_zxj:
+                    peak_index = i
+                    break
+        else:
+            price_trend = "Down"
+            min_zxj = min(sub_ticks, key=lambda x: x['zxj'])
+            for i in range(tick_infos[start_index:end_index]):
+                if tick_infos[i]['zxj'] == min_zxj:
+                    peak_index = i
+                    break
+        
+        
+        # 如果在进行中
+        past_1_min_cjl = sum([tick['cjlDiff'] for tick in tick_infos[-12:]])
+        if past_1_min_cjl > self.__hot_cjl_minute_threshold:
+            
+        # 刚进行完
+        # 早已进行完
+    
+        
+        pass
+        
+    def get_lastest_max_cjl_range(self, tick_infos):
+        max_cjl_index = 0
+        for i in range(len(tick_infos) - 1, 0, -1):
+            sub_ticks = tick_infos[i - 12:i]
+            if sum([tick['cjlDiff'] for tick in sub_ticks]) > self.__hot_cjl_minute_threshold:
+                max_cjl_index = i
+                break
+            i -= 6
+        
+        if max_cjl_index == 0:
+            return 0, 0
+        
+        # find past hot cjl index
+        start_index = 0
+        for i in range(max_cjl_index - 1, 0, -1):
+            sub_ticks = tick_infos[i - 12:i]
+            if sum([tick['cjlDiff'] for tick in sub_ticks]) < self.__low_cjl_minute_threshold:
+                start_index = i
+                break
+            i -= 6
+        
+        end_index = max_cjl_index
+        for i in range(max_cjl_index, len(tick_infos), 1):
+            sub_ticks = tick_infos[i - 12:i]
+            if sum([tick['cjlDiff'] for tick in sub_ticks]) < self.__low_cjl_minute_threshold:
+                end_index = i
+                break
+            i += 6
+        
+        # 如果成交量异常时间范围太小，就继续往前找
+        if end_index - start_index < 12 * 3 and len(tick_infos) > end_index + 12 * 3:
+            next_start_index, next_end_index = self.get_lastest_max_cjl_range(tick_infos[:-start_index])
+            return next_start_index+start_index, next_end_index+start_index
+        return start_index, end_index
+    
+    def fit_linear_equation(prices, ccls):
+        """
+        Fit a linear equation y = ax + b using given prices and ccls.
+
+        :param prices: List of prices.
+        :param ccls: List of CCLs (in ten thousands).
+        :return: Coefficients a and b of the linear equation.
+        """
+        # Reshape ccls for sklearn LinearRegression
+        X = np.array(ccls).reshape(-1, 1)
+        y = np.array(prices)
+
+        # Create and fit the model
+        model = LinearRegression()
+        model.fit(X, y)
+
+        # Coefficients a (slope) and b (intercept)
+        a = model.coef_[0]
+        b = model.intercept_
+
+        return a, b 
         
     def get_cjl_status(self, cjls):
         #    __cjl_status_values = ["Cold", "Warm", "Hot", "StartHot", "Cooling"]
@@ -152,12 +262,14 @@ class Metric:
         avg_ccl = sum(ccls) / len(ccls)
         min_ccl = min(ccls)
         max_ccl = max(ccls)
-        if max_ccl - avg_ccl > self.__balance_avg_to_min_max_ccl_diff or avg_ccl - min_ccl > self.__balance_avg_to_min_max_ccl_diff:
+        ccl_day_diff_threshold = avg_ccl * self.__balance_avg_to_min_max_ccl_diff_rate
+        if max_ccl - avg_ccl > ccl_day_diff_threshold or avg_ccl - min_ccl > ccl_day_diff_threshold:
             return False
         
         return True
 
-    def get_contract_status(self, tick_infos, extrems):
+    def get_contract_status(self, tick_infos):
+        extrems = self.find_extremes(tick_infos[-self.__six_hours_check_point_count:])
         if len(extrems) < 2:
             return None
 
@@ -198,10 +310,10 @@ class Metric:
             
     def find_extremes(self, ticks, span = 45 * 12):        
         extremes = []  # 用于存储最高和最低值的索
-        for i in range(len(ticks)):
+        for i in range(span, len(ticks) - span - 1):
             # 确定窗口边界
-            start = max(0, i - span)
-            end = min(len(ticks), i + span + 1)
+            start = i - span
+            end = i + span + 1
 
             # 当前值
             current_value = ticks[i]['zxj']
