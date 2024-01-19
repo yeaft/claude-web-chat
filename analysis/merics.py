@@ -1,7 +1,9 @@
 import numpy as np
+import time
 from sklearn.linear_model import LinearRegression
 from statistics import mean, variance, stdev
 import helper.statistic_utils as statistic_utils
+from helper import constance, utils, date_utils, analysis_helper, ticks_helper, file_utils
 
 class Metric:
     # Lowest means today is has the lowest value in the last 10 days, and current is not higher than 10% of daily waves
@@ -68,26 +70,6 @@ class Metric:
             2. 无量走平又是高点，就是空的信号,有一定可能是的就是后面的大量交易，显得之前是无量，但是后面的大量交易必定是3日方向的
     '''
 
-
-    def __init__(self):
-        self.ccl_status = None
-        self.ccl_space = None # transfer to money
-        self.ccl_trend = None
-
-
-
-    def calculate_ccl_status(self, tick_infos, day_infos):
-        pass
-
-    def calculate_ccl_space(self, tick_infos, day_infos):
-        pass
-
-    def calculate_ccl_trend(self, tick_infos, day_infos):
-        pass
-
-    def calculate_price_status(self, tick_infos, day_infos):
-        pass
-
     def calculate_price_trend(self, tick_infos, day_infos):
         # 1. 绝对定义：时间范围内的价格和ccl稳定，且cjl很低
         # 2. 参考率: 单位ccl的价格变化
@@ -102,17 +84,18 @@ class Metric:
     def calculate_contract_trend(self, tick_infos, day_infos):        
         pass
     
-    def get_current_metrics(self, tick_infos, day_infos):        
+    def get_current_metrics(self, tick_infos): 
+               
         metric = {}
         if len(tick_infos) < self.__six_hours_check_point_count:
             return 
-
         # 确定大方向
-        contract_status = self.get_contract_status(tick_infos)
-        metric['contractStatus'] = contract_status
+        # start_get_contract_status_time = time.time()
+        # metric['contractStatus'] = self.get_contract_status(tick_infos)
+        # print(f"get_contract_status cost {(time.time() - start_get_contract_status_time)*1000}ms")
         
         past_five_mins_ticks = tick_infos[-self.__five_minute_check_point_count:]
-        cjls = [tick['cjlDiff'] for tick in past_five_mins_ticks]
+        cjls = [tick['cjlDiff'] for tick in past_five_mins_ticks if 'cjlDiff' in tick]
         metric['cjlStatus'] = self.get_cjl_status(cjls)
 
         prices = [tick['zxj'] for tick in past_five_mins_ticks]
@@ -123,6 +106,13 @@ class Metric:
         
         if metric['cjlStatus'] == "Cold" and self.is_balance(ccls, prices, cjls):
             metric['contractTrend'] = "Balance"
+        else:
+            contract_trend, extra_info = self.get_event_trend(tick_infos)
+            metric['contractTrend'] = contract_trend
+            metric['extraInfo'] = extra_info
+        
+        # print(f"get_current_metrics cost {(time.time() - start_time)*1000}ms")
+        return metric
     
     def get_trend(self, data, short_count, long_count, threshold):
         short_avg = sum(data[-short_count:]) / short_count
@@ -154,21 +144,22 @@ class Metric:
         # 成交范围前可能就是平衡态
         start_index, end_index = self.get_lastest_max_cjl_range(tick_infos)
         if end_index - start_index < 12:
-            return
+            return "Unknown", "Unknown"
         
         sub_ticks = tick_infos[start_index:end_index]
         max_cjl_tick = max(sub_ticks, key=lambda x: x['cjlDiff'])
+        peak_index = -1
         if max_cjl_tick['zxj'] > tick_infos[start_index]['zxj']:
             zxj_trend = "Up"
-            max_zxj = max(sub_ticks, key=lambda x: x['zxj'])
-            for i in range(tick_infos[start_index:end_index]):
+            max_zxj = max(sub_ticks, key=lambda x: x['zxj'])['zxj']
+            for i in range(start_index, end_index+1, 1):
                 if tick_infos[i]['zxj'] == max_zxj:
                     peak_index = i
                     break
         else:
             zxj_trend = "Down"
-            min_zxj = min(sub_ticks, key=lambda x: x['zxj'])
-            for i in range(tick_infos[start_index:end_index]):
+            min_zxj = min(sub_ticks, key=lambda x: x['zxj'])['zxj']
+            for i in range(start_index, end_index+1, 1):
                 if tick_infos[i]['zxj'] == min_zxj:
                     peak_index = i
                     break
@@ -180,7 +171,7 @@ class Metric:
         last_3mins_ccls, last_3mins_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, -36, len(tick_infos)) 
         start_ccl_avg = mean(start_ccls)
         peak_ccl_avg = mean(peak_ccls)
-        now_ccl_avg = mean([t['ccl'] for t in now_ccls])
+        now_ccl_avg = mean(now_ccls)
         peak_zxj_avg = mean(peak_zxjs)
         peak_zxj_std = stdev(peak_zxjs)
         now_zxj_avg = mean(now_zxjs)
@@ -203,25 +194,31 @@ class Metric:
             
         
         start_peak_ccls, start_peak_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, start_index, peak_index)
+        if len(start_peak_ccls) <= 2:
+            return "Unknown", "Unknown"
         past_30_sec_ccls, past_30_sec_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, -6, len(tick_infos))
         start_peak_cp_rates = statistic_utils.calculate_diff_rate(start_peak_zxjs, start_peak_ccls)
+        if len(start_peak_cp_rates) <=2:
+            return "Unknown", "Unknown"
         start_peak_cp_rates_avg = mean(start_peak_cp_rates)
         start_peak_cp_rates_std = stdev(start_peak_cp_rates)
         past_30_sec_cp_rates = statistic_utils.calculate_diff_rate(past_30_sec_zxjs, past_30_sec_ccls)
+        if len(past_30_sec_cp_rates) <= 2:
+            return "Unknown", "Unknown"
         past_30_sec_cp_rates_avg = mean(past_30_sec_cp_rates)
         extra_info = ""    
         # 如果在进行中
         __ccl_trend_values = ["DownEnd", "Down", "UpAdjust", "Adjust", "DownAdjust", "Up", "UpEnd"]
-        past_1_min_cjl = sum([tick['cjlDiff'] for tick in tick_infos[-12:]])
+        past_1_min_cjl = sum([tick['cjlDiff'] for tick in tick_infos[-12:] if 'cjlDiff' in tick])
         index_diff = len(tick_infos) - end_index
         last_event_trend = self.get_status_by_ccl_zxj_metric(ccl_trend, zxj_trend)
-        if past_1_min_cjl > self.__hot_cjl_minute_threshold:
+        if past_1_min_cjl >= self.__hot_cjl_minute_threshold:
             if index_diff <= 12:
                 # Hot, Keep status
                 contract_trend = last_event_trend
             else:
                 contract_trend = "Error"
-        elif past_1_min_cjl > self.__low_cjl_minute_threshold:
+        elif past_1_min_cjl >= self.__low_cjl_minute_threshold:
             if index_diff <= 12:                
                 # Warming
                 if peak_2_now_zxj_trend == zxj_trend:
@@ -233,30 +230,33 @@ class Metric:
                         if past_30_sec_cp_rates_avg > start_peak_cp_rates_avg + start_peak_cp_rates_std:
                             extra_info = "MayTurnover"
                 else:
-                    # TODO add reverse
                     contract_trend = "UpPullBack" if zxj_trend == "Up" else "DownPullBack"
+                    if peak_2_now_ccl_trend == ccl_trend:
+                        extra_info = "ZxjCalmDown"
+                    else:
+                        extra_info = "RegularReverse"
             else:
                 # New trend start, Check if trend is same?
                 last_3mins_trend = self.get_status_by_ccl_zxj_metric(last_3mins_ccl_trend, last_3mins_zxj_trend)
-                if last_3mins_trend == last_event_trend:
-                    contract_trend = last_event_trend
-                    
-                contract_trend = self.get_trend(zxj_sub, 6, 12 * 3).replaceAll("Fast", "")
+                contract_trend = last_3mins_trend
+                if last_3mins_trend == last_event_trend:                    
+                    extra_info = "OpenSignal"
+                else:
+                    # TODO need to add more logic verify
+                    extra_info = "PossibleReverse"
                 
-        elif past_1_min_cjl < self.__low_cjl_minute_threshold:
+        else:
             if index_diff <= 12:
                 # Cold
-                
+                contract_trend = last_event_trend + "End"
             elif index_diff <= 12 * 5:
                 # Posible reverse
+                contract_trend = last_event_trend + "End"
             else:
+                contract_trend = "PrepareToStart"
                 # Stable
         
-        # 刚进行完
-        # 早已进行完
-    
-        
-        pass
+        return contract_trend, extra_info
     
     def get_status_by_ccl_zxj_metric(self, ccl_trend, zxj_trend):
         if ccl_trend == "Adjust" or ccl_trend == "Adjust":
@@ -274,7 +274,7 @@ class Metric:
         max_cjl_index = 0
         for i in range(len(tick_infos) - 1, 0, -1):
             sub_ticks = tick_infos[i - 12:i]
-            if sum([tick['cjlDiff'] for tick in sub_ticks]) > self.__hot_cjl_minute_threshold:
+            if sum([tick['cjlDiff'] for tick in sub_ticks if 'cjlDiff' in tick]) > self.__hot_cjl_minute_threshold:
                 max_cjl_index = i
                 break
             i -= 6
@@ -286,7 +286,7 @@ class Metric:
         start_index = 0
         for i in range(max_cjl_index - 1, 0, -1):
             sub_ticks = tick_infos[i - 12:i]
-            if sum([tick['cjlDiff'] for tick in sub_ticks]) < self.__low_cjl_minute_threshold:
+            if sum([tick['cjlDiff'] for tick in sub_ticks if 'cjlDiff' in tick]) < self.__low_cjl_minute_threshold:
                 start_index = i
                 break
             i -= 6
@@ -294,7 +294,7 @@ class Metric:
         end_index = max_cjl_index
         for i in range(max_cjl_index, len(tick_infos), 1):
             sub_ticks = tick_infos[i - 12:i]
-            if sum([tick['cjlDiff'] for tick in sub_ticks]) < self.__low_cjl_minute_threshold:
+            if sum([tick['cjlDiff'] for tick in sub_ticks if 'cjlDiff' in tick]) < self.__low_cjl_minute_threshold:
                 end_index = i
                 break
             i += 6
@@ -441,15 +441,28 @@ class Metric:
 
         return extremes
 
-    def calculate_close_ccl_trend(self, tick_infos, day_infos):
-        pass
-
-    def calculate_close_price_trend(self, tick_infos, day_infos):
-        pass
-
-    def calculate_close_price_micro_trend(self, tick_infos, day_infos):
-        pass
-
+if __name__ == "__main__":
+    span_type = "5sec"
+    ticks = ticks_helper.get_ticks("2023-10-23", "2023-10-27", "rb", "real")
+    print(f"ticks count: {len(ticks)}")
+    metric_helper = Metric()
+    datas = []
+    print(f"process number: {len(ticks) - 12*60*6}")
+    start_time = time.time()
+    for i in range(12 * 60 * 6, len(ticks)):
+        metric = metric_helper.get_current_metrics(ticks[:i])
+        data = {
+            "time": ticks[i]['time'],
+            "code": ticks[i]['code'],
+            "zxj": ticks[i]['zxj'],
+            "ccl": ticks[i]['ccl'],
+            "cjl": ticks[i]['cjlDiff'],
+        }
+        data.update(metric)
+        datas.append(data)
+    
+    print(f"process time: {round(time.time() - start_time,2)}s")
+    utils.convert_dic_to_csv("metrics.csv", datas)
     # def get_current_metrics(self, tick_infos, day_infos):
     #     ccl_status =  self.calculate_ccl_status(tick_infos, day_infos)
     #     ccl_space =  self.calculate_ccl_space(tick_infos, day_infos)
