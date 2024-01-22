@@ -107,9 +107,7 @@ class Metric:
         if metric['cjlStatus'] == "Cold" and self.is_balance(ccls, prices, cjls):
             metric['contractTrend'] = "Balance"
         else:
-            contract_trend, extra_info = self.get_event_trend(tick_infos)
-            metric['contractTrend'] = contract_trend
-            metric['extraInfo'] = extra_info
+            self.get_event_trend(tick_infos, metric)
         
         # print(f"get_current_metrics cost {(time.time() - start_time)*1000}ms")
         return metric
@@ -138,7 +136,7 @@ class Metric:
             return "Down"
         return "Adjust"
     
-    def get_event_trend(self, tick_infos):
+    def get_event_trend(self, tick_infos, metric):
         # cjl abnormal range, ccl peak, price peak
         # 先找到最近的一个cjl异常点，并得到大量成交范围，确定方向
         # 成交范围前可能就是平衡态
@@ -197,6 +195,7 @@ class Metric:
         if len(start_peak_ccls) <= 2:
             return "Unknown", "Unknown"
         past_30_sec_ccls, past_30_sec_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, -6, len(tick_infos))
+        # Should find the cp rate from balance to balance
         start_peak_cp_rates = statistic_utils.calculate_diff_rate(start_peak_zxjs, start_peak_ccls)
         if len(start_peak_cp_rates) <=2:
             return "Unknown", "Unknown"
@@ -212,15 +211,19 @@ class Metric:
         past_1_min_cjl = sum([tick['cjlDiff'] for tick in tick_infos[-12:] if 'cjlDiff' in tick])
         index_diff = len(tick_infos) - end_index
         last_event_trend = self.get_status_by_ccl_zxj_metric(ccl_trend, zxj_trend)
+        event_status = ""
         if past_1_min_cjl >= self.__hot_cjl_minute_threshold:
             if index_diff <= 12:
                 # Hot, Keep status
                 contract_trend = last_event_trend
+                event_status = "InEventAndHot"
             else:
                 contract_trend = "Error"
+                event_status = "OutEventAndHot"
         elif past_1_min_cjl >= self.__low_cjl_minute_threshold:
             if index_diff <= 12:                
                 # Warming
+                event_status = "InEventAndWarm"
                 if peak_2_now_zxj_trend == zxj_trend:
                     contract_trend = last_event_trend
                     if start_peak_cp_rates_avg > 0:
@@ -237,6 +240,7 @@ class Metric:
                         extra_info = "RegularReverse"
             else:
                 # New trend start, Check if trend is same?
+                event_status = "OutEventAndWarm"
                 last_3mins_trend = self.get_status_by_ccl_zxj_metric(last_3mins_ccl_trend, last_3mins_zxj_trend)
                 contract_trend = last_3mins_trend
                 if last_3mins_trend == last_event_trend:                    
@@ -248,15 +252,26 @@ class Metric:
         else:
             if index_diff <= 12:
                 # Cold
+                event_status = "InEventAndCold"
                 contract_trend = last_event_trend + "End"
             elif index_diff <= 12 * 5:
                 # Posible reverse
+                event_status = "NearEventAndCold"
                 contract_trend = last_event_trend + "End"
             else:
+                event_status = "OutEventAndCold"
                 contract_trend = "PrepareToStart"
                 # Stable
         
-        return contract_trend, extra_info
+        #Add event status
+        metric['contractTrend'] = contract_trend
+        metric['extraInfo'] = extra_info
+        metric['secs'] = index_diff * 5
+        metric['ES'] = event_status
+        metric['3MinsZxj'] = last_3mins_zxj_trend
+        metric['3MinsCcl'] = last_3mins_ccl_trend
+        metric['PeakCP'] = round(start_peak_cp_rates_avg,2)
+        metric['30SecCP'] = round(past_30_sec_cp_rates_avg,2)
     
     def get_status_by_ccl_zxj_metric(self, ccl_trend, zxj_trend):
         if ccl_trend == "Adjust" or ccl_trend == "Adjust":
@@ -462,7 +477,7 @@ if __name__ == "__main__":
         datas.append(data)
     
     print(f"process time: {round(time.time() - start_time,2)}s")
-    utils.convert_dic_to_csv("metrics.csv", datas)
+    utils.convert_dic_to_csv("metrics", datas, is_new=False)
     # def get_current_metrics(self, tick_infos, day_infos):
     #     ccl_status =  self.calculate_ccl_status(tick_infos, day_infos)
     #     ccl_space =  self.calculate_ccl_space(tick_infos, day_infos)
