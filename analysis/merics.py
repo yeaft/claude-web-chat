@@ -97,12 +97,15 @@ class Metric:
         past_five_mins_ticks = tick_infos[-self.__five_minute_check_point_count:]
         cjls = [tick['cjlDiff'] for tick in past_five_mins_ticks if 'cjlDiff' in tick]
         metric['cjlStatus'] = self.get_cjl_status(cjls)
+        metric['cjlTrend'] = self.get_trend_by_std(cjls, cjls[-6:], 0.5)
 
         prices = [tick['zxj'] for tick in past_five_mins_ticks]
-        metric['zxjTrend'] = self.get_trend(prices, 9, 12 * 5, self.__balance_avg_to_min_max_price_diff_rate)
+        metric['zxjTrend1'] = self.get_trend(prices, 9, 12 * 5, self.__balance_avg_to_min_max_price_diff_rate)
+        metric['zxjTrend2'] = self.get_trend_by_std(prices, prices[-6:], 0.5)
         
         ccls = [tick['ccl'] for tick in past_five_mins_ticks]
-        metric['cclTrend'] = self.get_trend(ccls, 9, 12 * 5, self.__balance_avg_to_min_max_ccl_diff_rate)
+        metric['cclTrend1'] = self.get_trend(ccls, 9, 12 * 5, self.__balance_avg_to_min_max_ccl_diff_rate)
+        metric['cclTrend2'] = self.get_trend_by_std(ccls, prices[-6:], 0.5)
         
         if metric['cjlStatus'] == "Cold" and self.is_balance(ccls, prices, cjls):
             metric['contractTrend'] = "Balance"
@@ -130,9 +133,13 @@ class Metric:
         long_avg = mean(longs)
         long_stdev = stdev(longs)
         short_avg = mean(shorts)
-        if short_avg > long_avg + rate * long_stdev:
-            return "Up"
-        if short_avg < long_avg - rate * long_stdev:
+        if short_avg > long_avg + 2 * rate * long_stdev:
+            return "FastUp"
+        if short_avg >= long_avg + rate * long_stdev:
+            return "Up"        
+        if short_avg < long_avg - 2 * rate * long_stdev:
+            return "FastDown"
+        if short_avg <= long_avg - rate * long_stdev:
             return "Down"
         return "Adjust"
     
@@ -218,7 +225,7 @@ class Metric:
                 contract_trend = last_event_trend
                 event_status = "InEventAndHot"
             else:
-                contract_trend = "Error"
+                contract_trend = "HotAgain"
                 event_status = "OutEventAndHot"
         elif past_1_min_cjl >= self.__low_cjl_minute_threshold:
             if index_diff <= 12:                
@@ -266,6 +273,7 @@ class Metric:
         #Add event status
         metric['contractTrend'] = contract_trend
         metric['extraInfo'] = extra_info
+        metric['endTime'] = tick_infos[end_index]['time']
         metric['secs'] = index_diff * 5
         metric['ES'] = event_status
         metric['3MinsZxj'] = last_3mins_zxj_trend
@@ -348,8 +356,8 @@ class Metric:
         a = model.coef_[0]
         b = model.intercept_
 
-        return a, b 
-        
+        return a, b
+            
     def get_cjl_status(self, cjls):
         #    __cjl_status_values = ["Cold", "Warm", "Hot", "StartHot", "Cooling"]
         minutes_cjls = []
