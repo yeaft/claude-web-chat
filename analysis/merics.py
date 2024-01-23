@@ -97,15 +97,15 @@ class Metric:
         past_five_mins_ticks = tick_infos[-self.__five_minute_check_point_count:]
         cjls = [tick['cjlDiff'] for tick in past_five_mins_ticks if 'cjlDiff' in tick]
         metric['cjlStatus'] = self.get_cjl_status(cjls)
-        metric['cjlTrend'] = self.get_trend_by_std(cjls, cjls[-6:], 0.5)
+        metric['cjlTrend'] = self.get_trend_by_std(cjls, cjls[-3:], 1) if cjls[-1] >= 200 else "Adjust"
 
         prices = [tick['zxj'] for tick in past_five_mins_ticks]
         metric['zxjTrend1'] = self.get_trend(prices, 9, 12 * 5, self.__balance_avg_to_min_max_price_diff_rate)
-        metric['zxjTrend2'] = self.get_trend_by_std(prices, prices[-6:], 0.5)
+        metric['zxjTrend2'] = self.get_trend_by_std(prices, prices[-6:], 1)
         
         ccls = [tick['ccl'] for tick in past_five_mins_ticks]
         metric['cclTrend1'] = self.get_trend(ccls, 9, 12 * 5, self.__balance_avg_to_min_max_ccl_diff_rate)
-        metric['cclTrend2'] = self.get_trend_by_std(ccls, prices[-6:], 0.5)
+        metric['cclTrend2'] = self.get_trend_by_std(ccls, prices[-12:], 1)
         
         if metric['cjlStatus'] == "Cold" and self.is_balance(ccls, prices, cjls):
             metric['contractTrend'] = "Balance"
@@ -218,21 +218,15 @@ class Metric:
         past_1_min_cjl = sum([tick['cjlDiff'] for tick in tick_infos[-12:] if 'cjlDiff' in tick])
         index_diff = len(tick_infos) - end_index
         last_event_trend = self.get_status_by_ccl_zxj_metric(ccl_trend, zxj_trend)
+        current_trend = self.get_status_by_ccl_zxj_metric(last_3mins_ccl_trend, last_3mins_zxj_trend)
         event_status = ""
         if past_1_min_cjl >= self.__hot_cjl_minute_threshold:
-            if index_diff <= 12:
-                # Hot, Keep status
-                contract_trend = last_event_trend
-                event_status = "InEventAndHot"
-            else:
-                contract_trend = "HotAgain"
-                event_status = "OutEventAndHot"
+            extra_info = "KeepTrend"
         elif past_1_min_cjl >= self.__low_cjl_minute_threshold:
             if index_diff <= 12:                
                 # Warming
                 event_status = "InEventAndWarm"
                 if peak_2_now_zxj_trend == zxj_trend:
-                    contract_trend = last_event_trend
                     if start_peak_cp_rates_avg > 0:
                         if past_30_sec_cp_rates_avg < start_peak_cp_rates_avg - start_peak_cp_rates_std:
                             extra_info = "MayTurnover"
@@ -240,7 +234,7 @@ class Metric:
                         if past_30_sec_cp_rates_avg > start_peak_cp_rates_avg + start_peak_cp_rates_std:
                             extra_info = "MayTurnover"
                 else:
-                    contract_trend = "UpPullBack" if zxj_trend == "Up" else "DownPullBack"
+                    # current_trend = "UpPullBack" if zxj_trend == "Up" else "DownPullBack"
                     if peak_2_now_ccl_trend == ccl_trend:
                         extra_info = "ZxjCalmDown"
                     else:
@@ -248,31 +242,26 @@ class Metric:
             else:
                 # New trend start, Check if trend is same?
                 event_status = "OutEventAndWarm"
-                last_3mins_trend = self.get_status_by_ccl_zxj_metric(last_3mins_ccl_trend, last_3mins_zxj_trend)
-                contract_trend = last_3mins_trend
-                if last_3mins_trend == last_event_trend:                    
-                    extra_info = "OpenSignal"
+                if current_trend == last_event_trend:                    
+                    extra_info = "StartSameTrend"
                 else:
                     # TODO need to add more logic verify
                     extra_info = "PossibleReverse"
                 
         else:
-            if index_diff <= 12:
+            if index_diff <= 12 * 5:
                 # Cold
-                event_status = "InEventAndCold"
-                contract_trend = last_event_trend + "End"
-            elif index_diff <= 12 * 5:
-                # Posible reverse
-                event_status = "NearEventAndCold"
-                contract_trend = last_event_trend + "End"
+                extra_info = "Ending"
             else:
-                event_status = "OutEventAndCold"
-                contract_trend = "PrepareToStart"
+                extra_info = "Preparing"
                 # Stable
         
         #Add event status
-        metric['contractTrend'] = contract_trend
+        metric['contractTrend'] = current_trend
+        metric['lastContractTrend'] = last_event_trend
         metric['extraInfo'] = extra_info
+        metric['startTime'] = tick_infos[start_index]['time']
+        metric['peakTime'] = tick_infos[peak_index]['time']
         metric['endTime'] = tick_infos[end_index]['time']
         metric['secs'] = index_diff * 5
         metric['ES'] = event_status
@@ -284,12 +273,12 @@ class Metric:
     def get_status_by_ccl_zxj_metric(self, ccl_trend, zxj_trend):
         if ccl_trend == "Adjust" or ccl_trend == "Adjust":
             return "Unknown"
-        if ccl_trend == "Up":
-            if zxj_trend == "Up":
+        if "Up" in ccl_trend:
+            if "Up" in zxj_trend:
                 return "Up"
             return "Down"
 
-        if zxj_trend == "Down":
+        if "Down" in zxj_trend:
             return "UpPullBack"
         return "DownPullBack"                
         
@@ -361,12 +350,12 @@ class Metric:
     def get_cjl_status(self, cjls):
         #    __cjl_status_values = ["Cold", "Warm", "Hot", "StartHot", "Cooling"]
         minutes_cjls = []
-        for i in range(0, 5):
-            minutes_cjls.append(sum(cjls[i * 12 : (i + 1) * 12]))
+        for i in range(0, 12):
+            minutes_cjls.append(sum(cjls[i * 6 : (i + 1) * 6]))
         
-        if minutes_cjls[-1] >= self.__hot_cjl_minute_threshold:
+        if minutes_cjls[-1] >= self.__hot_cjl_minute_threshold /1.7:
             return "Hot"
-        elif minutes_cjls[-1] >= self.__low_cjl_minute_threshold:
+        elif minutes_cjls[-1] >= self.__low_cjl_minute_threshold /1.7:
             if minutes_cjls[-1] > 1.3 * minutes_cjls[-2]:
                 return "StartHot"
             elif minutes_cjls[-1] < 0.7 * minutes_cjls[-2]:
