@@ -63,3 +63,4 @@
 1. Add peak time
 2. remove in or out event, stead of seconds
 3. Make a larger standard CP rate.
+4. 找ccl变化波段，同时表示status

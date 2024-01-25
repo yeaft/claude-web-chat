@@ -36,6 +36,12 @@ class Metric:
     __six_hours_check_point_count = 6 * 60 * 12
     __balance_avg_to_min_max_price_diff_rate = 0.0008
     __balance_avg_to_min_max_ccl_diff_rate = 0.001
+    __extreme_cols = ["zxj", "ccl", "cjlDiff"]
+    
+    def __init__(self):
+        self.extremes_set = {}
+        for col in self.__extreme_cols:
+            self.extremes_set[col] = []
 
     '''
     定义：
@@ -88,9 +94,14 @@ class Metric:
                
         metric = {}
         if len(tick_infos) < self.__six_hours_check_point_count:
-            return 
-        # 确定大方向
+            return metric
+        
         # start_get_contract_status_time = time.time()
+        # Get all extremes
+        self.find_extremes(tick_infos)
+        
+        # 确定大方向
+        
         # metric['contractStatus'] = self.get_contract_status(tick_infos)
         # print(f"get_contract_status cost {(time.time() - start_get_contract_status_time)*1000}ms")
         
@@ -316,7 +327,7 @@ class Metric:
             next_start_index, next_end_index = self.get_lastest_max_cjl_range(tick_infos[:-start_index])
             return next_start_index+start_index, next_end_index+start_index
         return start_index, end_index
-    
+        
     def get_tick_infos_ccl_and_zxj(self, tick_infos, start, end):
         ccls = []
         zxjs = []
@@ -386,11 +397,53 @@ class Metric:
         
         return True
 
-    def get_contract_status(self, tick_infos):
-        extrems = self.find_extremes(tick_infos[-self.__six_hours_check_point_count:])
-        if len(extrems) < 2:
-            return None
+    def get_market_sentiment(self, tick_infos):
+        cjl_extremes = self.extremes_set['cjlDiff'][-7:]
+        sentiments = []
+        for extreme in cjl_extremes:
+            index = extreme['index']
+            start, end = self.find_hot_period_with_step(tick_infos, index)
+            if end - start <= 12:
+                continue
+            
+            ccl_trend = "Up" if tick_infos[end]['ccl'] - tick_infos[start]['ccl'] >= 0.0012 * tick_infos[start]['ccl'] else "Down" if tick_infos[end]['ccl'] - tick_infos[start]['ccl'] < -0.0012 * tick_infos[start]['ccl'] else "Flat"
+            zxj_trend = "Up" if tick_infos[index]['zxj'] - tick_infos[start]['zxj'] >= 0.0015 * tick_infos[start]['zxj']  else "Down" if tick_infos[index]['zxj'] - tick_infos[start]['zxj'] =< -0.0015 * tick_infos[start]['zxj'] else "Flat"
+            sentiment = {
+                'cjlSum': sum([tick['cjlDiff'] for tick in tick_infos[start:end]]),
+                'cclTrend': ccl_trend,
+                'zxjTrend': zxj_trend                
+            }
+            sentiments.append(sentiment)
+        
+            
+    def find_hot_period_with_step(self, tick_infos, initial_index, window=6, step=3):
+        start_index = initial_index
+        end_index = initial_index
 
+        # 向左扩展
+        while start_index >= step and self.sum_within_window(tick_infos, start_index - step, window) >= self.__low_cjl_minute_threshold:
+            start_index -= step
+
+        # 如果跳出循环后当前点不满足条件，可能需要向右调整至满足条件的点
+        while start_index < len(tick_infos) and self.sum_within_window(tick_infos, start_index, window) < self.__low_cjl_minute_threshold:
+            start_index += 1
+
+        # 向右扩展
+        while end_index + step < len(tick_infos) and self.sum_within_window(tick_infos, end_index + step, window) >= self.__low_cjl_minute_threshold:
+            end_index += step
+
+        # 如果跳出循环后当前点不满足条件，可能需要向左调整至满足条件的点
+        while end_index >= 0 and self.sum_within_window(tick_infos, end_index, window) < self.__low_cjl_minute_threshold:
+            end_index -= 1
+
+        return start_index, end_index
+
+    def sum_within_window(self, tick_infos, index, window=6):
+        start = max(index - window, 0)
+        end = min(index + window, len(tick_infos) - 1)
+        return np.sum([tick['cjlDiff'] for tick in tick_infos[start:end+1]])    
+        
+    def get_contract_status(self, tick_infos):
         long_count, short_count, long_pullback_count, short_pullback_count = 0, 0, 0, 0
         for i in range(len(extrems) - 2):
             price_diff = extrems[i+1]['zxj'] - extrems[i]['zxj']
@@ -426,31 +479,40 @@ class Metric:
         
         return f"{status},{count_info}"
             
-    def find_extremes(self, ticks, span = 45 * 12):        
-        extremes = []  # 用于存储最高和最低值的索
-        for i in range(span, len(ticks) - span - 1):
+    def find_extremes(self, ticks, span = 45 * 12):
+        self.find_peak_start_index = max(self.find_peak_start_index, span)
+        for i in range(span, len(ticks) - span):
             # 确定窗口边界
             start = i - span
             end = i + span + 1
 
             # 当前值
-            current_value = ticks[i]['zxj']
-            min_value = min(t['zxj'] for t in ticks[start:end])
-            max_value = max(t['zxj'] for t in ticks[start:end])
-            # 检查是否为最高或最低值
-            if current_value == max_value:
-                ticks[i]['extreme'] = 'max'
-                if len(extremes) > 0 and extremes[-1]['extreme'] == 'max' and current_value >= extremes[-1]['zxj']:
-                    extremes[-1] = ticks[i]
-                else:
-                    extremes.append(ticks[i])
-            elif current_value == min_value:
-                ticks[i]['extreme'] = 'min'
-                if len(extremes) > 0 and extremes[-1]['extreme'] == 'min' and current_value <= extremes[-1]['zxj']:
-                    extremes[-1] = ticks[i]
-                else:
-                    extremes.append(ticks[i])
-
+            for col in self.__extreme_cols:
+                extremes = self.extremes_set[col]
+                current_value = ticks[i][col]
+                min_value = min(t[col] for t in ticks[start:end])
+                max_value = max(t[col] for t in ticks[start:end])
+                # 检查是否为最高或最低值
+                if current_value == max_value:
+                    extreme = {
+                        "extreme": "max",
+                        "index": i,
+                    }
+                    if len(extremes) > 0 and extremes[-1]['extreme'] == 'max' and current_value >= extremes[-1][col]:
+                        extremes[-1] = extreme
+                    else:
+                        extremes.append(extreme)
+                elif current_value == min_value:
+                    extreme = {
+                        "extreme": "min",
+                        "index": i,
+                    }
+                    if len(extremes) > 0 and extremes[-1]['extreme'] == 'min' and current_value <= extremes[-1][col]:
+                        extremes[-1] = extreme
+                    else:
+                        extremes.append(extreme)
+                    
+        self.find_peak_start_index = len(ticks) - span
         return extremes
 
 if __name__ == "__main__":
@@ -461,7 +523,7 @@ if __name__ == "__main__":
     datas = []
     print(f"process number: {len(ticks) - 12*60*6}")
     start_time = time.time()
-    for i in range(12 * 60 * 6, len(ticks)):
+    for i in range(12 * 60 * 6 - 5, len(ticks)):
         metric = metric_helper.get_current_metrics(ticks[:i])
         data = {
             "time": ticks[i]['time'],
