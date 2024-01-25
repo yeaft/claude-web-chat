@@ -39,7 +39,10 @@ class Metric:
     __extreme_cols = ["zxj", "ccl", "cjlDiff"]
     
     def __init__(self):
+        self.find_peak_start_index = 0
         self.extremes_set = {}
+        self.new_extreme = False
+        self.sentiments = []
         for col in self.__extreme_cols:
             self.extremes_set[col] = []
 
@@ -95,15 +98,15 @@ class Metric:
         metric = {}
         if len(tick_infos) < self.__six_hours_check_point_count:
             return metric
-        
-        # start_get_contract_status_time = time.time()
-        # Get all extremes
+        # start_time = time.time()
+                # Get all extremes
         self.find_extremes(tick_infos)
         
-        # 确定大方向
-        
+        if self.new_extreme:
+            self.sentiments = self.get_market_sentiment(tick_infos)        
+        # 确定大方向        
         # metric['contractStatus'] = self.get_contract_status(tick_infos)
-        # print(f"get_contract_status cost {(time.time() - start_get_contract_status_time)*1000}ms")
+        
         
         past_five_mins_ticks = tick_infos[-self.__five_minute_check_point_count:]
         cjls = [tick['cjlDiff'] for tick in past_five_mins_ticks if 'cjlDiff' in tick]
@@ -111,17 +114,21 @@ class Metric:
         metric['cjlTrend'] = self.get_trend_by_std(cjls, cjls[-3:], 1) if cjls[-1] >= 200 else "Adjust"
 
         prices = [tick['zxj'] for tick in past_five_mins_ticks]
-        metric['zxjTrend1'] = self.get_trend(prices, 9, 12 * 5, self.__balance_avg_to_min_max_price_diff_rate)
         metric['zxjTrend2'] = self.get_trend_by_std(prices, prices[-6:], 1)
         
         ccls = [tick['ccl'] for tick in past_five_mins_ticks]
         metric['cclTrend1'] = self.get_trend(ccls, 9, 12 * 5, self.__balance_avg_to_min_max_ccl_diff_rate)
-        metric['cclTrend2'] = self.get_trend_by_std(ccls, prices[-12:], 1)
+        metric['cclTrend2'] = self.get_trend_by_std(ccls, ccls[-12:], 1)
         
         if metric['cjlStatus'] == "Cold" and self.is_balance(ccls, prices, cjls):
             metric['contractTrend'] = "Balance"
         else:
             self.get_event_trend(tick_infos, metric)
+            
+        for i in range(min(len(self.sentiments),3)):
+            sentiment = self.sentiments[i]
+            metric[f"sentiment{i}"] = f"{sentiment['cclTrend']}/{sentiment['zxjTrend']}/{sentiment['timeRange']}m/{sentiment['cjlSum']}"
+            
         
         # print(f"get_current_metrics cost {(time.time() - start_time)*1000}ms")
         return metric
@@ -305,22 +312,7 @@ class Metric:
         if max_cjl_index == 0:
             return 0, 0
         
-        # find past hot cjl index
-        start_index = 0
-        for i in range(max_cjl_index - 1, 0, -1):
-            sub_ticks = tick_infos[i - 12:i]
-            if sum([tick['cjlDiff'] for tick in sub_ticks if 'cjlDiff' in tick]) < self.__low_cjl_minute_threshold:
-                start_index = i
-                break
-            i -= 6
-        
-        end_index = max_cjl_index
-        for i in range(max_cjl_index, len(tick_infos), 1):
-            sub_ticks = tick_infos[i - 12:i]
-            if sum([tick['cjlDiff'] for tick in sub_ticks if 'cjlDiff' in tick]) < self.__low_cjl_minute_threshold:
-                end_index = i
-                break
-            i += 6
+        start_index, end_index = self.find_hot_period_with_step(tick_infos, max_cjl_index)
         
         # 如果成交量异常时间范围太小，就继续往前找
         if end_index - start_index < 12 * 3 and len(tick_infos) > end_index + 12 * 3:
@@ -335,38 +327,16 @@ class Metric:
             ccls.append(tick['ccl'])
             zxjs.append(tick['zxj'])
         return ccls, zxjs
-    
-    def fit_linear_equation(prices, ccls):
-        """
-        Fit a linear equation y = ax + b using given prices and ccls.
-
-        :param prices: List of prices.
-        :param ccls: List of CCLs (in ten thousands).
-        :return: Coefficients a and b of the linear equation.
-        """
-        # Reshape ccls for sklearn LinearRegression
-        X = np.array(ccls).reshape(-1, 1)
-        y = np.array(prices)
-
-        # Create and fit the model
-        model = LinearRegression()
-        model.fit(X, y)
-
-        # Coefficients a (slope) and b (intercept)
-        a = model.coef_[0]
-        b = model.intercept_
-
-        return a, b
-            
+                
     def get_cjl_status(self, cjls):
         #    __cjl_status_values = ["Cold", "Warm", "Hot", "StartHot", "Cooling"]
         minutes_cjls = []
-        for i in range(0, 12):
-            minutes_cjls.append(sum(cjls[i * 6 : (i + 1) * 6]))
+        for i in range(0, 6):
+            minutes_cjls.append(sum(cjls[i * 12 : (i + 1) * 12]))
         
-        if minutes_cjls[-1] >= self.__hot_cjl_minute_threshold /1.7:
+        if minutes_cjls[-1] >= self.__hot_cjl_minute_threshold:
             return "Hot"
-        elif minutes_cjls[-1] >= self.__low_cjl_minute_threshold /1.7:
+        elif minutes_cjls[-1] >= self.__low_cjl_minute_threshold:
             if minutes_cjls[-1] > 1.3 * minutes_cjls[-2]:
                 return "StartHot"
             elif minutes_cjls[-1] < 0.7 * minutes_cjls[-2]:
@@ -399,6 +369,7 @@ class Metric:
 
     def get_market_sentiment(self, tick_infos):
         cjl_extremes = self.extremes_set['cjlDiff'][-7:]
+        cjl_extremes = list(reversed(cjl_extremes))
         sentiments = []
         for extreme in cjl_extremes:
             index = extreme['index']
@@ -406,14 +377,18 @@ class Metric:
             if end - start <= 12:
                 continue
             
-            ccl_trend = "Up" if tick_infos[end]['ccl'] - tick_infos[start]['ccl'] >= 0.0012 * tick_infos[start]['ccl'] else "Down" if tick_infos[end]['ccl'] - tick_infos[start]['ccl'] < -0.0012 * tick_infos[start]['ccl'] else "Flat"
-            zxj_trend = "Up" if tick_infos[index]['zxj'] - tick_infos[start]['zxj'] >= 0.0015 * tick_infos[start]['zxj']  else "Down" if tick_infos[index]['zxj'] - tick_infos[start]['zxj'] =< -0.0015 * tick_infos[start]['zxj'] else "Flat"
+            ccl_trend = "Up" if tick_infos[end]['ccl'] - tick_infos[start]['ccl'] >= 0.0012 * tick_infos[start]['ccl'] else "Down" if tick_infos[end]['ccl'] - tick_infos[start]['ccl'] <= -0.0012 * tick_infos[start]['ccl'] else "Flat"
+            zxj_trend = "Up" if tick_infos[index]['zxj'] - tick_infos[start]['zxj'] >= 0.001 * tick_infos[start]['zxj']  else "Down" if tick_infos[index]['zxj'] - tick_infos[start]['zxj'] <= -0.001 * tick_infos[start]['zxj'] else "Flat"
             sentiment = {
                 'cjlSum': sum([tick['cjlDiff'] for tick in tick_infos[start:end]]),
+                'duration': round((end - start) / 12,1),
+                'timeRange': f"{tick_infos[start]['time'][-12:-4]} - {tick_infos[end]['time'][-12:-4]}",
                 'cclTrend': ccl_trend,
                 'zxjTrend': zxj_trend                
             }
             sentiments.append(sentiment)
+        
+        return sentiments
         
             
     def find_hot_period_with_step(self, tick_infos, initial_index, window=6, step=3):
@@ -441,13 +416,17 @@ class Metric:
     def sum_within_window(self, tick_infos, index, window=6):
         start = max(index - window, 0)
         end = min(index + window, len(tick_infos) - 1)
-        return np.sum([tick['cjlDiff'] for tick in tick_infos[start:end+1]])    
+        return np.sum([tick['cjlDiff'] for tick in tick_infos[start:end+1] if "cjlDiff" in tick])    
         
     def get_contract_status(self, tick_infos):
         long_count, short_count, long_pullback_count, short_pullback_count = 0, 0, 0, 0
-        for i in range(len(extrems) - 2):
-            price_diff = extrems[i+1]['zxj'] - extrems[i]['zxj']
-            ccl_diff = extrems[i+1]['ccl'] - extrems[i]['ccl']
+        extremes = self.extremes_set['zxj'][-7:]
+        
+        for i in range(len(extremes) - 2):
+            current_extreme = extremes[i]
+            next_extreme = extremes[i+1]
+            price_diff = next_extreme['zxj'] - current_extreme['zxj']
+            ccl_diff = next_extreme['ccl'] - current_extreme['ccl']
             if price_diff > 0 and ccl_diff > 0:
                 long_count += 1
             elif price_diff < 0 and ccl_diff < 0:
@@ -481,7 +460,8 @@ class Metric:
             
     def find_extremes(self, ticks, span = 45 * 12):
         self.find_peak_start_index = max(self.find_peak_start_index, span)
-        for i in range(span, len(ticks) - span):
+        self.new_extreme = False
+        for i in range(self.find_peak_start_index, len(ticks) - span):
             # 确定窗口边界
             start = i - span
             end = i + span + 1
@@ -490,27 +470,29 @@ class Metric:
             for col in self.__extreme_cols:
                 extremes = self.extremes_set[col]
                 current_value = ticks[i][col]
-                min_value = min(t[col] for t in ticks[start:end])
-                max_value = max(t[col] for t in ticks[start:end])
+                min_value = min(t[col] for t in ticks[start:end] if col in t)
+                max_value = max(t[col] for t in ticks[start:end] if col in t)
                 # 检查是否为最高或最低值
                 if current_value == max_value:
                     extreme = {
                         "extreme": "max",
                         "index": i,
                     }
-                    if len(extremes) > 0 and extremes[-1]['extreme'] == 'max' and current_value >= extremes[-1][col]:
+                    if len(extremes) > 0 and extremes[-1]['extreme'] == 'max' and current_value >= ticks[extremes[-1]['index']][col]:
                         extremes[-1] = extreme
                     else:
                         extremes.append(extreme)
+                        self.new_extreme = True
                 elif current_value == min_value:
                     extreme = {
                         "extreme": "min",
                         "index": i,
                     }
-                    if len(extremes) > 0 and extremes[-1]['extreme'] == 'min' and current_value <= extremes[-1][col]:
+                    if len(extremes) > 0 and extremes[-1]['extreme'] == 'min' and current_value <= ticks[extremes[-1]['index']][col]:
                         extremes[-1] = extreme
                     else:
                         extremes.append(extreme)
+                        self.new_extreme = True
                     
         self.find_peak_start_index = len(ticks) - span
         return extremes
