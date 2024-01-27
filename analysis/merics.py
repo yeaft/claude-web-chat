@@ -127,7 +127,7 @@ class Metric:
             
         for i in range(min(len(self.sentiments),3)):
             sentiment = self.sentiments[i]
-            metric[f"sentiment{i}"] = f"{sentiment['cclTrend']}/{sentiment['zxjTrend']}/{sentiment['timeRange']}m/{sentiment['cjlSum']}"
+            metric[f"sentiment{i}"] = f"{sentiment['cclDiff']}/{sentiment['zxjDiff']}/{sentiment['cclTrend']}/{sentiment['zxjTrend']}/{sentiment['timeRange']}m/{sentiment['cjlSum']}"
             
         
         # print(f"get_current_metrics cost {(time.time() - start_time)*1000}ms")
@@ -278,9 +278,9 @@ class Metric:
         metric['contractTrend'] = current_trend
         metric['lastContractTrend'] = last_event_trend
         metric['extraInfo'] = extra_info
-        metric['startTime'] = tick_infos[start_index]['time']
-        metric['peakTime'] = tick_infos[peak_index]['time']
-        metric['endTime'] = tick_infos[end_index]['time']
+        metric['startTime'] = tick_infos[start_index]['time'][-16:-4]
+        metric['peakTime'] = tick_infos[peak_index]['time'][-16:-4]
+        metric['endTime'] = tick_infos[end_index]['time'][-16:-4]
         metric['secs'] = index_diff * 5
         metric['ES'] = event_status
         metric['3MinsZxj'] = last_3mins_zxj_trend
@@ -384,7 +384,9 @@ class Metric:
                 'duration': round((end - start) / 12,1),
                 'timeRange': f"{tick_infos[start]['time'][-12:-4]} - {tick_infos[end]['time'][-12:-4]}",
                 'cclTrend': ccl_trend,
-                'zxjTrend': zxj_trend                
+                'cclDiff': round(tick_infos[end]['ccl'] - tick_infos[start]['ccl']),
+                'zxjTrend': zxj_trend,
+                'zxjDiff': round(tick_infos[index]['zxj'] - tick_infos[start]['zxj'])
             }
             sentiments.append(sentiment)
         
@@ -470,29 +472,41 @@ class Metric:
             for col in self.__extreme_cols:
                 extremes = self.extremes_set[col]
                 current_value = ticks[i][col]
-                min_value = min(t[col] for t in ticks[start:end] if col in t)
                 max_value = max(t[col] for t in ticks[start:end] if col in t)
-                # 检查是否为最高或最低值
-                if current_value == max_value:
-                    extreme = {
-                        "extreme": "max",
-                        "index": i,
-                    }
-                    if len(extremes) > 0 and extremes[-1]['extreme'] == 'max' and current_value >= ticks[extremes[-1]['index']][col]:
-                        extremes[-1] = extreme
-                    else:
-                        extremes.append(extreme)
-                        self.new_extreme = True
-                elif current_value == min_value:
-                    extreme = {
-                        "extreme": "min",
-                        "index": i,
-                    }
-                    if len(extremes) > 0 and extremes[-1]['extreme'] == 'min' and current_value <= ticks[extremes[-1]['index']][col]:
-                        extremes[-1] = extreme
-                    else:
-                        extremes.append(extreme)
-                        self.new_extreme = True
+                if 'cjl' in col:
+                    if current_value == max_value:
+                        extreme = {
+                            "extreme": "max",
+                            "index": i,
+                        }
+                        if len(extremes) > 0 and i - extremes[-1]['index'] < 12 * 10 and current_value >= ticks[extremes[-1]['index']][col]:
+                            extremes[-1] = extreme
+                        else:
+                            extremes.append(extreme)
+                            self.new_extreme = True
+                else:
+                    min_value = min(t[col] for t in ticks[start:end] if col in t)
+                    # 检查是否为最高或最低值
+                    if current_value == max_value:
+                        extreme = {
+                            "extreme": "max",
+                            "index": i,
+                        }
+                        if len(extremes) > 0 and extremes[-1]['extreme'] == 'max' and current_value >= ticks[extremes[-1]['index']][col]:
+                            extremes[-1] = extreme
+                        else:
+                            extremes.append(extreme)
+                            self.new_extreme = True
+                    elif current_value == min_value:
+                        extreme = {
+                            "extreme": "min",
+                            "index": i,
+                        }
+                        if len(extremes) > 0 and extremes[-1]['extreme'] == 'min' and current_value <= ticks[extremes[-1]['index']][col]:
+                            extremes[-1] = extreme
+                        else:
+                            extremes.append(extreme)
+                            self.new_extreme = True
                     
         self.find_peak_start_index = len(ticks) - span
         return extremes
@@ -508,7 +522,7 @@ if __name__ == "__main__":
     for i in range(12 * 60 * 6 - 5, len(ticks)):
         metric = metric_helper.get_current_metrics(ticks[:i])
         data = {
-            "time": ticks[i]['time'],
+            "time": ticks[i]['time'][-16:-4],
             "code": ticks[i]['code'],
             "zxj": ticks[i]['zxj'],
             "ccl": ticks[i]['ccl'],
