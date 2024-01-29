@@ -39,6 +39,7 @@ class Metric:
     __extreme_cols = ["zxj", "ccl", "cjlDiff"]
     
     def __init__(self):
+        self.tick_infos = []
         self.find_peak_start_index = 0
         self.extremes_set = {}
         self.new_extreme = False
@@ -78,37 +79,22 @@ class Metric:
             1. 如果每次cjl异常都是一个放向，那么说明当日的趋势很明显
             2. 无量走平又是高点，就是空的信号,有一定可能是的就是后面的大量交易，显得之前是无量，但是后面的大量交易必定是3日方向的
     '''
-
-    def calculate_price_trend(self, tick_infos, day_infos):
-        # 1. 绝对定义：时间范围内的价格和ccl稳定，且cjl很低
-        # 2. 参考率: 单位ccl的价格变化
-        pass
-
-    def calculate_cjl_status(self, tick_infos, day_infos):
-        pass
-
-    def calculate_contract_status(self, tick_infos, day_infos):
-        pass
-
-    def calculate_contract_trend(self, tick_infos, day_infos):        
-        pass
-    
-    def get_current_metrics(self, tick_infos): 
-               
+   
+    def get_current_metrics(self):                
         metric = {}
-        if len(tick_infos) < self.__six_hours_check_point_count:
+        if len(self.tick_infos) < self.__six_hours_check_point_count:
             return metric
         # start_time = time.time()
                 # Get all extremes
-        self.find_extremes(tick_infos)
+        self.find_extremes()
         
         if self.new_extreme:
-            self.sentiments = self.get_market_sentiment(tick_infos)        
+            self.sentiments = self.get_market_sentiment()        
         # 确定大方向        
         # metric['contractStatus'] = self.get_contract_status(tick_infos)
         
         
-        past_five_mins_ticks = tick_infos[-self.__five_minute_check_point_count:]
+        past_five_mins_ticks = self.tick_infos[-self.__five_minute_check_point_count:]
         cjls = [tick['cjlDiff'] for tick in past_five_mins_ticks if 'cjlDiff' in tick]
         metric['cjlStatus'] = self.get_cjl_status(cjls)
         metric['cjlTrend'] = self.get_trend_by_std(cjls, cjls[-3:], 1) if cjls[-1] >= 200 else "Adjust"
@@ -123,7 +109,7 @@ class Metric:
         if metric['cjlStatus'] == "Cold" and self.is_balance(ccls, prices, cjls):
             metric['contractTrend'] = "Balance"
         else:
-            self.get_event_trend(tick_infos, metric)
+            self.get_event_trend(metric)
             
         for i in range(min(len(self.sentiments),3)):
             sentiment = self.sentiments[i]
@@ -161,37 +147,39 @@ class Metric:
             return "Down"
         return "Adjust"
     
-    def get_event_trend(self, tick_infos, metric):
+    def get_event_trend(self, metric):
         # cjl abnormal range, ccl peak, price peak
         # 先找到最近的一个cjl异常点，并得到大量成交范围，确定方向
         # 成交范围前可能就是平衡态
-        start_index, end_index = self.get_lastest_max_cjl_range(tick_infos)
+        start_index, end_index = self.get_lastest_max_cjl_range(self.tick_infos)
         if end_index - start_index < 12:
             return "Unknown", "Unknown"
+
+        print(f"start_index:{start_index}, end_index:{end_index}")
         
-        sub_ticks = tick_infos[start_index:end_index]
+        sub_ticks = self.tick_infos[start_index:end_index]
         max_cjl_tick = max(sub_ticks, key=lambda x: x['cjlDiff'])
         peak_index = -1
-        if max_cjl_tick['zxj'] > tick_infos[start_index]['zxj']:
+        if max_cjl_tick['zxj'] > self.tick_infos[start_index]['zxj']:
             zxj_trend = "Up"
             max_zxj = max(sub_ticks, key=lambda x: x['zxj'])['zxj']
             for i in range(start_index, end_index+1, 1):
-                if tick_infos[i]['zxj'] == max_zxj:
+                if self.tick_infos[i]['zxj'] == max_zxj:
                     peak_index = i
                     break
         else:
             zxj_trend = "Down"
             min_zxj = min(sub_ticks, key=lambda x: x['zxj'])['zxj']
             for i in range(start_index, end_index+1, 1):
-                if tick_infos[i]['zxj'] == min_zxj:
+                if self.tick_infos[i]['zxj'] == min_zxj:
                     peak_index = i
                     break
         
-        start_ccls, start_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, start_index-6, start_index+6)
-        peak_ccls, peak_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, peak_index-6, peak_index+6)
-        end_ccls, end_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, end_index-6, end_index+6)
-        now_ccls, now_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, -6, len(tick_infos))
-        last_3mins_ccls, last_3mins_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, -36, len(tick_infos)) 
+        start_ccls, start_zxjs = self.get_tick_infos_ccl_and_zxj(start_index-6, start_index+6)
+        peak_ccls, peak_zxjs = self.get_tick_infos_ccl_and_zxj(peak_index-6, peak_index+6)
+        end_ccls, end_zxjs = self.get_tick_infos_ccl_and_zxj(end_index-6, end_index+6)
+        now_ccls, now_zxjs = self.get_tick_infos_ccl_and_zxj(-6, len(self.tick_infos))
+        last_3mins_ccls, last_3mins_zxjs = self.get_tick_infos_ccl_and_zxj(-36, len(self.tick_infos)) 
         start_ccl_avg = mean(start_ccls)
         peak_ccl_avg = mean(peak_ccls)
         now_ccl_avg = mean(now_ccls)
@@ -216,10 +204,10 @@ class Metric:
         last_3mins_ccl_trend = self.get_trend_by_std(last_3mins_ccls, now_ccls, 0.3)
             
         
-        start_peak_ccls, start_peak_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, start_index, peak_index)
+        start_peak_ccls, start_peak_zxjs = self.get_tick_infos_ccl_and_zxj(start_index, peak_index)
         if len(start_peak_ccls) <= 2:
             return "Unknown", "Unknown"
-        past_30_sec_ccls, past_30_sec_zxjs = self.get_tick_infos_ccl_and_zxj(tick_infos, -6, len(tick_infos))
+        past_30_sec_ccls, past_30_sec_zxjs = self.get_tick_infos_ccl_and_zxj(-6, len(self.tick_infos))
         # Should find the cp rate from balance to balance
         start_peak_cp_rates = statistic_utils.calculate_diff_rate(start_peak_zxjs, start_peak_ccls)
         if len(start_peak_cp_rates) <=2:
@@ -233,8 +221,8 @@ class Metric:
         extra_info = ""    
         # 如果在进行中
         __ccl_trend_values = ["DownEnd", "Down", "UpAdjust", "Adjust", "DownAdjust", "Up", "UpEnd"]
-        past_1_min_cjl = sum([tick['cjlDiff'] for tick in tick_infos[-12:] if 'cjlDiff' in tick])
-        index_diff = len(tick_infos) - end_index
+        past_1_min_cjl = sum([tick['cjlDiff'] for tick in self.tick_infos[-12:] if 'cjlDiff' in tick])
+        index_diff = len(self.tick_infos) - end_index
         last_event_trend = self.get_status_by_ccl_zxj_metric(ccl_trend, zxj_trend)
         current_trend = self.get_status_by_ccl_zxj_metric(last_3mins_ccl_trend, last_3mins_zxj_trend)
         event_status = ""
@@ -275,12 +263,13 @@ class Metric:
                 # Stable
         
         #Add event status
+        print(f"StartIndex:{start_index}, PeakIndex:{peak_index}, EndIndex:{end_index}, IndexDiff:{index_diff}, Size: {len(self.tick_infos)}")
         metric['contractTrend'] = current_trend
         metric['lastContractTrend'] = last_event_trend
         metric['extraInfo'] = extra_info
-        metric['startTime'] = tick_infos[start_index]['time'][-16:-4]
-        metric['peakTime'] = tick_infos[peak_index]['time'][-16:-4]
-        metric['endTime'] = tick_infos[end_index]['time'][-16:-4]
+        metric['startTime'] = self.tick_infos[start_index]['time'][-16:-4]
+        metric['peakTime'] = self.tick_infos[peak_index]['time'][-16:-4]
+        metric['endTime'] = self.tick_infos[end_index]['time'][-16:-4]
         metric['secs'] = index_diff * 5
         metric['ES'] = event_status
         metric['3MinsZxj'] = last_3mins_zxj_trend
@@ -300,10 +289,10 @@ class Metric:
             return "UpPullBack"
         return "DownPullBack"                
         
-    def get_lastest_max_cjl_range(self, tick_infos):
+    def get_lastest_max_cjl_range(self, data):
         max_cjl_index = 0
-        for i in range(len(tick_infos) - 1, 0, -1):
-            sub_ticks = tick_infos[i - 12:i]
+        for i in range(len(data) - 1, 0, -1):
+            sub_ticks = data[i - 12:i]
             if sum([tick['cjlDiff'] for tick in sub_ticks if 'cjlDiff' in tick]) > self.__hot_cjl_minute_threshold:
                 max_cjl_index = i
                 break
@@ -312,18 +301,18 @@ class Metric:
         if max_cjl_index == 0:
             return 0, 0
         
-        start_index, end_index = self.find_hot_period_with_step(tick_infos, max_cjl_index)
+        start_index, end_index = self.find_hot_period_with_step(data, max_cjl_index)
         
         # 如果成交量异常时间范围太小，就继续往前找
-        if end_index - start_index < 12 * 3 and len(tick_infos) > end_index + 12 * 3:
-            next_start_index, next_end_index = self.get_lastest_max_cjl_range(tick_infos[:-start_index])
-            return next_start_index+start_index, next_end_index+start_index
+        if end_index - start_index < 12 * 3 and len(data) > end_index + 12 * 3:
+            next_start_index, next_end_index = self.get_lastest_max_cjl_range(data[:-start_index])
+            return next_start_index+start_index - 1, next_end_index+start_index - 1
         return start_index, end_index
         
-    def get_tick_infos_ccl_and_zxj(self, tick_infos, start, end):
+    def get_tick_infos_ccl_and_zxj(self, start, end):
         ccls = []
         zxjs = []
-        for tick in tick_infos[start:end]:
+        for tick in self.tick_infos[start:end]:
             ccls.append(tick['ccl'])
             zxjs.append(tick['zxj'])
         return ccls, zxjs
@@ -367,60 +356,86 @@ class Metric:
         
         return True
 
-    def get_market_sentiment(self, tick_infos):
+    def get_market_sentiment(self):
         cjl_extremes = self.extremes_set['cjlDiff'][-7:]
         cjl_extremes = list(reversed(cjl_extremes))
         sentiments = []
         for extreme in cjl_extremes:
             index = extreme['index']
-            start, end = self.find_hot_period_with_step(tick_infos, index)
+            start, end = self.find_hot_period_with_step(self.tick_infos, index)
             if end - start <= 12:
                 continue
             
-            ccl_trend = "Up" if tick_infos[end]['ccl'] - tick_infos[start]['ccl'] >= 0.0012 * tick_infos[start]['ccl'] else "Down" if tick_infos[end]['ccl'] - tick_infos[start]['ccl'] <= -0.0012 * tick_infos[start]['ccl'] else "Flat"
-            zxj_trend = "Up" if tick_infos[index]['zxj'] - tick_infos[start]['zxj'] >= 0.001 * tick_infos[start]['zxj']  else "Down" if tick_infos[index]['zxj'] - tick_infos[start]['zxj'] <= -0.001 * tick_infos[start]['zxj'] else "Flat"
+            ccl_trend = "Up" if self.tick_infos[end]['ccl'] - self.tick_infos[start]['ccl'] >= 0.0012 * self.tick_infos[start]['ccl'] else "Down" if self.tick_infos[end]['ccl'] - self.tick_infos[start]['ccl'] <= -0.0012 * self.tick_infos[start]['ccl'] else "Flat"
+            zxj_trend = "Up" if self.tick_infos[index]['zxj'] - self.tick_infos[start]['zxj'] >= 0.001 * self.tick_infos[start]['zxj']  else "Down" if self.tick_infos[index]['zxj'] - self.tick_infos[start]['zxj'] <= -0.001 * self.tick_infos[start]['zxj'] else "Flat"
             sentiment = {
-                'cjlSum': sum([tick['cjlDiff'] for tick in tick_infos[start:end]]),
+                'cjlSum': sum([tick['cjlDiff'] for tick in self.tick_infos[start:end]]),
                 'duration': round((end - start) / 12,1),
-                'timeRange': f"{tick_infos[start]['time'][-12:-4]} - {tick_infos[end]['time'][-12:-4]}",
+                'timeRange': f"{self.tick_infos[start]['time'][-12:-4]} - {self.tick_infos[end]['time'][-12:-4]}",
                 'cclTrend': ccl_trend,
-                'cclDiff': round(tick_infos[end]['ccl'] - tick_infos[start]['ccl']),
+                'cclDiff': round(self.tick_infos[end]['ccl'] - self.tick_infos[start]['ccl']),
                 'zxjTrend': zxj_trend,
-                'zxjDiff': round(tick_infos[index]['zxj'] - tick_infos[start]['zxj'])
+                'zxjDiff': round(self.tick_infos[index]['zxj'] - self.tick_infos[start]['zxj'])
             }
             sentiments.append(sentiment)
         
         return sentiments
         
-            
-    def find_hot_period_with_step(self, tick_infos, initial_index, window=6, step=3):
+    def append_zx_rate_zscore_and_diff_to_data(self, data):
+        # 计算zx_rate
+        zx_rates = []
+        for i in range(1, len(data)):
+            current, previous = data[i], data[i-1]
+            zxj_change = (current['zxj'] - previous['zxj']) / previous['zxj'] if previous['zxj'] != 0 else 0
+            ccl_change = (current['ccl'] - previous['ccl']) / previous['ccl'] if previous['ccl'] != 0 else 0
+            zx_rate = zxj_change / ccl_change if ccl_change != 0 else 0
+            zx_rates.append(zx_rate)
+            data[i]['zx_rate'] = zx_rate  # 添加zx_rate到数据中
+
+        # 计算z-score
+        zx_rates_mean = np.mean(zx_rates)
+        zx_rates_std = np.std(zx_rates)
+        zx_rate_zscores = []
+        for i in range(1, len(data)):
+            zx_rate_zscore = (data[i]['zx_rate'] - zx_rates_mean) / zx_rates_std if zx_rates_std != 0 else 0
+            zx_rate_zscores.append(zx_rate_zscore)
+            data[i]['zx_rate_zscore'] = zx_rate_zscore  # 添加zx_rate的z-score到数据中
+
+        # 计算z-score的差分
+        for i in range(1, len(zx_rate_zscores)):
+            zx_rate_zscore_diff = zx_rate_zscores[i] - zx_rate_zscores[i-1]
+            data[i]['zx_rate_zscore_diff'] = zx_rate_zscore_diff  # 添加差分到数据中
+
+        
+    def find_hot_period_with_step(self, data, initial_index, window=6, step=3):
         start_index = initial_index
         end_index = initial_index
 
         # 向左扩展
-        while start_index >= step and self.sum_within_window(tick_infos, start_index - step, window) >= self.__low_cjl_minute_threshold:
+        while start_index >= step and self.sum_within_window(data, start_index - step, window) >= self.__low_cjl_minute_threshold:
             start_index -= step
 
         # 如果跳出循环后当前点不满足条件，可能需要向右调整至满足条件的点
-        while start_index < len(tick_infos) and self.sum_within_window(tick_infos, start_index, window) < self.__low_cjl_minute_threshold:
+        while start_index < len(self.tick_infos) and self.sum_within_window(data, start_index, window) < self.__low_cjl_minute_threshold:
             start_index += 1
 
         # 向右扩展
-        while end_index + step < len(tick_infos) and self.sum_within_window(tick_infos, end_index + step, window) >= self.__low_cjl_minute_threshold:
+        while end_index + step < len(self.tick_infos) and self.sum_within_window(data, end_index + step, window) >= self.__low_cjl_minute_threshold:
             end_index += step
 
         # 如果跳出循环后当前点不满足条件，可能需要向左调整至满足条件的点
-        while end_index >= 0 and self.sum_within_window(tick_infos, end_index, window) < self.__low_cjl_minute_threshold:
+        end_index = max(end_index, len(data)-1)
+        while end_index >= 0 and self.sum_within_window(data, end_index, window) < self.__low_cjl_minute_threshold:
             end_index -= 1
 
         return start_index, end_index
 
-    def sum_within_window(self, tick_infos, index, window=6):
+    def sum_within_window(self, data, index, window=6):
         start = max(index - window, 0)
-        end = min(index + window, len(tick_infos) - 1)
-        return np.sum([tick['cjlDiff'] for tick in tick_infos[start:end+1] if "cjlDiff" in tick])    
+        end = min(index + window, len(data) - 1)
+        return np.sum([tick['cjlDiff'] for tick in data[start:end+1] if "cjlDiff" in tick])    
         
-    def get_contract_status(self, tick_infos):
+    def get_contract_status(self):
         long_count, short_count, long_pullback_count, short_pullback_count = 0, 0, 0, 0
         extremes = self.extremes_set['zxj'][-7:]
         
@@ -460,10 +475,10 @@ class Metric:
         
         return f"{status},{count_info}"
             
-    def find_extremes(self, ticks, span = 45 * 12):
+    def find_extremes(self, span = 45 * 12):
         self.find_peak_start_index = max(self.find_peak_start_index, span)
         self.new_extreme = False
-        for i in range(self.find_peak_start_index, len(ticks) - span):
+        for i in range(self.find_peak_start_index, len(self.tick_infos) - span):
             # 确定窗口边界
             start = i - span
             end = i + span + 1
@@ -471,28 +486,28 @@ class Metric:
             # 当前值
             for col in self.__extreme_cols:
                 extremes = self.extremes_set[col]
-                current_value = ticks[i][col]
-                max_value = max(t[col] for t in ticks[start:end] if col in t)
+                current_value = self.tick_infos[i][col]
+                max_value = max(t[col] for t in self.tick_infos[start:end] if col in t)
                 if 'cjl' in col:
                     if current_value == max_value:
                         extreme = {
                             "extreme": "max",
                             "index": i,
                         }
-                        if len(extremes) > 0 and i - extremes[-1]['index'] < 12 * 10 and current_value >= ticks[extremes[-1]['index']][col]:
+                        if len(extremes) > 0 and i - extremes[-1]['index'] < 12 * 10 and current_value >= self.tick_infos[extremes[-1]['index']][col]:
                             extremes[-1] = extreme
                         else:
                             extremes.append(extreme)
                             self.new_extreme = True
                 else:
-                    min_value = min(t[col] for t in ticks[start:end] if col in t)
+                    min_value = min(t[col] for t in self.tick_infos[start:end] if col in t)
                     # 检查是否为最高或最低值
                     if current_value == max_value:
                         extreme = {
                             "extreme": "max",
                             "index": i,
                         }
-                        if len(extremes) > 0 and extremes[-1]['extreme'] == 'max' and current_value >= ticks[extremes[-1]['index']][col]:
+                        if len(extremes) > 0 and extremes[-1]['extreme'] == 'max' and current_value >= self.tick_infos[extremes[-1]['index']][col]:
                             extremes[-1] = extreme
                         else:
                             extremes.append(extreme)
@@ -502,15 +517,35 @@ class Metric:
                             "extreme": "min",
                             "index": i,
                         }
-                        if len(extremes) > 0 and extremes[-1]['extreme'] == 'min' and current_value <= ticks[extremes[-1]['index']][col]:
+                        if len(extremes) > 0 and extremes[-1]['extreme'] == 'min' and current_value <= self.tick_infos[extremes[-1]['index']][col]:
                             extremes[-1] = extreme
                         else:
                             extremes.append(extreme)
                             self.new_extreme = True
                     
-        self.find_peak_start_index = len(ticks) - span
+        self.find_peak_start_index = len(self.tick_infos) - span
         return extremes
+    def append_data(self, new_data):
+            # 添加新数据
+            if not self.tick_infos:
+                self.tick_infos.append(new_data)
+                return
 
+            # 计算zx_rate
+            previous = self.tick_infos[-1]
+            zxj_change = (new_data['zxj'] - previous['zxj']) / previous['zxj'] if previous['zxj'] != 0 else 0
+            ccl_change = (new_data['ccl'] - previous['ccl']) / previous['ccl'] if previous['ccl'] != 0 else 0
+            zx_rate = zxj_change / ccl_change if ccl_change != 0 else 0
+
+            new_data['zx_rate'] = zx_rate
+
+            # 计算zx_rate的差分
+            if len(self.tick_infos) > 1:
+                zx_rate_diff = zx_rate - self.tick_infos[-1]['zx_rate']
+                new_data['zx_rate_diff'] = zx_rate_diff
+
+            self.tick_infos.append(new_data)
+            
 if __name__ == "__main__":
     span_type = "5sec"
     ticks = ticks_helper.get_ticks("2023-10-23", "2023-10-27", "rb", "real")
@@ -519,34 +554,28 @@ if __name__ == "__main__":
     datas = []
     print(f"process number: {len(ticks) - 12*60*6}")
     start_time = time.time()
-    for i in range(12 * 60 * 6 - 5, len(ticks)):
-        metric = metric_helper.get_current_metrics(ticks[:i])
+    for i in range(0, len(ticks)):
+        if 'cjlDiff' not in ticks[i]:
+            continue
+        metric_helper.append_data(ticks[i])
+        if len(metric_helper.tick_infos) < 12 * 60 * 6:
+            continue
+        
+        metric = metric_helper.get_current_metrics()
         data = {
             "time": ticks[i]['time'][-16:-4],
             "code": ticks[i]['code'],
             "zxj": ticks[i]['zxj'],
             "ccl": ticks[i]['ccl'],
             "cjl": ticks[i]['cjlDiff'],
+            "zx_rate": ticks[i]['zx_rate'],
+            "zx_rate_diff": ticks[i]['zx_rate_diff']
         }
         data.update(metric)
         datas.append(data)
     
     print(f"process time: {round(time.time() - start_time,2)}s")
     utils.convert_dic_to_csv("metrics", datas, is_new=False)
-    # def get_current_metrics(self, tick_infos, day_infos):
-    #     ccl_status =  self.calculate_ccl_status(tick_infos, day_infos)
-    #     ccl_space =  self.calculate_ccl_space(tick_infos, day_infos)
-    #     ccl_trend =  self.calculate_ccl_trend(tick_infos, day_infos)
-    #     price_status = self.calculate_price_status(tick_infos, day_infos)
-    #     price_trend = self.calculate_price_trend(tick_infos, day_infos)
-    #     cjl_status = self.calculate_cjl_status(tick_infos, day_infos)
-    #     contract_status = self.calculate_contract_status(tick_infos, day_infos)
-    #     contract_trend = self.calculate_contract_trend(tick_infos, day_infos)
-    #     close_ccl_trend = self.calculate_close_ccl_trend(tick_infos, day_infos)
-    #     close_price_trend = self.calculate_close_price_trend(tick_infos, day_infos)
-    #     close_price_micro_trend = self.calculate_close_price_micro_trend(tick_infos, day_infos)
-
-
     
         
     
