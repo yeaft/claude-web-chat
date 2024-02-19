@@ -25,6 +25,9 @@ BLOCKED_PATTERNS = [
     "45.128.*.*",
     "141.98.*.*"
 ]
+FIND_PEAK_START_INDEX = 0
+EXTREME_COLS = ["ccl", "zxj"]
+EXTREME_SET = {}
 
 def block_ip():
     def decorator(f):
@@ -77,9 +80,12 @@ def requires_auth(f):
 def initial_ticks():
     for data_type in DATA_TYPES:        
         if data_type not in CACHE_TICKS:
+            if data_type not in EXTREME_SET:
+                EXTREME_SET[data_type] = {'ccl':[], 'zxj':[]}
             ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(SIX_DAYS_SIZE)
             sorted_ticks = sorted(ticks, key=lambda x: x['time'])
             CACHE_TICKS[data_type] = sorted_ticks
+            find_extremes(data_type, CACHE_TICKS[data_type]) 
             
             m_ticks = []
             start_index = len(sorted_ticks) - LAST_DAY_SIZE
@@ -108,6 +114,47 @@ def initial_ticks():
             
     utils.log("Finish inital ticks data")
 
+def find_extremes(data_type, tick_infos, span = 45 * 12):
+    global FIND_PEAK_START_INDEX
+    
+    FIND_PEAK_START_INDEX = max(FIND_PEAK_START_INDEX, span)
+    for i in range(FIND_PEAK_START_INDEX, len(tick_infos) - int(0.6 * span)):
+        # 确定窗口边界
+        start = i - span
+        end = i + span + 1
+
+        # 当前值
+        for col in EXTREME_COLS:
+            if col not in tick_infos[i]:
+                continue
+            extremes = EXTREME_SET[data_type][col]
+            current_value = tick_infos[i][col]
+            max_value = max(t[col] for t in tick_infos[start:end] if col in t)
+            min_value = min(t[col] for t in tick_infos[start:end] if col in t)
+            # 检查是否为最高或最低值
+            if current_value == max_value:
+                extreme = {
+                    "extreme": "max",
+                    "index": i,
+                }
+                if len(extremes) > 0 and extremes[-1]['extreme'] == 'max':
+                    if current_value >= tick_infos[extremes[-1]['index']][col]:
+                        extremes[-1] = extreme
+                else:
+                    extremes.append(extreme)
+            elif current_value == min_value:
+                extreme = {
+                    "extreme": "min",
+                    "index": i,
+                }
+                if len(extremes) > 0 and extremes[-1]['extreme'] == 'min':
+                    if  current_value <= tick_infos[extremes[-1]['index']][col]:
+                        extremes[-1] = extreme
+                else:
+                    extremes.append(extreme)
+                
+    FIND_PEAK_START_INDEX = len(tick_infos) - span
+    
 @app.route('/ticks', methods=['GET'])
 @block_ip()
 def get_latest_1min_ticks():
@@ -160,6 +207,7 @@ def index():
 @app.route('/info', methods=['GET'])
 @block_ip()
 def get_info():
+    global FIND_PEAK_START_INDEX
     start_time = time.time()
     list_size = 8
     kp_time = date_utils.get_kp_time_string()
@@ -176,18 +224,44 @@ def get_info():
         
         if len(CACHE_TICKS[data_type]) >= 1.2 * SIX_DAYS_SIZE:
             CACHE_TICKS[data_type] = CACHE_TICKS[data_type][-SIX_DAYS_SIZE:]
+            FIND_PEAK_START_INDEX = 0
+            EXTREME_SET[data_type]['ccl'] = []
+            EXTREME_SET[data_type]['zxj'] = []
             
         new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gt": CACHE_TICKS[data_type][-1]['time']}}).sort([("time", 1)]))
         if new_ticks:
             CACHE_TICKS[data_type] += new_ticks
-            
+            find_extremes(CACHE_TICKS[data_type])            
         
-        if data_type not in CACHE_DAILY_CCL_DATA or current_str not in CACHE_DAILY_CCL_DATA[data_type]:
-            if data_type not in CACHE_DAILY_CCL_DATA or is_working_day:
-                CACHE_DAILY_CCL_DATA[data_type] = analysis_helper.get_past_n_days_ccl_min_max(CACHE_TICKS[data_type], data_type, 6)
-            # utils.log("CACHE_DAILY_CCL_DATA: {}".format(CACHE_DAILY_CCL_DATA[data_type]))
+        for col in ['ccl', 'zxj']:
+            peaks = []
+            size = 8 if col == "ccl" else 8
+            for i in range(1, len(EXTREME_SET[data_type][col][-size:])):
+                extreme = EXTREME_SET[data_type][col][-size:][i]
+                last_extreme = EXTREME_SET[data_type][col][-size:][i - 1]
+                extreme_tick = CACHE_TICKS[data_type][extreme['index']]
+                last_extreme_tick = CACHE_TICKS[data_type][last_extreme['index']]
+                if col == "ccl":
+                    peaks.append([extreme_tick['time'][-18:-4], extreme_tick['ccl'], int(extreme_tick['ccl'] - last_extreme_tick['ccl']), int(extreme_tick['zxj'] - last_extreme_tick['zxj']), extreme_tick['zxj']])
+                else:
+                    peaks.append([extreme_tick['time'][-18:-4], extreme_tick['zxj'], int(extreme_tick['zxj'] - last_extreme_tick['zxj']), int(extreme_tick['ccl'] - last_extreme_tick['ccl']), extreme_tick['ccl']])
+                # ccl_peaks.append([extreme_tick['time'][-18:-4], extreme_tick['ccl'], int(extreme_tick['ccl'] - last_extreme_tick['ccl']), extreme_tick['zxj'], int(extreme_tick['zxj'] - last_extreme_tick['zxj']), sum(tick['cjlDiff'] for tick in CACHE_TICKS[data_type][last_extreme['index']+1:extreme['index']] if 'cjlDiff' in tick)])
 
-        result[data_type]['daily_ccl_datas'] = CACHE_DAILY_CCL_DATA[data_type]
+            last_extreme = EXTREME_SET[data_type][col][-1]
+            last_extreme_tick = CACHE_TICKS[data_type][last_extreme['index']]
+            if col == "ccl":                
+                peaks.append([CACHE_TICKS[data_type][-1]['time'][-18:-4], CACHE_TICKS[data_type][-1]['ccl'], int(CACHE_TICKS[data_type][-1]['ccl'] - last_extreme_tick['ccl']), int(CACHE_TICKS[data_type][-1]['zxj'] - last_extreme_tick['zxj']), CACHE_TICKS[data_type][-1]['zxj']])
+            else:
+                peaks.append([CACHE_TICKS[data_type][-1]['time'][-18:-4], CACHE_TICKS[data_type][-1]['zxj'], int(CACHE_TICKS[data_type][-1]['zxj'] - last_extreme_tick['zxj']), int(CACHE_TICKS[data_type][-1]['ccl'] - last_extreme_tick['ccl']), CACHE_TICKS[data_type][-1]['ccl']])
+            result[data_type][f'{col}_peaks'] = peaks
+        
+        
+        # if data_type not in CACHE_DAILY_CCL_DATA or current_str not in CACHE_DAILY_CCL_DATA[data_type]:
+        #     if data_type not in CACHE_DAILY_CCL_DATA or is_working_day:
+        #         CACHE_DAILY_CCL_DATA[data_type] = analysis_helper.get_past_n_days_ccl_min_max(CACHE_TICKS[data_type], data_type, 6)
+        #     # utils.log("CACHE_DAILY_CCL_DATA: {}".format(CACHE_DAILY_CCL_DATA[data_type]))
+
+        # result[data_type]['daily_ccl_datas'] = CACHE_DAILY_CCL_DATA[data_type]
                             
         if is_working_day or data_type not in KP_TICKS:    
             if data_type not in KP_TICKS or kp_time != KP_TICKS[data_type]['time']:
@@ -201,7 +275,7 @@ def get_info():
             int(CACHE_TICKS[data_type][-1]['ccl'] - KP_TICKS[data_type]['ccl'])]]
         
         # Three hours ago
-        result[data_type]['peak_infos'] = analysis_helper.get_past_peaks_info(CACHE_TICKS[data_type][-HALF_DAY_SIZE:])
+        # result[data_type]['peak_infos'] = analysis_helper.get_past_peaks_info(CACHE_TICKS[data_type][-HALF_DAY_SIZE:])
         # result[data_type]['zxj_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="zxj")[1]]
         # result[data_type]['ccl_infos'] = [analysis_helper.get_past_min_max_infor(source_data, column="ccl")[2]]
         
@@ -216,7 +290,7 @@ def get_info():
         
         result[data_type]['ticks'] = latest_ticks
         
-        result[data_type]['sum_infos'] = f"open time {KP_TICKS[data_type]['time'][5:-4]}"
+        # result[data_type]['sum_infos'] = f"open time {KP_TICKS[data_type]['time'][5:-4]}"
         
     
     processing_time = int((time.time() - start_time) * 1000)  # in milliseconds
