@@ -89,14 +89,15 @@
 </head>
 <body>
 
+<div id="ticksContainers">
+    <!-- Ticks tables for each type will be placed here -->
+</div>
+
 <!-- Containers for Combined Chart and Table for Each Type -->
 <div id="combinedContainers">
     <!-- Dynamically generated chart and table containers will be placed here -->
 </div>
 
-<div id="ticksContainers">
-    <!-- Ticks tables for each type will be placed here -->
-</div>
 
 <script>
     Highcharts.setOptions({
@@ -279,12 +280,7 @@
 
     function createChartAndTable(type) {
         var combinedContainerId = createCombinedContainer(type);
-        var chartContainerId = 'chart_' + type;
-        if ($('#' + chartContainerId).length === 0) {
-            $('<div>').attr('id', chartContainerId)
-                .addClass('chart-container') // Add the chart-container class
-                .appendTo('#' + combinedContainerId);
-        }
+        
 
         // Check if table container exists before creating
         var tableContainerId = 'table_' + type;
@@ -299,7 +295,14 @@
             createTicksContainer(type);
         }
 
-        return { chartContainerId, tableContainerId };
+        var chartContainerId = 'chart_' + type;
+        if ($('#' + chartContainerId).length === 0) {
+            $('<div>').attr('id', chartContainerId)
+                .addClass('chart-container') // Add the chart-container class
+                .appendTo('#' + combinedContainerId);
+        }
+
+        return { tableContainerId,chartContainerId };
     }
 
 

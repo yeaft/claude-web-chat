@@ -235,7 +235,7 @@ def get_info():
         
         for col in ['ccl', 'zxj']:
             peaks = []
-            size = 8 if col == "ccl" else 8
+            size = 10 if col == "ccl" else 10
             for i in range(1, len(EXTREME_SET[data_type][col][-size:])):
                 extreme = EXTREME_SET[data_type][col][-size:][i]
                 last_extreme = EXTREME_SET[data_type][col][-size:][i - 1]
