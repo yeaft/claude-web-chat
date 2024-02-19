@@ -11,6 +11,6 @@ matplotlib
 mplcursors
 scipy 
 pandas
-scikit-learn
+# scikit-learn
 # TA-Lib
 # matplotlib
