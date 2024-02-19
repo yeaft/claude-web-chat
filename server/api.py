@@ -242,17 +242,17 @@ def get_info():
                 extreme_tick = CACHE_TICKS[data_type][extreme['index']]
                 last_extreme_tick = CACHE_TICKS[data_type][last_extreme['index']]
                 if col == "ccl":
-                    peaks.append([extreme_tick['time'][-18:-4], extreme_tick['ccl'], int(extreme_tick['ccl'] - last_extreme_tick['ccl']), int(extreme_tick['zxj'] - last_extreme_tick['zxj']), extreme_tick['zxj']])
+                    peaks.append([extreme_tick['time'][-18:-7], extreme_tick['ccl'], int(extreme_tick['ccl'] - last_extreme_tick['ccl']), int(extreme_tick['zxj'] - last_extreme_tick['zxj']), extreme_tick['zxj']])
                 else:
-                    peaks.append([extreme_tick['time'][-18:-4], extreme_tick['zxj'], int(extreme_tick['zxj'] - last_extreme_tick['zxj']), int(extreme_tick['ccl'] - last_extreme_tick['ccl']), extreme_tick['ccl']])
+                    peaks.append([extreme_tick['time'][-18:-7], extreme_tick['zxj'], int(extreme_tick['zxj'] - last_extreme_tick['zxj']), int(extreme_tick['ccl'] - last_extreme_tick['ccl']), extreme_tick['ccl']])
                 # ccl_peaks.append([extreme_tick['time'][-18:-4], extreme_tick['ccl'], int(extreme_tick['ccl'] - last_extreme_tick['ccl']), extreme_tick['zxj'], int(extreme_tick['zxj'] - last_extreme_tick['zxj']), sum(tick['cjlDiff'] for tick in CACHE_TICKS[data_type][last_extreme['index']+1:extreme['index']] if 'cjlDiff' in tick)])
 
             last_extreme = EXTREME_SET[data_type][col][-1]
             last_extreme_tick = CACHE_TICKS[data_type][last_extreme['index']]
             if col == "ccl":                
-                peaks.append([CACHE_TICKS[data_type][-1]['time'][-18:-4], CACHE_TICKS[data_type][-1]['ccl'], int(CACHE_TICKS[data_type][-1]['ccl'] - last_extreme_tick['ccl']), int(CACHE_TICKS[data_type][-1]['zxj'] - last_extreme_tick['zxj']), CACHE_TICKS[data_type][-1]['zxj']])
+                peaks.append([CACHE_TICKS[data_type][-1]['time'][-18:-7], CACHE_TICKS[data_type][-1]['ccl'], int(CACHE_TICKS[data_type][-1]['ccl'] - last_extreme_tick['ccl']), int(CACHE_TICKS[data_type][-1]['zxj'] - last_extreme_tick['zxj']), CACHE_TICKS[data_type][-1]['zxj']])
             else:
-                peaks.append([CACHE_TICKS[data_type][-1]['time'][-18:-4], CACHE_TICKS[data_type][-1]['zxj'], int(CACHE_TICKS[data_type][-1]['zxj'] - last_extreme_tick['zxj']), int(CACHE_TICKS[data_type][-1]['ccl'] - last_extreme_tick['ccl']), CACHE_TICKS[data_type][-1]['ccl']])
+                peaks.append([CACHE_TICKS[data_type][-1]['time'][-18:-7], CACHE_TICKS[data_type][-1]['zxj'], int(CACHE_TICKS[data_type][-1]['zxj'] - last_extreme_tick['zxj']), int(CACHE_TICKS[data_type][-1]['ccl'] - last_extreme_tick['ccl']), CACHE_TICKS[data_type][-1]['ccl']])
             result[data_type][f'{col}_peaks'] = peaks
         
         
