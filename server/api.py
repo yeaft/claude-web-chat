@@ -231,7 +231,7 @@ def get_info():
         new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gt": CACHE_TICKS[data_type][-1]['time']}}).sort([("time", 1)]))
         if new_ticks:
             CACHE_TICKS[data_type] += new_ticks
-            find_extremes(CACHE_TICKS[data_type])            
+            find_extremes(data_type, CACHE_TICKS[data_type])            
         
         for col in ['ccl', 'zxj']:
             peaks = []
