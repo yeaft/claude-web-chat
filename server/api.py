@@ -7,6 +7,7 @@ from functools import wraps
 from statistics import mean
 from flask_compress import Compress
 from functools import wraps
+import numpy as np
 
 app = Flask(__name__)
 Compress(app)
@@ -26,8 +27,10 @@ BLOCKED_PATTERNS = [
     "141.98.*.*"
 ]
 FIND_PEAK_START_INDEX = 0
-EXTREME_COLS = ["ccl", "zxj"]
+EXTREME_COLS = ["ccl", "zxj", "cjlDiff"]
 EXTREME_SET = {}
+LOW_CJL_MINUTE_THRESHOLD = 3000
+MIN_CJL_5SEC_THRESHOLD = 1500
 
 def block_ip():
     def decorator(f):
@@ -81,7 +84,7 @@ def initial_ticks():
     for data_type in DATA_TYPES:        
         if data_type not in CACHE_TICKS:
             if data_type not in EXTREME_SET:
-                EXTREME_SET[data_type] = {'ccl':[], 'zxj':[]}
+                EXTREME_SET[data_type] = {'ccl':[], 'zxj':[], 'cjlDiff':[]}
             ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(SIX_DAYS_SIZE)
             sorted_ticks = sorted(ticks, key=lambda x: x['time'])
             CACHE_TICKS[data_type] = sorted_ticks
@@ -130,31 +133,81 @@ def find_extremes(data_type, tick_infos, span = 45 * 12):
             extremes = EXTREME_SET[data_type][col]
             current_value = tick_infos[i][col]
             max_value = max(t[col] for t in tick_infos[start:end] if col in t)
-            min_value = min(t[col] for t in tick_infos[start:end] if col in t)
-            # 检查是否为最高或最低值
-            if current_value == max_value:
-                extreme = {
-                    "extreme": "max",
-                    "index": i,
-                }
-                if len(extremes) > 0 and extremes[-1]['extreme'] == 'max':
-                    if current_value >= tick_infos[extremes[-1]['index']][col]:
-                        extremes[-1] = extreme
-                else:
-                    extremes.append(extreme)
-            elif current_value == min_value:
-                extreme = {
-                    "extreme": "min",
-                    "index": i,
-                }
-                if len(extremes) > 0 and extremes[-1]['extreme'] == 'min':
-                    if  current_value <= tick_infos[extremes[-1]['index']][col]:
-                        extremes[-1] = extreme
-                else:
-                    extremes.append(extreme)
+            
+            if 'cjl' in col:
+                if current_value == max_value and current_value >= MIN_CJL_5SEC_THRESHOLD:
+                    extreme = {
+                        "extreme": "max",
+                        "index": i,
+                    }
+                    is_added = False
+                    if len(extremes) > 0 and i - extremes[-1]['index'] < 12 * 10:
+                        if current_value >= tick_infos[extremes[-1]['index']][col]:
+                            extremes[-1] = extreme
+                            is_added = True
+                    else:
+                        extremes.append(extreme)
+                        is_added = True
+                    
+                    if is_added:
+                        start_index, end_index = find_hot_period_with_step(tick_infos, i)
+                        extremes[-1]['start_index'] = start_index
+                        extremes[-1]['end_index'] = end_index
+            else:
+                min_value = min(t[col] for t in tick_infos[start:end] if col in t)        
+                # 检查是否为最高或最低值
+                if current_value == max_value:
+                    extreme = {
+                        "extreme": "max",
+                        "index": i,
+                    }
+                    if len(extremes) > 0 and extremes[-1]['extreme'] == 'max':
+                        if current_value >= tick_infos[extremes[-1]['index']][col]:
+                            extremes[-1] = extreme
+                    else:
+                        extremes.append(extreme)
+                elif current_value == min_value:
+                    extreme = {
+                        "extreme": "min",
+                        "index": i,
+                    }
+                    if len(extremes) > 0 and extremes[-1]['extreme'] == 'min':
+                        if  current_value <= tick_infos[extremes[-1]['index']][col]:
+                            extremes[-1] = extreme
+                    else:
+                        extremes.append(extreme)
                 
     FIND_PEAK_START_INDEX = len(tick_infos) - span
-    
+
+
+def find_hot_period_with_step(data, initial_index, window=6, step=3):
+    start_index = initial_index
+    end_index = initial_index
+
+    # 向左扩展
+    while start_index >= step and sum_within_window(data, start_index - step, window) >= LOW_CJL_MINUTE_THRESHOLD:
+        start_index -= step
+
+    # 如果跳出循环后当前点不满足条件，可能需要向右调整至满足条件的点
+    while start_index < len(data) and sum_within_window(data, start_index, window) < LOW_CJL_MINUTE_THRESHOLD:
+        start_index += 1
+
+    # 向右扩展
+    while end_index + step < len(data) and sum_within_window(data, end_index + step, window) >= LOW_CJL_MINUTE_THRESHOLD:
+        end_index += step
+
+    # 如果跳出循环后当前点不满足条件，可能需要向左调整至满足条件的点
+    end_index = min(end_index, len(data)-1)
+    while end_index >= 0 and sum_within_window(data, end_index, window) < LOW_CJL_MINUTE_THRESHOLD:
+        end_index -= 1
+
+    return start_index, end_index
+
+def sum_within_window(data, index, window=6):
+    start = max(index - window, 0)
+    end = min(index + window, len(data) - 1)
+    return np.sum([tick['cjlDiff'] for tick in data[start:end+1] if "cjlDiff" in tick])    
+        
 @app.route('/ticks', methods=['GET'])
 @block_ip()
 def get_latest_1min_ticks():
@@ -164,7 +217,9 @@ def get_latest_1min_ticks():
         if len(CACHE_TICKS_1MIN[data_type]) >= LAST_DAY_SIZE:
             CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][-LAST_DAY_SIZE:]
         last_tick = CACHE_TICKS_1MIN[data_type][-1]
+        last_index = len(CACHE_TICKS_1MIN[data_type])
         new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gte": last_tick["time"]}}).sort("time", 1))
+        is_updated = False
         if len(new_ticks) >= 12:
             m_ticks = []
             start_index = 1
@@ -191,9 +246,25 @@ def get_latest_1min_ticks():
             
             CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][len(m_ticks):]
             CACHE_TICKS_1MIN[data_type].extend(m_ticks)
+            is_updated = True
         
         # return from cache
         data[data_type] = CACHE_TICKS_1MIN[data_type]
+        if not is_updated and len(new_ticks) > 0 and new_ticks[-1] != last_tick:
+            zxjs = [x['zxj'] for x in new_ticks]
+            ccls = [x['ccl'] for x in new_ticks]
+            min_zxj = min(zxjs)
+            avg_ccl = mean(ccls)                        
+            max_zxj = max(zxjs)
+            cjl = sum([x['cjlDiff'] for x in new_ticks])
+            data[data_type].append({
+                            "time": new_ticks[-1]['time'][:-4],
+                            "code": new_ticks[-1]['code'],
+                            "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                            "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                            "ccl": int(avg_ccl),
+                            "cjl": int(cjl),
+                        })
     
     return data
 
@@ -233,9 +304,9 @@ def get_info():
             CACHE_TICKS[data_type] += new_ticks
             find_extremes(data_type, CACHE_TICKS[data_type])            
         
-        for col in ['ccl', 'zxj']:
+        for col in EXTREME_COLS:
             peaks = []
-            size = 12 if col == "ccl" else 12
+            size = 8 if col == "ccl" else 6
             for i in range(1, len(EXTREME_SET[data_type][col][-size:])):
                 extreme = EXTREME_SET[data_type][col][-size:][i]
                 last_extreme = EXTREME_SET[data_type][col][-size:][i - 1]
@@ -243,15 +314,23 @@ def get_info():
                 last_extreme_tick = CACHE_TICKS[data_type][last_extreme['index']]
                 if col == "ccl":
                     peaks.append([extreme_tick['time'][-18:-7], extreme_tick['ccl'], int(extreme_tick['ccl'] - last_extreme_tick['ccl']), int(extreme_tick['zxj'] - last_extreme_tick['zxj']), extreme_tick['zxj']])
-                else:
+                elif col == "zxj":
                     peaks.append([extreme_tick['time'][-18:-7], extreme_tick['zxj'], int(extreme_tick['zxj'] - last_extreme_tick['zxj']), int(extreme_tick['ccl'] - last_extreme_tick['ccl']), extreme_tick['ccl']])
+                else:
+                    start_tick = CACHE_TICKS[data_type][extreme['start_index']]
+                    end_tick = CACHE_TICKS[data_type][extreme['end_index']]
+                    minuts_diff = f"{round((extreme['end_index']-extreme['start_index']) / 12, 1)}m"
+                    cjl_sum = sum(tick['cjlDiff'] for tick in CACHE_TICKS[data_type][extreme['start_index']:extreme['end_index']+1])
+                    peak_price = max([tick['zxj'] for tick in CACHE_TICKS[data_type][extreme['start_index']:extreme['end_index']+1]]) if extreme_tick['zxj'] >= start_tick['zxj'] else min([tick['zxj'] for tick in CACHE_TICKS[data_type][extreme['start_index']:extreme['end_index']+1]])
+                    price_end_diff_info = f"{int(peak_price - start_tick['zxj'])}/{int(end_tick['zxj']- start_tick['zxj'])}"
+                    peaks.append([start_tick['time'][-18:-7], minuts_diff, cjl_sum, start_tick['zxj'], price_end_diff_info])
                 # ccl_peaks.append([extreme_tick['time'][-18:-4], extreme_tick['ccl'], int(extreme_tick['ccl'] - last_extreme_tick['ccl']), extreme_tick['zxj'], int(extreme_tick['zxj'] - last_extreme_tick['zxj']), sum(tick['cjlDiff'] for tick in CACHE_TICKS[data_type][last_extreme['index']+1:extreme['index']] if 'cjlDiff' in tick)])
 
             last_extreme = EXTREME_SET[data_type][col][-1]
             last_extreme_tick = CACHE_TICKS[data_type][last_extreme['index']]
             if col == "ccl":                
                 peaks.append([CACHE_TICKS[data_type][-1]['time'][-18:-7], CACHE_TICKS[data_type][-1]['ccl'], int(CACHE_TICKS[data_type][-1]['ccl'] - last_extreme_tick['ccl']), int(CACHE_TICKS[data_type][-1]['zxj'] - last_extreme_tick['zxj']), CACHE_TICKS[data_type][-1]['zxj']])
-            else:
+            elif col == "zxj":
                 peaks.append([CACHE_TICKS[data_type][-1]['time'][-18:-7], CACHE_TICKS[data_type][-1]['zxj'], int(CACHE_TICKS[data_type][-1]['zxj'] - last_extreme_tick['zxj']), int(CACHE_TICKS[data_type][-1]['ccl'] - last_extreme_tick['ccl']), CACHE_TICKS[data_type][-1]['ccl']])
             result[data_type][f'{col}_peaks'] = peaks
         

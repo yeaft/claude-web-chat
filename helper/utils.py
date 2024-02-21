@@ -246,3 +246,6 @@ def ding_msg(msg):
             "isAtAll": False
         }
     }
+    
+if __name__ == "__main__":
+    send_ding_msg("test")
