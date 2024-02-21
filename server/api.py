@@ -139,7 +139,7 @@ def find_extremes(data_type, tick_infos, span = 45 * 12):
             max_value = max(t[col] for t in tick_infos[start:end] if col in t)
             
             if 'cjl' in col:
-                if current_value == max_value and current_value >= MIN_CJL_5SEC_THRESHOLD:
+                if current_value == max_value and current_value >= MIN_CJL_5SEC_THRESHOLD and i > extremes[-1]['index']:
                     extreme = {
                         "extreme": "max",
                         "index": i,
@@ -160,7 +160,7 @@ def find_extremes(data_type, tick_infos, span = 45 * 12):
             else:
                 min_value = min(t[col] for t in tick_infos[start:end] if col in t)        
                 # 检查是否为最高或最低值
-                if current_value == max_value:
+                if current_value == max_value and i > extremes[-1]['index']:
                     extreme = {
                         "extreme": "max",
                         "index": i,
@@ -170,7 +170,7 @@ def find_extremes(data_type, tick_infos, span = 45 * 12):
                             extremes[-1] = extreme
                     else:
                         extremes.append(extreme)
-                elif current_value == min_value:
+                elif current_value == min_value and i > extremes[-1]['index']:
                     extreme = {
                         "extreme": "min",
                         "index": i,
