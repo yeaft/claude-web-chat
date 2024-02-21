@@ -280,7 +280,12 @@
 
     function createChartAndTable(type) {
         var combinedContainerId = createCombinedContainer(type);
-        
+        var chartContainerId = 'chart_' + type;
+        if ($('#' + chartContainerId).length === 0) {
+            $('<div>').attr('id', chartContainerId)
+                .addClass('chart-container') // Add the chart-container class
+                .appendTo('#' + combinedContainerId);
+        }
 
         // Check if table container exists before creating
         var tableContainerId = 'table_' + type;
@@ -295,14 +300,9 @@
             createTicksContainer(type);
         }
 
-        var chartContainerId = 'chart_' + type;
-        if ($('#' + chartContainerId).length === 0) {
-            $('<div>').attr('id', chartContainerId)
-                .addClass('chart-container') // Add the chart-container class
-                .appendTo('#' + combinedContainerId);
-        }
+        
 
-        return { tableContainerId,chartContainerId };
+        return { chartContainerId, tableContainerId };
     }
 
 
