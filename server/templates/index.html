@@ -280,13 +280,7 @@
 
     function createChartAndTable(type) {
         var combinedContainerId = createCombinedContainer(type);
-        var chartContainerId = 'chart_' + type;
-        if ($('#' + chartContainerId).length === 0) {
-            $('<div>').attr('id', chartContainerId)
-                .addClass('chart-container') // Add the chart-container class
-                .appendTo('#' + combinedContainerId);
-        }
-
+        
         // Check if table container exists before creating
         var tableContainerId = 'table_' + type;
         if ($('#' + tableContainerId).length === 0) {
@@ -300,9 +294,14 @@
             createTicksContainer(type);
         }
 
-        
+        var chartContainerId = 'chart_' + type;
+        if ($('#' + chartContainerId).length === 0) {
+            $('<div>').attr('id', chartContainerId)
+                .addClass('chart-container') // Add the chart-container class
+                .appendTo('#' + combinedContainerId);
+        }
 
-        return { chartContainerId, tableContainerId };
+        return { tableContainerId, chartContainerId };
     }
 
 
@@ -385,9 +384,11 @@
                 if ($('#table_' + type).length === 0) {
                     createChartAndTable(type);
                 }
+                var scrollTop = $(window).scrollTop(); // 保存当前滚动位置            
                 renderTable(type, data); // Render the main table
                 // renderTicksTable(type, data); // Render the ticks table
                 adjustTableFontSize();
+                $(window).scrollTop(scrollTop); // 恢复滚动位置
             });
         });
     }
