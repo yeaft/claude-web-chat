@@ -281,7 +281,8 @@ def index():
 @app.route('/test_ding', methods=['GET'])
 @block_ip()
 def test_ding():
-    return utils.send_ding_msg("test")
+    utils.send_ding_msg("test")
+    return {"status": "ok"}
     
     
 @app.route('/info', methods=['GET'])
