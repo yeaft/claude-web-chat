@@ -83,6 +83,31 @@
             white-space: nowrap;
             text-overflow: ellipsis;
         }
+
+        .button-container {
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        .test-button {
+            background-color: #4CAF50; /* Green */
+            border: none;
+            color: white;
+            padding: 15px 32px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 5px; /* Rounded corners */
+            transition: background-color 0.3s ease;
+        }
+
+        .test-button:hover {
+            background-color: #45a049; /* Darker shade of green */
+        }
+
     </style>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://code.highcharts.com/stock/highstock.js"></script>
@@ -98,6 +123,9 @@
     <!-- Dynamically generated chart and table containers will be placed here -->
 </div>
 
+<div class="button-container">
+    <button id="testButton" class="test-button">Check Ding</button>
+</div>
 
 <script>
     Highcharts.setOptions({
@@ -410,7 +438,17 @@
     }
     fetchDataAndUpdateUI();
     setInterval(fetchDataForCharts, 60000); // 1 minute for charts
-    setInterval(fetchDataForTables, 5000); // 5 seconds for tables    
+    setInterval(fetchDataForTables, 5000); // 5 seconds for tables
+
+    $(document).ready(function() {
+        $('#testButton').click(function() {
+            $.get("/test_ding", function(data, status) {
+                alert("Request sent! Status: " + status);
+            }).fail(function() {
+                alert("Error sending request.");
+            });
+        });
+    }); 
 </script>
 
 </body>

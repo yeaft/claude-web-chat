@@ -87,8 +87,11 @@ def initial_ticks():
                 EXTREME_SET[data_type] = {'ccl':[], 'zxj':[], 'cjlDiff':[]}
             ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(SIX_DAYS_SIZE)
             sorted_ticks = sorted(ticks, key=lambda x: x['time'])
-            CACHE_TICKS[data_type] = sorted_ticks
-            find_extremes(data_type, CACHE_TICKS[data_type]) 
+            CACHE_TICKS[data_type] = sorted_ticks            
+            find_extremes(data_type, CACHE_TICKS[data_type], cols = ["ccl", "zxj"])
+            find_extremes(data_type, CACHE_TICKS[data_type], span = 20 * 12, cols = ["cjlDiff"])
+            global FIND_PEAK_START_INDEX
+            FIND_PEAK_START_INDEX = len(CACHE_TICKS[data_type]) - 45 * 12
             
             m_ticks = []
             start_index = len(sorted_ticks) - LAST_DAY_SIZE
@@ -117,29 +120,28 @@ def initial_ticks():
             
     utils.log("Finish inital ticks data")
 
-def find_extremes(data_type, tick_infos, span = 45 * 12):
+def find_extremes(data_type, tick_infos, span = 45 * 12, cols = []):
     global FIND_PEAK_START_INDEX
-    
     FIND_PEAK_START_INDEX = max(FIND_PEAK_START_INDEX, span)
-    for i in range(FIND_PEAK_START_INDEX, len(tick_infos) - int(0.6 * span)):
+    end_index = len(tick_infos) - int(0.6 * span) if "cjlDiff" not in cols else len(tick_infos)
+    for i in range(FIND_PEAK_START_INDEX, end_index):
         # 确定窗口边界
         start = i - span
         end = i + span + 1
 
         # 当前值
-        for col in EXTREME_COLS:
+        if not cols:
+            cols = EXTREME_COLS
+        for col in cols:
             if col not in tick_infos[i]:
                 continue
-            if col == "cjlDiff":
-                start = i - int(span/2)
-                end = i + int(span/2) + 1
                 
             extremes = EXTREME_SET[data_type][col]
             current_value = tick_infos[i][col]
             max_value = max(t[col] for t in tick_infos[start:end] if col in t)
             
             if 'cjl' in col:
-                if current_value == max_value and current_value >= MIN_CJL_5SEC_THRESHOLD and i > extremes[-1]['index']:
+                if current_value == max_value and current_value >= MIN_CJL_5SEC_THRESHOLD and (len(extremes) == 0 or i > extremes[-1]['index']):
                     extreme = {
                         "extreme": "max",
                         "index": i,
@@ -160,7 +162,7 @@ def find_extremes(data_type, tick_infos, span = 45 * 12):
             else:
                 min_value = min(t[col] for t in tick_infos[start:end] if col in t)        
                 # 检查是否为最高或最低值
-                if current_value == max_value and i > extremes[-1]['index']:
+                if current_value == max_value and (len(extremes) == 0 or i > extremes[-1]['index']):
                     extreme = {
                         "extreme": "max",
                         "index": i,
@@ -170,7 +172,7 @@ def find_extremes(data_type, tick_infos, span = 45 * 12):
                             extremes[-1] = extreme
                     else:
                         extremes.append(extreme)
-                elif current_value == min_value and i > extremes[-1]['index']:
+                elif current_value == min_value and (len(extremes) == 0 or i > extremes[-1]['index']):
                     extreme = {
                         "extreme": "min",
                         "index": i,
@@ -180,8 +182,6 @@ def find_extremes(data_type, tick_infos, span = 45 * 12):
                             extremes[-1] = extreme
                     else:
                         extremes.append(extreme)
-                
-    FIND_PEAK_START_INDEX = len(tick_infos) - span
 
 
 def find_hot_period_with_step(data, initial_index, window=6, step=3):
@@ -278,7 +278,12 @@ def get_latest_1min_ticks():
 def index():
     return render_template('index.html')
 
-
+@app.route('/test_ding', methods=['GET'])
+@block_ip()
+def test_ding():
+    return utils.send_ding_msg("test")
+    
+    
 @app.route('/info', methods=['GET'])
 @block_ip()
 def get_info():
@@ -306,7 +311,10 @@ def get_info():
         new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gt": CACHE_TICKS[data_type][-1]['time']}}).sort([("time", 1)]))
         if new_ticks:
             CACHE_TICKS[data_type] += new_ticks
-            find_extremes(data_type, CACHE_TICKS[data_type])            
+            
+            find_extremes(data_type, CACHE_TICKS[data_type], cols = ['ccl', 'zxj'])
+            find_extremes(data_type, CACHE_TICKS[data_type], span = 20 * 12, cols = ['cjlDiff'])
+            FIND_PEAK_START_INDEX = len(CACHE_TICKS[data_type]) - 45 * 12        
         
         for col in EXTREME_COLS:
             peaks = []
