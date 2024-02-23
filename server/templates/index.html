@@ -437,7 +437,7 @@
         $('th, td').css('font-size', fontSize);
     }
     fetchDataAndUpdateUI();
-    setInterval(fetchDataForCharts, 5000); // 1 minute for charts
+    setInterval(fetchDataForCharts, 60000); // 1 minute for charts
     setInterval(fetchDataForTables, 5000); // 5 seconds for tables
 
     $(document).ready(function() {

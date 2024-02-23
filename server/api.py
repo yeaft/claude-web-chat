@@ -253,7 +253,7 @@ def get_latest_1min_ticks():
             is_updated = True
         
         # return from cache
-        data[data_type] = CACHE_TICKS_1MIN[data_type]
+        data[data_type] = list(CACHE_TICKS_1MIN[data_type])
         if not is_updated and len(new_ticks) > 0 and new_ticks[-1] != last_tick:
             zxjs = [x['zxj'] for x in new_ticks]
             ccls = [x['ccl'] for x in new_ticks]
