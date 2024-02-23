@@ -92,13 +92,12 @@ def get_kp_time_string(target_date = ""):
     now = datetime.now(pytz.timezone("Asia/Shanghai"))
     if target_date:
         date_str = target_date
-    else:
+    elif now.time() >= time(21, 0, 0):
         date_str = now.strftime('%Y-%m-%d')
-    
-    if now.time() < time(21, 0, 0) and now.time() >= time(9, 0, 0):
-        return f"{date_str} 09:00:00.000"
     else:
-        return f"{date_str} 21:00:00.000"
+        date_str = date_add_days(now, -1).strftime('%Y-%m-%d')
+        
+    return f"{date_str} 21:00:00.000"
 
 
 if __name__ == "__main__":
