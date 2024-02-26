@@ -559,7 +559,6 @@ class DataProcessor:
             
             night_rate = 0.9 if self.data[-1]['time'].hour >= 20 else 1
             if (last_period_cjl - past_cjl_mean > 3 * past_cjl_std and last_period_cjl_sum > self.cjl_period_min_threshold * night_rate) or last_period_cjl_sum > self.cjl_period_pass_threshold * night_rate:
-                print(f"time: {self.data[-1]['time']}, night_rate: {night_rate}")
                 if 'anomaly' not in self.data[-2]:
                     self.data[-1]['anomaly'] = "start"
                     # Check past 2 mins slope
