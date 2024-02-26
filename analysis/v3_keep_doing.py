@@ -556,7 +556,10 @@ class DataProcessor:
             last_period_cjl = int(last_period_cjl_sum / self.cjl_period_num)
             # self.data[-1]['ab_zxj_direction'] = "up" if self.data[-1]['zxj'] > mean([d['zxj'] for d in self.data[-6:-1]]) else "down"
             # self.data[-1]['ab_ccl_direction'] = "up" if self.data[-1]['ccl'] > mean([d['ccl'] for d in self.data[-6:-1]]) else "down"
-            if (last_period_cjl - past_cjl_mean > 3 * past_cjl_std and last_period_cjl_sum > self.cjl_period_min_threshold) or last_period_cjl_sum > self.cjl_period_pass_threshold:
+            
+            night_rate = 0.9 if self.data[-1]['time'].hour >= 20 else 1
+            if (last_period_cjl - past_cjl_mean > 3 * past_cjl_std and last_period_cjl_sum > self.cjl_period_min_threshold * night_rate) or last_period_cjl_sum > self.cjl_period_pass_threshold * night_rate:
+                print(f"time: {self.data[-1]['time']}, night_rate: {night_rate}")
                 if 'anomaly' not in self.data[-2]:
                     self.data[-1]['anomaly'] = "start"
                     # Check past 2 mins slope
@@ -567,7 +570,7 @@ class DataProcessor:
                         self.send_cjl_abnormal_signal(is_send=self.real_send_message)
 
                 else:
-                    if self.data[-1][self.cjl_column_name] >= self.cjl_hot_threshold:
+                    if self.data[-1][self.cjl_column_name] >= self.cjl_hot_threshold * night_rate:
                         self.data[-1]['anomaly'] = "hot"
                     else:
                         self.data[-1]['anomaly'] = "cold"                
@@ -582,7 +585,7 @@ class DataProcessor:
                             break
 
                 if contains_anomaly:
-                    if self.data[-1][self.cjl_column_name] >= self.cjl_hot_threshold:
+                    if self.data[-1][self.cjl_column_name] >= self.cjl_hot_threshold * night_rate:
                         is_colding = True
                         for i in range(2,5):
                             is_colding = 'anomaly' in self.data[-i-1] and self.data[-i][self.cjl_column_name] < self.data[-i-1][self.cjl_column_name]
@@ -1025,7 +1028,7 @@ if __name__ == "__main__":
     dps = [
         DataProcessor(cjl_column_name="cjlDiff", past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=True),
     ]
-    process_data(dps, "2023-10-20", "2023-11-01", contract_type="i", verify_name="verify_09_12",
+    process_data(dps, "2023-10-20", "2023-11-01", contract_type="rb", verify_name="verify_09_12",
                  check_column_name=check_column_name, is_draw_image=False)
     
 
