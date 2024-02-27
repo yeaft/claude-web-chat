@@ -308,6 +308,7 @@ def get_info():
             FIND_PEAK_START_INDEX = 0
             EXTREME_SET[data_type]['ccl'] = []
             EXTREME_SET[data_type]['zxj'] = []
+            EXTREME_SET[data_type]['cjlDiff'] = []
             
         new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gt": CACHE_TICKS[data_type][-1]['time']}}).sort([("time", 1)]))
         if new_ticks:
