@@ -338,7 +338,7 @@ def get_info():
                     cjl_per_min = round(cjl_sum / (extreme['end_index']-extreme['start_index']) * 12)
                     peak_price = max([tick['zxj'] for tick in CACHE_TICKS[data_type][extreme['start_index']:extreme['end_index']+1]]) if extreme_tick['zxj'] >= start_tick['zxj'] else min([tick['zxj'] for tick in CACHE_TICKS[data_type][extreme['start_index']:extreme['end_index']+1]])
                     price_end_diff_info = f"{int(peak_price - start_tick['zxj'])}/{int(end_tick['zxj']- start_tick['zxj'])}"
-                    peaks.append([start_tick['time'][-18:-7], minuts_diff, cjl_per_min, start_tick['zxj'], price_end_diff_info])
+                    peaks.append([f"{start_tick['time'][-18:-7]}-{end_tick['time'][-12:-7]}", cjl_per_min, start_tick['zxj'], peak_price, end_tick['zxj']])
                 # ccl_peaks.append([extreme_tick['time'][-18:-4], extreme_tick['ccl'], int(extreme_tick['ccl'] - last_extreme_tick['ccl']), extreme_tick['zxj'], int(extreme_tick['zxj'] - last_extreme_tick['zxj']), sum(tick['cjlDiff'] for tick in CACHE_TICKS[data_type][last_extreme['index']+1:extreme['index']] if 'cjlDiff' in tick)])
 
             last_extreme = EXTREME_SET[data_type][col][-1]
