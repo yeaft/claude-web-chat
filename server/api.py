@@ -345,7 +345,7 @@ def get_info():
                         symbol = "↓"
                     end_diff = int(end_tick['zxj'] - start_tick['zxj'])
                     peak_diff = int(peak_price - start_tick['zxj']) 
-                    peaks.append([f"{start_tick['time'][-12:-7]}-{end_tick['time'][-12:-7]}({minuts_diff})", f"{int(start_tick['zxj'])} {symbol} {end_diff}", f"{int(peak_price)}/{end_diff}", cjl_per_min, cjl_sum])
+                    peaks.append([f"{start_tick['time'][-12:-7]}-{end_tick['time'][-12:-7]} {minuts_diff}", f"{int(start_tick['zxj'])}{symbol}{end_diff}", f"{int(peak_price)}/{end_diff}", cjl_per_min, cjl_sum])
                 # ccl_peaks.append([extreme_tick['time'][-18:-4], extreme_tick['ccl'], int(extreme_tick['ccl'] - last_extreme_tick['ccl']), extreme_tick['zxj'], int(extreme_tick['zxj'] - last_extreme_tick['zxj']), sum(tick['cjlDiff'] for tick in CACHE_TICKS[data_type][last_extreme['index']+1:extreme['index']] if 'cjlDiff' in tick)])
 
             last_extreme = EXTREME_SET[data_type][col][-1]
