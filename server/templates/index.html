@@ -160,37 +160,7 @@
                 },
                 plotOptions: {
                     series: {
-                        point: {
-                            events: {
-                                click: function () {
-                                    var chart = this.series.chart;
-                                    
-                                    // Remove existing plotLines if any
-                                    if(chart.xAxis[0].plotLinesAndBands.length > 0) {
-                                        chart.xAxis[0].removePlotLine('xPlotLine');
-                                    }
-                                    if(chart.yAxis[0].plotLinesAndBands.length > 0) {
-                                        chart.yAxis[0].removePlotLine('yPlotLine');
-                                    }
-
-                                    // Add a vertical line at the x position (date/time)
-                                    chart.xAxis[0].addPlotLine({
-                                        value: this.x,
-                                        color: 'red',
-                                        width: 2,
-                                        id: 'xPlotLine'
-                                    });
-
-                                    // Add a horizontal line at the y position (value)
-                                    chart.yAxis[0].addPlotLine({
-                                        value: this.y,
-                                        color: 'green',
-                                        width: 2,
-                                        id: 'yPlotLine'
-                                    });
-                                }
-                            }
-                        }
+                        turboThreshold: 0
                     }
                 },
                 rangeSelector: {
@@ -231,6 +201,7 @@
                 xAxis: {
                     type: 'datetime',
                     tickInterval: 60000,
+                    crosshair: true,
                     labels: {
                         style: {
                             fontSize: labelFontSize // Set font size for the xAxis labels
@@ -239,6 +210,7 @@
                 },
                 yAxis: [{
                     height: '60%',
+                    crosshair: true,
                     labels: {
                         reserveSpace: true, 
                         style: {
