@@ -163,8 +163,14 @@
                         turboThreshold: 0
                     }
                 },
-                rangeSelector: { 
-                    enabled: false
+                rangeSelector: {
+                    buttons: [{
+                        type: 'day',
+                        count: 1,
+                        text: '1d'
+                    }],
+                    selected: 0, // This selects (highlights) the '6m' button by default
+                    inputEnabled: false, // Enables the input boxes for manual date entry
                 },
                 navigator: {
                     enabled: true
