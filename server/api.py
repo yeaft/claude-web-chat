@@ -94,8 +94,8 @@ def initial_ticks():
             FIND_PEAK_START_INDEX = len(CACHE_TICKS[data_type]) - 45 * 12
             
             m_ticks = []
-            start_index = len(sorted_ticks) - LAST_DAY_SIZE
-            for i in range(len(sorted_ticks) - LAST_DAY_SIZE, len(sorted_ticks)):
+            start_index = 0
+            for i in range(len(sorted_ticks)):
                 if sorted_ticks[i]['time'][-6:] == "00.000":
                     if i - start_index > 10:
                         zxjs = [x['zxj'] for x in sorted_ticks[start_index:i+1]]
