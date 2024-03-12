@@ -165,6 +165,10 @@
                 },
                 rangeSelector: {
                     buttons: [{
+                        type: 'hour',
+                        count: 12,
+                        text: '12h'
+                    },{
                         type: 'day',
                         count: 1,
                         text: '1d'
@@ -188,7 +192,7 @@
                         type: 'all',
                         text: 'All'
                     }],
-                    selected: 0, // This selects (highlights) the '6m' button by default
+                    selected: 1, // This selects (highlights) the '6m' button by default
                     inputEnabled: false, // Enables the input boxes for manual date entry
                 },
                 navigator: {
