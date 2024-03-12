@@ -17,7 +17,7 @@ CACHE_TICKS_1MIN = {}
 CACHE_DAILY_CCL_DATA = {}
 CACHE_CP_RATE_DATA = {}
 PAST_CCL_STABLE_DATA = {}
-SIX_DAYS_SIZE = int(12 * 60 * 5.8 * 6)
+TEN_DAYS_SIZE = int(12 * 60 * 5.8 * 10)
 LAST_DAY_SIZE = int(12 * 60 * 5.8)
 HALF_DAY_SIZE = int(12 * 60 * 3)
 KP_TICKS = {}
@@ -85,7 +85,7 @@ def initial_ticks():
         if data_type not in CACHE_TICKS:
             if data_type not in EXTREME_SET:
                 EXTREME_SET[data_type] = {'ccl':[], 'zxj':[], 'cjlDiff':[]}
-            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(SIX_DAYS_SIZE)
+            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(TEN_DAYS_SIZE)
             sorted_ticks = sorted(ticks, key=lambda x: x['time'])
             CACHE_TICKS[data_type] = sorted_ticks            
             find_extremes(data_type, CACHE_TICKS[data_type], cols = ["ccl", "zxj"])
@@ -218,8 +218,8 @@ def get_latest_1min_ticks():
     data = {}
     for data_type in DATA_TYPES:   
         # Update new data
-        if len(CACHE_TICKS_1MIN[data_type]) >= LAST_DAY_SIZE:
-            CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][-LAST_DAY_SIZE:]
+        if len(CACHE_TICKS_1MIN[data_type]) >= TEN_DAYS_SIZE:
+            CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][-TEN_DAYS_SIZE:]
         last_tick = CACHE_TICKS_1MIN[data_type][-1]
         last_index = len(CACHE_TICKS_1MIN[data_type])
         new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gte": last_tick["time"]}}).sort("time", 1))
@@ -299,12 +299,12 @@ def get_info():
     for data_type in DATA_TYPES:
         result[data_type] = {}    
         if data_type not in CACHE_TICKS:
-            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(SIX_DAYS_SIZE)
+            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(TEN_DAYS_SIZE)
             sorted_ticks = sorted(ticks, key=lambda x: x['time'])
             CACHE_TICKS[data_type] = sorted_ticks
         
-        if len(CACHE_TICKS[data_type]) >= 1.2 * SIX_DAYS_SIZE:
-            CACHE_TICKS[data_type] = CACHE_TICKS[data_type][-SIX_DAYS_SIZE:]
+        if len(CACHE_TICKS[data_type]) >= 1.2 * TEN_DAYS_SIZE:
+            CACHE_TICKS[data_type] = CACHE_TICKS[data_type][-TEN_DAYS_SIZE:]
             FIND_PEAK_START_INDEX = 0
             EXTREME_SET[data_type]['ccl'] = []
             EXTREME_SET[data_type]['zxj'] = []
