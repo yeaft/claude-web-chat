@@ -201,7 +201,9 @@
                 xAxis: {
                     type: 'datetime',
                     tickInterval: 60000,
-                    crosshair: true,
+                    crosshair: {
+                        color: 'black'
+                    },
                     labels: {
                         style: {
                             fontSize: labelFontSize // Set font size for the xAxis labels
@@ -220,7 +222,9 @@
                 }, {
                     top: '60%',
                     height: '40%',
-                    crosshair: true,
+                    crosshair: {
+                        color: 'black'
+                    },
                     labels: {
                         reserveSpace: true, 
                         style: {
