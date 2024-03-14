@@ -322,7 +322,19 @@
             chart.series[0].setData(typeData.map(d => [new Date(d.time).getTime(), d.max_zxj]));
             chart.series[1].setData(typeData.map(d => [new Date(d.time).getTime(), d.min_zxj]));
             chart.series[2].setData(typeData.map(d => [new Date(d.time).getTime(), d.ccl]));
-            chart.series[3].setData(typeData.map(d => [new Date(d.time).getTime(), d.cjl]));
+            chart.series[3].setData(typeData.map(d => {
+                var color = '#CE93D8'
+                if (d.cjl > 10000) {
+                    color = '#ac3f50';
+                } else if (d.cjl > 8500) {
+                    color = '#ca6e7c';
+                }
+                return {
+                    x: new Date(d.time).getTime(),
+                    y: d.cjl,
+                    color: color // Apply the chosen color
+                };
+            }));
         } else {
             console.error('Chart not initialized or invalid data for', typeData);
         }

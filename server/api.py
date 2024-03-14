@@ -103,7 +103,7 @@ def initial_ticks():
                         min_zxj = min(zxjs)
                         avg_ccl = mean(ccls)                        
                         max_zxj = max(zxjs)
-                        cjl = sum([x['cjlDiff'] for x in sorted_ticks[start_index:i+1]])
+                        cjl = sum([x['cjlDiff'] for x in sorted_ticks[start_index:i+1] if 'cjlDiff' in x])
                         
                         m_ticks.append({
                             "time": sorted_ticks[i]['time'][:-4],
