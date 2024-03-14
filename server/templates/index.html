@@ -496,6 +496,8 @@
             });
         }
 
+        adjustTableFontSize();
+
         // Re-draw or reflow the chart to apply new dimensions
         Object.keys(charts).forEach(function(chartId) {
             charts[chartId].reflow();
