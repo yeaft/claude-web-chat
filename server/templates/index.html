@@ -477,8 +477,12 @@
         return window.innerWidth <= 1080 && window.innerHeight > window.innerWidth; // or another threshold you prefer
     }
 
+    function isBoldFont() {
+        return window.innerWidth <= 1080;
+    }
+
     function adjustTableFontSize() {
-        var fontSize = isMobileDevice() ? '4vw' : '1.3vw'; // Using the same isMobileDevice function
+        var fontSize = isBoldFont() ? '4vw' : '1.3vw'; // Using the same isMobileDevice function
 
         // Apply the font size to th and td elements
         $('th, td').css('font-size', fontSize);
