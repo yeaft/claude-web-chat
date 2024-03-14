@@ -474,7 +474,7 @@
     }
 
     function isMobileDevice() {
-        return window.innerWidth <= 1080; // or another threshold you prefer
+        return window.innerWidth <= 1080 && window.innerHeight > window.innerWidth; // or another threshold you prefer
     }
 
     function adjustTableFontSize() {
@@ -483,6 +483,31 @@
         // Apply the font size to th and td elements
         $('th, td').css('font-size', fontSize);
     }
+    function adjustChartSize() {
+        if (window.innerHeight < window.innerWidth) { // Landscape orientation
+            $('.chart-container').css({
+                'height': '400px', // Adjust as needed
+                'width': '90%' // Adjust as needed
+            });
+        } else { // Portrait orientation
+            $('.chart-container').css({
+                'height': '800px', // Adjust as needed
+                'width': '100%' // Adjust as needed
+            });
+        }
+
+        // Re-draw or reflow the chart to apply new dimensions
+        Object.keys(charts).forEach(function(chartId) {
+            charts[chartId].reflow();
+        });
+    }
+
+    // Listen for orientation change or resize events
+    window.addEventListener('orientationchange', adjustChartSize);
+    window.addEventListener('resize', adjustChartSize);
+
+    // Call once on initial load
+    adjustChartSize();
     fetchDataAndUpdateUI();
     setInterval(fetchDataForCharts, 5000); // 1 minute for charts
     setInterval(fetchDataForTables, 5000); // 5 seconds for tables
