@@ -169,6 +169,10 @@
                         count: 3,
                         text: '3h'
                     },{
+                        type: 'hour',
+                        count: 12,
+                        text: '12h'
+                    },{
                         type: 'day',
                         count: 1,
                         text: '1d'
@@ -194,6 +198,11 @@
                     }],
                     selected: 1, // This selects (highlights) the '6m' button by default
                     inputEnabled: false, // Enables the input boxes for manual date entry
+                    labels: {
+                        style: {
+                            fontSize: labelFontSize // Set font size for the xAxis labels
+                        }
+                    }
                 },
                 navigator: {
                     enabled: true
@@ -507,11 +516,11 @@
     }
 
     // Listen for orientation change or resize events
-    window.addEventListener('orientationchange', adjustChartSize);
+    /* window.addEventListener('orientationchange', adjustChartSize);
     window.addEventListener('resize', adjustChartSize);
 
     // Call once on initial load
-    adjustChartSize();
+    adjustChartSize(); */
     fetchDataAndUpdateUI();
     setInterval(fetchDataForCharts, 5000); // 1 minute for charts
     setInterval(fetchDataForTables, 5000); // 5 seconds for tables
