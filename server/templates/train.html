@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Good luck</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 10px;
+        }
+        h3 {
+            color: #333;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 10px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 3px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        tr.even {
+            background-color: #f9f9f9;
+        }
+
+        tr.odd {
+            background-color: #FFF; /* Or any color you prefer for odd rows */
+        }
+        .header-container {
+            display: flex;
+            align-items: center; /* This will vertically center align the h3 and p */
+            justify-content: start;
+            flex-wrap: wrap;
+        }
+
+        .chart-container {
+            margin-left: auto;
+            margin-right: auto;
+            height: 800px; /* Default height, adjust as needed */
+            min-width: 310px; /* Minimum width */
+            max-width: 1250px; /* Maximum width */
+        }
+
+        @media screen and (max-width: 1080px) { /* Adjust for mobile devices */
+            .chart-container {
+                height: 1000px; /* Height for mobile */
+                max-width: 1000px; /* Max width for mobile */
+            }
+        }
+
+        .header-container h3 {
+            margin-right: 10px; /* Add some spacing between the h3 and p */
+        }
+        
+        /* Styles to ensure that the p tag doesn't take the full width and stays inline */
+        .header-container p {
+            margin: 0;
+            flex-grow: 1;
+            white-space: nowrap;
+        }
+        #ticksContainers table {
+            width: 100%;
+            table-layout: fixed;
+            border-collapse: collapse;
+            margin-bottom: 10px;
+        }
+
+        #ticksContainers th, 
+        #ticksContainers td {
+            border: 1px solid #ddd;
+            padding: 3px;
+            text-align: left;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+
+        .button-container {
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        .test-button {
+            background-color: #4CAF50; /* Green */
+            border: none;
+            color: white;
+            padding: 15px 32px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 5px; /* Rounded corners */
+            transition: background-color 0.3s ease;
+        }
+
+        .test-button:hover {
+            background-color: #45a049; /* Darker shade of green */
+        }
+
+    </style>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://code.highcharts.com/stock/highstock.js"></script>
+</head>
+<body>
+
+<div id="ticksContainers">
+    <!-- Ticks tables for each type will be placed here -->
+</div>
+
+<!-- Containers for Combined Chart and Table for Each Type -->
+<div id="combinedContainers">
+    <!-- Dynamically generated chart and table containers will be placed here -->
+</div>
+
+<div class="button-container">
+    <button id="playButton" class="control-button">Play</button>
+    <button id="pauseButton" class="control-button">Pause</button>
+    <button id="speedUp5Button" class="control-button">Speed5</button>
+    <button id="speedUp10Button" class="control-button">Speed10</button>
+    <button id="speedUp50Button" class="control-button">Speed100</button>
+</div>
+
+<script>
+    Highcharts.setOptions({
+        global: {
+            timezoneOffset: -8 * 60  // Offset for UTC +8
+        }
+    });
+    var charts = {};
+    var count = 0;
+
+    function createChartContainer(type) {
+        var containerId = 'container_' + type;
+        $('<div>').attr('id', containerId)
+                  .addClass('chart-container') // Add the chart-container class
+                  .appendTo('#chartContainer');
+        return containerId;
+    }
+
+    function createChart(containerId, title) {
+        var tooltipFontSize = isMobileDevice() ? '4vw' : '1.5vw';
+        var labelFontSize = isMobileDevice() ? '3vw' : '1.2vw';
+        var lineWidth = isMobileDevice() ? 4 : 2;
+        return new Promise((resolve, reject) => {
+            var chart = Highcharts.stockChart(containerId, {
+                chart: {
+                    zoomType: '',
+                    events: {
+                        load: function () {
+                            resolve(this);
+                        }
+                    }
+                },
+                plotOptions: {
+                    series: {
+                        turboThreshold: 0
+                    }
+                },
+                rangeSelector: {
+                    buttons: [{
+                        type: 'hour',
+                        count: 3,
+                        text: '3h'
+                    },{
+                        type: 'hour',
+                        count: 12,
+                        text: '12h'
+                    },{
+                        type: 'day',
+                        count: 1,
+                        text: '1d'
+                    }, {
+                        type: 'day',
+                        count: 2,
+                        text: '2d'
+                    }, {
+                        type: 'day',
+                        count: 3,
+                        text: '3d'
+                    }, {
+                        type: 'day',
+                        count: 5,
+                        text: '5d'
+                    }, {
+                        type: 'week',
+                        count: 1,
+                        text: '1w'
+                    },{
+                        type: 'all',
+                        text: 'All'
+                    }],
+                    selected: 1, // This selects (highlights) the '6m' button by default
+                    inputEnabled: false, // Enables the input boxes for manual date entry
+                    buttonTheme: {
+                        style: {
+                            fontSize: labelFontSize // Set font size for the xAxis labels
+                        }
+                    },
+                    buttonSpacing: 15
+                },
+                navigator: {
+                    enabled: true
+                },
+                scrollbar: {
+                    enabled: true
+                },
+                title: { text: title },
+                xAxis: {
+                    type: 'datetime',
+                    tickInterval: 60000,
+                    crosshair: {
+                        color: 'black'
+                    },
+                    labels: {
+                        style: {
+                            fontSize: labelFontSize // Set font size for the xAxis labels
+                        }
+                    }
+                },
+                yAxis: [{
+                    height: '60%',
+                    labels: {
+                        reserveSpace: true, 
+                        style: {
+                            fontSize: labelFontSize
+                        }
+                    },
+                    resize: { enabled: true }
+                }, {
+                    top: '60%',
+                    height: '40%',
+                    crosshair: {
+                        color: 'black'
+                    },
+                    labels: {
+                        reserveSpace: true, 
+                        style: {
+                            fontSize: labelFontSize
+                        }
+                    },
+                    offset: 0
+                }, {
+                    top: '60%',
+                    height: '40%',
+                    opposite: false,
+                    labels: {
+                        reserveSpace: true, 
+                        style: {
+                            fontSize: labelFontSize
+                        }
+                    }
+                }],
+                tooltip: {
+                    shared: true,
+                    split: false,
+                    style: {
+                        fontSize: tooltipFontSize // Set the font size for the tooltip
+                    },
+                    formatter: function () {
+                        /* var utcOffset = 8 * 60 * 60 * 1000;
+                        var adjustedTime = this.x + utcOffset; */
+                        var tooltipText = Highcharts.dateFormat('%b %e, %H:%M', this.x);
+                        this.points.forEach(function (point) {
+                            var value = point.y;
+                            if (title === "I" && (point.series.name === 'Max ZXJ' || point.series.name === 'Min ZXJ')) {
+                                value = roundToHalf(value);
+                            } else {
+                                value = Highcharts.numberFormat(value, 0);
+                            }
+                            tooltipText += '<br/><span style="color:' + point.series.color + '">●</span> ' + point.series.name + ': ' + value;
+                        });
+                        return tooltipText;
+                    }
+                },
+                series: [{
+                    name: 'Max ZXJ',
+                    data: [],
+                    type: 'line',
+                    color: '#FF8A80',
+                    lineWidth: lineWidth,
+                    yAxis: 0,
+                    dataGrouping: {
+                        enabled: false
+                    }
+                }, {
+                    name: 'Min ZXJ',
+                    data: [],
+                    type: 'line',
+                    color: '#81C784',
+                    lineWidth: lineWidth,
+                    yAxis: 0,
+                    dataGrouping: {
+                        enabled: false
+                    }
+                }, {
+                    name: 'CCL',
+                    data: [],
+                    type: 'line',
+                    lineWidth: lineWidth,
+                    yAxis: 1,
+                    dataGrouping: {
+                        enabled: false
+                    }
+                }, {
+                    name: 'CJL',
+                    data: [],
+                    type: 'column',
+                    lineWidth: lineWidth,
+                    color: '#CE93D8',
+                    yAxis: 2,
+                    dataGrouping: {
+                        enabled: false
+                    }
+                }]
+            });
+        });
+    }
+
+    function roundToHalf(num) {
+        return Math.round(num * 2) / 2;
+    }
+
+    function updateChartData(chart, typeData) {
+        if (chart && chart.series && typeData && Array.isArray(typeData)) {
+            chart.series[0].setData(typeData.map(d => [new Date(d.time).getTime(), d.max_zxj]));
+            chart.series[1].setData(typeData.map(d => [new Date(d.time).getTime(), d.min_zxj]));
+            chart.series[2].setData(typeData.map(d => [new Date(d.time).getTime(), d.ccl]));
+            chart.series[3].setData(typeData.map(d => {
+                var color = '#CE93D8'
+                if (d.cjl > 10000) {
+                    color = '#ca6e7c';
+                } else if (d.cjl > 8500) {
+                    color = '#d1818d';
+                }
+                return {
+                    x: new Date(d.time).getTime(),
+                    y: d.cjl,
+                    color: color // Apply the chosen color
+                };
+            }));
+        } else {
+            console.error('Chart not initialized or invalid data for', typeData);
+        }
+    }
+
+
+    function createCombinedContainer(type) {
+        var combinedContainerId = 'combined_' + type;
+        $('<div>').attr('id', combinedContainerId).appendTo('#combinedContainers');
+        return combinedContainerId;
+    }
+
+    function createTicksContainer(type) {
+        var ticksContainerId = 'ticks_' + type;
+        $('<div>').attr('id', ticksContainerId).appendTo('#ticksContainers');
+        return ticksContainerId;
+    }
+
+    function createChartAndTable(type) {
+        var combinedContainerId = createCombinedContainer(type);
+        
+        // Check if table container exists before creating
+        var tableContainerId = 'table_' + type;
+        if ($('#' + tableContainerId).length === 0) {
+            $('<div>').attr('id', tableContainerId)
+                .appendTo('#' + combinedContainerId);
+        }
+
+        // Check if ticks container exists before creating
+        var ticksContainerId = 'ticks_' + type;
+        if ($('#' + ticksContainerId).length === 0) {
+            createTicksContainer(type);
+        }
+
+        var chartContainerId = 'chart_' + type;
+        if ($('#' + chartContainerId).length === 0) {
+            $('<div>').attr('id', chartContainerId)
+                .addClass('chart-container') // Add the chart-container class
+                .appendTo('#' + combinedContainerId);
+        }
+
+        return { tableContainerId, chartContainerId };
+    }
+
+
+    function renderTicksTable(type, data) {
+        var tableHtml = '<table>';
+        /* tableHtml += '<tr class="odd"><td colspan="5">' + data.sum_infos + '</td></tr>'; */
+        /* tableHtml += addRowsFromArray(data.kp_info); */
+        tableHtml += addRowsFromArray(data.ticks);
+        tableHtml += '</table>';
+        $('#ticks_' + type).html(tableHtml);
+    } 
+
+    function fetchDataForCharts() {
+        $.getJSON('/train/ticks', function(chartData) {
+            // Define the desired order of the keys
+            var orderedKeys = ["rb", "i", "oi", "y"];
+
+            // Iterate over the ordered keys
+            $.each(orderedKeys, function(index, type) {
+                var data = chartData[type];
+                if (data) { // Check if the data for the key exists
+                    if (!charts[type]) {
+                        var containers = createChartAndTable(type);
+                        createChart(containers.chartContainerId, type.toUpperCase()).then(function(chart) {
+                            charts[type] = chart;
+                            updateChartData(chart, data);
+                        }).catch(function(error) {
+                            console.error('Error creating chart:', error);
+                        });
+                    } else {
+                        updateChartData(charts[type], data);
+                    }
+                }
+            });
+        });
+    }
+
+    function renderTable(type, data) {
+        var tableHtml = '<table>';
+        tableHtml += addRowsFromArray(data.kp_info);
+        /* tableHtml += addRowsFromArray(data.daily_ccl_datas); */
+        tableHtml += addRowsFromArray(data.ccl_peaks);
+        tableHtml += addRowsFromArray(data.zxj_peaks);
+        tableHtml += addRowsFromArray(data.cjlDiff_peaks);
+        tableHtml += addRowsFromArray(data.ccl_sums);        
+        /* tableHtml += addRowsFromArray(data.peak_infos); */
+        tableHtml += addRowsFromArray(data.ticks);
+        /* tableHtml += addRowsFromArray(data.zxj_infos);
+        tableHtml += addRowsFromArray(data.ccl_infos); */
+        tableHtml += '</table>';
+        $('#table_' + type).html(tableHtml);
+    }
+
+    function addRowsFromArray(arr) {
+        var tableHtml = "";
+        var className = "";
+        $.each(arr, function(index, row) {
+            className = count % 2 == 0 ? "even" : "odd";
+            tableHtml += '<tr class="' + className + '">';
+            $.each(row, function(key, value) {
+                tableHtml += '<td>' + value + '</td>';
+            });
+            count++;
+            tableHtml += '</tr>';
+        });
+        return tableHtml
+    }
+
+    function createTableContainer(type) {
+        var tableContainerId = 'table_' + type;
+        var tableDiv = $('<div>').attr('id', tableContainerId);
+        $('#chartsAndTables').append(tableDiv);
+        return tableContainerId;
+    }
+
+    function fetchDataForTables() {
+        count = 0;
+        $.getJSON('/train/info', function(tableData) {
+            $.each(tableData, function(type, data) {
+                if ($('#table_' + type).length === 0) {
+                    createChartAndTable(type);
+                }
+                var scrollTop = $(window).scrollTop(); // 保存当前滚动位置            
+                renderTable(type, data); // Render the main table
+                // renderTicksTable(type, data); // Render the ticks table
+                adjustTableFontSize();
+                $(window).scrollTop(scrollTop); // 恢复滚动位置
+            });
+        });
+    }
+
+    function fetchDataAndUpdateUI() {
+        fetchDataForTables();
+        fetchDataForCharts();        
+    }
+
+    function isMobileDevice() {
+        return window.innerWidth <= 1080 && window.innerHeight > window.innerWidth; // or another threshold you prefer
+    }
+
+    function isBoldFont() {
+        return window.innerWidth <= 1080;
+    }
+
+    function adjustTableFontSize() {
+        var fontSize = isBoldFont() ? '4vw' : '1.3vw'; // Using the same isMobileDevice function
+
+        // Apply the font size to th and td elements
+        $('th, td').css('font-size', fontSize);
+    }
+    function adjustChartSize() {
+        if (window.innerHeight < window.innerWidth) { // Landscape orientation
+            $('.chart-container').css({
+                'height': '500px', // Adjust as needed
+                'width': '100%' // Adjust as needed
+            });
+        } else { // Portrait orientation
+            $('.chart-container').css({
+                'height': '800px', // Adjust as needed
+                'width': '100%' // Adjust as needed
+            });
+        }
+
+        // Re-draw or reflow the chart to apply new dimensions
+        Object.keys(charts).forEach(function(chartId) {
+            charts[chartId].reflow();
+        });
+    }
+
+    // Listen for orientation change or resize events
+    /* window.addEventListener('orientationchange', adjustChartSize);
+    window.addEventListener('resize', adjustChartSize);
+
+    // Call once on initial load
+    adjustChartSize(); */
+    /* fetchDataAndUpdateUI();    */
+
+    $(document).ready(function() {
+
+        let isPlaying = false;
+        let fetchInterval = 5000; // 默认5秒刷新一次
+        let currentTime = new Date().toISOString(); // 假设的初始时间
+
+        $('#playButton').click(function() {
+            isPlaying = true;
+        });
+
+        $('#pauseButton').click(function() {
+            isPlaying = false;
+        });
+
+        $('#fastForwardButton').click(function() {
+            // 快进，比如每次快进30秒
+            let newTime = new Date(currentTime).getTime() + (30 * 1000);
+            currentTime = new Date(newTime).toISOString();
+        });
+
+        $('#rewindButton').click(function() {
+            // 后退，比如每次后退30秒
+            let newTime = new Date(currentTime).getTime() - (30 * 1000);
+            currentTime = new Date(newTime).toISOString();
+        });
+        $('#speedUp5Button').click(function() {
+            fetchInterval = 1000； // 1秒刷新一次
+        });
+
+        $('#speedUp10Button').click(function() {
+            fetchInterval = 500； // 0.5秒刷新一次
+        });
+
+        $('#speedUp50Button').click(function() {
+            fetchInterval = 100； // 0.05秒刷新一次
+        });
+
+        function fetchData() {
+            if (isPlaying) {
+                $.getJSON(`/ticks?start_time=${currentTime}`, function(chartData) {
+                    // 处理数据更新图表
+                    currentTime = new Date(currentTime).getTime() + fetchInterval;
+                    currentTime = new Date(currentTime).toISOString();
+                });
+            }
+        }
+
+        setInterval(fetchDataForCharts, fetchInterval);
+        setInterval(fetchDataForTables, fetchInterval); // 5 seconds for tables
+    }); 
+</script>
+
+</body>
+</html>

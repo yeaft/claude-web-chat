@@ -99,6 +99,20 @@ def get_kp_time_string(target_date = ""):
         
     return f"{date_str} 21:00:00.000"
 
+# 2023-11-01 15:00:00.000
+def get_kp_time_string_by_time(time):
+    date = time.split(" ")[0]
+    is_working_day = date_utils.is_work_day(date)
+    
+    if target_date:
+        date_str = target_date
+    elif now.time() >= time(21, 0, 0):
+        date_str = now.strftime('%Y-%m-%d')
+    else:
+        date_str = date_add_days(now, -1).strftime('%Y-%m-%d')
+        
+    return f"{date_str} 21:00:00.000"
+
 
 if __name__ == "__main__":
     # dt_str = "2020-01-23 14:02:23.627"
