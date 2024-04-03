@@ -7,7 +7,7 @@ import click
 import pytz
 
 from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
-from analysis import v3_keep_doing
+#from analysis import v3_keep_doing
 from datetime import datetime, timedelta
 from pymongo import MongoClient, DESCENDING, ASCENDING
 
@@ -21,8 +21,8 @@ CONTRACT_DP_MAP = {}
 def get_contract_map():
     max_date = constance.INFO_COL.find_one({"type":"rb"}, sort=[('date', DESCENDING)])['date']
     # max_date = "20240109"
-    available_contracts = list(constance.MAIN_COL.aggregate([
-        { "$match": { "date": "20240307", "cjl": { "$gt": "200000" } } },
+    available_contracts = list(constance.INFO_COL.aggregate([
+        { "$match": { "date": max_date, "cjl": { "$gt": 200000 } } },
         { "$group": {
             "_id": "$type",
             "maxCjl": { "$max": "$cjl" },
