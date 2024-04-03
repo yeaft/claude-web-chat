@@ -258,11 +258,11 @@ def collect_data(collect_type):
         test_data()
 
 if __name__ == "__main__":
-    # collect_data()
+    collect_data()
     
     # Test
     # Initial data
     # initial_dp_data()
-    print(get_contract_map())
+    # print(get_contract_map())
     # get_current_data({"rb": {"norCode":"RB2301"}})
  
