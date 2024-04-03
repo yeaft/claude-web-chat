@@ -19,9 +19,17 @@ MONITOR_CONTRACTS = ["rb"]
 CONTRACT_DP_MAP = {}
 
 def get_contract_map():
-    # max_date = constance.MAIN_COL.find_one({"type":"rb"}, sort=[('date', DESCENDING)])['date']
-    max_date = "20240109"
-    available_contracts = list(constance.MAIN_COL.find({"date": max_date, "kpl": {"$gt": 200000}}))
+    max_date = constance.INFO_COL.find_one({"type":"rb"}, sort=[('date', DESCENDING)])['date']
+    # max_date = "20240109"
+    available_contracts = list(constance.MAIN_COL.aggregate([
+        { "$match": { "date": "20240307", "cjl": { "$gt": "200000" } } },
+        { "$group": {
+            "_id": "$type",
+            "maxCjl": { "$max": "$cjl" },
+            "data": { "$first": "$$ROOT" }
+        }},
+        { "$replaceRoot": { "newRoot": "$data" } }
+    ]))
     types = {}
     
     for x in available_contracts:
@@ -250,11 +258,11 @@ def collect_data(collect_type):
         test_data()
 
 if __name__ == "__main__":
-    collect_data()
+    # collect_data()
     
     # Test
     # Initial data
     # initial_dp_data()
-    # get_contract_map()
+    print(get_contract_map())
     # get_current_data({"rb": {"norCode":"RB2301"}})
  
