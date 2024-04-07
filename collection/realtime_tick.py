@@ -23,9 +23,10 @@ def get_contract_map():
     # max_date = "20240109"
     available_contracts = list(constance.INFO_COL.aggregate([
         { "$match": { "date": max_date, "kpl": { "$gt": 200000 } } },
+        { "$sort": { "kpl": -1 } },
         { "$group": {
             "_id": "$type",
-            "maxCjl": { "$max": "$kpl" },
+            "maxKpl": { "$max": "$kpl" },
             "data": { "$first": "$$ROOT" }
         }},
         { "$replaceRoot": { "newRoot": "$data" } }
