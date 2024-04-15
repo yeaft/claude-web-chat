@@ -282,8 +282,8 @@ def train():
 @app.route('/train/info', methods=['GET'])
 @block_ip()
 def get_info():
-    global FIND_PEAK_START_INDEX, START_TIME
-    list_size = 11
+    global START_TIME
+    list_size = 25
     
     kp_time = date_utils.get_kp_time_string()
     is_working_day = date_utils.is_work_day(kp_time[:10])
@@ -299,20 +299,10 @@ def get_info():
         
         if len(CACHE_TICKS[data_type]) >= 1.2 * TEN_DAYS_SIZE:
             CACHE_TICKS[data_type] = CACHE_TICKS[data_type][-TEN_DAYS_SIZE:]
-            FIND_PEAK_START_INDEX = 0
-            EXTREME_SET[data_type]['ccl'] = []
-            EXTREME_SET[data_type]['zxj'] = []
-            EXTREME_SET[data_type]['cjlDiff'] = []
-            find_extremes(data_type, CACHE_TICKS[data_type], cols = ["ccl", "zxj"])
-            find_extremes(data_type, CACHE_TICKS[data_type], span = 20 * 12, cols = ["cjlDiff"])
             
         new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gt": CACHE_TICKS[data_type][-1]['time']}}).sort([("time", 1)]))
         if new_ticks:
             CACHE_TICKS[data_type] += new_ticks
-            
-            find_extremes(data_type, CACHE_TICKS[data_type], cols = ['ccl', 'zxj'])
-            find_extremes(data_type, CACHE_TICKS[data_type], span = 20 * 12, cols = ['cjlDiff'])
-            FIND_PEAK_START_INDEX = len(CACHE_TICKS[data_type]) - 45 * 12        
         
         for col in EXTREME_COLS:
             peaks = []

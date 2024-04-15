@@ -114,10 +114,6 @@
 </head>
 <body>
 
-<div id="ticksContainers">
-    <!-- Ticks tables for each type will be placed here -->
-</div>
-
 <!-- Containers for Combined Chart and Table for Each Type -->
 <div id="combinedContainers">
     <!-- Dynamically generated chart and table containers will be placed here -->
@@ -377,12 +373,6 @@
                 .appendTo('#' + combinedContainerId);
         }
 
-        // Check if ticks container exists before creating
-        var ticksContainerId = 'ticks_' + type;
-        if ($('#' + ticksContainerId).length === 0) {
-            createTicksContainer(type);
-        }
-
         var chartContainerId = 'chart_' + type;
         if ($('#' + chartContainerId).length === 0) {
             $('<div>').attr('id', chartContainerId)
@@ -392,16 +382,6 @@
 
         return { tableContainerId, chartContainerId };
     }
-
-
-    function renderTicksTable(type, data) {
-        var tableHtml = '<table>';
-        /* tableHtml += '<tr class="odd"><td colspan="5">' + data.sum_infos + '</td></tr>'; */
-        /* tableHtml += addRowsFromArray(data.kp_info); */
-        tableHtml += addRowsFromArray(data.ticks);
-        tableHtml += '</table>';
-        $('#ticks_' + type).html(tableHtml);
-    } 
 
     function fetchDataForCharts() {
         $.getJSON('/train/ticks', function(chartData) {
@@ -429,57 +409,12 @@
     }
 
     function renderTable(type, data) {
-        var tableHtml = '<table>';
+        var tableHtml = '<table>';        
         tableHtml += addRowsFromArray(data.kp_info);
-        /* tableHtml += addRowsFromArray(data.daily_ccl_datas); */
-        tableHtml += addRowsFromArray(data.ccl_peaks);
-        tableHtml += addRowsFromArray(data.zxj_peaks);
-        tableHtml += addRowsFromArray(data.cjlDiff_peaks);
-        tableHtml += addRowsFromArray(data.ccl_sums);        
-        /* tableHtml += addRowsFromArray(data.peak_infos); */
+        tableHtml += addRowsFromArray(data.ccl_sums);  
         tableHtml += addRowsFromArray(data.ticks);
-        /* tableHtml += addRowsFromArray(data.zxj_infos);
-        tableHtml += addRowsFromArray(data.ccl_infos); */
         tableHtml += '</table>';
         $('#table_' + type).html(tableHtml);
-    }
-
-    function addRowsFromArray(arr) {
-        var tableHtml = "";
-        var className = "";
-        $.each(arr, function(index, row) {
-            className = count % 2 == 0 ? "even" : "odd";
-            tableHtml += '<tr class="' + className + '">';
-            $.each(row, function(key, value) {
-                tableHtml += '<td>' + value + '</td>';
-            });
-            count++;
-            tableHtml += '</tr>';
-        });
-        return tableHtml
-    }
-
-    function createTableContainer(type) {
-        var tableContainerId = 'table_' + type;
-        var tableDiv = $('<div>').attr('id', tableContainerId);
-        $('#chartsAndTables').append(tableDiv);
-        return tableContainerId;
-    }
-
-    function fetchDataForTables() {
-        count = 0;
-        $.getJSON('/train/info', function(tableData) {
-            $.each(tableData, function(type, data) {
-                if ($('#table_' + type).length === 0) {
-                    createChartAndTable(type);
-                }
-                var scrollTop = $(window).scrollTop(); // 保存当前滚动位置            
-                renderTable(type, data); // Render the main table
-                // renderTicksTable(type, data); // Render the ticks table
-                adjustTableFontSize();
-                $(window).scrollTop(scrollTop); // 恢复滚动位置
-            });
-        });
     }
 
     function fetchDataAndUpdateUI() {
@@ -520,13 +455,6 @@
         });
     }
 
-    // Listen for orientation change or resize events
-    /* window.addEventListener('orientationchange', adjustChartSize);
-    window.addEventListener('resize', adjustChartSize);
-
-    // Call once on initial load
-    adjustChartSize(); */
-    /* fetchDataAndUpdateUI();    */
 
     $(document).ready(function() {
 
@@ -567,10 +495,10 @@
 
         function fetchData() {
             if (isPlaying) {
-                $.getJSON(`/ticks?start_time=${currentTime}`, function(chartData) {
+                $.getJSON(`/train/ticks?start_time=${currentTime}`, function(chartData) {
                     // 处理数据更新图表
-                    currentTime = new Date(currentTime).getTime() + fetchInterval;
-                    currentTime = new Date(currentTime).toISOString();
+                    newTime = new Date(currentTime).getTime() + fetchInterval;
+                    currentTime = new Date(newTime).toISOString();
                 });
             }
         }
