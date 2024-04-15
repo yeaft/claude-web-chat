@@ -394,13 +394,13 @@ def get_info():
         result[data_type]['ticks'] = latest_ticks
         
         ccl_sums = []
-        for i in range(5, 0, -1):
+        for i in range(10, 0, -1):
             start_index = - i * 12
             end_index = - (i - 1) * 12 if i != 1 else len(CACHE_TICKS[data_type])            
             ccl_sums.append(sum(tick['cjlDiff'] for tick in CACHE_TICKS[data_type][start_index:end_index]))
             
 
-        result[data_type]['ccl_sums'] = [ccl_sums]
+        result[data_type]['ccl_sums'] = [ccl_sums[:5], ccl_sums[5:]]
         
         # result[data_type]['sum_infos'] = f"open time {KP_TICKS[data_type]['time'][5:-4]}"
         
