@@ -78,7 +78,7 @@ class DataProcessor:
         else:
             reference_price = int (self.data[-1]['zxj'] * 12)
             
-        self.cjl_period_min_threshold = int(23000000/reference_price)
+        self.cjl_period_min_threshold = int(19000000/reference_price)
         self.cjl_period_pass_threshold = int(34000000/reference_price)
         self.cjl_hot_threshold = int(4500000 / reference_price) # threshold should be related to real money, 1000 * 4000 = 4 million
         self.must_away_cjl_threshold = int(240000000 / reference_price) # 40000 * 4000 = 160 million

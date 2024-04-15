@@ -76,6 +76,8 @@ def get_current_data(types, code_key = "norCode", current_time = ""):
 
             data_str = data_array[1].replace("\"", "").replace(";", "")
             data = convert_str_to_ticker_data(current_time, t, code, data_str)
+            if data['ccl'] == 0:
+                continue
             datas.append(data)
     
     # with open("/data.txt", "a") as f:
