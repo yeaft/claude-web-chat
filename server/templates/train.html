@@ -357,12 +357,6 @@
         return combinedContainerId;
     }
 
-    function createTicksContainer(type) {
-        var ticksContainerId = 'ticks_' + type;
-        $('<div>').attr('id', ticksContainerId).appendTo('#ticksContainers');
-        return ticksContainerId;
-    }
-
     function createChartAndTable(type) {
         var combinedContainerId = createCombinedContainer(type);
         
@@ -384,7 +378,7 @@
     }
 
     function fetchDataForCharts() {
-        $.getJSON('/train/ticks', function(chartData) {
+        $.getJSON(`/train/ticks?next=${next}`, function(chartData) {
             // Define the desired order of the keys
             var orderedKeys = ["rb", "i", "oi", "y"];
 
@@ -410,7 +404,6 @@
 
     function renderTable(type, data) {
         var tableHtml = '<table>';        
-        tableHtml += addRowsFromArray(data.kp_info);
         tableHtml += addRowsFromArray(data.ccl_sums);  
         tableHtml += addRowsFromArray(data.ticks);
         tableHtml += '</table>';
@@ -460,7 +453,6 @@
 
         let isPlaying = false;
         let fetchInterval = 5000; // 默认5秒刷新一次
-        let currentTime = new Date().toISOString(); // 假设的初始时间
 
         $('#playButton').click(function() {
             isPlaying = true;
@@ -472,14 +464,12 @@
 
         $('#fastForwardButton').click(function() {
             // 快进，比如每次快进30秒
-            let newTime = new Date(currentTime).getTime() + (30 * 1000);
-            currentTime = new Date(newTime).toISOString();
+            next = 30 / 5;
         });
 
         $('#rewindButton').click(function() {
             // 后退，比如每次后退30秒
-            let newTime = new Date(currentTime).getTime() - (30 * 1000);
-            currentTime = new Date(newTime).toISOString();
+            next = - 30 / 5;
         });
         $('#speedUp5Button').click(function() {
             fetchInterval = 1000； // 1秒刷新一次
@@ -495,10 +485,10 @@
 
         function fetchData() {
             if (isPlaying) {
-                $.getJSON(`/train/ticks?start_time=${currentTime}`, function(chartData) {
+                $.getJSON(`/train/ticks?next=${next}`, function(chartData) {
                     // 处理数据更新图表
-                    newTime = new Date(currentTime).getTime() + fetchInterval;
-                    currentTime = new Date(newTime).toISOString();
+                    next = 1;
+                    
                 });
             }
         }
