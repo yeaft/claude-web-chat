@@ -122,6 +122,9 @@
 <div class="button-container">
     <button id="playButton" class="control-button">Play</button>
     <button id="pauseButton" class="control-button">Pause</button>
+    <button id="past30Button" class="control-button">Past30</button>
+    <button id="next30Button" class="control-button">Next30</button>
+    <button id="normalButton" class="control-button">Normal</button>    
     <button id="speedUp5Button" class="control-button">Speed5</button>
     <button id="speedUp10Button" class="control-button">Speed10</button>
     <button id="speedUp50Button" class="control-button">Speed100</button>
@@ -377,29 +380,19 @@
         return { tableContainerId, chartContainerId };
     }
 
-    function fetchDataForCharts() {
-        $.getJSON(`/train/ticks?next=${next}`, function(chartData) {
-            // Define the desired order of the keys
-            var orderedKeys = ["rb", "i", "oi", "y"];
-
-            // Iterate over the ordered keys
-            $.each(orderedKeys, function(index, type) {
-                var data = chartData[type];
-                if (data) { // Check if the data for the key exists
-                    if (!charts[type]) {
-                        var containers = createChartAndTable(type);
-                        createChart(containers.chartContainerId, type.toUpperCase()).then(function(chart) {
-                            charts[type] = chart;
-                            updateChartData(chart, data);
-                        }).catch(function(error) {
-                            console.error('Error creating chart:', error);
-                        });
-                    } else {
-                        updateChartData(charts[type], data);
-                    }
-                }
+    function addRowsFromArray(arr) {
+        var tableHtml = "";
+        var className = "";
+        $.each(arr, function(index, row) {
+            className = count % 2 == 0 ? "even" : "odd";
+            tableHtml += '<tr class="' + className + '">';
+            $.each(row, function(key, value) {
+                tableHtml += '<td>' + value + '</td>';
             });
+            count++;
+            tableHtml += '</tr>';
         });
+        return tableHtml
     }
 
     function renderTable(type, data) {
@@ -410,10 +403,6 @@
         $('#table_' + type).html(tableHtml);
     }
 
-    function fetchDataAndUpdateUI() {
-        fetchDataForTables();
-        fetchDataForCharts();        
-    }
 
     function isMobileDevice() {
         return window.innerWidth <= 1080 && window.innerHeight > window.innerWidth; // or another threshold you prefer
@@ -450,52 +439,103 @@
 
 
     $(document).ready(function() {
+        let isPlaying = true;
+        let fetchInterval = 5000; // Default refresh rate of 5 seconds
+        let intervalHandle = null;
+        let next = 1;
 
-        let isPlaying = false;
-        let fetchInterval = 5000; // 默认5秒刷新一次
+        function fetchData() {
+            $.getJSON(`/train/data?next=${next}`, function(chartData) {
+                // Handle data and update charts
+                next = 1;
+                var orderedKeys = ["rb", "i", "oi", "y"];
+                $.each(orderedKeys, function(index, type) {
+                    var data = chartData[type];
+                    if (data) { 
+                        if ($('#table_' + type).length === 0) {
+                            createChartAndTable(type);
+                        }
+                        var scrollTop = $(window).scrollTop(); // Save current scroll position
+                        renderTable(type, data); // Render the main table
+                        adjustTableFontSize();
+                        $(window).scrollTop(scrollTop); // Restore scroll position                        
+
+                        ticks = data.chart_ticks;
+                        if (!charts[type]) {
+                        
+                            var containers = createChartAndTable(type);
+                            createChart(containers.chartContainerId, type.toUpperCase()).then(function(chart) {
+                                charts[type] = chart;
+                                updateChartData(chart, ticks);
+                            }).catch(function(error) {
+                                console.error('Error creating chart:', error);
+                            });
+                        } else {
+                            updateChartData(charts[type], ticks);
+                        }
+                    }
+                });
+            });
+        }
+        fetchData();
+
+        function manageDataFetching() {
+            if (isPlaying && intervalHandle === null) {
+                intervalHandle = setInterval(fetchData, fetchInterval);
+            } else if (!isPlaying && intervalHandle !== null) {
+                clearInterval(intervalHandle);
+                intervalHandle = null;
+            }
+        }
 
         $('#playButton').click(function() {
             isPlaying = true;
+            manageDataFetching();
         });
 
         $('#pauseButton').click(function() {
             isPlaying = false;
+            manageDataFetching();
         });
 
-        $('#fastForwardButton').click(function() {
-            // 快进，比如每次快进30秒
-            next = 30 / 5;
+        $('#past30Button').click(function() {
+            next = -6;
+            fetchData();
         });
 
-        $('#rewindButton').click(function() {
-            // 后退，比如每次后退30秒
-            next = - 30 / 5;
+        $('#next30Button').click(function() {
+            next = 6;
+            fetchData();
         });
+
+        $('#normalButton').click(function() {
+            fetchInterval = 5000; // 1 second refresh rate
+            clearInterval(intervalHandle);
+            intervalHandle = null;
+            manageDataFetching();
+        });
+
         $('#speedUp5Button').click(function() {
-            fetchInterval = 1000； // 1秒刷新一次
+            fetchInterval = 1000; // 1 second refresh rate
+            clearInterval(intervalHandle);
+            intervalHandle = null;
+            manageDataFetching();
         });
 
         $('#speedUp10Button').click(function() {
-            fetchInterval = 500； // 0.5秒刷新一次
+            fetchInterval = 500; // 0.5 second refresh rate
+            clearInterval(intervalHandle);
+            intervalHandle = null;
+            manageDataFetching();
         });
 
         $('#speedUp50Button').click(function() {
-            fetchInterval = 100； // 0.05秒刷新一次
+            fetchInterval = 100; // 0.05 second refresh rate
+            clearInterval(intervalHandle);
+            intervalHandle = null;
+            manageDataFetching();
         });
-
-        function fetchData() {
-            if (isPlaying) {
-                $.getJSON(`/train/ticks?next=${next}`, function(chartData) {
-                    // 处理数据更新图表
-                    next = 1;
-                    
-                });
-            }
-        }
-
-        setInterval(fetchDataForCharts, fetchInterval);
-        setInterval(fetchDataForTables, fetchInterval); // 5 seconds for tables
-    }); 
+    });
 </script>
 
 </body>

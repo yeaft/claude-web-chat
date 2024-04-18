@@ -18,6 +18,7 @@ CACHE_DAILY_CCL_DATA = {}
 CACHE_CP_RATE_DATA = {}
 PAST_CCL_STABLE_DATA = {}
 TEN_DAYS_SIZE = int(12 * 60 * 5.8 * 10)
+TEN_DAYS_MINS_SIZE = int(60 * 5.8 * 10)
 LAST_DAY_SIZE = int(12 * 60 * 5.8)
 HALF_DAY_SIZE = int(12 * 60 * 3)
 KP_TICKS = {}
@@ -115,38 +116,30 @@ def initial_ticks():
             CONTEXT[code] = {
                 "index": TEN_DAYS_SIZE,
                 "ticks": ticks,
-                "min_index": TEN_DAYS_SIZE / 12,
+                "min_index": 0,
                 "min_ticks": m_ticks
             }
+            print(f"Finish inital ticks data for {code}, total ticks: {len(ticks)}, total min ticks: {len(m_ticks)}")
             
     utils.log("Finish inital ticks data")
 
         
-@app.route('/train/ticks', methods=['GET'])
-@block_ip()
-def get_latest_1min_ticks():
-    next = request.args.get('next', default=1, type=int)  # Retrieve next_count from the query string
-    data = {}
-    next_index = CONTEXT[CODE]["min_index"] + int(next / 12)
-    start_index = next_index - TEN_DAYS_SIZE / 12 if next_index > TEN_DAYS_SIZE / 12 else 0
-    data["rb"] = CONTEXT[CODE]["min_ticks"][start_index:next_index]
-    CONTEXT[CODE]["min_index"] = next_index
-    return data
-
 @app.route('/train')
 @block_ip()
 @requires_auth
 def train():
     return render_template('train.html')
     
-@app.route('/train/info', methods=['GET'])
+@app.route('/train/data', methods=['GET'])
 @block_ip()
 def get_info():
-    list_size = 25  
+    list_size = 65 
     next = request.args.get('next', default=1, type=int)  # Retrieve next_count from the query string 
     next_index = CONTEXT[CODE]["index"] + next
     CONTEXT[CODE]["index"] = next_index
-    result = {}  
+    result = {
+        "rb": {},
+    }  
     data_type = "rb"  
             
     data = CONTEXT[CODE]["ticks"][next_index-list_size:next_index]
@@ -157,7 +150,7 @@ def get_info():
             [record['time'][11:-4], record['zxj'] if data_type == 'i' else int(record['zxj']), int(record['cjlDiff'] if "cjlDiff" in record else record['cjl']), int(data[i]['ccl'] - data[i - 1]['ccl']), int(record['ccl'])]
         )
     
-    result[data_type]['ticks'] = latest_ticks
+    result[data_type]['ticks'] = latest_ticks[-24:]
         
     ccl_sums = []
     for i in range(5, 0, -1):
@@ -167,6 +160,26 @@ def get_info():
             
 
     result[data_type]['ccl_sums'] = [ccl_sums]
+    
+    
+    # Find end_index
+    last_index = CONTEXT[CODE]["min_index"]
+    end_tick = data[-1]
+    end_index = -1
+    for i in range(last_index, len(CONTEXT[CODE]['min_ticks'])):
+        # print(f"{CONTEXT[CODE]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
+        if CONTEXT[CODE]['min_ticks'][i]['time'][:-2] == end_tick['time'][:-6]:
+            print(f"{CONTEXT[CODE]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
+            end_index = i    
+            break
+    
+
+    start_index = max(0, end_index - TEN_DAYS_MINS_SIZE)
+    print(f"Get latest 1min ticks for {CODE}, start_index: {start_index}, next_index: {end_index}, min_ticks: {len(CONTEXT[CODE]['min_ticks'])}")
+    result[data_type]['chart_ticks'] = CONTEXT[CODE]["min_ticks"][start_index:end_index]
+    CONTEXT[CODE]["min_index"] = end_index
+    
+    
     return result
 
 if __name__ == '__main__':
