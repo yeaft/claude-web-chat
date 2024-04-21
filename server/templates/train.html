@@ -119,6 +119,11 @@
     <!-- Dynamically generated chart and table containers will be placed here -->
 </div>
 
+<div id="codeButtons" class="button-container">
+    <!-- Buttons will be dynamically added here -->
+</div>
+
+
 <div class="button-container">
     <button id="playButton" class="control-button">Play</button>
     <button id="pauseButton" class="control-button">Pause</button>
@@ -444,11 +449,31 @@
         let intervalHandle = null;
         let next = 1;
 
-        function fetchData() {
-            $.getJSON(`/train/data?next=${next}`, function(chartData) {
+        var codeCandidates = ["rb2401", "ii2401"]; // Add more codes as needed
+
+        function createCodeButtons() {
+            var container = $('#codeButtons');
+            container.empty(); // Clear existing buttons if any
+            codeCandidates.forEach(function(code) {
+                $('<button>')
+                    .addClass('test-button')
+                    .text(code.toUpperCase()) // Button text
+                    .on('click', function() {
+                        fetchData(code);
+                    })
+                    .appendTo(container);
+            });
+        }
+
+        function fetchData(code=null, random=null) {
+            var url = `/train/data?next=${next}`;
+            if (code) {
+                url += `&code=${code}`; // Append code parameter to the URL if provided
+            }
+            $.getJSON(url, function(chartData) {
                 // Handle data and update charts
                 next = 1;
-                var orderedKeys = ["rb", "i", "oi", "y"];
+                var orderedKeys = ["rb", "i", "oi", "y", "hc"];
                 $.each(orderedKeys, function(index, type) {
                     var data = chartData[type];
                     if (data) { 
@@ -473,10 +498,19 @@
                         } else {
                             updateChartData(charts[type], ticks);
                         }
+                    } else {
+                        // Remove the chart and table if no data is available
+                        if ($('#table_' + type).length > 0) {
+                            $('#table_' + type).remove();
+                        }
+                        if ($('#chart_' + type).length > 0) {
+                            $('#chart_' + type).remove();
+                        }
                     }
                 });
             });
         }
+        createCodeButtons();
         fetchData();
 
         function manageDataFetching() {

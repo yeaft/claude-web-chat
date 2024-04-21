@@ -8,6 +8,7 @@ from statistics import mean
 from flask_compress import Compress
 from functools import wraps
 import numpy as np
+import random
 
 app = Flask(__name__)
 Compress(app)
@@ -33,9 +34,10 @@ EXTREME_SET = {}
 LOW_CJL_MINUTE_THRESHOLD = 3000
 MIN_CJL_5SEC_THRESHOLD = 1500
 # CANDIDATE_CODES = ["rb2401", "rb2405", "rb2410", "ii2401", "ii2405", "ii2410"]
-CANDIDATE_CODES = ["rb2401", "rb2405"]
-CODE = "rb2401"
+CANDIDATE_CODES = ["rb2401", "ii2401"]
+
 CONTEXT = {
+    "default_code": "rb2401"
 }
 
 def block_ip():
@@ -113,16 +115,27 @@ def initial_ticks():
                         
                     start_index = i + 1
             
+            train_status = constance.TRAIN_COL.find_one({"code": code}) 
+            if train_status is None:
+                tick_index = TEN_DAYS_SIZE
+                min_index = 0
+            else:
+                tick_index = train_status['index']
+                min_index = train_status['min_index']
+            
             CONTEXT[code] = {
-                "index": TEN_DAYS_SIZE,
+                "index": tick_index,
                 "ticks": ticks,
-                "min_index": 0,
+                "min_index": min_index,
                 "min_ticks": m_ticks
             }
+            
             print(f"Finish inital ticks data for {code}, total ticks: {len(ticks)}, total min ticks: {len(m_ticks)}")
             
     utils.log("Finish inital ticks data")
 
+def save_train_status(code):
+    constance.TRAIN_COL.update_one({"code": code}, {"$set": {"index": CONTEXT[code]['index'], "min_index": CONTEXT[code]['min_index']}}, upsert=True)
         
 @app.route('/train')
 @block_ip()
@@ -135,14 +148,32 @@ def train():
 def get_info():
     list_size = 65 
     next = request.args.get('next', default=1, type=int)  # Retrieve next_count from the query string 
-    next_index = CONTEXT[CODE]["index"] + next
-    CONTEXT[CODE]["index"] = next_index
+    code = request.args.get('code', default=CONTEXT["default_code"], type=str)  # Retrieve next_count from the query string
+    is_random = request.args.get('random', default=False, type=bool)  # Retrieve next_count from the query string
+    CONTEXT["default_code"] = code    
+    
+    if "rb" in code:
+        data_type = "rb"
+    elif "i" in code:
+        data_type = "i"
+    elif "hc" in code:
+        data_type = "hc"
+    else:
+        return {"error": "Invalid code"}
+    
+    print(f"Get info for {code}, next: {next}, candidate codes: {CANDIDATE_CODES}, context codes: {CONTEXT.keys()}")
+    
     result = {
-        "rb": {},
-    }  
-    data_type = "rb"  
-            
-    data = CONTEXT[CODE]["ticks"][next_index-list_size:next_index]
+        data_type: {},
+    }
+    
+    if is_random:
+        CONTEXT[code]["index"] = random.randint(TEN_DAYS_SIZE, len(CONTEXT[code]["ticks"]) - TEN_DAYS_SIZE)
+        CONTEXT[code]["min_index"] = CONTEXT[code]["index"] / 12 - 150    
+    
+    next_index = CONTEXT[code]["index"] + next
+    CONTEXT[code]["index"] = next_index        
+    data = CONTEXT[code]["ticks"][next_index-list_size:next_index]
     latest_ticks = []
     for i in range(1, len(data)):
         record = data[i]
@@ -163,22 +194,23 @@ def get_info():
     
     
     # Find end_index
-    last_index = CONTEXT[CODE]["min_index"]
+    last_index = CONTEXT[code]["min_index"]
     end_tick = data[-1]
     end_index = -1
-    for i in range(last_index, len(CONTEXT[CODE]['min_ticks'])):
-        # print(f"{CONTEXT[CODE]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
-        if CONTEXT[CODE]['min_ticks'][i]['time'][:-2] == end_tick['time'][:-6]:
-            print(f"{CONTEXT[CODE]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
+    for i in range(last_index, len(CONTEXT[code]['min_ticks'])):
+        # print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
+        if CONTEXT[code]['min_ticks'][i]['time'][:-2] == end_tick['time'][:-6]:
+            print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
             end_index = i    
             break
     
 
     start_index = max(0, end_index - TEN_DAYS_MINS_SIZE)
-    print(f"Get latest 1min ticks for {CODE}, start_index: {start_index}, next_index: {end_index}, min_ticks: {len(CONTEXT[CODE]['min_ticks'])}")
-    result[data_type]['chart_ticks'] = CONTEXT[CODE]["min_ticks"][start_index:end_index]
-    CONTEXT[CODE]["min_index"] = end_index
+    print(f"Get latest 1min ticks for {code}, start_index: {start_index}, next_index: {end_index}, min_ticks: {len(CONTEXT[code]['min_ticks'])}")
+    result[data_type]['chart_ticks'] = CONTEXT[code]["min_ticks"][start_index:end_index]
+    CONTEXT[code]["min_index"] = end_index
     
+    save_train_status(code)
     
     return result
 
