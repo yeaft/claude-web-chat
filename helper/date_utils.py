@@ -18,14 +18,18 @@ def get_today_date_string():
     now = datetime.now(pytz.timezone("Asia/Shanghai"))
     return convert_date_to_str(now)
 
+def get_today_time_string():
+    now = datetime.now(pytz.timezone("Asia/Shanghai"))
+    return convert_date_to_time_str(now)
+
 
 def convert_date_to_str(time, splitor = ""):
     date = datetime(time.year, time.month, time.day, 8)
     return date.strftime('%Y{}%m{}%d'.format(splitor, splitor))
 
 
-def convert_date_to_time_str(time):
-    return time.strftime('%Y%m%d%H%M%S')
+def convert_date_to_time_str(time, splitor = "-"):
+    return time.strftime('%Y{}%m{}%d %H:%M:%S'.format(splitor, splitor))
 
 
 def convert_str_to_date(date_str):

@@ -104,6 +104,36 @@
             transition: background-color 0.3s ease;
         }
 
+        .long-button {
+            background-color: #FF8A80;
+            border: none;
+            color: white;
+            padding: 15px 32px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 5px; /* Rounded corners */
+            transition: background-color 0.3s ease;
+        }
+
+        .short-button {
+            background-color: #81C784; 
+            border: none;
+            color: white;
+            padding: 15px 32px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 5px; /* Rounded corners */
+            transition: background-color 0.3s ease;
+        }
+
         .test-button:hover {
             background-color: #45a049; /* Darker shade of green */
         }
@@ -127,12 +157,12 @@
 <div class="button-container">
     <button id="playButton" class="control-button">Play</button>
     <button id="pauseButton" class="control-button">Pause</button>
+    <button id="randomButton" class="control-button">Random</button>
     <button id="past30Button" class="control-button">Past30</button>
     <button id="next30Button" class="control-button">Next30</button>
     <button id="normalButton" class="control-button">Normal</button>    
     <button id="speedUp5Button" class="control-button">Speed5</button>
     <button id="speedUp10Button" class="control-button">Speed10</button>
-    <button id="speedUp50Button" class="control-button">Speed100</button>
 </div>
 
 <script>
@@ -274,7 +304,7 @@
                     formatter: function () {
                         /* var utcOffset = 8 * 60 * 60 * 1000;
                         var adjustedTime = this.x + utcOffset; */
-                        var tooltipText = Highcharts.dateFormat('%b %e, %H:%M', this.x);
+                        var tooltipText = Highcharts.dateFormat('%H:%M', this.x);
                         this.points.forEach(function (point) {
                             var value = point.y;
                             if (title === "I" && (point.series.name === 'Max ZXJ' || point.series.name === 'Min ZXJ')) {
@@ -449,11 +479,19 @@
         let intervalHandle = null;
         let next = 1;
 
-        var codeCandidates = ["rb2401", "ii2401"]; // Add more codes as needed
+        var codeCandidates = ["rb2401", "rb2405", "ii2405", "ii2401"]; // Add more codes as needed
 
         function createCodeButtons() {
             var container = $('#codeButtons');
             container.empty(); // Clear existing buttons if any
+            $('<button>')
+                    .addClass('long-button')
+                    .text("Long") // Button text
+                    .on('click', function() {
+                        operate("long");
+                    })
+                    .appendTo(container);
+
             codeCandidates.forEach(function(code) {
                 $('<button>')
                     .addClass('test-button')
@@ -463,12 +501,31 @@
                     })
                     .appendTo(container);
             });
+
+            $('<button>')
+                .addClass('short-button')
+                .text("Short") // Button text
+                .on('click', function() {
+                    operate("short");
+                })
+                .appendTo(container);
+        }
+
+        function operate(direction) {
+            var url = `/train/operate?operation=${direction}`;
+            $.getJSON(url, function(response) {
+                console.log('Operate response:', response);
+            });
         }
 
         function fetchData(code=null, random=null) {
             var url = `/train/data?next=${next}`;
             if (code) {
                 url += `&code=${code}`; // Append code parameter to the URL if provided
+            }
+
+            if (random){
+                url += `&random=${random}`;
             }
             $.getJSON(url, function(chartData) {
                 // Handle data and update charts
@@ -532,6 +589,11 @@
             manageDataFetching();
         });
 
+        $('#randomButton').click(function() {
+            next = 1;
+            fetchData(code=null, random=true);
+        });
+
         $('#past30Button').click(function() {
             next = -6;
             fetchData();
@@ -558,13 +620,6 @@
 
         $('#speedUp10Button').click(function() {
             fetchInterval = 500; // 0.5 second refresh rate
-            clearInterval(intervalHandle);
-            intervalHandle = null;
-            manageDataFetching();
-        });
-
-        $('#speedUp50Button').click(function() {
-            fetchInterval = 100; // 0.05 second refresh rate
             clearInterval(intervalHandle);
             intervalHandle = null;
             manageDataFetching();

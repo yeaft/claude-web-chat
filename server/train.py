@@ -169,7 +169,7 @@ def get_info():
     
     if is_random:
         CONTEXT[code]["index"] = random.randint(TEN_DAYS_SIZE, len(CONTEXT[code]["ticks"]) - TEN_DAYS_SIZE)
-        CONTEXT[code]["min_index"] = CONTEXT[code]["index"] / 12 - 150    
+        CONTEXT[code]["min_index"] = int(CONTEXT[code]["index"] / 12 - 150)
     
     next_index = CONTEXT[code]["index"] + next
     CONTEXT[code]["index"] = next_index        
