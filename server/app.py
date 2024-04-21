@@ -122,7 +122,7 @@ def initial_ticks():
             CACHE_TICKS_1MIN[data_type] = m_ticks
             
     utils.log("Finish inital real ticks data")
-    
+    utils.log("Start to initial training data")
     for code in CANDIDATE_CODES:        
         if code not in CONTEXT:            
             ticks = list(constance.REAL_TIME_TICK_COL.find({"code": code}).sort([("time", 1)]))
