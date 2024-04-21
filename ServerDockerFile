@@ -19,4 +19,4 @@ RUN pip install -e .
 ENV FLASK_RUN_HOST=0.0.0.0
 
 # Command to run the Flask app
-CMD [ "python", "/server/app.py" ]
+CMD [ "python", "/server/api.py" ]
