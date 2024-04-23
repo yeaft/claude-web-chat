@@ -604,6 +604,7 @@
                                 showNotification("Create chart : " + type);
                                 updateChartData(chart, ticks);
                             }).catch(function(error) {
+                                showNotification("Failed to fetch data: " + error);
                                 console.error('Error creating chart:', error);
                             });
                         } else {
@@ -622,7 +623,7 @@
                 });
             }).fail(function(jqXHR, textStatus, errorThrown) {
                 console.error("Error fetching data:", textStatus, errorThrown);
-                showNotification("Failed to fetch data: " + textStatus + "Error: " + errorThrown);
+                showNotification("Failed to fetch data: " + textStatus + "Error: " + errorThrown + "Stack: " + jqXHR);
             });
         }
         

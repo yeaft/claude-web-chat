@@ -182,7 +182,7 @@ def get_latest_1min_ticks():
         if len(CACHE_TICKS_1MIN[data_type]) >= TEN_DAYS_SIZE:
             CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][-TEN_DAYS_SIZE:]
         last_tick = CACHE_TICKS_1MIN[data_type][-1]
-        new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gte": last_tick["time"]}}).sort("time", 1))
+        new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gt": last_tick["time"]}}).sort("time", 1))
         is_updated = False
         if len(new_ticks) >= 12:
             m_ticks = []
