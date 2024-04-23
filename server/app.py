@@ -18,6 +18,7 @@ CACHE_CP_RATE_DATA = {}
 PAST_CCL_STABLE_DATA = {}
 TEN_DAYS_SIZE = int(12 * 60 * 5.8 * 10)
 TEN_DAYS_MINS_SIZE = int(60 * 5.8 * 10)
+FIVE_DAYS_MINS_SIZE = int(60 * 5.8 * 5)
 LAST_DAY_SIZE = int(12 * 60 * 5.8)
 HALF_DAY_SIZE = int(12 * 60 * 3)
 KP_TICKS = {}
@@ -315,6 +316,7 @@ def train():
 @app.route('/train/data', methods=['GET'])
 @block_ip()
 def get_train_info():
+    start_time = time.time()
     list_size = 65 
     next = request.args.get('next', default=1, type=int)  # Retrieve next_count from the query string 
     code = request.args.get('code', default=CONTEXT["default_code"], type=str)  # Retrieve next_count from the query string
@@ -374,13 +376,12 @@ def get_train_info():
             break
     
 
-    start_index = max(0, end_index - TEN_DAYS_MINS_SIZE)
-    print(f"Get latest 1min ticks for {code}, start_index: {start_index}, next_index: {end_index}, min_ticks: {len(CONTEXT[code]['min_ticks'])}")
+    start_index = max(0, end_index - FIVE_DAYS_MINS_SIZE)
     result[data_type]['chart_ticks'] = CONTEXT[code]["min_ticks"][start_index:end_index]
     CONTEXT[code]["min_index"] = end_index
     
     save_train_status(code)
-    
+    print(f"Finish get_info in {round((time.time() - start_time)*1000,2)}ms")
     return result
 
 @app.route('/train/operate', methods=['GET'])
