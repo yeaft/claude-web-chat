@@ -620,6 +620,9 @@
                         }
                     }
                 });
+            }).fail(function(jqXHR, textStatus, errorThrown) {
+                console.error("Error fetching data:", textStatus, errorThrown);
+                showNotification("Failed to fetch data: " + textStatus + "Error: " + errorThrown);
             });
         }
         
