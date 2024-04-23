@@ -622,8 +622,14 @@
                     }
                 });
             }).fail(function(jqXHR, textStatus, errorThrown) {
-                console.error("Error fetching data:", textStatus, errorThrown);
-                showNotification("Failed to fetch data: " + textStatus + "Error: " + errorThrown + "Stack: " + jqXHR);
+                // When JSON.stringify is not enough due to circular references, consider using a custom replacer or a library that can handle it.
+                var errorDetails = JSON.stringify({
+                    textStatus: textStatus,
+                    errorThrown: errorThrown,
+                    jqXHR: { status: jqXHR.status, statusText: jqXHR.statusText, responseText: jqXHR.responseText }
+                }, null, 2); // The '2' argument adds indentation for better readability
+                console.error("Error fetching data:", errorDetails);
+                showNotification("Failed to fetch data: " + errorDetails);
             });
         }
         
@@ -631,12 +637,16 @@
         createCodeButtons();
 
         function manageDataFetching() {
-            if (isPlaying && intervalHandle === null) {
-                showNotification("set the interval");
-                intervalHandle = setInterval(fetchData, fetchInterval);
-            } else if (!isPlaying && intervalHandle !== null) {
-                clearInterval(intervalHandle);
-                intervalHandle = null;
+            if (isPlaying) {
+                if (intervalHandle !== null) {
+                    clearInterval(intervalHandle); // Clear existing interval
+                }
+                intervalHandle = setInterval(fetchData, fetchInterval); // Set a new interval
+            } else {
+                if (intervalHandle !== null) {
+                    clearInterval(intervalHandle); // Clear existing interval
+                    intervalHandle = null; // Reset the interval handle
+                }
             }
         }
 
