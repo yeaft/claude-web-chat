@@ -565,6 +565,7 @@
         }
 
         function fetchData(code=null, random=null) {
+            showNotification("Start fetch data");
             var url = `/train/data?next=${next}`;
             if (code) {
                 url += `&code=${code}`; // Append code parameter to the URL if provided
@@ -577,7 +578,7 @@
             url += `&timestamp=${new Date().getTime()}`; // Add timestamp to prevent caching
             $.getJSON(url, function(chartData) {
                 // Handle data and update charts
-                showNotification("Get data from url");
+                showNotification("Get response from server");
                 next = 1;
                 var orderedKeys = ["rb"];
                 $.each(orderedKeys, function(index, type) {
@@ -627,6 +628,7 @@
 
         function manageDataFetching() {
             if (isPlaying && intervalHandle === null) {
+                showNotification("set the interval");
                 intervalHandle = setInterval(fetchData, fetchInterval);
             } else if (!isPlaying && intervalHandle !== null) {
                 clearInterval(intervalHandle);
@@ -636,6 +638,7 @@
 
         $('#playButton').click(function() {
             isPlaying = true;
+            showNotification("start play");
             manageDataFetching();
         });
 
