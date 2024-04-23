@@ -50,6 +50,13 @@
             max-width: 1250px; /* Maximum width */
         }
 
+        @media screen and (max-width: 1080px) { /* Adjust for mobile devices */
+            .chart-container {
+                height: 1000px; /* Height for mobile */
+                max-width: 1000px; /* Max width for mobile */
+            }
+        }
+
         .header-container h3 {
             margin-right: 10px; /* Add some spacing between the h3 and p */
         }
@@ -516,9 +523,11 @@
             }
             $.getJSON(url, function(chartData) {
                 // Handle data and update charts
+                
                 next = 1;
                 var orderedKeys = ["rb", "i", "oi", "y", "hc"];
                 $.each(orderedKeys, function(index, type) {
+                    console.log("Creating chart container for", type);
                     var data = chartData[type];
                     if (data) { 
                         if ($('#table_' + type).length === 0) {
