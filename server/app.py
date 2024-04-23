@@ -332,7 +332,7 @@ def get_train_info():
     else:
         return {"error": "Invalid code"}
     
-    print(f"Get info for {code}, next: {next}, candidate codes: {CANDIDATE_CODES}, context codes: {CONTEXT.keys()}")
+    # print(f"Get info for {code}, next: {next}, candidate codes: {CANDIDATE_CODES}, context codes: {CONTEXT.keys()}")
     
     result = {
         data_type: {},
@@ -371,7 +371,7 @@ def get_train_info():
     for i in range(last_index, len(CONTEXT[code]['min_ticks'])):
         # print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
         if CONTEXT[code]['min_ticks'][i]['time'][:-2] == end_tick['time'][:-6]:
-            print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
+            # print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
             end_index = i    
             break
     

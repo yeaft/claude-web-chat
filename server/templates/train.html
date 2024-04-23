@@ -151,6 +151,35 @@
             background-color: #45a049; /* Darker shade of green */
         }
 
+        .notification-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            width: 300px;  // Adjust the width as necessary
+        }
+
+        .notification {
+            background-color: #f44336;
+            color: white;
+            padding: 16px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            display: block;
+            animation: fadein 0.5s, fadeout 0.5s 2.5s; /* Notification fades in and then fades out */
+        }
+
+        @keyframes fadein {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes fadeout {
+            from { opacity: 1; }
+            to { opacity: 0; }
+        }
+
+
     </style>
     <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
     <script src="https://code.highcharts.com/stock/highstock.js"></script>
@@ -165,6 +194,8 @@
 <div id="codeButtons" class="button-container">
     <!-- Buttons will be dynamically added here -->
 </div>
+
+<div id="notification-container" class="notification-container"></div>
 
 
 <div class="button-container">
@@ -467,6 +498,26 @@
         $('th, td').css('font-size', fontSize);
     }
 
+    function showNotification(message) {
+        const container = document.getElementById('notification-container');
+        
+        // Create the notification element
+        const notification = document.createElement('div');
+        notification.classList.add('notification');
+        notification.textContent = message;
+
+        // Append the notification to the container
+        container.appendChild(notification);
+
+        // Automatically remove the notification after 3 seconds
+        setTimeout(() => {
+            notification.classList.add('fadeout'); // Start fadeout animation
+            notification.addEventListener('animationend', () => {
+            notification.remove(); // Remove from DOM after animation completes
+            });
+        }, 3000);
+    }
+
     $(document).ready(function() {
         let isPlaying = true;
         let fetchInterval = 5000; // Default refresh rate of 5 seconds
@@ -526,17 +577,19 @@
             url += `&timestamp=${new Date().getTime()}`; // Add timestamp to prevent caching
             $.getJSON(url, function(chartData) {
                 // Handle data and update charts
-                
+                showNotification("Get data from url");
                 next = 1;
-                var orderedKeys = ["rb", "i", "oi", "y", "hc"];
+                var orderedKeys = ["rb"];
                 $.each(orderedKeys, function(index, type) {
-                    console.log("Creating chart container for", type);
+                    showNotification("Start processing for: " + type);
                     var data = chartData[type];
                     if (data) { 
                         if ($('#table_' + type).length === 0) {
+                            showNotification("Create chart and table for: " + type);
                             createChartAndTable(type);
                         }
                         var scrollTop = $(window).scrollTop(); // Save current scroll position
+                        showNotification("Render table : " + type);
                         renderTable(type, data); // Render the main table
                         adjustTableFontSize();
                         $(window).scrollTop(scrollTop); // Restore scroll position                        
@@ -547,11 +600,13 @@
                             var containers = createChartAndTable(type);
                             createChart(containers.chartContainerId, type.toUpperCase()).then(function(chart) {
                                 charts[type] = chart;
+                                showNotification("Create chart : " + type);
                                 updateChartData(chart, ticks);
                             }).catch(function(error) {
                                 console.error('Error creating chart:', error);
                             });
                         } else {
+                            showNotification("Update chart : " + type);
                             updateChartData(charts[type], ticks);
                         }
                     } else {
