@@ -2,7 +2,6 @@
 <html>
 <head>
     <title>Good luck</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -49,13 +48,6 @@
             height: 800px; /* Default height, adjust as needed */
             min-width: 310px; /* Minimum width */
             max-width: 1250px; /* Maximum width */
-        }
-
-        @media screen and (max-width: 1080px) { /* Adjust for mobile devices */
-            .chart-container {
-                height: 1000px; /* Height for mobile */
-                max-width: 1000px; /* Max width for mobile */
-            }
         }
 
         .header-container h3 {
@@ -467,25 +459,6 @@
         // Apply the font size to th and td elements
         $('th, td').css('font-size', fontSize);
     }
-    function adjustChartSize() {
-        if (window.innerHeight < window.innerWidth) { // Landscape orientation
-            $('.chart-container').css({
-                'height': '500px', // Adjust as needed
-                'width': '100%' // Adjust as needed
-            });
-        } else { // Portrait orientation
-            $('.chart-container').css({
-                'height': '800px', // Adjust as needed
-                'width': '100%' // Adjust as needed
-            });
-        }
-
-        // Re-draw or reflow the chart to apply new dimensions
-        Object.keys(charts).forEach(function(chartId) {
-            charts[chartId].reflow();
-        });
-    }
-
 
     $(document).ready(function() {
         let isPlaying = true;
