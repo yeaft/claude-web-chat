@@ -498,6 +498,18 @@
         $('th, td').css('font-size', fontSize);
     }
 
+    function replacer(key, value) {
+        if (key === 'prevObject' || key === 'delegateTarget') {
+            // Exclude common circular reference properties in jQuery objects
+            return undefined;
+        }
+        if (typeof value === 'function') {
+            // Exclude functions
+            return undefined;
+        }
+        return value;
+    }
+
     function showNotification(message) {
         const container = document.getElementById('notification-container');
         
@@ -511,11 +523,11 @@
 
         // Automatically remove the notification after 3 seconds
         setTimeout(() => {
-            notification.classList.add('fadeout'); // Start fadeout animation
-            notification.addEventListener('animationend', () => {
-            notification.remove(); // Remove from DOM after animation completes
-            });
-        }, 3000);
+            notification.style.opacity = '0'; // Start fadeout by reducing opacity
+            setTimeout(() => {
+                notification.remove(); // Remove from DOM after fadeout completes
+            }, 500); // This timeout should match the duration of the fadeout animation
+        }, 2500); // Show the notification for 2.5 seconds before starting to fade out
     }
 
     $(document).ready(function() {
@@ -623,11 +635,7 @@
                 });
             }).fail(function(jqXHR, textStatus, errorThrown) {
                 // When JSON.stringify is not enough due to circular references, consider using a custom replacer or a library that can handle it.
-                var errorDetails = JSON.stringify({
-                    textStatus: textStatus,
-                    errorThrown: errorThrown,
-                    jqXHR: { status: jqXHR.status, statusText: jqXHR.statusText, responseText: jqXHR.responseText }
-                }, null, 2); // The '2' argument adds indentation for better readability
+                var errorDetails = JSON.stringify(jqXHR, replacer, 2);
                 console.error("Error fetching data:", errorDetails);
                 showNotification("Failed to fetch data: " + errorDetails);
             });
