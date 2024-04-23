@@ -507,6 +507,7 @@
 
         function operate(direction) {
             var url = `/train/operate?operation=${direction}`;
+            url += `&timestamp=${new Date().getTime()}`; // Add timestamp to prevent caching
             $.getJSON(url, function(response) {
                 console.log('Operate response:', response);
             });
@@ -521,6 +522,8 @@
             if (random){
                 url += `&random=${random}`;
             }
+
+            url += `&timestamp=${new Date().getTime()}`; // Add timestamp to prevent caching
             $.getJSON(url, function(chartData) {
                 // Handle data and update charts
                 
