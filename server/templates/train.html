@@ -636,19 +636,7 @@
                 });
             }).fail(function(jqXHR, textStatus, errorThrown) {
                 // When JSON.stringify is not enough due to circular references, consider using a custom replacer or a library that can handle it.
-                var errorDetails = JSON.stringify({
-                    readyState: jqXHR.readyState,
-                    status: jqXHR.status,
-                    statusText: jqXHR.statusText,
-                    textStatus: textStatus,
-                    errorThrown: errorThrown,
-                    url: url, // Make sure this variable is accessible to log the request URL
-                    deviceInfo: {
-                        userAgent: navigator.userAgent,
-                        screenWidth: window.screen.width,
-                        screenHeight: window.screen.height
-                    }
-                });
+                var errorDetails = "error Thrown: " + errorThrown + " textStatus: " + textStatus + " readyState: " + jqXHR.readyState + " status: " + jqXHR.status + " statusText: " + jqXHR.statusText + " url: " + url + " deviceInfo: " + navigator.userAgent + " screenWidth: " + window.screen.width + " screenHeight: " + window.screen.height;
 
                 console.error("Error fetching data:", errorDetails);
                 showNotification("Failed to fetch data: " + errorDetails);
