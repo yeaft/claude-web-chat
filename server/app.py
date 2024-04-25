@@ -118,7 +118,7 @@ def initial_ticks():
                             "cjl": int(cjl),
                         })
                         
-                    start_index = i + 1
+                        start_index = i + 1
             
             CACHE_TICKS_1MIN[data_type] = m_ticks
             
@@ -131,7 +131,7 @@ def initial_ticks():
             m_ticks = []
             for i in range(len(ticks)):
                 if ticks[i]['time'][-6:] == "00.000":
-                    if i - start_index > 10:
+                    if i - start_index >= 10:
                         zxjs = [x['zxj'] for x in ticks[start_index:i+1]]
                         ccls = [x['ccl'] for x in ticks[start_index:i+1]]
                         min_zxj = min(zxjs)
@@ -146,9 +146,8 @@ def initial_ticks():
                             "min_zxj": int(min_zxj) if "i" in code else round(min_zxj*2)/2,
                             "ccl": int(avg_ccl),
                             "cjl": int(cjl),
-                        })
-                        
-                    start_index = i + 1
+                        })                        
+                        start_index = i + 1
             
             train_status = constance.TRAIN_COL.find_one({"code": code}) 
             if train_status is None:
@@ -205,12 +204,14 @@ def get_latest_1min_ticks():
                             "ccl": int(avg_ccl),
                             "cjl": int(cjl),
                         })
+                        is_updated = True
                         
                     start_index = i + 1
+                    
             
             CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][len(m_ticks):]
             CACHE_TICKS_1MIN[data_type].extend(m_ticks)
-            is_updated = True
+            
         
         # return from cache
         data[data_type] = list(CACHE_TICKS_1MIN[data_type])
@@ -340,7 +341,7 @@ def get_train_info():
     
     if is_random:
         CONTEXT[code]["index"] = random.randint(TEN_DAYS_SIZE, len(CONTEXT[code]["ticks"]) - TEN_DAYS_SIZE)
-        CONTEXT[code]["min_index"] = int(CONTEXT[code]["index"] / 12 - 150)
+        CONTEXT[code]["min_index"] = int(CONTEXT[code]["index"] / 12 - 500)
     
     next_index = CONTEXT[code]["index"] + next
     CONTEXT[code]["index"] = next_index        
@@ -372,13 +373,41 @@ def get_train_info():
         # print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
         if CONTEXT[code]['min_ticks'][i]['time'][:-2] == end_tick['time'][:-6]:
             # print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
-            end_index = i    
+            end_index = i 
             break
     
 
     start_index = max(0, end_index - FIVE_DAYS_MINS_SIZE)
     result[data_type]['chart_ticks'] = CONTEXT[code]["min_ticks"][start_index:end_index]
-    CONTEXT[code]["min_index"] = end_index
+    CONTEXT[code]["min_index"] = end_index 
+    
+    # Add extra info:
+    sub_ticks = []
+    for i in range(-1, -11, -1):
+        tick = data[i]
+        if tick['time'][:-6] != end_tick['time'][:-6] or tick['time'][-6:-4] == "00":
+            break
+        sub_ticks.append(tick)
+    
+    if len(sub_ticks) > 0:
+        zxjs = [x['zxj'] for x in sub_ticks]
+        ccls = [x['ccl'] for x in sub_ticks]
+        min_zxj = min(zxjs)
+        avg_ccl = mean(ccls)                        
+        max_zxj = max(zxjs)
+        cjl = sum([x['cjlDiff'] for x in sub_ticks])
+        cjl_2 = 0
+        for i in range(1, len(sub_ticks)):
+            cjl_2 += sub_ticks[i]['cjlDiff']
+        result[data_type]['chart_ticks'].append({
+            "time": sub_ticks[-1]['time'][:-4],
+            "code": sub_ticks[-1]['code'],
+            "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+            "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+            "ccl": int(avg_ccl),
+            "cjl": int(cjl),
+        })    
+    
     
     save_train_status(code)
     print(f"Finish get_info in {round((time.time() - start_time)*1000,2)}ms")
