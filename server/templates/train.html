@@ -515,7 +515,7 @@
         }
 
         function operate(direction) {
-            var url = `/train/operate?operation=${direction}`;
+            var url = `/t/o?operation=${direction}`;
             url += `&timestamp=${new Date().getTime()}`; // Add timestamp to prevent caching
             $.getJSON(url, function(response) {
                 console.log('Operate response:', response);
@@ -524,7 +524,7 @@
 
         function fetchData(code=null, random=null) {
             
-            var url = `/train/data?next=${next}`;
+            var url = `/t/d?next=${next}`;
             if (code) {
                 url += `&code=${code}`; // Append code parameter to the URL if provided
             }

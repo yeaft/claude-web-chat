@@ -185,27 +185,25 @@ def get_latest_1min_ticks():
         is_updated = False
         if len(new_ticks) >= 12:
             m_ticks = []
-            start_index = 1
-            for i in range(start_index, len(new_ticks)):
+            start_index = 0
+            for i in range(2, len(new_ticks)):
                 if new_ticks[i]['time'][-6:] == "00.000":
-                    if i - start_index > 10:
-                        zxjs = [x['zxj'] for x in new_ticks[start_index:i+1]]
-                        ccls = [x['ccl'] for x in new_ticks[start_index:i+1]]
-                        min_zxj = min(zxjs)
-                        avg_ccl = mean(ccls)                        
-                        max_zxj = max(zxjs)
-                        cjl = sum([x['cjlDiff'] for x in new_ticks[start_index:i+1]])
-                        
-                        m_ticks.append({
-                            "time": new_ticks[i]['time'][:-4],
-                            "code": new_ticks[i]['code'],
-                            "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
-                            "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
-                            "ccl": int(avg_ccl),
-                            "cjl": int(cjl),
-                        })
-                        is_updated = True
-                        
+                    zxjs = [x['zxj'] for x in new_ticks[start_index:i+1]]
+                    ccls = [x['ccl'] for x in new_ticks[start_index:i+1]]
+                    min_zxj = min(zxjs)
+                    avg_ccl = mean(ccls)                        
+                    max_zxj = max(zxjs)
+                    cjl = sum([x['cjlDiff'] for x in new_ticks[start_index:i+1]])
+                    
+                    m_ticks.append({
+                        "time": new_ticks[i]['time'][:-4],
+                        "code": new_ticks[i]['code'],
+                        "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                        "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                        "ccl": int(avg_ccl),
+                        "cjl": int(cjl),
+                    })
+                    is_updated = True                        
                     start_index = i + 1
                     
             
@@ -222,14 +220,15 @@ def get_latest_1min_ticks():
             avg_ccl = mean(ccls)                        
             max_zxj = max(zxjs)
             cjl = sum([x['cjlDiff'] for x in new_ticks])
+            new_time = date_utils.min_add(new_ticks[-1]['time'], 1)
             data[data_type].append({
-                            "time": new_ticks[-1]['time'][:-4],
-                            "code": new_ticks[-1]['code'],
-                            "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
-                            "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
-                            "ccl": int(avg_ccl),
-                            "cjl": int(cjl),
-                        })
+                "time": new_time[:-4],
+                "code": new_ticks[-1]['code'],
+                "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                "ccl": int(avg_ccl),
+                "cjl": int(cjl),
+            })
     
     return data
 
@@ -308,13 +307,13 @@ def get_info():
     utils.log("processing_time: {}".format(processing_time))
     return result
 
-@app.route('/train')
+@app.route('/t')
 @block_ip()
 @requires_auth
 def train():
     return render_template('train.html')
     
-@app.route('/train/data', methods=['GET'])
+@app.route('/t/d', methods=['GET'])
 @block_ip()
 def get_train_info():
     start_time = time.time()
@@ -368,52 +367,56 @@ def get_train_info():
     # Find end_index
     last_index = CONTEXT[code]["min_index"]
     end_tick = data[-1]
-    end_index = -1
-    for i in range(last_index, len(CONTEXT[code]['min_ticks'])):
-        # print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
-        if CONTEXT[code]['min_ticks'][i]['time'][:-2] == end_tick['time'][:-6]:
+    if CONTEXT[code]['min_ticks'][last_index]['time'] <= end_tick['time'][:-4]:
+        end_index = -1
+        # TODO issue at find the end_index
+        for i in range(last_index, len(CONTEXT[code]['min_ticks'])):
             # print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
-            end_index = i 
-            break
-    
-
-    start_index = max(0, end_index - FIVE_DAYS_MINS_SIZE)
-    result[data_type]['chart_ticks'] = CONTEXT[code]["min_ticks"][start_index:end_index]
-    CONTEXT[code]["min_index"] = end_index 
-    
-    # Add extra info:
-    sub_ticks = []
-    for i in range(-1, -11, -1):
-        tick = data[i]
-        if tick['time'][:-6] != end_tick['time'][:-6] or tick['time'][-6:-4] == "00":
-            break
-        sub_ticks.append(tick)
-    
-    if len(sub_ticks) > 0:
-        zxjs = [x['zxj'] for x in sub_ticks]
-        ccls = [x['ccl'] for x in sub_ticks]
-        min_zxj = min(zxjs)
-        avg_ccl = mean(ccls)                        
-        max_zxj = max(zxjs)
-        cjl = sum([x['cjlDiff'] for x in sub_ticks])
-        cjl_2 = 0
-        for i in range(1, len(sub_ticks)):
-            cjl_2 += sub_ticks[i]['cjlDiff']
-        result[data_type]['chart_ticks'].append({
-            "time": sub_ticks[-1]['time'][:-4],
-            "code": sub_ticks[-1]['code'],
-            "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
-            "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
-            "ccl": int(avg_ccl),
-            "cjl": int(cjl),
-        })    
-    
+            if CONTEXT[code]['min_ticks'][i]['time'][:-2] == end_tick['time'][:-6]:
+                print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
+                end_index = i + 1
+                break
+        
+        start_index = max(0, end_index - FIVE_DAYS_MINS_SIZE)
+        result[data_type]['chart_ticks'] = CONTEXT[code]["min_ticks"][start_index:end_index]
+        CONTEXT[code]["min_index"] = end_index - 1
+        
+        # Add extra info:
+        start_tick_time = CONTEXT[code]['min_ticks'][end_index - 1]['time'][:-2] + "05.000"
+        start_min_index = -1
+        for i in range(len(data)):
+            if data[i]['time'] == start_tick_time:
+                start_min_index = i   
+        
+        if start_min_index > -1:
+            sub_ticks = data[start_min_index:]    
+            print(f"latest min time {result[data_type]['chart_ticks'][-1]['time']}, start_tick_time: {start_tick_time}, start_min_index: {start_min_index}, start_min_tick_time: {data[start_min_index]['time']}, subticks: {len(sub_ticks)}")  
+            if len(sub_ticks) > 0:
+                zxjs = [x['zxj'] for x in sub_ticks]
+                ccls = [x['ccl'] for x in sub_ticks]
+                min_zxj = min(zxjs)
+                avg_ccl = mean(ccls)                        
+                max_zxj = max(zxjs)
+                cjl = sum([x['cjlDiff'] for x in sub_ticks])
+                new_time = date_utils.min_add(sub_ticks[-1]['time'], 1)
+                result[data_type]['chart_ticks'].append({
+                    "time": new_time[:-4],
+                    "code": sub_ticks[-1]['code'],
+                    "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                    "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                    "ccl": int(avg_ccl),
+                    "cjl": int(cjl),
+                })    
+        else:
+            print(f"Didn't find, latest min time {result[data_type]['chart_ticks'][-1]['time']}, start_tick_time: {start_tick_time}, start_min_index: {start_min_index}, start_min_tick_time: {data[start_min_index]['time']}, subticks: 0")
+    else:
+        print(f"Didn't find, latest min time {CONTEXT[code]['min_ticks'][last_index]['time']}, end_tick_time: {end_tick['time'][:-4]}")        
     
     save_train_status(code)
     print(f"Finish get_info in {round((time.time() - start_time)*1000,2)}ms")
     return result
 
-@app.route('/train/operate', methods=['GET'])
+@app.route('/t/o', methods=['GET'])
 @block_ip()
 def record_operate():
     operation = request.args.get('operation', default="", type=str)  # Retrieve next_count from the query string 

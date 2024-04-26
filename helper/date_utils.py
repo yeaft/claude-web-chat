@@ -47,6 +47,11 @@ def date_add_days(time, days):
     new_time = time + delta
     return new_time
 
+def date_add_minutes(time, minutes):
+    delta = timedelta(minutes=minutes)
+    new_time = time + delta
+    return new_time
+
 
 def datestr_add_days(datestr, days, splitor = ""):
     time = convert_str_to_date(datestr)
@@ -91,6 +96,10 @@ def sec_diff(start, end):
 def min_diff(start, end):
     time_format = "%Y-%m-%d %H:%M:%S.%f"
     return round((datetime.strptime(end, time_format) - datetime.strptime(start, time_format)).total_seconds()/60, 1)
+
+def min_add(time, minutes):
+    time = datetime.strptime(time, "%Y-%m-%d %H:%M:%S.%f")
+    return (time + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S.%f")
 
 def get_kp_time_string(target_date = ""):
     now = datetime.now(pytz.timezone("Asia/Shanghai"))
