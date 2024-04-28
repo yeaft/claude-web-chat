@@ -170,13 +170,22 @@
     <button id="playButton" class="control-button">Play</button>
     <button id="pauseButton" class="control-button">Pause</button>
     <button id="randomButton" class="control-button">Random</button>
-    <button id="past30Button" class="control-button">Past30</button>
-    <button id="next30Button" class="control-button">Next30</button>
-    <button id="normalButton" class="control-button">Normal</button>    
+    <button id="normalButton" class="control-button">Normal</button>   
+    <button id="speedUp3Button " class="control-button">Speed3</button>    
     <button id="speedUp5Button" class="control-button">Speed5</button>
     <button id="speedUp10Button" class="control-button">Speed10</button>
 </div>
 
+<div class="button-container">
+    <button id="past10Button" class="control-button">Past10s</button>
+    <button id="next10Button" class="control-button">Next10s</button>
+    <button id="past30Button" class="control-button">Past30s</button>
+    <button id="next30Button" class="control-button">Next30s</button>
+    <button id="past60Button" class="control-button">Past1m</button>
+    <button id="next60Button" class="control-button">Next1m</button>
+    <button id="past300Button" class="control-button">Past5m</button>
+    <button id="next300Button" class="control-button">Next5m</button>
+</div>
 <script>
     Highcharts.setOptions({
         global: {
@@ -606,8 +615,7 @@
         }
 
         $('#playButton').click(function() {
-            isPlaying = true;
-            
+            isPlaying = true;            
             manageDataFetching();
         });
 
@@ -621,6 +629,16 @@
             fetchData(code=null, random=true);
         });
 
+        $('#past10Button').click(function() {
+            next = -2;
+            fetchData();
+        });
+
+        $('#next10Button').click(function() {
+            next = 2;
+            fetchData();
+        });
+
         $('#past30Button').click(function() {
             next = -6;
             fetchData();
@@ -631,14 +649,44 @@
             fetchData();
         });
 
+        $('#past60Button').click(function() {
+            next = -12;
+            fetchData();
+        });
+
+        $('#next60Button').click(function() {
+            next = 12;
+            fetchData();
+        });
+
+        $('#past300Button').click(function() {
+            next = -60;
+            fetchData();
+        });
+
+        $('#next300Button').click(function() {
+            next = 60;
+            fetchData();
+        });
+
         $('#normalButton').click(function() {
-            fetchInterval = 5000; // 1 second refresh rate
+            isPlaying = true;  
+            fetchInterval = 5000; // 5 second refresh rate
+            clearInterval(intervalHandle);
+            intervalHandle = null;
+            manageDataFetching();
+        });
+
+        $('#speedUp3Button').click(function() {
+            isPlaying = true;  
+            fetchInterval = 2000; // 2 second refresh rate
             clearInterval(intervalHandle);
             intervalHandle = null;
             manageDataFetching();
         });
 
         $('#speedUp5Button').click(function() {
+            isPlaying = true;  
             fetchInterval = 1000; // 1 second refresh rate
             clearInterval(intervalHandle);
             intervalHandle = null;
@@ -646,6 +694,7 @@
         });
 
         $('#speedUp10Button').click(function() {
+            isPlaying = true;  
             fetchInterval = 500; // 0.5 second refresh rate
             clearInterval(intervalHandle);
             intervalHandle = null;
