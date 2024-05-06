@@ -393,9 +393,9 @@ def get_train_info():
         start_tick_time = CONTEXT[code]['min_ticks'][end_index - 1]['time'][:-2] + "05.000"
         start_min_index = -1
         for i in range(len(data)):
-            print(f"Comparing {data[i]['time']} > {start_tick_time}")
+            # print(f"Comparing {data[i]['time']} > {start_tick_time}")
             if data[i]['time'] >= start_tick_time:
-                print(f"Found start_min_index at {i} with time {data[i]['time']} > {start_tick_time} at")
+                # print(f"Found start_min_index at {i} with time {data[i]['time']} > {start_tick_time} at")
                 start_min_index = i
                 break
         
@@ -420,7 +420,7 @@ def get_train_info():
                 })
         
     save_train_status(code)
-    # print(f"Finish get_info in {round((time.time() - start_time)*1000,2)}ms")
+    print(f"Finish get_info in {round((time.time() - start_time)*1000,2)}ms")
     return result
 
 @app.route('/t/o', methods=['GET'])
