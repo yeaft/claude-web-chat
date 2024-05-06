@@ -509,7 +509,7 @@
                     .addClass('test-button')
                     .text(code.toUpperCase()) // Button text
                     .on('click', function() {
-                        fetchData(code);
+                        fetchData(code, null);
                     })
                     .appendTo(container);
             });
@@ -533,7 +533,10 @@
 
         function fetchData(code=null, random=null) {
             
-            var url = `/t/d?next=${next}`;
+            var url = `/t/d?h=1`;
+            if (next != 1) {
+                url += `&next=${next}`;
+            }
             if (code) {
                 url += `&code=${code}`; // Append code parameter to the URL if provided
             }
