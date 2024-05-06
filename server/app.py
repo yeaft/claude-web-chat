@@ -401,7 +401,7 @@ def get_train_info():
         
         if start_min_index > -1:
             sub_ticks = data[start_min_index:]    
-            print(f"latest min time {result[data_type]['chart_ticks'][-1]['time']}, start_tick_time: {start_tick_time}, start_min_index: {start_min_index}, start_min_tick_time: {data[start_min_index]['time']}, subticks: {len(sub_ticks)}")  
+            # print(f"latest min time {result[data_type]['chart_ticks'][-1]['time']}, start_tick_time: {start_tick_time}, start_min_index: {start_min_index}, start_min_tick_time: {data[start_min_index]['time']}, subticks: {len(sub_ticks)}")  
             if len(sub_ticks) > 0:
                 zxjs = [x['zxj'] for x in sub_ticks]
                 ccls = [x['ccl'] for x in sub_ticks]
