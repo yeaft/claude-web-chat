@@ -2,7 +2,7 @@ import math
 from . import constance, utils, date_utils
 from statistics import mean, variance, stdev
 
-def get_ticks(start_date, end_date, contract_type = "", col_type = "5sec"):
+def get_ticks(start_date, end_date, contract_type = "", col_type = "5sec", code_type = ""):
     col_name = ""
     
     yesterday = date_utils.datestr_add_days(start_date, -1)
@@ -23,6 +23,9 @@ def get_ticks(start_date, end_date, contract_type = "", col_type = "5sec"):
     filter = {"time": {"$gte": start_time, "$lte": end_time}}
     if contract_type != "":
         filter["type"] = contract_type
+    
+    if code_type != "":
+        filter["code"] = code_type
     
     # utils.log("filter: {}".format(filter))
     ticks = list(cols.find(filter).sort("time", 1))
