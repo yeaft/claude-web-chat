@@ -1,6 +1,7 @@
 import random
+import time
 from collections import deque
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import mplcursors
 import matplotlib.dates as mdates
@@ -21,6 +22,7 @@ from statistics import mean, variance, stdev
 
 class DataProcessor:
     def __init__(self, cjl_column_name, cjl_past_num=60, cjl_period_num=3, send_message=False, real_send_message=False):
+        self.win_cent = 0.005
         self.data = []
         self.max_data_size = 12 * 60 * 5.8 * 10  # ten days data
         self.send_message = send_message
@@ -45,7 +47,7 @@ class DataProcessor:
         self.must_away_cjl_threshold = int(240000000 / reference_price) # 40000 * 4000 = 160 million
 
     def validate_data(self, data):
-        if 'cjl' not in data:
+        if self.cjl_column_name not in data:
             return False
         
         return True
@@ -59,7 +61,7 @@ class DataProcessor:
         
         if n == 1:
             self.initial_threshold()
-        elif n % 100 == 0:
+        elif n % 10000 == 0:
             utils.log(f"Processed {n} ticks") 
 
         # TODO start to record data
@@ -111,6 +113,7 @@ class DataProcessor:
 
     def cjl_abnormal_check(self):
         if len(self.data) > self.cjl_past_num + self.cjl_period_num:
+            start_time = time.time()
             past_cjl = [d[self.cjl_column_name] for d in self.data[-self.cjl_past_num-self.cjl_period_num:-self.cjl_period_num]]
             past_cjl_mean = np.mean(past_cjl)
             past_cjl_std = np.std(past_cjl)
@@ -192,9 +195,12 @@ class DataProcessor:
                             self.record_cjl_abnormal_peak()
                             if self.send_message:
                                     self.send_cjl_abnormal_signal(is_send=self.real_send_message)
+                                    
+            # utils.log(f"Finish process one data point. use time: {round(time.time() - start_time,2)}s")
 
     def record_cjl_abnormal_peak(self):
         if 'anomaly' in self.data[-1] and self.data[-1]['anomaly'] == "end":
+            start_time = time.time()
             # find latest anomaly = start index
             start_index = len(self.data) - 2
             while start_index >= 0:
@@ -224,62 +230,84 @@ class DataProcessor:
                             "index": peak_index,
                             "peak_time": self.data[peak_index]['time'],
                             "peak_zxj": self.data[peak_index]['zxj'],
+                            "peak_ccl": self.data[peak_index]['ccl'],
                             "direction": direction,
                             "open_direction": "up" if direction == "down" else "down",
                             "cjl_sum": int(sum([d[self.cjl_column_name] for d in self.data[start_index:end_index]])),
                             "start_index": start_index,
                             "end_index": end_index,
-                            "time_diff": date_utils.get_time_diff(self.data[start_index]['time'], self.data[end_index]['time'])
+                            "time_diff": round((self.data[end_index]['time'] - self.data[start_index]['time']).total_seconds()/60, 1)
                         }
                     )
+                    
+                    break
+                
+                start_index -= 1
+            
+            # utils.log(f"Finish record abnormal peak. use time: {round(time.time() - start_time,2)}s")
+            
                         
     def start_process(self, data_length):        
         self.cjl_abnormal_check()
 
     def output_statistic(self):
-        extrems = analysis_helper.get_past_peaks(self.data, "zxj", 60 * 12)
-        match_count = 0
-        potential_zxj_peak_counts = 0
+        extrems = analysis_helper.get_past_peaks(self.data, "zxj", 30 * 12)
+        
         for cjl_peak in self.cjl_peaks:
+            match_count = 0
+            potential_zxj_peak_counts = 0
+            potentia_times = []
             start_index = cjl_peak['index']
-            end_index = self.check_future_two_days + start_index
-            available_zxj_extrem = [e for e in extrems if e['index'] >= start_index and e['index'] <= end_index]
-            for extrem in available_zxj_extrem:
-                if extrem['direction'] == cjl_peak['open_direction']:
-                    potential_zxj_peak_counts += 1
-                    if extrem['direction'] == "up" and extrem['zxj'] >= cjl_peak['peak_zxj'] * 1.01:
-                        match_count += 1
-                    elif extrem['direction'] == "down" and extrem['zxj'] <= cjl_peak['peak_zxj'] * 0.99:
-                        match_count += 1                         
+            end_index = int(self.check_future_two_days + start_index)
+            for i in range(start_index, end_index):
+                if cjl_peak['open_direction'] == "up":
+                    if self.data[i]['zxj'] >= cjl_peak['peak_zxj'] * (1+self.win_cent):
+                        match_count = 1
+                        start_index = i
+                        potentia_times.append(self.data[i]['time'])
+                        break
+                else:
+                    if self.data[i]['zxj'] <= cjl_peak['peak_zxj'] * (1-self.win_cent):
+                        match_count = 1
+                        start_index = i
+                        potentia_times.append(self.data[i]['time'])
+                        break
+            
+            if match_count > 0:
+                available_zxj_extrem = [e for e in extrems if e['index'] >= start_index and e['index'] <= end_index]
+                for extrem in available_zxj_extrem:
+                    if extrem['peak_type'] == "max" and cjl_peak['open_direction'] == "up":
+                        potential_zxj_peak_counts += 1
+                        potentia_times.append(extrem['time'])
+                        if extrem['zxj'] >= cjl_peak['peak_zxj'] * (1+self.win_cent):
+                            match_count += 1
+                    elif extrem['peak_type'] == "min" and cjl_peak['open_direction'] == "down":
+                        potential_zxj_peak_counts += 1
+                        potentia_times.append(extrem['time'])
+                        if extrem['zxj'] <= cjl_peak['peak_zxj'] * (1-self.win_cent):
+                            match_count += 1                         
             
             cjl_peak['match_count'] = match_count
             cjl_peak['potential_zxj_peak_counts'] = potential_zxj_peak_counts
+            cjl_peak['potentia_times'] = " ".join([str(t) for t in potentia_times])            
             
+        
+        # statistic match count larger than 0 number
+        match_count_larger_than_0 = len([c for c in self.cjl_peaks if c['match_count'] > 0])
+        utils.log(f"match_count_larger_than_0: {match_count_larger_than_0}, count: {len(self.cjl_peaks)}, rate: {round(match_count_larger_than_0*100.00/len(self.cjl_peaks), 2)}%")
             
-        utils.convert_dic_to_csv(f"extrems", extrems)
-        utils.convert_dic_to_csv(f"cjl_peaks", self.cjl_peaks)
+        utils.convert_dic_to_csv(f"extrems", extrems, is_new=False)
+        utils.convert_dic_to_csv(f"cjl_peaks", self.cjl_peaks, is_new=False)
 
 if __name__ == "__main__":
     dp = DataProcessor(cjl_column_name="cjlDiff")
     ticks = ticks_helper.get_ticks("2023-10-20", "2023-11-01", "rb", "real", "rb2401")
     utils.log(f"ticks count: {len(ticks)}")
+    
     for data in ticks:
         dp.process_new_data(data)
     
     dp.output_statistic()
+        
+    #TODO Optimize open direction
     
-    # 处理测试数据
-    # round 1
-    # dps = prepare_dps(check_column_name)
-    # process_data(dps, "2022-04-20", "2022-08-01",verify_name="verify_05_08", check_column_name=check_column_name)
-
-    # round 2
-    # dps = prepare_dps_simple(check_column_name)
-
-    # dp = DataProcessor(past_x_hour=3, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600)
-    # output_data(dp=dp, start_date="2022-11-01", end_date="2022-11-20", contract_type="rb", check_column_name=check_column_name)
-    # round 3
-    # dps = prepare_dps(check_column_name)
-    # process_data(dps, "2021-12-01", "2022-03-10", verify_name="verify_12_03", check_column_name=check_column_name)
-
-    # draw_image(dps, ticks, check_column_name)

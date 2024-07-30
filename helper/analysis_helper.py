@@ -1172,31 +1172,33 @@ def get_past_peaks(ticks, column="zxj", span=30 * 12):
         # 检查是否为最高或最低值
         if current_value == max_value:
             ticks[i]['extreme'] = 'max'
-            if len(extremes) > 0 and extremes[-1]['extreme'] == 'max' and current_value >= extremes[-1][column]:
-                extremes[-1] = ticks[i]
+            extreme = {
+                "index": i,
+                "start_index": start,
+                "end_index": end,
+                "time": ticks[i]['time'],
+                column: ticks[i][column],
+                "peak_type": "max"
+            }
+            if len(extremes) > 0 and extremes[-1]['peak_type'] == 'max' and current_value >= extremes[-1][column]:
+                extremes[-1] = extreme
             else:
-                extremes.append({
-                    "index": i,
-                    "start_index": start,
-                    "end_index": end,
-                    "time": ticks[i]['time'],
-                    "zxj": ticks[i]['zxj'],
-                    "peak_type": "max"
-                })
+                extremes.append(extreme)
             i = end - 1
         elif current_value == min_value:
             ticks[i]['extreme'] = 'min'
-            if len(extremes) > 0 and extremes[-1]['extreme'] == 'min' and current_value <= extremes[-1][column]:
-                extremes[-1] = ticks[i]
+            extreme = {
+                "index": i,
+                "start_index": start,
+                "end_index": end,
+                "time": ticks[i]['time'],
+                column: ticks[i][column],
+                "peak_type": "min"
+            }
+            if len(extremes) > 0 and extremes[-1]['peak_type'] == 'min' and current_value <= extremes[-1][column]:
+                extremes[-1] = extreme
             else:
-                extremes.append({
-                    "index": i,
-                    "start_index": start,
-                    "end_index": end,
-                    "time": ticks[i]['time'],
-                    "zxj": ticks[i]['zxj'],
-                    "peak_type": "min"
-                })
+                extremes.append(extreme)
             i = end - 1
     
     return extremes
