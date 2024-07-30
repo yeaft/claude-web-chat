@@ -1133,14 +1133,16 @@ def get_past_peaks_info(ticks, column="zxj", span=30 * 12):
         # 检查是否为最高或最低值
         if current_value == max_value:
             ticks[i]['extreme'] = 'max'
-            if len(extremes) > 0 and extremes[-1]['extreme'] == 'max' and current_value >= extremes[-1][column]:
-                extremes[-1] = ticks[i]
+            if len(extremes) > 0 and extremes[-1]['extreme'] == 'max':
+                if current_value >= extremes[-1][column]:
+                    extremes[-1] = ticks[i]
             else:
                 extremes.append(ticks[i])
         elif current_value == min_value:
             ticks[i]['extreme'] = 'min'
-            if len(extremes) > 0 and extremes[-1]['extreme'] == 'min' and current_value <= extremes[-1][column]:
-                extremes[-1] = ticks[i]
+            if len(extremes) > 0 and extremes[-1]['extreme'] == 'min':
+                if current_value <= extremes[-1][column]:
+                    extremes[-1] = ticks[i]
             else:
                 extremes.append(ticks[i])
     last_five_extremes = extremes[-5:]
