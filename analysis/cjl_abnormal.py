@@ -22,7 +22,7 @@ from statistics import mean, variance, stdev
 
 class DataProcessor:
     def __init__(self, cjl_column_name, cjl_past_num=60, cjl_period_num=3, send_message=False, real_send_message=False):
-        self.win_cent = 0.005
+        self.win_cent = 0.01
         self.data = []
         self.max_data_size = 12 * 60 * 5.8 * 10  # ten days data
         self.send_message = send_message
@@ -258,7 +258,7 @@ class DataProcessor:
             potential_zxj_peak_counts = 0
             potentia_times = []
             start_index = cjl_peak['index']
-            end_index = int(self.check_future_two_days + start_index)
+            end_index = min(int(self.check_future_two_days + start_index), len(self.data)-1)
             for i in range(start_index, end_index):
                 if cjl_peak['open_direction'] == "up":
                     if self.data[i]['zxj'] >= cjl_peak['peak_zxj'] * (1+self.win_cent):

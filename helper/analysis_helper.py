@@ -1182,8 +1182,9 @@ def get_past_peaks(ticks, column="zxj", span=30 * 12):
                 column: ticks[i][column],
                 "peak_type": "max"
             }
-            if len(extremes) > 0 and extremes[-1]['peak_type'] == 'max' and current_value >= extremes[-1][column]:
-                extremes[-1] = extreme
+            if len(extremes) > 0 and extremes[-1]['peak_type'] == 'max':
+                if current_value >= extremes[-1][column]:
+                    extremes[-1] = extreme
             else:
                 extremes.append(extreme)
             i = end - 1
@@ -1197,8 +1198,9 @@ def get_past_peaks(ticks, column="zxj", span=30 * 12):
                 column: ticks[i][column],
                 "peak_type": "min"
             }
-            if len(extremes) > 0 and extremes[-1]['peak_type'] == 'min' and current_value <= extremes[-1][column]:
-                extremes[-1] = extreme
+            if len(extremes) > 0 and extremes[-1]['peak_type'] == 'min':
+                if current_value <= extremes[-1][column]:
+                    extremes[-1] = extreme
             else:
                 extremes.append(extreme)
             i = end - 1
