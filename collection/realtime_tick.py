@@ -19,26 +19,44 @@ MONITOR_CONTRACTS = ["rb"]
 CONTRACT_DP_MAP = {}
 
 def get_contract_map():
-    max_date = constance.INFO_COL.find_one({"type":"rb"}, sort=[('date', DESCENDING)])['date']
+    # max_date = constance.INFO_COL.find_one({"type":"rb"}, sort=[('date', DESCENDING)])['date']
     # max_date = "20240109"
-    available_contracts = list(constance.INFO_COL.aggregate([
-        { "$match": { "date": max_date, "kpl": { "$gt": 200000 } } },
-        { "$sort": { "kpl": -1 } },
-        { "$group": {
-            "_id": "$type",
-            "maxKpl": { "$max": "$kpl" },
-            "data": { "$first": "$$ROOT" }
-        }},
-        { "$replaceRoot": { "newRoot": "$data" } }
-    ]))
+    # available_contracts = list(constance.INFO_COL.aggregate([
+    #     { "$match": { "date": max_date, "kpl": { "$gt": 200000 } } },
+    #     { "$sort": { "kpl": -1 } },
+    #     { "$group": {
+    #         "_id": "$type",
+    #         "maxKpl": { "$max": "$kpl" },
+    #         "data": { "$first": "$$ROOT" }
+    #     }},
+    #     { "$replaceRoot": { "newRoot": "$data" } }
+    # ]))
     types = {}
+    available_contracts = [
+        {
+            "type": "rb",
+            "code": "rb2501",
+            "secondCode": "rb2505"
+        },
+        {
+            "type": "i",
+            "code": "i2501",        
+            "secondCode": "i2505"
+        }
+        ,
+        {
+            "type": "hc",
+            "code": "hc2501",        
+            "secondCode": "hc2505"
+        }
+    ]
     
     for x in available_contracts:
         types[x['type']] = {}
         types[x['type']]['code'] = x['code']
         main_code = convert_code_to_standard_code(x['code'], x['type'])
-        second_info = list(constance.INFO_COL.find({"date": max_date, "type": x['type'], "code": {"$gt": x['code']}}).sort("kpl", DESCENDING).limit(1))[0]
-        second_code = convert_code_to_standard_code(second_info['code'], x['type'])
+        # second_info = list(constance.INFO_COL.find({"date": max_date, "type": x['type'], "code": {"$gt": x['code']}}).sort("kpl", DESCENDING).limit(1))[0]
+        second_code = convert_code_to_standard_code(x['secondCode'], x['type'])
         types[x['type']]['norCode'] = main_code.upper()
         types[x['type']]['secondCode'] = second_code
         types[x['type']]['secondNorCode'] = second_code.upper()

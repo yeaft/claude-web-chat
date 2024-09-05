@@ -310,4 +310,11 @@ if __name__ == "__main__":
     dp.output_statistic()
         
     #TODO Optimize open direction
+    # 1. Determine in the trend or fluctuation
+    # 2. if in the trend:
+        # 2.1 determine the CCL and ZXJ direction
+        # 2.2 wait the opposite direction CJL abnormal signal, and trade
+    # 3. If in the fluctuation:
+        # 3.1 determine the CCL and ZXJ direction is same?
+        # 3.2 need to trade based on the zxj peak?    
     
