@@ -5,7 +5,7 @@ pytz
 requests
 Flask
 flask-compress
-chinesecalendar
+chinesecalendar=1.9.1
 numpy
 matplotlib
 mplcursors
