@@ -1,4 +1,4 @@
-FROM python:3.9.7-alpine
+FROM python:3.9-slim
 RUN apk update && apk add tzdata && echo "Asia/Shanghai" > /etc/localtime
 WORKDIR /
 ADD ./requirements.txt /
