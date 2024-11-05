@@ -37,6 +37,7 @@ services:
       - FLASK_ENV=production
     networks:
       - webnet
+    network_mode: host
 
 networks:
   webnet:
