@@ -35,7 +35,8 @@ services:
       - "8080"
     environment:
       - FLASK_ENV=production
-    network_mode: host
+    networks:
+      - webnet
 
 networks:
   webnet:

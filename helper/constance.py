@@ -6,7 +6,8 @@ requests.packages.urllib3.disable_warnings()
 ONLINE = True if socket.gethostname() == "ali-dev01" else False
 PROXIES = {'https': "socks5h://localhost:1080"}
 # MONGODB_CONNECTION_STRING = "mongodb://localhost:27017" if socket.gethostname() in ['DESKTOP-ECBL64U', 'Tom-Surface', 'DESKTOP-LMT091I', 'vm172-31-0-3.ksc.com'] else "mongodb://120.92.210.196"
-MONGODB_CONNECTION_STRING = "mongodb://localhost:27017"
+MONGODB_CONNECTION_STRING = "mongodb://host.docker.internal:27017"
+# MONGODB_CONNECTION_STRING = "mongodb://localhost:27017"
 # MONGODB_CONNECTION_STRING = "mongodb://10.1.0.4:27017"
 # MONGODB_CONNECTION_STRING = "mongodb://52.140.209.226:27017"
 
