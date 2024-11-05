@@ -1,0 +1,29 @@
+version: '3'
+services:
+  flask-app:
+    build: .
+    container_name: flask-app
+    expose:
+      - 8888
+    environment:
+      - FLASK_ENV=production
+    networks:
+      - webnet
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - /etc/letsencrypt:/etc/letsencrypt  # Mount SSL certs
+    depends_on:
+      - flask-app
+    networks:
+      - webnet
+
+networks:
+  webnet:
+    driver: bridge
+

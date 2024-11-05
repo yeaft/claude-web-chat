@@ -1,0 +1,2060 @@
+Context:
+
+我现在有两个服务，一个是IManage的api服务，通过docker-compose起的，前端nginx后面加上服务，一个是数据api服务，这个是docker起的，并没有nginx https支持。我现在希望把这两个服务合并到一个docker compose里面，让api server也在nginx后面，这样一个是可以都走nginx的https，另一个可以很好的去分配域名解析。
+
+
+References:
+
+IManage 服务相关的代码和Compose文件
+File: api_call.ps1
+# Default API Base URL and Token (can be overridden by function parameters)
+$defaultBaseURL = "https://imanage.yeaft.com"
+$defaultToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjbGllbnRfaWQiOiIxMTExMTExMSIsInRva2VuX3R5cGUiOiJhY2Nlc3MiLCJzY29wZSI6InJlYWQgd3JpdGUifQ.KDSWuSUTspkjqxJPK-Z-uSIGDlEGky6xJNn9CkIm6t8"  # Replace with a default token if you have one
+
+function Invoke-IMAPI {
+    param (
+        [string]$methodName,           # The endpoint name, e.g., "authorize", "getCustomerInfo", etc.
+        [string]$token = $defaultToken, # Access token for authentication, defaults to $defaultToken if not provided
+        [string]$baseURL = $defaultBaseURL,  # API base URL, defaults to $defaultBaseURL if not provided
+        [hashtable]$parameters = @{}    # Optional parameters specific to the endpoint
+    )
+
+    # Display help if the methodName is "--help"
+    if ($methodName -eq "--help") {
+        Show-Help
+        return
+    }
+
+    # Mapping method names to endpoints and HTTP methods
+    $apiMap = @{
+        "authorize" = @{ method = "GET"; path = "/authorize" }
+        "callback" = @{ method = "GET"; path = "/callback" }
+        "token" = @{ method = "POST"; path = "/token" }
+        "getCustomerInfo" = @{ method = "GET"; path = "/api" }
+        "getGlobalDocuments" = @{ method = "GET"; path = "/work/api/v2/customers/{customerId}/documents" }
+        "getDocumentsByLibrary" = @{ method = "GET"; path = "/work/api/v2/customers/{customerId}/libraries/{libraryId}/documents" }
+        "downloadDocument" = @{ method = "GET"; path = "/work/api/v2/customers/{customerId}/libraries/{libraryId}/documents/{docId}/download" }
+        "getDocumentACL" = @{ method = "GET"; path = "/work/api/v2/customers/{customerId}/libraries/{libraryId}/documents/{docId}/security" }
+        "getLibraries" = @{ method = "GET"; path = "/work/api/v2/customers/{customerId}/libraries" }
+        "getGroups" = @{ method = "GET"; path = "/work/api/v2/customers/{customerId}/libraries/{libraryId}/groups" }
+        "getGroupMembers" = @{ method = "GET"; path = "/work/api/v2/customers/{customerId}/libraries/{libraryId}/groups/{groupId}/members" }
+        "previewEmail" = @{ method = "GET"; path = "/work/api/v2/customers/{customerId}/libraries/{libraryId}/email/{docId}/preview" }
+    }
+
+    # Verify method name exists
+    if (-not $apiMap.ContainsKey($methodName)) {
+        Write-Output "Error: Unsupported method name '$methodName'. Use '--help' to see supported methods."
+        return
+    }
+
+    # Extract API endpoint details
+    $apiDetails = $apiMap[$methodName]
+    $method = $apiDetails.method
+    $path = $apiDetails.path
+
+    # Replace path variables if available
+    foreach ($key in $parameters.Keys) {
+        $path = $path -replace "{${key}}", $parameters[$key]
+    }
+
+    # Build request URL
+    $url = "$baseURL$path"
+
+    # Log the request details
+    Write-Output "Request URL: $url"
+    Write-Output "HTTP Method: $method"
+    Write-Output "Headers: @{ 'x-auth-token' = '$token'; 'Content-Type' = 'application/json' }"
+    Write-Output "Parameters: $($parameters | Out-String)"
+
+    # Prepare headers
+    $headers = @{
+        "x-auth-token" = $token  # Use x-auth-token as the header key
+        "Content-Type"  = "application/json"
+    }
+
+    # Prepare body for POST requests
+    $body = $null
+    if ($method -eq "POST" -and $parameters) {
+        $body = $parameters | ConvertTo-Json
+        Write-Output "Request Body: $body"
+    }
+
+    # Invoke API request
+    try {
+        $response = Invoke-RestMethod -Uri $url -Method $method -Headers $headers -Body $body
+        Write-Output "Response: $($response | ConvertTo-Json -Depth 5)"
+    }
+    catch {
+        Write-Output "Error: $($_.Exception.Message)"
+    }
+}
+
+function Show-Help {
+    Write-Output "Usage: Invoke-IMAPI -methodName <endpoint> -token <token> -baseURL <url> -parameters <parameters>"
+    Write-Output "Available Endpoints:"
+    Write-Output "  - authorize"
+    Write-Output "  - callback"
+    Write-Output "  - token"
+    Write-Output "  - getCustomerInfo"
+    Write-Output "  - getGlobalDocuments"
+    Write-Output "  - getDocumentsByLibrary"
+    Write-Output "  - downloadDocument"
+    Write-Output "  - getDocumentACL"
+    Write-Output "  - getLibraries"
+    Write-Output "  - getGroups"
+    Write-Output "  - getGroupMembers"
+    Write-Output "  - previewEmail"
+    Write-Output ""
+    Write-Output "Parameters:"
+    Write-Output "  - methodName: The name of the API endpoint you want to call."
+    Write-Output "  - token: The access token for authorization (default: $defaultToken)."
+    Write-Output "  - baseURL: The base URL for the API (default: $defaultBaseURL)."
+    Write-Output "  - parameters: A hashtable of parameters to include in the request, such as path variables or query parameters."
+    Write-Output ""
+    Write-Output "Examples:"
+    Write-Output '  Invoke-IMAPI -methodName "authorize" -token "<YourToken>" -parameters @{ client_id = "<YourClientID>"; redirect_uri = "https://localhost/v1.0/admin/oauth/callback"; state = "example_state" }'
+    Write-Output '  Invoke-IMAPI -methodName "getCustomerInfo" -token "<YourToken>"'
+    Write-Output '  Invoke-IMAPI -methodName "getGlobalDocuments" -token "<YourToken>" -parameters @{ customerId = "12345"; offset = 0; limit = 10 }'
+    Write-Output '  Invoke-IMAPI -methodName "token" -token "<YourToken>" -parameters @{ grant_type = "authorization_code"; client_id = "<YourClientID>"; client_secret = "<YourClientSecret>"; code = "<AuthCode>" }'
+}
+
+# Example: To display help
+# Invoke-IMAPI --help
+
+
+File: app.py
+from flask import Flask, request, jsonify, redirect, url_for, make_response, send_file
+from datetime import datetime, timedelta
+import base64
+import uuid
+from functools import wraps
+import random
+import string
+import jwt  # 导入 PyJWT 库，用于处理 JWT 令牌
+import os
+
+app = Flask(__name__)
+
+# JWT 配置
+JWT_SECRET_KEY = '1qaz@WSX'  # 在生产环境中，请使用安全的密钥
+JWT_ALGORITHM = 'HS256'
+
+# OAuth2 配置
+# 更新 clients 字典，移除过期的 'access_token' 和 'token_expiry' 字段
+clients = {
+    "client_localhost": {
+        "client_secret": "localhost_secret",
+        "redirect_uris": ["https://localhost/v1.0/admin/oauth/callback"],
+        "authorized": False,
+        "auth_code": "",
+        "refresh_tokens": {}  # 存储刷新令牌
+    },
+    "client_df": {
+        "client_secret": "df_secret",
+        "redirect_uris": ["https://df-gcs.office.com/v1.0/admin/oauth/callback"],
+        "authorized": False,
+        "auth_code": "",
+        "refresh_tokens": {}
+    }
+}
+
+# 为 '11111111' 客户端生成一个永不过期的 JWT 访问令牌
+always_valid_payload = {
+    'client_id': '11111111',
+    'token_type': 'access',
+    'scope': 'read write'
+    # 不包含 'exp' 声明，使其永不过期
+}
+always_valid_token = jwt.encode(always_valid_payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+clients['11111111'] = {
+    "client_secret": "always_valid",
+    "redirect_uris": ["https://localhost/v1.0/admin/oauth/callback"],
+    "authorized": True,
+    "auth_code": "",
+    "access_token": always_valid_token,
+    "refresh_tokens": {}
+}
+
+# OAuth2 端点
+@app.route('/authorize')
+def authorize():
+    client_id = request.args.get('client_id')
+    redirect_uri = request.args.get('redirect_uri')
+    state = request.args.get('state')
+    response_mode = request.args.get('response_mode')  # 新增参数，用于控制响应模式
+
+    if client_id in clients:
+        if not redirect_uri or redirect_uri in clients[client_id]['redirect_uris']:
+            # 模拟用户授权
+            auth_code = str(uuid.uuid4())
+            clients[client_id]['auth_code'] = auth_code
+
+            if response_mode == 'direct':
+                # 直接返回授权码，不进行重定向
+                return jsonify({"code": auth_code, "state": state})
+            elif redirect_uri:
+                # 重定向回客户端，携带授权码
+                return redirect(f"{redirect_uri}?code={auth_code}&state={state}")
+            else:
+                # 如果没有提供 redirect_uri，且未要求直接返回，则返回错误
+                return jsonify({"error": "redirect_uri is required unless response_mode is 'direct'"}), 400
+        else:
+            return jsonify({"error": "Invalid redirect_uri"}), 400
+    else:
+        return jsonify({"error": "Invalid client_id"}), 400
+
+@app.route('/callback')
+def callback():
+    # 模拟回调端点，直接返回授权码
+    code = request.args.get('code')
+    state = request.args.get('state')
+    return jsonify({"code": code, "state": state})
+
+@app.route('/token', methods=['POST'])
+def token():
+    grant_type = request.form.get('grant_type')
+    client_id = request.form.get('client_id')
+    client_secret = request.form.get('client_secret')
+
+    if client_id not in clients or clients[client_id]['client_secret'] != client_secret:
+        return jsonify({"error": "Invalid client credentials"}), 400
+
+    if grant_type == 'authorization_code':
+        auth_code = request.form.get('code')
+        if clients[client_id]['auth_code'] == auth_code:
+            if client_id == '11111111':
+                return jsonify({
+                    "access_token": always_valid_token,
+                    "token_type": "Bearer",
+                    "expires_in": 3600
+                })
+            # 生成访问令牌和刷新令牌（JWT）
+            access_token_payload = {
+                'client_id': client_id,
+                'exp': datetime.utcnow() + timedelta(hours=1),
+                'token_type': 'access',
+                'scope': 'read write'  # 根据需要添加范围（scopes）
+            }
+            access_token = jwt.encode(access_token_payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+            refresh_token_payload = {
+                'client_id': client_id,
+                'exp': datetime.utcnow() + timedelta(days=30),
+                'token_type': 'refresh'
+            }
+            refresh_token = jwt.encode(refresh_token_payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+            # 存储刷新令牌，并标记为有效
+            clients[client_id]['refresh_tokens'][refresh_token] = {'valid': True}
+
+            return jsonify({
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "refresh_token": refresh_token
+            })
+        else:
+            return jsonify({"error": "Invalid authorization code"}), 400
+
+    elif grant_type == 'refresh_token':
+        refresh_token = request.form.get('refresh_token')
+        try:
+            # 解码并验证刷新令牌
+            refresh_token_payload = jwt.decode(refresh_token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            client_id_from_token = refresh_token_payload['client_id']
+            if client_id_from_token != client_id:
+                return jsonify({"error": "Invalid client_id in refresh token"}), 400
+
+            # 检查刷新令牌是否有效且未被使用
+            if refresh_token in clients[client_id]['refresh_tokens'] and clients[client_id]['refresh_tokens'][refresh_token]['valid']:
+                # 将已使用的刷新令牌标记为无效
+                clients[client_id]['refresh_tokens'][refresh_token]['valid'] = False
+
+                # 生成新的访问令牌和刷新令牌
+                access_token_payload = {
+                    'client_id': client_id,
+                    'exp': datetime.utcnow() + timedelta(hours=12),
+                    'token_type': 'access',
+                    'scope': 'read write'
+                }
+                access_token = jwt.encode(access_token_payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+                new_refresh_token_payload = {
+                    'client_id': client_id,
+                    'exp': datetime.utcnow() + timedelta(days=30),
+                    'token_type': 'refresh'
+                }
+                new_refresh_token = jwt.encode(new_refresh_token_payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+                # 存储新的刷新令牌
+                clients[client_id]['refresh_tokens'][new_refresh_token] = {'valid': True}
+
+                return jsonify({
+                    "access_token": access_token,
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                    "refresh_token": new_refresh_token
+                })
+            else:
+                return jsonify({"error": "Invalid or expired refresh token"}), 400
+        except jwt.ExpiredSignatureError:
+            return jsonify({"error": "Refresh token expired"}), 400
+        except jwt.InvalidTokenError:
+            return jsonify({"error": "Invalid refresh token"}), 400
+
+    elif grant_type == 'client_credentials':
+        if client_id == '11111111':
+            return jsonify({
+                "access_token": always_valid_token,
+                "token_type": "Bearer",
+                "expires_in": 3600
+            })
+        
+        # 支持 client_credentials 授权类型
+        access_token_payload = {
+            'client_id': client_id,
+            'exp': datetime.utcnow() + timedelta(hours=12),
+            'token_type': 'access',
+            'scope': 'read write'
+        }
+        access_token = jwt.encode(access_token_payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+        return jsonify({
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": 3600
+            # 不返回 refresh_token
+        })
+
+    else:
+        return jsonify({"error": "Unsupported grant type"}), 400
+
+# 用于令牌验证的装饰器
+def token_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        auth_token = request.headers.get('x-auth-token', None)
+        if not auth_token:
+            auth_token = request.args.get('Authorization', None).replace('Bearer ', '')  # 从查询参数中获取令牌
+        if auth_token:
+            access_token = auth_token
+
+            # 检查是否为 'always_valid' 令牌
+            if access_token == clients['11111111']['access_token']:
+                return f(*args, **kwargs)
+
+            try:
+                # 解码并验证访问令牌
+                access_token_payload = jwt.decode(access_token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+                client_id_from_token = access_token_payload['client_id']
+                # 可选地，您可以在此验证 client_id_from_token 是否有效
+                return f(*args, **kwargs)
+            except jwt.ExpiredSignatureError:
+                return jsonify({"error": "Access token expired"}), 401
+            except jwt.InvalidTokenError:
+                return jsonify({"error": "Invalid access token"}), 401
+        return jsonify({"error": "Unauthorized"}), 401
+    return wrapper
+
+# Explanation for using 'x-auth-token' instead of 'Authorization':
+"""
+We're using 'x-auth-token' as a custom header for authentication instead of the standard 'Authorization' header. This approach can help avoid conflicts with intermediaries like proxies or browsers that might strip or alter the 'Authorization' header. Additionally, some security policies or CORS configurations might restrict the use of the 'Authorization' header. By using a custom header, we gain more control and reduce potential issues with header manipulation or restrictions.
+"""
+
+# Helper functions for random data generation
+def random_string(length=8):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
+
+def random_email():
+    return f"{random_string(5)}@example.com"
+
+def random_date(start, end):
+    return start + timedelta(
+        seconds=random.randint(0, int((end - start).total_seconds())),
+    )
+
+# Mock data store
+customers = {}
+
+def generate_data():
+    now = datetime.utcnow()
+    past = now - timedelta(days=365)
+    customer_id = '123'
+    customers[customer_id] = {
+        'app': {
+            'id': 'app_id_123'
+        },
+        'auth_status': 'authenticated',
+        'capabilities': ['capability1', 'capability2'],
+        'dms_version': 'v1.0',
+        'user': {
+            'customer_id': int(customer_id),
+            'email': 'user@example.com',
+            'id': 'user_123',
+            'name': 'User Name',
+            'ssid': 'ssid_123',
+            'user_type': 'standard'
+        },
+        'versions': [
+            {
+                'name': 'version1',
+                'url': 'http://example.com/version1',
+                'version': '1.0.0'
+            }
+        ],
+        'work': {
+            'libraries': [],
+            'preferred_library': 'Library1'
+        },
+        # 'documents', 'groups', 'users' are stored but will not be returned in the customer response
+        'documents': [],
+        'groups': [],
+        'users': []
+    }
+
+    # Generate 8 libraries
+    libraries = []
+    for i in range(1, 9):
+        lib = {
+            'id': f'Library{i}',
+            'type': 'worksite',
+            'is_hidden': False
+        }
+        libraries.append(lib)
+    customers[customer_id]['work']['libraries'] = libraries
+
+    # Generate 600 users
+    users = []
+    for _ in range(600):
+        user_id = random_string(8)
+        user = {
+            "allow_logon": random.choice([True, False]),
+            "custom1": random_string(10),
+            "custom2": random_string(10),
+            "custom3": random_string(10),
+            "database": random.choice(libraries)['id'],
+            "doc_server": "DEFSERVER",
+            "distinguished_name": f"cn={user_id},dc=example,dc=com",
+            "edit_date": random_date(past, now).isoformat() + 'Z',
+            "email": random_email(),
+            "full_name": f"{random_string(5)} {random_string(7)}",
+            "id": user_id,
+            "is_external": random.choice([True, False]),
+            "location": random.choice(["Chicago", "New York", "London"]),
+            "preferred_library": random.choice(libraries)['id'],
+            "ssid": str(uuid.uuid4()),
+            "user_nos": random.randint(1, 10),
+            "user_num": random.randint(10000, 99999)
+        }
+        users.append(user)
+    customers[customer_id]['users'] = users
+
+    # Generate 100 groups
+    groups = []
+    for i in range(100):
+        group_id = random_string(6).upper()
+        group_members = random.sample(users, random.randint(1, 5))
+        group = {
+            "access": random.randint(1, 3),
+            "access_level": random.choice(["read", "read_write", "full_access"]),
+            "id": group_id,
+            "name": f"Group {group_id}",
+            "sid": str(random.randint(1, 1000)),
+            "type": "group",
+            "is_external": False,
+            "enabled": True,
+            "members": [member['id'] for member in group_members]
+        }
+        groups.append(group)
+    customers[customer_id]['groups'] = groups
+
+    # Generate 1000 documents (200 emails, 800 files)
+    documents = []
+    for _ in range(1000):
+        is_email = random.random() < 0.2  # 20% chance for email
+        library = random.choice(libraries)
+        doc_id = f"{library['id']}!{random.randint(10000, 99999)}.{random.randint(1, 10)}"
+        create_date = random_date(past, now)
+        edit_date = random_date(create_date, now)
+
+        # Generate content for document or email
+        if is_email:
+            # For emails, generate email content
+            email_subject = random_string(15)
+            email_body = f"This is the body of the email {doc_id}"
+            doc_content = f"Subject: {email_subject}\nFrom: {random_email()}\nTo: {random_email()}\n\n{email_body}"
+        else:
+            # For documents, generate document content
+            doc_content = f"This is the content of document {doc_id}"
+
+        doc = {
+            "author": random.choice(users)['id'],
+            "comment": random_string(20),
+            "content_type": "email" if is_email else "document",
+            "create_date": create_date.isoformat() + 'Z',
+            "database": library['id'],
+            "document_number": random.randint(10000, 99999),
+            "edit_date": edit_date.isoformat() + 'Z',
+            "extension": random.choice(["eml", "msg"]) if is_email else random.choice(["pdf", "docx", "txt"]),
+            "file_create_date": create_date.isoformat() + 'Z',
+            "file_edit_date": edit_date.isoformat() + 'Z',
+            "id": doc_id,
+            "iwl": f"iwl:dms=EXAMPLE&&lib={library['id']}&&num={random.randint(10000,99999)}&&ver={random.randint(1,10)}",
+            "last_user": random.choice(users)['id'],
+            "name": f"{random_string(10)} Document",
+            "size": random.randint(1024, 1048576),
+            "type": random.choice(["EMAIL", "MSG", "EML"]) if is_email else random.choice(["ACROBAT", "WORD", "TEXT"]),
+            "version": random.randint(1, 10),
+            "workspace_name": random_string(10),
+            "wstype": "document",
+            # Additional fields for emails
+            "subject": email_subject if is_email else None,
+            "cc": random_email() if is_email else None,
+            "conversation_name": random_string(10) if is_email else None,
+            "from": random_email() if is_email else None,
+            "has_attachment": random.choice([True, False]) if is_email else None,
+            "received_date": random_date(past, now).isoformat() + 'Z' if is_email else None,
+            "sent_date": random_date(past, now).isoformat() + 'Z' if is_email else None,
+            "to": random_email() if is_email else None,
+            "co_authors": None if is_email else [random.choice(users)['id'] for _ in range(random.randint(0, 3))],
+            # Add 'content' field
+            "content": base64.b64encode(doc_content.encode()).decode('utf-8')
+        }
+        documents.append(doc)
+    customers[customer_id]['documents'] = documents
+
+    # Generate ACLs for each document
+    for doc in documents:
+        # Each document will have an ACL with random users and groups
+        acl_entries = []
+        num_acl_entries = random.randint(1, 5)
+        for _ in range(num_acl_entries):
+            acl_type = random.choice(['user', 'group'])
+            if acl_type == 'user':
+                user = random.choice(users)
+                acl_entry = {
+                    "access": random.randint(1, 3),
+                    "access_level": random.choice(["read", "read_write", "full_access"]),
+                    "id": user['id'],
+                    "name": user['full_name'],
+                    "sid": str(random.randint(1, 1000)),
+                    "type": "user",
+                    "is_external": user['is_external'],
+                    "allow_logon": user['allow_logon']
+                }
+            else:
+                group = random.choice(groups)
+                acl_entry = {
+                    "access": group['access'],
+                    "access_level": group['access_level'],
+                    "id": group['id'],
+                    "name": group['name'],
+                    "sid": group['sid'],
+                    "type": "group",
+                    "is_external": group['is_external'],
+                    "enabled": group['enabled']
+                }
+            acl_entries.append(acl_entry)
+        # Attach the ACL to the document
+        doc['acl'] = {
+            "data": acl_entries,
+            "default_security": doc.get('default_security', 'private')
+        }
+
+# Call generate_data to initialize the data store
+generate_data()
+
+# API Implementations
+
+@app.route('/api', methods=['GET'])
+@token_required
+def get_customer_id():
+    customer_id = '123'
+    customer_data = customers[customer_id].copy()
+    # Exclude 'documents', 'users', and 'groups' from the response
+    excluded_keys = ['documents', 'users', 'groups']
+    for key in excluded_keys:
+        customer_data.pop(key, None)
+    response_data = {"data": customer_data}
+    return jsonify(response_data)
+
+# Existing global get documents API
+@app.route('/work/api/v2/customers/<customerId>/documents', methods=['GET'])
+@token_required
+def get_global_documents(customerId):
+    if customerId not in customers:
+        customer_keys = list(customers.keys())
+        return jsonify({"error": "Customer not found", "customerIds": customer_keys, "inputId": customerId}), 404
+
+    documents = customers[customerId]['documents'].copy()
+
+    # Handle query parameters
+    offset = int(request.args.get('offset', 0))
+    limit = int(request.args.get('limit', 500))
+    limit = max(1, min(limit, 9999))
+    libraries = request.args.get('libraries')
+    edit_date_from = request.args.get('edit_date_from')
+
+    # Filter by libraries
+    if libraries:
+        library_list = [lib.strip().lower() for lib in libraries.split(',')]
+        documents = [doc for doc in documents if doc['database'].lower() in library_list]
+
+    # Filter by edit_date_from
+    if edit_date_from:
+        try:
+            edit_date_from_dt = datetime.strptime(edit_date_from, '%Y-%m-%dT%H:%M:%SZ')
+            documents = [doc for doc in documents if datetime.strptime(doc['edit_date'], '%Y-%m-%dT%H:%M:%S.%fZ') >= edit_date_from_dt]
+        except ValueError:
+            try:
+                edit_date_from_dt = datetime.strptime(edit_date_from, '%Y-%m-%dT%H:%M:%SZ')
+                documents = [doc for doc in documents if datetime.strptime(doc['edit_date'], '%Y-%m-%dT%H:%M:%SZ') >= edit_date_from_dt]
+            except ValueError:
+                return jsonify({"error": "Invalid edit_date_from format"}), 400
+
+    # Only include fields defined in DocumentItem
+    document_fields = [
+        "author",
+        "comment",
+        "content_type",
+        "create_date",
+        "database",
+        "document_number",
+        "edit_date",
+        "extension",
+        "file_create_date",
+        "file_edit_date",
+        "id",
+        "iwl",
+        "last_user",
+        "name",
+        "size",
+        "type",
+        "version",
+        "workspace_name",
+        "wstype",
+        "subject",
+        "cc",
+        "conversation_name",
+        "from",
+        "has_attachment",
+        "received_date",
+        "sent_date",
+        "to",
+        "co_authors"
+    ]
+
+    filtered_documents = []
+    for doc in documents:
+        filtered_doc = {key: doc[key] for key in document_fields if key in doc and doc[key] is not None}
+        filtered_documents.append(filtered_doc)
+
+    # Apply offset and limit
+    total_count = len(filtered_documents)
+    filtered_documents = filtered_documents[offset:offset+limit]
+
+    response_data = {
+        "data": {
+            "results": filtered_documents
+        },
+        "total_count": total_count
+    }
+    return jsonify(response_data)
+
+# New library-based get documents API
+@app.route('/work/api/v2/customers/<customerId>/libraries/<libraryId>/documents', methods=['GET'])
+@token_required
+def get_library_documents(customerId, libraryId):
+    if customerId not in customers:
+        customer_keys = list(customers.keys())
+        return jsonify({"error": "Customer not found", "customerIds": customer_keys, "inputId": customerId}), 404
+
+    documents = customers[customerId]['documents'].copy()
+
+    # Filter documents by libraryId
+    documents = [doc for doc in documents if doc['database'] == libraryId]
+
+    # Handle query parameters
+    offset = int(request.args.get('offset', 0))
+    limit = int(request.args.get('limit', 500))
+    limit = max(1, min(limit, 9999))
+    edit_date_from = request.args.get('edit_date_from')
+
+    # Filter by edit_date_from
+    if edit_date_from:
+        try:
+            edit_date_from_dt = datetime.strptime(edit_date_from, '%Y-%m-%dT%H:%M:%SZ')
+            documents = [doc for doc in documents if datetime.strptime(doc['edit_date'], '%Y-%m-%dT%H:%M:%S.%fZ') >= edit_date_from_dt]
+        except ValueError:
+            try:
+                edit_date_from_dt = datetime.strptime(edit_date_from, '%Y-%m-%dT%H:%M:%SZ')
+                documents = [doc for doc in documents if datetime.strptime(doc['edit_date'], '%Y-%m-%dT%H:%M:%SZ') >= edit_date_from_dt]
+            except ValueError:
+                return jsonify({"error": "Invalid edit_date_from format"}), 400
+
+    # Only include fields defined in DocumentItem
+    document_fields = [
+        "author",
+        "comment",
+        "content_type",
+        "create_date",
+        "database",
+        "document_number",
+        "edit_date",
+        "extension",
+        "file_create_date",
+        "file_edit_date",
+        "id",
+        "iwl",
+        "last_user",
+        "name",
+        "size",
+        "type",
+        "version",
+        "workspace_name",
+        "wstype",
+        "subject",
+        "cc",
+        "conversation_name",
+        "from",
+        "has_attachment",
+        "received_date",
+        "sent_date",
+        "to",
+        "co_authors"
+    ]
+
+    filtered_documents = []
+    for doc in documents:
+        filtered_doc = {key: doc[key] for key in document_fields if key in doc and doc[key] is not None}
+        filtered_documents.append(filtered_doc)
+
+    # Apply offset and limit
+    total_count = len(filtered_documents)
+    filtered_documents = filtered_documents[offset:offset+limit]
+
+    response_data = {
+        "data": {
+            "results": filtered_documents
+        },
+        "total_count": total_count
+    }
+    return jsonify(response_data)
+
+@app.route('/work/api/v2/customers/<customerId>/libraries/<libraryId>/documents/<docId>/download', methods=['GET'])
+@token_required
+def download_document(customerId, libraryId, docId):
+    if customerId not in customers:
+        return jsonify({"error": "Customer not found"}), 404
+
+    documents = customers[customerId]['documents']
+    doc = next((d for d in documents if d['id'] == docId and d['database'] == libraryId), None)
+    if not doc:
+        return jsonify({"error": "Document not found"}), 404
+
+    # Handle 'latest' parameter
+    latest = request.args.get('latest', 'false').lower() == 'true'
+    if latest:
+        # For simplicity, assume the latest version is the one with the highest 'version' field
+        versions = [d for d in documents if d['document_number'] == doc['document_number']]
+        latest_version = max(versions, key=lambda x: x['version'])
+        doc = latest_version
+
+    # Decode the content
+    content = base64.b64decode(doc.get('content', '').encode())
+
+    # Create a response with the content
+    response = make_response(content)
+    response.headers.set('Content-Type', 'application/octet-stream')
+    response.headers.set('Content-Disposition', f'attachment; filename="{doc["name"]}"')
+    response.headers.set('Content-Length', len(content))
+    response.headers.set('Document-Id', doc['id'])
+    return response
+
+@app.route('/work/api/v2/customers/<customerId>/libraries/<libraryId>/documents/<docId>/security', methods=['GET'])
+@token_required
+def get_document_acl(customerId, libraryId, docId):
+    if customerId not in customers:
+        return jsonify({"error": "Customer not found"}), 404
+
+    documents = customers[customerId]['documents']
+    doc = next((d for d in documents if d['id'] == docId and d['database'] == libraryId), None)
+    if not doc:
+        return jsonify({"error": "Document not found"}), 404
+
+    # Return the ACL specific to the document
+    acl_data = doc.get('acl', {"data": [], "default_security": doc.get('default_security', 'private')})
+
+    # Filter ACL entries
+    acl_entry_fields = [
+        "access",
+        "access_level",
+        "id",
+        "name",
+        "sid",
+        "type",
+        "is_external",
+        "allow_logon",
+        "enabled"
+    ]
+    filtered_acl_entries = []
+    for entry in acl_data.get('data', []):
+        filtered_entry = {key: entry[key] for key in acl_entry_fields if key in entry and entry[key] is not None}
+        filtered_acl_entries.append(filtered_entry)
+
+    response_acl_data = {
+        "data": filtered_acl_entries,
+        "default_security": acl_data.get('default_security', 'private')
+    }
+    return jsonify(response_acl_data)
+
+@app.route('/work/api/v2/customers/<customerId>/libraries', methods=['GET'])
+@token_required
+def get_libraries(customerId):
+    if customerId not in customers:
+        return jsonify({"error": "Customer not found"}), 404
+    libraries = customers[customerId]['work']['libraries']
+
+    # Only include fields defined in IManageLibrary
+    library_fields = ["id", "type", "is_hidden"]
+    filtered_libraries = [{key: lib[key] for key in library_fields if key in lib} for lib in libraries]
+
+    response_data = {
+        "data": filtered_libraries
+    }
+    return jsonify(response_data)
+
+@app.route('/work/api/v2/customers/<customerId>/libraries/<libraryId>/groups', methods=['GET'])
+@token_required
+def get_groups(customerId, libraryId):
+    if customerId not in customers:
+        return jsonify({"error": "Customer not found"}), 404
+    groups = customers[customerId]['groups'].copy()
+
+    # Handle query parameters
+    enabled_param = request.args.get('enabled')
+    offset = int(request.args.get('offset', 0))
+    limit = int(request.args.get('limit', 500))
+    limit = max(1, min(limit, 9999))
+
+    # Filter by enabled status
+    if enabled_param is not None:
+        enabled = enabled_param.lower() == 'true'
+        groups = [g for g in groups if g['enabled'] == enabled]
+
+    # Apply offset and limit
+    total_count = len(groups)
+    groups = groups[offset:offset+limit]
+
+    # Only include fields defined in IManageGroup
+    group_fields = [
+        "access",
+        "access_level",
+        "id",
+        "name",
+        "sid",
+        "type",
+        "is_external",
+        "enabled",
+        "members"
+    ]
+    filtered_groups = [{key: group[key] for key in group_fields if key in group} for group in groups]
+
+    response_data = {
+        "data": filtered_groups,
+        "total_count": total_count
+    }
+    return jsonify(response_data)
+
+@app.route('/work/api/v2/customers/<customerId>/libraries/<libraryId>/groups/<groupId>/members', methods=['GET'])
+@token_required
+def get_group_members(customerId, libraryId, groupId):
+    if customerId not in customers:
+        return jsonify({"error": "Customer not found"}), 404
+    groups = customers[customerId]['groups']
+    group = next((g for g in groups if g['id'] == groupId), None)
+    if not group:
+        return jsonify({"error": "Group not found"}), 404
+
+    users = customers[customerId]['users']
+
+    # Get members of the group
+    members = [user for user in users if user['id'] in group['members']]
+
+    # Handle query parameters
+    allow_logon_param = request.args.get('allow_logon')
+    offset = int(request.args.get('offset', 0))
+    limit = int(request.args.get('limit', 500))
+    limit = max(1, min(limit, 9999))
+
+    # Filter by allow_logon
+    if allow_logon_param is not None:
+        allow_logon = allow_logon_param.lower() == 'true'
+        members = [m for m in members if m['allow_logon'] == allow_logon]
+
+    # Apply offset and limit
+    total_count = len(members)
+    members = members[offset:offset+limit]
+
+    # Only include fields defined in IManageUser
+    user_fields = [
+        "allow_logon",
+        "custom1",
+        "custom2",
+        "custom3",
+        "database",
+        "doc_server",
+        "distinguished_name",
+        "edit_date",
+        "email",
+        "full_name",
+        "id",
+        "is_external",
+        "location",
+        "preferred_library",
+        "ssid",
+        "user_nos",
+        "user_num"
+    ]
+    filtered_members = [{key: member[key] for key in user_fields if key in member} for member in members]
+
+    response_data = {
+        "data": filtered_members,
+        "total_count": total_count
+    }
+    return jsonify(response_data)
+
+# New endpoint for email preview
+@app.route('/work/api/v2/customers/<customerId>/libraries/<libraryId>/email/<docId>/preview', methods=['GET'])
+@token_required
+def preview_email(customerId, libraryId, docId):
+    if customerId not in customers:
+        return jsonify({"error": "Customer not found"}), 404
+
+    documents = customers[customerId]['documents']
+    # Find the email document
+    doc = next((d for d in documents if d['id'] == docId and d['database'] == libraryId and d['content_type'] == 'email'), None)
+    if not doc:
+        return jsonify({"error": "Email not found"}), 404
+
+    # Simulate email preview
+    # Depending on the environment, return MSG, EML, or HTML content
+    # For simplicity, we'll return an HTML preview
+
+    email_content = f"""
+    <html>
+    <body>
+        <h1>{doc.get('subject', 'No Subject')}</h1>
+        <p>From: {doc.get('from')}</p>
+        <p>To: {doc.get('to')}</p>
+        <p>CC: {doc.get('cc')}</p>
+        <p>Sent Date: {doc.get('sent_date')}</p>
+        <p>Received Date: {doc.get('received_date')}</p>
+        <hr>
+        <p>{doc.get('comment', 'No content')}</p>
+    </body>
+    </html>
+    """
+
+    response = make_response(email_content)
+    response.headers.set('Content-Type', 'text/html')
+    response.headers.set('Content-Length', len(email_content))
+    return response
+
+# New endpoint to download the script file
+@app.route('/download-script', methods=['GET'])
+def download_script():
+    script_path = os.path.join(os.path.dirname(__file__), 'api_call.ps1')  # Path to the script file in the same directory
+
+    if os.path.exists(script_path):
+        # Serve the file as an attachment
+        return send_file(script_path, as_attachment=True, download_name='api_call.ps1')
+    else:
+        return jsonify({"error": "File not found"}), 404
+
+# API to copy content
+@app.route('/copy', methods=['GET'])
+def copy():
+    global copied_content
+    copied_content = request.args.get('t')
+    if copied_content is not None:
+        return jsonify({"message": "Content copied successfully"}), 200
+    else:
+        return jsonify({"error": "No content provided"}), 400
+
+# API to paste content
+@app.route('/paste', methods=['GET'])
+def paste():
+    if copied_content is not None:
+        return jsonify({"content": copied_content}), 200
+    else:
+        return jsonify({"error": "No content available to paste"}), 404
+
+# Entry point
+if __name__ == '__main__':
+    # Run the Flask app
+    app.run(debug=True, port=8888, host='0.0.0.0')
+
+
+File: docker-compose.yml
+version: '3'
+services:
+  flask-app:
+    build: .
+    container_name: flask-app
+    expose:
+      - 8888
+    environment:
+      - FLASK_ENV=production
+    networks:
+      - webnet
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - /etc/letsencrypt:/etc/letsencrypt  # Mount SSL certs
+    depends_on:
+      - flask-app
+    networks:
+      - webnet
+
+networks:
+  webnet:
+    driver: bridge
+
+
+
+File: Dockerfile
+# Use the official Python image from Docker Hub
+FROM python:3.9-slim
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy the requirements file into the container
+COPY requirements.txt /app/
+
+# Install any needed packages specified in requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application code into the container
+COPY . /app/
+
+# Expose port 8888 for the Flask app
+EXPOSE 8888
+
+# Define the command to run the application
+CMD ["python", "app.py"]
+
+
+File: nginx.conf
+events {}
+http {
+    server {
+        listen 443 ssl;
+        server_name yeaft.com imanage.yeaft.com;
+
+        # SSL certificates
+        ssl_certificate /etc/letsencrypt/live/yeaft.com/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/yeaft.com/privkey.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+
+        # Proxy requests to Flask app
+        location / {
+            proxy_pass http://flask-app:8888;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+
+
+
+File: Readme.md
+# Docker build
+`docker build -t imanage-flask-app .`
+
+# Docker run
+`docker run -d -p 8888:8888 --name imanage_app imanage-flask-app`
+
+
+File: requirements.txt
+flask
+PyJWT
+
+
+api 服务相关的代码
+File: api.py
+from flask import Flask, request, render_template,Response, abort
+from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
+import ipaddress
+from datetime import datetime, timedelta
+import time, pytz
+from functools import wraps
+from statistics import mean
+from flask_compress import Compress
+import numpy as np
+
+app = Flask(__name__)
+Compress(app)
+
+CACHE_TICKS = {}
+CACHE_TICKS_1MIN = {}
+CACHE_DAILY_CCL_DATA = {}
+CACHE_CP_RATE_DATA = {}
+PAST_CCL_STABLE_DATA = {}
+TEN_DAYS_SIZE = int(12 * 60 * 5.8 * 10)
+LAST_DAY_SIZE = int(12 * 60 * 5.8)
+HALF_DAY_SIZE = int(12 * 60 * 3)
+KP_TICKS = {}
+DATA_TYPES= ['rb']
+BLOCKED_PATTERNS = [
+    "45.128.*.*",
+    "141.98.*.*"
+]
+FIND_PEAK_START_INDEX = 0
+EXTREME_COLS = ["ccl", "zxj", "cjlDiff"]
+EXTREME_SET = {}
+LOW_CJL_MINUTE_THRESHOLD = 3000
+MIN_CJL_5SEC_THRESHOLD = 1500
+
+def block_ip():
+    def decorator(f):
+        @wraps(f)  # This preserves the original function's name and docstring
+        def decorated_function(*args, **kwargs):
+            if is_ip_blocked(request.remote_addr):
+                abort(403)  # Forbidden
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+def is_ip_blocked(ip_addr):
+    for pattern in BLOCKED_PATTERNS:
+        if '*' in pattern:  # Simple wildcard matching
+            base_ip = pattern.replace('*', '0')
+            try:
+                network = ipaddress.ip_network(base_ip)
+                if ipaddress.ip_address(ip_addr) in network:
+                    return True
+            except ValueError:
+                continue
+        else:  # CIDR notation
+            try:
+                if ipaddress.ip_address(ip_addr) in ipaddress.ip_network(pattern, strict=False):
+                    return True
+            except ValueError:
+                continue
+    return False
+    
+def check_auth(username, password):
+    """Check if a username / password combination is valid."""
+    return username == 'hermes' and password == '1qaz@WSX'  # Replace with your credentials
+
+def authenticate():
+    """Sends a 401 response to request authentication."""
+    return Response(
+        'Could not verify your access level for that URL.\n'
+        'You have to login with proper credentials', 401,
+        {'WWW-Authenticate': 'Basic realm="Login Required"'})
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+def initial_ticks():
+    for data_type in DATA_TYPES:        
+        if data_type not in CACHE_TICKS:
+            if data_type not in EXTREME_SET:
+                EXTREME_SET[data_type] = {'ccl':[], 'zxj':[], 'cjlDiff':[]}
+            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(TEN_DAYS_SIZE)
+            sorted_ticks = sorted(ticks, key=lambda x: x['time'])
+            CACHE_TICKS[data_type] = sorted_ticks            
+            
+            m_ticks = []
+            start_index = 0
+            for i in range(len(sorted_ticks)):
+                if sorted_ticks[i]['time'][-6:] == "00.000":
+                    if i - start_index > 10:
+                        zxjs = [x['zxj'] for x in sorted_ticks[start_index:i+1]]
+                        ccls = [x['ccl'] for x in sorted_ticks[start_index:i+1]]
+                        min_zxj = min(zxjs)
+                        avg_ccl = mean(ccls)                        
+                        max_zxj = max(zxjs)
+                        cjl = sum([x['cjlDiff'] for x in sorted_ticks[start_index:i+1] if 'cjlDiff' in x])
+                        
+                        m_ticks.append({
+                            "time": sorted_ticks[i]['time'][:-4],
+                            "code": sorted_ticks[i]['code'],
+                            "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                            "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                            "ccl": int(avg_ccl),
+                            "cjl": int(cjl),
+                        })
+                        
+                    start_index = i + 1
+            
+            CACHE_TICKS_1MIN[data_type] = m_ticks
+            
+    utils.log("Finish inital ticks data")
+
+@app.route('/ticks', methods=['GET'])
+@block_ip()
+def get_latest_1min_ticks():
+    data = {}
+    for data_type in DATA_TYPES:   
+        # Update new data
+        if len(CACHE_TICKS_1MIN[data_type]) >= TEN_DAYS_SIZE:
+            CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][-TEN_DAYS_SIZE:]
+        last_tick = CACHE_TICKS_1MIN[data_type][-1]
+        new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gte": last_tick["time"]}}).sort("time", 1))
+        is_updated = False
+        if len(new_ticks) >= 12:
+            m_ticks = []
+            start_index = 1
+            for i in range(start_index, len(new_ticks)):
+                if new_ticks[i]['time'][-6:] == "00.000":
+                    if i - start_index > 10:
+                        zxjs = [x['zxj'] for x in new_ticks[start_index:i+1]]
+                        ccls = [x['ccl'] for x in new_ticks[start_index:i+1]]
+                        min_zxj = min(zxjs)
+                        avg_ccl = mean(ccls)                        
+                        max_zxj = max(zxjs)
+                        cjl = sum([x['cjlDiff'] for x in new_ticks[start_index:i+1]])
+                        
+                        m_ticks.append({
+                            "time": new_ticks[i]['time'][:-4],
+                            "code": new_ticks[i]['code'],
+                            "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                            "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                            "ccl": int(avg_ccl),
+                            "cjl": int(cjl),
+                        })
+                        
+                    start_index = i + 1
+            
+            CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][len(m_ticks):]
+            CACHE_TICKS_1MIN[data_type].extend(m_ticks)
+            is_updated = True
+        
+        # return from cache
+        data[data_type] = list(CACHE_TICKS_1MIN[data_type])
+        if not is_updated and len(new_ticks) > 0 and new_ticks[-1] != last_tick:
+            zxjs = [x['zxj'] for x in new_ticks]
+            ccls = [x['ccl'] for x in new_ticks]
+            min_zxj = min(zxjs)
+            avg_ccl = mean(ccls)                        
+            max_zxj = max(zxjs)
+            cjl = sum([x['cjlDiff'] for x in new_ticks])
+            data[data_type].append({
+                            "time": new_ticks[-1]['time'][:-4],
+                            "code": new_ticks[-1]['code'],
+                            "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                            "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                            "ccl": int(avg_ccl),
+                            "cjl": int(cjl),
+                        })
+    
+    return data
+
+@app.route('/')
+@block_ip()
+@requires_auth
+def index():
+    return render_template('index.html')
+
+@app.route('/test_ding', methods=['GET'])
+@block_ip()
+def test_ding():
+    utils.send_ding_msg("test")
+    return {"status": "ok"}
+    
+    
+@app.route('/info', methods=['GET'])
+@block_ip()
+def get_info():
+    start_time = time.time()
+    list_size = 26
+    kp_time = date_utils.get_kp_time_string()
+    is_working_day = date_utils.is_work_day(kp_time[:10])
+    result = {}    
+            
+    for data_type in DATA_TYPES:
+        result[data_type] = {}    
+        if data_type not in CACHE_TICKS:
+            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(TEN_DAYS_SIZE)
+            sorted_ticks = sorted(ticks, key=lambda x: x['time'])
+            CACHE_TICKS[data_type] = sorted_ticks
+        
+        if len(CACHE_TICKS[data_type]) >= 1.2 * TEN_DAYS_SIZE:
+            CACHE_TICKS[data_type] = CACHE_TICKS[data_type][-TEN_DAYS_SIZE:]
+
+        new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gt": CACHE_TICKS[data_type][-1]['time']}}).sort([("time", 1)]))
+        if new_ticks:
+            CACHE_TICKS[data_type] += new_ticks
+                      
+        if is_working_day or data_type not in KP_TICKS:    
+            if data_type not in KP_TICKS or kp_time != KP_TICKS[data_type]['time']:
+                utils.log("kp_time: {}".format(kp_time))
+                KP_TICKS[data_type] = constance.REAL_TIME_TICK_COL.find_one({"type": data_type, "time": {"$lte": kp_time}}, sort=[("time", -1)])
+        
+        result[data_type]['kp_info'] = [[CACHE_TICKS[data_type][-1]['code'],
+            CACHE_TICKS[data_type][-1]['zxj'],
+            CACHE_TICKS[data_type][-1]['ccl'],
+            int(CACHE_TICKS[data_type][-1]['zxj'] - KP_TICKS[data_type]['zxj']) if data_type != 'i' else round((CACHE_TICKS[data_type][-1]['zxj'] - KP_TICKS[data_type]['zxj'])*2)/2,
+            int(CACHE_TICKS[data_type][-1]['ccl'] - KP_TICKS[data_type]['ccl'])]]
+            
+        data = CACHE_TICKS[data_type][-list_size:]
+        latest_ticks = []
+        for i in range(1, len(data)):
+            record = data[i]
+            latest_ticks.append(
+                [record['time'][11:-4], record['zxj'] if data_type == 'i' else int(record['zxj']), int(record['cjlDiff'] if "cjlDiff" in record else record['cjl']), int(data[i]['ccl'] - data[i - 1]['ccl']), int(record['ccl'])]
+            )
+        
+        result[data_type]['ticks'] = latest_ticks
+        
+        ccl_sums = []
+        for i in range(10, 0, -1):
+            start_index = - i * 12
+            end_index = - (i - 1) * 12 if i != 1 else len(CACHE_TICKS[data_type])            
+            ccl_sums.append(sum(tick['cjlDiff'] for tick in CACHE_TICKS[data_type][start_index:end_index]))
+            
+
+        result[data_type]['ccl_sums'] = [ccl_sums[:5], ccl_sums[5:]]
+        
+        # result[data_type]['sum_infos'] = f"open time {KP_TICKS[data_type]['time'][5:-4]}"
+        
+    
+    processing_time = int((time.time() - start_time) * 1000)  # in milliseconds
+    # current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+    
+    utils.log("processing_time: {}".format(processing_time))
+    return result
+
+if __name__ == '__main__':
+    initial_ticks()
+    app.run(debug=False, host='0.0.0.0', port=8080)
+
+
+File: app.py
+from flask import Flask, request, render_template,Response, abort
+from helper import constance, date_utils, utils
+import ipaddress
+import time
+from functools import wraps
+from statistics import mean
+from flask_compress import Compress
+from functools import wraps
+import random
+
+app = Flask(__name__)
+Compress(app)
+
+CACHE_TICKS = {}
+CACHE_TICKS_1MIN = {}
+CACHE_DAILY_CCL_DATA = {}
+CACHE_CP_RATE_DATA = {}
+PAST_CCL_STABLE_DATA = {}
+TEN_DAYS_SIZE = int(12 * 60 * 5.8 * 10)
+TEN_DAYS_MINS_SIZE = int(60 * 5.8 * 10)
+FIVE_DAYS_MINS_SIZE = int(60 * 5.8 * 5)
+LAST_DAY_SIZE = int(12 * 60 * 5.8)
+HALF_DAY_SIZE = int(12 * 60 * 3)
+KP_TICKS = {}
+DATA_TYPES= ['rb']
+BLOCKED_PATTERNS = [
+    "45.128.*.*",
+    "141.98.*.*"
+]
+FIND_PEAK_START_INDEX = 0
+EXTREME_COLS = ["ccl", "zxj", "cjlDiff"]
+EXTREME_SET = {}
+LOW_CJL_MINUTE_THRESHOLD = 3000
+MIN_CJL_5SEC_THRESHOLD = 1500
+
+CANDIDATE_CODES = ["rb2401"]
+
+CONTEXT = {
+    "default_code": "rb2401"
+}
+
+
+def block_ip():
+    def decorator(f):
+        @wraps(f)  # This preserves the original function's name and docstring
+        def decorated_function(*args, **kwargs):
+            if is_ip_blocked(request.remote_addr):
+                abort(403)  # Forbidden
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+def is_ip_blocked(ip_addr):
+    for pattern in BLOCKED_PATTERNS:
+        if '*' in pattern:  # Simple wildcard matching
+            base_ip = pattern.replace('*', '0')
+            try:
+                network = ipaddress.ip_network(base_ip)
+                if ipaddress.ip_address(ip_addr) in network:
+                    return True
+            except ValueError:
+                continue
+        else:  # CIDR notation
+            try:
+                if ipaddress.ip_address(ip_addr) in ipaddress.ip_network(pattern, strict=False):
+                    return True
+            except ValueError:
+                continue
+    return False
+    
+def check_auth(username, password):
+    """Check if a username / password combination is valid."""
+    return username == 'hermes' and password == '1qaz@WSX'  # Replace with your credentials
+
+def authenticate():
+    """Sends a 401 response to request authentication."""
+    return Response(
+        'Could not verify your access level for that URL.\n'
+        'You have to login with proper credentials', 401,
+        {'WWW-Authenticate': 'Basic realm="Login Required"'})
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+def initial_ticks():
+    for data_type in DATA_TYPES:        
+        if data_type not in CACHE_TICKS:
+            if data_type not in EXTREME_SET:
+                EXTREME_SET[data_type] = {'ccl':[], 'zxj':[], 'cjlDiff':[]}
+            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(TEN_DAYS_SIZE)
+            sorted_ticks = sorted(ticks, key=lambda x: x['time'])
+            CACHE_TICKS[data_type] = sorted_ticks            
+            
+            m_ticks = []
+            start_index = 0
+            for i in range(len(sorted_ticks)):
+                if sorted_ticks[i]['time'][-6:] == "00.000":
+                    if i - start_index > 10:
+                        zxjs = [x['zxj'] for x in sorted_ticks[start_index:i+1]]
+                        ccls = [x['ccl'] for x in sorted_ticks[start_index:i+1]]
+                        min_zxj = min(zxjs)
+                        avg_ccl = mean(ccls)                        
+                        max_zxj = max(zxjs)
+                        cjl = sum([x['cjlDiff'] for x in sorted_ticks[start_index:i+1] if 'cjlDiff' in x])
+                        
+                        m_ticks.append({
+                            "time": sorted_ticks[i]['time'][:-4],
+                            "code": sorted_ticks[i]['code'],
+                            "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                            "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                            "ccl": int(avg_ccl),
+                            "cjl": int(cjl),
+                        })
+                        
+                        start_index = i + 1
+            
+            CACHE_TICKS_1MIN[data_type] = m_ticks
+            
+    utils.log("Finish inital real ticks data")
+    utils.log("Start to initial training data")
+    for code in CANDIDATE_CODES:        
+        if code not in CONTEXT:            
+            ticks = list(constance.REAL_TIME_TICK_COL.find({"code": code}).sort([("time", 1)]))
+            start_index = 0
+            m_ticks = []
+            for i in range(len(ticks)):
+                if ticks[i]['time'][-6:] == "00.000":
+                    if i - start_index >= 10:
+                        zxjs = [x['zxj'] for x in ticks[start_index:i+1]]
+                        ccls = [x['ccl'] for x in ticks[start_index:i+1]]
+                        min_zxj = min(zxjs)
+                        avg_ccl = mean(ccls)                        
+                        max_zxj = max(zxjs)
+                        cjl = sum([x['cjlDiff'] for x in ticks[start_index:i+1] if 'cjlDiff' in x])
+                        
+                        m_ticks.append({
+                            "time": ticks[i]['time'][:-4],
+                            "code": ticks[i]['code'],
+                            "max_zxj": int(max_zxj) if "i" in code else round(max_zxj*2)/2,
+                            "min_zxj": int(min_zxj) if "i" in code else round(min_zxj*2)/2,
+                            "ccl": int(avg_ccl),
+                            "cjl": int(cjl),
+                        })                        
+                        start_index = i + 1
+            
+            train_status = constance.TRAIN_COL.find_one({"code": code}) 
+            if train_status is None:
+                tick_index = TEN_DAYS_SIZE
+                min_index = 0
+            else:
+                tick_index = train_status['index']
+                min_index = train_status['min_index']
+            
+            CONTEXT[code] = {
+                "index": tick_index,
+                "ticks": ticks,
+                "min_index": min_index,
+                "min_ticks": m_ticks
+            }
+            
+            print(f"Finish inital ticks data for {code}, total ticks: {len(ticks)}, total min ticks: {len(m_ticks)}")
+            
+    utils.log("Finish inital train ticks data")
+
+def save_train_status(code):
+    constance.TRAIN_COL.update_one({"code": code}, {"$set": {"index": CONTEXT[code]['index'], "min_index": CONTEXT[code]['min_index']}}, upsert=True)
+    
+    
+@app.route('/ticks', methods=['GET'])
+@block_ip()
+def get_latest_1min_ticks():
+    data = {}
+    for data_type in DATA_TYPES:   
+        # Update new data
+        if len(CACHE_TICKS_1MIN[data_type]) >= TEN_DAYS_SIZE:
+            CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][-TEN_DAYS_SIZE:]
+        last_tick = CACHE_TICKS_1MIN[data_type][-1]
+        new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gt": last_tick["time"] + ".000"}}).sort("time", 1))
+        is_updated = False
+        if len(new_ticks) >= 10:
+            m_ticks = []
+            start_index = 0
+            for i in range(2, len(new_ticks)):
+                if new_ticks[i]['time'][-6:] == "00.000":
+                    zxjs = [x['zxj'] for x in new_ticks[start_index:i+1]]
+                    ccls = [x['ccl'] for x in new_ticks[start_index:i+1]]
+                    min_zxj = min(zxjs)
+                    avg_ccl = mean(ccls)                        
+                    max_zxj = max(zxjs)
+                    cjl = sum([x['cjlDiff'] for x in new_ticks[start_index:i+1]])
+                    
+                    m_ticks.append({
+                        "time": new_ticks[i]['time'][:-4],
+                        "code": new_ticks[i]['code'],
+                        "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                        "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                        "ccl": int(avg_ccl),
+                        "cjl": int(cjl),
+                    })
+                    is_updated = True                        
+                    start_index = i + 1
+                    
+            
+            CACHE_TICKS_1MIN[data_type] = CACHE_TICKS_1MIN[data_type][len(m_ticks):]
+            CACHE_TICKS_1MIN[data_type].extend(m_ticks)
+            
+        
+        # return from cache
+        data[data_type] = list(CACHE_TICKS_1MIN[data_type])
+        if not is_updated and len(new_ticks) > 0 and new_ticks[-1] != last_tick:
+            zxjs = [x['zxj'] for x in new_ticks]
+            ccls = [x['ccl'] for x in new_ticks]
+            min_zxj = min(zxjs)
+            avg_ccl = mean(ccls)                        
+            max_zxj = max(zxjs)
+            cjl = sum([x['cjlDiff'] for x in new_ticks])
+            new_time = date_utils.min_add(new_ticks[-1]['time'], 1)
+            data[data_type].append({
+                "time": new_time[:-4],
+                "code": new_ticks[-1]['code'],
+                "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                "ccl": int(avg_ccl),
+                "cjl": int(cjl),
+            })
+    
+    return data
+
+@app.route('/')
+@block_ip()
+@requires_auth
+def index():
+    return render_template('index.html')
+
+@app.route('/test_ding', methods=['GET'])
+@block_ip()
+def test_ding():
+    utils.send_ding_msg("test")
+    return {"status": "ok"}
+    
+    
+@app.route('/info', methods=['GET'])
+@block_ip()
+def get_info():
+    start_time = time.time()
+    list_size = 26
+    kp_time = date_utils.get_kp_time_string()
+    is_working_day = date_utils.is_work_day(kp_time[:10])
+    result = {}    
+            
+    for data_type in DATA_TYPES:
+        result[data_type] = {}    
+        if data_type not in CACHE_TICKS:
+            ticks = constance.REAL_TIME_TICK_COL.find({"type": data_type}).sort([("time", -1)]).limit(TEN_DAYS_SIZE)
+            sorted_ticks = sorted(ticks, key=lambda x: x['time'])
+            CACHE_TICKS[data_type] = sorted_ticks
+        
+        if len(CACHE_TICKS[data_type]) >= 1.2 * TEN_DAYS_SIZE:
+            CACHE_TICKS[data_type] = CACHE_TICKS[data_type][-TEN_DAYS_SIZE:]
+
+        new_ticks = list(constance.REAL_TIME_TICK_COL.find({"type": data_type, "time": {"$gt": CACHE_TICKS[data_type][-1]['time']}}).sort([("time", 1)]))
+        if new_ticks:
+            CACHE_TICKS[data_type] += new_ticks
+                      
+        if is_working_day or data_type not in KP_TICKS:    
+            if data_type not in KP_TICKS or kp_time != KP_TICKS[data_type]['time']:
+                utils.log("kp_time: {}".format(kp_time))
+                KP_TICKS[data_type] = constance.REAL_TIME_TICK_COL.find_one({"type": data_type, "time": {"$lte": kp_time}}, sort=[("time", -1)])
+        
+        result[data_type]['kp_info'] = [[CACHE_TICKS[data_type][-1]['code'],
+            CACHE_TICKS[data_type][-1]['zxj'],
+            CACHE_TICKS[data_type][-1]['ccl'],
+            int(CACHE_TICKS[data_type][-1]['zxj'] - KP_TICKS[data_type]['zxj']) if data_type != 'i' else round((CACHE_TICKS[data_type][-1]['zxj'] - KP_TICKS[data_type]['zxj'])*2)/2,
+            int(CACHE_TICKS[data_type][-1]['ccl'] - KP_TICKS[data_type]['ccl'])]]
+            
+        data = CACHE_TICKS[data_type][-list_size:]
+        latest_ticks = []
+        for i in range(1, len(data)):
+            record = data[i]
+            latest_ticks.append(
+                [record['time'][11:-4], record['zxj'] if data_type == 'i' else int(record['zxj']), int(record['cjlDiff'] if "cjlDiff" in record else record['cjl']), int(data[i]['ccl'] - data[i - 1]['ccl']), int(record['ccl'])]
+            )
+        
+        result[data_type]['ticks'] = latest_ticks
+        
+        ccl_sums = []
+        for i in range(10, 0, -1):
+            start_index = - i * 12
+            end_index = - (i - 1) * 12 if i != 1 else len(CACHE_TICKS[data_type])            
+            ccl_sums.append(sum(tick['cjlDiff'] for tick in CACHE_TICKS[data_type][start_index:end_index]))
+            
+
+        result[data_type]['ccl_sums'] = [ccl_sums[:5], ccl_sums[5:]]
+        
+        # result[data_type]['sum_infos'] = f"open time {KP_TICKS[data_type]['time'][5:-4]}"
+        
+    
+    processing_time = int((time.time() - start_time) * 1000)  # in milliseconds
+    # current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+    
+    utils.log("processing_time: {}".format(processing_time))
+    return result
+
+@app.route('/t')
+@block_ip()
+@requires_auth
+def train():
+    return render_template('train.html')
+    
+@app.route('/t/d', methods=['GET'])
+@block_ip()
+def get_train_info():
+    start_time = time.time()
+    list_size = 65 
+    next = request.args.get('next', default=1, type=int)  # Retrieve next_count from the query string 
+    code = request.args.get('code', default=CONTEXT["default_code"], type=str)  # Retrieve next_count from the query string
+    is_random = request.args.get('random', default=False, type=bool)  # Retrieve next_count from the query string
+    CONTEXT["default_code"] = code    
+    
+    if "rb" in code:
+        data_type = "rb"
+    elif "i" in code:
+        data_type = "i"
+    elif "hc" in code:
+        data_type = "hc"
+    else:
+        return {"error": "Invalid code"}
+    
+    # print(f"Get info for {code}, next: {next}, candidate codes: {CANDIDATE_CODES}, context codes: {CONTEXT.keys()}")
+    
+    result = {
+        data_type: {},
+    }
+    
+    if is_random:
+        CONTEXT[code]["index"] = random.randint(TEN_DAYS_SIZE, len(CONTEXT[code]["ticks"]) - TEN_DAYS_SIZE)
+        CONTEXT[code]["min_index"] = int(CONTEXT[code]["index"] / 12 - 500)
+    
+    next_index = CONTEXT[code]["index"] + next
+    CONTEXT[code]["index"] = next_index        
+    data = CONTEXT[code]["ticks"][next_index-list_size:next_index]
+    latest_ticks = []
+    for i in range(1, len(data)):
+        record = data[i]
+        latest_ticks.append(
+            [record['time'][11:-4], record['zxj'] if data_type == 'i' else int(record['zxj']), int(record['cjlDiff'] if "cjlDiff" in record else record['cjl']), int(data[i]['ccl'] - data[i - 1]['ccl']), int(record['ccl'])]
+        )
+    
+    result[data_type]['ticks'] = latest_ticks[-24:]
+        
+    ccl_sums = []
+    for i in range(5, 0, -1):
+        start_index = - i * 12
+        end_index = - (i - 1) * 12 if i != 1 else len(data)            
+        ccl_sums.append(sum(tick['cjlDiff'] for tick in data[start_index:end_index]))
+            
+
+    result[data_type]['ccl_sums'] = [ccl_sums]
+    
+    
+    # Find end_index
+    last_index = CONTEXT[code]["min_index"]
+    end_tick = data[-1]
+    while CONTEXT[code]['min_ticks'][last_index]['time'] > end_tick['time'][:-4]:
+        print(f"Min time is larger than end tick time, {CONTEXT[code]['min_ticks'][last_index]['time']} > {end_tick['time'][:-4]}")
+        last_index -= 5
+        if last_index <= 0:
+            print(f"Cannot find end_index for {CONTEXT[code]['min_ticks'][last_index+1]['time']} {end_tick['time'][:-4]}")
+            break
+        
+    end_index = -1
+    # TODO issue at find the end_index
+    for i in range(last_index, len(CONTEXT[code]['min_ticks'])):
+        # print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
+        if CONTEXT[code]['min_ticks'][i]['time'][:-2] == end_tick['time'][:-6]:
+            end_index = i + 1
+            break
+    
+    if end_index == -1:
+        print(f"Cannot find end_index for {CONTEXT[code]['min_ticks'][last_index+1]['time']} {end_tick['time'][:-4]}")
+    else:            
+        start_index = max(0, end_index - FIVE_DAYS_MINS_SIZE)
+        result[data_type]['chart_ticks'] = CONTEXT[code]["min_ticks"][start_index:end_index]
+        CONTEXT[code]["min_index"] = end_index - 1
+        
+        # Add extra info:
+        start_tick_time = CONTEXT[code]['min_ticks'][end_index - 1]['time'][:-2] + "05.000"
+        start_min_index = -1
+        for i in range(len(data)):
+            # print(f"Comparing {data[i]['time']} > {start_tick_time}")
+            if data[i]['time'] >= start_tick_time:
+                # print(f"Found start_min_index at {i} with time {data[i]['time']} > {start_tick_time} at")
+                start_min_index = i
+                break
+        
+        if start_min_index > -1:
+            sub_ticks = data[start_min_index:]    
+            # print(f"latest min time {result[data_type]['chart_ticks'][-1]['time']}, start_tick_time: {start_tick_time}, start_min_index: {start_min_index}, start_min_tick_time: {data[start_min_index]['time']}, subticks: {len(sub_ticks)}")  
+            if len(sub_ticks) > 0:
+                zxjs = [x['zxj'] for x in sub_ticks]
+                ccls = [x['ccl'] for x in sub_ticks]
+                min_zxj = min(zxjs)
+                avg_ccl = mean(ccls)                        
+                max_zxj = max(zxjs)
+                cjl = sum([x['cjlDiff'] for x in sub_ticks])
+                new_time = date_utils.min_add(sub_ticks[-1]['time'], 1)
+                result[data_type]['chart_ticks'].append({
+                    "time": new_time[:-4],
+                    "code": sub_ticks[-1]['code'],
+                    "max_zxj": int(max_zxj) if data_type != "i" else round(max_zxj*2)/2,
+                    "min_zxj": int(min_zxj) if data_type != "i" else round(min_zxj*2)/2,
+                    "ccl": int(avg_ccl),
+                    "cjl": int(cjl),
+                })
+        
+    save_train_status(code)
+    print(f"Finish get_info in {round((time.time() - start_time)*1000,2)}ms")
+    return result
+
+@app.route('/t/o', methods=['GET'])
+@block_ip()
+def record_operate():
+    operation = request.args.get('operation', default="", type=str)  # Retrieve next_count from the query string 
+    code = CONTEXT["default_code"]
+    tick_now = CONTEXT[code]["ticks"][CONTEXT[code]["index"]]
+    operation_info = {
+        "train_time": date_utils.get_today_time_string(),
+        "operation": operation,        
+        "code": code,
+        "time": tick_now['time'],
+        "zxj": tick_now['zxj'],
+    }
+    constance.TRAIN_OPT_COL.insert_one(operation_info)
+    return {"status": "success", "operation": operation, "time": tick_now['time']}
+
+if __name__ == '__main__':
+    initial_ticks()
+    app.run(debug=False, host='0.0.0.0', port=8080)
+
+
+File: train.py
+from flask import Flask, request, render_template,Response, abort
+from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
+import ipaddress
+from datetime import datetime, timedelta
+import time, pytz
+from functools import wraps
+from statistics import mean
+from flask_compress import Compress
+from functools import wraps
+import numpy as np
+import random
+
+app = Flask(__name__)
+Compress(app)
+
+CACHE_TICKS = {}
+CACHE_TICKS_1MIN = {}
+CACHE_DAILY_CCL_DATA = {}
+CACHE_CP_RATE_DATA = {}
+PAST_CCL_STABLE_DATA = {}
+TEN_DAYS_SIZE = int(12 * 60 * 5.8 * 10)
+TEN_DAYS_MINS_SIZE = int(60 * 5.8 * 10)
+FIVE_DAYS_MINS_SIZE = int(60 * 5.8 * 5)
+LAST_DAY_SIZE = int(12 * 60 * 5.8)
+HALF_DAY_SIZE = int(12 * 60 * 3)
+KP_TICKS = {}
+DATA_TYPES= ['rb']
+BLOCKED_PATTERNS = [
+    "45.128.*.*",
+    "141.98.*.*"
+]
+FIND_PEAK_START_INDEX = 0
+EXTREME_COLS = ["ccl", "zxj", "cjlDiff"]
+EXTREME_SET = {}
+LOW_CJL_MINUTE_THRESHOLD = 3000
+MIN_CJL_5SEC_THRESHOLD = 1500
+# CANDIDATE_CODES = ["rb2401", "rb2405", "rb2410", "ii2401", "ii2405", "ii2410"]
+CANDIDATE_CODES = ["rb2401", "ii2401"]
+
+CONTEXT = {
+    "default_code": "rb2401"
+}
+
+def block_ip():
+    def decorator(f):
+        @wraps(f)  # This preserves the original function's name and docstring
+        def decorated_function(*args, **kwargs):
+            if is_ip_blocked(request.remote_addr):
+                abort(403)  # Forbidden
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+def is_ip_blocked(ip_addr):
+    for pattern in BLOCKED_PATTERNS:
+        if '*' in pattern:  # Simple wildcard matching
+            base_ip = pattern.replace('*', '0')
+            try:
+                network = ipaddress.ip_network(base_ip)
+                if ipaddress.ip_address(ip_addr) in network:
+                    return True
+            except ValueError:
+                continue
+        else:  # CIDR notation
+            try:
+                if ipaddress.ip_address(ip_addr) in ipaddress.ip_network(pattern, strict=False):
+                    return True
+            except ValueError:
+                continue
+    return False
+    
+def check_auth(username, password):
+    """Check if a username / password combination is valid."""
+    return username == 'hermes' and password == '1qaz@WSX'  # Replace with your credentials
+
+def authenticate():
+    """Sends a 401 response to request authentication."""
+    return Response(
+        'Could not verify your access level for that URL.\n'
+        'You have to login with proper credentials', 401,
+        {'WWW-Authenticate': 'Basic realm="Login Required"'})
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+def initial_ticks():
+    for code in CANDIDATE_CODES:        
+        if code not in CONTEXT:            
+            ticks = list(constance.REAL_TIME_TICK_COL.find({"code": code}).sort([("time", 1)]))
+            start_index = 0
+            m_ticks = []
+            for i in range(len(ticks)):
+                if ticks[i]['time'][-6:] == "00.000":
+                    if i - start_index > 10:
+                        zxjs = [x['zxj'] for x in ticks[start_index:i+1]]
+                        ccls = [x['ccl'] for x in ticks[start_index:i+1]]
+                        min_zxj = min(zxjs)
+                        avg_ccl = mean(ccls)                        
+                        max_zxj = max(zxjs)
+                        cjl = sum([x['cjlDiff'] for x in ticks[start_index:i+1] if 'cjlDiff' in x])
+                        
+                        m_ticks.append({
+                            "time": ticks[i]['time'][:-4],
+                            "code": ticks[i]['code'],
+                            "max_zxj": int(max_zxj) if "i" in code else round(max_zxj*2)/2,
+                            "min_zxj": int(min_zxj) if "i" in code else round(min_zxj*2)/2,
+                            "ccl": int(avg_ccl),
+                            "cjl": int(cjl),
+                        })
+                        
+                    start_index = i + 1
+            
+            train_status = constance.TRAIN_COL.find_one({"code": code}) 
+            if train_status is None:
+                tick_index = TEN_DAYS_SIZE
+                min_index = 0
+            else:
+                tick_index = train_status['index']
+                min_index = train_status['min_index']
+            
+            CONTEXT[code] = {
+                "index": tick_index,
+                "ticks": ticks,
+                "min_index": min_index,
+                "min_ticks": m_ticks
+            }
+            
+            print(f"Finish inital ticks data for {code}, total ticks: {len(ticks)}, total min ticks: {len(m_ticks)}")
+            
+    utils.log("Finish inital ticks data")
+
+def save_train_status(code):
+    constance.TRAIN_COL.update_one({"code": code}, {"$set": {"index": CONTEXT[code]['index'], "min_index": CONTEXT[code]['min_index']}}, upsert=True)
+        
+@app.route('/train')
+@block_ip()
+@requires_auth
+def train():
+    return render_template('train.html')
+    
+@app.route('/train/data', methods=['GET'])
+@block_ip()
+def get_info():
+    start_time = time.time()
+    list_size = 65 
+    next = request.args.get('next', default=1, type=int)  # Retrieve next_count from the query string 
+    code = request.args.get('code', default=CONTEXT["default_code"], type=str)  # Retrieve next_count from the query string
+    is_random = request.args.get('random', default=False, type=bool)  # Retrieve next_count from the query string
+    CONTEXT["default_code"] = code    
+    
+    if "rb" in code:
+        data_type = "rb"
+    elif "i" in code:
+        data_type = "i"
+    elif "hc" in code:
+        data_type = "hc"
+    else:
+        return {"error": "Invalid code"}
+        
+    result = {
+        data_type: {},
+    }
+    
+    if is_random:
+        CONTEXT[code]["index"] = random.randint(TEN_DAYS_SIZE, len(CONTEXT[code]["ticks"]) - TEN_DAYS_SIZE)
+        CONTEXT[code]["min_index"] = int(CONTEXT[code]["index"] / 12 - 150)
+    
+    next_index = CONTEXT[code]["index"] + next
+    CONTEXT[code]["index"] = next_index        
+    data = CONTEXT[code]["ticks"][next_index-list_size:next_index]
+    latest_ticks = []
+    for i in range(1, len(data)):
+        record = data[i]
+        latest_ticks.append(
+            [record['time'][11:-4], record['zxj'] if data_type == 'i' else int(record['zxj']), int(record['cjlDiff'] if "cjlDiff" in record else record['cjl']), int(data[i]['ccl'] - data[i - 1]['ccl']), int(record['ccl'])]
+        )
+    
+    result[data_type]['ticks'] = latest_ticks[-24:]
+        
+    ccl_sums = []
+    for i in range(5, 0, -1):
+        start_index = - i * 12
+        end_index = - (i - 1) * 12 if i != 1 else len(data)            
+        ccl_sums.append(sum(tick['cjlDiff'] for tick in data[start_index:end_index]))
+            
+
+    result[data_type]['ccl_sums'] = [ccl_sums]
+    
+    
+    # Find end_index
+    last_index = CONTEXT[code]["min_index"]
+    end_tick = data[-1]
+    end_index = -1
+    for i in range(last_index, len(CONTEXT[code]['min_ticks'])):
+        # print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
+        if CONTEXT[code]['min_ticks'][i]['time'][:-2] == end_tick['time'][:-6]:
+            print(f"{CONTEXT[code]['min_ticks'][i]['time']} == {end_tick['time'][:-4]} at {i}, start_index: {last_index}, end_index: {i}")
+            end_index = i    
+            break
+    
+
+    start_index = max(0, end_index - FIVE_DAYS_MINS_SIZE)
+    print(f"Get latest 1min ticks for {code}, start_index: {start_index}, next_index: {end_index}, min_ticks: {len(CONTEXT[code]['min_ticks'])}")
+    result[data_type]['chart_ticks'] = CONTEXT[code]["min_ticks"][start_index:end_index]
+    CONTEXT[code]["min_index"] = end_index
+    
+    save_train_status(code)
+    
+    print(f"Finish get_info in {round((time.time() - start_time)*1000,2)}ms")
+    return result
+
+if __name__ == '__main__':
+    initial_ticks()
+    app.run(debug=False, host='0.0.0.0', port=8080)
+
+
+File: __init__.py
+
+
+api 服务相关的代码
+File: ServerDockerFile
+FROM python:3.9.7-alpine
+# Set timezone
+RUN apk update && apk add tzdata && echo "Asia/Shanghai" > /etc/localtime
+
+# Set the working directory
+WORKDIR /
+
+# Install requirements
+ADD ./requirements.txt /
+RUN pip install -r /requirements.txt
+
+# Copy all files (be sure not to include sensitive files or large data)
+ADD . /
+
+# This step seems unnecessary if you're just running a Flask app, so I'd omit the pip install -e . line.
+# If you have a specific reason for it, keep it.
+RUN pip install -e .
+# Set Flask specific environment variables for better Docker compatibility
+ENV FLASK_RUN_HOST=0.0.0.0
+
+# Command to run the Flask app
+CMD [ "python", "/server/app.py" ]
+
+
+
+
+Summary of tasks:
+
+1. 将这两个服务的编排文件，整合到一个上层的docker-compose文件中，可以build和部署。可以 nginx 代理到两个服务。
+2. 确保兼容性，这样以后所有额外新的服务都会使用这个docker-compose文件。这样都可以用到nginx的代理和https
+

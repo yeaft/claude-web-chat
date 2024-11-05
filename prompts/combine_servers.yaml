@@ -1,0 +1,30 @@
+# 下面是上下文
+context: |
+  我现在有两个服务，一个是IManage的api服务，通过docker-compose起的，前端nginx后面加上服务，一个是数据api服务，这个是docker起的，并没有nginx https支持。我现在希望把这两个服务合并到一个docker compose里面，让api server也在nginx后面，这样一个是可以都走nginx的https，另一个可以很好的去分配域名解析。
+
+# 下面是需求
+requirements: |
+  
+
+# 下面是参考信息
+reference:
+  - description: "IManage 服务相关的代码和Compose文件"
+    file_path: C:\Users\tom\Projects\termination\IManage\
+    file_suffix: ""
+    recursive: true
+    filename_pattern: ""
+  - description: "api 服务相关的代码"
+    file_path: C:\Users\tom\Projects\termination\server\
+    file_suffix: ""
+    recursive: false
+    filename_pattern: ""
+  - description: "api 服务相关的代码"
+    file_path: C:\Users\tom\Projects\termination\
+    file_suffix: ""
+    recursive: false
+    filename_pattern: "ServerDockerFile"
+
+# 任务总结和一些指导
+summary: |
+  1. 将这两个服务的编排文件，整合到一个上层的docker-compose文件中，可以build和部署。可以 nginx 代理到两个服务。
+  2. 确保兼容性，这样以后所有额外新的服务都会使用这个docker-compose文件。这样都可以用到nginx的代理和https

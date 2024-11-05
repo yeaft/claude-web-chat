@@ -1,0 +1,23 @@
+# 下面是上下文
+context: |
+  
+
+# 下面是需求
+requirements: |
+  
+
+# 下面是参考信息
+reference:
+  - description: ""
+    file_path: "./data"
+    file_suffix: ".cs"
+    recursive: false
+    filename_pattern: ""
+
+# 任务总结和一些指导
+summary: |
+  Summarize the tasks to be done here...
+  Example: 
+  1. Implement OAuth flow for authentication.
+  2. Develop functions for content and identity sync using iManage APIs.
+  3. Ensure error handling for failed API calls and invalid data.

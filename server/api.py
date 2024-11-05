@@ -6,7 +6,6 @@ import time, pytz
 from functools import wraps
 from statistics import mean
 from flask_compress import Compress
-from functools import wraps
 import numpy as np
 
 app = Flask(__name__)
