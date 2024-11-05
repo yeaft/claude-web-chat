@@ -2,7 +2,7 @@ version: '3'
 services:
   nginx:
     image: nginx:latest
-    container_name: nginx
+    container_name: nginx_for_servers
     ports:
       - "443:443"
     volumes:
