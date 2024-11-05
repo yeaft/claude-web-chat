@@ -37,6 +37,8 @@ services:
       - FLASK_ENV=production
     networks:
       - webnet
+    extra_hosts:
+      - "host.docker.internal:10.1.0.1"
 
 networks:
   webnet:
