@@ -38,7 +38,7 @@ services:
     networks:
       - webnet
     extra_hosts:
-      - "host.docker.internal:10.1.0.1"
+      - "host.docker.internal:172.17.0.1"
 
 networks:
   webnet:
