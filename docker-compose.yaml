@@ -28,8 +28,8 @@ services:
 
   data-api-flask-app:
     build:
-      context: ./server
-      dockerfile: Dockerfile
+      context: ./
+      dockerfile: ServerDockerFile
     container_name: data-api-flask-app
     expose:
       - "8080"
