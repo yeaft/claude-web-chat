@@ -1,0 +1,16 @@
+click
+pymongo
+pyyaml
+pytz
+requests
+Flask
+flask-compress
+chinesecalendar==1.9.1
+numpy
+matplotlib
+mplcursors
+scipy 
+pandas
+# scikit-learn
+# TA-Lib
+# matplotlib
