@@ -1,4 +1,5 @@
-from flask import Flask, request, jsonify, redirect, url_for, make_response, send_file
+from flask import Flask, request, jsonify, render_template_string, send_from_directory, redirect, url_for
+from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
 import base64
 import uuid
@@ -9,6 +10,13 @@ import jwt  # 导入 PyJWT 库，用于处理 JWT 令牌
 import os
 
 app = Flask(__name__)
+
+# Directory to store uploaded files
+UPLOAD_FOLDER = 'uploads'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # JWT 配置
 JWT_SECRET_KEY = '1qaz@WSX'  # 在生产环境中，请使用安全的密钥
@@ -865,6 +873,59 @@ def paste():
         return jsonify({"content": copied_content}), 200
     else:
         return jsonify({"error": "No content available to paste"}), 404
+
+# HTML template for the UI
+HTML_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>File Upload and Download</title>
+</head>
+<body>
+  <h2>Upload Files</h2>
+  <form action="/upload" method="post" enctype="multipart/form-data">
+    <input type="file" name="files" multiple>
+    <input type="submit" value="Upload">
+  </form>
+
+  <h2>Available Files for Download</h2>
+  <ul>
+    {% for filename in files %}
+      <li>{{ filename }} - <a href="{{ url_for('download_file', filename=filename) }}">Download</a></li>
+    {% endfor %}
+  </ul>
+</body>
+</html>
+"""
+
+# Route to display the upload/download UI
+@app.route('/file-manager')
+def file_manager():
+    # List all files in the upload folder
+    files = os.listdir(app.config['UPLOAD_FOLDER'])
+    return render_template_string(HTML_TEMPLATE, files=files)
+
+# Route to handle file uploads
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    if 'files' not in request.files:
+        return jsonify({"error": "No files part in the request"}), 400
+
+    files = request.files.getlist('files')
+    for file in files:
+        if file.filename == '':
+            continue
+        # Secure the filename and save it
+        filename = secure_filename(file.filename)
+        file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+    
+    return redirect(url_for('file_manager'))
+
+# Route to download a specific file
+@app.route('/download/<filename>', methods=['GET'])
+def download_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
 
 # Entry point
 if __name__ == '__main__':
