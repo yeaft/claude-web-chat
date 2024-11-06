@@ -10,10 +10,10 @@ ADD ./requirements.txt /
 RUN pip install -r /requirements.txt
 
 # Copy all files (be sure not to include sensitive files or large data)
-ADD ./helper /
-ADD ./analysis /
+ADD ./helper /helper
+ADD ./analysis /analysis
 ADD ./setup.py /
-ADD ./server /
+ADD ./server /server
 
 # This step seems unnecessary if you're just running a Flask app, so I'd omit the pip install -e . line.
 # If you have a specific reason for it, keep it.
