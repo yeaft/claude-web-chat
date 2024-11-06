@@ -19,7 +19,7 @@ from statistics import mean, variance, stdev
 # prechecked
 
 
-class DataProcessor:
+class AbnormalDetector:
     def __init__(self,cjl_column_name="cjl", cjl_past_num=60, cjl_period_num=3, past_x_hour=3, candidate_x_min=5, precheck_x_min=10, check_column_name="ccl", precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False, real_send_message=False):
         self.data = []
         self.max_data_size = 12 * 60 * 5.8 * 10  # ten days data
