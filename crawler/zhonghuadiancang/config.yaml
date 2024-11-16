@@ -1,0 +1,11 @@
+# api:
+#   api_key: 'sk-ZfMnkHWbXqwNiS3O0IEZXeQa5OLqnc6xkligwFgAktjUPvpA'     # 替换为您的实际API密钥
+#   api_base: 'https://api.moonshot.cn/v1'  # 如果使用其他服务，请修改为对应的API地址
+#   model: 'moonshot-v1-auto'             # 使用的模型名称
+api:
+  api_key: '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'     # 替换为您的实际API密钥
+  model: 'gpt-4o'             # 使用的模型名称
+# api:
+#   api_key: 'YOUR_API_KEY'        # 替换为您的实际 API Key（OpenAI 或 Kimi）
+#   base_url: 'https://api.openai.com/v1'  # 如果使用 Kimi，请修改为 'https://api.moonshot.cn/v1'
+#   model: 'gpt-3.5-turbo'         # 使用的模型名称（OpenAI 或 Kimi 支持的模型）

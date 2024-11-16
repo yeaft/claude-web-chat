@@ -29,7 +29,7 @@ class AbnormalDetector:
         self.cjl_period_num = cjl_period_num
         self.real_send_message = real_send_message
         self.cjl_column_name = cjl_column_name
-        self.cjl_ab_start_data = None
+        self.cjl_ab_start_data = {}
 
         self.past_30min_ccl_trend = "NA"
         self.past_30min_ccl_diff = 0
@@ -403,7 +403,7 @@ class AbnormalDetector:
         if self.send_message:
             self.send_cjl_abnormal_signal(is_send=self.real_send_message)
             
-        self.cjl_ab_start_data = None
+        self.cjl_ab_start_data = {}
 
         
         # 1. Up is slow, down is fast. 
@@ -942,34 +942,9 @@ def draw_image(dps, ticks, check_column_name="zxj"):
     plt.show()
 
 
-def prepare_dps(check_column_name="ccl"):
-    dps = []
-    for past_x_hour in [3, 6]:
-        for precheck_x_min in [10, 30]:
-            if precheck_x_min == 30:
-                precheck_min_slope_value = 350
-                precheck_accept_slope_value = 600
-            elif precheck_x_min == 20:
-                precheck_min_slope_value = 380
-                precheck_accept_slope_value = 650
-            elif precheck_x_min == 15:
-                precheck_min_slope_value = 450
-                precheck_accept_slope_value = 750
-            elif precheck_x_min == 10:
-                precheck_min_slope_value = 500
-                precheck_accept_slope_value = 800
-            else:
-                precheck_min_slope_value = 350
-                precheck_accept_slope_value = 600
-            # for precheck_min_slope_value in [, 1, 2]:
-            #     for precheck_accept_slope_value in [0.5, 1, 2]:
-            dps.append(DataProcessor(past_x_hour, precheck_x_min, check_column_name=check_column_name, precheck_min_slope_value=precheck_min_slope_value, precheck_accept_slope_value=precheck_accept_slope_value))
-    return dps
-
-
 def prepare_dps_simple(check_column_name="ccl"):
     dps = []
-    dps.append(DataProcessor(past_x_hour=6, precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600))
+    dps.append(AbnormalDetector(past_x_hour=6, precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600))
     return dps
 
 
@@ -1025,7 +1000,7 @@ if __name__ == "__main__":
 
 
     dps = [
-        DataProcessor(cjl_column_name="cjlDiff", past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=True),
+        AbnormalDetector(cjl_column_name="cjlDiff", past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=True),
     ]
     process_data(dps, "2023-10-20", "2023-11-01", contract_type="rb", verify_name="verify_09_12",
                  check_column_name=check_column_name, is_draw_image=False)

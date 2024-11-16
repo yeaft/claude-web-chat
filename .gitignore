@@ -6,3 +6,4 @@ dist/*
 ~$*.*
 **.json
 **.xlsx
+crawler/zhonghuadiancang/**/*.txt
