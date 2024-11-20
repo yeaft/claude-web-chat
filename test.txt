@@ -1,0 +1,1 @@
+docker run -e GRADIO_SERVER_NAME=0.0.0.0 -e GRADIO_SERVER_PORT=7860 -p 7860:7860 -it --rm --platform linux/arm64 ghcr.io/cinnamon/kotaemon:main-full

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- Meta 标签 -->
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css">
+    <!-- 自定义 CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <!-- 引入字体 -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC&display=swap" rel="stylesheet">
+    <title>{% block title %}Reading App{% endblock %}</title>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg navbar-light bg-light">
+        <a class="navbar-brand" href="{{ url_for('main.index') }}">阅读</a>
+        <div class="ml-auto">
+            <!-- 主题选择器 -->
+            <form class="form-inline mr-3">
+                <label class="mr-2">主题：</label>
+                <select id="theme-selector" class="form-control">
+                    <option value="theme-light-gray">浅灰</option>
+                    <option value="theme-light-yellow">淡黄</option>
+                    <option value="theme-light-green">淡绿</option>
+                </select>
+            </form>
+            <!-- 登录/登出链接 -->
+            {% if current_user.is_authenticated %}
+            <a href="{{ url_for('main.logout') }}" class="btn btn-outline-secondary">登出</a>
+            {% else %}
+            <a href="{{ url_for('main.login') }}" class="btn btn-outline-primary">登录</a>
+            <a href="{{ url_for('main.register') }}" class="btn btn-primary">注册</a>
+            {% endif %}
+        </div>
+    </nav>
+    <!-- 主内容 -->
+    {% block content %}{% endblock %}
+    {% block scripts %}
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script>
+        // 主题切换功能
+        document.addEventListener('DOMContentLoaded', function() {
+            const themeSelector = document.getElementById('theme-selector');
+            const currentTheme = localStorage.getItem('theme') || 'theme-light-gray';
+
+            // 设置初始主题
+            document.body.classList.add(currentTheme);
+            themeSelector.value = currentTheme;
+
+            // 监听主题选择器的变化
+            themeSelector.addEventListener('change', function() {
+                // 移除所有可能的主题类
+                document.body.classList.remove('theme-light-gray', 'theme-light-yellow', 'theme-light-green');
+                // 添加新主题类
+                const selectedTheme = this.value;
+                document.body.classList.add(selectedTheme);
+                // 保存到 localStorage
+                localStorage.setItem('theme', selectedTheme);
+            });
+        });
+    </script>
+    {% endblock %}
+</body>
+</html>

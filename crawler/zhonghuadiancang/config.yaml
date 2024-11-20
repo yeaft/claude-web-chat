@@ -1,11 +1,24 @@
+api:
+  api_type: 'azure'  # 'openai' 或 'azure'
+  api_key: '59cf6af038424cb88d54d31700b35d0c'  # 替换为您的实际 API Key
+  api_base: 'https://piq-test.openai.azure.com'  # Azure OpenAI 资源的终结点
+  deployment_id: 'gpt-4o'  # 您部署的模型的名称
+  api_version: '2024-02-15-preview'  # API 版本，默认为 '2023-07-01-preview'
+  model: 'gpt-4o'  # 使用的模型名称，对于 Azure，需要与部署的模型对应
+mongodb:
+  host: 'localhost'          # MongoDB 主机
+  port: 27017                # MongoDB 端口
+  database: 'dao'  # 数据库名称
+  collection: 'books'        # 集合名称
+
 # api:
 #   api_key: 'sk-ZfMnkHWbXqwNiS3O0IEZXeQa5OLqnc6xkligwFgAktjUPvpA'     # 替换为您的实际API密钥
 #   api_base: 'https://api.moonshot.cn/v1'  # 如果使用其他服务，请修改为对应的API地址
 #   model: 'moonshot-v1-auto'             # 使用的模型名称
-api:
-  api_key: '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'     # 替换为您的实际API密钥
-  model: 'gpt-4o'             # 使用的模型名称
 # api:
-#   api_key: 'YOUR_API_KEY'        # 替换为您的实际 API Key（OpenAI 或 Kimi）
+#   api_key: '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'     # 替换为您的实际API密钥
+#   model: 'gpt-4o'             # 使用的模型名称
+# api:
+#   api_key: '59cf6af038424cb88d54d31700b35d0c'        # 替换为您的实际 API Key（OpenAI 或 Kimi）
 #   base_url: 'https://api.openai.com/v1'  # 如果使用 Kimi，请修改为 'https://api.moonshot.cn/v1'
 #   model: 'gpt-3.5-turbo'         # 使用的模型名称（OpenAI 或 Kimi 支持的模型）

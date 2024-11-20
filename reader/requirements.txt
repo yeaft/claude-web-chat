@@ -1,0 +1,6 @@
+flask
+Flask-PyMongo
+flask-login
+werkzeug
+flask-wtf
+markdown

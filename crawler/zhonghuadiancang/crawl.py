@@ -16,15 +16,20 @@ HEADERS = {
 
 # 定义要爬取的分类和标签
 categories = [
-    {
-        'name': '道教',
-        'type': 'tag',
-        'id': 60,
-    },
+    # {
+    #     'name': '道教',
+    #     'type': 'tag',
+    #     'id': 60,
+    # },
     {
         'name': '中医',
         'type': 'tag',
         'id': 80,
+    },
+    {
+        'name': '修炼',
+        'type': 'tag',
+        'id': 81,
     },
     {
         'name': '佛学宝典',
@@ -115,8 +120,8 @@ def get_book_list_for_category(category, existing_items):
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        page_items = parse_book_list_page(soup, existing_items, category['name'])
-        if not page_items:
+        page_items, has_skip = parse_book_list_page(soup, existing_items, category['name'])
+        if not page_items and not has_skip:
             log(f"未在页面 {page_url} 发现内容，停止遍历该分类")
             break
 
@@ -129,6 +134,7 @@ def get_book_list_for_category(category, existing_items):
 
 def parse_book_list_page(soup, existing_items, category_name):
     items = []
+    has_skip = False
     tbody = soup.find('tbody')
     if tbody:
         rows = tbody.find_all('tr')
@@ -148,6 +154,7 @@ def parse_book_list_page(soup, existing_items, category_name):
                         author_name = '佚名'
                     if (item_name, author_name) in existing_items:
                         log(f"《{item_name}》作者：{author_name} 已存在，跳过")
+                        has_skip = True
                         continue
                     items.append({
                         'name': item_name,
@@ -178,7 +185,7 @@ def parse_book_list_page(soup, existing_items, category_name):
                     'author': author_name,
                     'category': category_name,
                 })
-    return items
+    return items, has_skip
 
 def get_item_info(item):
     while True:

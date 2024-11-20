@@ -1,0 +1,79 @@
+/* 默认主题（浅灰） */
+body.theme-light-gray {
+    background-color: #f8f9fa; /* 浅灰色 */
+    color: #212529; /* 深色字体 */
+}
+
+/* 淡黄色主题 */
+body.theme-light-yellow {
+    background-color: #fff9e6; /* 淡黄色 */
+    color: #333333; /* 深色字体 */
+}
+
+/* 淡绿色主题 */
+body.theme-light-green {
+    background-color: #e6ffe6; /* 淡绿色 */
+    color: #212529; /* 深色字体 */
+}
+
+/* 调整链接颜色，以便在不同背景下清晰可见 */
+a {
+    color: inherit;
+}
+
+a:hover {
+    color: #007bff;
+}
+
+/* 内容容器的样式 */
+.content-wrapper {
+    background-color: rgba(255, 255, 255, 0.9); /* 半透明白色背景 */
+    border-radius: 5px;
+    margin-bottom: 20px;
+}
+
+/* 调整正文的左右内边距 */
+#original-text, #translated-text {
+    padding-left: 15px;
+    padding-right: 15px;
+}
+
+/* 调整两栏之间的间距 */
+@media (min-width: 768px) {
+    #original-text {
+        border-right: 1px solid #dee2e6;
+    }
+}
+
+body {
+    font-family: 'Noto Serif SC', serif;
+    line-height: 1.6;
+    background-color: #f8f9fa;
+}
+
+h3, h4 {
+    margin-top: 20px;
+}
+
+#original-text, #translated-text {
+    height: 80vh;
+    overflow-y: auto;
+    padding: 20px;
+    background-color: #fff;
+}
+
+#original-text {
+    border-right: 1px solid #dee2e6;
+}
+
+p {
+    text-indent: 2em;
+}
+
+@media (max-width: 768px) {
+    #original-text, #translated-text {
+        height: auto;
+        overflow-y: visible;
+        padding: 10px;
+    }
+}

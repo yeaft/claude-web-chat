@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <h2>登录</h2>
+    <form method="post">
+        <div class="form-group">
+            <label>邮箱:</label>
+            <input type="email" name="email" class="form-control" required autofocus>
+        </div>
+        <div class="form-group">
+            <label>密码:</label>
+            <input type="password" name="password" class="form-control" required>
+        </div>
+        <button type="submit" class="btn btn-primary">登录</button>
+    </form>
+    <p>Don't have an account? <a href="{{ url_for('main.register') }}">注册</a>.</p>
+</div>
+{% endblock %}

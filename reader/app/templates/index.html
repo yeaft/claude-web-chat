@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <h2>Search for Books</h2>
+    <form method="post" action="{{ url_for('main.index') }}">
+        <div class="form-group">
+            <input type="text" name="search" id="search" class="form-control" placeholder="书名查询" autocomplete="off">
+        </div>
+    </form>
+    <ul id="suggestions" class="list-group"></ul>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // 实现自动完成功能
+    const searchInput = document.getElementById('search');
+    const suggestions = document.getElementById('suggestions');
+
+    searchInput.addEventListener('input', function() {
+        const query = this.value;
+        if (query.length > 0) {
+            fetch('/api/search_suggestions?query=' + query)
+                .then(response => response.json())
+                .then(data => {
+                    suggestions.innerHTML = '';
+                    data.forEach(item => {
+                        const li = document.createElement('li');
+                        li.classList.add('list-group-item');
+                        li.textContent = item;
+                        li.addEventListener('click', function() {
+                            searchInput.value = this.textContent;
+                            suggestions.innerHTML = '';
+                        });
+                        suggestions.appendChild(li);
+                    });
+                });
+        } else {
+            suggestions.innerHTML = '';
+        }
+    });
+</script>
+{% endblock %}

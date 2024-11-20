@@ -6,7 +6,8 @@ import yaml
 import glob
 import argparse
 import datetime
-from openai import OpenAI  # 导入 OpenAI 类
+import requests  # 用于 Azure OpenAI API 的请求
+import openai  # 使用 OpenAI 官方 SDK
 
 # 定义全局变量
 CONFIG_FILE = 'config.yaml'
@@ -34,18 +35,36 @@ def load_config(config_file):
 
 def initialize_client(config):
     """
-    根据配置初始化客户端，支持 OpenAI 和其他兼容的 API。
+    根据配置初始化客户端，支持 OpenAI 和 Azure OpenAI API。
     """
+    api_type = config['api'].get('api_type', 'openai')  # 'openai' 或 'azure'
     api_key = config['api']['api_key']
-    api_base = config['api'].get('api_base', '')
-    os.environ['API_KEY'] = api_key  # 设置环境变量，供客户端使用
-    client = OpenAI(
-        api_key=api_key,
-        base_url=api_base,
-    ) if not api_base else OpenAI(api_key=api_key)
     model = config['api'].get('model', 'gpt-3.5-turbo')
-    log(f"客户端已初始化，API 基础 URL: {api_base}, 使用模型: {model}")
-    return client, model
+    
+    if api_type == 'openai':
+        api_base = config['api'].get('api_base', 'https://api.openai.com/v1')
+        # 设置 OpenAI 客户端的全局配置
+        openai.api_type = 'open_ai'
+        openai.api_key = api_key
+        openai.base_url = api_base
+        openai.api_version = None  # 对于 OpenAI，不需要设置版本
+        log(f"客户端已初始化为 OpenAI，API 基础 URL: {api_base}, 使用模型: {model}")
+    elif api_type == 'azure':
+        api_base = config['api']['api_base']  # Azure OpenAI 的终结点
+        deployment_id = config['api']['deployment_id']  # 部署的模型名称
+        api_version = config['api'].get('api_version', '2023-07-01-preview')
+        # 设置 OpenAI 客户端的全局配置
+        openai.api_type = 'azure'
+        openai.api_key = api_key
+        openai.base_url = api_base
+        openai.api_version = api_version
+        # 对于 Azure，需要在模型名称中指定部署的名称
+        model = deployment_id
+        log(f"客户端已初始化为 Azure OpenAI，API 基础 URL: {api_base}, 使用模型部署: {model}, API 版本: {api_version}")
+    else:
+        log(f"未知的 API 类型：{api_type}")
+        sys.exit(1)
+    return model
 
 def get_book_files(input_pattern):
     """
@@ -119,24 +138,53 @@ def construct_prompt(chapter_content):
 """
     return prompt
 
-def call_llm_api(client, messages, model, max_retries=3, max_tokens=4096):
+def call_llm_api(messages, model, config, max_retries=3, max_tokens=8192):
     """
     调用 LLM API，获取返回结果。
     """
+    api_type = config['api'].get('api_type', 'openai')
     for attempt in range(max_retries):
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=0.6,
-                timeout=300,  # 设置超时时间为5分钟
-            )
-            assistant_message = response.choices[0].message
-            result = assistant_message['content'].strip()
-            # 打印返回的 response 信息
-            log(f"收到 API 响应：{response}")
-            return result
+            if api_type == 'openai':
+                # 使用 OpenAI SDK 调用
+                response = openai.ChatCompletion.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=0.7,
+                )
+                assistant_message = response.choices[0].message
+                result = assistant_message['content'].strip()
+                # 打印返回的 response 信息
+                log(f"收到 API 响应：{response}")
+                return result
+            elif api_type == 'azure':
+                # 使用 Azure OpenAI API 调用
+                api_key = config['api']['api_key']
+                api_base = config['api']['api_base']
+                api_version = config['api'].get('api_version', '2023-07-01-preview')
+                deployment_id = config['api']['deployment_id']
+                headers = {
+                    "Content-Type": "application/json",
+                    "api-key": api_key,
+                }
+                endpoint = f"{api_base}/openai/deployments/{deployment_id}/chat/completions?api-version={api_version}"
+                payload = {
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": max_tokens,
+                }
+                response = requests.post(endpoint, headers=headers, json=payload)
+                response.raise_for_status()
+                response_data = response.json()
+                assistant_message = response_data['choices'][0]['message']
+                result = assistant_message['content'].strip()
+                # 打印返回的 response 信息
+                log(f"收到 API 响应：{response_data}")
+                return result
+            else:
+                log(f"未知的 API 类型：{api_type}")
+                return None
         except Exception as e:
             log(f"调用 API 出错：{e}")
             if attempt < max_retries - 1:
@@ -161,7 +209,7 @@ def save_output(category, book_name, chapter_title, content):
         f.write(content)
     log(f"已保存到 {file_path}")
 
-def process_books(books, client, model):
+def process_books(books, model, config):
     """
     处理书籍列表，针对每个章节调用 LLM API 并保存结果。
     """
@@ -183,11 +231,11 @@ def process_books(books, client, model):
 
             # 构建 messages
             messages = [
-                {"role": "system", "content": "你是一个精通中国古典文学的助手。"},
+                {"role": "system", "content": "你是一个精通中国古典文学的大师, 善于理解和分析国学书籍文章, 而且可以引经据典。"},
                 {"role": "user", "content": prompt},
             ]
 
-            result = call_llm_api(client, messages, model)
+            result = call_llm_api(messages, model, config)
             if result:
                 save_output(category, book_name, chapter_title, result)
             else:
@@ -203,10 +251,7 @@ def main():
 
     # 加载配置
     config = load_config(CONFIG_FILE)
-    client, model = initialize_client(config)
-
-    # 打印 client 的基本信息
-    log(f"客户端信息：{client}")
+    model = initialize_client(config)
 
     # 获取书籍文件列表
     file_list = get_book_files(args.input)
@@ -222,7 +267,7 @@ def main():
     # 加载书籍
     books = load_books(file_list)
     # 处理书籍
-    process_books(books, client, model)
+    process_books(books, model, config)
 
 if __name__ == '__main__':
     main()

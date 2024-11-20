@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <h2>搜索“{{ query }}”的结果</h2>
+    {% if books %}
+    <ul class="list-group">
+        {% for book in books %}
+        <li class="list-group-item">
+            <a href="{{ url_for('main.book', name=book) }}">{{ book }}</a>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p>未找到相关书籍。</p>
+    {% endif %}
+</div>
+{% endblock %}

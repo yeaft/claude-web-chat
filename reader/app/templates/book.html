@@ -1,0 +1,90 @@
+<!-- book.html -->
+
+{% extends 'base.html' %}
+{% block content %}
+<div class="container-fluid mt-3">
+    <div class="row">
+        {% if not is_mobile %}
+        <!-- 桌面布局 -->
+        <div class="col-md-6" id="original-text">
+            <div class="content-wrapper p-3">
+                <h3>{{ document.chapter_title }}</h3>
+                {{ document.original_text | markdown | safe }}
+            </div>
+        </div>
+        <div class="col-md-6" id="translated-text">
+            <div class="content-wrapper p-3">
+                <h4>白话文翻译</h4>
+                {{ document.plain_translation | markdown | safe }}
+                <h4>典故解释</h4>
+                {{ document.allusion_explanation | markdown | safe }}
+                <h4>深刻句子汇总</h4>
+                {{ document.profound_sentences | markdown | safe }}
+                <h4>章节总结</h4>
+                {{ document.summary | markdown | safe }}
+            </div>
+        </div>
+        {% else %}
+        <!-- 移动设备布局 -->
+        <div class="col-12">
+            <div class="content-wrapper p-3">
+                <h3>{{ document.chapter_title }}</h3>
+                <h4>原文</h4>
+                {{ document.original_text | markdown | safe }}
+                <h4>白话文翻译</h4>
+                {{ document.plain_translation | markdown | safe }}
+                <h4>典故解释</h4>
+                {{ document.allusion_explanation | markdown | safe }}
+                <h4>深刻句子汇总</h4>
+                {{ document.profound_sentences | markdown | safe }}
+                <h4>章节总结</h4>
+                {{ document.summary | markdown | safe }}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    <!-- 导航 -->
+    <div class="row mt-4">
+        <div class="col-12 text-center">
+            {% if prev_chapter %}
+            <a href="{{ url_for('main.book', name=document.name, chapter=prev_chapter) }}" class="btn btn-primary">上一章</a>
+            {% endif %}
+            {% if next_chapter %}
+            <a href="{{ url_for('main.book', name=document.name, chapter=next_chapter) }}" class="btn btn-primary">下一章</a>
+            {% endif %}
+            <a href="{{ url_for('main.index') }}" class="btn btn-secondary">返回搜索</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+    // 检测设备类型
+    var is_mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    // 在模板中使用 is_mobile 变量
+    var is_mobile_template = '{{ is_mobile }}';
+    if (is_mobile_template === 'False') {
+        is_mobile = false;
+    } else {
+        is_mobile = true;
+    }
+
+    if (!is_mobile){
+        // 同步滚动
+        const originalText = document.getElementById('original-text');
+        const translatedText = document.getElementById('translated-text');
+
+        if (originalText && translatedText) {
+            originalText.addEventListener('scroll', function() {
+                translatedText.scrollTop = originalText.scrollTop;
+            });
+
+            translatedText.addEventListener('scroll', function() {
+                originalText.scrollTop = translatedText.scrollTop;
+            });
+        }
+    }
+</script>
+{% endblock %}
