@@ -53,8 +53,6 @@ def register():
 # 主页面和搜索功能
 @main_bp.route('/', methods=['GET', 'POST'])
 def index():
-    if current_user.is_authenticated and current_user.last_book:
-        return redirect(url_for('main.book', name=current_user.last_book, chapter=current_user.last_chapter or 1))
     if request.method == 'POST':
         query = request.form.get('search')
         return redirect(url_for('main.search_results', query=query))
@@ -74,26 +72,55 @@ def search_suggestions():
     return jsonify(suggestions)
 
 # 阅读页面
-@main_bp.route('/book/<name>', defaults={'chapter': 1})
-@main_bp.route('/book/<name>/chapter/<int:chapter>')
+@main_bp.route('/book/<name>', defaults={'chapter': None}, methods=['GET', 'POST'])
+@main_bp.route('/book/<name>/chapter/<int:chapter>', methods=['GET', 'POST'])
 def book(name, chapter):
     # 查询章节内容
-    document = mongo.db.books.find_one({'name': name, 'chapter': chapter})
+    document = mongo.db.books.find_one({'name': name, 'chapter': chapter}) if chapter else None
+    if request.method == 'POST':
+        # 用户输入章节号跳转
+        input_chapter = request.form.get('chapter')
+        try:
+            input_chapter = int(input_chapter)
+            max_chapter = mongo.db.books.count_documents({'name': name})
+            if 1 <= input_chapter <= max_chapter:
+                return redirect(url_for('main.book', name=name, chapter=input_chapter))
+            else:
+                flash(f'请输入有效的章节号（1-{max_chapter}）。', 'warning')
+        except ValueError:
+            flash('章节号必须是数字。', 'danger')
+    
+    if not chapter:
+        # 如果章节未指定，获取用户的最后阅读章节
+        if current_user.is_authenticated and name in current_user.reading_history:
+            chapter = current_user.reading_history[name]
+            document = mongo.db.books.find_one({'name': name, 'chapter': chapter})
+            if not document:
+                chapter = 1
+                document = mongo.db.books.find_one({'name': name, 'chapter': chapter})
+        else:
+            chapter = 1
+            document = mongo.db.books.find_one({'name': name, 'chapter': chapter})
+    
     if not document:
         return "Chapter not found.", 404
+    
     # 获取章节总数
     total_chapters = mongo.db.books.count_documents({'name': name})
+    
     # 更新用户的最后阅读位置
     if current_user.is_authenticated:
-        mongo.db.users.update_one({'_id': ObjectId(current_user.id)}, {'$set': {'last_book': name, 'last_chapter': chapter}})
+        current_user.update_reading_history(name, chapter)
+    
     # 检测是否为移动设备
     user_agent = request.headers.get('User-Agent')
     is_mobile = False
     if user_agent:
         is_mobile = any(mobile in user_agent.lower() for mobile in ['iphone', 'android'])
-
+    
     prev_chapter = chapter - 1 if chapter > 1 else None
     next_chapter = chapter + 1 if chapter < total_chapters else None
+    
     return render_template(
         'book.html',
         document=document,

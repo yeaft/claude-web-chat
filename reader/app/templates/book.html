@@ -44,16 +44,26 @@
     </div>
     <!-- 底部导航 -->
     <div class="row" id="footer">
-        <div class="col-12 text-center py-2 bg-white border-top">
-            {% if prev_chapter %}
-            <a href="{{ url_for('main.book', name=document.name, chapter=prev_chapter) }}" class="btn btn-primary">上一章</a>
-            {% endif %}
-            {% if next_chapter %}
-            <a href="{{ url_for('main.book', name=document.name, chapter=next_chapter) }}" class="btn btn-primary">下一章</a>
-            {% endif %}
-            <a href="{{ url_for('main.index') }}" class="btn btn-secondary">返回搜索</a>
+        <div class="col-12 py-2 bg-white border-top">
+            <div class="d-flex justify-content-center align-items-center flex-wrap gap-2">
+                {% if prev_chapter %}
+                <a href="{{ url_for('main.book', name=document.name, chapter=prev_chapter) }}" class="btn btn-primary mx-2">上一章</a>
+                {% endif %}
+                <form method="post" class="d-flex align-items-center mx-2" style="white-space: nowrap;">
+                    <label for="chapter" class="mr-2 mb-0">跳转到第</label>
+                    <input type="number" name="chapter" id="chapter" class="form-control form-control-sm mr-2" min="1" max="{{ total_chapters }}" required>
+                    <label class="mr-2 mb-0">章（最大{{ total_chapters }}章）</label>
+                    <button type="submit" class="btn btn-primary btn-sm">跳转</button>
+                </form>
+                {% if next_chapter %}
+                <a href="{{ url_for('main.book', name=document.name, chapter=next_chapter) }}" class="btn btn-primary mx-2">下一章</a>
+                {% endif %}
+                <a href="{{ url_for('main.index') }}" class="btn btn-secondary mx-2">返回搜索</a>
+            </div>
         </div>
     </div>
+
+
 </div>
 {% endblock %}
 
