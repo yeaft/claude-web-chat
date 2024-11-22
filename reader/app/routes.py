@@ -7,6 +7,7 @@ from bson.objectid import ObjectId
 
 # 定义蓝图
 main_bp = Blueprint('main', __name__)
+page_size = 8
 
 # 登录视图
 @main_bp.route('/login', methods=['GET', 'POST'])
@@ -134,7 +135,14 @@ def book(name, chapter):
 @main_bp.route('/api/search', methods=['GET'])
 def api_search():
     query = request.args.get('query', '')
-    books = mongo.db.books.distinct('name', {'name': {'$regex': query, '$options': 'i'}})
+    filters = {}
+    if query:
+        filters['$or'] = [
+            {'name': {'$regex': query, '$options': 'i'}},
+            {'author': {'$regex': query, '$options': 'i'}},
+            {'tags': {'$regex': query, '$options': 'i'}}
+        ]
+    books = mongo.db.books.find(filters).limit(page_size)
     return jsonify({'books': books})
 
 @main_bp.route('/api/book/<name>/chapter/<int:chapter>', methods=['GET'])
@@ -154,4 +162,30 @@ def api_book_chapter(name, chapter):
         'profound_sentences': document['profound_sentences'],
         'summary': document['summary'],
         'chapter_count': document['chapter_count']
+    })
+
+@main_bp.route('/api/books', methods=['GET'])
+def api_books():
+    query = request.args.get('query', '').strip()
+    page = int(request.args.get('page', 1))
+
+    filters = {}
+    if query:
+        filters['$or'] = [
+            {'name': {'$regex': query, '$options': 'i'}},
+            {'author': {'$regex': query, '$options': 'i'}},
+            {'tags': {'$regex': query, '$options': 'i'}}
+        ]
+
+    total_books = mongo.db.books.count_documents(filters)
+    total_pages = (total_books + page_size - 1) // page_size
+    books = list(mongo.db.books.find(filters).skip((page - 1) * page_size).limit(page_size))
+
+    for book in books:
+        book['_id'] = str(book['_id'])  # 转换 ObjectId 为字符串
+
+    return jsonify({
+        'books': books,
+        'pages': list(range(1, total_pages + 1)),
+        'current_page': page
     })

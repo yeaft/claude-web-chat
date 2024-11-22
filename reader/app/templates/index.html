@@ -1,47 +1,120 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="container d-flex flex-column align-items-center justify-content-center" style="min-height: 80vh;">
-    <h1 class="mb-4" style="font-weight: bold;">欢迎使用阅读平台</h1>
-    <p class="mb-4 text-secondary">查找您感兴趣的书籍，进入阅读世界</p>
-    <form method="post" action="{{ url_for('main.index') }}" style="width: 100%; max-width: 500px;">
+<div class="container">
+    <br/>
+    <p class="text-secondary text-center">查找您感兴趣的书籍，进入阅读世界</p>
+    <form method="post" id="search-form" style="max-width: 500px; margin: 0 auto;">
         <div class="input-group">
-            <input type="text" name="search" id="search" class="form-control" placeholder="输入书名查询" autocomplete="off">
+            <input type="text" name="search" id="search" class="form-control" placeholder="输入书名、作者或分类查询" autocomplete="off">
             <div class="input-group-append">
                 <button class="btn btn-primary" type="submit">搜索</button>
             </div>
         </div>
     </form>
-    <ul id="suggestions" class="list-group mt-3" style="width: 100%; max-width: 500px;"></ul>
+
+    <div class="table-responsive mt-4">
+        <table class="table table-striped table-bordered text-center w-100">
+            <thead class="thead-light">
+                <tr>
+                    <th style="width: 16.67%;">书名</th>
+                    <th style="width: 16.67%;">作者</th>
+                    <th style="width: 16.67%;">分类</th>
+                    <th style="width: 50%;">简介</th>
+                </tr>
+            </thead>
+            <tbody id="books-table">
+                {% for book in books %}
+                <tr>
+                    <td>
+                        <a href="{{ url_for('main.book', name=book['name']) }}" 
+                           class="clickable-link"
+                           data-bs-toggle="tooltip" 
+                           data-bs-placement="top" 
+                           title="点击查看书籍详情：{{ book['name'] }}">
+                            {{ book['name'] }}
+                        </a>
+                    </td>
+                    <td data-bs-toggle="tooltip" data-bs-placement="top" title="{{ book['author'] }}">
+                        {{ book['author'] }}
+                    </td>
+                    <td data-bs-toggle="tooltip" data-bs-placement="top" title="{{ book['tags'] }}">
+                        {{ book['tags'] }}
+                    </td>
+                    <td data-bs-toggle="tooltip" data-bs-placement="top" title="{{ book['summary'] }}">
+                        {{ book['summary'] }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    
+
+    <nav>
+        <ul class="pagination justify-content-center" id="pagination">
+            {% for page in pages %}
+            <li class="page-item {% if page == current_page %}active{% endif %}">
+                <a class="page-link" href="#" onclick="loadPage({{ page }}); return false;">{{ page }}</a>
+            </li>
+            {% endfor %}
+        </ul>
+    </nav>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-    // 实现自动完成功能
-    const searchInput = document.getElementById('search');
-    const suggestions = document.getElementById('suggestions');
-
-    searchInput.addEventListener('input', function() {
-        const query = this.value;
-        if (query.length > 0) {
-            fetch('/api/search_suggestions?query=' + query)
-                .then(response => response.json())
-                .then(data => {
-                    suggestions.innerHTML = '';
-                    data.forEach(item => {
-                        const li = document.createElement('li');
-                        li.classList.add('list-group-item');
-                        li.textContent = item;
-                        li.addEventListener('click', function() {
-                            searchInput.value = this.textContent;
-                            suggestions.innerHTML = '';
-                        });
-                        suggestions.appendChild(li);
-                    });
-                });
-        } else {
-            suggestions.innerHTML = '';
-        }
+    document.addEventListener('DOMContentLoaded', function () {
+        // 初始化所有的 tooltip
+        const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+        tooltipTriggerList.forEach(function (tooltipTriggerEl) {
+            new bootstrap.Tooltip(tooltipTriggerEl);
+        });
     });
+
+    document.getElementById('search-form').addEventListener('submit', function(event) {
+        event.preventDefault();
+        const query = document.getElementById('search').value;
+        fetchBooks(query, 1);
+    });
+
+    function fetchBooks(query, page) {
+        fetch(`/api/books?query=${query}&page=${page}`)
+            .then(response => response.json())
+            .then(data => {
+                updateTable(data.books);
+                updatePagination(data.pages, data.current_page);
+            })
+            .catch(error => console.error('Error fetching books:', error));
+    }
+
+    function updateTable(books) {
+        const booksTable = document.getElementById('books-table');
+        booksTable.innerHTML = '';
+        books.forEach(book => {
+            const row = `<tr>
+                <td><a href="/book/${book.name}">${book.name}</a></td>
+                <td>${book.author}</td>
+                <td>${book.tags}</td>
+                <td>${book.summary}</td>
+            </tr>`;
+            booksTable.insertAdjacentHTML('beforeend', row);
+        });
+    }
+
+    function updatePagination(pages, currentPage) {
+        const pagination = document.getElementById('pagination');
+        pagination.innerHTML = '';
+        pages.forEach(page => {
+            const activeClass = page === currentPage ? 'active' : '';
+            const pageItem = `<li class="page-item ${activeClass}">
+                <a class="page-link" href="#" onclick="fetchBooks(document.getElementById('search').value, ${page}); return false;">${page}</a>
+            </li>`;
+            pagination.insertAdjacentHTML('beforeend', pageItem);
+        });
+    }
+
+    // 初次加载默认数据
+    fetchBooks('', 1);
 </script>
 {% endblock %}

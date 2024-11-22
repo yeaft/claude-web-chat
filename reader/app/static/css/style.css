@@ -93,3 +93,35 @@ a:hover {
         margin-bottom: 10px;
     }
 }
+
+/* 确保表格宽度适配父容器 */
+.table-responsive {
+    overflow-x: auto; /* 启用水平滚动条，仅在需要时显示 */
+}
+
+/* 设置表格单元格内容不换行并防止超宽 */
+.table {
+    table-layout: fixed; /* 固定表格布局，按指定的列宽分配 */
+    width: 100%; /* 表格占满容器宽度 */
+}
+
+/* 确保表格内容不换行并超出显示省略号 */
+.table td,
+.table th {
+    white-space: nowrap; /* 禁止换行 */
+    overflow: hidden; /* 隐藏超出的部分 */
+    text-overflow: ellipsis; /* 超出部分显示省略号 */
+}
+
+/* 书名链接的样式 */
+.clickable-link {
+    color: #007bff; /* 蓝色，表明可点击 */
+    font-weight: bold;
+    text-decoration: underline; /* 下划线提示 */
+    cursor: pointer;
+}
+
+.clickable-link:hover {
+    color: #0056b3; /* 鼠标悬停时的颜色 */
+    text-decoration: underline;
+}
