@@ -245,6 +245,10 @@ a:hover {
         padding: 15px;
         margin: 0;
     }
+
+    body {
+        font-weight: 500;
+    }
 }
 
 /* 确保表格宽度适配父容器 */
