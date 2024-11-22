@@ -8,48 +8,45 @@ from bson.objectid import ObjectId
 # 定义蓝图
 main_bp = Blueprint('main', __name__)
 
-# 登录和注册视图
+# 登录视图
 @main_bp.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
         return redirect(url_for('main.index'))
     if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-        print(f"尝试登录用户: {email}")  # 调试信息
+        email = request.form.get('email')
+        password = request.form.get('password')
         user = User.find_by_email(email)
-        if user:
-            print("用户存在，验证密码...")  # 调试信息
-            if user.check_password(password):
-                login_user(user)
-                print("登录成功，跳转到主页")  # 调试信息
-                return redirect(url_for('main.index'))
-            else:
-                print("密码不正确")  # 调试信息
-                flash('无效的用户名密码.')
+        if user and user.check_password(password):
+            login_user(user)
+            flash('登录成功!', 'success')
+            return redirect(url_for('main.index'))
         else:
-            print("用户不存在")  # 调试信息
-            flash('无效的用户名密码.')
+            flash('无效的用户名或密码.', 'danger')
     return render_template('login.html')
 
+# 注销视图
 @main_bp.route('/logout')
+@login_required
 def logout():
     logout_user()
+    flash('您已登出.', 'info')
     return redirect(url_for('main.index'))
 
+# 注册视图
 @main_bp.route('/register', methods=['GET', 'POST'])
 def register():
     if current_user.is_authenticated:
         return redirect(url_for('main.index'))
     if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-        user = User.find_by_email(email)
-        if user:
-            flash('邮箱地址已经注册')
+        email = request.form.get('email')
+        password = request.form.get('password')
+        if User.find_by_email(email):
+            flash('邮箱地址已经注册', 'warning')
         else:
             user = User.create_user(email, password)
             login_user(user)
+            flash('注册并登录成功!', 'success')
             return redirect(url_for('main.index'))
     return render_template('register.html')
 
@@ -59,21 +56,21 @@ def index():
     if current_user.is_authenticated and current_user.last_book:
         return redirect(url_for('main.book', name=current_user.last_book, chapter=current_user.last_chapter or 1))
     if request.method == 'POST':
-        query = request.form['search']
+        query = request.form.get('search')
         return redirect(url_for('main.search_results', query=query))
     return render_template('index.html')
 
 @main_bp.route('/search')
 def search_results():
     query = request.args.get('query', '')
-    books = mongo.db.books.distinct('name', {'name': {'$regex': query}})
+    books = mongo.db.books.distinct('name', {'name': {'$regex': query, '$options': 'i'}})
     return render_template('search.html', books=books, query=query)
 
 # 自动完成 API
 @main_bp.route('/api/search_suggestions')
 def search_suggestions():
     query = request.args.get('query', '')
-    suggestions = mongo.db.books.distinct('name', {'name': {'$regex': query}})
+    suggestions = mongo.db.books.distinct('name', {'name': {'$regex': query, '$options': 'i'}})
     return jsonify(suggestions)
 
 # 阅读页面
@@ -110,7 +107,7 @@ def book(name, chapter):
 @main_bp.route('/api/search', methods=['GET'])
 def api_search():
     query = request.args.get('query', '')
-    books = mongo.db.books.distinct('name', {'name': {'$regex': query}})
+    books = mongo.db.books.distinct('name', {'name': {'$regex': query, '$options': 'i'}})
     return jsonify({'books': books})
 
 @main_bp.route('/api/book/<name>/chapter/<int:chapter>', methods=['GET'])

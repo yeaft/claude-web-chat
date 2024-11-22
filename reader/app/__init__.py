@@ -3,7 +3,6 @@ from flask import Flask
 from config import Config
 from flask_pymongo import PyMongo
 from flask_login import LoginManager
-from .models import User  # 确保User模型已经定义
 import markdown  # 导入 markdown
 
 mongo = PyMongo()
@@ -19,9 +18,6 @@ def create_app():
     login_manager.init_app(app)
     login_manager.login_view = 'main.login'  # 设置登录视图
 
-    @login_manager.user_loader
-    def load_user(user_id):
-        return User.find_by_email(user_id)  # 实现根据ID加载用户的方法
 
     # 注册蓝图
     from .routes import main_bp
