@@ -63,6 +63,7 @@
 {% endblock %}
 
 {% block scripts %}
+{{ super() }} <!-- 继承 base.html 中的脚本块 -->
 <script>
     document.addEventListener('DOMContentLoaded', function () {
         // 初始化所有的 tooltip

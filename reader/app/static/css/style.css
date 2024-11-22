@@ -1,11 +1,137 @@
+/* 浅灰主题 */
+.theme-light-gray {
+    background-color: #f8f9fa; /* 浅灰背景 */
+    color: #212529; /* 深灰文本颜色 */
+}
+
+.theme-light-gray .content-wrapper{
+    background-color: #f8f9fa; /* 浅灰背景 */
+    color: #212529; /* 深灰文本颜色 */
+}
+
+.theme-light-gray .navbar {
+    background-color: #ffffff !important; /* 白色导航栏 */
+    color: #212529;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.theme-light-gray a:hover {
+    color: #0056b3; /* 深蓝链接 */
+}
+
+.theme-light-gray .table {
+    color: #212529;
+}
+
+/* 淡黄主题 */
+.theme-light-yellow {
+    background-color: #fffbe6; /* 淡黄色背景 */
+    color: #5a3e00; /* 深棕文本颜色 */
+}
+
+.theme-light-yellow .content-wrapper{
+    background-color: #fffbe6; /* 淡黄色背景 */
+    color: #5a3e00; /* 深棕文本颜色 */
+}
+
+.theme-light-yellow .navbar {
+    background-color: #fff9cc !important; /* 深黄色导航栏 */
+    color: #5a3e00;
+    border-bottom: 1px solid #ffec99;
+}
+
+.theme-light-yellow a {
+    color: #b08900; /* 棕黄链接 */
+}
+
+.theme-light-yellow a:hover {
+    color: #805d00; /* 深棕链接 */
+}
+
+.theme-light-yellow .table {
+    color: #5a3e00;
+}
+
+/* 淡绿色主题 */
+.theme-light-green {
+    background-color: #e9f7ef; /* 淡绿色背景 */
+    color: #0c513d; /* 深绿色文本颜色 */
+}
+
+.theme-light-green .content-wrapper{
+    background-color: #e9f7ef; /* 淡绿色背景 */
+    color: #0c513d; /* 深绿色文本颜色 */
+}
+
+.theme-light-green .navbar {
+    background-color: #d4edda !important; /* 深绿色导航栏 */
+    color: #0c513d;
+    border-bottom: 1px solid #c3e6cb;
+}
+
+.theme-light-green #footer {
+    background-color: #d4edda !important; /* 深绿色导航栏 */
+    color: #0c513d;
+    border-bottom: 1px solid #c3e6cb;
+}
+
+.theme-light-green a {
+    color: #198754; /* 绿色链接 */
+}
+
+.theme-light-green a:hover {
+    color: #146c43; /* 深绿色链接 */
+}
+
+.theme-light-green .table {
+    color: #0c513d;
+}
+
+/* Dark 模式主题 */
+.theme-dark {
+    background-color: #121212; /* 深黑背景 */
+    color: #f5f5f5; /* 浅灰文本颜色 */
+}
+
+.theme-dark .content-wrapper{
+    background-color: #121212; /* 深黑背景 */
+    color: #f5f5f5; /* 浅灰文本颜色 */
+}
+
+.theme-dark .navbar {
+    background-color: #1e1e1e !important; /* 深灰导航栏 */
+    color: #f5f5f5;
+    border-bottom: 1px solid #333333;
+}
+
+.theme-dark a {
+    color: #66d9ff; /* 浅蓝色链接 */
+}
+
+.theme-dark a:hover {
+    color: #33bbff; /* 高亮蓝色链接 */
+}
+
+.theme-dark .table {
+    color: #f5f5f5;
+    background-color: #1e1e1e; /* 深灰表格背景 */
+    border-color: #333333; /* 表格边框颜色 */
+}
+
+.theme-dark .table-striped tbody tr:nth-of-type(odd) {
+    background-color: #2c2c2c; /* 条纹背景 */
+}
+
+.theme-dark .table-striped tbody tr:nth-of-type(even) {
+    background-color: #1e1e1e; /* 深灰背景 */
+}
 /* 全局样式 */
 body {
-    font-family: 'Noto Serif SC', serif;
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'SimSun', 'Arial', sans-serif;
     line-height: 1.6;
     margin: 0;
     padding: 0;
     background-color: #f8f9fa; /* 默认背景颜色 */
-    overflow: hidden; /* 禁止全局滚动条 */
 }
 
 h3, h4 {
@@ -20,7 +146,6 @@ p {
 /* 内容容器样式 */
 .content-wrapper {
     padding: 15px;
-    background-color: rgba(255, 255, 255, 0.95); /* 半透明背景 */
     border-radius: 5px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); /* 轻微阴影 */
     flex-grow: 1; /* 允许内容容器填充剩余空间 */
@@ -59,7 +184,6 @@ p {
 
 /* 导航栏样式 */
 .navbar {
-    background-color: #ffffff !important;
     border-bottom: 1px solid #dee2e6;
     padding: 20px;
     box-shadow: 0px 1px 3px rgba(0, 0, 0, 0.1);
@@ -115,13 +239,11 @@ a:hover {
 
 /* 书名链接的样式 */
 .clickable-link {
-    color: #007bff; /* 蓝色，表明可点击 */
     font-weight: bold;
     text-decoration: underline; /* 下划线提示 */
     cursor: pointer;
 }
 
 .clickable-link:hover {
-    color: #0056b3; /* 鼠标悬停时的颜色 */
     text-decoration: underline;
 }

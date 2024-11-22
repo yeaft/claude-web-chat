@@ -12,8 +12,7 @@
 </head>
 <body>
     <!-- 导航栏 -->
-    <!-- base.html -->
-    <nav class="navbar navbar-expand-lg navbar-light bg-light">
+    <nav class="navbar navbar-expand-lg navbar-light">
         <a class="navbar-brand" href="{{ url_for('main.index') }}">阅读</a>
         <div class="ml-auto d-flex align-items-center">
             <!-- 主题选择器 -->
@@ -23,6 +22,7 @@
                     <option value="theme-light-gray">浅灰</option>
                     <option value="theme-light-yellow">淡黄</option>
                     <option value="theme-light-green">淡绿</option>
+                    <option value="theme-dark">Dark</option>
                 </select>
             </form>
             <!-- 登录/注册按钮 -->
@@ -37,21 +37,22 @@
     </nav>
     <!-- 主内容 -->
     {% block content %}{% endblock %}
+
     {% block scripts %}
     <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', function () {
             const themeSelector = document.getElementById('theme-selector');
-            const themes = ['theme-light-gray', 'theme-light-yellow', 'theme-light-green'];
+            const themes = ['theme-light-gray', 'theme-light-yellow', 'theme-light-green', 'theme-dark'];
             // 获取当前主题
             const currentTheme = localStorage.getItem('theme') || 'theme-light-gray';
             // 设置初始主题
             document.body.classList.add(currentTheme);
             themeSelector.value = currentTheme;
             // 监听主题选择器的变化
-            themeSelector.addEventListener('change', function() {
+            themeSelector.addEventListener('change', function () {
                 // 移除所有主题类
                 themes.forEach(theme => document.body.classList.remove(theme));
                 const selectedTheme = this.value;
@@ -59,6 +60,7 @@
                 localStorage.setItem('theme', selectedTheme);
             });
         });
+
     </script>
     {% endblock %}
 </body>

@@ -44,7 +44,7 @@
     </div>
     <!-- 底部导航 -->
     <div class="row" id="footer">
-        <div class="col-12 py-2 bg-white border-top">
+        <div class="col-12 py-2 border-top">
             <div class="d-flex justify-content-center align-items-center flex-wrap gap-2">
                 {% if prev_chapter %}
                 <a href="{{ url_for('main.book', name=document.name, chapter=prev_chapter) }}" class="btn btn-primary mx-2">上一章</a>
@@ -68,6 +68,7 @@
 {% endblock %}
 
 {% block scripts %}
+{{ super() }} <!-- 继承 base.html 中的脚本块 -->
 <script>
     // 检测设备类型
     var is_mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
