@@ -15,10 +15,11 @@
         <table class="table table-striped table-bordered text-center w-100">
             <thead class="thead-light">
                 <tr>
-                    <th style="width: 16.67%;">书名</th>
-                    <th style="width: 16.67%;">作者</th>
-                    <th style="width: 16.67%;">分类</th>
-                    <th style="width: 50%;">简介</th>
+                    <th style="width: 50%;">书名</th>
+                    <!-- 其他列头在桌面设备显示 -->
+                    <th class="d-none d-md-table-cell" style="width: 20%;">作者</th>
+                    <th class="d-none d-md-table-cell" style="width: 20%;">分类</th>
+                    <th class="d-none d-md-table-cell" style="width: 50%;">简介</th>
                 </tr>
             </thead>
             <tbody id="books-table">
@@ -49,6 +50,9 @@
 {% block scripts %}
 {{ super() }} <!-- 继承 base.html 中的脚本块 -->
 <script>
+    // 检测设备类型（全局作用域）
+    var is_mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
     document.addEventListener('DOMContentLoaded', function () {
         // 初始化所有的 tooltip
         const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
@@ -83,27 +87,50 @@
         const booksTable = document.getElementById('books-table');
         booksTable.innerHTML = '';
         books.forEach(book => {
-            const row = `<tr>
-                <td>
-                    <a href="/book/${encodeURIComponent(book.name)}" 
-                       class="clickable-link"
-                       data-bs-toggle="tooltip" 
-                       data-bs-placement="top" 
-                       title="点击查看书籍详情：${book.name}">
-                        ${book.name}
-                    </a>
-                </td>
-                <td data-bs-toggle="tooltip" data-bs-placement="top" title="${book.author}">
-                    ${book.author}
-                </td>
-                <td data-bs-toggle="tooltip" data-bs-placement="top" title="${book.tags}">
-                    ${book.tags}
-                </td>
-                <td data-bs-toggle="tooltip" data-bs-placement="top" title="${book.summary}">
-                    ${book.summary}
-                </td>
-            </tr>`;
-            booksTable.insertAdjacentHTML('beforeend', row);
+            const row = document.createElement('tr');
+
+            // 书名列
+            const nameCell = document.createElement('td');
+            nameCell.innerHTML = `<a href="/book/${encodeURIComponent(book.name)}" 
+                                   class="clickable-link"
+                                   data-bs-toggle="tooltip" 
+                                   data-bs-placement="top" 
+                                   title="点击查看书籍详情：${book.name}">
+                                    ${book.name}
+                                </a>`;
+            row.appendChild(nameCell);
+
+            // 检测设备类型，只有在非移动设备时添加其他列
+            if (!is_mobile) {
+                // 作者列
+                const authorCell = document.createElement('td');
+                authorCell.classList.add('d-none', 'd-md-table-cell');
+                authorCell.setAttribute('data-bs-toggle', 'tooltip');
+                authorCell.setAttribute('data-bs-placement', 'top');
+                authorCell.setAttribute('title', book.author || '');
+                authorCell.textContent = book.author || '';
+                row.appendChild(authorCell);
+
+                // 分类列
+                const tagsCell = document.createElement('td');
+                tagsCell.classList.add('d-none', 'd-md-table-cell');
+                tagsCell.setAttribute('data-bs-toggle', 'tooltip');
+                tagsCell.setAttribute('data-bs-placement', 'top');
+                tagsCell.setAttribute('title', book.tags || '');
+                tagsCell.textContent = book.tags || '';
+                row.appendChild(tagsCell);
+
+                // 简介列
+                const summaryCell = document.createElement('td');
+                summaryCell.classList.add('d-none', 'd-md-table-cell');
+                summaryCell.setAttribute('data-bs-toggle', 'tooltip');
+                summaryCell.setAttribute('data-bs-placement', 'top');
+                summaryCell.setAttribute('title', book.summary || '');
+                summaryCell.textContent = book.summary || '';
+                row.appendChild(summaryCell);
+            }
+
+            booksTable.appendChild(row);
         });
 
         // 重新初始化 tooltip
@@ -203,4 +230,3 @@
     });
 </script>
 {% endblock %}
-
