@@ -132,7 +132,8 @@ body {
     margin: 0;
     padding: 0;
     background-color: #f8f9fa; /* 默认背景颜色 */
-    font-weight: 200;
+    font-weight: 400;
+    font-size: large;
 }
 
 h3, h4 {
