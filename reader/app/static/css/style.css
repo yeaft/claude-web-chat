@@ -132,6 +132,7 @@ body {
     margin: 0;
     padding: 0;
     background-color: #f8f9fa; /* 默认背景颜色 */
+    font-weight: 200;
 }
 
 h3, h4 {
@@ -158,7 +159,7 @@ p {
     overflow-y: auto; /* 确保滚动条正常显示 */
     box-sizing: border-box;
     flex-grow: 1; /* 允许内容容器填充剩余空间 */
-    padding: 15px;
+    padding: 20px;
 }
 
 #original-text {
@@ -205,6 +206,28 @@ a:hover {
     text-decoration: underline;
 }
 
+/* 调整当没有翻译时的布局 */
+#content-center {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* 父容器不滚动 */
+}
+
+.centered-content {
+    width: 65%; /* 内容占据 60% 的宽度 */
+    margin: 0 auto;
+    flex-grow: 1; /* 允许内容容器填充剩余空间 */
+    overflow-y: auto; /* 启用滚动条 */
+    box-sizing: border-box;
+}
+
+/* 确保 footer 位于页面底部 */
+.container-fluid {
+    display: flex;
+    flex-direction: column;
+}
+
 /* 移动端适配 */
 @media (max-width: 768px) {
     #original-text, #translated-text {
@@ -215,6 +238,12 @@ a:hover {
 
     .content-wrapper {
         margin-bottom: 10px;
+    }
+
+    .centered-content {
+        width: 100%; /* 移动端内容占满宽度 */
+        padding: 15px;
+        margin: 0;
     }
 }
 

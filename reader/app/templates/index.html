@@ -2,7 +2,6 @@
 {% block content %}
 <div class="container">
     <br/>
-    <p class="text-secondary text-center">查找您感兴趣的书籍，进入阅读世界</p>
     <form method="post" id="search-form" style="max-width: 500px; margin: 0 auto;">
         <div class="input-group">
             <input type="text" name="search" id="search" class="form-control" placeholder="输入书名、作者或分类查询" autocomplete="off">
@@ -23,42 +22,27 @@
                 </tr>
             </thead>
             <tbody id="books-table">
-                {% for book in books %}
-                <tr>
-                    <td>
-                        <a href="{{ url_for('main.book', name=book['name']) }}" 
-                           class="clickable-link"
-                           data-bs-toggle="tooltip" 
-                           data-bs-placement="top" 
-                           title="点击查看书籍详情：{{ book['name'] }}">
-                            {{ book['name'] }}
-                        </a>
-                    </td>
-                    <td data-bs-toggle="tooltip" data-bs-placement="top" title="{{ book['author'] }}">
-                        {{ book['author'] }}
-                    </td>
-                    <td data-bs-toggle="tooltip" data-bs-placement="top" title="{{ book['tags'] }}">
-                        {{ book['tags'] }}
-                    </td>
-                    <td data-bs-toggle="tooltip" data-bs-placement="top" title="{{ book['summary'] }}">
-                        {{ book['summary'] }}
-                    </td>
-                </tr>
-                {% endfor %}
+                <!-- 书籍列表将通过 JavaScript 动态插入 -->
             </tbody>
         </table>
     </div>
     
-
+    <!-- 分页控件 -->
     <nav>
         <ul class="pagination justify-content-center" id="pagination">
-            {% for page in pages %}
-            <li class="page-item {% if page == current_page %}active{% endif %}">
-                <a class="page-link" href="#" onclick="loadPage({{ page }}); return false;">{{ page }}</a>
-            </li>
-            {% endfor %}
+            <!-- 分页按钮将通过 JavaScript 动态生成 -->
         </ul>
     </nav>
+
+    <!-- 页码跳转输入框 -->
+    <div class="d-flex justify-content-center mt-3">
+        <form id="jump-form" class="form-inline">
+            <label for="jump-page" class="mr-2">跳转到第</label>
+            <input type="number" class="form-control mr-2" id="jump-page" min="1">
+            <label class="mr-2">页</label>
+            <button type="submit" class="btn btn-primary">跳转</button>
+        </form>
+    </div>
 </div>
 {% endblock %}
 
@@ -71,6 +55,9 @@
         tooltipTriggerList.forEach(function (tooltipTriggerEl) {
             new bootstrap.Tooltip(tooltipTriggerEl);
         });
+
+        // 初次加载默认数据
+        fetchBooks('', 1);
     });
 
     document.getElementById('search-form').addEventListener('submit', function(event) {
@@ -80,11 +67,14 @@
     });
 
     function fetchBooks(query, page) {
-        fetch(`/api/books?query=${query}&page=${page}`)
+        // 判断是搜索还是普通浏览
+        const apiUrl = query ? `/api/search?query=${encodeURIComponent(query)}&page=${page}` : `/api/books?page=${page}`;
+
+        fetch(apiUrl)
             .then(response => response.json())
             .then(data => {
                 updateTable(data.books);
-                updatePagination(data.pages, data.current_page);
+                updatePagination(data.total_pages, data.current_page, query);
             })
             .catch(error => console.error('Error fetching books:', error));
     }
@@ -94,28 +84,123 @@
         booksTable.innerHTML = '';
         books.forEach(book => {
             const row = `<tr>
-                <td><a href="/book/${book.name}">${book.name}</a></td>
-                <td>${book.author}</td>
-                <td>${book.tags}</td>
-                <td>${book.summary}</td>
+                <td>
+                    <a href="/book/${encodeURIComponent(book.name)}" 
+                       class="clickable-link"
+                       data-bs-toggle="tooltip" 
+                       data-bs-placement="top" 
+                       title="点击查看书籍详情：${book.name}">
+                        ${book.name}
+                    </a>
+                </td>
+                <td data-bs-toggle="tooltip" data-bs-placement="top" title="${book.author}">
+                    ${book.author}
+                </td>
+                <td data-bs-toggle="tooltip" data-bs-placement="top" title="${book.tags}">
+                    ${book.tags}
+                </td>
+                <td data-bs-toggle="tooltip" data-bs-placement="top" title="${book.summary}">
+                    ${book.summary}
+                </td>
             </tr>`;
             booksTable.insertAdjacentHTML('beforeend', row);
         });
-    }
 
-    function updatePagination(pages, currentPage) {
-        const pagination = document.getElementById('pagination');
-        pagination.innerHTML = '';
-        pages.forEach(page => {
-            const activeClass = page === currentPage ? 'active' : '';
-            const pageItem = `<li class="page-item ${activeClass}">
-                <a class="page-link" href="#" onclick="fetchBooks(document.getElementById('search').value, ${page}); return false;">${page}</a>
-            </li>`;
-            pagination.insertAdjacentHTML('beforeend', pageItem);
+        // 重新初始化 tooltip
+        const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+        tooltipTriggerList.forEach(function (tooltipTriggerEl) {
+            new bootstrap.Tooltip(tooltipTriggerEl);
         });
     }
 
-    // 初次加载默认数据
-    fetchBooks('', 1);
+    function updatePagination(totalPages, currentPage, query) {
+        const pagination = document.getElementById('pagination');
+        pagination.innerHTML = '';
+
+        const maxVisiblePages = 7; // 最大显示的页码按钮数
+        let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+        let endPage = startPage + maxVisiblePages - 1;
+
+        if (endPage > totalPages) {
+            endPage = totalPages;
+            startPage = Math.max(1, endPage - maxVisiblePages + 1);
+        }
+
+        // 首页按钮
+        if (currentPage > 1) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item">
+                    <a class="page-link" href="#" onclick="fetchBooks('${query}', 1); return false;">首页</a>
+                </li>
+            `);
+        }
+
+        // 前一页按钮
+        if (currentPage > 1) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item">
+                    <a class="page-link" href="#" onclick="fetchBooks('${query}', ${currentPage - 1}); return false;">上一页</a>
+                </li>
+            `);
+        }
+
+        // 如果开始页大于1，显示省略号
+        if (startPage > 1) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item disabled">
+                    <span class="page-link">...</span>
+                </li>
+            `);
+        }
+
+        // 页码按钮
+        for (let page = startPage; page <= endPage; page++) {
+            const activeClass = page === currentPage ? 'active' : '';
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item ${activeClass}">
+                    <a class="page-link" href="#" onclick="fetchBooks('${query}', ${page}); return false;">${page}</a>
+                </li>
+            `);
+        }
+
+        // 如果结束页小于总页数，显示省略号
+        if (endPage < totalPages) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item disabled">
+                    <span class="page-link">...</span>
+                </li>
+            `);
+        }
+
+        // 下一页按钮
+        if (currentPage < totalPages) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item">
+                    <a class="page-link" href="#" onclick="fetchBooks('${query}', ${currentPage + 1}); return false;">下一页</a>
+                </li>
+            `);
+        }
+
+        // 尾页按钮
+        if (currentPage < totalPages) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item">
+                    <a class="page-link" href="#" onclick="fetchBooks('${query}', ${totalPages}); return false;">尾页</a>
+                </li>
+            `);
+        }
+    }
+
+    // 页码跳转
+    document.getElementById('jump-form').addEventListener('submit', function(event) {
+        event.preventDefault();
+        const jumpPage = parseInt(document.getElementById('jump-page').value);
+        if (isNaN(jumpPage) || jumpPage < 1) {
+            alert('请输入有效的页码。');
+            return;
+        }
+        fetchBooks(document.getElementById('search').value, jumpPage);
+    });
 </script>
 {% endblock %}
+

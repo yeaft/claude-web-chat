@@ -12,7 +12,7 @@ import openai   # 用于调用 DeepSeek API
 # 定义全局变量
 CONFIG_FILE = 'config.yaml'
 CHAPTER_SEPARATOR = '=================================================='
-DEFAULT_INPUT_PATTERN = './道教/庄子-庄子-(先秦,道教,哲学).txt'  # 默认的书籍文件匹配模式
+DEFAULT_INPUT_PATTERN = './道教/庄子-庄子-(先秦,道教,哲学).tx'  # 默认的书籍文件匹配模式
 PROMPT_FOLDER = './prompt'           # 存放生成的 prompt 文件的文件夹（可选）
 
 def log(message):
@@ -46,7 +46,8 @@ def confirm_books(file_list):
     """
     log("即将处理以下书籍：")
     for idx, file_path in enumerate(file_list, 1):
-        log(f"{idx}. {file_path}")
+        replaced_file_path = file_path.replace('\\', '/')  # 将 Windows 路径分隔符替换为 Unix 风格
+        log(f"{idx}. {replaced_file_path}")
     confirmation = input("确认开始处理吗？(y/n): ")
     return confirmation.lower() == 'y'
 
@@ -62,6 +63,7 @@ def load_books(file_list):
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
         # 提取书名、作者、类别和标签（假设文件名格式为 'category/bookname-author-(tags).txt'）
+        file_path = file_path.replace('\\', '/')
         match = re.match(r'(.+)/(.+?)-(.+?)(?:-\((.*?)\))?\.txt$', file_path)
         if match:
             category = os.path.basename(match.group(1))
@@ -99,24 +101,27 @@ def construct_prompt(chapter_content):
 
 要求：
 1. 将以上内容翻译成白话文，不需要原文和译文对应。并以“白话文翻译”作为标题。
-2. 翻译过程中对生僻字后面加上拼音和语调，对难理解的词后面加上简单解释。
+2. 翻译过程中对生僻字后面加上拼音和声调，对难理解的词后面加上简单解释。
 3. 对整个段落以你国学大师的身份进行解读，并以“内容解读”作为标题。
-3. 如果内容中包含典故，请进行解释说明，并以“典故解释”作为标题。
-4. 汇总其中深刻有意义的句子，并以“深刻句子汇总”作为标题。
-5. 给出章节的总结思想，字数为译文的十分之一，并以“章节总结”作为标题。
+4. 如果内容中包含典故，请进行解释说明，并以“典故解释”作为标题。
+5. 汇总其中深刻有意义的句子，并以“深刻句子汇总”作为标题。
+6. 给出章节的总结思想，字数为译文的十分之一，并以“章节总结”作为标题。
 
-请按照以上要求生成内容，每个部分以对应的标题开头，内容之间用空行分隔，译文以及一些解释不需要加粗，以MD格式返回。
+请按照以上要求生成内容，每个部分以对应的标题开头，内容之间用空行分隔，译文以及一些解释不需要加粗，以 MD 格式返回。
 """
     return prompt
 
-def generate_and_load(books, deepseek_config, mongo_config, save_prompt=False):
+def generate_and_load(books, deepseek_config, mongo_config, save_prompt=False, skip_translation=False):
     """
     为每本书的每个章节生成提示，调用 DeepSeek API 获取响应，解析响应内容，并保存到 MongoDB。
+    如果 skip_translation 为 True，则直接将书籍内容保存到 MongoDB，而不进行翻译。
     """
-    # 设置 OpenAI 客户端配置
-    openai.api_key = deepseek_config.get('api_key')
-    openai.base_url = deepseek_config.get('base_url')
+    if not skip_translation:
+        # 设置 OpenAI 客户端配置
+        openai.api_key = deepseek_config.get('api_key')
+        openai.base_url = deepseek_config.get('base_url')
 
+    # 连接 MongoDB
     client = pymongo.MongoClient(mongo_config['host'], mongo_config['port'])
     db = client[mongo_config['database']]
     collection = db[mongo_config['collection']]
@@ -136,73 +141,106 @@ def generate_and_load(books, deepseek_config, mongo_config, save_prompt=False):
             chapter_title = f"第{chapter_number}章"
             log(f"处理 {chapter_title} ...")
 
-            # 构建 prompt
-            prompt = construct_prompt(chapter)
+            if skip_translation:
+                # 直接保存原始内容到 MongoDB
+                chapter_info = {
+                    'name': book_name,
+                    'author': author,
+                    'categories': [category],
+                    'tags': tags,
+                    'chapter_count': len(chapters),
+                    'chapter': chapter_number,
+                    'chapter_title': chapter_title,
+                    'original_text': chapters[idx],
+                    # 假设原文中已经包含翻译等信息，可以根据需要调整以下字段
+                    'plain_translation': '',  # 或者提取翻译内容
+                    'content_explanation': '',
+                    'allusion_explanation': '',
+                    'profound_sentences': '',
+                    'summary': '',
+                }
+                try:
+                    collection.replace_one(
+                        {'name': book_name, 'author': author, 'chapter': chapter_number},
+                        chapter_info,
+                        upsert=True
+                    )
+                    log(f"已将《{book_name}》第 {chapter_number} 章直接保存到数据库。")
+                except Exception as e:
+                    log(f"保存章节 {chapter_title} 到 MongoDB 时出错：{e}")
+            else:
+                # 构建 prompt
+                prompt = construct_prompt(chapter)
 
-            # 如果需要保存 prompt，则写入文件
-            if save_prompt:
-                prompt_dir = os.path.join(PROMPT_FOLDER, book_name)
-                os.makedirs(prompt_dir, exist_ok=True)
-                prompt_file = os.path.join(prompt_dir, f"第{chapter_number}章.txt")
-                with open(prompt_file, 'w', encoding='utf-8') as f:
-                    f.write(prompt)
-                log(f"已保存提示文件：{prompt_file}")
+                # 如果需要保存 prompt，则写入文件
+                if save_prompt:
+                    prompt_dir = os.path.join(PROMPT_FOLDER, book_name)
+                    os.makedirs(prompt_dir, exist_ok=True)
+                    prompt_file = os.path.join(prompt_dir, f"第{chapter_number}章.txt")
+                    with open(prompt_file, 'w', encoding='utf-8') as f:
+                        f.write(prompt)
+                    log(f"已保存提示文件：{prompt_file}")
 
-            try:
-                # 调用 DeepSeek API 生成响应
-                response = openai.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[
-                        {"role": "system", "content": "你是中国国学大师，精通儒释道和中医理论"},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0.8,
-                    max_tokens=4096,
-                    stream=False
-                )
-                response_content = response.choices[0].message.content
-                log(f"成功调用 DeepSeek API 获取响应。")
-            except Exception as e:
-                log(f"调用 DeepSeek API 生成响应时出错：{e}")
-                continue
+                try:
+                    # 调用 DeepSeek API 生成响应
+                    response = openai.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[
+                            {"role": "system", "content": "你是中国国学大师，精通儒释道和中医理论"},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0.8,
+                        max_tokens=4096,
+                        stream=False
+                    )
+                    response_content = response.choices[0].message.content
+                    log(f"成功调用 DeepSeek API 获取响应。")
+                except Exception as e:
+                    log(f"调用 DeepSeek API 生成响应时出错：{e}")
+                    continue
 
-            # 解析响应内容
-            parsed_content = parse_content(response_content)
+                # 解析响应内容
+                parsed_content = parse_content(response_content)
 
-            # 检查解析结果是否有效
-            pc = parsed_content.get('plain_translation', '')
-            if len(pc) < 10:
-                log(f"章节 {chapter_title} 的白话文翻译内容过短，可能解析有误。")
-                log(f"原文：{chapter}")
-                log(f"解析内容：{response_content}")
-                log("=========================================")
+                # 检查解析结果是否有效
+                pc = parsed_content.get('plain_translation', '')
+                if len(pc) < 10:
+                    log(f"章节 {chapter_title} 的白话文翻译内容过短，可能解析有误。")
+                    log(f"原文：{chapter}")
+                    log(f"解析内容：{response_content}")
+                    log("=========================================")
 
-            # 组装章节信息
-            chapter_info = {
-                'name': book_name,
-                'author': author,
-                'categories': [category],
-                'tags': tags,
-                'chapter_count': len(chapters),
-                'chapter': chapter_number,
-                'chapter_title': chapter_title,
-                'original_text': chapters[idx],
-                'plain_translation': parsed_content.get('plain_translation', ''),
-                'allusion_explanation': parsed_content.get('allusion_explanation', ''),
-                'profound_sentences': parsed_content.get('profound_sentences', ''),
-                'summary': parsed_content.get('summary', ''),
-            }
+                # 组装章节信息
+                chapter_info = {
+                    'name': book_name,
+                    'author': author,
+                    'categories': [category],
+                    'tags': tags,
+                    'chapter_count': len(chapters),
+                    'chapter': chapter_number,
+                    'chapter_title': chapter_title,
+                    'original_text': chapters[idx],
+                    'plain_translation': parsed_content.get('plain_translation', ''),
+                    'content_explanation': parsed_content.get('content_explanation', ''),
+                    'allusion_explanation': parsed_content.get('allusion_explanation', ''),
+                    'profound_sentences': parsed_content.get('profound_sentences', ''),
+                    'summary': parsed_content.get('summary', ''),
+                }
 
-            # 将章节信息插入到 MongoDB 中
-            try:
-                collection.replace_one(
-                    {'name': book_name, 'author': author, 'chapter': chapter_number},
-                    chapter_info,
-                    upsert=True
-                )
-                log(f"已将《{book_name}》第 {chapter_number} 章保存到数据库。")
-            except Exception as e:
-                log(f"保存章节 {chapter_title} 到 MongoDB 时出错：{e}")
+                # 将章节信息插入到 MongoDB 中
+                try:
+                    collection.replace_one(
+                        {'name': book_name, 'author': author, 'chapter': chapter_number},
+                        chapter_info,
+                        upsert=True
+                    )
+                    log(f"已将《{book_name}》第 {chapter_number} 章保存到数据库。")
+                except Exception as e:
+                    log(f"保存章节 {chapter_title} 到 MongoDB 时出错：{e}")
+
+    # 关闭 MongoDB 连接
+    client.close()
+    log("已完成所有处理，关闭 MongoDB 连接。")
 
 def parse_content(content_text):
     """
@@ -269,9 +307,10 @@ def parse_content(content_text):
 
 def main():
     # 解析命令行参数
-    parser = argparse.ArgumentParser(description='生成提示文件并调用 DeepSeek API 生成响应，或仅加载处理结果到 MongoDB。')
+    parser = argparse.ArgumentParser(description='生成提示文件并调用 DeepSeek API 生成响应，或直接将书籍内容保存到 MongoDB。')
     parser.add_argument('--input', type=str, default=DEFAULT_INPUT_PATTERN, help='书籍文件的输入模式，支持 glob 模式。')
     parser.add_argument('--save_prompt', action='store_true', help='是否保存生成的提示文件。')
+    parser.add_argument('--skip_translation', action='store_true', help='是否跳过翻译，直接将书籍内容保存到 MongoDB。')
     args = parser.parse_args()
 
     # 加载配置
@@ -291,19 +330,23 @@ def main():
     # 加载书籍
     books = load_books(file_list)
 
-    # 获取 DeepSeek API 配置
-    deepseek_config = config.get('deepseek', {})
-    if not deepseek_config.get('api_key') or not deepseek_config.get('base_url'):
-        log("DeepSeek API 配置信息不完整，请在 config.yaml 中设置 'deepseek.api_key' 和 'deepseek.base_url'。")
-        sys.exit(1)
-    
+    # 获取 MongoDB 配置
     mongo_config = config.get('mongodb', {})
     if not mongo_config.get('host') or not mongo_config.get('database') or not mongo_config.get('collection'):
         log("MongoDB 配置信息不完整，请在 config.yaml 中设置 'mongodb.host', 'mongodb.database' 和 'mongodb.collection'。")
         sys.exit(1)
 
-    # 生成提示文件、调用 DeepSeek API 并保存到 MongoDB
-    generate_and_load(books, deepseek_config, mongo_config, save_prompt=args.save_prompt)
+    if args.skip_translation:
+        # 直接将书籍内容保存到 MongoDB
+        generate_and_load(books, None, mongo_config, save_prompt=args.save_prompt, skip_translation=True)
+    else:
+        # 获取 DeepSeek API 配置
+        deepseek_config = config.get('deepseek', {})
+        if not deepseek_config.get('api_key') or not deepseek_config.get('base_url'):
+            log("DeepSeek API 配置信息不完整，请在 config.yaml 中设置 'deepseek.api_key' 和 'deepseek.base_url'。")
+            sys.exit(1)
+        # 生成提示文件、调用 DeepSeek API 并保存到 MongoDB
+        generate_and_load(books, deepseek_config, mongo_config, save_prompt=args.save_prompt)
 
 if __name__ == '__main__':
     main()

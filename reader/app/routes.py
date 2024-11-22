@@ -59,11 +59,47 @@ def index():
         return redirect(url_for('main.search_results', query=query))
     return render_template('index.html')
 
-@main_bp.route('/search')
-def search_results():
-    query = request.args.get('query', '')
-    books = mongo.db.books.distinct('name', {'name': {'$regex': query, '$options': 'i'}})
-    return render_template('search.html', books=books, query=query)
+@main_bp.route('/api/search', methods=['GET'])
+def api_search():
+    query = request.args.get('query', '').strip()
+    page = int(request.args.get('page', 1))
+
+    # 增加 chapter=1 的条件
+    filters = {'chapter': 1}
+    if query:
+        filters['$and'] = [
+            {'$or': [
+                {'name': {'$regex': query, '$options': 'i'}},
+                {'author': {'$regex': query, '$options': 'i'}},
+                {'tags': {'$regex': query, '$options': 'i'}}
+            ]}
+        ]
+
+    total_books = mongo.db.books.count_documents(filters)
+    total_pages = (total_books + page_size - 1) // page_size
+
+    # 确保页码在有效范围内
+    if page < 1:
+        page = 1
+    elif page > total_pages:
+        page = total_pages
+
+    books_cursor = mongo.db.books.find(filters).skip((page - 1) * page_size).limit(page_size)
+    books = []
+    for book in books_cursor:
+        books.append({
+            'name': book['name'],
+            'author': book.get('author', ''),
+            'tags': book.get('tags', ''),
+            'summary': book.get('summary', '')
+        })
+
+    return jsonify({
+        'books': books,
+        'total_pages': total_pages,
+        'current_page': page
+    })
+
 
 # 自动完成 API
 @main_bp.route('/api/search_suggestions')
@@ -131,22 +167,6 @@ def book(name, chapter):
         next_chapter=next_chapter
     )
 
-# API 接口
-@main_bp.route('/api/search', methods=['GET'])
-def api_search():
-    query = request.args.get('query', '')
-    filters = {'chapter': 1}
-    if query:
-        filters['$and'] = [
-            {'$or': [
-                {'name': {'$regex': query, '$options': 'i'}},
-                {'author': {'$regex': query, '$options': 'i'}},
-                {'tags': {'$regex': query, '$options': 'i'}}
-            ]}
-        ]
-    books = mongo.db.books.find(filters).limit(page_size)
-    return jsonify({'books': books})
-
 @main_bp.route('/api/book/<name>/chapter/<int:chapter>', methods=['GET'])
 def api_book_chapter(name, chapter):
     document = mongo.db.books.find_one({'name': name, 'chapter': chapter})
@@ -184,13 +204,26 @@ def api_books():
 
     total_books = mongo.db.books.count_documents(filters)
     total_pages = (total_books + page_size - 1) // page_size
-    books = list(mongo.db.books.find(filters).skip((page - 1) * page_size).limit(page_size))
 
-    for book in books:
-        book['_id'] = str(book['_id'])  # 转换 ObjectId 为字符串
+    # 确保页码在有效范围内
+    if page < 1:
+        page = 1
+    elif page > total_pages:
+        page = total_pages
+
+    books_cursor = mongo.db.books.find(filters).skip((page - 1) * page_size).limit(page_size)
+    books = []
+    for book in books_cursor:
+        books.append({
+            'name': book['name'],
+            'author': book.get('author', ''),
+            'tags': book.get('tags', ''),
+            'summary': book.get('summary', '')
+        })
 
     return jsonify({
         'books': books,
-        'pages': list(range(1, total_pages + 1)),
+        'total_pages': total_pages,
         'current_page': page
     })
+

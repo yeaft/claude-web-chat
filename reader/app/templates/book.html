@@ -1,28 +1,40 @@
 {% extends 'base.html' %}
+{% block title %}{{ document.chapter_title }} - 我的书籍{% endblock %}
+
 {% block content %}
 <div class="container-fluid d-flex flex-column">
     <!-- 内容部分 -->
     <div class="row flex-grow-1" id="content-section">
         {% if not is_mobile %}
-        <!-- 桌面布局 -->
-        <div class="col-md-6 d-flex flex-column" id="original-text">
-            <div class="content-wrapper">
-                <h3>{{ document.chapter_title }}</h3>
-                {{ document.original_text | markdown | safe }}
+            {% if document.plain_translation %}
+            <!-- 桌面布局，有翻译，左右布局 -->
+            <div class="col-md-6 d-flex flex-column" id="original-text">
+                <div class="content-wrapper">
+                    <h3>{{ document.chapter_title }}</h3>
+                    {{ document.original_text | markdown | safe }}
+                </div>
             </div>
-        </div>
-        <div class="col-md-6 d-flex flex-column" id="translated-text" >
-            <div class="content-wrapper">
-                <h4>白话文翻译</h4>
-                {{ document.plain_translation | markdown | safe }}
-                <h4>典故解释</h4>
-                {{ document.allusion_explanation | markdown | safe }}
-                <h4>深刻句子汇总</h4>
-                {{ document.profound_sentences | markdown | safe }}
-                <h4>章节总结</h4>
-                {{ document.summary | markdown | safe }}
+            <div class="col-md-6 d-flex flex-column" id="translated-text">
+                <div class="content-wrapper">
+                    <h4>白话文翻译</h4>
+                    {{ document.plain_translation | markdown | safe }}
+                    <h4>典故解释</h4>
+                    {{ document.allusion_explanation | markdown | safe }}
+                    <h4>深刻句子汇总</h4>
+                    {{ document.profound_sentences | markdown | safe }}
+                    <h4>章节总结</h4>
+                    {{ document.summary | markdown | safe }}
+                </div>
             </div>
-        </div>
+            {% else %}
+            <!-- 桌面布局，无翻译，内容居中 -->
+            <div class="col-12 d-flex flex-column align-items-center" id="content-center">
+                <div class="content-wrapper centered-content">
+                    <h3>{{ document.chapter_title }}</h3>
+                    {{ document.original_text | markdown | safe }}
+                </div>
+            </div>
+            {% endif %}
         {% else %}
         <!-- 移动端布局 -->
         <div class="col-12">
@@ -30,6 +42,7 @@
                 <h3>{{ document.chapter_title }}</h3>
                 <h4>原文</h4>
                 {{ document.original_text | markdown | safe }}
+                {% if document.plain_translation %}
                 <h4>白话文翻译</h4>
                 {{ document.plain_translation | markdown | safe }}
                 <h4>典故解释</h4>
@@ -38,6 +51,7 @@
                 {{ document.profound_sentences | markdown | safe }}
                 <h4>章节总结</h4>
                 {{ document.summary | markdown | safe }}
+                {% endif %}
             </div>
         </div>
         {% endif %}
@@ -52,7 +66,7 @@
                 <form method="post" class="d-flex align-items-center mx-2" style="white-space: nowrap;">
                     <label for="chapter" class="mr-2 mb-0">跳转到第</label>
                     <input type="number" name="chapter" id="chapter" class="form-control form-control-sm mr-2" min="1" max="{{ total_chapters }}" required>
-                    <label class="mr-2 mb-0">章（最大{{ total_chapters }}章）</label>
+                    <label class="mr-2 mb-0">章（共{{ total_chapters }}章）</label>
                     <button type="submit" class="btn btn-primary btn-sm">跳转</button>
                 </form>
                 {% if next_chapter %}
@@ -62,8 +76,6 @@
             </div>
         </div>
     </div>
-
-
 </div>
 {% endblock %}
 
@@ -81,6 +93,8 @@
     }
 
     if (!is_mobile){
+        {% if document.plain_translation %}
+        // 有翻译，执行滚动联动和高度调整
         const originalText = document.getElementById('original-text');
         const translatedText = document.getElementById('translated-text');
         let isSyncingScroll = false; // 标志变量
@@ -122,6 +136,29 @@
 
         // 监听窗口大小变化
         window.addEventListener("resize", adjustContentHeight);
+        {% else %}
+        // 无翻译，仅调整内容区域高度
+        function adjustContentHeight() {
+            const contentSection = document.getElementById("content-section");
+            const contentCenter = document.getElementById("content-center");
+            const footer = document.getElementById("footer");
+            const navBar = document.querySelector(".navbar"); // 导航栏
+            const footerHeight = footer.offsetHeight;
+            const navHeight = navBar ? navBar.offsetHeight : 0;
+            const windowHeight = window.innerHeight;
+
+            // 动态设置内容区域高度
+            const newContentHeight = windowHeight - footerHeight - navHeight;
+            contentSection.style.height = `${newContentHeight}px`;
+            contentCenter.style.height = `${newContentHeight}px`;
+        }
+
+        // 初次调整
+        adjustContentHeight();
+
+        // 监听窗口大小变化
+        window.addEventListener("resize", adjustContentHeight);
+        {% endif %}
     }
 </script>
 {% endblock %}
