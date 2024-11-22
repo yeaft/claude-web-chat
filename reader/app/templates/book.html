@@ -1,19 +1,18 @@
-<!-- book.html -->
-
 {% extends 'base.html' %}
 {% block content %}
-<div class="container-fluid mt-3">
-    <div class="row">
+<div class="container-fluid d-flex flex-column">
+    <!-- 内容部分 -->
+    <div class="row flex-grow-1" id="content-section">
         {% if not is_mobile %}
         <!-- 桌面布局 -->
-        <div class="col-md-6" id="original-text">
-            <div class="content-wrapper p-3">
+        <div class="col-md-6 d-flex flex-column" id="original-text">
+            <div class="content-wrapper">
                 <h3>{{ document.chapter_title }}</h3>
                 {{ document.original_text | markdown | safe }}
             </div>
         </div>
-        <div class="col-md-6" id="translated-text">
-            <div class="content-wrapper p-3">
+        <div class="col-md-6 d-flex flex-column" id="translated-text" >
+            <div class="content-wrapper">
                 <h4>白话文翻译</h4>
                 {{ document.plain_translation | markdown | safe }}
                 <h4>典故解释</h4>
@@ -25,9 +24,9 @@
             </div>
         </div>
         {% else %}
-        <!-- 移动设备布局 -->
+        <!-- 移动端布局 -->
         <div class="col-12">
-            <div class="content-wrapper p-3">
+            <div class="content-wrapper">
                 <h3>{{ document.chapter_title }}</h3>
                 <h4>原文</h4>
                 {{ document.original_text | markdown | safe }}
@@ -43,9 +42,9 @@
         </div>
         {% endif %}
     </div>
-    <!-- 导航 -->
-    <div class="row mt-4">
-        <div class="col-12 text-center">
+    <!-- 底部导航 -->
+    <div class="row" id="footer">
+        <div class="col-12 text-center py-2 bg-white border-top">
             {% if prev_chapter %}
             <a href="{{ url_for('main.book', name=document.name, chapter=prev_chapter) }}" class="btn btn-primary">上一章</a>
             {% endif %}
@@ -57,7 +56,6 @@
     </div>
 </div>
 {% endblock %}
-
 
 {% block scripts %}
 <script>
@@ -72,19 +70,47 @@
     }
 
     if (!is_mobile){
-        // 同步滚动
         const originalText = document.getElementById('original-text');
         const translatedText = document.getElementById('translated-text');
+        let isSyncingScroll = false; // 标志变量
 
         if (originalText && translatedText) {
             originalText.addEventListener('scroll', function() {
-                translatedText.scrollTop = originalText.scrollTop;
+                if (!isSyncingScroll) {
+                    isSyncingScroll = true;
+                    translatedText.scrollTop = originalText.scrollTop;
+                    isSyncingScroll = false;
+                }
             });
 
             translatedText.addEventListener('scroll', function() {
-                originalText.scrollTop = translatedText.scrollTop;
+                if (!isSyncingScroll) {
+                    isSyncingScroll = true;
+                    originalText.scrollTop = translatedText.scrollTop;
+                    isSyncingScroll = false;
+                }
             });
         }
+
+        // 动态调整内容区域高度
+        function adjustContentHeight() {
+            const contentSection = document.getElementById("content-section");
+            const footer = document.getElementById("footer");
+            const navBar = document.querySelector(".navbar"); // 导航栏
+            const footerHeight = footer.offsetHeight;
+            const navHeight = navBar ? navBar.offsetHeight : 0;
+            const windowHeight = window.innerHeight;
+
+            // 动态设置内容区域高度
+            const newContentHeight = windowHeight - footerHeight - navHeight;
+            contentSection.style.height = `${newContentHeight}px`;
+        }
+
+        // 初次调整
+        adjustContentHeight();
+
+        // 监听窗口大小变化
+        window.addEventListener("resize", adjustContentHeight);
     }
 </script>
 {% endblock %}

@@ -1,7 +1,7 @@
 api:
-  api_type: 'azure'  # 'openai' 或 'azure'
-  api_key: '59cf6af038424cb88d54d31700b35d0c'  # 替换为您的实际 API Key
-  api_base: 'https://piq-test.openai.azure.com'  # Azure OpenAI 资源的终结点
+  api_type: 'openai'  # 'openai' 或 'azure'
+  api_key: 'sk-e9c6ebc0a36041a1ac8b32dd2b6e14e7'  # 替换为您的实际 API Key
+  api_base: 'https://api.deepseek.com/beta'  # Azure OpenAI 资源的终结点
   deployment_id: 'gpt-4o'  # 您部署的模型的名称
   api_version: '2024-02-15-preview'  # API 版本，默认为 '2023-07-01-preview'
   model: 'gpt-4o'  # 使用的模型名称，对于 Azure，需要与部署的模型对应
@@ -10,6 +10,9 @@ mongodb:
   port: 27017                # MongoDB 端口
   database: 'dao'  # 数据库名称
   collection: 'books'        # 集合名称
+deepseek:
+  api_key: "sk-e9c6ebc0a36041a1ac8b32dd2b6e14e7"
+  base_url: "https://api.deepseek.com"
 
 # api:
 #   api_key: 'sk-ZfMnkHWbXqwNiS3O0IEZXeQa5OLqnc6xkligwFgAktjUPvpA'     # 替换为您的实际API密钥

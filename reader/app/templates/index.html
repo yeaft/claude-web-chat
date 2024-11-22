@@ -1,13 +1,17 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="container">
-    <h2>Search for Books</h2>
-    <form method="post" action="{{ url_for('main.index') }}">
-        <div class="form-group">
-            <input type="text" name="search" id="search" class="form-control" placeholder="书名查询" autocomplete="off">
+<div class="container d-flex flex-column align-items-center justify-content-center" style="min-height: 80vh;">
+    <h1 class="mb-4" style="font-weight: bold;">欢迎使用阅读平台</h1>
+    <p class="mb-4 text-secondary">查找您感兴趣的书籍，进入阅读世界</p>
+    <form method="post" action="{{ url_for('main.index') }}" style="width: 100%; max-width: 500px;">
+        <div class="input-group">
+            <input type="text" name="search" id="search" class="form-control" placeholder="输入书名查询" autocomplete="off">
+            <div class="input-group-append">
+                <button class="btn btn-primary" type="submit">搜索</button>
+            </div>
         </div>
     </form>
-    <ul id="suggestions" class="list-group"></ul>
+    <ul id="suggestions" class="list-group mt-3" style="width: 100%; max-width: 500px;"></ul>
 </div>
 {% endblock %}
 

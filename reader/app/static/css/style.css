@@ -1,79 +1,95 @@
-/* 默认主题（浅灰） */
-body.theme-light-gray {
-    background-color: #f8f9fa; /* 浅灰色 */
-    color: #212529; /* 深色字体 */
-}
-
-/* 淡黄色主题 */
-body.theme-light-yellow {
-    background-color: #fff9e6; /* 淡黄色 */
-    color: #333333; /* 深色字体 */
-}
-
-/* 淡绿色主题 */
-body.theme-light-green {
-    background-color: #e6ffe6; /* 淡绿色 */
-    color: #212529; /* 深色字体 */
-}
-
-/* 调整链接颜色，以便在不同背景下清晰可见 */
-a {
-    color: inherit;
-}
-
-a:hover {
-    color: #007bff;
-}
-
-/* 内容容器的样式 */
-.content-wrapper {
-    background-color: rgba(255, 255, 255, 0.9); /* 半透明白色背景 */
-    border-radius: 5px;
-    margin-bottom: 20px;
-}
-
-/* 调整正文的左右内边距 */
-#original-text, #translated-text {
-    padding-left: 15px;
-    padding-right: 15px;
-}
-
-/* 调整两栏之间的间距 */
-@media (min-width: 768px) {
-    #original-text {
-        border-right: 1px solid #dee2e6;
-    }
-}
-
+/* 全局样式 */
 body {
     font-family: 'Noto Serif SC', serif;
     line-height: 1.6;
-    background-color: #f8f9fa;
+    margin: 0;
+    padding: 0;
+    background-color: #f8f9fa; /* 默认背景颜色 */
+    overflow: hidden; /* 禁止全局滚动条 */
 }
 
 h3, h4 {
     margin-top: 20px;
-}
-
-#original-text, #translated-text {
-    height: 80vh;
-    overflow-y: auto;
-    padding: 20px;
-    background-color: #fff;
-}
-
-#original-text {
-    border-right: 1px solid #dee2e6;
+    font-weight: bold;
 }
 
 p {
     text-indent: 2em;
 }
 
+/* 内容容器样式 */
+.content-wrapper {
+    padding: 15px;
+    background-color: rgba(255, 255, 255, 0.95); /* 半透明背景 */
+    border-radius: 5px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); /* 轻微阴影 */
+    flex-grow: 1; /* 允许内容容器填充剩余空间 */
+    box-sizing: border-box;
+}
+
+/* 左右两列样式 */
+#original-text, #translated-text {
+    height: 100%; /* 填充父容器高度 */
+    overflow-y: auto; /* 确保滚动条正常显示 */
+    box-sizing: border-box;
+    flex-grow: 1; /* 允许内容容器填充剩余空间 */
+    padding: 15px;
+}
+
+#original-text {
+    border-right: 1px solid #dee2e6; /* 分隔线 */
+}
+
+/* 滚动条美化 */
+#original-text::-webkit-scrollbar,
+#translated-text::-webkit-scrollbar {
+    width: 8px;
+}
+
+#original-text::-webkit-scrollbar-thumb,
+#translated-text::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 4px;
+}
+
+#original-text::-webkit-scrollbar-thumb:hover,
+#translated-text::-webkit-scrollbar-thumb:hover {
+    background: #aaa;
+}
+
+/* 导航栏样式 */
+.navbar {
+    background-color: #ffffff !important;
+    border-bottom: 1px solid #dee2e6;
+    padding: 20px;
+    box-shadow: 0px 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* 表单和按钮样式 */
+form, button, select {
+    color: inherit;
+}
+
+/* 超链接样式 */
+a {
+    color: inherit;
+    text-decoration: none;
+}
+
+a:hover {
+    color: #007bff;
+    text-decoration: underline;
+}
+
+/* 移动端适配 */
 @media (max-width: 768px) {
     #original-text, #translated-text {
-        height: auto;
+        height: auto; /* 移动端高度适配 */
         overflow-y: visible;
-        padding: 10px;
+        padding: 15px;
+    }
+
+    .content-wrapper {
+        margin-bottom: 10px;
     }
 }
