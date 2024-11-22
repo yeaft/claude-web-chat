@@ -41,6 +41,21 @@ services:
     extra_hosts:
       - "host.docker.internal:172.17.0.1"
 
+  reader-app:
+    build:
+      context: ./reader
+      dockerfile: Dockerfile
+    container_name: reader-app
+    expose:
+      - "5123"
+    environment:
+      - FLASK_ENV=production
+      - MONGODB_HOST=host.docker.internal
+    networks:
+      - webnet
+    extra_hosts:
+      - "host.docker.internal:172.17.0.1"
+
 networks:
   webnet:
     driver: bridge
