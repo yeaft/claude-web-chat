@@ -29,6 +29,7 @@
             </form>
             <!-- 登录/注册按钮 -->
             {% if current_user.is_authenticated %}
+            <span class="navbar-text mr-3">欢迎, {{ current_user.email }}</span>
             <a href="{{ url_for('main.logout') }}" class="btn btn-outline-secondary mr-2">登出</a>
             {% else %}
             <a href="{{ url_for('main.login') }}" class="btn btn-outline-primary mr-2">登录</a>

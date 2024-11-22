@@ -3,19 +3,25 @@ from flask import Flask
 from config import Config
 from flask_pymongo import PyMongo
 from flask_login import LoginManager
+from .models import User  # 确保User模型已经定义
 import markdown  # 导入 markdown
 
 mongo = PyMongo()
 login_manager = LoginManager()
-login_manager.login_view = 'main.login'  # 更新登录视图的名称
-
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+    app.secret_key = app.config['SECRET_KEY']  # 初始化密钥
 
-    # 初始化扩展
+     # 初始化扩展
     mongo.init_app(app)
+     # 初始化Flask-Login
     login_manager.init_app(app)
+    login_manager.login_view = 'main.login'  # 设置登录视图
+
+    @login_manager.user_loader
+    def load_user(user_id):
+        return User.find_by_email(user_id)  # 实现根据ID加载用户的方法
 
     # 注册蓝图
     from .routes import main_bp

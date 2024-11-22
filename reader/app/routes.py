@@ -16,11 +16,19 @@ def login():
     if request.method == 'POST':
         email = request.form['email']
         password = request.form['password']
+        print(f"尝试登录用户: {email}")  # 调试信息
         user = User.find_by_email(email)
-        if user and user.check_password(password):
-            login_user(user)
-            return redirect(url_for('main.index'))
+        if user:
+            print("用户存在，验证密码...")  # 调试信息
+            if user.check_password(password):
+                login_user(user)
+                print("登录成功，跳转到主页")  # 调试信息
+                return redirect(url_for('main.index'))
+            else:
+                print("密码不正确")  # 调试信息
+                flash('无效的用户名密码.')
         else:
+            print("用户不存在")  # 调试信息
             flash('无效的用户名密码.')
     return render_template('login.html')
 
