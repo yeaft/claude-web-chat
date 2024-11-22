@@ -69,7 +69,7 @@ def search_results():
 @main_bp.route('/api/search_suggestions')
 def search_suggestions():
     query = request.args.get('query', '')
-    suggestions = mongo.db.books.distinct('name', {'name': {'$regex': query, '$options': 'i'}})
+    suggestions = mongo.db.books.distinct('name', {'chapter': 1,'name': {'$regex': query, '$options': 'i'}})
     return jsonify(suggestions)
 
 # 阅读页面
@@ -135,12 +135,14 @@ def book(name, chapter):
 @main_bp.route('/api/search', methods=['GET'])
 def api_search():
     query = request.args.get('query', '')
-    filters = {}
+    filters = {'chapter': 1}
     if query:
-        filters['$or'] = [
-            {'name': {'$regex': query, '$options': 'i'}},
-            {'author': {'$regex': query, '$options': 'i'}},
-            {'tags': {'$regex': query, '$options': 'i'}}
+        filters['$and'] = [
+            {'$or': [
+                {'name': {'$regex': query, '$options': 'i'}},
+                {'author': {'$regex': query, '$options': 'i'}},
+                {'tags': {'$regex': query, '$options': 'i'}}
+            ]}
         ]
     books = mongo.db.books.find(filters).limit(page_size)
     return jsonify({'books': books})
@@ -169,12 +171,15 @@ def api_books():
     query = request.args.get('query', '').strip()
     page = int(request.args.get('page', 1))
 
-    filters = {}
+    # 增加 chapter=1 的条件
+    filters = {'chapter': 1}
     if query:
-        filters['$or'] = [
-            {'name': {'$regex': query, '$options': 'i'}},
-            {'author': {'$regex': query, '$options': 'i'}},
-            {'tags': {'$regex': query, '$options': 'i'}}
+        filters['$and'] = [
+            {'$or': [
+                {'name': {'$regex': query, '$options': 'i'}},
+                {'author': {'$regex': query, '$options': 'i'}},
+                {'tags': {'$regex': query, '$options': 'i'}}
+            ]}
         ]
 
     total_books = mongo.db.books.count_documents(filters)
