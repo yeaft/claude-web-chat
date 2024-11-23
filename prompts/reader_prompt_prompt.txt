@@ -1,0 +1,1189 @@
+Context:
+
+我现在要做一个有RAG集成的阅读帮助网站。现在已经做好了网页阅读部分，包括前端和后端，我现在要做的是集成RAG，让用户可以在阅读的时候有任何问题都可以通过对话框提问，然后RAG会回答用户的问题。
+
+
+Requirements:
+
+1. 目前先做最简单的就是后端新增一个集成deepseek的api，让用户可以通过对话框调用这个api提问问题。deepseek的API和openai是一样的，所以可以直接用openai的API来集成。这个API需要支持stream返回内容
+2. 前段交互分为手机端和电脑端，如果是手机端，有一个类似copilot的按钮在navbar上，点击后页面变为对话框，用户可以在对话框里提问问题。然后再点击那个按钮，就收回返回到之前的页面。如果是电脑端，navbar上也有按钮，但是点击后页面类似阅读页面分为左右两侧。左侧为内容，右侧为对话框。如果是有翻译的，那么在左侧内容下面，如果用户再点击隐藏对话框，翻译变为右侧。
+3. 对话框的风格和ChatGPT类似，用户提问的问题会有一个loading的动画，然后RAG会回答用户的问题，支持stream的方式，且用MD的格式返回内容。
+4. 对话上下文最多支持10个对话，超过10个对话后，最早的对话会被删除。同时对话框可以清除所有对话。不会保存用户所有的对话内容。
+5. 当用户用鼠标选择阅读文章的部分内容时，提示用户是否要提问这个问题，如果用户选择是，那么对话框会自动弹出，用户可以直接提问选择内容的问题。
+
+
+References:
+
+这个是我现在的代码，包括前段和后端，已经可以阅读，如果对于有翻译的书籍，对电脑端会分成两边，左边和右边。
+File: config.py
+import os
+
+class Config:
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'your-secret-key'
+    MONGODB_HOST = os.getenv("MONGODB_HOST", "localhost")
+    MONGO_URI = f'mongodb://{MONGODB_HOST}:27017/dao'
+
+
+File: run.py
+from app import create_app
+
+app = create_app()
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5123)
+
+
+File: models.py
+# app/models.py
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_login import UserMixin
+from bson.objectid import ObjectId
+from . import mongo, login_manager
+
+class User(UserMixin):
+    def __init__(self, user_data):
+        self.id = str(user_data['_id'])  # 确保ID为字符串
+        self.email = user_data['email']
+        self.password_hash = user_data['password_hash']
+        self.reading_history = user_data.get('reading_history', {})  # 初始化阅读历史
+
+    @staticmethod
+    def get(user_id):
+        try:
+            oid = ObjectId(user_id)
+        except:
+            return None
+        user_data = mongo.db.users.find_one({'_id': oid})
+        if user_data:
+            return User(user_data)
+        return None
+
+    @staticmethod
+    def find_by_email(email):
+        user_data = mongo.db.users.find_one({'email': email})
+        if user_data:
+            return User(user_data)
+        return None
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+    @staticmethod
+    def create_user(email, password):
+        password_hash = generate_password_hash(password)
+        result = mongo.db.users.insert_one({
+            'email': email,
+            'password_hash': password_hash,
+            'reading_history': {}  # 初始化阅读历史
+        })
+        return User.get(str(result.inserted_id))
+
+    def update_reading_history(self, book_name, chapter):
+        # 更新阅读历史
+        self.reading_history[book_name] = chapter
+        mongo.db.users.update_one(
+            {'_id': ObjectId(self.id)},
+            {'$set': {'reading_history': self.reading_history}}
+        )
+
+# 用户加载回调
+@login_manager.user_loader
+def load_user(user_id):
+    return User.get(user_id)
+
+
+File: routes.py
+# app/routes.py
+from flask import Blueprint, render_template, redirect, url_for, request, flash, jsonify
+from flask_login import login_user, logout_user, current_user, login_required
+from .models import User
+from . import mongo
+from bson.objectid import ObjectId
+
+# 定义蓝图
+main_bp = Blueprint('main', __name__)
+page_size = 8
+
+# 登录视图
+@main_bp.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('main.index'))
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        user = User.find_by_email(email)
+        if user and user.check_password(password):
+            login_user(user)
+            flash('登录成功!', 'success')
+            return redirect(url_for('main.index'))
+        else:
+            flash('无效的用户名或密码.', 'danger')
+    return render_template('login.html')
+
+# 注销视图
+@main_bp.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    flash('您已登出.', 'info')
+    return redirect(url_for('main.index'))
+
+# 注册视图
+@main_bp.route('/register', methods=['GET', 'POST'])
+def register():
+    if current_user.is_authenticated:
+        return redirect(url_for('main.index'))
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        if User.find_by_email(email):
+            flash('邮箱地址已经注册', 'warning')
+        else:
+            user = User.create_user(email, password)
+            login_user(user)
+            flash('注册并登录成功!', 'success')
+            return redirect(url_for('main.index'))
+    return render_template('register.html')
+
+# 主页面和搜索功能
+@main_bp.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        query = request.form.get('search')
+        return redirect(url_for('main.search_results', query=query))
+    return render_template('index.html')
+
+@main_bp.route('/api/search', methods=['GET'])
+def api_search():
+    query = request.args.get('query', '').strip()
+    page = int(request.args.get('page', 1))
+
+    # 增加 chapter=1 的条件
+    filters = {'chapter': 1}
+    if query:
+        filters['$and'] = [
+            {'$or': [
+                {'name': {'$regex': query, '$options': 'i'}},
+                {'author': {'$regex': query, '$options': 'i'}},
+                {'tags': {'$regex': query, '$options': 'i'}}
+            ]}
+        ]
+
+    total_books = mongo.db.books.count_documents(filters)
+    total_pages = (total_books + page_size - 1) // page_size
+
+    # 确保页码在有效范围内
+    if page < 1:
+        page = 1
+    elif page > total_pages:
+        page = total_pages
+
+    books_cursor = mongo.db.books.find(filters).skip((page - 1) * page_size).limit(page_size)
+    books = []
+    for book in books_cursor:
+        books.append({
+            'name': book['name'],
+            'author': book.get('author', ''),
+            'tags': book.get('tags', ''),
+            'summary': book.get('summary', '')
+        })
+
+    return jsonify({
+        'books': books,
+        'total_pages': total_pages,
+        'current_page': page
+    })
+
+
+# 自动完成 API
+@main_bp.route('/api/search_suggestions')
+def search_suggestions():
+    query = request.args.get('query', '')
+    suggestions = mongo.db.books.distinct('name', {'chapter': 1,'name': {'$regex': query, '$options': 'i'}})
+    return jsonify(suggestions)
+
+# 阅读页面
+@main_bp.route('/book/<name>', defaults={'chapter': None}, methods=['GET', 'POST'])
+@main_bp.route('/book/<name>/chapter/<int:chapter>', methods=['GET', 'POST'])
+def book(name, chapter):
+    # 查询章节内容
+    document = mongo.db.books.find_one({'name': name, 'chapter': chapter}) if chapter else None
+    if request.method == 'POST':
+        # 用户输入章节号跳转
+        input_chapter = request.form.get('chapter')
+        try:
+            input_chapter = int(input_chapter)
+            max_chapter = mongo.db.books.count_documents({'name': name})
+            if 1 <= input_chapter <= max_chapter:
+                return redirect(url_for('main.book', name=name, chapter=input_chapter))
+            else:
+                flash(f'请输入有效的章节号（1-{max_chapter}）。', 'warning')
+        except ValueError:
+            flash('章节号必须是数字。', 'danger')
+    
+    if not chapter:
+        # 如果章节未指定，获取用户的最后阅读章节
+        if current_user.is_authenticated and name in current_user.reading_history:
+            chapter = current_user.reading_history[name]
+            document = mongo.db.books.find_one({'name': name, 'chapter': chapter})
+            if not document:
+                chapter = 1
+                document = mongo.db.books.find_one({'name': name, 'chapter': chapter})
+        else:
+            chapter = 1
+            document = mongo.db.books.find_one({'name': name, 'chapter': chapter})
+    
+    if not document:
+        return "Chapter not found.", 404
+    
+    # 获取章节总数
+    total_chapters = mongo.db.books.count_documents({'name': name})
+    
+    # 更新用户的最后阅读位置
+    if current_user.is_authenticated:
+        current_user.update_reading_history(name, chapter)
+    
+    # 检测是否为移动设备
+    user_agent = request.headers.get('User-Agent')
+    is_mobile = False
+    if user_agent:
+        is_mobile = any(mobile in user_agent.lower() for mobile in ['iphone', 'android'])
+    
+    prev_chapter = chapter - 1 if chapter > 1 else None
+    next_chapter = chapter + 1 if chapter < total_chapters else None
+    
+    return render_template(
+        'book.html',
+        document=document,
+        total_chapters=total_chapters,
+        is_mobile=is_mobile,
+        prev_chapter=prev_chapter,
+        next_chapter=next_chapter
+    )
+
+@main_bp.route('/api/book/<name>/chapter/<int:chapter>', methods=['GET'])
+def api_book_chapter(name, chapter):
+    document = mongo.db.books.find_one({'name': name, 'chapter': chapter})
+    if not document:
+        return jsonify({'error': 'Chapter not found.'}), 404
+    # 可以根据需要筛选需要返回的字段
+    return jsonify({
+        'name': document['name'],
+        'author': document['author'],
+        'chapter': document['chapter'],
+        'chapter_title': document['chapter_title'],
+        'original_text': document['original_text'],
+        'plain_translation': document['plain_translation'],
+        'allusion_explanation': document['allusion_explanation'],
+        'profound_sentences': document['profound_sentences'],
+        'summary': document['summary'],
+        'chapter_count': document['chapter_count']
+    })
+
+@main_bp.route('/api/books', methods=['GET'])
+def api_books():
+    query = request.args.get('query', '').strip()
+    page = int(request.args.get('page', 1))
+
+    # 增加 chapter=1 的条件
+    filters = {'chapter': 1}
+    if query:
+        filters['$and'] = [
+            {'$or': [
+                {'name': {'$regex': query, '$options': 'i'}},
+                {'author': {'$regex': query, '$options': 'i'}},
+                {'tags': {'$regex': query, '$options': 'i'}}
+            ]}
+        ]
+
+    total_books = mongo.db.books.count_documents(filters)
+    total_pages = (total_books + page_size - 1) // page_size
+
+    # 确保页码在有效范围内
+    if page < 1:
+        page = 1
+    elif page > total_pages:
+        page = total_pages
+
+    books_cursor = mongo.db.books.find(filters).skip((page - 1) * page_size).limit(page_size)
+    books = []
+    for book in books_cursor:
+        books.append({
+            'name': book['name'],
+            'author': book.get('author', ''),
+            'tags': book.get('tags', ''),
+            'summary': book.get('summary', '')
+        })
+
+    return jsonify({
+        'books': books,
+        'total_pages': total_pages,
+        'current_page': page
+    })
+
+
+
+File: __init__.py
+# app/__init__.py
+from flask import Flask
+from config import Config
+from flask_pymongo import PyMongo
+from flask_login import LoginManager
+import markdown  # 导入 markdown
+
+mongo = PyMongo()
+login_manager = LoginManager()
+def create_app():
+    app = Flask(__name__)
+    app.config.from_object(Config)
+    app.secret_key = app.config['SECRET_KEY']  # 初始化密钥
+
+     # 初始化扩展
+    mongo.init_app(app)
+     # 初始化Flask-Login
+    login_manager.init_app(app)
+    login_manager.login_view = 'main.login'  # 设置登录视图
+
+
+    # 注册蓝图
+    from .routes import main_bp
+    app.register_blueprint(main_bp)
+
+    # 注册 markdown 过滤器
+    @app.template_filter('markdown')
+    def markdown_filter(text):
+        return markdown.markdown(text, extensions=['fenced_code', 'tables'])
+
+    return app
+
+File: style.css
+/* 浅灰主题 */
+.theme-light-gray {
+    background-color: #f8f9fa; /* 浅灰背景 */
+    color: #212529; /* 深灰文本颜色 */
+}
+
+.theme-light-gray .content-wrapper{
+    background-color: #f8f9fa; /* 浅灰背景 */
+    color: #212529; /* 深灰文本颜色 */
+}
+
+.theme-light-gray .navbar {
+    background-color: #ffffff !important; /* 白色导航栏 */
+    color: #212529;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.theme-light-gray a:hover {
+    color: #0056b3; /* 深蓝链接 */
+}
+
+.theme-light-gray .table {
+    color: #212529;
+}
+
+/* 淡黄主题 */
+.theme-light-yellow {
+    background-color: #fffbe6; /* 淡黄色背景 */
+    color: #5a3e00; /* 深棕文本颜色 */
+}
+
+.theme-light-yellow .content-wrapper{
+    background-color: #fffbe6; /* 淡黄色背景 */
+    color: #5a3e00; /* 深棕文本颜色 */
+}
+
+.theme-light-yellow .navbar {
+    background-color: #fff9cc !important; /* 深黄色导航栏 */
+    color: #5a3e00;
+    border-bottom: 1px solid #ffec99;
+}
+
+.theme-light-yellow a {
+    color: #b08900; /* 棕黄链接 */
+}
+
+.theme-light-yellow a:hover {
+    color: #805d00; /* 深棕链接 */
+}
+
+.theme-light-yellow .table {
+    color: #5a3e00;
+}
+
+/* 淡绿色主题 */
+.theme-light-green {
+    background-color: #e9f7ef; /* 淡绿色背景 */
+    color: #0c513d; /* 深绿色文本颜色 */
+}
+
+.theme-light-green .content-wrapper{
+    background-color: #e9f7ef; /* 淡绿色背景 */
+    color: #0c513d; /* 深绿色文本颜色 */
+}
+
+.theme-light-green .navbar {
+    background-color: #d4edda !important; /* 深绿色导航栏 */
+    color: #0c513d;
+    border-bottom: 1px solid #c3e6cb;
+}
+
+.theme-light-green #footer {
+    background-color: #d4edda !important; /* 深绿色导航栏 */
+    color: #0c513d;
+    border-bottom: 1px solid #c3e6cb;
+}
+
+.theme-light-green a {
+    color: #198754; /* 绿色链接 */
+}
+
+.theme-light-green a:hover {
+    color: #146c43; /* 深绿色链接 */
+}
+
+.theme-light-green .table {
+    color: #0c513d;
+}
+
+/* Dark 模式主题 */
+.theme-dark {
+    background-color: #121212; /* 深黑背景 */
+    color: #f5f5f5; /* 浅灰文本颜色 */
+}
+
+.theme-dark .content-wrapper{
+    background-color: #121212; /* 深黑背景 */
+    color: #f5f5f5; /* 浅灰文本颜色 */
+}
+
+.theme-dark .navbar {
+    background-color: #1e1e1e !important; /* 深灰导航栏 */
+    color: #f5f5f5;
+    border-bottom: 1px solid #333333;
+}
+
+.theme-dark a {
+    color: #66d9ff; /* 浅蓝色链接 */
+}
+
+.theme-dark a:hover {
+    color: #33bbff; /* 高亮蓝色链接 */
+}
+
+.theme-dark .table {
+    color: #f5f5f5;
+    background-color: #1e1e1e; /* 深灰表格背景 */
+    border-color: #333333; /* 表格边框颜色 */
+}
+
+.theme-dark .table-striped tbody tr:nth-of-type(odd) {
+    background-color: #2c2c2c; /* 条纹背景 */
+}
+
+.theme-dark .table-striped tbody tr:nth-of-type(even) {
+    background-color: #1e1e1e; /* 深灰背景 */
+}
+/* 全局样式 */
+body {
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'SimSun', 'Arial', sans-serif;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+    background-color: #f8f9fa; /* 默认背景颜色 */
+    font-weight: 400;
+    font-size: large;
+}
+
+h3, h4 {
+    margin-top: 20px;
+    font-weight: bold;
+}
+
+p {
+    text-indent: 2em;
+}
+
+/* 内容容器样式 */
+.content-wrapper {
+    padding: 15px;
+    border-radius: 5px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); /* 轻微阴影 */
+    flex-grow: 1; /* 允许内容容器填充剩余空间 */
+    box-sizing: border-box;
+}
+
+/* 左右两列样式 */
+#original-text, #translated-text {
+    height: 100%; /* 填充父容器高度 */
+    overflow-y: auto; /* 确保滚动条正常显示 */
+    box-sizing: border-box;
+    flex-grow: 1; /* 允许内容容器填充剩余空间 */
+    padding: 20px;
+}
+
+#original-text {
+    border-right: 1px solid #dee2e6; /* 分隔线 */
+}
+
+/* 滚动条美化 */
+#original-text::-webkit-scrollbar,
+#translated-text::-webkit-scrollbar {
+    width: 8px;
+}
+
+#original-text::-webkit-scrollbar-thumb,
+#translated-text::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 4px;
+}
+
+#original-text::-webkit-scrollbar-thumb:hover,
+#translated-text::-webkit-scrollbar-thumb:hover {
+    background: #aaa;
+}
+
+/* 导航栏样式 */
+.navbar {
+    border-bottom: 1px solid #dee2e6;
+    padding: 20px;
+    box-shadow: 0px 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* 表单和按钮样式 */
+form, button, select {
+    color: inherit;
+}
+
+/* 超链接样式 */
+a {
+    color: inherit;
+    text-decoration: none;
+}
+
+a:hover {
+    color: #007bff;
+    text-decoration: underline;
+}
+
+/* 调整当没有翻译时的布局 */
+#content-center {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* 父容器不滚动 */
+}
+
+.centered-content {
+    width: 65%; /* 内容占据 60% 的宽度 */
+    margin: 0 auto;
+    flex-grow: 1; /* 允许内容容器填充剩余空间 */
+    overflow-y: auto; /* 启用滚动条 */
+    box-sizing: border-box;
+}
+
+/* 确保 footer 位于页面底部 */
+.container-fluid {
+    display: flex;
+    flex-direction: column;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    #original-text, #translated-text {
+        height: auto; /* 移动端高度适配 */
+        overflow-y: visible;
+        padding: 15px;
+    }
+
+    .content-wrapper {
+        margin-bottom: 10px;
+    }
+
+    .centered-content {
+        width: 100%; /* 移动端内容占满宽度 */
+        padding: 15px;
+        margin: 0;
+    }
+
+    body {
+        font-weight: 600;
+        font-size:x-large;
+    }
+}
+
+/* 确保表格宽度适配父容器 */
+.table-responsive {
+    overflow-x: auto; /* 启用水平滚动条，仅在需要时显示 */
+}
+
+/* 设置表格单元格内容不换行并防止超宽 */
+.table {
+    table-layout: fixed; /* 固定表格布局，按指定的列宽分配 */
+    width: 100%; /* 表格占满容器宽度 */
+}
+
+/* 确保表格内容不换行并超出显示省略号 */
+.table td,
+.table th {
+    white-space: nowrap; /* 禁止换行 */
+    overflow: hidden; /* 隐藏超出的部分 */
+    text-overflow: ellipsis; /* 超出部分显示省略号 */
+}
+
+/* 书名链接的样式 */
+.clickable-link {
+    font-weight: bold;
+    text-decoration: underline; /* 下划线提示 */
+    cursor: pointer;
+}
+
+.clickable-link:hover {
+    text-decoration: underline;
+}
+
+File: base.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- Meta 标签 -->
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.5.0/dist/css/bootstrap.min.css">
+    <!-- 自定义 CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <title>{% block title %}Reading App{% endblock %}</title>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg navbar-light">
+        <a class="navbar-brand" href="{{ url_for('main.index') }}">开卷有益</a>
+        <div class="ml-auto d-flex align-items-center">
+            <!-- 主题选择器 -->
+            <form class="form-inline mr-3 d-flex align-items-center">
+                <label class="mr-2 mb-0">主题：</label>
+                <select id="theme-selector" class="form-control">
+                    <option value="theme-light-gray">浅灰</option>
+                    <option value="theme-light-yellow">淡黄</option>
+                    <option value="theme-light-green">淡绿</option>
+                    <option value="theme-dark">Dark</option>
+                </select>
+            </form>
+            <!-- 登录/注册按钮 -->
+            {% if current_user.is_authenticated %}
+            <span class="navbar-text mr-3">欢迎, {{ current_user.email }}</span>
+            <a href="{{ url_for('main.logout') }}" class="btn btn-outline-secondary mr-2">登出</a>
+            {% else %}
+            <a href="{{ url_for('main.login') }}" class="btn btn-outline-primary mr-2">登录</a>
+            <a href="{{ url_for('main.register') }}" class="btn btn-primary">注册</a>
+            {% endif %}
+        </div>
+    </nav>
+    <!-- 主内容 -->
+    {% block content %}{% endblock %}
+
+    {% block scripts %}
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const themeSelector = document.getElementById('theme-selector');
+            const themes = ['theme-light-gray', 'theme-light-yellow', 'theme-light-green', 'theme-dark'];
+            // 获取当前主题
+            const currentTheme = localStorage.getItem('theme') || 'theme-light-gray';
+            // 设置初始主题
+            document.body.classList.add(currentTheme);
+            themeSelector.value = currentTheme;
+            // 监听主题选择器的变化
+            themeSelector.addEventListener('change', function () {
+                // 移除所有主题类
+                themes.forEach(theme => document.body.classList.remove(theme));
+                const selectedTheme = this.value;
+                document.body.classList.add(selectedTheme);
+                localStorage.setItem('theme', selectedTheme);
+            });
+        });
+
+    </script>
+    {% endblock %}
+</body>
+</html>
+
+
+File: book.html
+{% extends 'base.html' %}
+{% block title %}{{ document.chapter_title }} - 我的书籍{% endblock %}
+
+{% block content %}
+<div class="container-fluid d-flex flex-column">
+    <!-- 内容部分 -->
+    <div class="row flex-grow-1" id="content-section">
+        {% if not is_mobile %}
+            {% if document.plain_translation %}
+            <!-- 桌面布局，有翻译，左右布局 -->
+            <div class="col-md-6 d-flex flex-column" id="original-text">
+                <div class="content-wrapper">
+                    <h3>{{ document.chapter_title }}</h3>
+                    {{ document.original_text | markdown | safe }}
+                </div>
+            </div>
+            <div class="col-md-6 d-flex flex-column" id="translated-text">
+                <div class="content-wrapper">
+                    <h4>白话文翻译</h4>
+                    {{ document.plain_translation | markdown | safe }}
+                    <h4>典故解释</h4>
+                    {{ document.allusion_explanation | markdown | safe }}
+                    <h4>深刻句子汇总</h4>
+                    {{ document.profound_sentences | markdown | safe }}
+                    <h4>章节总结</h4>
+                    {{ document.summary | markdown | safe }}
+                </div>
+            </div>
+            {% else %}
+            <!-- 桌面布局，无翻译，内容居中 -->
+            <div class="col-12 d-flex flex-column align-items-center" id="content-center">
+                <div class="content-wrapper centered-content">
+                    <h3>{{ document.chapter_title }}</h3>
+                    {{ document.original_text | markdown | safe }}
+                </div>
+            </div>
+            {% endif %}
+        {% else %}
+        <!-- 移动端布局 -->
+        <div class="col-12">
+            <div class="content-wrapper">
+                <h3>{{ document.chapter_title }}</h3>
+                <h4>原文</h4>
+                {{ document.original_text | markdown | safe }}
+                {% if document.plain_translation %}
+                <h4>白话文翻译</h4>
+                {{ document.plain_translation | markdown | safe }}
+                <h4>典故解释</h4>
+                {{ document.allusion_explanation | markdown | safe }}
+                <h4>深刻句子汇总</h4>
+                {{ document.profound_sentences | markdown | safe }}
+                <h4>章节总结</h4>
+                {{ document.summary | markdown | safe }}
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    <!-- 底部导航 -->
+    <div class="row" id="footer">
+        <div class="col-12 py-2 border-top">
+            <div class="d-flex justify-content-center align-items-center flex-wrap gap-2">
+                {% if prev_chapter %}
+                <a href="{{ url_for('main.book', name=document.name, chapter=prev_chapter) }}" class="btn btn-primary mx-2">上一章</a>
+                {% endif %}
+                <form method="post" class="d-flex align-items-center mx-2" style="white-space: nowrap;">
+                    <label for="chapter" class="mr-2 mb-0">跳转到第</label>
+                    <input type="number" name="chapter" id="chapter" class="form-control form-control-sm mr-2" min="1" max="{{ total_chapters }}" required>
+                    <label class="mr-2 mb-0">章（共{{ total_chapters }}章）</label>
+                    <button type="submit" class="btn btn-primary btn-sm">跳转</button>
+                </form>
+                {% if next_chapter %}
+                <a href="{{ url_for('main.book', name=document.name, chapter=next_chapter) }}" class="btn btn-primary mx-2">下一章</a>
+                {% endif %}
+                <a href="{{ url_for('main.index') }}" class="btn btn-secondary mx-2">返回搜索</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }} <!-- 继承 base.html 中的脚本块 -->
+<script>
+    // 检测设备类型
+    var is_mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    // 在模板中使用 is_mobile 变量
+    var is_mobile_template = '{{ is_mobile }}';
+    if (is_mobile_template === 'False') {
+        is_mobile = false;
+    } else {
+        is_mobile = true;
+    }
+
+    if (!is_mobile){
+        {% if document.plain_translation %}
+        // 有翻译，执行滚动联动和高度调整
+        const originalText = document.getElementById('original-text');
+        const translatedText = document.getElementById('translated-text');
+        let isSyncingScroll = false; // 标志变量
+
+        if (originalText && translatedText) {
+            originalText.addEventListener('scroll', function() {
+                if (!isSyncingScroll) {
+                    isSyncingScroll = true;
+                    translatedText.scrollTop = originalText.scrollTop;
+                    isSyncingScroll = false;
+                }
+            });
+
+            translatedText.addEventListener('scroll', function() {
+                if (!isSyncingScroll) {
+                    isSyncingScroll = true;
+                    originalText.scrollTop = translatedText.scrollTop;
+                    isSyncingScroll = false;
+                }
+            });
+        }
+
+        // 动态调整内容区域高度
+        function adjustContentHeight() {
+            const contentSection = document.getElementById("content-section");
+            const footer = document.getElementById("footer");
+            const navBar = document.querySelector(".navbar"); // 导航栏
+            const footerHeight = footer.offsetHeight;
+            const navHeight = navBar ? navBar.offsetHeight : 0;
+            const windowHeight = window.innerHeight;
+
+            // 动态设置内容区域高度
+            const newContentHeight = windowHeight - footerHeight - navHeight;
+            contentSection.style.height = `${newContentHeight}px`;
+        }
+
+        // 初次调整
+        adjustContentHeight();
+
+        // 监听窗口大小变化
+        window.addEventListener("resize", adjustContentHeight);
+        {% else %}
+        // 无翻译，仅调整内容区域高度
+        function adjustContentHeight() {
+            const contentSection = document.getElementById("content-section");
+            const contentCenter = document.getElementById("content-center");
+            const footer = document.getElementById("footer");
+            const navBar = document.querySelector(".navbar"); // 导航栏
+            const footerHeight = footer.offsetHeight;
+            const navHeight = navBar ? navBar.offsetHeight : 0;
+            const windowHeight = window.innerHeight;
+
+            // 动态设置内容区域高度
+            const newContentHeight = windowHeight - footerHeight - navHeight;
+            contentSection.style.height = `${newContentHeight}px`;
+            contentCenter.style.height = `${newContentHeight}px`;
+        }
+
+        // 初次调整
+        adjustContentHeight();
+
+        // 监听窗口大小变化
+        window.addEventListener("resize", adjustContentHeight);
+        {% endif %}
+    }
+</script>
+{% endblock %}
+
+
+File: index.html
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <br/>
+    <form method="post" id="search-form" style="max-width: 500px; margin: 0 auto;">
+        <div class="input-group">
+            <input type="text" name="search" id="search" class="form-control" placeholder="输入书名、作者或分类查询" autocomplete="off">
+            <div class="input-group-append">
+                <button class="btn btn-primary" type="submit">搜索</button>
+            </div>
+        </div>
+    </form>
+
+    <div class="table-responsive mt-4">
+        <table class="table table-striped table-bordered text-center w-100">
+            <thead class="thead-light">
+                <tr>
+                    <th style="width: 50%;">书名</th>
+                    <!-- 其他列头在桌面设备显示 -->
+                    <th class="d-none d-md-table-cell" style="width: 20%;">作者</th>
+                    <th class="d-none d-md-table-cell" style="width: 20%;">分类</th>
+                    <th class="d-none d-md-table-cell" style="width: 50%;">简介</th>
+                </tr>
+            </thead>
+            <tbody id="books-table">
+                <!-- 书籍列表将通过 JavaScript 动态插入 -->
+            </tbody>
+        </table>
+    </div>
+    
+    <!-- 分页控件 -->
+    <nav>
+        <ul class="pagination justify-content-center" id="pagination">
+            <!-- 分页按钮将通过 JavaScript 动态生成 -->
+        </ul>
+    </nav>
+
+    <!-- 页码跳转输入框 -->
+    <div class="d-flex justify-content-center mt-3">
+        <form id="jump-form" class="form-inline">
+            <label for="jump-page" class="mr-2">跳转到第</label>
+            <input type="number" class="form-control mr-2" id="jump-page" min="1">
+            <label class="mr-2">页</label>
+            <button type="submit" class="btn btn-primary">跳转</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }} <!-- 继承 base.html 中的脚本块 -->
+<script>
+    // 检测设备类型（全局作用域）
+    var is_mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+    document.addEventListener('DOMContentLoaded', function () {
+        // 初始化所有的 tooltip
+        const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+        tooltipTriggerList.forEach(function (tooltipTriggerEl) {
+            new bootstrap.Tooltip(tooltipTriggerEl);
+        });
+
+        // 初次加载默认数据
+        fetchBooks('', 1);
+    });
+
+    document.getElementById('search-form').addEventListener('submit', function(event) {
+        event.preventDefault();
+        const query = document.getElementById('search').value;
+        fetchBooks(query, 1);
+    });
+
+    function fetchBooks(query, page) {
+        // 判断是搜索还是普通浏览
+        const apiUrl = query ? `/api/search?query=${encodeURIComponent(query)}&page=${page}` : `/api/books?page=${page}`;
+
+        fetch(apiUrl)
+            .then(response => response.json())
+            .then(data => {
+                updateTable(data.books);
+                updatePagination(data.total_pages, data.current_page, query);
+            })
+            .catch(error => console.error('Error fetching books:', error));
+    }
+
+    function updateTable(books) {
+        const booksTable = document.getElementById('books-table');
+        booksTable.innerHTML = '';
+        books.forEach(book => {
+            const row = document.createElement('tr');
+
+            // 书名列
+            const nameCell = document.createElement('td');
+            nameCell.innerHTML = `<a href="/book/${encodeURIComponent(book.name)}" 
+                                   class="clickable-link"
+                                   data-bs-toggle="tooltip" 
+                                   data-bs-placement="top" 
+                                   title="点击查看书籍详情：${book.name}">
+                                    ${book.name}
+                                </a>`;
+            row.appendChild(nameCell);
+
+            // 检测设备类型，只有在非移动设备时添加其他列
+            if (!is_mobile) {
+                // 作者列
+                const authorCell = document.createElement('td');
+                authorCell.classList.add('d-none', 'd-md-table-cell');
+                authorCell.setAttribute('data-bs-toggle', 'tooltip');
+                authorCell.setAttribute('data-bs-placement', 'top');
+                authorCell.setAttribute('title', book.author || '');
+                authorCell.textContent = book.author || '';
+                row.appendChild(authorCell);
+
+                // 分类列
+                const tagsCell = document.createElement('td');
+                tagsCell.classList.add('d-none', 'd-md-table-cell');
+                tagsCell.setAttribute('data-bs-toggle', 'tooltip');
+                tagsCell.setAttribute('data-bs-placement', 'top');
+                tagsCell.setAttribute('title', book.tags || '');
+                tagsCell.textContent = book.tags || '';
+                row.appendChild(tagsCell);
+
+                // 简介列
+                const summaryCell = document.createElement('td');
+                summaryCell.classList.add('d-none', 'd-md-table-cell');
+                summaryCell.setAttribute('data-bs-toggle', 'tooltip');
+                summaryCell.setAttribute('data-bs-placement', 'top');
+                summaryCell.setAttribute('title', book.summary || '');
+                summaryCell.textContent = book.summary || '';
+                row.appendChild(summaryCell);
+            }
+
+            booksTable.appendChild(row);
+        });
+
+        // 重新初始化 tooltip
+        const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+        tooltipTriggerList.forEach(function (tooltipTriggerEl) {
+            new bootstrap.Tooltip(tooltipTriggerEl);
+        });
+    }
+
+    function updatePagination(totalPages, currentPage, query) {
+        const pagination = document.getElementById('pagination');
+        pagination.innerHTML = '';
+
+        const maxVisiblePages = 7; // 最大显示的页码按钮数
+        let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+        let endPage = startPage + maxVisiblePages - 1;
+
+        if (endPage > totalPages) {
+            endPage = totalPages;
+            startPage = Math.max(1, endPage - maxVisiblePages + 1);
+        }
+
+        // 首页按钮
+        if (currentPage > 1) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item">
+                    <a class="page-link" href="#" onclick="fetchBooks('${query}', 1); return false;">首页</a>
+                </li>
+            `);
+        }
+
+        // 前一页按钮
+        if (currentPage > 1) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item">
+                    <a class="page-link" href="#" onclick="fetchBooks('${query}', ${currentPage - 1}); return false;">上一页</a>
+                </li>
+            `);
+        }
+
+        // 如果开始页大于1，显示省略号
+        if (startPage > 1) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item disabled">
+                    <span class="page-link">...</span>
+                </li>
+            `);
+        }
+
+        // 页码按钮
+        for (let page = startPage; page <= endPage; page++) {
+            const activeClass = page === currentPage ? 'active' : '';
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item ${activeClass}">
+                    <a class="page-link" href="#" onclick="fetchBooks('${query}', ${page}); return false;">${page}</a>
+                </li>
+            `);
+        }
+
+        // 如果结束页小于总页数，显示省略号
+        if (endPage < totalPages) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item disabled">
+                    <span class="page-link">...</span>
+                </li>
+            `);
+        }
+
+        // 下一页按钮
+        if (currentPage < totalPages) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item">
+                    <a class="page-link" href="#" onclick="fetchBooks('${query}', ${currentPage + 1}); return false;">下一页</a>
+                </li>
+            `);
+        }
+
+        // 尾页按钮
+        if (currentPage < totalPages) {
+            pagination.insertAdjacentHTML('beforeend', `
+                <li class="page-item">
+                    <a class="page-link" href="#" onclick="fetchBooks('${query}', ${totalPages}); return false;">尾页</a>
+                </li>
+            `);
+        }
+    }
+
+    // 页码跳转
+    document.getElementById('jump-form').addEventListener('submit', function(event) {
+        event.preventDefault();
+        const jumpPage = parseInt(document.getElementById('jump-page').value);
+        if (isNaN(jumpPage) || jumpPage < 1) {
+            alert('请输入有效的页码。');
+            return;
+        }
+        fetchBooks(document.getElementById('search').value, jumpPage);
+    });
+</script>
+{% endblock %}
+
+File: login.html
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <h2>登录</h2>
+    <form method="post">
+        <div class="form-group">
+            <label>邮箱:</label>
+            <input type="email" name="email" class="form-control" required autofocus>
+        </div>
+        <div class="form-group">
+            <label>密码:</label>
+            <input type="password" name="password" class="form-control" required>
+        </div>
+        <button type="submit" class="btn btn-primary">登录</button>
+    </form>
+    <p>没有账号吗? <a href="{{ url_for('main.register') }}">点击注册</a>.</p>
+</div>
+{% endblock %}
+
+
+File: register.html
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <h2>注册</h2>
+    <form method="post">
+        <div class="form-group">
+            <label>邮箱:</label>
+            <input type="email" name="email" class="form-control" required autofocus>
+        </div>
+        <div class="form-group">
+            <label>密码:</label>
+            <input type="password" name="password" class="form-control" required>
+        </div>
+        <button type="submit" class="btn btn-primary">注册</button>
+    </form>
+    <p>已有账号? <a href="{{ url_for('main.login') }}">点击登录</a>.</p>
+</div>
+{% endblock %}
+
+
+File: search.html
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <h2>搜索“{{ query }}”的结果</h2>
+    {% if books %}
+    <ul class="list-group">
+        {% for book in books %}
+        <li class="list-group-item">
+            <a href="{{ url_for('main.book', name=book) }}">{{ book }}</a>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p>未找到相关书籍。</p>
+    {% endif %}
+</div>
+{% endblock %}
+
+
+
+
+Summary of tasks:
+请按照需求完成以下任务：
+1. 新增一个后端API，集成deepseek的API，支持stream返回内容。
+2. 根据不同设备，实现不同的前端交互，手机端和电脑端。
+3. 实现ChatGPT类似的对话框风格，支持stream返回内容。
+4. 对话上下文最多支持10个对话，超过10个对话后，最早的对话会被删除。同时对话框可以清除所有对话。不会保存用户所有的对话内容。
+5. 当用户用鼠标选择阅读文章的部分内容时，提示用户是否要提问这个问题，如果用户选择是，那么对话框会自动弹出，用户可以直接提问选择内容的问题。
+5. 每个修改的代码按需求给出完整的代码内容。
+

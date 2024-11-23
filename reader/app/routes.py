@@ -1,9 +1,16 @@
-# app/routes.py
-from flask import Blueprint, render_template, redirect, url_for, request, flash, jsonify
+from flask import Blueprint, render_template, redirect, url_for, request, flash, jsonify, Response
 from flask_login import login_user, logout_user, current_user, login_required
 from .models import User
 from . import mongo
 from bson.objectid import ObjectId
+
+# Import OpenAI (for DeepSeek API)
+import os
+import openai
+
+# Initialize OpenAI API key
+openai.api_key = os.getenv("DEEPSEEK_API_KEY", "sk-e9c6ebc0a36041a1ac8b32dd2b6e14e7")
+openai.base_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com")
 
 # 定义蓝图
 main_bp = Blueprint('main', __name__)
@@ -227,3 +234,46 @@ def api_books():
         'current_page': page
     })
 
+# New API route for chat
+@main_bp.route('/api/chat', methods=['POST'])
+def chat_api():
+    data = request.get_json()
+    messages = data.get('messages', [])
+    stream = data.get('stream', False)
+
+    if not messages:
+        return jsonify({'error': 'No messages provided'}), 400
+
+    # Limit to the last 10 pairs of messages (user and assistant)
+    messages = messages[-20:]
+
+    # Call OpenAI API (DeepSeek's API)
+    try:
+        if stream:
+            # Stream response
+            def generate():
+                response = openai.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=messages,
+                    temperature=0.8,
+                    stream=True
+                )
+                for chunk in response:
+                    if chunk.choices:
+                        choice = chunk.choices[0]
+                        if choice.delta:
+                            content = choice.delta.content
+                            yield content
+
+            return Response(generate(), content_type='text/event-stream')
+        else:
+            # Non-stream response
+            response = openai.chat.completions.create(
+                model="deepseek-chat",
+                temperature=0.8,
+                messages=messages,
+                stream=False
+            )
+            return jsonify(response)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
