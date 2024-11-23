@@ -103,7 +103,6 @@
             var mainContent = document.getElementById('main-content');
             var contentSection = document.getElementById('content-section');
 
-            // Function to adjust heights dynamically
             function adjustHeights() {
                 var windowHeight = window.innerHeight;
                 var navHeight = document.querySelector('.navbar').offsetHeight;
@@ -117,7 +116,11 @@
                 }
 
                 if (contentSection) {
-                    contentSection.style.height = contentHeight + 'px';
+                    if (isMobile) {
+                        contentSection.style.height = 'auto';
+                    } else {
+                        contentSection.style.height = contentHeight + 'px';
+                    }
                 }
 
                 if (chatContainer) {
@@ -128,7 +131,7 @@
                 var chatFormHeight = document.getElementById('chat-form').offsetHeight;
                 var chatMessages = document.getElementById('chat-messages');
                 if (chatMessages) {
-                    chatMessages.style.height = (chatHeight - chatFormHeight) + 'px';
+                        chatMessages.style.height = (chatHeight - chatFormHeight) + 'px';
                 }
             }
 
@@ -309,17 +312,17 @@
             });
 
             // Initial chat open if on the reading page
-            {% if 'book' in request.endpoint %}
-            if (!chatContainer.classList.contains('active')) {
-                chatContainer.classList.add('active');
-                if (!isMobile) {
-                    mainContent.classList.add('with-chat');
-                } else {
-                    mainContent.style.display = 'none';
-                }
-                adjustHeights();
-            }
-            {% endif %}
+            // {% if 'book' in request.endpoint %}
+            // if (!chatContainer.classList.contains('active')) {
+            //     chatContainer.classList.add('active');
+            //     if (!isMobile) {
+            //         mainContent.classList.add('with-chat');
+            //     } else {
+            //         mainContent.style.display = 'none';
+            //     }
+            //     adjustHeights();
+            // }
+            // {% endif %}
         });
     </script>
     {% endblock %}

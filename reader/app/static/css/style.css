@@ -233,6 +233,11 @@ a:hover {
         padding: 15px;
     }
 
+    #content-section {
+        flex-direction: column;
+        overflow: visible; /* Allow content to scroll on mobile */
+    }
+
     .content-wrapper {
         margin-bottom: 10px;
     }
@@ -336,6 +341,7 @@ a:hover {
         position: fixed;
         left: 0;
         z-index: 1000;
+        overflow: auto; /* Allow scrolling within the chat container */
     }
 
     .with-chat #original-text {
