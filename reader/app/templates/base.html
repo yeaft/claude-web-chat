@@ -13,11 +13,11 @@
 <body>
     <!-- Navbar -->
     <nav class="navbar navbar-expand-lg navbar-light">
-        <a class="navbar-brand" href="{{ url_for('main.index') }}">开卷有益</a>
+        <a class="navbar-brand" href="{{ url_for('main.index') }}">读书</a>
         <div class="ml-auto d-flex align-items-center">
             <!-- Theme Selector -->
             <form class="form-inline mr-3 d-flex align-items-center">
-                <label class="mr-2 mb-0">主题：</label>
+                <!-- <label class="mr-2 mb-0">主题：</label> -->
                 <select id="theme-selector" class="form-control">
                     <option value="theme-light-gray">浅灰</option>
                     <option value="theme-light-yellow">淡黄</option>
@@ -35,7 +35,7 @@
             </button>
             <!-- Login/Register Buttons -->
             {% if current_user.is_authenticated %}
-            <span class="navbar-text mr-3">欢迎, {{ current_user.email }}</span>
+            <span class="navbar-text mr-3">{{ current_user.email }}</span>
             <a href="{{ url_for('main.logout') }}" class="btn btn-outline-secondary mr-2">登出</a>
             {% else %}
             <a href="{{ url_for('main.login') }}" class="btn btn-outline-primary mr-2">登录</a>

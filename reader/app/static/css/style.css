@@ -244,6 +244,7 @@ a:hover {
     }
 
     body {
+        overflow: auto;
         font-weight: 600;
         font-size:x-large;
     }
@@ -336,7 +337,7 @@ a:hover {
         left: 0;
         z-index: 1000;
     }
-    
+
     .with-chat #original-text {
         display: none;
     }
