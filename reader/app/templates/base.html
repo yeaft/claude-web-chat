@@ -26,11 +26,11 @@
                 </select>
             </form>
             <!-- Copilot Button -->
-            <button id="toggle-chat-btn" class="btn btn-outline-secondary ml-2">
+            <button id="toggle-chat-btn" class="btn ml-2">
                 <!-- Chat Icon -->
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="bi bi-chat-right-dots" viewBox="0 0 16 16">
-                  <path d="M14 1a1 1 0 0 1 1 1v11.793l-2-2V2a1 1 0 0 1 1-1h1zM2.854 12.146A.5.5 0 0 1 2.5 12V2a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v8.793l-2-2V2H3v9.5a.5.5 0 0 1-.146.354l-1 1a.5.5 0 0 1-.707 0l-1-1a.5.5 0 0 1 0-.707l1-1z"/>
-                  <path d="M3 4.5a.5.5 0 1 1 1 0 .5.5 0 0 1-1 0zm0 2a.5.5 0 1 1 1 0 .5.5 0 0 1-1 0zm0 2a.5.5 0 1 1 1 0 .5.5 0 0 1-1 0z"/>
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="bi bi-copilot" viewBox="0 0 16 16">
+                    <path d="M8 0a8 8 0 1 0 8 8A8 8 0 0 0 8 0zM4 7a4 4 0 1 1 8 0A4 4 0 0 1 4 7z"/>
+                    <path d="M2 14s1-1 6-1 6 1 6 1v1H2v-1z"/>
                 </svg>
             </button>
             <!-- Login/Register Buttons -->
@@ -59,8 +59,8 @@
                 <!-- Clear Button -->
                 <button type="button" id="clear-chat-btn" class="btn-clear" title="清除">
                     <!-- Broom Icon -->
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-broom" viewBox="0 0 16 16">
-                      <path d="M15.73 1.01a.5.5 0 0 1 .215.66l-6 13a.5.5 0 0 1-.927-.374l2.185-4.73L5.343 7.05l-2.12 2.122a.5.5 0 1 1-.707-.708l2.122-2.121-2.477-5.365a.5.5 0 0 1 .858-.514l3.228 6.976 5.862-2.546 2.662-5.777a.5.5 0 0 1 .66-.215z"/>
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-x-circle" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
                     </svg>
                 </button>
                 <!-- Send Button -->
@@ -175,10 +175,14 @@
                 userMessageDiv.className = 'message user-message';
 
                 // User avatar
-                var userAvatar = document.createElement('div');
-                userAvatar.className = 'avatar';
-                userAvatar.innerHTML = '<img src="/static/images/user-icon.png" alt="User">';
-                userMessageDiv.appendChild(userAvatar);
+//                 var userAvatar = document.createElement('div');
+//                 userAvatar.className = 'avatar';
+//                 userAvatar.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" fill="currentColor" class="bi bi-person-circle" viewBox="0 0 16 16">
+//   <path d="M13.468 12.37C12.758 11.226 11.287 10 8 10s-4.758 1.226-5.468 2.37A6.987 6.987 0 0 0 8 15a6.987 6.987 0 0 0 5.468-2.63z"/>
+//   <path fill-rule="evenodd" d="M8 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
+//   <path fill-rule="evenodd" d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1z"/>
+// </svg>`;
+                // userMessageDiv.appendChild(userAvatar);
 
                 // Message content
                 var userContent = document.createElement('div');
@@ -196,10 +200,12 @@
                 loadingDiv.className = 'message assistant-message loading';
 
                 // Assistant avatar
-                var assistantAvatar = document.createElement('div');
-                assistantAvatar.className = 'avatar';
-                assistantAvatar.innerHTML = '<img src="/static/images/assistant-icon.png" alt="Assistant">';
-                loadingDiv.appendChild(assistantAvatar);
+//                 var assistantAvatar = document.createElement('div');
+//                 assistantAvatar.className = 'avatar';
+//                 assistantAvatar.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" fill="currentColor" class="bi bi-robot" viewBox="0 0 16 16">
+//   <path d="M4 2a2 2 0 0 0-2 2v3h12V4a2 2 0 0 0-2-2H4zm-3 5v7a1 1 0 0 0 1 1h1v-1h8v1h1a1 1 0 0 0 1-1V7H1zm3 2a1 1 0 1 1 2 0 1 1 0 0 1-2 0zm6 0a1 1 0 1 1 2 0 1 1 0 0 1-2 0z"/>
+// </svg>`;
+//                 loadingDiv.appendChild(assistantAvatar);
 
                 // Loading content
                 var loadingContent = document.createElement('div');
@@ -234,10 +240,10 @@
                     assistantMessageDiv.className = 'message assistant-message';
 
                     // Assistant avatar
-                    var assistantAvatar = document.createElement('div');
-                    assistantAvatar.className = 'avatar';
-                    assistantAvatar.innerHTML = '<img src="/static/images/assistant-icon.png" alt="Assistant">';
-                    assistantMessageDiv.appendChild(assistantAvatar);
+                    // var assistantAvatar = document.createElement('div');
+                    // assistantAvatar.className = 'avatar';
+                    // assistantAvatar.innerHTML = '<img src="/static/images/assistant-icon.png" alt="Assistant">';
+                    // assistantMessageDiv.appendChild(assistantAvatar);
 
                     // Message content
                     var assistantContent = document.createElement('div');

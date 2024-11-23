@@ -333,11 +333,10 @@ a:hover {
     .chat-container {
         width: 100%;
         position: fixed;
-        top: 56px; /* Adjust according to navbar height */
         left: 0;
         z-index: 1000;
     }
-
+    
     .with-chat #original-text {
         display: none;
     }
@@ -363,18 +362,6 @@ a:hover {
     margin-bottom: 15px;
 }
 
-.message .avatar {
-    width: 40px;
-    height: 40px;
-    margin-right: 10px;
-}
-
-.message .avatar img {
-    width: 100%;
-    height: 100%;
-    border-radius: 50%;
-}
-
 .message .content {
     max-width: 80%;
     word-wrap: break-word;
@@ -383,20 +370,26 @@ a:hover {
     font-size: 16px;
 }
 
-.user-message .avatar {
-    order: 2;
-    margin-left: 10px;
-    margin-right: 0;
+.user-message {
+    justify-content: flex-end;
 }
 
 .user-message .content {
     background-color: rgba(0, 123, 255, 0.1);
     padding: 10px;
     border-radius: 8px;
+    text-align: right;
+}
+
+.assistant-message {
+    justify-content: flex-start;
 }
 
 .assistant-message .content {
-    /* No background color */
+    background-color: rgba(220, 220, 220, 0.2); /* Light gray background */
+    padding: 10px;
+    border-radius: 8px;
+    text-align: left;
 }
 
 .loading {
@@ -432,7 +425,7 @@ a:hover {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-top: 10px;
+    margin-top: -5px;
 }
 
 .chat-controls button {

@@ -11,12 +11,8 @@
                 <div class="content-wrapper">
                     <h3>{{ document.chapter_title }}</h3>
                     {{ document.original_text | markdown | safe }}
-                </div>
-            </div>
-            {% if document.plain_translation %}
-            <!-- Translation content, will be shown when chat is closed -->
-            <div id="translation-content" style="display: none;">
-                <div class="content-wrapper">
+                    {% if document.plain_translation %}
+                    <div class="border-top"></div>
                     <h4>白话文翻译</h4>
                     {{ document.plain_translation | markdown | safe }}
                     <h4>典故解释</h4>
@@ -25,9 +21,10 @@
                     {{ document.profound_sentences | markdown | safe }}
                     <h4>章节总结</h4>
                     {{ document.summary | markdown | safe }}
+                    {% endif %}
                 </div>
             </div>
-            {% endif %}
+            
         {% else %}
         <!-- Mobile Layout -->
         <div class="col-12">
