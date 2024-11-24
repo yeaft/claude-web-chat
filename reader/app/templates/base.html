@@ -1,23 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <!-- Meta Tags -->
+    <!-- 元标签 -->
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- Bootstrap CSS -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.5.0/dist/css/bootstrap.min.css">
-    <!-- Custom CSS -->
+    <!-- 自定义 CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <title>{% block title %}Reading App{% endblock %}</title>
 </head>
 <body>
-    <!-- Navbar -->
+    <!-- 导航栏 -->
     <nav class="navbar navbar-expand-lg navbar-light">
         <a class="navbar-brand" href="{{ url_for('main.index') }}">读书</a>
         <div class="ml-auto d-flex align-items-center">
-            <!-- Theme Selector -->
+            <!-- 主题选择器 -->
             <form class="form-inline mr-3 d-flex align-items-center">
-                <!-- <label class="mr-2 mb-0">主题：</label> -->
                 <select id="theme-selector" class="form-control">
                     <option value="theme-light-gray">浅灰</option>
                     <option value="theme-light-yellow">淡黄</option>
@@ -25,15 +24,15 @@
                     <option value="theme-dark">Dark</option>
                 </select>
             </form>
-            <!-- Copilot Button -->
+            <!-- Copilot 按钮 -->
             <button id="toggle-chat-btn" class="btn ml-2">
-                <!-- Chat Icon -->
+                <!-- Chat 图标 -->
                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="bi bi-copilot" viewBox="0 0 16 16">
                     <path d="M8 0a8 8 0 1 0 8 8A8 8 0 0 0 8 0zM4 7a4 4 0 1 1 8 0A4 4 0 0 1 4 7z"/>
                     <path d="M2 14s1-1 6-1 6 1 6 1v1H2v-1z"/>
                 </svg>
             </button>
-            <!-- Login/Register Buttons -->
+            <!-- 登录/注册 按钮 -->
             {% if current_user.is_authenticated %}
             <span class="navbar-text mr-3">{{ current_user.email }}</span>
             <a href="{{ url_for('main.logout') }}" class="btn btn-outline-secondary mr-2">登出</a>
@@ -43,29 +42,29 @@
             {% endif %}
         </div>
     </nav>
-    <!-- Main Content -->
+    <!-- 主内容 -->
     <div id="main-content">
         {% block content %}{% endblock %}
     </div>
 
-    <!-- Chat Container -->
+    <!-- 聊天容器 -->
     <div id="chat-container" class="chat-container">
-        <!-- Chat Messages -->
+        <!-- 聊天消息 -->
         <div id="chat-messages" class="chat-messages"></div>
-        <!-- Input Form -->
+        <!-- 输入表单 -->
         <form id="chat-form">
             <textarea id="chat-input" placeholder="输入你的问题..."></textarea>
             <div class="chat-controls">
-                <!-- Clear Button -->
+                <!-- 清除按钮 -->
                 <button type="button" id="clear-chat-btn" class="btn-clear" title="清除">
-                    <!-- Broom Icon -->
+                    <!-- X 图标 -->
                     <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-x-circle" viewBox="0 0 16 16">
                         <path fill-rule="evenodd" d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
                     </svg>
                 </button>
-                <!-- Send Button -->
+                <!-- 发送按钮 -->
                 <button type="submit" class="btn-send" title="发送">
-                    <!-- Up Arrow Icon -->
+                    <!-- 向上箭头图标 -->
                     <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-arrow-up-circle" viewBox="0 0 16 16">
                       <path fill-rule="evenodd" d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM8 4a.5.5 0 0 1 .5.5v6.293l2.146-2.147a.5.5 0 0 1 .708.708l-3 3a.498.498 0 0 1-.708 0l-3-3a.5.5 0 1 1 .708-.708L7.5 10.793V4.5A.5.5 0 0 1 8 4z"/>
                     </svg>
@@ -75,28 +74,32 @@
     </div>
 
     {% block scripts %}
+    <!-- 引入必要的脚本 -->
     <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Marked.js 用于解析 Markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- 您的自定义脚本 -->
     <script>
         document.addEventListener('DOMContentLoaded', function () {
             const themeSelector = document.getElementById('theme-selector');
             const themes = ['theme-light-gray', 'theme-light-yellow', 'theme-light-green', 'theme-dark'];
-            // Get current theme
+            // 获取当前主题
             const currentTheme = localStorage.getItem('theme') || 'theme-light-gray';
-            // Set initial theme
+            // 设置初始主题
             document.body.classList.add(currentTheme);
             themeSelector.value = currentTheme;
-            // Listen to theme selector changes
+            // 监听主题选择器的变化
             themeSelector.addEventListener('change', function () {
-                // Remove all theme classes
+                // 移除所有主题类
                 themes.forEach(theme => document.body.classList.remove(theme));
                 const selectedTheme = this.value;
                 document.body.classList.add(selectedTheme);
                 localStorage.setItem('theme', selectedTheme);
             });
 
-            // Chat functionality
+            // 聊天功能
             var isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
             var toggleChatBtn = document.getElementById('toggle-chat-btn');
             var chatContainer = document.getElementById('chat-container');
@@ -112,7 +115,11 @@
                 var chatHeight = windowHeight - navHeight;
 
                 if (mainContent) {
-                    mainContent.style.height = contentHeight + 'px';
+                    if (isMobile) {
+                        mainContent.style.height = 'auto';
+                    } else {
+                        mainContent.style.height = contentHeight + 'px';
+                    }
                 }
 
                 if (contentSection) {
@@ -124,111 +131,80 @@
                 }
 
                 if (chatContainer) {
-                    chatContainer.style.height = chatHeight + 'px';
+                    if (isMobile) {
+                        chatContainer.style.height = 'auto';
+                    } else {
+                        chatContainer.style.height = chatHeight + 'px';
+                    }
                 }
 
-                // Adjust chat messages height
+                // 调整聊天消息高度
                 var chatFormHeight = document.getElementById('chat-form').offsetHeight;
                 var chatMessages = document.getElementById('chat-messages');
                 if (chatMessages) {
+                    if (isMobile) {
+                        chatMessages.style.height = 'auto';
+                    } else {
                         chatMessages.style.height = (chatHeight - chatFormHeight) + 'px';
+                    }
                 }
             }
 
-            // Call adjustHeights on load and resize
+            // 页面加载和调整大小时调用
             adjustHeights();
             window.addEventListener('resize', adjustHeights);
 
             toggleChatBtn.addEventListener('click', function () {
-                if (chatContainer.style.display === 'none' || chatContainer.style.display === '') {
-                    chatContainer.style.display = 'block';
-                    if (!isMobile) {
-                        mainContent.classList.add('with-chat');
-                    } else {
-                        mainContent.style.display = 'none';
-                    }
-                } else {
-                    chatContainer.style.display = 'none';
+                if (chatContainer.classList.contains('active')) {
+                    chatContainer.classList.remove('active');
                     if (!isMobile) {
                         mainContent.classList.remove('with-chat');
                     } else {
                         mainContent.style.display = 'block';
                     }
+                } else {
+                    chatContainer.classList.add('active');
+                    if (!isMobile) {
+                        mainContent.classList.add('with-chat');
+                    } else {
+                        mainContent.style.display = 'none';
+                    }
                 }
                 adjustHeights();
             });
 
-            // Handle chat form submission
+            // 定义全局变量
             var chatForm = document.getElementById('chat-form');
             var chatInput = document.getElementById('chat-input');
             var chatMessages = document.getElementById('chat-messages');
 
             var messages = [];
 
-            chatForm.addEventListener('submit', function (e) {
-                e.preventDefault();
-                var userMessage = chatInput.value.trim();
-                if (userMessage === '') return;
-
-                // Add user message to messages
-                messages.push({'role': 'user', 'content': userMessage});
-
-                // Display user message
-                var userMessageDiv = document.createElement('div');
-                userMessageDiv.className = 'message user-message';
-
-                // User avatar
-//                 var userAvatar = document.createElement('div');
-//                 userAvatar.className = 'avatar';
-//                 userAvatar.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" fill="currentColor" class="bi bi-person-circle" viewBox="0 0 16 16">
-//   <path d="M13.468 12.37C12.758 11.226 11.287 10 8 10s-4.758 1.226-5.468 2.37A6.987 6.987 0 0 0 8 15a6.987 6.987 0 0 0 5.468-2.63z"/>
-//   <path fill-rule="evenodd" d="M8 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
-//   <path fill-rule="evenodd" d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1z"/>
-// </svg>`;
-                // userMessageDiv.appendChild(userAvatar);
-
-                // Message content
-                var userContent = document.createElement('div');
-                userContent.className = 'content';
-                userContent.textContent = userMessage;
-                userMessageDiv.appendChild(userContent);
-
-                chatMessages.appendChild(userMessageDiv);
-
-                // Clear input
-                chatInput.value = '';
-
-                // Show loading animation
+            // 发送消息到服务器的通用函数
+            function sendMessageToServer(messagesToSend) {
+                // 显示加载动画
                 var loadingDiv = document.createElement('div');
                 loadingDiv.className = 'message assistant-message loading';
 
-                // Assistant avatar
-//                 var assistantAvatar = document.createElement('div');
-//                 assistantAvatar.className = 'avatar';
-//                 assistantAvatar.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" fill="currentColor" class="bi bi-robot" viewBox="0 0 16 16">
-//   <path d="M4 2a2 2 0 0 0-2 2v3h12V4a2 2 0 0 0-2-2H4zm-3 5v7a1 1 0 0 0 1 1h1v-1h8v1h1a1 1 0 0 0 1-1V7H1zm3 2a1 1 0 1 1 2 0 1 1 0 0 1-2 0zm6 0a1 1 0 1 1 2 0 1 1 0 0 1-2 0z"/>
-// </svg>`;
-//                 loadingDiv.appendChild(assistantAvatar);
-
-                // Loading content
+                // 加载内容
                 var loadingContent = document.createElement('div');
                 loadingContent.className = 'content';
-                loadingContent.textContent = '...';
+                loadingContent.innerHTML = '正在思考<span class="loading-dots"><span></span><span></span><span></span></span>';
                 loadingDiv.appendChild(loadingContent);
 
                 chatMessages.appendChild(loadingDiv);
 
-                // Scroll to bottom
+                // 滚动到底部
                 chatMessages.scrollTop = chatMessages.scrollHeight;
 
-                // Send request to server
+                // 发送请求到服务器
                 fetch('/api/chat', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        'messages': messages,
+                        'messages': messagesToSend,
                         'stream': true
                     })
                 })
@@ -236,46 +212,48 @@
                     if (!response.ok) {
                         throw new Error('Network response was not ok');
                     }
-                    // Read the stream
+                    // 读取流
                     const reader = response.body.getReader();
                     const decoder = new TextDecoder('utf-8');
                     let assistantMessageDiv = document.createElement('div');
                     assistantMessageDiv.className = 'message assistant-message';
 
-                    // Assistant avatar
-                    // var assistantAvatar = document.createElement('div');
-                    // assistantAvatar.className = 'avatar';
-                    // assistantAvatar.innerHTML = '<img src="/static/images/assistant-icon.png" alt="Assistant">';
-                    // assistantMessageDiv.appendChild(assistantAvatar);
-
-                    // Message content
+                    // 消息内容
                     var assistantContent = document.createElement('div');
                     assistantContent.className = 'content';
                     assistantMessageDiv.appendChild(assistantContent);
 
                     chatMessages.replaceChild(assistantMessageDiv, loadingDiv);
 
+                    let accumulatedContent = ''; // 累积助手消息的变量
+
                     function read() {
                         reader.read().then(({ done, value }) => {
                             if (done) {
-                                // Add assistant message to messages
-                                messages.push({'role': 'assistant', 'content': assistantContent.textContent});
+                                // 移除加载动画
+                                assistantContent.querySelector('.loading-dots')?.remove();
 
-                                // Limit to last 20 messages (10 pairs)
+                                // 添加助手消息到消息数组
+                                messages.push({ 'role': 'assistant', 'content': accumulatedContent });
+
+                                // 限制消息数量
                                 if (messages.length > 20) {
                                     messages = messages.slice(-20);
                                 }
 
                                 return;
                             }
-                            // Append the new text
+                            // 追加新文本
                             const chunk = decoder.decode(value);
-                            assistantContent.textContent += chunk;
+                            accumulatedContent += chunk;
 
-                            // Scroll to bottom
+                            // 渲染Markdown
+                            assistantContent.innerHTML = marked.parse(accumulatedContent);
+
+                            // 滚动到底部
                             chatMessages.scrollTop = chatMessages.scrollHeight;
 
-                            // Read the next chunk
+                            // 读取下一个数据块
                             read();
                         });
                     }
@@ -284,45 +262,187 @@
                 .catch(function (error) {
                     console.error('Error:', error);
                 });
+            }
+
+            // 处理聊天表单提交
+            chatForm.addEventListener('submit', function (e) {
+                e.preventDefault();
+                var userMessage = chatInput.value.trim();
+                if (userMessage === '') return;
+
+                // 添加用户消息到消息数组
+                messages.push({'role': 'user', 'content': userMessage});
+
+                // 显示用户消息
+                var userMessageDiv = document.createElement('div');
+                userMessageDiv.className = 'message user-message';
+
+                var userContent = document.createElement('div');
+                userContent.className = 'content';
+                userContent.textContent = userMessage;
+                userMessageDiv.appendChild(userContent);
+
+                chatMessages.appendChild(userMessageDiv);
+
+                // 清空输入框
+                chatInput.value = '';
+
+                // 滚动到底部
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                // 发送消息到服务器
+                sendMessageToServer(messages);
             });
 
-            // Clear chat
+            // 清除聊天记录
             var clearChatBtn = document.getElementById('clear-chat-btn');
             clearChatBtn.addEventListener('click', function () {
                 messages = [];
                 chatMessages.innerHTML = '';
             });
 
-            // Handle text selection
+            // 定义一个变量，跟踪提示框是否刚刚创建
+            var justCreatedPrompt = false;
+
+            // 处理文本选择
             document.addEventListener('mouseup', function (e) {
                 var selectedText = window.getSelection().toString().trim();
-                if (selectedText.length > 0) {
-                    // Show prompt to ask question
-                    if (confirm('要提问关于以下内容的问题吗？\n\n' + selectedText)) {
-                        // Open chat box
-                        if (chatContainer.style.display === 'none' || chatContainer.style.display === '') {
-                            toggleChatBtn.click();
-                        }
 
-                        // Pre-fill chat input with selected text
-                        chatInput.value = selectedText;
-                        chatInput.focus();
-                    }
+                // 首先，处理提示框的关闭
+                var existingPrompt = document.querySelector('.selection-prompt');
+                if (existingPrompt && !existingPrompt.contains(e.target)) {
+                    existingPrompt.parentNode.removeChild(existingPrompt);
+                }
+
+                if (selectedText.length > 0) {
+                    // 创建提示框
+                    var selection = window.getSelection();
+                    var range = selection.getRangeAt(0);
+                    var rect = range.getBoundingClientRect();
+
+                    var promptDiv = document.createElement('div');
+                    promptDiv.className = 'selection-prompt';
+
+                    // 按钮
+                    var btnTranslate = document.createElement('button');
+                    btnTranslate.textContent = '翻译';
+
+                    var btnAnalyze = document.createElement('button');
+                    btnAnalyze.textContent = '解析';
+
+                    var btnReturn = document.createElement('button');
+                    btnReturn.textContent = '返回';
+
+                    promptDiv.appendChild(btnTranslate);
+                    promptDiv.appendChild(btnAnalyze);
+                    promptDiv.appendChild(btnReturn);
+
+                    document.body.appendChild(promptDiv);
+
+                    // 计算提示框位置
+                    promptDiv.style.top = (rect.bottom + window.scrollY + 5) + 'px';
+                    promptDiv.style.left = (rect.left + window.scrollX) + 'px';
+
+                    // 标记提示框刚刚创建
+                    justCreatedPrompt = true;
+
+                    // 处理按钮点击事件
+                    btnReturn.addEventListener('click', function (event) {
+                        event.stopPropagation();
+                        if (promptDiv && document.body.contains(promptDiv)) {
+                            promptDiv.parentNode.removeChild(promptDiv);
+                        }
+                        window.getSelection().removeAllRanges();
+                    });
+
+                    btnTranslate.addEventListener('click', function (event) {
+                        event.stopPropagation();
+                        if (promptDiv && document.body.contains(promptDiv)) {
+                            promptDiv.parentNode.removeChild(promptDiv);
+                        }
+                        handleSelectionAction('translate', selectedText);
+                    });
+
+                    btnAnalyze.addEventListener('click', function (event) {
+                        event.stopPropagation();
+                        if (promptDiv && document.body.contains(promptDiv)) {
+                            promptDiv.parentNode.removeChild(promptDiv);
+                        }
+                        handleSelectionAction('analyze', selectedText);
+                    });
+                } else {
+                    justCreatedPrompt = false;
                 }
             });
 
-            // Initial chat open if on the reading page
-            // {% if 'book' in request.endpoint %}
-            // if (!chatContainer.classList.contains('active')) {
-            //     chatContainer.classList.add('active');
-            //     if (!isMobile) {
-            //         mainContent.classList.add('with-chat');
-            //     } else {
-            //         mainContent.style.display = 'none';
-            //     }
-            //     adjustHeights();
-            // }
-            // {% endif %}
+            // 当点击其他地方时，关闭提示框
+            document.addEventListener('mousedown', function (e) {
+                var promptDiv = document.querySelector('.selection-prompt');
+                if (promptDiv && !promptDiv.contains(e.target) && !justCreatedPrompt) {
+                    promptDiv.parentNode.removeChild(promptDiv);
+                }
+                // 重置标记
+                justCreatedPrompt = false;
+            });
+
+            // 定义 handleSelectionAction 函数
+            function handleSelectionAction(action, selectedText) {
+                // 打开聊天窗口（如果未打开）
+                if (!chatContainer.classList.contains('active')) {
+                    toggleChatBtn.click();
+                }
+
+                // 调整高度
+                adjustHeights();
+
+                // 清空消息
+                messages = [];
+                chatMessages.innerHTML = '';
+
+                // 添加系统消息
+                messages.push({
+                    'role': 'system',
+                    'content': '你是一个精通国学儒释道中医的的国学大师，你会尽可能的准确帮助用户翻译文章，内容分析和解析，或者回答用户相关的提问。'
+                });
+
+                // 添加用户消息
+                var userMessageContent = '';
+                if (action === 'translate') {
+                    userMessageContent = `请你帮助翻译成白话文：${selectedText}`;
+                } else if (action === 'analyze') {
+                    userMessageContent = `请你对于下面的内容，进行分析解构并给出你的看法。内容：${selectedText}`;
+                }
+
+                messages.push({
+                    'role': 'user',
+                    'content': userMessageContent
+                });
+
+                // 显示用户消息
+                var userMessageDiv = document.createElement('div');
+                userMessageDiv.className = 'message user-message';
+
+                var userContent = document.createElement('div');
+                userContent.className = 'content';
+                userContent.textContent = userMessageContent;
+                userMessageDiv.appendChild(userContent);
+
+                chatMessages.appendChild(userMessageDiv);
+
+                // 滚动到底部
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                // 发送消息到服务器
+                sendMessageToServer(messages);
+            }
+
+            // 如果在阅读页面，初始打开聊天窗口
+            {% if 'book' in request.endpoint %}
+            if (!chatContainer.classList.contains('active')) {
+                toggleChatBtn.click();
+                adjustHeights();
+            }
+            {% endif %}
         });
     </script>
     {% endblock %}
