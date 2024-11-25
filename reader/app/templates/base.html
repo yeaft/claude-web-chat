@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.5.0/dist/css/bootstrap.min.css">
     <!-- Custom CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
     <title>{% block title %}Reading App{% endblock %}</title>
 </head>
 <body>
@@ -55,7 +56,7 @@
             <textarea id="chat-input" placeholder="输入你的问题..."></textarea>
             <div class="chat-controls">
                 <!-- Clear Button -->
-                <button type="button" id="clear-chat-btn" class="btn-clear" title="清除">
+                <button type="button" id="clear-chat-btn" class="btn-clear" title="清空对话">
                     <!-- X Icon -->
                     <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-x-circle" viewBox="0 0 16 16">
                         <path fill-rule="evenodd" d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
@@ -64,9 +65,13 @@
                 <!-- Send Button -->
                 <button type="submit" class="btn-send" title="发送">
                     <!-- Up Arrow Icon -->
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-arrow-up-circle" viewBox="0 0 16 16">
-                      <path fill-rule="evenodd" d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM8 4a.5.5 0 0 1 .5.5v6.293l2.146-2.147a.5.5 0 0 1 .708.708l-3 3a.498.498 0 0 1-.708 0l-3-3a.5.5 0 1 1 .708-.708L7.5 10.793V4.5A.5.5 0 0 1 8 4z"/>
-                    </svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="bi bi-send">
+                        <path d="M22 12L3 3a1 1 0 0 0-1.3 1.3L11 12 1.7 19.7a1 1 0 0 0 1.3 1.3L22 12z"/>
+                        <path d="M20 12L5.5 5.5L11 12 5.5 18.5L20 12z"/>
+                      </svg>
+                    <!-- <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-arrow-up-circle" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM8 12a.5.5 0 0 1-.5-.5V5.707L5.354 8.854a.5.5 0 1 1-.708-.708l3-3a.498.498 0 0 1 .708 0l3 3a.5.5 0 1 1-.708.708L8.5 5.707V11.5a.5.5 0 0 1-.5.5z"/>
+                      </svg> -->
                 </button>
             </div>
         </form>
