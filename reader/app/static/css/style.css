@@ -138,7 +138,7 @@ body {
     line-height: 1.6;
     font-weight: 400;
     font-size: large;
-    overflow: hidden;
+    overflow: auto;
 }
 
 h3, h4 {

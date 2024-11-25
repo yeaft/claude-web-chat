@@ -14,7 +14,7 @@ openai.base_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com")
 
 # 定义蓝图
 main_bp = Blueprint('main', __name__)
-page_size = 10
+page_size = 9
 
 # 登录视图
 @main_bp.route('/login', methods=['GET', 'POST'])
