@@ -5,16 +5,14 @@ Context:
 
 Requirements:
 
-1. 目前先做最简单的就是后端新增一个集成deepseek的api，让用户可以通过对话框调用这个api提问问题。deepseek的API和openai是一样的，所以可以直接用openai的API来集成。这个API需要支持stream返回内容
-2. 前段交互分为手机端和电脑端，如果是手机端，有一个类似copilot的按钮在navbar上，点击后页面变为对话框，用户可以在对话框里提问问题。然后再点击那个按钮，就收回返回到之前的页面。如果是电脑端，navbar上也有按钮，但是点击后页面类似阅读页面分为左右两侧。左侧为内容，右侧为对话框。如果是有翻译的，那么在左侧内容下面，如果用户再点击隐藏对话框，翻译变为右侧。
-3. 对话框的风格和ChatGPT类似，用户提问的问题会有一个loading的动画，然后RAG会回答用户的问题，支持stream的方式，且用MD的格式返回内容。
-4. 对话上下文最多支持10个对话，超过10个对话后，最早的对话会被删除。同时对话框可以清除所有对话。不会保存用户所有的对话内容。
-5. 当用户用鼠标选择阅读文章的部分内容时，提示用户是否要提问这个问题，如果用户选择是，那么对话框会自动弹出，用户可以直接提问选择内容的问题。
+现在有些地方需要修改。
+1. 一个是聊天时，有时候发送的message要等很长时间还没有前段返回，但是看后端已经结束了。然后如果再问一个，上一个message的答案就会显示出来。感觉是在渲染的时候卡住了。如果后端服务出错了，那么前的返回也要显示出错，再试一次
+2. mobile的适配有问题，现在content内容可以滑动，但是高度不是固定的，所以footer就不能可见，需要滚到最下面才能看见。我需要内容部分是固定高度且支持滑动，这样footer就在底部可见。
 
 
 References:
 
-这个是我现在的代码，包括前段和后端，已经可以阅读，如果对于有翻译的书籍，对电脑端会分成两边，左边和右边。
+这个是我现在的代码，包括前段和后端，已经可以阅读。
 File: config.py
 import os
 
@@ -22,7 +20,17 @@ class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'your-secret-key'
     MONGODB_HOST = os.getenv("MONGODB_HOST", "localhost")
     MONGO_URI = f'mongodb://{MONGODB_HOST}:27017/dao'
+    DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # Add this line
 
+
+File: requirements.txt
+flask
+Flask-PyMongo
+flask-login
+werkzeug
+flask-wtf
+markdown
+openai
 
 File: run.py
 from app import create_app
@@ -93,12 +101,19 @@ def load_user(user_id):
 
 
 File: routes.py
-# app/routes.py
-from flask import Blueprint, render_template, redirect, url_for, request, flash, jsonify
+from flask import Blueprint, render_template, redirect, url_for, request, flash, jsonify, Response
 from flask_login import login_user, logout_user, current_user, login_required
 from .models import User
 from . import mongo
 from bson.objectid import ObjectId
+
+# Import OpenAI (for DeepSeek API)
+import os
+import openai
+
+# Initialize OpenAI API key
+openai.api_key = os.getenv("DEEPSEEK_API_KEY", "sk-e9c6ebc0a36041a1ac8b32dd2b6e14e7")
+openai.base_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com")
 
 # 定义蓝图
 main_bp = Blueprint('main', __name__)
@@ -322,6 +337,49 @@ def api_books():
         'current_page': page
     })
 
+# New API route for chat
+@main_bp.route('/api/chat', methods=['POST'])
+def chat_api():
+    data = request.get_json()
+    messages = data.get('messages', [])
+    stream = data.get('stream', False)
+
+    if not messages:
+        return jsonify({'error': 'No messages provided'}), 400
+
+    # Limit to the last 10 pairs of messages (user and assistant)
+    messages = messages[-20:]
+
+    # Call OpenAI API (DeepSeek's API)
+    try:
+        if stream:
+            # Stream response
+            def generate():
+                response = openai.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=messages,
+                    temperature=0.8,
+                    stream=True
+                )
+                for chunk in response:
+                    if chunk.choices:
+                        choice = chunk.choices[0]
+                        if choice.delta:
+                            content = choice.delta.content
+                            yield content
+
+            return Response(generate(), content_type='text/event-stream')
+        else:
+            # Non-stream response
+            response = openai.chat.completions.create(
+                model="deepseek-chat",
+                temperature=0.8,
+                messages=messages,
+                stream=False
+            )
+            return jsonify(response)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 File: __init__.py
@@ -491,7 +549,7 @@ body {
     line-height: 1.6;
     margin: 0;
     padding: 0;
-    background-color: #f8f9fa; /* 默认背景颜色 */
+    overflow: hidden; /* Prevent body from scrolling */
     font-weight: 400;
     font-size: large;
 }
@@ -523,10 +581,6 @@ p {
     padding: 20px;
 }
 
-#original-text {
-    border-right: 1px solid #dee2e6; /* 分隔线 */
-}
-
 /* 滚动条美化 */
 #original-text::-webkit-scrollbar,
 #translated-text::-webkit-scrollbar {
@@ -547,7 +601,6 @@ p {
 /* 导航栏样式 */
 .navbar {
     border-bottom: 1px solid #dee2e6;
-    padding: 20px;
     box-shadow: 0px 1px 3px rgba(0, 0, 0, 0.1);
 }
 
@@ -593,8 +646,13 @@ a:hover {
 @media (max-width: 768px) {
     #original-text, #translated-text {
         height: auto; /* 移动端高度适配 */
-        overflow-y: visible;
+        overflow-y: auto;
         padding: 15px;
+    }
+
+    #content-section {
+        flex-direction: column;
+        overflow: visible; /* Allow content to scroll on mobile */
     }
 
     .content-wrapper {
@@ -608,6 +666,7 @@ a:hover {
     }
 
     body {
+        overflow: auto;
         font-weight: 600;
         font-size:x-large;
     }
@@ -643,11 +702,256 @@ a:hover {
     text-decoration: underline;
 }
 
+/* Content Section */
+#content-section {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: row;
+    overflow: hidden; /* Prevent scrolling in the parent */
+}
+
+#original-text, .chat-container {
+    overflow-y: auto; /* Enable vertical scrolling within content areas */
+}
+
+#original-text {
+    width: 50%;
+}
+
+.with-chat #original-text {
+    width: 50% !; /* Adjust width when chat is open */
+}
+
+.with-chat .chat-container {
+    width: 50%;
+}
+
+.with-chat{
+    width: 50% !important;
+    float: left !important;
+}
+
+#main-content {
+    width: 100%;
+    float: none;
+}
+
+.chat-container {
+    display: none;
+    background-color: inherit;
+    color: inherit;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+.chat-container.active {
+    display: block;
+}
+
+@media (max-width: 768px) {
+    #original-text {
+        width: 100%;
+    }
+
+    .chat-container {
+        width: 100%;
+        position: fixed;
+        left: 0;
+        z-index: 1000;
+        overflow: auto; /* Allow scrolling within the chat container */
+    }
+
+    .with-chat #original-text {
+        display: none;
+    }
+
+    #main-content {
+        width: 100%;
+    }
+}
+
+/* Chat Messages */
+.chat-messages {
+    overflow-y: auto;
+    padding: 15px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1; /* Fill the available space */
+}
+
+/* Message Styles */
+.message {
+    display: flex;
+    margin-bottom: 15px;
+}
+
+.message .content {
+    max-width: 100%;
+    word-wrap: break-word;
+    line-height: 1.5;
+    font-size: 16px;
+}
+
+.user-message {
+    justify-content: flex-end;
+}
+
+.user-message .content {
+    background-color: rgba(0, 123, 255, 0.1);
+    padding: 10px;
+    border-radius: 8px;
+    max-width: 80%; /* Optional: Limit width for better readability */
+}
+
+.assistant-message {
+    justify-content: flex-start;
+}
+
+.assistant-message .content {
+    background-color: rgba(220, 220, 220, 0.2); /* Light gray background */
+    padding: 10px;
+    border-radius: 8px;
+    text-align: left;
+    max-width: 100%; /* Allow full width */
+}
+
+.loading {
+    font-style: italic;
+}
+
+/* Input Form */
+#chat-form {
+    padding: 10px;
+    box-sizing: border-box;
+    background-color: inherit;
+}
+
+#chat-input {
+    width: 100%;
+    height: 100px; /* Approximately 5 lines */
+    resize: none;
+    overflow-y: auto;
+    border: 1px solid #ced4da;
+    border-radius: 5px;
+    background-color: inherit;
+    color: inherit;
+    font-size: 16px;
+    padding: 10px;
+}
+
+#chat-input:focus {
+    outline: none;
+    border-color: #80bdff;
+}
+
+.chat-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: -5px;
+}
+
+.chat-controls button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 5px;
+}
+
+.chat-controls button:hover {
+    opacity: 0.7;
+}
+
+.chat-controls svg {
+    width: 24px;
+    height: 24px;
+    fill: currentColor;
+}
+
+.chat-controls .btn-clear {
+    margin-right: auto;
+}
+
+.chat-controls .btn-send {
+    margin-left: auto;
+}
+
+/* Remove default button focus outline */
+button:focus {
+    outline: none;
+}
+
+/* Loading Animation */
+.loading-dots {
+    display: inline-block;
+    margin-left: 5px;
+}
+
+.loading-dots span {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin: 0 2px;
+    background-color: currentColor;
+    border-radius: 50%;
+    opacity: 0;
+    animation: loadingBlink 1s infinite;
+}
+
+.loading-dots span:nth-child(1) {
+    animation-delay: 0s;
+}
+
+.loading-dots span:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.loading-dots span:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+@keyframes loadingBlink {
+    0%, 80%, 100% {
+        opacity: 0;
+    }
+    40% {
+        opacity: 1;
+    }
+}
+
+/* Selection Prompt */
+.selection-prompt {
+    position: absolute;
+    background-color: #ffffff;
+    border: 1px solid #cccccc;
+    padding: 5px;
+    border-radius: 4px;
+    z-index: 2000;
+    display: flex;
+    gap: 5px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.selection-prompt button {
+    padding: 5px 10px;
+    cursor: pointer;
+    background-color: transparent;
+    border: none;
+    font-size: 14px;
+    color: #007bff;
+}
+
+.selection-prompt button:hover {
+    background-color: #f0f0f0;
+}
+
+
 File: base.html
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <!-- Meta 标签 -->
+    <!-- 元标签 -->
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- Bootstrap CSS -->
@@ -659,11 +963,10 @@ File: base.html
 <body>
     <!-- 导航栏 -->
     <nav class="navbar navbar-expand-lg navbar-light">
-        <a class="navbar-brand" href="{{ url_for('main.index') }}">开卷有益</a>
+        <a class="navbar-brand" href="{{ url_for('main.index') }}">读书</a>
         <div class="ml-auto d-flex align-items-center">
             <!-- 主题选择器 -->
             <form class="form-inline mr-3 d-flex align-items-center">
-                <label class="mr-2 mb-0">主题：</label>
                 <select id="theme-selector" class="form-control">
                     <option value="theme-light-gray">浅灰</option>
                     <option value="theme-light-yellow">淡黄</option>
@@ -671,9 +974,17 @@ File: base.html
                     <option value="theme-dark">Dark</option>
                 </select>
             </form>
-            <!-- 登录/注册按钮 -->
+            <!-- Copilot 按钮 -->
+            <button id="toggle-chat-btn" class="btn ml-2">
+                <!-- Chat 图标 -->
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="bi bi-copilot" viewBox="0 0 16 16">
+                    <path d="M8 0a8 8 0 1 0 8 8A8 8 0 0 0 8 0zM4 7a4 4 0 1 1 8 0A4 4 0 0 1 4 7z"/>
+                    <path d="M2 14s1-1 6-1 6 1 6 1v1H2v-1z"/>
+                </svg>
+            </button>
+            <!-- 登录/注册 按钮 -->
             {% if current_user.is_authenticated %}
-            <span class="navbar-text mr-3">欢迎, {{ current_user.email }}</span>
+            <span class="navbar-text mr-3">{{ current_user.email }}</span>
             <a href="{{ url_for('main.logout') }}" class="btn btn-outline-secondary mr-2">登出</a>
             {% else %}
             <a href="{{ url_for('main.login') }}" class="btn btn-outline-primary mr-2">登录</a>
@@ -682,12 +993,44 @@ File: base.html
         </div>
     </nav>
     <!-- 主内容 -->
-    {% block content %}{% endblock %}
+    <div id="main-content">
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- 聊天容器 -->
+    <div id="chat-container" class="chat-container">
+        <!-- 聊天消息 -->
+        <div id="chat-messages" class="chat-messages"></div>
+        <!-- 输入表单 -->
+        <form id="chat-form">
+            <textarea id="chat-input" placeholder="输入你的问题..."></textarea>
+            <div class="chat-controls">
+                <!-- 清除按钮 -->
+                <button type="button" id="clear-chat-btn" class="btn-clear" title="清除">
+                    <!-- X 图标 -->
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-x-circle" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+                    </svg>
+                </button>
+                <!-- 发送按钮 -->
+                <button type="submit" class="btn-send" title="发送">
+                    <!-- 向上箭头图标 -->
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-arrow-up-circle" viewBox="0 0 16 16">
+                      <path fill-rule="evenodd" d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM8 4a.5.5 0 0 1 .5.5v6.293l2.146-2.147a.5.5 0 0 1 .708.708l-3 3a.498.498 0 0 1-.708 0l-3-3a.5.5 0 1 1 .708-.708L7.5 10.793V4.5A.5.5 0 0 1 8 4z"/>
+                    </svg>
+                </button>
+            </div>
+        </form>
+    </div>
 
     {% block scripts %}
+    <!-- 引入必要的脚本 -->
     <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Marked.js 用于解析 Markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- 您的自定义脚本 -->
     <script>
         document.addEventListener('DOMContentLoaded', function () {
             const themeSelector = document.getElementById('theme-selector');
@@ -705,8 +1048,352 @@ File: base.html
                 document.body.classList.add(selectedTheme);
                 localStorage.setItem('theme', selectedTheme);
             });
-        });
 
+            // 聊天功能
+            var isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+            var toggleChatBtn = document.getElementById('toggle-chat-btn');
+            var chatContainer = document.getElementById('chat-container');
+            var mainContent = document.getElementById('main-content');
+            var contentSection = document.getElementById('content-section');
+
+            function adjustHeights() {
+                var windowHeight = window.innerHeight;
+                var navHeight = document.querySelector('.navbar').offsetHeight;
+                var footerHeight = document.getElementById('footer') ? document.getElementById('footer').offsetHeight : 0;
+
+                var contentHeight = windowHeight - navHeight - footerHeight;
+                var chatHeight = windowHeight - navHeight;
+
+                if (mainContent) {
+                    if (isMobile) {
+                        mainContent.style.height = 'auto';
+                    } else {
+                        mainContent.style.height = contentHeight + 'px';
+                    }
+                }
+
+                if (contentSection) {
+                    if (isMobile) {
+                        contentSection.style.height = 'auto';
+                    } else {
+                        contentSection.style.height = contentHeight + 'px';
+                    }
+                }
+
+                if (chatContainer) {
+                    if (isMobile) {
+                        chatContainer.style.height = 'auto';
+                    } else {
+                        chatContainer.style.height = chatHeight + 'px';
+                    }
+                }
+
+                // 调整聊天消息高度
+                var chatFormHeight = document.getElementById('chat-form').offsetHeight;
+                var chatMessages = document.getElementById('chat-messages');
+                if (chatMessages) {
+                    if (isMobile) {
+                        chatMessages.style.height = 'auto';
+                    } else {
+                        chatMessages.style.height = (chatHeight - chatFormHeight) + 'px';
+                    }
+                }
+            }
+
+            // 页面加载和调整大小时调用
+            adjustHeights();
+            window.addEventListener('resize', adjustHeights);
+
+            toggleChatBtn.addEventListener('click', function () {
+                if (chatContainer.classList.contains('active')) {
+                    chatContainer.classList.remove('active');
+                    if (!isMobile) {
+                        mainContent.classList.remove('with-chat');
+                    } else {
+                        mainContent.style.display = 'block';
+                    }
+                } else {
+                    chatContainer.classList.add('active');
+                    if (!isMobile) {
+                        mainContent.classList.add('with-chat');
+                    } else {
+                        mainContent.style.display = 'none';
+                    }
+                }
+                adjustHeights();
+            });
+
+            // 定义全局变量
+            var chatForm = document.getElementById('chat-form');
+            var chatInput = document.getElementById('chat-input');
+            var chatMessages = document.getElementById('chat-messages');
+
+            var messages = [];
+
+            // 发送消息到服务器的通用函数
+            function sendMessageToServer(messagesToSend) {
+                // 显示加载动画
+                var loadingDiv = document.createElement('div');
+                loadingDiv.className = 'message assistant-message loading';
+
+                // 加载内容
+                var loadingContent = document.createElement('div');
+                loadingContent.className = 'content';
+                loadingContent.innerHTML = '正在思考<span class="loading-dots"><span></span><span></span><span></span></span>';
+                loadingDiv.appendChild(loadingContent);
+
+                chatMessages.appendChild(loadingDiv);
+
+                // 滚动到底部
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                // 发送请求到服务器
+                fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        'messages': messagesToSend,
+                        'stream': true
+                    })
+                })
+                .then(function (response) {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    // 读取流
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder('utf-8');
+                    let assistantMessageDiv = document.createElement('div');
+                    assistantMessageDiv.className = 'message assistant-message';
+
+                    // 消息内容
+                    var assistantContent = document.createElement('div');
+                    assistantContent.className = 'content';
+                    assistantMessageDiv.appendChild(assistantContent);
+
+                    chatMessages.replaceChild(assistantMessageDiv, loadingDiv);
+
+                    let accumulatedContent = ''; // 累积助手消息的变量
+
+                    function read() {
+                        reader.read().then(({ done, value }) => {
+                            if (done) {
+                                // 移除加载动画
+                                assistantContent.querySelector('.loading-dots')?.remove();
+
+                                // 添加助手消息到消息数组
+                                messages.push({ 'role': 'assistant', 'content': accumulatedContent });
+
+                                // 限制消息数量
+                                if (messages.length > 20) {
+                                    messages = messages.slice(-20);
+                                }
+
+                                return;
+                            }
+                            // 追加新文本
+                            const chunk = decoder.decode(value);
+                            accumulatedContent += chunk;
+
+                            // 渲染Markdown
+                            assistantContent.innerHTML = marked.parse(accumulatedContent);
+
+                            // 滚动到底部
+                            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                            // 读取下一个数据块
+                            read();
+                        });
+                    }
+                    read();
+                })
+                .catch(function (error) {
+                    console.error('Error:', error);
+                });
+            }
+
+            // 处理聊天表单提交
+            chatForm.addEventListener('submit', function (e) {
+                e.preventDefault();
+                var userMessage = chatInput.value.trim();
+                if (userMessage === '') return;
+
+                // 添加用户消息到消息数组
+                messages.push({'role': 'user', 'content': userMessage});
+
+                // 显示用户消息
+                var userMessageDiv = document.createElement('div');
+                userMessageDiv.className = 'message user-message';
+
+                var userContent = document.createElement('div');
+                userContent.className = 'content';
+                userContent.textContent = userMessage;
+                userMessageDiv.appendChild(userContent);
+
+                chatMessages.appendChild(userMessageDiv);
+
+                // 清空输入框
+                chatInput.value = '';
+
+                // 滚动到底部
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                // 发送消息到服务器
+                sendMessageToServer(messages);
+            });
+
+            // 清除聊天记录
+            var clearChatBtn = document.getElementById('clear-chat-btn');
+            clearChatBtn.addEventListener('click', function () {
+                messages = [];
+                chatMessages.innerHTML = '';
+            });
+
+            // 定义一个变量，跟踪提示框是否刚刚创建
+            var justCreatedPrompt = false;
+
+            // 处理文本选择
+            document.addEventListener('mouseup', function (e) {
+                var selectedText = window.getSelection().toString().trim();
+
+                // 首先，处理提示框的关闭
+                var existingPrompt = document.querySelector('.selection-prompt');
+                if (existingPrompt && !existingPrompt.contains(e.target)) {
+                    existingPrompt.parentNode.removeChild(existingPrompt);
+                }
+
+                if (selectedText.length > 0) {
+                    // 创建提示框
+                    var selection = window.getSelection();
+                    var range = selection.getRangeAt(0);
+                    var rect = range.getBoundingClientRect();
+
+                    var promptDiv = document.createElement('div');
+                    promptDiv.className = 'selection-prompt';
+
+                    // 按钮
+                    var btnTranslate = document.createElement('button');
+                    btnTranslate.textContent = '翻译';
+
+                    var btnAnalyze = document.createElement('button');
+                    btnAnalyze.textContent = '解析';
+
+                    var btnReturn = document.createElement('button');
+                    btnReturn.textContent = '返回';
+
+                    promptDiv.appendChild(btnTranslate);
+                    promptDiv.appendChild(btnAnalyze);
+                    promptDiv.appendChild(btnReturn);
+
+                    document.body.appendChild(promptDiv);
+
+                    // 计算提示框位置
+                    promptDiv.style.top = (rect.bottom + window.scrollY + 5) + 'px';
+                    promptDiv.style.left = (rect.left + window.scrollX) + 'px';
+
+                    // 标记提示框刚刚创建
+                    justCreatedPrompt = true;
+
+                    // 处理按钮点击事件
+                    btnReturn.addEventListener('click', function (event) {
+                        event.stopPropagation();
+                        if (promptDiv && document.body.contains(promptDiv)) {
+                            promptDiv.parentNode.removeChild(promptDiv);
+                        }
+                        window.getSelection().removeAllRanges();
+                    });
+
+                    btnTranslate.addEventListener('click', function (event) {
+                        event.stopPropagation();
+                        if (promptDiv && document.body.contains(promptDiv)) {
+                            promptDiv.parentNode.removeChild(promptDiv);
+                        }
+                        handleSelectionAction('translate', selectedText);
+                    });
+
+                    btnAnalyze.addEventListener('click', function (event) {
+                        event.stopPropagation();
+                        if (promptDiv && document.body.contains(promptDiv)) {
+                            promptDiv.parentNode.removeChild(promptDiv);
+                        }
+                        handleSelectionAction('analyze', selectedText);
+                    });
+                } else {
+                    justCreatedPrompt = false;
+                }
+            });
+
+            // 当点击其他地方时，关闭提示框
+            document.addEventListener('mousedown', function (e) {
+                var promptDiv = document.querySelector('.selection-prompt');
+                if (promptDiv && !promptDiv.contains(e.target) && !justCreatedPrompt) {
+                    promptDiv.parentNode.removeChild(promptDiv);
+                }
+                // 重置标记
+                justCreatedPrompt = false;
+            });
+
+            // 定义 handleSelectionAction 函数
+            function handleSelectionAction(action, selectedText) {
+                // 打开聊天窗口（如果未打开）
+                if (!chatContainer.classList.contains('active')) {
+                    toggleChatBtn.click();
+                }
+
+                // 调整高度
+                adjustHeights();
+
+                // 清空消息
+                messages = [];
+                chatMessages.innerHTML = '';
+
+                // 添加系统消息
+                messages.push({
+                    'role': 'system',
+                    'content': '你是一个精通国学儒释道中医的的国学大师，你会尽可能的准确帮助用户翻译文章，内容分析和解析，或者回答用户相关的提问。'
+                });
+
+                // 添加用户消息
+                var userMessageContent = '';
+                if (action === 'translate') {
+                    userMessageContent = `请你帮助翻译成白话文：${selectedText}`;
+                } else if (action === 'analyze') {
+                    userMessageContent = `请你对于下面的内容，进行分析解构并给出你的看法。内容：${selectedText}`;
+                }
+
+                messages.push({
+                    'role': 'user',
+                    'content': userMessageContent
+                });
+
+                // 显示用户消息
+                var userMessageDiv = document.createElement('div');
+                userMessageDiv.className = 'message user-message';
+
+                var userContent = document.createElement('div');
+                userContent.className = 'content';
+                userContent.textContent = userMessageContent;
+                userMessageDiv.appendChild(userContent);
+
+                chatMessages.appendChild(userMessageDiv);
+
+                // 滚动到底部
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                // 发送消息到服务器
+                sendMessageToServer(messages);
+            }
+
+            // 如果在阅读页面，初始打开聊天窗口
+            {% if 'book' in request.endpoint %}
+            if (!chatContainer.classList.contains('active')) {
+                toggleChatBtn.click();
+                adjustHeights();
+            }
+            {% endif %}
+        });
     </script>
     {% endblock %}
 </body>
@@ -719,19 +1406,16 @@ File: book.html
 
 {% block content %}
 <div class="container-fluid d-flex flex-column">
-    <!-- 内容部分 -->
+    <!-- Content Section -->
     <div class="row flex-grow-1" id="content-section">
         {% if not is_mobile %}
-            {% if document.plain_translation %}
-            <!-- 桌面布局，有翻译，左右布局 -->
-            <div class="col-md-6 d-flex flex-column" id="original-text">
+            <!-- Desktop Layout -->
+            <div class="col-md-12 d-flex flex-column" id="original-text">
                 <div class="content-wrapper">
                     <h3>{{ document.chapter_title }}</h3>
                     {{ document.original_text | markdown | safe }}
-                </div>
-            </div>
-            <div class="col-md-6 d-flex flex-column" id="translated-text">
-                <div class="content-wrapper">
+                    {% if document.plain_translation %}
+                    <div class="border-top"></div>
                     <h4>白话文翻译</h4>
                     {{ document.plain_translation | markdown | safe }}
                     <h4>典故解释</h4>
@@ -740,41 +1424,35 @@ File: book.html
                     {{ document.profound_sentences | markdown | safe }}
                     <h4>章节总结</h4>
                     {{ document.summary | markdown | safe }}
+                    {% endif %}
                 </div>
             </div>
-            {% else %}
-            <!-- 桌面布局，无翻译，内容居中 -->
-            <div class="col-12 d-flex flex-column align-items-center" id="content-center">
-                <div class="content-wrapper centered-content">
-                    <h3>{{ document.chapter_title }}</h3>
-                    {{ document.original_text | markdown | safe }}
-                </div>
-            </div>
-            {% endif %}
+            
         {% else %}
-        <!-- 移动端布局 -->
+        <!-- Mobile Layout -->
         <div class="col-12">
             <div class="content-wrapper">
-                <h3>{{ document.chapter_title }}</h3>
-                <h4>原文</h4>
-                {{ document.original_text | markdown | safe }}
-                {% if document.plain_translation %}
-                <h4>白话文翻译</h4>
-                {{ document.plain_translation | markdown | safe }}
-                <h4>典故解释</h4>
-                {{ document.allusion_explanation | markdown | safe }}
-                <h4>深刻句子汇总</h4>
-                {{ document.profound_sentences | markdown | safe }}
-                <h4>章节总结</h4>
-                {{ document.summary | markdown | safe }}
-                {% endif %}
+                <div id="content-area">
+                    <h3>{{ document.chapter_title }}</h3>
+                    {{ document.original_text | markdown | safe }}
+                    {% if document.plain_translation %}
+                    <h4>白话文翻译</h4>
+                    {{ document.plain_translation | markdown | safe }}
+                    <h4>典故解释</h4>
+                    {{ document.allusion_explanation | markdown | safe }}
+                    <h4>深刻句子汇总</h4>
+                    {{ document.profound_sentences | markdown | safe }}
+                    <h4>章节总结</h4>
+                    {{ document.summary | markdown | safe }}
+                    {% endif %}
+                </div>
             </div>
         </div>
         {% endif %}
     </div>
-    <!-- 底部导航 -->
+    <!-- Footer Navigation -->
     <div class="row" id="footer">
-        <div class="col-12 py-2 border-top">
+        <div class="col-12 py-2">
             <div class="d-flex justify-content-center align-items-center flex-wrap gap-2">
                 {% if prev_chapter %}
                 <a href="{{ url_for('main.book', name=document.name, chapter=prev_chapter) }}" class="btn btn-primary mx-2">上一章</a>
@@ -793,90 +1471,6 @@ File: book.html
         </div>
     </div>
 </div>
-{% endblock %}
-
-{% block scripts %}
-{{ super() }} <!-- 继承 base.html 中的脚本块 -->
-<script>
-    // 检测设备类型
-    var is_mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    // 在模板中使用 is_mobile 变量
-    var is_mobile_template = '{{ is_mobile }}';
-    if (is_mobile_template === 'False') {
-        is_mobile = false;
-    } else {
-        is_mobile = true;
-    }
-
-    if (!is_mobile){
-        {% if document.plain_translation %}
-        // 有翻译，执行滚动联动和高度调整
-        const originalText = document.getElementById('original-text');
-        const translatedText = document.getElementById('translated-text');
-        let isSyncingScroll = false; // 标志变量
-
-        if (originalText && translatedText) {
-            originalText.addEventListener('scroll', function() {
-                if (!isSyncingScroll) {
-                    isSyncingScroll = true;
-                    translatedText.scrollTop = originalText.scrollTop;
-                    isSyncingScroll = false;
-                }
-            });
-
-            translatedText.addEventListener('scroll', function() {
-                if (!isSyncingScroll) {
-                    isSyncingScroll = true;
-                    originalText.scrollTop = translatedText.scrollTop;
-                    isSyncingScroll = false;
-                }
-            });
-        }
-
-        // 动态调整内容区域高度
-        function adjustContentHeight() {
-            const contentSection = document.getElementById("content-section");
-            const footer = document.getElementById("footer");
-            const navBar = document.querySelector(".navbar"); // 导航栏
-            const footerHeight = footer.offsetHeight;
-            const navHeight = navBar ? navBar.offsetHeight : 0;
-            const windowHeight = window.innerHeight;
-
-            // 动态设置内容区域高度
-            const newContentHeight = windowHeight - footerHeight - navHeight;
-            contentSection.style.height = `${newContentHeight}px`;
-        }
-
-        // 初次调整
-        adjustContentHeight();
-
-        // 监听窗口大小变化
-        window.addEventListener("resize", adjustContentHeight);
-        {% else %}
-        // 无翻译，仅调整内容区域高度
-        function adjustContentHeight() {
-            const contentSection = document.getElementById("content-section");
-            const contentCenter = document.getElementById("content-center");
-            const footer = document.getElementById("footer");
-            const navBar = document.querySelector(".navbar"); // 导航栏
-            const footerHeight = footer.offsetHeight;
-            const navHeight = navBar ? navBar.offsetHeight : 0;
-            const windowHeight = window.innerHeight;
-
-            // 动态设置内容区域高度
-            const newContentHeight = windowHeight - footerHeight - navHeight;
-            contentSection.style.height = `${newContentHeight}px`;
-            contentCenter.style.height = `${newContentHeight}px`;
-        }
-
-        // 初次调整
-        adjustContentHeight();
-
-        // 监听窗口大小变化
-        window.addEventListener("resize", adjustContentHeight);
-        {% endif %}
-    }
-</script>
 {% endblock %}
 
 
@@ -1179,11 +1773,6 @@ File: search.html
 
 
 Summary of tasks:
-请按照需求完成以下任务：
-1. 新增一个后端API，集成deepseek的API，支持stream返回内容。
-2. 根据不同设备，实现不同的前端交互，手机端和电脑端。
-3. 实现ChatGPT类似的对话框风格，支持stream返回内容。
-4. 对话上下文最多支持10个对话，超过10个对话后，最早的对话会被删除。同时对话框可以清除所有对话。不会保存用户所有的对话内容。
-5. 当用户用鼠标选择阅读文章的部分内容时，提示用户是否要提问这个问题，如果用户选择是，那么对话框会自动弹出，用户可以直接提问选择内容的问题。
-5. 每个修改的代码按需求给出完整的代码内容。
+
+请按照需求修改代码。且给出完整准确的代码，以便我可以直接替换。
 

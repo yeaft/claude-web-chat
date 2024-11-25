@@ -5,47 +5,23 @@
 <div class="container-fluid d-flex flex-column">
     <!-- Content Section -->
     <div class="row flex-grow-1" id="content-section">
-        {% if not is_mobile %}
-            <!-- Desktop Layout -->
-            <div class="col-md-12 d-flex flex-column" id="original-text">
-                <div class="content-wrapper">
-                    <h3>{{ document.chapter_title }}</h3>
-                    {{ document.original_text | markdown | safe }}
-                    {% if document.plain_translation %}
-                    <div class="border-top"></div>
-                    <h4>白话文翻译</h4>
-                    {{ document.plain_translation | markdown | safe }}
-                    <h4>典故解释</h4>
-                    {{ document.allusion_explanation | markdown | safe }}
-                    <h4>深刻句子汇总</h4>
-                    {{ document.profound_sentences | markdown | safe }}
-                    <h4>章节总结</h4>
-                    {{ document.summary | markdown | safe }}
-                    {% endif %}
-                </div>
-            </div>
-            
-        {% else %}
-        <!-- Mobile Layout -->
-        <div class="col-12">
+        <div class="col-md-12 d-flex flex-column" id="original-text">
             <div class="content-wrapper">
-                <div id="content-area">
-                    <h3>{{ document.chapter_title }}</h3>
-                    {{ document.original_text | markdown | safe }}
-                    {% if document.plain_translation %}
-                    <h4>白话文翻译</h4>
-                    {{ document.plain_translation | markdown | safe }}
-                    <h4>典故解释</h4>
-                    {{ document.allusion_explanation | markdown | safe }}
-                    <h4>深刻句子汇总</h4>
-                    {{ document.profound_sentences | markdown | safe }}
-                    <h4>章节总结</h4>
-                    {{ document.summary | markdown | safe }}
-                    {% endif %}
-                </div>
+                <h3>{{ document.chapter_title }}</h3>
+                {{ document.original_text | markdown | safe }}
+                {% if document.plain_translation %}
+                <div class="border-top"></div>
+                <h4>白话文翻译</h4>
+                {{ document.plain_translation | markdown | safe }}
+                <h4>典故解释</h4>
+                {{ document.allusion_explanation | markdown | safe }}
+                <h4>深刻句子汇总</h4>
+                {{ document.profound_sentences | markdown | safe }}
+                <h4>章节总结</h4>
+                {{ document.summary | markdown | safe }}
+                {% endif %}
             </div>
         </div>
-        {% endif %}
     </div>
     <!-- Footer Navigation -->
     <div class="row" id="footer">
