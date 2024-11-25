@@ -39,8 +39,8 @@
     <div class="d-flex justify-content-center mt-3">
         <form id="jump-form" class="form-inline">
             <label for="jump-page" class="mr-2">跳转到第</label>
-            <input type="number" class="form-control mr-2" id="jump-page" min="1">
-            <label class="mr-2">页</label>
+            <input type="number" class="form-control form-control-sm"" id="jump-page" min="1">
+            <label class="mx-2">页</label>
             <button type="submit" class="btn btn-primary">跳转</button>
         </form>
     </div>
@@ -144,7 +144,7 @@
         const pagination = document.getElementById('pagination');
         pagination.innerHTML = '';
 
-        const maxVisiblePages = 7; // 最大显示的页码按钮数
+        const maxVisiblePages = is_mobile ? 1 : 7; // 最大显示的页码按钮数
         let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
         let endPage = startPage + maxVisiblePages - 1;
 

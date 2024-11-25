@@ -258,6 +258,10 @@ a:hover {
         font-weight: 600;
         font-size:x-large;
     }
+
+    .form-control-sm {
+        width: 2rem;
+    }
 }
 
 /* 确保表格宽度适配父容器 */
