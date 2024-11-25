@@ -33,11 +33,11 @@
             </button>
             <!-- Login/Register Buttons -->
             {% if current_user.is_authenticated %}
-            <span class="navbar-text mr-3">{{ current_user.email }}</span>
+            <span class="navbar-text mr-3">{{ current_user.email.split('@')[0] }}</span>
             <a href="{{ url_for('main.logout') }}" class="btn btn-outline-secondary mr-2 no-border">登出</a>
             {% else %}
-            <a href="{{ url_for('main.login') }}" class="btn btn-outline-primary mr-2">登录</a>
-            <a href="{{ url_for('main.register') }}" class="btn btn-primary">注册</a>
+            <a href="{{ url_for('main.login') }}" class="btn btn-outline-primary mr-2 no-border">登录</a>
+            <a href="{{ url_for('main.register') }}" class="btn btn-outline-primary no-border">注册</a>
             {% endif %}
         </div>
     </nav>
