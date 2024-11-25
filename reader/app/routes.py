@@ -239,7 +239,6 @@ def api_books():
 def chat_api():
     data = request.get_json()
     messages = data.get('messages', [])
-    stream = data.get('stream', False)
 
     if not messages:
         return jsonify({'error': 'No messages provided'}), 400
@@ -249,31 +248,22 @@ def chat_api():
 
     # Call OpenAI API (DeepSeek's API)
     try:
-        if stream:
-            # Stream response
-            def generate():
-                response = openai.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=messages,
-                    temperature=0.8,
-                    stream=True
-                )
-                for chunk in response:
-                    if chunk.choices:
-                        choice = chunk.choices[0]
-                        if choice.delta:
-                            content = choice.delta.content
-                            yield content
-
-            return Response(generate(), content_type='text/event-stream')
-        else:
-            # Non-stream response
+        # Stream response
+        def generate():
             response = openai.chat.completions.create(
                 model="deepseek-chat",
-                temperature=0.8,
                 messages=messages,
-                stream=False
+                temperature=0.8,
+                stream=True
             )
-            return jsonify(response)
+            for chunk in response:
+                if chunk.choices:
+                    choice = chunk.choices[0]
+                    if choice.delta:
+                        content = choice.delta.content
+                        yield content
+
+        return Response(generate(), content_type='text/event-stream')
+      
     except Exception as e:
         return jsonify({'error': str(e)}), 500
