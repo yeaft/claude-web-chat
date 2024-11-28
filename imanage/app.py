@@ -110,7 +110,7 @@ def token():
                 return jsonify({
                     "access_token": always_valid_token,
                     "token_type": "Bearer",
-                    "expires_in": 3600
+                    "expires_in": 3600000
                 })
             # 生成访问令牌和刷新令牌（JWT）
             access_token_payload = {
@@ -176,7 +176,7 @@ def token():
                 return jsonify({
                     "access_token": access_token,
                     "token_type": "Bearer",
-                    "expires_in": 3600,
+                    "expires_in": 36000,
                     "refresh_token": new_refresh_token
                 })
             else:
@@ -191,7 +191,7 @@ def token():
             return jsonify({
                 "access_token": always_valid_token,
                 "token_type": "Bearer",
-                "expires_in": 3600
+                "expires_in": 36000000
             })
         
         # 支持 client_credentials 授权类型
@@ -206,7 +206,7 @@ def token():
         return jsonify({
             "access_token": access_token,
             "token_type": "Bearer",
-            "expires_in": 3600
+            "expires_in": 36000
             # 不返回 refresh_token
         })
 
