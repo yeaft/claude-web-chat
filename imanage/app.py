@@ -276,19 +276,39 @@ def token():
 
 def get_request_data(request):
     """
-    将请求的所有相关内容转换为 JSON 格式
+    将请求的所有相关内容转换为 JSON 格式，处理各种边界情况以提高稳定性。
     """
+    try:
+        # 如果 Content-Type 为 application/json，则解析 JSON
+        if request.content_type and 'application/json' in request.content_type:
+            json_data = request.get_json(silent=True)  # 使用 silent=True 避免直接抛出异常
+        else:
+            json_data = None
+    except Exception as e:
+        json_data = None
+        logging.error(f"Failed to parse JSON body: {e}")
+
+    try:
+        # 获取请求体的原始数据（确保解码成功）
+        raw_data = request.data.decode('utf-8') if request.data else None
+    except Exception as e:
+        raw_data = None
+        logging.error(f"Failed to decode request body: {e}")
+
+    # 构建请求数据字典
     request_data = {
         "method": request.method,
         "path": request.path,
         "headers": {key: value for key, value in request.headers.items()},
         "args": {key: value for key, value in request.args.items()},
         "form": {key: value for key, value in request.form.items()},
-        "json": request.json,  # 如果是 JSON 请求体，则解析为字典
-        "data": request.data.decode('utf-8') if request.data else None,  # 原始请求体
+        "json": json_data,  # 解析后的 JSON 数据
+        "data": raw_data,  # 原始请求体数据
         "files": {key: file.filename for key, file in request.files.items()},  # 上传的文件信息
     }
+
     return request_data
+
 
 # 用于令牌验证的装饰器
 def token_required(f):
