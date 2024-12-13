@@ -9,7 +9,11 @@ import string
 import jwt  # 导入 PyJWT 库，用于处理 JWT 令牌
 import os
 import hashlib
-
+import logging
+ 
+logging.basicConfig(level=logging.INFO, filename='app.log', filemode='a',
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+ 
 app = Flask(__name__)
 
 # Directory to store uploaded files
@@ -125,9 +129,10 @@ def callback():
 
 @app.route('/token', methods=['POST'])
 def token():
-    print("Query Parameters:")
+    logging.info("Query Parameters:")
     for param, value in request.args.items():
-        print(f"  {param}: {value}")
+        logging.info(f"  {param}: {value}")
+    
     grant_type = request.form.get('grant_type')
     client_id = request.form.get('client_id')
     client_secret = request.form.get('client_secret')   
