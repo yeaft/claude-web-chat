@@ -125,7 +125,6 @@ def callback():
 
 @app.route('/token', methods=['POST'])
 def token():
-    print("In token")
     print("Query Parameters:")
     for param, value in request.args.items():
         print(f"  {param}: {value}")
