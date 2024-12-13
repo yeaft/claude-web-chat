@@ -125,13 +125,15 @@ def callback():
 
 @app.route('/token', methods=['POST'])
 def token():
+    print("In token")
+    print("Query Parameters:")
+    for param, value in request.args.items():
+        print(f"  {param}: {value}")
     grant_type = request.form.get('grant_type')
     client_id = request.form.get('client_id')
     client_secret = request.form.get('client_secret')
 
-    print("Query Parameters:")
-    for param, value in request.args.items():
-        print(f"  {param}: {value}")
+    
 
     if client_id not in clients or clients[client_id]['client_secret'] != client_secret:
         return jsonify({"error": "Invalid client credentials"}), 400
