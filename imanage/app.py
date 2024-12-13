@@ -138,9 +138,8 @@ def callback():
 
 @app.route('/token', methods=['POST'])
 def token():
-    logger.info("Query Parameters:")
-    for param, value in request.args.items():
-        logger.info(f"  {param}: {value}")
+    request_data = get_request_data(request)
+    logger.info(f"Request info: {request_data}")
     
     grant_type = request.form.get('grant_type')
     client_id = request.form.get('client_id')
@@ -273,6 +272,23 @@ def token():
 
     else:
         return jsonify({"error": "Unsupported grant type"}), 400
+
+
+def get_request_data(request):
+    """
+    将请求的所有相关内容转换为 JSON 格式
+    """
+    request_data = {
+        "method": request.method,
+        "path": request.path,
+        "headers": {key: value for key, value in request.headers.items()},
+        "args": {key: value for key, value in request.args.items()},
+        "form": {key: value for key, value in request.form.items()},
+        "json": request.json,  # 如果是 JSON 请求体，则解析为字典
+        "data": request.data.decode('utf-8') if request.data else None,  # 原始请求体
+        "files": {key: file.filename for key, file in request.files.items()},  # 上传的文件信息
+    }
+    return request_data
 
 # 用于令牌验证的装饰器
 def token_required(f):
