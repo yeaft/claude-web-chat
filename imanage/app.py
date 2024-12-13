@@ -85,6 +85,7 @@ def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
 # OAuth2 端点
 @app.route('/authorize')
 def authorize():
+       
     client_id = request.args.get('client_id')
     redirect_uri = request.args.get('redirect_uri')
     state = request.args.get('state')
@@ -104,6 +105,9 @@ def authorize():
             if response_mode == 'direct':
                 return jsonify({"code": auth_code, "state": state})
             elif redirect_uri:
+                # print request info
+                print(f"Authorize: client id: {client_id}, code_challenge: {code_challenge}, code_challenge_method: {code_challenge_method}, code: {auth_code}")
+                
                 return redirect(f"{redirect_uri}?code={auth_code}&state={state}")
             else:
                 return jsonify({"error": "redirect_uri is required unless response_mode is 'direct'"}), 400
@@ -124,6 +128,10 @@ def token():
     grant_type = request.form.get('grant_type')
     client_id = request.form.get('client_id')
     client_secret = request.form.get('client_secret')
+
+    print("Query Parameters:")
+    for param, value in request.args.items():
+        print(f"  {param}: {value}")
 
     if client_id not in clients or clients[client_id]['client_secret'] != client_secret:
         return jsonify({"error": "Invalid client credentials"}), 400
