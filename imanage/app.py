@@ -131,9 +131,7 @@ def token():
         print(f"  {param}: {value}")
     grant_type = request.form.get('grant_type')
     client_id = request.form.get('client_id')
-    client_secret = request.form.get('client_secret')
-
-    
+    client_secret = request.form.get('client_secret')   
 
     if client_id not in clients or clients[client_id]['client_secret'] != client_secret:
         return jsonify({"error": "Invalid client credentials"}), 400
