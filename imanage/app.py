@@ -10,9 +10,18 @@ import jwt  # 导入 PyJWT 库，用于处理 JWT 令牌
 import os
 import hashlib
 import logging
- 
-logging.basicConfig(level=logging.INFO, filename='app.log', filemode='a',
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+
+# 配置日志格式
+log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# 创建日志记录器
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# 输出到控制台的日志处理器
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+logger.addHandler(console_handler)
  
 app = Flask(__name__)
 
@@ -129,9 +138,9 @@ def callback():
 
 @app.route('/token', methods=['POST'])
 def token():
-    logging.info("Query Parameters:")
+    logger.info("Query Parameters:")
     for param, value in request.args.items():
-        logging.info(f"  {param}: {value}")
+        logger.info(f"  {param}: {value}")
     
     grant_type = request.form.get('grant_type')
     client_id = request.form.get('client_id')
