@@ -15,7 +15,7 @@ DATA_URL = "https://hq.sinajs.cn/list="
 DATA_5M_URL = "http://stock2.finance.sina.com.cn/futures/api/json.php/IndexService.getInnerFuturesMiniKLine5m?symbol="
 START_TIMES = [["085959", "101500"], ["103000", "113000"], ["133000", "150000"], ["205955", "230000"]]
 # MONITOR_CONTRACTS = ["rb", "oi", "i"]
-MONITOR_CONTRACTS = ["rb"]
+MONITOR_CONTRACTS = ["rb", "p", "m"]
 CONTRACT_DP_MAP = {}
 
 def get_contract_map():
@@ -48,6 +48,16 @@ def get_contract_map():
             "type": "hc",
             "code": "hc2505",        
             "secondCode": "hc2509"
+        },
+        {
+            "type": "p",
+            "code": "p2505",
+            "secondCode": "p2509"
+        },
+        {
+            "type": "m",
+            "code": "m2505",
+            "secondCode": "m2509"
         }
     ]
     
@@ -73,7 +83,7 @@ def get_current_data(types, code_key = "norCode", current_time = ""):
         current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.000')
     url = DATA_URL + ",".join(normalised_codes)
     r = requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'}, proxies=constance.PROXIES) if constance.ONLINE else requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'})
-    # utils.log(r.text)
+    utils.log(r.text)
     # with open("/log.txt", "a") as f:
     #     f.write("{} \n".format(r.text))
 
@@ -285,5 +295,5 @@ if __name__ == "__main__":
     # Initial data
     # initial_dp_data()
     # print(get_contract_map())
-    # get_current_data({"rb": {"norCode":"RB2301"}})
+    # get_current_data({"p": {"norCode":"P2505"}})
  
