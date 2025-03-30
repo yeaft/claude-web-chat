@@ -149,7 +149,7 @@ def collect_tick_data():
     
     last_trade_status = False
     utils.log("Start collect realtime tick")
-    # utils.log("Types {0}".format(types))
+    utils.log("Types {0}".format(types))
     while True:
         # align time
         while not is_end_with_5_sec():
@@ -273,9 +273,8 @@ def test_data():
         current_datas, raw_text = get_current_data(types, code_key)
         results = []
         for d in current_datas:
-            if d['cjl'] > 0 and (d['cjl'] != types[d['type']]['cjl'] or d['ccl'] != types[d['type']]['ccl']):
+            if d['cjl'] > 0 and d['ccl'] > 0:
                 results.append(d)
-    
         utils.log("{}".format(raw_text))
         utils.log("----------------------------------------")
         utils.log("{}".format(results))
