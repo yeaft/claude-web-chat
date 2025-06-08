@@ -35,29 +35,29 @@ def get_contract_map():
     available_contracts = [
         {
             "type": "rb",
-            "code": "rb2505",
-            "secondCode": "rb2510"
+            "code": "rb2510",
+            "secondCode": "rb2601"
         },
         {
             "type": "i",
-            "code": "i2505",        
-            "secondCode": "i2509"
+            "code": "i2509",        
+            "secondCode": "i2601"
         }
         ,
         {
             "type": "hc",
-            "code": "hc2505",        
-            "secondCode": "hc2509"
+            "code": "hc2509",        
+            "secondCode": "hc2601"
         },
         {
             "type": "p",
-            "code": "p2505",
-            "secondCode": "p2509"
+            "code": "p2509",
+            "secondCode": "p2601"
         },
         {
             "type": "m",
-            "code": "m2505",
-            "secondCode": "m2509"
+            "code": "m2509",
+            "secondCode": "m2601"
         }
     ]
     
