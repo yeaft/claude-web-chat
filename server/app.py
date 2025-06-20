@@ -33,10 +33,10 @@ EXTREME_SET = {}
 LOW_CJL_MINUTE_THRESHOLD = 3000
 MIN_CJL_5SEC_THRESHOLD = 1500
 
-CANDIDATE_CODES = ["rb2401"]
+CANDIDATE_CODES = ["rb2510"]
 
 CONTEXT = {
-    "default_code": "rb2401"
+    "default_code": "rb2510"
 }
 
 
