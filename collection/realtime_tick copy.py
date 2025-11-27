@@ -5,11 +5,6 @@ import yaml
 import socket
 import click
 import pytz
-import sys
-import os
-
-# Add parent directory to Python path to import helper modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
 from analysis import realtime_abnormal_detector
@@ -24,109 +19,58 @@ MONITOR_CONTRACTS = ["rb", "p", "m"]
 CONTRACT_DP_MAP = {}
 
 def get_contract_map():
-    """
-    通过新浪期货API动态获取最新的主力和次主力合约代码
-    返回包含types和collect_contracts的数据结构
-    """
-    # 监控的合约类型，用于生成collect_contracts数组
-    monitor_types = ["rb", "i", "hc", "p", "m"]
+    # max_date = constance.INFO_COL.find_one({"type":"rb"}, sort=[('date', DESCENDING)])['date']
+    # max_date = "20240109"
+    # available_contracts = list(constance.INFO_COL.aggregate([
+    #     { "$match": { "date": max_date, "kpl": { "$gt": 200000 } } },
+    #     { "$sort": { "kpl": -1 } },
+    #     { "$group": {
+    #         "_id": "$type",
+    #         "maxKpl": { "$max": "$kpl" },
+    #         "data": { "$first": "$$ROOT" }
+    #     }},
+    #     { "$replaceRoot": { "newRoot": "$data" } }
+    # ]))
     types = {}
-    collect_contracts = []
+    available_contracts = [
+        {
+            "type": "rb",
+            "code": "rb2601",
+            "secondCode": "rb2605"
+        },
+        {
+            "type": "i",
+            "code": "i2601",        
+            "secondCode": "i2605"
+        }
+        ,
+        {
+            "type": "hc",
+            "code": "hc2601",        
+            "secondCode": "hc2605"
+        },
+        {
+            "type": "p",
+            "code": "p2601",
+            "secondCode": "p2605"
+        },
+        {
+            "type": "m",
+            "code": "m2601",
+            "secondCode": "m2605"
+        }
+    ]
     
-    # 获取当前日期，用于生成合约代码
-    current_date = datetime.now(pytz.timezone("Asia/Shanghai"))
-    current_year = current_date.year % 100  # 获取年份后两位
-    current_month = current_date.month
-    
-    for contract_type in monitor_types:
-        # 生成当前日期附近的6个可能合约代码
-        possible_codes = []
-        for i in range(6):
-            # 计算合约月份（从当前月份开始的未来合约）
-            month_offset = i
-            target_year = current_year + (current_month + month_offset - 1) // 12
-            target_month = (current_month + month_offset - 1) % 12 + 1
-            
-            # 生成合约代码格式：类型YYMM
-            code = f"{contract_type}{target_year:02d}{target_month:02d}"
-            possible_codes.append(code)
-        
-        # 批量查询这些合约的数据
-        normalised_codes = [f"nf_{code.upper()}" for code in possible_codes]
-        url = DATA_URL + ",".join(normalised_codes)
-        
-        try:
-            r = requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'}, proxies=constance.PROXIES) if constance.ONLINE else requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'})
-            
-            active_contracts = []
-            utils.log(r.text)
-            for line in r.text.split("\n"):
-                data_array = line.split("=")
-                if len(data_array) > 1:
-                    nor_code = data_array[0].replace("var hq_str_nf_", "")
-                    code = nor_code.lower()
-                    
-                    data_str = data_array[1].replace("\"", "").replace(";", "")
-                    str_s = data_str.split(",")
-                    
-                    # 检查是否有有效数据
-                    if len(str_s) > 14:
-                        cjl = int(float(str_s[14])) if str_s[14] else 0
-                        ccl = int(float(str_s[13])) if str_s[13] else 0
-                        
-                        # 只保留有活跃交易的合约
-                        if cjl > 0 and ccl > 0:
-                            active_contracts.append({
-                                'code': code,
-                                'cjl': cjl,
-                                'ccl': ccl
-                            })
-            
-            # 按成交量降序排列，取前两个作为主力和次主力
-            active_contracts.sort(key=lambda x: x['cjl'], reverse=True)
-            
-            if len(active_contracts) >= 2:
-                main_contract = active_contracts[0]['code']
-                second_contract = active_contracts[1]['code']
-            elif len(active_contracts) == 1:
-                main_contract = active_contracts[0]['code']
-                # 如果没有次主力，使用下一个可能的合约
-                second_contract = possible_codes[1] if len(possible_codes) > 1 else main_contract
-            else:
-                # 如果没有活跃合约，使用默认的前两个
-                main_contract = possible_codes[0]
-                second_contract = possible_codes[1] if len(possible_codes) > 1 else main_contract
-            
-            # 构建types数据结构
-            types[contract_type] = {
-                'code': main_contract,
-                'secondCode': second_contract,
-                'norCode': main_contract.upper(),
-                'secondNorCode': second_contract.upper()
-            }
-            
-            # 为主力合约添加到collect_contracts
-            if contract_type in ["rb", "i", "hc", "p", "m"]:
-                collect_contracts.append(main_contract)
-                
-        except Exception as e:
-            utils.log(f"Error getting contract data for {contract_type}: {e}")
-            # 出错时使用默认值
-            default_main = f"{contract_type}{current_year:02d}{current_month:02d}"
-            default_second = f"{contract_type}{current_year:02d}{(current_month % 12) + 1:02d}"
-            types[contract_type] = {
-                'code': default_main,
-                'secondCode': default_second,
-                'norCode': default_main.upper(),
-                'secondNorCode': default_second.upper()
-            }
-            if contract_type in ["rb", "i", "hc", "p", "m"]:
-                collect_contracts.append(default_main)
-    
-    return {
-        "types": types,
-        "collect_contracts": collect_contracts
-    }
+    for x in available_contracts:
+        types[x['type']] = {}
+        types[x['type']]['code'] = x['code']
+        main_code = convert_code_to_standard_code(x['code'], x['type'])
+        # second_info = list(constance.INFO_COL.find({"date": max_date, "type": x['type'], "code": {"$gt": x['code']}}).sort("kpl", DESCENDING).limit(1))[0]
+        second_code = convert_code_to_standard_code(x['secondCode'], x['type'])
+        types[x['type']]['norCode'] = main_code.upper()
+        types[x['type']]['secondCode'] = second_code
+        types[x['type']]['secondNorCode'] = second_code.upper()
+    return types
 
 def convert_code_to_standard_code(source_code, contract):
     code_date = ''.join(filter(str.isdigit, source_code))
@@ -194,9 +138,7 @@ def initial_dp_data():
 def collect_tick_data():
 
     initial_dp_data()
-    contract_result = get_contract_map()
-    types = contract_result["types"]
-    collect_contracts = contract_result["collect_contracts"]
+    types = get_contract_map()
     cols = {}
     cols["norCode"] = constance.REAL_TIME_TICK_COL
     cols["secondNorCode"] = constance.REAL_TIME_TICK_SECOND_COL
@@ -208,7 +150,6 @@ def collect_tick_data():
     last_trade_status = False
     utils.log("Start collect realtime tick")
     utils.log("Types {0}".format(types))
-    utils.log("Collect contracts: {0}".format(collect_contracts))
     while True:
         # align time
         while not is_end_with_5_sec():
@@ -217,9 +158,7 @@ def collect_tick_data():
         current_trade_status = is_trading()
         if last_trade_status != current_trade_status:
             if not current_trade_status:
-                contract_result = get_contract_map()
-                types = contract_result["types"]
-                collect_contracts = contract_result["collect_contracts"]
+                types = get_contract_map()
             elif current_trade_status:
                 current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.000')
                 if (current_time.split(" ")[1] >= "20:55:00.000" and current_time.split(" ")[1] <= "21:01:00.000") or (current_time.split(" ")[1] >= "08:55:00.000" and current_time.split(" ")[1] <= "09:01:00.000"):
@@ -328,11 +267,8 @@ def convert_str_to_ticker_data(current_time, contract_type, code, data_str):
     return data
 
 def test_data():
-    contract_result = get_contract_map()
-    types = contract_result["types"]
-    collect_contracts = contract_result["collect_contracts"]
-    utils.log("Types: {}".format(types))
-    utils.log("Collect contracts: {}".format(collect_contracts))
+    types = get_contract_map()
+    utils.log("{}".format(types))
     for code_key in ["norCode", "secondNorCode"]:
         current_datas, raw_text = get_current_data(types, code_key)
         results = []
@@ -359,3 +295,4 @@ if __name__ == "__main__":
     # initial_dp_data()
     # print(get_contract_map())
     # get_current_data({"p": {"norCode":"P2505"}})
+ 

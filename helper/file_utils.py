@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-import imp
+import importlib
 import click
 import os
 import pathlib
