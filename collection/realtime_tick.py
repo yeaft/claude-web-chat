@@ -59,7 +59,6 @@ def get_contract_map():
             r = requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'}, proxies=constance.PROXIES) if constance.ONLINE else requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'})
             
             active_contracts = []
-            utils.log(r.text)
             for line in r.text.split("\n"):
                 data_array = line.split("=")
                 if len(data_array) > 1:
