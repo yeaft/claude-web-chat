@@ -9,8 +9,8 @@ local SESSION_NAME = "ai_writor_session"
 local SESSION_EXPIRY = 86400 * 7  -- 7 days in seconds
 local HTPASSWD_FILE = "/etc/nginx/.htpasswd"
 
--- Verify session token
-local function verify_token(token, ip)
+-- Verify session token (NO IP binding - supports users behind proxies/load balancers)
+local function verify_token(token)
     -- Token format: timestamp:hash
     local timestamp, hash = token:match("^(%d+):(%w+)$")
     if not timestamp or not hash then
@@ -24,8 +24,8 @@ local function verify_token(token, ip)
         return false
     end
 
-    -- Verify hash
-    local expected = ngx.md5(ip .. "|" .. timestamp .. "|" .. SESSION_SECRET)
+    -- Verify hash (not bound to IP)
+    local expected = ngx.md5(timestamp .. "|" .. SESSION_SECRET)
     return hash == expected
 end
 
@@ -33,8 +33,7 @@ end
 function _M.check_session()
     local cookie = ngx.var["cookie_" .. SESSION_NAME]
     if cookie then
-        local client_ip = ngx.var.remote_addr
-        if verify_token(cookie, client_ip) then
+        if verify_token(cookie) then
             return true
         end
     end
@@ -123,18 +122,15 @@ function _M.set_session_cookie()
     -- Only set cookie on successful requests
     local status = ngx.status
     if status >= 200 and status < 400 then
-        -- Check if we need to set cookie (from authenticate())
-        -- or if request already had valid session
+        -- Check if already has valid session
         local cookie = ngx.var["cookie_" .. SESSION_NAME]
-        local client_ip = ngx.var.remote_addr
-
-        if cookie and verify_token(cookie, client_ip) then
+        if cookie and verify_token(cookie) then
             return  -- Already has valid session
         end
 
-        -- Generate new session token
+        -- Generate new session token (not bound to IP)
         local timestamp = ngx.time()
-        local hash = ngx.md5(client_ip .. "|" .. timestamp .. "|" .. SESSION_SECRET)
+        local hash = ngx.md5(timestamp .. "|" .. SESSION_SECRET)
         local token = timestamp .. ":" .. hash
 
         -- Set cookie
