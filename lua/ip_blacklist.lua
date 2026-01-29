@@ -119,16 +119,22 @@ function _M.log_auth_result()
     local status = ngx.status
 
     if status == 401 then
-        -- Failed authentication
-        local count = failed_attempts:incr(client_ip, 1, 0)
-        ngx.log(ngx.WARN, "Failed auth attempt ", count, "/", MAX_ATTEMPTS, " from IP: ", client_ip)
+        -- Only count as failed attempt if Authorization header was provided
+        -- (meaning user entered wrong password, not just initial challenge)
+        local auth_header = ngx.var.http_authorization
+        if auth_header and auth_header ~= "" then
+            -- User provided credentials but they were wrong
+            local count = failed_attempts:incr(client_ip, 1, 0)
+            ngx.log(ngx.WARN, "Failed auth attempt ", count, "/", MAX_ATTEMPTS, " from IP: ", client_ip)
 
-        if count >= MAX_ATTEMPTS then
-            blacklist:set(client_ip, true)
-            ngx.log(ngx.ERR, "IP permanently blacklisted: ", client_ip)
+            if count >= MAX_ATTEMPTS then
+                blacklist:set(client_ip, true)
+                ngx.log(ngx.ERR, "IP permanently blacklisted: ", client_ip)
+            end
+
+            save_blacklist()
         end
-
-        save_blacklist()
+        -- If no auth header, it's just the initial 401 challenge - don't count
     elseif status == 200 or status == 304 then
         -- Successful authentication - clear failed attempts
         local prev_count = failed_attempts:get(client_ip)
