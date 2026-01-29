@@ -10,7 +10,7 @@ local SESSION_EXPIRY = 86400 * 7  -- 7 days in seconds
 
 -- Valid users (username -> password) - simpler than htpasswd parsing
 local VALID_USERS = {
-    ["hyi"] = "Qvn2026!"  -- Change this password!
+    ["hyi"] = "1qaz@WSX3edc"  -- Change this password!
 }
 
 -- Verify session token (NO IP binding - supports users behind proxies/load balancers)
