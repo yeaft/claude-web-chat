@@ -6,9 +6,10 @@ services:
     ports:
       - "443:443"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf
-      - ./lua:/etc/nginx/lua:ro  # Lua scripts for IP blacklist
-      - ./ip_blacklist.json:/etc/nginx/ip_blacklist.json  # Persistent blacklist
+      # OpenResty uses different paths than standard nginx
+      - ./nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf
+      - ./lua:/usr/local/openresty/nginx/lua:ro  # Lua scripts for IP blacklist
+      - ./ip_blacklist.json:/usr/local/openresty/nginx/ip_blacklist.json  # Persistent blacklist
       - /etc/letsencrypt:/etc/letsencrypt  # Mount SSL certificates
       - ./htpasswd:/etc/nginx/.htpasswd:ro  # Basic Auth for ai-writor
     depends_on:

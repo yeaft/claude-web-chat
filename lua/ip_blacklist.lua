@@ -7,7 +7,7 @@ local _M = {}
 
 -- Configuration
 local MAX_ATTEMPTS = 3
-local BLACKLIST_FILE = "/etc/nginx/ip_blacklist.json"
+local BLACKLIST_FILE = "/usr/local/openresty/nginx/ip_blacklist.json"
 
 -- Shared dictionary for tracking (defined in nginx.conf)
 local failed_attempts = ngx.shared.failed_attempts
