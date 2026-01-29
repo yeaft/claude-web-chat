@@ -7,7 +7,11 @@ local _M = {}
 local SESSION_SECRET = "ai-writor-session-secret-key-2026"  -- Change this!
 local SESSION_NAME = "ai_writor_session"
 local SESSION_EXPIRY = 86400 * 7  -- 7 days in seconds
-local HTPASSWD_FILE = "/etc/nginx/.htpasswd"
+
+-- Valid users (username -> password) - simpler than htpasswd parsing
+local VALID_USERS = {
+    ["hyi"] = "Qvn2026!"  -- Change this password!
+}
 
 -- Verify session token (NO IP binding - supports users behind proxies/load balancers)
 local function verify_token(token)
@@ -40,7 +44,7 @@ function _M.check_session()
     return false
 end
 
--- Verify Basic Auth credentials against htpasswd file
+-- Verify Basic Auth credentials against configured users
 function _M.verify_basic_auth()
     local auth = ngx.var.http_authorization
     if not auth then return false end
@@ -54,48 +58,12 @@ function _M.verify_basic_auth()
     local user, pass = decoded:match("^([^:]+):(.*)$")
     if not user or not pass then return false end
 
-    -- Read htpasswd file
-    local file = io.open(HTPASSWD_FILE, "r")
-    if not file then
-        ngx.log(ngx.ERR, "Cannot open htpasswd file: ", HTPASSWD_FILE)
-        return false
+    -- Check against configured users
+    local valid_pass = VALID_USERS[user]
+    if valid_pass and valid_pass == pass then
+        return true
     end
 
-    for line in file:lines() do
-        local stored_user, stored_hash = line:match("^([^:]+):(.+)$")
-        if stored_user == user then
-            file:close()
-
-            -- Handle different htpasswd formats
-            -- {SHA} format (htpasswd -s)
-            if stored_hash:sub(1, 5) == "{SHA}" then
-                local sha1 = ngx.sha1_bin(pass)
-                local expected = ngx.encode_base64(sha1)
-                return stored_hash:sub(6) == expected
-            end
-
-            -- apr1 MD5 format ($apr1$salt$hash) - most common
-            if stored_hash:sub(1, 6) == "$apr1$" then
-                -- Use os.execute to verify with htpasswd or openssl
-                -- For simplicity, we'll use a different approach
-                local apr1_verify = require("apr1_md5")
-                if apr1_verify then
-                    return apr1_verify.verify(pass, stored_hash)
-                end
-                -- Fallback: can't verify apr1, log warning
-                ngx.log(ngx.WARN, "apr1 hash verification not supported, please use SHA format")
-                return false
-            end
-
-            -- Plain text (not recommended but for testing)
-            if stored_hash == pass then
-                return true
-            end
-
-            return false
-        end
-    end
-    file:close()
     return false
 end
 
