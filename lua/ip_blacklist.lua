@@ -93,6 +93,21 @@ function _M.check()
     end
 end
 
+-- Check if IP is blacklisted (returns boolean, doesn't exit)
+function _M.is_blacklisted()
+    load_blacklist()
+
+    local client_ip = ngx.var.remote_addr
+
+    -- Check X-Forwarded-For for real IP behind proxy
+    local xff = ngx.var.http_x_forwarded_for
+    if xff then
+        client_ip = xff:match("^([^,]+)")
+    end
+
+    return blacklist:get(client_ip) == true
+end
+
 -- Record auth result (call in log_by_lua)
 function _M.log_auth_result()
     local client_ip = ngx.var.remote_addr
