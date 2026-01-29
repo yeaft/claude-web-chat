@@ -60,6 +60,39 @@ services:
     extra_hosts:
       - "host.docker.internal:172.17.0.1"
 
+  # =========================================
+  # AI-Writor Services
+  # =========================================
+  ai-writor-backend:
+    build:
+      context: ../ai-writor/backend
+      dockerfile: Dockerfile
+    container_name: ai-writor-backend
+    expose:
+      - "5000"
+    env_file:
+      - ../ai-writor/backend/.env
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_PATH=/app/data/chat.db
+    volumes:
+      - ../ai-writor/backend/data:/app/data
+      - ../ai-writor/backend/uploads:/app/uploads
+    networks:
+      - webnet
+    restart: unless-stopped
+
+  ai-writor-frontend:
+    build:
+      context: ../ai-writor/frontend
+      dockerfile: Dockerfile
+    container_name: ai-writor-frontend
+    expose:
+      - "9000"
+    networks:
+      - webnet
+    restart: unless-stopped
+
 networks:
   webnet:
     driver: bridge
