@@ -93,6 +93,27 @@ services:
       - webnet
     restart: unless-stopped
 
+  # =========================================
+  # Claude Web Chat Services
+  # =========================================
+  claude-webchat:
+    build:
+      context: ../WebChat
+      dockerfile: Dockerfile
+    container_name: claude-webchat
+    expose:
+      - "3000"
+    env_file:
+      - ../WebChat/server/.env
+    environment:
+      - NODE_ENV=production
+      - SKIP_AUTH=false
+    volumes:
+      - ../WebChat/server/users.json:/app/server/users.json
+    networks:
+      - webnet
+    restart: unless-stopped
+
 networks:
   webnet:
     driver: bridge
