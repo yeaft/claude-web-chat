@@ -7,3 +7,7 @@ dist/*
 **.json
 **.xlsx
 crawler/zhonghuadiancang/**/*.txt
+
+# Claude Code temp files
+tmpclaude-*
+**/tmpclaude-*

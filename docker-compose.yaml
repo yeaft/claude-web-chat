@@ -94,7 +94,7 @@ services:
     restart: unless-stopped
 
   # =========================================
-  # Claude Web Chat Services
+  # Claude Web Chat Services (cc.yeaft.com)
   # =========================================
   claude-webchat:
     build:
@@ -102,14 +102,16 @@ services:
       dockerfile: Dockerfile
     container_name: claude-webchat
     expose:
-      - "3000"
+      - "3456"
     env_file:
       - ../WebChat/server/.env
     environment:
       - NODE_ENV=production
+      - PORT=3456
       - SKIP_AUTH=false
     volumes:
       - ../WebChat/server/users.json:/app/server/users.json
+      - ../WebChat/data:/app/data
     networks:
       - webnet
     restart: unless-stopped
