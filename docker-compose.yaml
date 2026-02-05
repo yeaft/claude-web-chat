@@ -112,7 +112,6 @@ services:
       - SKIP_AUTH=false
     volumes:
       - ../WebChat/data:/app/data
-      - ../WebChat/server/users.json:/app/server/users.json:ro
     networks:
       - webnet
     restart: unless-stopped
