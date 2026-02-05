@@ -15,6 +15,7 @@ services:
     depends_on:
       - imanage-flask-app
       - data-api-flask-app
+      - claude-webchat
     networks:
       - webnet
 
@@ -110,8 +111,8 @@ services:
       - PORT=3456
       - SKIP_AUTH=false
     volumes:
-      - ../WebChat/server/users.json:/app/server/users.json
       - ../WebChat/data:/app/data
+      - ../WebChat/server/users.json:/app/server/users.json:ro
     networks:
       - webnet
     restart: unless-stopped
