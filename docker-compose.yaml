@@ -1,17 +1,13 @@
 version: '3'
 services:
   nginx:
-    image: openresty/openresty:alpine
+    image: nginx:alpine
     container_name: nginx_for_servers
     ports:
       - "443:443"
     volumes:
-      # OpenResty uses different paths than standard nginx
-      - ./nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf
-      - ./lua:/usr/local/openresty/nginx/lua:ro  # Lua scripts for IP blacklist
-      - ./ip_blacklist.json:/usr/local/openresty/nginx/ip_blacklist.json  # Persistent blacklist
-      - /etc/letsencrypt:/etc/letsencrypt  # Mount SSL certificates
-      - ./htpasswd:/etc/nginx/.htpasswd:ro  # Basic Auth for ai-writor
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     depends_on:
       - imanage-flask-app
       - data-api-flask-app
