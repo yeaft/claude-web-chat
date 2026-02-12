@@ -112,6 +112,31 @@ services:
       - webnet
     restart: unless-stopped
 
+  # =========================================
+  # Copilot Proxy Server (copilot.yeaft.com)
+  # =========================================
+  copilot-proxy:
+    build:
+      context: ../CopilotProxyServer
+      dockerfile: Dockerfile
+    container_name: copilot-proxy
+    expose:
+      - "6628"
+    env_file:
+      - ../CopilotProxyServer/.env
+    environment:
+      - NODE_ENV=production
+      - PORT=6628
+      - DATA_DIR=/app/data
+    volumes:
+      - copilot-proxy-data:/app/data
+    networks:
+      - webnet
+    restart: unless-stopped
+
 networks:
   webnet:
     driver: bridge
+
+volumes:
+  copilot-proxy-data:
