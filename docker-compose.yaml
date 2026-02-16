@@ -119,13 +119,13 @@ services:
     expose:
       - "6628"
     env_file:
-      - ../CopilotProxyServer/.env
+      - ${HOME}/data/copilot-proxy/.env
     environment:
       - NODE_ENV=production
       - PORT=6628
       - DATA_DIR=/app/data
     volumes:
-      - copilot-proxy-data:/app/data
+      - ${HOME}/data/copilot-proxy:/app/data
     networks:
       - webnet
     restart: unless-stopped
@@ -133,6 +133,3 @@ services:
 networks:
   webnet:
     driver: bridge
-
-volumes:
-  copilot-proxy-data:
