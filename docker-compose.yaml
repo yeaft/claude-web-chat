@@ -94,20 +94,16 @@ services:
   # Claude Web Chat Services (cc.yeaft.com)
   # =========================================
   claude-webchat:
-    build:
-      context: ../WebChat
-      dockerfile: Dockerfile
+    image: ghcr.io/yeaft/claude-web-chat:latest
     container_name: claude-webchat
     expose:
       - "3456"
     env_file:
-      - ../WebChat/server/.env
+      - ${HOME}/data/webchat/.env
     environment:
       - NODE_ENV=production
-      - PORT=3456
-      - SKIP_AUTH=false
     volumes:
-      - ../WebChat/data:/app/data
+      - ${HOME}/data/webchat:/app/data
     networks:
       - webnet
     restart: unless-stopped
