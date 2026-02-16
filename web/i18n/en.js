@@ -85,6 +85,7 @@ export default {
   'chat.agent.upgrade': 'Upgrade',
   'chat.agent.upgrading': 'Upgrading',
   'chat.agent.upgradeConfirm': 'Upgrade Agent "{name}" to the latest version?\nThe agent will restart after upgrading.',
+  'chat.agent.alreadyLatest': 'Agent is already at the latest version (v{version}), no upgrade needed.',
   'chat.agent.online': '{count} Agent(s) online',
   'chat.agent.selectFirst': 'Please select an Agent first',
 

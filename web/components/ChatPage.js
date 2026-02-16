@@ -937,12 +937,15 @@ export default {
 
     // 监听 agent 升级结果
     this._agentUpgradeAckHandler = (e) => {
-      const { agentId, success, error } = e.detail;
+      const { agentId, success, error, alreadyLatest, version } = e.detail;
       if (!success) {
         delete this.upgradingAgents[agentId];
         alert(`Agent upgrade failed: ${error || 'Unknown error'}`);
+      } else if (alreadyLatest) {
+        delete this.upgradingAgents[agentId];
+        alert(this.$t('chat.agent.alreadyLatest', { version: version || '' }));
       }
-      // success 时 agent 会重启，等上线后由 watcher 清除状态
+      // success && !alreadyLatest 时 agent 会重启，等上线后由 watcher 清除状态
     };
     window.addEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
 

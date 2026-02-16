@@ -851,7 +851,7 @@ async function handleAgentMessage(agentId, msg) {
           (agent.ownerId && client.userId === agent.ownerId) ||
           (!agent.ownerId && client.role === 'admin')
         )) {
-          await sendToWebClient(client, { type: 'upgrade_agent_ack', agentId, success: msg.success, error: msg.error });
+          await sendToWebClient(client, { type: 'upgrade_agent_ack', agentId, success: msg.success, error: msg.error, alreadyLatest: msg.alreadyLatest, version: msg.version });
         }
       }
       break;

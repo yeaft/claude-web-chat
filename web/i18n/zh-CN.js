@@ -85,6 +85,7 @@ export default {
   'chat.agent.upgrade': '升级',
   'chat.agent.upgrading': '升级中',
   'chat.agent.upgradeConfirm': '升级 Agent "{name}" 到最新版本？\n升级完成后 Agent 会自动重启。',
+  'chat.agent.alreadyLatest': 'Agent 已是最新版本 (v{version})，无需升级。',
   'chat.agent.online': '{count} 个 Agent 在线',
   'chat.agent.selectFirst': '请先选择一个 Agent',
 

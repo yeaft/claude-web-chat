@@ -267,12 +267,20 @@ async function handleMessage(msg) {
       break;
 
     case 'upgrade_agent':
-      console.log('[Agent] Upgrade requested, running npm upgrade...');
+      console.log('[Agent] Upgrade requested, checking for updates...');
       try {
         const pkgName = ctx.pkgName || '@yeaft/webchat-agent';
+        // Check latest version before installing
+        const latestVersion = execSync(`npm view ${pkgName} version`, { stdio: 'pipe' }).toString().trim();
+        if (latestVersion === ctx.agentVersion) {
+          console.log(`[Agent] Already at latest version (${ctx.agentVersion}), skipping upgrade.`);
+          sendToServer({ type: 'upgrade_agent_ack', success: true, alreadyLatest: true, version: ctx.agentVersion });
+          break;
+        }
+        console.log(`[Agent] Upgrading from ${ctx.agentVersion} to ${latestVersion}...`);
         execSync(`npm install -g ${pkgName}@latest`, { stdio: 'pipe' });
         console.log('[Agent] Upgrade successful, restarting...');
-        sendToServer({ type: 'upgrade_agent_ack', success: true });
+        sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion });
         // Restart after upgrade (same as restart_agent)
         setTimeout(() => {
           for (const [, term] of ctx.terminals) {
