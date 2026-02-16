@@ -274,7 +274,7 @@ async function handleAgentMessage(agentId, msg) {
     'conversation_list', 'conversation_created', 'conversation_resumed',
     'agent_sync_complete', 'sync_sessions', 'proxy_response', 'proxy_response_chunk',
     'proxy_response_end', 'proxy_ports_update', 'proxy_ws_opened', 'proxy_ws_message',
-    'proxy_ws_closed', 'proxy_ws_error', 'restart_agent_ack'
+    'proxy_ws_closed', 'proxy_ws_error', 'restart_agent_ack', 'upgrade_agent_ack'
   ]);
   if (msg.conversationId && !CONV_EXEMPT_TYPES.has(msg.type)) {
     if (!agent.conversations.has(msg.conversationId)) {
@@ -840,6 +840,18 @@ async function handleAgentMessage(agentId, msg) {
           (!agent.ownerId && client.role === 'admin')
         )) {
           await sendToWebClient(client, { type: 'restart_agent_ack', agentId });
+        }
+      }
+      break;
+    }
+
+    case 'upgrade_agent_ack': {
+      for (const [, client] of webClients) {
+        if (client.authenticated && (CONFIG.skipAuth ||
+          (agent.ownerId && client.userId === agent.ownerId) ||
+          (!agent.ownerId && client.role === 'admin')
+        )) {
+          await sendToWebClient(client, { type: 'upgrade_agent_ack', agentId, success: msg.success, error: msg.error });
         }
       }
       break;

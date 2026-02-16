@@ -82,6 +82,9 @@ export default {
   'chat.agent.restarting': 'Restarting',
   'chat.agent.restart': 'Restart',
   'chat.agent.restartConfirm': 'Are you sure you want to restart Agent "{name}"?\nAll active conversations will be interrupted.',
+  'chat.agent.upgrade': 'Upgrade',
+  'chat.agent.upgrading': 'Upgrading',
+  'chat.agent.upgradeConfirm': 'Upgrade Agent "{name}" to the latest version?\nThe agent will restart after upgrading.',
   'chat.agent.online': '{count} Agent(s) online',
   'chat.agent.selectFirst': 'Please select an Agent first',
 
@@ -260,6 +263,8 @@ export default {
   // Settings - Security
   'settings.security.agentKey': 'Agent Secret',
   'settings.security.agentKeyDesc': 'Shared secret for Agent connection authentication',
+  'settings.security.agentCmdInstall': 'Install Agent',
+  'settings.security.agentCmdService': 'Run as Service',
   'settings.security.none': 'None',
   'settings.security.show': 'Show',
   'settings.security.hide': 'Hide',

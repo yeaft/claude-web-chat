@@ -83,6 +83,7 @@ export async function broadcastAgentList() {
           status: agent.status || 'ready',
           latency: agent.latency || null,
           capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+          version: agent.version || null,
           proxyPorts: agent.proxyPorts || [],
           conversations: Array.from(agent.conversations.values()).filter(c =>
             CONFIG.skipAuth || !c.userId || c.userId === client.userId

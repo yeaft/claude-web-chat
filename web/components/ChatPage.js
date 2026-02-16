@@ -69,12 +69,23 @@ export default {
                 <div v-for="agent in store.agents" :key="agent.id" class="agent-dropdown-item" :class="{ offline: !agent.online }">
                   <span class="status-dot" :class="{ online: agent.online, restarting: restartingAgents[agent.id] }"></span>
                   <span class="agent-dropdown-name">{{ agent.name }}</span>
+                  <span class="agent-dropdown-version" v-if="agent.version">v{{ agent.version }}</span>
                   <span class="agent-dropdown-latency" v-if="agent.online && agent.latency" :class="getLatencyClass(agent.latency)">{{ agent.latency }}ms</span>
                   <span class="agent-dropdown-status" v-if="restartingAgents[agent.id]">{{ $t('chat.agent.restarting') }}</span>
+                  <span class="agent-dropdown-status" v-else-if="upgradingAgents[agent.id]">{{ $t('chat.agent.upgrading') }}</span>
+                  <button
+                    class="agent-dropdown-upgrade-btn"
+                    @click.stop="upgradeAgent(agent.id)"
+                    :disabled="!agent.online || restartingAgents[agent.id] || upgradingAgents[agent.id]"
+                    :title="$t('chat.agent.upgrade')"
+                  >
+                    <span v-if="upgradingAgents[agent.id]" class="spinner-mini"></span>
+                    <svg v-else viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></svg>
+                  </button>
                   <button
                     class="agent-dropdown-restart-btn"
                     @click.stop="restartAgent(agent.id)"
-                    :disabled="!agent.online || restartingAgents[agent.id]"
+                    :disabled="!agent.online || restartingAgents[agent.id] || upgradingAgents[agent.id]"
                     :title="$t('chat.agent.restart')"
                   >
                     <span v-if="restartingAgents[agent.id]" class="spinner-mini"></span>
@@ -459,6 +470,7 @@ export default {
       proxyOpen: false,
       agentManagerOpen: false,
       restartingAgents: {},
+      upgradingAgents: {},
       newConversationWorkDir: '',
       newConvAgent: '',
       newConvMobileTab: 'config',
@@ -797,6 +809,13 @@ export default {
       this.restartingAgents[agentId] = true;
       this.store.restartAgent(agentId);
     },
+    upgradeAgent(agentId) {
+      const agent = this.store.agents.find(a => a.id === agentId);
+      const name = agent?.name || agentId;
+      if (!confirm(this.$t('chat.agent.upgradeConfirm', { name }))) return;
+      this.upgradingAgents[agentId] = true;
+      this.store.upgradeAgent(agentId);
+    },
     // Folder picker methods
     openFolderPicker(target) {
       const agentId = target === 'newConv' ? this.newConvAgent : this.resumeAgent;
@@ -916,6 +935,17 @@ export default {
     };
     window.addEventListener('agent-restart-ack', this._agentRestartAckHandler);
 
+    // 监听 agent 升级结果
+    this._agentUpgradeAckHandler = (e) => {
+      const { agentId, success, error } = e.detail;
+      if (!success) {
+        delete this.upgradingAgents[agentId];
+        alert(`Agent upgrade failed: ${error || 'Unknown error'}`);
+      }
+      // success 时 agent 会重启，等上线后由 watcher 清除状态
+    };
+    window.addEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
+
     // 监听 agent 列表更新，检查重启中的 agent 是否已恢复
     this._checkRestartingAgents = this.$watch(
       () => this.store.agents.map(a => a.id + ':' + a.online),
@@ -926,6 +956,12 @@ export default {
             delete this.restartingAgents[agentId];
           }
         }
+        for (const agentId of Object.keys(this.upgradingAgents)) {
+          const agent = this.store.agents.find(a => a.id === agentId);
+          if (agent?.online) {
+            delete this.upgradingAgents[agentId];
+          }
+        }
       }
     );
   },
@@ -934,6 +970,7 @@ export default {
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('workbench-message', this.handleFolderPickerMessage);
     window.removeEventListener('agent-restart-ack', this._agentRestartAckHandler);
+    window.removeEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
     if (this._checkRestartingAgents) this._checkRestartingAgents();
   }
 };

@@ -696,6 +696,14 @@ async function handleWebMessage(clientId, msg) {
       break;
     }
 
+    case 'upgrade_agent': {
+      const upgradeAgentId = msg.agentId;
+      if (!upgradeAgentId) break;
+      if (!await checkAgentAccess(upgradeAgentId)) break;
+      await forwardToAgent(upgradeAgentId, { type: 'upgrade_agent' });
+      break;
+    }
+
     case 'proxy_update_ports': {
       const proxyAgentId = msg.agentId || client.currentAgent;
       if (!proxyAgentId) break;

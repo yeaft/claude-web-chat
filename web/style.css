@@ -8747,7 +8747,7 @@ body {
   top: 100%;
   left: -4px;
   margin-top: 4px;
-  min-width: 200px;
+  min-width: 252px;
   background: var(--bg-main);
   border-radius: 12px;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
@@ -8811,13 +8811,20 @@ body {
   white-space: nowrap;
 }
 
+.agent-dropdown-version {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 .agent-dropdown-status {
   font-size: 11px;
   color: #f59e0b;
   white-space: nowrap;
 }
 
-.agent-dropdown-restart-btn {
+.agent-dropdown-restart-btn,
+.agent-dropdown-upgrade-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -8832,12 +8839,14 @@ body {
   flex-shrink: 0;
 }
 
-.agent-dropdown-restart-btn:hover:not(:disabled) {
+.agent-dropdown-restart-btn:hover:not(:disabled),
+.agent-dropdown-upgrade-btn:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--accent-color, #3b82f6);
 }
 
-.agent-dropdown-restart-btn:disabled {
+.agent-dropdown-restart-btn:disabled,
+.agent-dropdown-upgrade-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
 }
@@ -9142,6 +9151,39 @@ body {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+/* Agent command hints */
+.sp-cmd-group {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sp-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sp-cmd-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  min-width: 80px;
+}
+
+.sp-cmd {
+  flex: 1;
+  font-size: 11px;
+  padding: 6px 10px;
+  background: var(--sidebar-hover);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  word-break: break-all;
+  user-select: all;
 }
 
 /* Buttons */

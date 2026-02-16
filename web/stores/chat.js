@@ -206,6 +206,7 @@ export const useChatStore = defineStore('chat', {
     refreshAgents() { convHelpers.refreshAgents(this); },
     refreshConversation() { convHelpers.refreshConversation(this); },
     restartAgent(agentId) { convHelpers.restartAgent(this, agentId); },
+    upgradeAgent(agentId) { convHelpers.upgradeAgent(this, agentId); },
 
     // ★ Phase 6: 分页加载
     loadMoreMessages() {

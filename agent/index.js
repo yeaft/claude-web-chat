@@ -16,6 +16,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Load package version
 const pkg = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf-8'));
 ctx.agentVersion = pkg.version;
+ctx.pkgName = pkg.name;
 
 // 配置文件路径（向后兼容：先查当前目录 .claude-agent.json）
 const LOCAL_CONFIG_FILE = join(process.cwd(), '.claude-agent.json');

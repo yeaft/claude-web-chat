@@ -266,3 +266,11 @@ export function restartAgent(store, agentId) {
     agentId
   });
 }
+
+export function upgradeAgent(store, agentId) {
+  if (!agentId) return;
+  store.sendWsMessage({
+    type: 'upgrade_agent',
+    agentId
+  });
+}

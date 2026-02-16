@@ -82,6 +82,9 @@ export default {
   'chat.agent.restarting': '重启中',
   'chat.agent.restart': '重启',
   'chat.agent.restartConfirm': '确定要重启 Agent "{name}" 吗？\n所有活跃的会话将被中断。',
+  'chat.agent.upgrade': '升级',
+  'chat.agent.upgrading': '升级中',
+  'chat.agent.upgradeConfirm': '升级 Agent "{name}" 到最新版本？\n升级完成后 Agent 会自动重启。',
   'chat.agent.online': '{count} 个 Agent 在线',
   'chat.agent.selectFirst': '请先选择一个 Agent',
 
@@ -260,6 +263,8 @@ export default {
   // Settings - Security
   'settings.security.agentKey': 'Agent 密钥',
   'settings.security.agentKeyDesc': '用于 Agent 连接认证的共享密钥',
+  'settings.security.agentCmdInstall': '安装 Agent',
+  'settings.security.agentCmdService': '以服务方式运行',
   'settings.security.none': '无',
   'settings.security.show': '显示',
   'settings.security.hide': '隐藏',

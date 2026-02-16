@@ -498,6 +498,11 @@ export function handleMessage(store, msg) {
       window.dispatchEvent(new CustomEvent('agent-restart-ack', { detail: { agentId: msg.agentId } }));
       break;
 
+    case 'upgrade_agent_ack':
+      console.log(`[Agent] Upgrade ${msg.success ? 'succeeded' : 'failed'} for agent: ${msg.agentId}`, msg.error || '');
+      window.dispatchEvent(new CustomEvent('agent-upgrade-ack', { detail: { agentId: msg.agentId, success: msg.success, error: msg.error } }));
+      break;
+
     // Workbench messages - forward to components
     case 'terminal_created':
     case 'terminal_output':

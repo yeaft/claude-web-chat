@@ -118,10 +118,10 @@ services:
 
 ```bash
 # 启动服务器（首次运行会自动创建 data/ 目录和 SQLite 数据库）
-docker-compose up -d --build webchat
+docker compose up -d --build webchat
 
 # 创建第一个 admin 用户
-docker exec webchat node server/create-user.js admin your-password admin@example.com
+docker compose exec webchat node server/create-user.js admin your-password admin@example.com
 ```
 
 后续用户可通过邀请码注册（admin 在设置页面创建邀请码）。
@@ -249,7 +249,7 @@ yeaft-agent --version               显示版本号
 服务器在生产模式（`SKIP_AUTH=false`）下会检查：
 - `JWT_SECRET` 必须修改为非默认值
 
-如果未配置用户，服务器会启动但输出警告 — 通过 `docker exec` 创建首个用户即可。
+如果未配置用户，服务器会启动但输出警告 — 通过 `docker compose exec` 创建首个用户即可。
 
 ### Agent 认证
 
@@ -357,7 +357,7 @@ JWT_SECRET=随机字符串（至少32位）
 
 ### Docker 部署后 502 Bad Gateway
 
-1. 检查容器是否运行：`docker-compose logs webchat`
+1. 检查容器是否运行：`docker compose logs webchat`
 2. 刷新 nginx DNS 缓存：`docker exec nginx nginx -s reload`
 
 ### SQLite 只读错误 (SQLITE_READONLY)

@@ -98,10 +98,10 @@ services:
 
 ```bash
 # Start the server (data/ and SQLite DB are auto-created on first run)
-docker-compose up -d --build webchat
+docker compose up -d --build webchat
 
 # Create the first admin user
-docker exec webchat node server/create-user.js admin your-password admin@example.com
+docker compose exec webchat node server/create-user.js admin your-password admin@example.com
 ```
 
 Additional users can register via invitation codes (admin creates them in Settings).
@@ -197,7 +197,7 @@ Environment variables (alternative to flags):
 The server **refuses to start** in production mode if:
 - `JWT_SECRET` is left at default
 
-If no users are configured, the server starts with a warning — create the first user via `docker exec`.
+If no users are configured, the server starts with a warning — create the first user via `docker compose exec`.
 
 ### Agent Authentication
 
