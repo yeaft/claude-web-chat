@@ -66,8 +66,8 @@ export default {
               <svg class="dropdown-chevron" :class="{ open: agentManagerOpen }" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
               <!-- Agent Dropdown Menu -->
               <div class="agent-dropdown" v-if="agentManagerOpen" @click.stop>
-                <div v-for="agent in store.agents" :key="agent.id" class="agent-dropdown-item" :class="{ offline: !agent.online }">
-                  <span class="status-dot" :class="{ online: agent.online, restarting: restartingAgents[agent.id] }"></span>
+                <div v-for="agent in store.agents" :key="agent.id" class="agent-dropdown-item" :class="{ offline: !agent.online && !upgradingAgents[agent.id] && !restartingAgents[agent.id] }">
+                  <span class="status-dot" :class="{ online: agent.online, restarting: restartingAgents[agent.id], upgrading: upgradingAgents[agent.id] }"></span>
                   <span class="agent-dropdown-name">{{ agent.name }}</span>
                   <span class="agent-dropdown-version" v-if="agent.version">v{{ agent.version }}</span>
                   <span class="agent-dropdown-latency" v-if="agent.online && agent.latency" :class="getLatencyClass(agent.latency)">{{ agent.latency }}ms</span>
@@ -813,7 +813,7 @@ export default {
       const agent = this.store.agents.find(a => a.id === agentId);
       const name = agent?.name || agentId;
       if (!confirm(this.$t('chat.agent.upgradeConfirm', { name }))) return;
-      this.upgradingAgents[agentId] = true;
+      this.upgradingAgents[agentId] = { since: Date.now(), oldVersion: agent?.version || null };
       this.store.upgradeAgent(agentId);
     },
     // Folder picker methods
@@ -962,7 +962,18 @@ export default {
         for (const agentId of Object.keys(this.upgradingAgents)) {
           const agent = this.store.agents.find(a => a.id === agentId);
           if (agent?.online) {
-            delete this.upgradingAgents[agentId];
+            // Agent came back online — delay clearing to ensure user sees the status
+            const info = this.upgradingAgents[agentId];
+            const elapsed = Date.now() - (info?.since || 0);
+            const minDisplayMs = 3000;
+            if (elapsed < minDisplayMs) {
+              setTimeout(() => {
+                const ag = this.store.agents.find(a => a.id === agentId);
+                if (ag?.online) delete this.upgradingAgents[agentId];
+              }, minDisplayMs - elapsed);
+            } else {
+              delete this.upgradingAgents[agentId];
+            }
           }
         }
       }

@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import { execSync } from 'child_process';
+import { execSync, execFile } from 'child_process';
 import ctx from './context.js';
 import { encrypt, decrypt, isEncrypted, decodeKey } from './encryption.js';
 import { handleTerminalCreate, handleTerminalInput, handleTerminalResize, handleTerminalClose } from './terminal.js';
@@ -268,44 +268,55 @@ async function handleMessage(msg) {
 
     case 'upgrade_agent':
       console.log('[Agent] Upgrade requested, checking for updates...');
-      try {
-        const pkgName = ctx.pkgName || '@yeaft/webchat-agent';
-        // Check latest version before installing
-        const latestVersion = execSync(`npm view ${pkgName} version`, { stdio: 'pipe' }).toString().trim();
-        if (latestVersion === ctx.agentVersion) {
-          console.log(`[Agent] Already at latest version (${ctx.agentVersion}), skipping upgrade.`);
-          sendToServer({ type: 'upgrade_agent_ack', success: true, alreadyLatest: true, version: ctx.agentVersion });
-          break;
+      (async () => {
+        try {
+          const pkgName = ctx.pkgName || '@yeaft/webchat-agent';
+          // Check latest version (async to avoid blocking heartbeat)
+          const latestVersion = await new Promise((resolve, reject) => {
+            execFile('npm', ['view', pkgName, 'version'], { stdio: 'pipe' }, (err, stdout) => {
+              if (err) reject(err); else resolve(stdout.toString().trim());
+            });
+          });
+          if (latestVersion === ctx.agentVersion) {
+            console.log(`[Agent] Already at latest version (${ctx.agentVersion}), skipping upgrade.`);
+            sendToServer({ type: 'upgrade_agent_ack', success: true, alreadyLatest: true, version: ctx.agentVersion });
+            return;
+          }
+          console.log(`[Agent] Upgrading from ${ctx.agentVersion} to ${latestVersion}...`);
+          // Use async execFile to avoid blocking event loop (heartbeat must keep running)
+          await new Promise((resolve, reject) => {
+            execFile('npm', ['install', '-g', `${pkgName}@latest`], { stdio: 'pipe' }, (err) => {
+              if (err) reject(err); else resolve();
+            });
+          });
+          console.log('[Agent] Upgrade successful, restarting...');
+          sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion });
+          // Restart after upgrade (same as restart_agent)
+          setTimeout(() => {
+            for (const [, term] of ctx.terminals) {
+              if (term.pty) { try { term.pty.kill(); } catch {} }
+              if (term.timer) clearTimeout(term.timer);
+            }
+            ctx.terminals.clear();
+            for (const [, state] of ctx.conversations) {
+              if (state.abortController) state.abortController.abort();
+              if (state.inputStream) state.inputStream.done();
+            }
+            ctx.conversations.clear();
+            stopAgentHeartbeat();
+            if (ctx.ws) {
+              ctx.ws.removeAllListeners('close');
+              ctx.ws.close();
+            }
+            clearTimeout(ctx.reconnectTimer);
+            console.log('[Agent] Cleanup done, exiting for auto-restart...');
+            process.exit(1);
+          }, 500);
+        } catch (e) {
+          console.error('[Agent] Upgrade failed:', e.message);
+          sendToServer({ type: 'upgrade_agent_ack', success: false, error: e.message });
         }
-        console.log(`[Agent] Upgrading from ${ctx.agentVersion} to ${latestVersion}...`);
-        execSync(`npm install -g ${pkgName}@latest`, { stdio: 'pipe' });
-        console.log('[Agent] Upgrade successful, restarting...');
-        sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion });
-        // Restart after upgrade (same as restart_agent)
-        setTimeout(() => {
-          for (const [, term] of ctx.terminals) {
-            if (term.pty) { try { term.pty.kill(); } catch {} }
-            if (term.timer) clearTimeout(term.timer);
-          }
-          ctx.terminals.clear();
-          for (const [, state] of ctx.conversations) {
-            if (state.abortController) state.abortController.abort();
-            if (state.inputStream) state.inputStream.done();
-          }
-          ctx.conversations.clear();
-          stopAgentHeartbeat();
-          if (ctx.ws) {
-            ctx.ws.removeAllListeners('close');
-            ctx.ws.close();
-          }
-          clearTimeout(ctx.reconnectTimer);
-          console.log('[Agent] Cleanup done, exiting for auto-restart...');
-          process.exit(1);
-        }, 500);
-      } catch (e) {
-        console.error('[Agent] Upgrade failed:', e.message);
-        sendToServer({ type: 'upgrade_agent_ack', success: false, error: e.message });
-      }
+      })();
       break;
   }
 }

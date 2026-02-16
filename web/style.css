@@ -7572,6 +7572,101 @@ body {
   position: relative;
 }
 
+/* === File Preview Containers === */
+.file-preview-container {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+.file-preview-iframe {
+  width: 100%;
+  flex: 1;
+  border: none;
+  background: #fff;
+}
+.file-preview-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  margin: auto;
+  display: block;
+  padding: 16px;
+}
+.preview-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.preview-error {
+  padding: 24px;
+  color: var(--text-danger, #e53e3e);
+  font-size: 13px;
+}
+.preview-unsupported {
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+.office-local-preview {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+  background: #fff;
+}
+.office-local-preview .docx-wrapper {
+  background: #fff !important;
+}
+/* XLSX sheet tabs */
+.xlsx-sheet-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-workbench);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.xlsx-sheet-tab {
+  padding: 6px 14px;
+  font-size: 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+.xlsx-sheet-tab:hover { color: var(--text-primary); }
+.xlsx-sheet-tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-color, #d97706);
+}
+.xlsx-table-wrap {
+  overflow: auto;
+  flex: 1;
+}
+.xlsx-table-wrap table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: 100%;
+}
+.xlsx-table-wrap td, .xlsx-table-wrap th {
+  border: 1px solid #ddd;
+  padding: 4px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+.xlsx-table-wrap th {
+  background: #f5f5f5;
+  font-weight: 600;
+}
+
 /* === Find/Replace Bar === */
 .find-replace-bar {
   display: flex;
@@ -8785,7 +8880,8 @@ body {
   background: var(--success);
 }
 
-.agent-dropdown-item .status-dot.restarting {
+.agent-dropdown-item .status-dot.restarting,
+.agent-dropdown-item .status-dot.upgrading {
   background: #f59e0b;
   animation: pulse-restart 1s infinite;
 }
