@@ -407,6 +407,11 @@ export default {
   'files.moveTo': '移动到...',
   'files.download': '下载',
   'files.enterNewName': '输入新名称...',
+  'files.loadingPreview': '加载预览中...',
+  'files.pptxNotSupported': 'PPTX 本地预览暂不支持，请在设置中切换为 Office Online 模式。',
+  'files.officePreviewMode': 'Office 预览模式',
+  'files.officeOnline': 'Office Online',
+  'files.localRender': '本地渲染',
 
   // ============ Proxy Tab ============
   'proxy.port': '端口',

@@ -3,7 +3,7 @@ import multer from 'multer';
 import { CONFIG, isEmailConfigured, isTotpEnabled } from './config.js';
 import { loginStep1, loginStep2, verifyToken, logout, verifyTotpStep, completeTotpSetup, register, hashPassword } from './auth.js';
 import { sessionDb, messageDb, userDb, invitationDb } from './database.js';
-import { pendingFiles } from './context.js';
+import { pendingFiles, previewFiles } from './context.js';
 
 // 登录速率限制: IP -> { attempts, resetAt }
 const loginAttempts = new Map();
@@ -526,5 +526,30 @@ export function registerApiRoutes(app) {
       console.error('Failed to get user sessions:', e.message);
       res.status(500).json({ error: 'Failed to get user sessions' });
     }
+  });
+
+  // =====================
+  // File Preview (binary file preview for Office/PDF/Image)
+  // =====================
+
+  // Cleanup expired preview files every 60s (10 min TTL)
+  setInterval(() => {
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    for (const [id, f] of previewFiles) {
+      if (f.createdAt < cutoff) previewFiles.delete(id);
+    }
+  }, 60 * 1000);
+
+  app.get('/api/preview/:fileId', (req, res) => {
+    const file = previewFiles.get(req.params.fileId);
+    if (!file) return res.status(404).send('File not found or expired');
+    if (file.token && req.query.token !== file.token) {
+      return res.status(403).send('Forbidden');
+    }
+    res.setHeader('Content-Type', file.mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.filename)}"`);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(file.buffer);
   });
 }

@@ -31,6 +31,19 @@ export function validateGitPath(filePath) {
   return filePath && !/[`$;|&><!\n\r]/.test(filePath);
 }
 
+// Binary file extensions → MIME type mapping
+const BINARY_EXTENSIONS = {
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.xls': 'application/vnd.ms-excel',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon'
+};
+
 export async function handleReadFile(msg) {
   const { conversationId, filePath, _requestUserId } = msg;
   console.log('[Agent] handleReadFile received:', { filePath, conversationId, workDir: msg.workDir });
@@ -39,37 +52,55 @@ export async function handleReadFile(msg) {
 
   try {
     const resolved = resolveAndValidatePath(filePath, workDir);
-    const content = await readFile(resolved, 'utf-8');
-
-    // 检测语言
     const ext = extname(resolved).toLowerCase();
-    const langMap = {
-      '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
-      '.ts': 'javascript', '.tsx': 'javascript', '.jsx': 'javascript',
-      '.py': 'python', '.pyw': 'python',
-      '.html': 'htmlmixed', '.htm': 'htmlmixed',
-      '.css': 'css', '.scss': 'css', '.less': 'css',
-      '.json': 'javascript',
-      '.md': 'markdown',
-      '.sh': 'shell', '.bash': 'shell', '.zsh': 'shell',
-      '.cs': 'text/x-csharp', '.java': 'text/x-java',
-      '.cpp': 'text/x-c++src', '.c': 'text/x-csrc', '.h': 'text/x-csrc',
-      '.xml': 'xml', '.svg': 'xml',
-      '.yaml': 'yaml', '.yml': 'yaml',
-      '.sql': 'sql',
-      '.go': 'go', '.rs': 'rust', '.rb': 'ruby',
-      '.php': 'php', '.swift': 'swift'
-    };
+    const mimeType = BINARY_EXTENSIONS[ext];
 
-    console.log('[Agent] Sending file_content:', { filePath: resolved, contentLen: content.length, conversationId });
-    ctx.sendToServer({
-      type: 'file_content',
-      conversationId,
-      _requestUserId,
-      filePath: resolved,
-      content,
-      language: langMap[ext] || null
-    });
+    if (mimeType) {
+      // Binary file: read as Buffer, send base64
+      const buffer = await readFile(resolved);
+      console.log('[Agent] Sending binary file_content:', { filePath: resolved, size: buffer.length, mimeType, conversationId });
+      ctx.sendToServer({
+        type: 'file_content',
+        conversationId,
+        _requestUserId,
+        filePath: resolved,
+        content: buffer.toString('base64'),
+        binary: true,
+        mimeType
+      });
+    } else {
+      // Text file: read as utf-8
+      const content = await readFile(resolved, 'utf-8');
+
+      // 检测语言
+      const langMap = {
+        '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
+        '.ts': 'javascript', '.tsx': 'javascript', '.jsx': 'javascript',
+        '.py': 'python', '.pyw': 'python',
+        '.html': 'htmlmixed', '.htm': 'htmlmixed',
+        '.css': 'css', '.scss': 'css', '.less': 'css',
+        '.json': 'javascript',
+        '.md': 'markdown',
+        '.sh': 'shell', '.bash': 'shell', '.zsh': 'shell',
+        '.cs': 'text/x-csharp', '.java': 'text/x-java',
+        '.cpp': 'text/x-c++src', '.c': 'text/x-csrc', '.h': 'text/x-csrc',
+        '.xml': 'xml', '.svg': 'xml',
+        '.yaml': 'yaml', '.yml': 'yaml',
+        '.sql': 'sql',
+        '.go': 'go', '.rs': 'rust', '.rb': 'ruby',
+        '.php': 'php', '.swift': 'swift'
+      };
+
+      console.log('[Agent] Sending file_content:', { filePath: resolved, contentLen: content.length, conversationId });
+      ctx.sendToServer({
+        type: 'file_content',
+        conversationId,
+        _requestUserId,
+        filePath: resolved,
+        content,
+        language: langMap[ext] || null
+      });
+    }
   } catch (e) {
     ctx.sendToServer({
       type: 'file_content',

@@ -32,3 +32,7 @@ export const DIR_CACHE_MAX_SIZE = 500;
 // ★ Phase 5: File Tab state storage
 // key: `${userId}:${agentId}` → { files: [{path}], activeIndex, timestamp }
 export const userFileTabs = new Map();
+
+// Preview file cache for binary file preview (Office/PDF/Image)
+// fileId → { buffer, mimeType, filename, createdAt, token }
+export const previewFiles = new Map();

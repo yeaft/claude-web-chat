@@ -162,6 +162,27 @@ export default {
                     </div>
                   </div>
                 </div>
+                <div class="sp-row">
+                  <span class="sp-label">{{ $t('files.officePreviewMode') }}</span>
+                  <div class="sp-custom-select" :class="{ open: openDropdown === 'officePreview' }" v-click-outside="() => closeDropdown('officePreview')">
+                    <button class="sp-custom-select-trigger" @click="toggleDropdown('officePreview')">
+                      <span>{{ officePreviewOptions.find(o => o.value === officePreviewMode)?.label }}</span>
+                      <svg class="sp-custom-select-chevron" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                    </button>
+                    <div class="sp-custom-select-menu" v-show="openDropdown === 'officePreview'">
+                      <div
+                        class="sp-custom-select-option"
+                        :class="{ active: officePreviewMode === opt.value }"
+                        v-for="opt in officePreviewOptions"
+                        :key="opt.value"
+                        @click="setOfficePreviewMode(opt.value); closeDropdown('officePreview')"
+                      >
+                        {{ opt.label }}
+                        <svg v-if="officePreviewMode === opt.value" class="sp-custom-select-check" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -275,7 +296,8 @@ export default {
       message: '',
       isError: false,
       selectedLocale: chatStore.locale,
-      openDropdown: null
+      openDropdown: null,
+      officePreviewMode: localStorage.getItem('officePreviewMode') || 'local'
     };
   },
   computed: {
@@ -319,6 +341,12 @@ export default {
         { value: 'en', label: 'English' }
       ];
     },
+    officePreviewOptions() {
+      return [
+        { value: 'local', label: this.$t('files.localRender') },
+        { value: 'online', label: this.$t('files.officeOnline') }
+      ];
+    },
     roleOptions() {
       return [
         { value: 'user', label: this.$t('settings.invite.normalUser') },
@@ -359,6 +387,11 @@ export default {
       if (this.chatStore.theme !== theme) {
         this.chatStore.toggleTheme();
       }
+    },
+
+    setOfficePreviewMode(mode) {
+      this.officePreviewMode = mode;
+      localStorage.setItem('officePreviewMode', mode);
     },
 
     async loadData() {

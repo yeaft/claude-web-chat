@@ -4,7 +4,7 @@ import { CONFIG } from './config.js';
 import { verifyAgent } from './auth.js';
 import { encodeKey } from './encryption.js';
 import { sessionDb, messageDb } from './database.js';
-import { agents, webClients, pendingAgentConnections, serverMessageQueues } from './context.js';
+import { agents, webClients, pendingAgentConnections, serverMessageQueues, previewFiles } from './context.js';
 import {
   parseMessage, sendToAgent, sendToWebClient,
   broadcastAgentList, notifyConversationUpdate, forwardToClients,
@@ -732,8 +732,34 @@ async function handleAgentMessage(agentId, msg) {
 
     // File operation messages (forward to web clients)
     case 'file_content':
-      console.log(`[Server] Forwarding file_content to clients, conv=${msg.conversationId}, path=${msg.filePath}`);
-      await forwardToClients(agentId, msg.conversationId, msg);
+      if (msg.binary) {
+        // Binary file: cache on server, forward fileId instead of base64 content
+        const fileId = randomUUID();
+        const token = randomUUID();
+        const filename = msg.filePath.split('/').pop() || 'file';
+        previewFiles.set(fileId, {
+          buffer: Buffer.from(msg.content, 'base64'),
+          mimeType: msg.mimeType,
+          filename,
+          createdAt: Date.now(),
+          token
+        });
+        console.log(`[Server] Cached binary preview: fileId=${fileId}, mime=${msg.mimeType}, path=${msg.filePath}`);
+        const fwdMsg = {
+          type: 'file_content',
+          conversationId: msg.conversationId,
+          _requestUserId: msg._requestUserId,
+          filePath: msg.filePath,
+          binary: true,
+          fileId,
+          previewToken: token,
+          mimeType: msg.mimeType
+        };
+        await forwardToClients(agentId, msg.conversationId, fwdMsg);
+      } else {
+        console.log(`[Server] Forwarding file_content to clients, conv=${msg.conversationId}, path=${msg.filePath}`);
+        await forwardToClients(agentId, msg.conversationId, msg);
+      }
       break;
 
     case 'file_saved': {

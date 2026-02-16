@@ -407,6 +407,11 @@ export default {
   'files.moveTo': 'Move to...',
   'files.download': 'Download',
   'files.enterNewName': 'Enter new name...',
+  'files.loadingPreview': 'Loading preview...',
+  'files.pptxNotSupported': 'PPTX local preview is not supported. Please switch to Office Online mode in Settings.',
+  'files.officePreviewMode': 'Office Preview Mode',
+  'files.officeOnline': 'Office Online',
+  'files.localRender': 'Local Rendering',
 
   // ============ Proxy Tab ============
   'proxy.port': 'Port',

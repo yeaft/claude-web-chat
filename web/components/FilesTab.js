@@ -167,6 +167,8 @@ export default {
         </div>
         <template v-else-if="activeFile">
           <div v-if="debugStatus" style="padding:4px 8px;font-size:11px;color:var(--text-muted);background:var(--bg-sidebar);border-bottom:1px solid var(--border-color)">{{ debugStatus }}</div>
+          <!-- 文本文件: CodeMirror 编辑器 -->
+          <template v-if="!activeFile.fileType || activeFile.fileType === 'text'">
           <!-- 搜索/替换栏 -->
           <div class="find-replace-bar" v-if="findBarVisible">
             <div class="find-row">
@@ -214,6 +216,26 @@ export default {
             </div>
           </div>
           <div ref="editorContainer" class="file-editor-container"></div>
+          </template>
+          <!-- Office 文件预览 -->
+          <div v-else-if="activeFile.fileType === 'office'" class="file-preview-container">
+            <div v-if="activeFile.previewLoading" class="preview-loading">
+              <span class="spinner-mini"></span> {{ $t('files.loadingPreview') }}
+            </div>
+            <iframe v-else-if="activeFile.previewUrl" :src="activeFile.previewUrl" class="file-preview-iframe" allowfullscreen></iframe>
+            <div v-else-if="activeFile.localPreviewReady" ref="officePreviewContainer" class="office-local-preview"></div>
+            <div v-else-if="activeFile.previewError" class="preview-error">{{ activeFile.previewError }}</div>
+          </div>
+          <!-- PDF 预览 -->
+          <div v-else-if="activeFile.fileType === 'pdf'" class="file-preview-container">
+            <div v-if="!activeFile.blobUrl" class="preview-loading"><span class="spinner-mini"></span> {{ $t('files.loadingPreview') }}</div>
+            <iframe v-else :src="activeFile.blobUrl" class="file-preview-iframe"></iframe>
+          </div>
+          <!-- 图片预览 -->
+          <div v-else-if="activeFile.fileType === 'image'" class="file-preview-container">
+            <div v-if="!activeFile.blobUrl" class="preview-loading"><span class="spinner-mini"></span> {{ $t('files.loadingPreview') }}</div>
+            <img v-else :src="activeFile.blobUrl" class="file-preview-image" />
+          </div>
         </template>
       </div>
       <div class="file-col-placeholder" v-if="openFiles.length === 0 && !fileLoading">
@@ -440,12 +462,67 @@ export default {
     const fileTabsMap = Vue.reactive({});
 
     // --- File tabs state ---
-    const openFiles = Vue.ref([]); // [{ path, name, content, originalContent, isDirty, cmInstance }]
+    const openFiles = Vue.ref([]); // [{ path, name, content, originalContent, isDirty, cmInstance, fileType, blobUrl, previewUrl, ... }]
     const activeFileIndex = Vue.ref(-1);
     const fileLoading = Vue.ref(false);
     const fileSaving = Vue.ref(false);
     const editorContainer = Vue.ref(null);
+    const officePreviewContainer = Vue.ref(null);
     const rootEl = Vue.ref(null);
+
+    // --- File type detection ---
+    const OFFICE_EXT = new Set(['.docx', '.xlsx', '.xls', '.pptx', '.ppt']);
+    const PDF_EXT = new Set(['.pdf']);
+    const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico']);
+
+    function getFileType(name) {
+      const dot = name.lastIndexOf('.');
+      if (dot < 0) return 'text';
+      const ext = name.substring(dot).toLowerCase();
+      if (OFFICE_EXT.has(ext)) return 'office';
+      if (PDF_EXT.has(ext)) return 'pdf';
+      if (IMAGE_EXT.has(ext)) return 'image';
+      return 'text';
+    }
+
+    // --- Office local rendering ---
+    const renderOfficeLocal = (file) => {
+      const container = officePreviewContainer.value;
+      if (!container || !file._arrayBuffer) return;
+      container.innerHTML = '';
+      const ext = ('.' + file.name.split('.').pop()).toLowerCase();
+
+      if (ext === '.docx' && window.docx) {
+        window.docx.renderAsync(file._arrayBuffer, container, null, {
+          className: 'docx-preview-content',
+          inWrapper: true,
+          ignoreWidth: false,
+          ignoreHeight: true
+        }).catch(e => { file.previewError = e.message; });
+      } else if (ext === '.xlsx' || ext === '.xls') {
+        try {
+          const wb = XLSX.read(file._arrayBuffer, { type: 'array' });
+          const sheetName = wb.SheetNames[0];
+          const html = XLSX.utils.sheet_to_html(wb.Sheets[sheetName], { editable: false });
+          container.innerHTML = '<div class="xlsx-sheet-tabs">' +
+            wb.SheetNames.map((n, i) => `<button class="xlsx-sheet-tab${i === 0 ? ' active' : ''}" data-idx="${i}">${n}</button>`).join('') +
+            '</div><div class="xlsx-table-wrap">' + html + '</div>';
+          // Sheet tab switching
+          container.querySelectorAll('.xlsx-sheet-tab').forEach(btn => {
+            btn.addEventListener('click', () => {
+              const idx = parseInt(btn.dataset.idx);
+              const sn = wb.SheetNames[idx];
+              const h = XLSX.utils.sheet_to_html(wb.Sheets[sn], { editable: false });
+              container.querySelector('.xlsx-table-wrap').innerHTML = h;
+              container.querySelectorAll('.xlsx-sheet-tab').forEach(b => b.classList.remove('active'));
+              btn.classList.add('active');
+            });
+          });
+        } catch (e) { file.previewError = e.message; }
+      } else if (ext === '.pptx' || ext === '.ppt') {
+        container.innerHTML = '<div class="preview-unsupported">' + t('files.pptxNotSupported') + '</div>';
+      }
+    };
 
     // --- Per-session undo history ---
     const undoHistoryMap = Vue.reactive({}); // convId -> { filePath -> cmHistory }
@@ -1096,7 +1173,8 @@ export default {
         fileTabsMap[convId] = {
           files: openFiles.value.map(f => ({
             path: f.path, name: f.name, content: f.content,
-            originalContent: f.originalContent, isDirty: f.isDirty
+            originalContent: f.originalContent, isDirty: f.isDirty,
+            fileType: f.fileType
           })),
           activeIndex: activeFileIndex.value
         };
@@ -1132,13 +1210,19 @@ export default {
         ...f,
         isDirty: f.isDirty || false,
         originalContent: f.originalContent || f.content,
-        cmInstance: null
+        cmInstance: null,
+        fileType: f.fileType || getFileType(f.name || ''),
+        blobUrl: null,
+        previewUrl: null,
+        previewLoading: false,
+        localPreviewReady: false,
+        previewError: null
       }));
       activeFileIndex.value = saved.activeIndex;
 
       Vue.nextTick(() => {
         const file = activeFile.value;
-        if (file && editorContainer.value) {
+        if (file && (!file.fileType || file.fileType === 'text') && editorContainer.value) {
           createEditor(file);
         }
       });
@@ -1154,7 +1238,7 @@ export default {
           activeFileIndex.value = existingIndex;
           Vue.nextTick(() => {
             const file = openFiles.value[existingIndex];
-            if (file && file.content != null) createEditor(file);
+            if (file && file.content != null && (!file.fileType || file.fileType === 'text')) createEditor(file);
           });
         }
         saveTabsState(store.currentConversation);
@@ -1162,18 +1246,26 @@ export default {
       }
 
       saveCurrentUndoHistory();
+      const displayName = name || nPath.split(/[/\\]/).pop();
+      const fileType = getFileType(displayName);
       const newFile = {
         path: nPath,
-        name: name || nPath.split(/[/\\]/).pop(),
+        name: displayName,
         content: null,
         originalContent: null,
         isDirty: false,
-        cmInstance: null
+        cmInstance: null,
+        fileType,
+        blobUrl: null,
+        previewUrl: null,
+        previewLoading: fileType !== 'text',
+        localPreviewReady: false,
+        previewError: null
       };
       openFiles.value.push(newFile);
       activeFileIndex.value = openFiles.value.length - 1;
       fileLoading.value = true;
-      destroyEditor();
+      if (fileType === 'text') destroyEditor();
       saveTabsState(store.currentConversation);
 
       debugStatus.value = `Loading: ${fullPath}`;
@@ -1196,12 +1288,16 @@ export default {
 
       Vue.nextTick(() => {
         const file = openFiles.value[index];
-        if (file && file.content != null && editorContainer.value) {
-          createEditor(file);
-          // Re-apply search if find bar is open
-          if (findBarVisible.value && findQuery.value) {
-            Vue.nextTick(() => performFind());
+        if (!file) return;
+        if (!file.fileType || file.fileType === 'text') {
+          if (file.content != null && editorContainer.value) {
+            createEditor(file);
+            if (findBarVisible.value && findQuery.value) {
+              Vue.nextTick(() => performFind());
+            }
           }
+        } else if (file.fileType === 'office' && file.localPreviewReady) {
+          Vue.nextTick(() => renderOfficeLocal(file));
         }
       });
     };
@@ -1216,6 +1312,11 @@ export default {
       const convId = store.currentConversation;
       if (convId && undoHistoryMap[convId]) {
         delete undoHistoryMap[convId][file.path];
+      }
+
+      // Clean up blob URL
+      if (file.blobUrl) {
+        URL.revokeObjectURL(file.blobUrl);
       }
 
       const wasActive = (index === activeFileIndex.value);
@@ -1237,7 +1338,7 @@ export default {
       if (openFiles.value.length > 0 && wasActive) {
         Vue.nextTick(() => {
           const newActive = openFiles.value[activeFileIndex.value];
-          if (newActive && newActive.content != null && editorContainer.value) {
+          if (newActive && (!newActive.fileType || newActive.fileType === 'text') && newActive.content != null && editorContainer.value) {
             createEditor(newActive);
           }
         });
@@ -1968,6 +2069,13 @@ export default {
           if (msg.error) {
             debugStatus.value = `Error: ${msg.error}`;
             pendingDownload = null;
+            // Reset preview loading state for the file tab
+            const errFilePath = normalizePath(msg.filePath);
+            const errTab = openFiles.value.find(f => f.path === errFilePath);
+            if (errTab) {
+              errTab.previewLoading = false;
+              errTab.previewError = msg.error;
+            }
             return;
           }
           const nFilePath = normalizePath(msg.filePath);
@@ -1976,15 +2084,26 @@ export default {
           if (pendingDownload && normalizePath(pendingDownload) === nFilePath) {
             pendingDownload = null;
             try {
-              const blob = new Blob([msg.content || ''], { type: 'application/octet-stream' });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = nFilePath.split('/').pop() || 'download';
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-              URL.revokeObjectURL(url);
+              if (msg.binary) {
+                // Binary: download via preview endpoint
+                const dlUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
+                const a = document.createElement('a');
+                a.href = dlUrl;
+                a.download = nFilePath.split('/').pop() || 'download';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+              } else {
+                const blob = new Blob([msg.content || ''], { type: 'application/octet-stream' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = nFilePath.split('/').pop() || 'download';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+              }
             } catch (e) {
               console.error('Download failed:', e);
             }
@@ -1994,6 +2113,46 @@ export default {
           const tabIndex = openFiles.value.findIndex(f => f.path === nFilePath);
           if (tabIndex >= 0) {
             const file = openFiles.value[tabIndex];
+
+            // Binary file (Office / PDF / Image)
+            if (msg.binary) {
+              file.previewLoading = false;
+              const previewBaseUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
+              const ft = file.fileType || getFileType(file.name);
+              file.fileType = ft;
+
+              if (ft === 'pdf' || ft === 'image') {
+                // Fetch binary and create local blob URL
+                fetch(previewBaseUrl)
+                  .then(r => r.blob())
+                  .then(blob => {
+                    file.blobUrl = URL.createObjectURL(blob);
+                  })
+                  .catch(e => { file.previewError = e.message; });
+              } else if (ft === 'office') {
+                const mode = localStorage.getItem('officePreviewMode') || 'local';
+                if (mode === 'online') {
+                  // Office Online iframe
+                  file.previewUrl = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(previewBaseUrl);
+                } else {
+                  // Local rendering
+                  fetch(previewBaseUrl)
+                    .then(r => r.arrayBuffer())
+                    .then(buf => {
+                      file._arrayBuffer = buf;
+                      file.localPreviewReady = true;
+                      if (tabIndex === activeFileIndex.value) {
+                        Vue.nextTick(() => renderOfficeLocal(file));
+                      }
+                    })
+                    .catch(e => { file.previewError = e.message; });
+                }
+              }
+              saveTabsState(store.currentConversation);
+              return;
+            }
+
+            // Text file
             file.content = msg.content || '';
             file.originalContent = msg.content || '';
             file.isDirty = false;
@@ -2066,13 +2225,20 @@ export default {
             for (const file of msg.openFiles) {
               const nPath = normalizePath(file.path);
               const name = nPath.split('/').pop();
+              const fileType = getFileType(name);
               openFiles.value.push({
                 path: nPath,
                 name,
                 content: null,
                 originalContent: null,
                 isDirty: false,
-                cmInstance: null
+                cmInstance: null,
+                fileType,
+                blobUrl: null,
+                previewUrl: null,
+                previewLoading: fileType !== 'text',
+                localPreviewReady: false,
+                previewError: null
               });
               // 请求文件内容
               store.sendWsMessage({
@@ -2191,7 +2357,7 @@ export default {
       () => activeFile.value?.content,
       (newContent, oldContent) => {
         const file = activeFile.value;
-        if (file && newContent != null && oldContent == null && !file.cmInstance) {
+        if (file && newContent != null && oldContent == null && !file.cmInstance && (!file.fileType || file.fileType === 'text')) {
           Vue.nextTick(() => {
             setTimeout(() => {
               if (!file.cmInstance) {
@@ -2277,7 +2443,7 @@ export default {
       toggleRootExpand, collapseAll, startTreePathEdit, confirmTreePath, cancelTreePathEdit,
       treePanelWidth, isTreeResizing, startTreeResize,
       openFiles, activeFileIndex, activeFile, fileLoading, fileSaving,
-      editorContainer,
+      editorContainer, officePreviewContainer,
       folderPickerOpen, folderPickerPath, folderPickerEntries, folderPickerLoading, folderPickerSelected,
       searchQuery, searchResults, searchLoading, onSearchInput, clearSearch, onSearchResultClick,
       quickOpenVisible, quickOpenQuery, quickOpenResults, quickOpenSelectedIndex, quickOpenLoading, quickOpenInput,
