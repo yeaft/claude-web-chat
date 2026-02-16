@@ -1,0 +1,68 @@
+{
+  "name": "@yeaft/webchat-agent",
+  "version": "1.0.0",
+  "description": "Remote agent for Yeaft WebChat — connects worker machines to the central server",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "yeaft-agent": "./cli.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "claude",
+    "agent",
+    "remote",
+    "websocket",
+    "cli",
+    "yeaft"
+  ],
+  "homepage": "https://github.com/yeaft/webchat",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yeaft/webchat.git",
+    "directory": "agent"
+  },
+  "bugs": {
+    "url": "https://github.com/yeaft/webchat/issues"
+  },
+  "files": [
+    "cli.js",
+    "service.js",
+    "index.js",
+    "context.js",
+    "connection.js",
+    "conversation.js",
+    "claude.js",
+    "terminal.js",
+    "proxy.js",
+    "workbench.js",
+    "history.js",
+    "encryption.js",
+    "sdk/"
+  ],
+  "license": "MIT",
+  "author": "Yeaft",
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "nodemonConfig": {
+    "watch": ["*.js", "sdk/*.js"],
+    "ignore": ["node_modules", "package-lock.json", ".claude-agent.json"],
+    "ext": "js"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
+    "ws": "^8.16.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.0.0"
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "name": "@yeaft/webchat",
+  "version": "1.0.0",
+  "description": "Web interface for remotely accessing Claude Code CLI across multiple worker machines",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "server",
+    "agent"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "install:all": "npm install --workspaces",
+    "build": "node web/build.js",
+    "start:server": "npm run start --workspace=server",
+    "start:server:prod": "cross-env SERVE_DIST=true npm run start --workspace=server",
+    "start:agent": "npm run start --workspace=agent",
+    "dev:server": "npm run dev --workspace=server",
+    "dev:agent": "npm run dev --workspace=agent",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:agent\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "esbuild": "^0.20.0",
+    "supertest": "^7.2.2",
+    "vitest": "^4.0.18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yeaft/webchat.git"
+  },
+  "homepage": "https://github.com/yeaft/webchat",
+  "bugs": {
+    "url": "https://github.com/yeaft/webchat/issues"
+  },
+  "keywords": [
+    "claude",
+    "cli",
+    "websocket",
+    "remote",
+    "yeaft",
+    "webchat"
+  ],
+  "license": "MIT",
+  "author": "Yeaft"
+}

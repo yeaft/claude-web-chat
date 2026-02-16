@@ -1,0 +1,546 @@
+import { useAuthStore } from '../stores/auth.js';
+import ProxyTab from './ProxyTab.js';
+
+export default {
+  name: 'SettingsPanel',
+  components: { ProxyTab },
+  props: {
+    visible: Boolean
+  },
+  emits: ['close'],
+  template: `
+    <div class="settings-overlay" v-if="visible" @click.self="$emit('close')">
+      <div class="settings-dialog">
+        <!-- Left Navigation -->
+        <div class="settings-nav">
+          <div class="settings-nav-title">{{ $t('settings.close') }}</div>
+          <button
+            v-for="tab in visibleTabs"
+            :key="tab.key"
+            class="settings-nav-item"
+            :class="{ active: activeTab === tab.key }"
+            @click="activeTab = tab.key"
+          >
+            <svg v-if="tab.key === 'general'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+            <svg v-else-if="tab.key === 'account'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+            <svg v-else-if="tab.key === 'security'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+            <svg v-else-if="tab.key === 'proxy'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+            <svg v-else-if="tab.key === 'invitations'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+            <span>{{ tab.label }}</span>
+          </button>
+        </div>
+
+        <!-- Right Content -->
+        <div class="settings-content">
+          <div class="settings-content-header">
+            <h2 class="settings-content-title">{{ currentTabLabel }}</h2>
+            <button class="settings-close" @click="$emit('close')" :title="$t('settings.close')">
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </div>
+          <div class="settings-scroll">
+            <!-- Account -->
+            <div v-show="activeTab === 'account'" class="settings-pane">
+              <div class="sp-group">
+                <div class="sp-row">
+                  <div class="sp-row-left">
+                    <span class="sp-label">{{ $t('settings.account.username') }}</span>
+                  </div>
+                  <span class="sp-value">{{ profile?.username || '-' }}</span>
+                </div>
+                <div class="sp-row">
+                  <div class="sp-row-left">
+                    <span class="sp-label">{{ $t('settings.account.role') }}</span>
+                  </div>
+                  <span class="sp-badge" :class="'sp-role-' + (profile?.role || 'user')">{{ roleLabel }}</span>
+                </div>
+                <div class="sp-row">
+                  <div class="sp-row-left">
+                    <span class="sp-label">{{ $t('settings.account.email') }}</span>
+                  </div>
+                  <span class="sp-value">{{ profile?.email || $t('settings.account.emailNotSet') }}</span>
+                </div>
+              </div>
+
+              <div class="sp-group">
+                <button class="sp-btn sp-btn-danger" @click="doLogout">{{ $t('settings.account.logout') }}</button>
+              </div>
+            </div>
+
+            <!-- Security -->
+            <div v-show="activeTab === 'security'" class="settings-pane">
+              <div class="sp-group">
+                <div class="sp-group-title">{{ $t('settings.security.agentKey') }}</div>
+                <p class="sp-desc">{{ $t('settings.security.agentKeyDesc') }}</p>
+                <div class="sp-secret-row">
+                  <code class="sp-secret">{{ showSecret ? (agentSecret || $t('settings.security.none')) : (agentSecret ? '••••••••••••' : $t('settings.security.none')) }}</code>
+                  <button class="sp-icon-btn" @click="showSecret = !showSecret" :title="showSecret ? $t('settings.security.hide') : $t('settings.security.show')">
+                    <svg v-if="showSecret" viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                    <svg v-else viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>
+                  </button>
+                  <button class="sp-icon-btn" @click="copySecret" v-if="agentSecret" :title="$t('common.copy')">
+                    <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                  </button>
+                </div>
+                <div class="sp-actions-row">
+                  <button class="sp-btn sp-btn-muted" @click="resetSecret" :disabled="resettingSecret">
+                    {{ resettingSecret ? $t('settings.security.resetting') : $t('settings.security.resetKey') }}
+                  </button>
+                  <span class="sp-warning" v-if="resetConfirm">{{ $t('settings.security.resetWarning') }}</span>
+                </div>
+              </div>
+
+              <div class="sp-group">
+                <div class="sp-group-title">{{ $t('settings.security.changePassword') }}</div>
+                <input type="password" v-model="currentPassword" :placeholder="$t('settings.security.currentPassword')" autocomplete="current-password" class="sp-input">
+                <input type="password" v-model="newPassword" :placeholder="$t('settings.security.newPassword')" autocomplete="new-password" class="sp-input">
+                <input type="password" v-model="confirmPassword" :placeholder="$t('settings.security.confirmPassword')" autocomplete="new-password" class="sp-input">
+                <button class="sp-btn" @click="changePassword" :disabled="changingPassword">
+                  {{ changingPassword ? $t('settings.security.changing') : $t('settings.security.changeBtn') }}
+                </button>
+              </div>
+            </div>
+
+            <!-- General -->
+            <div v-show="activeTab === 'general'" class="settings-pane">
+              <div class="sp-group">
+                <div class="sp-row">
+                  <span class="sp-label">{{ $t('settings.general.theme') }}</span>
+                  <div class="sp-custom-select" :class="{ open: openDropdown === 'theme' }" v-click-outside="() => closeDropdown('theme')">
+                    <button class="sp-custom-select-trigger" @click="toggleDropdown('theme')">
+                      <span>{{ themeOptions.find(o => o.value === chatStore.theme)?.label }}</span>
+                      <svg class="sp-custom-select-chevron" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                    </button>
+                    <div class="sp-custom-select-menu" v-show="openDropdown === 'theme'">
+                      <div
+                        class="sp-custom-select-option"
+                        :class="{ active: chatStore.theme === opt.value }"
+                        v-for="opt in themeOptions"
+                        :key="opt.value"
+                        @click="setTheme(opt.value); closeDropdown('theme')"
+                      >
+                        {{ opt.label }}
+                        <svg v-if="chatStore.theme === opt.value" class="sp-custom-select-check" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="sp-row">
+                  <span class="sp-label">{{ $t('settings.general.language') }}</span>
+                  <div class="sp-custom-select" :class="{ open: openDropdown === 'language' }" v-click-outside="() => closeDropdown('language')">
+                    <button class="sp-custom-select-trigger" @click="toggleDropdown('language')">
+                      <span>{{ languageOptions.find(o => o.value === selectedLocale)?.label }}</span>
+                      <svg class="sp-custom-select-chevron" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                    </button>
+                    <div class="sp-custom-select-menu" v-show="openDropdown === 'language'">
+                      <div
+                        class="sp-custom-select-option"
+                        :class="{ active: selectedLocale === opt.value }"
+                        v-for="opt in languageOptions"
+                        :key="opt.value"
+                        @click="selectLanguage(opt.value); closeDropdown('language')"
+                      >
+                        {{ opt.label }}
+                        <svg v-if="selectedLocale === opt.value" class="sp-custom-select-check" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Invitations (admin only) -->
+            <div v-show="activeTab === 'invitations'" class="settings-pane" v-if="authStore.role === 'admin'">
+              <div class="sp-group">
+                <div class="sp-row">
+                  <span class="sp-label">{{ $t('settings.invite.create') }}</span>
+                  <div class="sp-invite-create-row">
+                    <div class="sp-custom-select" :class="{ open: openDropdown === 'inviteRole' }" v-click-outside="() => closeDropdown('inviteRole')">
+                      <button class="sp-custom-select-trigger" @click="toggleDropdown('inviteRole')">
+                        <span>{{ roleOptions.find(o => o.value === inviteRole)?.label }}</span>
+                        <svg class="sp-custom-select-chevron" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                      </button>
+                      <div class="sp-custom-select-menu" v-show="openDropdown === 'inviteRole'">
+                        <div
+                          class="sp-custom-select-option"
+                          :class="{ active: inviteRole === opt.value }"
+                          v-for="opt in roleOptions"
+                          :key="opt.value"
+                          @click="inviteRole = opt.value; closeDropdown('inviteRole')"
+                        >
+                          {{ opt.label }}
+                          <svg v-if="inviteRole === opt.value" class="sp-custom-select-check" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                        </div>
+                      </div>
+                    </div>
+                    <button class="sp-btn-create" @click="createInvitation" :disabled="creatingInvite">
+                      <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                      {{ creatingInvite ? $t('settings.invite.creating') : $t('settings.invite.createBtn') }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="sp-group" v-if="invitations.length > 0">
+                <div class="sp-group-title">{{ $t('settings.invite.list') }}</div>
+                <div class="sp-invite-item" v-for="inv in invitations" :key="inv.code">
+                  <div class="sp-invite-main">
+                    <div class="sp-invite-info">
+                      <div class="sp-invite-top">
+                        <code class="sp-invite-code">{{ inv.code }}</code>
+                        <span class="sp-badge sp-role-pro">{{ inv.role }}</span>
+                        <span class="sp-invite-status" :class="inviteStatusClass(inv)">
+                          {{ inviteStatusText(inv) }}
+                        </span>
+                      </div>
+                      <div class="sp-invite-meta">
+                        <span v-if="inv.used_by">{{ $t('settings.invite.usedBy', { user: inv.usedByUsername }) }}</span>
+                        <span v-else-if="inv.expiresAt < Date.now()">{{ $t('settings.invite.expiredAt', { time: formatTime(inv.expiresAt) }) }}</span>
+                        <span v-else>{{ $t('settings.invite.expiresAt', { time: formatTime(inv.expiresAt) }) }}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <button class="sp-icon-btn" @click="copyInviteCode(inv.code)" v-if="!inv.used_by && inv.expiresAt >= Date.now()" :title="$t('common.copy')">
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                  </button>
+                  <button class="sp-icon-btn" @click="deleteInvitation(inv.code)" v-if="!inv.used_by" :title="$t('common.delete')">
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="sp-group" v-else>
+                <p class="sp-desc">{{ $t('settings.invite.noInvites') }}</p>
+              </div>
+            </div>
+
+            <!-- Proxy -->
+            <div v-show="activeTab === 'proxy'" class="settings-pane">
+              <ProxyTab />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Toast -->
+      <transition name="sp-toast">
+        <div v-if="message" class="sp-toast" :class="{ error: isError }">{{ message }}</div>
+      </transition>
+    </div>
+  `,
+  directives: {
+    'click-outside': {
+      mounted(el, binding) {
+        el._clickOutside = (e) => {
+          if (!el.contains(e.target)) binding.value();
+        };
+        document.addEventListener('click', el._clickOutside);
+      },
+      unmounted(el) {
+        document.removeEventListener('click', el._clickOutside);
+      }
+    }
+  },
+  data() {
+    const chatStore = Pinia.useChatStore();
+    return {
+      activeTab: 'general',
+      profile: null,
+      agentSecret: null,
+      showSecret: false,
+      resettingSecret: false,
+      resetConfirm: false,
+      currentPassword: '',
+      newPassword: '',
+      confirmPassword: '',
+      changingPassword: false,
+      invitations: [],
+      inviteRole: 'user',
+      creatingInvite: false,
+      message: '',
+      isError: false,
+      selectedLocale: chatStore.locale,
+      openDropdown: null
+    };
+  },
+  computed: {
+    authStore() {
+      return useAuthStore();
+    },
+    chatStore() {
+      return Pinia.useChatStore();
+    },
+    roleLabel() {
+      const roles = { admin: this.$t('settings.account.roleAdmin'), pro: this.$t('settings.account.rolePro'), user: this.$t('settings.account.roleUser') };
+      return roles[this.profile?.role] || this.$t('settings.account.roleUser');
+    },
+    visibleTabs() {
+      const tabs = [
+        { key: 'general', label: this.$t('settings.tabs.general') },
+        { key: 'account', label: this.$t('settings.tabs.account') },
+        { key: 'security', label: this.$t('settings.tabs.security') }
+      ];
+      if (this.authStore.role === 'admin' || this.authStore.role === 'pro') {
+        tabs.push({ key: 'proxy', label: this.$t('settings.tabs.proxy') });
+      }
+      if (this.authStore.role === 'admin') {
+        tabs.push({ key: 'invitations', label: this.$t('settings.tabs.invitations') });
+      }
+      return tabs;
+    },
+    currentTabLabel() {
+      const tab = this.visibleTabs.find(t => t.key === this.activeTab);
+      return tab?.label || '';
+    },
+    themeOptions() {
+      return [
+        { value: 'light', label: this.$t('settings.general.lightTheme') },
+        { value: 'dark', label: this.$t('settings.general.darkTheme') }
+      ];
+    },
+    languageOptions() {
+      return [
+        { value: 'zh-CN', label: '中文' },
+        { value: 'en', label: 'English' }
+      ];
+    },
+    roleOptions() {
+      return [
+        { value: 'user', label: this.$t('settings.invite.normalUser') },
+        { value: 'pro', label: this.$t('settings.invite.proUser') }
+      ];
+    }
+  },
+  watch: {
+    visible(val) {
+      if (val) {
+        this.loadData();
+      }
+    }
+  },
+  methods: {
+    changeLanguage() {
+      this.chatStore.changeLocale(this.selectedLocale);
+    },
+
+    selectLanguage(value) {
+      this.selectedLocale = value;
+      this.chatStore.changeLocale(value);
+    },
+
+    toggleDropdown(name) {
+      this.openDropdown = this.openDropdown === name ? null : name;
+    },
+
+    closeDropdown(name) {
+      if (this.openDropdown === name) this.openDropdown = null;
+    },
+
+    setTheme(theme) {
+      if (this.chatStore.theme !== theme) {
+        this.chatStore.toggleTheme();
+      }
+    },
+
+    async loadData() {
+      this.message = '';
+      try {
+        const headers = this.getHeaders();
+        const [profileRes, secretRes] = await Promise.all([
+          fetch('/api/user/profile', { headers }),
+          fetch('/api/user/agent-secret', { headers })
+        ]);
+        if (profileRes.ok) {
+          this.profile = await profileRes.json();
+        }
+        if (secretRes.ok) {
+          const data = await secretRes.json();
+          this.agentSecret = data.agentSecret;
+        }
+        if (this.authStore.role === 'admin') {
+          await this.loadInvitations();
+        }
+      } catch (e) {
+        console.error('Failed to load settings data:', e);
+      }
+    },
+
+    async loadInvitations() {
+      try {
+        const res = await fetch('/api/invitations', { headers: this.getHeaders() });
+        if (res.ok) {
+          const data = await res.json();
+          this.invitations = data.invitations.map(inv => ({
+            ...inv,
+            code: inv.id,
+            expiresAt: inv.expires_at,
+            usedByUsername: inv.used_by_username || null
+          }));
+        }
+      } catch (e) {
+        console.error('Failed to load invitations:', e);
+      }
+    },
+
+    getHeaders() {
+      const h = { 'Content-Type': 'application/json' };
+      if (this.authStore.token) {
+        h['Authorization'] = `Bearer ${this.authStore.token}`;
+      }
+      return h;
+    },
+
+    async copySecret() {
+      if (this.agentSecret) {
+        try {
+          await navigator.clipboard.writeText(this.agentSecret);
+          this.showMessage(this.$t('settings.msg.copiedClipboard'));
+        } catch {
+          this.showMessage(this.$t('settings.msg.copyFailed'), true);
+        }
+      }
+    },
+
+    async resetSecret() {
+      if (!this.resetConfirm) {
+        this.resetConfirm = true;
+        return;
+      }
+      this.resettingSecret = true;
+      try {
+        const res = await fetch('/api/user/agent-secret/reset', {
+          method: 'POST',
+          headers: this.getHeaders()
+        });
+        if (res.ok) {
+          const data = await res.json();
+          this.agentSecret = data.agentSecret;
+          this.showSecret = true;
+          this.showMessage(this.$t('settings.msg.keyReset'));
+        } else {
+          const data = await res.json();
+          this.showMessage(data.error || this.$t('settings.msg.resetFailed'), true);
+        }
+      } catch (e) {
+        this.showMessage(this.$t('settings.msg.resetFailed') + ': ' + e.message, true);
+      } finally {
+        this.resettingSecret = false;
+        this.resetConfirm = false;
+      }
+    },
+
+    async changePassword() {
+      if (!this.currentPassword) {
+        this.showMessage(this.$t('settings.security.enterCurrentPwd'), true);
+        return;
+      }
+      if (!this.newPassword || this.newPassword.length < 6) {
+        this.showMessage(this.$t('settings.security.newPwdMin'), true);
+        return;
+      }
+      if (this.newPassword !== this.confirmPassword) {
+        this.showMessage(this.$t('settings.security.pwdMismatch'), true);
+        return;
+      }
+      this.changingPassword = true;
+      try {
+        const res = await fetch('/api/user/profile', {
+          method: 'PUT',
+          headers: this.getHeaders(),
+          body: JSON.stringify({
+            currentPassword: this.currentPassword,
+            newPassword: this.newPassword
+          })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          this.showMessage(this.$t('settings.security.pwdChanged'));
+          this.currentPassword = '';
+          this.newPassword = '';
+          this.confirmPassword = '';
+        } else {
+          this.showMessage(data.error || this.$t('settings.msg.changeFailed'), true);
+        }
+      } catch (e) {
+        this.showMessage(this.$t('settings.msg.changeFailed') + ': ' + e.message, true);
+      } finally {
+        this.changingPassword = false;
+      }
+    },
+
+    async createInvitation() {
+      this.creatingInvite = true;
+      try {
+        const res = await fetch('/api/invitations', {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify({ role: this.inviteRole })
+        });
+        if (res.ok) {
+          await this.loadInvitations();
+          this.showMessage(this.$t('settings.msg.inviteCreated'));
+        } else {
+          const data = await res.json();
+          this.showMessage(data.error || this.$t('settings.msg.createFailed'), true);
+        }
+      } catch (e) {
+        this.showMessage(this.$t('settings.msg.createFailed') + ': ' + e.message, true);
+      } finally {
+        this.creatingInvite = false;
+      }
+    },
+
+    async copyInviteCode(code) {
+      try {
+        await navigator.clipboard.writeText(code);
+        this.showMessage(this.$t('settings.msg.inviteCopied'));
+      } catch {
+        this.showMessage(this.$t('settings.msg.copyFailed'), true);
+      }
+    },
+
+    async deleteInvitation(code) {
+      try {
+        const res = await fetch(`/api/invitations/${code}`, {
+          method: 'DELETE',
+          headers: this.getHeaders()
+        });
+        if (res.ok) {
+          await this.loadInvitations();
+          this.showMessage(this.$t('settings.msg.inviteDeleted'));
+        } else {
+          const data = await res.json();
+          this.showMessage(data.error || this.$t('settings.msg.deleteFailed'), true);
+        }
+      } catch (e) {
+        this.showMessage(this.$t('settings.msg.deleteFailed') + ': ' + e.message, true);
+      }
+    },
+
+    inviteStatusClass(inv) {
+      if (inv.used_by) return 'used';
+      if (inv.expiresAt < Date.now()) return 'expired';
+      return '';
+    },
+
+    inviteStatusText(inv) {
+      if (inv.used_by) return this.$t('settings.invite.used');
+      if (inv.expiresAt < Date.now()) return this.$t('settings.invite.expired');
+      return this.$t('settings.invite.available');
+    },
+
+    formatTime(ts) {
+      return new Date(ts).toLocaleString();
+    },
+
+    async doLogout() {
+      await this.authStore.logout();
+      window.location.reload();
+    },
+
+    showMessage(msg, error = false) {
+      this.message = msg;
+      this.isError = error;
+      setTimeout(() => { this.message = ''; }, 3000);
+    }
+  }
+};

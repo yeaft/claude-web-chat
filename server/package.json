@@ -1,0 +1,57 @@
+{
+  "name": "@yeaft/webchat-server",
+  "version": "1.0.0",
+  "description": "Central WebSocket server for Yeaft WebChat",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "dev:noauth": "cross-env SKIP_AUTH=true nodemon index.js",
+    "dev:auth": "nodemon index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "homepage": "https://github.com/yeaft/webchat",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yeaft/webchat.git",
+    "directory": "server"
+  },
+  "bugs": {
+    "url": "https://github.com/yeaft/webchat/issues"
+  },
+  "license": "MIT",
+  "author": "Yeaft",
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "nodemon": "^3.0.2"
+  },
+  "nodemonConfig": {
+    "watch": [
+      "*.js"
+    ],
+    "ignore": [
+      "node_modules",
+      "package-lock.json"
+    ],
+    "ext": "js"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "better-sqlite3": "^12.6.2",
+    "compression": "^1.8.1",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "nodemailer": "^6.9.8",
+    "qrcode": "^1.5.4",
+    "speakeasy": "^2.0.0",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
+    "uuid": "^9.0.1",
+    "ws": "^8.16.0"
+  }
+}

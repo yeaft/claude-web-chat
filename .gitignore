@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+web/dist/
+build/
+
+# Sub-package lock files (root package-lock.json is the source of truth)
+agent/package-lock.json
+web/package-lock.json
+
+# Logs
+*.log
+agent/logs/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# User data (contains password hashes and TOTP secrets)
+server/users.json
+server/user.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Temp files
+tmpclaude-*
+**/tmpclaude-*
+*.bak
+
+# Agent temp attachments
+.claude-tmp-attachments/
+
+# Agent config files (contains agent ID and server URL)
+.claude-agent*.json
+
+# SQLite database
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Claude Code
+CLAUDE.md
+.claude/
