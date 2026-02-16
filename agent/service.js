@@ -11,6 +11,36 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVICE_NAME = 'yeaft-agent';
 
+/**
+ * Load .env file from agent directory (or cwd) into process.env
+ * Only sets vars that are not already set (won't override existing env)
+ */
+function loadDotenv() {
+  // Try agent source directory first, then cwd
+  const candidates = [join(__dirname, '.env'), join(process.cwd(), '.env')];
+  for (const envPath of candidates) {
+    if (!existsSync(envPath)) continue;
+    try {
+      const content = readFileSync(envPath, 'utf-8');
+      for (const line of content.split('\n')) {
+        const match = line.match(/^\s*([^#][^=]*)\s*=\s*(.*)$/);
+        if (match) {
+          const key = match[1].trim();
+          let value = match[2].trim();
+          value = value.replace(/^["']|["']$/g, '');
+          // Don't override existing env vars
+          if (!process.env[key]) {
+            process.env[key] = value;
+          }
+        }
+      }
+      return; // loaded successfully, stop
+    } catch {
+      // continue to next candidate
+    }
+  }
+}
+
 // Standard config/log directory per platform
 export function getConfigDir() {
   if (platform() === 'win32') {
@@ -60,6 +90,9 @@ function getCliPath() {
  * Parse --server/--name/--secret/--work-dir from args, merge with existing config
  */
 export function parseServiceArgs(args) {
+  // Load .env if available (for dev / source-based usage)
+  loadDotenv();
+
   const existing = loadServiceConfig() || {};
   const config = {
     serverUrl: existing.serverUrl || '',

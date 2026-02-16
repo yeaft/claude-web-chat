@@ -1,8 +1,14 @@
-# Yeaft WebChat
+# Claude Web Chat
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-A web interface for remotely accessing [Claude Code](https://claude.ai/code) CLI across multiple worker machines. Hub-and-spoke architecture with a central WebSocket server, distributed agents, and a Vue.js frontend.
+A web interface for remotely accessing [Claude Code](https://claude.ai/code) CLI across multiple machines. Hub-and-spoke architecture with a central WebSocket server, distributed agents, and a Vue.js frontend.
+
+## Prerequisites
+
+- **Server**: Node.js >= 18, Docker (recommended for production)
+- **Agent**: Node.js >= 18, [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- **Web Client**: Modern browser (Chrome, Firefox, Safari, Edge)
 
 ## Architecture
 
@@ -112,6 +118,31 @@ yeaft-agent --server wss://your-server.com --name worker-1 --secret your-secret
 
 # Or install as system service (auto-start on boot, auto-restart on crash)
 yeaft-agent install --server wss://your-server.com --name worker-1 --secret your-secret
+
+# Manage installed service
+yeaft-agent status                 # check if running
+yeaft-agent logs                   # view logs (follow mode)
+yeaft-agent restart                # restart
+yeaft-agent uninstall              # remove service
+```
+
+**From source** (for development or without npm global install):
+
+```bash
+cd agent
+cp .env.example .env
+# Edit .env — set SERVER_URL, AGENT_NAME, AGENT_SECRET, WORK_DIR
+
+# Run in foreground
+node index.js
+
+# Or install as system service (reads config from .env)
+node cli.js install
+
+# Manage installed service
+node cli.js status
+node cli.js logs
+node cli.js uninstall
 ```
 
 ### Agent CLI
