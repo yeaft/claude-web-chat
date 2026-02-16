@@ -30,11 +30,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/yeaft/webchat.git"
+    "url": "https://github.com/yeaft/claude-web-chat.git"
   },
-  "homepage": "https://github.com/yeaft/webchat",
+  "homepage": "https://github.com/yeaft/claude-web-chat",
   "bugs": {
-    "url": "https://github.com/yeaft/webchat/issues"
+    "url": "https://github.com/yeaft/claude-web-chat/issues"
   },
   "keywords": [
     "claude",

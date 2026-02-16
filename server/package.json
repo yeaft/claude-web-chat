@@ -13,14 +13,14 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "homepage": "https://github.com/yeaft/webchat",
+  "homepage": "https://github.com/yeaft/claude-web-chat",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yeaft/webchat.git",
+    "url": "https://github.com/yeaft/claude-web-chat.git",
     "directory": "server"
   },
   "bugs": {
-    "url": "https://github.com/yeaft/webchat/issues"
+    "url": "https://github.com/yeaft/claude-web-chat/issues"
   },
   "license": "MIT",
   "author": "Yeaft",

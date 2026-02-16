@@ -55,8 +55,8 @@ yeaft-agent upgrade
 ### 方式 B：完整开发环境
 
 ```bash
-git clone https://github.com/yeaft/webchat.git
-cd webchat
+git clone https://github.com/yeaft/claude-web-chat.git
+cd claude-web-chat
 
 # 安装所有依赖
 npm install
@@ -287,7 +287,7 @@ npm run build
 ## 项目结构
 
 ```
-webchat/
+claude-web-chat/
 ├── server/           # 中央 WebSocket 服务器
 │   ├── index.js      # 入口
 │   ├── ws-agent.js   # Agent 连接与消息处理

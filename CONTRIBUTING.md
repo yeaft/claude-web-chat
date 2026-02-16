@@ -5,8 +5,8 @@ Thanks for your interest in contributing!
 ## Development Setup
 
 ```bash
-git clone https://github.com/yeaft/webchat.git
-cd webchat
+git clone https://github.com/yeaft/claude-web-chat.git
+cd claude-web-chat
 npm install
 npm run dev
 ```
@@ -45,7 +45,7 @@ Bundles `web/` into `web/dist/` via esbuild. Docker builds do this automatically
 
 ## Reporting Issues
 
-Use [GitHub Issues](https://github.com/yeaft/webchat/issues). Include:
+Use [GitHub Issues](https://github.com/yeaft/claude-web-chat/issues). Include:
 - Steps to reproduce
 - Expected vs actual behavior
 - Node.js version and OS

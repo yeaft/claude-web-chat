@@ -55,8 +55,8 @@ yeaft-agent upgrade
 ### Option B: Full development setup
 
 ```bash
-git clone https://github.com/yeaft/webchat.git
-cd webchat
+git clone https://github.com/yeaft/claude-web-chat.git
+cd claude-web-chat
 
 # Install all dependencies
 npm install
@@ -220,7 +220,7 @@ If no users are configured, the server starts with a warning — create the firs
 ## Project Structure
 
 ```
-webchat/
+claude-web-chat/
 ├── server/           # Central WebSocket hub (Express + ws)
 │   ├── index.js      # Entry point
 │   ├── ws-agent.js   # Agent connection & message handling
