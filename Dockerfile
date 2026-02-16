@@ -12,7 +12,7 @@ COPY web/vendor ./web/vendor/
 
 # Install web build dependencies
 WORKDIR /app/web
-RUN npm ci
+RUN npm install
 
 # Copy web source files
 COPY web/*.js web/*.css web/*.html ./
