@@ -1,8 +1,6 @@
-import random
 from collections import deque
 from datetime import datetime, timedelta, time
 import matplotlib.pyplot as plt
-import mplcursors
 import matplotlib.dates as mdates
 import heapq
 from helper import constance, utils, date_utils, analysis_helper, ticks_helper
@@ -10,14 +8,7 @@ import pytz
 import numpy as np
 from scipy.stats import linregress
 import math
-import copy
 from statistics import mean, variance, stdev
-
-# contract status => [available,extremDetected, holding]
-# mark result => [precheck pass, precheck fail, observe pass, observe fail]
-# Observed
-# prechecked
-
 
 class AbnormalDetector:
     def __init__(self,cjl_column_name="cjl", cjl_past_num=60, cjl_period_num=3, past_x_hour=3, candidate_x_min=5, precheck_x_min=10, check_column_name="ccl", precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False, real_send_message=False):
@@ -237,28 +228,11 @@ class AbnormalDetector:
             self.check_point['observe_check_index'] = n-1
             self.observe_failed_points.append(self.check_point)
     
-    def action_for_precheck_pass(self): 
-        return       
-        # if self.last_valid_check_point:
-        #     if self.last_valid_check_point['mark_result'] == "observe_pass":
-                # TODO do the trade
-            # elif self.last_valid_check_point['mark_result'] == "precheck_pass":
-                # If last check point status is precheck_pass, which mean the ccl is still between pass or fail, so we need to check the slope
-                # Which means current check point is fake, just keep same with last one.
-                # if last_check_point['extreme_type'] == self.check_point['extreme_type']:                                # TODO do the trade
-                #     self.check_point = last_check_point
-                #     self.check_points.remove(last_check_point)
-        # If pass precheck
-        #   if before is observe pass
-        #   if before is observe fail
-        #   if before is precheck pass
+    def action_for_precheck_pass(self):
+        return
     
     def action_for_observe_pass(self):
         return
-        # If pass observe
-            #   if before is observe pass
-            #   if before is observe fail
-            #   if before is precheck pass\
 
     def get_short_trend(self):
         # 短期ccl趋势
@@ -351,29 +325,8 @@ class AbnormalDetector:
 
 
     def cjl_abnormal_end_analysis(self):
-        # 1. check if current after a cjl abnormal
-        # 2. must know:
-        #   1. Current ccl overall trend, the next possible direction
-        #   2. the relation between current ccl and price
-        #   3. ccl threshold and cjl abnormal and price direction will be the cut condition
-        #   4. consider current trade time, near 23:00 will be a small ccl drop, near 15:00 will be a large ccl drop, this will reflect the in day impact
-        # 3. according to the information, make the decision
-        # 4. big trend won't lie, but it is posible there is some reverse trend in shot time.
-
-
-        # cjl abnormal analysis
         if 'anomaly' not in self.data[-1] or self.data[-1]['anomaly'] != "end":
             return
-        
-        # Find anbormal start index
-        # abnormal_start_data = None
-        # for i in range(len(self.data)-1, -1, -1):
-        #     if 'anomaly' in self.data[i] and self.data[i]['anomaly'] == "start":
-        #         if len(self.data) - i >= 500:
-        #             print(f"too many hot trade {self.data[i]['time']} - {self.data[-1]['time']}")
-        #             return
-        #         abnormal_start_data = self.data[i]
-        #         break
         
         if self.cjl_ab_start_data:
             return 
@@ -402,33 +355,11 @@ class AbnormalDetector:
         
         if self.send_message:
             self.send_cjl_abnormal_signal(is_send=self.real_send_message)
-            
+
         self.cjl_ab_start_data = {}
-
-        
-        # 1. Up is slow, down is fast. 
-        # 2. ccl abnormal should be detect
-        
-        # Attribution current abnormal 
-        # Give the future view
-
-        # 1. 必须分析已过日期的状态，比如是大上涨趋势，还是下跌趋势。
-        # 2. 收盘的ccl回落和价格走势有很大的指导意义
-        #    2.1 如果子弹够，且趋势强硬，日内ccl提出后，价格依旧是追随趋势，那么第二天很有可能是继续强硬
-        #    2.2 如果子弹以用满，且ccl大幅下滑，且价格大幅波动，那么第二天大概率是ccl下将的调整
-        # 2. 把第二天的走势全部预测出来，比如如果要继续搞是怎么样，如果是休息等
-        # 3. 检查前一天ccl和价格的相关性，也要看前一个相关性，用来判断交易的情况
 
     def start_analyse(self, n):
         last_check_point = self.check_points[-2]
-        # 查看上一个
-            # 如果是不同向
-            #   observ pass不重要，修改observe通过条件为上一个的不通过条件即可，且还要看上一个同向是否为observe pass
-            #   如果不是，那么依旧要对上一个做observe的判断？
-            # 如果是同向
-            #   如果上一个是observe pass，那么当前的是放向加强，顺势，继续不变, 不应该把当前的check point加入到observe pass的列表中
-            #   如果上一个是observe fail，那么大概率是强趋势，中间有个调整的check point但是没有发现，可以增加一个cjl的判断用来避免大趋势的错判
-            #   如果上一个是其他状态，说明有可能是双头顶或者双底，趋势可以考虑，因为没有observe fail，依旧以上一个为准做判断
         if self.new_check_point:
             # 1. Check do we need to give up previous observed extreme point
             if last_check_point["extreme_type"] == self.check_point["extreme_type"]:            
@@ -495,8 +426,7 @@ class AbnormalDetector:
                     candidate['extreme'] = False
                     self.error_points.append(candidate)
 
-    def send_cjl_abnormal_signal(self, is_send = False):
-
+    def send_cjl_abnormal_signal(self, is_send=False):
         message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
         message += f"{self.data[-1]['code']} CJL abnormal {self.data[-1]['anomaly']}\n"
         duration_seconds = (self.data[-1]['time'] - self.cjl_ab_start_data['time']).total_seconds()
@@ -512,8 +442,6 @@ class AbnormalDetector:
                 message += f"{round(self.data[-index_diff]['zxj'] * 2)/2} {round(self.data[-1]['zxj']*2)/2} {round(max([d['zxj'] for d in self.data[-index_diff:]]) * 2)/2} {round(min([d['zxj'] for d in self.data[-index_diff:]])*2)/2}\n"
             message += f"CJL sum: {int(sum([d[self.cjl_column_name] for d in self.data[-index_diff:]]))}\n"
             message += f"CCL Diff: {int(self.data[-1]['ccl'] - self.cjl_ab_start_data['ccl'])}\n"
-        # message += f"ZXJ L:{self.past_30min_price_trend:<4} S:{self.data[-1]['ab_zxj_direction']:<5}\n"
-        # message += f"CCL L:{self.past_30min_ccl_trend:<4} S:{self.data[-1]['ab_ccl_direction']:<5}\n"
 
         for i in range(len(self.data)-index_diff, len(self.data)):
             if self.data[-1]['type'] != "i":
@@ -524,12 +452,8 @@ class AbnormalDetector:
         utils.send_ding_msg(msg=message, is_real_send=is_send)
 
     def send_ccl_abnormal_signal(self, is_send=False):
-
         message = f"{self.data[-1]['time'].date()} {self.data[-1]['time'].time()}\n"
         message += f"{self.data[-1]['code']} CCL Abnormal {self.data[-1]['ab_ccl_direction']}\n"
-        # TODO ccl 单位增长率更重要
-        # message += f"Avg: {int(self.past_5day_ccl_avg)}\nMin: {int(self.past_5day_ccl_min)}\nMax: {int(self.past_5day_ccl_max)}\n"
-        # Only select last 5 abnormal data
         count = 0
         for d in self.ccl_abnormal_data:
             if d['ab_ccl_count'] > 1 or d == self.ccl_abnormal_data[-1]:
@@ -556,7 +480,7 @@ class AbnormalDetector:
             last_period_cjl = int(last_period_cjl_sum / self.cjl_period_num)
             # self.data[-1]['ab_zxj_direction'] = "up" if self.data[-1]['zxj'] > mean([d['zxj'] for d in self.data[-6:-1]]) else "down"
             # self.data[-1]['ab_ccl_direction'] = "up" if self.data[-1]['ccl'] > mean([d['ccl'] for d in self.data[-6:-1]]) else "down"
-            
+
             night_rate = 0.9 if self.data[-1]['time'].hour >= 20 else 1
             if (last_period_cjl - past_cjl_mean > 3 * past_cjl_std and last_period_cjl_sum > self.cjl_period_min_threshold * night_rate) or last_period_cjl_sum > self.cjl_period_pass_threshold * night_rate:
                 if 'anomaly' not in self.data[-2]:
@@ -564,7 +488,6 @@ class AbnormalDetector:
                     # Check past 2 mins slope
                     # self.data[-1]['past_2_mins_slope'] = round(self.slope_angle(self.data[-24], self.data[-1]), 2)
                     self.cjl_ab_start_data = self.data[-1]
-                    # Generate suggestion
                     if self.send_message:
                         self.send_cjl_abnormal_signal(is_send=self.real_send_message)
 
@@ -701,25 +624,7 @@ class AbnormalDetector:
                         self.send_ccl_abnormal_signal(is_send=self.real_send_message)
 
     def start_process(self, data_length):
-        
         self.cjl_abnormal_check()
-        # self.ccl_abnormal_check()
-        # self.cjl_abnormal_end_analysis()
-        
-        # self.check_candidate(data_length)
-        # Only have more than extreme points, to do the futher analysis
-        # if len(self.extreme_points) > 2:
-        #     self.start_analyse(data_length)
-
-        # Record the extreme point
-        # self.record_extreme_point(data_length)
-        # day_span = ticks_helper.get_x_span_number(5, span_type="5sec", unit="d")
-        # if len(self.data) < day_span:
-        #     return
-        
-        # if len(self.data) % (12 * 30) == 0:
-        #     self.get_big_trend()
-        #     self.get_ccl_metric()
 
     def slope_angle(self, start, end):
         delta_y = end[self.check_column_name] - start[self.check_column_name]
@@ -835,12 +740,9 @@ class AbnormalDetector:
             result, max_value, min_value, max_win, max_loss, future_zxj = 0, 0, 0, 0, 0, 0
             is_overlap = False
             trade_time = "9999"
-            # utils.log(
-            #     f"{data['code']} {data['time']} {data['extreme_type']} {'precheck_extreme' in data} {data['zxj']} {data['add_candidate_zxj']} {future_zxj} {result} {max_win} {max_loss} {data['before_slope']} {data['after_slope']} {data['correlation']} {data['lr_zxj']} {data['lr_ccl']}")
             data['prefix'] = prefix
             results.append(data)
 
-            # f"{prefix} {data['code']} {data['time'].strftime('%Y-%m-%d %H:%M:%S')} {data['add_candidate_time'].strftime('%H:%M:%S')} {trade_time} {data['extreme_type']} {'precheck_extreme' in data} {is_overlap} {data['zxj']} {data['add_candidate_zxj']} {future_zxj} {result} {max_win} {max_loss} {data['before_slope']} {data['after_slope']} {data['correlation']} {data['lr_zxj']} {data['lr_ccl']}")
         result_win = sum([result['result'] for result in results])
         result_true_win = sum([result['result']
                                for result in results if result['precheck_extreme']])
@@ -860,11 +762,6 @@ class AbnormalDetector:
 
         return results, statistic
 
-    # 1. 缓慢持续下跌趋势找波峰，缓慢持续上涨趋势找波谷，调整区间两头都要找
-    # 2. 收盘时，必然会出现持仓量下跌，从而引起价格变化，可以不予理会
-    # 3. 有可能有连续的波峰或波谷，所以超过30分钟之后，发现并没有走远，那么可以考虑观望
-    # 4. 实时检测异常情况
-
 
 def draw_image(dps, ticks, check_column_name="zxj"):
     # 提取时间和价格
@@ -879,10 +776,6 @@ def draw_image(dps, ticks, check_column_name="zxj"):
     axs[0].set_title('zxj data')  # type: ignore
     axs[0].xaxis.set_major_locator(plt.MaxNLocator(10))  # type: ignore
     axs[0].tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)  # type: ignore
-
-    # cursor0 = mplcursors.cursor(zxj_plot, hover=True)
-    # cursor0.connect("add", lambda sel: sel.annotation.set_text(
-    #     f'Date: {times[sel.target.index]}, Value: {sel.target[1]}'))
 
     for i, dp in enumerate(dps, start=1):
         ccl_plot, = axs[i].plot(times, values, label=check_column_name)   # type: ignore
@@ -901,20 +794,12 @@ def draw_image(dps, ticks, check_column_name="zxj"):
                           for point in abnormal_cold_data]
         axs[i].scatter(abnormal_cold_times, abnormal_cold_values, color='red', label='Abnormal Points')   # type: ignore
 
-
         candidate_times = [data['time'].strftime(
             '%Y-%m-%d %H:%M:%S') for data in dp.check_points]
         candidate_values = [point[check_column_name]
                             for point in dp.check_points]
         axs[i].scatter(candidate_times, candidate_values,   # type: ignore
                        color='blue', label='Candidate Points')
-        
-        # precheck_candidate_times = [data['time'].strftime(
-        #     '%Y-%m-%d %H:%M:%S') for data in dp.precheck_check_points]
-        # precheck_candidate_values = [point[check_column_name]
-        #                              for point in dp.precheck_check_points]
-        # axs[i].scatter(precheck_candidate_times, precheck_candidate_values, # type: ignore
-        #                color='lime', label='Candidate Points')
 
         axs[i].set_title(f'{dp.past_x_hours} hours range - {dp.precheck_x_min} mins check:  Observe pass num: {len(dp.observe_passed_points)}') # type: ignore
         axs[i].xaxis.set_major_locator(plt.MaxNLocator(10))  # type: ignore
@@ -949,10 +834,6 @@ def prepare_dps_simple(check_column_name="ccl"):
 
 
 def process_data(dps, start_date, end_date, contract_type="rb", verify_name="verify", is_draw_image=False, check_column_name="ccl"):
-    span_type = "5sec"
-
-    # final_results = []
-    # statistics = []
     ticks = []
     for dp in dps:
         ticks = ticks_helper.get_ticks(
@@ -966,50 +847,24 @@ def process_data(dps, start_date, end_date, contract_type="rb", verify_name="ver
         utils.convert_dic_to_csv(f"/mnt/c/Users/12282/Documents/v3_useful", useful_data)
         utils.convert_dic_to_csv(f"/mnt/c/Users/12282/Documents/v3_all", dp.data)
 
-    # utils.echo_dics(statistics)
-    # utils.convert_dic_to_csv(f"{verify_name}", final_results)
-    # utils.convert_dic_to_csv(f"{verify_name}_statistic", statistics)
     if is_draw_image:
         draw_image(dps, ticks, check_column_name=check_column_name)
 
-def output_data(dp, start_date, end_date, contract_type = "rb", check_column_name="ccl"):
-    span_type = "5sec"
+def output_data(dp, start_date, end_date, contract_type="rb", check_column_name="ccl"):
     ticks = ticks_helper.get_ticks(
         start_date, end_date, contract_type, span_type)
     utils.log("get {} ticks".format(len(ticks)))
     for data in ticks:
         dp.process_new_data(data)
 
-
-    # utils.convert_dic_to_csv(f"v3_with_abnormal", dp.data)
     useful_data = [d for d in dp.data if len(d) > 12]
     utils.convert_dic_to_csv(f"v3_useful", useful_data)
 
 if __name__ == "__main__":
-    # process_data("2022-05-01", "2022-08-01")
     check_column_name = "ccl"
-
-    # 处理测试数据
-    # round 1
-    # dps = prepare_dps(check_column_name)
-    # process_data(dps, "2022-04-20", "2022-08-01",verify_name="verify_05_08", check_column_name=check_column_name)
-
-    # round 2
-    # dps = prepare_dps_simple(check_column_name)
-
-
 
     dps = [
         AbnormalDetector(cjl_column_name="cjlDiff", past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=True),
     ]
     process_data(dps, "2023-10-20", "2023-11-01", contract_type="rb", verify_name="verify_09_12",
                  check_column_name=check_column_name, is_draw_image=False)
-    
-
-    # dp = DataProcessor(past_x_hour=3, candidate_x_min=5,  precheck_x_min=30, check_column_name=check_column_name, precheck_min_slope_value=350, precheck_accept_slope_value=600)
-    # output_data(dp=dp, start_date="2022-11-01", end_date="2022-11-20", contract_type="rb", check_column_name=check_column_name)
-    # round 3
-    # dps = prepare_dps(check_column_name)
-    # process_data(dps, "2021-12-01", "2022-03-10", verify_name="verify_12_03", check_column_name=check_column_name)
-
-    # draw_image(dps, ticks, check_column_name)

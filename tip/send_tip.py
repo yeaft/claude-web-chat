@@ -1,33 +1,19 @@
-import requests
 import time
-import math
-import yaml
-import socket
-import click
 import pytz
 
-from helper import constance, date_utils, analysis_helper, domain_utils, file_utils, utils
-from datetime import datetime, timedelta
-from pymongo import MongoClient, DESCENDING, ASCENDING
+from helper import date_utils, analysis_helper, utils
+from collection.realtime_tick import get_current_data
+from datetime import datetime
 
-def send_tips(types, ):
+
+def send_tips(types):
     # align time
     while True:
         current_sec = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%S')
         if current_sec >= "30":
             break
         time.sleep(5)
-    types = get_types()
     current_datas, raw_text = get_current_data(types)
-    # current_datas = []
-    # data = {}
-    # data['type'] = "ru"
-    # data['code'] = "ru2009"
-    # data['jkp'] = 10255
-    # data['zgj'] = 10280
-    # data['zdj'] = 10080
-    # data['zxj'] = 10140
-    # current_datas.append(data)
     results = []
     for data in current_datas:
         results.extend(analysis_helper.mock_similars(data['type'], data['code'], date_utils.get_today_date_string(), data['jkp'], data['zgj'], data['zdj'], data['zxj']))
