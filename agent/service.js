@@ -395,12 +395,13 @@ function winInstall(config) {
   // Create a batch file that sets env vars and starts node (with log redirection)
   mkdirSync(logDir, { recursive: true });
   const logFile = join(logDir, 'out.log');
-  const batContent = `@echo off\r\n${envLines.join('\r\n')}\r\n"${nodePath}" "${cliPath}" >> "${logFile}" 2>&1\r\n`;
+  const cliDir = dirname(cliPath);
+  const batContent = `@echo off\r\ncd /d "${cliDir}"\r\n${envLines.join('\r\n')}\r\n"${nodePath}" "${cliPath}" >> "${logFile}" 2>&1\r\n`;
   const batPath = getWinBatPath();
   writeFileSync(batPath, batContent);
 
   // Create VBS wrapper to run hidden (no console window)
-  const vbsContent = `Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run """${batPath}""", 0, False\r\n`;
+  const vbsContent = `Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.CurrentDirectory = "${cliDir}"\r\nWshShell.Run """${batPath}""", 0, False\r\n`;
   const vbsPath = getWinWrapperPath();
   writeFileSync(vbsPath, vbsContent);
 
@@ -439,6 +440,11 @@ function winInstall(config) {
   }
 
   console.log('Service installed and started.');
+  console.log(`  Bat:  ${batPath}`);
+  console.log(`  VBS:  ${vbsPath}`);
+  console.log(`  Log:  ${logFile}`);
+  console.log(`  Node: ${nodePath}`);
+  console.log(`  CLI:  ${cliPath}`);
   console.log(`\nManage with:`);
   console.log(`  yeaft-agent status`);
   console.log(`  yeaft-agent logs`);
@@ -478,13 +484,14 @@ function winStart() {
 }
 
 function winStop() {
-  // Find and kill the node process running cli.js
+  // Find and kill the node process running our cli.js
   try {
     const output = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', {
       encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe']
     });
+    const cliPath = getCliPath();
     for (const line of output.split('\n')) {
-      if (line.includes('cli.js') && line.includes(SERVICE_NAME)) {
+      if (line.includes('cli.js') && (line.includes(SERVICE_NAME) || line.includes('webchat-agent'))) {
         const pid = line.trim().split(',').pop();
         if (pid && /^\d+$/.test(pid)) {
           execSync(`taskkill /pid ${pid} /f`, { stdio: 'pipe' });
