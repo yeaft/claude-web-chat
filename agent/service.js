@@ -406,21 +406,35 @@ function winInstall(config) {
   try { execSync(`schtasks /delete /tn "${WIN_TASK_NAME}" /f 2>nul`, { stdio: 'pipe' }); } catch {}
 
   // Create scheduled task that runs at logon
-  // Try with highest privilege first, fall back to limited (no admin required)
+  // Try schtasks first (highest → limited), fall back to Startup folder
+  let usedStartupFolder = false;
   try {
     execSync(
       `schtasks /create /tn "${WIN_TASK_NAME}" /tr "wscript.exe \\"${vbsPath}\\"" /sc onlogon /rl highest /f`,
       { stdio: 'pipe' }
     );
   } catch {
-    execSync(
-      `schtasks /create /tn "${WIN_TASK_NAME}" /tr "wscript.exe \\"${vbsPath}\\"" /sc onlogon /rl limited /f`,
-      { stdio: 'pipe' }
-    );
+    try {
+      execSync(
+        `schtasks /create /tn "${WIN_TASK_NAME}" /tr "wscript.exe \\"${vbsPath}\\"" /sc onlogon /rl limited /f`,
+        { stdio: 'pipe' }
+      );
+    } catch {
+      // schtasks not available (no admin) — use Startup folder
+      const startupDir = join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+      const startupVbs = join(startupDir, `${WIN_TASK_NAME}.vbs`);
+      writeFileSync(startupVbs, vbsContent);
+      usedStartupFolder = true;
+      console.log('  (Using Startup folder for auto-start — no admin required)');
+    }
   }
 
   // Also start it now
-  execSync(`schtasks /run /tn "${WIN_TASK_NAME}"`, { stdio: 'pipe' });
+  if (usedStartupFolder) {
+    spawn('wscript.exe', [vbsPath], { detached: true, stdio: 'ignore' }).unref();
+  } else {
+    execSync(`schtasks /run /tn "${WIN_TASK_NAME}"`, { stdio: 'pipe' });
+  }
 
   console.log('Service installed and started.');
   console.log(`\nManage with:`);
@@ -438,6 +452,9 @@ function winUninstall() {
   const batPath = getWinBatPath();
   if (existsSync(vbsPath)) unlinkSync(vbsPath);
   if (existsSync(batPath)) unlinkSync(batPath);
+  // Clean up Startup folder shortcut
+  const startupVbs = join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', `${WIN_TASK_NAME}.vbs`);
+  if (existsSync(startupVbs)) unlinkSync(startupVbs);
   console.log('Service uninstalled.');
 }
 
@@ -446,8 +463,15 @@ function winStart() {
     execSync(`schtasks /run /tn "${WIN_TASK_NAME}"`, { stdio: 'pipe' });
     console.log('Service started.');
   } catch {
-    console.error('Service not installed. Run "yeaft-agent install" first.');
-    process.exit(1);
+    // No schtasks — try direct launch via VBS
+    const vbsPath = getWinWrapperPath();
+    if (existsSync(vbsPath)) {
+      spawn('wscript.exe', [vbsPath], { detached: true, stdio: 'ignore' }).unref();
+      console.log('Service started.');
+    } else {
+      console.error('Service not installed. Run "yeaft-agent install" first.');
+      process.exit(1);
+    }
   }
 }
 
@@ -494,7 +518,14 @@ function winStatus() {
       console.log(`Task name: ${WIN_TASK_NAME}`);
     }
   } catch {
-    console.log('Service is not installed.');
+    // Check Startup folder fallback
+    const startupVbs = join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', `${WIN_TASK_NAME}.vbs`);
+    if (existsSync(startupVbs)) {
+      console.log('Service installed via Startup folder (no admin).');
+      console.log(`Startup script: ${startupVbs}`);
+    } else {
+      console.log('Service is not installed.');
+    }
   }
 }
 
