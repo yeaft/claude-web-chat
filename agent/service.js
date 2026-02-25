@@ -406,10 +406,18 @@ function winInstall(config) {
   try { execSync(`schtasks /delete /tn "${WIN_TASK_NAME}" /f 2>nul`, { stdio: 'pipe' }); } catch {}
 
   // Create scheduled task that runs at logon
-  execSync(
-    `schtasks /create /tn "${WIN_TASK_NAME}" /tr "wscript.exe \\"${vbsPath}\\"" /sc onlogon /rl highest /f`,
-    { stdio: 'pipe' }
-  );
+  // Try with highest privilege first, fall back to limited (no admin required)
+  try {
+    execSync(
+      `schtasks /create /tn "${WIN_TASK_NAME}" /tr "wscript.exe \\"${vbsPath}\\"" /sc onlogon /rl highest /f`,
+      { stdio: 'pipe' }
+    );
+  } catch {
+    execSync(
+      `schtasks /create /tn "${WIN_TASK_NAME}" /tr "wscript.exe \\"${vbsPath}\\"" /sc onlogon /rl limited /f`,
+      { stdio: 'pipe' }
+    );
+  }
 
   // Also start it now
   execSync(`schtasks /run /tn "${WIN_TASK_NAME}"`, { stdio: 'pipe' });
