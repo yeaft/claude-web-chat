@@ -406,16 +406,8 @@ export function handleAskUserQuestion(conversationId, input, toolCtx) {
       questions: input.questions || []
     });
 
-    // 设置超时（5 分钟）
-    const timeout = setTimeout(() => {
-      console.log(`[AskUser] ${requestId} timed out, auto-resolving with empty answers`);
-      ctx.pendingUserQuestions.delete(requestId);
-      resolve({ behavior: 'allow', updatedInput: { questions: input.questions, answers: {} } });
-    }, 5 * 60 * 1000);
-
     ctx.pendingUserQuestions.set(requestId, {
       resolve,
-      timeout,
       conversationId,
       input
     });
@@ -423,7 +415,6 @@ export function handleAskUserQuestion(conversationId, input, toolCtx) {
     // 监听 abort signal
     if (toolCtx?.signal) {
       toolCtx.signal.addEventListener('abort', () => {
-        clearTimeout(timeout);
         ctx.pendingUserQuestions.delete(requestId);
         reject(new Error('aborted'));
       });
@@ -438,7 +429,6 @@ export function handleAskUserAnswer(msg) {
   const pending = ctx.pendingUserQuestions.get(msg.requestId);
   if (pending) {
     console.log(`[AskUser] Received answer for ${msg.requestId}`);
-    clearTimeout(pending.timeout);
     ctx.pendingUserQuestions.delete(msg.requestId);
     pending.resolve({
       behavior: 'allow',
