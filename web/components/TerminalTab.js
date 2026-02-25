@@ -104,6 +104,7 @@ const PaneTree = {
         class="split-divider"
         :class="'divider-' + node.direction"
         @mousedown.prevent="startDrag($event, node)"
+        @touchstart.prevent="startDrag($event, node)"
       ></div>
       <div class="split-child" :style="secondStyle">
         <PaneTree
@@ -132,8 +133,11 @@ const PaneTree = {
     const startDrag = (e, splitNode) => {
       const container = e.target.closest('.terminal-split');
       if (!container) return;
+      const isTouch = e.type === 'touchstart';
       const isHorizontal = splitNode.direction === 'horizontal';
-      const startPos = isHorizontal ? e.clientX : e.clientY;
+      const startPos = isHorizontal
+        ? (isTouch ? e.touches[0].clientX : e.clientX)
+        : (isTouch ? e.touches[0].clientY : e.clientY);
       const containerRect = container.getBoundingClientRect();
       const totalSize = isHorizontal ? containerRect.width : containerRect.height;
       const startRatio = splitNode.ratio;
@@ -141,24 +145,28 @@ const PaneTree = {
       document.body.style.cursor = isHorizontal ? 'col-resize' : 'row-resize';
       document.body.style.userSelect = 'none';
 
-      const onMouseMove = (ev) => {
-        const currentPos = isHorizontal ? ev.clientX : ev.clientY;
+      const onMove = (ev) => {
+        const currentPos = isHorizontal
+          ? (isTouch ? ev.touches[0].clientX : ev.clientX)
+          : (isTouch ? ev.touches[0].clientY : ev.clientY);
         const delta = currentPos - startPos;
         const newRatio = Math.max(0.1, Math.min(0.9, startRatio + delta / totalSize));
         splitNode.ratio = newRatio;
       };
 
-      const onMouseUp = () => {
+      const onEnd = () => {
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onEnd);
+        document.removeEventListener('touchmove', onMove);
+        document.removeEventListener('touchend', onEnd);
         // Fit all terminals after drag
         window.dispatchEvent(new CustomEvent('terminal-fit-all'));
       };
 
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
+      document.addEventListener(isTouch ? 'touchmove' : 'mousemove', onMove);
+      document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
     };
 
     return { firstStyle, secondStyle, startDrag };

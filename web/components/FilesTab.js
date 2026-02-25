@@ -137,7 +137,7 @@ export default {
       </div>
 
       <!-- 拖拽分割线 -->
-      <div class="file-tree-splitter" @mousedown="startTreeResize"></div>
+      <div class="file-tree-splitter" @mousedown="startTreeResize" @touchstart.prevent="startTreeResize"></div>
 
       <!-- 右栏: 文件编辑器（带标签页） -->
       <div class="file-col-content" v-if="openFiles.length > 0 || fileLoading" @wheel.ctrl.prevent="onWheel">
@@ -884,8 +884,9 @@ export default {
     // ===========================
     const startTreeResize = (e) => {
       e.preventDefault();
+      const isTouch = e.type === 'touchstart';
       isTreeResizing.value = true;
-      const startX = e.clientX;
+      const startX = isTouch ? e.touches[0].clientX : e.clientX;
       const startWidth = treePanelWidth.value;
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
@@ -893,22 +894,25 @@ export default {
       const container = e.target.closest('.file-two-col');
       const maxWidth = container ? container.offsetWidth * 0.5 : 400;
 
-      const onMouseMove = (ev) => {
-        const delta = ev.clientX - startX;
+      const onMove = (ev) => {
+        const clientX = isTouch ? ev.touches[0].clientX : ev.clientX;
+        const delta = clientX - startX;
         treePanelWidth.value = Math.max(120, Math.min(maxWidth, startWidth + delta));
       };
 
-      const onMouseUp = () => {
+      const onEnd = () => {
         isTreeResizing.value = false;
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
         localStorage.setItem('filePanelWidth', treePanelWidth.value.toString());
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onEnd);
+        document.removeEventListener('touchmove', onMove);
+        document.removeEventListener('touchend', onEnd);
       };
 
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
+      document.addEventListener(isTouch ? 'touchmove' : 'mousemove', onMove);
+      document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
     };
 
     // ===========================
