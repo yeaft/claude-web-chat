@@ -241,3 +241,50 @@ describe('Agent Conversation State', () => {
     expect(conversations.has('conv2')).toBe(true);
   });
 });
+
+describe('Turn Result Deduplication', () => {
+  it('should initialize turnResultReceived as false', () => {
+    const state = {
+      turnActive: false,
+      turnResultReceived: false,
+    };
+    expect(state.turnResultReceived).toBe(false);
+  });
+
+  it('should suppress duplicate result messages within same turn', () => {
+    const state = { turnActive: true, turnResultReceived: false };
+    const results = [];
+
+    // Simulate the result processing logic in processClaudeOutput
+    const processResult = (message) => {
+      if (state.turnResultReceived) {
+        return false; // suppressed
+      }
+      state.turnResultReceived = true;
+      state.turnActive = false;
+      results.push(message);
+      return true;
+    };
+
+    // First result should be accepted
+    expect(processResult({ subtype: 'success' })).toBe(true);
+    expect(results.length).toBe(1);
+    expect(state.turnResultReceived).toBe(true);
+    expect(state.turnActive).toBe(false);
+
+    // Second result (duplicate) should be suppressed
+    expect(processResult({ subtype: 'error_during_execution' })).toBe(false);
+    expect(results.length).toBe(1); // still 1
+  });
+
+  it('should reset turnResultReceived on new user input', () => {
+    const state = { turnActive: false, turnResultReceived: true };
+
+    // Simulate handleUserInput resetting the flag
+    state.turnActive = true;
+    state.turnResultReceived = false;
+
+    expect(state.turnResultReceived).toBe(false);
+    expect(state.turnActive).toBe(true);
+  });
+});

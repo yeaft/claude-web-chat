@@ -299,6 +299,7 @@ async function handleAgentMessage(agentId, msg) {
           existing.workDir = conv.workDir || existing.workDir;
           existing.claudeSessionId = conv.claudeSessionId || existing.claudeSessionId;
           existing.createdAt = conv.createdAt || existing.createdAt;
+          if (conv.processing !== undefined) existing.processing = conv.processing;
           // ★ Security: 不信任 agent 上报的 userId/username，保留 server 端已有值
           // 仅在 server 端无值时，从 DB 或 agent.ownerId 补充
           if (!existing.userId) {

@@ -169,7 +169,23 @@ export default {
           <div v-if="debugStatus" style="padding:4px 8px;font-size:11px;color:var(--text-muted);background:var(--bg-sidebar);border-bottom:1px solid var(--border-color)">{{ debugStatus }}</div>
           <!-- 文本文件: CodeMirror 编辑器 -->
           <template v-if="!activeFile.fileType || activeFile.fileType === 'text'">
-          <!-- 搜索/替换栏 -->
+          <!-- Markdown 预览/编辑切换 -->
+          <div v-if="isActiveMarkdown" class="md-toolbar">
+            <button :class="['md-toggle-btn', { active: mdPreviewMode }]" @click="mdPreviewMode = true">
+              <svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px;margin-right:3px"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.76 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+              {{ $t && $t('files.preview') || 'Preview' }}
+            </button>
+            <button :class="['md-toggle-btn', { active: !mdPreviewMode }]" @click="switchToMdEdit">
+              <svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px;margin-right:3px"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+              {{ $t && $t('files.edit') || 'Edit' }}
+            </button>
+          </div>
+          <!-- Markdown 渲染预览 -->
+          <div v-if="isActiveMarkdown && mdPreviewMode" class="file-preview-container md-preview-container" ref="mdPreviewRef">
+            <div class="markdown-body md-file-preview" v-html="mdRenderedHtml"></div>
+          </div>
+          <!-- 搜索/替换栏 + CodeMirror 编辑器 -->
+          <template v-if="!isActiveMarkdown || !mdPreviewMode">
           <div class="find-replace-bar" v-if="findBarVisible">
             <div class="find-row">
               <input
@@ -216,6 +232,7 @@ export default {
             </div>
           </div>
           <div ref="editorContainer" class="file-editor-container"></div>
+          </template>
           </template>
           <!-- Office 文件预览 -->
           <div v-else-if="activeFile.fileType === 'office'" class="file-preview-container">
@@ -474,6 +491,7 @@ export default {
     const OFFICE_EXT = new Set(['.docx', '.xlsx', '.xls', '.pptx', '.ppt']);
     const PDF_EXT = new Set(['.pdf']);
     const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico']);
+    const MD_EXT = new Set(['.md', '.markdown', '.mdx']);
 
     function getFileType(name) {
       const dot = name.lastIndexOf('.');
@@ -483,6 +501,76 @@ export default {
       if (PDF_EXT.has(ext)) return 'pdf';
       if (IMAGE_EXT.has(ext)) return 'image';
       return 'text';
+    }
+
+    function isMarkdownFile(name) {
+      const dot = name.lastIndexOf('.');
+      if (dot < 0) return false;
+      return MD_EXT.has(name.substring(dot).toLowerCase());
+    }
+
+    // --- Markdown preview ---
+    const mdPreviewMode = Vue.ref(true);
+    const mdPreviewRef = Vue.ref(null);
+    let mermaidInitialized = false;
+
+    const isActiveMarkdown = Vue.computed(() => {
+      const f = activeFile.value;
+      return !!(f && isMarkdownFile(f.name));
+    });
+
+    const mdRenderedHtml = Vue.computed(() => {
+      const f = activeFile.value;
+      if (!f || !isMarkdownFile(f.name) || f.content == null) return '';
+      try {
+        if (typeof marked !== 'undefined') {
+          return marked.parse(f.content);
+        }
+      } catch (e) {
+        console.error('Markdown parse error:', e);
+      }
+      return '<pre>' + (f.content || '') + '</pre>';
+    });
+
+    function initMermaid() {
+      if (mermaidInitialized || typeof mermaid === 'undefined') return;
+      try {
+        const theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme });
+        mermaidInitialized = true;
+      } catch (e) {
+        console.error('Mermaid init error:', e);
+      }
+    }
+
+    async function renderMermaidBlocks() {
+      const container = mdPreviewRef.value;
+      if (!container || typeof mermaid === 'undefined') return;
+      initMermaid();
+      const codeBlocks = container.querySelectorAll('pre code.language-mermaid');
+      for (let i = 0; i < codeBlocks.length; i++) {
+        const codeEl = codeBlocks[i];
+        const pre = codeEl.parentElement;
+        const code = codeEl.textContent;
+        try {
+          const id = 'mermaid-' + Date.now() + '-' + i;
+          const { svg } = await mermaid.render(id, code);
+          const div = document.createElement('div');
+          div.className = 'mermaid-rendered';
+          div.innerHTML = svg;
+          pre.replaceWith(div);
+        } catch (e) {
+          console.warn('Mermaid render error:', e);
+        }
+      }
+    }
+
+    function switchToMdEdit() {
+      mdPreviewMode.value = false;
+      Vue.nextTick(() => {
+        const file = activeFile.value;
+        if (file && editorContainer.value) createEditor(file);
+      });
     }
 
     // --- Office local rendering ---
@@ -1290,7 +1378,9 @@ export default {
         const file = openFiles.value[index];
         if (!file) return;
         if (!file.fileType || file.fileType === 'text') {
-          if (file.content != null && editorContainer.value) {
+          if (isMarkdownFile(file.name)) {
+            mdPreviewMode.value = true;
+          } else if (file.content != null && editorContainer.value) {
             createEditor(file);
             if (findBarVisible.value && findQuery.value) {
               Vue.nextTick(() => performFind());
@@ -2158,11 +2248,16 @@ export default {
             file.isDirty = false;
             saveTabsState(store.currentConversation);
             if (tabIndex === activeFileIndex.value) {
-              Vue.nextTick(() => {
-                setTimeout(() => {
-                  createEditor(file);
-                }, 100);
-              });
+              // Markdown file in preview mode — skip creating editor
+              if (isMarkdownFile(file.name) && mdPreviewMode.value) {
+                // Content already set, mdRenderedHtml computed will update automatically
+              } else {
+                Vue.nextTick(() => {
+                  setTimeout(() => {
+                    createEditor(file);
+                  }, 100);
+                });
+              }
             }
           }
           break;
@@ -2358,12 +2453,26 @@ export default {
       (newContent, oldContent) => {
         const file = activeFile.value;
         if (file && newContent != null && oldContent == null && !file.cmInstance && (!file.fileType || file.fileType === 'text')) {
+          // Skip auto-creating editor for markdown files in preview mode
+          if (isMarkdownFile(file.name) && mdPreviewMode.value) return;
           Vue.nextTick(() => {
             setTimeout(() => {
               if (!file.cmInstance) {
                 createEditor(file);
               }
             }, 150);
+          });
+        }
+      }
+    );
+
+    // Watch markdown preview — render mermaid blocks after HTML is inserted
+    Vue.watch(
+      [mdRenderedHtml, mdPreviewMode],
+      ([html, preview]) => {
+        if (html && preview) {
+          Vue.nextTick(() => {
+            setTimeout(() => renderMermaidBlocks(), 50);
           });
         }
       }
@@ -2417,6 +2526,7 @@ export default {
       window.addEventListener('conversation-deleted', handleConversationDeleted);
       window.addEventListener('keydown', handleGlobalKeydown);
       document.addEventListener('click', handleDocumentClick);
+      initMermaid();
       if (store.currentAgent) {
         initFileBrowser();
         // ★ 请求恢复文件 tabs
@@ -2443,7 +2553,9 @@ export default {
       toggleRootExpand, collapseAll, startTreePathEdit, confirmTreePath, cancelTreePathEdit,
       treePanelWidth, isTreeResizing, startTreeResize,
       openFiles, activeFileIndex, activeFile, fileLoading, fileSaving,
-      editorContainer, officePreviewContainer,
+      editorContainer, officePreviewContainer, mdPreviewRef,
+      // Markdown preview
+      isActiveMarkdown, mdPreviewMode, mdRenderedHtml, switchToMdEdit,
       folderPickerOpen, folderPickerPath, folderPickerEntries, folderPickerLoading, folderPickerSelected,
       searchQuery, searchResults, searchLoading, onSearchInput, clearSearch, onSearchResultClick,
       quickOpenVisible, quickOpenQuery, quickOpenResults, quickOpenSelectedIndex, quickOpenLoading, quickOpenInput,

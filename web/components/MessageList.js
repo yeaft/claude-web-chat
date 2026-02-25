@@ -68,7 +68,6 @@ export default {
           v-for="msg in processedMessages"
           :key="msg.id"
           :message="msg"
-          @cancel-queued="cancelQueued"
         />
 
         <!-- Minimal Status Indicator -->
@@ -136,10 +135,6 @@ export default {
     const hasStreamingMessage = Vue.computed(() => {
       return store.messages.some(m => m.isStreaming);
     });
-
-    const cancelQueued = (queueId) => {
-      store.cancelQueuedMessage(queueId);
-    };
 
     // 执行状态相关
     const currentTool = Vue.computed(() => store.executionStatus.currentTool);
@@ -307,7 +302,6 @@ export default {
       onlineAgents,
       shortenPath,
       processedMessages,
-      cancelQueued,
       statusIcon,
       statusIconClass,
       statusText,

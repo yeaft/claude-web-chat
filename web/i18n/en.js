@@ -205,6 +205,7 @@ export default {
   'chatInput.queueSend': 'Queue and send',
   'chatInput.stop': 'Stop execution',
   'chatInput.stopWithQueue': 'Stop execution (clear {count} queued and stop current)',
+  'chatInput.queuedMessages': '{count} message(s) queued',
 
   // ============ Tool Status ============
   'tools.thinking': 'Thinking...',
@@ -408,6 +409,8 @@ export default {
   'files.download': 'Download',
   'files.enterNewName': 'Enter new name...',
   'files.loadingPreview': 'Loading preview...',
+  'files.preview': 'Preview',
+  'files.edit': 'Edit',
   'files.pptxNotSupported': 'PPTX local preview is not supported. Please switch to Office Online mode in Settings.',
   'files.officePreviewMode': 'Office Preview Mode',
   'files.officeOnline': 'Office Online',

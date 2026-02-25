@@ -138,18 +138,15 @@ export async function notifyConversationUpdate(agentId, msg) {
         await sendToWebClient(targetClient, cleanMsg);
         return;
       }
+      // Target client disconnected/reconnected — fall through to broadcast
     }
-    // Fallback: 如果没有 _requestClientId，发送给所有已认证客户端
-    let sentCount = 0;
+    // Fallback: 如果没有 _requestClientId 或 target 不可用，发送给所有已认证客户端
     const { _requestClientId: _, ...cleanMsg } = msg;
-    for (const [clientId, client] of webClients) {
+    for (const [, client] of webClients) {
       if (client.authenticated) {
-        console.log(`[${msg.type}] Sending to client ${clientId}`);
         await sendToWebClient(client, cleanMsg);
-        sentCount++;
       }
     }
-    console.log(`[${msg.type}] Sent to ${sentCount} clients`);
     return;
   }
 
@@ -221,6 +218,8 @@ export async function forwardToClients(agentId, conversationId, msg) {
       console.warn(`[Forward] file_content NOT forwarded! conv=${conversationId}, agent=${agentId}, ownerId=${ownerId}, _reqUser=${msg._requestUserId}, webClients=${webClients.size}`);
     } else if (msg.type === 'claude_output') {
       console.warn(`[Forward] No authenticated clients for conv=${conversationId}, owner=${ownerId}`);
+    } else if (msg.type === 'directory_listing') {
+      console.warn(`[Forward] directory_listing NOT forwarded! conv=${conversationId}, agent=${agentId}, ownerId=${ownerId}, _reqUser=${msg._requestUserId}, webClients=${webClients.size}`);
     }
   }
 }

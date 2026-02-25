@@ -168,7 +168,7 @@ export function loadSessionHistory(workDir, claudeSessionId, limit = 500) {
 }
 
 export async function handleListHistorySessions(msg) {
-  const { workDir, requestId } = msg;
+  const { workDir, requestId, _requestClientId } = msg;
   const effectiveWorkDir = workDir || ctx.CONFIG.workDir;
 
   console.log(`Listing history sessions for: ${effectiveWorkDir}`);
@@ -178,6 +178,7 @@ export async function handleListHistorySessions(msg) {
     ctx.sendToServer({
       type: 'history_sessions_list',
       requestId,
+      _requestClientId,
       workDir: effectiveWorkDir,
       sessions
     });
@@ -186,6 +187,7 @@ export async function handleListHistorySessions(msg) {
     ctx.sendToServer({
       type: 'history_sessions_list',
       requestId,
+      _requestClientId,
       workDir: effectiveWorkDir,
       sessions: [],
       error: e.message
@@ -195,7 +197,7 @@ export async function handleListHistorySessions(msg) {
 
 // 列出 Claude projects 目录下的所有 folder (工作目录)
 export async function handleListFolders(msg) {
-  const { requestId } = msg;
+  const { requestId, _requestClientId } = msg;
   const projectsDir = getClaudeProjectsDir();
 
   console.log(`Listing folders from: ${projectsDir}`);
@@ -268,6 +270,7 @@ export async function handleListFolders(msg) {
     ctx.sendToServer({
       type: 'folders_list',
       requestId,
+      _requestClientId,
       folders
     });
     console.log(`folders_list sent with ${folders.length} folders`);
@@ -276,6 +279,7 @@ export async function handleListFolders(msg) {
     ctx.sendToServer({
       type: 'folders_list',
       requestId,
+      _requestClientId,
       folders: [],
       error: e.message
     });

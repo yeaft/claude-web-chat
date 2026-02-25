@@ -8,6 +8,20 @@ export default {
   name: 'ChatInput',
   template: `
     <footer class="input-area" ref="inputAreaRef">
+      <div class="queue-panel" v-if="store.currentQueue.length > 0">
+        <div class="queue-panel-header">
+          <span class="queue-panel-title">{{ $t('chatInput.queuedMessages', { count: store.currentQueue.length }) }}</span>
+        </div>
+        <div class="queue-panel-list">
+          <div class="queue-panel-item" v-for="(item, idx) in store.currentQueue" :key="item.id">
+            <div class="queue-item-num">{{ idx + 1 }}</div>
+            <span class="queue-item-text">{{ item.prompt }}</span>
+            <button class="queue-item-cancel" @click="store.cancelQueuedMessage(item.id)" :title="$t('message.cancelQueue')">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
       <div class="attachments-preview" v-if="attachments.length > 0">
         <div class="attachment-item" v-for="(file, index) in attachments" :key="index">
           <img v-if="file.preview" :src="file.preview" class="attachment-thumb" />

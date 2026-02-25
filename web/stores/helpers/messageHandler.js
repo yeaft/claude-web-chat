@@ -517,6 +517,7 @@ export function handleMessage(store, msg) {
     case 'file_op_result':
     case 'file_search_result':
       if (msg.type === 'file_content') console.log('[Store] Dispatching file_content workbench-message:', msg.type, msg.filePath);
+      if (msg.type === 'directory_listing') console.log('[Store] Dispatching directory_listing workbench-message, convId:', msg.conversationId, 'entries:', msg.entries?.length);
       window.dispatchEvent(new CustomEvent('workbench-message', { detail: msg }));
       break;
   }

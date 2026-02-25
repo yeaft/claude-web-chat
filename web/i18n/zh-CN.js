@@ -205,6 +205,7 @@ export default {
   'chatInput.queueSend': '排队发送',
   'chatInput.stop': '停止执行',
   'chatInput.stopWithQueue': '停止执行（清除 {count} 条排队并停止当前）',
+  'chatInput.queuedMessages': '{count} 条消息排队中',
 
   // ============ Tool Status ============
   'tools.thinking': '思考中...',
@@ -408,6 +409,8 @@ export default {
   'files.download': '下载',
   'files.enterNewName': '输入新名称...',
   'files.loadingPreview': '加载预览中...',
+  'files.preview': '预览',
+  'files.edit': '编辑',
   'files.pptxNotSupported': 'PPTX 本地预览暂不支持，请在设置中切换为 Office Online 模式。',
   'files.officePreviewMode': 'Office 预览模式',
   'files.officeOnline': 'Office Online',

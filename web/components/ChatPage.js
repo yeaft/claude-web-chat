@@ -820,6 +820,7 @@ export default {
     openFolderPicker(target) {
       const agentId = target === 'newConv' ? this.newConvAgent : this.resumeAgent;
       if (!agentId) return;
+      console.log('[FolderPicker] Opening, target:', target, 'agentId:', agentId);
       this.folderPickerTarget = target;
       this.folderPickerOpen = true;
       this.folderPickerSelected = '';
@@ -837,6 +838,14 @@ export default {
         workDir: agent?.workDir || '',
         _clientId: this.store.clientId
       });
+      // Timeout: if no response in 10s, stop loading
+      clearTimeout(this._folderPickerTimeout);
+      this._folderPickerTimeout = setTimeout(() => {
+        if (this.folderPickerLoading) {
+          console.warn('[FolderPicker] Timeout waiting for directory listing');
+          this.folderPickerLoading = false;
+        }
+      }, 10000);
     },
     loadFolderPickerDir(dirPath) {
       const agentId = this.folderPickerTarget === 'newConv' ? this.newConvAgent : this.resumeAgent;
@@ -852,6 +861,14 @@ export default {
         workDir: agent?.workDir || '',
         _clientId: this.store.clientId
       });
+      // Timeout
+      clearTimeout(this._folderPickerTimeout);
+      this._folderPickerTimeout = setTimeout(() => {
+        if (this.folderPickerLoading) {
+          console.warn('[FolderPicker] Timeout waiting for directory listing');
+          this.folderPickerLoading = false;
+        }
+      }, 10000);
     },
     folderPickerNavigateUp() {
       if (!this.folderPickerPath) return;
@@ -906,7 +923,13 @@ export default {
     },
     handleFolderPickerMessage(event) {
       const msg = event.detail;
-      if (!msg || msg.type !== 'directory_listing' || msg.conversationId !== '_workdir_picker') return;
+      if (!msg) return;
+      if (msg.type === 'directory_listing') {
+        console.log('[FolderPicker] Received directory_listing, conversationId:', msg.conversationId, 'entries:', msg.entries?.length, 'error:', msg.error);
+      }
+      if (msg.type !== 'directory_listing' || msg.conversationId !== '_workdir_picker') return;
+      console.log('[FolderPicker] Processing _workdir_picker response, entries:', msg.entries?.length, 'dirPath:', msg.dirPath);
+      clearTimeout(this._folderPickerTimeout);
       this.folderPickerLoading = false;
       this.folderPickerEntries = (msg.entries || [])
         .filter(e => e.type === 'directory')
@@ -985,6 +1008,7 @@ export default {
     window.removeEventListener('workbench-message', this.handleFolderPickerMessage);
     window.removeEventListener('agent-restart-ack', this._agentRestartAckHandler);
     window.removeEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
+    clearTimeout(this._folderPickerTimeout);
     if (this._checkRestartingAgents) this._checkRestartingAgents();
   }
 };

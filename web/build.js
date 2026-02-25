@@ -50,6 +50,22 @@ for (const file of vendorJs) {
 writeFileSync(join(distDir, 'vendor.bundle.js'), vendorBundle);
 console.log(`   Vendor bundle: ${(vendorBundle.length / 1024).toFixed(1)} KB`);
 
+// Step 1b: Copy large vendor files separately (too big for bundle)
+console.log('1b. Copying large vendor files...');
+const separateVendorJs = [
+  'jszip.min.js',
+  'docx-preview.min.js',
+  'xlsx.min.js',
+  'mermaid.min.js'
+];
+for (const file of separateVendorJs) {
+  const src = join(vendorDir, file);
+  if (existsSync(src)) {
+    copyFileSync(src, join(distDir, file));
+    console.log(`   ${file}: ${(statSync(src).size / 1024).toFixed(1)} KB`);
+  }
+}
+
 // Step 2: Bundle app code with esbuild
 console.log('2. Bundling application code...');
 
@@ -119,6 +135,10 @@ const indexHtml = `<!DOCTYPE html>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23d97706'/><path d='M8 11l4 4-4 4' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' fill='none'/><path d='M14 19h10' stroke='white' stroke-width='2.5' stroke-linecap='round'/></svg>">
   <link rel="stylesheet" href="style.bundle.css">
   <script src="vendor.bundle.js"></script>
+  <script defer src="jszip.min.js"></script>
+  <script defer src="docx-preview.min.js"></script>
+  <script defer src="xlsx.min.js"></script>
+  <script defer src="mermaid.min.js"></script>
 </head>
 <body>
   <div id="app"></div>
@@ -129,7 +149,7 @@ writeFileSync(join(distDir, 'index.html'), indexHtml);
 
 // Step 5: Create gzip versions for servers that support pre-compressed files
 console.log('5. Creating gzip versions...');
-const filesToGzip = ['vendor.bundle.js', 'app.bundle.js', 'style.bundle.css'];
+const filesToGzip = ['vendor.bundle.js', 'app.bundle.js', 'style.bundle.css', ...separateVendorJs];
 for (const file of filesToGzip) {
   const content = readFileSync(join(distDir, file));
   const gzipped = gzipSync(content, { level: 9 });

@@ -610,6 +610,7 @@ async function handleWebMessage(clientId, msg) {
       await forwardToAgent(dirAgentId, {
         type: 'list_directory',
         dirPath: msg.dirPath,
+        workDir: msg.workDir,
         conversationId: msg.conversationId || client.currentConversation,
         requestId: msg.requestId,
         _requestUserId: client.userId

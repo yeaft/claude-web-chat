@@ -34,6 +34,7 @@ export async function startClaudeQuery(conversationId, workDir, resumeSessionId)
     createdAt: Date.now(),
     abortController,
     turnActive: false, // 是否有 turn 正在处理中
+    turnResultReceived: false, // 当前 turn 是否已收到 result（用于抑制重复 result）
     // Metadata from system init message
     tools: [],
     slashCommands: [],
@@ -324,6 +325,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
       // 捕获 result 消息中的 usage 信息
       if (message.type === 'result') {
+        // 累计 usage（无论是否重复，始终统计）
         if (message.usage) {
           state.usage.inputTokens += message.usage.input_tokens || 0;
           state.usage.outputTokens += message.usage.output_tokens || 0;
@@ -333,9 +335,17 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         state.usage.totalCostUsd += message.total_cost_usd || 0;
         console.log(`[SDK] Query completed for ${conversationId}, cost: $${state.usage.totalCostUsd.toFixed(4)}`);
 
+        // ★ Guard：当前 turn 已收到过 result，抑制 SDK 发出的重复 result
+        // （长任务场景下 SDK 可能先发 result/success 再发 result/error_during_execution）
+        if (state.turnResultReceived) {
+          console.warn(`[SDK] Suppressing duplicate result for ${conversationId} (subtype: ${message.subtype || 'unknown'})`);
+          continue;
+        }
+
         // ★ Turn 完成：发送 turn_completed，进程继续运行等待下一条消息
         // stream-json 模式下 Claude 进程是持久运行的，for-await 在 result 后继续等待
         // 不清空 state.query 和 state.inputStream，下次用户消息直接通过同一个 inputStream 发送
+        state.turnResultReceived = true;
         sendOutput(conversationId, message);
 
         resultHandled = true;
