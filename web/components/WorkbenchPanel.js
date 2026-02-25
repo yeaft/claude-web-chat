@@ -57,7 +57,7 @@ export default {
       </div>
 
       <!-- 拖拽调整宽度手柄 -->
-      <div class="resize-handle" @mousedown="startResize" v-if="store.workbenchExpanded"></div>
+      <div class="resize-handle" @mousedown="startResize" @touchstart.prevent="startResize" v-if="store.workbenchExpanded"></div>
     </div>
   `,
   setup() {
@@ -116,8 +116,9 @@ export default {
 
     const startResize = (e) => {
       e.preventDefault();
+      const isTouch = e.type === 'touchstart';
+      const startX = isTouch ? e.touches[0].clientX : e.clientX;
       isResizing.value = true;
-      const startX = e.clientX;
       // If no custom width yet, use current computed width
       if (!hasCustomWidth.value) {
         const el = e.target.closest('.workbench-panel');
@@ -128,23 +129,26 @@ export default {
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
 
-      const onMouseMove = (e) => {
-        const delta = e.clientX - startX;
+      const onMove = (e) => {
+        const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+        const delta = clientX - startX;
         // Allow workbench to grow up to window width minus sidebar (~48-260px) minus a small margin
         const maxWidth = Math.max(900, window.innerWidth - 100);
         panelWidth.value = Math.max(280, Math.min(maxWidth, startWidth + delta));
       };
 
-      const onMouseUp = () => {
+      const onEnd = () => {
         isResizing.value = false;
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onEnd);
+        document.removeEventListener('touchmove', onMove);
+        document.removeEventListener('touchend', onEnd);
       };
 
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
+      document.addEventListener(isTouch ? 'touchmove' : 'mousemove', onMove);
+      document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
     };
 
     // Auto-switch to explorer tab when a file is opened from chat
