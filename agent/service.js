@@ -443,11 +443,22 @@ function winInstall(config) {
 
   // Setup auto-start: create startup script in Windows Startup folder
   // pm2-startup doesn't work well on Windows, use Startup folder approach
+  const trayScript = join(__dirname, 'scripts', 'agent-tray.ps1');
   const startupDir = join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
   const startupBat = join(startupDir, `${PM2_APP_NAME}.bat`);
-  // pm2 is in PATH (ensured by ensurePm2), so just call it directly
-  const batContent = `@echo off\r\npm2 resurrect\r\n`;
+  // Resurrect pm2 processes + launch tray icon
+  let batContent = `@echo off\r\npm2 resurrect\r\n`;
+  if (existsSync(trayScript)) {
+    batContent += `start "" powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File "${trayScript}"\r\n`;
+  }
   writeFileSync(startupBat, batContent);
+
+  // Launch tray now
+  if (existsSync(trayScript)) {
+    spawn('powershell', ['-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', trayScript], {
+      detached: true, stdio: 'ignore'
+    }).unref();
+  }
 
   console.log(`\nService installed and started.`);
   console.log(`  Ecosystem: ${ecoPath}`);

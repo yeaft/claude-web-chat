@@ -4,12 +4,11 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-$AgentDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $AgentDir
+$PM2AppName = "yeaft-agent"
 
 # 创建托盘图标
 $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
-$notifyIcon.Text = "Claude Agent"
+$notifyIcon.Text = "Yeaft Agent"
 $notifyIcon.Visible = $true
 
 # 创建 Claude 风格图标（橙色圆形 + 白色 C）
@@ -58,7 +57,7 @@ $contextMenu.Items.Add($menuStatus)
 $menuLogs = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuLogs.Text = "View Logs"
 $menuLogs.Add_Click({
-    Start-Process "powershell" -ArgumentList "-NoExit -Command `"pm2 logs claude-agent --lines 100`""
+    Start-Process "powershell" -ArgumentList "-NoExit -Command `"pm2 logs $PM2AppName --lines 100`""
 })
 $contextMenu.Items.Add($menuLogs)
 
@@ -69,8 +68,8 @@ $contextMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $menuRestart = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuRestart.Text = "Restart Agent"
 $menuRestart.Add_Click({
-    pm2 restart claude-agent
-    $notifyIcon.ShowBalloonTip(2000, "Claude Agent", "Agent restarted", [System.Windows.Forms.ToolTipIcon]::Info)
+    pm2 restart $PM2AppName
+    $notifyIcon.ShowBalloonTip(2000, "Yeaft Agent", "Agent restarted", [System.Windows.Forms.ToolTipIcon]::Info)
 })
 $contextMenu.Items.Add($menuRestart)
 
@@ -78,8 +77,8 @@ $contextMenu.Items.Add($menuRestart)
 $menuStop = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuStop.Text = "Stop Agent"
 $menuStop.Add_Click({
-    pm2 stop claude-agent
-    $notifyIcon.ShowBalloonTip(2000, "Claude Agent", "Agent stopped", [System.Windows.Forms.ToolTipIcon]::Warning)
+    pm2 stop $PM2AppName
+    $notifyIcon.ShowBalloonTip(2000, "Yeaft Agent", "Agent stopped", [System.Windows.Forms.ToolTipIcon]::Warning)
 })
 $contextMenu.Items.Add($menuStop)
 
@@ -87,8 +86,8 @@ $contextMenu.Items.Add($menuStop)
 $menuStart = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuStart.Text = "Start Agent"
 $menuStart.Add_Click({
-    pm2 start ecosystem.config.cjs
-    $notifyIcon.ShowBalloonTip(2000, "Claude Agent", "Agent started", [System.Windows.Forms.ToolTipIcon]::Info)
+    pm2 start $PM2AppName
+    $notifyIcon.ShowBalloonTip(2000, "Yeaft Agent", "Agent started", [System.Windows.Forms.ToolTipIcon]::Info)
 })
 $contextMenu.Items.Add($menuStart)
 
@@ -99,7 +98,9 @@ $contextMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $menuOpenLogs = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuOpenLogs.Text = "Open Logs Folder"
 $menuOpenLogs.Add_Click({
-    Start-Process "explorer" -ArgumentList "$AgentDir\logs"
+    $logDir = Join-Path $env:APPDATA "yeaft-agent\logs"
+    if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+    Start-Process "explorer" -ArgumentList $logDir
 })
 $contextMenu.Items.Add($menuOpenLogs)
 
@@ -110,8 +111,8 @@ $contextMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $menuExit = New-Object System.Windows.Forms.ToolStripMenuItem
 $menuExit.Text = "Exit"
 $menuExit.Add_Click({
-    pm2 delete claude-agent 2>$null
-    $notifyIcon.ShowBalloonTip(1000, "Claude Agent", "Agent stopped", [System.Windows.Forms.ToolTipIcon]::Info)
+    pm2 stop $PM2AppName 2>$null
+    $notifyIcon.ShowBalloonTip(1000, "Yeaft Agent", "Agent stopped", [System.Windows.Forms.ToolTipIcon]::Info)
     Start-Sleep -Milliseconds 500
     $notifyIcon.Visible = $false
     $notifyIcon.Dispose()
@@ -123,11 +124,11 @@ $notifyIcon.ContextMenuStrip = $contextMenu
 
 # 双击打开日志
 $notifyIcon.Add_DoubleClick({
-    Start-Process "powershell" -ArgumentList "-NoExit -Command `"pm2 logs claude-agent`""
+    Start-Process "powershell" -ArgumentList "-NoExit -Command `"pm2 logs $PM2AppName`""
 })
 
 # 显示启动提示
-$notifyIcon.ShowBalloonTip(2000, "Claude Agent", "Tray manager started. Right-click for options.", [System.Windows.Forms.ToolTipIcon]::Info)
+$notifyIcon.ShowBalloonTip(2000, "Yeaft Agent", "Tray manager started. Right-click for options.", [System.Windows.Forms.ToolTipIcon]::Info)
 
 # 保持运行
 [System.Windows.Forms.Application]::Run()

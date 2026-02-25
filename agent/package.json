@@ -44,7 +44,8 @@
     "workbench.js",
     "history.js",
     "encryption.js",
-    "sdk/"
+    "sdk/",
+    "scripts/agent-tray.ps1"
   ],
   "license": "MIT",
   "author": "Yeaft",
