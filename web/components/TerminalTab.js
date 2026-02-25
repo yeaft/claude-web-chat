@@ -328,7 +328,7 @@ export default {
       const term = new TermClass({
         cursorBlink: true,
         fontSize: 13,
-        fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
+        fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace, 'Symbols Nerd Font Mono', 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji'",
         theme: getTermTheme(),
         allowProposedApi: true
       });
