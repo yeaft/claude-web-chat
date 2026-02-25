@@ -371,80 +371,87 @@ function macLogs() {
 // ─── Windows (Task Scheduler) ────────────────────────────────
 
 const WIN_TASK_NAME = 'YeaftAgent';
+const PM2_APP_NAME = 'yeaft-agent';
 
-function getWinWrapperPath() {
-  return join(getConfigDir(), 'run.vbs');
+// Legacy paths for cleanup
+function getWinWrapperPath() { return join(getConfigDir(), 'run.vbs'); }
+function getWinBatPath() { return join(getConfigDir(), 'run.bat'); }
+
+function ensurePm2() {
+  try {
+    execSync('pm2 --version', { stdio: 'pipe' });
+  } catch {
+    console.log('Installing pm2...');
+    execSync('npm install -g pm2', { stdio: 'inherit' });
+  }
 }
 
-function getWinBatPath() {
-  return join(getConfigDir(), 'run.bat');
+function getEcosystemPath() {
+  return join(getConfigDir(), 'ecosystem.config.cjs');
+}
+
+function generateEcosystem(config) {
+  const nodePath = getNodePath();
+  const cliPath = getCliPath();
+  const cliDir = dirname(cliPath);
+  const logDir = getLogDir();
+
+  const env = {};
+  if (config.serverUrl) env.SERVER_URL = config.serverUrl;
+  if (config.agentName) env.AGENT_NAME = config.agentName;
+  if (config.agentSecret) env.AGENT_SECRET = config.agentSecret;
+  if (config.workDir) env.WORK_DIR = config.workDir;
+
+  return `module.exports = {
+  apps: [{
+    name: '${PM2_APP_NAME}',
+    script: '${cliPath.replace(/\\/g, '\\\\')}',
+    interpreter: '${nodePath.replace(/\\/g, '\\\\')}',
+    cwd: '${cliDir.replace(/\\/g, '\\\\')}',
+    env: ${JSON.stringify(env, null, 6)},
+    autorestart: true,
+    watch: false,
+    max_restarts: 10,
+    restart_delay: 5000,
+    log_date_format: 'YYYY-MM-DD HH:mm:ss',
+    error_file: '${join(logDir, 'error.log').replace(/\\/g, '\\\\')}',
+    out_file: '${join(logDir, 'out.log').replace(/\\/g, '\\\\')}',
+    merge_logs: true,
+    max_memory_restart: '500M',
+  }]
+};
+`;
 }
 
 function winInstall(config) {
-  const nodePath = getNodePath();
-  const cliPath = getCliPath();
+  ensurePm2();
   const logDir = getLogDir();
-
-  // Build environment variable settings for the batch file
-  const envLines = [];
-  if (config.serverUrl) envLines.push(`set "SERVER_URL=${config.serverUrl}"`);
-  if (config.agentName) envLines.push(`set "AGENT_NAME=${config.agentName}"`);
-  if (config.agentSecret) envLines.push(`set "AGENT_SECRET=${config.agentSecret}"`);
-  if (config.workDir) envLines.push(`set "WORK_DIR=${config.workDir}"`);
-
-  // Create a batch file that sets env vars and starts node (with log redirection)
   mkdirSync(logDir, { recursive: true });
-  const logFile = join(logDir, 'out.log');
-  const cliDir = dirname(cliPath);
-  const batContent = `@echo off\r\ncd /d "${cliDir}"\r\n${envLines.join('\r\n')}\r\n"${nodePath}" "${cliPath}" >> "${logFile}" 2>&1\r\n`;
-  const batPath = getWinBatPath();
-  writeFileSync(batPath, batContent);
 
-  // Create VBS wrapper to run hidden (no console window)
-  const vbsContent = `Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.CurrentDirectory = "${cliDir}"\r\nWshShell.Run """${batPath}""", 0, False\r\n`;
-  const vbsPath = getWinWrapperPath();
-  writeFileSync(vbsPath, vbsContent);
+  // Generate ecosystem config
+  const ecoPath = getEcosystemPath();
+  writeFileSync(ecoPath, generateEcosystem(config));
 
-  // Remove existing task if any
-  try { execSync(`schtasks /delete /tn "${WIN_TASK_NAME}" /f 2>nul`, { stdio: 'pipe' }); } catch {}
+  // Stop existing instance if any
+  try { execSync(`pm2 delete ${PM2_APP_NAME}`, { stdio: 'pipe' }); } catch {}
 
-  // Create scheduled task that runs at logon
-  // Try schtasks first (highest → limited), fall back to Startup folder
-  let usedStartupFolder = false;
-  try {
-    execSync(
-      `schtasks /create /tn "${WIN_TASK_NAME}" /tr "wscript.exe \\"${vbsPath}\\"" /sc onlogon /rl highest /f`,
-      { stdio: 'pipe' }
-    );
-  } catch {
-    try {
-      execSync(
-        `schtasks /create /tn "${WIN_TASK_NAME}" /tr "wscript.exe \\"${vbsPath}\\"" /sc onlogon /rl limited /f`,
-        { stdio: 'pipe' }
-      );
-    } catch {
-      // schtasks not available (no admin) — use Startup folder
-      const startupDir = join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
-      const startupVbs = join(startupDir, `${WIN_TASK_NAME}.vbs`);
-      writeFileSync(startupVbs, vbsContent);
-      usedStartupFolder = true;
-      console.log('  (Using Startup folder for auto-start — no admin required)');
-    }
-  }
+  // Start with pm2
+  execSync(`pm2 start "${ecoPath}"`, { stdio: 'inherit' });
 
-  // Also start it now
-  if (usedStartupFolder) {
-    execSync(`wscript.exe "${vbsPath}"`, { stdio: 'pipe' });
-  } else {
-    execSync(`schtasks /run /tn "${WIN_TASK_NAME}"`, { stdio: 'pipe' });
-  }
+  // Save pm2 process list for resurrection
+  execSync('pm2 save', { stdio: 'pipe' });
 
-  console.log('Service installed and started.');
-  console.log(`  Bat:  ${batPath}`);
-  console.log(`  VBS:  ${vbsPath}`);
-  console.log(`  Log:  ${logFile}`);
-  console.log(`  Node: ${nodePath}`);
-  console.log(`  CLI:  ${cliPath}`);
+  // Setup auto-start: create startup script in Windows Startup folder
+  // pm2-startup doesn't work well on Windows, use Startup folder approach
+  const startupDir = join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+  const startupBat = join(startupDir, `${PM2_APP_NAME}.bat`);
+  // pm2 is in PATH (ensured by ensurePm2), so just call it directly
+  const batContent = `@echo off\r\npm2 resurrect\r\n`;
+  writeFileSync(startupBat, batContent);
+
+  console.log(`\nService installed and started.`);
+  console.log(`  Ecosystem: ${ecoPath}`);
+  console.log(`  Startup:   ${startupBat}`);
   console.log(`\nManage with:`);
   console.log(`  yeaft-agent status`);
   console.log(`  yeaft-agent logs`);
@@ -453,14 +460,19 @@ function winInstall(config) {
 }
 
 function winUninstall() {
-  try { winStop(); } catch {}
-  try { execSync(`schtasks /delete /tn "${WIN_TASK_NAME}" /f`, { stdio: 'pipe' }); } catch {}
-  // Clean up wrapper files
+  try { execSync(`pm2 delete ${PM2_APP_NAME}`, { stdio: 'pipe' }); } catch {}
+  try { execSync('pm2 save', { stdio: 'pipe' }); } catch {}
+  // Clean up ecosystem config
+  const ecoPath = getEcosystemPath();
+  if (existsSync(ecoPath)) unlinkSync(ecoPath);
+  // Clean up Startup bat
+  const startupBat = join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', `${PM2_APP_NAME}.bat`);
+  if (existsSync(startupBat)) unlinkSync(startupBat);
+  // Clean up legacy files
   const vbsPath = getWinWrapperPath();
   const batPath = getWinBatPath();
   if (existsSync(vbsPath)) unlinkSync(vbsPath);
   if (existsSync(batPath)) unlinkSync(batPath);
-  // Clean up Startup folder shortcut
   const startupVbs = join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', `${WIN_TASK_NAME}.vbs`);
   if (existsSync(startupVbs)) unlinkSync(startupVbs);
   console.log('Service uninstalled.');
@@ -468,14 +480,12 @@ function winUninstall() {
 
 function winStart() {
   try {
-    execSync(`schtasks /run /tn "${WIN_TASK_NAME}"`, { stdio: 'pipe' });
-    console.log('Service started.');
+    execSync(`pm2 start ${PM2_APP_NAME}`, { stdio: 'inherit' });
   } catch {
-    // No schtasks — try direct launch via VBS
-    const vbsPath = getWinWrapperPath();
-    if (existsSync(vbsPath)) {
-      execSync(`wscript.exe "${vbsPath}"`, { stdio: 'pipe' });
-      console.log('Service started.');
+    // Try ecosystem file
+    const ecoPath = getEcosystemPath();
+    if (existsSync(ecoPath)) {
+      execSync(`pm2 start "${ecoPath}"`, { stdio: 'inherit' });
     } else {
       console.error('Service not installed. Run "yeaft-agent install" first.');
       process.exit(1);
@@ -484,73 +494,43 @@ function winStart() {
 }
 
 function winStop() {
-  // Find and kill the node process running our cli.js
   try {
-    const output = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', {
-      encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe']
-    });
-    const cliPath = getCliPath();
-    for (const line of output.split('\n')) {
-      if (line.includes('cli.js') && (line.includes(SERVICE_NAME) || line.includes('webchat-agent'))) {
-        const pid = line.trim().split(',').pop();
-        if (pid && /^\d+$/.test(pid)) {
-          execSync(`taskkill /pid ${pid} /f`, { stdio: 'pipe' });
-        }
-      }
-    }
-  } catch {}
-  // Also try to end the task
-  try { execSync(`schtasks /end /tn "${WIN_TASK_NAME}"`, { stdio: 'pipe' }); } catch {}
-  console.log('Service stopped.');
+    execSync(`pm2 stop ${PM2_APP_NAME}`, { stdio: 'inherit' });
+  } catch {
+    console.error('Service not running or not installed.');
+  }
 }
 
 function winRestart() {
-  winStop();
-  // Brief pause to ensure cleanup
-  execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'pipe' });
-  winStart();
+  try {
+    execSync(`pm2 restart ${PM2_APP_NAME}`, { stdio: 'inherit' });
+  } catch {
+    console.error('Service not running. Use "yeaft-agent start" to start.');
+  }
 }
 
 function winStatus() {
   try {
-    const output = execSync(`schtasks /query /tn "${WIN_TASK_NAME}" /fo csv /v`, {
-      encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe']
-    });
-    const lines = output.trim().split('\n');
-    if (lines.length >= 2) {
-      // Parse CSV header + data
-      const headers = lines[0].split('","').map(h => h.replace(/"/g, ''));
-      const values = lines[1].split('","').map(v => v.replace(/"/g, ''));
-      const statusIdx = headers.indexOf('Status');
-      const status = statusIdx >= 0 ? values[statusIdx] : 'Unknown';
-      console.log(`Service status: ${status}`);
-      console.log(`Task name: ${WIN_TASK_NAME}`);
-    }
+    execSync(`pm2 describe ${PM2_APP_NAME}`, { stdio: 'inherit' });
   } catch {
-    // Check Startup folder fallback
-    const startupVbs = join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', `${WIN_TASK_NAME}.vbs`);
-    if (existsSync(startupVbs)) {
-      console.log('Service installed via Startup folder (no admin).');
-      console.log(`Startup script: ${startupVbs}`);
-    } else {
-      console.log('Service is not installed.');
-    }
+    console.log('Service is not installed.');
   }
 }
 
 function winLogs() {
-  const logFile = join(getLogDir(), 'out.log');
-  if (existsSync(logFile)) {
-    // Windows: use PowerShell Get-Content -Wait (like tail -f)
-    const child = spawn('powershell', ['-Command', `Get-Content -Path "${logFile}" -Tail 100 -Wait`], {
-      stdio: 'inherit'
-    });
-    child.on('error', () => {
+  const child = spawn('pm2', ['logs', PM2_APP_NAME, '--lines', '100'], {
+    stdio: 'inherit',
+    shell: true
+  });
+  child.on('error', () => {
+    // Fallback to reading log file directly
+    const logFile = join(getLogDir(), 'out.log');
+    if (existsSync(logFile)) {
       console.log(readFileSync(logFile, 'utf-8'));
-    });
-  } else {
-    console.log('No logs found.');
-  }
+    } else {
+      console.log('No logs found.');
+    }
+  });
 }
 
 // ─── Platform dispatcher ─────────────────────────────────────
