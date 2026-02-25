@@ -392,8 +392,10 @@ function winInstall(config) {
   if (config.agentSecret) envLines.push(`set "AGENT_SECRET=${config.agentSecret}"`);
   if (config.workDir) envLines.push(`set "WORK_DIR=${config.workDir}"`);
 
-  // Create a batch file that sets env vars and starts node
-  const batContent = `@echo off\r\n${envLines.join('\r\n')}\r\n"${nodePath}" "${cliPath}"\r\n`;
+  // Create a batch file that sets env vars and starts node (with log redirection)
+  mkdirSync(logDir, { recursive: true });
+  const logFile = join(logDir, 'out.log');
+  const batContent = `@echo off\r\n${envLines.join('\r\n')}\r\n"${nodePath}" "${cliPath}" >> "${logFile}" 2>&1\r\n`;
   const batPath = getWinBatPath();
   writeFileSync(batPath, batContent);
 
@@ -431,7 +433,7 @@ function winInstall(config) {
 
   // Also start it now
   if (usedStartupFolder) {
-    spawn('wscript.exe', [vbsPath], { detached: true, stdio: 'ignore' }).unref();
+    execSync(`wscript.exe "${vbsPath}"`, { stdio: 'pipe' });
   } else {
     execSync(`schtasks /run /tn "${WIN_TASK_NAME}"`, { stdio: 'pipe' });
   }
@@ -466,7 +468,7 @@ function winStart() {
     // No schtasks — try direct launch via VBS
     const vbsPath = getWinWrapperPath();
     if (existsSync(vbsPath)) {
-      spawn('wscript.exe', [vbsPath], { detached: true, stdio: 'ignore' }).unref();
+      execSync(`wscript.exe "${vbsPath}"`, { stdio: 'pipe' });
       console.log('Service started.');
     } else {
       console.error('Service not installed. Run "yeaft-agent install" first.');
