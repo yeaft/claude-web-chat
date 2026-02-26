@@ -391,6 +391,11 @@ async function handleAgentMessage(agentId, msg) {
     case 'turn_completed':
       {
         const turnConv = agent.conversations.get(msg.conversationId);
+        // ★ Guard: 如果 processing 已为 false，说明是重复的 turn_completed，跳过
+        if (turnConv && !turnConv.processing) {
+          console.warn(`[turn_completed] Ignoring duplicate for ${msg.conversationId}`);
+          break;
+        }
         if (turnConv) {
           turnConv.processing = false;
           if (msg.claudeSessionId) {

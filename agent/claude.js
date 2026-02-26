@@ -369,6 +369,9 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
   } catch (error) {
     if (error.name === 'AbortError') {
       console.log(`[SDK] Query aborted for ${conversationId}`);
+    } else if (resultHandled) {
+      // Turn 已正常完成，进程退出产生的 error 不发送给用户
+      console.warn(`[SDK] Ignoring post-result error for ${conversationId}: ${error.message}`);
     } else {
       console.error(`[SDK] Error for ${conversationId}:`, error.message);
       sendError(conversationId, error.message);
