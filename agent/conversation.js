@@ -55,7 +55,7 @@ export function sendConversationList() {
 }
 
 export function sendOutput(conversationId, data) {
-  ctx.sendToServer({
+  return ctx.sendToServer({
     type: 'claude_output',
     conversationId,
     data

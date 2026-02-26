@@ -346,12 +346,13 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         // stream-json 模式下 Claude 进程是持久运行的，for-await 在 result 后继续等待
         // 不清空 state.query 和 state.inputStream，下次用户消息直接通过同一个 inputStream 发送
         state.turnResultReceived = true;
-        sendOutput(conversationId, message);
-
         resultHandled = true;
         state.turnActive = false;
 
-        ctx.sendToServer({
+        // ★ await 确保 result 和 turn_completed 消息确实发送成功
+        // 不 await 会导致 encrypt 失败时消息静默丢失，前端卡在"思考中"
+        await sendOutput(conversationId, message);
+        await ctx.sendToServer({
           type: 'turn_completed',
           conversationId,
           claudeSessionId: state.claudeSessionId,

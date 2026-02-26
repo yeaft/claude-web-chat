@@ -273,7 +273,7 @@ async function handleMessage(msg) {
           const pkgName = ctx.pkgName || '@yeaft/webchat-agent';
           // Check latest version (async to avoid blocking heartbeat)
           const latestVersion = await new Promise((resolve, reject) => {
-            execFile('npm', ['view', pkgName, 'version'], { stdio: 'pipe' }, (err, stdout) => {
+            execFile('npm', ['view', pkgName, 'version'], { stdio: 'pipe', shell: true }, (err, stdout) => {
               if (err) reject(err); else resolve(stdout.toString().trim());
             });
           });
@@ -285,7 +285,7 @@ async function handleMessage(msg) {
           console.log(`[Agent] Upgrading from ${ctx.agentVersion} to ${latestVersion}...`);
           // Use async execFile to avoid blocking event loop (heartbeat must keep running)
           await new Promise((resolve, reject) => {
-            execFile('npm', ['install', '-g', `${pkgName}@latest`], { stdio: 'pipe' }, (err) => {
+            execFile('npm', ['install', '-g', `${pkgName}@latest`], { stdio: 'pipe', shell: true }, (err) => {
               if (err) reject(err); else resolve();
             });
           });
