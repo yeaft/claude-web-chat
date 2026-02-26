@@ -107,10 +107,11 @@ export default {
     const showAutocomplete = Vue.ref(false);
     const selectedIndex = Vue.ref(0);
 
-    // 获取可用的 slash commands
+    // 获取可用的 slash commands（确保都有 / 前缀）
     const availableCommands = Vue.computed(() => {
       const dynamic = store.slashCommands || [];
-      return dynamic.length > 0 ? dynamic : DEFAULT_SLASH_COMMANDS;
+      const commands = dynamic.length > 0 ? dynamic : DEFAULT_SLASH_COMMANDS;
+      return commands.map(cmd => cmd.startsWith('/') ? cmd : '/' + cmd);
     });
 
     // 根据输入过滤命令
