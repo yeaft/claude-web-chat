@@ -89,7 +89,6 @@ export function handleMessage(store, msg) {
         if (agent) {
           store.currentAgentInfo = agent;
           const serverConvs = agent.conversations || [];
-          const serverConvIds = new Set(serverConvs.map(c => c.id));
           for (const serverConv of serverConvs) {
             const existing = store.conversations.find(c => c.id === serverConv.id);
             if (existing) {
@@ -101,7 +100,15 @@ export function handleMessage(store, msg) {
             if (serverConv.title && !store.conversationTitles[serverConv.id]) {
               store.conversationTitles[serverConv.id] = serverConv.title;
             }
-
+          }
+        }
+      }
+      // ★ 同步所有 agent 的 processing 状态（不仅限于 currentAgent）
+      {
+        const allServerConvIds = new Set();
+        for (const agent of msg.agents) {
+          for (const serverConv of (agent.conversations || [])) {
+            allServerConvIds.add(serverConv.id);
             if (serverConv.processing && !isRecentlyClosed(store, serverConv.id)) {
               store.processingConversations[serverConv.id] = true;
             } else if (store.processingConversations[serverConv.id]) {
@@ -112,20 +119,10 @@ export function handleMessage(store, msg) {
               store.finishStreamingForConversation(serverConv.id);
             }
           }
-
-          for (const convId of Object.keys(store.processingConversations)) {
-            if (!serverConvIds.has(convId)) {
-              console.log(`[agent_list] Clearing stale processing state for ${convId}`);
-              delete store.processingConversations[convId];
-              stopProcessingWatchdog(store, convId);
-              const status = store.executionStatusMap[convId];
-              if (status) status.currentTool = null;
-              store.finishStreamingForConversation(convId);
-            }
-          }
-        } else {
-          for (const convId of Object.keys(store.processingConversations)) {
-            console.log(`[agent_list] Agent offline, clearing processing state for ${convId}`);
+        }
+        for (const convId of Object.keys(store.processingConversations)) {
+          if (!allServerConvIds.has(convId)) {
+            console.log(`[agent_list] Clearing stale processing state for ${convId}`);
             delete store.processingConversations[convId];
             stopProcessingWatchdog(store, convId);
             const status = store.executionStatusMap[convId];
