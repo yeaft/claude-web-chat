@@ -308,6 +308,12 @@ const stmts = {
     SELECT COUNT(*) as count FROM messages WHERE session_id = ?
   `),
 
+  // 检查时间戳是否需要重建（所有消息 created_at 的极差 < 1秒 说明是旧版批量写入的）
+  getTimestampRange: db.prepare(`
+    SELECT MIN(created_at) as min_ts, MAX(created_at) as max_ts, COUNT(*) as count
+    FROM messages WHERE session_id = ?
+  `),
+
   // 获取最后一条 user 消息
   getLastUserMessage: db.prepare(`
     SELECT * FROM messages WHERE session_id = ? AND role = 'user'
@@ -621,57 +627,70 @@ export const messageDb = {
     const lastUserMsg = this.getLastUserMessage(sessionId);
 
     if (lastUserMsg) {
-      // DB 中已有消息，需要找到增量部分
-      const anchor = lastUserMsg.content;
-      let anchorIndex = -1;
-
-      // 倒序在 historyMessages 中找到最后一个匹配 DB 最后 user message 的位置
-      for (let i = historyMessages.length - 1; i >= 0; i--) {
-        const msg = historyMessages[i];
-        if (msg.type === 'user') {
-          const text = extractUserText(msg);
-          if (text === anchor) {
-            anchorIndex = i;
-            break;
-          }
-        }
-      }
-
-      if (anchorIndex === -1) {
-        // 找不到匹配，说明 DB 的锚点不在 history 范围内（可能被 limit 截断）
-        // 直接把整个 history 追加到 DB 后面
-        console.log(`[bulkAddHistory] Anchor not found in history, appending all ${historyMessages.length} messages for ${sessionId}`);
-        // msgsToInsert 保持默认值 historyMessages，直接进入插入阶段
+      // 检查是否需要重建：旧版 bulkAddHistory 写入的数据所有 created_at 几乎相同
+      const tsRange = stmts.getTimestampRange.get(sessionId);
+      if (tsRange && tsRange.count > 5 && (tsRange.max_ts - tsRange.min_ts) < 1000) {
+        // 时间戳异常（几百条消息的时间跨度 < 1秒），清空重写
+        console.log(`[bulkAddHistory] Detected bad timestamps (range: ${tsRange.max_ts - tsRange.min_ts}ms for ${tsRange.count} msgs), rebuilding for ${sessionId}`);
+        stmts.deleteMessagesBySession.run(sessionId);
+        // msgsToInsert 保持 historyMessages（全量写入），跳过 merge 逻辑
       } else {
-        // 从 anchorIndex 所在的 user message 之后开始（跳过该 user msg 及其 assistant 回复，
-        // 因为那个 turn 已在 DB 中）。找到下一个 user message 的位置。
-        let nextTurnStart = -1;
-        for (let i = anchorIndex + 1; i < historyMessages.length; i++) {
-          if (historyMessages[i].type === 'user') {
-            nextTurnStart = i;
-            break;
+        // DB 中已有消息且时间戳正常，需要找到增量部分
+        const anchor = lastUserMsg.content;
+        let anchorIndex = -1;
+
+        // 倒序在 historyMessages 中找到最后一个匹配 DB 最后 user message 的位置
+        for (let i = historyMessages.length - 1; i >= 0; i--) {
+          const msg = historyMessages[i];
+          if (msg.type === 'user') {
+            const text = extractUserText(msg);
+            if (text === anchor) {
+              anchorIndex = i;
+              break;
+            }
           }
         }
 
-        if (nextTurnStart === -1) {
-          // anchor 之后没有新的 user turn，无需追加
-          return 0;
-        }
+        if (anchorIndex === -1) {
+          // 找不到匹配，说明 DB 的锚点不在 history 范围内（可能被 limit 截断）
+          // 直接把整个 history 追加到 DB 后面
+          console.log(`[bulkAddHistory] Anchor not found in history, appending all ${historyMessages.length} messages for ${sessionId}`);
+          // msgsToInsert 保持默认值 historyMessages，直接进入插入阶段
+        } else {
+          // 从 anchorIndex 所在的 user message 之后开始（跳过该 user msg 及其 assistant 回复，
+          // 因为那个 turn 已在 DB 中）。找到下一个 user message 的位置。
+          let nextTurnStart = -1;
+          for (let i = anchorIndex + 1; i < historyMessages.length; i++) {
+            if (historyMessages[i].type === 'user') {
+              nextTurnStart = i;
+              break;
+            }
+          }
 
-        msgsToInsert = historyMessages.slice(nextTurnStart);
+          if (nextTurnStart === -1) {
+            // anchor 之后没有新的 user turn，无需追加
+            return 0;
+          }
+
+          msgsToInsert = historyMessages.slice(nextTurnStart);
+        }
       }
     }
 
-    // 执行批量插入（created_at 递增以保证时间戳有序）
+    // 执行批量插入（使用 jsonl 中的原始 timestamp 作为 created_at）
     const insertMany = db.transaction((msgs) => {
       let count = 0;
-      const baseTime = Date.now();
-      let offset = 0;
+      let lastTs = 0;
       for (const msg of msgs) {
+        // 从 jsonl 原始数据提取 timestamp，保证严格递增
+        const rawTs = msg.timestamp ? new Date(msg.timestamp).getTime() : 0;
+        const ts = rawTs > lastTs ? rawTs : lastTs + 1;
+        lastTs = ts;
+
         if (msg.type === 'user') {
           const text = extractUserText(msg);
           if (text) {
-            stmts.insertMessage.run(sessionId, 'user', text, 'user', null, null, baseTime + offset++);
+            stmts.insertMessage.run(sessionId, 'user', text, 'user', null, null, ts);
             count++;
           }
         } else if (msg.type === 'assistant') {
@@ -679,12 +698,12 @@ export const messageDb = {
           if (!content || !Array.isArray(content)) continue;
           for (const block of content) {
             if (block.type === 'text' && block.text) {
-              stmts.insertMessage.run(sessionId, 'assistant', block.text, 'assistant', null, null, baseTime + offset++);
+              stmts.insertMessage.run(sessionId, 'assistant', block.text, 'assistant', null, null, ts);
               count++;
             } else if (block.type === 'tool_use') {
               stmts.insertMessage.run(
                 sessionId, 'assistant', JSON.stringify(block.input || {}),
-                'tool_use', block.name, JSON.stringify(block.input || {}), baseTime + offset++
+                'tool_use', block.name, JSON.stringify(block.input || {}), ts
               );
               count++;
             }
