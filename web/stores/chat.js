@@ -208,28 +208,18 @@ export const useChatStore = defineStore('chat', {
     restartAgent(agentId) { convHelpers.restartAgent(this, agentId); },
     upgradeAgent(agentId) { convHelpers.upgradeAgent(this, agentId); },
 
-    // ★ Phase 6: 分页加载
+    // ★ Phase 6.1: 分页加载（基于 turn，统一走 DB）
     loadMoreMessages() {
       if (this.loadingMoreMessages || !this.hasMoreMessages || !this.currentConversation) return;
       this.loadingMoreMessages = true;
 
       const firstMsgWithId = this.messages.find(m => m.dbMessageId);
-      if (firstMsgWithId) {
-        // 有 DB 锚点：向上加载更早的消息
-        this.sendWsMessage({
-          type: 'sync_messages',
-          conversationId: this.currentConversation,
-          beforeId: firstMsgWithId.dbMessageId,
-          limit: 100
-        });
-      } else {
-        // 无 DB 锚点（如 resume 的 Claude 历史）：加载最新的数据库消息
-        this.sendWsMessage({
-          type: 'sync_messages',
-          conversationId: this.currentConversation,
-          limit: 100
-        });
-      }
+      this.sendWsMessage({
+        type: 'sync_messages',
+        conversationId: this.currentConversation,
+        turns: 5,
+        ...(firstMsgWithId ? { beforeId: firstMsgWithId.dbMessageId } : {})
+      });
     },
 
     // =====================

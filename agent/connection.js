@@ -17,10 +17,28 @@ import {
   sendConversationList
 } from './conversation.js';
 
+// 需要在断连期间缓冲的消息类型（Claude 输出相关的关键消息）
+const BUFFERABLE_TYPES = new Set([
+  'claude_output', 'turn_completed', 'conversation_closed',
+  'session_id_update', 'compact_status', 'slash_commands_update',
+  'background_task_started', 'background_task_output'
+]);
+
 // Send message to server (with encryption if available)
+// 断连时对关键消息类型进行缓冲，重连后自动 flush
 async function sendToServer(msg) {
   if (!ctx.ws || ctx.ws.readyState !== WebSocket.OPEN) {
-    console.warn(`[WS] Cannot send message, WebSocket not open (state: ${ctx.ws?.readyState})`);
+    // 缓冲关键消息
+    if (BUFFERABLE_TYPES.has(msg.type)) {
+      if (ctx.messageBuffer.length < ctx.messageBufferMaxSize) {
+        ctx.messageBuffer.push(msg);
+        console.log(`[WS] Buffered message: ${msg.type} (queue: ${ctx.messageBuffer.length})`);
+      } else {
+        console.warn(`[WS] Buffer full (${ctx.messageBufferMaxSize}), dropping: ${msg.type}`);
+      }
+    } else {
+      console.warn(`[WS] Cannot send message, WebSocket not open: ${msg.type}`);
+    }
     return;
   }
 
@@ -28,14 +46,31 @@ async function sendToServer(msg) {
     if (ctx.sessionKey) {
       const encrypted = await encrypt(msg, ctx.sessionKey);
       ctx.ws.send(JSON.stringify(encrypted));
-      console.log(`[WS] Sent encrypted message: ${msg.type}`);
     } else {
       ctx.ws.send(JSON.stringify(msg));
-      console.log(`[WS] Sent plain message: ${msg.type}`);
     }
   } catch (e) {
     console.error(`[WS] Error sending message ${msg.type}:`, e.message);
+    // 发送失败也缓冲
+    if (BUFFERABLE_TYPES.has(msg.type) && ctx.messageBuffer.length < ctx.messageBufferMaxSize) {
+      ctx.messageBuffer.push(msg);
+      console.log(`[WS] Send failed, buffered: ${msg.type}`);
+    }
   }
+}
+
+// Flush 断连期间缓冲的消息
+async function flushMessageBuffer() {
+  if (ctx.messageBuffer.length === 0) return;
+
+  const buffered = ctx.messageBuffer.splice(0);
+  console.log(`[WS] Flushing ${buffered.length} buffered messages...`);
+
+  for (const msg of buffered) {
+    await sendToServer(msg);
+  }
+
+  console.log(`[WS] Flush complete`);
 }
 
 // Parse incoming message (decrypt if encrypted)
@@ -79,6 +114,9 @@ async function handleMessage(msg) {
       }
 
       sendConversationList();
+
+      // ★ Flush 断连期间缓冲的消息
+      await flushMessageBuffer();
 
       // ★ Phase 1: 通知 server 同步完成
       sendToServer({ type: 'agent_sync_complete' });

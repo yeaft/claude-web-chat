@@ -102,11 +102,11 @@ export function autoRestoreConversation(store, conversationId) {
     });
   } else {
     store.messages = [];
-    // ★ Bug #9: 使用 limit 而不是 afterMessageId: 0
+    // ★ Phase 6.1: 使用 turns 加载最近 5 个 turn
     store.sendWsMessage({
       type: 'sync_messages',
       conversationId,
-      limit: 100
+      turns: 5
     });
   }
 

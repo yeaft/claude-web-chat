@@ -3990,6 +3990,7 @@ body {
 
 .message.user .message-content {
   word-break: break-word;
+  white-space: pre-wrap;
 }
 
 .message.user .user-attachments {

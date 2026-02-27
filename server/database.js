@@ -263,6 +263,30 @@ const stmts = {
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `),
 
+  // 获取最近 N 个 user 消息的 id（用于 turn 分页）
+  getRecentUserMessageIds: db.prepare(`
+    SELECT id FROM messages WHERE session_id = ? AND role = 'user'
+    ORDER BY id DESC LIMIT ?
+  `),
+
+  // 获取 id >= 某值的所有消息（用于取最后 N turns 的全部消息）
+  getMessagesFromId: db.prepare(`
+    SELECT * FROM messages WHERE session_id = ? AND id >= ?
+    ORDER BY id ASC
+  `),
+
+  // 获取 beforeId 之前的最近 N 个 user 消息的 id
+  getUserMessageIdsBeforeId: db.prepare(`
+    SELECT id FROM messages WHERE session_id = ? AND role = 'user' AND id < ?
+    ORDER BY id DESC LIMIT ?
+  `),
+
+  // 获取 id 在某范围内的所有消息 [fromId, beforeId)
+  getMessagesBetweenIds: db.prepare(`
+    SELECT * FROM messages WHERE session_id = ? AND id >= ? AND id < ?
+    ORDER BY id ASC
+  `),
+
   getMessagesBySession: db.prepare(`
     SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC
   `),
@@ -282,6 +306,12 @@ const stmts = {
 
   getMessageCount: db.prepare(`
     SELECT COUNT(*) as count FROM messages WHERE session_id = ?
+  `),
+
+  // 获取最后一条 user 消息
+  getLastUserMessage: db.prepare(`
+    SELECT * FROM messages WHERE session_id = ? AND role = 'user'
+    ORDER BY id DESC LIMIT 1
   `),
 
   deleteMessagesBySession: db.prepare(`
@@ -545,6 +575,123 @@ export const messageDb = {
   // 获取指定 ID 之前的消息（向上分页）
   getBeforeId(sessionId, beforeId, limit = 50) {
     return stmts.getMessagesBeforeId.all(sessionId, beforeId, limit).reverse();
+  },
+
+  // ★ Phase 6.1: 基于 turn 分页 — 获取最后 N 个 turns 的消息
+  getRecentTurns(sessionId, turnCount = 5) {
+    const userIds = stmts.getRecentUserMessageIds.all(sessionId, turnCount);
+    if (userIds.length === 0) return { messages: [], hasMore: false };
+    const oldestUserId = userIds[userIds.length - 1].id;
+    const messages = stmts.getMessagesFromId.all(sessionId, oldestUserId);
+    // 检查在 oldestUserId 之前是否还有消息
+    const hasMore = stmts.getMessagesBeforeId.all(sessionId, oldestUserId, 1).length > 0;
+    return { messages, hasMore };
+  },
+
+  // ★ Phase 6.1: 基于 turn 向上分页 — 获取 beforeId 之前的 N 个 turns
+  getTurnsBeforeId(sessionId, beforeId, turnCount = 5) {
+    const userIds = stmts.getUserMessageIdsBeforeId.all(sessionId, beforeId, turnCount);
+    if (userIds.length === 0) return { messages: [], hasMore: false };
+    const oldestUserId = userIds[userIds.length - 1].id;
+    const messages = stmts.getMessagesBetweenIds.all(sessionId, oldestUserId, beforeId);
+    const hasMore = stmts.getMessagesBeforeId.all(sessionId, oldestUserId, 1).length > 0;
+    return { messages, hasMore };
+  },
+
+  // 获取最后一条 user 消息
+  getLastUserMessage(sessionId) {
+    return stmts.getLastUserMessage.get(sessionId) || null;
+  },
+
+  // ★ Phase 6.1: 批量插入历史消息（支持增量 merge）
+  // 如果 DB 中已有消息，以 DB 最后一条 user message 的 content 为锚点，
+  // 在 historyMessages 中倒序找到匹配位置，将其后的增量消息追加到 DB。
+  bulkAddHistory(sessionId, historyMessages) {
+    // 提取 history 中 user 消息的 text
+    function extractUserText(msg) {
+      const content = msg.message?.content;
+      if (!content) return '';
+      return typeof content === 'string'
+        ? content
+        : (Array.isArray(content) ? content.map(b => b.text || '').join('') : JSON.stringify(content));
+    }
+
+    // 确定要写入的消息范围
+    let msgsToInsert = historyMessages;
+    const lastUserMsg = this.getLastUserMessage(sessionId);
+
+    if (lastUserMsg) {
+      // DB 中已有消息，需要找到增量部分
+      const anchor = lastUserMsg.content;
+      let anchorIndex = -1;
+
+      // 倒序在 historyMessages 中找到最后一个匹配 DB 最后 user message 的位置
+      for (let i = historyMessages.length - 1; i >= 0; i--) {
+        const msg = historyMessages[i];
+        if (msg.type === 'user') {
+          const text = extractUserText(msg);
+          if (text === anchor) {
+            anchorIndex = i;
+            break;
+          }
+        }
+      }
+
+      if (anchorIndex === -1) {
+        // 找不到匹配，说明 DB 的锚点不在 history 范围内（可能被 limit 截断）
+        // 直接把整个 history 追加到 DB 后面
+        console.log(`[bulkAddHistory] Anchor not found in history, appending all ${historyMessages.length} messages for ${sessionId}`);
+        // msgsToInsert 保持默认值 historyMessages，直接进入插入阶段
+      } else {
+        // 从 anchorIndex 所在的 user message 之后开始（跳过该 user msg 及其 assistant 回复，
+        // 因为那个 turn 已在 DB 中）。找到下一个 user message 的位置。
+        let nextTurnStart = -1;
+        for (let i = anchorIndex + 1; i < historyMessages.length; i++) {
+          if (historyMessages[i].type === 'user') {
+            nextTurnStart = i;
+            break;
+          }
+        }
+
+        if (nextTurnStart === -1) {
+          // anchor 之后没有新的 user turn，无需追加
+          return 0;
+        }
+
+        msgsToInsert = historyMessages.slice(nextTurnStart);
+      }
+    }
+
+    // 执行批量插入
+    const insertMany = db.transaction((msgs) => {
+      let count = 0;
+      for (const msg of msgs) {
+        if (msg.type === 'user') {
+          const text = extractUserText(msg);
+          if (text) {
+            stmts.insertMessage.run(sessionId, 'user', text, 'user', null, null, Date.now());
+            count++;
+          }
+        } else if (msg.type === 'assistant') {
+          const content = msg.message?.content;
+          if (!content || !Array.isArray(content)) continue;
+          for (const block of content) {
+            if (block.type === 'text' && block.text) {
+              stmts.insertMessage.run(sessionId, 'assistant', block.text, 'assistant', null, null, Date.now());
+              count++;
+            } else if (block.type === 'tool_use') {
+              stmts.insertMessage.run(
+                sessionId, 'assistant', JSON.stringify(block.input || {}),
+                'tool_use', block.name, JSON.stringify(block.input || {}), Date.now()
+              );
+              count++;
+            }
+          }
+        }
+      }
+      return count;
+    });
+    return insertMany(msgsToInsert);
   },
 
   // 获取消息总数

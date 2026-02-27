@@ -289,20 +289,34 @@ async function handleWebMessage(clientId, msg) {
           return;
         }
         try {
-          const limit = msg.limit || 100;
-          let messages;
-          if (msg.beforeId) {
-            messages = messageDb.getBeforeId(msg.conversationId, msg.beforeId, limit);
-          } else if (msg.afterMessageId) {
-            messages = messageDb.getAfterId(msg.conversationId, msg.afterMessageId);
+          let messages, hasMore;
+
+          if (msg.turns) {
+            // ★ Phase 6.1: 基于 turn 的分页
+            if (msg.beforeId) {
+              const result = messageDb.getTurnsBeforeId(msg.conversationId, msg.beforeId, msg.turns);
+              messages = result.messages;
+              hasMore = result.hasMore;
+            } else {
+              const result = messageDb.getRecentTurns(msg.conversationId, msg.turns);
+              messages = result.messages;
+              hasMore = result.hasMore;
+            }
           } else {
-            messages = messageDb.getRecent(msg.conversationId, limit);
+            // 原有逻辑：基于消息数的分页
+            const limit = msg.limit || 100;
+            if (msg.beforeId) {
+              messages = messageDb.getBeforeId(msg.conversationId, msg.beforeId, limit);
+            } else if (msg.afterMessageId) {
+              messages = messageDb.getAfterId(msg.conversationId, msg.afterMessageId);
+            } else {
+              messages = messageDb.getRecent(msg.conversationId, limit);
+            }
+            const oldestId = messages.length > 0 ? messages[0].id : null;
+            hasMore = oldestId ? messageDb.getBeforeId(msg.conversationId, oldestId, 1).length > 0 : false;
           }
 
           const total = messageDb.getCount(msg.conversationId);
-          const oldestId = messages.length > 0 ? messages[0].id : null;
-          const hasMore = oldestId ? messageDb.getBeforeId(msg.conversationId, oldestId, 1).length > 0 : false;
-
           console.log(`[sync_messages] Found ${messages.length} messages (total=${total}, hasMore=${hasMore})`);
           await sendToWebClient(client, {
             type: 'sync_messages_result',

@@ -51,7 +51,7 @@ export function handleMessage(store, msg) {
               store.sendWsMessage({
                 type: 'sync_messages',
                 conversationId: store.currentConversation,
-                limit: 100
+                turns: 5
               });
             }
             store.sendWsMessage({
@@ -88,36 +88,56 @@ export function handleMessage(store, msg) {
         const agent = msg.agents.find(a => a.id === store.currentAgent);
         if (agent) {
           store.currentAgentInfo = agent;
-          const serverConvs = agent.conversations || [];
-          for (const serverConv of serverConvs) {
-            const existing = store.conversations.find(c => c.id === serverConv.id);
-            if (existing) {
-              existing.claudeSessionId = serverConv.claudeSessionId;
-              existing.processing = serverConv.processing;
-              existing.userId = serverConv.userId;
-              existing.username = serverConv.username;
-            }
+        }
+      }
+      // ★ 同步所有 agent 的 conversations 到 store.conversations
+      {
+        // 收集所有 server 端的 conversations
+        const allServerConvs = [];
+        const allServerConvIds = new Set();
+        for (const agent of msg.agents) {
+          for (const serverConv of (agent.conversations || [])) {
+            if (allServerConvIds.has(serverConv.id)) continue;
+            allServerConvIds.add(serverConv.id);
+            allServerConvs.push({
+              ...serverConv,
+              agentId: agent.id,
+              agentName: agent.name
+            });
+            // 同步 title
             if (serverConv.title && !store.conversationTitles[serverConv.id]) {
               store.conversationTitles[serverConv.id] = serverConv.title;
             }
           }
         }
-      }
-      // ★ 同步所有 agent 的 processing 状态（不仅限于 currentAgent）
-      {
-        const allServerConvIds = new Set();
-        for (const agent of msg.agents) {
-          for (const serverConv of (agent.conversations || [])) {
-            allServerConvIds.add(serverConv.id);
-            if (serverConv.processing && !isRecentlyClosed(store, serverConv.id)) {
-              store.processingConversations[serverConv.id] = true;
-            } else if (store.processingConversations[serverConv.id]) {
-              delete store.processingConversations[serverConv.id];
-              stopProcessingWatchdog(store, serverConv.id);
-              const status = store.executionStatusMap[serverConv.id];
-              if (status) status.currentTool = null;
-              store.finishStreamingForConversation(serverConv.id);
-            }
+
+        // 合并到 store.conversations：更新已有的，添加缺失的
+        for (const serverConv of allServerConvs) {
+          const existing = store.conversations.find(c => c.id === serverConv.id);
+          if (existing) {
+            existing.claudeSessionId = serverConv.claudeSessionId || existing.claudeSessionId;
+            existing.processing = serverConv.processing;
+            existing.userId = serverConv.userId;
+            existing.username = serverConv.username;
+            existing.agentId = serverConv.agentId;
+            existing.agentName = serverConv.agentName;
+          } else {
+            store.conversations.push(serverConv);
+          }
+        }
+        // 清理不在 server 中的 conversations
+        store.conversations = store.conversations.filter(c => allServerConvIds.has(c.id));
+
+        // 同步 processing 状态
+        for (const serverConv of allServerConvs) {
+          if (serverConv.processing && !isRecentlyClosed(store, serverConv.id)) {
+            store.processingConversations[serverConv.id] = true;
+          } else if (store.processingConversations[serverConv.id]) {
+            delete store.processingConversations[serverConv.id];
+            stopProcessingWatchdog(store, serverConv.id);
+            const status = store.executionStatusMap[serverConv.id];
+            if (status) status.currentTool = null;
+            store.finishStreamingForConversation(serverConv.id);
           }
         }
         for (const convId of Object.keys(store.processingConversations)) {
@@ -131,8 +151,40 @@ export function handleMessage(store, msg) {
           }
         }
       }
+      // ★ 自动恢复上次查看的 conversation（UI 刷新后）
       if (!store.currentConversation && !store.currentAgent && !store.recoveryDismissed) {
+        const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
         const lastAgent = store.lastUsedAgent;
+
+        if (lastViewed) {
+          // 优先恢复上次查看的 conversation
+          const conv = store.conversations.find(c => c.id === lastViewed);
+          if (conv) {
+            const agent = msg.agents.find(a => a.id === conv.agentId && a.online);
+            if (agent) {
+              console.log('[AutoRestore] Restoring last viewed conversation:', lastViewed, 'on agent:', conv.agentId);
+              store.currentAgent = conv.agentId;
+              store.currentAgentInfo = agent;
+              store.currentConversation = lastViewed;
+              store.currentWorkDir = conv.workDir;
+              store.messages = [];
+              // 加载最近 5 turns 消息
+              store.sendWsMessage({
+                type: 'sync_messages',
+                conversationId: lastViewed,
+                turns: 5
+              });
+              // 通知 server 选择了这个 agent 和 conversation
+              store.sendWsMessage({ type: 'select_agent', agentId: conv.agentId, silent: true });
+              store.sendWsMessage({ type: 'select_conversation', conversationId: lastViewed });
+              // 查询 processing 状态
+              store.sendWsMessage({ type: 'refresh_conversation', conversationId: lastViewed });
+              break;
+            }
+          }
+        }
+
+        // 回退：恢复上次使用的 agent
         if (lastAgent) {
           const agent = store.agents.find(a => a.id === lastAgent && a.online);
           if (agent) {
@@ -185,13 +237,16 @@ export function handleMessage(store, msg) {
         const formatted = (msg.messages || []).map(m => store.formatDbMessage(m)).filter(Boolean);
 
         if (formatted.length > 0) {
-          // ★ Phase 6: 判断是向上分页还是正常加载
-          if (store.messages.length > 0 &&
-              formatted[0].dbMessageId && store.messages[0]?.dbMessageId &&
-              formatted[formatted.length - 1].dbMessageId < store.messages[0].dbMessageId) {
-            // 向上加载：插入到消息列表开头
-            console.log(`[Sync] Prepending ${formatted.length} older messages`);
-            store.messages.unshift(...formatted);
+          // ★ Phase 6.1: 判断是向上分页还是正常加载
+          // 找到当前消息列表中第一条有 dbMessageId 的消息
+          const firstDbMsg = store.messages.find(m => m.dbMessageId);
+          if (firstDbMsg &&
+              formatted[0].dbMessageId &&
+              formatted[formatted.length - 1].dbMessageId < firstDbMsg.dbMessageId) {
+            // 向上加载：插入到消息列表中第一条 DB 消息之前
+            const insertIdx = store.messages.indexOf(firstDbMsg);
+            console.log(`[Sync] Prepending ${formatted.length} older messages at index ${insertIdx}`);
+            store.messages.splice(insertIdx, 0, ...formatted);
           } else {
             // 正常同步（首次加载或追加）
             console.log(`[Sync] Received ${formatted.length} messages`);
@@ -695,15 +750,14 @@ function handleConversationResumed(store, msg) {
     type: 'system',
     content: t('store.convResumed', { agent: resumedAgent?.name || msg.agentId, sessionId: msg.claudeSessionId ? msg.claudeSessionId.slice(0, 8) + '...' : '' })
   });
-  console.log('History messages received:', msg.historyMessages?.length || 0, 'dbMessageCount:', msg.dbMessageCount || 0);
-  if (msg.historyMessages && msg.historyMessages.length > 0) {
-    // ★ Phase 6: 只显示最后 50 条历史消息
-    const recent = msg.historyMessages.length > 50
-      ? msg.historyMessages.slice(-50)
-      : msg.historyMessages;
-    store.loadHistoryMessages(recent);
+  console.log('dbMessages received:', msg.dbMessages?.length || 0, 'dbMessageCount:', msg.dbMessageCount || 0);
+  // ★ Phase 6.1: server 已将 history 写入 DB 并返回最后 5 turns 的 DB 消息
+  if (msg.dbMessages && msg.dbMessages.length > 0) {
+    const formatted = msg.dbMessages.map(m => store.formatDbMessage(m)).filter(Boolean);
+    for (const m of formatted) {
+      store.messages.push(m);
+    }
   }
-  // 有更多历史（CLI 端有 >50 条，或数据库里有消息可加载）
-  store.hasMoreMessages = (msg.historyMessages?.length > 50) || (msg.dbMessageCount > 0);
+  store.hasMoreMessages = !!msg.hasMoreMessages;
   store.saveOpenSessions();
 }

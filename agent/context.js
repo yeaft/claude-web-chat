@@ -19,6 +19,9 @@ export default {
   pendingAuthTempId: null,
   agentHeartbeatTimer: null,
   lastPongAt: 0,
+  // 断连期间的消息缓冲队列（重连后 flush）
+  messageBuffer: [],
+  messageBufferMaxSize: 5000, // 防止内存无限增长
   // 由 connection.js 注册的通信函数
   sendToServer: null,
   // 由 index.js 注册的配置保存函数

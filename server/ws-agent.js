@@ -364,8 +364,27 @@ async function handleAgentMessage(agentId, msg) {
       // ★ Security: 覆盖 msg 中的 userId 为可信值，确保 notifyConversationUpdate 用正确的 userId
       msg.userId = trustedUserId;
       msg.username = trustedUsername;
-      // 附加数据库消息数量，供 web 端判断是否可向上加载
+
+      // ★ Phase 6.1: 将 historyMessages 同步到 DB（支持增量 merge）
+      // agent 的 history 是权威数据源，bulkAddHistory 会自动找到 DB 中缺失的部分并追加
+      if (msg.type === 'conversation_resumed' && msg.historyMessages && msg.historyMessages.length > 0) {
+        try {
+          const insertedCount = messageDb.bulkAddHistory(msg.conversationId, msg.historyMessages);
+          if (insertedCount > 0) {
+            console.log(`[conversation_resumed] Synced ${insertedCount} new messages to DB for ${msg.conversationId}`);
+          }
+        } catch (e) {
+          console.error('Failed to sync history to DB:', e.message);
+        }
+        // 从 DB 读取最后 5 turns 发给前端
+        const { messages: recentMessages, hasMore } = messageDb.getRecentTurns(msg.conversationId, 5);
+        // 不再发原始 historyMessages 给前端，改为 dbMessages
+        delete msg.historyMessages;
+        msg.dbMessages = recentMessages;
+        msg.hasMoreMessages = hasMore;
+      }
       msg.dbMessageCount = messageDb.getCount(msg.conversationId);
+
       await notifyConversationUpdate(agentId, msg);
       await broadcastAgentList();
       break;
