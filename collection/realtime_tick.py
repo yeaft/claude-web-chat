@@ -19,17 +19,107 @@ from pymongo import MongoClient, DESCENDING, ASCENDING
 DATA_URL = "https://hq.sinajs.cn/list="
 DATA_5M_URL = "http://stock2.finance.sina.com.cn/futures/api/json.php/IndexService.getInnerFuturesMiniKLine5m?symbol="
 START_TIMES = [["085959", "101500"], ["103000", "113000"], ["133000", "150000"], ["205955", "230000"]]
-# MONITOR_CONTRACTS = ["rb", "oi", "i"]
-MONITOR_CONTRACTS = ["rb", "p", "m"]
+# 所有大宗商品品种候选池（排除金融期货）
+ALL_COMMODITY_TYPES = [
+    "rb", "hc", "i", "j", "jm",          # 黑色系
+    "cu", "al", "zn", "ni", "sn", "pb",   # 有色金属
+    "ag", "au",                            # 贵金属
+    "sc", "fu", "bu", "lu",               # 能源
+    "ma", "ta", "eg", "eb", "sa", "fg",   # 化工
+    "l", "pp", "v", "pf",                 # 化工（塑料链）
+    "ru", "sp", "ss",                     # 化工/其他
+    "m", "y", "p", "a", "b", "c", "cs",  # 农产品（油脂豆类谷物）
+    "rm", "oi", "cf", "sr",              # 农产品（软商品）
+    "jd", "ap", "lh",                     # 农产品（鲜活）
+    "sf", "sm",                           # 硅铁/锰硅
+]
+TOP_N = 10  # 采集成交量+持仓量排名前N的品种
 CONTRACT_DP_MAP = {}
 
-def get_contract_map():
+def get_top_n_types(n=TOP_N):
+    """
+    查询所有大宗商品品种的主力合约，按成交量和持仓量综合排名，返回 Top N 品种列表。
+    排名规则：成交量排名 + 持仓量排名，取综合排名最靠前的 N 个。
+    """
+    current_date = datetime.now(pytz.timezone("Asia/Shanghai"))
+    current_year = current_date.year % 100
+    current_month = current_date.month
+
+    all_results = []
+    # 分批查询，每批最多 20 个品种（避免 URL 过长）
+    batch_size = 10
+    for batch_start in range(0, len(ALL_COMMODITY_TYPES), batch_size):
+        batch_types = ALL_COMMODITY_TYPES[batch_start:batch_start + batch_size]
+        all_codes = []
+        code_to_type = {}
+
+        for ct in batch_types:
+            for i in range(6):
+                target_year = current_year + (current_month + i - 1) // 12
+                target_month = (current_month + i - 1) % 12 + 1
+                code = f"{ct}{target_year:02d}{target_month:02d}"
+                nf_code = f"nf_{code.upper()}"
+                all_codes.append(nf_code)
+                code_to_type[code.upper()] = ct
+
+        url = DATA_URL + ",".join(all_codes)
+        try:
+            r = requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'}, proxies=constance.PROXIES) if constance.ONLINE else requests.get(url, headers={'Referer': 'http://vip.stock.finance.sina.com.cn/'})
+
+            # 每个品种取成交量最大的合约
+            type_best = {}
+            for line in r.text.split("\n"):
+                parts = line.split("=")
+                if len(parts) > 1:
+                    nor_code = parts[0].replace("var hq_str_nf_", "")
+                    ct = code_to_type.get(nor_code)
+                    if not ct:
+                        continue
+                    data_str = parts[1].replace('"', '').replace(';', '')
+                    fields = data_str.split(",")
+                    if len(fields) > 14:
+                        cjl = int(float(fields[14])) if fields[14] else 0
+                        ccl = int(float(fields[13])) if fields[13] else 0
+                        if cjl > 0 and ccl > 0:
+                            if ct not in type_best or cjl > type_best[ct]['cjl']:
+                                type_best[ct] = {'type': ct, 'cjl': cjl, 'ccl': ccl}
+
+            all_results.extend(type_best.values())
+        except Exception as e:
+            utils.log(f"Error querying batch {batch_types}: {e}")
+
+    if not all_results:
+        # 查询全部失败时使用默认品种
+        utils.log("Warning: failed to query rankings, using defaults")
+        return ["rb", "m", "ta", "ma", "sa", "hc", "i", "v", "fg", "p"]
+
+    # 综合排名：成交量排名 + 持仓量排名，取总分最小的 Top N
+    all_results.sort(key=lambda x: x['cjl'], reverse=True)
+    for rank, item in enumerate(all_results):
+        item['cjl_rank'] = rank
+
+    all_results.sort(key=lambda x: x['ccl'], reverse=True)
+    for rank, item in enumerate(all_results):
+        item['ccl_rank'] = rank
+        item['total_rank'] = item['cjl_rank'] + item['ccl_rank']
+
+    all_results.sort(key=lambda x: x['total_rank'])
+    top_types = [item['type'] for item in all_results[:n]]
+
+    utils.log(f"Top {n} types by CJL+CCL ranking: {top_types}")
+    for item in all_results[:n]:
+        utils.log(f"  {item['type']:4s}  CJL: {item['cjl']:>10,}(#{item['cjl_rank']+1:2d})  CCL: {item['ccl']:>10,}(#{item['ccl_rank']+1:2d})  Total: #{item['total_rank']+2}")
+
+    return top_types
+
+
+def get_contract_map(monitor_types=None):
     """
     通过新浪期货API动态获取最新的主力和次主力合约代码
     返回包含types和collect_contracts的数据结构
     """
-    # 监控的合约类型，用于生成collect_contracts数组
-    monitor_types = ["rb", "i", "hc", "p", "m"]
+    if monitor_types is None:
+        monitor_types = get_top_n_types()
     types = {}
     collect_contracts = []
     
@@ -104,9 +194,8 @@ def get_contract_map():
                 'secondNorCode': second_contract.upper()
             }
             
-            # 为主力合约添加到collect_contracts
-            if contract_type in ["rb", "i", "hc", "p", "m"]:
-                collect_contracts.append(main_contract)
+            # 为所有监控品种添加到collect_contracts
+            collect_contracts.append(main_contract)
                 
         except Exception as e:
             utils.log(f"Error getting contract data for {contract_type}: {e}")
@@ -119,7 +208,7 @@ def get_contract_map():
                 'norCode': default_main.upper(),
                 'secondNorCode': default_second.upper()
             }
-            if contract_type in ["rb", "i", "hc", "p", "m"]:
+            if contract_type in monitor_types:
                 collect_contracts.append(default_main)
     
     return {
@@ -172,10 +261,12 @@ def is_end_with_5_sec():
     current_sec = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%S')[-1]
     return current_sec == "0" or current_sec == "5"
 
-def initial_dp_data():
+def initial_dp_data(monitor_contracts):
     # Contract map
-    for c in MONITOR_CONTRACTS:
-        CONTRACT_DP_MAP[c] = realtime_abnormal_detector.AbnormalDetector(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name='ccl', precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False, real_send_message=False)                                 
+    for c in monitor_contracts:
+        if c in CONTRACT_DP_MAP:
+            continue  # 已初始化过的品种不重复初始化
+        CONTRACT_DP_MAP[c] = realtime_abnormal_detector.AbnormalDetector(past_x_hour=2, candidate_x_min=5,  precheck_x_min=30, check_column_name='ccl', precheck_min_slope_value=350, precheck_accept_slope_value=600, send_message=False, real_send_message=False)
         CONTRACT_DP_MAP[c].cjl_column_name = "cjlDiff"
         current_time = date_utils.date_add_days(datetime.now(), -10)
         current_time_str = date_utils.convert_date_to_str(current_time, "-")
@@ -192,10 +283,11 @@ def initial_dp_data():
 
 def collect_tick_data():
 
-    initial_dp_data()
     contract_result = get_contract_map()
     types = contract_result["types"]
     collect_contracts = contract_result["collect_contracts"]
+    monitor_contracts = list(types.keys())
+    initial_dp_data(monitor_contracts)
     cols = {}
     cols["norCode"] = constance.REAL_TIME_TICK_COL
     cols["secondNorCode"] = constance.REAL_TIME_TICK_SECOND_COL
@@ -216,17 +308,19 @@ def collect_tick_data():
         current_trade_status = is_trading()
         if last_trade_status != current_trade_status:
             if not current_trade_status:
+                # 非交易时段：重新查询排名，更新品种列表
                 contract_result = get_contract_map()
                 types = contract_result["types"]
                 collect_contracts = contract_result["collect_contracts"]
+                monitor_contracts = list(types.keys())
+                initial_dp_data(monitor_contracts)
             elif current_trade_status:
                 current_time = datetime.now(pytz.timezone("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S.000')
                 if (current_time.split(" ")[1] >= "20:55:00.000" and current_time.split(" ")[1] <= "21:01:00.000") or (current_time.split(" ")[1] >= "08:55:00.000" and current_time.split(" ")[1] <= "09:01:00.000"):
-                    msg = "{0}:\n".format(current_time)
+                    msg = "{0}:\n监控品种({1}个):\n".format(current_time, len(types))
                     for t, v in types.items():
                         utils.log("Type {0}: code {1} secondCode {2}".format(t, v['code'], v['secondCode']))
-                        if t.lower() in ["rb", "i", "sa", "m", "fg", "y", "p", "hc"]:
-                            msg += "{0} {1} {2}\n".format(v['code'], v['secondCode'], v['norCode'])
+                        msg += "{0} {1} {2}\n".format(v['code'], v['secondCode'], v['norCode'])
                     utils.send_ding_msg(msg)
 
             utils.log("Change trade status, current {0}".format("trading" if current_trade_status else "close"))
@@ -258,7 +352,7 @@ def collect_tick_data():
                 # Prepare to send the abnormal information
                 if code_key == "norCode":
                     for info in results:
-                        if info['type'] in MONITOR_CONTRACTS:
+                        if info['type'] in CONTRACT_DP_MAP:
                             try:
                                 CONTRACT_DP_MAP[info['type']].process_new_data(info)
                             except Exception as e:
