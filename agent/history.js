@@ -86,15 +86,18 @@ export async function getHistorySessions(workDir) {
       let title = '';
       let firstMessage = '';
       let hasUserMessage = false;
+      let customTitle = '';
+      let jsonlSummary = '';
 
       try {
         const content = readFileSync(filePath, 'utf-8');
         const lines = content.split('\n').filter(l => l.trim());
 
-        for (const line of lines.slice(0, 30)) {
+        for (const line of lines) {
           try {
             const data = JSON.parse(line);
-            if (data.type === 'user' && data.message?.content) {
+            // First user message → preview + fallback title
+            if (!hasUserMessage && data.type === 'user' && data.message?.content) {
               const text = typeof data.message.content === 'string'
                 ? data.message.content
                 : data.message.content[0]?.text || '';
@@ -102,8 +105,15 @@ export async function getHistorySessions(workDir) {
                 firstMessage = text.substring(0, 100);
                 title = text.substring(0, 100);
                 hasUserMessage = true;
-                break;
               }
+            }
+            // /rename → custom-title (keep last occurrence)
+            if (data.type === 'custom-title' && data.customTitle) {
+              customTitle = data.customTitle;
+            }
+            // Auto-generated summary
+            if (data.type === 'summary' && data.summary) {
+              jsonlSummary = data.summary;
             }
           } catch {}
         }
@@ -113,10 +123,11 @@ export async function getHistorySessions(workDir) {
 
       // 只添加有实际用户消息的会话，过滤掉空会话
       if (hasUserMessage) {
+        // Priority: custom-title (/rename) > auto-generated summary > first user message
         sessions.push({
           sessionId,
           workDir,
-          title: title || sessionId.slice(0, 8),
+          title: customTitle || jsonlSummary || title || sessionId.slice(0, 8),
           preview: firstMessage,
           lastModified: stats.mtime.getTime(),
           size: stats.size
@@ -157,6 +168,28 @@ export function loadSessionHistory(workDir, claudeSessionId, limit = 500) {
     }
   } catch (e) {
     console.error(`Error reading session file: ${e.message}`);
+  }
+
+  // Filter out context continuation summary messages and everything before them.
+  // When Claude CLI runs out of context and resumes, it inserts a special user message
+  // containing this marker. We discard that message and all prior messages.
+  const CONTINUATION_MARKER = 'This session is being continued from a previous conversation';
+  let lastContinuationIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.type === 'user') {
+      const content = msg.message?.content;
+      const text = typeof content === 'string'
+        ? content
+        : Array.isArray(content) ? content.map(b => b.text || '').join('') : '';
+      if (text.includes(CONTINUATION_MARKER)) {
+        lastContinuationIndex = i;
+        break;
+      }
+    }
+  }
+  if (lastContinuationIndex >= 0) {
+    messages.splice(0, lastContinuationIndex + 1);
   }
 
   // ★ Phase 6: 限制返回数量（取最后 N 条）
