@@ -626,14 +626,17 @@ export const messageDb = {
     let msgsToInsert = historyMessages;
     const lastUserMsg = this.getLastUserMessage(sessionId);
 
+    // 是否需要先清空旧数据（重建场景）
+    let needsRebuild = false;
+
     if (lastUserMsg) {
       // 检查是否需要重建：旧版 bulkAddHistory 写入的数据所有 created_at 几乎相同
       const tsRange = stmts.getTimestampRange.get(sessionId);
       if (tsRange && tsRange.count > 5 && (tsRange.max_ts - tsRange.min_ts) < 1000) {
-        // 时间戳异常（几百条消息的时间跨度 < 1秒），清空重写
+        // 时间戳异常（几百条消息的时间跨度 < 1秒），需要清空重写
         console.log(`[bulkAddHistory] Detected bad timestamps (range: ${tsRange.max_ts - tsRange.min_ts}ms for ${tsRange.count} msgs), rebuilding for ${sessionId}`);
-        stmts.deleteMessagesBySession.run(sessionId);
-        // msgsToInsert 保持 historyMessages（全量写入），跳过 merge 逻辑
+        needsRebuild = true;
+        // msgsToInsert 保持 historyMessages（全量写入）
       } else {
         // DB 中已有消息且时间戳正常，需要找到增量部分
         const anchor = lastUserMsg.content;
@@ -679,6 +682,11 @@ export const messageDb = {
 
     // 执行批量插入（使用 jsonl 中的原始 timestamp 作为 created_at）
     const insertMany = db.transaction((msgs) => {
+      // 如果需要重建，先清空旧数据（在同一 transaction 中，保证原子性）
+      if (needsRebuild) {
+        stmts.deleteMessagesBySession.run(sessionId);
+      }
+
       let count = 0;
       let lastTs = 0;
       for (const msg of msgs) {
