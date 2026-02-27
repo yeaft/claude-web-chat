@@ -288,15 +288,15 @@ const stmts = {
   `),
 
   getMessagesBySession: db.prepare(`
-    SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC
+    SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC
   `),
 
   getRecentMessages: db.prepare(`
-    SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT ?
+    SELECT * FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?
   `),
 
   getMessagesAfterId: db.prepare(`
-    SELECT * FROM messages WHERE session_id = ? AND id > ? ORDER BY created_at ASC
+    SELECT * FROM messages WHERE session_id = ? AND id > ? ORDER BY id ASC
   `),
 
   getMessagesBeforeId: db.prepare(`
@@ -662,14 +662,16 @@ export const messageDb = {
       }
     }
 
-    // 执行批量插入
+    // 执行批量插入（created_at 递增以保证时间戳有序）
     const insertMany = db.transaction((msgs) => {
       let count = 0;
+      const baseTime = Date.now();
+      let offset = 0;
       for (const msg of msgs) {
         if (msg.type === 'user') {
           const text = extractUserText(msg);
           if (text) {
-            stmts.insertMessage.run(sessionId, 'user', text, 'user', null, null, Date.now());
+            stmts.insertMessage.run(sessionId, 'user', text, 'user', null, null, baseTime + offset++);
             count++;
           }
         } else if (msg.type === 'assistant') {
@@ -677,12 +679,12 @@ export const messageDb = {
           if (!content || !Array.isArray(content)) continue;
           for (const block of content) {
             if (block.type === 'text' && block.text) {
-              stmts.insertMessage.run(sessionId, 'assistant', block.text, 'assistant', null, null, Date.now());
+              stmts.insertMessage.run(sessionId, 'assistant', block.text, 'assistant', null, null, baseTime + offset++);
               count++;
             } else if (block.type === 'tool_use') {
               stmts.insertMessage.run(
                 sessionId, 'assistant', JSON.stringify(block.input || {}),
-                'tool_use', block.name, JSON.stringify(block.input || {}), Date.now()
+                'tool_use', block.name, JSON.stringify(block.input || {}), baseTime + offset++
               );
               count++;
             }
