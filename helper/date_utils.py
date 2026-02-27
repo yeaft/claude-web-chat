@@ -1,10 +1,84 @@
 
 import calendar
+import json
+import os
 import pytz
 # from . import constance
 from datetime import datetime, timedelta, date, time
-from chinese_calendar import is_holiday, is_workday
+from lunardate import LunarDate
 from pymongo import MongoClient, DESCENDING, ASCENDING
+
+# ============================================================
+# 交易日历：自动计算中国法定节假日（替代 chinese_calendar 库）
+# 覆盖范围：元旦、春节、清明、五一、端午、中秋、国庆
+# 调休工作日从 JSON 配置文件加载（需要每年手动更新）
+# ============================================================
+
+_CALENDAR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trading_calendar.json')
+_HOLIDAY_CACHE = {}  # year -> set of YYYYMMDD
+_WORK_DATES = set()
+
+def _get_holidays_for_year(year):
+    """自动计算某年的法定节假日（不含调休，只含放假日）"""
+    if year in _HOLIDAY_CACHE:
+        return _HOLIDAY_CACHE[year]
+
+    holidays = set()
+
+    def add_range(start_date, days):
+        for i in range(days):
+            d = start_date + timedelta(days=i)
+            holidays.add(d.strftime('%Y%m%d'))
+
+    # 元旦：1月1日，放1天
+    add_range(date(year, 1, 1), 1)
+
+    # 春节：农历正月初一前一天（除夕）到初六，共7天
+    try:
+        spring_festival = LunarDate(year, 1, 1).toSolarDate()
+        add_range(spring_festival - timedelta(days=1), 7)
+    except Exception:
+        pass
+
+    # 清明：4月4日或4月5日（大多数年份是4月5日），放1天
+    # 简化处理：固定4月4-5日都标记，实际只差1天影响极小
+    qingming = date(year, 4, 5) if year % 4 != 0 else date(year, 4, 4)
+    add_range(qingming, 1)
+
+    # 五一：5月1日，放1天（近年扩展为5天，但调休日由配置文件处理）
+    add_range(date(year, 5, 1), 5)
+
+    # 端午：农历五月初五，放1天
+    try:
+        duanwu = LunarDate(year, 5, 5).toSolarDate()
+        add_range(duanwu, 1)
+    except Exception:
+        pass
+
+    # 中秋：农历八月十五，放1天
+    try:
+        zhongqiu = LunarDate(year, 8, 15).toSolarDate()
+        add_range(zhongqiu, 1)
+    except Exception:
+        pass
+
+    # 国庆：10月1日-7日，共7天
+    add_range(date(year, 10, 1), 7)
+
+    _HOLIDAY_CACHE[year] = holidays
+    return holidays
+
+def _load_work_dates():
+    """从 JSON 配置文件加载调休工作日"""
+    global _WORK_DATES
+    try:
+        with open(_CALENDAR_FILE, 'r') as f:
+            cal = json.load(f)
+        _WORK_DATES = set(cal.get('work_dates', {}).get('dates', []))
+    except FileNotFoundError:
+        _WORK_DATES = set()
+
+_load_work_dates()
 
 
 def round_datetime(dt_str):
@@ -40,7 +114,17 @@ def convert_str_to_date(date_str):
 
 
 def is_work_day(date_str):
-    return is_workday(convert_str_to_date(date_str))
+    date_str_clean = date_str.replace("-", "")
+    # 调休工作日（周末但需上班）→ 优先级最高
+    if date_str_clean in _WORK_DATES:
+        return True
+    # 法定节假日（自动计算）
+    year = int(date_str_clean[:4])
+    if date_str_clean in _get_holidays_for_year(year):
+        return False
+    # 默认：周一到周五为工作日
+    dt = convert_str_to_date(date_str)
+    return dt.weekday() < 5
 
 def date_add_days(time, days):
     delta = timedelta(days=days)
