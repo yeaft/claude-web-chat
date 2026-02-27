@@ -1,6 +1,10 @@
 import WebSocket from 'ws';
-import { execSync, execFile } from 'child_process';
+import { execSync, execFile, spawn } from 'child_process';
+import { writeFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { platform } from 'os';
 import ctx from './context.js';
+import { getConfigDir } from './service.js';
 import { encrypt, decrypt, isEncrypted, decodeKey } from './encryption.js';
 import { handleTerminalCreate, handleTerminalInput, handleTerminalResize, handleTerminalClose } from './terminal.js';
 import { handleProxyHttpRequest, handleProxyWsOpen, handleProxyWsMessage, handleProxyWsClose } from './proxy.js';
@@ -321,15 +325,124 @@ async function handleMessage(msg) {
             return;
           }
           console.log(`[Agent] Upgrading from ${ctx.agentVersion} to ${latestVersion}...`);
-          // Use async execFile to avoid blocking event loop (heartbeat must keep running)
-          await new Promise((resolve, reject) => {
-            execFile('npm', ['install', '-g', `${pkgName}@latest`], { stdio: 'pipe', shell: true }, (err) => {
-              if (err) reject(err); else resolve();
+
+          // 检测安装方式：npm install 的路径包含 node_modules，源码运行则不包含
+          const scriptPath = (process.argv[1] || '').replace(/\\/g, '/');
+          const nmIndex = scriptPath.lastIndexOf('/node_modules/');
+          const isNpmInstall = nmIndex !== -1;
+
+          if (!isNpmInstall) {
+            // 源码运行不支持远程升级（代码在 git repo 中，需要手动 git pull）
+            console.log('[Agent] Source-based install detected, remote upgrade not supported.');
+            sendToServer({ type: 'upgrade_agent_ack', success: false, error: 'Source-based install: please use git pull to upgrade' });
+            return;
+          }
+
+          // 提取 node_modules 的父目录（即 npm install 执行时的项目目录或全局 prefix）
+          // 例如 /usr/lib/node_modules/@yeaft/webchat-agent/cli.js → /usr/lib
+          // 例如 C:/Users/x/myproject/node_modules/@yeaft/webchat-agent/cli.js → C:/Users/x/myproject
+          const installDir = scriptPath.substring(0, nmIndex);
+
+          // 判断全局安装 vs 局部安装：全局安装的 installDir 就是 npm global prefix
+          const isGlobalInstall = await new Promise((resolve) => {
+            execFile('npm', ['prefix', '-g'], { shell: true }, (err, stdout) => {
+              if (err) { resolve(false); return; }
+              const globalPrefix = stdout.toString().trim().replace(/\\/g, '/');
+              resolve(installDir === globalPrefix);
             });
           });
-          console.log('[Agent] Upgrade successful, restarting...');
-          sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion });
-          // Restart after upgrade (same as restart_agent)
+
+          const isWindows = platform() === 'win32';
+          // 全局安装用 npm install -g，局部安装在 installDir 下 npm install
+          const npmArgs = isGlobalInstall
+            ? ['install', '-g', `${pkgName}@${latestVersion}`]
+            : ['install', `${pkgName}@${latestVersion}`];
+
+          if (isWindows) {
+            // Windows: 进程持有文件锁，npm install 无法覆盖正在运行的模块文件 (EBUSY)
+            // 策略：生成 detached bat 脚本，等当前进程退出后再 npm install
+            const pid = process.pid;
+            const configDir = getConfigDir();
+            mkdirSync(configDir, { recursive: true });
+            const batPath = join(configDir, 'upgrade.bat');
+            const isPm2 = !!process.env.pm_id;
+            const installDirWin = installDir.replace(/\//g, '\\');
+
+            const batLines = [
+              '@echo off',
+              'setlocal',
+              `set PID=${pid}`,
+              `set PKG=${pkgName}@${latestVersion}`,
+              `set INSTALL_DIR=${installDirWin}`,
+              `set MAX_WAIT=30`,
+              `set COUNT=0`,
+              ':WAIT_LOOP',
+              'tasklist /FI "PID eq %PID%" 2>NUL | find /I "%PID%" >NUL',
+              'if errorlevel 1 goto PID_EXITED',
+              'set /A COUNT+=1',
+              'if %COUNT% GEQ %MAX_WAIT% (',
+              '  echo [Upgrade] Timeout waiting for PID %PID% to exit after 60s',
+              '  goto PID_EXITED',
+              ')',
+              'timeout /T 2 /NOBREAK >NUL',
+              'goto WAIT_LOOP',
+              ':PID_EXITED',
+            ];
+
+            if (isPm2) {
+              // pm2 可能已自动重启旧代码（exit 1 触发），先 stop 释放文件锁
+              batLines.push(
+                'echo [Upgrade] Stopping pm2 agent to release file locks...',
+                'call pm2 stop yeaft-agent 2>NUL',
+                'timeout /T 3 /NOBREAK >NUL',
+              );
+            }
+
+            const npmBatCmd = isGlobalInstall
+              ? 'call npm install -g %PKG%'
+              : 'cd /d "%INSTALL_DIR%" && call npm install %PKG%';
+
+            batLines.push(
+              'echo [Upgrade] Installing %PKG%...',
+              npmBatCmd,
+              'if errorlevel 1 (',
+              '  echo [Upgrade] npm install failed with exit code %errorlevel%',
+              ') else (',
+              '  echo [Upgrade] Successfully installed %PKG%',
+              ')',
+            );
+
+            if (isPm2) {
+              batLines.push(
+                'echo [Upgrade] Starting agent via pm2...',
+                'call pm2 start yeaft-agent',
+              );
+            }
+
+            batLines.push(`del /F /Q "${batPath}"`);
+
+            writeFileSync(batPath, batLines.join('\r\n'));
+            const child = spawn('cmd.exe', ['/c', batPath], {
+              detached: true,
+              stdio: 'ignore',
+              windowsHide: true
+            });
+            child.unref();
+            console.log(`[Agent] Spawned upgrade script (PID wait for ${pid}, pm2=${isPm2}, dir=${installDir}): ${batPath}`);
+            sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
+          } else {
+            // Linux/macOS: rename 不受文件锁影响，直接升级
+            const cwd = isGlobalInstall ? undefined : installDir;
+            await new Promise((resolve, reject) => {
+              execFile('npm', npmArgs, { cwd, stdio: 'pipe', shell: true }, (err) => {
+                if (err) reject(err); else resolve();
+              });
+            });
+            console.log('[Agent] Upgrade successful, restarting...');
+            sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion });
+          }
+
+          // 清理并退出
           setTimeout(() => {
             for (const [, term] of ctx.terminals) {
               if (term.pty) { try { term.pty.kill(); } catch {} }
@@ -347,7 +460,7 @@ async function handleMessage(msg) {
               ctx.ws.close();
             }
             clearTimeout(ctx.reconnectTimer);
-            console.log('[Agent] Cleanup done, exiting for auto-restart...');
+            console.log('[Agent] Cleanup done, exiting...');
             process.exit(1);
           }, 500);
         } catch (e) {
