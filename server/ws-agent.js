@@ -364,6 +364,35 @@ async function handleAgentMessage(agentId, msg) {
       // ★ Security: 覆盖 msg 中的 userId 为可信值，确保 notifyConversationUpdate 用正确的 userId
       msg.userId = trustedUserId;
       msg.username = trustedUsername;
+      // Resume 时将 agent 发来的历史消息写入数据库，之后前端通过 sync_messages 分页加载
+      if (msg.type === 'conversation_resumed' && msg.historyMessages?.length > 0) {
+        let savedCount = 0;
+        for (const hMsg of msg.historyMessages) {
+          try {
+            if (hMsg.type === 'user' && hMsg.message?.content) {
+              const raw = hMsg.message.content;
+              const text = typeof raw === 'string' ? raw
+                : (Array.isArray(raw) ? raw.map(b => b.text || '').join('') : JSON.stringify(raw));
+              if (text) { messageDb.add(msg.conversationId, 'user', text, 'user'); savedCount++; }
+            } else if (hMsg.type === 'assistant' && hMsg.message?.content) {
+              const blocks = Array.isArray(hMsg.message.content) ? hMsg.message.content : [hMsg.message.content];
+              // 保存文本
+              const text = blocks.filter(b => b.type === 'text' && b.text).map(b => b.text).join('');
+              if (text) { messageDb.add(msg.conversationId, 'assistant', text, 'assistant'); savedCount++; }
+              // 保存 tool_use
+              for (const item of blocks) {
+                if (item.type === 'tool_use') {
+                  messageDb.add(msg.conversationId, 'assistant', JSON.stringify(item.input || {}), 'tool_use', item.name, JSON.stringify(item.input || {}));
+                }
+              }
+            }
+          } catch (e) {
+            console.error('Failed to save history message to DB:', e.message);
+          }
+        }
+        console.log(`[Resume] Saved ${savedCount} history messages to DB for conversation ${msg.conversationId}`);
+        delete msg.historyMessages; // 不再传大量数据给前端
+      }
       // 附加数据库消息数量，供 web 端判断是否可向上加载
       msg.dbMessageCount = messageDb.getCount(msg.conversationId);
       await notifyConversationUpdate(agentId, msg);
@@ -589,8 +618,11 @@ async function handleAgentMessage(agentId, msg) {
             const content = typeof rawContent === 'string'
               ? rawContent
               : (Array.isArray(rawContent) ? rawContent.map(b => b.text || '').join('') : JSON.stringify(rawContent));
-            const dbId = messageDb.add(msg.conversationId, 'user', content, 'user');
-            msg.data.dbMessageId = dbId;
+            // 跳过普通 user echo（用户输入已在 ws-client.js 保存），只保存含 <local-command-stdout> 的 slash command 输出
+            if (content.includes('<local-command-stdout>')) {
+              const dbId = messageDb.add(msg.conversationId, 'user', content, 'user');
+              msg.data.dbMessageId = dbId;
+            }
           }
           if (data.type === 'assistant' && data.message?.content) {
             let content;

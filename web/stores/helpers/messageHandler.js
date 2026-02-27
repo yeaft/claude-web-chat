@@ -697,13 +697,22 @@ function handleConversationResumed(store, msg) {
   });
   console.log('History messages received:', msg.historyMessages?.length || 0, 'dbMessageCount:', msg.dbMessageCount || 0);
   if (msg.historyMessages && msg.historyMessages.length > 0) {
-    // ★ Phase 6: 只显示最后 50 条历史消息
+    // 兼容：如果 server 仍然传了 historyMessages（旧版 server），用旧逻辑
     const recent = msg.historyMessages.length > 50
       ? msg.historyMessages.slice(-50)
       : msg.historyMessages;
     store.loadHistoryMessages(recent);
+    store.hasMoreMessages = (msg.historyMessages.length > 50) || (msg.dbMessageCount > 0);
+  } else if (msg.dbMessageCount > 0) {
+    // 新逻辑：历史消息已存入数据库，通过 sync_messages 分页加载
+    store.sendWsMessage({
+      type: 'sync_messages',
+      conversationId: msg.conversationId,
+      limit: 100
+    });
+    store.hasMoreMessages = msg.dbMessageCount > 100;
+  } else {
+    store.hasMoreMessages = false;
   }
-  // 有更多历史（CLI 端有 >50 条，或数据库里有消息可加载）
-  store.hasMoreMessages = (msg.historyMessages?.length > 50) || (msg.dbMessageCount > 0);
   store.saveOpenSessions();
 }
