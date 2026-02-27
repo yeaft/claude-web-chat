@@ -86,15 +86,18 @@ export async function getHistorySessions(workDir) {
       let title = '';
       let firstMessage = '';
       let hasUserMessage = false;
+      let customTitle = '';
+      let jsonlSummary = '';
 
       try {
         const content = readFileSync(filePath, 'utf-8');
         const lines = content.split('\n').filter(l => l.trim());
 
-        for (const line of lines.slice(0, 30)) {
+        for (const line of lines) {
           try {
             const data = JSON.parse(line);
-            if (data.type === 'user' && data.message?.content) {
+            // First user message → preview + fallback title
+            if (!hasUserMessage && data.type === 'user' && data.message?.content) {
               const text = typeof data.message.content === 'string'
                 ? data.message.content
                 : data.message.content[0]?.text || '';
@@ -102,8 +105,15 @@ export async function getHistorySessions(workDir) {
                 firstMessage = text.substring(0, 100);
                 title = text.substring(0, 100);
                 hasUserMessage = true;
-                break;
               }
+            }
+            // /rename → custom-title (keep last occurrence)
+            if (data.type === 'custom-title' && data.customTitle) {
+              customTitle = data.customTitle;
+            }
+            // Auto-generated summary
+            if (data.type === 'summary' && data.summary) {
+              jsonlSummary = data.summary;
             }
           } catch {}
         }
@@ -113,10 +123,11 @@ export async function getHistorySessions(workDir) {
 
       // 只添加有实际用户消息的会话，过滤掉空会话
       if (hasUserMessage) {
+        // Priority: custom-title (/rename) > auto-generated summary > first user message
         sessions.push({
           sessionId,
           workDir,
-          title: title || sessionId.slice(0, 8),
+          title: customTitle || jsonlSummary || title || sessionId.slice(0, 8),
           preview: firstMessage,
           lastModified: stats.mtime.getTime(),
           size: stats.size
