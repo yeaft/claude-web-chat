@@ -22,10 +22,10 @@ const wss = new WebSocketServer({ noServer: true });
 // =====================
 // WebSocket 心跳机制
 // =====================
-const HEARTBEAT_INTERVAL = 30000;
+const AGENT_HEARTBEAT_INTERVAL = 30000;
+const CLIENT_HEARTBEAT_INTERVAL = 90000;
 
 setInterval(() => {
-  // 检查 agents
   for (const [agentId, agent] of agents) {
     if (agent.isAlive === false) {
       console.log(`[Heartbeat] Agent ${agentId} not responding, terminating`);
@@ -36,8 +36,9 @@ setInterval(() => {
     agent.pingSentAt = Date.now();
     agent.ws.ping();
   }
+}, AGENT_HEARTBEAT_INTERVAL);
 
-  // 检查 web clients
+setInterval(() => {
   for (const [clientId, client] of webClients) {
     if (client.isAlive === false) {
       console.log(`[Heartbeat] Web client ${clientId} not responding, terminating`);
@@ -47,7 +48,7 @@ setInterval(() => {
     client.isAlive = false;
     client.ws.ping();
   }
-}, HEARTBEAT_INTERVAL);
+}, CLIENT_HEARTBEAT_INTERVAL);
 
 // ★ Phase 5: 每小时清理超过 24 小时的 file tab 状态
 setInterval(() => {
