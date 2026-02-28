@@ -739,15 +739,7 @@ export function closeDb() {
   db.close();
 }
 
-// 进程退出时关闭数据库
+// 进程退出时关闭数据库（兜底）
 process.on('exit', closeDb);
-process.on('SIGINT', () => {
-  closeDb();
-  process.exit(0);
-});
-process.on('SIGTERM', () => {
-  closeDb();
-  process.exit(0);
-});
 
 export default db;

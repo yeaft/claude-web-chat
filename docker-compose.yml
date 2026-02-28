@@ -1,0 +1,27 @@
+services:
+  webchat:
+    image: ghcr.io/yeaft/claude-web-chat:latest
+    container_name: webchat
+    ports:
+      - "3456:3456"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: unless-stopped
+    stop_grace_period: 10s
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_POLL_INTERVAL=300
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_SCHEDULE=0 0 3 * * *
+      - TZ=Asia/Shanghai
+    restart: unless-stopped

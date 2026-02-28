@@ -80,7 +80,8 @@ export function connect(store) {
   store.ws.onclose = (event) => {
     console.log('[WS] Disconnected:', event.code, event.reason);
     store.authenticated = false;
-    store.connectionState = 'disconnected';
+    const wasUpdating = store.connectionState === 'updating';
+    store.connectionState = wasUpdating ? 'updating' : 'disconnected';
     store.stopHeartbeat();
     clearSessionLoading(store);
 
@@ -89,6 +90,15 @@ export function connect(store) {
       localStorage.removeItem('authToken');
       authStore.reset();
       store.reconnectAttempts = 0;
+      return;
+    }
+
+    if (wasUpdating) {
+      // Server is updating — fast reconnect with short interval
+      store.reconnectAttempts = 0;
+      store.reconnectTimer = setTimeout(() => {
+        store.connect();
+      }, 2000);
       return;
     }
 

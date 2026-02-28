@@ -572,6 +572,11 @@ export function handleMessage(store, msg) {
       if (msg.type === 'directory_listing') console.log('[Store] Dispatching directory_listing workbench-message, convId:', msg.conversationId, 'entries:', msg.entries?.length);
       window.dispatchEvent(new CustomEvent('workbench-message', { detail: msg }));
       break;
+
+    case 'server_updating':
+      console.log('[WS] Server is updating, will reconnect automatically');
+      store.connectionState = 'updating';
+      break;
   }
 }
 

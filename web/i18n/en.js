@@ -110,6 +110,7 @@ export default {
   // Chat - Connection
   'chat.connection.connecting': 'Connecting...',
   'chat.connection.reconnecting': 'Reconnecting ({current}/{max})...',
+  'chat.connection.updating': 'Server is updating, please wait...',
   'chat.connection.disconnected': 'Disconnected',
   'chat.connection.reconnect': 'Reconnect',
 

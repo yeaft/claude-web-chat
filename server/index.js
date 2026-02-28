@@ -6,11 +6,12 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { CONFIG, isEmailConfigured, validateProductionConfig } from './config.js';
 import { agents, webClients, userFileTabs } from './context.js';
-import { invitationDb } from './database.js';
+import { invitationDb, closeDb } from './database.js';
 import { registerApiRoutes } from './api.js';
 import { registerProxyRoutes, handleProxyWebSocketUpgrade } from './proxy.js';
 import { handleAgentConnection } from './ws-agent.js';
 import { handleWebConnection } from './ws-client.js';
+import { sendToWebClient } from './ws-utils.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -158,3 +159,45 @@ server.listen(CONFIG.port, () => {
     console.log(`Email verification: ${isEmailConfigured() ? 'ENABLED' : 'DISABLED'}`);
   }
 });
+
+// =====================
+// 优雅关闭（Graceful Shutdown）
+// =====================
+async function gracefulShutdown(signal) {
+  console.log(`\n[Shutdown] Received ${signal}, starting graceful shutdown...`);
+
+  // 1. 通知所有 web client 服务即将更新
+  const updateMsg = { type: 'server_updating' };
+  for (const [, client] of webClients) {
+    try {
+      await sendToWebClient(client, updateMsg);
+    } catch (e) { /* ignore send errors during shutdown */ }
+  }
+
+  // 2. 短暂等待，确保消息发送完毕
+  await new Promise(resolve => setTimeout(resolve, 500));
+
+  // 3. 关闭所有 WebSocket 连接
+  for (const [, client] of webClients) {
+    try { client.ws.close(1012, 'Server restarting'); } catch (e) {}
+  }
+  for (const [, agent] of agents) {
+    try { agent.ws.close(1012, 'Server restarting'); } catch (e) {}
+  }
+
+  // 4. 停止接受新连接
+  server.close(() => {
+    console.log('[Shutdown] HTTP server closed');
+    closeDb();
+    process.exit(0);
+  });
+
+  // 5. 强制退出兜底（5 秒超时）
+  setTimeout(() => {
+    console.warn('[Shutdown] Forced exit after timeout');
+    process.exit(1);
+  }, 5000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

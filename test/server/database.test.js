@@ -475,3 +475,298 @@ describe('invitationDb', () => {
     });
   });
 });
+
+// Helper: create a session and return its id
+function createSession(agentId = 'agent1') {
+  const id = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  sessionDb.create(id, agentId, 'test-agent', '/tmp');
+  return id;
+}
+
+// Helper: add a user+assistant turn pair with controlled timestamps
+function addTurn(sessionId, userText, assistantText, ts) {
+  db.prepare('INSERT INTO messages (session_id, role, content, message_type, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    sessionId, 'user', userText, 'user', ts
+  );
+  db.prepare('INSERT INTO messages (session_id, role, content, message_type, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    sessionId, 'assistant', assistantText, 'assistant', ts + 1
+  );
+}
+
+// Helper: create a history message in Claude jsonl format
+function makeHistoryUserMsg(text, timestamp) {
+  return {
+    type: 'user',
+    message: { content: text },
+    timestamp: new Date(timestamp).toISOString()
+  };
+}
+
+function makeHistoryAssistantMsg(text, timestamp) {
+  return {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text }] },
+    timestamp: new Date(timestamp).toISOString()
+  };
+}
+
+describe('messageDb — getLastUserMessage', () => {
+  it('should return null for empty session', () => {
+    const sid = createSession();
+    expect(messageDb.getLastUserMessage(sid)).toBeNull();
+  });
+
+  it('should return the last user message', () => {
+    const sid = createSession();
+    const now = Date.now();
+    addTurn(sid, 'first question', 'first answer', now);
+    addTurn(sid, 'second question', 'second answer', now + 100);
+    const last = messageDb.getLastUserMessage(sid);
+    expect(last).toBeTruthy();
+    expect(last.content).toBe('second question');
+    expect(last.role).toBe('user');
+  });
+});
+
+describe('messageDb — getRecentTurns', () => {
+  it('should return empty for session with no messages', () => {
+    const sid = createSession();
+    const result = messageDb.getRecentTurns(sid, 5);
+    expect(result.messages).toEqual([]);
+    expect(result.hasMore).toBe(false);
+  });
+
+  it('should return single turn with hasMore=false', () => {
+    const sid = createSession();
+    addTurn(sid, 'hello', 'hi there', Date.now());
+    const result = messageDb.getRecentTurns(sid, 5);
+    expect(result.messages.length).toBe(2);
+    expect(result.hasMore).toBe(false);
+  });
+
+  it('should return correct number of turns and set hasMore', () => {
+    const sid = createSession();
+    const base = Date.now();
+    for (let i = 0; i < 5; i++) {
+      addTurn(sid, `question ${i}`, `answer ${i}`, base + i * 100);
+    }
+
+    // Request last 3 turns
+    const result = messageDb.getRecentTurns(sid, 3);
+    // Should have 3 user + 3 assistant = 6 messages
+    expect(result.messages.length).toBe(6);
+    expect(result.hasMore).toBe(true);
+    // First message should be the 3rd turn's user message
+    expect(result.messages[0].content).toBe('question 2');
+  });
+
+  it('should return all turns when turnCount >= total', () => {
+    const sid = createSession();
+    const base = Date.now();
+    addTurn(sid, 'q1', 'a1', base);
+    addTurn(sid, 'q2', 'a2', base + 100);
+
+    const result = messageDb.getRecentTurns(sid, 10);
+    expect(result.messages.length).toBe(4);
+    expect(result.hasMore).toBe(false);
+  });
+});
+
+describe('messageDb — getTurnsBeforeId', () => {
+  it('should page upward from a given message id', () => {
+    const sid = createSession();
+    const base = Date.now();
+    for (let i = 0; i < 5; i++) {
+      addTurn(sid, `q${i}`, `a${i}`, base + i * 100);
+    }
+    // Get all messages to find a beforeId
+    const all = messageDb.getBySession(sid);
+    // The 4th turn's user message (index 6)
+    const beforeId = all[6].id;
+
+    const result = messageDb.getTurnsBeforeId(sid, beforeId, 2);
+    expect(result.messages.length).toBe(4); // 2 turns × 2 messages
+    expect(result.hasMore).toBe(true);
+    expect(result.messages[0].content).toBe('q1');
+  });
+
+  it('should return hasMore=false at top', () => {
+    const sid = createSession();
+    const base = Date.now();
+    addTurn(sid, 'q0', 'a0', base);
+    addTurn(sid, 'q1', 'a1', base + 100);
+
+    const all = messageDb.getBySession(sid);
+    // beforeId = second turn's user message
+    const beforeId = all[2].id;
+
+    const result = messageDb.getTurnsBeforeId(sid, beforeId, 5);
+    expect(result.messages.length).toBe(2); // only 1 turn before
+    expect(result.hasMore).toBe(false);
+  });
+});
+
+describe('messageDb — bulkAddHistory', () => {
+  it('should insert all messages on empty DB', () => {
+    const sid = createSession();
+    const base = Date.now();
+    const history = [
+      makeHistoryUserMsg('hello', base),
+      makeHistoryAssistantMsg('hi', base + 1000),
+      makeHistoryUserMsg('how are you', base + 2000),
+      makeHistoryAssistantMsg('good', base + 3000),
+    ];
+
+    const count = messageDb.bulkAddHistory(sid, history);
+    expect(count).toBe(4);
+
+    const msgs = messageDb.getBySession(sid);
+    expect(msgs.length).toBe(4);
+    expect(msgs[0].content).toBe('hello');
+    expect(msgs[1].content).toBe('hi');
+    expect(msgs[2].content).toBe('how are you');
+    expect(msgs[3].content).toBe('good');
+  });
+
+  it('should incrementally merge — only insert new turns after anchor', () => {
+    const sid = createSession();
+    const base = Date.now();
+
+    // First bulk write
+    const history1 = [
+      makeHistoryUserMsg('q1', base),
+      makeHistoryAssistantMsg('a1', base + 1000),
+      makeHistoryUserMsg('q2', base + 2000),
+      makeHistoryAssistantMsg('a2', base + 3000),
+    ];
+    messageDb.bulkAddHistory(sid, history1);
+    expect(messageDb.getCount(sid)).toBe(4);
+
+    // Second bulk write with overlap + new turn
+    const history2 = [
+      makeHistoryUserMsg('q1', base),
+      makeHistoryAssistantMsg('a1', base + 1000),
+      makeHistoryUserMsg('q2', base + 2000),
+      makeHistoryAssistantMsg('a2', base + 3000),
+      makeHistoryUserMsg('q3', base + 4000),
+      makeHistoryAssistantMsg('a3', base + 5000),
+    ];
+    const count = messageDb.bulkAddHistory(sid, history2);
+    expect(count).toBe(2); // only q3 + a3
+
+    const msgs = messageDb.getBySession(sid);
+    expect(msgs.length).toBe(6);
+    expect(msgs[4].content).toBe('q3');
+    expect(msgs[5].content).toBe('a3');
+  });
+
+  it('should return 0 when anchor found but no new turns after it', () => {
+    const sid = createSession();
+    const base = Date.now();
+
+    const history = [
+      makeHistoryUserMsg('q1', base),
+      makeHistoryAssistantMsg('a1', base + 1000),
+    ];
+    messageDb.bulkAddHistory(sid, history);
+
+    // Same history, no new turns
+    const count = messageDb.bulkAddHistory(sid, history);
+    expect(count).toBe(0);
+    expect(messageDb.getCount(sid)).toBe(2);
+  });
+
+  it('should append all when anchor not found in history', () => {
+    const sid = createSession();
+    const base = Date.now();
+
+    // Write initial data with proper timestamps
+    addTurn(sid, 'old question', 'old answer', base);
+
+    // History that does not contain "old question"
+    const history = [
+      makeHistoryUserMsg('new q1', base + 10000),
+      makeHistoryAssistantMsg('new a1', base + 11000),
+    ];
+
+    const count = messageDb.bulkAddHistory(sid, history);
+    expect(count).toBe(2);
+    expect(messageDb.getCount(sid)).toBe(4); // 2 old + 2 new
+  });
+
+  it('should rebuild when timestamps are abnormal (all same)', () => {
+    const sid = createSession();
+    const sameTs = Date.now();
+
+    // Simulate old bulkAddHistory data: 6+ messages with identical timestamps
+    for (let i = 0; i < 6; i++) {
+      db.prepare('INSERT INTO messages (session_id, role, content, message_type, created_at) VALUES (?, ?, ?, ?, ?)').run(
+        sid, i % 2 === 0 ? 'user' : 'assistant', `msg${i}`, i % 2 === 0 ? 'user' : 'assistant', sameTs
+      );
+    }
+    expect(messageDb.getCount(sid)).toBe(6);
+
+    // Provide proper history — should trigger rebuild
+    const base = Date.now();
+    const history = [
+      makeHistoryUserMsg('rebuilt q1', base),
+      makeHistoryAssistantMsg('rebuilt a1', base + 1000),
+      makeHistoryUserMsg('rebuilt q2', base + 2000),
+      makeHistoryAssistantMsg('rebuilt a2', base + 3000),
+    ];
+
+    const count = messageDb.bulkAddHistory(sid, history);
+    expect(count).toBe(4);
+
+    const msgs = messageDb.getBySession(sid);
+    expect(msgs.length).toBe(4); // old data cleared
+    expect(msgs[0].content).toBe('rebuilt q1');
+  });
+
+  it('should ensure timestamps are strictly increasing', () => {
+    const sid = createSession();
+    const sameTs = Date.now();
+
+    // All messages have the same timestamp
+    const history = [
+      makeHistoryUserMsg('q1', sameTs),
+      makeHistoryAssistantMsg('a1', sameTs),
+      makeHistoryUserMsg('q2', sameTs),
+      makeHistoryAssistantMsg('a2', sameTs),
+    ];
+
+    messageDb.bulkAddHistory(sid, history);
+    const msgs = messageDb.getBySession(sid);
+
+    // Timestamps should be strictly increasing
+    for (let i = 1; i < msgs.length; i++) {
+      expect(msgs[i].created_at).toBeGreaterThan(msgs[i - 1].created_at);
+    }
+  });
+
+  it('should handle tool_use blocks in assistant messages', () => {
+    const sid = createSession();
+    const base = Date.now();
+    const history = [
+      makeHistoryUserMsg('run a command', base),
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'Let me run that.' },
+            { type: 'tool_use', name: 'Bash', input: { command: 'ls' } },
+          ]
+        },
+        timestamp: new Date(base + 1000).toISOString()
+      },
+    ];
+
+    const count = messageDb.bulkAddHistory(sid, history);
+    expect(count).toBe(3); // 1 user + 1 text + 1 tool_use
+
+    const msgs = messageDb.getBySession(sid);
+    expect(msgs[1].message_type).toBe('assistant');
+    expect(msgs[2].message_type).toBe('tool_use');
+    expect(msgs[2].tool_name).toBe('Bash');
+  });
+});

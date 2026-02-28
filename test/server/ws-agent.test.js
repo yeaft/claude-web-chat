@@ -506,3 +506,110 @@ describe('Agent Latency Measurement', () => {
     expect(agent.pingSentAt).toBeNull();
   });
 });
+
+describe('conversation_resumed with bulkAddHistory', () => {
+  it('should sync history messages to DB on conversation_resumed', () => {
+    const sid = 'conv_resume_test';
+    sessionDb.create(sid, 'agent1', 'test-agent', '/tmp');
+
+    const base = Date.now();
+    const historyMessages = [
+      { type: 'user', message: { content: 'hello' }, timestamp: new Date(base).toISOString() },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] }, timestamp: new Date(base + 1000).toISOString() },
+      { type: 'user', message: { content: 'how are you' }, timestamp: new Date(base + 2000).toISOString() },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'good' }] }, timestamp: new Date(base + 3000).toISOString() },
+    ];
+
+    const insertedCount = messageDb.bulkAddHistory(sid, historyMessages);
+    expect(insertedCount).toBe(4);
+    expect(messageDb.getCount(sid)).toBe(4);
+  });
+
+  it('should read recent turns after sync', () => {
+    const sid = 'conv_turns_test';
+    sessionDb.create(sid, 'agent1', 'test-agent', '/tmp');
+
+    const base = Date.now();
+    const historyMessages = [];
+    for (let i = 0; i < 10; i++) {
+      historyMessages.push(
+        { type: 'user', message: { content: `q${i}` }, timestamp: new Date(base + i * 2000).toISOString() },
+        { type: 'assistant', message: { content: [{ type: 'text', text: `a${i}` }] }, timestamp: new Date(base + i * 2000 + 1000).toISOString() }
+      );
+    }
+
+    messageDb.bulkAddHistory(sid, historyMessages);
+
+    const { messages, hasMore } = messageDb.getRecentTurns(sid, 5);
+    // 5 turns = 10 messages (5 user + 5 assistant)
+    expect(messages.length).toBe(10);
+    expect(hasMore).toBe(true);
+    // First message should be the 6th turn's user message (q5)
+    expect(messages[0].content).toBe('q5');
+  });
+
+  it('should remove historyMessages and add dbMessages in response pattern', () => {
+    const sid = 'conv_transform_test';
+    sessionDb.create(sid, 'agent1', 'test-agent', '/tmp');
+
+    const base = Date.now();
+    const msg = {
+      type: 'conversation_resumed',
+      conversationId: sid,
+      historyMessages: [
+        { type: 'user', message: { content: 'hello' }, timestamp: new Date(base).toISOString() },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] }, timestamp: new Date(base + 1000).toISOString() },
+      ]
+    };
+
+    // Simulate the ws-agent.js pattern
+    const insertedCount = messageDb.bulkAddHistory(msg.conversationId, msg.historyMessages);
+    expect(insertedCount).toBe(2);
+
+    const { messages: recentMessages, hasMore } = messageDb.getRecentTurns(msg.conversationId, 5);
+    delete msg.historyMessages;
+    msg.dbMessages = recentMessages;
+    msg.hasMoreMessages = hasMore;
+    msg.dbMessageCount = messageDb.getCount(msg.conversationId);
+
+    // Verify transformation
+    expect(msg.historyMessages).toBeUndefined();
+    expect(msg.dbMessages).toBeTruthy();
+    expect(msg.dbMessages.length).toBe(2);
+    expect(msg.hasMoreMessages).toBe(false);
+    expect(msg.dbMessageCount).toBe(2);
+  });
+
+  it('should clean up duplicate claudeSessionId entries', () => {
+    const agent = createMockAgent();
+
+    // Set up existing conversations with same claudeSessionId
+    agent.conversations.set('conv_old', {
+      id: 'conv_old',
+      claudeSessionId: 'claude_sess_1',
+    });
+    agent.conversations.set('conv_other', {
+      id: 'conv_other',
+      claudeSessionId: 'claude_sess_2',
+    });
+
+    // Simulate conversation_resumed with same claudeSessionId
+    const msg = {
+      type: 'conversation_resumed',
+      conversationId: 'conv_new',
+      claudeSessionId: 'claude_sess_1'
+    };
+
+    // Replicate cleanup logic from ws-agent.js
+    if (msg.type === 'conversation_resumed' && msg.claudeSessionId) {
+      for (const [id, conv] of agent.conversations) {
+        if (id !== msg.conversationId && conv.claudeSessionId === msg.claudeSessionId) {
+          agent.conversations.delete(id);
+        }
+      }
+    }
+
+    expect(agent.conversations.has('conv_old')).toBe(false);   // cleaned up
+    expect(agent.conversations.has('conv_other')).toBe(true);   // different session, kept
+  });
+});

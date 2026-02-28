@@ -288,3 +288,140 @@ describe('Turn Result Deduplication', () => {
     expect(state.turnActive).toBe(true);
   });
 });
+
+describe('Upgrade Install Mode Detection', () => {
+  // Replicates the logic from agent/connection.js upgrade_agent handler
+
+  function detectInstallMode(scriptPath) {
+    const normalized = scriptPath.replace(/\\/g, '/');
+    const nmIndex = normalized.lastIndexOf('/node_modules/');
+    const isNpmInstall = nmIndex !== -1;
+
+    if (!isNpmInstall) {
+      return { type: 'source' };
+    }
+
+    const installDir = normalized.substring(0, nmIndex);
+    return { type: 'npm', installDir };
+  }
+
+  describe('source install detection', () => {
+    it('should detect source install (no node_modules)', () => {
+      const result = detectInstallMode('/home/user/projects/webchat-agent/index.js');
+      expect(result.type).toBe('source');
+    });
+
+    it('should detect source install on Windows path', () => {
+      const result = detectInstallMode('C:\\Users\\dev\\webchat-agent\\index.js');
+      expect(result.type).toBe('source');
+    });
+  });
+
+  describe('npm install detection', () => {
+    it('should detect global install on Linux', () => {
+      const result = detectInstallMode('/usr/lib/node_modules/@yeaft/webchat-agent/cli.js');
+      expect(result.type).toBe('npm');
+      expect(result.installDir).toBe('/usr/lib');
+    });
+
+    it('should detect global install on macOS (nvm)', () => {
+      const result = detectInstallMode('/Users/dev/.nvm/versions/node/v20.0.0/lib/node_modules/@yeaft/webchat-agent/index.js');
+      expect(result.type).toBe('npm');
+      expect(result.installDir).toBe('/Users/dev/.nvm/versions/node/v20.0.0/lib');
+    });
+
+    it('should detect global install on Windows', () => {
+      const result = detectInstallMode('C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\@yeaft\\webchat-agent\\cli.js');
+      expect(result.type).toBe('npm');
+      expect(result.installDir).toBe('C:/Users/dev/AppData/Roaming/npm');
+    });
+
+    it('should detect local install', () => {
+      const result = detectInstallMode('/home/user/myproject/node_modules/@yeaft/webchat-agent/index.js');
+      expect(result.type).toBe('npm');
+      expect(result.installDir).toBe('/home/user/myproject');
+    });
+
+    it('should detect local install on Windows', () => {
+      const result = detectInstallMode('C:\\Projects\\myapp\\node_modules\\@yeaft\\webchat-agent\\cli.js');
+      expect(result.type).toBe('npm');
+      expect(result.installDir).toBe('C:/Projects/myapp');
+    });
+  });
+
+  describe('global vs local distinction', () => {
+    it('should identify global install when installDir matches npm prefix', () => {
+      const installDir = '/usr/lib';
+      const globalPrefix = '/usr/lib';
+      expect(installDir === globalPrefix).toBe(true);
+    });
+
+    it('should identify local install when installDir differs from npm prefix', () => {
+      const installDir = '/home/user/myproject';
+      const globalPrefix = '/usr/lib';
+      expect(installDir === globalPrefix).toBe(false);
+    });
+  });
+
+  describe('npm args construction', () => {
+    it('should use -g flag for global install', () => {
+      const isGlobalInstall = true;
+      const pkgName = '@yeaft/webchat-agent';
+      const version = '0.0.21';
+      const npmArgs = isGlobalInstall
+        ? ['install', '-g', `${pkgName}@${version}`]
+        : ['install', `${pkgName}@${version}`];
+      expect(npmArgs).toEqual(['install', '-g', '@yeaft/webchat-agent@0.0.21']);
+    });
+
+    it('should omit -g flag for local install', () => {
+      const isGlobalInstall = false;
+      const pkgName = '@yeaft/webchat-agent';
+      const version = '0.0.21';
+      const npmArgs = isGlobalInstall
+        ? ['install', '-g', `${pkgName}@${version}`]
+        : ['install', `${pkgName}@${version}`];
+      expect(npmArgs).toEqual(['install', '@yeaft/webchat-agent@0.0.21']);
+    });
+  });
+
+  describe('Windows bat script generation', () => {
+    it('should convert forward slashes to backslashes for bat path', () => {
+      const installDir = 'C:/Users/dev/AppData/Roaming/npm';
+      const installDirWin = installDir.replace(/\//g, '\\');
+      expect(installDirWin).toBe('C:\\Users\\dev\\AppData\\Roaming\\npm');
+    });
+
+    it('should include pm2 stop/start when running under pm2', () => {
+      const isPm2 = true;
+      const batLines = [];
+
+      if (isPm2) {
+        batLines.push('call pm2 stop yeaft-agent 2>NUL');
+      }
+      batLines.push('call npm install -g %PKG%');
+      if (isPm2) {
+        batLines.push('call pm2 start yeaft-agent');
+      }
+
+      expect(batLines).toContain('call pm2 stop yeaft-agent 2>NUL');
+      expect(batLines).toContain('call pm2 start yeaft-agent');
+    });
+
+    it('should not include pm2 commands when not under pm2', () => {
+      const isPm2 = false;
+      const batLines = [];
+
+      if (isPm2) {
+        batLines.push('call pm2 stop yeaft-agent 2>NUL');
+      }
+      batLines.push('call npm install -g %PKG%');
+      if (isPm2) {
+        batLines.push('call pm2 start yeaft-agent');
+      }
+
+      expect(batLines).not.toContain('call pm2 stop yeaft-agent 2>NUL');
+      expect(batLines.length).toBe(1);
+    });
+  });
+});

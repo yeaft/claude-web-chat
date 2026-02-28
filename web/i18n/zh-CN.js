@@ -110,6 +110,7 @@ export default {
   // Chat - Connection
   'chat.connection.connecting': '连接中...',
   'chat.connection.reconnecting': '重连中 ({current}/{max})...',
+  'chat.connection.updating': '服务正在更新，请稍候...',
   'chat.connection.disconnected': '连接断开',
   'chat.connection.reconnect': '重连',
 

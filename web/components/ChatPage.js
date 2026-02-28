@@ -112,7 +112,10 @@ export default {
 
           <!-- Connection warning -->
           <div v-if="store.connectionState !== 'connected'" class="connection-status" :class="store.connectionState">
-            <span v-if="store.connectionState === 'connecting'" class="status-text">
+            <span v-if="store.connectionState === 'updating'" class="status-text">
+              <span class="spinner-mini"></span> {{ $t('chat.connection.updating') }}
+            </span>
+            <span v-else-if="store.connectionState === 'connecting'" class="status-text">
               <span class="spinner-mini"></span> {{ $t('chat.connection.connecting') }}
             </span>
             <span v-else-if="store.connectionState === 'reconnecting'" class="status-text">
