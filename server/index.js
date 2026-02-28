@@ -25,7 +25,7 @@ const wss = new WebSocketServer({ noServer: true });
 const HEARTBEAT_INTERVAL = 30000;
 
 setInterval(() => {
-  // 检查 agents
+  // 检查 agents（使用应用层 JSON ping，确保 nginx 等反向代理能正确转发）
   for (const [agentId, agent] of agents) {
     if (agent.isAlive === false) {
       console.log(`[Heartbeat] Agent ${agentId} not responding, terminating`);
@@ -34,7 +34,11 @@ setInterval(() => {
     }
     agent.isAlive = false;
     agent.pingSentAt = Date.now();
-    agent.ws.ping();
+    try {
+      agent.ws.send(JSON.stringify({ type: 'ping' }));
+    } catch (e) {
+      console.warn(`[Heartbeat] Failed to send ping to agent ${agentId}:`, e.message);
+    }
   }
 
   // 检查 web clients
@@ -45,7 +49,11 @@ setInterval(() => {
       continue;
     }
     client.isAlive = false;
-    client.ws.ping();
+    try {
+      client.ws.send(JSON.stringify({ type: 'ping' }));
+    } catch (e) {
+      console.warn(`[Heartbeat] Failed to send ping to web client ${clientId}:`, e.message);
+    }
   }
 }, HEARTBEAT_INTERVAL);
 

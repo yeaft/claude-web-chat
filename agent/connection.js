@@ -95,6 +95,16 @@ async function parseMessage(data) {
 
 async function handleMessage(msg) {
   switch (msg.type) {
+    case 'ping':
+      // 应用层心跳：server 发 ping，agent 回 pong
+      sendToServer({ type: 'pong' });
+      return;
+
+    case 'pong':
+      // 应用层心跳响应：更新 lastPongAt
+      ctx.lastPongAt = Date.now();
+      return;
+
     case 'registered':
       if (msg.sessionKey) {
         ctx.sessionKey = decodeKey(msg.sessionKey);
@@ -476,13 +486,6 @@ export function startAgentHeartbeat() {
   stopAgentHeartbeat();
   ctx.lastPongAt = Date.now();
 
-  // 监听 pong 帧
-  if (ctx.ws) {
-    ctx.ws.on('pong', () => {
-      ctx.lastPongAt = Date.now();
-    });
-  }
-
   ctx.agentHeartbeatTimer = setInterval(() => {
     if (!ctx.ws || ctx.ws.readyState !== WebSocket.OPEN) return;
 
@@ -495,7 +498,7 @@ export function startAgentHeartbeat() {
     }
 
     try {
-      ctx.ws.ping();
+      sendToServer({ type: 'ping' });
     } catch (e) {
       console.warn('[Heartbeat] Failed to send ping:', e.message);
     }
@@ -539,7 +542,7 @@ export function connect() {
   ctx.ws.on('open', () => {
     console.log('Connected to server, waiting for auth challenge...');
     clearTimeout(ctx.reconnectTimer);
-    // 启动 agent 端心跳: 每 25 秒发一次 ping 帧
+    // 启动 agent 端心跳: 每 25 秒发一次应用层 ping
     startAgentHeartbeat();
   });
 
