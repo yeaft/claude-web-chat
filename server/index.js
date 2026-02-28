@@ -34,13 +34,7 @@ setInterval(() => {
     }
     agent.isAlive = false;
     agent.pingSentAt = Date.now();
-    try {
-      // 同时发协议级和应用层 ping，兼容新旧 agent
-      agent.ws.ping();
-      agent.ws.send(JSON.stringify({ type: 'ping' }));
-    } catch (e) {
-      console.warn(`[Heartbeat] Failed to send ping to agent ${agentId}:`, e.message);
-    }
+    agent.ws.ping();
   }
 
   // 检查 web clients
@@ -51,13 +45,7 @@ setInterval(() => {
       continue;
     }
     client.isAlive = false;
-    try {
-      // 同时发协议级和应用层 ping，兼容新旧 web client
-      client.ws.ping();
-      client.ws.send(JSON.stringify({ type: 'ping' }));
-    } catch (e) {
-      console.warn(`[Heartbeat] Failed to send ping to web client ${clientId}:`, e.message);
-    }
+    client.ws.ping();
   }
 }, HEARTBEAT_INTERVAL);
 

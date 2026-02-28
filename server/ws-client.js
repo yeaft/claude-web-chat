@@ -61,7 +61,7 @@ export function handleWebConnection(ws, url) {
     isAlive: true
   });
 
-  // 心跳响应处理（协议级 pong，兼容旧客户端）
+  // 心跳响应处理
   ws.on('pong', () => {
     const client = webClients.get(clientId);
     if (client) client.isAlive = true;
@@ -164,11 +164,6 @@ async function handleWebMessage(clientId, msg) {
   switch (msg.type) {
     case 'ping':
       await sendToWebClient(client, { type: 'pong' });
-      break;
-
-    case 'pong':
-      // 应用层心跳响应
-      client.isAlive = true;
       break;
 
     case 'get_agents':

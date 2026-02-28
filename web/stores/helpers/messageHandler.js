@@ -14,11 +14,6 @@ export function handleMessage(store, msg) {
   store._lastPongAt = Date.now();
 
   switch (msg.type) {
-    case 'ping':
-      // 应用层心跳：server 发 ping，前端回 pong
-      store.sendWsMessage({ type: 'pong' });
-      return;
-
     case 'auth_result':
       if (msg.success) {
         store.authenticated = true;

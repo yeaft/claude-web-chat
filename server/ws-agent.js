@@ -30,9 +30,7 @@ export function handleAgentConnection(ws, url) {
       }
       const msg = await parseMessage(data, agent.sessionKey);
       if (msg) {
-        if (msg.type !== 'pong') {
-          console.log(`[Agent] Received message from ${agentIdToUse}: ${msg.type}`);
-        }
+        console.log(`[Agent] Received message from ${agentIdToUse}: ${msg.type}`);
         handleAgentMessage(agentIdToUse, msg);
       } else {
         console.error(`[Agent] Failed to parse message from ${agentIdToUse}`);
@@ -144,9 +142,7 @@ export function handleAgentConnection(ws, url) {
       }
       const msg = await parseMessage(data, agent.sessionKey);
       if (msg) {
-        if (msg.type !== 'pong') {
-          console.log(`[Agent] Received message from ${agentId}: ${msg.type}`);
-        }
+        console.log(`[Agent] Received message from ${agentId}: ${msg.type}`);
         handleAgentMessage(agentId, msg);
       } else {
         console.error(`[Agent] Failed to parse message from ${agentId}`);
@@ -239,8 +235,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   }, 30000);
   agents.get(agentId)._syncTimeout = syncTimeout;
 
-  // 心跳响应处理（应用层 JSON pong）+ latency 测量
-  // 注：旧版 agent 可能仍使用协议级 pong，保留兼容
+  // 心跳响应处理 + latency 测量
   ws.on('pong', () => {
     const agent = agents.get(agentId);
     if (agent) {
@@ -271,16 +266,6 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
 async function handleAgentMessage(agentId, msg) {
   const agent = agents.get(agentId);
   if (!agent) return;
-
-  // ★ 应用层心跳：agent 回复 pong（优先处理，避免日志刷屏）
-  if (msg.type === 'pong') {
-    agent.isAlive = true;
-    if (agent.pingSentAt) {
-      agent.latency = Date.now() - agent.pingSentAt;
-      agent.pingSentAt = null;
-    }
-    return;
-  }
 
   // ★ Security: 需要 conversationId 的消息类型，验证该 conversation 属于此 agent
   // 排除: conversation_created/resumed (正在创建)、conversation_list (批量同步)、
