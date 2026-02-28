@@ -165,6 +165,7 @@ export const useChatStore = defineStore('chat', {
     manualReconnect() { wsHelpers.manualReconnect(this); },
     startHeartbeat() { wsHelpers.startHeartbeat(this); },
     stopHeartbeat() { wsHelpers.stopHeartbeat(this); },
+    setupVisibilityHandler() { wsHelpers.setupVisibilityHandler(this); },
 
     // =====================
     // Message dispatcher

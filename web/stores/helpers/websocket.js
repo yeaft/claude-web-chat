@@ -160,3 +160,43 @@ export function stopHeartbeat(store) {
     store.heartbeatTimer = null;
   }
 }
+
+/**
+ * 监听页面可见性变化（移动端切换 APP 场景）
+ * 切回前台时主动检查 WebSocket 连接，快速恢复状态
+ */
+export function setupVisibilityHandler(store) {
+  if (store._visibilityHandlerInstalled) return;
+  store._visibilityHandlerInstalled = true;
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      console.log('[Visibility] Page became visible, checking connection...');
+
+      if (!store.ws || store.ws.readyState !== WebSocket.OPEN) {
+        // WebSocket 已断开，立即重连
+        console.log('[Visibility] WebSocket not open, reconnecting immediately');
+        store.reconnectAttempts = 0;
+        store.connect();
+      } else {
+        // WebSocket 看起来还连着，发一个 ping 验证
+        // 移动端浏览器切后台后 WebSocket 可能静默失效
+        try {
+          store.sendWsMessage({ type: 'ping' });
+          // 如果 3 秒内没收到 pong，说明连接已死，重连
+          const pongBefore = store._lastPongAt;
+          setTimeout(() => {
+            if (store._lastPongAt === pongBefore) {
+              console.warn('[Visibility] No pong after resume, reconnecting...');
+              if (store.ws) store.ws.close(4001, 'Visibility resume timeout');
+            }
+          }, 3000);
+        } catch (e) {
+          console.warn('[Visibility] Ping failed, reconnecting...', e);
+          store.reconnectAttempts = 0;
+          store.connect();
+        }
+      }
+    }
+  });
+}

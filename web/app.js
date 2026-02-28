@@ -26,6 +26,9 @@ const App = {
     // Initialize theme
     chatStore.initTheme();
 
+    // Setup visibility handler for mobile app switching
+    chatStore.setupVisibilityHandler();
+
     // Check auth mode and try to restore session
     Vue.onMounted(async () => {
       await authStore.checkAuthMode();
