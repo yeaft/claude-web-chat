@@ -3560,11 +3560,18 @@ body {
     justify-content: flex-end;
   }
 
-  /* Mobile table - prevent horizontal scroll */
-  .markdown-body table {
-    display: block;
+  /* Mobile table - horizontal scroll via wrapper */
+  .table-scroll-wrapper {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+    margin: 1em 0;
+  }
+
+  .table-scroll-wrapper table {
+    table-layout: auto;
+    width: auto;
+    min-width: 100%;
+    margin: 0;
   }
 
   .markdown-body th,
@@ -3572,12 +3579,6 @@ body {
     padding: 8px 10px;
     font-size: 0.85em;
     min-width: 80px;
-  }
-
-  /* Allow long content to wrap in cells */
-  .markdown-body td {
-    white-space: normal;
-    word-break: break-word;
   }
 }
 
@@ -3656,6 +3657,11 @@ body {
   margin: 1.5em 0;
 }
 
+.table-scroll-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .markdown-body table {
   border-collapse: collapse;
   width: 100%;
@@ -3664,6 +3670,10 @@ body {
   border-radius: 8px;
   overflow: hidden;
   table-layout: fixed;
+}
+
+.table-scroll-wrapper table {
+  margin: 0;
 }
 
 .markdown-body th,

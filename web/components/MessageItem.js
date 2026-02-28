@@ -684,7 +684,7 @@ export default {
       try {
         if (typeof marked !== 'undefined') {
           const html = marked.parse(content);
-          return addCodeBlockCopyButtons(html);
+          return wrapTables(addCodeBlockCopyButtons(html));
         }
       } catch (e) {
         console.error('Markdown parsing error:', e);
@@ -710,6 +710,11 @@ export default {
             <pre><code${attrs}>${code}</code></pre>
           </div>`;
         });
+    };
+
+    const wrapTables = (html) => {
+      return html.replace(/<table>([\s\S]*?)<\/table>/g,
+        (match) => `<div class="table-scroll-wrapper">${match}</div>`);
     };
 
     const simpleMarkdown = (text) => {
