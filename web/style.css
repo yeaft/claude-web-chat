@@ -995,6 +995,14 @@ body {
   padding: 4px 12px 8px;
 }
 
+.sidebar-version {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.5;
+  padding: 2px 0 0;
+}
+
 .sidebar-menu-btn {
   width: 100%;
   display: flex;

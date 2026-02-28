@@ -1,4 +1,7 @@
 import { randomUUID } from 'crypto';
+import { readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import multer from 'multer';
 import { CONFIG, isEmailConfigured, isTotpEnabled } from './config.js';
 import { loginStep1, loginStep2, verifyToken, logout, verifyTotpStep, completeTotpSetup, register, hashPassword } from './auth.js';
@@ -110,7 +113,23 @@ function transformSession(session) {
   };
 }
 
+// Read version from version.json (injected at Docker build time)
+const __apiDirname = dirname(fileURLToPath(import.meta.url));
+let serverVersion = 'dev';
+try {
+  const versionFile = JSON.parse(readFileSync(join(__apiDirname, '../version.json'), 'utf-8'));
+  serverVersion = versionFile.version || 'dev';
+} catch {}
+
 export function registerApiRoutes(app) {
+  // =====================
+  // Version API
+  // =====================
+
+  app.get('/api/version', (req, res) => {
+    res.json({ version: serverVersion });
+  });
+
   // =====================
   // Authentication API
   // =====================

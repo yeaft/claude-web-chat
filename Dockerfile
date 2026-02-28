@@ -27,7 +27,12 @@ RUN npm run build
 # Stage 2: Production image
 FROM node:20-alpine
 
+ARG BUILD_VERSION=dev
+
 WORKDIR /app
+
+# Write version info (injected from git tag at build time)
+RUN echo "{\"version\":\"${BUILD_VERSION}\"}" > /app/version.json
 
 # Copy root package files for workspaces support
 COPY package.json package-lock.json ./
