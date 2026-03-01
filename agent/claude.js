@@ -284,6 +284,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
       if (message.type === 'system') {
         // 新格式: subtype: 'status', status: 'compacting'
         if (message.subtype === 'status' && message.status === 'compacting') {
+          state._compacting = true;
           console.log(`[${conversationId}] Compact started (status)`);
           ctx.sendToServer({
             type: 'compact_status',
@@ -292,8 +293,10 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
             message: 'Context compacting in progress...'
           });
         }
-        // compact 边界标记 — 表示 compact 完成
+        // compact 边界标记 — 表示 compact 完成，后续会有 summary user 消息需要过滤
         if (message.subtype === 'compact_boundary') {
+          state._compacting = false;
+          state._compactSummaryPending = true;
           console.log(`[${conversationId}] Compact completed (boundary)`);
           ctx.sendToServer({
             type: 'compact_status',
@@ -304,6 +307,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         }
         // 旧格式兼容
         if (message.subtype === 'compact_start' || message.message?.includes?.('Compacting')) {
+          state._compacting = true;
           console.log(`[${conversationId}] Compact started`);
           ctx.sendToServer({
             type: 'compact_status',
@@ -313,6 +317,8 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
           });
         }
         if (message.subtype === 'compact_complete' || message.subtype === 'compact_end') {
+          state._compacting = false;
+          state._compactSummaryPending = true;
           console.log(`[${conversationId}] Compact completed`);
           ctx.sendToServer({
             type: 'compact_status',
@@ -321,6 +327,21 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
             message: message.message || 'Context compacted successfully'
           });
         }
+      }
+
+      // 过滤 compact 过程中的 system 消息（如 status:null、重新 init）
+      if (message.type === 'system' && state._compacting) {
+        continue;
+      }
+
+      // 过滤 compact summary 消息（compact_boundary 之后的 user 消息）
+      if (message.type === 'user' && state._compactSummaryPending) {
+        console.log(`[${conversationId}] Filtering compact summary message`);
+        continue;
+      }
+      // compact 后的 <local-command-stdout>Compacted </local-command-stdout> 标记 summary 结束
+      if (state._compactSummaryPending && message.type !== 'user') {
+        state._compactSummaryPending = false;
       }
 
       // 捕获 result 消息中的 usage 信息

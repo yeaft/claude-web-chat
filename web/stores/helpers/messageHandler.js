@@ -30,36 +30,8 @@ export function handleMessage(store, msg) {
 
         store.sendWsMessage({ type: 'get_agents' });
 
-        if (store.currentAgent) {
-          console.log('[Reconnect] Restoring agent selection:', store.currentAgent);
-          store.sendWsMessage({
-            type: 'select_agent',
-            agentId: store.currentAgent
-          });
-
-          if (store.currentConversation) {
-            if (store.messages.length > 0) {
-              const lastMessageId = store.messages[store.messages.length - 1]?.id;
-              console.log('[Reconnect] Requesting missed messages after:', lastMessageId);
-              store.sendWsMessage({
-                type: 'sync_messages',
-                conversationId: store.currentConversation,
-                afterMessageId: lastMessageId
-              });
-            } else {
-              console.log('[Reconnect] Messages empty, requesting full sync');
-              store.sendWsMessage({
-                type: 'sync_messages',
-                conversationId: store.currentConversation,
-                turns: 5
-              });
-            }
-            store.sendWsMessage({
-              type: 'refresh_conversation',
-              conversationId: store.currentConversation
-            });
-          }
-        }
+        // ★ Reconnect 时不再提前发 select_agent/sync_messages/refresh_conversation
+        // 等 agent_list 返回后，确认 agent 在线再恢复状态，避免时序问题导致 "Agent access denied"
 
         store.checkPendingRecovery();
       } else {
@@ -149,6 +121,41 @@ export function handleMessage(store, msg) {
             if (status) status.currentTool = null;
             store.finishStreamingForConversation(convId);
           }
+        }
+      }
+      // ★ Reconnect 恢复：currentAgent 已有值说明是 WebSocket 重连（非页面刷新）
+      if (store.currentAgent) {
+        const agent = msg.agents.find(a => a.id === store.currentAgent && a.online);
+        if (agent) {
+          console.log('[Reconnect] Agent online, restoring selection:', store.currentAgent);
+          store.currentAgentInfo = agent;
+          store.sendWsMessage({ type: 'select_agent', agentId: store.currentAgent, silent: true });
+          if (store.currentConversation) {
+            store.sendWsMessage({ type: 'select_conversation', conversationId: store.currentConversation });
+            if (store.messages.length > 0) {
+              const lastMessageId = store.messages[store.messages.length - 1]?.id;
+              console.log('[Reconnect] Requesting missed messages after:', lastMessageId);
+              store.sendWsMessage({
+                type: 'sync_messages',
+                conversationId: store.currentConversation,
+                afterMessageId: lastMessageId
+              });
+            } else {
+              store.sendWsMessage({
+                type: 'sync_messages',
+                conversationId: store.currentConversation,
+                turns: 5
+              });
+            }
+            store.sendWsMessage({
+              type: 'refresh_conversation',
+              conversationId: store.currentConversation
+            });
+          }
+          break;
+        } else {
+          console.log('[Reconnect] Agent not online yet:', store.currentAgent);
+          // agent 还没上线，保留 currentAgent 等下次 agent_list 更新
         }
       }
       // ★ 自动恢复上次查看的 conversation（UI 刷新后）
@@ -343,7 +350,7 @@ export function handleMessage(store, msg) {
 
     case 'error': {
       const errorConvId = msg.conversationId || store.currentConversation;
-      const isSystemError = ['Permission denied', 'Agent not found', 'No conversation selected', 'Agent is still syncing'].some(
+      const isSystemError = ['Permission denied', 'Agent not found', 'No conversation selected', 'Agent is still syncing', 'Agent access denied'].some(
         s => msg.message?.includes(s)
       );
       // ★ Bug #6: 清除 sessionLoading 状态
@@ -513,6 +520,14 @@ export function handleMessage(store, msg) {
               store.compactStatus = null;
             }
           }, 3000);
+        } else if (msg.status === 'compacting') {
+          // 安全超时：30 秒后如果仍在 compacting 状态，自动清除
+          setTimeout(() => {
+            if (store.compactStatus?.conversationId === convId && store.compactStatus?.status === 'compacting') {
+              console.warn(`[Compact] Timeout: clearing stale compacting status for ${convId}`);
+              store.compactStatus = null;
+            }
+          }, 30000);
         }
       }
       break;
