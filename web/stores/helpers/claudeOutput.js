@@ -86,15 +86,15 @@ export function handleClaudeOutput(store, conversationId, data) {
       }
     }
   } else if (data.type === 'user') {
-    // 过滤 compact summary 消息（compact 后的上下文摘要，不应显示在 UI 中）
+    // 检查是否是 skill/slash command 的本地输出（如 /context, /cost 等）
+    // Claude CLI 将这些结果以 user 消息返回，content 用 <local-command-stdout> 包裹
     const userContent = data.message?.content;
+
+    // 过滤 compact summary 消息（compact 后的上下文摘要，不应显示在 UI 中）
     if (typeof userContent === 'string' && userContent.includes('This session is being continued from a previous conversation')) {
       return;
     }
 
-    // 检查是否是 skill/slash command 的本地输出（如 /context, /cost 等）
-    // Claude CLI 将这些结果以 user 消息返回，content 用 <local-command-stdout> 包裹
-    const userContent = data.message?.content;
     if (typeof userContent === 'string' && userContent.includes('<local-command-stdout>')) {
       const match = userContent.match(/<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/);
       if (match) {
