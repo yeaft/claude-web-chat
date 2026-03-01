@@ -243,6 +243,14 @@ export function answerUserQuestion(store, requestId, answers) {
     msg.answered = true;
     msg.selectedAnswers = answers;
   }
+  // 立刻进入 processing 状态，显示"思考中"指示器
+  if (store.currentConversation && !store.processingConversations[store.currentConversation]) {
+    store.processingConversations[store.currentConversation] = true;
+    if (store._closedAt?.[store.currentConversation]) {
+      delete store._closedAt[store.currentConversation];
+    }
+    store.getOrCreateExecutionStatus(store.currentConversation);
+  }
 }
 
 export function refreshAgents(store) {
