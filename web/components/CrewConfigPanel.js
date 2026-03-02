@@ -16,27 +16,17 @@ export default {
         <div class="crew-config-body">
           <!-- 创建模式 -->
           <template v-if="!isEditMode">
-            <!-- Agent + 模型 -->
+            <!-- Agent -->
             <div class="crew-config-section">
               <label class="crew-config-label">Agent</label>
-              <div class="crew-agent-model-row">
-                <div class="crew-select-wrapper crew-agent-select">
-                  <select class="crew-config-select" v-model="selectedAgent">
-                    <option value="">选择 Agent</option>
-                    <option v-for="agent in crewAgents" :key="agent.id" :value="agent.id">
-                      {{ agent.name }}{{ agent.latency ? ' (' + agent.latency + 'ms)' : '' }}
-                    </option>
-                  </select>
-                  <svg class="select-arrow" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-                </div>
-                <div class="crew-select-wrapper crew-model-select" v-if="selectedAgent">
-                  <select class="crew-config-select" v-model="model">
-                    <option value="sonnet">Sonnet</option>
-                    <option value="opus">Opus</option>
-                    <option value="haiku">Haiku</option>
-                  </select>
-                  <svg class="select-arrow" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-                </div>
+              <div class="crew-select-wrapper">
+                <select class="crew-config-select" v-model="selectedAgent">
+                  <option value="">选择 Agent</option>
+                  <option v-for="agent in crewAgents" :key="agent.id" :value="agent.id">
+                    {{ agent.name }}{{ agent.latency ? ' (' + agent.latency + 'ms)' : '' }}
+                  </option>
+                </select>
+                <svg class="select-arrow" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
               </div>
             </div>
 
@@ -211,7 +201,7 @@ export default {
   data() {
     return {
       selectedAgent: '',
-      model: 'sonnet',
+      model: 'opus',
       projectDir: this.defaultWorkDir || '',
       sharedDir: '.crew',
       goal: '',
