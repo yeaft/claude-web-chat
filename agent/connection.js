@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 import { execSync, execFile, spawn } from 'child_process';
-import { writeFileSync, mkdirSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync, cpSync, rmSync } from 'fs';
 import { join } from 'path';
 import { platform } from 'os';
 import ctx from './context.js';
@@ -371,12 +371,13 @@ async function handleMessage(msg) {
           // 例如 C:/Users/x/myproject/node_modules/@yeaft/webchat-agent/cli.js → C:/Users/x/myproject
           const installDir = scriptPath.substring(0, nmIndex);
 
-          // 判断全局安装 vs 局部安装：全局安装的 installDir 就是 npm global prefix
+          // 判断全局安装 vs 局部安装
+          // npm 全局 node_modules: prefix/lib/node_modules (Linux/macOS) 或 prefix/node_modules (Windows)
           const isGlobalInstall = await new Promise((resolve) => {
             execFile('npm', ['prefix', '-g'], { shell: true }, (err, stdout) => {
               if (err) { resolve(false); return; }
               const globalPrefix = stdout.toString().trim().replace(/\\/g, '/');
-              resolve(installDir === globalPrefix);
+              resolve(installDir === globalPrefix || installDir === globalPrefix + '/lib');
             });
           });
 
@@ -459,18 +460,100 @@ async function handleMessage(msg) {
             console.log(`[Agent] Spawned upgrade script (PID wait for ${pid}, pm2=${isPm2}, dir=${installDir}): ${batPath}`);
             sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
           } else {
-            // Linux/macOS: rename 不受文件锁影响，直接升级
+            // Linux/macOS: 生成 detached shell 脚本，先停止服务再升级再启动
+            // 避免在升级过程中 systemd 不断重启已删除的旧版本
+            const pid = process.pid;
+            const configDir = getConfigDir();
+            mkdirSync(configDir, { recursive: true });
+            const shPath = join(configDir, 'upgrade.sh');
+            const isSystemd = existsSync(join(process.env.HOME || '', '.config', 'systemd', 'user', 'yeaft-agent.service'));
+            const isLaunchd = platform() === 'darwin' && existsSync(join(process.env.HOME || '', 'Library', 'LaunchAgents', 'com.yeaft.agent.plist'));
             const cwd = isGlobalInstall ? undefined : installDir;
-            await new Promise((resolve, reject) => {
-              execFile('npm', npmArgs, { cwd, stdio: 'pipe', shell: true }, (err) => {
-                if (err) reject(err); else resolve();
-              });
+
+            const shLines = [
+              '#!/bin/bash',
+              `PID=${pid}`,
+              `PKG="${pkgName}@${latestVersion}"`,
+              ...(cwd ? [`INSTALL_DIR="${cwd}"`] : []),
+              '',
+              '# Wait for current process to exit',
+              'COUNT=0',
+              'while kill -0 $PID 2>/dev/null; do',
+              '  COUNT=$((COUNT+1))',
+              '  if [ $COUNT -ge 30 ]; then',
+              '    echo "[Upgrade] Timeout waiting for PID $PID to exit"',
+              '    break',
+              '  fi',
+              '  sleep 2',
+              'done',
+              '',
+            ];
+
+            // 停止服务管理器的自动重启
+            if (isSystemd) {
+              shLines.push(
+                '# Stop systemd service to prevent restart loop',
+                'systemctl --user stop yeaft-agent 2>/dev/null',
+                'sleep 1',
+                '',
+              );
+            } else if (isLaunchd) {
+              const plistPath = join(process.env.HOME || '', 'Library', 'LaunchAgents', 'com.yeaft.agent.plist');
+              shLines.push(
+                '# Unload launchd service to prevent restart loop',
+                `launchctl unload "${plistPath}" 2>/dev/null`,
+                'sleep 1',
+                '',
+              );
+            }
+
+            // npm install
+            const npmCmd = isGlobalInstall
+              ? `npm install -g "$PKG"`
+              : `cd "$INSTALL_DIR" && npm install "$PKG"`;
+
+            shLines.push(
+              'echo "[Upgrade] Installing $PKG..."',
+              npmCmd,
+              'EXIT_CODE=$?',
+              'if [ $EXIT_CODE -ne 0 ]; then',
+              '  echo "[Upgrade] npm install failed with exit code $EXIT_CODE"',
+              'else',
+              '  echo "[Upgrade] Successfully installed $PKG"',
+              'fi',
+              '',
+            );
+
+            // 重新启动服务
+            if (isSystemd) {
+              shLines.push(
+                '# Restart systemd service',
+                'systemctl --user start yeaft-agent',
+                'echo "[Upgrade] Service restarted via systemd"',
+              );
+            } else if (isLaunchd) {
+              const plistPath = join(process.env.HOME || '', 'Library', 'LaunchAgents', 'com.yeaft.agent.plist');
+              shLines.push(
+                '# Reload launchd service',
+                `launchctl load "${plistPath}"`,
+                'echo "[Upgrade] Service restarted via launchd"',
+              );
+            }
+
+            // 清理脚本自身
+            shLines.push('', `rm -f "${shPath}"`);
+
+            writeFileSync(shPath, shLines.join('\n'), { mode: 0o755 });
+            const child = spawn('bash', [shPath], {
+              detached: true,
+              stdio: 'ignore',
             });
-            console.log('[Agent] Upgrade successful, restarting...');
-            sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion });
+            child.unref();
+            console.log(`[Agent] Spawned upgrade script: ${shPath}`);
+            sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
           }
 
-          // 清理并退出
+          // 清理并退出，让升级脚本接管
           setTimeout(() => {
             for (const [, term] of ctx.terminals) {
               if (term.pty) { try { term.pty.kill(); } catch {} }
@@ -488,8 +571,8 @@ async function handleMessage(msg) {
               ctx.ws.close();
             }
             clearTimeout(ctx.reconnectTimer);
-            console.log('[Agent] Cleanup done, exiting...');
-            process.exit(1);
+            console.log('[Agent] Cleanup done, exiting for upgrade...');
+            process.exit(0);
           }, 500);
         } catch (e) {
           console.error('[Agent] Upgrade failed:', e.message);
