@@ -139,7 +139,7 @@ export default {
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
               <span>{{ $t('chat.sidebar.resumeConv') }}</span>
             </button>
-            <button class="sidebar-nav-item crew-nav-item" :class="{ active: store.crewMode }" @click="openCrewMode" :disabled="onlineAgentCount === 0">
+            <button class="sidebar-nav-item crew-nav-item" :class="{ active: store.crewMode }" @click="openCrewMode" :disabled="crewCapableAgentCount === 0" :title="crewCapableAgentCount === 0 ? 'No agent supports Crew mode (requires Claude CLI)' : 'Crew'">
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
               <span>Crew</span>
             </button>
@@ -541,6 +541,9 @@ export default {
     onlineAgentCount() {
       return this.store.agents.filter(a => a.online).length;
     },
+    crewCapableAgentCount() {
+      return this.store.agents.filter(a => a.online && a.capabilities?.includes('crew')).length;
+    },
     currentAgentLatency() {
       if (!this.store.currentAgent) return null;
       const agent = this.store.agents.find(a => a.id === this.store.currentAgent);
@@ -575,11 +578,20 @@ export default {
   methods: {
     // Crew mode methods
     openCrewMode() {
-      // 如果没有选中 agent，先选一个
+      // 优先选择支持 crew 的 agent
       if (!this.store.currentAgent) {
-        const onlineAgents = this.store.agents.filter(a => a.online);
-        if (onlineAgents.length > 0) {
-          this.store.selectAgent(onlineAgents[0].id);
+        const crewAgents = this.store.agents.filter(a => a.online && a.capabilities?.includes('crew'));
+        if (crewAgents.length > 0) {
+          this.store.selectAgent(crewAgents[0].id);
+        }
+      } else {
+        // 当前 agent 不支持 crew，切换到支持的
+        const current = this.store.agents.find(a => a.id === this.store.currentAgent);
+        if (!current?.capabilities?.includes('crew')) {
+          const crewAgents = this.store.agents.filter(a => a.online && a.capabilities?.includes('crew'));
+          if (crewAgents.length > 0) {
+            this.store.selectAgent(crewAgents[0].id);
+          }
         }
       }
       this.store.enterCrewMode();

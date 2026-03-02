@@ -883,7 +883,7 @@ function pauseAll(session) {
 
   sendCrewOutput(session, 'system', 'system', {
     type: 'assistant',
-    message: { role: 'assistant', content: [{ type: 'text', text: '⏸️ Session 已暂停' }] }
+    message: { role: 'assistant', content: [{ type: 'text', text: 'Session 已暂停' }] }
   });
   sendStatusUpdate(session);
 }
@@ -899,7 +899,7 @@ async function resumeSession(session) {
 
   sendCrewOutput(session, 'system', 'system', {
     type: 'assistant',
-    message: { role: 'assistant', content: [{ type: 'text', text: '▶️ Session 已恢复' }] }
+    message: { role: 'assistant', content: [{ type: 'text', text: 'Session 已恢复' }] }
   });
   sendStatusUpdate(session);
 
@@ -929,7 +929,7 @@ async function stopRole(session, roleName) {
 
   sendCrewOutput(session, 'system', 'system', {
     type: 'assistant',
-    message: { role: 'assistant', content: [{ type: 'text', text: `🛑 ${roleName} 已停止` }] }
+    message: { role: 'assistant', content: [{ type: 'text', text: `${roleName} 已停止` }] }
   });
   sendStatusUpdate(session);
   console.log(`[Crew] Role ${roleName} stopped`);
@@ -956,7 +956,7 @@ async function stopAll(session) {
 
   sendCrewOutput(session, 'system', 'system', {
     type: 'assistant',
-    message: { role: 'assistant', content: [{ type: 'text', text: '❌ Session 已终止' }] }
+    message: { role: 'assistant', content: [{ type: 'text', text: 'Session 已终止' }] }
   });
   sendStatusUpdate(session);
 
@@ -988,7 +988,7 @@ function sendCrewOutput(session, roleName, outputType, rawMessage, extra = {}) {
     type: 'crew_output',
     sessionId: session.id,
     role: roleName,
-    roleIcon: role?.icon || (roleName === 'human' ? '👤' : roleName === 'system' ? '⚙️' : '🤖'),
+    roleIcon: role?.icon || (roleName === 'human' ? 'H' : roleName === 'system' ? 'S' : 'A'),
     roleName: role?.displayName || roleName,
     outputType,  // 'text' | 'tool_use' | 'tool_result' | 'route' | 'system'
     data: rawMessage,
