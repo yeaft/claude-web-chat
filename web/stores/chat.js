@@ -80,7 +80,16 @@ export const useChatStore = defineStore('chat', {
     hasMoreMessages: false,
     loadingMoreMessages: false,
     // 可用的 slash commands 列表（从 Claude SDK init 消息获取）
-    slashCommands: []
+    slashCommands: [],
+
+    // =====================
+    // Crew (multi-agent) 状态
+    // =====================
+    crewMode: false,              // 是否处于 crew 模式
+    crewSession: null,            // 当前 crew session 信息
+    crewMessages: [],             // crew 群聊消息
+    crewStatus: null,             // crew 状态 { status, currentRole, round, maxRounds, costUsd }
+    crewConfigOpen: false,        // crew 配置面板是否打开
   }),
 
   getters: {
@@ -283,6 +292,270 @@ export const useChatStore = defineStore('chat', {
 
     toggleWorkbenchMaximized() {
       this.workbenchMaximized = !this.workbenchMaximized;
+    },
+
+    // =====================
+    // Crew (multi-agent) actions
+    // =====================
+    enterCrewMode() {
+      this.crewMode = true;
+      this.crewConfigOpen = true;
+      this.crewMessages = [];
+      this.crewSession = null;
+      this.crewStatus = null;
+    },
+
+    exitCrewMode() {
+      this.crewMode = false;
+      this.crewConfigOpen = false;
+      this.crewSession = null;
+      this.crewMessages = [];
+      this.crewStatus = null;
+    },
+
+    createCrewSession(config) {
+      const sessionId = 'crew_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      this.sendWsMessage({
+        type: 'create_crew_session',
+        sessionId,
+        projectDir: config.projectDir,
+        sharedDir: config.sharedDir || '.crew',
+        goal: config.goal,
+        roles: config.roles,
+        maxRounds: config.maxRounds || 20,
+        agentId: this.currentAgent
+      });
+      this.crewConfigOpen = false;
+    },
+
+    sendCrewMessage(content, targetRole = null) {
+      if (!this.crewSession) return;
+      // 添加人的消息到本地显示
+      this.crewMessages.push({
+        id: Date.now(),
+        role: 'human',
+        roleIcon: '👤',
+        roleName: '你',
+        type: 'text',
+        content,
+        timestamp: Date.now()
+      });
+      // 发送到 server
+      this.sendWsMessage({
+        type: 'crew_human_input',
+        sessionId: this.crewSession.id,
+        content,
+        targetRole,
+        agentId: this.currentAgent
+      });
+    },
+
+    sendCrewControl(action, targetRole = null) {
+      if (!this.crewSession) return;
+      this.sendWsMessage({
+        type: 'crew_control',
+        sessionId: this.crewSession.id,
+        action,
+        targetRole,
+        agentId: this.currentAgent
+      });
+    },
+
+    addCrewRole(role) {
+      if (!this.crewSession) return;
+      this.sendWsMessage({
+        type: 'crew_add_role',
+        sessionId: this.crewSession.id,
+        role,
+        agentId: this.currentAgent
+      });
+    },
+
+    removeCrewRole(roleName) {
+      if (!this.crewSession) return;
+      this.sendWsMessage({
+        type: 'crew_remove_role',
+        sessionId: this.crewSession.id,
+        roleName,
+        agentId: this.currentAgent
+      });
+    },
+
+    handleCrewOutput(msg) {
+      if (!msg) return;
+
+      if (msg.type === 'crew_session_created') {
+        this.crewSession = {
+          id: msg.sessionId,
+          projectDir: msg.projectDir,
+          sharedDir: msg.sharedDir,
+          goal: msg.goal,
+          roles: msg.roles,
+          decisionMaker: msg.decisionMaker,
+          maxRounds: msg.maxRounds
+        };
+        this.crewMessages.push({
+          id: Date.now(),
+          role: 'system',
+          roleIcon: '⚙️',
+          roleName: '系统',
+          type: 'system',
+          content: `Crew Session 已创建，目标: ${msg.goal}`,
+          timestamp: Date.now()
+        });
+        return;
+      }
+
+      if (msg.type === 'crew_output') {
+        const crewMsg = {
+          id: Date.now() + Math.random(),
+          role: msg.role,
+          roleIcon: msg.roleIcon,
+          roleName: msg.roleName,
+          type: msg.outputType,
+          timestamp: Date.now()
+        };
+
+        if (msg.outputType === 'text') {
+          // 流式文本：追加到最后一条同角色的消息
+          const lastMsg = this.crewMessages.length > 0 ? this.crewMessages[this.crewMessages.length - 1] : null;
+          if (lastMsg && lastMsg.role === msg.role && lastMsg.type === 'text' && lastMsg._streaming) {
+            // 追加文本
+            const content = msg.data?.message?.content;
+            if (content) {
+              if (typeof content === 'string') {
+                lastMsg.content += content;
+              } else if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type === 'text') {
+                    lastMsg.content += block.text;
+                  }
+                }
+              }
+            }
+            return;
+          }
+          // 新消息
+          const content = msg.data?.message?.content;
+          let text = '';
+          if (typeof content === 'string') {
+            text = content;
+          } else if (Array.isArray(content)) {
+            text = content.filter(b => b.type === 'text').map(b => b.text).join('');
+          }
+          crewMsg.content = text;
+          crewMsg._streaming = true;
+          this.crewMessages.push(crewMsg);
+          return;
+        }
+
+        if (msg.outputType === 'tool_use') {
+          const content = msg.data?.message?.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block.type === 'tool_use') {
+                this.crewMessages.push({
+                  ...crewMsg,
+                  type: 'tool',
+                  toolName: block.name,
+                  toolInput: block.input,
+                  content: `${block.name} ${block.input?.file_path || block.input?.command?.substring(0, 60) || ''}`
+                });
+              }
+            }
+          }
+          return;
+        }
+
+        if (msg.outputType === 'route') {
+          this.crewMessages.push({
+            ...crewMsg,
+            type: 'route',
+            routeTo: msg.routeTo,
+            content: `→ @${msg.routeTo} ${msg.routeSummary || ''}`
+          });
+          return;
+        }
+
+        if (msg.outputType === 'system') {
+          const content = msg.data?.message?.content;
+          let text = '';
+          if (typeof content === 'string') {
+            text = content;
+          } else if (Array.isArray(content)) {
+            text = content.filter(b => b.type === 'text').map(b => b.text).join('');
+          }
+          this.crewMessages.push({
+            ...crewMsg,
+            type: 'system',
+            content: text
+          });
+          return;
+        }
+      }
+
+      if (msg.type === 'crew_status') {
+        this.crewStatus = {
+          status: msg.status,
+          currentRole: msg.currentRole,
+          round: msg.round,
+          maxRounds: msg.maxRounds,
+          costUsd: msg.costUsd,
+          activeRoles: msg.activeRoles || []
+        };
+        // 同步 roles 列表（角色变动后 status 会携带最新列表）
+        if (msg.roles && this.crewSession) {
+          this.crewSession.roles = msg.roles;
+        }
+        return;
+      }
+
+      if (msg.type === 'crew_turn_completed') {
+        // 标记最后一条该角色的消息为非流式
+        for (let i = this.crewMessages.length - 1; i >= 0; i--) {
+          if (this.crewMessages[i].role === msg.role && this.crewMessages[i]._streaming) {
+            this.crewMessages[i]._streaming = false;
+            break;
+          }
+        }
+        return;
+      }
+
+      if (msg.type === 'crew_human_needed') {
+        this.crewMessages.push({
+          id: Date.now(),
+          role: 'system',
+          roleIcon: '🔔',
+          roleName: '系统',
+          type: 'human_needed',
+          fromRole: msg.fromRole,
+          content: `${msg.fromRole} 需要人工介入: ${msg.message}`,
+          timestamp: Date.now()
+        });
+        return;
+      }
+
+      if (msg.type === 'crew_role_added') {
+        // 更新 session 的 roles 列表
+        if (this.crewSession) {
+          this.crewSession.roles = [...(this.crewSession.roles || []), msg.role];
+          if (msg.decisionMaker) {
+            this.crewSession.decisionMaker = msg.decisionMaker;
+          }
+        }
+        return;
+      }
+
+      if (msg.type === 'crew_role_removed') {
+        // 更新 session 的 roles 列表
+        if (this.crewSession) {
+          this.crewSession.roles = (this.crewSession.roles || []).filter(r => r.name !== msg.roleName);
+          if (msg.decisionMaker !== undefined) {
+            this.crewSession.decisionMaker = msg.decisionMaker;
+          }
+        }
+        return;
+      }
     },
 
     openFileInExplorer(filePath) {

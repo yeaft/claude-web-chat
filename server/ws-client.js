@@ -757,5 +757,77 @@ async function handleWebMessage(clientId, msg) {
       }
       break;
     }
+
+    // =====================================================================
+    // Crew (multi-agent) messages — 转发到 agent
+    // =====================================================================
+    case 'create_crew_session': {
+      const crewAgentId = msg.agentId || client.currentAgent;
+      if (!await checkAgentAccess(crewAgentId)) break;
+      const crewAgent = agents.get(crewAgentId);
+      if (!crewAgent) {
+        await sendToWebClient(client, { type: 'error', message: 'Agent not found' });
+        break;
+      }
+      client.currentAgent = crewAgentId;
+      await forwardToAgent(crewAgentId, {
+        type: 'create_crew_session',
+        sessionId: msg.sessionId || randomUUID(),
+        projectDir: msg.projectDir,
+        sharedDir: msg.sharedDir,
+        goal: msg.goal,
+        roles: msg.roles,
+        maxRounds: msg.maxRounds,
+        userId: client.userId,
+        username: client.username
+      });
+      break;
+    }
+
+    case 'crew_human_input': {
+      const crewHumanAgentId = msg.agentId || client.currentAgent;
+      if (!await checkAgentAccess(crewHumanAgentId)) break;
+      await forwardToAgent(crewHumanAgentId, {
+        type: 'crew_human_input',
+        sessionId: msg.sessionId,
+        content: msg.content,
+        targetRole: msg.targetRole
+      });
+      break;
+    }
+
+    case 'crew_control': {
+      const crewCtrlAgentId = msg.agentId || client.currentAgent;
+      if (!await checkAgentAccess(crewCtrlAgentId)) break;
+      await forwardToAgent(crewCtrlAgentId, {
+        type: 'crew_control',
+        sessionId: msg.sessionId,
+        action: msg.action,
+        targetRole: msg.targetRole
+      });
+      break;
+    }
+
+    case 'crew_add_role': {
+      const addRoleAgentId = msg.agentId || client.currentAgent;
+      if (!await checkAgentAccess(addRoleAgentId)) break;
+      await forwardToAgent(addRoleAgentId, {
+        type: 'crew_add_role',
+        sessionId: msg.sessionId,
+        role: msg.role
+      });
+      break;
+    }
+
+    case 'crew_remove_role': {
+      const rmRoleAgentId = msg.agentId || client.currentAgent;
+      if (!await checkAgentAccess(rmRoleAgentId)) break;
+      await forwardToAgent(rmRoleAgentId, {
+        type: 'crew_remove_role',
+        sessionId: msg.sessionId,
+        roleName: msg.roleName
+      });
+      break;
+    }
   }
 }

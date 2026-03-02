@@ -747,6 +747,53 @@ async function handleAgentMessage(agentId, msg) {
       });
       break;
 
+    // =====================================================================
+    // Crew (multi-agent) messages — 透传到 web clients
+    // =====================================================================
+    case 'crew_session_created': {
+      // 在 agent 的 conversations 中注册 crew session（复用现有转发机制）
+      const crewUserId = msg.userId || agent.ownerId || null;
+      const crewUsername = msg.username || agent.ownerUsername || null;
+      agent.conversations.set(msg.sessionId, {
+        id: msg.sessionId,
+        workDir: msg.projectDir,
+        userId: crewUserId,
+        username: crewUsername,
+        createdAt: Date.now(),
+        processing: true,
+        isCrew: true,
+        goal: msg.goal,
+        roles: msg.roles
+      });
+      await forwardToClients(agentId, msg.sessionId, msg);
+      await broadcastAgentList();
+      break;
+    }
+
+    case 'crew_output':
+      await forwardToClients(agentId, msg.sessionId, msg);
+      break;
+
+    case 'crew_status':
+      await forwardToClients(agentId, msg.sessionId, msg);
+      break;
+
+    case 'crew_turn_completed':
+      await forwardToClients(agentId, msg.sessionId, msg);
+      break;
+
+    case 'crew_human_needed':
+      await forwardToClients(agentId, msg.sessionId, msg);
+      break;
+
+    case 'crew_role_added':
+      await forwardToClients(agentId, msg.sessionId, msg);
+      break;
+
+    case 'crew_role_removed':
+      await forwardToClients(agentId, msg.sessionId, msg);
+      break;
+
     // Terminal messages (forward to web clients)
     case 'terminal_created':
     case 'terminal_output':

@@ -592,6 +592,19 @@ export function handleMessage(store, msg) {
       console.log('[WS] Server is updating, will reconnect automatically');
       store.connectionState = 'updating';
       break;
+
+    // =====================================================================
+    // Crew (multi-agent) messages
+    // =====================================================================
+    case 'crew_session_created':
+    case 'crew_output':
+    case 'crew_status':
+    case 'crew_turn_completed':
+    case 'crew_human_needed':
+    case 'crew_role_added':
+    case 'crew_role_removed':
+      store.handleCrewOutput(msg);
+      break;
   }
 }
 

@@ -9961,3 +9961,808 @@ body {
     padding: 4px;
   }
 }
+
+/* =====================================================================
+   Crew Mode Styles
+   ===================================================================== */
+
+/* Sidebar Crew button */
+.crew-nav-item.active {
+  background: var(--accent-color, #d97706) !important;
+  color: #fff !important;
+}
+
+/* Crew Mode Header (above main content) */
+.crew-mode-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-color, #333);
+  background: var(--bg-secondary, #1e1e1e);
+}
+.crew-back-btn {
+  background: none;
+  border: 1px solid var(--border-color, #555);
+  color: var(--text-color, #ccc);
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.crew-back-btn:hover { background: var(--hover-bg, #333); }
+.crew-mode-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-color, #eee);
+}
+.crew-new-btn {
+  margin-left: auto;
+  background: var(--accent-color, #d97706);
+  color: #fff;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.crew-new-btn:hover { opacity: 0.9; }
+
+/* Crew Chat View */
+.crew-chat-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Crew Status Bar */
+.crew-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--bg-secondary, #1a1a1a);
+  border-bottom: 1px solid var(--border-color, #333);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.crew-status-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.crew-status-goal {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-color, #ccc);
+}
+.crew-status-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.crew-role-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 14px;
+  opacity: 0.4;
+  transition: opacity 0.2s;
+}
+.crew-role-badge.active {
+  opacity: 1;
+  animation: crew-pulse 1.5s infinite;
+}
+.crew-role-badge.decision-maker {
+  border: 1px solid var(--accent-color, #d97706);
+}
+@keyframes crew-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+.crew-status-state {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.crew-status-state.status-running { background: #166534; color: #86efac; }
+.crew-status-state.status-paused { background: #713f12; color: #fde68a; }
+.crew-status-state.status-waiting { background: #7c2d12; color: #fed7aa; }
+.crew-status-state.status-completed { background: #14532d; color: #a7f3d0; }
+.crew-status-state.status-stopped { background: #7f1d1d; color: #fca5a5; }
+.crew-status-rounds, .crew-status-cost {
+  color: var(--text-muted, #888);
+  font-size: 12px;
+}
+.crew-controls {
+  position: relative;
+}
+.crew-control-btn {
+  background: none;
+  border: 1px solid var(--border-color, #555);
+  color: var(--text-color, #ccc);
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.crew-control-dropdown {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  background: var(--bg-primary, #252525);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 8px;
+  padding: 4px;
+  z-index: 100;
+  min-width: 180px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.crew-control-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-color, #ccc);
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.crew-control-item:hover { background: var(--hover-bg, #333); }
+.crew-control-item.danger { color: #f87171; }
+.crew-control-divider {
+  height: 1px;
+  background: var(--border-color, #333);
+  margin: 4px 0;
+}
+
+/* Crew Messages */
+.crew-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.crew-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted, #888);
+}
+.crew-empty-icon { font-size: 48px; margin-bottom: 12px; }
+.crew-empty-text { font-size: 14px; }
+
+/* Crew Message Item */
+.crew-message {
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+}
+.crew-msg-avatar {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 16px;
+}
+.crew-msg-body {
+  flex: 1;
+  min-width: 0;
+}
+.crew-msg-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.crew-msg-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-color, #eee);
+}
+.crew-msg-name.is-human { color: #60a5fa; }
+.crew-msg-name.is-system { color: #888; }
+.crew-msg-time {
+  font-size: 11px;
+  color: var(--text-muted, #666);
+}
+.crew-msg-content {
+  font-size: 14px;
+  color: var(--text-color, #ccc);
+  line-height: 1.6;
+  word-break: break-word;
+}
+.crew-msg-content pre {
+  background: var(--bg-primary, #1a1a1a);
+  padding: 8px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 13px;
+  margin: 4px 0;
+}
+.crew-msg-content code {
+  background: var(--bg-primary, #1a1a1a);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+/* Crew Tool Message */
+.crew-msg-tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  padding: 2px 8px;
+  background: var(--bg-primary, #1a1a1a);
+  border-radius: 4px;
+  border-left: 2px solid var(--accent-color, #d97706);
+}
+.crew-tool-name { font-weight: 600; }
+.crew-tool-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Crew Route Message */
+.crew-msg-route {
+  font-size: 13px;
+  color: var(--accent-color, #d97706);
+  font-weight: 500;
+  padding: 4px 0;
+}
+
+/* Crew System Message */
+.crew-msg-system {
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  font-style: italic;
+}
+
+/* Crew Human Needed */
+.crew-msg-human-needed {
+  font-size: 13px;
+  color: #f59e0b;
+  font-weight: 500;
+  padding: 6px 10px;
+  background: rgba(245, 158, 11, 0.1);
+  border-radius: 6px;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+/* Crew Streaming Indicator */
+.crew-streaming-indicator {
+  display: flex;
+  gap: 4px;
+  padding: 8px 0 8px 38px;
+}
+.crew-typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted, #888);
+  animation: crew-typing 1.4s infinite;
+}
+.crew-typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.crew-typing-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes crew-typing {
+  0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+  30% { opacity: 1; transform: scale(1); }
+}
+
+/* Crew Input Area */
+.crew-input-area {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border-color, #333);
+  padding: 8px 16px 12px;
+  background: var(--bg-secondary, #1e1e1e);
+}
+.crew-input-hints {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.crew-at-hint {
+  font-size: 11px;
+  color: var(--accent-color, #d97706);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(217, 119, 6, 0.1);
+}
+.crew-at-hint:hover {
+  background: rgba(217, 119, 6, 0.2);
+}
+.crew-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.crew-input {
+  flex: 1;
+  background: var(--bg-primary, #252525);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--text-color, #eee);
+  font-size: 14px;
+  resize: none;
+  min-height: 36px;
+  max-height: 120px;
+  font-family: inherit;
+}
+.crew-input:focus {
+  outline: none;
+  border-color: var(--accent-color, #d97706);
+}
+.crew-send-btn {
+  background: var(--accent-color, #d97706);
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.crew-send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* =====================================================================
+   Crew Config Panel (Modal Overlay)
+   ===================================================================== */
+.crew-config-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.crew-config-panel {
+  background: var(--bg-secondary, #1e1e1e);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+.crew-config-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color, #333);
+}
+.crew-config-header h2 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--text-color, #eee);
+}
+.crew-config-close {
+  background: none;
+  border: none;
+  color: var(--text-muted, #888);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.crew-config-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.crew-config-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.crew-config-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-color, #ccc);
+}
+.crew-config-input, .crew-config-textarea {
+  background: var(--bg-primary, #252525);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: var(--text-color, #eee);
+  font-size: 14px;
+  font-family: inherit;
+}
+.crew-config-input:focus, .crew-config-textarea:focus {
+  outline: none;
+  border-color: var(--accent-color, #d97706);
+}
+.crew-config-textarea { resize: vertical; }
+.crew-config-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-color, #ccc);
+}
+.crew-config-input-sm {
+  background: var(--bg-primary, #252525);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: var(--text-color, #eee);
+  font-size: 13px;
+  width: 60px;
+}
+
+/* Crew Roles List */
+.crew-roles-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.crew-role-item {
+  background: var(--bg-primary, #252525);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.crew-role-item.is-decision-maker {
+  border-color: var(--accent-color, #d97706);
+}
+.crew-role-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.crew-role-icon-input {
+  width: 32px;
+  text-align: center;
+  background: var(--bg-secondary, #1e1e1e);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 4px;
+  padding: 4px;
+  font-size: 16px;
+  color: var(--text-color, #eee);
+}
+.crew-role-name-input {
+  flex: 1;
+  background: var(--bg-secondary, #1e1e1e);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: var(--text-color, #eee);
+  font-size: 14px;
+  font-weight: 600;
+}
+.crew-role-model-select {
+  background: var(--bg-secondary, #1e1e1e);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 4px;
+  padding: 4px 6px;
+  color: var(--text-color, #eee);
+  font-size: 12px;
+}
+.crew-role-decision-label {
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0.4;
+  transition: opacity 0.2s;
+}
+.crew-role-decision-label:has(input:checked) {
+  opacity: 1;
+}
+.crew-role-decision-label input {
+  display: none;
+}
+.crew-role-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted, #666);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.crew-role-remove:hover { color: #f87171; }
+.crew-role-remove:disabled { opacity: 0.3; cursor: not-allowed; }
+.crew-role-desc-input {
+  background: var(--bg-secondary, #1e1e1e);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: var(--text-color, #ccc);
+  font-size: 13px;
+}
+.crew-role-advanced summary {
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  padding: 4px 0;
+}
+.crew-add-role-btn {
+  background: none;
+  border: 1px dashed var(--border-color, #555);
+  color: var(--text-muted, #888);
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.crew-add-role-btn:hover {
+  border-color: var(--accent-color, #d97706);
+  color: var(--accent-color, #d97706);
+}
+
+/* Crew Templates */
+.crew-template-btns {
+  display: flex;
+  gap: 8px;
+}
+.crew-template-btn {
+  background: var(--bg-primary, #252525);
+  border: 1px solid var(--border-color, #444);
+  color: var(--text-color, #ccc);
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.crew-template-btn.active {
+  border-color: var(--accent-color, #d97706);
+  color: var(--accent-color, #d97706);
+}
+
+/* Crew Config Footer */
+.crew-config-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-color, #333);
+}
+.crew-cancel-btn {
+  background: none;
+  border: 1px solid var(--border-color, #555);
+  color: var(--text-color, #ccc);
+  padding: 8px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.crew-start-btn {
+  background: var(--accent-color, #d97706);
+  color: #fff;
+  border: none;
+  padding: 8px 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+.crew-start-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* =====================================================================
+   Crew: Add Role Button (status bar)
+   ===================================================================== */
+.crew-add-role-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px dashed var(--border-color, #555);
+  background: none;
+  color: var(--text-secondary, #888);
+  font-size: 16px;
+  cursor: pointer;
+  margin-left: 2px;
+  transition: all 0.15s;
+  padding: 0;
+  line-height: 1;
+}
+.crew-add-role-btn:hover {
+  border-color: var(--accent-color, #d97706);
+  color: var(--accent-color, #d97706);
+  background: rgba(217, 119, 6, 0.1);
+}
+
+/* =====================================================================
+   Crew: Role Context Menu
+   ===================================================================== */
+.crew-role-context-menu {
+  position: fixed;
+  background: var(--bg-secondary, #2a2a2a);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  min-width: 140px;
+  padding: 4px 0;
+}
+.crew-role-menu-header {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-secondary, #999);
+  border-bottom: 1px solid var(--border-color, #333);
+}
+.crew-role-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text-color, #ddd);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.crew-role-menu-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* =====================================================================
+   Crew: Add Role Modal
+   ===================================================================== */
+.crew-add-role-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+.crew-add-role-modal {
+  background: var(--bg-primary, #1a1a1a);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 12px;
+  width: 440px;
+  max-width: 92vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+.crew-add-role-title {
+  padding: 16px 20px;
+  font-size: 16px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-color, #333);
+}
+.crew-add-role-form {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.crew-add-role-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.crew-add-role-field label {
+  font-size: 12px;
+  color: var(--text-secondary, #999);
+}
+.crew-add-role-field input,
+.crew-add-role-field select,
+.crew-add-role-field textarea {
+  background: var(--bg-secondary, #2a2a2a);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text-color, #ddd);
+  font-size: 13px;
+  font-family: inherit;
+}
+.crew-add-role-field input:focus,
+.crew-add-role-field select:focus,
+.crew-add-role-field textarea:focus {
+  outline: none;
+  border-color: var(--accent-color, #d97706);
+}
+
+/* Presets in add-role modal */
+.crew-add-role-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding-top: 4px;
+}
+.crew-preset-label {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  margin-right: 4px;
+}
+.crew-preset-btn {
+  background: var(--bg-secondary, #2a2a2a);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 6px;
+  padding: 4px 10px;
+  color: var(--text-color, #ddd);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.crew-preset-btn:hover {
+  border-color: var(--accent-color, #d97706);
+  background: rgba(217, 119, 6, 0.1);
+}
+
+/* Add role modal footer */
+.crew-add-role-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-color, #333);
+}
+.crew-add-role-cancel {
+  background: none;
+  border: 1px solid var(--border-color, #555);
+  color: var(--text-color, #ccc);
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.crew-add-role-confirm {
+  background: var(--accent-color, #d97706);
+  color: #fff;
+  border: none;
+  padding: 8px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.crew-add-role-confirm:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Config panel hint */
+.crew-config-hint {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  margin-right: auto;
+  align-self: center;
+}

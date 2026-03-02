@@ -20,12 +20,19 @@ import {
   handleUserInput, handleUpdateConversationSettings, handleAskUserAnswer,
   sendConversationList
 } from './conversation.js';
+import {
+  createCrewSession, handleCrewHumanInput, handleCrewControl,
+  addRoleToSession, removeRoleFromSession
+} from './crew.js';
 
 // 需要在断连期间缓冲的消息类型（Claude 输出相关的关键消息）
 const BUFFERABLE_TYPES = new Set([
   'claude_output', 'turn_completed', 'conversation_closed',
   'session_id_update', 'compact_status', 'slash_commands_update',
-  'background_task_started', 'background_task_output'
+  'background_task_started', 'background_task_output',
+  'crew_output', 'crew_status', 'crew_turn_completed',
+  'crew_session_created', 'crew_human_needed',
+  'crew_role_added', 'crew_role_removed'
 ]);
 
 // Send message to server (with encryption if available)
@@ -256,6 +263,27 @@ async function handleMessage(msg) {
 
     case 'ask_user_answer':
       handleAskUserAnswer(msg);
+      break;
+
+    // Crew (multi-agent) messages
+    case 'create_crew_session':
+      await createCrewSession(msg);
+      break;
+
+    case 'crew_human_input':
+      await handleCrewHumanInput(msg);
+      break;
+
+    case 'crew_control':
+      await handleCrewControl(msg);
+      break;
+
+    case 'crew_add_role':
+      await addRoleToSession(msg);
+      break;
+
+    case 'crew_remove_role':
+      await removeRoleFromSession(msg);
       break;
 
     // Port proxy

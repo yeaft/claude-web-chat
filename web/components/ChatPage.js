@@ -4,11 +4,13 @@ import ChatInput from './ChatInput.js';
 import WorkbenchPanel from './WorkbenchPanel.js';
 import ProxyTab from './ProxyTab.js';
 import SettingsPanel from './SettingsPanel.js';
+import CrewConfigPanel from './CrewConfigPanel.js';
+import CrewChatView from './CrewChatView.js';
 import { useAuthStore } from '../stores/auth.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': showMobileSidebar }">
       <!-- Mobile Menu Button -->
@@ -137,6 +139,10 @@ export default {
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
               <span>{{ $t('chat.sidebar.resumeConv') }}</span>
             </button>
+            <button class="sidebar-nav-item crew-nav-item" :class="{ active: store.crewMode }" @click="openCrewMode" :disabled="onlineAgentCount === 0">
+              <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+              <span>Crew</span>
+            </button>
           </nav>
         </div>
 
@@ -198,16 +204,36 @@ export default {
 
       <!-- Main Chat Area (Right) -->
       <main class="main-content" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
-        <ChatHeader />
-        <MessageList
-          @new-conversation="openNewConversationModal"
-          @resume-conversation="openResumeModal"
-        />
-        <ChatInput />
+        <!-- Crew Mode -->
+        <template v-if="store.crewMode">
+          <div class="crew-mode-header">
+            <button class="crew-back-btn" @click="exitCrewMode">← 返回会话模式</button>
+            <span class="crew-mode-title">🤖 Crew 模式</span>
+            <button class="crew-new-btn" @click="store.crewConfigOpen = true" v-if="!store.crewSession">+ 新建 Session</button>
+          </div>
+          <CrewChatView />
+        </template>
+        <!-- Normal Chat Mode -->
+        <template v-else>
+          <ChatHeader />
+          <MessageList
+            @new-conversation="openNewConversationModal"
+            @resume-conversation="openResumeModal"
+          />
+          <ChatInput />
+        </template>
       </main>
 
       <!-- Settings (floating modal) -->
       <SettingsPanel :visible="showSettingsPanel" @close="showSettingsPanel = false" />
+
+      <!-- Crew Config Panel -->
+      <CrewConfigPanel
+        v-if="store.crewConfigOpen"
+        :defaultWorkDir="store.currentAgentInfo?.workDir || ''"
+        @close="store.crewConfigOpen = false"
+        @start="startCrewSession"
+      />
 
       <!-- New Conversation Modal - Same style as Resume Modal -->
       <div class="modal-overlay" v-if="showNewConversationModal" @click.self="closeNewConvModal">
@@ -547,6 +573,28 @@ export default {
     }
   },
   methods: {
+    // Crew mode methods
+    openCrewMode() {
+      // 如果没有选中 agent，先选一个
+      if (!this.store.currentAgent) {
+        const onlineAgents = this.store.agents.filter(a => a.online);
+        if (onlineAgents.length > 0) {
+          this.store.selectAgent(onlineAgents[0].id);
+        }
+      }
+      this.store.enterCrewMode();
+    },
+    exitCrewMode() {
+      if (this.store.crewSession) {
+        if (!confirm('退出 Crew 模式将终止当前 Session，确定？')) return;
+        this.store.sendCrewControl('stop_all');
+      }
+      this.store.exitCrewMode();
+    },
+    startCrewSession(config) {
+      this.store.createCrewSession(config);
+    },
+
     openNewConversationModal() {
       this.showNewConversationModal = true;
       this.newConvAgent = '';
