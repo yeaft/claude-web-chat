@@ -5295,6 +5295,14 @@ body {
   color: var(--text-muted);
 }
 
+/* Loading State */
+.resume-panel-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+}
+
 /* Empty State */
 .resume-panel-empty {
   display: flex;

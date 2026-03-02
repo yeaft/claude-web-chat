@@ -282,18 +282,23 @@ export default {
                 </button>
               </div>
               <div class="resume-panel-list">
-                <div
-                  v-for="folder in store.folders"
-                  :key="folder.name"
-                  class="resume-list-item folder-item-compact"
-                  @click="selectConvModalFolder(folder.path)"
-                >
-                  <div class="item-path">{{ folder.path }}</div>
-                  <span class="item-badge">{{ folder.sessionCount }}</span>
+                <div class="resume-panel-loading" v-if="store.foldersLoading">
+                  <span class="mini-spinner"></span>
                 </div>
-                <div class="resume-panel-empty" v-if="store.folders.length === 0 && !store.foldersLoading">
-                  {{ $t('modal.newConv.noWorkDirs') }}
-                </div>
+                <template v-else>
+                  <div
+                    v-for="folder in store.folders"
+                    :key="folder.name"
+                    class="resume-list-item folder-item-compact"
+                    @click="selectConvModalFolder(folder.path)"
+                  >
+                    <div class="item-path">{{ folder.path }}</div>
+                    <span class="item-badge">{{ folder.sessionCount }}</span>
+                  </div>
+                  <div class="resume-panel-empty" v-if="store.folders.length === 0">
+                    {{ $t('modal.newConv.noWorkDirs') }}
+                  </div>
+                </template>
               </div>
             </div>
 
@@ -502,13 +507,24 @@ export default {
       this.convModalWorkDir = '';
       this.selectedResumeSession = null;
       this.historyLoaded = false;
+      this._foldersRetried = false;
       // 优先选择当前 agent（如果在线），否则选第一个在线 agent
       const onlineAgents = this.store.agents.filter(a => a.online);
       const currentAgentOnline = onlineAgents.find(a => a.id === this.store.currentAgent);
       const selectedAgent = currentAgentOnline || onlineAgents[0];
       if (selectedAgent) {
         this.convModalAgent = selectedAgent.id;
-        this.store.listFoldersForAgent(this.convModalAgent);
+        this.store.listFoldersForAgent(this.convModalAgent).then(() => {
+          // 如果首次加载结果为空且 modal 仍然打开，自动重试一次
+          if (this.showConversationModal && this.store.folders.length === 0 && !this._foldersRetried) {
+            this._foldersRetried = true;
+            setTimeout(() => {
+              if (this.showConversationModal && this.convModalAgent) {
+                this.store.listFoldersForAgent(this.convModalAgent);
+              }
+            }, 1500);
+          }
+        });
       }
     },
     openConversationModalResume() {
