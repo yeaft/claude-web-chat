@@ -14,23 +14,33 @@ export default {
         </div>
 
         <div class="crew-config-body">
-          <!-- 创建模式：顶部控制区 -->
+          <!-- 创建模式 -->
           <template v-if="!isEditMode">
-            <!-- Agent 选择 -->
+            <!-- Agent + 模型 -->
             <div class="crew-config-section">
               <label class="crew-config-label">Agent</label>
-              <div class="crew-select-wrapper">
-                <select class="crew-config-select" v-model="selectedAgent">
-                  <option value="">选择 Agent</option>
-                  <option v-for="agent in crewAgents" :key="agent.id" :value="agent.id">
-                    {{ agent.name }}{{ agent.latency ? ' (' + agent.latency + 'ms)' : '' }}
-                  </option>
-                </select>
-                <svg class="select-arrow" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+              <div class="crew-agent-model-row">
+                <div class="crew-select-wrapper crew-agent-select">
+                  <select class="crew-config-select" v-model="selectedAgent">
+                    <option value="">选择 Agent</option>
+                    <option v-for="agent in crewAgents" :key="agent.id" :value="agent.id">
+                      {{ agent.name }}{{ agent.latency ? ' (' + agent.latency + 'ms)' : '' }}
+                    </option>
+                  </select>
+                  <svg class="select-arrow" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                </div>
+                <div class="crew-select-wrapper crew-model-select" v-if="selectedAgent">
+                  <select class="crew-config-select" v-model="model">
+                    <option value="sonnet">Sonnet</option>
+                    <option value="opus">Opus</option>
+                    <option value="haiku">Haiku</option>
+                  </select>
+                  <svg class="select-arrow" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                </div>
               </div>
             </div>
 
-            <!-- 工作区（带浏览按钮） -->
+            <!-- 工作区 -->
             <div class="crew-config-section" v-if="selectedAgent">
               <label class="crew-config-label">工作区</label>
               <div class="crew-workdir-group">
@@ -47,7 +57,7 @@ export default {
               <textarea class="crew-config-textarea" v-model="goal" placeholder="描述你想让团队完成的目标..." rows="3"></textarea>
             </div>
 
-            <!-- 角色模板（简化为 inline 选择） -->
+            <!-- 角色模板 -->
             <div class="crew-config-section" v-if="selectedAgent">
               <label class="crew-config-label">团队模板</label>
               <div class="crew-template-btns">
@@ -57,21 +67,28 @@ export default {
               </div>
             </div>
 
-            <!-- 角色列表（简化展示） -->
-            <div class="crew-config-section crew-roles-section" v-if="selectedAgent && roles.length > 0">
-              <label class="crew-config-label">角色 ({{ roles.length }})</label>
-              <div class="crew-roles-compact">
-                <div v-for="(role, idx) in roles" :key="idx" class="crew-role-compact" :class="{ 'is-decision-maker': role.isDecisionMaker }">
-                  <span class="crew-role-compact-icon">{{ role.icon }}</span>
-                  <span class="crew-role-compact-name">{{ role.displayName }}</span>
-                  <span class="crew-role-compact-model">{{ role.model }}</span>
-                  <button class="crew-role-compact-star" @click="setDecisionMaker(idx)" :class="{ active: role.isDecisionMaker }" title="设为决策者">
-                    <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
-                  </button>
-                  <button class="crew-role-compact-remove" @click="removeRole(idx)">&times;</button>
+            <!-- 角色配置（可编辑卡片） -->
+            <div class="crew-config-section" v-if="selectedAgent">
+              <label class="crew-config-label">角色配置</label>
+              <div class="crew-roles-list">
+                <div v-for="(role, idx) in roles" :key="idx" class="crew-role-item" :class="{ 'is-decision-maker': role.isDecisionMaker }">
+                  <div class="crew-role-header">
+                    <input class="crew-role-icon-input" v-model="role.icon" maxlength="4" />
+                    <input class="crew-role-name-input" v-model="role.displayName" placeholder="角色名" />
+                    <label class="crew-role-decision-label" :title="role.isDecisionMaker ? '决策者' : '设为决策者'">
+                      <input type="radio" name="decisionMaker" :checked="role.isDecisionMaker" @change="setDecisionMaker(idx)" />
+                      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+                    </label>
+                    <button class="crew-role-remove" @click="removeRole(idx)">&times;</button>
+                  </div>
+                  <input class="crew-role-desc-input" v-model="role.description" placeholder="角色职责描述" />
+                  <details class="crew-role-advanced">
+                    <summary>高级设置</summary>
+                    <textarea class="crew-config-textarea" v-model="role.claudeMd" placeholder="自定义 system prompt（可选）" rows="3"></textarea>
+                  </details>
                 </div>
               </div>
-              <button class="crew-add-role-inline-btn" @click="addRole">+ 添加角色</button>
+              <button class="crew-add-role-btn" @click="addRole">+ 添加角色</button>
             </div>
 
             <!-- 高级设置 (折叠) -->
@@ -106,11 +123,6 @@ export default {
                   <div class="crew-role-header">
                     <input class="crew-role-icon-input" v-model="role.icon" maxlength="4" :disabled="!role._isNew" />
                     <input class="crew-role-name-input" v-model="role.displayName" placeholder="角色名" :disabled="!role._isNew" />
-                    <select class="crew-role-model-select" v-model="role.model" :disabled="!role._isNew">
-                      <option value="sonnet">Sonnet</option>
-                      <option value="haiku">Haiku</option>
-                      <option value="opus">Opus</option>
-                    </select>
                     <label class="crew-role-decision-label" :title="role.isDecisionMaker ? '决策者' : '设为决策者'">
                       <input type="radio" name="decisionMaker" :checked="role.isDecisionMaker" @change="setDecisionMaker(idx)" />
                       <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
@@ -199,6 +211,7 @@ export default {
   data() {
     return {
       selectedAgent: '',
+      model: 'sonnet',
       projectDir: this.defaultWorkDir || '',
       sharedDir: '.crew',
       goal: '',
@@ -255,7 +268,6 @@ export default {
       this.roles = (this.session.roles || []).map(r => ({ ...r }));
     } else {
       this.loadTemplate('dev');
-      // 自动选择当前 agent 或第一个支持 crew 的 agent
       if (this.store.currentAgent) {
         const current = this.store.agents.find(a => a.id === this.store.currentAgent);
         if (current?.online && current?.capabilities?.includes('crew')) {
@@ -276,25 +288,25 @@ export default {
           {
             name: 'pm', displayName: 'PM', icon: '📋',
             description: '需求分析，任务拆分和进度跟踪',
-            model: 'sonnet', isDecisionMaker: true,
+            isDecisionMaker: true,
             claudeMd: '你是 Steve Jobs（史蒂夫·乔布斯），以他的思维方式和工作风格来管理这个项目。\n追求极致简洁，对产品品质零容忍，善于从用户视角思考，敢于砍掉不必要的功能。'
           },
           {
             name: 'architect', displayName: '架构师', icon: '🏗️',
             description: '系统设计和技术决策',
-            model: 'opus', isDecisionMaker: false,
+            isDecisionMaker: false,
             claudeMd: '你是 Martin Fowler（马丁·福勒），以他的架构哲学来设计系统。\n推崇演进式架构，重视重构和代码整洁，善用设计模式但不过度设计，用最合适而非最新的技术。'
           },
           {
             name: 'developer', displayName: '开发者', icon: '💻',
             description: '代码编写和功能实现',
-            model: 'sonnet', isDecisionMaker: false,
+            isDecisionMaker: false,
             claudeMd: '你是 Linus Torvalds（林纳斯·托瓦兹），以他的编码风格来写代码。\n代码简洁高效，厌恶不必要的抽象，追求性能和正确性，注重实用主义而非教条。'
           },
           {
             name: 'reviewer', displayName: '审查者', icon: '🔍',
             description: '代码审查和质量把控',
-            model: 'sonnet', isDecisionMaker: false,
+            isDecisionMaker: false,
             claudeMd: '你是 Robert C. Martin（Uncle Bob），以他的 Clean Code 标准来审查代码。\n严格遵循整洁代码原则，关注命名、函数大小、单一职责，不放过代码坏味道。'
           }
         ];
@@ -303,25 +315,25 @@ export default {
           {
             name: 'planner', displayName: '编排师', icon: '📐',
             description: '结构规划，内容编排',
-            model: 'sonnet', isDecisionMaker: true,
+            isDecisionMaker: true,
             claudeMd: '你是金庸（查良镛），以他构建长篇叙事的能力来规划内容结构。\n善于搭建宏大而有序的框架，每条线索伏笔照应，结构严谨又不失灵动。'
           },
           {
             name: 'designer', displayName: '设计师', icon: '🎨',
             description: '风格设计，框架构建',
-            model: 'sonnet', isDecisionMaker: false,
+            isDecisionMaker: false,
             claudeMd: '你是陈丹青，以他的美学素养和跨界视野来指导内容设计。\n追求视觉与文字的统一，风格鲜明不媚俗，善于用直觉和经验打破常规框架。'
           },
           {
             name: 'writer', displayName: '执笔师', icon: '✍️',
             description: '内容撰写',
-            model: 'sonnet', isDecisionMaker: false,
+            isDecisionMaker: false,
             claudeMd: '你是鲁迅（周树人），以他的文风来撰写内容。\n文字精炼如刀，一针见血，绝不废话，善于用最短的句子表达最深的意思，幽默与犀利并存。'
           },
           {
             name: 'editor', displayName: '审稿师', icon: '🔎',
             description: '审核校对，质量把关',
-            model: 'sonnet', isDecisionMaker: false,
+            isDecisionMaker: false,
             claudeMd: '你是叶圣陶，以他的编辑标准来审稿。\n文章要让人看得懂，语言要规范准确，删去一切可有可无的字词，追求平实、干净、通顺。'
           }
         ];
@@ -338,7 +350,6 @@ export default {
         icon: '🤖',
         description: '',
         claudeMd: '',
-        model: 'sonnet',
         isDecisionMaker: this.roles.length === 0,
         _isNew: this.isEditMode
       });
@@ -364,11 +375,11 @@ export default {
 
     startSession() {
       if (!this.canStart) return;
-      // 先选择 agent
       this.store.selectAgent(this.selectedAgent);
       const roles = this.roles.map(r => ({
         ...r,
-        name: r.name || r.displayName.toLowerCase().replace(/\s+/g, '_')
+        name: r.name || r.displayName.toLowerCase().replace(/\s+/g, '_'),
+        model: this.model  // 全局模型统一赋给每个角色
       }));
       this.$emit('start', {
         projectDir: this.projectDir.trim(),

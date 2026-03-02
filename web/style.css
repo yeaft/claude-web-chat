@@ -10991,6 +10991,21 @@ body {
   margin-right: auto;
 }
 
+/* Crew Agent + Model Row */
+.crew-agent-model-row {
+  display: flex;
+  gap: 8px;
+}
+
+.crew-agent-select {
+  flex: 1;
+}
+
+.crew-model-select {
+  width: 120px;
+  min-width: 120px;
+}
+
 /* Crew Agent Select */
 .crew-select-wrapper {
   position: relative;
