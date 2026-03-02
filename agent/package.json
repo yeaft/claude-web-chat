@@ -32,21 +32,9 @@
     "url": "https://github.com/yeaft/claude-web-chat/issues"
   },
   "files": [
-    "cli.js",
-    "service.js",
-    "index.js",
-    "context.js",
-    "connection.js",
-    "conversation.js",
-    "crew.js",
-    "claude.js",
-    "terminal.js",
-    "proxy.js",
-    "workbench.js",
-    "history.js",
-    "encryption.js",
+    "*.js",
     "sdk/",
-    "scripts/agent-tray.ps1"
+    "scripts/"
   ],
   "license": "MIT",
   "author": "Yeaft",
