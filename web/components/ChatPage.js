@@ -298,16 +298,16 @@ export default {
               </div>
             </div>
 
-            <!-- Session list (for resume, shown when folder selected) -->
-            <div class="resume-panel" v-if="convModalWorkDir && historyLoaded">
+            <!-- Session list (always visible in right panel) -->
+            <div class="resume-panel">
               <div class="resume-panel-header">
-                <span>{{ $t('modal.resume.sessionLabel') }} <span class="header-tag">{{ getLastPathSegment(convModalWorkDir) }}</span></span>
-                <button class="refresh-btn-mini" @click="loadConvModalSessions" :disabled="store.historySessionsLoading" :title="$t('common.refresh')">
+                <span>{{ $t('modal.resume.sessionLabel') }} <span class="header-tag" v-if="convModalWorkDir">{{ getLastPathSegment(convModalWorkDir) }}</span></span>
+                <button class="refresh-btn-mini" @click="loadConvModalSessions" :disabled="store.historySessionsLoading || !convModalWorkDir" :title="$t('common.refresh')">
                   <svg v-if="!store.historySessionsLoading" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
                   <span v-else class="mini-spinner"></span>
                 </button>
               </div>
-              <div class="resume-panel-list">
+              <div class="resume-panel-list" v-if="convModalWorkDir && historyLoaded">
                 <div
                   v-for="session in store.historySessions"
                   :key="session.sessionId"
@@ -321,6 +321,9 @@ export default {
                 <div class="resume-panel-empty" v-if="store.historySessions.length === 0 && !store.historySessionsLoading">
                   {{ $t('modal.resume.noSessions') }}
                 </div>
+              </div>
+              <div class="resume-panel-empty" v-else>
+                {{ $t('modal.resume.selectWorkDir') }}
               </div>
             </div>
           </div>
@@ -336,22 +339,20 @@ export default {
           <!-- Footer with two action buttons -->
           <div class="resume-modal-footer" v-if="convModalAgent">
             <button
-              class="modern-btn primary"
-              @click="createNewConversation"
-              :disabled="!convModalAgent"
-              style="flex: 1"
-            >
-              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-              {{ $t('modal.newConv.create') }}
-            </button>
-            <button
-              class="modern-btn secondary"
+              class="modern-btn"
               @click="resumeSelectedSession"
               :disabled="!selectedResumeSession"
-              style="flex: 1"
             >
               <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
               {{ $t('chat.sidebar.resumeConv') }}
+            </button>
+            <button
+              class="modern-btn primary"
+              @click="createNewConversation"
+              :disabled="!convModalAgent"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              {{ $t('modal.newConv.create') }}
             </button>
           </div>
         </div>
