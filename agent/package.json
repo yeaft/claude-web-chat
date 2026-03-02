@@ -1,6 +1,6 @@
 {
   "name": "@yeaft/webchat-agent",
-  "version": "0.0.39",
+  "version": "1.0.0",
   "description": "Remote agent for Yeaft WebChat — connects worker machines to the central server",
   "main": "index.js",
   "type": "module",
@@ -38,7 +38,6 @@
     "context.js",
     "connection.js",
     "conversation.js",
-    "crew.js",
     "claude.js",
     "terminal.js",
     "proxy.js",
@@ -54,15 +53,8 @@
     "nodemon": "^3.0.2"
   },
   "nodemonConfig": {
-    "watch": [
-      "*.js",
-      "sdk/*.js"
-    ],
-    "ignore": [
-      "node_modules",
-      "package-lock.json",
-      ".claude-agent.json"
-    ],
+    "watch": ["*.js", "sdk/*.js"],
+    "ignore": ["node_modules", "package-lock.json", ".claude-agent.json"],
     "ext": "js"
   },
   "dependencies": {
