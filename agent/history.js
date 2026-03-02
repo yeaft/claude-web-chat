@@ -227,7 +227,7 @@ export async function handleListFolders(msg) {
           // 从 session 文件读取真实的工作目录路径
           const originalPath = getWorkDirFromProjectFolder(entryPath, entry);
 
-          // 获取该目录下的会话数量（只计算有实际用户消息的会话）
+          // 快速计数：只数 .jsonl 文件数量，不读取文件内容
           let sessionCount = 0;
           let lastModified = stats.mtime.getTime();
 
@@ -236,29 +236,11 @@ export async function handleListFolders(msg) {
 
             for (const file of files) {
               if (file.endsWith('.jsonl')) {
-                const filePath = join(entryPath, file);
-                const fileStats = statSync(filePath);
-                if (fileStats.mtime.getTime() > lastModified) {
-                  lastModified = fileStats.mtime.getTime();
-                }
-
-                // 检查文件是否包含用户消息（与 getHistorySessions 保持一致）
+                sessionCount++;
                 try {
-                  const content = readFileSync(filePath, 'utf-8');
-                  const lines = content.split('\n').filter(l => l.trim()).slice(0, 30);
-                  for (const line of lines) {
-                    try {
-                      const data = JSON.parse(line);
-                      if (data.type === 'user' && data.message?.content) {
-                        const text = typeof data.message.content === 'string'
-                          ? data.message.content
-                          : data.message.content[0]?.text || '';
-                        if (text.trim()) {
-                          sessionCount++;
-                          break;
-                        }
-                      }
-                    } catch {}
+                  const fileStats = statSync(join(entryPath, file));
+                  if (fileStats.mtime.getTime() > lastModified) {
+                    lastModified = fileStats.mtime.getTime();
                   }
                 } catch {}
               }

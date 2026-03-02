@@ -193,7 +193,7 @@ export function listFolders(store) {
         store._foldersResolve = null;
         store.foldersLoading = false;
       }
-    }, 5000);
+    }, 10000);
   });
 }
 
@@ -221,7 +221,7 @@ export function listFoldersForAgent(store, agentId) {
         store._foldersResolve = null;
         store.foldersLoading = false;
       }
-    }, 5000);
+    }, 10000);
   });
 }
 
