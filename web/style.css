@@ -10029,6 +10029,16 @@ body {
   opacity: 1;
 }
 
+.crew-stopped-tag {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-tertiary, #374151);
+  color: var(--text-secondary, #9ca3af);
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+
 /* Crew config toggle in header (matches mcp-toggle) */
 .crew-config-toggle.crew-running {
   color: var(--accent-blue);
