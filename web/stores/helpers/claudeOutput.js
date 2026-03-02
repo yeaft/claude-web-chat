@@ -1,6 +1,6 @@
 // Claude output processing helpers
 
-import { resetProcessingWatchdog } from './watchdog.js';
+import { resetProcessingWatchdog, stopProcessingWatchdog } from './watchdog.js';
 
 export function getOrCreateExecutionStatus(store, conversationId) {
   if (!store.executionStatusMap[conversationId]) {
@@ -138,8 +138,11 @@ export function handleClaudeOutput(store, conversationId, data) {
       execStatus.currentTool = null;
     }
   } else if (data.type === 'result') {
-    // processing 状态由 turn_completed/conversation_closed 消息管理，此处不重复清理
-    // 但仍需清理 tool 相关状态
+    // ★ result 表示当前 turn 已完成，立即清除 processing 状态
+    // 防止 turn_completed 消息丢失（如 WebSocket 断线）导致"思考中"永久残留
+    // turn_completed 到达时会幂等地再次清除，queue_update 会正确重设
+    delete store.processingConversations[conversationId];
+    stopProcessingWatchdog(store, conversationId);
     execStatus.currentTool = null;
     const msgs = conversationId === store.currentConversation
       ? store.messages
