@@ -1,7 +1,8 @@
 import { randomUUID } from 'crypto';
-import { readFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { readFileSync, readdirSync, statSync } from 'fs';
+import { dirname, join, resolve, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
+import { platform } from 'os';
 import multer from 'multer';
 import { CONFIG, isEmailConfigured, isTotpEnabled } from './config.js';
 import { loginStep1, loginStep2, verifyToken, logout, verifyTotpStep, completeTotpSetup, register, hashPassword } from './auth.js';
@@ -570,5 +571,44 @@ export function registerApiRoutes(app) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'no-store');
     res.send(file.buffer);
+  });
+
+  // Directory listing API — directly reads server filesystem
+  app.get('/api/list-directory', requireAuth, (req, res) => {
+    const dirPath = req.query.path || '';
+
+    try {
+      let targetPath;
+      if (!dirPath) {
+        // Empty path: list root or drives
+        if (platform() === 'win32') {
+          const drives = [];
+          for (const letter of 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('')) {
+            const drivePath = letter + ':\\';
+            try { statSync(drivePath); drives.push({ name: letter + ':', type: 'directory' }); } catch {}
+          }
+          return res.json({ dirPath: '', entries: drives });
+        }
+        targetPath = '/';
+      } else {
+        targetPath = isAbsolute(dirPath) ? resolve(dirPath) : resolve('/', dirPath);
+      }
+
+      const entries = readdirSync(targetPath, { withFileTypes: true });
+      const result = [];
+
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        if (entry.name === 'node_modules') continue;
+        if (entry.isDirectory()) {
+          result.push({ name: entry.name, type: 'directory' });
+        }
+      }
+
+      result.sort((a, b) => a.name.localeCompare(b.name));
+      res.json({ dirPath: targetPath, entries: result });
+    } catch (e) {
+      res.json({ dirPath: dirPath, entries: [], error: e.message });
+    }
   });
 }

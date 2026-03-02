@@ -741,7 +741,6 @@ export default {
     openFolderPicker(target) {
       const agentId = this.convModalAgent;
       if (!agentId) return;
-      console.log('[FolderPicker] Opening, target:', target, 'agentId:', agentId);
       this.folderPickerTarget = target;
       this.folderPickerOpen = true;
       this.folderPickerSelected = '';
@@ -751,45 +750,30 @@ export default {
       const defaultDir = currentWorkDir || agent?.workDir || '';
       this.folderPickerPath = defaultDir;
       this.folderPickerEntries = [];
-      this.store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: '_workdir_picker',
-        agentId: agentId,
-        dirPath: defaultDir,
-        workDir: agent?.workDir || '',
-        _clientId: this.store.clientId
-      });
-      // Timeout: if no response in 10s, stop loading
-      clearTimeout(this._folderPickerTimeout);
-      this._folderPickerTimeout = setTimeout(() => {
-        if (this.folderPickerLoading) {
-          console.warn('[FolderPicker] Timeout waiting for directory listing');
-          this.folderPickerLoading = false;
-        }
-      }, 10000);
+      this.fetchFolderPickerDir(defaultDir);
     },
     loadFolderPickerDir(dirPath) {
-      const agentId = this.convModalAgent;
-      if (!agentId) return;
       this.folderPickerLoading = true;
       this.folderPickerSelected = '';
-      const agent = this.store.agents.find(a => a.id === agentId);
-      this.store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: '_workdir_picker',
-        agentId: agentId,
-        dirPath: dirPath,
-        workDir: agent?.workDir || '',
-        _clientId: this.store.clientId
-      });
-      // Timeout
-      clearTimeout(this._folderPickerTimeout);
-      this._folderPickerTimeout = setTimeout(() => {
-        if (this.folderPickerLoading) {
-          console.warn('[FolderPicker] Timeout waiting for directory listing');
-          this.folderPickerLoading = false;
-        }
-      }, 10000);
+      this.fetchFolderPickerDir(dirPath);
+    },
+    async fetchFolderPickerDir(dirPath) {
+      try {
+        const token = useAuthStore().token;
+        const resp = await fetch('/api/list-directory?path=' + encodeURIComponent(dirPath || ''), {
+          headers: token ? { 'Authorization': 'Bearer ' + token } : {}
+        });
+        const data = await resp.json();
+        this.folderPickerLoading = false;
+        this.folderPickerEntries = (data.entries || [])
+          .filter(e => e.type === 'directory')
+          .sort((a, b) => a.name.localeCompare(b.name));
+        if (data.dirPath != null) this.folderPickerPath = data.dirPath;
+      } catch (e) {
+        console.error('[FolderPicker] API error:', e);
+        this.folderPickerLoading = false;
+        this.folderPickerEntries = [];
+      }
     },
     folderPickerNavigateUp() {
       if (!this.folderPickerPath) return;
@@ -838,21 +822,6 @@ export default {
         this.historyLoaded = true;
       }
       this.folderPickerOpen = false;
-    },
-    handleFolderPickerMessage(event) {
-      const msg = event.detail;
-      if (!msg) return;
-      if (msg.type === 'directory_listing') {
-        console.log('[FolderPicker] Received directory_listing, conversationId:', msg.conversationId, 'entries:', msg.entries?.length, 'error:', msg.error);
-      }
-      if (msg.type !== 'directory_listing' || msg.conversationId !== '_workdir_picker') return;
-      console.log('[FolderPicker] Processing _workdir_picker response, entries:', msg.entries?.length, 'dirPath:', msg.dirPath);
-      clearTimeout(this._folderPickerTimeout);
-      this.folderPickerLoading = false;
-      this.folderPickerEntries = (msg.entries || [])
-        .filter(e => e.type === 'directory')
-        .sort((a, b) => a.name.localeCompare(b.name));
-      if (msg.dirPath != null) this.folderPickerPath = msg.dirPath;
     }
   },
   mounted() {
@@ -866,7 +835,6 @@ export default {
     };
     document.addEventListener('click', this._clickOutsideHandler);
     window.addEventListener('resize', this.handleResize);
-    window.addEventListener('workbench-message', this.handleFolderPickerMessage);
 
     // Fetch server version
     fetch('/api/version').then(r => r.json()).then(d => { this.serverVersion = d.version; }).catch(() => {});
@@ -926,10 +894,8 @@ export default {
   beforeUnmount() {
     document.removeEventListener('click', this._clickOutsideHandler);
     window.removeEventListener('resize', this.handleResize);
-    window.removeEventListener('workbench-message', this.handleFolderPickerMessage);
     window.removeEventListener('agent-restart-ack', this._agentRestartAckHandler);
     window.removeEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
-    clearTimeout(this._folderPickerTimeout);
     if (this._checkRestartingAgents) this._checkRestartingAgents();
   }
 };
