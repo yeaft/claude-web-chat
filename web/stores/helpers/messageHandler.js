@@ -93,6 +93,7 @@ export function handleMessage(store, msg) {
             existing.username = serverConv.username;
             existing.agentId = serverConv.agentId;
             existing.agentName = serverConv.agentName;
+            if (serverConv.type) existing.type = serverConv.type;
           } else {
             store.conversations.push(serverConv);
           }

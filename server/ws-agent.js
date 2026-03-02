@@ -762,7 +762,7 @@ async function handleAgentMessage(agentId, msg) {
         username: crewUsername,
         createdAt: Date.now(),
         processing: true,
-        isCrew: true,
+        type: 'crew',
         goal: msg.goal,
         roles: msg.roles
       });
