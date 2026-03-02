@@ -4,6 +4,20 @@
  * 支持动态添加/移除角色
  */
 
+// SVG icon helpers (24x24 viewBox, fill="currentColor", matching app style)
+const ICONS = {
+  crew: '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>',
+  play: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>',
+  stop: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>',
+  close: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
+  bolt: '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M11 21h-1l1-7H7.5c-.88 0-.33-.75-.31-.78C8.48 10.94 10.42 7.54 13.01 3h1l-1 7h3.51c.4 0 .62.19.4.66C12.97 17.55 11 21 11 21z"/></svg>',
+  bell: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>',
+  add: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>',
+};
+
 export default {
   name: 'CrewChatView',
   template: `
@@ -11,7 +25,7 @@ export default {
       <!-- Status Bar -->
       <div class="crew-status-bar" v-if="store.crewSession">
         <div class="crew-status-info">
-          <span class="crew-status-icon">🤖</span>
+          <span class="crew-status-icon" v-html="icons.crew"></span>
           <span class="crew-status-goal">{{ store.crewSession.goal }}</span>
         </div>
         <div class="crew-status-meta">
@@ -24,27 +38,35 @@ export default {
               {{ role.icon }}
             </span>
             <!-- 添加角色按钮 -->
-            <button class="crew-add-role-btn" @click="showAddRole = true" title="添加角色">+</button>
+            <button class="crew-add-role-btn" @click="showAddRole = true" title="添加角色">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+            </button>
           </span>
           <span class="crew-status-state" :class="statusClass">{{ statusText }}</span>
-          <span class="crew-status-rounds" v-if="store.crewStatus">轮次 {{ store.crewStatus.round }}/{{ store.crewStatus.maxRounds }}</span>
+          <span class="crew-status-rounds" v-if="store.crewStatus">{{ store.crewStatus.round }}/{{ store.crewStatus.maxRounds }}</span>
           <span class="crew-status-cost" v-if="store.crewStatus">\${{ (store.crewStatus.costUsd || 0).toFixed(3) }}</span>
         </div>
         <div class="crew-controls">
           <div class="crew-control-dropdown" v-if="controlOpen" @click.stop>
-            <button class="crew-control-item" @click="controlAction('pause')" v-if="store.crewStatus?.status === 'running'">⏸️ 暂停全部</button>
-            <button class="crew-control-item" @click="controlAction('resume')" v-if="store.crewStatus?.status === 'paused'">▶️ 恢复</button>
+            <button class="crew-control-item" @click="controlAction('pause')" v-if="store.crewStatus?.status === 'running'">
+              <span class="crew-control-icon" v-html="icons.pause"></span> 暂停全部
+            </button>
+            <button class="crew-control-item" @click="controlAction('resume')" v-if="store.crewStatus?.status === 'paused'">
+              <span class="crew-control-icon" v-html="icons.play"></span> 恢复
+            </button>
             <div class="crew-control-divider" v-if="store.crewSession?.roles?.length > 0"></div>
             <button class="crew-control-item danger" v-for="role in store.crewSession?.roles" :key="role.name" @click="controlAction('stop_role', role.name)">
-              🛑 停止 {{ role.displayName }}
+              <span class="crew-control-icon" v-html="icons.stop"></span> 停止 {{ role.displayName }}
             </button>
             <div class="crew-control-divider"></div>
-            <button class="crew-control-item danger" @click="controlAction('stop_all')">❌ 终止 Session</button>
+            <button class="crew-control-item danger" @click="controlAction('stop_all')">
+              <span class="crew-control-icon" v-html="icons.close"></span> 终止 Session
+            </button>
           </div>
           <button class="crew-control-btn" @click.stop="controlOpen = !controlOpen" title="控制">
-            <span v-if="store.crewStatus?.status === 'running'">⏹</span>
-            <span v-else-if="store.crewStatus?.status === 'paused'">▶️</span>
-            <span v-else>⚙️</span>
+            <span v-if="store.crewStatus?.status === 'running'" v-html="icons.stop"></span>
+            <span v-else-if="store.crewStatus?.status === 'paused'" v-html="icons.play"></span>
+            <span v-else v-html="icons.settings"></span>
           </button>
         </div>
       </div>
@@ -52,13 +74,15 @@ export default {
       <!-- Role Context Menu -->
       <div v-if="roleMenuVisible" class="crew-role-context-menu" :style="roleMenuStyle" @click.stop>
         <div class="crew-role-menu-header">{{ roleMenuTarget?.icon }} {{ roleMenuTarget?.displayName }}</div>
-        <button class="crew-role-menu-item" @click="removeRole(roleMenuTarget?.name)">🗑️ 移除</button>
+        <button class="crew-role-menu-item" @click="removeRole(roleMenuTarget?.name)">
+          <span class="crew-control-icon" v-html="icons.trash"></span> 移除
+        </button>
       </div>
 
       <!-- Messages -->
       <div class="crew-messages" ref="messagesRef">
         <div v-if="store.crewMessages.length === 0" class="crew-empty">
-          <div class="crew-empty-icon">🤖</div>
+          <div class="crew-empty-icon" v-html="icons.crew.replace(/16/g, '48')"></div>
           <div class="crew-empty-text" v-if="store.crewSession">等待角色开始工作...</div>
           <div class="crew-empty-text" v-else>等待 Crew Session 启动...</div>
         </div>
@@ -80,7 +104,7 @@ export default {
 
             <!-- 工具调用 -->
             <div v-else-if="msg.type === 'tool'" class="crew-msg-tool">
-              <span class="crew-tool-icon">⚡</span>
+              <span class="crew-tool-icon" v-html="icons.bolt"></span>
               <span class="crew-tool-name">{{ msg.toolName }}</span>
               <span class="crew-tool-detail">{{ msg.content }}</span>
             </div>
@@ -97,7 +121,7 @@ export default {
 
             <!-- 需要人工介入 -->
             <div v-else-if="msg.type === 'human_needed'" class="crew-msg-human-needed">
-              🔔 {{ msg.content }}
+              <span class="crew-control-icon" v-html="icons.bell"></span> {{ msg.content }}
             </div>
           </div>
         </div>
@@ -119,7 +143,9 @@ export default {
         </div>
         <div class="crew-input-row">
           <textarea class="crew-input" v-model="inputText" @keydown.enter.exact="sendMessage" placeholder="输入消息... (@角色名 发送给指定角色)" rows="1" ref="inputRef"></textarea>
-          <button class="crew-send-btn" @click="sendMessage" :disabled="!inputText.trim()">发送</button>
+          <button class="crew-send-btn" @click="sendMessage" :disabled="!inputText.trim()" title="发送">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.5 13V3L13 8L3.5 13Z"/></svg>
+          </button>
         </div>
       </div>
 
@@ -138,7 +164,7 @@ export default {
             </div>
             <div class="crew-add-role-field">
               <label>图标</label>
-              <input v-model="newRole.icon" placeholder="如 👨‍💻" style="width: 60px" />
+              <input v-model="newRole.icon" placeholder="如 PM" style="width: 60px" />
             </div>
             <div class="crew-add-role-field">
               <label>角色描述</label>
@@ -184,6 +210,7 @@ export default {
 
   data() {
     return {
+      icons: ICONS,
       inputText: '',
       controlOpen: false,
       showAddRole: false,
@@ -265,13 +292,13 @@ export default {
   computed: {
     statusText() {
       const status = this.store.crewStatus?.status;
-      if (status === 'running') return '🟢 运行中';
-      if (status === 'paused') return '⏸️ 已暂停';
-      if (status === 'waiting_human') return '🔔 等待人工';
-      if (status === 'completed') return '✅ 已完成';
-      if (status === 'stopped') return '🛑 已停止';
-      if (status === 'max_rounds_reached') return '⚠️ 达到最大轮次';
-      return '⏳ 初始化中';
+      if (status === 'running') return '运行中';
+      if (status === 'paused') return '已暂停';
+      if (status === 'waiting_human') return '等待人工';
+      if (status === 'completed') return '已完成';
+      if (status === 'stopped') return '已停止';
+      if (status === 'max_rounds_reached') return '达到上限';
+      return '初始化';
     },
     statusClass() {
       const status = this.store.crewStatus?.status;

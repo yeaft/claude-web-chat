@@ -9,31 +9,31 @@ export default {
     <div class="crew-config-overlay" @click.self="$emit('close')">
       <div class="crew-config-panel">
         <div class="crew-config-header">
-          <h2>🤖 新建 Crew Session</h2>
+          <h2>新建 Crew Session</h2>
           <button class="crew-config-close" @click="$emit('close')">&times;</button>
         </div>
 
         <div class="crew-config-body">
           <!-- 工作区配置 -->
           <div class="crew-config-section">
-            <label class="crew-config-label">📁 开发工作区</label>
+            <label class="crew-config-label">开发工作区</label>
             <input class="crew-config-input" v-model="projectDir" placeholder="/home/user/projects/app" />
           </div>
 
           <div class="crew-config-section">
-            <label class="crew-config-label">📂 共享内容区</label>
+            <label class="crew-config-label">共享内容区</label>
             <input class="crew-config-input" v-model="sharedDir" placeholder=".crew (相对于项目目录)" />
           </div>
 
           <!-- 任务目标 -->
           <div class="crew-config-section">
-            <label class="crew-config-label">📋 任务目标</label>
+            <label class="crew-config-label">任务目标</label>
             <textarea class="crew-config-textarea" v-model="goal" placeholder="描述你想让团队完成的目标..." rows="3"></textarea>
           </div>
 
           <!-- 角色配置 -->
           <div class="crew-config-section">
-            <label class="crew-config-label">👥 角色配置</label>
+            <label class="crew-config-label">角色配置</label>
 
             <div class="crew-roles-list">
               <div v-for="(role, idx) in roles" :key="idx" class="crew-role-item" :class="{ 'is-decision-maker': role.isDecisionMaker }">
@@ -47,7 +47,7 @@ export default {
                   </select>
                   <label class="crew-role-decision-label" :title="role.isDecisionMaker ? '决策者' : '设为决策者'">
                     <input type="radio" name="decisionMaker" :checked="role.isDecisionMaker" @change="setDecisionMaker(idx)" />
-                    ⭐
+                    <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
                   </label>
                   <button class="crew-role-remove" @click="removeRole(idx)">&times;</button>
                 </div>
@@ -64,7 +64,7 @@ export default {
 
           <!-- 角色模板 -->
           <div class="crew-config-section">
-            <label class="crew-config-label">📦 角色模板</label>
+            <label class="crew-config-label">角色模板</label>
             <div class="crew-template-btns">
               <button class="crew-template-btn" @click="loadTemplate('dev')" :class="{ active: currentTemplate === 'dev' }">软件开发</button>
               <button class="crew-template-btn" @click="loadTemplate('writing')" :class="{ active: currentTemplate === 'writing' }">写作团队</button>
@@ -73,7 +73,7 @@ export default {
 
           <!-- 高级设置 -->
           <div class="crew-config-section">
-            <label class="crew-config-label">🎛️ 高级</label>
+            <label class="crew-config-label">高级设置</label>
             <div class="crew-config-row">
               <label>最大轮次:</label>
               <input class="crew-config-input-sm" type="number" v-model.number="maxRounds" min="1" max="100" />
@@ -84,7 +84,7 @@ export default {
         <div class="crew-config-footer">
           <span class="crew-config-hint" v-if="roles.length === 0">不添加角色也可以启动，之后在群聊中动态添加</span>
           <button class="crew-cancel-btn" @click="$emit('close')">取消</button>
-          <button class="crew-start-btn" @click="startSession" :disabled="!canStart">🚀 启动</button>
+          <button class="crew-start-btn" @click="startSession" :disabled="!canStart">启动 Session</button>
         </div>
       </div>
     </div>
