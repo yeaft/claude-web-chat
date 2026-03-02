@@ -868,22 +868,26 @@ export default {
     };
     window.addEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
 
-    // 监听 agent 列表更新，检查重启中的 agent 是否已恢复
+    // 监听 agent 列表更新，检查重启中/升级中的 agent 是否已恢复
     this._checkRestartingAgents = this.$watch(
       () => this.store.agents.map(a => a.id + ':' + a.online),
       () => {
         for (const agentId of Object.keys(this.restartingAgents)) {
           const agent = this.store.agents.find(a => a.id === agentId);
-          if (agent?.online) {
+          // agent 上线了，或者 agent 已消失（可能以新 ID 重连）则清除
+          if (agent?.online || !agent) {
             delete this.restartingAgents[agentId];
           }
         }
         for (const agentId of Object.keys(this.upgradingAgents)) {
           const agent = this.store.agents.find(a => a.id === agentId);
-          if (agent?.online) {
+          const info = this.upgradingAgents[agentId];
+          const elapsed = Date.now() - (info?.since || 0);
+          // agent 已消失（可能以新 ID 重连），或超过 2 分钟，强制清除
+          if (!agent || elapsed > 120000) {
+            delete this.upgradingAgents[agentId];
+          } else if (agent.online) {
             // Agent came back online — delay clearing to ensure user sees the status
-            const info = this.upgradingAgents[agentId];
-            const elapsed = Date.now() - (info?.since || 0);
             const minDisplayMs = 3000;
             if (elapsed < minDisplayMs) {
               setTimeout(() => {
