@@ -4888,7 +4888,7 @@ body {
 .resume-modal {
   width: 90%;
   max-width: 500px;
-  max-height: 80vh;
+  height: 75vh;
   display: flex;
   flex-direction: column;
   border-radius: 16px;

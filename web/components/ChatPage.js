@@ -508,14 +508,7 @@ export default {
       const selectedAgent = currentAgentOnline || onlineAgents[0];
       if (selectedAgent) {
         this.convModalAgent = selectedAgent.id;
-        this.store.listFoldersForAgent(this.convModalAgent).then(() => {
-          if (this.store.folders.length > 0) {
-            this.convModalWorkDir = this.store.folders[0].path;
-            // 自动加载 sessions
-            this.store.listHistorySessionsForAgent(this.convModalAgent, this.convModalWorkDir);
-            this.historyLoaded = true;
-          }
-        });
+        this.store.listFoldersForAgent(this.convModalAgent);
       }
     },
     openConversationModalResume() {
@@ -533,13 +526,7 @@ export default {
         this.convModalWorkDir = '';
         this.selectedResumeSession = null;
         this.historyLoaded = false;
-        this.store.listFoldersForAgent(this.convModalAgent).then(() => {
-          if (this.store.folders.length > 0) {
-            this.convModalWorkDir = this.store.folders[0].path;
-            this.store.listHistorySessionsForAgent(this.convModalAgent, this.convModalWorkDir);
-            this.historyLoaded = true;
-          }
-        });
+        this.store.listFoldersForAgent(this.convModalAgent);
       }
     },
     onConvModalWorkDirInput() {
