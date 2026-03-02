@@ -88,6 +88,7 @@ export const useChatStore = defineStore('chat', {
     crewSessions: {},             // { [sessionId]: { id, projectDir, sharedDir, goal, roles, decisionMaker, maxRounds } }
     crewMessagesMap: {},          // { [sessionId]: messages[] }
     crewStatuses: {},             // { [sessionId]: { status, currentRole, round, maxRounds, costUsd, activeRoles } }
+    crewSessionsList: [],         // 从索引加载的所有 crew sessions（含已停止的）
     crewConfigOpen: false,        // crew 配置面板是否打开
     crewConfigMode: 'create',    // 'create' | 'edit'
   }),
@@ -343,6 +344,16 @@ export const useChatStore = defineStore('chat', {
         agentId: this.currentAgent
       });
       this.crewConfigOpen = false;
+    },
+
+    resumeCrewSession(sessionId) {
+      // 初始化 crew 消息存储
+      if (!this.crewMessagesMap[sessionId]) this.crewMessagesMap[sessionId] = [];
+      this.sendWsMessage({
+        type: 'resume_crew_session',
+        sessionId,
+        agentId: this.currentAgent
+      });
     },
 
     sendCrewMessage(content, targetRole = null) {

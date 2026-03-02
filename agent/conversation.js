@@ -1,6 +1,7 @@
 import ctx from './context.js';
 import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
+import { crewSessions, loadCrewIndex } from './crew.js';
 
 // 不支持的斜杠命令（真正需要交互式 CLI 的命令）
 const UNSUPPORTED_SLASH_COMMANDS = ['/help', '/bug', '/login', '/logout', '/terminal-setup', '/vim', '/config'];
@@ -33,8 +34,8 @@ export function parseSlashCommand(message) {
   return { type: null, message };
 }
 
-// 发送 conversation 列表
-export function sendConversationList() {
+// 发送 conversation 列表（含活跃 crew sessions + 索引中已停止的 crew sessions）
+export async function sendConversationList() {
   const list = [];
   for (const [id, state] of ctx.conversations) {
     list.push({
@@ -47,7 +48,41 @@ export function sendConversationList() {
       username: state.username
     });
   }
-
+  // 追加活跃 crew sessions
+  const activeCrewIds = new Set();
+  for (const [id, session] of crewSessions) {
+    activeCrewIds.add(id);
+    list.push({
+      id,
+      workDir: session.projectDir,
+      createdAt: session.createdAt,
+      processing: session.status === 'running',
+      userId: session.userId,
+      username: session.username,
+      type: 'crew',
+      goal: session.goal
+    });
+  }
+  // 追加索引中已停止的 crew sessions（不重复）
+  try {
+    const index = await loadCrewIndex();
+    for (const entry of index) {
+      if (!activeCrewIds.has(entry.sessionId)) {
+        list.push({
+          id: entry.sessionId,
+          workDir: entry.projectDir,
+          createdAt: entry.createdAt,
+          processing: false,
+          userId: entry.userId,
+          username: entry.username,
+          type: 'crew',
+          status: entry.status
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('[sendConversationList] Failed to load crew index:', e.message);
+  }
   ctx.sendToServer({
     type: 'conversation_list',
     conversations: list

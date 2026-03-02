@@ -15,6 +15,7 @@
 import { query, Stream } from './sdk/index.js';
 import { promises as fs } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import ctx from './context.js';
 
 // =====================================================================
@@ -24,8 +25,178 @@ import ctx from './context.js';
 /** @type {Map<string, CrewSession>} */
 const crewSessions = new Map();
 
-// 导出供 connection.js 使用
+// 导出供 connection.js / conversation.js 使用
 export { crewSessions };
+
+// =====================================================================
+// Crew Session Index (~/.claude/crew-sessions.json)
+// =====================================================================
+
+const CREW_INDEX_PATH = join(homedir(), '.claude', 'crew-sessions.json');
+
+export async function loadCrewIndex() {
+  try { return JSON.parse(await fs.readFile(CREW_INDEX_PATH, 'utf-8')); }
+  catch { return []; }
+}
+
+async function saveCrewIndex(index) {
+  await fs.mkdir(join(homedir(), '.claude'), { recursive: true });
+  await fs.writeFile(CREW_INDEX_PATH, JSON.stringify(index, null, 2));
+}
+
+function sessionToIndexEntry(session) {
+  return {
+    sessionId: session.id,
+    projectDir: session.projectDir,
+    sharedDir: session.sharedDir,
+    status: session.status,
+    createdAt: session.createdAt,
+    updatedAt: Date.now()
+  };
+}
+
+async function upsertCrewIndex(session) {
+  const index = await loadCrewIndex();
+  const entry = sessionToIndexEntry(session);
+  const idx = index.findIndex(e => e.sessionId === session.id);
+  if (idx >= 0) index[idx] = entry; else index.push(entry);
+  await saveCrewIndex(index);
+}
+
+// =====================================================================
+// Session Metadata (.crew/session.json)
+// =====================================================================
+
+async function saveSessionMeta(session) {
+  const meta = {
+    sessionId: session.id,
+    projectDir: session.projectDir,
+    sharedDir: session.sharedDir,
+    goal: session.goal,
+    status: session.status,
+    roles: Array.from(session.roles.values()).map(r => ({
+      name: r.name, displayName: r.displayName, icon: r.icon,
+      description: r.description, isDecisionMaker: r.isDecisionMaker || false
+    })),
+    decisionMaker: session.decisionMaker,
+    maxRounds: session.maxRounds,
+    round: session.round,
+    createdAt: session.createdAt,
+    updatedAt: Date.now(),
+    userId: session.userId,
+    username: session.username
+  };
+  await fs.writeFile(join(session.sharedDir, 'session.json'), JSON.stringify(meta, null, 2));
+}
+
+async function loadSessionMeta(sharedDir) {
+  try { return JSON.parse(await fs.readFile(join(sharedDir, 'session.json'), 'utf-8')); }
+  catch { return null; }
+}
+
+// =====================================================================
+// List & Resume Crew Sessions
+// =====================================================================
+
+/**
+ * 列出所有 crew sessions（从索引文件 + 活跃 sessions 合并）
+ */
+export async function handleListCrewSessions(msg) {
+  const { requestId, _requestClientId } = msg;
+  const index = await loadCrewIndex();
+
+  // 用活跃 session 更新实时状态
+  for (const entry of index) {
+    const active = crewSessions.get(entry.sessionId);
+    if (active) {
+      entry.status = active.status;
+    }
+  }
+
+  ctx.sendToServer({
+    type: 'crew_sessions_list',
+    requestId,
+    _requestClientId,
+    sessions: index
+  });
+}
+
+/**
+ * 恢复已停止的 crew session
+ */
+export async function resumeCrewSession(msg) {
+  const { sessionId, userId, username } = msg;
+
+  // 如果已经在活跃 sessions 中，直接返回状态
+  if (crewSessions.has(sessionId)) {
+    const session = crewSessions.get(sessionId);
+    sendStatusUpdate(session);
+    return;
+  }
+
+  // 从索引获取 sharedDir
+  const index = await loadCrewIndex();
+  const indexEntry = index.find(e => e.sessionId === sessionId);
+  if (!indexEntry) {
+    sendCrewMessage({ type: 'error', sessionId, message: 'Crew session not found in index' });
+    return;
+  }
+
+  // 从 session.json 加载详细元数据
+  const meta = await loadSessionMeta(indexEntry.sharedDir);
+  if (!meta) {
+    sendCrewMessage({ type: 'error', sessionId, message: 'Crew session metadata not found' });
+    return;
+  }
+
+  // 重建 session（跳过 initSharedDir，目录已存在）
+  const roles = meta.roles || [];
+  const decisionMaker = meta.decisionMaker || roles[0]?.name || null;
+  const session = {
+    id: sessionId,
+    projectDir: meta.projectDir,
+    sharedDir: meta.sharedDir || indexEntry.sharedDir,
+    goal: meta.goal,
+    roles: new Map(roles.map(r => [r.name, r])),
+    roleStates: new Map(),
+    decisionMaker,
+    status: 'waiting_human',
+    round: meta.round || 0,
+    maxRounds: meta.maxRounds || 20,
+    costUsd: 0,
+    messageHistory: [],
+    humanMessageQueue: [],
+    waitingHumanContext: null,
+    userId: userId || meta.userId,
+    username: username || meta.username,
+    createdAt: meta.createdAt || Date.now()
+  };
+  crewSessions.set(sessionId, session);
+
+  // 通知 server（复用 crew_session_created）
+  sendCrewMessage({
+    type: 'crew_session_created',
+    sessionId,
+    projectDir: session.projectDir,
+    sharedDir: session.sharedDir,
+    goal: session.goal,
+    roles: roles.map(r => ({
+      name: r.name, displayName: r.displayName, icon: r.icon,
+      description: r.description, isDecisionMaker: r.isDecisionMaker || false
+    })),
+    decisionMaker,
+    maxRounds: session.maxRounds,
+    userId: session.userId,
+    username: session.username
+  });
+  sendStatusUpdate(session);
+
+  // 更新索引和 session.json
+  await upsertCrewIndex(session);
+  await saveSessionMeta(session);
+
+  console.log(`[Crew] Session ${sessionId} resumed, waiting for human input`);
+}
 
 // =====================================================================
 // Session Lifecycle
@@ -103,6 +274,10 @@ export async function createCrewSession(msg) {
 
   // 发送状态
   sendStatusUpdate(session);
+
+  // 持久化到索引和 session.json
+  await upsertCrewIndex(session);
+  await saveSessionMeta(session);
 
   // 如果有预设角色，启动第一个
   if (roles.length > 0) {
@@ -402,7 +577,7 @@ async function createRoleQuery(session, roleName) {
     cwd: roleCwd,
     permissionMode: 'bypassPermissions',
     abort: abortController.signal,
-    model: role.model || 'sonnet',
+    model: role.model || undefined,
     appendSystemPrompt: systemPrompt
   };
 
@@ -1022,4 +1197,8 @@ function sendStatusUpdate(session) {
       .filter(([, s]) => s.turnActive)
       .map(([name]) => name)
   });
+
+  // 异步更新持久化
+  upsertCrewIndex(session).catch(e => console.warn('[Crew] Failed to update index:', e.message));
+  saveSessionMeta(session).catch(e => console.warn('[Crew] Failed to save session meta:', e.message));
 }

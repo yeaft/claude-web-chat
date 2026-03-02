@@ -301,6 +301,9 @@ async function handleAgentMessage(agentId, msg) {
           existing.claudeSessionId = conv.claudeSessionId || existing.claudeSessionId;
           existing.createdAt = conv.createdAt || existing.createdAt;
           if (conv.processing !== undefined) existing.processing = conv.processing;
+          // 保留 crew 相关字段
+          if (conv.type) existing.type = conv.type;
+          if (conv.goal) existing.goal = conv.goal;
           // ★ Security: 不信任 agent 上报的 userId/username，保留 server 端已有值
           // 仅在 server 端无值时，从 DB 或 agent.ownerId 补充
           if (!existing.userId) {
@@ -793,6 +796,11 @@ async function handleAgentMessage(agentId, msg) {
 
     case 'crew_role_removed':
       await forwardToClients(agentId, msg.sessionId, msg);
+      break;
+
+    case 'crew_sessions_list':
+      // 定向转发给请求者（参照 folders_list）
+      await notifyConversationUpdate(agentId, msg);
       break;
 
     // Terminal messages (forward to web clients)

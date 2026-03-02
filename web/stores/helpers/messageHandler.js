@@ -394,18 +394,31 @@ export function handleMessage(store, msg) {
     }
 
     case 'history_sessions_list':
+      if (msg.requestId && store._historySessionsRequestId && msg.requestId !== store._historySessionsRequestId) {
+        console.log('[history_sessions_list] Stale response ignored');
+        break;
+      }
       store.historySessions = msg.sessions || [];
       store.historySessionsLoading = false;
       break;
 
     case 'folders_list':
-      console.log('[folders_list] Received:', msg.folders?.length || 0, 'folders');
+      console.log('[folders_list] Received:', msg.folders?.length || 0, 'folders, requestId:', msg.requestId);
+      // 忽略过期的请求（竞态条件：快速切换 agent 时旧请求晚到）
+      if (msg.requestId && store._foldersRequestId && msg.requestId !== store._foldersRequestId) {
+        console.log('[folders_list] Stale response ignored, expected:', store._foldersRequestId);
+        break;
+      }
       store.folders = msg.folders || [];
       store.foldersLoading = false;
       if (store._foldersResolve) {
         store._foldersResolve();
         store._foldersResolve = null;
       }
+      break;
+
+    case 'crew_sessions_list':
+      store.crewSessionsList = msg.sessions || [];
       break;
 
     case 'conversation_refresh':

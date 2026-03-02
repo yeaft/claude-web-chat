@@ -160,12 +160,14 @@ export function listHistorySessions(store, workDir) {
     store.historySessionsLoading = false;
     return;
   }
+  const requestId = Date.now().toString();
+  store._historySessionsRequestId = requestId;
   store.historySessionsLoading = true;
   store.historySessions = [];
   store.sendWsMessage({
     type: 'list_history_sessions',
     workDir,
-    requestId: Date.now().toString()
+    requestId
   });
 }
 
@@ -177,6 +179,9 @@ export function listFolders(store) {
   store.foldersLoading = true;
   store.folders = [];
 
+  const requestId = Date.now().toString();
+  store._foldersRequestId = requestId;
+
   return new Promise((resolve) => {
     // 如果有旧的 pending resolve，先 resolve 它
     if (store._foldersResolve) {
@@ -185,7 +190,7 @@ export function listFolders(store) {
     store._foldersResolve = resolve;
     store.sendWsMessage({
       type: 'list_folders',
-      requestId: Date.now().toString()
+      requestId
     });
     setTimeout(() => {
       if (store._foldersResolve === resolve) {
@@ -205,6 +210,9 @@ export function listFoldersForAgent(store, agentId) {
   store.foldersLoading = true;
   store.folders = [];
 
+  const requestId = Date.now().toString();
+  store._foldersRequestId = requestId;
+
   return new Promise((resolve) => {
     if (store._foldersResolve) {
       store._foldersResolve();
@@ -213,7 +221,7 @@ export function listFoldersForAgent(store, agentId) {
     store.sendWsMessage({
       type: 'list_folders',
       agentId,
-      requestId: Date.now().toString()
+      requestId
     });
     setTimeout(() => {
       if (store._foldersResolve === resolve) {
@@ -235,13 +243,15 @@ export function listHistorySessionsForAgent(store, agentId, workDir) {
     store.historySessionsLoading = false;
     return;
   }
+  const requestId = Date.now().toString();
+  store._historySessionsRequestId = requestId;
   store.historySessionsLoading = true;
   store.historySessions = [];
   store.sendWsMessage({
     type: 'list_history_sessions',
     agentId,
     workDir,
-    requestId: Date.now().toString()
+    requestId
   });
 }
 

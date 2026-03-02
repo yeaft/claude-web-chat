@@ -830,5 +830,30 @@ async function handleWebMessage(clientId, msg) {
       });
       break;
     }
+
+    case 'list_crew_sessions': {
+      const listCrewAgentId = msg.agentId || client.currentAgent;
+      if (!listCrewAgentId) break;
+      if (!await checkAgentAccess(listCrewAgentId)) break;
+      await forwardToAgent(listCrewAgentId, {
+        type: 'list_crew_sessions',
+        requestId: msg.requestId,
+        _requestClientId: clientId
+      });
+      break;
+    }
+
+    case 'resume_crew_session': {
+      const resumeCrewAgentId = msg.agentId || client.currentAgent;
+      if (!await checkAgentAccess(resumeCrewAgentId)) break;
+      client.currentAgent = resumeCrewAgentId;
+      await forwardToAgent(resumeCrewAgentId, {
+        type: 'resume_crew_session',
+        sessionId: msg.sessionId,
+        userId: client.userId,
+        username: client.username
+      });
+      break;
+    }
   }
 }
