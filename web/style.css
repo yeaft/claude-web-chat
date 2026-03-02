@@ -9968,73 +9968,93 @@ body {
    ===================================================================== */
 
 /* Sidebar Crew button */
-.crew-nav-item.active {
-  background: var(--session-active);
-  color: var(--accent-blue);
-}
 
-/* Crew Mode Header (above main content) */
-.crew-mode-header {
+/* Sidebar Crew conversation item distinction */
+.session-item-crew .title {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 16px;
-  height: 48px;
-  min-height: 48px;
-  background: var(--bg-main);
-  box-sizing: border-box;
+  gap: 4px;
 }
 
-.crew-back-btn {
-  width: 34px;
-  height: 34px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-secondary);
-  transition: background 0.15s, color 0.15s;
+.crew-conv-icon {
   flex-shrink: 0;
-  font-size: 14px;
+  color: var(--accent-blue);
+  opacity: 0.7;
 }
 
-.crew-back-btn:hover {
-  background: var(--sidebar-hover);
-  color: var(--text-primary);
+.session-item-crew.active .crew-conv-icon {
+  opacity: 1;
 }
 
-.crew-mode-title {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-primary);
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: center;
+/* Crew config toggle in header (matches mcp-toggle) */
+.crew-config-toggle.crew-running {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
 }
 
-.crew-new-btn {
-  margin-left: auto;
-  background: transparent;
-  color: var(--text-secondary);
-  border: 1px solid var(--border-color);
-  padding: 6px 14px;
-  border-radius: 10px;
-  cursor: pointer;
+.crew-config-toggle.crew-paused {
+  color: var(--text-warning, #f59e0b);
+  border-color: var(--text-warning, #f59e0b);
+}
+
+.crew-config-toggle.crew-waiting {
+  color: var(--text-warning, #f59e0b);
+  border-color: var(--text-warning, #f59e0b);
+}
+
+.crew-config-toggle.crew-stopped {
+  color: var(--text-muted);
+  border-color: var(--border-color);
+}
+
+/* Crew config panel: Session controls (edit mode) */
+.crew-config-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.crew-config-status-info {
+  display: flex;
+  gap: 16px;
   font-size: 13px;
-  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.crew-config-status-info strong {
+  color: var(--text-primary);
+}
+
+.crew-config-control-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.crew-control-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  background: var(--bg-main);
+  color: var(--text-primary);
   transition: all 0.15s;
 }
 
-.crew-new-btn:hover {
+.crew-control-action-btn:hover {
   background: var(--sidebar-hover);
-  color: var(--text-primary);
-  border-color: var(--text-muted);
+}
+
+.crew-control-action-btn.danger {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.crew-control-action-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
 }
 
 /* Crew Chat View */

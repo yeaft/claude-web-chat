@@ -139,7 +139,7 @@ export default {
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
               <span>{{ $t('chat.sidebar.resumeConv') }}</span>
             </button>
-            <button class="sidebar-nav-item crew-nav-item" :class="{ active: store.crewMode }" @click="openCrewMode" :disabled="crewCapableAgentCount === 0" :title="crewCapableAgentCount === 0 ? 'No agent supports Crew mode (requires Claude CLI)' : 'Crew'">
+            <button class="sidebar-nav-item crew-nav-item" @click="newCrewSession" :disabled="crewCapableAgentCount === 0" :title="crewCapableAgentCount === 0 ? 'No agent supports Crew mode (requires Claude CLI)' : 'New Crew Session'">
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
               <span>Crew</span>
             </button>
@@ -153,13 +153,14 @@ export default {
             v-for="conv in store.conversations"
             :key="conv.id"
             class="session-item"
-            :class="{ active: conv.id === store.currentConversation, processing: store.isConversationProcessing(conv.id) }"
+            :class="{ active: conv.id === store.currentConversation, processing: store.isConversationProcessing(conv.id), 'session-item-crew': conv.isCrew }"
             @click="selectConversation(conv.id, conv.agentId)"
           >
             <div class="session-item-header">
               <div class="title" :title="getConversationFullTitle(conv)">
                 <span v-if="store.isConversationProcessing(conv.id)" class="processing-dot"></span>
-                {{ getConversationTitle(conv) }}
+                <svg v-if="conv.isCrew" class="crew-conv-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+                {{ conv.isCrew ? getCrewTitle(conv) : getConversationTitle(conv) }}
               </div>
               <span class="session-time">{{ getConversationTime(conv) }}</span>
               <button class="session-delete-btn" @click.stop="deleteConversation(conv.id, conv.agentId)" :title="$t('chat.sidebar.closeConv')">
@@ -204,13 +205,9 @@ export default {
 
       <!-- Main Chat Area (Right) -->
       <main class="main-content" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
-        <!-- Crew Mode -->
-        <template v-if="store.crewMode">
-          <div class="crew-mode-header">
-            <button class="crew-back-btn" @click="exitCrewMode">← 返回会话模式</button>
-            <span class="crew-mode-title">🤖 Crew 模式</span>
-            <button class="crew-new-btn" @click="store.crewConfigOpen = true" v-if="!store.crewSession">+ 新建 Session</button>
-          </div>
+        <!-- Crew Conversation -->
+        <template v-if="isCurrentCrewConversation">
+          <ChatHeader />
           <CrewChatView />
         </template>
         <!-- Normal Chat Mode -->
@@ -230,6 +227,9 @@ export default {
       <!-- Crew Config Panel -->
       <CrewConfigPanel
         v-if="store.crewConfigOpen"
+        :mode="store.crewConfigMode"
+        :session="store.currentCrewSession"
+        :status="store.currentCrewStatus"
         :defaultWorkDir="store.currentAgentInfo?.workDir || ''"
         @close="store.crewConfigOpen = false"
         @start="startCrewSession"
@@ -544,6 +544,9 @@ export default {
     crewCapableAgentCount() {
       return this.store.agents.filter(a => a.online && a.capabilities?.includes('crew')).length;
     },
+    isCurrentCrewConversation() {
+      return this.store.currentConversationIsCrew;
+    },
     currentAgentLatency() {
       if (!this.store.currentAgent) return null;
       const agent = this.store.agents.find(a => a.id === this.store.currentAgent);
@@ -577,7 +580,7 @@ export default {
   },
   methods: {
     // Crew mode methods
-    openCrewMode() {
+    newCrewSession() {
       // 优先选择支持 crew 的 agent
       if (!this.store.currentAgent) {
         const crewAgents = this.store.agents.filter(a => a.online && a.capabilities?.includes('crew'));
@@ -585,7 +588,6 @@ export default {
           this.store.selectAgent(crewAgents[0].id);
         }
       } else {
-        // 当前 agent 不支持 crew，切换到支持的
         const current = this.store.agents.find(a => a.id === this.store.currentAgent);
         if (!current?.capabilities?.includes('crew')) {
           const crewAgents = this.store.agents.filter(a => a.online && a.capabilities?.includes('crew'));
@@ -595,13 +597,6 @@ export default {
         }
       }
       this.store.enterCrewMode();
-    },
-    exitCrewMode() {
-      if (this.store.crewSession) {
-        if (!confirm('退出 Crew 模式将终止当前 Session，确定？')) return;
-        this.store.sendCrewControl('stop_all');
-      }
-      this.store.exitCrewMode();
     },
     startCrewSession(config) {
       this.store.createCrewSession(config);
@@ -791,7 +786,22 @@ export default {
       this.showMobileSidebar = false;
     },
     deleteConversation(conversationId, agentId) {
-      if (confirm(this.$t('chat.delete.confirm'))) {
+      const conv = this.store.conversations.find(c => c.id === conversationId);
+      const confirmMsg = conv?.isCrew ? '终止并关闭此 Crew Session？' : this.$t('chat.delete.confirm');
+      if (confirm(confirmMsg)) {
+        // Crew conversation 需要先终止 session
+        if (conv?.isCrew && this.store.crewSessions[conversationId]) {
+          this.store.sendWsMessage({
+            type: 'crew_control',
+            sessionId: conversationId,
+            action: 'stop_all',
+            agentId
+          });
+          // 清理 crew 数据
+          delete this.store.crewSessions[conversationId];
+          delete this.store.crewMessagesMap[conversationId];
+          delete this.store.crewStatuses[conversationId];
+        }
         this.store.deleteConversation(conversationId, agentId);
       }
     },
@@ -808,11 +818,18 @@ export default {
       return conv.id.slice(0, 8) + '...';
     },
     getConversationFullTitle(conv) {
+      if (conv.isCrew) {
+        return conv.goal || 'Crew Session';
+      }
       const cachedTitle = this.store.getConversationTitle(conv.id);
       if (cachedTitle && cachedTitle.length > 30) {
         return cachedTitle;
       }
       return undefined;
+    },
+    getCrewTitle(conv) {
+      const goal = conv.goal || this.store.crewSessions[conv.id]?.goal || 'Crew Session';
+      return goal.length > 30 ? goal.slice(0, 30) + '...' : goal;
     },
     getConversationTime(conv) {
       // 优先显示最后活动时间，其次创建时间

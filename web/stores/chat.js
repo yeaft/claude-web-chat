@@ -83,13 +83,13 @@ export const useChatStore = defineStore('chat', {
     slashCommands: [],
 
     // =====================
-    // Crew (multi-agent) 状态
+    // Crew (multi-agent) 状态 — 按 sessionId 存储，融入 conversation 体系
     // =====================
-    crewMode: false,              // 是否处于 crew 模式
-    crewSession: null,            // 当前 crew session 信息
-    crewMessages: [],             // crew 群聊消息
-    crewStatus: null,             // crew 状态 { status, currentRole, round, maxRounds, costUsd }
+    crewSessions: {},             // { [sessionId]: { id, projectDir, sharedDir, goal, roles, decisionMaker, maxRounds } }
+    crewMessagesMap: {},          // { [sessionId]: messages[] }
+    crewStatuses: {},             // { [sessionId]: { status, currentRole, round, maxRounds, costUsd, activeRoles } }
     crewConfigOpen: false,        // crew 配置面板是否打开
+    crewConfigMode: 'create',    // 'create' | 'edit'
   }),
 
   getters: {
@@ -160,6 +160,27 @@ export const useChatStore = defineStore('chat', {
       if (conv.disallowedTools === null || conv.disallowedTools === undefined) return false;
       if (conv.disallowedTools.length === 0) return true;
       return !conv.disallowedTools.some(t => t === 'mcp__*');
+    },
+    // 当前 conversation 是否是 Crew
+    currentConversationIsCrew: (state) => {
+      if (!state.currentConversation) return false;
+      const conv = state.conversations.find(c => c.id === state.currentConversation);
+      return conv?.isCrew === true;
+    },
+    // 当前 Crew session 信息
+    currentCrewSession: (state) => {
+      if (!state.currentConversation) return null;
+      return state.crewSessions[state.currentConversation] || null;
+    },
+    // 当前 Crew 状态
+    currentCrewStatus: (state) => {
+      if (!state.currentConversation) return null;
+      return state.crewStatuses[state.currentConversation] || null;
+    },
+    // 当前 Crew 消息列表
+    currentCrewMessages: (state) => {
+      if (!state.currentConversation) return [];
+      return state.crewMessagesMap[state.currentConversation] || [];
     }
   },
 
@@ -298,23 +319,19 @@ export const useChatStore = defineStore('chat', {
     // Crew (multi-agent) actions
     // =====================
     enterCrewMode() {
-      this.crewMode = true;
+      this.crewConfigMode = 'create';
       this.crewConfigOpen = true;
-      this.crewMessages = [];
-      this.crewSession = null;
-      this.crewStatus = null;
     },
 
-    exitCrewMode() {
-      this.crewMode = false;
-      this.crewConfigOpen = false;
-      this.crewSession = null;
-      this.crewMessages = [];
-      this.crewStatus = null;
+    openCrewConfig() {
+      this.crewConfigMode = 'edit';
+      this.crewConfigOpen = true;
     },
 
     createCrewSession(config) {
       const sessionId = 'crew_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      // 初始化 crew 消息存储
+      this.crewMessagesMap[sessionId] = [];
       this.sendWsMessage({
         type: 'create_crew_session',
         sessionId,
@@ -329,12 +346,15 @@ export const useChatStore = defineStore('chat', {
     },
 
     sendCrewMessage(content, targetRole = null) {
-      if (!this.crewSession) return;
+      const sessionId = this.currentConversation;
+      const session = this.crewSessions[sessionId];
+      if (!session) return;
       // 添加人的消息到本地显示
-      this.crewMessages.push({
+      if (!this.crewMessagesMap[sessionId]) this.crewMessagesMap[sessionId] = [];
+      this.crewMessagesMap[sessionId].push({
         id: Date.now(),
         role: 'human',
-        roleIcon: '👤',
+        roleIcon: 'H',
         roleName: '你',
         type: 'text',
         content,
@@ -343,7 +363,7 @@ export const useChatStore = defineStore('chat', {
       // 发送到 server
       this.sendWsMessage({
         type: 'crew_human_input',
-        sessionId: this.crewSession.id,
+        sessionId,
         content,
         targetRole,
         agentId: this.currentAgent
@@ -351,10 +371,12 @@ export const useChatStore = defineStore('chat', {
     },
 
     sendCrewControl(action, targetRole = null) {
-      if (!this.crewSession) return;
+      const sessionId = this.currentConversation;
+      const session = this.crewSessions[sessionId];
+      if (!session) return;
       this.sendWsMessage({
         type: 'crew_control',
-        sessionId: this.crewSession.id,
+        sessionId,
         action,
         targetRole,
         agentId: this.currentAgent
@@ -362,20 +384,22 @@ export const useChatStore = defineStore('chat', {
     },
 
     addCrewRole(role) {
-      if (!this.crewSession) return;
+      const sessionId = this.currentConversation;
+      if (!this.crewSessions[sessionId]) return;
       this.sendWsMessage({
         type: 'crew_add_role',
-        sessionId: this.crewSession.id,
+        sessionId,
         role,
         agentId: this.currentAgent
       });
     },
 
     removeCrewRole(roleName) {
-      if (!this.crewSession) return;
+      const sessionId = this.currentConversation;
+      if (!this.crewSessions[sessionId]) return;
       this.sendWsMessage({
         type: 'crew_remove_role',
-        sessionId: this.crewSession.id,
+        sessionId,
         roleName,
         agentId: this.currentAgent
       });
@@ -383,10 +407,17 @@ export const useChatStore = defineStore('chat', {
 
     handleCrewOutput(msg) {
       if (!msg) return;
+      const sid = msg.sessionId;
+
+      // 确保消息数组存在
+      const ensureMessages = (sessionId) => {
+        if (!this.crewMessagesMap[sessionId]) this.crewMessagesMap[sessionId] = [];
+        return this.crewMessagesMap[sessionId];
+      };
 
       if (msg.type === 'crew_session_created') {
-        this.crewSession = {
-          id: msg.sessionId,
+        this.crewSessions[sid] = {
+          id: sid,
           projectDir: msg.projectDir,
           sharedDir: msg.sharedDir,
           goal: msg.goal,
@@ -394,19 +425,28 @@ export const useChatStore = defineStore('chat', {
           decisionMaker: msg.decisionMaker,
           maxRounds: msg.maxRounds
         };
-        this.crewMessages.push({
+        ensureMessages(sid).push({
           id: Date.now(),
           role: 'system',
-          roleIcon: '⚙️',
+          roleIcon: 'S',
           roleName: '系统',
           type: 'system',
           content: `Crew Session 已创建，目标: ${msg.goal}`,
           timestamp: Date.now()
         });
+        // 更新 conversation 的 isCrew/goal 标记
+        const conv = this.conversations.find(c => c.id === sid);
+        if (conv) {
+          conv.isCrew = true;
+          conv.goal = msg.goal;
+        }
+        // 自动选中该 crew conversation
+        this.selectConversation(sid, this.currentAgent);
         return;
       }
 
       if (msg.type === 'crew_output') {
+        const messages = ensureMessages(sid);
         const crewMsg = {
           id: Date.now() + Math.random(),
           role: msg.role,
@@ -417,10 +457,8 @@ export const useChatStore = defineStore('chat', {
         };
 
         if (msg.outputType === 'text') {
-          // 流式文本：追加到最后一条同角色的消息
-          const lastMsg = this.crewMessages.length > 0 ? this.crewMessages[this.crewMessages.length - 1] : null;
+          const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
           if (lastMsg && lastMsg.role === msg.role && lastMsg.type === 'text' && lastMsg._streaming) {
-            // 追加文本
             const content = msg.data?.message?.content;
             if (content) {
               if (typeof content === 'string') {
@@ -435,7 +473,6 @@ export const useChatStore = defineStore('chat', {
             }
             return;
           }
-          // 新消息
           const content = msg.data?.message?.content;
           let text = '';
           if (typeof content === 'string') {
@@ -445,7 +482,7 @@ export const useChatStore = defineStore('chat', {
           }
           crewMsg.content = text;
           crewMsg._streaming = true;
-          this.crewMessages.push(crewMsg);
+          messages.push(crewMsg);
           return;
         }
 
@@ -454,7 +491,7 @@ export const useChatStore = defineStore('chat', {
           if (Array.isArray(content)) {
             for (const block of content) {
               if (block.type === 'tool_use') {
-                this.crewMessages.push({
+                messages.push({
                   ...crewMsg,
                   type: 'tool',
                   toolName: block.name,
@@ -468,7 +505,7 @@ export const useChatStore = defineStore('chat', {
         }
 
         if (msg.outputType === 'route') {
-          this.crewMessages.push({
+          messages.push({
             ...crewMsg,
             type: 'route',
             routeTo: msg.routeTo,
@@ -485,7 +522,7 @@ export const useChatStore = defineStore('chat', {
           } else if (Array.isArray(content)) {
             text = content.filter(b => b.type === 'text').map(b => b.text).join('');
           }
-          this.crewMessages.push({
+          messages.push({
             ...crewMsg,
             type: 'system',
             content: text
@@ -495,7 +532,7 @@ export const useChatStore = defineStore('chat', {
       }
 
       if (msg.type === 'crew_status') {
-        this.crewStatus = {
+        this.crewStatuses[sid] = {
           status: msg.status,
           currentRole: msg.currentRole,
           round: msg.round,
@@ -503,18 +540,17 @@ export const useChatStore = defineStore('chat', {
           costUsd: msg.costUsd,
           activeRoles: msg.activeRoles || []
         };
-        // 同步 roles 列表（角色变动后 status 会携带最新列表）
-        if (msg.roles && this.crewSession) {
-          this.crewSession.roles = msg.roles;
+        if (msg.roles && this.crewSessions[sid]) {
+          this.crewSessions[sid].roles = msg.roles;
         }
         return;
       }
 
       if (msg.type === 'crew_turn_completed') {
-        // 标记最后一条该角色的消息为非流式
-        for (let i = this.crewMessages.length - 1; i >= 0; i--) {
-          if (this.crewMessages[i].role === msg.role && this.crewMessages[i]._streaming) {
-            this.crewMessages[i]._streaming = false;
+        const messages = ensureMessages(sid);
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === msg.role && messages[i]._streaming) {
+            messages[i]._streaming = false;
             break;
           }
         }
@@ -522,10 +558,10 @@ export const useChatStore = defineStore('chat', {
       }
 
       if (msg.type === 'crew_human_needed') {
-        this.crewMessages.push({
+        ensureMessages(sid).push({
           id: Date.now(),
           role: 'system',
-          roleIcon: '🔔',
+          roleIcon: 'S',
           roleName: '系统',
           type: 'human_needed',
           fromRole: msg.fromRole,
@@ -536,22 +572,20 @@ export const useChatStore = defineStore('chat', {
       }
 
       if (msg.type === 'crew_role_added') {
-        // 更新 session 的 roles 列表
-        if (this.crewSession) {
-          this.crewSession.roles = [...(this.crewSession.roles || []), msg.role];
+        if (this.crewSessions[sid]) {
+          this.crewSessions[sid].roles = [...(this.crewSessions[sid].roles || []), msg.role];
           if (msg.decisionMaker) {
-            this.crewSession.decisionMaker = msg.decisionMaker;
+            this.crewSessions[sid].decisionMaker = msg.decisionMaker;
           }
         }
         return;
       }
 
       if (msg.type === 'crew_role_removed') {
-        // 更新 session 的 roles 列表
-        if (this.crewSession) {
-          this.crewSession.roles = (this.crewSession.roles || []).filter(r => r.name !== msg.roleName);
+        if (this.crewSessions[sid]) {
+          this.crewSessions[sid].roles = (this.crewSessions[sid].roles || []).filter(r => r.name !== msg.roleName);
           if (msg.decisionMaker !== undefined) {
-            this.crewSession.decisionMaker = msg.decisionMaker;
+            this.crewSessions[sid].decisionMaker = msg.decisionMaker;
           }
         }
         return;

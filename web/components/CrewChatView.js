@@ -23,14 +23,14 @@ export default {
   template: `
     <div class="crew-chat-view">
       <!-- Status Bar -->
-      <div class="crew-status-bar" v-if="store.crewSession">
+      <div class="crew-status-bar" v-if="store.currentCrewSession">
         <div class="crew-status-info">
           <span class="crew-status-icon" v-html="icons.crew"></span>
-          <span class="crew-status-goal">{{ store.crewSession.goal }}</span>
+          <span class="crew-status-goal">{{ store.currentCrewSession.goal }}</span>
         </div>
         <div class="crew-status-meta">
           <span class="crew-status-roles">
-            <span v-for="role in store.crewSession.roles" :key="role.name"
+            <span v-for="role in store.currentCrewSession.roles" :key="role.name"
               class="crew-role-badge"
               :class="{ active: isRoleActive(role.name), 'decision-maker': role.isDecisionMaker }"
               :title="role.displayName + (role.isDecisionMaker ? ' (决策者)' : '')"
@@ -43,19 +43,19 @@ export default {
             </button>
           </span>
           <span class="crew-status-state" :class="statusClass">{{ statusText }}</span>
-          <span class="crew-status-rounds" v-if="store.crewStatus">{{ store.crewStatus.round }}/{{ store.crewStatus.maxRounds }}</span>
-          <span class="crew-status-cost" v-if="store.crewStatus">\${{ (store.crewStatus.costUsd || 0).toFixed(3) }}</span>
+          <span class="crew-status-rounds" v-if="store.currentCrewStatus">{{ store.currentCrewStatus.round }}/{{ store.currentCrewStatus.maxRounds }}</span>
+          <span class="crew-status-cost" v-if="store.currentCrewStatus">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
         </div>
         <div class="crew-controls">
           <div class="crew-control-dropdown" v-if="controlOpen" @click.stop>
-            <button class="crew-control-item" @click="controlAction('pause')" v-if="store.crewStatus?.status === 'running'">
+            <button class="crew-control-item" @click="controlAction('pause')" v-if="store.currentCrewStatus?.status === 'running'">
               <span class="crew-control-icon" v-html="icons.pause"></span> 暂停全部
             </button>
-            <button class="crew-control-item" @click="controlAction('resume')" v-if="store.crewStatus?.status === 'paused'">
+            <button class="crew-control-item" @click="controlAction('resume')" v-if="store.currentCrewStatus?.status === 'paused'">
               <span class="crew-control-icon" v-html="icons.play"></span> 恢复
             </button>
-            <div class="crew-control-divider" v-if="store.crewSession?.roles?.length > 0"></div>
-            <button class="crew-control-item danger" v-for="role in store.crewSession?.roles" :key="role.name" @click="controlAction('stop_role', role.name)">
+            <div class="crew-control-divider" v-if="store.currentCrewSession?.roles?.length > 0"></div>
+            <button class="crew-control-item danger" v-for="role in store.currentCrewSession?.roles" :key="role.name" @click="controlAction('stop_role', role.name)">
               <span class="crew-control-icon" v-html="icons.stop"></span> 停止 {{ role.displayName }}
             </button>
             <div class="crew-control-divider"></div>
@@ -64,8 +64,8 @@ export default {
             </button>
           </div>
           <button class="crew-control-btn" @click.stop="controlOpen = !controlOpen" title="控制">
-            <span v-if="store.crewStatus?.status === 'running'" v-html="icons.stop"></span>
-            <span v-else-if="store.crewStatus?.status === 'paused'" v-html="icons.play"></span>
+            <span v-if="store.currentCrewStatus?.status === 'running'" v-html="icons.stop"></span>
+            <span v-else-if="store.currentCrewStatus?.status === 'paused'" v-html="icons.play"></span>
             <span v-else v-html="icons.settings"></span>
           </button>
         </div>
@@ -81,13 +81,13 @@ export default {
 
       <!-- Messages -->
       <div class="crew-messages" ref="messagesRef">
-        <div v-if="store.crewMessages.length === 0" class="crew-empty">
+        <div v-if="store.currentCrewMessages.length === 0" class="crew-empty">
           <div class="crew-empty-icon" v-html="icons.crew.replace(/16/g, '48')"></div>
-          <div class="crew-empty-text" v-if="store.crewSession">等待角色开始工作...</div>
+          <div class="crew-empty-text" v-if="store.currentCrewSession">等待角色开始工作...</div>
           <div class="crew-empty-text" v-else>等待 Crew Session 启动...</div>
         </div>
 
-        <div v-for="msg in store.crewMessages" :key="msg.id" class="crew-message" :class="'crew-msg-' + msg.type + ' crew-role-' + msg.role">
+        <div v-for="msg in store.currentCrewMessages" :key="msg.id" class="crew-message" :class="'crew-msg-' + msg.type + ' crew-role-' + msg.role">
           <!-- 角色标识 -->
           <div class="crew-msg-avatar">
             <span class="crew-msg-icon">{{ msg.roleIcon }}</span>
@@ -136,8 +136,8 @@ export default {
 
       <!-- Input -->
       <div class="crew-input-area">
-        <div class="crew-input-hints" v-if="store.crewSession">
-          <span class="crew-at-hint" v-for="role in store.crewSession.roles" :key="role.name" @click="insertAt(role.name)" :title="role.displayName">
+        <div class="crew-input-hints" v-if="store.currentCrewSession">
+          <span class="crew-at-hint" v-for="role in store.currentCrewSession.roles" :key="role.name" @click="insertAt(role.name)" :title="role.displayName">
             @{{ role.displayName }}
           </span>
         </div>
@@ -291,7 +291,7 @@ export default {
 
   computed: {
     statusText() {
-      const status = this.store.crewStatus?.status;
+      const status = this.store.currentCrewStatus?.status;
       if (status === 'running') return '运行中';
       if (status === 'paused') return '已暂停';
       if (status === 'waiting_human') return '等待人工';
@@ -301,7 +301,7 @@ export default {
       return '初始化';
     },
     statusClass() {
-      const status = this.store.crewStatus?.status;
+      const status = this.store.currentCrewStatus?.status;
       return {
         'status-running': status === 'running',
         'status-paused': status === 'paused',
@@ -311,12 +311,12 @@ export default {
       };
     },
     hasStreamingMessage() {
-      return this.store.crewMessages.some(m => m._streaming);
+      return this.store.currentCrewMessages.some(m => m._streaming);
     }
   },
 
   watch: {
-    'store.crewMessages': {
+    'store.currentCrewMessages': {
       handler() {
         this.$nextTick(() => this.scrollToBottom());
       },
@@ -350,7 +350,7 @@ export default {
     },
 
     isRoleActive(roleName) {
-      return this.store.crewStatus?.activeRoles?.includes(roleName);
+      return this.store.currentCrewStatus?.activeRoles?.includes(roleName);
     },
 
     insertAt(roleName) {
@@ -394,7 +394,7 @@ export default {
     // 添加角色
     applyPreset(preset) {
       // 检查是否已存在
-      const existing = this.store.crewSession?.roles?.find(r => r.name === preset.name);
+      const existing = this.store.currentCrewSession?.roles?.find(r => r.name === preset.name);
       if (existing) {
         // 如果已存在，加后缀
         this.newRole = { ...preset, name: preset.name + '2', displayName: preset.displayName + '2' };

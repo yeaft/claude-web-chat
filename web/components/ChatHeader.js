@@ -5,7 +5,7 @@ export default {
       <div class="chat-title">{{ headerTitle }}<span v-if="folderPath" class="chat-title-path">{{ folderPath }}</span></div>
       <div class="header-actions">
         <button
-          v-if="store.currentConversation"
+          v-if="store.currentConversation && !store.currentConversationIsCrew"
           class="mcp-toggle"
           :class="{ enabled: store.currentMcpEnabled }"
           @click="store.toggleMcp()"
@@ -16,6 +16,17 @@ export default {
           </svg>
           <span>MCP</span>
           <span class="mcp-status">{{ store.currentMcpEnabled ? 'ON' : 'OFF' }}</span>
+        </button>
+        <button
+          v-if="store.currentConversationIsCrew"
+          class="mcp-toggle crew-config-toggle"
+          :class="crewStatusClass"
+          @click="store.openCrewConfig()"
+          title="Crew Settings"
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+          <span>Crew</span>
+          <span class="mcp-status">{{ crewStatusLabel }}</span>
         </button>
       </div>
       <!-- Compact Status Banner -->
@@ -32,19 +43,25 @@ export default {
     const store = Pinia.useChatStore();
     const t = Vue.inject('t');
 
-    // 计算标题：优先会话标题，其次工作目录最后一段，最后显示产品名
     const headerTitle = Vue.computed(() => {
       if (!store.currentConversation) {
         return 'Claude Web Chat';
       }
 
-      // 优先使用会话标题（最新用户消息）
+      // Crew conversation: 显示 goal
+      if (store.currentConversationIsCrew) {
+        const session = store.currentCrewSession;
+        if (session?.goal) {
+          return session.goal.length > 50 ? session.goal.slice(0, 50) + '...' : session.goal;
+        }
+        return 'Crew Session';
+      }
+
       const title = store.getConversationTitle(store.currentConversation);
       if (title) {
         return title.length > 50 ? title.slice(0, 50) + '...' : title;
       }
 
-      // 其次使用工作目录的最后一段
       if (store.currentWorkDir) {
         const parts = store.currentWorkDir.split(/[/\\]/);
         return parts[parts.length - 1] || parts[parts.length - 2] || store.currentWorkDir;
@@ -53,10 +70,8 @@ export default {
       return t('chatHeader.newConv');
     });
 
-    // Compact status display
     const showCompactStatus = Vue.computed(() => {
       if (!store.compactStatus) return false;
-      // 只显示当前会话的 compact 状态
       return store.compactStatus.conversationId === store.currentConversation;
     });
 
@@ -78,6 +93,26 @@ export default {
       return store.currentWorkDir;
     });
 
-    return { store, headerTitle, folderPath, showCompactStatus, compactStatusClass, compactMessage };
+    const crewStatusLabel = Vue.computed(() => {
+      const status = store.currentCrewStatus?.status;
+      if (status === 'running') return 'Running';
+      if (status === 'paused') return 'Paused';
+      if (status === 'waiting_human') return 'Waiting';
+      if (status === 'completed') return 'Done';
+      if (status === 'stopped') return 'Stopped';
+      return 'Init';
+    });
+
+    const crewStatusClass = Vue.computed(() => {
+      const status = store.currentCrewStatus?.status;
+      return {
+        'crew-running': status === 'running',
+        'crew-paused': status === 'paused',
+        'crew-waiting': status === 'waiting_human',
+        'crew-stopped': status === 'stopped' || status === 'completed'
+      };
+    });
+
+    return { store, headerTitle, folderPath, showCompactStatus, compactStatusClass, compactMessage, crewStatusLabel, crewStatusClass };
   }
 };
