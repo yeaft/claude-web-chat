@@ -841,13 +841,24 @@ async function handleAgentMessage(agentId, msg) {
       break;
     }
 
-    case 'directory_listing':
+    case 'directory_listing': {
       // ★ Phase 4: 缓存目录列表结果
       if (msg.dirPath && msg.entries && !msg.error) {
         setCachedDir(agentId, msg.dirPath, msg.entries);
       }
+      // 优先定向发送给请求者（解决 _workdir_picker 等虚拟 conversationId 路由问题）
+      const dirTargetClientId = msg._requestClientId;
+      if (dirTargetClientId) {
+        const targetClient = webClients.get(dirTargetClientId);
+        if (targetClient?.authenticated) {
+          const { _requestClientId, ...cleanMsg } = msg;
+          await sendToWebClient(targetClient, cleanMsg);
+          break;
+        }
+      }
       await forwardToClients(agentId, msg.conversationId, msg);
       break;
+    }
 
     case 'file_op_result':
       // ★ Phase 4: 文件创建/删除/移动 — 清空该 agent 的所有目录缓存

@@ -750,30 +750,27 @@ export default {
       const defaultDir = currentWorkDir || agent?.workDir || '';
       this.folderPickerPath = defaultDir;
       this.folderPickerEntries = [];
-      this.fetchFolderPickerDir(defaultDir);
+      this.store.sendWsMessage({
+        type: 'list_directory',
+        conversationId: '_workdir_picker',
+        agentId: agentId,
+        dirPath: defaultDir,
+        workDir: agent?.workDir || ''
+      });
     },
     loadFolderPickerDir(dirPath) {
+      const agentId = this.convModalAgent;
+      if (!agentId) return;
       this.folderPickerLoading = true;
       this.folderPickerSelected = '';
-      this.fetchFolderPickerDir(dirPath);
-    },
-    async fetchFolderPickerDir(dirPath) {
-      try {
-        const token = useAuthStore().token;
-        const resp = await fetch('/api/list-directory?path=' + encodeURIComponent(dirPath || ''), {
-          headers: token ? { 'Authorization': 'Bearer ' + token } : {}
-        });
-        const data = await resp.json();
-        this.folderPickerLoading = false;
-        this.folderPickerEntries = (data.entries || [])
-          .filter(e => e.type === 'directory')
-          .sort((a, b) => a.name.localeCompare(b.name));
-        if (data.dirPath != null) this.folderPickerPath = data.dirPath;
-      } catch (e) {
-        console.error('[FolderPicker] API error:', e);
-        this.folderPickerLoading = false;
-        this.folderPickerEntries = [];
-      }
+      const agent = this.store.agents.find(a => a.id === agentId);
+      this.store.sendWsMessage({
+        type: 'list_directory',
+        conversationId: '_workdir_picker',
+        agentId: agentId,
+        dirPath: dirPath,
+        workDir: agent?.workDir || ''
+      });
     },
     folderPickerNavigateUp() {
       if (!this.folderPickerPath) return;
@@ -822,6 +819,15 @@ export default {
         this.historyLoaded = true;
       }
       this.folderPickerOpen = false;
+    },
+    handleFolderPickerMessage(event) {
+      const msg = event.detail;
+      if (!msg || msg.type !== 'directory_listing' || msg.conversationId !== '_workdir_picker') return;
+      this.folderPickerLoading = false;
+      this.folderPickerEntries = (msg.entries || [])
+        .filter(e => e.type === 'directory')
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (msg.dirPath != null) this.folderPickerPath = msg.dirPath;
     }
   },
   mounted() {
@@ -835,6 +841,7 @@ export default {
     };
     document.addEventListener('click', this._clickOutsideHandler);
     window.addEventListener('resize', this.handleResize);
+    window.addEventListener('workbench-message', this.handleFolderPickerMessage);
 
     // Fetch server version
     fetch('/api/version').then(r => r.json()).then(d => { this.serverVersion = d.version; }).catch(() => {});
@@ -894,6 +901,7 @@ export default {
   beforeUnmount() {
     document.removeEventListener('click', this._clickOutsideHandler);
     window.removeEventListener('resize', this.handleResize);
+    window.removeEventListener('workbench-message', this.handleFolderPickerMessage);
     window.removeEventListener('agent-restart-ack', this._agentRestartAckHandler);
     window.removeEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
     if (this._checkRestartingAgents) this._checkRestartingAgents();

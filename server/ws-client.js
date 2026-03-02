@@ -627,7 +627,8 @@ async function handleWebMessage(clientId, msg) {
         workDir: msg.workDir,
         conversationId: msg.conversationId || client.currentConversation,
         requestId: msg.requestId,
-        _requestUserId: client.userId
+        _requestUserId: client.userId,
+        _requestClientId: clientId
       });
       break;
     }
