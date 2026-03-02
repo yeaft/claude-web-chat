@@ -728,6 +728,8 @@ export default {
       const name = agent?.name || agentId;
       if (!confirm(this.$t('chat.agent.restartConfirm', { name }))) return;
       this.restartingAgents[agentId] = true;
+      // 2 分钟后强制清除重启状态（兜底）
+      setTimeout(() => { delete this.restartingAgents[agentId]; }, 120000);
       this.store.restartAgent(agentId);
     },
     upgradeAgent(agentId) {
@@ -735,6 +737,8 @@ export default {
       const name = agent?.name || agentId;
       if (!confirm(this.$t('chat.agent.upgradeConfirm', { name }))) return;
       this.upgradingAgents[agentId] = { since: Date.now(), oldVersion: agent?.version || null };
+      // 2 分钟后强制清除升级状态（兜底）
+      setTimeout(() => { delete this.upgradingAgents[agentId]; }, 120000);
       this.store.upgradeAgent(agentId);
     },
     // Folder picker methods
