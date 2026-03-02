@@ -728,6 +728,7 @@ function handleConversationCreated(store, msg) {
     claudeSessionId: null,
     createdAt: Date.now(),
     processing: false,
+    type: 'chat',
     disallowedTools: msg.disallowedTools ?? null
   });
   store.currentAgent = msg.agentId;
@@ -764,6 +765,7 @@ function handleConversationResumed(store, msg) {
     claudeSessionId: msg.claudeSessionId,
     createdAt: Date.now(),
     processing: false,
+    type: 'chat',
     disallowedTools: msg.disallowedTools ?? null
   });
   store.currentAgent = msg.agentId;

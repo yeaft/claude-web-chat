@@ -165,7 +165,7 @@ export const useChatStore = defineStore('chat', {
     currentConversationIsCrew: (state) => {
       if (!state.currentConversation) return false;
       const conv = state.conversations.find(c => c.id === state.currentConversation);
-      return conv?.isCrew === true;
+      return conv?.type === 'crew';
     },
     // 当前 Crew session 信息
     currentCrewSession: (state) => {
@@ -446,12 +446,12 @@ export const useChatStore = defineStore('chat', {
             claudeSessionId: null,
             createdAt: Date.now(),
             processing: false,
-            isCrew: true,
+            type: 'crew',
             goal: msg.goal
           };
           this.conversations.push(conv);
         } else {
-          conv.isCrew = true;
+          conv.type = 'crew';
           conv.goal = msg.goal;
         }
         // 缓存当前消息，切换到 crew conversation
