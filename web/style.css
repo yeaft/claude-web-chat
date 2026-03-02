@@ -5076,19 +5076,21 @@ body {
   flex: 1;
   min-height: 0;
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
 }
 
 .resume-panel {
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-width: 0;
+  min-height: 0;
   overflow: hidden;
 }
 
-.resume-panel + .resume-panel {
-  border-left: 1px solid var(--border-color);
+.resume-panel-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .resume-panel-header {
@@ -5361,15 +5363,6 @@ body {
 .resume-modal-footer .modern-btn svg {
   width: 14px;
   height: 14px;
-}
-
-.resume-modal-footer .modern-btn.primary {
-  border-color: var(--accent-blue);
-  color: var(--accent-blue);
-}
-
-.resume-modal-footer .modern-btn.primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
 }
 
 /* ===================== */
@@ -6576,11 +6569,6 @@ body {
     height: 100%;
     max-height: 100%;
     border-radius: 0;
-  }
-
-  .resume-modal-content {
-    flex: 1;
-    flex-direction: column;
   }
 
   /* Mobile input - simple approach without fixed positioning */
