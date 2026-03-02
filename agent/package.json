@@ -38,6 +38,7 @@
     "context.js",
     "connection.js",
     "conversation.js",
+    "crew.js",
     "claude.js",
     "terminal.js",
     "proxy.js",
