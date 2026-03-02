@@ -434,14 +434,34 @@ export const useChatStore = defineStore('chat', {
           content: `Crew Session 已创建，目标: ${msg.goal}`,
           timestamp: Date.now()
         });
-        // 更新 conversation 的 isCrew/goal 标记
-        const conv = this.conversations.find(c => c.id === sid);
-        if (conv) {
+        // 创建或更新 conversation
+        let conv = this.conversations.find(c => c.id === sid);
+        if (!conv) {
+          const agent = this.agents.find(a => a.id === this.currentAgent);
+          conv = {
+            id: sid,
+            agentId: this.currentAgent,
+            agentName: agent?.name || this.currentAgent,
+            workDir: msg.projectDir,
+            claudeSessionId: null,
+            createdAt: Date.now(),
+            processing: false,
+            isCrew: true,
+            goal: msg.goal
+          };
+          this.conversations.push(conv);
+        } else {
           conv.isCrew = true;
           conv.goal = msg.goal;
         }
-        // 自动选中该 crew conversation
-        this.selectConversation(sid, this.currentAgent);
+        // 缓存当前消息，切换到 crew conversation
+        if (this.currentConversation && this.messages.length > 0) {
+          this.messagesCache[this.currentConversation] = this.messages;
+        }
+        this.currentConversation = sid;
+        this.currentWorkDir = msg.projectDir;
+        this.messages = [];
+        this.saveOpenSessions();
         return;
       }
 

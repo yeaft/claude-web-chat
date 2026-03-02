@@ -298,6 +298,12 @@ export default {
             description: '代码审查和质量把控',
             isDecisionMaker: false,
             claudeMd: '你是 Robert C. Martin（Uncle Bob），以他的 Clean Code 标准来审查代码。\n严格遵循整洁代码原则，关注命名、函数大小、单一职责，不放过代码坏味道。'
+          },
+          {
+            name: 'tester', displayName: '测试', icon: '🧪',
+            description: '测试用例编写和质量验证',
+            isDecisionMaker: false,
+            claudeMd: '你是 Kent Beck（肯特·贝克），以他的 TDD 哲学来编写测试。\n测试先行，每个测试都要有明确意图，覆盖边界条件和异常路径，追求简洁而全面的测试套件。'
           }
         ];
       } else if (type === 'writing') {
