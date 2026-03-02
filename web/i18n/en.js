@@ -99,7 +99,7 @@ export default {
   'chat.sidebar.collapse': 'Collapse sidebar',
   'chat.sidebar.portProxy': 'Port Proxy',
   'chat.sidebar.workbench': 'Workbench',
-  'chat.sidebar.newConv': 'New Conversation',
+  'chat.sidebar.newConv': 'Conversation',
   'chat.sidebar.resumeConv': 'Resume Conversation',
   'chat.sidebar.lightMode': 'Light Mode',
   'chat.sidebar.darkMode': 'Dark Mode',
@@ -157,7 +157,7 @@ export default {
   'welcome.noAgentsHint': 'Please start an Agent and connect it to the server',
   'welcome.noAgent': 'No Agents Online',
   'welcome.noAgentHint': 'Please start an Agent and connect it to the server',
-  'welcome.newConv': 'New Conversation',
+  'welcome.newConv': 'Conversation',
   'welcome.resumeHistory': 'Resume History',
 
   // ============ Message List ============
@@ -241,7 +241,7 @@ export default {
   'header.compacted': 'Context compression complete',
   'chatHeader.mcpEnabled': 'MCP tools enabled — click to disable',
   'chatHeader.mcpDisabled': 'MCP tools disabled — click to enable',
-  'chatHeader.newConv': 'New Conversation',
+  'chatHeader.newConv': 'Conversation',
   'chatHeader.compacting': 'Compressing context...',
   'chatHeader.compactDone': 'Context compression complete',
 

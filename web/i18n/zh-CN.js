@@ -99,7 +99,7 @@ export default {
   'chat.sidebar.collapse': '收起侧边栏',
   'chat.sidebar.portProxy': '端口映射',
   'chat.sidebar.workbench': '工具面板',
-  'chat.sidebar.newConv': '新建会话',
+  'chat.sidebar.newConv': '会话',
   'chat.sidebar.resumeConv': '恢复会话',
   'chat.sidebar.lightMode': '浅色模式',
   'chat.sidebar.darkMode': '深色模式',
@@ -157,7 +157,7 @@ export default {
   'welcome.noAgentsHint': '请先启动 Agent 程序连接到服务器',
   'welcome.noAgent': '暂无在线 Agent',
   'welcome.noAgentHint': '请先启动 Agent 程序连接到服务器',
-  'welcome.newConv': '新建会话',
+  'welcome.newConv': '会话',
   'welcome.resumeHistory': '恢复历史',
 
   // ============ Message List ============
@@ -241,7 +241,7 @@ export default {
   'header.compacted': '上下文压缩完成',
   'chatHeader.mcpEnabled': 'MCP 工具已启用 — 点击禁用',
   'chatHeader.mcpDisabled': 'MCP 工具已禁用 — 点击启用',
-  'chatHeader.newConv': '新会话',
+  'chatHeader.newConv': '会话',
   'chatHeader.compacting': '正在压缩上下文...',
   'chatHeader.compactDone': '上下文压缩完成',
 
