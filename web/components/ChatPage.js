@@ -37,7 +37,7 @@ export default {
           <button class="collapsed-icon-btn" @click="openConversationModal" :disabled="onlineAgentCount === 0" :title="$t('chat.sidebar.newConv')">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           </button>
-          <button class="collapsed-icon-btn" @click="newCrewSession" :disabled="crewCapableAgentCount === 0" title="Crew">
+          <button class="collapsed-icon-btn" @click="newCrewSession" title="Crew">
             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
           </button>
           <div class="collapsed-spacer"></div>
@@ -135,7 +135,7 @@ export default {
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
               <span>{{ $t('chat.sidebar.newConv') }}</span>
             </button>
-            <button class="sidebar-nav-item crew-nav-item" @click="newCrewSession" :disabled="crewCapableAgentCount === 0" :title="crewCapableAgentCount === 0 ? 'No agent supports Crew mode (requires Claude CLI)' : 'New Crew Session'">
+            <button class="sidebar-nav-item crew-nav-item" @click="newCrewSession" title="Crew Session">
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
               <span>Crew</span>
             </button>
@@ -223,12 +223,14 @@ export default {
       <!-- Crew Config Panel -->
       <CrewConfigPanel
         v-if="store.crewConfigOpen"
+        ref="crewPanel"
         :mode="store.crewConfigMode"
         :session="store.currentCrewSession"
         :status="store.currentCrewStatus"
         :defaultWorkDir="store.currentAgentInfo?.workDir || ''"
         @close="store.crewConfigOpen = false"
         @start="startCrewSession"
+        @browse="openCrewFolderPicker"
       />
 
       <!-- Unified Conversation Modal (New + Resume) -->
@@ -480,25 +482,30 @@ export default {
   methods: {
     // Crew mode methods
     newCrewSession() {
-      // 优先选择支持 crew 的 agent
-      if (!this.store.currentAgent) {
-        const crewAgents = this.store.agents.filter(a => a.online && a.capabilities?.includes('crew'));
-        if (crewAgents.length > 0) {
-          this.store.selectAgent(crewAgents[0].id);
-        }
-      } else {
-        const current = this.store.agents.find(a => a.id === this.store.currentAgent);
-        if (!current?.capabilities?.includes('crew')) {
-          const crewAgents = this.store.agents.filter(a => a.online && a.capabilities?.includes('crew'));
-          if (crewAgents.length > 0) {
-            this.store.selectAgent(crewAgents[0].id);
-          }
-        }
-      }
       this.store.enterCrewMode();
     },
     startCrewSession(config) {
       this.store.createCrewSession(config);
+    },
+    openCrewFolderPicker() {
+      const crewPanel = this.$refs.crewPanel;
+      const agentId = crewPanel?.selectedAgent;
+      if (!agentId) return;
+      this.folderPickerTarget = 'crew';
+      this.folderPickerOpen = true;
+      this.folderPickerSelected = '';
+      this.folderPickerLoading = true;
+      const agent = this.store.agents.find(a => a.id === agentId);
+      const defaultDir = crewPanel?.projectDir || agent?.workDir || '';
+      this.folderPickerPath = defaultDir;
+      this.folderPickerEntries = [];
+      this.store.sendWsMessage({
+        type: 'list_directory',
+        conversationId: '_workdir_picker',
+        agentId: agentId,
+        dirPath: defaultDir,
+        workDir: agent?.workDir || ''
+      });
     },
 
     openConversationModal() {
@@ -763,7 +770,10 @@ export default {
       });
     },
     loadFolderPickerDir(dirPath) {
-      const agentId = this.convModalAgent;
+      let agentId = this.convModalAgent;
+      if (this.folderPickerTarget === 'crew') {
+        agentId = this.$refs.crewPanel?.selectedAgent;
+      }
       if (!agentId) return;
       this.folderPickerLoading = true;
       this.folderPickerSelected = '';
@@ -815,9 +825,14 @@ export default {
         const sep = path.includes('\\') ? '\\' : '/';
         path = path.replace(/[/\\]$/, '') + sep + this.folderPickerSelected;
       }
+      if (this.folderPickerTarget === 'crew') {
+        const crewPanel = this.$refs.crewPanel;
+        if (crewPanel) crewPanel.projectDir = path;
+        this.folderPickerOpen = false;
+        return;
+      }
       this.convModalWorkDir = path;
       this.selectedResumeSession = null;
-      // 自动加载 sessions
       if (this.convModalAgent) {
         this.store.listHistorySessionsForAgent(this.convModalAgent, path);
         this.historyLoaded = true;

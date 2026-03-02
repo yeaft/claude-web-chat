@@ -1,6 +1,6 @@
 /**
  * CrewConfigPanel - Crew 模式配置面板
- * 支持创建和编辑模式
+ * 支持创建和编辑模式，参考会话 modal 的交互风格
  */
 
 export default {
@@ -9,114 +9,173 @@ export default {
     <div class="crew-config-overlay" @click.self="$emit('close')">
       <div class="crew-config-panel">
         <div class="crew-config-header">
-          <h2>{{ isEditMode ? 'Crew Settings' : 'New Crew Session' }}</h2>
+          <h2>{{ isEditMode ? 'Crew Settings' : 'Crew Session' }}</h2>
           <button class="crew-config-close" @click="$emit('close')">&times;</button>
         </div>
 
         <div class="crew-config-body">
-          <!-- 工作区配置 (仅创建模式) -->
-          <div class="crew-config-section" v-if="!isEditMode">
-            <label class="crew-config-label">开发工作区</label>
-            <input class="crew-config-input" v-model="projectDir" placeholder="/home/user/projects/app" />
-          </div>
+          <!-- 创建模式：顶部控制区 -->
+          <template v-if="!isEditMode">
+            <!-- Agent 选择 -->
+            <div class="crew-config-section">
+              <label class="crew-config-label">Agent</label>
+              <div class="crew-select-wrapper">
+                <select class="crew-config-select" v-model="selectedAgent">
+                  <option value="">选择 Agent</option>
+                  <option v-for="agent in crewAgents" :key="agent.id" :value="agent.id">
+                    {{ agent.name }}{{ agent.latency ? ' (' + agent.latency + 'ms)' : '' }}
+                  </option>
+                </select>
+                <svg class="select-arrow" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+              </div>
+            </div>
 
-          <div class="crew-config-section" v-if="!isEditMode">
-            <label class="crew-config-label">共享内容区</label>
-            <input class="crew-config-input" v-model="sharedDir" placeholder=".crew (相对于项目目录)" />
-          </div>
+            <!-- 工作区（带浏览按钮） -->
+            <div class="crew-config-section" v-if="selectedAgent">
+              <label class="crew-config-label">工作区</label>
+              <div class="crew-workdir-group">
+                <input class="crew-config-input" v-model="projectDir" :placeholder="selectedAgentWorkDir || '/home/user/projects/app'" />
+                <button class="crew-browse-btn" @click="$emit('browse', 'crew')" title="浏览">
+                  <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+                </button>
+              </div>
+            </div>
 
-          <!-- 任务目标 -->
-          <div class="crew-config-section">
-            <label class="crew-config-label">任务目标</label>
-            <textarea class="crew-config-textarea" v-model="goal" placeholder="描述你想让团队完成的目标..." rows="3" :disabled="isEditMode"></textarea>
-          </div>
+            <!-- 任务目标 -->
+            <div class="crew-config-section" v-if="selectedAgent">
+              <label class="crew-config-label">任务目标</label>
+              <textarea class="crew-config-textarea" v-model="goal" placeholder="描述你想让团队完成的目标..." rows="3"></textarea>
+            </div>
 
-          <!-- 角色配置 -->
-          <div class="crew-config-section">
-            <label class="crew-config-label">角色配置</label>
+            <!-- 角色模板（简化为 inline 选择） -->
+            <div class="crew-config-section" v-if="selectedAgent">
+              <label class="crew-config-label">团队模板</label>
+              <div class="crew-template-btns">
+                <button class="crew-template-btn" @click="loadTemplate('dev')" :class="{ active: currentTemplate === 'dev' }">软件开发</button>
+                <button class="crew-template-btn" @click="loadTemplate('writing')" :class="{ active: currentTemplate === 'writing' }">写作团队</button>
+                <button class="crew-template-btn" @click="loadTemplate('custom')" :class="{ active: currentTemplate === 'custom' }">自定义</button>
+              </div>
+            </div>
 
-            <div class="crew-roles-list">
-              <div v-for="(role, idx) in roles" :key="idx" class="crew-role-item" :class="{ 'is-decision-maker': role.isDecisionMaker }">
-                <div class="crew-role-header">
-                  <input class="crew-role-icon-input" v-model="role.icon" maxlength="4" :disabled="isEditMode && !role._isNew" />
-                  <input class="crew-role-name-input" v-model="role.displayName" placeholder="角色名" :disabled="isEditMode && !role._isNew" />
-                  <select class="crew-role-model-select" v-model="role.model" :disabled="isEditMode && !role._isNew">
-                    <option value="sonnet">Sonnet</option>
-                    <option value="haiku">Haiku</option>
-                    <option value="opus">Opus</option>
-                  </select>
-                  <label class="crew-role-decision-label" :title="role.isDecisionMaker ? '决策者' : '设为决策者'">
-                    <input type="radio" name="decisionMaker" :checked="role.isDecisionMaker" @change="setDecisionMaker(idx)" />
-                    <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
-                  </label>
-                  <button class="crew-role-remove" @click="removeRole(idx)">&times;</button>
+            <!-- 角色列表（简化展示） -->
+            <div class="crew-config-section crew-roles-section" v-if="selectedAgent && roles.length > 0">
+              <label class="crew-config-label">角色 ({{ roles.length }})</label>
+              <div class="crew-roles-compact">
+                <div v-for="(role, idx) in roles" :key="idx" class="crew-role-compact" :class="{ 'is-decision-maker': role.isDecisionMaker }">
+                  <span class="crew-role-compact-icon">{{ role.icon }}</span>
+                  <span class="crew-role-compact-name">{{ role.displayName }}</span>
+                  <span class="crew-role-compact-model">{{ role.model }}</span>
+                  <button class="crew-role-compact-star" @click="setDecisionMaker(idx)" :class="{ active: role.isDecisionMaker }" title="设为决策者">
+                    <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+                  </button>
+                  <button class="crew-role-compact-remove" @click="removeRole(idx)">&times;</button>
                 </div>
-                <input class="crew-role-desc-input" v-model="role.description" placeholder="角色职责描述" :disabled="isEditMode && !role._isNew" />
-                <details class="crew-role-advanced">
-                  <summary>高级设置</summary>
-                  <textarea class="crew-config-textarea" v-model="role.claudeMd" placeholder="自定义 system prompt（可选）" rows="3" :disabled="isEditMode && !role._isNew"></textarea>
-                </details>
+              </div>
+              <button class="crew-add-role-inline-btn" @click="addRole">+ 添加角色</button>
+            </div>
+
+            <!-- 高级设置 (折叠) -->
+            <details class="crew-config-section crew-advanced-section" v-if="selectedAgent">
+              <summary class="crew-config-label crew-summary-label">高级设置</summary>
+              <div class="crew-advanced-content">
+                <div class="crew-config-row">
+                  <label>共享目录:</label>
+                  <input class="crew-config-input-sm" v-model="sharedDir" placeholder=".crew" />
+                </div>
+                <div class="crew-config-row">
+                  <label>最大轮次:</label>
+                  <input class="crew-config-input-sm" type="number" v-model.number="maxRounds" min="1" max="100" />
+                </div>
+              </div>
+            </details>
+          </template>
+
+          <!-- 编辑模式 -->
+          <template v-else>
+            <!-- 任务目标 -->
+            <div class="crew-config-section">
+              <label class="crew-config-label">任务目标</label>
+              <textarea class="crew-config-textarea" v-model="goal" placeholder="描述你想让团队完成的目标..." rows="3" disabled></textarea>
+            </div>
+
+            <!-- 角色配置 -->
+            <div class="crew-config-section">
+              <label class="crew-config-label">角色配置</label>
+              <div class="crew-roles-list">
+                <div v-for="(role, idx) in roles" :key="idx" class="crew-role-item" :class="{ 'is-decision-maker': role.isDecisionMaker }">
+                  <div class="crew-role-header">
+                    <input class="crew-role-icon-input" v-model="role.icon" maxlength="4" :disabled="!role._isNew" />
+                    <input class="crew-role-name-input" v-model="role.displayName" placeholder="角色名" :disabled="!role._isNew" />
+                    <select class="crew-role-model-select" v-model="role.model" :disabled="!role._isNew">
+                      <option value="sonnet">Sonnet</option>
+                      <option value="haiku">Haiku</option>
+                      <option value="opus">Opus</option>
+                    </select>
+                    <label class="crew-role-decision-label" :title="role.isDecisionMaker ? '决策者' : '设为决策者'">
+                      <input type="radio" name="decisionMaker" :checked="role.isDecisionMaker" @change="setDecisionMaker(idx)" />
+                      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+                    </label>
+                    <button class="crew-role-remove" @click="removeRole(idx)">&times;</button>
+                  </div>
+                  <input class="crew-role-desc-input" v-model="role.description" placeholder="角色职责描述" :disabled="!role._isNew" />
+                  <details class="crew-role-advanced">
+                    <summary>高级设置</summary>
+                    <textarea class="crew-config-textarea" v-model="role.claudeMd" placeholder="自定义 system prompt（可选）" rows="3" :disabled="!role._isNew"></textarea>
+                  </details>
+                </div>
+              </div>
+              <button class="crew-add-role-btn" @click="addRole">+ 添加角色</button>
+            </div>
+
+            <!-- Session 控制 -->
+            <div class="crew-config-section" v-if="status">
+              <label class="crew-config-label">Session 控制</label>
+              <div class="crew-config-controls">
+                <div class="crew-config-status-info">
+                  <span>状态: <strong>{{ statusLabel }}</strong></span>
+                  <span v-if="status.round">轮次: {{ status.round }}/{{ status.maxRounds }}</span>
+                  <span v-if="status.costUsd">费用: \${{ (status.costUsd || 0).toFixed(3) }}</span>
+                </div>
+                <div class="crew-config-control-btns">
+                  <button class="crew-control-action-btn" @click="doControl('pause')" v-if="status.status === 'running'">
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                    暂停
+                  </button>
+                  <button class="crew-control-action-btn" @click="doControl('resume')" v-if="status.status === 'paused'">
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                    恢复
+                  </button>
+                  <button class="crew-control-action-btn danger" @click="doControl('stop_all')">
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
+                    终止
+                  </button>
+                </div>
               </div>
             </div>
+          </template>
 
-            <button class="crew-add-role-btn" @click="addRole">+ 添加角色</button>
-          </div>
-
-          <!-- 角色模板 (仅创建模式) -->
-          <div class="crew-config-section" v-if="!isEditMode">
-            <label class="crew-config-label">角色模板</label>
-            <div class="crew-template-btns">
-              <button class="crew-template-btn" @click="loadTemplate('dev')" :class="{ active: currentTemplate === 'dev' }">软件开发</button>
-              <button class="crew-template-btn" @click="loadTemplate('writing')" :class="{ active: currentTemplate === 'writing' }">写作团队</button>
+          <!-- 没有选择 Agent 时的提示 -->
+          <div class="crew-empty-state" v-if="!isEditMode && !selectedAgent">
+            <div class="crew-empty-icon">
+              <svg viewBox="0 0 24 24" width="40" height="40"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
             </div>
-          </div>
-
-          <!-- 高级设置 (仅创建模式) -->
-          <div class="crew-config-section" v-if="!isEditMode">
-            <label class="crew-config-label">高级设置</label>
-            <div class="crew-config-row">
-              <label>最大轮次:</label>
-              <input class="crew-config-input-sm" type="number" v-model.number="maxRounds" min="1" max="100" />
-            </div>
-          </div>
-
-          <!-- Session 控制 (仅编辑模式) -->
-          <div class="crew-config-section" v-if="isEditMode && status">
-            <label class="crew-config-label">Session 控制</label>
-            <div class="crew-config-controls">
-              <div class="crew-config-status-info">
-                <span>状态: <strong>{{ statusLabel }}</strong></span>
-                <span v-if="status.round">轮次: {{ status.round }}/{{ status.maxRounds }}</span>
-                <span v-if="status.costUsd">费用: \${{ (status.costUsd || 0).toFixed(3) }}</span>
-              </div>
-              <div class="crew-config-control-btns">
-                <button class="crew-control-action-btn" @click="doControl('pause')" v-if="status.status === 'running'">
-                  <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-                  暂停
-                </button>
-                <button class="crew-control-action-btn" @click="doControl('resume')" v-if="status.status === 'paused'">
-                  <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-                  恢复
-                </button>
-                <button class="crew-control-action-btn danger" @click="doControl('stop_all')">
-                  <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
-                  终止
-                </button>
-              </div>
-            </div>
+            <div class="crew-empty-text" v-if="crewAgents.length === 0">没有支持 Crew 模式的在线 Agent</div>
+            <div class="crew-empty-text" v-else>请选择一个 Agent 开始配置</div>
           </div>
         </div>
 
-        <div class="crew-config-footer">
+        <div class="crew-config-footer" v-if="isEditMode || selectedAgent">
           <template v-if="isEditMode">
             <span class="crew-config-hint" v-if="pendingNewRoles.length > 0">{{ pendingNewRoles.length }} 个新角色待添加</span>
-            <button class="crew-cancel-btn" @click="$emit('close')">关闭</button>
-            <button class="crew-start-btn" @click="applyChanges" :disabled="pendingNewRoles.length === 0 && pendingRemovals.length === 0" v-if="pendingNewRoles.length > 0 || pendingRemovals.length > 0">应用变更</button>
+            <button class="modern-btn" @click="$emit('close')">关闭</button>
+            <button class="modern-btn" @click="applyChanges" :disabled="pendingNewRoles.length === 0 && pendingRemovals.length === 0" v-if="pendingNewRoles.length > 0 || pendingRemovals.length > 0">应用变更</button>
           </template>
           <template v-else>
-            <span class="crew-config-hint" v-if="roles.length === 0">不添加角色也可以启动，之后在群聊中动态添加</span>
-            <button class="crew-cancel-btn" @click="$emit('close')">取消</button>
-            <button class="crew-start-btn" @click="startSession" :disabled="!canStart">启动 Session</button>
+            <button class="modern-btn" @click="$emit('close')">取消</button>
+            <button class="modern-btn" @click="startSession" :disabled="!canStart">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+              启动
+            </button>
           </template>
         </div>
       </div>
@@ -130,7 +189,7 @@ export default {
     status: { type: Object, default: null }
   },
 
-  emits: ['close', 'start'],
+  emits: ['close', 'start', 'browse'],
 
   setup() {
     const store = Pinia.useChatStore();
@@ -139,13 +198,14 @@ export default {
 
   data() {
     return {
+      selectedAgent: '',
       projectDir: this.defaultWorkDir || '',
       sharedDir: '.crew',
       goal: '',
       maxRounds: 20,
       currentTemplate: 'dev',
       roles: [],
-      pendingRemovals: []  // 编辑模式中标记为移除的角色 name
+      pendingRemovals: []
     };
   },
 
@@ -153,8 +213,16 @@ export default {
     isEditMode() {
       return this.mode === 'edit' && this.session;
     },
+    crewAgents() {
+      return this.store.agents.filter(a => a.online && a.capabilities?.includes('crew'));
+    },
+    selectedAgentWorkDir() {
+      if (!this.selectedAgent) return '';
+      const agent = this.store.agents.find(a => a.id === this.selectedAgent);
+      return agent?.workDir || '';
+    },
     canStart() {
-      return this.projectDir.trim() && this.goal.trim();
+      return this.selectedAgent && this.projectDir.trim() && this.goal.trim();
     },
     pendingNewRoles() {
       return this.roles.filter(r => r._isNew);
@@ -170,6 +238,14 @@ export default {
     }
   },
 
+  watch: {
+    selectedAgent(newVal) {
+      if (newVal && !this.projectDir) {
+        this.projectDir = this.selectedAgentWorkDir;
+      }
+    }
+  },
+
   created() {
     if (this.isEditMode) {
       this.goal = this.session.goal || '';
@@ -179,6 +255,16 @@ export default {
       this.roles = (this.session.roles || []).map(r => ({ ...r }));
     } else {
       this.loadTemplate('dev');
+      // 自动选择当前 agent 或第一个支持 crew 的 agent
+      if (this.store.currentAgent) {
+        const current = this.store.agents.find(a => a.id === this.store.currentAgent);
+        if (current?.online && current?.capabilities?.includes('crew')) {
+          this.selectedAgent = current.id;
+        }
+      }
+      if (!this.selectedAgent && this.crewAgents.length > 0) {
+        this.selectedAgent = this.crewAgents[0].id;
+      }
     }
   },
 
@@ -239,6 +325,8 @@ export default {
             claudeMd: '你是叶圣陶，以他的编辑标准来审稿。\n文章要让人看得懂，语言要规范准确，删去一切可有可无的字词，追求平实、干净、通顺。'
           }
         ];
+      } else if (type === 'custom') {
+        this.roles = [];
       }
     },
 
@@ -251,8 +339,8 @@ export default {
         description: '',
         claudeMd: '',
         model: 'sonnet',
-        isDecisionMaker: false,
-        _isNew: this.isEditMode  // 编辑模式下标记为新角色
+        isDecisionMaker: this.roles.length === 0,
+        _isNew: this.isEditMode
       });
     },
 
@@ -261,7 +349,6 @@ export default {
       const wasDecisionMaker = role.isDecisionMaker;
 
       if (this.isEditMode && !role._isNew) {
-        // 编辑模式：记录待移除，并从列表删除
         this.pendingRemovals.push(role.name);
       }
 
@@ -277,6 +364,8 @@ export default {
 
     startSession() {
       if (!this.canStart) return;
+      // 先选择 agent
+      this.store.selectAgent(this.selectedAgent);
       const roles = this.roles.map(r => ({
         ...r,
         name: r.name || r.displayName.toLowerCase().replace(/\s+/g, '_')
@@ -291,18 +380,15 @@ export default {
     },
 
     applyChanges() {
-      // 移除角色
       for (const name of this.pendingRemovals) {
         this.store.removeCrewRole(name);
       }
-      // 添加新角色
       for (const role of this.pendingNewRoles) {
         const { _isNew, ...roleData } = role;
         roleData.name = roleData.name || roleData.displayName.toLowerCase().replace(/\s+/g, '_');
         this.store.addCrewRole(roleData);
       }
       this.pendingRemovals = [];
-      // 清除 _isNew 标记
       this.roles.forEach(r => { delete r._isNew; });
       this.$emit('close');
     },

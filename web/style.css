@@ -10944,13 +10944,45 @@ body {
   color: var(--accent-blue);
 }
 
-/* Crew Config Footer */
+/* Crew Config Footer — uses .modern-btn */
 .crew-config-footer {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
   padding: 16px 24px;
   border-top: 1px solid var(--border-color);
+}
+
+.crew-config-footer .modern-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 7px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.crew-config-footer .modern-btn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+}
+
+.crew-config-footer .modern-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.crew-config-footer .modern-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 .crew-config-hint {
@@ -10959,48 +10991,197 @@ body {
   margin-right: auto;
 }
 
-.crew-cancel-btn {
-  background: transparent;
+/* Crew Agent Select */
+.crew-select-wrapper {
+  position: relative;
+}
+
+.crew-config-select {
+  width: 100%;
+  padding: 10px 36px 10px 12px;
+  background: var(--bg-sidebar);
   border: 1px solid var(--border-color);
-  color: var(--text-secondary);
-  padding: 10px 20px;
   border-radius: 12px;
-  cursor: pointer;
+  color: var(--text-primary);
   font-size: 14px;
-  font-weight: 500;
+  cursor: pointer;
+  appearance: none;
+  transition: border-color 0.15s;
+}
+
+.crew-config-select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.crew-select-wrapper .select-arrow {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-muted);
+}
+
+/* Crew Workdir Group */
+.crew-workdir-group {
+  display: flex;
+  gap: 6px;
+}
+
+.crew-workdir-group .crew-config-input {
+  flex: 1;
+}
+
+.crew-browse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-width: 40px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
   transition: all 0.15s;
 }
 
-.crew-cancel-btn:hover {
-  background: var(--sidebar-hover);
-  color: var(--text-primary);
+.crew-browse-btn:hover {
   border-color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
-.crew-start-btn {
-  background: var(--accent);
-  color: var(--bg-main);
+/* Crew Compact Roles */
+.crew-roles-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.crew-role-compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-color);
+  transition: border-color 0.15s;
+}
+
+.crew-role-compact.is-decision-maker {
+  border-color: var(--accent-blue);
+}
+
+.crew-role-compact-icon {
+  font-size: 16px;
+  width: 24px;
+  text-align: center;
+}
+
+.crew-role-compact-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.crew-role-compact-model {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 8px;
+  background: var(--bg-main);
+  border-radius: 4px;
+}
+
+.crew-role-compact-star {
+  background: none;
   border: none;
-  padding: 10px 24px;
-  border-radius: 12px;
+  color: var(--text-muted);
+  opacity: 0.3;
   cursor: pointer;
+  padding: 2px;
+  transition: opacity 0.15s;
+}
+
+.crew-role-compact-star:hover {
+  opacity: 0.6;
+}
+
+.crew-role-compact-star.active {
+  opacity: 1;
+  color: var(--accent-blue);
+}
+
+.crew-role-compact-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.crew-role-compact-remove:hover {
+  color: var(--error);
+  background: rgba(214, 93, 93, 0.1);
+}
+
+.crew-add-role-inline-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 6px 10px;
+  transition: color 0.15s;
+  text-align: left;
+}
+
+.crew-add-role-inline-btn:hover {
+  color: var(--text-secondary);
+}
+
+/* Crew Advanced Section */
+.crew-summary-label {
+  cursor: pointer;
+  user-select: none;
+}
+
+.crew-advanced-section {
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 12px 16px;
+}
+
+.crew-advanced-content {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Crew Empty State */
+.crew-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  gap: 12px;
+}
+
+.crew-empty-icon {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.crew-empty-text {
   font-size: 14px;
-  font-weight: 600;
-  transition: opacity 0.15s, transform 0.1s;
-}
-
-.crew-start-btn:hover:not(:disabled) {
-  opacity: 0.85;
-  transform: translateY(-1px);
-}
-
-.crew-start-btn:active:not(:disabled) {
-  transform: translateY(0);
-}
-
-.crew-start-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  color: var(--text-muted);
 }
 
 /* =====================================================================
