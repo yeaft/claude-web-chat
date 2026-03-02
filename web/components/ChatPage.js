@@ -34,11 +34,11 @@ export default {
           <button v-if="canUseWorkbench" class="collapsed-icon-btn" :class="{ active: store.workbenchExpanded }" @click="store.toggleWorkbench()" :title="$t('chat.sidebar.workbench')">
             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H4V5h16v14zM6 7h5v2H6V7zm0 4h5v2H6v-2zm0 4h5v2H6v-2zm7-8h5v10h-5V7z"/></svg>
           </button>
-          <button class="collapsed-icon-btn" @click="openNewConversationModal" :disabled="onlineAgentCount === 0" :title="$t('chat.sidebar.newConv')">
+          <button class="collapsed-icon-btn" @click="openConversationModal" :disabled="onlineAgentCount === 0" :title="$t('chat.sidebar.newConv')">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           </button>
-          <button class="collapsed-icon-btn" @click="openResumeModal" :disabled="onlineAgentCount === 0" :title="$t('chat.sidebar.resumeConv')">
-            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+          <button class="collapsed-icon-btn" @click="newCrewSession" :disabled="crewCapableAgentCount === 0" title="Crew">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
           </button>
           <div class="collapsed-spacer"></div>
           <button class="collapsed-icon-btn" @click="store.toggleTheme()" :title="store.theme === 'dark' ? $t('chat.sidebar.lightMode') : $t('chat.sidebar.darkMode')">
@@ -131,13 +131,9 @@ export default {
 
           <!-- Menu items (Copilot style) -->
           <nav class="sidebar-nav">
-            <button class="sidebar-nav-item" @click="openNewConversationModal" :disabled="onlineAgentCount === 0">
+            <button class="sidebar-nav-item" @click="openConversationModal" :disabled="onlineAgentCount === 0">
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
               <span>{{ $t('chat.sidebar.newConv') }}</span>
-            </button>
-            <button class="sidebar-nav-item" @click="openResumeModal" :disabled="onlineAgentCount === 0">
-              <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
-              <span>{{ $t('chat.sidebar.resumeConv') }}</span>
             </button>
             <button class="sidebar-nav-item crew-nav-item" @click="newCrewSession" :disabled="crewCapableAgentCount === 0" :title="crewCapableAgentCount === 0 ? 'No agent supports Crew mode (requires Claude CLI)' : 'New Crew Session'">
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
@@ -214,8 +210,8 @@ export default {
         <template v-else>
           <ChatHeader />
           <MessageList
-            @new-conversation="openNewConversationModal"
-            @resume-conversation="openResumeModal"
+            @new-conversation="openConversationModal"
+            @resume-conversation="openConversationModalResume"
           />
           <ChatInput />
         </template>
@@ -235,18 +231,18 @@ export default {
         @start="startCrewSession"
       />
 
-      <!-- New Conversation Modal - Same style as Resume Modal -->
-      <div class="modal-overlay" v-if="showNewConversationModal" @click.self="closeNewConvModal">
+      <!-- Unified Conversation Modal (New + Resume) -->
+      <div class="modal-overlay" v-if="showConversationModal" @click.self="closeConversationModal">
         <div class="modal resume-modal">
           <!-- Top Controls -->
           <div class="resume-modal-controls">
-            <button class="resume-close-btn" @click="closeNewConvModal">
+            <button class="resume-close-btn" @click="closeConversationModal">
               <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
             <div class="resume-control-row">
               <label class="resume-control-label">Agent</label>
               <div class="resume-select-wrapper">
-                <select v-model="newConvAgent" @change="onNewConvAgentChange" class="resume-select">
+                <select v-model="convModalAgent" @change="onConvModalAgentChange" class="resume-select">
                   <option value="">{{ $t('chat.agent.select') }}</option>
                   <option v-for="agent in store.agents.filter(a => a.online)" :key="agent.id" :value="agent.id">
                     {{ agent.name }}{{ agent.latency ? ' (' + agent.latency + 'ms)' : '' }}
@@ -255,29 +251,32 @@ export default {
                 <svg class="select-arrow" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
               </div>
             </div>
-            <div class="resume-control-row" v-if="newConvAgent">
+            <div class="resume-control-row" v-if="convModalAgent">
               <label class="resume-control-label">{{ $t('modal.newConv.workDir') }}</label>
               <div class="workdir-input-group">
                 <input
                   type="text"
-                  v-model="newConversationWorkDir"
-                  :placeholder="selectedNewAgentWorkDir || $t('modal.newConv.inputOrSelect')"
-                  @keypress.enter="createNewConversation"
+                  v-model="convModalWorkDir"
+                  @input="onConvModalWorkDirInput"
+                  :placeholder="selectedConvModalAgentWorkDir || $t('modal.newConv.inputOrSelect')"
+                  @keypress.enter="createNewConversation()"
                   class="resume-input"
                 >
-                <button class="workdir-browse-btn" @click="openFolderPicker('newConv')" :title="$t('modal.newConv.browse')">
+                <button class="workdir-browse-btn" @click="openFolderPicker('convModal')" :title="$t('modal.newConv.browse')">
                   <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
                 </button>
               </div>
             </div>
           </div>
 
+
           <!-- Content Area -->
-          <div class="resume-modal-content" v-if="newConvAgent">
+          <div class="resume-modal-content" v-if="convModalAgent">
+            <!-- Folder list (always visible) -->
             <div class="resume-panel">
               <div class="resume-panel-header">
                 <span>{{ $t('modal.newConv.folderLabel') }}</span>
-                <button class="refresh-btn-mini" @click="loadNewConvFolders" :disabled="store.foldersLoading" :title="$t('common.refresh')">
+                <button class="refresh-btn-mini" @click="loadConvModalFolders" :disabled="store.foldersLoading" :title="$t('common.refresh')">
                   <svg v-if="!store.foldersLoading" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
                   <span v-else class="mini-spinner"></span>
                 </button>
@@ -287,8 +286,8 @@ export default {
                   v-for="folder in store.folders"
                   :key="folder.name"
                   class="resume-list-item folder-item-compact"
-                  :class="{ selected: newConversationWorkDir === folder.path }"
-                  @click="newConversationWorkDir = folder.path"
+                  :class="{ selected: convModalWorkDir === folder.path }"
+                  @click="selectConvModalFolder(folder.path)"
                 >
                   <div class="item-path">{{ folder.path }}</div>
                   <span class="item-badge">{{ folder.sessionCount }}</span>
@@ -298,118 +297,12 @@ export default {
                 </div>
               </div>
             </div>
-          </div>
 
-          <!-- Empty state when no agent -->
-          <div class="resume-modal-empty" v-else>
-            <div class="empty-icon">🤖</div>
-            <div class="empty-text">{{ $t('modal.newConv.selectAgent') }}</div>
-          </div>
-
-          <!-- Footer with action button -->
-          <div class="resume-modal-footer" v-if="newConvAgent">
-            <button
-              class="modern-btn primary full-width"
-              @click="createNewConversation"
-              :disabled="!newConvAgent"
-            >
-              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-              {{ $t('modal.newConv.create') }}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Resume Conversation Modal - Compact Design -->
-      <div class="modal-overlay" v-if="showResumeModal" @click.self="closeResumeModal">
-        <div class="modal resume-modal">
-          <!-- Top Controls: Agent + Work Directory with close button -->
-          <div class="resume-modal-controls">
-            <button class="resume-close-btn" @click="closeResumeModal">
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-            </button>
-            <div class="resume-control-row">
-              <label class="resume-control-label">Agent</label>
-              <div class="resume-select-wrapper">
-                <select v-model="resumeAgent" @change="onResumeAgentChange" class="resume-select">
-                  <option value="">{{ $t('chat.agent.select') }}</option>
-                  <option v-for="agent in store.agents.filter(a => a.online)" :key="agent.id" :value="agent.id">
-                    {{ agent.name }}{{ agent.latency ? ' (' + agent.latency + 'ms)' : '' }}
-                  </option>
-                </select>
-                <svg class="select-arrow" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-              </div>
-            </div>
-            <div class="resume-control-row" v-if="resumeAgent">
-              <label class="resume-control-label">{{ $t('modal.resume.workDir') }}</label>
-              <div class="workdir-input-group">
-                <input
-                  type="text"
-                  v-model="resumeWorkDir"
-                  @input="onResumeWorkDirInput"
-                  :placeholder="selectedResumeAgentWorkDir || $t('modal.resume.inputOrSelect')"
-                  class="resume-input"
-                >
-                <button class="workdir-browse-btn" @click="openFolderPicker('resume')" :title="$t('modal.resume.browse')">
-                  <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Tab Navigation -->
-          <div class="resume-modal-tabs" v-if="resumeAgent">
-            <button
-              class="resume-tab"
-              :class="{ active: mobileTab === 'folders' }"
-              @click="mobileTab = 'folders'"
-            >
-              {{ $t('modal.resume.tabFolders') }}
-              <span class="tab-badge" v-if="store.folders.length">{{ store.folders.length }}</span>
-            </button>
-            <button
-              class="resume-tab"
-              :class="{ active: mobileTab === 'sessions' }"
-              @click="mobileTab = 'sessions'"
-            >
-              {{ $t('modal.resume.tabSessions') }}
-              <span class="tab-badge" v-if="store.historySessions.length">{{ store.historySessions.length }}</span>
-            </button>
-          </div>
-
-          <!-- Content Area -->
-          <div class="resume-modal-content" v-if="resumeAgent">
-            <!-- Folders Panel -->
-            <div class="resume-panel" v-show="mobileTab === 'folders'">
+            <!-- Session list (for resume, shown when folder selected) -->
+            <div class="resume-panel" v-if="convModalWorkDir && historyLoaded">
               <div class="resume-panel-header">
-                <span>{{ $t('modal.resume.folderLabel') }}</span>
-                <button class="refresh-btn-mini" @click="loadResumeFolders" :disabled="store.foldersLoading" :title="$t('common.refresh')">
-                  <svg v-if="!store.foldersLoading" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-                  <span v-else class="mini-spinner"></span>
-                </button>
-              </div>
-              <div class="resume-panel-list">
-                <div
-                  v-for="folder in store.folders"
-                  :key="folder.name"
-                  class="resume-list-item folder-item-compact"
-                  :class="{ selected: resumeWorkDir === folder.path }"
-                  @click="selectResumeFolder(folder); mobileTab = 'sessions'"
-                >
-                  <div class="item-path">{{ folder.path }}</div>
-                  <span class="item-badge">{{ folder.sessionCount }}</span>
-                </div>
-                <div class="resume-panel-empty" v-if="store.folders.length === 0 && !store.foldersLoading">
-                  {{ $t('modal.resume.noWorkDirs') }}
-                </div>
-              </div>
-            </div>
-
-            <!-- Sessions Panel -->
-            <div class="resume-panel" v-show="mobileTab === 'sessions'">
-              <div class="resume-panel-header">
-                <span>{{ $t('modal.resume.sessionLabel') }} <span class="header-tag" v-if="resumeWorkDir">{{ getLastPathSegment(resumeWorkDir) }}</span></span>
-                <button class="refresh-btn-mini" @click="loadHistorySessions" :disabled="store.historySessionsLoading || !resumeWorkDir" :title="$t('common.refresh')">
+                <span>{{ $t('modal.resume.sessionLabel') }} <span class="header-tag">{{ getLastPathSegment(convModalWorkDir) }}</span></span>
+                <button class="refresh-btn-mini" @click="loadConvModalSessions" :disabled="store.historySessionsLoading" :title="$t('common.refresh')">
                   <svg v-if="!store.historySessionsLoading" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
                   <span v-else class="mini-spinner"></span>
                 </button>
@@ -419,15 +312,13 @@ export default {
                   v-for="session in store.historySessions"
                   :key="session.sessionId"
                   class="resume-list-item session-item-compact"
-                  @click="resumeSessionDirectly(session)"
+                  :class="{ selected: selectedResumeSession?.sessionId === session.sessionId }"
+                  @click="selectedResumeSession = session"
                 >
                   <div class="item-name">{{ session.title || $t('modal.resume.untitled') }}</div>
                   <div class="item-time">{{ formatDate(session.lastModified) }}</div>
                 </div>
-                <div class="resume-panel-empty" v-if="!resumeWorkDir">
-                  {{ $t('modal.resume.selectWorkDir') }}
-                </div>
-                <div class="resume-panel-empty" v-else-if="store.historySessions.length === 0 && !store.historySessionsLoading && historyLoaded">
+                <div class="resume-panel-empty" v-if="store.historySessions.length === 0 && !store.historySessionsLoading">
                   {{ $t('modal.resume.noSessions') }}
                 </div>
               </div>
@@ -436,8 +327,32 @@ export default {
 
           <!-- Empty state when no agent -->
           <div class="resume-modal-empty" v-else>
-            <div class="empty-icon">🤖</div>
-            <div class="empty-text">{{ $t('modal.resume.selectAgent') }}</div>
+            <div class="empty-icon">
+              <svg viewBox="0 0 24 24" width="40" height="40"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
+            </div>
+            <div class="empty-text">{{ $t('modal.newConv.selectAgent') }}</div>
+          </div>
+
+          <!-- Footer with two action buttons -->
+          <div class="resume-modal-footer" v-if="convModalAgent">
+            <button
+              class="modern-btn primary"
+              @click="createNewConversation"
+              :disabled="!convModalAgent"
+              style="flex: 1"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              {{ $t('modal.newConv.create') }}
+            </button>
+            <button
+              class="modern-btn secondary"
+              @click="resumeSelectedSession"
+              :disabled="!selectedResumeSession"
+              style="flex: 1"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+              {{ $t('chat.sidebar.resumeConv') }}
+            </button>
           </div>
         </div>
       </div>
@@ -493,22 +408,18 @@ export default {
   data() {
     return {
       showAgentDropdown: false,
-      showNewConversationModal: false,
-      showResumeModal: false,
       showMobileSidebar: false,
       showSettingsPanel: false,
       proxyOpen: false,
       agentManagerOpen: false,
       restartingAgents: {},
       upgradingAgents: {},
-      newConversationWorkDir: '',
-      newConvAgent: '',
-      newConvMobileTab: 'config',
-      resumeSessionId: '',
-      resumeWorkDir: '',
-      resumeAgent: '',
+      // Unified conversation modal state
+      showConversationModal: false,
+      convModalAgent: '',
+      convModalWorkDir: '',
+      selectedResumeSession: null,
       historyLoaded: false,
-      mobileTab: 'folders',
       windowWidth: window.innerWidth,
       // Folder picker state
       folderPickerOpen: false,
@@ -516,7 +427,7 @@ export default {
       folderPickerEntries: [],
       folderPickerLoading: false,
       folderPickerSelected: '',
-      folderPickerTarget: '', // 'newConv' or 'resume'
+      folderPickerTarget: '', // 'convModal'
       serverVersion: ''
     };
   },
@@ -528,14 +439,9 @@ export default {
       const role = useAuthStore().role;
       return role === 'admin' || role === 'pro';
     },
-    selectedNewAgentWorkDir() {
-      if (!this.newConvAgent) return '';
-      const agent = this.store.agents.find(a => a.id === this.newConvAgent);
-      return agent?.workDir || '';
-    },
-    selectedResumeAgentWorkDir() {
-      if (!this.resumeAgent) return '';
-      const agent = this.store.agents.find(a => a.id === this.resumeAgent);
+    selectedConvModalAgentWorkDir() {
+      if (!this.convModalAgent) return '';
+      const agent = this.store.agents.find(a => a.id === this.convModalAgent);
       return agent?.workDir || '';
     },
     onlineAgentCount() {
@@ -551,20 +457,6 @@ export default {
       if (!this.store.currentAgent) return null;
       const agent = this.store.agents.find(a => a.id === this.store.currentAgent);
       return agent?.latency || null;
-    },
-    defaultNewFolder() {
-      // 从 folders 列表中获取第一个作为默认值
-      if (this.store.folders.length > 0) {
-        return this.store.folders[0].path;
-      }
-      return this.selectedNewAgentWorkDir;
-    },
-    defaultResumeFolder() {
-      // 从 folders 列表中获取第一个作为默认值
-      if (this.store.folders.length > 0) {
-        return this.store.folders[0].path;
-      }
-      return this.selectedResumeAgentWorkDir;
     },
     isMobileView() {
       return this.windowWidth < 640;
@@ -602,64 +494,84 @@ export default {
       this.store.createCrewSession(config);
     },
 
-    openNewConversationModal() {
-      this.showNewConversationModal = true;
-      this.newConvAgent = '';
-      this.newConversationWorkDir = '';
-      // 优先选择当前 agent（如果在线），否则选第一个在线 agent
-      const onlineAgents = this.store.agents.filter(a => a.online);
-      const currentAgentOnline = onlineAgents.find(a => a.id === this.store.currentAgent);
-      const selectedAgent = currentAgentOnline || onlineAgents[0];
-      if (selectedAgent) {
-        this.newConvAgent = selectedAgent.id;
-        // Load folders for the selected agent without switching current agent
-        this.store.listFoldersForAgent(this.newConvAgent).then(() => {
-          if (this.store.folders.length > 0) {
-            this.newConversationWorkDir = this.store.folders[0].path;
-          }
-        });
-      }
-    },
-    openResumeModal() {
-      this.showResumeModal = true;
-      this.resumeAgent = '';
-      this.resumeWorkDir = '';
-      this.resumeSessionId = '';
+    openConversationModal() {
+      this.showConversationModal = true;
+      this.convModalAgent = '';
+      this.convModalWorkDir = '';
+      this.selectedResumeSession = null;
       this.historyLoaded = false;
       // 优先选择当前 agent（如果在线），否则选第一个在线 agent
       const onlineAgents = this.store.agents.filter(a => a.online);
       const currentAgentOnline = onlineAgents.find(a => a.id === this.store.currentAgent);
       const selectedAgent = currentAgentOnline || onlineAgents[0];
       if (selectedAgent) {
-        this.resumeAgent = selectedAgent.id;
-        // Load folders for the selected agent without switching current agent
-        this.store.listFoldersForAgent(this.resumeAgent).then(() => {
+        this.convModalAgent = selectedAgent.id;
+        this.store.listFoldersForAgent(this.convModalAgent).then(() => {
           if (this.store.folders.length > 0) {
-            this.resumeWorkDir = this.store.folders[0].path;
-            this.store.listHistorySessionsForAgent(this.resumeAgent, this.resumeWorkDir);
+            this.convModalWorkDir = this.store.folders[0].path;
+            // 自动加载 sessions
+            this.store.listHistorySessionsForAgent(this.convModalAgent, this.convModalWorkDir);
             this.historyLoaded = true;
           }
         });
       }
     },
-    closeNewConvModal() {
-      this.showNewConversationModal = false;
-      this.newConvAgent = '';
-      this.newConversationWorkDir = '';
-      this.newConvMobileTab = 'config';
+    openConversationModalResume() {
+      this.openConversationModal();
     },
-    onResumeWorkDirInput() {
-      // Load sessions based on user input after debounce (using specified agent)
+    closeConversationModal() {
+      this.showConversationModal = false;
+      this.convModalAgent = '';
+      this.convModalWorkDir = '';
+      this.selectedResumeSession = null;
       this.historyLoaded = false;
+    },
+    onConvModalAgentChange() {
+      if (this.convModalAgent) {
+        this.convModalWorkDir = '';
+        this.selectedResumeSession = null;
+        this.historyLoaded = false;
+        this.store.listFoldersForAgent(this.convModalAgent).then(() => {
+          if (this.store.folders.length > 0) {
+            this.convModalWorkDir = this.store.folders[0].path;
+            this.store.listHistorySessionsForAgent(this.convModalAgent, this.convModalWorkDir);
+            this.historyLoaded = true;
+          }
+        });
+      }
+    },
+    onConvModalWorkDirInput() {
+      this.historyLoaded = false;
+      this.selectedResumeSession = null;
       if (this._workDirInputTimer) {
         clearTimeout(this._workDirInputTimer);
       }
       this._workDirInputTimer = setTimeout(() => {
-        if (this.resumeWorkDir.trim() && this.resumeAgent) {
-          this.store.listHistorySessionsForAgent(this.resumeAgent, this.resumeWorkDir.trim());
+        if (this.convModalWorkDir.trim() && this.convModalAgent) {
+          this.store.listHistorySessionsForAgent(this.convModalAgent, this.convModalWorkDir.trim());
           this.historyLoaded = true;
         }
       }, 500);
+    },
+    selectConvModalFolder(path) {
+      this.convModalWorkDir = path;
+      this.selectedResumeSession = null;
+      // 自动加载该 folder 下的 sessions
+      if (this.convModalAgent) {
+        this.store.listHistorySessionsForAgent(this.convModalAgent, path);
+        this.historyLoaded = true;
+      }
+    },
+    loadConvModalFolders() {
+      if (this.convModalAgent) {
+        this.store.listFoldersForAgent(this.convModalAgent);
+      }
+    },
+    loadConvModalSessions() {
+      if (this.convModalAgent && this.convModalWorkDir.trim()) {
+        this.store.listHistorySessionsForAgent(this.convModalAgent, this.convModalWorkDir.trim());
+        this.historyLoaded = true;
+      }
     },
     toggleAgentDropdown() {
       this.showAgentDropdown = !this.showAgentDropdown;
@@ -672,97 +584,19 @@ export default {
       this.showAgentDropdown = false;
     },
     createNewConversation() {
-      if (!this.newConvAgent) return;
-      // Select the agent and create conversation with explicit agentId
-      this.store.selectAgent(this.newConvAgent);
-      const workDir = this.newConversationWorkDir.trim() || this.selectedNewAgentWorkDir;
-      // Pass agentId to ensure the request goes to the correct agent
-      this.store.createConversation(workDir, this.newConvAgent);
-      this.showNewConversationModal = false;
-      this.newConversationWorkDir = '';
-      this.newConvAgent = '';
+      if (!this.convModalAgent) return;
+      this.store.selectAgent(this.convModalAgent);
+      const workDir = this.convModalWorkDir.trim() || this.selectedConvModalAgentWorkDir;
+      this.store.createConversation(workDir, this.convModalAgent);
+      this.closeConversationModal();
     },
-    onNewConvAgentChange() {
-      // When agent changes, load folders and reset workDir (without switching current agent)
-      if (this.newConvAgent) {
-        this.newConversationWorkDir = '';
-        this.store.listFoldersForAgent(this.newConvAgent).then(() => {
-          if (this.store.folders.length > 0) {
-            this.newConversationWorkDir = this.store.folders[0].path;
-          }
-        });
-      }
-    },
-    loadNewConvFolders() {
-      if (this.newConvAgent) {
-        this.store.listFoldersForAgent(this.newConvAgent);
-      }
-    },
-    resumeConversation() {
-      if (!this.resumeAgent || !this.resumeSessionId.trim()) return;
-      // First select the agent
-      this.store.selectAgent(this.resumeAgent);
-      // Then resume conversation with explicit agentId to avoid race condition
-      const workDir = this.resumeWorkDir.trim() || this.selectedResumeAgentWorkDir;
-      this.store.resumeConversation(this.resumeSessionId.trim(), workDir, this.resumeAgent);
-      this.closeResumeModal();
-    },
-    onResumeAgentChange() {
-      // When agent changes, load folders and reset state (without switching current agent)
-      if (this.resumeAgent) {
-        this.resumeWorkDir = '';
-        this.resumeSessionId = '';
-        this.historyLoaded = false;
-        this.store.listFoldersForAgent(this.resumeAgent).then(() => {
-          if (this.store.folders.length > 0) {
-            this.resumeWorkDir = this.store.folders[0].path;
-            this.store.listHistorySessionsForAgent(this.resumeAgent, this.resumeWorkDir);
-            this.historyLoaded = true;
-          }
-        });
-      }
-    },
-    loadResumeFolders() {
-      if (this.resumeAgent) {
-        this.store.listFoldersForAgent(this.resumeAgent);
-      }
-    },
-    selectResumeFolder(folder) {
-      this.resumeWorkDir = folder.path;
-      // Auto-load history sessions when folder selected (using specified agent)
-      this.store.listHistorySessionsForAgent(this.resumeAgent, folder.path);
-      this.historyLoaded = true;
-    },
-    loadHistorySessions() {
-      const workDir = this.resumeWorkDir.trim() || this.store.currentAgentWorkDir;
-      if (!workDir) {
-        alert(this.$t('chat.delete.enterWorkDir'));
-        return;
-      }
-      // Use specified agent instead of current agent
-      this.store.listHistorySessionsForAgent(this.resumeAgent, workDir);
-      this.historyLoaded = true;
-    },
-    selectHistorySession(session) {
-      this.resumeSessionId = session.sessionId;
-      this.resumeWorkDir = session.workDir;
-    },
-    resumeSessionDirectly(session) {
-      // 直接恢复会话并关闭模态框
-      if (!this.resumeAgent) return;
-      this.store.selectAgent(this.resumeAgent);
-      // 预先保存会话标题
-      this.store._pendingSessionTitle = session.title;
-      const workDir = session.workDir || this.resumeWorkDir.trim() || this.selectedResumeAgentWorkDir;
-      this.store.resumeConversation(session.sessionId, workDir, this.resumeAgent);
-      this.closeResumeModal();
-    },
-    closeResumeModal() {
-      this.showResumeModal = false;
-      this.resumeSessionId = '';
-      this.resumeWorkDir = '';
-      this.resumeAgent = '';
-      this.historyLoaded = false;
+    resumeSelectedSession() {
+      if (!this.convModalAgent || !this.selectedResumeSession) return;
+      this.store.selectAgent(this.convModalAgent);
+      this.store._pendingSessionTitle = this.selectedResumeSession.title;
+      const workDir = this.selectedResumeSession.workDir || this.convModalWorkDir.trim() || this.selectedConvModalAgentWorkDir;
+      this.store.resumeConversation(this.selectedResumeSession.sessionId, workDir, this.convModalAgent);
+      this.closeConversationModal();
     },
     formatDate(timestamp) {
       if (!timestamp) return '';
@@ -900,14 +734,14 @@ export default {
     },
     // Folder picker methods
     openFolderPicker(target) {
-      const agentId = target === 'newConv' ? this.newConvAgent : this.resumeAgent;
+      const agentId = this.convModalAgent;
       if (!agentId) return;
       console.log('[FolderPicker] Opening, target:', target, 'agentId:', agentId);
       this.folderPickerTarget = target;
       this.folderPickerOpen = true;
       this.folderPickerSelected = '';
       this.folderPickerLoading = true;
-      const currentWorkDir = target === 'newConv' ? this.newConversationWorkDir : this.resumeWorkDir;
+      const currentWorkDir = this.convModalWorkDir;
       const agent = this.store.agents.find(a => a.id === agentId);
       const defaultDir = currentWorkDir || agent?.workDir || '';
       this.folderPickerPath = defaultDir;
@@ -930,7 +764,7 @@ export default {
       }, 10000);
     },
     loadFolderPickerDir(dirPath) {
-      const agentId = this.folderPickerTarget === 'newConv' ? this.newConvAgent : this.resumeAgent;
+      const agentId = this.convModalAgent;
       if (!agentId) return;
       this.folderPickerLoading = true;
       this.folderPickerSelected = '';
@@ -991,15 +825,12 @@ export default {
         const sep = path.includes('\\') ? '\\' : '/';
         path = path.replace(/[/\\]$/, '') + sep + this.folderPickerSelected;
       }
-      if (this.folderPickerTarget === 'newConv') {
-        this.newConversationWorkDir = path;
-      } else {
-        this.resumeWorkDir = path;
-        // Auto-load history sessions
-        if (this.resumeAgent) {
-          this.store.listHistorySessionsForAgent(this.resumeAgent, path);
-          this.historyLoaded = true;
-        }
+      this.convModalWorkDir = path;
+      this.selectedResumeSession = null;
+      // 自动加载 sessions
+      if (this.convModalAgent) {
+        this.store.listHistorySessionsForAgent(this.convModalAgent, path);
+        this.historyLoaded = true;
       }
       this.folderPickerOpen = false;
     },
