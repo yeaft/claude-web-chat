@@ -352,7 +352,7 @@ async function handleMessage(msg) {
             sendToServer({ type: 'upgrade_agent_ack', success: true, alreadyLatest: true, version: ctx.agentVersion });
             return;
           }
-          console.log(`[Agent] Upgrading from ${ctx.agentVersion} to ${latestVersion}...`);
+          console.log(`[Agent] Upgrading from ${ctx.agentVersion} to latest (${latestVersion})...`);
 
           // 检测安装方式：npm install 的路径包含 node_modules，源码运行则不包含
           const scriptPath = (process.argv[1] || '').replace(/\\/g, '/');
@@ -383,9 +383,10 @@ async function handleMessage(msg) {
 
           const isWindows = platform() === 'win32';
           // 全局安装用 npm install -g，局部安装在 installDir 下 npm install
+          // 不指定版本号，直接用 @latest 确保安装最新版
           const npmArgs = isGlobalInstall
-            ? ['install', '-g', `${pkgName}@${latestVersion}`]
-            : ['install', `${pkgName}@${latestVersion}`];
+            ? ['install', '-g', `${pkgName}@latest`]
+            : ['install', `${pkgName}@latest`];
 
           if (isWindows) {
             // Windows: 进程持有文件锁，npm install 无法覆盖正在运行的模块文件 (EBUSY)
@@ -401,7 +402,7 @@ async function handleMessage(msg) {
               '@echo off',
               'setlocal',
               `set PID=${pid}`,
-              `set PKG=${pkgName}@${latestVersion}`,
+              `set PKG=${pkgName}@latest`,
               `set INSTALL_DIR=${installDirWin}`,
               `set MAX_WAIT=30`,
               `set COUNT=0`,
@@ -473,7 +474,7 @@ async function handleMessage(msg) {
             const shLines = [
               '#!/bin/bash',
               `PID=${pid}`,
-              `PKG="${pkgName}@${latestVersion}"`,
+              `PKG="${pkgName}@latest"`,
               ...(cwd ? [`INSTALL_DIR="${cwd}"`] : []),
               '',
               '# Wait for current process to exit',
