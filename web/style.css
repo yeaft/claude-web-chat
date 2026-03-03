@@ -10444,6 +10444,47 @@ body {
   font-family: system-ui;
 }
 
+/* Task label in message header */
+.crew-task-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--task-color, var(--accent-blue));
+  background: color-mix(in srgb, var(--task-color, var(--accent-blue)) 12%, transparent);
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* Task filter in status bar */
+.crew-task-filter {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--text-muted);
+  background: transparent;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.crew-task-filter:hover {
+  background: var(--bg-hover);
+}
+.crew-task-filter.active {
+  color: var(--task-color, var(--text-primary));
+  background: color-mix(in srgb, var(--task-color, var(--text-primary)) 15%, transparent);
+  font-weight: 500;
+}
+
+/* Active role task hint in status bar */
+.crew-at-task {
+  font-size: 10px;
+  opacity: 0.7;
+  margin-left: 1px;
+}
+.crew-at-hint.is-active {
+  font-weight: 600;
+}
+
 /* crew-msg-content inherits .markdown-body styles for consistency with Chat */
 .crew-msg-content {
   word-break: break-word;
@@ -11152,6 +11193,48 @@ body {
 
 .crew-role-advanced summary:hover {
   color: var(--text-secondary);
+}
+
+/* Role concurrency selector */
+.crew-role-concurrency {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.crew-concurrency-label {
+  color: var(--text-muted);
+}
+
+.crew-concurrency-btn {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s;
+}
+
+.crew-concurrency-btn:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.crew-concurrency-btn.active {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+
+.crew-concurrency-follow {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* Config panel add-role button */

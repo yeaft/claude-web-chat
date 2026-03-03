@@ -541,20 +541,29 @@ export const useChatStore = defineStore('chat', {
           roleIcon: msg.roleIcon,
           roleName: msg.roleName,
           type: msg.outputType,
+          taskId: msg.taskId || null,
+          taskTitle: msg.taskTitle || null,
           timestamp: Date.now()
         };
 
         if (msg.outputType === 'text') {
-          const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
-          if (lastMsg && lastMsg.role === msg.role && lastMsg.type === 'text' && lastMsg._streaming) {
+          // 反向搜索该角色的最后一条 _streaming 消息（并发安全）
+          let streamMsg = null;
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === msg.role && messages[i].type === 'text' && messages[i]._streaming) {
+              streamMsg = messages[i];
+              break;
+            }
+          }
+          if (streamMsg) {
             const content = msg.data?.message?.content;
             if (content) {
               if (typeof content === 'string') {
-                lastMsg.content += content;
+                streamMsg.content += content;
               } else if (Array.isArray(content)) {
                 for (const block of content) {
                   if (block.type === 'text') {
-                    lastMsg.content += block.text;
+                    streamMsg.content += block.text;
                   }
                 }
               }
@@ -575,6 +584,13 @@ export const useChatStore = defineStore('chat', {
         }
 
         if (msg.outputType === 'tool_use') {
+          // 先结束该角色的 streaming 文本（tool_use 意味着文本部分结束）
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === msg.role && messages[i].type === 'text' && messages[i]._streaming) {
+              messages[i]._streaming = false;
+              break;
+            }
+          }
           const content = msg.data?.message?.content;
           if (Array.isArray(content)) {
             for (const block of content) {

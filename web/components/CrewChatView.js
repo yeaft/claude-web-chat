@@ -84,6 +84,7 @@ export default {
               <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-header">
                 <span class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
                 <span class="crew-msg-name" :class="{ 'is-human': turn.message.role === 'human', 'is-system': turn.message.role === 'system' }">{{ turn.message.roleName }}</span>
+                <span v-if="turn.message.taskTitle" class="crew-task-label" :style="getTaskColor(turn.message.taskId)">{{ turn.message.taskTitle }}</span>
                 <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
               </div>
               <div v-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
@@ -107,6 +108,7 @@ export default {
               <div class="crew-msg-header">
                 <span class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
                 <span class="crew-msg-name">{{ turn.roleName }}</span>
+                <span v-if="turn.taskTitle" class="crew-task-label" :style="getTaskColor(turn.taskId)">{{ turn.taskTitle }}</span>
                 <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
               </div>
 
@@ -159,16 +161,24 @@ export default {
       <div class="input-area crew-input-area">
         <div class="crew-input-hints" v-if="store.currentCrewSession">
           <span class="crew-at-hint" v-for="role in store.currentCrewSession.roles" :key="role.name"
-            @click="insertAt(role.name)" :title="role.displayName"
+            @click="insertAt(role.name)" :title="getRoleBadgeTitle(role)"
             :style="getRoleStyle(role.name)"
+            :class="{ 'is-active': isRoleActive(role.name) }"
             @contextmenu.prevent="openRoleMenu($event, role)">
-            @{{ role.displayName }}
+            @{{ role.displayName }}<span v-if="getRoleTaskTitle(role.name)" class="crew-at-task">({{ getRoleTaskTitle(role.name) }})</span>
           </span>
           <button class="crew-hint-btn" @click="showAddRole = true" title="添加角色">
             <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           </button>
           <span class="crew-hint-separator"></span>
           <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
+          <template v-if="activeTasks.length > 0">
+            <span class="crew-hint-separator"></span>
+            <span class="crew-task-filter" :class="{ active: !taskFilter }" @click="setTaskFilter(null)">全部</span>
+            <span v-for="task in activeTasks" :key="task.id"
+              class="crew-task-filter" :class="{ active: taskFilter === task.id }"
+              :style="getTaskColor(task.id)" @click="setTaskFilter(task.id)">{{ task.title }}</span>
+          </template>
           <span class="crew-hint-meta" v-if="store.currentCrewStatus">轮次 {{ store.currentCrewStatus.round || 0 }}</span>
           <span class="crew-hint-meta" v-if="store.currentCrewStatus">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
           <span class="crew-hint-meta" v-if="store.currentCrewStatus && totalTokens > 0">{{ formatTokens(totalTokens) }} tok</span>
@@ -296,6 +306,7 @@ export default {
       uploading: false,
       expandedTurns: {},
       taskPanelCollapsed: false,
+      taskFilter: null,
       atMenuVisible: false,
       atQuery: '',
       atMenuIndex: 0,
@@ -340,7 +351,8 @@ export default {
 你负责编写代码、实现功能，写出简洁、高效、可读的代码。
 
 # 协作流程
-- 代码完成后，同时交给 @reviewer 审查代码质量和 @tester 进行测试验证（并行审核，两者独立 approve）
+- 代码完成后，同时交给审查者审核代码质量和测试者进行测试验证（并行审核，两者独立 approve）
+- 多实例模式下，你会被分配到一个开发组，系统会自动告诉你搭档的 reviewer 和 tester 是谁
 - 两者都通过后，交给决策者汇总`
         },
         {
@@ -481,8 +493,40 @@ export default {
       if (this.crewTasks.length === 0) return 0;
       return Math.round((this.completedTaskCount / this.crewTasks.length) * 100);
     },
-    groupedMessages() {
+    activeTasks() {
+      // 从消息中收集所有出现过的 taskId/taskTitle
+      const taskMap = new Map();
+      for (const msg of this.store.currentCrewMessages) {
+        if (msg.taskId && msg.taskTitle) {
+          taskMap.set(msg.taskId, msg.taskTitle);
+        }
+      }
+      return Array.from(taskMap, ([id, title]) => ({ id, title }));
+    },
+    activeRolesTasks() {
+      // 找出当前活跃角色（正在 streaming 的）及其 task
+      const active = [];
       const messages = this.store.currentCrewMessages;
+      const seen = new Set();
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m._streaming && m.role && !seen.has(m.role)) {
+          seen.add(m.role);
+          active.push({
+            role: m.role,
+            roleName: m.roleName,
+            roleIcon: m.roleIcon,
+            taskTitle: m.taskTitle
+          });
+        }
+      }
+      return active;
+    },
+    groupedMessages() {
+      const allMessages = this.store.currentCrewMessages;
+      const messages = this.taskFilter
+        ? allMessages.filter(m => !m.taskId || m.taskId === this.taskFilter || m.type === 'route' || m.type === 'system' || m.role === 'human')
+        : allMessages;
       const turns = [];
       let currentTurn = null;
       let turnCounter = 0;
@@ -491,6 +535,10 @@ export default {
         if (currentTurn) {
           currentTurn.textMsg = currentTurn.messages.find(m => m.type === 'text') || null;
           currentTurn.toolMsgs = currentTurn.messages.filter(m => m.type === 'tool');
+          // 取 turn 中第一条消息的 task 信息
+          const firstWithTask = currentTurn.messages.find(m => m.taskId);
+          currentTurn.taskId = firstWithTask?.taskId || null;
+          currentTurn.taskTitle = firstWithTask?.taskTitle || null;
           turns.push(currentTurn);
           currentTurn = null;
         }
@@ -605,6 +653,29 @@ export default {
         '--role-bg': `var(--crew-color-fallback-${idx})11`,
         '--role-border': `var(--crew-color-fallback-${idx})40`
       };
+    },
+
+    getTaskColor(taskId) {
+      if (!taskId) return {};
+      const TASK_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+      const hash = taskId.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xff, 0);
+      const color = TASK_COLORS[hash % TASK_COLORS.length];
+      return { '--task-color': color };
+    },
+
+    setTaskFilter(taskId) {
+      this.taskFilter = this.taskFilter === taskId ? null : taskId;
+    },
+
+    getRoleTaskTitle(roleName) {
+      // 找该角色最后一条带 taskTitle 的消息
+      const messages = this.store.currentCrewMessages;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === roleName && messages[i].taskTitle) {
+          return messages[i].taskTitle;
+        }
+      }
+      return null;
     },
 
     getRoleBadgeTitle(role) {

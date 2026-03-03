@@ -16,7 +16,11 @@ import { query, Stream } from './sdk/index.js';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { execFile as execFileCb } from 'child_process';
+import { promisify } from 'util';
 import ctx from './context.js';
+
+const execFile = promisify(execFileCb);
 
 // =====================================================================
 // Data Structures
@@ -27,6 +31,188 @@ const crewSessions = new Map();
 
 // 导出供 connection.js / conversation.js 使用
 export { crewSessions };
+
+// =====================================================================
+// Role Multi-Instance Expansion
+// =====================================================================
+
+// 短前缀映射：用于 count > 1 时生成实例名
+const SHORT_PREFIX = {
+  developer: 'dev',
+  tester: 'test',
+  reviewer: 'rev'
+};
+
+// 只有执行者角色支持多实例
+const EXPANDABLE_ROLES = new Set(['developer', 'tester', 'reviewer']);
+
+/**
+ * 展开角色列表：count > 1 的执行者角色展开为多个实例
+ * count === 1 或管理者角色保持原样（向后兼容）
+ *
+ * @param {Array} roles - 原始角色配置
+ * @returns {Array} 展开后的角色列表
+ */
+function expandRoles(roles) {
+  // 找到 developer 的 count，reviewer/tester 自动跟随
+  const devRole = roles.find(r => r.name === 'developer');
+  const devCount = devRole?.count > 1 ? devRole.count : 1;
+
+  const expanded = [];
+  for (const role of roles) {
+    const isExpandable = EXPANDABLE_ROLES.has(role.name);
+    // reviewer/tester 跟随 developer 的 count
+    const count = isExpandable ? devCount : 1;
+
+    if (count <= 1 || !isExpandable) {
+      // 单实例：保持原样，添加元数据
+      expanded.push({
+        ...role,
+        roleType: role.name,
+        groupIndex: 0
+      });
+    } else {
+      // 多实例展开
+      const prefix = SHORT_PREFIX[role.name] || role.name;
+      for (let i = 1; i <= count; i++) {
+        expanded.push({
+          ...role,
+          name: `${prefix}-${i}`,
+          displayName: `${role.displayName}-${i}`,
+          roleType: role.name,
+          groupIndex: i,
+          count: undefined  // 展开后不再需要 count
+        });
+      }
+    }
+  }
+  return expanded;
+}
+
+// =====================================================================
+// Git Worktree Management
+// =====================================================================
+
+/**
+ * 为多实例开发组创建 git worktree
+ * 每个 groupIndex 对应一个 worktree，同组的 dev/rev/test 共享
+ * count=1 时不创建（向后兼容）
+ *
+ * @param {string} projectDir - 主项目目录
+ * @param {Array} roles - 展开后的角色列表
+ * @returns {Map<number, string>} groupIndex → worktree 路径
+ */
+async function initWorktrees(projectDir, roles) {
+  const groupIndices = [...new Set(roles.filter(r => r.groupIndex > 0).map(r => r.groupIndex))];
+  if (groupIndices.length === 0) return new Map();
+
+  const worktreeBase = join(projectDir, '.worktrees');
+  await fs.mkdir(worktreeBase, { recursive: true });
+
+  // 获取 git 已知的 worktree 列表
+  let knownWorktrees = new Set();
+  try {
+    const { stdout } = await execFile('git', ['worktree', 'list', '--porcelain'], { cwd: projectDir });
+    for (const line of stdout.split('\n')) {
+      if (line.startsWith('worktree ')) {
+        knownWorktrees.add(line.slice('worktree '.length).trim());
+      }
+    }
+  } catch {
+    // git worktree list 失败，视为空集
+  }
+
+  const worktreeMap = new Map();
+
+  for (const idx of groupIndices) {
+    const wtDir = join(worktreeBase, `dev-${idx}`);
+    const branch = `crew/dev-${idx}`;
+
+    // 检查目录是否存在
+    let dirExists = false;
+    try {
+      await fs.access(wtDir);
+      dirExists = true;
+    } catch {}
+
+    if (dirExists) {
+      if (knownWorktrees.has(wtDir)) {
+        // 目录存在且 git 记录中也有，直接复用
+        console.log(`[Crew] Worktree already exists: ${wtDir}`);
+        worktreeMap.set(idx, wtDir);
+        continue;
+      } else {
+        // 孤立目录：目录存在但 git 不认识，先删除再重建
+        console.warn(`[Crew] Orphaned worktree dir, removing: ${wtDir}`);
+        await fs.rm(wtDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+
+    try {
+      // 创建分支（如果不存在）
+      try {
+        await execFile('git', ['branch', branch], { cwd: projectDir });
+      } catch {
+        // 分支已存在，忽略
+      }
+
+      // 创建 worktree
+      await execFile('git', ['worktree', 'add', wtDir, branch], { cwd: projectDir });
+      console.log(`[Crew] Created worktree: ${wtDir} on branch ${branch}`);
+      worktreeMap.set(idx, wtDir);
+    } catch (e) {
+      console.error(`[Crew] Failed to create worktree for group ${idx}:`, e.message);
+    }
+  }
+
+  return worktreeMap;
+}
+
+/**
+ * 清理 session 的 git worktrees
+ * @param {string} projectDir - 主项目目录
+ */
+async function cleanupWorktrees(projectDir) {
+  const worktreeBase = join(projectDir, '.worktrees');
+
+  try {
+    await fs.access(worktreeBase);
+  } catch {
+    return; // .worktrees 目录不存在，无需清理
+  }
+
+  try {
+    const entries = await fs.readdir(worktreeBase);
+    for (const entry of entries) {
+      if (!entry.startsWith('dev-')) continue;
+      const wtDir = join(worktreeBase, entry);
+      const branch = `crew/${entry}`;
+
+      try {
+        await execFile('git', ['worktree', 'remove', wtDir, '--force'], { cwd: projectDir });
+        console.log(`[Crew] Removed worktree: ${wtDir}`);
+      } catch (e) {
+        console.warn(`[Crew] Failed to remove worktree ${wtDir}:`, e.message);
+      }
+
+      try {
+        await execFile('git', ['branch', '-D', branch], { cwd: projectDir });
+        console.log(`[Crew] Deleted branch: ${branch}`);
+      } catch (e) {
+        console.warn(`[Crew] Failed to delete branch ${branch}:`, e.message);
+      }
+    }
+
+    // 尝试删除 .worktrees 目录（如果已空）
+    try {
+      await fs.rmdir(worktreeBase);
+    } catch {
+      // 目录不空或其他原因，忽略
+    }
+  } catch (e) {
+    console.error(`[Crew] Failed to cleanup worktrees:`, e.message);
+  }
+}
 
 // =====================================================================
 // Crew Session Index (~/.claude/crew-sessions.json)
@@ -247,7 +433,7 @@ export async function resumeCrewSession(msg) {
     uiMessages: [],          // will be loaded from messages.json
     humanMessageQueue: [],
     waitingHumanContext: null,
-    pendingRoute: null,
+    pendingRoutes: [],
     userId: userId || meta.userId,
     username: username || meta.username,
     createdAt: meta.createdAt || Date.now()
@@ -297,11 +483,14 @@ export async function createCrewSession(msg) {
     projectDir,
     sharedDir: sharedDirRel,
     goal,
-    roles = [],     // [{ name, displayName, icon, description, claudeMd, model, budget, isDecisionMaker }]
+    roles: rawRoles = [],     // [{ name, displayName, icon, description, claudeMd, model, budget, isDecisionMaker, count }]
     maxRounds = 20,
     userId,
     username
   } = msg;
+
+  // 展开多实例角色（count > 1 的执行者角色）
+  const roles = expandRoles(rawRoles);
 
   // 解析共享目录（相对路径相对于 projectDir）
   const sharedDir = sharedDirRel?.startsWith('/')
@@ -310,6 +499,17 @@ export async function createCrewSession(msg) {
 
   // 初始化共享区
   await initSharedDir(sharedDir, goal, roles, projectDir);
+
+  // 初始化 git worktrees（仅多实例时）
+  const worktreeMap = await initWorktrees(projectDir, roles);
+  // 回填 workDir：同组的 dev-N/rev-N/test-N 共享同一个 worktree
+  for (const role of roles) {
+    if (role.groupIndex > 0 && worktreeMap.has(role.groupIndex)) {
+      role.workDir = worktreeMap.get(role.groupIndex);
+      // 重新写入 CLAUDE.md（加入工作目录信息）
+      await writeRoleClaudeMd(sharedDir, role);
+    }
+  }
 
   // 找到决策者
   const decisionMaker = roles.find(r => r.isDecisionMaker)?.name || roles[0]?.name || null;
@@ -332,7 +532,7 @@ export async function createCrewSession(msg) {
     uiMessages: [],          // 精简的 UI 消息历史（用于恢复时重放）
     humanMessageQueue: [],   // 人的消息排队
     waitingHumanContext: null, // { fromRole, reason, message }
-    pendingRoute: null,       // { fromRole, route } — 暂停时未完成的路由
+    pendingRoutes: [],        // [{ fromRole, route }] — 暂停时未完成的路由
     userId,
     username,
     createdAt: Date.now()
@@ -353,7 +553,9 @@ export async function createCrewSession(msg) {
       icon: r.icon,
       description: r.description,
       isDecisionMaker: r.isDecisionMaker || false,
-      model: r.model
+      model: r.model,
+      roleType: r.roleType,
+      groupIndex: r.groupIndex
     })),
     decisionMaker,
     maxRounds,
@@ -395,51 +597,58 @@ export async function addRoleToSession(msg) {
     return;
   }
 
-  if (session.roles.has(role.name)) {
-    console.warn(`[Crew] Role already exists: ${role.name}`);
-    return;
-  }
+  // 展开多实例（count > 1 时）
+  const rolesToAdd = expandRoles([role]);
 
-  // 添加角色到 session
-  session.roles.set(role.name, role);
+  for (const r of rolesToAdd) {
+    if (session.roles.has(r.name)) {
+      console.warn(`[Crew] Role already exists: ${r.name}`);
+      continue;
+    }
 
-  // 如果还没有决策者且新角色是决策者，更新
-  if (role.isDecisionMaker) {
-    session.decisionMaker = role.name;
-  }
-  // 如果没有任何决策者，第一个角色作为决策者
-  if (!session.decisionMaker) {
-    session.decisionMaker = role.name;
-  }
+    // 添加角色到 session
+    session.roles.set(r.name, r);
 
-  // 初始化角色目录（CLAUDE.md + memory.md）
-  await initRoleDir(session.sharedDir, role);
+    // 如果还没有决策者且新角色是决策者，更新
+    if (r.isDecisionMaker) {
+      session.decisionMaker = r.name;
+    }
+    // 如果没有任何决策者，第一个角色作为决策者
+    if (!session.decisionMaker) {
+      session.decisionMaker = r.name;
+    }
+
+    // 初始化角色目录（CLAUDE.md + memory.md）
+    await initRoleDir(session.sharedDir, r);
+
+    console.log(`[Crew] Role added: ${r.name} (${r.displayName}) to session ${sessionId}`);
+
+    // 通知 Web 端
+    sendCrewMessage({
+      type: 'crew_role_added',
+      sessionId,
+      role: {
+        name: r.name,
+        displayName: r.displayName,
+        icon: r.icon,
+        description: r.description,
+        isDecisionMaker: r.isDecisionMaker || false,
+        model: r.model,
+        roleType: r.roleType,
+        groupIndex: r.groupIndex
+      },
+      decisionMaker: session.decisionMaker
+    });
+
+    // 发送系统消息
+    sendCrewOutput(session, 'system', 'system', {
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: `${r.icon} ${r.displayName} 加入了群聊` }] }
+    });
+  }
 
   // 更新共享 CLAUDE.md（增量添加新角色信息）
   await updateSharedClaudeMd(session);
-
-  console.log(`[Crew] Role added: ${role.name} (${role.displayName}) to session ${sessionId}`);
-
-  // 通知 Web 端
-  sendCrewMessage({
-    type: 'crew_role_added',
-    sessionId,
-    role: {
-      name: role.name,
-      displayName: role.displayName,
-      icon: role.icon,
-      description: role.description,
-      isDecisionMaker: role.isDecisionMaker || false,
-      model: role.model
-    },
-    decisionMaker: session.decisionMaker
-  });
-
-  // 发送系统消息
-  sendCrewOutput(session, 'system', 'system', {
-    type: 'assistant',
-    message: { role: 'assistant', content: [{ type: 'text', text: `${role.icon} ${role.displayName} 加入了群聊` }] }
-  });
 
   sendStatusUpdate(session);
 }
@@ -587,9 +796,20 @@ _团队共同维护，记录重要的共识、决策和信息。_
 async function writeRoleClaudeMd(sharedDir, role) {
   const roleDir = join(sharedDir, 'roles', role.name);
 
-  const claudeMd = `# 角色: ${role.icon} ${role.displayName}
+  let claudeMd = `# 角色: ${role.icon} ${role.displayName}
 ${role.claudeMd || role.description}
+`;
 
+  // 有独立 worktree 的角色，覆盖代码工作目录
+  if (role.workDir) {
+    claudeMd += `
+# 代码工作目录
+${role.workDir}
+所有代码操作请使用此路径。不要使用项目主目录。
+`;
+  }
+
+  claudeMd += `
 # 个人记忆
 _在这里记录重要的信息、决策、进展和待办事项。_
 `;
@@ -704,7 +924,18 @@ async function createRoleQuery(session, roleName) {
  */
 function buildRoleSystemPrompt(role, session) {
   const allRoles = Array.from(session.roles.values());
-  const otherRoles = allRoles.filter(r => r.name !== role.name);
+
+  // 按组裁剪路由目标：
+  // - 有 groupIndex > 0 的执行者只看到同组成员 + 管理者（PM/architect/designer）
+  // - 管理者（groupIndex === 0）看到所有角色
+  let routeTargets;
+  if (role.groupIndex > 0) {
+    routeTargets = allRoles.filter(r =>
+      r.name !== role.name && (r.groupIndex === role.groupIndex || r.groupIndex === 0)
+    );
+  } else {
+    routeTargets = allRoles.filter(r => r.name !== role.name);
+  }
 
   let prompt = `# 团队协作
 你正在一个 AI 团队中工作。${session.goal ? `项目目标是: ${session.goal}` : '等待用户提出任务或问题。'}
@@ -712,7 +943,10 @@ function buildRoleSystemPrompt(role, session) {
 团队成员:
 ${allRoles.map(r => `- ${r.icon} ${r.displayName}: ${r.description}${r.isDecisionMaker ? ' (决策者)' : ''}`).join('\n')}`;
 
-  if (otherRoles.length > 0) {
+  const hasMultiInstance = allRoles.some(r => r.groupIndex > 0);
+
+  if (routeTargets.length > 0) {
+    const multiRouteAllowed = role.isDecisionMaker && hasMultiInstance;
     prompt += `\n\n# 路由规则
 当你完成当前任务并需要将结果传递给其他角色时，在你的回复最末尾添加一个 ROUTE 块：
 
@@ -724,14 +958,14 @@ summary: <简要说明要传递什么>
 \`\`\`
 
 可用的路由目标:
-${otherRoles.map(r => `- ${r.name}: ${r.icon} ${r.displayName} — ${r.description}`).join('\n')}
+${routeTargets.map(r => `- ${r.name}: ${r.icon} ${r.displayName} — ${r.description}`).join('\n')}
 - human: 人工（只在决策者也无法决定时使用）
 
 注意：
 - 如果你的工作还没完成，不需要添加 ROUTE 块
 - 如果你遇到不确定的问题，@ 决策者 "${session.decisionMaker}"，而不是直接 @ human
 - 如果你是决策者且遇到需要人类判断的问题，才 @ human
-- 每次回复最多只能有一个 ROUTE 块
+${multiRouteAllowed ? '- 决策者可以一次发多个 ROUTE 块来并行分配任务' : '- 每次回复最多只能有一个 ROUTE 块'}
 - ROUTE 块必须在回复的最末尾
 - 当你的任务已完成且不需要其他角色继续时，ROUTE 回决策者 "${session.decisionMaker}" 做总结
 - 在正文中可用 @角色name 提及某个角色（如 @developer），但这不会触发路由，仅供阅读`;
@@ -739,14 +973,63 @@ ${otherRoles.map(r => `- ${r.name}: ${r.icon} ${r.displayName} — ${r.descripti
 
   // 决策者额外 prompt
   if (role.isDecisionMaker) {
+
     prompt += `\n\n# 决策者职责
 你是团队的决策者。其他角色遇到不确定的情况会请求你的决策。
 - 如果你有足够的信息做出决策，直接决定并 @相关角色执行
 - 如果你需要更多信息，@具体角色请求补充
 - 如果问题超出你的能力范围或需要业务判断，@human 请人类决定
 - 你可以随时审查其他角色的工作并给出反馈
-- PM 拥有 commit + push + tag 的自主权。只要修改没有大的 regression 影响（测试全通过），PM 可以自行决定 commit、push 和 tag，无需等待人工确认。只有当改动会直接影响对话交互逻辑时，才需要人工介入审核。
+- PM 拥有 commit + push + tag 的自主权。只要修改没有大的 regression 影响（测试全通过），PM 可以自行决定 commit、push 和 tag，无需等待人工确认。只有当改动会直接影响对话交互逻辑时，才需要人工介入审核。`;
 
+    // 多实例模式：注入开发组状态和调度规则
+    if (hasMultiInstance) {
+      // 构建开发组实时状态
+      const maxGroup = Math.max(...allRoles.map(r => r.groupIndex));
+      const groupLines = [];
+      for (let g = 1; g <= maxGroup; g++) {
+        const members = allRoles.filter(r => r.groupIndex === g);
+        const memberStrs = members.map(r => {
+          const state = session.roleStates.get(r.name);
+          const busy = state?.turnActive;
+          const task = state?.currentTask;
+          if (busy && task) return `${r.name}(忙:${task.taskId} ${task.taskTitle})`;
+          if (busy) return `${r.name}(忙)`;
+          return `${r.name}(空闲)`;
+        });
+        groupLines.push(`组${g}: ${memberStrs.join(' ')}`);
+      }
+
+      prompt += `\n\n# 执行组状态
+${groupLines.join(' / ')}
+
+# 并行任务调度规则
+你有 ${maxGroup} 个开发组可以并行工作。拆分任务时：
+1. 每个子任务分配 task-id（如 task-1）和 taskTitle（如 "实现登录页面"）
+2. 优先分配给**空闲**的开发组，避免给忙碌的 dev 发新任务
+3. 一次可以发**多个 ROUTE 块**来并行分配任务：
+
+\`\`\`
+---ROUTE---
+to: dev-1
+task: task-1
+taskTitle: 实现登录页面
+summary: 请实现登录页面，包括表单验证和API调用
+---END_ROUTE---
+
+---ROUTE---
+to: dev-2
+task: task-2
+taskTitle: 实现注册页面
+summary: 请实现注册页面，包括邮箱验证
+---END_ROUTE---
+\`\`\`
+
+4. 每个 dev 完成后会独立经过 reviewer 和 tester 审核，最后 ROUTE 回你
+5. 等待**所有子任务完成**后再做汇总报告`;
+    }
+
+    prompt += `\n
 # 工作流终结点
 团队的工作流有明确的结束条件。当以下任一条件满足时，你应该给出总结并结束当前工作流：
 1. **代码已提交** - 所有代码修改已经 commit（如需要，可让 developer 执行 git commit）
@@ -770,6 +1053,35 @@ ${otherRoles.map(r => `- ${r.name}: ${r.icon} ${r.displayName} — ${r.descripti
 - @角色name 标注负责人（可选）
 - 后续回复中可更新 TASKS 块（标记完成的任务）
 - TASKS 块不需要在回复最末尾，可以放在任意位置`;
+  }
+
+  // 执行者角色的组绑定 prompt（count > 1 时）
+  if (role.groupIndex > 0 && role.roleType === 'developer') {
+    const gi = role.groupIndex;
+    const rev = allRoles.find(r => r.roleType === 'reviewer' && r.groupIndex === gi);
+    const test = allRoles.find(r => r.roleType === 'tester' && r.groupIndex === gi);
+    if (rev && test) {
+      prompt += `\n\n# 开发组绑定
+你属于开发组 ${gi}。你的搭档：
+- 审查者: ${rev.icon} ${rev.name}
+- 测试: ${test.icon} ${test.name}
+
+开发完成后，请同时发两个 ROUTE 块分别给 ${rev.name} 和 ${test.name}：
+
+\`\`\`
+---ROUTE---
+to: ${rev.name}
+summary: 请审查代码变更
+---END_ROUTE---
+
+---ROUTE---
+to: ${test.name}
+summary: 请测试功能
+---END_ROUTE---
+\`\`\`
+
+两者会并行工作，各自完成后独立 ROUTE 回 PM。`;
+    }
   }
 
   return prompt;
@@ -810,23 +1122,28 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
       }
 
       if (message.type === 'assistant') {
-        // 转发流式输出到 Web
-        sendCrewOutput(session, roleName, 'text', message);
-
         // 累积文本用于路由解析
         const content = message.message?.content;
         if (content) {
           if (typeof content === 'string') {
             roleState.accumulatedText += content;
+            // 转发流式文本到 Web
+            sendCrewOutput(session, roleName, 'text', message);
           } else if (Array.isArray(content)) {
+            let hasText = false;
             for (const block of content) {
               if (block.type === 'text') {
                 roleState.accumulatedText += block.text;
+                hasText = true;
               } else if (block.type === 'tool_use') {
-                // 转发 tool use + 记录当前工具
+                // ★ 修复5: tool_use 时结束该角色前一条 streaming 文本
+                endRoleStreaming(session, roleName);
                 roleState.currentTool = block.name;
                 sendCrewOutput(session, roleName, 'tool_use', message);
               }
+            }
+            if (hasText) {
+              sendCrewOutput(session, roleName, 'text', message);
             }
           }
         }
@@ -838,9 +1155,8 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
         // ★ Turn 完成！
         console.log(`[Crew] ${roleName} turn completed`);
 
-        // 结束 uiMessages 中最后一条的 streaming 标记
-        const lastUi = session.uiMessages[session.uiMessages.length - 1];
-        if (lastUi && lastUi._streaming) delete lastUi._streaming;
+        // ★ 修复2: 反向搜索该角色最后一条 streaming 消息并结束
+        endRoleStreaming(session, roleName);
 
         // 更新费用
         if (message.total_cost_usd) {
@@ -858,8 +1174,8 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
             .catch(e => console.warn(`[Crew] Failed to save sessionId for ${roleName}:`, e.message));
         }
 
-        // 解析路由
-        const route = parseRoute(roleState.accumulatedText);
+        // 解析路由（支持多 ROUTE 块）
+        const routes = parseRoutes(roleState.accumulatedText);
         roleState.accumulatedText = '';
         roleState.turnActive = false;
 
@@ -874,11 +1190,30 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
         sendStatusUpdate(session);
 
         // 执行路由
-        if (route) {
-          await executeRoute(session, roleName, route);
+        if (routes.length > 0) {
+          // ★ 修复1: 多 ROUTE 只增 1 轮（round++ 从 executeRoute 移到这里）
+          session.round++;
+
+          // task 继承：如果路由没有指定 taskId，从当前角色继承
+          const currentTask = roleState.currentTask;
+          for (const route of routes) {
+            if (!route.taskId && currentTask) {
+              route.taskId = currentTask.taskId;
+              route.taskTitle = currentTask.taskTitle;
+            }
+          }
+
+          // 并行执行所有路由（allSettled 保证单个失败不中断其他）
+          const results = await Promise.allSettled(routes.map(route =>
+            executeRoute(session, roleName, route)
+          ));
+          for (const r of results) {
+            if (r.status === 'rejected') {
+              console.warn(`[Crew] Route execution failed:`, r.reason);
+            }
+          }
         } else {
-          // 没有路由，角色完成了当前工作但没有指定下一步
-          // 检查是否有人的消息在排队
+          // 没有路由，检查是否有人的消息在排队
           await processHumanQueue(session);
         }
       }
@@ -886,12 +1221,12 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
   } catch (error) {
     if (error.name === 'AbortError') {
       console.log(`[Crew] ${roleName} aborted`);
-      // 暂停时：检查已累积的文本中是否有 route，保存为 pendingRoute
+      // 暂停时：检查已累积的文本中是否有 route，保存为 pendingRoutes
       if (session.status === 'paused' && roleState.accumulatedText) {
-        const route = parseRoute(roleState.accumulatedText);
-        if (route && !session.pendingRoute) {
-          session.pendingRoute = { fromRole: roleName, route };
-          console.log(`[Crew] Saved pending route from aborted ${roleName}: -> ${route.to}`);
+        const routes = parseRoutes(roleState.accumulatedText);
+        if (routes.length > 0 && session.pendingRoutes.length === 0) {
+          session.pendingRoutes = routes.map(route => ({ fromRole: roleName, route }));
+          console.log(`[Crew] Saved ${routes.length} pending route(s) from aborted ${roleName}`);
         }
         roleState.accumulatedText = '';
       }
@@ -917,52 +1252,62 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
   }
 }
 
+/**
+ * 结束指定角色的最后一条 streaming 消息（反向搜索）
+ */
+function endRoleStreaming(session, roleName) {
+  for (let i = session.uiMessages.length - 1; i >= 0; i--) {
+    if (session.uiMessages[i].role === roleName && session.uiMessages[i]._streaming) {
+      delete session.uiMessages[i]._streaming;
+      break;
+    }
+  }
+}
+
 // =====================================================================
 // Route Parsing & Execution
 // =====================================================================
 
 /**
- * 从累积文本中解析 ROUTE 块
+ * 从累积文本中解析所有 ROUTE 块（支持多 ROUTE + task 字段）
+ * @returns {Array<{ to, summary, taskId, taskTitle }>}
  */
-function parseRoute(text) {
-  // 主格式
-  const match = text.match(/---ROUTE---\s*\n\s*to:\s*(.+?)\s*\n\s*summary:\s*(.+?)\s*\n\s*---END_ROUTE---/s);
-  if (match) {
-    return {
-      to: match[1].trim().toLowerCase(),
-      summary: match[2].trim()
-    };
-  }
+function parseRoutes(text) {
+  const routes = [];
+  const regex = /---ROUTE---\s*\n([\s\S]*?)---END_ROUTE---/g;
+  let match;
 
-  // 备用格式（更宽松）
-  const altMatch = text.match(/---ROUTE---\s*\n([\s\S]*?)---END_ROUTE---/);
-  if (altMatch) {
-    const block = altMatch[1];
+  while ((match = regex.exec(text)) !== null) {
+    const block = match[1];
     const toMatch = block.match(/to:\s*(.+)/i);
+    if (!toMatch) continue;
+
     const summaryMatch = block.match(/summary:\s*(.+)/i);
-    if (toMatch) {
-      return {
-        to: toMatch[1].trim().toLowerCase(),
-        summary: summaryMatch ? summaryMatch[1].trim() : ''
-      };
-    }
+    const taskMatch = block.match(/^task:\s*(.+)/im);
+    const taskTitleMatch = block.match(/^taskTitle:\s*(.+)/im);
+
+    routes.push({
+      to: toMatch[1].trim().toLowerCase(),
+      summary: summaryMatch ? summaryMatch[1].trim() : '',
+      taskId: taskMatch ? taskMatch[1].trim() : null,
+      taskTitle: taskTitleMatch ? taskTitleMatch[1].trim() : null
+    });
   }
 
-  return null;
+  return routes;
 }
 
 /**
  * 执行路由
  */
 async function executeRoute(session, fromRole, route) {
-  const { to, summary } = route;
+  const { to, summary, taskId, taskTitle } = route;
 
-  // 增加轮次计数
-  session.round++;
+  // ★ round++ 已移到 processRoleOutput 中（多 ROUTE 只增 1 轮）
 
-  // 如果 session 已暂停或停止，保存 pendingRoute 等恢复时重放
+  // 如果 session 已暂停或停止，保存为 pendingRoutes
   if (session.status === 'paused' || session.status === 'stopped') {
-    session.pendingRoute = { fromRole, route };
+    session.pendingRoutes.push({ fromRole, route });
     console.log(`[Crew] Session ${session.status}, route saved as pending: ${fromRole} -> ${to}`);
     return;
   }
@@ -991,13 +1336,15 @@ async function executeRoute(session, fromRole, route) {
 
   // 路由到指定角色
   if (session.roles.has(to)) {
+    // task 信息通过 dispatchToRole 内部设置（createRoleQuery 之后 roleState 才存在）
+
     // 先检查是否有人的消息在排队
     if (session.humanMessageQueue.length > 0) {
       // 人的消息优先
       await processHumanQueue(session);
     } else {
       const taskPrompt = buildRoutePrompt(fromRole, summary, session);
-      await dispatchToRole(session, to, taskPrompt, fromRole);
+      await dispatchToRole(session, to, taskPrompt, fromRole, taskId, taskTitle);
     }
   } else {
     console.warn(`[Crew] Unknown route target: ${to}`);
@@ -1023,7 +1370,7 @@ function buildRoutePrompt(fromRole, summary, session) {
 /**
  * 向角色发送消息
  */
-async function dispatchToRole(session, roleName, content, fromSource) {
+async function dispatchToRole(session, roleName, content, fromSource, taskId, taskTitle) {
   if (session.status === 'paused' || session.status === 'stopped') {
     console.log(`[Crew] Session ${session.status}, skipping dispatch to ${roleName}`);
     return;
@@ -1036,11 +1383,17 @@ async function dispatchToRole(session, roleName, content, fromSource) {
     roleState = await createRoleQuery(session, roleName);
   }
 
+  // 设置 task（createRoleQuery 之后 roleState 一定存在）
+  if (taskId) {
+    roleState.currentTask = { taskId, taskTitle };
+  }
+
   // 记录消息历史
   session.messageHistory.push({
     from: fromSource,
     to: roleName,
     content: typeof content === 'string' ? content.substring(0, 200) : '...',
+    taskId: taskId || roleState.currentTask?.taskId || null,
     timestamp: Date.now()
   });
 
@@ -1052,7 +1405,7 @@ async function dispatchToRole(session, roleName, content, fromSource) {
     message: { role: 'user', content }
   });
 
-  console.log(`[Crew] Dispatched to ${roleName} from ${fromSource}`);
+  console.log(`[Crew] Dispatched to ${roleName} from ${fromSource}${taskId ? ` (task: ${taskId})` : ''}`);
 }
 
 // =====================================================================
@@ -1134,10 +1487,15 @@ export async function handleCrewHumanInput(msg) {
  */
 async function processHumanQueue(session) {
   if (session.humanMessageQueue.length === 0) return;
-
-  const msg = session.humanMessageQueue.shift();
-  const humanPrompt = `人工消息:\n${msg.content}`;
-  await dispatchToRole(session, msg.target, humanPrompt, 'human');
+  if (session._processingHumanQueue) return;
+  session._processingHumanQueue = true;
+  try {
+    const msg = session.humanMessageQueue.shift();
+    const humanPrompt = `人工消息:\n${msg.content}`;
+    await dispatchToRole(session, msg.target, humanPrompt, 'human');
+  } finally {
+    session._processingHumanQueue = false;
+  }
 }
 
 /**
@@ -1217,7 +1575,7 @@ async function pauseAll(session) {
 
 /**
  * 恢复 session
- * 重新执行被暂停时保存的 pendingRoute
+ * 重新执行被暂停时保存的 pendingRoutes
  */
 async function resumeSession(session) {
   if (session.status !== 'paused') return;
@@ -1231,16 +1589,23 @@ async function resumeSession(session) {
   });
   sendStatusUpdate(session);
 
-  // 恢复被中断的路由
-  if (session.pendingRoute) {
-    const { fromRole, route } = session.pendingRoute;
-    session.pendingRoute = null;
-    console.log(`[Crew] Replaying pending route: ${fromRole} -> ${route.to}`);
-    await executeRoute(session, fromRole, route);
+  // 恢复被中断的路由（可能有多条）
+  if (session.pendingRoutes.length > 0) {
+    const pending = session.pendingRoutes.slice();
+    session.pendingRoutes = [];
+    console.log(`[Crew] Replaying ${pending.length} pending route(s)`);
+    const results = await Promise.allSettled(pending.map(({ fromRole, route }) =>
+      executeRoute(session, fromRole, route)
+    ));
+    for (const r of results) {
+      if (r.status === 'rejected') {
+        console.warn(`[Crew] Pending route replay failed:`, r.reason);
+      }
+    }
     return;
   }
 
-  // 没有 pendingRoute，检查排队的人的消息
+  // 没有 pendingRoutes，检查排队的人的消息
   await processHumanQueue(session);
 }
 
@@ -1297,6 +1662,9 @@ async function stopAll(session) {
   });
   sendStatusUpdate(session);
 
+  // 清理 git worktrees
+  await cleanupWorktrees(session.projectDir);
+
   // 从活跃 sessions 中移除
   crewSessions.delete(session.id);
   console.log(`[Crew] Session ${session.id} stopped`);
@@ -1323,6 +1691,11 @@ function sendCrewOutput(session, roleName, outputType, rawMessage, extra = {}) {
   const roleIcon = role?.icon || (roleName === 'human' ? 'H' : roleName === 'system' ? 'S' : 'A');
   const displayName = role?.displayName || roleName;
 
+  // 从 roleState 获取当前 task 信息
+  const roleState = session.roleStates.get(roleName);
+  const taskId = roleState?.currentTask?.taskId || null;
+  const taskTitle = roleState?.currentTask?.taskTitle || null;
+
   sendCrewMessage({
     type: 'crew_output',
     sessionId: session.id,
@@ -1331,6 +1704,8 @@ function sendCrewOutput(session, roleName, outputType, rawMessage, extra = {}) {
     roleName: displayName,
     outputType,  // 'text' | 'tool_use' | 'tool_result' | 'route' | 'system'
     data: rawMessage,
+    taskId,
+    taskTitle,
     ...extra
   });
 
@@ -1344,21 +1719,27 @@ function sendCrewOutput(session, roleName, outputType, rawMessage, extra = {}) {
       text = content.filter(b => b.type === 'text').map(b => b.text).join('');
     }
     if (!text) return;
-    // 合并同一角色的连续文本
-    const last = session.uiMessages[session.uiMessages.length - 1];
-    if (last && last.role === roleName && last.type === 'text' && last._streaming) {
-      last.content += text;
-    } else {
+    // ★ 修复2: 反向搜索该角色最后一条 _streaming 消息
+    let found = false;
+    for (let i = session.uiMessages.length - 1; i >= 0; i--) {
+      const msg = session.uiMessages[i];
+      if (msg.role === roleName && msg.type === 'text' && msg._streaming) {
+        msg.content += text;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
       session.uiMessages.push({
         role: roleName, roleIcon, roleName: displayName,
         type: 'text', content: text, _streaming: true,
+        taskId, taskTitle,
         timestamp: Date.now()
       });
     }
   } else if (outputType === 'route') {
-    // 结束前一条消息的 streaming
-    const last = session.uiMessages[session.uiMessages.length - 1];
-    if (last && last._streaming) delete last._streaming;
+    // 结束该角色前一条 streaming
+    endRoleStreaming(session, roleName);
     session.uiMessages.push({
       role: roleName, roleIcon, roleName: displayName,
       type: 'route', routeTo: extra.routeTo,
