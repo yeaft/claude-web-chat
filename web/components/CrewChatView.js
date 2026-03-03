@@ -70,11 +70,9 @@ export default {
 
           <!-- Standalone messages (route, system, human_needed, human text) -->
           <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': turn.message.role === 'human' && turn.message.type === 'text' }]" :style="getRoleStyle(turn.message.role)">
-            <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-avatar">
-              <span class="crew-msg-icon">{{ turn.message.roleIcon }}</span>
-            </div>
             <div class="crew-msg-body">
-              <div class="crew-msg-header">
+              <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-header">
+                <span class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
                 <span class="crew-msg-name" :class="{ 'is-human': turn.message.role === 'human', 'is-system': turn.message.role === 'system' }">{{ turn.message.roleName }}</span>
                 <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
               </div>
@@ -96,11 +94,9 @@ export default {
 
           <!-- Grouped turn (same role: text + tools) -->
           <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :style="getRoleStyle(turn.role)">
-            <div class="crew-msg-avatar">
-              <span class="crew-msg-icon">{{ turn.roleIcon }}</span>
-            </div>
             <div class="crew-msg-body">
               <div class="crew-msg-header">
+                <span class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
                 <span class="crew-msg-name">{{ turn.roleName }}</span>
                 <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
               </div>

@@ -10357,7 +10357,6 @@ body {
 /* Crew Message Item */
 .crew-message {
   display: flex;
-  gap: 12px;
   padding: 8px 24px;
   max-width: 800px;
   margin: 0 auto;
@@ -10365,10 +10364,9 @@ body {
   box-sizing: border-box;
 }
 
-/* Human message: right-aligned bubble, no avatar */
+/* Human message: right-aligned bubble */
 .crew-message.crew-msg-human-bubble {
-  flex-direction: row-reverse;
-  gap: 0;
+  justify-content: flex-end;
 }
 
 .crew-message.crew-msg-human-bubble .crew-msg-body {
@@ -10376,10 +10374,6 @@ body {
   background: var(--bg-user-msg);
   border-radius: 16px 16px 4px 16px;
   padding: 8px 14px;
-}
-
-.crew-message.crew-msg-human-bubble .crew-msg-header {
-  justify-content: flex-end;
 }
 
 .crew-message.crew-msg-human-bubble:hover {
@@ -10391,7 +10385,7 @@ body {
   max-width: 800px;
   margin: 2px auto;
   width: 100%;
-  padding: 0 48px;
+  padding: 0 24px;
   box-sizing: border-box;
 }
 
@@ -10407,29 +10401,6 @@ body {
   background: var(--sidebar-hover);
 }
 
-.crew-msg-avatar {
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  font-size: 16px;
-  background: var(--role-bg, var(--bg-sidebar));
-  border: 1.5px solid var(--role-border, transparent);
-  overflow: hidden;
-}
-
-.crew-msg-icon {
-  display: block;
-  width: 16px;
-  height: 16px;
-  line-height: 16px;
-  text-align: center;
-  font-size: 16px;
-}
-
 .crew-msg-body {
   flex: 1;
   min-width: 0;
@@ -10438,8 +10409,13 @@ body {
 .crew-msg-header {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 2px;
+}
+
+.crew-msg-header-icon {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .crew-msg-name {
@@ -10460,6 +10436,12 @@ body {
   font-size: 11px;
   color: var(--text-muted);
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+.crew-msg-time::before {
+  content: '·';
+  margin-right: 6px;
+  font-family: system-ui;
 }
 
 /* crew-msg-content inherits .markdown-body styles for consistency with Chat */
