@@ -1837,9 +1837,10 @@ body {
 .context-bar-inline {
   position: absolute;
   bottom: 0;
-  left: 0;
-  right: 0;
+  left: 12px;
+  right: 12px;
   height: 3px;
+  border-radius: 0 0 12px 12px;
   overflow: hidden;
 }
 
