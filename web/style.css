@@ -547,7 +547,7 @@ body {
   font-weight: 600;
   color: var(--text-primary);
   min-width: 0;
-  overflow: hidden;
+  white-space: nowrap;
 }
 
 .sidebar-brand .status-dot {
