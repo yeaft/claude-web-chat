@@ -17,25 +17,29 @@ export default {
           <!-- 创建模式 -->
           <template v-if="!isEditMode">
             <!-- 可恢复的 Crew Sessions -->
-            <div class="crew-config-section" v-if="stoppedCrewSessions.length > 0">
+            <div class="crew-config-section" v-if="resumableCrewSessions.length > 0">
               <label class="crew-config-label">恢复已有 Session</label>
               <div class="crew-stopped-list">
                 <div
-                  v-for="sc in stoppedCrewSessions"
-                  :key="sc.id"
+                  v-for="sc in resumableCrewSessions"
+                  :key="sc.sessionId"
                   class="crew-stopped-item"
                   @click="resumeStoppedSession(sc)"
                 >
                   <div class="crew-stopped-info">
                     <span class="crew-stopped-goal">{{ sc.goal || 'Crew Session' }}</span>
-                    <span class="crew-stopped-meta">{{ shortenPath(sc.workDir) }}</span>
+                    <span class="crew-stopped-meta">
+                      {{ shortenPath(sc.projectDir) }}
+                      <span class="crew-stopped-status-tag" :class="'status-' + (sc.status || 'stopped')">{{ formatStatus(sc.status) }}</span>
+                      <span v-if="sc.createdAt" class="crew-stopped-time">{{ formatSessionTime(sc.createdAt) }}</span>
+                    </span>
                   </div>
                   <span class="crew-stopped-resume-tag">恢复</span>
                 </div>
               </div>
             </div>
 
-            <div class="crew-config-divider" v-if="stoppedCrewSessions.length > 0">
+            <div class="crew-config-divider" v-if="resumableCrewSessions.length > 0">
               <span>或新建 Session</span>
             </div>
 
@@ -261,10 +265,19 @@ export default {
       if (s === 'stopped') return '已停止';
       return '初始化';
     },
-    stoppedCrewSessions() {
-      return this.store.conversations.filter(c =>
-        c.type === 'crew' && !this.store.crewSessions[c.id]
-      );
+    resumableCrewSessions() {
+      // 从 crew index 获取所有 session，排除当前活跃的
+      const activeIds = new Set(Object.keys(this.store.crewSessions));
+      const fromIndex = (this.store.crewSessionsList || []).filter(s => !activeIds.has(s.sessionId));
+      // 也包括 conversations 中的已停止 crew（向后兼容）
+      const indexIds = new Set(fromIndex.map(s => s.sessionId));
+      const fromConvs = this.store.conversations
+        .filter(c => c.type === 'crew' && !activeIds.has(c.id) && !indexIds.has(c.id))
+        .map(c => ({ sessionId: c.id, goal: c.goal, projectDir: c.workDir, status: 'stopped', createdAt: c.createdAt, agentId: c.agentId }));
+      const all = [...fromIndex, ...fromConvs];
+      // 按创建时间倒序
+      all.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      return all;
     }
   },
 
@@ -272,6 +285,13 @@ export default {
     selectedAgent(newVal) {
       if (newVal && !this.projectDir) {
         this.projectDir = this.selectedAgentWorkDir;
+      }
+      // 切换 agent 时重新加载 crew sessions 列表
+      if (newVal && !this.isEditMode) {
+        this.store.sendWsMessage({
+          type: 'list_crew_sessions',
+          agentId: newVal
+        });
       }
     }
   },
@@ -298,10 +318,30 @@ export default {
   },
 
   methods: {
-    resumeStoppedSession(conv) {
-      if (conv.agentId) this.store.selectAgent(conv.agentId);
-      this.store.resumeCrewSession(conv.id);
+    resumeStoppedSession(session) {
+      const agentId = session.agentId || this.selectedAgent;
+      if (agentId) this.store.selectAgent(agentId);
+      this.store.resumeCrewSession(session.sessionId);
       this.$emit('close');
+    },
+    formatStatus(s) {
+      if (s === 'running') return '运行中';
+      if (s === 'paused') return '已暂停';
+      if (s === 'waiting_human') return '等待人工';
+      if (s === 'completed') return '已完成';
+      if (s === 'stopped') return '已停止';
+      if (s === 'max_rounds_reached') return '达到上限';
+      return '已停止';
+    },
+    formatSessionTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      const now = new Date();
+      if (d.toDateString() === now.toDateString()) {
+        return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      }
+      return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) + ' ' +
+             d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     },
     shortenPath(p) {
       if (!p) return '';

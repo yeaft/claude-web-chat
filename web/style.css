@@ -10127,6 +10127,33 @@ body {
 .crew-stopped-meta {
   font-size: 11px;
   color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.crew-stopped-status-tag {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-tertiary, #374151);
+  color: var(--text-secondary, #9ca3af);
+  line-height: 1.2;
+}
+
+.crew-stopped-status-tag.status-paused {
+  color: var(--text-warning, #f59e0b);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.crew-stopped-status-tag.status-completed {
+  color: var(--accent-green, #10b981);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.crew-stopped-time {
+  color: var(--text-muted, #6b7280);
 }
 
 .crew-stopped-resume-tag {
@@ -10687,6 +10714,59 @@ body {
 @keyframes crew-typing {
   0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
   30% { opacity: 1; transform: scale(1); }
+}
+
+/* Crew Turn Group — collapsed tool section */
+.crew-turn-tools {
+  margin-top: 6px;
+  border-top: 1px solid var(--border-color, rgba(255,255,255,0.06));
+  padding-top: 4px;
+}
+
+.crew-turn-tool-latest {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.crew-turn-tool-latest > .tool-line {
+  flex: 1;
+  min-width: 0;
+}
+
+.crew-turn-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: none;
+  border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 11px;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.crew-turn-expand-btn:hover {
+  background: var(--bg-tertiary, rgba(255,255,255,0.05));
+  color: var(--text-primary);
+  border-color: var(--accent-blue);
+}
+
+.crew-turn-expand-count {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.crew-turn-tools-expanded {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 2px;
+  border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));
+  margin-top: 4px;
 }
 
 /* Crew Input Area — reuses .input-area, .input-wrapper, .attach-btn, .send-btn */

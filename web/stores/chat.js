@@ -322,6 +322,16 @@ export const useChatStore = defineStore('chat', {
     enterCrewMode() {
       this.crewConfigMode = 'create';
       this.crewConfigOpen = true;
+      // 加载持久化的 crew sessions 列表
+      this.listCrewSessions();
+    },
+
+    listCrewSessions() {
+      if (!this.currentAgent) return;
+      this.sendWsMessage({
+        type: 'list_crew_sessions',
+        agentId: this.currentAgent
+      });
     },
 
     openCrewConfig() {
