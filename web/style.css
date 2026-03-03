@@ -10418,6 +10418,16 @@ body {
   font-size: 16px;
   background: var(--role-bg, var(--bg-sidebar));
   border: 1.5px solid var(--role-border, transparent);
+  overflow: hidden;
+}
+
+.crew-msg-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  font-size: 16px;
 }
 
 .crew-msg-body {
@@ -10806,10 +10816,10 @@ body {
   right: 0;
   max-height: 200px;
   overflow-y: auto;
-  background: var(--bg-primary);
+  background: var(--bg-main);
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  box-shadow: 0 -4px 16px rgba(0,0,0,0.2);
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.05);
   margin-bottom: 4px;
   z-index: 100;
 }
@@ -10845,6 +10855,10 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+[data-theme="dark"] .crew-at-menu {
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.08);
 }
 
 /* =====================================================================
