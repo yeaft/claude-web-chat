@@ -10515,6 +10515,18 @@ body {
 .crew-route-target {
   color: var(--text-secondary);
   margin-left: 2px;
+  font-style: italic;
+  font-size: 12px;
+}
+
+/* Route message styling — lighter, smaller, italic to distinguish from role content */
+.crew-message.crew-msg-route .crew-msg-name {
+  font-size: 12px;
+}
+.crew-message.crew-msg-route .crew-msg-content {
+  font-style: italic;
+  color: var(--text-secondary);
+  font-size: 12.5px;
 }
 
 /* Crew Task Panel */
