@@ -494,7 +494,21 @@ export const useChatStore = defineStore('chat', {
           decisionMaker: msg.decisionMaker,
           maxRounds: msg.maxRounds
         };
-        ensureMessages(sid);
+        // 恢复 UI 消息历史
+        if (msg.uiMessages && msg.uiMessages.length > 0) {
+          this.crewMessagesMap[sid] = msg.uiMessages.map(m => ({
+            id: m.timestamp || Date.now() + Math.random(),
+            role: m.role,
+            roleIcon: m.roleIcon,
+            roleName: m.roleName,
+            type: m.type,
+            content: m.content,
+            routeTo: m.routeTo,
+            timestamp: m.timestamp || Date.now()
+          }));
+        } else {
+          ensureMessages(sid);
+        }
         // 确保 conversation 存在
         let conv = this.conversations.find(c => c.id === sid);
         if (!conv) {

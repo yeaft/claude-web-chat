@@ -111,11 +111,25 @@ async function saveSessionMeta(session) {
     username: session.username
   };
   await fs.writeFile(join(session.sharedDir, 'session.json'), JSON.stringify(meta, null, 2));
+  // 保存 UI 消息历史（用于恢复时重放）
+  if (session.uiMessages && session.uiMessages.length > 0) {
+    // 清理 _streaming 标记后保存
+    const cleaned = session.uiMessages.map(m => {
+      const { _streaming, ...rest } = m;
+      return rest;
+    });
+    await fs.writeFile(join(session.sharedDir, 'messages.json'), JSON.stringify(cleaned));
+  }
 }
 
 async function loadSessionMeta(sharedDir) {
   try { return JSON.parse(await fs.readFile(join(sharedDir, 'session.json'), 'utf-8')); }
   catch { return null; }
+}
+
+async function loadSessionMessages(sharedDir) {
+  try { return JSON.parse(await fs.readFile(join(sharedDir, 'messages.json'), 'utf-8')); }
+  catch { return []; }
 }
 
 // =====================================================================
@@ -155,6 +169,10 @@ export async function resumeCrewSession(msg) {
   if (crewSessions.has(sessionId)) {
     const session = crewSessions.get(sessionId);
     const roles = Array.from(session.roles.values());
+    // 如果内存中没有 uiMessages，尝试从磁盘加载
+    if ((!session.uiMessages || session.uiMessages.length === 0) && session.sharedDir) {
+      session.uiMessages = await loadSessionMessages(session.sharedDir);
+    }
     sendCrewMessage({
       type: 'crew_session_restored',
       sessionId,
@@ -168,7 +186,8 @@ export async function resumeCrewSession(msg) {
       decisionMaker: session.decisionMaker,
       maxRounds: session.maxRounds,
       userId: session.userId,
-      username: session.username
+      username: session.username,
+      uiMessages: session.uiMessages || []
     });
     sendStatusUpdate(session);
     return;
@@ -205,6 +224,7 @@ export async function resumeCrewSession(msg) {
     maxRounds: meta.maxRounds || 20,
     costUsd: 0,
     messageHistory: [],
+    uiMessages: [],          // will be loaded from messages.json
     humanMessageQueue: [],
     waitingHumanContext: null,
     pendingRoute: null,
@@ -213,6 +233,9 @@ export async function resumeCrewSession(msg) {
     createdAt: meta.createdAt || Date.now()
   };
   crewSessions.set(sessionId, session);
+
+  // 加载 UI 消息历史
+  session.uiMessages = await loadSessionMessages(session.sharedDir);
 
   // 通知 server
   sendCrewMessage({
@@ -228,7 +251,8 @@ export async function resumeCrewSession(msg) {
     decisionMaker,
     maxRounds: session.maxRounds,
     userId: session.userId,
-    username: session.username
+    username: session.username,
+    uiMessages: session.uiMessages
   });
   sendStatusUpdate(session);
 
@@ -283,6 +307,7 @@ export async function createCrewSession(msg) {
     maxRounds,
     costUsd: 0,
     messageHistory: [],      // 群聊消息历史
+    uiMessages: [],          // 精简的 UI 消息历史（用于恢复时重放）
     humanMessageQueue: [],   // 人的消息排队
     waitingHumanContext: null, // { fromRole, reason, message }
     pendingRoute: null,       // { fromRole, route } — 暂停时未完成的路由
@@ -764,6 +789,10 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
         // ★ Turn 完成！
         console.log(`[Crew] ${roleName} turn completed`);
 
+        // 结束 uiMessages 中最后一条的 streaming 标记
+        const lastUi = session.uiMessages[session.uiMessages.length - 1];
+        if (lastUi && lastUi._streaming) delete lastUi._streaming;
+
         // 更新费用
         if (message.total_cost_usd) {
           session.costUsd += message.total_cost_usd;
@@ -1003,6 +1032,12 @@ export async function handleCrewHumanInput(msg) {
   }
 
   // 注意：不在这里发送人的消息到 Web（前端已本地添加，避免重复）
+  // 但需要记录到 uiMessages 用于恢复时重放
+  session.uiMessages.push({
+    role: 'human', roleIcon: 'H', roleName: '你',
+    type: 'text', content,
+    timestamp: Date.now()
+  });
 
   // 如果在等待人工介入
   if (session.status === 'waiting_human') {
@@ -1246,17 +1281,67 @@ function sendCrewMessage(msg) {
  */
 function sendCrewOutput(session, roleName, outputType, rawMessage, extra = {}) {
   const role = session.roles.get(roleName);
+  const roleIcon = role?.icon || (roleName === 'human' ? 'H' : roleName === 'system' ? 'S' : 'A');
+  const displayName = role?.displayName || roleName;
 
   sendCrewMessage({
     type: 'crew_output',
     sessionId: session.id,
     role: roleName,
-    roleIcon: role?.icon || (roleName === 'human' ? 'H' : roleName === 'system' ? 'S' : 'A'),
-    roleName: role?.displayName || roleName,
+    roleIcon,
+    roleName: displayName,
     outputType,  // 'text' | 'tool_use' | 'tool_result' | 'route' | 'system'
     data: rawMessage,
     ...extra
   });
+
+  // ★ 记录精简 UI 消息用于恢复（跳过 tool_use/tool_result，只记录可见内容）
+  if (outputType === 'text') {
+    const content = rawMessage?.message?.content;
+    let text = '';
+    if (typeof content === 'string') {
+      text = content;
+    } else if (Array.isArray(content)) {
+      text = content.filter(b => b.type === 'text').map(b => b.text).join('');
+    }
+    if (!text) return;
+    // 合并同一角色的连续文本
+    const last = session.uiMessages[session.uiMessages.length - 1];
+    if (last && last.role === roleName && last.type === 'text' && last._streaming) {
+      last.content += text;
+    } else {
+      session.uiMessages.push({
+        role: roleName, roleIcon, roleName: displayName,
+        type: 'text', content: text, _streaming: true,
+        timestamp: Date.now()
+      });
+    }
+  } else if (outputType === 'route') {
+    // 结束前一条消息的 streaming
+    const last = session.uiMessages[session.uiMessages.length - 1];
+    if (last && last._streaming) delete last._streaming;
+    session.uiMessages.push({
+      role: roleName, roleIcon, roleName: displayName,
+      type: 'route', routeTo: extra.routeTo,
+      content: `→ @${extra.routeTo} ${extra.routeSummary || ''}`,
+      timestamp: Date.now()
+    });
+  } else if (outputType === 'system') {
+    const content = rawMessage?.message?.content;
+    let text = '';
+    if (typeof content === 'string') {
+      text = content;
+    } else if (Array.isArray(content)) {
+      text = content.filter(b => b.type === 'text').map(b => b.text).join('');
+    }
+    if (!text) return;
+    session.uiMessages.push({
+      role: roleName, roleIcon, roleName: displayName,
+      type: 'system', content: text,
+      timestamp: Date.now()
+    });
+  }
+  // tool_use 和 tool_result 不记录（太大，恢复时不需要）
 }
 
 /**
