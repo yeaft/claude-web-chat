@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { platform } from 'os';
+import { platform, homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { exec } from 'child_process';
@@ -62,14 +62,51 @@ const CONFIG = {
   workDir: process.env.WORK_DIR || fileConfig.workDir,
   reconnectInterval: fileConfig.reconnectInterval,
   agentSecret: process.env.AGENT_SECRET || fileConfig.agentSecret,
-  // 禁用的工具列表（逗号分隔），如 "mcp__github,mcp__sentry"
-  // 默认不禁用任何工具（MCP 工具由 ~/.claude.json 中的 mcpServers 配置控制）
-  // 设置 DISALLOWED_TOOLS 可指定需要禁用的工具
+  // MCP 白名单：只允许这些 MCP 服务器的工具，其余自动禁用
+  // 通过 ALLOWED_MCP_SERVERS 环境变量（逗号分隔）或配置文件 allowedMcpServers 指定
+  // 默认只允许 playwright
   disallowedTools: (() => {
+    // 解析显式禁用列表
     const raw = process.env.DISALLOWED_TOOLS || fileConfig.disallowedTools || '';
-    if (raw === 'none') return [];
-    const list = raw.split(',').map(s => s.trim()).filter(Boolean);
-    return list;
+    const explicit = raw === 'none' ? [] : raw.split(',').map(s => s.trim()).filter(Boolean);
+
+    // 解析 MCP 白名单
+    const allowedRaw = process.env.ALLOWED_MCP_SERVERS || fileConfig.allowedMcpServers || 'playwright';
+    const allowedMcpServers = allowedRaw.split(',').map(s => s.trim()).filter(Boolean);
+
+    // 读取 ~/.claude.json 中所有配置的 MCP 服务器名
+    const claudeConfigPath = join(homedir(), '.claude.json');
+    const mcpDisallowed = [];
+    try {
+      if (existsSync(claudeConfigPath)) {
+        const claudeConfig = JSON.parse(readFileSync(claudeConfigPath, 'utf-8'));
+        const allMcpNames = new Set();
+        // 收集所有项目中配置的 MCP 服务器名
+        for (const [, projCfg] of Object.entries(claudeConfig.projects || {})) {
+          for (const name of Object.keys(projCfg.mcpServers || {})) {
+            allMcpNames.add(name);
+          }
+        }
+        // 顶层 mcpServers
+        for (const name of Object.keys(claudeConfig.mcpServers || {})) {
+          allMcpNames.add(name);
+        }
+        // 不在白名单中的 MCP 服务器 → 禁用
+        for (const name of allMcpNames) {
+          if (!allowedMcpServers.includes(name)) {
+            mcpDisallowed.push(`mcp__${name}`);
+          }
+        }
+        if (mcpDisallowed.length > 0) {
+          console.log(`[MCP] Allowed: ${allowedMcpServers.join(', ')}`);
+          console.log(`[MCP] Disallowed: ${mcpDisallowed.join(', ')}`);
+        }
+      }
+    } catch (e) {
+      console.warn('[MCP] Failed to read ~/.claude.json:', e.message);
+    }
+
+    return [...explicit, ...mcpDisallowed];
   })()
 };
 
