@@ -10720,7 +10720,7 @@ body {
   gap: 6px;
   flex-wrap: nowrap;
   align-items: center;
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .crew-hint-btn {
