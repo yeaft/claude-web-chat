@@ -51,12 +51,8 @@ export default {
         return 'Claude Web Chat';
       }
 
-      // Crew conversation: 显示 goal
+      // Crew conversation
       if (store.currentConversationIsCrew) {
-        const session = store.currentCrewSession;
-        if (session?.goal) {
-          return session.goal.length > 50 ? session.goal.slice(0, 50) + '...' : session.goal;
-        }
         return 'Crew Session';
       }
 

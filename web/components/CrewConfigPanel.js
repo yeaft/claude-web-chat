@@ -72,12 +72,6 @@ export default {
               </div>
             </div>
 
-            <!-- 任务目标 -->
-            <div class="crew-config-section" v-if="selectedAgent">
-              <label class="crew-config-label">任务目标</label>
-              <textarea class="crew-config-textarea" v-model="goal" placeholder="描述你想让团队完成的目标..." rows="3"></textarea>
-            </div>
-
             <!-- 角色模板 -->
             <div class="crew-config-section" v-if="selectedAgent">
               <label class="crew-config-label">团队模板</label>
@@ -130,12 +124,6 @@ export default {
 
           <!-- 编辑模式 -->
           <template v-else>
-            <!-- 任务目标 -->
-            <div class="crew-config-section">
-              <label class="crew-config-label">任务目标</label>
-              <textarea class="crew-config-textarea" v-model="goal" placeholder="描述你想让团队完成的目标..." rows="3" disabled></textarea>
-            </div>
-
             <!-- 角色配置 -->
             <div class="crew-config-section">
               <label class="crew-config-label">角色配置</label>
@@ -255,7 +243,7 @@ export default {
       return agent?.workDir || '';
     },
     canStart() {
-      return this.selectedAgent && this.projectDir.trim() && this.goal.trim();
+      return this.selectedAgent && this.projectDir.trim();
     },
     pendingNewRoles() {
       return this.roles.filter(r => r._isNew);
@@ -487,7 +475,7 @@ export default {
       this.$emit('start', {
         projectDir: this.projectDir.trim(),
         sharedDir: this.sharedDir.trim() || '.crew',
-        goal: this.goal.trim(),
+        goal: '',
         roles,
         maxRounds: this.maxRounds
       });
