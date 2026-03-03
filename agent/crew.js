@@ -1464,13 +1464,26 @@ export async function handleCrewHumanInput(msg) {
     return;
   }
 
-  // 解析 @role 指令
-  const atMatch = content.match(/^@(\w+)\s*([\s\S]*)/);
+  // 解析 @role 指令（支持 name 和 displayName）
+  const atMatch = content.match(/^@(\S+)\s*([\s\S]*)/);
   if (atMatch) {
-    const target = atMatch[1].toLowerCase();
+    const atTarget = atMatch[1];
     const message = atMatch[2].trim() || content;
 
-    if (session.roles.has(target)) {
+    // 先精确匹配 role.name，再匹配 displayName
+    let target = null;
+    for (const [name, role] of session.roles) {
+      if (name === atTarget.toLowerCase()) {
+        target = name;
+        break;
+      }
+      if (role.displayName === atTarget) {
+        target = name;
+        break;
+      }
+    }
+
+    if (target) {
       // 检查目标角色是否正在忙
       const targetState = session.roleStates.get(target);
       if (targetState?.turnActive) {

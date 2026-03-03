@@ -92,8 +92,8 @@ export default {
             <div class="crew-msg-body">
               <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-header">
                 <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
-                <span class="crew-msg-name" :class="{ 'is-human': turn.message.role === 'human', 'is-system': turn.message.role === 'system' }">{{ turn.message.roleName }}</span>
-                <span v-if="turn.message.type === 'route'" class="crew-route-target">→ {{ getRoleDisplayName(turn.message.routeTo) }}</span>
+                <span class="crew-msg-name" :class="{ 'is-human': turn.message.role === 'human', 'is-system': turn.message.role === 'system' }">{{ turn.message.type === 'route' ? turn.message.roleName : shortName(turn.message.roleName) }}</span>
+                <span v-if="turn.message.type === 'route'" class="crew-route-target">→ {{ turn.message.routeToName || getRoleDisplayName(turn.message.routeTo) }}</span>
                 <span v-if="turn.message.taskTitle" class="crew-task-label" :style="getTaskColor(turn.message.taskId)">{{ turn.message.taskTitle }}</span>
                 <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
               </div>
@@ -118,7 +118,7 @@ export default {
             <div class="crew-msg-body">
               <div class="crew-msg-header">
                 <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
-                <span class="crew-msg-name">{{ turn.roleName }}</span>
+                <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
                 <span v-if="turn.taskTitle" class="crew-task-label" :style="getTaskColor(turn.taskId)">{{ turn.taskTitle }}</span>
                 <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
               </div>
@@ -171,17 +171,6 @@ export default {
       <!-- Input -->
       <div class="input-area crew-input-area">
         <div class="crew-input-hints" v-if="store.currentCrewSession">
-          <span class="crew-at-hint" v-for="role in store.currentCrewSession.roles" :key="role.name"
-            @click="insertAt(role.name)" :title="getRoleBadgeTitle(role)"
-            :style="getRoleStyle(role.name)"
-            :class="{ 'is-active': isRoleActive(role.name) }"
-            @contextmenu.prevent="openRoleMenu($event, role)">
-            @{{ role.displayName }}<span v-if="getRoleTaskTitle(role.name)" class="crew-at-task">({{ getRoleTaskTitle(role.name) }})</span>
-          </span>
-          <button class="crew-hint-btn" @click="showAddRole = true" title="添加角色">
-            <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-          </button>
-          <span class="crew-hint-separator"></span>
           <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
           <template v-if="activeTasks.length > 0">
             <span class="crew-hint-separator"></span>
@@ -713,6 +702,12 @@ summary: 请测试以下变更...
       return role ? role.displayName : roleName;
     },
 
+    shortName(displayName) {
+      if (!displayName) return '';
+      const idx = displayName.indexOf('-');
+      return idx > 0 ? displayName.substring(idx + 1) : displayName;
+    },
+
     getRoleStyle(roleName) {
       if (PRESET_ROLES.includes(roleName)) {
         return {
@@ -817,9 +812,9 @@ summary: 请测试以下变更...
       const atIdx = beforeCursor.lastIndexOf('@');
       if (atIdx >= 0) {
         const afterCursor = text.substring(pos);
-        this.inputText = text.substring(0, atIdx) + '@' + role.name + ' ' + afterCursor;
+        this.inputText = text.substring(0, atIdx) + '@' + role.displayName + ' ' + afterCursor;
         this.$nextTick(() => {
-          const newPos = atIdx + role.name.length + 2; // @ + name + space
+          const newPos = atIdx + role.displayName.length + 2; // @ + displayName + space
           textarea.selectionStart = textarea.selectionEnd = newPos;
           textarea.focus();
         });
@@ -828,7 +823,8 @@ summary: 请测试以下变更...
     },
 
     insertAt(roleName) {
-      this.inputText = `@${roleName} ` + this.inputText;
+      const displayName = this.getRoleDisplayName(roleName);
+      this.inputText = `@${displayName} ` + this.inputText;
       this.$refs.inputRef?.focus();
     },
 

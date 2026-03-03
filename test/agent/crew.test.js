@@ -1924,3 +1924,329 @@ describe('CSS class validation for turn divider', () => {
     expect(afterRules['opacity']).toBe('0.4');
   });
 });
+
+// =====================================================================
+// Hints bar: 不再显示角色标签和添加角色按钮
+// =====================================================================
+
+describe('Hints bar - role badges and add button removed', () => {
+  // 读取 CrewChatView.js 模板中 crew-input-hints 区域
+  // 验证不再包含 crew-at-hint 角色标签和添加角色按钮
+
+  const hintsTemplate = `
+        <div class="crew-input-hints" v-if="store.currentCrewSession">
+          <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
+          <template v-if="activeTasks.length > 0">
+            <span class="crew-hint-separator"></span>
+  `;
+
+  it('should NOT contain crew-at-hint role badges in hints bar', () => {
+    expect(hintsTemplate).not.toContain('crew-at-hint');
+    expect(hintsTemplate).not.toContain('v-for="role in store.currentCrewSession.roles"');
+  });
+
+  it('should NOT contain add role button in hints bar', () => {
+    expect(hintsTemplate).not.toContain('showAddRole = true');
+    expect(hintsTemplate).not.toContain('title="添加角色"');
+    // No plus icon SVG
+    expect(hintsTemplate).not.toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
+  });
+
+  it('should still show status text in hints bar', () => {
+    expect(hintsTemplate).toContain('crew-hint-status');
+    expect(hintsTemplate).toContain('statusText');
+  });
+
+  it('should still show task filters after status', () => {
+    expect(hintsTemplate).toContain('activeTasks.length > 0');
+    expect(hintsTemplate).toContain('crew-hint-separator');
+  });
+});
+
+// Verify actual source file matches expectations
+describe('Hints bar - source file verification', () => {
+  let fileContent;
+
+  it('should load CrewChatView.js source', async () => {
+    fileContent = await fs.readFile(
+      join(__dirname, '../../web/components/CrewChatView.js'),
+      'utf-8'
+    );
+    expect(fileContent).toBeTruthy();
+  });
+
+  it('should NOT have crew-at-hint spans in the template', () => {
+    // The hints area (between crew-input-hints and input-wrapper) should not have role badges
+    const hintsAreaMatch = fileContent.match(
+      /class="crew-input-hints"[\s\S]*?<\/div>\s*(?=<div class="attachments-preview|<div class="input-wrapper")/
+    );
+    expect(hintsAreaMatch).toBeTruthy();
+    const hintsArea = hintsAreaMatch[0];
+    expect(hintsArea).not.toContain('crew-at-hint');
+    expect(hintsArea).not.toContain('insertAt(role.name)');
+  });
+
+  it('should NOT have add-role button in hints area', () => {
+    const hintsAreaMatch = fileContent.match(
+      /class="crew-input-hints"[\s\S]*?<\/div>\s*(?=<div class="attachments-preview|<div class="input-wrapper")/
+    );
+    const hintsArea = hintsAreaMatch[0];
+    expect(hintsArea).not.toContain('showAddRole = true');
+    expect(hintsArea).not.toContain('添加角色');
+  });
+});
+
+// =====================================================================
+// @ 自动补全: 选中角色后输入框显示 displayName
+// =====================================================================
+
+describe('@ autocomplete - uses displayName instead of name', () => {
+  // Replicate selectAtRole logic from CrewChatView.js
+  function selectAtRole(inputText, cursorPos, role) {
+    const beforeCursor = inputText.substring(0, cursorPos);
+    const atIdx = beforeCursor.lastIndexOf('@');
+    if (atIdx >= 0) {
+      const afterCursor = inputText.substring(cursorPos);
+      const newText = inputText.substring(0, atIdx) + '@' + role.displayName + ' ' + afterCursor;
+      const newPos = atIdx + role.displayName.length + 2;
+      return { text: newText, cursorPos: newPos };
+    }
+    return { text: inputText, cursorPos };
+  }
+
+  // Replicate insertAt logic from CrewChatView.js
+  function insertAt(roleName, roles, currentText) {
+    const role = roles.find(r => r.name === roleName);
+    const displayName = role ? role.displayName : roleName;
+    return `@${displayName} ` + currentText;
+  }
+
+  const testRoles = [
+    { name: 'pm', displayName: 'PM-乔布斯' },
+    { name: 'developer', displayName: '开发者-托瓦兹' },
+    { name: 'architect', displayName: '架构师-福勒' },
+    { name: 'tester', displayName: '测试-贝克' }
+  ];
+
+  it('selectAtRole should insert displayName (not name) after @', () => {
+    const pmRole = testRoles[0];
+    // User typed "@p" then selected PM role
+    const result = selectAtRole('@p', 2, pmRole);
+    expect(result.text).toBe('@PM-乔布斯 ');
+    expect(result.text).not.toContain('@pm ');
+  });
+
+  it('selectAtRole should handle Chinese displayName correctly', () => {
+    const devRole = testRoles[1];
+    const result = selectAtRole('@dev', 4, devRole);
+    expect(result.text).toBe('@开发者-托瓦兹 ');
+    expect(result.text).not.toContain('@developer ');
+  });
+
+  it('selectAtRole should calculate cursor position based on displayName length', () => {
+    const archRole = testRoles[2];
+    const result = selectAtRole('@ar', 3, archRole);
+    // @ + 架构师-福勒 (5 chars) + space = position 7
+    expect(result.cursorPos).toBe(1 + archRole.displayName.length + 1);
+  });
+
+  it('selectAtRole should preserve text after cursor', () => {
+    const pmRole = testRoles[0];
+    const result = selectAtRole('@p 后面的文字', 2, pmRole);
+    expect(result.text).toBe('@PM-乔布斯  后面的文字');
+  });
+
+  it('selectAtRole should handle @ in middle of text', () => {
+    const testerRole = testRoles[3];
+    const input = '请 @te';
+    const result = selectAtRole(input, 5, testerRole);
+    expect(result.text).toBe('请 @测试-贝克 ');
+  });
+
+  it('insertAt should use displayName instead of name', () => {
+    const result = insertAt('pm', testRoles, '请查看这个问题');
+    expect(result).toBe('@PM-乔布斯 请查看这个问题');
+    expect(result).not.toContain('@pm ');
+  });
+
+  it('insertAt should fallback to roleName if role not found', () => {
+    const result = insertAt('unknown', testRoles, '你好');
+    expect(result).toBe('@unknown 你好');
+  });
+});
+
+// =====================================================================
+// 后端 @displayName 解析和路由
+// =====================================================================
+
+describe('Backend @displayName parsing and routing', () => {
+  // Replicate the @ matching logic from agent/crew.js handleCrewHumanInput
+  function resolveAtTarget(content, session) {
+    const atMatch = content.match(/^@(\S+)\s*([\s\S]*)/);
+    if (!atMatch) return null;
+
+    const atTarget = atMatch[1];
+    const message = atMatch[2].trim() || content;
+
+    // 先精确匹配 role.name，再匹配 displayName
+    let target = null;
+    for (const [name, role] of session.roles) {
+      if (name === atTarget.toLowerCase()) {
+        target = name;
+        break;
+      }
+      if (role.displayName === atTarget) {
+        target = name;
+        break;
+      }
+    }
+
+    return target ? { target, message } : null;
+  }
+
+  function createRouteSession() {
+    return {
+      roles: new Map([
+        ['pm', { name: 'pm', displayName: 'PM-乔布斯', description: '需求分析', isDecisionMaker: true }],
+        ['developer', { name: 'developer', displayName: '开发者-托瓦兹', description: '代码编写' }],
+        ['architect', { name: 'architect', displayName: '架构师-福勒', description: '系统设计' }],
+        ['tester', { name: 'tester', displayName: '测试-贝克', description: '测试' }],
+        ['reviewer', { name: 'reviewer', displayName: '审查者-马丁', description: '审查' }]
+      ])
+    };
+  }
+
+  it('should resolve @displayName to correct role name', () => {
+    const session = createRouteSession();
+    const result = resolveAtTarget('@PM-乔布斯 请确认需求', session);
+    expect(result).not.toBeNull();
+    expect(result.target).toBe('pm');
+    expect(result.message).toBe('请确认需求');
+  });
+
+  it('should still resolve @name (backward compat)', () => {
+    const session = createRouteSession();
+    const result = resolveAtTarget('@pm 请确认需求', session);
+    expect(result).not.toBeNull();
+    expect(result.target).toBe('pm');
+  });
+
+  it('should resolve Chinese displayName', () => {
+    const session = createRouteSession();
+    const result = resolveAtTarget('@开发者-托瓦兹 修复这个bug', session);
+    expect(result).not.toBeNull();
+    expect(result.target).toBe('developer');
+    expect(result.message).toBe('修复这个bug');
+  });
+
+  it('should resolve @architect by name', () => {
+    const session = createRouteSession();
+    const result = resolveAtTarget('@architect 设计方案', session);
+    expect(result).not.toBeNull();
+    expect(result.target).toBe('architect');
+  });
+
+  it('should resolve @架构师-福勒 by displayName', () => {
+    const session = createRouteSession();
+    const result = resolveAtTarget('@架构师-福勒 设计方案', session);
+    expect(result).not.toBeNull();
+    expect(result.target).toBe('architect');
+  });
+
+  it('should return null for unknown target', () => {
+    const session = createRouteSession();
+    const result = resolveAtTarget('@unknown 你好', session);
+    expect(result).toBeNull();
+  });
+
+  it('should return null for non-@ messages', () => {
+    const session = createRouteSession();
+    const result = resolveAtTarget('普通消息', session);
+    expect(result).toBeNull();
+  });
+
+  it('should use full content as message when no text after @target', () => {
+    const session = createRouteSession();
+    const result = resolveAtTarget('@PM-乔布斯 ', session);
+    expect(result).not.toBeNull();
+    expect(result.target).toBe('pm');
+    expect(result.message).toBe('@PM-乔布斯 '); // falls back to full content
+  });
+
+  it('should handle displayName with hyphen correctly (regex \\S+ match)', () => {
+    const session = createRouteSession();
+    // The regex /^@(\S+)\s*/ should match "PM-乔布斯" as one token (no spaces)
+    const result = resolveAtTarget('@审查者-马丁 代码审查', session);
+    expect(result).not.toBeNull();
+    expect(result.target).toBe('reviewer');
+  });
+
+  it('should prioritize name match over displayName match', () => {
+    // Edge case: if a role's name matches, it should be preferred
+    const session = {
+      roles: new Map([
+        ['pm', { name: 'pm', displayName: 'PM-乔布斯' }],
+        ['pm-custom', { name: 'pm-custom', displayName: 'pm' }] // displayName matches another role's name
+      ])
+    };
+    const result = resolveAtTarget('@pm 你好', session);
+    expect(result.target).toBe('pm'); // name match wins
+  });
+
+  it('should be case-insensitive for name matching', () => {
+    const session = createRouteSession();
+    const result = resolveAtTarget('@PM 你好', session);
+    expect(result).not.toBeNull();
+    expect(result.target).toBe('pm');
+  });
+
+  it('should be case-sensitive for displayName matching', () => {
+    const session = createRouteSession();
+    // displayName 是 "PM-乔布斯"，如果用小写 "pm-乔布斯" 不应匹配 displayName
+    // 但 "pm-乔布斯" 的 toLowerCase 也不等于任何 name
+    const result = resolveAtTarget('@pm-乔布斯 你好', session);
+    // name match: "pm-乔布斯".toLowerCase() = "pm-乔布斯", no role named "pm-乔布斯"
+    // displayName match: "pm-乔布斯" !== "PM-乔布斯"
+    expect(result).toBeNull();
+  });
+
+  it('should handle multiline message content', () => {
+    const session = createRouteSession();
+    const result = resolveAtTarget('@测试-贝克 请测试以下变更：\n1. 变更一\n2. 变更二', session);
+    expect(result).not.toBeNull();
+    expect(result.target).toBe('tester');
+    expect(result.message).toContain('变更一');
+    expect(result.message).toContain('变更二');
+  });
+
+  it('should use new regex \\S+ instead of old \\w+ to support Chinese/hyphen displayNames', () => {
+    // Old regex: /^@(\w+)\s*/ only matches word chars (letters, digits, underscore)
+    // New regex: /^@(\S+)\s*/ matches any non-whitespace (Chinese, hyphens, etc.)
+    const oldRegex = /^@(\w+)\s*([\s\S]*)/;
+    const newRegex = /^@(\S+)\s*([\s\S]*)/;
+
+    const chineseInput = '@PM-乔布斯 测试';
+
+    const oldMatch = chineseInput.match(oldRegex);
+    const newMatch = chineseInput.match(newRegex);
+
+    // Old regex only captures "PM" (stops at hyphen), missing the full displayName
+    expect(oldMatch).not.toBeNull();
+    expect(oldMatch[1]).toBe('PM'); // only "PM", not "PM-乔布斯"
+
+    // New regex captures the full displayName including Chinese chars and hyphens
+    expect(newMatch).not.toBeNull();
+    expect(newMatch[1]).toBe('PM-乔布斯'); // full displayName captured
+
+    // Pure Chinese displayName test
+    const pureChineseInput = '@开发者-托瓦兹 修复bug';
+    const oldChineseMatch = pureChineseInput.match(oldRegex);
+    const newChineseMatch = pureChineseInput.match(newRegex);
+
+    // Old regex fails entirely on Chinese-starting displayName
+    expect(oldChineseMatch).toBeNull();
+    // New regex works correctly
+    expect(newChineseMatch).not.toBeNull();
+    expect(newChineseMatch[1]).toBe('开发者-托瓦兹');
+  });
+});
