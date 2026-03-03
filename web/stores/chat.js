@@ -325,6 +325,7 @@ export const useChatStore = defineStore('chat', {
 
     createCrewSession(config) {
       const sessionId = 'crew_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const agentId = config.agentId || this.currentAgent;
       // 初始化 crew 消息存储
       this.crewMessagesMap[sessionId] = [];
       this.sendWsMessage({
@@ -335,18 +336,18 @@ export const useChatStore = defineStore('chat', {
         goal: config.goal,
         roles: config.roles,
         maxRounds: config.maxRounds || 20,
-        agentId: this.currentAgent
+        agentId
       });
       this.crewConfigOpen = false;
     },
 
-    resumeCrewSession(sessionId) {
+    resumeCrewSession(sessionId, agentId) {
       // 初始化 crew 消息存储
       if (!this.crewMessagesMap[sessionId]) this.crewMessagesMap[sessionId] = [];
       this.sendWsMessage({
         type: 'resume_crew_session',
         sessionId,
-        agentId: this.currentAgent
+        agentId: agentId || this.currentAgent
       });
     },
 

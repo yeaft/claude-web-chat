@@ -5,13 +5,20 @@ import { encrypt, decrypt, isEncrypted } from '../../utils/encryption.js';
 import { clearSessionLoading } from './session.js';
 
 export function sendWsMessage(store, msg) {
-  if (!store.ws || store.ws.readyState !== WebSocket.OPEN) return;
+  if (!store.ws || store.ws.readyState !== WebSocket.OPEN) {
+    console.warn('[WS] Cannot send, connection not open:', msg.type);
+    return;
+  }
 
-  if (store.sessionKey) {
-    const encrypted = encrypt(msg, store.sessionKey);
-    store.ws.send(JSON.stringify(encrypted));
-  } else {
-    store.ws.send(JSON.stringify(msg));
+  try {
+    if (store.sessionKey) {
+      const encrypted = encrypt(msg, store.sessionKey);
+      store.ws.send(JSON.stringify(encrypted));
+    } else {
+      store.ws.send(JSON.stringify(msg));
+    }
+  } catch (e) {
+    console.error('[WS] Failed to send message:', msg.type, e);
   }
 }
 

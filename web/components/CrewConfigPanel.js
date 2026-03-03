@@ -309,7 +309,7 @@ export default {
     resumeStoppedSession(session) {
       const agentId = session.agentId || this.selectedAgent;
       if (agentId) this.store.selectAgent(agentId);
-      this.store.resumeCrewSession(session.sessionId);
+      this.store.resumeCrewSession(session.sessionId, agentId);
       this.$emit('close');
     },
     deleteStoppedSession(session) {
@@ -471,10 +471,16 @@ export default {
       if (!this.canStart) return;
       this.store.selectAgent(this.selectedAgent);
       const roles = this.roles.map(r => ({
-        ...r,
-        name: r.name || r.displayName.toLowerCase().replace(/\s+/g, '_')
+        name: r.name || r.displayName.toLowerCase().replace(/\s+/g, '_'),
+        displayName: r.displayName,
+        icon: r.icon,
+        description: r.description,
+        claudeMd: r.claudeMd || '',
+        model: r.model,
+        isDecisionMaker: r.isDecisionMaker || false
       }));
       this.$emit('start', {
+        agentId: this.selectedAgent,
         projectDir: this.projectDir.trim(),
         sharedDir: this.sharedDir.trim() || '.crew',
         goal: '',
