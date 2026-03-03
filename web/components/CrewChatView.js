@@ -143,6 +143,7 @@ export default {
           <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
           <span class="crew-hint-meta" v-if="store.currentCrewStatus">{{ store.currentCrewStatus.round }}/{{ store.currentCrewStatus.maxRounds }}</span>
           <span class="crew-hint-meta" v-if="store.currentCrewStatus">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
+          <span class="crew-hint-meta" v-if="store.currentCrewStatus && totalTokens > 0">{{ formatTokens(totalTokens) }} tok</span>
           <div class="crew-hint-controls" style="position: relative;">
             <button class="crew-hint-btn" @click.stop="controlOpen = !controlOpen" title="控制">
               <span v-if="store.currentCrewStatus?.status === 'running'" v-html="icons.pause"></span>
@@ -382,6 +383,11 @@ export default {
       const [role, tool] = entries[0];
       return `${tool}...`;
     },
+    totalTokens() {
+      const s = this.store.currentCrewStatus;
+      if (!s) return 0;
+      return (s.totalInputTokens || 0) + (s.totalOutputTokens || 0);
+    },
     canSend() {
       const hasContent = this.inputText.trim() || this.attachments.length > 0;
       const notUploading = !this.uploading && this.attachments.every(a => a.fileId);
@@ -455,6 +461,12 @@ export default {
       if (!ts) return '';
       const d = new Date(ts);
       return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    },
+
+    formatTokens(n) {
+      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+      return String(n);
     },
 
     mdRender: renderMarkdown,

@@ -648,6 +648,8 @@ export const useChatStore = defineStore('chat', {
           round: msg.round,
           maxRounds: msg.maxRounds,
           costUsd: msg.costUsd,
+          totalInputTokens: msg.totalInputTokens || 0,
+          totalOutputTokens: msg.totalOutputTokens || 0,
           activeRoles: msg.activeRoles || [],
           currentToolByRole: msg.currentToolByRole || {}
         };

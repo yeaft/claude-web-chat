@@ -1107,7 +1107,8 @@ body {
 /* Chat Header */
 .chat-header {
   display: flex;
-  justify-content: center;
+  align-items: center;
+  justify-content: space-between;
   padding: 8px 24px 4px;
   background: var(--bg-main);
   position: relative;

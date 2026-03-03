@@ -223,6 +223,8 @@ export async function resumeCrewSession(msg) {
     round: meta.round || 0,
     maxRounds: meta.maxRounds || 20,
     costUsd: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
     messageHistory: [],
     uiMessages: [],          // will be loaded from messages.json
     humanMessageQueue: [],
@@ -306,6 +308,8 @@ export async function createCrewSession(msg) {
     round: 0,
     maxRounds,
     costUsd: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
     messageHistory: [],      // 群聊消息历史
     uiMessages: [],          // 精简的 UI 消息历史（用于恢复时重放）
     humanMessageQueue: [],   // 人的消息排队
@@ -796,6 +800,11 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
         // 更新费用
         if (message.total_cost_usd) {
           session.costUsd += message.total_cost_usd;
+        }
+        // 更新 token 用量
+        if (message.usage) {
+          session.totalInputTokens += message.usage.input_tokens || 0;
+          session.totalOutputTokens += message.usage.output_tokens || 0;
         }
 
         // ★ 持久化 sessionId（每次 turn 完成后保存，用于后续 resume）
@@ -1358,6 +1367,8 @@ function sendStatusUpdate(session) {
     round: session.round,
     maxRounds: session.maxRounds,
     costUsd: session.costUsd,
+    totalInputTokens: session.totalInputTokens,
+    totalOutputTokens: session.totalOutputTokens,
     roles: Array.from(session.roles.values()).map(r => ({
       name: r.name,
       displayName: r.displayName,

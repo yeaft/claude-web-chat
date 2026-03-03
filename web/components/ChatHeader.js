@@ -14,6 +14,19 @@ export default {
         </svg>
         <span class="compact-message">{{ compactMessage }}</span>
       </div>
+      <button
+        v-if="store.currentConversation && !store.currentConversationIsCrew"
+        class="mcp-toggle"
+        :class="{ enabled: store.currentMcpEnabled }"
+        @click="store.toggleMcp()"
+        :title="store.currentMcpEnabled ? $t('chatHeader.mcpEnabled') : $t('chatHeader.mcpDisabled')"
+      >
+        <svg viewBox="0 0 24 24" width="14" height="14">
+          <path fill="currentColor" d="M14.17 3.5a2.5 2.5 0 00-4.34 0L7.55 7H4a2 2 0 00-2 2v2a2 2 0 002 2h.09l1.21 6.07A2 2 0 007.26 21h9.48a2 2 0 001.96-1.93L19.91 13H20a2 2 0 002-2V9a2 2 0 00-2-2h-3.55l-2.28-3.5zM12 5.5l1.82 2.8.18.2H20v2h-2l-1.23 6.15a.5.5 0 01-.03.1l-.04.25H7.3l-1.21-6.07-.06-.43H4V8.5h5.82l.18-.2L12 5.5z"/>
+        </svg>
+        <span>MCP</span>
+        <span class="mcp-status">{{ store.currentMcpEnabled ? 'ON' : 'OFF' }}</span>
+      </button>
     </header>
   `,
   setup() {
