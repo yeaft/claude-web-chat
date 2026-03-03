@@ -175,7 +175,7 @@ export const useChatStore = defineStore('chat', {
     // =====================
     // WebSocket helpers
     // =====================
-    sendWsMessage(msg) { wsHelpers.sendWsMessage(this, msg); },
+    sendWsMessage(msg) { return wsHelpers.sendWsMessage(this, msg); },
     parseWsMessage(data) { return wsHelpers.parseWsMessage(this, data); },
     connect() { wsHelpers.connect(this); },
     scheduleReconnect() { wsHelpers.scheduleReconnect(this); },
@@ -378,7 +378,14 @@ export const useChatStore = defineStore('chat', {
       if (attachments && attachments.length > 0) {
         msg.attachments = attachments;
       }
-      this.sendWsMessage(msg);
+      const sent = this.sendWsMessage(msg);
+      if (!sent) {
+        // Mark the message as failed so user knows it didn't send
+        const messages = this.crewMessagesMap[sessionId];
+        if (messages && messages.length > 0) {
+          messages[messages.length - 1]._sendFailed = true;
+        }
+      }
     },
 
     sendCrewControl(action, targetRole = null) {

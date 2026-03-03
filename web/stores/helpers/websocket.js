@@ -7,7 +7,7 @@ import { clearSessionLoading } from './session.js';
 export function sendWsMessage(store, msg) {
   if (!store.ws || store.ws.readyState !== WebSocket.OPEN) {
     console.warn('[WS] Cannot send, connection not open:', msg.type);
-    return;
+    return false;
   }
 
   try {
@@ -17,8 +17,10 @@ export function sendWsMessage(store, msg) {
     } else {
       store.ws.send(JSON.stringify(msg));
     }
+    return true;
   } catch (e) {
     console.error('[WS] Failed to send message:', msg.type, e);
+    return false;
   }
 }
 

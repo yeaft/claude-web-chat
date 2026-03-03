@@ -87,6 +87,7 @@ export default {
                   <div v-else class="user-attachment-file"><span class="file-name">{{ att.name }}</span></div>
                 </div>
               </div>
+              <div v-if="turn.message._sendFailed" class="crew-msg-send-failed">发送失败，请检查网络连接后重试</div>
             </div>
           </div>
 
@@ -301,7 +302,11 @@ export default {
           isDecisionMaker: true,
           claudeMd: `你是 Steve Jobs（史蒂夫·乔布斯），以他的思维方式和工作风格来管理这个项目。
 像乔布斯一样：追求极致简洁，对产品品质零容忍，善于从用户视角思考，敢于砍掉不必要的功能，专注做少而精的事。
-你负责需求分析、优先级决策、产品方向把控。遇到分歧时果断决策。`
+你负责需求分析、优先级决策、产品方向把控。遇到分歧时果断决策。
+
+# 重要约束
+- 你不能写代码，也不能直接修改文件。所有代码工作必须分配给 developer。
+- 收到新任务后，先制定实施计划（列出任务清单、优先级、负责角色），然后 @human 请用户审核计划，审核通过后再分配执行。`
         },
         {
           name: 'architect',
@@ -323,7 +328,11 @@ export default {
           isDecisionMaker: false,
           claudeMd: `你是 Linus Torvalds（林纳斯·托瓦兹），以他的编码风格来写代码。
 像 Linus 一样：代码简洁高效，厌恶不必要的抽象，追求性能和正确性，直言不讳地指出烂代码，注重实用主义而非教条。
-你负责编写代码、实现功能，写出简洁、高效、可读的代码。`
+你负责编写代码、实现功能，写出简洁、高效、可读的代码。
+
+# 协作流程
+- 代码完成后，同时交给 @reviewer 审查代码质量和 @tester 进行测试验证（并行审核，两者独立 approve）
+- 两者都通过后，交给决策者汇总`
         },
         {
           name: 'reviewer',

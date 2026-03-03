@@ -46,7 +46,15 @@ async function sendToServer(msg) {
         ctx.messageBuffer.push(msg);
         console.log(`[WS] Buffered message: ${msg.type} (queue: ${ctx.messageBuffer.length})`);
       } else {
-        console.warn(`[WS] Buffer full (${ctx.messageBufferMaxSize}), dropping: ${msg.type}`);
+        // Buffer full: drop oldest non-status messages to make room
+        const dropIdx = ctx.messageBuffer.findIndex(m => m.type !== 'crew_status' && m.type !== 'turn_completed');
+        if (dropIdx >= 0) {
+          ctx.messageBuffer.splice(dropIdx, 1);
+          ctx.messageBuffer.push(msg);
+          console.warn(`[WS] Buffer full, dropped oldest to make room for: ${msg.type}`);
+        } else {
+          console.warn(`[WS] Buffer full (${ctx.messageBufferMaxSize}), dropping: ${msg.type}`);
+        }
       }
     } else {
       console.warn(`[WS] Cannot send message, WebSocket not open: ${msg.type}`);

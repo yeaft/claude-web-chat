@@ -724,7 +724,7 @@ summary: <简要说明要传递什么>
 \`\`\`
 
 可用的路由目标:
-${otherRoles.map(r => `- ${r.name}: ${r.displayName}`).join('\n')}
+${otherRoles.map(r => `- ${r.name}: ${r.icon} ${r.displayName} — ${r.description}`).join('\n')}
 - human: 人工（只在决策者也无法决定时使用）
 
 注意：
@@ -733,7 +733,8 @@ ${otherRoles.map(r => `- ${r.name}: ${r.displayName}`).join('\n')}
 - 如果你是决策者且遇到需要人类判断的问题，才 @ human
 - 每次回复最多只能有一个 ROUTE 块
 - ROUTE 块必须在回复的最末尾
-- 当你的任务已完成且不需要其他角色继续时，ROUTE 回决策者 "${session.decisionMaker}" 做总结`;
+- 当你的任务已完成且不需要其他角色继续时，ROUTE 回决策者 "${session.decisionMaker}" 做总结
+- 在正文中可用 @角色name 提及某个角色（如 @developer），但这不会触发路由，仅供阅读`;
   }
 
   // 决策者额外 prompt

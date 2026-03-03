@@ -10578,6 +10578,12 @@ body {
   border: 1px solid var(--border-color);
 }
 
+.crew-msg-send-failed {
+  font-size: 12px;
+  color: var(--error);
+  margin-top: 4px;
+}
+
 /* Crew Streaming Indicator */
 .crew-streaming-indicator {
   display: flex;

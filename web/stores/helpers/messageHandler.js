@@ -135,25 +135,37 @@ export function handleMessage(store, msg) {
           store.sendWsMessage({ type: 'select_agent', agentId: store.currentAgent, silent: true });
           if (store.currentConversation) {
             store.sendWsMessage({ type: 'select_conversation', conversationId: store.currentConversation });
-            if (store.messages.length > 0) {
-              const lastMessageId = store.messages[store.messages.length - 1]?.id;
-              console.log('[Reconnect] Requesting missed messages after:', lastMessageId);
+            // Crew conversation: 恢复 crew session 状态
+            const conv = store.conversations.find(c => c.id === store.currentConversation);
+            if (conv?.type === 'crew') {
+              console.log('[Reconnect] Crew conversation detected, resuming crew session:', store.currentConversation);
               store.sendWsMessage({
-                type: 'sync_messages',
-                conversationId: store.currentConversation,
-                afterMessageId: lastMessageId
+                type: 'resume_crew_session',
+                sessionId: store.currentConversation,
+                agentId: store.currentAgent
               });
             } else {
+              // 普通 conversation: 同步聊天消息
+              if (store.messages.length > 0) {
+                const lastMessageId = store.messages[store.messages.length - 1]?.id;
+                console.log('[Reconnect] Requesting missed messages after:', lastMessageId);
+                store.sendWsMessage({
+                  type: 'sync_messages',
+                  conversationId: store.currentConversation,
+                  afterMessageId: lastMessageId
+                });
+              } else {
+                store.sendWsMessage({
+                  type: 'sync_messages',
+                  conversationId: store.currentConversation,
+                  turns: 5
+                });
+              }
               store.sendWsMessage({
-                type: 'sync_messages',
-                conversationId: store.currentConversation,
-                turns: 5
+                type: 'refresh_conversation',
+                conversationId: store.currentConversation
               });
             }
-            store.sendWsMessage({
-              type: 'refresh_conversation',
-              conversationId: store.currentConversation
-            });
           }
           break;
         } else {
@@ -178,17 +190,27 @@ export function handleMessage(store, msg) {
               store.currentConversation = lastViewed;
               store.currentWorkDir = conv.workDir;
               store.messages = [];
-              // 加载最近 5 turns 消息
-              store.sendWsMessage({
-                type: 'sync_messages',
-                conversationId: lastViewed,
-                turns: 5
-              });
               // 通知 server 选择了这个 agent 和 conversation
               store.sendWsMessage({ type: 'select_agent', agentId: conv.agentId, silent: true });
               store.sendWsMessage({ type: 'select_conversation', conversationId: lastViewed });
-              // 查询 processing 状态
-              store.sendWsMessage({ type: 'refresh_conversation', conversationId: lastViewed });
+              if (conv.type === 'crew') {
+                // Crew conversation: 恢复 crew session 状态
+                console.log('[AutoRestore] Crew conversation, resuming crew session:', lastViewed);
+                store.sendWsMessage({
+                  type: 'resume_crew_session',
+                  sessionId: lastViewed,
+                  agentId: conv.agentId
+                });
+              } else {
+                // 加载最近 5 turns 消息
+                store.sendWsMessage({
+                  type: 'sync_messages',
+                  conversationId: lastViewed,
+                  turns: 5
+                });
+                // 查询 processing 状态
+                store.sendWsMessage({ type: 'refresh_conversation', conversationId: lastViewed });
+              }
               break;
             }
           }
