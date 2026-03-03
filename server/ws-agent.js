@@ -769,6 +769,14 @@ async function handleAgentMessage(agentId, msg) {
         goal: msg.goal,
         roles: msg.roles
       });
+      // 持久化到 sessionDb，这样 server 重启后删除操作仍能通过 ownership 检查
+      try {
+        if (!sessionDb.exists(msg.sessionId)) {
+          sessionDb.create(msg.sessionId, agentId, agent.name, msg.projectDir, null, msg.goal, crewUserId);
+        }
+      } catch (e) {
+        console.error('Failed to save crew session to database:', e.message);
+      }
       await forwardToClients(agentId, msg.sessionId, msg);
       await broadcastAgentList();
       break;

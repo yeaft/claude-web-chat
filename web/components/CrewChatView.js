@@ -3,8 +3,8 @@
  * 显示多角色的群聊消息，包括状态栏和控制按钮
  * 支持动态添加/移除角色
  */
+import { renderMarkdown } from '../utils/markdown.js';
 
-// SVG icon helpers (24x24 viewBox, fill="currentColor", matching app style)
 const ICONS = {
   crew: '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>',
   pause: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>',
@@ -13,10 +13,10 @@ const ICONS = {
   close: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>',
   settings: '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>',
   trash: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
-  bolt: '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M11 21h-1l1-7H7.5c-.88 0-.33-.75-.31-.78C8.48 10.94 10.42 7.54 13.01 3h1l-1 7h3.51c.4 0 .62.19.4.66C12.97 17.55 11 21 11 21z"/></svg>',
   bell: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>',
-  add: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>',
 };
+
+const PRESET_ROLES = ['pm', 'architect', 'developer', 'reviewer', 'tester', 'writer', 'human', 'system'];
 
 export default {
   name: 'CrewChatView',
@@ -33,15 +33,16 @@ export default {
             <span v-for="role in store.currentCrewSession.roles" :key="role.name"
               class="crew-role-badge"
               :class="{ active: isRoleActive(role.name), 'decision-maker': role.isDecisionMaker }"
-              :title="role.displayName + (role.isDecisionMaker ? ' (决策者)' : '')"
+              :style="getRoleStyle(role.name)"
+              :title="getRoleBadgeTitle(role)"
               @contextmenu.prevent="openRoleMenu($event, role)">
               {{ role.icon }}
             </span>
-            <!-- 添加角色按钮 -->
             <button class="crew-add-role-btn" @click="showAddRole = true" title="添加角色">
               <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
             </button>
           </span>
+          <span class="crew-role-tool-hint" v-if="activeToolHint">{{ activeToolHint }}</span>
           <span class="crew-status-state" :class="statusClass">{{ statusText }}</span>
           <span class="crew-status-rounds" v-if="store.currentCrewStatus">{{ store.currentCrewStatus.round }}/{{ store.currentCrewStatus.maxRounds }}</span>
           <span class="crew-status-cost" v-if="store.currentCrewStatus">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
@@ -87,44 +88,63 @@ export default {
           <div class="crew-empty-text" v-else>等待 Crew Session 启动...</div>
         </div>
 
-        <div v-for="msg in store.currentCrewMessages" :key="msg.id" class="crew-message" :class="'crew-msg-' + msg.type + ' crew-role-' + msg.role">
-          <!-- 角色标识 -->
-          <div class="crew-msg-avatar">
-            <span class="crew-msg-icon">{{ msg.roleIcon }}</span>
+        <template v-for="(msg, idx) in store.currentCrewMessages" :key="msg.id">
+          <!-- Round Divider — show before route messages -->
+          <div v-if="msg.type === 'route' && msg.round > 0" class="crew-round-divider">
+            <div class="crew-round-line"></div>
+            <span class="crew-round-label">Round {{ msg.round }}</span>
+            <div class="crew-round-line"></div>
           </div>
 
-          <div class="crew-msg-body">
-            <div class="crew-msg-header">
-              <span class="crew-msg-name" :class="{ 'is-human': msg.role === 'human', 'is-system': msg.role === 'system' }">{{ msg.roleName }}</span>
-              <span class="crew-msg-time">{{ formatTime(msg.timestamp) }}</span>
+          <div class="crew-message" :class="'crew-msg-' + msg.type + ' crew-role-' + msg.role" :style="getRoleStyle(msg.role)">
+            <!-- 角色标识 -->
+            <div class="crew-msg-avatar">
+              <span class="crew-msg-icon">{{ msg.roleIcon }}</span>
             </div>
 
-            <!-- 文本消息 -->
-            <div v-if="msg.type === 'text'" class="crew-msg-content" v-html="renderMarkdown(msg.content)"></div>
+            <div class="crew-msg-body">
+              <div class="crew-msg-header">
+                <span class="crew-msg-name" :class="{ 'is-human': msg.role === 'human', 'is-system': msg.role === 'system' }">{{ msg.roleName }}</span>
+                <span class="crew-msg-time">{{ formatTime(msg.timestamp) }}</span>
+              </div>
 
-            <!-- 工具调用 -->
-            <div v-else-if="msg.type === 'tool'" class="crew-msg-tool">
-              <span class="crew-tool-icon" v-html="icons.bolt"></span>
-              <span class="crew-tool-name">{{ msg.toolName }}</span>
-              <span class="crew-tool-detail">{{ msg.content }}</span>
-            </div>
+              <!-- 文本消息 -->
+              <div v-if="msg.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(msg.content)"></div>
+              <!-- 附件预览 -->
+              <div v-if="msg.attachments && msg.attachments.length > 0" class="user-attachments" style="margin-top: 6px;">
+                <div v-for="(att, aidx) in msg.attachments" :key="aidx" class="user-attachment-item" :class="{ 'is-image': att.isImage }">
+                  <img v-if="att.isImage && att.preview" :src="att.preview" :alt="att.name" class="user-attachment-image" />
+                  <div v-else class="user-attachment-file">
+                    <span class="file-name">{{ att.name }}</span>
+                  </div>
+                </div>
+              </div>
 
-            <!-- 路由消息 -->
-            <div v-else-if="msg.type === 'route'" class="crew-msg-route">
-              {{ msg.content }}
-            </div>
+              <!-- 工具调用 — 使用 ToolLine 组件 -->
+              <tool-line v-else-if="msg.type === 'tool'"
+                :tool-name="msg.toolName"
+                :tool-input="msg.toolInput"
+                :tool-result="msg.toolResult"
+                :has-result="!!msg.hasResult"
+                :compact="true" />
 
-            <!-- 系统消息 -->
-            <div v-else-if="msg.type === 'system'" class="crew-msg-system">
-              {{ msg.content }}
-            </div>
+              <!-- 路由消息 -->
+              <div v-else-if="msg.type === 'route'" class="crew-msg-route">
+                {{ msg.content }}
+              </div>
 
-            <!-- 需要人工介入 -->
-            <div v-else-if="msg.type === 'human_needed'" class="crew-msg-human-needed">
-              <span class="crew-control-icon" v-html="icons.bell"></span> {{ msg.content }}
+              <!-- 系统消息 -->
+              <div v-else-if="msg.type === 'system'" class="crew-msg-system">
+                {{ msg.content }}
+              </div>
+
+              <!-- 需要人工介入 -->
+              <div v-else-if="msg.type === 'human_needed'" class="crew-msg-human-needed">
+                <span class="crew-control-icon" v-html="icons.bell"></span> {{ msg.content }}
+              </div>
             </div>
           </div>
-        </div>
+        </template>
 
         <!-- 流式指示器 -->
         <div v-if="hasStreamingMessage" class="crew-streaming-indicator">
@@ -135,16 +155,49 @@ export default {
       </div>
 
       <!-- Input -->
-      <div class="crew-input-area">
+      <div class="input-area crew-input-area">
         <div class="crew-input-hints" v-if="store.currentCrewSession">
-          <span class="crew-at-hint" v-for="role in store.currentCrewSession.roles" :key="role.name" @click="insertAt(role.name)" :title="role.displayName">
+          <span class="crew-at-hint" v-for="role in store.currentCrewSession.roles" :key="role.name"
+            @click="insertAt(role.name)" :title="role.displayName"
+            :style="getRoleStyle(role.name)">
             @{{ role.displayName }}
           </span>
         </div>
-        <div class="crew-input-row">
-          <textarea class="crew-input" v-model="inputText" @keydown.enter.exact="sendMessage" placeholder="输入消息... (@角色名 发送给指定角色)" rows="1" ref="inputRef"></textarea>
-          <button class="crew-send-btn" @click="sendMessage" :disabled="!inputText.trim()" title="发送">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.5 13V3L13 8L3.5 13Z"/></svg>
+        <div class="attachments-preview" v-if="attachments.length > 0">
+          <div class="attachment-item" v-for="(file, index) in attachments" :key="index">
+            <img v-if="file.preview" :src="file.preview" class="attachment-thumb" />
+            <span v-else class="attachment-icon">\u{1F4CE}</span>
+            <span class="attachment-name">{{ file.name }}</span>
+            <button class="attachment-remove" @click="removeAttachment(index)">&times;</button>
+          </div>
+        </div>
+        <div class="input-wrapper">
+          <input
+            type="file"
+            ref="fileInput"
+            @change="handleFileSelect"
+            multiple
+            accept="image/*,text/*,.pdf,.doc,.docx,.xls,.xlsx,.json,.md,.py,.js,.ts,.css,.html"
+            style="display: none;"
+          />
+          <button class="attach-btn" @click="triggerFileSelect" title="上传文件">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
+            </svg>
+          </button>
+          <div class="textarea-wrapper">
+            <textarea
+              ref="inputRef"
+              v-model="inputText"
+              @input="autoResize"
+              @keydown="handleKeydown"
+              @paste="handlePaste"
+              placeholder="输入消息... (@角色名 发送给指定角色，Shift+Enter 换行)"
+              rows="1"
+            ></textarea>
+          </div>
+          <button class="send-btn" @click="sendMessage" :disabled="!canSend" title="发送">
+            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
           </button>
         </div>
       </div>
@@ -205,7 +258,8 @@ export default {
 
   setup() {
     const store = Pinia.useChatStore();
-    return { store };
+    const authStore = Pinia.useAuthStore();
+    return { store, authStore };
   },
 
   data() {
@@ -217,12 +271,14 @@ export default {
       roleMenuVisible: false,
       roleMenuTarget: null,
       roleMenuStyle: {},
+      attachments: [],   // { file, name, preview?, uploading, fileId? }
+      uploading: false,
       newRole: this.getEmptyRole(),
       rolePresets: [
         {
           name: 'pm',
           displayName: 'PM',
-          icon: '📋',
+          icon: '\u{1F4CB}',
           description: '项目管理，需求分析，任务拆分和进度跟踪',
           model: 'sonnet',
           isDecisionMaker: true,
@@ -233,7 +289,7 @@ export default {
         {
           name: 'architect',
           displayName: '架构师',
-          icon: '🏗️',
+          icon: '\u{1F3D7}\uFE0F',
           description: '系统设计和技术决策',
           model: 'opus',
           isDecisionMaker: false,
@@ -244,7 +300,7 @@ export default {
         {
           name: 'developer',
           displayName: '开发者',
-          icon: '👨‍💻',
+          icon: '\u{1F468}\u200D\u{1F4BB}',
           description: '代码编写和功能实现',
           model: 'sonnet',
           isDecisionMaker: false,
@@ -255,7 +311,7 @@ export default {
         {
           name: 'reviewer',
           displayName: '审查者',
-          icon: '🔍',
+          icon: '\u{1F50D}',
           description: '代码审查和质量把控',
           model: 'sonnet',
           isDecisionMaker: false,
@@ -266,7 +322,7 @@ export default {
         {
           name: 'tester',
           displayName: '测试者',
-          icon: '🧪',
+          icon: '\u{1F9EA}',
           description: '测试用例编写和质量验证',
           model: 'sonnet',
           isDecisionMaker: false,
@@ -277,7 +333,7 @@ export default {
         {
           name: 'writer',
           displayName: '技术写作',
-          icon: '✍️',
+          icon: '\u270D\uFE0F',
           description: '技术文档和 API 文档编写',
           model: 'sonnet',
           isDecisionMaker: false,
@@ -312,6 +368,19 @@ export default {
     },
     hasStreamingMessage() {
       return this.store.currentCrewMessages.some(m => m._streaming);
+    },
+    activeToolHint() {
+      const tools = this.store.currentCrewStatus?.currentToolByRole;
+      if (!tools) return '';
+      const entries = Object.entries(tools);
+      if (entries.length === 0) return '';
+      const [role, tool] = entries[0];
+      return `${tool}...`;
+    },
+    canSend() {
+      const hasContent = this.inputText.trim() || this.attachments.length > 0;
+      const notUploading = !this.uploading && this.attachments.every(a => a.fileId);
+      return hasContent && notUploading;
     }
   },
 
@@ -326,7 +395,7 @@ export default {
 
   methods: {
     getEmptyRole() {
-      return { name: '', displayName: '', icon: '🤖', description: '', model: 'sonnet', claudeMd: '', isDecisionMaker: false };
+      return { name: '', displayName: '', icon: '\u{1F916}', description: '', model: 'sonnet', claudeMd: '', isDecisionMaker: false };
     },
 
     formatTime(ts) {
@@ -335,18 +404,33 @@ export default {
       return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     },
 
-    renderMarkdown(text) {
-      if (!text) return '';
-      let html = text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-      html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>');
-      html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-      html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-      html = html.replace(/\n/g, '<br>');
-      html = html.replace(/---ROUTE---[\s\S]*?---END_ROUTE---/g, '');
-      return html;
+    mdRender: renderMarkdown,
+
+    getRoleStyle(roleName) {
+      if (PRESET_ROLES.includes(roleName)) {
+        return {
+          '--role-color': `var(--crew-color-${roleName})`,
+          '--role-bg': `var(--crew-color-${roleName}-bg)`,
+          '--role-border': `var(--crew-color-${roleName}-border)`
+        };
+      }
+      // Dynamic role: hash name to pick a fallback color
+      const hash = roleName.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xff, 0);
+      const idx = hash % 4;
+      return {
+        '--role-color': `var(--crew-color-fallback-${idx})`,
+        '--role-bg': `var(--crew-color-fallback-${idx})11`,
+        '--role-border': `var(--crew-color-fallback-${idx})40`
+      };
+    },
+
+    getRoleBadgeTitle(role) {
+      const tools = this.store.currentCrewStatus?.currentToolByRole;
+      let title = role.displayName + (role.isDecisionMaker ? ' (决策者)' : '');
+      if (tools?.[role.name]) {
+        title += ` — ${tools[role.name]}`;
+      }
+      return title;
     },
 
     isRoleActive(roleName) {
@@ -358,12 +442,110 @@ export default {
       this.$refs.inputRef?.focus();
     },
 
+    autoResize() {
+      const textarea = this.$refs.inputRef;
+      if (textarea) {
+        textarea.style.height = 'auto';
+        textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+      }
+    },
+
+    handleKeydown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        this.sendMessage();
+      }
+    },
+
+    handlePaste(e) {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const files = [];
+      for (const item of items) {
+        if (item.kind === 'file') {
+          const file = item.getAsFile();
+          if (file) files.push(file);
+        }
+      }
+      if (files.length > 0) {
+        e.preventDefault();
+        this.addFiles(files);
+      }
+    },
+
+    triggerFileSelect(e) {
+      e?.preventDefault();
+      e?.stopPropagation();
+      this.$refs.fileInput?.click();
+    },
+
+    handleFileSelect(e) {
+      const files = Array.from(e.target.files || []);
+      if (files.length > 0) this.addFiles(files);
+      e.target.value = '';
+      this.$nextTick(() => this.$refs.inputRef?.focus());
+    },
+
+    async addFiles(files) {
+      for (const file of files) {
+        const attachment = { file, name: file.name, preview: null, uploading: true, fileId: null };
+        if (file.type.startsWith('image/')) attachment.preview = URL.createObjectURL(file);
+        this.attachments.push(attachment);
+      }
+      this.uploading = true;
+      try {
+        const formData = new FormData();
+        for (const file of files) formData.append('files', file);
+        const headers = {};
+        if (this.authStore?.token) headers['Authorization'] = `Bearer ${this.authStore.token}`;
+        const response = await fetch('/api/upload', { method: 'POST', headers, body: formData });
+        if (!response.ok) throw new Error('Upload failed');
+        const result = await response.json();
+        let resultIndex = 0;
+        for (const attachment of this.attachments) {
+          if (attachment.uploading && !attachment.fileId && resultIndex < result.files.length) {
+            attachment.fileId = result.files[resultIndex].fileId;
+            attachment.uploading = false;
+            resultIndex++;
+          }
+        }
+      } catch (error) {
+        console.error('Upload error:', error);
+        const failed = this.attachments.filter(a => !a.fileId);
+        for (const f of failed) { if (f.preview) URL.revokeObjectURL(f.preview); }
+        this.attachments = this.attachments.filter(a => a.fileId);
+      } finally {
+        this.uploading = false;
+        this.$nextTick(() => this.$refs.inputRef?.focus());
+      }
+    },
+
+    removeAttachment(index) {
+      const attachment = this.attachments[index];
+      if (attachment.preview) URL.revokeObjectURL(attachment.preview);
+      this.attachments.splice(index, 1);
+      this.$nextTick(() => this.$refs.inputRef?.focus());
+    },
+
     sendMessage(e) {
       if (e && e.preventDefault) e.preventDefault();
+      if (!this.canSend) return;
+
       const text = this.inputText.trim();
-      if (!text) return;
-      this.store.sendCrewMessage(text);
+      const attachmentInfos = this.attachments
+        .filter(a => a.fileId)
+        .map(a => ({
+          fileId: a.fileId,
+          name: a.name,
+          preview: a.preview,
+          isImage: a.file?.type?.startsWith('image/') || false,
+          mimeType: a.file?.type || ''
+        }));
+
+      this.store.sendCrewMessage(text, null, attachmentInfos.length > 0 ? attachmentInfos : undefined);
       this.inputText = '';
+      this.attachments = [];
+      if (this.$refs.inputRef) this.$refs.inputRef.style.height = 'auto';
     },
 
     controlAction(action, targetRole = null) {
@@ -374,13 +556,9 @@ export default {
       this.store.sendCrewControl(action, targetRole);
     },
 
-    // 角色右键菜单
     openRoleMenu(event, role) {
       this.roleMenuTarget = role;
-      this.roleMenuStyle = {
-        left: event.clientX + 'px',
-        top: event.clientY + 'px'
-      };
+      this.roleMenuStyle = { left: event.clientX + 'px', top: event.clientY + 'px' };
       this.roleMenuVisible = true;
     },
 
@@ -391,12 +569,9 @@ export default {
       this.store.removeCrewRole(roleName);
     },
 
-    // 添加角色
     applyPreset(preset) {
-      // 检查是否已存在
       const existing = this.store.currentCrewSession?.roles?.find(r => r.name === preset.name);
       if (existing) {
-        // 如果已存在，加后缀
         this.newRole = { ...preset, name: preset.name + '2', displayName: preset.displayName + '2' };
       } else {
         this.newRole = { ...preset };
@@ -412,9 +587,7 @@ export default {
 
     scrollToBottom() {
       const el = this.$refs.messagesRef;
-      if (el) {
-        el.scrollTop = el.scrollHeight;
-      }
+      if (el) el.scrollTop = el.scrollHeight;
     }
   },
 

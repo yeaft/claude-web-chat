@@ -86,6 +86,36 @@ select option:checked {
   --sidebar-hover: #e8e6e1;
   --session-active: #e2e0db;
   --inline-code-bg: rgba(0, 0, 0, 0.05);
+  /* Crew Role Colors */
+  --crew-color-pm: #4a7cc9;
+  --crew-color-pm-bg: rgba(74, 124, 201, 0.08);
+  --crew-color-pm-border: rgba(74, 124, 201, 0.25);
+  --crew-color-architect: #8b5cf6;
+  --crew-color-architect-bg: rgba(139, 92, 246, 0.08);
+  --crew-color-architect-border: rgba(139, 92, 246, 0.25);
+  --crew-color-developer: #10b981;
+  --crew-color-developer-bg: rgba(16, 185, 129, 0.08);
+  --crew-color-developer-border: rgba(16, 185, 129, 0.25);
+  --crew-color-reviewer: #f59e0b;
+  --crew-color-reviewer-bg: rgba(245, 158, 11, 0.08);
+  --crew-color-reviewer-border: rgba(245, 158, 11, 0.25);
+  --crew-color-tester: #06b6d4;
+  --crew-color-tester-bg: rgba(6, 182, 212, 0.08);
+  --crew-color-tester-border: rgba(6, 182, 212, 0.25);
+  --crew-color-writer: #ec4899;
+  --crew-color-writer-bg: rgba(236, 72, 153, 0.08);
+  --crew-color-writer-border: rgba(236, 72, 153, 0.25);
+  --crew-color-human: #d97706;
+  --crew-color-human-bg: rgba(217, 119, 6, 0.08);
+  --crew-color-human-border: rgba(217, 119, 6, 0.25);
+  --crew-color-system: #6b7280;
+  --crew-color-system-bg: rgba(107, 114, 128, 0.05);
+  --crew-color-system-border: rgba(107, 114, 128, 0.15);
+  --crew-color-fallback-0: #6366f1;
+  --crew-color-fallback-1: #14b8a6;
+  --crew-color-fallback-2: #f43f5e;
+  --crew-color-fallback-3: #84cc16;
+
   /* Diff colors */
   --diff-add-bg: rgba(46, 140, 67, 0.08);
   --diff-add-border: rgba(46, 140, 67, 0.35);
@@ -136,6 +166,24 @@ select option:checked {
   --diff-del-text: #d4a0a0;
   --diff-line-num: #605e5a;
   --diff-header-bg: #141414;
+
+  /* Crew Role Colors — dark theme: bump background alpha */
+  --crew-color-pm-bg: rgba(74, 124, 201, 0.12);
+  --crew-color-pm-border: rgba(74, 124, 201, 0.30);
+  --crew-color-architect-bg: rgba(139, 92, 246, 0.12);
+  --crew-color-architect-border: rgba(139, 92, 246, 0.30);
+  --crew-color-developer-bg: rgba(16, 185, 129, 0.12);
+  --crew-color-developer-border: rgba(16, 185, 129, 0.30);
+  --crew-color-reviewer-bg: rgba(245, 158, 11, 0.12);
+  --crew-color-reviewer-border: rgba(245, 158, 11, 0.30);
+  --crew-color-tester-bg: rgba(6, 182, 212, 0.12);
+  --crew-color-tester-border: rgba(6, 182, 212, 0.30);
+  --crew-color-writer-bg: rgba(236, 72, 153, 0.12);
+  --crew-color-writer-border: rgba(236, 72, 153, 0.30);
+  --crew-color-human-bg: rgba(217, 119, 6, 0.12);
+  --crew-color-human-border: rgba(217, 119, 6, 0.30);
+  --crew-color-system-bg: rgba(107, 114, 128, 0.08);
+  --crew-color-system-border: rgba(107, 114, 128, 0.20);
 }
 
 html {
@@ -10179,20 +10227,53 @@ body {
   opacity: 0.4;
   transition: opacity 0.2s, background 0.15s;
   cursor: default;
+  background: var(--role-bg, transparent);
 }
 
 .crew-role-badge.active {
   opacity: 1;
-  background: var(--sidebar-hover);
+  background: var(--role-bg, var(--sidebar-hover));
 }
 
 .crew-role-badge.decision-maker {
-  border: 1.5px solid var(--accent-blue);
+  border: 1.5px solid var(--role-color, var(--accent-blue));
   opacity: 0.7;
 }
 
 .crew-role-badge.decision-maker.active {
   opacity: 1;
+}
+
+/* Active role tool hint — shows what active role is doing */
+.crew-role-tool-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes crew-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.crew-role-badge.active::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  border: 1.5px solid var(--bg-sidebar);
+  animation: crew-pulse 1.5s infinite;
+}
+
+.crew-role-badge {
+  position: relative;
 }
 
 .crew-status-state {
@@ -10375,7 +10456,8 @@ body {
   justify-content: center;
   border-radius: 50%;
   font-size: 16px;
-  background: var(--bg-sidebar);
+  background: var(--role-bg, var(--bg-sidebar));
+  border: 1.5px solid var(--role-border, transparent);
 }
 
 .crew-msg-body {
@@ -10393,15 +10475,15 @@ body {
 .crew-msg-name {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--role-color, var(--text-primary));
 }
 
 .crew-msg-name.is-human {
-  color: var(--accent-blue);
+  color: var(--crew-color-human);
 }
 
 .crew-msg-name.is-system {
-  color: var(--text-muted);
+  color: var(--crew-color-system);
 }
 
 .crew-msg-time {
@@ -10415,6 +10497,10 @@ body {
   color: var(--text-primary);
   line-height: 1.6;
   word-break: break-word;
+}
+
+.crew-message.crew-msg-text {
+  border-left: 3px solid var(--role-border, transparent);
 }
 
 .crew-msg-content pre {
@@ -10442,30 +10528,17 @@ body {
   padding: 0;
 }
 
-/* Crew Tool Message */
+/* Crew Tool Message — uses shared .tool-line styles from MessageItem */
 .crew-msg-tool {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  padding: 4px 0;
+  padding: 2px 0;
 }
 
-.crew-tool-icon {
-  color: var(--text-muted);
-}
-
-.crew-tool-name {
-  font-weight: 500;
+.crew-msg-tool .tool-line {
   font-size: 12px;
 }
 
-.crew-tool-detail {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-muted);
+.crew-msg-tool .tool-expand {
+  margin-top: 4px;
 }
 
 /* Crew Route Message */
@@ -10475,6 +10548,33 @@ body {
   font-weight: 500;
   font-style: italic;
   padding: 2px 0;
+}
+
+/* Crew Round Divider */
+.crew-round-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 24px 4px;
+  max-width: 800px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.crew-round-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-color);
+}
+
+.crew-round-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 /* Crew System Message */
@@ -10522,15 +10622,12 @@ body {
   30% { opacity: 1; transform: scale(1); }
 }
 
-/* Crew Input Area */
+/* Crew Input Area — reuses .input-area, .input-wrapper, .attach-btn, .send-btn */
 .crew-input-area {
   flex-shrink: 0;
-  padding: 16px 24px 24px;
-  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
-  background: var(--bg-main);
 }
 
-.crew-input-hints {
+.crew-input-area .crew-input-hints {
   max-width: 768px;
   margin: 0 auto 8px;
   display: flex;
@@ -10553,71 +10650,6 @@ body {
   background: var(--sidebar-hover);
   color: var(--text-primary);
   border-color: var(--text-muted);
-}
-
-.crew-input-row {
-  max-width: 768px;
-  margin: 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: var(--bg-input-wrapper);
-  border-radius: 24px;
-  padding: 12px 12px 12px 20px;
-  min-height: 48px;
-  transition: box-shadow 0.2s;
-}
-
-.crew-input-row:focus-within {
-  box-shadow: 0 0 0 2px var(--text-secondary);
-}
-
-.crew-input {
-  flex: 1;
-  border: none;
-  background: transparent;
-  color: var(--text-primary);
-  caret-color: var(--text-primary);
-  font-size: 16px;
-  resize: none;
-  max-height: 120px;
-  line-height: 1.5;
-  font-family: inherit;
-  min-height: 24px;
-}
-
-.crew-input:focus {
-  outline: none;
-}
-
-.crew-input::placeholder {
-  color: var(--text-muted);
-}
-
-.crew-send-btn {
-  width: 36px;
-  height: 36px;
-  border: none;
-  border-radius: 50%;
-  background: var(--accent);
-  color: var(--bg-main);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  font-size: 14px;
-  font-weight: 600;
-  transition: opacity 0.15s;
-}
-
-.crew-send-btn:hover:not(:disabled) {
-  opacity: 0.85;
-}
-
-.crew-send-btn:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
 }
 
 /* =====================================================================

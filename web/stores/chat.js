@@ -356,7 +356,7 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
-    sendCrewMessage(content, targetRole = null) {
+    sendCrewMessage(content, targetRole = null, attachments = undefined) {
       const sessionId = this.currentConversation;
       const session = this.crewSessions[sessionId];
       if (!session) return;
@@ -369,16 +369,21 @@ export const useChatStore = defineStore('chat', {
         roleName: '你',
         type: 'text',
         content,
+        attachments,
         timestamp: Date.now()
       });
       // 发送到 server
-      this.sendWsMessage({
+      const msg = {
         type: 'crew_human_input',
         sessionId,
         content,
         targetRole,
         agentId: this.currentAgent
-      });
+      };
+      if (attachments && attachments.length > 0) {
+        msg.attachments = attachments;
+      }
+      this.sendWsMessage(msg);
     },
 
     sendCrewControl(action, targetRole = null) {
@@ -526,9 +531,30 @@ export const useChatStore = defineStore('chat', {
                   ...crewMsg,
                   type: 'tool',
                   toolName: block.name,
+                  toolId: block.id,
                   toolInput: block.input,
+                  hasResult: false,
+                  toolResult: null,
                   content: `${block.name} ${block.input?.file_path || block.input?.command?.substring(0, 60) || ''}`
                 });
+              }
+            }
+          }
+          return;
+        }
+
+        if (msg.outputType === 'tool_result') {
+          const resultContent = msg.data?.message?.content;
+          if (Array.isArray(resultContent)) {
+            for (const block of resultContent) {
+              if (block.type === 'tool_result' && block.tool_use_id) {
+                for (let i = messages.length - 1; i >= 0; i--) {
+                  if (messages[i].type === 'tool' && messages[i].toolId === block.tool_use_id) {
+                    messages[i].hasResult = true;
+                    messages[i].toolResult = block.content;
+                    break;
+                  }
+                }
               }
             }
           }
@@ -540,6 +566,7 @@ export const useChatStore = defineStore('chat', {
             ...crewMsg,
             type: 'route',
             routeTo: msg.routeTo,
+            round: this.crewStatuses[sid]?.round || 0,
             content: `→ @${msg.routeTo} ${msg.routeSummary || ''}`
           });
           return;
@@ -569,7 +596,8 @@ export const useChatStore = defineStore('chat', {
           round: msg.round,
           maxRounds: msg.maxRounds,
           costUsd: msg.costUsd,
-          activeRoles: msg.activeRoles || []
+          activeRoles: msg.activeRoles || [],
+          currentToolByRole: msg.currentToolByRole || {}
         };
         if (msg.roles && this.crewSessions[sid]) {
           this.crewSessions[sid].roles = msg.roles;

@@ -5,6 +5,7 @@ import zhCN from './i18n/zh-CN.js';
 import en from './i18n/en.js';
 import LoginPage from './components/LoginPage.js';
 import ChatPage from './components/ChatPage.js';
+import ToolLine from './components/ToolLine.js';
 
 // Make stores globally available for components
 window.Pinia = {
@@ -67,5 +68,8 @@ createI18n(app, { 'zh-CN': zhCN, en });
 // Set up the store references after pinia is installed
 window.Pinia.useChatStore = useChatStore;
 window.Pinia.useAuthStore = useAuthStore;
+
+// Register global components
+app.component('ToolLine', ToolLine);
 
 app.mount('#app');

@@ -130,6 +130,14 @@ export function toggleMcp(store) {
 }
 
 export function deleteConversation(store, conversationId, agentId) {
+  // 清理 crew 数据（不管 server 是否响应）
+  const conv = store.conversations.find(c => c.id === conversationId);
+  if (conv?.type === 'crew') {
+    delete store.crewSessions?.[conversationId];
+    delete store.crewMessagesMap?.[conversationId];
+    delete store.crewStatuses?.[conversationId];
+  }
+
   // 如果目标 conversation 在其他 agent 上，需要先通知 server 切换 agent
   // 否则 server 端 forwardToAgent 会发送到 client.currentAgent
   if (agentId && agentId !== store.currentAgent) {

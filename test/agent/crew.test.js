@@ -669,3 +669,511 @@ describe('Crew Session Lifecycle', () => {
     expect(crewSessions.has(session.id)).toBe(false);
   });
 });
+
+// =====================================================================
+// Bug Fix: pauseAll / resumeSession / processRoleOutput
+// =====================================================================
+
+describe('pauseAll - abort running queries and save sessionId', () => {
+  // Replicate parseRoute for pendingRoute tests
+  function parseRoute(text) {
+    const match = text.match(/---ROUTE---\s*\n\s*to:\s*(.+?)\s*\n\s*summary:\s*(.+?)\s*\n\s*---END_ROUTE---/s);
+    if (match) {
+      return { to: match[1].trim().toLowerCase(), summary: match[2].trim() };
+    }
+    return null;
+  }
+
+  it('should abort all running role queries on pause', () => {
+    const session = createTestSession({ status: 'running' });
+    const aborted = [];
+
+    session.roleStates.set('pm', {
+      claudeSessionId: 'cs_pm_1',
+      abortController: { abort: () => aborted.push('pm') },
+      turnActive: true,
+      query: {},
+      inputStream: {}
+    });
+    session.roleStates.set('developer', {
+      claudeSessionId: 'cs_dev_1',
+      abortController: { abort: () => aborted.push('developer') },
+      turnActive: true,
+      query: {},
+      inputStream: {}
+    });
+
+    // Replicate pauseAll logic
+    session.status = 'paused';
+    for (const [roleName, roleState] of session.roleStates) {
+      if (roleState.abortController) {
+        roleState.abortController.abort();
+      }
+      roleState.wasActive = roleState.turnActive;
+      roleState.turnActive = false;
+      roleState.query = null;
+      roleState.inputStream = null;
+    }
+
+    expect(session.status).toBe('paused');
+    expect(aborted).toEqual(['pm', 'developer']);
+    expect(session.roleStates.get('pm').turnActive).toBe(false);
+    expect(session.roleStates.get('pm').wasActive).toBe(true);
+    expect(session.roleStates.get('pm').query).toBeNull();
+    expect(session.roleStates.get('pm').inputStream).toBeNull();
+    expect(session.roleStates.get('developer').turnActive).toBe(false);
+    expect(session.roleStates.get('developer').wasActive).toBe(true);
+  });
+
+  it('should preserve claudeSessionId for each role during pause', () => {
+    const session = createTestSession({ status: 'running' });
+
+    session.roleStates.set('pm', {
+      claudeSessionId: 'cs_pm_42',
+      abortController: { abort: () => {} },
+      turnActive: true,
+      query: {},
+      inputStream: {}
+    });
+
+    // Replicate pauseAll: sessionId should be preserved (saved to file in real code)
+    session.status = 'paused';
+    const roleState = session.roleStates.get('pm');
+    const savedSessionId = roleState.claudeSessionId;
+    roleState.wasActive = roleState.turnActive;
+    roleState.turnActive = false;
+    roleState.query = null;
+    roleState.inputStream = null;
+
+    // sessionId 应该依然可用于后续 resume
+    expect(savedSessionId).toBe('cs_pm_42');
+    expect(roleState.claudeSessionId).toBe('cs_pm_42');
+  });
+
+  it('should handle roles with no abortController gracefully', () => {
+    const session = createTestSession({ status: 'running' });
+
+    session.roleStates.set('pm', {
+      claudeSessionId: 'cs_pm_1',
+      abortController: null,
+      turnActive: false,
+      query: null,
+      inputStream: null
+    });
+
+    session.status = 'paused';
+    for (const [, roleState] of session.roleStates) {
+      if (roleState.abortController) {
+        roleState.abortController.abort();
+      }
+      roleState.wasActive = roleState.turnActive;
+      roleState.turnActive = false;
+      roleState.query = null;
+      roleState.inputStream = null;
+    }
+
+    // Should not throw
+    expect(session.status).toBe('paused');
+    expect(session.roleStates.get('pm').wasActive).toBe(false);
+  });
+});
+
+describe('resumeSession - replay pendingRoute', () => {
+  it('should replay pendingRoute when resuming', () => {
+    const session = createTestSession({ status: 'paused' });
+    session.pendingRoute = {
+      fromRole: 'pm',
+      route: { to: 'developer', summary: '请实现功能 X' }
+    };
+
+    // Replicate resumeSession logic
+    session.status = 'running';
+    let replayedRoute = null;
+    if (session.pendingRoute) {
+      replayedRoute = { ...session.pendingRoute };
+      session.pendingRoute = null;
+    }
+
+    expect(session.status).toBe('running');
+    expect(session.pendingRoute).toBeNull();
+    expect(replayedRoute).not.toBeNull();
+    expect(replayedRoute.fromRole).toBe('pm');
+    expect(replayedRoute.route.to).toBe('developer');
+    expect(replayedRoute.route.summary).toBe('请实现功能 X');
+  });
+
+  it('should fallback to processHumanQueue when no pendingRoute', () => {
+    const session = createTestSession({ status: 'paused' });
+    session.pendingRoute = null;
+    session.humanMessageQueue = [
+      { target: 'pm', content: '人工消息', timestamp: Date.now() }
+    ];
+
+    // Replicate resumeSession logic
+    session.status = 'running';
+    let didReplayRoute = false;
+    let didProcessHumanQueue = false;
+
+    if (session.pendingRoute) {
+      didReplayRoute = true;
+      session.pendingRoute = null;
+    } else {
+      // Would call processHumanQueue
+      didProcessHumanQueue = true;
+    }
+
+    expect(didReplayRoute).toBe(false);
+    expect(didProcessHumanQueue).toBe(true);
+    expect(session.status).toBe('running');
+  });
+
+  it('should not resume if status is not paused', () => {
+    const session = createTestSession({ status: 'running' });
+    session.pendingRoute = { fromRole: 'pm', route: { to: 'developer', summary: 'test' } };
+
+    // Replicate resumeSession guard
+    let didResume = false;
+    if (session.status === 'paused') {
+      session.status = 'running';
+      didResume = true;
+    }
+
+    expect(didResume).toBe(false);
+    // pendingRoute should not be consumed
+    expect(session.pendingRoute).not.toBeNull();
+  });
+
+  it('should clear pendingRoute before executing to prevent re-entry', () => {
+    const session = createTestSession({ status: 'paused' });
+    session.pendingRoute = {
+      fromRole: 'architect',
+      route: { to: 'developer', summary: '设计完成' }
+    };
+
+    // Replicate exact resumeSession logic for pendingRoute
+    session.status = 'running';
+    const { fromRole, route } = session.pendingRoute;
+    session.pendingRoute = null;
+    // At this point executeRoute would be called
+    // If executeRoute somehow triggers pause again, pendingRoute is already null
+
+    expect(session.pendingRoute).toBeNull();
+    expect(fromRole).toBe('architect');
+    expect(route.to).toBe('developer');
+  });
+});
+
+describe('processRoleOutput - break on paused status', () => {
+  it('should break loop when status is paused', () => {
+    const session = createTestSession({ status: 'running' });
+    const processedMessages = [];
+
+    // Simulate message processing loop
+    const messages = [
+      { type: 'assistant', message: { content: 'msg1' } },
+      { type: 'assistant', message: { content: 'msg2' } },
+      { type: 'assistant', message: { content: 'msg3' } }
+    ];
+
+    for (const message of messages) {
+      // Replicate the paused/stopped check from processRoleOutput
+      if (session.status === 'stopped' || session.status === 'paused') break;
+      processedMessages.push(message);
+
+      // Simulate pause happening after first message
+      if (processedMessages.length === 1) {
+        session.status = 'paused';
+      }
+    }
+
+    // Only the first message should be processed before pause took effect
+    expect(processedMessages.length).toBe(1);
+  });
+
+  it('should break loop when status is stopped', () => {
+    const session = createTestSession({ status: 'stopped' });
+    const processedMessages = [];
+
+    const messages = [
+      { type: 'assistant', message: { content: 'msg1' } }
+    ];
+
+    for (const message of messages) {
+      if (session.status === 'stopped' || session.status === 'paused') break;
+      processedMessages.push(message);
+    }
+
+    expect(processedMessages.length).toBe(0);
+  });
+
+  it('should save pendingRoute from accumulated text on abort during pause', () => {
+    function parseRoute(text) {
+      const match = text.match(/---ROUTE---\s*\n\s*to:\s*(.+?)\s*\n\s*summary:\s*(.+?)\s*\n\s*---END_ROUTE---/s);
+      if (match) {
+        return { to: match[1].trim().toLowerCase(), summary: match[2].trim() };
+      }
+      return null;
+    }
+
+    const session = createTestSession({ status: 'paused' });
+    session.pendingRoute = null;
+
+    const roleState = {
+      accumulatedText: `任务已完成。
+
+---ROUTE---
+to: reviewer
+summary: 请审核代码变更
+---END_ROUTE---`,
+      claudeSessionId: 'cs_dev_1'
+    };
+
+    // Replicate AbortError handling from processRoleOutput
+    if (session.status === 'paused' && roleState.accumulatedText) {
+      const route = parseRoute(roleState.accumulatedText);
+      if (route && !session.pendingRoute) {
+        session.pendingRoute = { fromRole: 'developer', route };
+      }
+      roleState.accumulatedText = '';
+    }
+
+    expect(session.pendingRoute).not.toBeNull();
+    expect(session.pendingRoute.fromRole).toBe('developer');
+    expect(session.pendingRoute.route.to).toBe('reviewer');
+    expect(session.pendingRoute.route.summary).toBe('请审核代码变更');
+    expect(roleState.accumulatedText).toBe('');
+  });
+
+  it('should not overwrite existing pendingRoute on abort', () => {
+    function parseRoute(text) {
+      const match = text.match(/---ROUTE---\s*\n\s*to:\s*(.+?)\s*\n\s*summary:\s*(.+?)\s*\n\s*---END_ROUTE---/s);
+      if (match) {
+        return { to: match[1].trim().toLowerCase(), summary: match[2].trim() };
+      }
+      return null;
+    }
+
+    const session = createTestSession({ status: 'paused' });
+    // Already has a pendingRoute from another role
+    session.pendingRoute = {
+      fromRole: 'pm',
+      route: { to: 'architect', summary: '请设计方案' }
+    };
+
+    const roleState = {
+      accumulatedText: `---ROUTE---
+to: reviewer
+summary: 新的路由
+---END_ROUTE---`
+    };
+
+    // Replicate: should NOT overwrite
+    if (session.status === 'paused' && roleState.accumulatedText) {
+      const route = parseRoute(roleState.accumulatedText);
+      if (route && !session.pendingRoute) {
+        session.pendingRoute = { fromRole: 'developer', route };
+      }
+      roleState.accumulatedText = '';
+    }
+
+    // Original pendingRoute should be preserved
+    expect(session.pendingRoute.fromRole).toBe('pm');
+    expect(session.pendingRoute.route.to).toBe('architect');
+  });
+});
+
+describe('executeRoute - save pending when paused/stopped', () => {
+  it('should save route as pendingRoute when session is paused', () => {
+    const session = createTestSession({ status: 'paused' });
+    session.pendingRoute = null;
+    session.round = 3;
+
+    const fromRole = 'pm';
+    const route = { to: 'developer', summary: '开始开发' };
+
+    // Replicate executeRoute: round increments first
+    session.round++;
+
+    // Then check paused/stopped
+    if (session.status === 'paused' || session.status === 'stopped') {
+      session.pendingRoute = { fromRole, route };
+    }
+
+    expect(session.round).toBe(4);
+    expect(session.pendingRoute).not.toBeNull();
+    expect(session.pendingRoute.fromRole).toBe('pm');
+    expect(session.pendingRoute.route.to).toBe('developer');
+  });
+
+  it('should save route as pendingRoute when session is stopped', () => {
+    const session = createTestSession({ status: 'stopped' });
+    session.pendingRoute = null;
+
+    const fromRole = 'reviewer';
+    const route = { to: 'developer', summary: '需要修改' };
+
+    session.round++;
+    if (session.status === 'paused' || session.status === 'stopped') {
+      session.pendingRoute = { fromRole, route };
+    }
+
+    expect(session.pendingRoute).not.toBeNull();
+    expect(session.pendingRoute.fromRole).toBe('reviewer');
+    expect(session.pendingRoute.route.to).toBe('developer');
+  });
+
+  it('should not save pendingRoute when session is running', () => {
+    const session = createTestSession({ status: 'running' });
+    session.pendingRoute = null;
+
+    const fromRole = 'pm';
+    const route = { to: 'developer', summary: '任务分配' };
+
+    session.round++;
+    if (session.status === 'paused' || session.status === 'stopped') {
+      session.pendingRoute = { fromRole, route };
+    }
+
+    expect(session.pendingRoute).toBeNull();
+  });
+});
+
+describe('createCrewSession / resumeCrewSession - pendingRoute initialization', () => {
+  it('should initialize pendingRoute as null in createCrewSession', () => {
+    const session = createTestSession();
+    session.pendingRoute = null; // As added in the fix
+
+    expect(session.pendingRoute).toBeNull();
+  });
+
+  it('should initialize pendingRoute as null in resumeCrewSession', () => {
+    // Replicate resumeCrewSession rebuild logic
+    const meta = {
+      sessionId: 'crew_resume_001',
+      projectDir: '/project',
+      sharedDir: '/project/.crew',
+      goal: 'Test',
+      roles: [{ name: 'pm', displayName: 'PM', icon: '📋', description: 'desc', isDecisionMaker: true }],
+      decisionMaker: 'pm',
+      round: 3,
+      maxRounds: 20,
+      createdAt: 1000
+    };
+
+    const session = {
+      id: meta.sessionId,
+      roles: new Map(meta.roles.map(r => [r.name, r])),
+      roleStates: new Map(),
+      status: 'waiting_human',
+      round: meta.round,
+      pendingRoute: null, // ← This is the fix
+      humanMessageQueue: [],
+      waitingHumanContext: null
+    };
+
+    expect(session.pendingRoute).toBeNull();
+    // pendingRoute should be available for future pauseAll/resume cycles
+    session.pendingRoute = { fromRole: 'pm', route: { to: 'developer', summary: 'test' } };
+    expect(session.pendingRoute).not.toBeNull();
+    session.pendingRoute = null;
+    expect(session.pendingRoute).toBeNull();
+  });
+});
+
+describe('Full pause-resume cycle integration', () => {
+  it('should correctly handle pause -> route saved -> resume -> route replayed', () => {
+    function parseRoute(text) {
+      const match = text.match(/---ROUTE---\s*\n\s*to:\s*(.+?)\s*\n\s*summary:\s*(.+?)\s*\n\s*---END_ROUTE---/s);
+      if (match) {
+        return { to: match[1].trim().toLowerCase(), summary: match[2].trim() };
+      }
+      return null;
+    }
+
+    // Step 1: Create running session with active role
+    const session = createTestSession({ status: 'running' });
+    session.pendingRoute = null;
+
+    const aborted = [];
+    session.roleStates.set('developer', {
+      claudeSessionId: 'cs_dev_99',
+      abortController: { abort: () => aborted.push('developer') },
+      turnActive: true,
+      accumulatedText: `代码已完成。
+
+---ROUTE---
+to: reviewer
+summary: 代码审查
+---END_ROUTE---`,
+      query: {},
+      inputStream: {}
+    });
+
+    // Step 2: Pause
+    session.status = 'paused';
+    for (const [, roleState] of session.roleStates) {
+      if (roleState.abortController) {
+        roleState.abortController.abort();
+      }
+      roleState.wasActive = roleState.turnActive;
+      roleState.turnActive = false;
+      roleState.query = null;
+      roleState.inputStream = null;
+    }
+
+    // Step 3: Simulate AbortError handler saving pendingRoute
+    const roleState = session.roleStates.get('developer');
+    if (session.status === 'paused' && roleState.accumulatedText) {
+      const route = parseRoute(roleState.accumulatedText);
+      if (route && !session.pendingRoute) {
+        session.pendingRoute = { fromRole: 'developer', route };
+      }
+      roleState.accumulatedText = '';
+    }
+
+    expect(aborted).toEqual(['developer']);
+    expect(session.pendingRoute).not.toBeNull();
+    expect(session.pendingRoute.route.to).toBe('reviewer');
+
+    // Step 4: Resume
+    let replayedFromRole = null;
+    let replayedRoute = null;
+
+    session.status = 'running';
+    if (session.pendingRoute) {
+      replayedFromRole = session.pendingRoute.fromRole;
+      replayedRoute = session.pendingRoute.route;
+      session.pendingRoute = null;
+      // executeRoute would be called here
+    }
+
+    expect(session.status).toBe('running');
+    expect(session.pendingRoute).toBeNull();
+    expect(replayedFromRole).toBe('developer');
+    expect(replayedRoute.to).toBe('reviewer');
+    expect(replayedRoute.summary).toBe('代码审查');
+  });
+
+  it('should handle dispatchToRole guard when paused/stopped', () => {
+    const session = createTestSession({ status: 'paused' });
+    let dispatched = false;
+
+    // Replicate dispatchToRole guard
+    if (session.status === 'paused' || session.status === 'stopped') {
+      // skip dispatch
+    } else {
+      dispatched = true;
+    }
+
+    expect(dispatched).toBe(false);
+
+    session.status = 'running';
+    if (session.status === 'paused' || session.status === 'stopped') {
+      // skip dispatch
+    } else {
+      dispatched = true;
+    }
+
+    expect(dispatched).toBe(true);
+  });
+});

@@ -167,6 +167,7 @@ export async function resumeCrewSession(msg) {
     messageHistory: [],
     humanMessageQueue: [],
     waitingHumanContext: null,
+    pendingRoute: null,
     userId: userId || meta.userId,
     username: username || meta.username,
     createdAt: meta.createdAt || Date.now()
@@ -244,6 +245,7 @@ export async function createCrewSession(msg) {
     messageHistory: [],      // 群聊消息历史
     humanMessageQueue: [],   // 人的消息排队
     waitingHumanContext: null, // { fromRole, reason, message }
+    pendingRoute: null,       // { fromRole, route } — 暂停时未完成的路由
     userId,
     username,
     createdAt: Date.now()
@@ -684,8 +686,8 @@ ${allRoles.map(r => `- ${r.icon} ${r.name}: ${r.displayName} - ${r.description}`
 async function processRoleOutput(session, roleName, roleQuery, roleState) {
   try {
     for await (const message of roleQuery) {
-      // 检查 session 是否已停止
-      if (session.status === 'stopped') break;
+      // 检查 session 是否已停止或暂停
+      if (session.status === 'stopped' || session.status === 'paused') break;
 
       if (message.type === 'system' && message.subtype === 'init') {
         roleState.claudeSessionId = message.session_id;
@@ -707,14 +709,16 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
               if (block.type === 'text') {
                 roleState.accumulatedText += block.text;
               } else if (block.type === 'tool_use') {
-                // 转发 tool use
+                // 转发 tool use + 记录当前工具
+                roleState.currentTool = block.name;
                 sendCrewOutput(session, roleName, 'tool_use', message);
               }
             }
           }
         }
       } else if (message.type === 'user') {
-        // tool results
+        // tool results — clear currentTool
+        roleState.currentTool = null;
         sendCrewOutput(session, roleName, 'tool_result', message);
       } else if (message.type === 'result') {
         // ★ Turn 完成！
@@ -759,6 +763,15 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
   } catch (error) {
     if (error.name === 'AbortError') {
       console.log(`[Crew] ${roleName} aborted`);
+      // 暂停时：检查已累积的文本中是否有 route，保存为 pendingRoute
+      if (session.status === 'paused' && roleState.accumulatedText) {
+        const route = parseRoute(roleState.accumulatedText);
+        if (route && !session.pendingRoute) {
+          session.pendingRoute = { fromRole: roleName, route };
+          console.log(`[Crew] Saved pending route from aborted ${roleName}: -> ${route.to}`);
+        }
+        roleState.accumulatedText = '';
+      }
     } else {
       console.error(`[Crew] ${roleName} error:`, error.message);
       // 通知决策者
@@ -836,6 +849,13 @@ async function executeRoute(session, fromRole, route) {
       maxRounds: session.maxRounds
     });
     sendStatusUpdate(session);
+    return;
+  }
+
+  // 如果 session 已暂停或停止，保存 pendingRoute 等恢复时重放
+  if (session.status === 'paused' || session.status === 'stopped') {
+    session.pendingRoute = { fromRole, route };
+    console.log(`[Crew] Session ${session.status}, route saved as pending: ${fromRole} -> ${to}`);
     return;
   }
 
@@ -1033,7 +1053,7 @@ export async function handleCrewControl(msg) {
 
   switch (action) {
     case 'pause':
-      pauseAll(session);
+      await pauseAll(session);
       break;
     case 'resume':
       await resumeSession(session);
@@ -1051,10 +1071,28 @@ export async function handleCrewControl(msg) {
 
 /**
  * 暂停所有角色
+ * abort 运行中的 query 并保存 sessionId，恢复时 resume
  */
-function pauseAll(session) {
+async function pauseAll(session) {
   session.status = 'paused';
-  console.log(`[Crew] Session ${session.id} paused`);
+
+  // abort 所有运行中的角色，保存 sessionId 以便 resume
+  for (const [roleName, roleState] of session.roleStates) {
+    if (roleState.claudeSessionId) {
+      await saveRoleSessionId(session.sharedDir, roleName, roleState.claudeSessionId)
+        .catch(e => console.warn(`[Crew] Failed to save sessionId for ${roleName}:`, e.message));
+    }
+    if (roleState.abortController) {
+      roleState.abortController.abort();
+    }
+    // 记录哪些角色在暂停时正在工作
+    roleState.wasActive = roleState.turnActive;
+    roleState.turnActive = false;
+    roleState.query = null;
+    roleState.inputStream = null;
+  }
+
+  console.log(`[Crew] Session ${session.id} paused, all active queries aborted`);
 
   sendCrewOutput(session, 'system', 'system', {
     type: 'assistant',
@@ -1065,6 +1103,7 @@ function pauseAll(session) {
 
 /**
  * 恢复 session
+ * 重新执行被暂停时保存的 pendingRoute
  */
 async function resumeSession(session) {
   if (session.status !== 'paused') return;
@@ -1078,7 +1117,16 @@ async function resumeSession(session) {
   });
   sendStatusUpdate(session);
 
-  // 恢复后检查是否有排队的人的消息
+  // 恢复被中断的路由
+  if (session.pendingRoute) {
+    const { fromRole, route } = session.pendingRoute;
+    session.pendingRoute = null;
+    console.log(`[Crew] Replaying pending route: ${fromRole} -> ${route.to}`);
+    await executeRoute(session, fromRole, route);
+    return;
+  }
+
+  // 没有 pendingRoute，检查排队的人的消息
   await processHumanQueue(session);
 }
 
@@ -1195,7 +1243,12 @@ function sendStatusUpdate(session) {
     })),
     activeRoles: Array.from(session.roleStates.entries())
       .filter(([, s]) => s.turnActive)
-      .map(([name]) => name)
+      .map(([name]) => name),
+    currentToolByRole: Object.fromEntries(
+      Array.from(session.roleStates.entries())
+        .filter(([, s]) => s.turnActive && s.currentTool)
+        .map(([name, s]) => [name, s.currentTool])
+    )
   });
 
   // 异步更新持久化
