@@ -34,7 +34,11 @@ export default {
                       <span v-if="sc.createdAt" class="crew-stopped-time">{{ formatSessionTime(sc.createdAt) }}</span>
                     </span>
                   </div>
-                  <span class="crew-stopped-resume-tag">恢复</span>
+                  <div class="crew-stopped-actions">
+                    <button class="crew-stopped-delete-btn" @click.stop="deleteStoppedSession(sc)" title="删除">
+                      <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -323,6 +327,28 @@ export default {
       if (agentId) this.store.selectAgent(agentId);
       this.store.resumeCrewSession(session.sessionId);
       this.$emit('close');
+    },
+    deleteStoppedSession(session) {
+      if (!confirm('确定要删除此 Crew Session？此操作不可恢复。')) return;
+      const agentId = session.agentId || this.selectedAgent;
+      this.store.sendWsMessage({
+        type: 'delete_crew_session',
+        sessionId: session.sessionId,
+        agentId: agentId
+      });
+      // 从本地列表中移除
+      if (this.store.crewSessionsList) {
+        const idx = this.store.crewSessionsList.findIndex(s => s.sessionId === session.sessionId);
+        if (idx >= 0) this.store.crewSessionsList.splice(idx, 1);
+      }
+      // 如果在 conversations 中也移除
+      const convIdx = this.store.conversations.findIndex(c => c.id === session.sessionId);
+      if (convIdx >= 0) {
+        this.store.conversations.splice(convIdx, 1);
+      }
+      delete this.store.crewSessions?.[session.sessionId];
+      delete this.store.crewMessagesMap?.[session.sessionId];
+      delete this.store.crewStatuses?.[session.sessionId];
     },
     formatStatus(s) {
       if (s === 'running') return '运行中';

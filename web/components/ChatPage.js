@@ -132,7 +132,7 @@ export default {
           <!-- Menu items (Copilot style) -->
           <nav class="sidebar-nav">
             <button class="sidebar-nav-item" @click="openConversationModal" :disabled="onlineAgentCount === 0">
-              <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
               <span>{{ $t('chat.sidebar.newConv') }}</span>
             </button>
             <button class="sidebar-nav-item crew-nav-item" @click="newCrewSession" title="Crew Session">
@@ -682,8 +682,7 @@ export default {
       return undefined;
     },
     getCrewTitle(conv) {
-      const goal = conv.goal || this.store.crewSessions[conv.id]?.goal || 'Crew Session';
-      return goal.length > 30 ? goal.slice(0, 30) + '...' : goal;
+      return 'Crew Session';
     },
     getConversationTime(conv) {
       // 优先显示最后活动时间，其次创建时间

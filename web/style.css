@@ -4834,7 +4834,7 @@ body {
 
 .resume-modal {
   width: 90%;
-  max-width: 500px;
+  max-width: 520px;
   height: 75vh;
   display: flex;
   flex-direction: column;
@@ -9984,13 +9984,30 @@ body {
   color: var(--text-muted, #6b7280);
 }
 
-.crew-stopped-resume-tag {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: var(--accent-blue);
-  color: #fff;
+.crew-stopped-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
+}
+
+.crew-stopped-delete-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.crew-stopped-delete-btn:hover {
+  color: var(--error, #ef4444);
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .crew-config-divider {
@@ -10652,7 +10669,7 @@ body {
   border: 1px solid var(--border-color);
   border-radius: 16px;
   width: 90%;
-  max-width: 580px;
+  max-width: 520px;
   max-height: 85vh;
   display: flex;
   flex-direction: column;

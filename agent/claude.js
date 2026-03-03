@@ -358,8 +358,9 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         // 计算上下文使用百分比并注入到消息中
         const inputTokens = message.usage?.input_tokens || 0;
         const maxContextTokens = 200000; // Claude 模型 context window
+        let contextUsage = null;
         if (inputTokens > 0) {
-          message._contextUsage = {
+          contextUsage = {
             inputTokens,
             maxTokens: maxContextTokens,
             percentage: Math.min(100, Math.round((inputTokens / maxContextTokens) * 100))
@@ -384,7 +385,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
         // ★ await 确保 result 和 turn_completed 消息确实发送成功
         // 不 await 会导致 encrypt 失败时消息静默丢失，前端卡在"思考中"
-        await sendOutput(conversationId, message);
+        await sendOutput(conversationId, contextUsage ? { ...message, _contextUsage: contextUsage } : message);
         await ctx.sendToServer({
           type: 'turn_completed',
           conversationId,
