@@ -979,6 +979,20 @@ ${multiRouteAllowed ? '- 决策者可以一次发多个 ROUTE 块来并行分配
   // 决策者额外 prompt
   if (role.isDecisionMaker) {
 
+    prompt += `\n\n# 工具使用限制（绝对禁令）
+你**绝对不能**使用以下工具修改任何文件：
+- Edit 工具 — 禁止
+- Write 工具 — 禁止
+- NotebookEdit 工具 — 禁止
+
+你**可以**使用的工具：
+- Read — 读取文件内容
+- Grep — 搜索代码
+- Glob — 查找文件
+- Bash — 仅限 git 命令（git status/add/commit/push/tag/log/diff）和只读命令
+
+如果你需要修改任何文件（无论多小的改动），必须 ROUTE 给 developer 执行。`;
+
     prompt += `\n\n# 决策者职责
 你是团队的决策者。其他角色遇到不确定的情况会请求你的决策。
 - 如果你有足够的信息做出决策，直接决定并 @相关角色执行
