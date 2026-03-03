@@ -10485,6 +10485,49 @@ body {
   font-weight: 600;
 }
 
+/* Done tasks: collapsible toggle */
+.crew-done-toggle {
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  margin-top: 2px;
+  user-select: none;
+}
+.crew-done-toggle:hover {
+  color: var(--text-secondary);
+}
+
+/* Done tasks: clickable item */
+.crew-task-clickable {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.crew-task-clickable:hover {
+  background: var(--bg-hover);
+}
+
+/* Task filter bar: "返回全部" prompt */
+.crew-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  margin: 0 0 4px 0;
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.crew-filter-back {
+  cursor: pointer;
+  color: var(--accent-blue, #4a9eff);
+  font-weight: 500;
+}
+.crew-filter-back:hover {
+  text-decoration: underline;
+}
+
 /* crew-msg-content inherits .markdown-body styles for consistency with Chat */
 .crew-msg-content {
   word-break: break-word;

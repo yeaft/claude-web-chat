@@ -43,16 +43,31 @@ export default {
             <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
           </div>
           <div v-if="!taskPanelCollapsed" class="crew-task-list">
-            <div v-for="(task, idx) in pendingTasks" :key="idx" class="crew-task-item">
+            <div v-for="(task, idx) in pendingTasks" :key="'p'+idx" class="crew-task-item">
               <span class="crew-task-check">\u2B1C</span>
               <span class="crew-task-text">{{ task.text }}</span>
               <span v-if="task.assignee" class="crew-task-assignee" :style="getRoleStyle(task.assignee)">@{{ task.assignee }}</span>
             </div>
-            <div v-if="pendingTasks.length === 0" class="crew-task-item done">
+            <div v-if="pendingTasks.length === 0 && doneTasks.length > 0" class="crew-task-item done">
               <span class="crew-task-check">\u2705</span>
               <span class="crew-task-text" style="color: var(--text-muted)">全部完成</span>
             </div>
+            <div v-if="doneTasks.length > 0" class="crew-done-toggle" @click="doneTasksExpanded = !doneTasksExpanded">
+              <span>{{ doneTasksExpanded ? '\u25BC' : '\u25B6' }} 已完成 ({{ doneTasks.length }})</span>
+            </div>
+            <template v-if="doneTasksExpanded">
+              <div v-for="(task, idx) in doneTasks" :key="'d'+idx" class="crew-task-item done crew-task-clickable" @click="viewDoneTask(task)">
+                <span class="crew-task-check">\u2705</span>
+                <span class="crew-task-text">{{ task.text }}</span>
+                <span v-if="task.assignee" class="crew-task-assignee" :style="getRoleStyle(task.assignee)">@{{ task.assignee }}</span>
+              </div>
+            </template>
           </div>
+        </div>
+
+        <div v-if="taskFilter" class="crew-filter-bar">
+          <span>正在查看：<strong>{{ getTaskFilterTitle() }}</strong></span>
+          <span class="crew-filter-back" @click="taskFilter = null">← 返回全部</span>
         </div>
 
         <div v-if="store.currentCrewMessages.length === 0" class="crew-empty">
@@ -302,6 +317,7 @@ export default {
       uploading: false,
       expandedTurns: {},
       taskPanelCollapsed: false,
+      doneTasksExpanded: false,
       taskFilter: null,
       atMenuVisible: false,
       atQuery: '',
@@ -501,6 +517,25 @@ export default {
     pendingTasks() {
       return this.crewTasks.filter(t => !t.done);
     },
+    doneTasks() {
+      return this.crewTasks.filter(t => t.done);
+    },
+    completedTaskIds() {
+      // Match done crewTasks (text) to activeTasks (title) to get taskIds
+      const ids = new Set();
+      const done = this.doneTasks;
+      if (done.length === 0) return ids;
+      for (const task of done) {
+        const t = task.text.toLowerCase();
+        for (const at of this.activeTasks) {
+          const title = at.title.toLowerCase();
+          if (t.includes(title) || title.includes(t)) {
+            ids.add(at.id);
+          }
+        }
+      }
+      return ids;
+    },
     taskProgress() {
       if (this.crewTasks.length === 0) return 0;
       return Math.round((this.completedTaskCount / this.crewTasks.length) * 100);
@@ -536,9 +571,17 @@ export default {
     },
     groupedMessages() {
       const allMessages = this.store.currentCrewMessages;
-      const messages = this.taskFilter
-        ? allMessages.filter(m => !m.taskId || m.taskId === this.taskFilter || m.type === 'route' || m.type === 'system' || m.role === 'human')
-        : allMessages;
+      const completed = this.completedTaskIds;
+      let messages;
+      if (this.taskFilter) {
+        // Explicit filter: show only this task's messages + untagged + structural
+        messages = allMessages.filter(m => !m.taskId || m.taskId === this.taskFilter || m.type === 'route' || m.type === 'system' || m.role === 'human');
+      } else if (completed.size > 0) {
+        // Default view: hide completed tasks' messages
+        messages = allMessages.filter(m => !m.taskId || !completed.has(m.taskId) || m.type === 'route' || m.type === 'system' || m.role === 'human');
+      } else {
+        messages = allMessages;
+      }
       const turns = [];
       let currentTurn = null;
       let turnCounter = 0;
@@ -677,6 +720,24 @@ export default {
 
     setTaskFilter(taskId) {
       this.taskFilter = this.taskFilter === taskId ? null : taskId;
+    },
+
+    getTaskFilterTitle() {
+      if (!this.taskFilter) return '';
+      const task = this.activeTasks.find(t => t.id === this.taskFilter);
+      return task ? task.title : this.taskFilter;
+    },
+
+    viewDoneTask(task) {
+      // Find the taskId matching this done task's text
+      const t = task.text.toLowerCase();
+      for (const at of this.activeTasks) {
+        const title = at.title.toLowerCase();
+        if (t.includes(title) || title.includes(t)) {
+          this.taskFilter = at.id;
+          return;
+        }
+      }
     },
 
     getRoleTaskTitle(roleName) {
