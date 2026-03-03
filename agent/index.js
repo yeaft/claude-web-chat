@@ -63,13 +63,13 @@ const CONFIG = {
   reconnectInterval: fileConfig.reconnectInterval,
   agentSecret: process.env.AGENT_SECRET || fileConfig.agentSecret,
   // 禁用的工具列表（逗号分隔），如 "mcp__github,mcp__sentry"
-  // 默认禁用所有 MCP 工具（避免超过 Claude API 128 工具限制）
-  // 设置 DISALLOWED_TOOLS=none 可取消默认禁用
+  // 默认不禁用任何工具（MCP 工具由 ~/.claude.json 中的 mcpServers 配置控制）
+  // 设置 DISALLOWED_TOOLS 可指定需要禁用的工具
   disallowedTools: (() => {
     const raw = process.env.DISALLOWED_TOOLS || fileConfig.disallowedTools || '';
     if (raw === 'none') return [];
     const list = raw.split(',').map(s => s.trim()).filter(Boolean);
-    return list.length > 0 ? list : ['mcp__*'];
+    return list;
   })()
 };
 

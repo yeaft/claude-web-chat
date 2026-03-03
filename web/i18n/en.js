@@ -225,12 +225,8 @@ export default {
   'status.executingTool': 'Running {name}',
 
   // ============ Chat Header ============
-  'header.mcpEnabled': 'MCP tools enabled — click to disable',
-  'header.mcpDisabled': 'MCP tools disabled — click to enable',
   'header.compacting': 'Compressing context...',
   'header.compacted': 'Context compression complete',
-  'chatHeader.mcpEnabled': 'MCP tools enabled — click to disable',
-  'chatHeader.mcpDisabled': 'MCP tools disabled — click to enable',
   'chatHeader.newConv': 'Conversation',
   'chatHeader.compacting': 'Compressing context...',
   'chatHeader.compactDone': 'Context compression complete',

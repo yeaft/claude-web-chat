@@ -146,15 +146,6 @@ export const useChatStore = defineStore('chat', {
     selectedTaskInfo: () => {
       return null;
     },
-    // 当前会话的 MCP 是否启用（disallowedTools 不包含 mcp__*）
-    currentMcpEnabled: (state) => {
-      if (!state.currentConversation) return false;
-      const conv = state.conversations.find(c => c.id === state.currentConversation);
-      if (!conv) return false;
-      if (conv.disallowedTools === null || conv.disallowedTools === undefined) return false;
-      if (conv.disallowedTools.length === 0) return true;
-      return !conv.disallowedTools.some(t => t === 'mcp__*');
-    },
     // 当前 conversation 是否是 Crew
     currentConversationIsCrew: (state) => {
       if (!state.currentConversation) return false;
@@ -222,7 +213,6 @@ export const useChatStore = defineStore('chat', {
     resumeConversation(claudeSessionId, workDir, agentId = null, disallowedTools = null) { convHelpers.resumeConversation(this, claudeSessionId, workDir, agentId, disallowedTools); },
     selectConversation(conversationId, agentId) { convHelpers.selectConversation(this, conversationId, agentId); },
     updateConversationSettings(conversationId, settings) { convHelpers.updateConversationSettings(this, conversationId, settings); },
-    toggleMcp() { convHelpers.toggleMcp(this); },
     deleteConversation(conversationId, agentId) { convHelpers.deleteConversation(this, conversationId, agentId); },
     sendMessage(text, attachments = []) { convHelpers.sendMessage(this, text, attachments); },
     cancelExecution() { convHelpers.cancelExecution(this); },

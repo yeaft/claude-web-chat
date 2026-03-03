@@ -1228,47 +1228,6 @@ body {
   flex-shrink: 0;
 }
 
-/* MCP Toggle Button */
-.mcp-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  border: 1px solid var(--border-color);
-  background: transparent;
-  color: var(--text-muted);
-  transition: all 0.15s;
-  white-space: nowrap;
-}
-
-.mcp-toggle:hover {
-  background: var(--sidebar-hover);
-  color: var(--text-secondary);
-}
-
-.mcp-toggle.enabled {
-  color: var(--accent-blue);
-  border-color: var(--accent-blue);
-}
-
-.mcp-toggle.enabled:hover {
-  background: rgba(59, 130, 246, 0.1);
-}
-
-.mcp-toggle svg {
-  flex-shrink: 0;
-}
-
-.mcp-status {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-}
-
 /* Header icon button (sidebar toggle, refresh, workbench toggle) */
 .header-icon-btn {
   width: 34px;

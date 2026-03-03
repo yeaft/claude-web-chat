@@ -225,12 +225,8 @@ export default {
   'status.executingTool': '正在执行 {name}',
 
   // ============ Chat Header ============
-  'header.mcpEnabled': 'MCP 工具已启用 — 点击禁用',
-  'header.mcpDisabled': 'MCP 工具已禁用 — 点击启用',
   'header.compacting': '正在压缩上下文...',
   'header.compacted': '上下文压缩完成',
-  'chatHeader.mcpEnabled': 'MCP 工具已启用 — 点击禁用',
-  'chatHeader.mcpDisabled': 'MCP 工具已禁用 — 点击启用',
   'chatHeader.newConv': '会话',
   'chatHeader.compacting': '正在压缩上下文...',
   'chatHeader.compactDone': '上下文压缩完成',

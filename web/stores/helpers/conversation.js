@@ -117,18 +117,6 @@ export function updateConversationSettings(store, conversationId, settings) {
   });
 }
 
-export function toggleMcp(store) {
-  if (!store.currentConversation) return;
-  const conv = store.conversations.find(c => c.id === store.currentConversation);
-  if (!conv) return;
-  const isEnabled = store.currentMcpEnabled;
-  const newDisallowedTools = isEnabled ? ['mcp__*'] : [];
-  conv.disallowedTools = newDisallowedTools;
-  store.updateConversationSettings(store.currentConversation, {
-    disallowedTools: newDisallowedTools
-  });
-}
-
 export function deleteConversation(store, conversationId, agentId) {
   // 清理 crew 数据（不管 server 是否响应）
   const conv = store.conversations.find(c => c.id === conversationId);
