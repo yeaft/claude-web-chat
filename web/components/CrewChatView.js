@@ -43,10 +43,14 @@ export default {
             <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
           </div>
           <div v-if="!taskPanelCollapsed" class="crew-task-list">
-            <div v-for="(task, idx) in crewTasks" :key="idx" class="crew-task-item" :class="{ done: task.done }">
-              <span class="crew-task-check">{{ task.done ? '\u2705' : '\u2B1C' }}</span>
+            <div v-for="(task, idx) in pendingTasks" :key="idx" class="crew-task-item">
+              <span class="crew-task-check">\u2B1C</span>
               <span class="crew-task-text">{{ task.text }}</span>
               <span v-if="task.assignee" class="crew-task-assignee" :style="getRoleStyle(task.assignee)">@{{ task.assignee }}</span>
+            </div>
+            <div v-if="pendingTasks.length === 0" class="crew-task-item done">
+              <span class="crew-task-check">\u2705</span>
+              <span class="crew-task-text" style="color: var(--text-muted)">全部完成</span>
             </div>
           </div>
         </div>
@@ -493,6 +497,9 @@ export default {
     },
     completedTaskCount() {
       return this.crewTasks.filter(t => t.done).length;
+    },
+    pendingTasks() {
+      return this.crewTasks.filter(t => !t.done);
     },
     taskProgress() {
       if (this.crewTasks.length === 0) return 0;
