@@ -70,10 +70,12 @@ export default {
 
           <!-- Route indicator (centered system-style) -->
           <div v-if="turn.type !== 'turn' && turn.message.type === 'route'" class="crew-route-indicator">
-            <span>{{ turn.message.roleIcon }} {{ turn.message.roleName }}</span>
-            <span class="crew-route-arrow">→</span>
-            <span>{{ getRoleIcon(turn.message.routeTo) }} {{ getRoleDisplayName(turn.message.routeTo) }}</span>
-            <span v-if="turn.message.routeSummary" class="crew-route-summary">· {{ turn.message.routeSummary }}</span>
+            <div class="crew-route-header">
+              <span>{{ turn.message.roleIcon }} {{ turn.message.roleName }}</span>
+              <span class="crew-route-arrow">→</span>
+              <span>{{ getRoleIcon(turn.message.routeTo) }} {{ getRoleDisplayName(turn.message.routeTo) }}</span>
+            </div>
+            <div v-if="turn.message.routeSummary" class="crew-route-summary">{{ turn.message.routeSummary }}</div>
           </div>
 
           <!-- Standalone messages (system, human_needed, human text) -->

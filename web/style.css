@@ -10476,6 +10476,15 @@ body {
   margin: 0 auto;
   width: 100%;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.crew-route-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .crew-route-arrow {
@@ -10483,8 +10492,12 @@ body {
 }
 
 .crew-route-summary {
-  margin-left: 2px;
-  opacity: 0.7;
+  color: var(--text-secondary);
+  font-size: 12px;
+  max-width: 500px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Crew Task Panel */
