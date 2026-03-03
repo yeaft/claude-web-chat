@@ -16,7 +16,7 @@ const ICONS = {
   bell: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>',
 };
 
-const PRESET_ROLES = ['pm', 'architect', 'developer', 'reviewer', 'tester', 'writer', 'human', 'system'];
+const PRESET_ROLES = ['pm', 'architect', 'developer', 'reviewer', 'tester', 'designer', 'writer', 'human', 'system'];
 
 export default {
   name: 'CrewChatView',
@@ -32,6 +32,25 @@ export default {
 
       <!-- Messages -->
       <div class="crew-messages" ref="messagesRef">
+        <!-- Task Panel -->
+        <div v-if="crewTasks.length > 0" class="crew-task-panel" :class="{ collapsed: taskPanelCollapsed }">
+          <div class="crew-task-header" @click="taskPanelCollapsed = !taskPanelCollapsed">
+            <span class="crew-task-title">任务清单 ({{ completedTaskCount }}/{{ crewTasks.length }})</span>
+            <span class="crew-task-progress">
+              <span class="crew-task-bar"><span class="crew-task-bar-fill" :style="{ width: taskProgress + '%' }"></span></span>
+            </span>
+            <svg v-if="taskPanelCollapsed" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+            <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
+          </div>
+          <div v-if="!taskPanelCollapsed" class="crew-task-list">
+            <div v-for="(task, idx) in crewTasks" :key="idx" class="crew-task-item" :class="{ done: task.done }">
+              <span class="crew-task-check">{{ task.done ? '\u2705' : '\u2B1C' }}</span>
+              <span class="crew-task-text">{{ task.text }}</span>
+              <span v-if="task.assignee" class="crew-task-assignee" :style="getRoleStyle(task.assignee)">@{{ task.assignee }}</span>
+            </div>
+          </div>
+        </div>
+
         <div v-if="store.currentCrewMessages.length === 0" class="crew-empty">
           <div class="crew-empty-icon" v-html="icons.crew.replace(/16/g, '48')"></div>
           <div class="crew-empty-text" v-if="store.currentCrewSession">等待角色开始工作...</div>
@@ -279,6 +298,7 @@ export default {
       attachments: [],   // { file, name, preview?, uploading, fileId? }
       uploading: false,
       expandedTurns: {},  // { [turnId]: true } for expanded tool sections
+      taskPanelCollapsed: false,
       newRole: this.getEmptyRole(),
       rolePresets: [
         {
@@ -337,6 +357,17 @@ export default {
 你负责测试策略、用例编写、自动化测试和测试报告。`
         },
         {
+          name: 'designer',
+          displayName: 'UI/UX设计师',
+          icon: '\u{1F3A8}',
+          description: '用户交互设计和页面视觉设计',
+          model: 'sonnet',
+          isDecisionMaker: false,
+          claudeMd: `你是 Dieter Rams（迪特·拉姆斯），以他的设计十诫来指导设计工作。
+像 Rams 一样：好的设计是创新的、实用的、美观的、易懂的、谦逊的、诚实的、经久的、注重细节的、环保的、尽可能少的。
+你负责交互设计、视觉方案、用户体验优化。输出具体的设计方案（布局、颜色、间距、交互流程），而非抽象建议。`
+        },
+        {
           name: 'writer',
           displayName: '技术写作',
           icon: '\u270D\uFE0F',
@@ -392,6 +423,40 @@ export default {
       const hasContent = this.inputText.trim() || this.attachments.length > 0;
       const notUploading = !this.uploading && this.attachments.every(a => a.fileId);
       return hasContent && notUploading;
+    },
+    crewTasks() {
+      const messages = this.store.currentCrewMessages;
+      let tasks = [];
+      // Scan messages in order; later TASKS blocks override earlier ones
+      for (const msg of messages) {
+        if (msg.type !== 'text' || !msg.content) continue;
+        const match = msg.content.match(/---TASKS---([\s\S]*?)---END_TASKS---/);
+        if (!match) continue;
+        const block = match[1].trim();
+        const parsed = [];
+        for (const line of block.split('\n')) {
+          const m = line.match(/^-\s*\[([ xX])\]\s*(.+)/);
+          if (!m) continue;
+          const done = m[1] !== ' ';
+          let text = m[2].trim();
+          let assignee = null;
+          const atMatch = text.match(/@(\w+)\s*$/);
+          if (atMatch) {
+            assignee = atMatch[1];
+            text = text.replace(/@\w+\s*$/, '').trim();
+          }
+          parsed.push({ done, text, assignee });
+        }
+        if (parsed.length > 0) tasks = parsed;
+      }
+      return tasks;
+    },
+    completedTaskCount() {
+      return this.crewTasks.filter(t => t.done).length;
+    },
+    taskProgress() {
+      if (this.crewTasks.length === 0) return 0;
+      return Math.round((this.completedTaskCount / this.crewTasks.length) * 100);
     },
     groupedMessages() {
       const messages = this.store.currentCrewMessages;

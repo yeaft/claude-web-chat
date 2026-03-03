@@ -70,8 +70,9 @@ export function simpleMarkdownFallback(text) {
  */
 export function renderMarkdown(text) {
   if (!text || typeof text !== 'string') return '';
-  // Strip ROUTE blocks
+  // Strip ROUTE blocks and TASKS blocks (tasks shown in dedicated panel)
   text = text.replace(/---ROUTE---[\s\S]*?---END_ROUTE---/g, '').trim();
+  text = text.replace(/---TASKS---[\s\S]*?---END_TASKS---/g, '').trim();
   if (!text) return '';
 
   configureMarked();

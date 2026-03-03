@@ -102,6 +102,9 @@ select option:checked {
   --crew-color-tester: #06b6d4;
   --crew-color-tester-bg: rgba(6, 182, 212, 0.08);
   --crew-color-tester-border: rgba(6, 182, 212, 0.25);
+  --crew-color-designer: #e11d48;
+  --crew-color-designer-bg: rgba(225, 29, 72, 0.08);
+  --crew-color-designer-border: rgba(225, 29, 72, 0.25);
   --crew-color-writer: #ec4899;
   --crew-color-writer-bg: rgba(236, 72, 153, 0.08);
   --crew-color-writer-border: rgba(236, 72, 153, 0.25);
@@ -178,6 +181,8 @@ select option:checked {
   --crew-color-reviewer-border: rgba(245, 158, 11, 0.30);
   --crew-color-tester-bg: rgba(6, 182, 212, 0.12);
   --crew-color-tester-border: rgba(6, 182, 212, 0.30);
+  --crew-color-designer-bg: rgba(225, 29, 72, 0.12);
+  --crew-color-designer-border: rgba(225, 29, 72, 0.30);
   --crew-color-writer-bg: rgba(236, 72, 153, 0.12);
   --crew-color-writer-border: rgba(236, 72, 153, 0.30);
   --crew-color-human-bg: rgba(217, 119, 6, 0.12);
@@ -10405,40 +10410,13 @@ body {
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
 }
 
+/* crew-msg-content inherits .markdown-body styles for consistency with Chat */
 .crew-msg-content {
-  font-size: 15px;
-  color: var(--text-primary);
-  line-height: 1.6;
   word-break: break-word;
 }
 
 .crew-message.crew-msg-text {
   border-left: 3px solid var(--role-border, transparent);
-}
-
-.crew-msg-content pre {
-  background: var(--code-bg);
-  color: var(--code-text);
-  padding: 16px;
-  border-radius: 8px;
-  overflow-x: auto;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  margin: 8px 0;
-}
-
-.crew-msg-content code {
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  background: var(--inline-code-bg);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 0.9em;
-}
-
-.crew-msg-content pre code {
-  background: none;
-  padding: 0;
 }
 
 /* Crew Tool Message — uses shared .tool-line styles from MessageItem */
@@ -10461,6 +10439,94 @@ body {
   font-weight: 500;
   font-style: italic;
   padding: 2px 0;
+}
+
+/* Crew Task Panel */
+.crew-task-panel {
+  max-width: 800px;
+  margin: 8px auto 4px;
+  padding: 0 24px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.crew-task-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-light);
+  transition: background 0.15s;
+}
+
+.crew-task-header:hover {
+  background: var(--sidebar-hover);
+}
+
+.crew-task-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.crew-task-progress {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.crew-task-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--border-color);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.crew-task-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--success);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.crew-task-list {
+  padding: 6px 0 2px;
+}
+
+.crew-task-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.crew-task-item.done {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.crew-task-check {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.crew-task-text {
+  flex: 1;
+}
+
+.crew-task-assignee {
+  font-size: 11px;
+  color: var(--role-color, var(--text-muted));
+  white-space: nowrap;
 }
 
 /* Crew Round Divider */
@@ -10598,8 +10664,9 @@ body {
   margin: 0 auto 8px;
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
+  overflow-x: auto;
 }
 
 .crew-hint-btn {
@@ -10627,11 +10694,13 @@ body {
   height: 14px;
   background: var(--border-color);
   opacity: 0.5;
+  margin-left: auto;
 }
 
 .crew-hint-status {
   font-size: 11px;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .crew-hint-status.status-running { color: var(--success); }
@@ -10643,10 +10712,13 @@ body {
 .crew-hint-meta {
   font-size: 11px;
   color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .crew-hint-controls {
   position: relative;
+  display: flex;
+  align-items: center;
 }
 
 .crew-at-hint {
