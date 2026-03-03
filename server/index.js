@@ -80,7 +80,7 @@ const webDir = process.env.SERVE_DIST === 'true'
   ? join(__dirname, '../web/dist')
   : join(__dirname, '../web');
 app.use(express.static(webDir, {
-  maxAge: process.env.SERVE_DIST === 'true' ? '1d' : 0,
+  maxAge: process.env.SERVE_DIST === 'true' ? '1y' : 0,
   etag: true,
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.html')) {
