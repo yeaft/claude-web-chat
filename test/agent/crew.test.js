@@ -2250,3 +2250,222 @@ describe('Backend @displayName parsing and routing', () => {
     expect(newChineseMatch[1]).toBe('开发者-托瓦兹');
   });
 });
+
+// =====================================================================
+// shortName: 消息头显示简短名 vs ROUTE 保留完整名
+// =====================================================================
+
+describe('shortName - message header displays short name', () => {
+  // Replicate shortName from CrewChatView.js
+  function shortName(displayName) {
+    if (!displayName) return '';
+    const idx = displayName.indexOf('-');
+    return idx > 0 ? displayName.substring(idx + 1) : displayName;
+  }
+
+  it('should extract name after hyphen from "PM-乔布斯"', () => {
+    expect(shortName('PM-乔布斯')).toBe('乔布斯');
+  });
+
+  it('should extract name after hyphen from "架构师-福勒"', () => {
+    expect(shortName('架构师-福勒')).toBe('福勒');
+  });
+
+  it('should extract name after hyphen from "开发者-托瓦兹"', () => {
+    expect(shortName('开发者-托瓦兹')).toBe('托瓦兹');
+  });
+
+  it('should extract name after hyphen from "审查者-马丁"', () => {
+    expect(shortName('审查者-马丁')).toBe('马丁');
+  });
+
+  it('should extract name after hyphen from "测试-贝克"', () => {
+    expect(shortName('测试-贝克')).toBe('贝克');
+  });
+
+  it('should extract name after hyphen from "设计师-拉姆斯"', () => {
+    expect(shortName('设计师-拉姆斯')).toBe('拉姆斯');
+  });
+
+  it('should return full name if no hyphen', () => {
+    expect(shortName('PM')).toBe('PM');
+    expect(shortName('Admin')).toBe('Admin');
+  });
+
+  it('should return empty string for empty/falsy input', () => {
+    expect(shortName('')).toBe('');
+    expect(shortName(null)).toBe('');
+    expect(shortName(undefined)).toBe('');
+  });
+
+  it('should handle hyphen at position 0 (return full name)', () => {
+    // idx = 0, condition idx > 0 is false, returns full name
+    expect(shortName('-orphan')).toBe('-orphan');
+  });
+
+  it('should only split on first hyphen', () => {
+    // "策略师-索罗斯-备份" → substring after first '-' = "索罗斯-备份"
+    expect(shortName('策略师-索罗斯-备份')).toBe('索罗斯-备份');
+  });
+});
+
+describe('Message header: shortName vs full name for ROUTE', () => {
+  // Replicate the template logic from line 95 of CrewChatView.js:
+  // {{ turn.message.type === 'route' ? turn.message.roleName : shortName(turn.message.roleName) }}
+  function shortName(displayName) {
+    if (!displayName) return '';
+    const idx = displayName.indexOf('-');
+    return idx > 0 ? displayName.substring(idx + 1) : displayName;
+  }
+
+  function getHeaderDisplayName(message) {
+    return message.type === 'route' ? message.roleName : shortName(message.roleName);
+  }
+
+  it('should show short name for normal text messages', () => {
+    const msg = { type: 'text', role: 'pm', roleName: 'PM-乔布斯', content: '分析完成' };
+    expect(getHeaderDisplayName(msg)).toBe('乔布斯');
+  });
+
+  it('should show full name for route messages', () => {
+    const msg = { type: 'route', role: 'pm', roleName: 'PM-乔布斯', routeTo: 'developer' };
+    expect(getHeaderDisplayName(msg)).toBe('PM-乔布斯');
+  });
+
+  it('should show short name for tool messages', () => {
+    const msg = { type: 'tool', role: 'developer', roleName: '开发者-托瓦兹', toolName: 'Read' };
+    expect(getHeaderDisplayName(msg)).toBe('托瓦兹');
+  });
+
+  it('should show short name for system messages', () => {
+    const msg = { type: 'system', role: 'system', roleName: 'System' };
+    expect(getHeaderDisplayName(msg)).toBe('System');
+  });
+
+  it('should show short name for human_needed messages', () => {
+    const msg = { type: 'human_needed', role: 'pm', roleName: 'PM-乔布斯', content: '需要决策' };
+    expect(getHeaderDisplayName(msg)).toBe('乔布斯');
+  });
+
+  it('should verify all preset roles show short names in headers', () => {
+    const presetRoles = [
+      { displayName: 'PM-乔布斯', expectedShort: '乔布斯' },
+      { displayName: '架构师-福勒', expectedShort: '福勒' },
+      { displayName: '开发者-托瓦兹', expectedShort: '托瓦兹' },
+      { displayName: '审查者-马丁', expectedShort: '马丁' },
+      { displayName: '测试-贝克', expectedShort: '贝克' },
+      { displayName: '设计师-拉姆斯', expectedShort: '拉姆斯' }
+    ];
+
+    for (const role of presetRoles) {
+      const msg = { type: 'text', roleName: role.displayName };
+      expect(getHeaderDisplayName(msg)).toBe(role.expectedShort);
+    }
+  });
+
+  it('should verify all preset roles show full names in ROUTE headers', () => {
+    const presetRoles = [
+      'PM-乔布斯', '架构师-福勒', '开发者-托瓦兹',
+      '审查者-马丁', '测试-贝克', '设计师-拉姆斯'
+    ];
+
+    for (const displayName of presetRoles) {
+      const msg = { type: 'route', roleName: displayName, routeTo: 'pm' };
+      expect(getHeaderDisplayName(msg)).toBe(displayName);
+    }
+  });
+});
+
+describe('Grouped turn header also uses shortName', () => {
+  // Verify the grouped turn template (line 121) uses shortName
+  function shortName(displayName) {
+    if (!displayName) return '';
+    const idx = displayName.indexOf('-');
+    return idx > 0 ? displayName.substring(idx + 1) : displayName;
+  }
+
+  it('should show short name in grouped turn header', () => {
+    // Simulates a grouped turn (multiple messages from same role)
+    const turn = {
+      type: 'turn',
+      role: 'developer',
+      roleName: '开发者-托瓦兹',
+      roleIcon: '',
+      messages: [
+        { type: 'text', content: '开始实现...' },
+        { type: 'tool', toolName: 'Read' }
+      ]
+    };
+
+    // Template uses: {{ shortName(turn.roleName) }}
+    expect(shortName(turn.roleName)).toBe('托瓦兹');
+  });
+
+  it('should show short name for futures team roles', () => {
+    const futuresRoles = [
+      { displayName: '策略师-索罗斯', expectedShort: '索罗斯' },
+      { displayName: '分析师-利弗莫尔', expectedShort: '利弗莫尔' },
+      { displayName: '研究员-达里奥', expectedShort: '达里奥' },
+      { displayName: '风控官-塔勒布', expectedShort: '塔勒布' },
+      { displayName: '交易员-琼斯', expectedShort: '琼斯' }
+    ];
+
+    for (const role of futuresRoles) {
+      expect(shortName(role.displayName)).toBe(role.expectedShort);
+    }
+  });
+
+  it('should show short name for writing team roles', () => {
+    const writingRoles = [
+      { displayName: '编排师-金庸', expectedShort: '金庸' },
+      { displayName: '设计师-陈丹青', expectedShort: '陈丹青' },
+      { displayName: '执笔师-鲁迅', expectedShort: '鲁迅' },
+      { displayName: '审稿师-叶圣陶', expectedShort: '叶圣陶' }
+    ];
+
+    for (const role of writingRoles) {
+      expect(shortName(role.displayName)).toBe(role.expectedShort);
+    }
+  });
+});
+
+// Verify source file template uses shortName correctly
+describe('Source file verification - shortName usage in template', () => {
+  let fileContent;
+
+  it('should load CrewChatView.js source', async () => {
+    fileContent = await fs.readFile(
+      join(__dirname, '../../web/components/CrewChatView.js'),
+      'utf-8'
+    );
+    expect(fileContent).toBeTruthy();
+  });
+
+  it('should use shortName for non-route standalone messages', () => {
+    // Line 95: route uses full roleName, others use shortName
+    expect(fileContent).toContain(
+      "turn.message.type === 'route' ? turn.message.roleName : shortName(turn.message.roleName)"
+    );
+  });
+
+  it('should use shortName for grouped turn headers', () => {
+    // Line 121: {{ shortName(turn.roleName) }}
+    expect(fileContent).toContain('shortName(turn.roleName)');
+  });
+
+  it('should define shortName method that splits on hyphen', () => {
+    // Verify the shortName method exists and uses indexOf('-')
+    expect(fileContent).toContain("shortName(displayName)");
+    expect(fileContent).toContain("displayName.indexOf('-')");
+    expect(fileContent).toContain("displayName.substring(idx + 1)");
+  });
+
+  it('should NOT use shortName for route message names', () => {
+    // The ternary ensures route messages show full roleName
+    // Verify the pattern: route ? roleName : shortName(roleName)
+    const routePattern = fileContent.match(
+      /type\s*===\s*'route'\s*\?\s*turn\.message\.roleName\s*:\s*shortName\(turn\.message\.roleName\)/
+    );
+    expect(routePattern).toBeTruthy();
+  });
+});
