@@ -69,12 +69,9 @@ export default {
         >
           <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
-      </div>
-      <div class="context-usage-bar" v-if="contextUsage && contextUsage.conversationId === store.currentConversation">
-        <div class="context-usage-track">
-          <div class="context-usage-fill" :class="contextColorClass" :style="{ width: contextUsage.percentage + '%' }"></div>
+        <div class="context-bar-inline" v-if="contextUsage && contextUsage.conversationId === store.currentConversation" :title="contextLabel">
+          <div class="context-bar-fill" :class="contextColorClass" :style="{ width: contextUsage.percentage + '%' }"></div>
         </div>
-        <span class="context-usage-label">{{ contextLabel }}</span>
       </div>
     </footer>
   `,
