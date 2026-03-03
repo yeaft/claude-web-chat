@@ -628,15 +628,15 @@ export default {
     },
     selectConversation(conversationId, agentId) {
       const conv = this.store.conversations.find(c => c.id === conversationId);
-      // 如果是已停止的 crew conversation（不在活跃 crewSessions 中），触发恢复
+      // 如果是已停止的 crew conversation（不在活跃 crewSessions 中），先切换再触发恢复
       if (conv?.type === 'crew' && !this.store.crewSessions[conversationId]) {
         if (agentId) this.store.selectAgent(agentId);
+        this.store.selectConversation(conversationId, agentId);
         this.store.resumeCrewSession(conversationId);
         this.showMobileSidebar = false;
         return;
       }
       this.store.selectConversation(conversationId, agentId);
-      // Close mobile sidebar after selecting
       this.showMobileSidebar = false;
     },
     deleteConversation(conversationId, agentId) {
