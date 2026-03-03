@@ -2469,3 +2469,507 @@ describe('Source file verification - shortName usage in template', () => {
     expect(routePattern).toBeTruthy();
   });
 });
+
+// =====================================================================
+// Feature Blocks: taskId-based message grouping
+// =====================================================================
+
+describe('featureBlocks - message segmentation by taskId', () => {
+  // Replicate the segment splitting logic from featureBlocks computed
+  function splitSegments(messages) {
+    const segments = [];
+    let currentSegment = null;
+
+    const flushSegment = () => {
+      if (currentSegment && currentSegment.messages.length > 0) {
+        segments.push(currentSegment);
+      }
+      currentSegment = null;
+    };
+
+    for (const msg of messages) {
+      const taskId = msg.taskId || null;
+      const isGlobal = !taskId || msg.role === 'human';
+
+      if (isGlobal) {
+        if (currentSegment && currentSegment.taskId) {
+          flushSegment();
+        }
+        if (!currentSegment || currentSegment.taskId) {
+          flushSegment();
+          currentSegment = { taskId: null, messages: [] };
+        }
+        currentSegment.messages.push(msg);
+      } else {
+        if (currentSegment && currentSegment.taskId === taskId) {
+          currentSegment.messages.push(msg);
+        } else {
+          flushSegment();
+          currentSegment = { taskId, messages: [msg] };
+        }
+      }
+    }
+    flushSegment();
+    return segments;
+  }
+
+  // Replicate _buildTurns
+  function buildTurns(messages) {
+    const turns = [];
+    let currentTurn = null;
+    let turnCounter = 0;
+
+    const flushTurn = () => {
+      if (currentTurn) {
+        currentTurn.textMsg = currentTurn.messages.find(m => m.type === 'text') || null;
+        currentTurn.toolMsgs = currentTurn.messages.filter(m => m.type === 'tool');
+        turns.push(currentTurn);
+        currentTurn = null;
+      }
+    };
+
+    for (const msg of messages) {
+      if (msg.type === 'route' || msg.type === 'system' || msg.type === 'human_needed') {
+        flushTurn();
+        turns.push({ type: msg.type, message: msg, id: 'standalone_' + (msg.id || turnCounter++) });
+        continue;
+      }
+      if (msg.role === 'human') {
+        flushTurn();
+        turns.push({ type: 'text', message: msg, id: 'human_' + (msg.id || turnCounter++) });
+        continue;
+      }
+      if (currentTurn && currentTurn.role === msg.role) {
+        currentTurn.messages.push(msg);
+      } else {
+        flushTurn();
+        currentTurn = {
+          type: 'turn', role: msg.role, roleName: msg.roleName, roleIcon: msg.roleIcon,
+          messages: [msg], textMsg: null, toolMsgs: [], id: 'turn_' + (turnCounter++)
+        };
+      }
+    }
+    flushTurn();
+    return turns;
+  }
+
+  // Replicate full featureBlocks computed
+  function buildFeatureBlocks(allMessages, completedTaskIds = new Set()) {
+    const segments = splitSegments(allMessages);
+    const blocks = [];
+    let blockCounter = 0;
+
+    for (const seg of segments) {
+      const turns = buildTurns(seg.messages);
+      if (seg.taskId) {
+        const taskTitle = seg.messages.find(m => m.taskTitle)?.taskTitle || seg.taskId;
+        const isCompleted = completedTaskIds.has(seg.taskId);
+        const hasStreaming = seg.messages.some(m => m._streaming);
+        const activeRoles = [];
+        const seenRoles = new Set();
+        for (let i = seg.messages.length - 1; i >= 0; i--) {
+          const m = seg.messages[i];
+          if (m._streaming && m.role && !seenRoles.has(m.role)) {
+            seenRoles.add(m.role);
+            activeRoles.push({ role: m.role, roleName: m.roleName, roleIcon: m.roleIcon });
+          }
+        }
+        blocks.push({
+          type: 'feature', taskId: seg.taskId, taskTitle, turns,
+          isCompleted, hasStreaming, activeRoles,
+          id: 'feature_' + seg.taskId + '_' + (blockCounter++)
+        });
+      } else {
+        blocks.push({ type: 'global', turns, id: 'global_' + (blockCounter++) });
+      }
+    }
+    return blocks;
+  }
+
+  // Replicate isFeatureExpanded
+  function isFeatureExpanded(block, expandedFeatures = {}) {
+    if (block.taskId in expandedFeatures) {
+      return expandedFeatures[block.taskId];
+    }
+    return !block.isCompleted || block.hasStreaming;
+  }
+
+  it('should group messages without taskId into global blocks', () => {
+    const messages = [
+      { role: 'pm', type: 'text', content: 'PM 说' },
+      { role: 'developer', type: 'text', content: '开发者回复' }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    expect(blocks.length).toBe(1);
+    expect(blocks[0].type).toBe('global');
+    expect(blocks[0].turns.length).toBe(2);
+  });
+
+  it('should group messages with same taskId into feature block', () => {
+    const messages = [
+      { role: 'pm', type: 'text', content: '分配任务', taskId: 'task_1', taskTitle: '实现登录' },
+      { role: 'developer', type: 'text', content: '收到', taskId: 'task_1' },
+      { role: 'developer', type: 'tool', toolName: 'Edit', taskId: 'task_1' }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    expect(blocks.length).toBe(1);
+    expect(blocks[0].type).toBe('feature');
+    expect(blocks[0].taskId).toBe('task_1');
+    expect(blocks[0].taskTitle).toBe('实现登录');
+  });
+
+  it('should separate global and feature blocks', () => {
+    const messages = [
+      { role: 'pm', type: 'text', content: '欢迎' },
+      { role: 'pm', type: 'text', content: '开始任务1', taskId: 'task_1', taskTitle: '任务一' },
+      { role: 'developer', type: 'text', content: '执行中', taskId: 'task_1' },
+      { role: 'pm', type: 'text', content: '全局消息' },
+      { role: 'pm', type: 'text', content: '开始任务2', taskId: 'task_2', taskTitle: '任务二' }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    expect(blocks.length).toBe(4);
+    expect(blocks[0].type).toBe('global');
+    expect(blocks[1].type).toBe('feature');
+    expect(blocks[1].taskId).toBe('task_1');
+    expect(blocks[2].type).toBe('global');
+    expect(blocks[3].type).toBe('feature');
+    expect(blocks[3].taskId).toBe('task_2');
+  });
+
+  it('should treat human messages as global even if they have taskId', () => {
+    const messages = [
+      { role: 'pm', type: 'text', content: '执行中', taskId: 'task_1', taskTitle: '任务' },
+      { role: 'human', type: 'text', content: '人工消息', taskId: 'task_1' },
+      { role: 'pm', type: 'text', content: '继续', taskId: 'task_1' }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    // Human message breaks the feature block into: feature, global(human), feature
+    expect(blocks.length).toBe(3);
+    expect(blocks[0].type).toBe('feature');
+    expect(blocks[1].type).toBe('global');
+    expect(blocks[1].turns[0].message.role).toBe('human');
+    expect(blocks[2].type).toBe('feature');
+  });
+
+  it('should merge consecutive global messages into one block', () => {
+    const messages = [
+      { role: 'pm', type: 'text', content: '消息1' },
+      { role: 'pm', type: 'text', content: '消息2' },
+      { role: 'developer', type: 'text', content: '消息3' }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    expect(blocks.length).toBe(1);
+    expect(blocks[0].type).toBe('global');
+  });
+
+  it('should handle different taskIds as separate feature blocks', () => {
+    const messages = [
+      { role: 'developer', type: 'text', content: '任务1', taskId: 'task_1', taskTitle: '登录' },
+      { role: 'developer', type: 'text', content: '任务2', taskId: 'task_2', taskTitle: '注册' }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    expect(blocks.length).toBe(2);
+    expect(blocks[0].taskId).toBe('task_1');
+    expect(blocks[1].taskId).toBe('task_2');
+  });
+
+  it('should mark completed features correctly', () => {
+    const messages = [
+      { role: 'developer', type: 'text', content: '完成', taskId: 'task_1', taskTitle: '登录' }
+    ];
+    const completed = new Set(['task_1']);
+    const blocks = buildFeatureBlocks(messages, completed);
+    expect(blocks[0].isCompleted).toBe(true);
+  });
+
+  it('should detect streaming features', () => {
+    const messages = [
+      { role: 'developer', type: 'text', content: '进行中', taskId: 'task_1', taskTitle: '登录', _streaming: true }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    expect(blocks[0].hasStreaming).toBe(true);
+  });
+
+  it('should collect active roles from streaming messages', () => {
+    const messages = [
+      { role: 'developer', roleName: '开发者-托瓦兹', roleIcon: '', type: 'text', content: '编码中', taskId: 'task_1', _streaming: true },
+      { role: 'reviewer', roleName: '审查者-马丁', roleIcon: '', type: 'text', content: '审查中', taskId: 'task_1', _streaming: true }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    expect(blocks[0].activeRoles.length).toBe(2);
+    // Active roles are collected in reverse order (latest first)
+    expect(blocks[0].activeRoles[0].role).toBe('reviewer');
+    expect(blocks[0].activeRoles[1].role).toBe('developer');
+  });
+
+  it('should not duplicate active roles', () => {
+    const messages = [
+      { role: 'developer', roleName: '开发者', roleIcon: '', type: 'text', content: '行1', taskId: 'task_1', _streaming: true },
+      { role: 'developer', roleName: '开发者', roleIcon: '', type: 'tool', toolName: 'Edit', taskId: 'task_1', _streaming: true }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    expect(blocks[0].activeRoles.length).toBe(1);
+  });
+
+  it('should use taskId as fallback title when no taskTitle found', () => {
+    const messages = [
+      { role: 'developer', type: 'text', content: '工作中', taskId: 'task_abc' }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    expect(blocks[0].taskTitle).toBe('task_abc');
+  });
+
+  it('should handle empty messages', () => {
+    const blocks = buildFeatureBlocks([]);
+    expect(blocks.length).toBe(0);
+  });
+
+  it('should build turns inside feature blocks correctly', () => {
+    const messages = [
+      { role: 'developer', roleName: '开发者', type: 'text', content: '文本', taskId: 'task_1', taskTitle: '功能' },
+      { role: 'developer', roleName: '开发者', type: 'tool', toolName: 'Read', taskId: 'task_1' },
+      { role: 'pm', roleName: 'PM', type: 'route', routeTo: 'developer', taskId: 'task_1' },
+      { role: 'reviewer', roleName: '审查者', type: 'text', content: '审查', taskId: 'task_1' }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    expect(blocks.length).toBe(1);
+    const turns = blocks[0].turns;
+    // developer text+tool grouped, then route standalone, then reviewer text
+    expect(turns.length).toBe(3);
+    expect(turns[0].type).toBe('turn');
+    expect(turns[0].role).toBe('developer');
+    expect(turns[0].toolMsgs.length).toBe(1);
+    expect(turns[1].type).toBe('route');
+    expect(turns[2].type).toBe('turn');
+    expect(turns[2].role).toBe('reviewer');
+  });
+
+  it('should handle interleaved global and feature messages', () => {
+    const messages = [
+      { role: 'pm', type: 'text', content: '计划' },
+      { role: 'developer', type: 'text', content: '开发A', taskId: 'task_a', taskTitle: '功能A' },
+      { role: 'developer', type: 'text', content: '开发A续', taskId: 'task_a' },
+      { role: 'pm', type: 'route', routeTo: 'developer' },
+      { role: 'developer', type: 'text', content: '开发B', taskId: 'task_b', taskTitle: '功能B' },
+      { role: 'pm', type: 'text', content: '总结' }
+    ];
+    const blocks = buildFeatureBlocks(messages);
+    expect(blocks.length).toBe(5);
+    expect(blocks[0].type).toBe('global');   // PM 计划
+    expect(blocks[1].type).toBe('feature');  // task_a
+    expect(blocks[1].taskId).toBe('task_a');
+    expect(blocks[2].type).toBe('global');   // route
+    expect(blocks[3].type).toBe('feature');  // task_b
+    expect(blocks[3].taskId).toBe('task_b');
+    expect(blocks[4].type).toBe('global');   // PM 总结
+  });
+});
+
+describe('isFeatureExpanded - auto-collapse completed features', () => {
+  function isFeatureExpanded(block, expandedFeatures = {}) {
+    if (block.taskId in expandedFeatures) {
+      return expandedFeatures[block.taskId];
+    }
+    return !block.isCompleted || block.hasStreaming;
+  }
+
+  it('should expand non-completed features by default', () => {
+    const block = { taskId: 'task_1', isCompleted: false, hasStreaming: false };
+    expect(isFeatureExpanded(block)).toBe(true);
+  });
+
+  it('should collapse completed features by default', () => {
+    const block = { taskId: 'task_1', isCompleted: true, hasStreaming: false };
+    expect(isFeatureExpanded(block)).toBe(false);
+  });
+
+  it('should expand completed feature if still streaming', () => {
+    const block = { taskId: 'task_1', isCompleted: true, hasStreaming: true };
+    expect(isFeatureExpanded(block)).toBe(true);
+  });
+
+  it('should respect manual toggle: expand collapsed', () => {
+    const block = { taskId: 'task_1', isCompleted: true, hasStreaming: false };
+    const expandedFeatures = { task_1: true };
+    expect(isFeatureExpanded(block, expandedFeatures)).toBe(true);
+  });
+
+  it('should respect manual toggle: collapse expanded', () => {
+    const block = { taskId: 'task_1', isCompleted: false, hasStreaming: false };
+    const expandedFeatures = { task_1: false };
+    expect(isFeatureExpanded(block, expandedFeatures)).toBe(false);
+  });
+
+  it('should not affect other features when toggling one', () => {
+    const blockA = { taskId: 'task_a', isCompleted: false, hasStreaming: false };
+    const blockB = { taskId: 'task_b', isCompleted: true, hasStreaming: false };
+    const expandedFeatures = { task_b: true };
+    expect(isFeatureExpanded(blockA, expandedFeatures)).toBe(true); // default
+    expect(isFeatureExpanded(blockB, expandedFeatures)).toBe(true); // manually expanded
+  });
+
+  it('should expand streaming features regardless of manual toggle', () => {
+    // If manually collapsed but streaming, the logic still uses manual state
+    // (manual state takes precedence)
+    const block = { taskId: 'task_1', isCompleted: false, hasStreaming: true };
+    const expandedFeatures = { task_1: false };
+    // Manual toggle wins
+    expect(isFeatureExpanded(block, expandedFeatures)).toBe(false);
+  });
+});
+
+describe('shouldShowTurnDivider - accepts turns array parameter', () => {
+  // Replicate the updated shouldShowTurnDivider (now takes turns as param)
+  function shouldShowTurnDivider(turns, tidx) {
+    const prev = turns[tidx - 1];
+    const curr = turns[tidx];
+    if (curr.type === 'route' || prev.type === 'route') return false;
+    const prevRole = prev.type === 'turn' ? prev.role : prev.message?.role;
+    const currRole = curr.type === 'turn' ? curr.role : curr.message?.role;
+    return prevRole && currRole && prevRole !== currRole;
+  }
+
+  it('should show divider between different roles', () => {
+    const turns = [
+      { type: 'turn', role: 'pm' },
+      { type: 'turn', role: 'developer' }
+    ];
+    expect(shouldShowTurnDivider(turns, 1)).toBe(true);
+  });
+
+  it('should not show divider for same role', () => {
+    const turns = [
+      { type: 'turn', role: 'pm' },
+      { type: 'turn', role: 'pm' }
+    ];
+    expect(shouldShowTurnDivider(turns, 1)).toBe(false);
+  });
+
+  it('should not show divider around route messages', () => {
+    const turns = [
+      { type: 'turn', role: 'pm' },
+      { type: 'route', message: { role: 'pm' } }
+    ];
+    expect(shouldShowTurnDivider(turns, 1)).toBe(false);
+  });
+
+  it('should work with standalone messages', () => {
+    const turns = [
+      { type: 'text', message: { role: 'human' } },
+      { type: 'turn', role: 'pm' }
+    ];
+    expect(shouldShowTurnDivider(turns, 1)).toBe(true);
+  });
+});
+
+describe('Feature blocks - removed task panel and filter bar', () => {
+  let fileContent;
+
+  it('should load source file', async () => {
+    fileContent = await fs.readFile(
+      join(__dirname, '../../web/components/CrewChatView.js'),
+      'utf-8'
+    );
+    expect(fileContent).toBeTruthy();
+  });
+
+  it('should NOT have crew-task-panel in template', () => {
+    expect(fileContent).not.toContain('crew-task-panel');
+  });
+
+  it('should NOT have taskFilter in data', () => {
+    expect(fileContent).not.toContain('taskFilter:');
+    expect(fileContent).not.toContain('taskFilter ===');
+  });
+
+  it('should NOT have crew-filter-bar in template', () => {
+    expect(fileContent).not.toContain('crew-filter-bar');
+    expect(fileContent).not.toContain('crew-filter-back');
+  });
+
+  it('should have featureBlocks computed instead of groupedMessages', () => {
+    expect(fileContent).toContain('featureBlocks()');
+    expect(fileContent).not.toMatch(/\bgroupedMessages\s*\(\)/);
+  });
+
+  it('should have crew-feature-thread in template', () => {
+    expect(fileContent).toContain('crew-feature-thread');
+    expect(fileContent).toContain('crew-feature-header');
+    expect(fileContent).toContain('crew-feature-body');
+  });
+
+  it('should have isFeatureExpanded method', () => {
+    expect(fileContent).toContain('isFeatureExpanded(block)');
+  });
+
+  it('should have toggleFeature method', () => {
+    expect(fileContent).toContain('toggleFeature(taskId)');
+  });
+
+  it('should use _buildTurns helper method', () => {
+    expect(fileContent).toContain('_buildTurns(');
+  });
+
+  it('should use shouldShowTurnDivider with turns parameter', () => {
+    expect(fileContent).toContain('shouldShowTurnDivider(block.turns, tidx)');
+  });
+
+  it('should show completed badge for completed features', () => {
+    expect(fileContent).toContain("block.isCompleted");
+    expect(fileContent).toContain('已完成');
+  });
+
+  it('should show active badge for streaming features', () => {
+    expect(fileContent).toContain("block.hasStreaming");
+    expect(fileContent).toContain('进行中');
+  });
+
+  it('should display message count in feature header', () => {
+    expect(fileContent).toContain('block.turns.length');
+    expect(fileContent).toContain('条');
+  });
+
+  it('should show active roles in feature header using shortName', () => {
+    expect(fileContent).toContain('block.activeRoles');
+    expect(fileContent).toContain('shortName(ar.roleName)');
+  });
+});
+
+describe('Feature blocks CSS verification', () => {
+  let cssContent;
+
+  it('should load style.css', async () => {
+    cssContent = await fs.readFile(
+      join(__dirname, '../../web/style.css'),
+      'utf-8'
+    );
+    expect(cssContent).toBeTruthy();
+  });
+
+  it('should define crew-feature-thread styles', () => {
+    expect(cssContent).toContain('.crew-feature-thread');
+    expect(cssContent).toContain('.crew-feature-header');
+    expect(cssContent).toContain('.crew-feature-body');
+    expect(cssContent).toContain('.crew-feature-title');
+  });
+
+  it('should style completed features with muted title', () => {
+    expect(cssContent).toContain('.crew-feature-thread.is-completed .crew-feature-title');
+  });
+
+  it('should have feature badge styles for completed and active', () => {
+    expect(cssContent).toContain('.crew-feature-badge.completed');
+    expect(cssContent).toContain('.crew-feature-badge.active');
+  });
+
+  it('should have hover effect on feature header', () => {
+    expect(cssContent).toContain('.crew-feature-header:hover');
+  });
+
+  it('should use border-left for feature body thread line', () => {
+    expect(cssContent).toContain('.crew-feature-body');
+    // Feature body has border-left for visual thread
+    const bodyRule = cssContent.match(/\.crew-feature-body\s*\{[^}]*border-left[^}]*/);
+    expect(bodyRule).toBeTruthy();
+  });
+});

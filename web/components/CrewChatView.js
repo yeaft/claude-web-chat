@@ -32,130 +32,140 @@ export default {
 
       <!-- Messages -->
       <div class="crew-messages" ref="messagesRef">
-        <!-- Task Panel -->
-        <div v-if="crewTasks.length > 0" class="crew-task-panel" :class="{ collapsed: taskPanelCollapsed }">
-          <div class="crew-task-header" @click="taskPanelCollapsed = !taskPanelCollapsed">
-            <span class="crew-task-title">任务清单 ({{ completedTaskCount }}/{{ crewTasks.length }})</span>
-            <span class="crew-task-progress">
-              <span class="crew-task-bar"><span class="crew-task-bar-fill" :style="{ width: taskProgress + '%' }"></span></span>
-            </span>
-            <svg v-if="taskPanelCollapsed" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-            <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
-          </div>
-          <div v-if="!taskPanelCollapsed" class="crew-task-list">
-            <div v-for="(task, idx) in pendingTasks" :key="'p'+idx" class="crew-task-item">
-              <span class="crew-task-check">\u2B1C</span>
-              <span class="crew-task-text">{{ task.text }}</span>
-              <span v-if="task.assignee" class="crew-task-assignee" :style="getRoleStyle(task.assignee)">@{{ task.assignee }}</span>
-            </div>
-            <div v-if="pendingTasks.length === 0 && doneTasks.length > 0" class="crew-task-item done">
-              <span class="crew-task-check">\u2705</span>
-              <span class="crew-task-text" style="color: var(--text-muted)">全部完成</span>
-            </div>
-            <div v-if="doneTasks.length > 0" class="crew-done-toggle" @click="doneTasksExpanded = !doneTasksExpanded">
-              <span>{{ doneTasksExpanded ? '\u25BC' : '\u25B6' }} 已完成 ({{ doneTasks.length }})</span>
-            </div>
-            <template v-if="doneTasksExpanded">
-              <div v-for="(task, idx) in doneTasks" :key="'d'+idx" class="crew-task-item done crew-task-clickable" @click="viewDoneTask(task)">
-                <span class="crew-task-check">\u2705</span>
-                <span class="crew-task-text">{{ task.text }}</span>
-                <span v-if="task.assignee" class="crew-task-assignee" :style="getRoleStyle(task.assignee)">@{{ task.assignee }}</span>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <div v-if="taskFilter" class="crew-filter-bar">
-          <span>正在查看：<strong>{{ getTaskFilterTitle() }}</strong></span>
-          <span class="crew-filter-back" @click="taskFilter = null">← 返回全部</span>
-        </div>
-
         <div v-if="store.currentCrewMessages.length === 0" class="crew-empty">
           <div class="crew-empty-icon" v-html="icons.crew.replace(/16/g, '48')"></div>
           <div class="crew-empty-text" v-if="store.currentCrewSession">等待角色开始工作...</div>
           <div class="crew-empty-text" v-else>等待 Crew Session 启动...</div>
         </div>
 
-        <template v-for="(turn, tidx) in groupedMessages" :key="turn.id">
-          <!-- Turn divider: when role changes between adjacent turns -->
-          <div v-if="tidx > 0 && shouldShowDivider(tidx)" class="crew-turn-divider"></div>
-
-          <!-- Round Divider -->
-          <div v-if="turn.type === 'route' && turn.message.round > 0" class="crew-round-divider">
-            <div class="crew-round-line"></div>
-            <span class="crew-round-label">Round {{ turn.message.round }}</span>
-            <div class="crew-round-line"></div>
-          </div>
-
-          <!-- Standalone messages (route, system, human_needed, human text) -->
-          <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': turn.message.role === 'human' && turn.message.type === 'text' }]" :style="getRoleStyle(turn.message.role)">
-            <div class="crew-msg-body">
-              <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-header">
-                <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
-                <span class="crew-msg-name" :class="{ 'is-human': turn.message.role === 'human', 'is-system': turn.message.role === 'system' }">{{ turn.message.type === 'route' ? turn.message.roleName : shortName(turn.message.roleName) }}</span>
-                <span v-if="turn.message.type === 'route'" class="crew-route-target">→ {{ turn.message.routeToName || getRoleDisplayName(turn.message.routeTo) }}</span>
-                <span v-if="turn.message.taskTitle" class="crew-task-label" :style="getTaskColor(turn.message.taskId)">{{ turn.message.taskTitle }}</span>
-                <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
+        <template v-for="(block, bidx) in featureBlocks" :key="block.id">
+          <!-- Global block: messages without taskId, render inline -->
+          <template v-if="block.type === 'global'">
+            <template v-for="(turn, tidx) in block.turns" :key="turn.id">
+              <div v-if="tidx > 0 && shouldShowTurnDivider(block.turns, tidx)" class="crew-turn-divider"></div>
+              <div v-if="turn.type === 'route' && turn.message.round > 0" class="crew-round-divider">
+                <div class="crew-round-line"></div>
+                <span class="crew-round-label">Round {{ turn.message.round }}</span>
+                <div class="crew-round-line"></div>
               </div>
-              <div v-if="turn.message.type === 'route' && turn.message.routeSummary" class="crew-msg-content">{{ turn.message.routeSummary }}</div>
-              <div v-else-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
-              <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
-                <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
-              </div>
-              <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
-              <div v-if="turn.message.attachments && turn.message.attachments.length > 0" class="user-attachments" style="margin-top: 6px;">
-                <div v-for="(att, aidx) in turn.message.attachments" :key="aidx" class="user-attachment-item" :class="{ 'is-image': att.isImage }">
-                  <img v-if="att.isImage && att.preview" :src="att.preview" :alt="att.name" class="user-attachment-image" />
-                  <div v-else class="user-attachment-file"><span class="file-name">{{ att.name }}</span></div>
+              <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': turn.message.role === 'human' && turn.message.type === 'text' }]" :style="getRoleStyle(turn.message.role)">
+                <div class="crew-msg-body">
+                  <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-header">
+                    <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
+                    <span class="crew-msg-name" :class="{ 'is-human': turn.message.role === 'human', 'is-system': turn.message.role === 'system' }">{{ turn.message.type === 'route' ? turn.message.roleName : shortName(turn.message.roleName) }}</span>
+                    <span v-if="turn.message.type === 'route'" class="crew-route-target">→ {{ turn.message.routeToName || getRoleDisplayName(turn.message.routeTo) }}</span>
+                    <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
+                  </div>
+                  <div v-if="turn.message.type === 'route' && turn.message.routeSummary" class="crew-msg-content">{{ turn.message.routeSummary }}</div>
+                  <div v-else-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
+                  <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
+                    <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
+                  </div>
+                  <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
+                  <div v-if="turn.message.attachments && turn.message.attachments.length > 0" class="user-attachments" style="margin-top: 6px;">
+                    <div v-for="(att, aidx) in turn.message.attachments" :key="aidx" class="user-attachment-item" :class="{ 'is-image': att.isImage }">
+                      <img v-if="att.isImage && att.preview" :src="att.preview" :alt="att.name" class="user-attachment-image" />
+                      <div v-else class="user-attachment-file"><span class="file-name">{{ att.name }}</span></div>
+                    </div>
+                  </div>
+                  <div v-if="turn.message._sendFailed" class="crew-msg-send-failed">发送失败，请检查网络连接后重试</div>
                 </div>
               </div>
-              <div v-if="turn.message._sendFailed" class="crew-msg-send-failed">发送失败，请检查网络连接后重试</div>
-            </div>
-          </div>
-
-          <!-- Grouped turn (same role: text + tools) -->
-          <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :style="getRoleStyle(turn.role)">
-            <div class="crew-msg-body">
-              <div class="crew-msg-header">
-                <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
-                <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
-                <span v-if="turn.taskTitle" class="crew-task-label" :style="getTaskColor(turn.taskId)">{{ turn.taskTitle }}</span>
-                <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
-              </div>
-
-              <!-- Main text reply -->
-              <template v-if="turn.textMsg">
-                <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
-              </template>
-
-              <!-- Tool actions section -->
-              <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
-                <!-- Latest tool (always visible) -->
-                <div class="crew-turn-tool-latest">
-                  <tool-line
-                    :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName"
-                    :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput"
-                    :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult"
-                    :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult"
-                    :compact="true" />
-                  <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
-                    <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-                    <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
-                    <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
-                  </button>
-                </div>
-                <!-- Expanded: all previous tools -->
-                <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
-                  <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
-                    <tool-line
-                      :tool-name="toolMsg.toolName"
-                      :tool-input="toolMsg.toolInput"
-                      :tool-result="toolMsg.toolResult"
-                      :has-result="!!toolMsg.hasResult"
-                      :compact="true" />
+              <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :style="getRoleStyle(turn.role)">
+                <div class="crew-msg-body">
+                  <div class="crew-msg-header">
+                    <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
+                    <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
+                    <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
+                  </div>
+                  <template v-if="turn.textMsg">
+                    <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
                   </template>
+                  <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
+                    <div class="crew-turn-tool-latest">
+                      <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
+                      <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
+                        <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                        <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
+                        <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
+                      </button>
+                    </div>
+                    <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
+                      <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
+                        <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
+                      </template>
+                    </div>
+                  </div>
                 </div>
               </div>
+            </template>
+          </template>
+
+          <!-- Feature block: messages with taskId, render as collapsible thread -->
+          <div v-else class="crew-feature-thread" :class="{ 'is-completed': block.isCompleted }" :style="getTaskColor(block.taskId)">
+            <div class="crew-feature-header" @click="toggleFeature(block.taskId)">
+              <svg v-if="isFeatureExpanded(block)" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
+              <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+              <span class="crew-feature-title">{{ block.taskTitle }}</span>
+              <span v-if="block.isCompleted" class="crew-feature-badge completed">已完成</span>
+              <span v-else-if="block.hasStreaming" class="crew-feature-badge active">进行中</span>
+              <span v-if="block.activeRoles.length > 0" class="crew-feature-roles">
+                <span v-for="ar in block.activeRoles" :key="ar.role" class="crew-feature-role-tag" :style="getRoleStyle(ar.role)">{{ ar.roleIcon }} {{ shortName(ar.roleName) }}</span>
+              </span>
+              <span class="crew-feature-meta">{{ block.turns.length }} 条</span>
+            </div>
+            <div v-if="isFeatureExpanded(block)" class="crew-feature-body">
+              <template v-for="(turn, tidx) in block.turns" :key="turn.id">
+                <div v-if="tidx > 0 && shouldShowTurnDivider(block.turns, tidx)" class="crew-turn-divider"></div>
+                <div v-if="turn.type === 'route' && turn.message.round > 0" class="crew-round-divider">
+                  <div class="crew-round-line"></div>
+                  <span class="crew-round-label">Round {{ turn.message.round }}</span>
+                  <div class="crew-round-line"></div>
+                </div>
+                <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :style="getRoleStyle(turn.message.role)">
+                  <div class="crew-msg-body">
+                    <div class="crew-msg-header">
+                      <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
+                      <span class="crew-msg-name">{{ turn.message.type === 'route' ? turn.message.roleName : shortName(turn.message.roleName) }}</span>
+                      <span v-if="turn.message.type === 'route'" class="crew-route-target">→ {{ turn.message.routeToName || getRoleDisplayName(turn.message.routeTo) }}</span>
+                      <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
+                    </div>
+                    <div v-if="turn.message.type === 'route' && turn.message.routeSummary" class="crew-msg-content">{{ turn.message.routeSummary }}</div>
+                    <div v-else-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
+                    <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
+                      <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
+                    </div>
+                    <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
+                  </div>
+                </div>
+                <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :style="getRoleStyle(turn.role)">
+                  <div class="crew-msg-body">
+                    <div class="crew-msg-header">
+                      <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
+                      <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
+                      <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
+                    </div>
+                    <template v-if="turn.textMsg">
+                      <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
+                    </template>
+                    <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
+                      <div class="crew-turn-tool-latest">
+                        <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
+                        <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
+                          <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                          <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
+                          <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
+                        </button>
+                      </div>
+                      <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
+                        <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
+                          <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
         </template>
@@ -172,13 +182,6 @@ export default {
       <div class="input-area crew-input-area">
         <div class="crew-input-hints" v-if="store.currentCrewSession">
           <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
-          <template v-if="activeTasks.length > 0">
-            <span class="crew-hint-separator"></span>
-            <span class="crew-task-filter" :class="{ active: !taskFilter }" @click="setTaskFilter(null)">全部</span>
-            <span v-for="task in activeTasks" :key="task.id"
-              class="crew-task-filter" :class="{ active: taskFilter === task.id }"
-              :style="getTaskColor(task.id)" @click="setTaskFilter(task.id)">{{ task.title }}</span>
-          </template>
           <span class="crew-hint-meta" v-if="store.currentCrewStatus">轮次 {{ store.currentCrewStatus.round || 0 }}</span>
           <span class="crew-hint-meta" v-if="store.currentCrewStatus">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
           <span class="crew-hint-meta" v-if="store.currentCrewStatus && totalTokens > 0">{{ formatTokens(totalTokens) }} tok</span>
@@ -305,9 +308,7 @@ export default {
       attachments: [],   // { file, name, preview?, uploading, fileId? }
       uploading: false,
       expandedTurns: {},
-      taskPanelCollapsed: false,
-      doneTasksExpanded: false,
-      taskFilter: null,
+      expandedFeatures: {},
       atMenuVisible: false,
       atQuery: '',
       atMenuIndex: 0,
@@ -579,68 +580,91 @@ summary: 请测试以下变更...
       }
       return active;
     },
-    groupedMessages() {
+    featureBlocks() {
       const allMessages = this.store.currentCrewMessages;
       const completed = this.completedTaskIds;
-      let messages;
-      if (this.taskFilter) {
-        // Explicit filter: show only this task's messages + untagged + structural
-        messages = allMessages.filter(m => !m.taskId || m.taskId === this.taskFilter || m.type === 'route' || m.type === 'system' || m.role === 'human');
-      } else if (completed.size > 0) {
-        // Default view: hide completed tasks' messages
-        messages = allMessages.filter(m => !m.taskId || !completed.has(m.taskId) || m.type === 'route' || m.type === 'system' || m.role === 'human');
-      } else {
-        messages = allMessages;
-      }
-      const turns = [];
-      let currentTurn = null;
-      let turnCounter = 0;
 
-      const flushTurn = () => {
-        if (currentTurn) {
-          currentTurn.textMsg = currentTurn.messages.find(m => m.type === 'text') || null;
-          currentTurn.toolMsgs = currentTurn.messages.filter(m => m.type === 'tool');
-          // 取 turn 中第一条消息的 task 信息
-          const firstWithTask = currentTurn.messages.find(m => m.taskId);
-          currentTurn.taskId = firstWithTask?.taskId || null;
-          currentTurn.taskTitle = firstWithTask?.taskTitle || null;
-          turns.push(currentTurn);
-          currentTurn = null;
+      // Step 1: Split messages into segments by taskId continuity
+      // Messages with the same taskId that appear consecutively are grouped.
+      // Messages without taskId (or structural messages like route/system) go to 'global'.
+      const segments = [];
+      let currentSegment = null;
+
+      const flushSegment = () => {
+        if (currentSegment && currentSegment.messages.length > 0) {
+          segments.push(currentSegment);
         }
+        currentSegment = null;
       };
 
-      for (const msg of messages) {
-        // route, system, human_needed — standalone items, break current turn
-        if (msg.type === 'route' || msg.type === 'system' || msg.type === 'human_needed') {
-          flushTurn();
-          turns.push({ type: msg.type, message: msg, id: 'standalone_' + (msg.id || turnCounter++) });
-          continue;
-        }
-        // human messages — standalone
-        if (msg.role === 'human') {
-          flushTurn();
-          turns.push({ type: 'text', message: msg, id: 'human_' + (msg.id || turnCounter++) });
-          continue;
-        }
-        // Group consecutive messages from same role into a turn
-        if (currentTurn && currentTurn.role === msg.role) {
-          currentTurn.messages.push(msg);
+      for (const msg of allMessages) {
+        const taskId = msg.taskId || null;
+        // Human messages, system messages, and messages without taskId go to global
+        const isGlobal = !taskId || msg.role === 'human';
+
+        if (isGlobal) {
+          // If current segment is a feature, flush it
+          if (currentSegment && currentSegment.taskId) {
+            flushSegment();
+          }
+          // Append to current global segment or create one
+          if (!currentSegment || currentSegment.taskId) {
+            flushSegment();
+            currentSegment = { taskId: null, messages: [] };
+          }
+          currentSegment.messages.push(msg);
         } else {
-          flushTurn();
-          currentTurn = {
-            type: 'turn',
-            role: msg.role,
-            roleName: msg.roleName,
-            roleIcon: msg.roleIcon,
-            messages: [msg],
-            textMsg: null,
-            toolMsgs: [],
-            id: 'turn_' + (turnCounter++)
-          };
+          // Feature message
+          if (currentSegment && currentSegment.taskId === taskId) {
+            currentSegment.messages.push(msg);
+          } else {
+            flushSegment();
+            currentSegment = { taskId, messages: [msg] };
+          }
         }
       }
-      flushTurn();
-      return turns;
+      flushSegment();
+
+      // Step 2: Convert segments to blocks with turns
+      const blocks = [];
+      let blockCounter = 0;
+      for (const seg of segments) {
+        const turns = this._buildTurns(seg.messages);
+        if (seg.taskId) {
+          // Feature block
+          const taskTitle = seg.messages.find(m => m.taskTitle)?.taskTitle || seg.taskId;
+          const isCompleted = completed.has(seg.taskId);
+          const hasStreaming = seg.messages.some(m => m._streaming);
+          // Active roles: roles currently streaming in this feature
+          const activeRoles = [];
+          const seenRoles = new Set();
+          for (let i = seg.messages.length - 1; i >= 0; i--) {
+            const m = seg.messages[i];
+            if (m._streaming && m.role && !seenRoles.has(m.role)) {
+              seenRoles.add(m.role);
+              activeRoles.push({ role: m.role, roleName: m.roleName, roleIcon: m.roleIcon });
+            }
+          }
+          blocks.push({
+            type: 'feature',
+            taskId: seg.taskId,
+            taskTitle,
+            turns,
+            isCompleted,
+            hasStreaming,
+            activeRoles,
+            id: 'feature_' + seg.taskId + '_' + (blockCounter++)
+          });
+        } else {
+          // Global block
+          blocks.push({
+            type: 'global',
+            turns,
+            id: 'global_' + (blockCounter++)
+          });
+        }
+      }
+      return blocks;
     }
   },
 
@@ -676,16 +700,71 @@ summary: 请测试以下变更...
       this.expandedTurns[turnId] = !this.expandedTurns[turnId];
     },
 
-    shouldShowDivider(tidx) {
-      const turns = this.groupedMessages;
+    toggleFeature(taskId) {
+      this.expandedFeatures[taskId] = !this.expandedFeatures[taskId];
+    },
+
+    isFeatureExpanded(block) {
+      // If manually toggled, use that state
+      if (block.taskId in this.expandedFeatures) {
+        return this.expandedFeatures[block.taskId];
+      }
+      // Default: expand if not completed or has streaming
+      return !block.isCompleted || block.hasStreaming;
+    },
+
+    shouldShowTurnDivider(turns, tidx) {
       const prev = turns[tidx - 1];
       const curr = turns[tidx];
-      // Don't add divider before/after round dividers or routes
       if (curr.type === 'route' || prev.type === 'route') return false;
-      // Get roles
       const prevRole = prev.type === 'turn' ? prev.role : prev.message?.role;
       const currRole = curr.type === 'turn' ? curr.role : curr.message?.role;
       return prevRole && currRole && prevRole !== currRole;
+    },
+
+    _buildTurns(messages) {
+      const turns = [];
+      let currentTurn = null;
+      let turnCounter = 0;
+
+      const flushTurn = () => {
+        if (currentTurn) {
+          currentTurn.textMsg = currentTurn.messages.find(m => m.type === 'text') || null;
+          currentTurn.toolMsgs = currentTurn.messages.filter(m => m.type === 'tool');
+          turns.push(currentTurn);
+          currentTurn = null;
+        }
+      };
+
+      for (const msg of messages) {
+        if (msg.type === 'route' || msg.type === 'system' || msg.type === 'human_needed') {
+          flushTurn();
+          turns.push({ type: msg.type, message: msg, id: 'standalone_' + (msg.id || turnCounter++) });
+          continue;
+        }
+        if (msg.role === 'human') {
+          flushTurn();
+          turns.push({ type: 'text', message: msg, id: 'human_' + (msg.id || turnCounter++) });
+          continue;
+        }
+        if (currentTurn && currentTurn.role === msg.role) {
+          currentTurn.messages.push(msg);
+        } else {
+          flushTurn();
+          currentTurn = {
+            type: 'turn',
+            role: msg.role,
+            roleName: msg.roleName,
+            roleIcon: msg.roleIcon,
+            messages: [msg],
+            textMsg: null,
+            toolMsgs: [],
+            id: 'turn_' + (turnCounter++)
+          };
+        }
+      }
+      flushTurn();
+      return turns;
     },
 
     getRoleIcon(roleName) {
@@ -732,28 +811,6 @@ summary: 请测试以下变更...
       const hash = taskId.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xff, 0);
       const color = TASK_COLORS[hash % TASK_COLORS.length];
       return { '--task-color': color };
-    },
-
-    setTaskFilter(taskId) {
-      this.taskFilter = this.taskFilter === taskId ? null : taskId;
-    },
-
-    getTaskFilterTitle() {
-      if (!this.taskFilter) return '';
-      const task = this.activeTasks.find(t => t.id === this.taskFilter);
-      return task ? task.title : this.taskFilter;
-    },
-
-    viewDoneTask(task) {
-      // Find the taskId matching this done task's text
-      const t = task.text.toLowerCase();
-      for (const at of this.activeTasks) {
-        const title = at.title.toLowerCase();
-        if (t.includes(title) || title.includes(t)) {
-          this.taskFilter = at.id;
-          return;
-        }
-      }
     },
 
     getRoleTaskTitle(roleName) {

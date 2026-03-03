@@ -10660,6 +10660,101 @@ body {
   white-space: nowrap;
 }
 
+/* Crew Feature Thread — task-based message grouping */
+.crew-feature-thread {
+  max-width: 800px;
+  margin: 6px auto;
+  padding: 0 24px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.crew-feature-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  border-radius: 8px;
+  background: var(--bg-sidebar);
+  border-left: 3px solid var(--task-color, var(--accent-blue));
+  transition: background 0.15s;
+  user-select: none;
+}
+
+.crew-feature-header:hover {
+  background: var(--sidebar-hover);
+}
+
+.crew-feature-header svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.crew-feature-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-feature-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.crew-feature-badge.completed {
+  background: rgba(74, 158, 92, 0.12);
+  color: var(--success);
+}
+
+.crew-feature-badge.active {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent-blue, #4a9eff);
+}
+
+.crew-feature-roles {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.crew-feature-role-tag {
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--role-bg, transparent);
+  color: var(--role-color, var(--text-secondary));
+  white-space: nowrap;
+}
+
+.crew-feature-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.crew-feature-thread.is-completed .crew-feature-title {
+  color: var(--text-muted);
+}
+
+.crew-feature-body {
+  border-left: 3px solid var(--task-color, var(--border-color));
+  margin-left: 0;
+  padding-left: 0;
+}
+
+.crew-feature-body .crew-message {
+  border-left: none;
+}
+
 /* Crew Round Divider */
 .crew-round-divider {
   display: flex;
