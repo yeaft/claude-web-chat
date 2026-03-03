@@ -1986,13 +1986,13 @@ describe('Hints bar - source file verification', () => {
     expect(hintsArea).not.toContain('insertAt(role.name)');
   });
 
-  it('should NOT have add-role button in hints area', () => {
+  it('should have add-role button in hints area', () => {
     const hintsAreaMatch = fileContent.match(
       /class="crew-input-hints"[\s\S]*?<\/div>\s*(?=<div class="attachments-preview|<div class="input-wrapper")/
     );
     const hintsArea = hintsAreaMatch[0];
-    expect(hintsArea).not.toContain('showAddRole = true');
-    expect(hintsArea).not.toContain('添加角色');
+    expect(hintsArea).toContain('showAddRole = true');
+    expect(hintsArea).toContain('添加角色');
   });
 });
 
