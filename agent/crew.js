@@ -931,21 +931,6 @@ async function executeRoute(session, fromRole, route) {
   // 增加轮次计数
   session.round++;
 
-  // 检查最大轮次
-  if (session.round >= session.maxRounds) {
-    console.log(`[Crew] Max rounds (${session.maxRounds}) reached`);
-    session.status = 'completed';
-    sendCrewMessage({
-      type: 'crew_status',
-      sessionId: session.id,
-      status: 'max_rounds_reached',
-      round: session.round,
-      maxRounds: session.maxRounds
-    });
-    sendStatusUpdate(session);
-    return;
-  }
-
   // 如果 session 已暂停或停止，保存 pendingRoute 等恢复时重放
   if (session.status === 'paused' || session.status === 'stopped') {
     session.pendingRoute = { fromRole, route };

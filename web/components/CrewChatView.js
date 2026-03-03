@@ -160,7 +160,7 @@ export default {
           </button>
           <span class="crew-hint-separator"></span>
           <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
-          <span class="crew-hint-meta" v-if="store.currentCrewStatus">{{ store.currentCrewStatus.round }}/{{ store.currentCrewStatus.maxRounds }}</span>
+          <span class="crew-hint-meta" v-if="store.currentCrewStatus">轮次 {{ store.currentCrewStatus.round || 0 }}</span>
           <span class="crew-hint-meta" v-if="store.currentCrewStatus">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
           <span class="crew-hint-meta" v-if="store.currentCrewStatus && totalTokens > 0">{{ formatTokens(totalTokens) }} tok</span>
           <div class="crew-hint-controls" style="position: relative;">
@@ -213,12 +213,21 @@ export default {
             <textarea
               ref="inputRef"
               v-model="inputText"
-              @input="autoResize"
+              @input="handleInput"
               @keydown="handleKeydown"
               @paste="handlePaste"
               placeholder="输入消息... (@角色名 发送给指定角色，Shift+Enter 换行)"
               rows="1"
             ></textarea>
+            <div class="crew-at-menu" v-if="atMenuVisible && filteredAtRoles.length > 0">
+              <div v-for="(role, idx) in filteredAtRoles" :key="role.name"
+                class="crew-at-menu-item" :class="{ active: idx === atMenuIndex }"
+                @mousedown.prevent="selectAtRole(role)">
+                <span class="crew-at-menu-icon">{{ role.icon }}</span>
+                <span class="crew-at-menu-name">{{ role.displayName }}</span>
+                <span class="crew-at-menu-desc">{{ role.description }}</span>
+              </div>
+            </div>
           </div>
           <button class="send-btn" @click="sendMessage" :disabled="!canSend" title="发送">
             <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
@@ -230,51 +239,30 @@ export default {
       <div v-if="showAddRole" class="crew-add-role-overlay" @click.self="showAddRole = false">
         <div class="crew-add-role-modal">
           <div class="crew-add-role-title">添加角色</div>
-          <div class="crew-add-role-form">
-            <div class="crew-add-role-field">
-              <label>角色标识 (英文)</label>
-              <input v-model="newRole.name" placeholder="如 developer, reviewer" />
-            </div>
-            <div class="crew-add-role-field">
-              <label>显示名称</label>
-              <input v-model="newRole.displayName" placeholder="如 开发者" />
-            </div>
-            <div class="crew-add-role-field">
-              <label>图标</label>
-              <input v-model="newRole.icon" placeholder="如 PM" style="width: 60px" />
-            </div>
-            <div class="crew-add-role-field">
-              <label>角色描述</label>
-              <input v-model="newRole.description" placeholder="负责什么工作" />
-            </div>
-            <div class="crew-add-role-field">
-              <label>模型</label>
-              <select v-model="newRole.model">
-                <option value="sonnet">Sonnet</option>
-                <option value="opus">Opus</option>
-                <option value="haiku">Haiku</option>
-              </select>
-            </div>
-            <div class="crew-add-role-field">
-              <label>自定义 Prompt (可选)</label>
-              <textarea v-model="newRole.claudeMd" placeholder="角色的额外系统提示..." rows="3"></textarea>
-            </div>
-            <div class="crew-add-role-field">
-              <label><input type="checkbox" v-model="newRole.isDecisionMaker" /> 设为决策者</label>
-            </div>
 
-            <!-- 快速角色模板 -->
-            <div class="crew-add-role-presets">
-              <span class="crew-preset-label">快速添加：</span>
-              <button v-for="preset in rolePresets" :key="preset.name" class="crew-preset-btn" @click="applyPreset(preset)">
-                {{ preset.icon }} {{ preset.displayName }}
-              </button>
+          <!-- 一键添加预设 -->
+          <div class="crew-add-role-presets">
+            <button v-for="preset in availablePresets" :key="preset.name" class="crew-preset-btn" @click="quickAddPreset(preset)">
+              {{ preset.icon }} {{ preset.displayName }}
+            </button>
+          </div>
+
+          <!-- 自定义角色（折叠） -->
+          <details class="crew-add-custom-details">
+            <summary class="crew-add-custom-summary">自定义角色</summary>
+            <div class="crew-add-role-form">
+              <div class="crew-add-role-row">
+                <input v-model="newRole.name" placeholder="英文标识 (如 analyst)" class="crew-add-input" />
+                <input v-model="newRole.displayName" placeholder="显示名称" class="crew-add-input" />
+                <input v-model="newRole.icon" placeholder="图标" class="crew-add-input" style="width: 50px; flex: none;" />
+              </div>
+              <input v-model="newRole.description" placeholder="角色描述 (可选)" class="crew-add-input" />
+              <textarea v-model="newRole.claudeMd" placeholder="自定义 Prompt (可选)" rows="2" class="crew-add-input"></textarea>
+              <div class="crew-add-role-actions">
+                <button class="crew-add-role-confirm" @click="confirmAddRole" :disabled="!newRole.name || !newRole.displayName">添加</button>
+              </div>
             </div>
-          </div>
-          <div class="crew-add-role-actions">
-            <button class="crew-add-role-cancel" @click="showAddRole = false">取消</button>
-            <button class="crew-add-role-confirm" @click="confirmAddRole" :disabled="!newRole.name || !newRole.displayName">添加</button>
-          </div>
+          </details>
         </div>
       </div>
     </div>
@@ -297,8 +285,11 @@ export default {
       roleMenuStyle: {},
       attachments: [],   // { file, name, preview?, uploading, fileId? }
       uploading: false,
-      expandedTurns: {},  // { [turnId]: true } for expanded tool sections
+      expandedTurns: {},
       taskPanelCollapsed: false,
+      atMenuVisible: false,
+      atQuery: '',
+      atMenuIndex: 0,
       newRole: this.getEmptyRole(),
       rolePresets: [
         {
@@ -423,6 +414,20 @@ export default {
       const hasContent = this.inputText.trim() || this.attachments.length > 0;
       const notUploading = !this.uploading && this.attachments.every(a => a.fileId);
       return hasContent && notUploading;
+    },
+    filteredAtRoles() {
+      if (!this.atMenuVisible) return [];
+      const roles = this.store.currentCrewSession?.roles || [];
+      const q = this.atQuery.toLowerCase();
+      if (!q) return roles;
+      return roles.filter(r =>
+        r.name.toLowerCase().includes(q) ||
+        r.displayName.toLowerCase().includes(q)
+      );
+    },
+    availablePresets() {
+      const existing = this.store.currentCrewSession?.roles?.map(r => r.name) || [];
+      return this.rolePresets.filter(p => !existing.includes(p.name));
     },
     crewTasks() {
       const messages = this.store.currentCrewMessages;
@@ -571,6 +576,48 @@ export default {
       return this.store.currentCrewStatus?.activeRoles?.includes(roleName);
     },
 
+    handleInput() {
+      this.autoResize();
+      // Detect @ trigger for autocomplete
+      const textarea = this.$refs.inputRef;
+      if (!textarea) return;
+      const pos = textarea.selectionStart;
+      const text = this.inputText;
+      // Find the last @ before cursor
+      const beforeCursor = text.substring(0, pos);
+      const atIdx = beforeCursor.lastIndexOf('@');
+      if (atIdx >= 0 && (atIdx === 0 || /\s/.test(beforeCursor[atIdx - 1]))) {
+        const query = beforeCursor.substring(atIdx + 1);
+        // Only show if query has no spaces (still typing the name)
+        if (!/\s/.test(query)) {
+          this.atQuery = query;
+          this.atMenuVisible = true;
+          this.atMenuIndex = 0;
+          return;
+        }
+      }
+      this.atMenuVisible = false;
+    },
+
+    selectAtRole(role) {
+      const textarea = this.$refs.inputRef;
+      if (!textarea) return;
+      const pos = textarea.selectionStart;
+      const text = this.inputText;
+      const beforeCursor = text.substring(0, pos);
+      const atIdx = beforeCursor.lastIndexOf('@');
+      if (atIdx >= 0) {
+        const afterCursor = text.substring(pos);
+        this.inputText = text.substring(0, atIdx) + '@' + role.name + ' ' + afterCursor;
+        this.$nextTick(() => {
+          const newPos = atIdx + role.name.length + 2; // @ + name + space
+          textarea.selectionStart = textarea.selectionEnd = newPos;
+          textarea.focus();
+        });
+      }
+      this.atMenuVisible = false;
+    },
+
     insertAt(roleName) {
       this.inputText = `@${roleName} ` + this.inputText;
       this.$refs.inputRef?.focus();
@@ -585,6 +632,29 @@ export default {
     },
 
     handleKeydown(e) {
+      // @ menu navigation
+      if (this.atMenuVisible && this.filteredAtRoles.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          this.atMenuIndex = (this.atMenuIndex + 1) % this.filteredAtRoles.length;
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          this.atMenuIndex = (this.atMenuIndex - 1 + this.filteredAtRoles.length) % this.filteredAtRoles.length;
+          return;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          this.selectAtRole(this.filteredAtRoles[this.atMenuIndex]);
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this.atMenuVisible = false;
+          return;
+        }
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.sendMessage();
@@ -701,6 +771,14 @@ export default {
       if (!roleName) return;
       if (!confirm(`确定要移除 ${roleName}？角色的 Memory 将保留。`)) return;
       this.store.removeCrewRole(roleName);
+    },
+
+    quickAddPreset(preset) {
+      this.store.addCrewRole({ ...preset });
+      // If no more presets available, close the modal
+      if (this.availablePresets.length <= 1) {
+        this.showAddRole = false;
+      }
     },
 
     applyPreset(preset) {

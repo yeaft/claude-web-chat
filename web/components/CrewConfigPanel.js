@@ -114,10 +114,6 @@ export default {
                   <label>共享目录:</label>
                   <input class="crew-config-input-sm" v-model="sharedDir" placeholder=".crew" />
                 </div>
-                <div class="crew-config-row">
-                  <label>最大轮次:</label>
-                  <input class="crew-config-input-sm" type="number" v-model.number="maxRounds" min="1" max="100" />
-                </div>
               </div>
             </details>
           </template>
@@ -154,7 +150,7 @@ export default {
               <div class="crew-config-controls">
                 <div class="crew-config-status-info">
                   <span>状态: <strong>{{ statusLabel }}</strong></span>
-                  <span v-if="status.round">轮次: {{ status.round }}/{{ status.maxRounds }}</span>
+                  <span v-if="status.round">轮次: {{ status.round }}</span>
                   <span v-if="status.costUsd">费用: \${{ (status.costUsd || 0).toFixed(3) }}</span>
                 </div>
                 <div class="crew-config-control-btns">
