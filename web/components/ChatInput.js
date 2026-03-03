@@ -16,12 +16,6 @@ export default {
           <button class="attachment-remove" @click="removeAttachment(index)">&times;</button>
         </div>
       </div>
-      <div class="input-hints" v-if="store.currentConversation && !store.currentConversationIsCrew">
-        <span class="input-hints-spacer"></span>
-        <span class="context-usage-hint" v-if="contextUsage" :class="contextColorClass" :title="contextLabel">
-          {{ contextUsage.percentage }}%
-        </span>
-      </div>
       <div class="input-wrapper">
         <input
           type="file"
@@ -328,25 +322,6 @@ export default {
       store.cancelExecution();
     };
 
-    // Context usage
-    const contextUsage = Vue.computed(() => {
-      if (!store.contextUsage) return null;
-      if (store.contextUsage.conversationId !== store.currentConversation) return null;
-      return store.contextUsage;
-    });
-    const contextColorClass = Vue.computed(() => {
-      const pct = contextUsage.value?.percentage || 0;
-      if (pct >= 80) return 'context-danger';
-      if (pct >= 50) return 'context-warn';
-      return 'context-ok';
-    });
-    const contextLabel = Vue.computed(() => {
-      if (!contextUsage.value) return '';
-      const used = (contextUsage.value.inputTokens / 1000).toFixed(0);
-      const total = (contextUsage.value.maxTokens / 1000).toFixed(0);
-      return `Context: ${used}k / ${total}k`;
-    });
-
     return {
       store,
       inputText,
@@ -371,10 +346,7 @@ export default {
       removeAttachment,
       send,
       handleKeydown,
-      cancelExecution,
-      contextUsage,
-      contextColorClass,
-      contextLabel
+      cancelExecution
     };
   }
 };

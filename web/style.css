@@ -1107,12 +1107,18 @@ body {
 /* Chat Header */
 .chat-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   padding: 8px 24px 4px;
   background: var(--bg-main);
   position: relative;
   box-sizing: border-box;
+}
+
+.chat-header .mcp-toggle {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 /* Compact Status Banner */
