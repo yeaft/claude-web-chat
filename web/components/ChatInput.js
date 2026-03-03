@@ -48,7 +48,8 @@ export default {
             @keydown="handleKeydown"
             @paste="handlePaste"
             @blur="onBlur"
-            :placeholder="$t('chatInput.placeholder')"
+            :placeholder="isCompacting ? $t('chatHeader.compacting') : $t('chatInput.placeholder')"
+            :disabled="isCompacting"
             rows="1"
           ></textarea>
         </div>
@@ -109,7 +110,13 @@ export default {
       );
     });
 
+    const isCompacting = Vue.computed(() => {
+      return store.compactStatus?.status === 'compacting'
+        && store.compactStatus?.conversationId === store.currentConversation;
+    });
+
     const canSend = Vue.computed(() => {
+      if (isCompacting.value) return false;
       const hasContent = inputText.value.trim() || attachments.value.length > 0;
       const notUploading = !uploading.value && attachments.value.every(a => a.fileId);
       return hasContent && store.currentAgent && store.currentConversation && notUploading;
@@ -347,6 +354,7 @@ export default {
       attachments,
       uploading,
       canSend,
+      isCompacting,
       contextUsage,
       contextColorClass,
       contextLabel,
