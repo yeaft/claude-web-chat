@@ -368,8 +368,8 @@ export async function createCrewSession(msg) {
   await upsertCrewIndex(session);
   await saveSessionMeta(session);
 
-  // 如果有预设角色，启动第一个
-  if (roles.length > 0) {
+  // 如果有目标，自动启动第一个角色；否则等待用户输入
+  if (goal && roles.length > 0) {
     const firstRole = roles.find(r => r.name === 'pm') || roles[0];
     if (firstRole) {
       const initialPrompt = buildInitialTask(goal, firstRole, roles);
@@ -707,7 +707,7 @@ function buildRoleSystemPrompt(role, session) {
   const otherRoles = allRoles.filter(r => r.name !== role.name);
 
   let prompt = `# 团队协作
-你正在一个 AI 团队中工作。项目目标是: ${session.goal}
+你正在一个 AI 团队中工作。${session.goal ? `项目目标是: ${session.goal}` : '等待用户提出任务或问题。'}
 
 团队成员:
 ${allRoles.map(r => `- ${r.icon} ${r.displayName}: ${r.description}${r.isDecisionMaker ? ' (决策者)' : ''}`).join('\n')}`;
@@ -732,7 +732,8 @@ ${otherRoles.map(r => `- ${r.name}: ${r.displayName}`).join('\n')}
 - 如果你遇到不确定的问题，@ 决策者 "${session.decisionMaker}"，而不是直接 @ human
 - 如果你是决策者且遇到需要人类判断的问题，才 @ human
 - 每次回复最多只能有一个 ROUTE 块
-- ROUTE 块必须在回复的最末尾`;
+- ROUTE 块必须在回复的最末尾
+- 当你的任务已完成且不需要其他角色继续时，ROUTE 回决策者 "${session.decisionMaker}" 做总结`;
   }
 
   // 决策者额外 prompt
@@ -743,6 +744,14 @@ ${otherRoles.map(r => `- ${r.name}: ${r.displayName}`).join('\n')}
 - 如果你需要更多信息，@具体角色请求补充
 - 如果问题超出你的能力范围或需要业务判断，@human 请人类决定
 - 你可以随时审查其他角色的工作并给出反馈
+
+# 工作流终结点
+团队的工作流有明确的结束条件。当以下任一条件满足时，你应该给出总结并结束当前工作流：
+1. **代码已提交** - 所有代码修改已经 commit（如需要，可让 developer 执行 git commit）
+2. **需要用户输入** - 遇到需要用户决定的问题时，@human 提出具体问题，等待用户回复
+3. **任务完成** - 所有任务已完成，给出完成总结（列出完成了什么、变更了哪些文件、还有什么后续建议）
+
+重要：不要无限循环地在角色之间传递。当工作实质性完成时，主动给出总结并结束。
 
 # 任务清单
 你可以在回复中添加 TASKS 块来发布/更新任务清单，团队界面会自动展示：
