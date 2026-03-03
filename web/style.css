@@ -10087,6 +10087,73 @@ body {
   line-height: 1.2;
 }
 
+.crew-stopped-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.crew-stopped-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.crew-stopped-item:hover {
+  border-color: var(--accent-blue);
+}
+
+.crew-stopped-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.crew-stopped-goal {
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crew-stopped-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.crew-stopped-resume-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--accent-blue);
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.crew-config-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.crew-config-divider::before,
+.crew-config-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-color);
+}
+
 /* Crew config toggle in header (matches mcp-toggle) */
 .crew-config-toggle.crew-running {
   color: var(--accent-blue);

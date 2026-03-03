@@ -136,6 +136,18 @@ export function deleteConversation(store, conversationId, agentId) {
     delete store.crewSessions?.[conversationId];
     delete store.crewMessagesMap?.[conversationId];
     delete store.crewStatuses?.[conversationId];
+    // 从 agent 的 crew index 中移除，防止 sendConversationList 重新加载
+    store.sendWsMessage({
+      type: 'delete_crew_session',
+      sessionId: conversationId,
+      agentId: agentId || store.currentAgent
+    });
+  }
+
+  // 立即从本地列表移除（不等 server 同步）
+  store.conversations = store.conversations.filter(c => c.id !== conversationId);
+  if (store.currentConversation === conversationId) {
+    store.currentConversation = null;
   }
 
   // 如果目标 conversation 在其他 agent 上，需要先通知 server 切换 agent

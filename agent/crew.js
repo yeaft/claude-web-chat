@@ -50,6 +50,9 @@ function sessionToIndexEntry(session) {
     projectDir: session.projectDir,
     sharedDir: session.sharedDir,
     status: session.status,
+    goal: session.goal,
+    userId: session.userId,
+    username: session.username,
     createdAt: session.createdAt,
     updatedAt: Date.now()
   };
@@ -61,6 +64,15 @@ async function upsertCrewIndex(session) {
   const idx = index.findIndex(e => e.sessionId === session.id);
   if (idx >= 0) index[idx] = entry; else index.push(entry);
   await saveCrewIndex(index);
+}
+
+export async function removeFromCrewIndex(sessionId) {
+  const index = await loadCrewIndex();
+  const filtered = index.filter(e => e.sessionId !== sessionId);
+  if (filtered.length !== index.length) {
+    await saveCrewIndex(filtered);
+    console.log(`[Crew] Removed session ${sessionId} from index`);
+  }
 }
 
 // =====================================================================

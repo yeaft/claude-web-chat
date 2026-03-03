@@ -16,6 +16,29 @@ export default {
         <div class="crew-config-body">
           <!-- 创建模式 -->
           <template v-if="!isEditMode">
+            <!-- 可恢复的 Crew Sessions -->
+            <div class="crew-config-section" v-if="stoppedCrewSessions.length > 0">
+              <label class="crew-config-label">恢复已有 Session</label>
+              <div class="crew-stopped-list">
+                <div
+                  v-for="sc in stoppedCrewSessions"
+                  :key="sc.id"
+                  class="crew-stopped-item"
+                  @click="resumeStoppedSession(sc)"
+                >
+                  <div class="crew-stopped-info">
+                    <span class="crew-stopped-goal">{{ sc.goal || 'Crew Session' }}</span>
+                    <span class="crew-stopped-meta">{{ shortenPath(sc.workDir) }}</span>
+                  </div>
+                  <span class="crew-stopped-resume-tag">恢复</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="crew-config-divider" v-if="stoppedCrewSessions.length > 0">
+              <span>或新建 Session</span>
+            </div>
+
             <!-- Agent -->
             <div class="crew-config-section">
               <label class="crew-config-label">Agent</label>
@@ -237,6 +260,11 @@ export default {
       if (s === 'completed') return '已完成';
       if (s === 'stopped') return '已停止';
       return '初始化';
+    },
+    stoppedCrewSessions() {
+      return this.store.conversations.filter(c =>
+        c.type === 'crew' && !this.store.crewSessions[c.id]
+      );
     }
   },
 
@@ -270,6 +298,21 @@ export default {
   },
 
   methods: {
+    resumeStoppedSession(conv) {
+      if (conv.agentId) this.store.selectAgent(conv.agentId);
+      this.store.resumeCrewSession(conv.id);
+      this.$emit('close');
+    },
+    shortenPath(p) {
+      if (!p) return '';
+      const home = '/home/';
+      if (p.startsWith(home)) {
+        const rest = p.slice(home.length);
+        const slash = rest.indexOf('/');
+        return slash >= 0 ? '~' + rest.slice(slash) : '~';
+      }
+      return p;
+    },
     loadTemplate(type) {
       this.currentTemplate = type;
       if (type === 'dev') {

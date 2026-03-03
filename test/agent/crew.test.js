@@ -19,6 +19,9 @@ function sessionToIndexEntry(session) {
     projectDir: session.projectDir,
     sharedDir: session.sharedDir,
     status: session.status,
+    goal: session.goal,
+    userId: session.userId,
+    username: session.username,
     createdAt: session.createdAt,
     updatedAt: Date.now()
   };
@@ -90,14 +93,14 @@ describe('Crew Index Operations', () => {
       expect(entry.updatedAt).toBeGreaterThan(0);
     });
 
-    it('should not include roles, goal, or other metadata', () => {
+    it('should include goal, userId, username but not roles', () => {
       const session = createTestSession();
       const entry = sessionToIndexEntry(session);
 
+      expect(entry.goal).toBe('测试目标');
+      expect(entry.userId).toBe('user_123');
+      expect(entry.username).toBe('testuser');
       expect(entry.roles).toBeUndefined();
-      expect(entry.goal).toBeUndefined();
-      expect(entry.userId).toBeUndefined();
-      expect(entry.username).toBeUndefined();
       expect(entry.decisionMaker).toBeUndefined();
     });
   });

@@ -855,5 +855,16 @@ async function handleWebMessage(clientId, msg) {
       });
       break;
     }
+
+    case 'delete_crew_session': {
+      const deleteCrewAgentId = msg.agentId || client.currentAgent;
+      if (!deleteCrewAgentId) break;
+      if (!await checkAgentAccess(deleteCrewAgentId)) break;
+      await forwardToAgent(deleteCrewAgentId, {
+        type: 'delete_crew_session',
+        sessionId: msg.sessionId
+      });
+      break;
+    }
   }
 }
