@@ -1836,32 +1836,31 @@ body {
 /* Context Usage Bar (inline inside input-wrapper) */
 .context-bar-inline {
   position: absolute;
-  bottom: 0;
-  left: 12px;
-  right: 12px;
-  height: 3px;
-  border-radius: 0 0 12px 12px;
-  overflow: hidden;
+  bottom: 1px;
+  left: 16px;
+  right: 16px;
+  height: 2px;
 }
 
 .context-bar-fill {
   height: 100%;
+  border-radius: 1px;
   transition: width 0.3s ease;
 }
 
 .context-bar-fill.context-ok {
   background: var(--success);
-  opacity: 0.5;
+  opacity: 0.3;
 }
 
 .context-bar-fill.context-warn {
   background: #eab308;
-  opacity: 0.7;
+  opacity: 0.4;
 }
 
 .context-bar-fill.context-danger {
   background: #ef4444;
-  opacity: 0.8;
+  opacity: 0.5;
 }
 
 /* Attachments Preview */
