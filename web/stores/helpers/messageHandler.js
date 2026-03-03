@@ -338,8 +338,6 @@ export function handleMessage(store, msg) {
             status.currentTool = null;
           }
           store.finishStreamingForConversation(convId);
-          // 进程退出，清理 web 端排队消息
-          delete store.messageQueues[convId];
           // 更新 conversation 的 claudeSessionId 和 workDir
           const conv = store.conversations.find(c => c.id === convId);
           if (conv) {
@@ -449,72 +447,11 @@ export function handleMessage(store, msg) {
           stopProcessingWatchdog(store, convId);
           if (!store._closedAt) store._closedAt = {};
           store._closedAt[convId] = Date.now();
-          delete store.messageQueues[convId];
           const status = store.executionStatusMap[convId];
           if (status) {
             status.currentTool = null;
           }
           store.finishStreamingForConversation(convId);
-          const msgs = convId === store.currentConversation
-            ? store.messages
-            : (store.messagesCache[convId] || []);
-          for (const m of msgs) {
-            if (m.isQueued && m.queueId) {
-              m.isQueued = false;
-              m.isCancelled = true;
-            }
-          }
-        }
-      }
-      break;
-
-    case 'queue_update':
-      if (msg.conversationId) {
-        store.messageQueues[msg.conversationId] = msg.queue || [];
-        if (msg.nowProcessing) {
-          // 队列中的下一条消息正在被处理，确保 processing 状态正确
-          store.processingConversations[msg.conversationId] = true;
-          const msgs = msg.conversationId === store.currentConversation
-            ? store.messages
-            : (store.messagesCache[msg.conversationId] || []);
-          for (const m of msgs) {
-            if (m.queueId === msg.nowProcessing.id) {
-              m.isQueued = false;
-              break;
-            }
-          }
-        }
-      }
-      break;
-
-    case 'queued_message_cancelled':
-      if (msg.conversationId) {
-        const msgs = msg.conversationId === store.currentConversation
-          ? store.messages
-          : (store.messagesCache[msg.conversationId] || []);
-        for (const m of msgs) {
-          if (m.queueId === msg.queueId) {
-            m.isQueued = false;
-            m.isCancelled = true;
-            break;
-          }
-        }
-      }
-      break;
-
-    case 'queue_cleared':
-      if (msg.conversationId) {
-        const cleared = store.messageQueues[msg.conversationId] || [];
-        const clearedIds = new Set(cleared.map(q => q.id));
-        store.messageQueues[msg.conversationId] = [];
-        const msgs = msg.conversationId === store.currentConversation
-          ? store.messages
-          : (store.messagesCache[msg.conversationId] || []);
-        for (const m of msgs) {
-          if (m.queueId && (clearedIds.has(m.queueId) || m.isQueued)) {
-            m.isQueued = false;
-            m.isCancelled = true;
-          }
         }
       }
       break;

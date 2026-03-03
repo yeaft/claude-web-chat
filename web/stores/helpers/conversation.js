@@ -172,15 +172,10 @@ export function deleteConversation(store, conversationId, agentId) {
 export function sendMessage(store, text, attachments = []) {
   if ((!text.trim() && attachments.length === 0) || !store.currentAgent || !store.currentConversation) return;
 
-  const isQueued = !!store.processingConversations[store.currentConversation];
-  const queueId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-
   store.addMessage({
     type: 'user',
     content: text,
-    attachments: attachments.length > 0 ? attachments : undefined,
-    queueId: isQueued ? queueId : undefined,
-    isQueued
+    attachments: attachments.length > 0 ? attachments : undefined
   });
 
   if (text.trim()) {
@@ -203,8 +198,7 @@ export function sendMessage(store, text, attachments = []) {
     type: 'chat',
     prompt: text,
     fileIds,
-    workDir: store.currentWorkDir,
-    queueId
+    workDir: store.currentWorkDir
   });
 }
 
@@ -223,31 +217,13 @@ export function cancelExecution(store) {
   stopProcessingWatchdog(store, convId);
   if (!store._closedAt) store._closedAt = {};
   store._closedAt[convId] = Date.now();
-  delete store.messageQueues[convId];
   const status = store.executionStatusMap[convId];
   if (status) status.currentTool = null;
   store.finishStreamingForConversation(convId);
 
-  const msgs = store.messages;
-  for (const m of msgs) {
-    if (m.isQueued && m.queueId) {
-      m.isQueued = false;
-      m.isCancelled = true;
-    }
-  }
-
   store.addMessage({
     type: 'system',
     content: t('chat.execution.cancelled')
-  });
-}
-
-export function cancelQueuedMessage(store, queueId) {
-  if (!store.currentConversation) return;
-  store.sendWsMessage({
-    type: 'cancel_queued_message',
-    conversationId: store.currentConversation,
-    queueId
   });
 }
 

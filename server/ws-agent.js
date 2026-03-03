@@ -4,7 +4,7 @@ import { CONFIG } from './config.js';
 import { verifyAgent } from './auth.js';
 import { encodeKey } from './encryption.js';
 import { sessionDb, messageDb } from './database.js';
-import { agents, webClients, pendingAgentConnections, serverMessageQueues, previewFiles } from './context.js';
+import { agents, webClients, pendingAgentConnections, previewFiles } from './context.js';
 import {
   parseMessage, sendToAgent, sendToWebClient,
   broadcastAgentList, notifyConversationUpdate, forwardToClients,
@@ -55,21 +55,6 @@ export function handleAgentConnection(ws, url) {
       if (agent?.conversations) {
         for (const [, conv] of agent.conversations) {
           conv.processing = false;
-        }
-      }
-      // ★ Phase 3: 清空队列
-      if (agent?.conversations) {
-        for (const [convId] of agent.conversations) {
-          const queue = serverMessageQueues.get(convId);
-          if (queue && queue.length > 0) {
-            forwardToClients(agentId, convId, {
-              type: 'queue_cleared',
-              conversationId: convId,
-              count: queue.length,
-              reason: 'agent_disconnected'
-            });
-            serverMessageQueues.delete(convId);
-          }
         }
       }
       clearAgentDirCache(agentId);
@@ -165,21 +150,6 @@ export function handleAgentConnection(ws, url) {
     if (agent?.conversations) {
       for (const [, conv] of agent.conversations) {
         conv.processing = false;
-      }
-    }
-    // ★ Phase 3: Agent 断连时清空该 agent 所有 conversation 的队列
-    if (agent?.conversations) {
-      for (const [convId] of agent.conversations) {
-        const queue = serverMessageQueues.get(convId);
-        if (queue && queue.length > 0) {
-          forwardToClients(agentId, convId, {
-            type: 'queue_cleared',
-            conversationId: convId,
-            count: queue.length,
-            reason: 'agent_disconnected'
-          });
-          serverMessageQueues.delete(convId);
-        }
       }
     }
     // ★ Phase 4: 清理目录缓存
@@ -442,56 +412,6 @@ async function handleAgentMessage(agentId, msg) {
           workDir: msg.workDir
         });
 
-        // ★ Phase 3: 处理队列中下一条消息
-        const turnQueue = serverMessageQueues.get(msg.conversationId);
-        if (turnQueue && turnQueue.length > 0) {
-          const next = turnQueue.shift();
-
-          // 通知 web 端队列更新
-          await forwardToClients(agentId, msg.conversationId, {
-            type: 'queue_update',
-            conversationId: msg.conversationId,
-            queue: turnQueue.map(m => ({ id: m.id, prompt: m.prompt.substring(0, 100), queuedAt: m.queuedAt })),
-            nowProcessing: { id: next.id, prompt: next.prompt.substring(0, 100) }
-          });
-
-          // 标记为 processing
-          if (turnConv) turnConv.processing = true;
-
-          // 用队列消息的 prompt 更新标题
-          if (next.prompt && next.prompt.trim()) {
-            const title = next.prompt.trim().substring(0, 100);
-            sessionDb.update(msg.conversationId, { title });
-            if (turnConv) turnConv.title = title;
-          }
-
-          // 处理附件
-          if (next.files && next.files.length > 0) {
-            await sendToAgent(agent, {
-              type: 'transfer_files',
-              conversationId: msg.conversationId,
-              files: next.files,
-              prompt: next.prompt,
-              workDir: next.workDir || turnConv?.workDir,
-              claudeSessionId: msg.claudeSessionId || turnConv?.claudeSessionId
-            });
-          } else {
-            await sendToAgent(agent, {
-              type: 'execute',
-              conversationId: msg.conversationId,
-              prompt: next.prompt,
-              workDir: next.workDir || turnConv?.workDir,
-              claudeSessionId: msg.claudeSessionId || turnConv?.claudeSessionId,
-              queueId: next.id
-            });
-          }
-        }
-
-        // 如果队列空了，清理
-        if (!turnQueue || turnQueue.length === 0) {
-          serverMessageQueues.delete(msg.conversationId);
-        }
-
         await broadcastAgentList();
       }
       break;
@@ -523,53 +443,6 @@ async function handleAgentMessage(agentId, msg) {
           claudeSessionId: msg.claudeSessionId,
           workDir: msg.workDir
         });
-
-        // 进程退出也要处理队列（如果有的话）
-        const closedQueue = serverMessageQueues.get(msg.conversationId);
-        if (closedQueue && closedQueue.length > 0) {
-          // 进程已退出，队列中的消息需要重新启动进程处理
-          const next = closedQueue.shift();
-
-          await forwardToClients(agentId, msg.conversationId, {
-            type: 'queue_update',
-            conversationId: msg.conversationId,
-            queue: closedQueue.map(m => ({ id: m.id, prompt: m.prompt.substring(0, 100), queuedAt: m.queuedAt })),
-            nowProcessing: { id: next.id, prompt: next.prompt.substring(0, 100) }
-          });
-
-          if (closedConv) closedConv.processing = true;
-
-          // 用队列消息的 prompt 更新标题
-          if (next.prompt && next.prompt.trim()) {
-            const title = next.prompt.trim().substring(0, 100);
-            sessionDb.update(msg.conversationId, { title });
-            if (closedConv) closedConv.title = title;
-          }
-
-          if (next.files && next.files.length > 0) {
-            await sendToAgent(agent, {
-              type: 'transfer_files',
-              conversationId: msg.conversationId,
-              files: next.files,
-              prompt: next.prompt,
-              workDir: next.workDir || closedConv?.workDir,
-              claudeSessionId: msg.claudeSessionId || closedConv?.claudeSessionId
-            });
-          } else {
-            await sendToAgent(agent, {
-              type: 'execute',
-              conversationId: msg.conversationId,
-              prompt: next.prompt,
-              workDir: next.workDir || closedConv?.workDir,
-              claudeSessionId: msg.claudeSessionId || closedConv?.claudeSessionId,
-              queueId: next.id
-            });
-          }
-        }
-
-        if (!closedQueue || closedQueue.length === 0) {
-          serverMessageQueues.delete(msg.conversationId);
-        }
 
         await broadcastAgentList();
       }
@@ -670,21 +543,9 @@ async function handleAgentMessage(agentId, msg) {
       break;
 
     case 'execution_cancelled': {
-      // ★ Bug #2: 设置 processing=false
       const cancelledConv = agent.conversations.get(msg.conversationId);
       if (cancelledConv) {
         cancelledConv.processing = false;
-      }
-      // ★ Bug #2: 清空队列
-      const cancelQueue = serverMessageQueues.get(msg.conversationId);
-      if (cancelQueue && cancelQueue.length > 0) {
-        await forwardToClients(agentId, msg.conversationId, {
-          type: 'queue_cleared',
-          conversationId: msg.conversationId,
-          count: cancelQueue.length,
-          reason: 'execution_cancelled'
-        });
-        serverMessageQueues.delete(msg.conversationId);
       }
       await forwardToClients(agentId, msg.conversationId, {
         type: 'execution_cancelled',

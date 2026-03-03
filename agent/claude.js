@@ -354,7 +354,19 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
           state.usage.cacheCreation += message.usage.cache_creation_input_tokens || 0;
         }
         state.usage.totalCostUsd += message.total_cost_usd || 0;
-        console.log(`[SDK] Query completed for ${conversationId}, cost: $${state.usage.totalCostUsd.toFixed(4)}`);
+
+        // 计算上下文使用百分比并注入到消息中
+        const inputTokens = message.usage?.input_tokens || 0;
+        const maxContextTokens = 200000; // Claude 模型 context window
+        if (inputTokens > 0) {
+          message._contextUsage = {
+            inputTokens,
+            maxTokens: maxContextTokens,
+            percentage: Math.min(100, Math.round((inputTokens / maxContextTokens) * 100))
+          };
+        }
+
+        console.log(`[SDK] Query completed for ${conversationId}, cost: $${state.usage.totalCostUsd.toFixed(4)}, context: ${inputTokens}/${maxContextTokens} tokens`);
 
         // ★ Guard：当前 turn 已收到过 result，抑制 SDK 发出的重复 result
         // （长任务场景下 SDK 可能先发 result/success 再发 result/error_during_execution）

@@ -167,9 +167,6 @@ export default {
   'message.loadMore': '↑ 点击或向上滚动加载更多',
 
   // ============ Message Item ============
-  'message.queued': '排队中',
-  'message.cancelled': '已取消',
-  'message.cancelQueue': '取消排队',
   'message.copyContent': '复制内容',
   'message.copy': '复制内容',
   'message.copied': '已复制',
@@ -194,19 +191,12 @@ export default {
   // ============ Chat Input ============
   'input.upload': '上传文件',
   'input.placeholder': '输入消息...',
-  'input.placeholderQueue': '输入消息排队发送...',
   'input.send': '发送',
-  'input.queueSend': '排队发送',
   'input.stopExecution': '停止执行',
-  'input.stopWithQueue': '停止执行（清除 {count} 条排队并停止当前）',
   'chatInput.upload': '上传文件',
   'chatInput.placeholder': '输入消息...',
-  'chatInput.placeholderQueue': '输入消息排队发送...',
   'chatInput.send': '发送',
-  'chatInput.queueSend': '排队发送',
   'chatInput.stop': '停止执行',
-  'chatInput.stopWithQueue': '停止执行（清除 {count} 条排队并停止当前）',
-  'chatInput.queuedMessages': '{count} 条消息排队中',
 
   // ============ Tool Status ============
   'tools.thinking': '思考中...',

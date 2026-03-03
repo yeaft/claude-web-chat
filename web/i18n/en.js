@@ -167,9 +167,6 @@ export default {
   'message.loadMore': '↑ Click or scroll up to load more',
 
   // ============ Message Item ============
-  'message.queued': 'Queued',
-  'message.cancelled': 'Cancelled',
-  'message.cancelQueue': 'Cancel queue',
   'message.copyContent': 'Copy content',
   'message.copy': 'Copy content',
   'message.copied': 'Copied',
@@ -194,19 +191,12 @@ export default {
   // ============ Chat Input ============
   'input.upload': 'Upload file',
   'input.placeholder': 'Type a message...',
-  'input.placeholderQueue': 'Type a message to queue...',
   'input.send': 'Send',
-  'input.queueSend': 'Queue and send',
   'input.stopExecution': 'Stop execution',
-  'input.stopWithQueue': 'Stop execution (clear {count} queued and stop current)',
   'chatInput.upload': 'Upload file',
   'chatInput.placeholder': 'Type a message...',
-  'chatInput.placeholderQueue': 'Type a message to queue...',
   'chatInput.send': 'Send',
-  'chatInput.queueSend': 'Queue and send',
   'chatInput.stop': 'Stop execution',
-  'chatInput.stopWithQueue': 'Stop execution (clear {count} queued and stop current)',
-  'chatInput.queuedMessages': '{count} message(s) queued',
 
   // ============ Tool Status ============
   'tools.thinking': 'Thinking...',

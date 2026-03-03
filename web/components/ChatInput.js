@@ -8,20 +8,6 @@ export default {
   name: 'ChatInput',
   template: `
     <footer class="input-area" ref="inputAreaRef">
-      <div class="queue-panel" v-if="store.currentQueue.length > 0">
-        <div class="queue-panel-header">
-          <span class="queue-panel-title">{{ $t('chatInput.queuedMessages', { count: store.currentQueue.length }) }}</span>
-        </div>
-        <div class="queue-panel-list">
-          <div class="queue-panel-item" v-for="(item, idx) in store.currentQueue" :key="item.id">
-            <div class="queue-item-num">{{ idx + 1 }}</div>
-            <span class="queue-item-text">{{ item.prompt }}</span>
-            <button class="queue-item-cancel" @click="store.cancelQueuedMessage(item.id)" :title="$t('message.cancelQueue')">
-              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-            </button>
-          </div>
-        </div>
-      </div>
       <div class="attachments-preview" v-if="attachments.length > 0">
         <div class="attachment-item" v-for="(file, index) in attachments" :key="index">
           <img v-if="file.preview" :src="file.preview" class="attachment-thumb" />
@@ -62,7 +48,7 @@ export default {
             @keydown="handleKeydown"
             @paste="handlePaste"
             @blur="onBlur"
-            :placeholder="store.isProcessing ? $t('chatInput.placeholderQueue') : $t('chatInput.placeholder')"
+            :placeholder="$t('chatInput.placeholder')"
             rows="1"
           ></textarea>
         </div>
@@ -70,25 +56,24 @@ export default {
           v-if="store.isProcessing"
           class="send-btn stop-btn"
           @click="cancelExecution"
-          :title="queueCount > 0 ? $t('chatInput.stopWithQueue', { count: queueCount }) : $t('chatInput.stop')"
+          :title="$t('chatInput.stop')"
         >
           <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-          <span v-if="queueCount > 0" class="queue-count">{{ queueCount }}</span>
         </button>
         <button
           class="send-btn"
-          :class="{ 'queue-send': store.isProcessing && canSend }"
           @click="send"
           :disabled="!canSend"
-          :title="store.isProcessing ? $t('chatInput.queueSend') : $t('chatInput.send')"
+          :title="$t('chatInput.send')"
         >
-          <svg v-if="store.isProcessing && canSend" viewBox="0 0 24 24">
-            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-            <circle cx="19" cy="5" r="4.5" fill="currentColor" stroke="var(--bg-main)" stroke-width="1.5"/>
-            <path d="M17 5h4M19 3v4" stroke="var(--bg-main)" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-          <svg v-else viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
+      </div>
+      <div class="context-usage-bar" v-if="contextUsage && contextUsage.conversationId === store.currentConversation">
+        <div class="context-usage-track">
+          <div class="context-usage-fill" :class="contextColorClass" :style="{ width: contextUsage.percentage + '%' }"></div>
+        </div>
+        <span class="context-usage-label">{{ contextLabel }}</span>
       </div>
     </footer>
   `,
@@ -130,7 +115,22 @@ export default {
       return hasContent && store.currentAgent && store.currentConversation && notUploading;
     });
 
-    const queueCount = Vue.computed(() => store.currentQueue.length);
+    const contextUsage = Vue.computed(() => store.contextUsage);
+
+    const contextColorClass = Vue.computed(() => {
+      const pct = contextUsage.value?.percentage || 0;
+      if (pct >= 80) return 'context-danger';
+      if (pct >= 50) return 'context-warn';
+      return 'context-ok';
+    });
+
+    const contextLabel = Vue.computed(() => {
+      if (!contextUsage.value) return '';
+      const pct = contextUsage.value.percentage;
+      const used = (contextUsage.value.inputTokens / 1000).toFixed(0);
+      const total = (contextUsage.value.maxTokens / 1000).toFixed(0);
+      return `${pct}% (${used}k / ${total}k)`;
+    });
 
     const autoResize = () => {
       const textarea = inputRef.value;
@@ -347,7 +347,9 @@ export default {
       attachments,
       uploading,
       canSend,
-      queueCount,
+      contextUsage,
+      contextColorClass,
+      contextLabel,
       showAutocomplete,
       selectedIndex,
       filteredCommands,

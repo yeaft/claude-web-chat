@@ -10,12 +10,6 @@ export default {
     <div :class="messageClass">
       <!-- User message -->
       <template v-if="message.type === 'user'">
-        <div class="message-queue-indicator" v-if="message.isQueued">
-          <span class="queue-badge">{{ $t('message.queued') }}</span>
-        </div>
-        <div class="message-cancelled-indicator" v-if="message.isCancelled">
-          <span class="cancelled-badge">{{ $t('message.cancelled') }}</span>
-        </div>
         <div class="message-content" v-if="message.content">{{ message.content }}</div>
         <!-- Attachments indicator (Claude Code style) -->
         <div class="user-attachments-indicator" v-if="message.attachments && message.attachments.length > 0">
@@ -380,8 +374,6 @@ export default {
     const messageClass = Vue.computed(() => {
       const base = ['message', props.message.type];
       if (props.message.isStreaming) base.push('streaming');
-      if (props.message.isQueued) base.push('queued');
-      if (props.message.isCancelled) base.push('cancelled');
       return base;
     });
 

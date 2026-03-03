@@ -139,8 +139,6 @@ export function handleClaudeOutput(store, conversationId, data) {
     }
   } else if (data.type === 'result') {
     // ★ result 表示当前 turn 已完成，立即清除 processing 状态
-    // 防止 turn_completed 消息丢失（如 WebSocket 断线）导致"思考中"永久残留
-    // turn_completed 到达时会幂等地再次清除，queue_update 会正确重设
     delete store.processingConversations[conversationId];
     stopProcessingWatchdog(store, conversationId);
     execStatus.currentTool = null;
@@ -153,5 +151,13 @@ export function handleClaudeOutput(store, conversationId, data) {
       }
     }
     store.finishStreamingForConversation(conversationId);
+
+    // 提取上下文使用信息
+    if (data._contextUsage) {
+      store.contextUsage = {
+        ...data._contextUsage,
+        conversationId
+      };
+    }
   }
 }

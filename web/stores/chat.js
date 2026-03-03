@@ -74,8 +74,6 @@ export const useChatStore = defineStore('chat', {
     compactStatus: null,
     // 代理端口映射: agentId → [{port, label, enabled}]
     proxyPorts: {},
-    // 消息排队: conversationId → [{id, prompt, queuedAt}]
-    messageQueues: {},
     // ★ Phase 6: 消息分页状态
     hasMoreMessages: false,
     loadingMoreMessages: false,
@@ -101,11 +99,6 @@ export const useChatStore = defineStore('chat', {
     canSend: (state) => {
       if (!state.currentAgent || !state.currentConversation) return false;
       return true; // 始终允许发送（排队机制支持）
-    },
-    // 当前会话的排队消息列表
-    currentQueue: (state) => {
-      if (!state.currentConversation) return [];
-      return state.messageQueues[state.currentConversation] || [];
     },
     currentAgentName: (state) => {
       return state.currentAgentInfo?.name || '选择 Agent';
@@ -233,7 +226,6 @@ export const useChatStore = defineStore('chat', {
     deleteConversation(conversationId, agentId) { convHelpers.deleteConversation(this, conversationId, agentId); },
     sendMessage(text, attachments = []) { convHelpers.sendMessage(this, text, attachments); },
     cancelExecution() { convHelpers.cancelExecution(this); },
-    cancelQueuedMessage(queueId) { convHelpers.cancelQueuedMessage(this, queueId); },
     answerUserQuestion(requestId, answers) { convHelpers.answerUserQuestion(this, requestId, answers); },
     refreshAgents() { convHelpers.refreshAgents(this); },
     refreshConversation() { convHelpers.refreshConversation(this); },

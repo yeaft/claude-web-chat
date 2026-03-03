@@ -34,14 +34,26 @@ export { crewSessions };
 
 const CREW_INDEX_PATH = join(homedir(), '.claude', 'crew-sessions.json');
 
+// 写入锁：防止并发写入导致文件损坏
+let _indexWriteLock = Promise.resolve();
+
 export async function loadCrewIndex() {
   try { return JSON.parse(await fs.readFile(CREW_INDEX_PATH, 'utf-8')); }
   catch { return []; }
 }
 
 async function saveCrewIndex(index) {
-  await fs.mkdir(join(homedir(), '.claude'), { recursive: true });
-  await fs.writeFile(CREW_INDEX_PATH, JSON.stringify(index, null, 2));
+  const doWrite = async () => {
+    await fs.mkdir(join(homedir(), '.claude'), { recursive: true });
+    const data = JSON.stringify(index, null, 2);
+    // 先写临时文件再 rename，保证原子性
+    const tmpPath = CREW_INDEX_PATH + '.tmp';
+    await fs.writeFile(tmpPath, data);
+    await fs.rename(tmpPath, CREW_INDEX_PATH);
+  };
+  // 串行化写入
+  _indexWriteLock = _indexWriteLock.then(doWrite, doWrite);
+  return _indexWriteLock;
 }
 
 function sessionToIndexEntry(session) {

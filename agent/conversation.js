@@ -375,9 +375,6 @@ export async function handleUserInput(msg) {
 
   let state = ctx.conversations.get(conversationId);
 
-  // ★ Phase 3.6: 排队逻辑已移至 server 端，agent 不再本地排队
-  // Server 保证 conversation busy 时不会发新的 execute 过来
-
   // 如果没有活跃的查询，启动新的
   if (!state || !state.query || !state.inputStream) {
     const resumeSessionId = claudeSessionId || state?.claudeSessionId || null;
@@ -388,6 +385,7 @@ export async function handleUserInput(msg) {
   }
 
   // 发送用户消息到输入流
+  // Claude stream-json 模式支持在回复过程中接收新消息（写入 stdin）
   const userMessage = {
     type: 'user',
     message: { role: 'user', content: prompt }

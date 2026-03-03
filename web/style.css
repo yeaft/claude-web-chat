@@ -546,6 +546,8 @@ body {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .sidebar-brand .status-dot {
@@ -558,6 +560,10 @@ body {
 
 .sidebar-brand .status-dot.online {
   background: var(--success);
+}
+
+.sidebar-brand .brand-label {
+  white-space: nowrap;
 }
 
 .sidebar-header-actions {
@@ -916,6 +922,8 @@ body {
   color: var(--text-secondary);
   margin-top: 2px;
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .session-path {
@@ -1825,106 +1833,46 @@ body {
   flex-shrink: 0;
 }
 
-/* Queue Panel - fixed above input */
-.queue-panel {
+/* Context Usage Bar */
+.context-usage-bar {
   max-width: 768px;
-  margin: 0 auto 10px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  padding: 10px 12px;
-  animation: queueSlideIn 0.2s ease-out;
-}
-
-@keyframes queueSlideIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.queue-panel-header {
-  margin-bottom: 6px;
-}
-
-.queue-panel-title {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.queue-panel-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 120px;
-  overflow-y: auto;
-}
-
-.queue-panel-item {
+  margin: 8px auto 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
-  background: var(--bg-main);
-  border-radius: 8px;
-  transition: background 0.15s;
 }
 
-.queue-panel-item:hover {
-  background: var(--bg-input-wrapper);
-}
-
-.queue-item-num {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--accent-color);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-[data-theme="dark"] .queue-item-num {
-  color: var(--bg-main);
-}
-
-.queue-item-text {
+.context-usage-track {
   flex: 1;
-  font-size: 12px;
-  color: var(--text-secondary);
+  height: 3px;
+  background: var(--border-color);
+  border-radius: 2px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
 }
 
-.queue-item-cancel {
-  background: none;
-  border: none;
-  padding: 4px;
-  cursor: pointer;
+.context-usage-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.context-usage-fill.context-ok {
+  background: var(--success);
+}
+
+.context-usage-fill.context-warn {
+  background: #eab308;
+}
+
+.context-usage-fill.context-danger {
+  background: #ef4444;
+}
+
+.context-usage-label {
+  font-size: 11px;
   color: var(--text-muted);
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  white-space: nowrap;
   flex-shrink: 0;
-  opacity: 0;
-  transition: opacity 0.15s, background 0.15s, color 0.15s;
-}
-
-.queue-panel-item:hover .queue-item-cancel {
-  opacity: 1;
-}
-
-.queue-item-cancel:hover {
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
 }
 
 /* Attachments Preview */
@@ -2167,45 +2115,6 @@ body {
   height: 16px;
 }
 
-/* Queue count badge on stop button */
-.send-btn.stop-btn .queue-count {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  background: var(--bg-main);
-  color: var(--text-primary);
-  font-size: 10px;
-  font-weight: 600;
-  min-width: 16px;
-  height: 16px;
-  line-height: 16px;
-  border-radius: 8px;
-  text-align: center;
-  padding: 0 4px;
-  border: 1px solid var(--border-color);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-/* Queue-send button highlight */
-.send-btn.queue-send {
-  background: #4a7cc9;
-}
-
-.send-btn.queue-send:hover:not(:disabled) {
-  background: #3a6ab5;
-}
-
-[data-theme="dark"] .send-btn.queue-send {
-  background: #5a7a9a;
-}
-
-[data-theme="dark"] .send-btn.queue-send:hover:not(:disabled) {
-  background: #6a8aaa;
-}
-
-.send-btn.queue-send svg {
-  overflow: visible;
-}
 
 
 /* Session list empty hint */
@@ -9037,77 +8946,6 @@ body {
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 10px;
-}
-
-/* ============ Message Queue Styles ============ */
-
-.message.user.queued {
-  opacity: 0.65;
-  border-left: 3px solid #d4a34a;
-  border-radius: 18px 18px 18px 14px;
-}
-
-[data-theme="dark"] .message.user.queued {
-  border-left-color: #9a7a45;
-}
-
-.message.user.cancelled {
-  opacity: 0.4;
-}
-
-.message.user.cancelled .message-content {
-  text-decoration: line-through;
-}
-
-.message-queue-indicator,
-.message-cancelled-indicator {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-
-.queue-badge {
-  font-size: 11px;
-  padding: 1px 8px;
-  border-radius: 10px;
-  background: #d4a34a;
-  color: #fff;
-  font-weight: 500;
-}
-
-[data-theme="dark"] .queue-badge {
-  background: #8a7040;
-  color: #d8d5d0;
-}
-
-.cancelled-badge {
-  font-size: 11px;
-  padding: 1px 8px;
-  border-radius: 10px;
-  background: var(--error);
-  color: #fff;
-  font-weight: 500;
-}
-
-.queue-cancel-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: 50%;
-  padding: 0;
-  transition: background 0.15s, color 0.15s;
-}
-
-.queue-cancel-btn:hover {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--error);
 }
 
 /* ============ Sidebar Proxy Modal ============ */

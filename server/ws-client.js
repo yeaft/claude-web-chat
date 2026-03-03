@@ -4,7 +4,7 @@ import { CONFIG } from './config.js';
 import { verifyToken, generateSkipAuthSession } from './auth.js';
 import { encodeKey } from './encryption.js';
 import { messageDb, userDb, sessionDb } from './database.js';
-import { agents, webClients, pendingFiles, serverMessageQueues, userFileTabs } from './context.js';
+import { agents, webClients, pendingFiles, userFileTabs } from './context.js';
 import {
   parseMessage, sendToWebClient, sendToAgent,
   broadcastAgentList, forwardToAgent, forwardToClients,
@@ -262,7 +262,6 @@ async function handleWebMessage(clientId, msg) {
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
       }
-      serverMessageQueues.delete(msg.conversationId);
       await forwardToAgent(client.currentAgent, {
         type: 'delete_conversation',
         conversationId: msg.conversationId
@@ -348,8 +347,6 @@ async function handleWebMessage(clientId, msg) {
       const convId = client.currentConversation;
       const convInfo = chatAgent?.conversations.get(convId);
 
-      const isProcessing = convInfo?.processing === true;
-
       // 处理附件
       const fileIds = msg.fileIds || [];
       let resolvedFiles = [];
@@ -369,37 +366,8 @@ async function handleWebMessage(clientId, msg) {
         }
       }
 
-      if (isProcessing) {
-        const queueItem = {
-          id: msg.queueId || randomUUID(),
-          prompt: msg.prompt,
-          workDir: msg.workDir || convInfo?.workDir,
-          userId: client.userId,
-          clientId: clientId,
-          queuedAt: Date.now(),
-          files: resolvedFiles.length > 0 ? resolvedFiles : undefined
-        };
-
-        if (!serverMessageQueues.has(convId)) {
-          serverMessageQueues.set(convId, []);
-        }
-        const queue = serverMessageQueues.get(convId);
-
-        if (queue.length >= 10) {
-          await sendToWebClient(client, { type: 'error', message: 'Queue full (max 10 messages)' });
-          return;
-        }
-
-        queue.push(queueItem);
-
-        await forwardToClients(client.currentAgent, convId, {
-          type: 'queue_update',
-          conversationId: convId,
-          queue: queue.map(m => ({ id: m.id, prompt: m.prompt.substring(0, 100), queuedAt: m.queuedAt }))
-        });
-        return;
-      }
-
+      // 直接转发给 agent — Claude stream-json 模式支持在回复过程中接收新消息
+      // agent 端的 inputStream.enqueue() 会将消息写入 Claude 进程的 stdin
       if (convInfo) convInfo.processing = true;
 
       // 用用户输入的 prompt 更新会话标题（始终用最新的用户消息）
@@ -424,8 +392,7 @@ async function handleWebMessage(clientId, msg) {
           conversationId: convId,
           prompt: msg.prompt,
           workDir: msg.workDir || convInfo?.workDir,
-          claudeSessionId: convInfo?.claudeSessionId,
-          queueId: msg.queueId
+          claudeSessionId: convInfo?.claudeSessionId
         });
       }
       break;
@@ -471,71 +438,10 @@ async function handleWebMessage(clientId, msg) {
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
       }
-      const cancelQueue = serverMessageQueues.get(cancelConvId);
-      if (cancelQueue && cancelQueue.length > 0) {
-        await forwardToClients(client.currentAgent, cancelConvId, {
-          type: 'queue_cleared',
-          conversationId: cancelConvId,
-          count: cancelQueue.length,
-          reason: 'execution_cancelled'
-        });
-        serverMessageQueues.delete(cancelConvId);
-      }
       await forwardToAgent(client.currentAgent, {
         type: 'cancel_execution',
         conversationId: cancelConvId
       });
-      break;
-    }
-
-    case 'cancel_queued_message': {
-      if (!client.currentAgent) return;
-      if (!await checkAgentAccess(client.currentAgent)) return;
-      const cqmConvId = msg.conversationId || client.currentConversation;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(cqmConvId, client.userId)) {
-        console.warn(`[Security] User ${client.userId} cancel_queued denied for ${cqmConvId}`);
-        await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
-        return;
-      }
-      const queue = serverMessageQueues.get(cqmConvId);
-      if (queue) {
-        const idx = queue.findIndex(m => m.id === msg.queueId);
-        if (idx >= 0) {
-          queue.splice(idx, 1);
-          await forwardToClients(client.currentAgent, cqmConvId, {
-            type: 'queued_message_cancelled',
-            conversationId: cqmConvId,
-            queueId: msg.queueId
-          });
-          await forwardToClients(client.currentAgent, cqmConvId, {
-            type: 'queue_update',
-            conversationId: cqmConvId,
-            queue: queue.map(m => ({ id: m.id, prompt: m.prompt.substring(0, 100), queuedAt: m.queuedAt }))
-          });
-        }
-      }
-      break;
-    }
-
-    case 'clear_queue': {
-      if (!client.currentAgent) return;
-      if (!await checkAgentAccess(client.currentAgent)) return;
-      const clrConvId = msg.conversationId || client.currentConversation;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(clrConvId, client.userId)) {
-        console.warn(`[Security] User ${client.userId} clear_queue denied for ${clrConvId}`);
-        await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
-        return;
-      }
-      const clrQueue = serverMessageQueues.get(clrConvId);
-      if (clrQueue) {
-        const count = clrQueue.length;
-        serverMessageQueues.delete(clrConvId);
-        await forwardToClients(client.currentAgent, clrConvId, {
-          type: 'queue_cleared',
-          conversationId: clrConvId,
-          count
-        });
-      }
       break;
     }
 
