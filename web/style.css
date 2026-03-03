@@ -5210,6 +5210,8 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-right: 12px;
+  direction: rtl;
+  text-align: left;
 }
 
 .folder-item-compact .item-badge {
@@ -8095,6 +8097,8 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  direction: rtl;
+  text-align: left;
 }
 
 .folder-picker-list {
