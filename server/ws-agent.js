@@ -653,6 +653,27 @@ async function handleAgentMessage(agentId, msg) {
       break;
     }
 
+    case 'crew_session_restored': {
+      // 恢复时重新注册到 agent.conversations（server 可能重启过）
+      const restoreUserId = msg.userId || agent.ownerId || null;
+      const restoreUsername = msg.username || agent.ownerUsername || null;
+      if (!agent.conversations.has(msg.sessionId)) {
+        agent.conversations.set(msg.sessionId, {
+          id: msg.sessionId,
+          workDir: msg.projectDir,
+          userId: restoreUserId,
+          username: restoreUsername,
+          createdAt: Date.now(),
+          processing: true,
+          type: 'crew',
+          goal: msg.goal,
+          roles: msg.roles
+        });
+      }
+      await forwardToClients(agentId, msg.sessionId, msg);
+      break;
+    }
+
     case 'crew_output':
       await forwardToClients(agentId, msg.sessionId, msg);
       break;

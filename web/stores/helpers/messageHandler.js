@@ -563,6 +563,7 @@ export function handleMessage(store, msg) {
     // Crew (multi-agent) messages
     // =====================================================================
     case 'crew_session_created':
+    case 'crew_session_restored':
     case 'crew_output':
     case 'crew_status':
     case 'crew_turn_completed':

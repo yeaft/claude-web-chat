@@ -156,7 +156,7 @@ export async function resumeCrewSession(msg) {
     const session = crewSessions.get(sessionId);
     const roles = Array.from(session.roles.values());
     sendCrewMessage({
-      type: 'crew_session_created',
+      type: 'crew_session_restored',
       sessionId,
       projectDir: session.projectDir,
       sharedDir: session.sharedDir,
@@ -214,9 +214,9 @@ export async function resumeCrewSession(msg) {
   };
   crewSessions.set(sessionId, session);
 
-  // 通知 server（复用 crew_session_created）
+  // 通知 server
   sendCrewMessage({
-    type: 'crew_session_created',
+    type: 'crew_session_restored',
     sessionId,
     projectDir: session.projectDir,
     sharedDir: session.sharedDir,

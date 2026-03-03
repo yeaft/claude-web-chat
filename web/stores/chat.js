@@ -483,6 +483,42 @@ export const useChatStore = defineStore('chat', {
         return;
       }
 
+      if (msg.type === 'crew_session_restored') {
+        // 恢复时只重建 session 数据，不添加系统消息，不强制切换
+        this.crewSessions[sid] = {
+          id: sid,
+          projectDir: msg.projectDir,
+          sharedDir: msg.sharedDir,
+          goal: msg.goal,
+          roles: msg.roles,
+          decisionMaker: msg.decisionMaker,
+          maxRounds: msg.maxRounds
+        };
+        ensureMessages(sid);
+        // 确保 conversation 存在
+        let conv = this.conversations.find(c => c.id === sid);
+        if (!conv) {
+          const agent = this.agents.find(a => a.id === this.currentAgent);
+          conv = {
+            id: sid,
+            agentId: this.currentAgent,
+            agentName: agent?.name || this.currentAgent,
+            workDir: msg.projectDir,
+            claudeSessionId: null,
+            createdAt: Date.now(),
+            processing: false,
+            type: 'crew',
+            goal: msg.goal
+          };
+          this.conversations.push(conv);
+        } else {
+          conv.type = 'crew';
+          conv.goal = msg.goal;
+        }
+        this.saveOpenSessions();
+        return;
+      }
+
       if (msg.type === 'crew_output') {
         const messages = ensureMessages(sid);
         const crewMsg = {
