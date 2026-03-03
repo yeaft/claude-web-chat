@@ -81,7 +81,12 @@ const webDir = process.env.SERVE_DIST === 'true'
   : join(__dirname, '../web');
 app.use(express.static(webDir, {
   maxAge: process.env.SERVE_DIST === 'true' ? '1d' : 0,
-  etag: true
+  etag: true,
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  }
 }));
 
 // Port proxy routes (must be before express.json() to get raw body)

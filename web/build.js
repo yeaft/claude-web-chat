@@ -6,6 +6,11 @@ const esbuild = require('esbuild');
 const { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, statSync, rmSync } = require('fs');
 const { join } = require('path');
 const { gzipSync } = require('zlib');
+const crypto = require('crypto');
+
+function contentHash(filePath) {
+  return crypto.createHash('md5').update(readFileSync(filePath)).digest('hex').slice(0, 8);
+}
 
 const distDir = join(__dirname, 'dist');
 const vendorDir = join(__dirname, 'vendor');
@@ -126,6 +131,9 @@ console.log(`   CSS bundle: ${(cssResult.code.length / 1024).toFixed(1)} KB`);
 
 // Step 4: Generate optimized index.html
 console.log('4. Generating index.html...');
+const appHash = contentHash(join(distDir, 'app.bundle.js'));
+const cssHash = contentHash(join(distDir, 'style.bundle.css'));
+const vendorHash = contentHash(join(distDir, 'vendor.bundle.js'));
 const indexHtml = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -133,8 +141,8 @@ const indexHtml = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Claude Web Chat</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23d97706'/><path d='M8 11l4 4-4 4' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' fill='none'/><path d='M14 19h10' stroke='white' stroke-width='2.5' stroke-linecap='round'/></svg>">
-  <link rel="stylesheet" href="style.bundle.css">
-  <script src="vendor.bundle.js"></script>
+  <link rel="stylesheet" href="style.bundle.css?v=${cssHash}">
+  <script src="vendor.bundle.js?v=${vendorHash}"></script>
   <script defer src="jszip.min.js"></script>
   <script defer src="docx-preview.min.js"></script>
   <script defer src="xlsx.min.js"></script>
@@ -142,7 +150,7 @@ const indexHtml = `<!DOCTYPE html>
 </head>
 <body>
   <div id="app"></div>
-  <script type="module" src="app.bundle.js"></script>
+  <script type="module" src="app.bundle.js?v=${appHash}"></script>
 </body>
 </html>`;
 writeFileSync(join(distDir, 'index.html'), indexHtml);
