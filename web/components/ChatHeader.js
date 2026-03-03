@@ -2,8 +2,12 @@ export default {
   name: 'ChatHeader',
   template: `
     <header class="chat-header">
-      <div class="chat-title">{{ headerTitle }}<span v-if="folderPath" class="chat-title-path">{{ folderPath }}</span></div>
-      <div class="header-actions">
+      <div class="chat-header-inner">
+        <div class="chat-title-group">
+          <div class="chat-title">{{ headerTitle }}</div>
+          <div v-if="folderPath" class="chat-title-path">{{ folderPath }}</div>
+        </div>
+        <div class="header-actions">
         <span class="context-usage-hint" v-if="contextUsage" :class="contextColorClass" :title="contextLabel">
           {{ contextUsage.percentage }}%
         </span>
@@ -32,6 +36,7 @@ export default {
           <span class="mcp-status">{{ crewStatusLabel }}</span>
         </button>
       </div>
+      </div>
       <!-- Compact Status Banner -->
       <div v-if="showCompactStatus" class="compact-status-banner" :class="compactStatusClass">
         <span v-if="store.compactStatus?.status === 'compacting'" class="compact-spinner"></span>
@@ -58,7 +63,7 @@ export default {
 
       const title = store.getConversationTitle(store.currentConversation);
       if (title) {
-        return title.length > 50 ? title.slice(0, 50) + '...' : title;
+        return title;
       }
 
       if (store.currentWorkDir) {
