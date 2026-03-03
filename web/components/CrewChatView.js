@@ -800,8 +800,8 @@ summary: 请测试以下变更...
       const idx = hash % 4;
       return {
         '--role-color': `var(--crew-color-fallback-${idx})`,
-        '--role-bg': `var(--crew-color-fallback-${idx})11`,
-        '--role-border': `var(--crew-color-fallback-${idx})40`
+        '--role-bg': `var(--crew-color-fallback-${idx}-bg)`,
+        '--role-border': `var(--crew-color-fallback-${idx}-border)`
       };
     },
 
