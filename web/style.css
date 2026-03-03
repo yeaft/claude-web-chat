@@ -10365,6 +10365,44 @@ body {
   box-sizing: border-box;
 }
 
+/* Human message: right-aligned bubble, no avatar */
+.crew-message.crew-msg-human-bubble {
+  flex-direction: row-reverse;
+  gap: 0;
+}
+
+.crew-message.crew-msg-human-bubble .crew-msg-body {
+  max-width: 75%;
+  background: var(--bg-user-msg);
+  border-radius: 16px 16px 4px 16px;
+  padding: 8px 14px;
+}
+
+.crew-message.crew-msg-human-bubble .crew-msg-header {
+  justify-content: flex-end;
+}
+
+.crew-message.crew-msg-human-bubble:hover {
+  background: transparent;
+}
+
+/* Turn divider between different roles */
+.crew-turn-divider {
+  max-width: 800px;
+  margin: 2px auto;
+  width: 100%;
+  padding: 0 48px;
+  box-sizing: border-box;
+}
+
+.crew-turn-divider::after {
+  content: '';
+  display: block;
+  height: 1px;
+  background: var(--border-color);
+  opacity: 0.4;
+}
+
 .crew-message:hover {
   background: var(--sidebar-hover);
 }

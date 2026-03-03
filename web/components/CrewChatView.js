@@ -58,6 +58,9 @@ export default {
         </div>
 
         <template v-for="(turn, tidx) in groupedMessages" :key="turn.id">
+          <!-- Turn divider: when role changes between adjacent turns -->
+          <div v-if="tidx > 0 && shouldShowDivider(tidx)" class="crew-turn-divider"></div>
+
           <!-- Round Divider -->
           <div v-if="turn.type === 'route' && turn.message.round > 0" class="crew-round-divider">
             <div class="crew-round-line"></div>
@@ -65,9 +68,9 @@ export default {
             <div class="crew-round-line"></div>
           </div>
 
-          <!-- Standalone messages (route, system, human_needed) -->
-          <div v-if="turn.type !== 'turn'" class="crew-message" :class="'crew-msg-' + (turn.message.type) + ' crew-role-' + (turn.message.role)" :style="getRoleStyle(turn.message.role)">
-            <div class="crew-msg-avatar">
+          <!-- Standalone messages (route, system, human_needed, human text) -->
+          <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': turn.message.role === 'human' && turn.message.type === 'text' }]" :style="getRoleStyle(turn.message.role)">
+            <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-avatar">
               <span class="crew-msg-icon">{{ turn.message.roleIcon }}</span>
             </div>
             <div class="crew-msg-body">
@@ -552,6 +555,18 @@ export default {
 
     toggleTurn(turnId) {
       this.expandedTurns[turnId] = !this.expandedTurns[turnId];
+    },
+
+    shouldShowDivider(tidx) {
+      const turns = this.groupedMessages;
+      const prev = turns[tidx - 1];
+      const curr = turns[tidx];
+      // Don't add divider before/after round dividers or routes
+      if (curr.type === 'route' || prev.type === 'route') return false;
+      // Get roles
+      const prevRole = prev.type === 'turn' ? prev.role : prev.message?.role;
+      const currRole = curr.type === 'turn' ? curr.role : curr.message?.role;
+      return prevRole && currRole && prevRole !== currRole;
     },
 
     getRoleStyle(roleName) {
