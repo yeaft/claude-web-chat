@@ -68,16 +68,23 @@ export default {
             <div class="crew-round-line"></div>
           </div>
 
-          <!-- Standalone messages (route, system, human_needed, human text) -->
-          <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': turn.message.role === 'human' && turn.message.type === 'text' }]" :style="getRoleStyle(turn.message.role)">
+          <!-- Route indicator (centered system-style) -->
+          <div v-if="turn.type !== 'turn' && turn.message.type === 'route'" class="crew-route-indicator">
+            <span>{{ turn.message.roleIcon }} {{ turn.message.roleName }}</span>
+            <span class="crew-route-arrow">→</span>
+            <span>{{ getRoleIcon(turn.message.routeTo) }} {{ getRoleDisplayName(turn.message.routeTo) }}</span>
+            <span v-if="turn.message.routeSummary" class="crew-route-summary">· {{ turn.message.routeSummary }}</span>
+          </div>
+
+          <!-- Standalone messages (system, human_needed, human text) -->
+          <div v-else-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': turn.message.role === 'human' && turn.message.type === 'text' }]" :style="getRoleStyle(turn.message.role)">
             <div class="crew-msg-body">
               <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-header">
                 <span class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
                 <span class="crew-msg-name" :class="{ 'is-human': turn.message.role === 'human', 'is-system': turn.message.role === 'system' }">{{ turn.message.roleName }}</span>
                 <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
               </div>
-              <div v-if="turn.message.type === 'route'" class="crew-msg-route">{{ turn.message.content }}</div>
-              <div v-else-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
+              <div v-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
               <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
                 <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
               </div>
@@ -564,6 +571,20 @@ export default {
       const prevRole = prev.type === 'turn' ? prev.role : prev.message?.role;
       const currRole = curr.type === 'turn' ? curr.role : curr.message?.role;
       return prevRole && currRole && prevRole !== currRole;
+    },
+
+    getRoleIcon(roleName) {
+      const session = this.store.currentCrewSession;
+      if (!session) return '';
+      const role = session.roles.find(r => r.name === roleName);
+      return role ? role.icon : '';
+    },
+
+    getRoleDisplayName(roleName) {
+      const session = this.store.currentCrewSession;
+      if (!session) return roleName;
+      const role = session.roles.find(r => r.name === roleName);
+      return role ? role.displayName : roleName;
     },
 
     getRoleStyle(roleName) {

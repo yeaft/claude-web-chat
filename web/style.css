@@ -10466,13 +10466,25 @@ body {
   margin-top: 4px;
 }
 
-/* Crew Route Message */
-.crew-msg-route {
-  font-size: 13px;
-  color: var(--text-secondary);
-  font-weight: 500;
-  font-style: italic;
-  padding: 2px 0;
+/* Crew Route Indicator (centered) */
+.crew-route-indicator {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 24px;
+  max-width: 800px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.crew-route-arrow {
+  margin: 0 4px;
+}
+
+.crew-route-summary {
+  margin-left: 2px;
+  opacity: 0.7;
 }
 
 /* Crew Task Panel */

@@ -618,6 +618,7 @@ export const useChatStore = defineStore('chat', {
             ...crewMsg,
             type: 'route',
             routeTo: msg.routeTo,
+            routeSummary: msg.routeSummary || '',
             round: this.crewStatuses[sid]?.round || 0,
             content: `→ @${msg.routeTo} ${msg.routeSummary || ''}`
           });
