@@ -1839,8 +1839,7 @@ body {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 2px;
-  border-radius: 0 0 24px 24px;
+  height: 3px;
   overflow: hidden;
 }
 
