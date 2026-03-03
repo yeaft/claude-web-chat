@@ -151,13 +151,5 @@ export function handleClaudeOutput(store, conversationId, data) {
       }
     }
     store.finishStreamingForConversation(conversationId);
-
-    // 提取上下文使用信息
-    if (data._contextUsage) {
-      store.contextUsage = {
-        ...data._contextUsage,
-        conversationId
-      };
-    }
   }
 }

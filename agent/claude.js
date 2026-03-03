@@ -355,16 +355,17 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         }
         state.usage.totalCostUsd += message.total_cost_usd || 0;
 
-        // 计算上下文使用百分比并注入到消息中
+        // 计算上下文使用百分比
         const inputTokens = message.usage?.input_tokens || 0;
         const maxContextTokens = 200000; // Claude 模型 context window
-        let contextUsage = null;
         if (inputTokens > 0) {
-          contextUsage = {
+          ctx.sendToServer({
+            type: 'context_usage',
+            conversationId,
             inputTokens,
             maxTokens: maxContextTokens,
             percentage: Math.min(100, Math.round((inputTokens / maxContextTokens) * 100))
-          };
+          });
         }
 
         console.log(`[SDK] Query completed for ${conversationId}, cost: $${state.usage.totalCostUsd.toFixed(4)}, context: ${inputTokens}/${maxContextTokens} tokens`);
@@ -385,7 +386,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
         // ★ await 确保 result 和 turn_completed 消息确实发送成功
         // 不 await 会导致 encrypt 失败时消息静默丢失，前端卡在"思考中"
-        await sendOutput(conversationId, contextUsage ? { ...message, _contextUsage: contextUsage } : message);
+        await sendOutput(conversationId, message);
         await ctx.sendToServer({
           type: 'turn_completed',
           conversationId,

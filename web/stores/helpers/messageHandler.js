@@ -550,6 +550,15 @@ export function handleMessage(store, msg) {
       store.connectionState = 'updating';
       break;
 
+    case 'context_usage':
+      store.contextUsage = {
+        inputTokens: msg.inputTokens,
+        maxTokens: msg.maxTokens,
+        percentage: msg.percentage,
+        conversationId: msg.conversationId
+      };
+      break;
+
     // =====================================================================
     // Crew (multi-agent) messages
     // =====================================================================

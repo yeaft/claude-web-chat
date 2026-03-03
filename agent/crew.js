@@ -151,9 +151,25 @@ export async function handleListCrewSessions(msg) {
 export async function resumeCrewSession(msg) {
   const { sessionId, userId, username } = msg;
 
-  // 如果已经在活跃 sessions 中，直接返回状态
+  // 如果已经在活跃 sessions 中，重新发送完整信息让前端重建
   if (crewSessions.has(sessionId)) {
     const session = crewSessions.get(sessionId);
+    const roles = Array.from(session.roles.values());
+    sendCrewMessage({
+      type: 'crew_session_created',
+      sessionId,
+      projectDir: session.projectDir,
+      sharedDir: session.sharedDir,
+      goal: session.goal,
+      roles: roles.map(r => ({
+        name: r.name, displayName: r.displayName, icon: r.icon,
+        description: r.description, isDecisionMaker: r.isDecisionMaker || false
+      })),
+      decisionMaker: session.decisionMaker,
+      maxRounds: session.maxRounds,
+      userId: session.userId,
+      username: session.username
+    });
     sendStatusUpdate(session);
     return;
   }

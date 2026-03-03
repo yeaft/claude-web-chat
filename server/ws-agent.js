@@ -542,6 +542,16 @@ async function handleAgentMessage(agentId, msg) {
       });
       break;
 
+    case 'context_usage':
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'context_usage',
+        conversationId: msg.conversationId,
+        inputTokens: msg.inputTokens,
+        maxTokens: msg.maxTokens,
+        percentage: msg.percentage
+      });
+      break;
+
     case 'execution_cancelled': {
       const cancelledConv = agent.conversations.get(msg.conversationId);
       if (cancelledConv) {
