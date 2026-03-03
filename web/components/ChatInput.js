@@ -69,9 +69,6 @@ export default {
         >
           <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
-        <div class="context-bar-inline" v-if="contextUsage && contextUsage.conversationId === store.currentConversation" :title="contextLabel">
-          <div class="context-bar-fill" :class="contextColorClass" :style="{ width: contextUsage.percentage + '%' }"></div>
-        </div>
       </div>
     </footer>
   `,
@@ -117,23 +114,6 @@ export default {
       const hasContent = inputText.value.trim() || attachments.value.length > 0;
       const notUploading = !uploading.value && attachments.value.every(a => a.fileId);
       return hasContent && store.currentAgent && store.currentConversation && notUploading;
-    });
-
-    const contextUsage = Vue.computed(() => store.contextUsage);
-
-    const contextColorClass = Vue.computed(() => {
-      const pct = contextUsage.value?.percentage || 0;
-      if (pct >= 80) return 'context-danger';
-      if (pct >= 50) return 'context-warn';
-      return 'context-ok';
-    });
-
-    const contextLabel = Vue.computed(() => {
-      if (!contextUsage.value) return '';
-      const pct = contextUsage.value.percentage;
-      const used = (contextUsage.value.inputTokens / 1000).toFixed(0);
-      const total = (contextUsage.value.maxTokens / 1000).toFixed(0);
-      return `${pct}% (${used}k / ${total}k)`;
     });
 
     const autoResize = () => {
@@ -352,9 +332,6 @@ export default {
       uploading,
       canSend,
       isCompacting,
-      contextUsage,
-      contextColorClass,
-      contextLabel,
       showAutocomplete,
       selectedIndex,
       filteredCommands,

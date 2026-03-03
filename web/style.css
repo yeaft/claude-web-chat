@@ -1833,34 +1833,25 @@ body {
   flex-shrink: 0;
 }
 
-/* Context Usage Bar (inline inside input-wrapper) */
-.context-bar-inline {
-  position: absolute;
-  bottom: 1px;
-  left: 16px;
-  right: 16px;
-  height: 2px;
+/* Context Usage Hint (in header) */
+.context-usage-hint {
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.6;
+  cursor: default;
 }
 
-.context-bar-fill {
-  height: 100%;
-  border-radius: 1px;
-  transition: width 0.3s ease;
+.context-usage-hint.context-ok {
+  color: var(--success);
 }
 
-.context-bar-fill.context-ok {
-  background: var(--success);
-  opacity: 0.3;
+.context-usage-hint.context-warn {
+  color: #eab308;
 }
 
-.context-bar-fill.context-warn {
-  background: #eab308;
-  opacity: 0.4;
-}
-
-.context-bar-fill.context-danger {
-  background: #ef4444;
-  opacity: 0.5;
+.context-usage-hint.context-danger {
+  color: #ef4444;
+  opacity: 0.8;
 }
 
 /* Attachments Preview */

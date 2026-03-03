@@ -4,6 +4,9 @@ export default {
     <header class="chat-header">
       <div class="chat-title">{{ headerTitle }}<span v-if="folderPath" class="chat-title-path">{{ folderPath }}</span></div>
       <div class="header-actions">
+        <span class="context-usage-hint" v-if="contextUsage" :class="contextColorClass" :title="contextLabel">
+          {{ contextUsage.percentage }}%
+        </span>
         <button
           v-if="store.currentConversation && !store.currentConversationIsCrew"
           class="mcp-toggle"
@@ -113,6 +116,26 @@ export default {
       };
     });
 
-    return { store, headerTitle, folderPath, showCompactStatus, compactStatusClass, compactMessage, crewStatusLabel, crewStatusClass };
+    const contextUsage = Vue.computed(() => {
+      if (!store.contextUsage) return null;
+      if (store.contextUsage.conversationId !== store.currentConversation) return null;
+      return store.contextUsage;
+    });
+
+    const contextColorClass = Vue.computed(() => {
+      const pct = contextUsage.value?.percentage || 0;
+      if (pct >= 80) return 'context-danger';
+      if (pct >= 50) return 'context-warn';
+      return 'context-ok';
+    });
+
+    const contextLabel = Vue.computed(() => {
+      if (!contextUsage.value) return '';
+      const used = (contextUsage.value.inputTokens / 1000).toFixed(0);
+      const total = (contextUsage.value.maxTokens / 1000).toFixed(0);
+      return `Context: ${used}k / ${total}k`;
+    });
+
+    return { store, headerTitle, folderPath, showCompactStatus, compactStatusClass, compactMessage, crewStatusLabel, crewStatusClass, contextUsage, contextColorClass, contextLabel };
   }
 };
