@@ -10280,7 +10280,7 @@ body {
 .crew-control-dropdown {
   position: absolute;
   right: 0;
-  top: calc(100% + 4px);
+  bottom: calc(100% + 4px);
   background: var(--bg-main);
   border: 1px solid var(--border-color);
   border-radius: 12px;
