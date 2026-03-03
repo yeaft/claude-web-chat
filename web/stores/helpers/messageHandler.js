@@ -307,7 +307,9 @@ export function handleMessage(store, msg) {
         if (convId) {
           delete store.processingConversations[convId];
           stopProcessingWatchdog(store, convId);
-          // 不设置 _closedAt — turn_completed 只是一轮结束，不需要防护窗口
+          // ★ 设置防护窗口，防止后续 agent_list 中的 stale processing:true 重新设回
+          if (!store._closedAt) store._closedAt = {};
+          store._closedAt[convId] = Date.now();
           const status = store.executionStatusMap[convId];
           if (status) {
             status.currentTool = null;

@@ -141,6 +141,9 @@ export function handleClaudeOutput(store, conversationId, data) {
     // ★ result 表示当前 turn 已完成，立即清除 processing 状态
     delete store.processingConversations[conversationId];
     stopProcessingWatchdog(store, conversationId);
+    // ★ 设置防护窗口，防止后续 agent_list 中的 stale processing:true 重新设回
+    if (!store._closedAt) store._closedAt = {};
+    store._closedAt[conversationId] = Date.now();
     execStatus.currentTool = null;
     const msgs = conversationId === store.currentConversation
       ? store.messages
