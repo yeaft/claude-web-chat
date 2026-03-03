@@ -10615,6 +10615,54 @@ body {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.crew-hint-btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: all 0.15s;
+}
+
+.crew-hint-btn:hover {
+  color: var(--text-primary);
+  background: var(--sidebar-hover);
+}
+
+.crew-hint-separator {
+  width: 1px;
+  height: 14px;
+  background: var(--border-color);
+  opacity: 0.5;
+}
+
+.crew-hint-status {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.crew-hint-status.status-running { color: var(--success); }
+.crew-hint-status.status-paused { color: #eab308; }
+.crew-hint-status.status-waiting { color: var(--accent-blue); }
+.crew-hint-status.status-completed,
+.crew-hint-status.status-stopped { color: var(--text-muted); }
+
+.crew-hint-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.crew-hint-controls {
+  position: relative;
 }
 
 .crew-at-hint {

@@ -22,56 +22,6 @@ export default {
   name: 'CrewChatView',
   template: `
     <div class="crew-chat-view">
-      <!-- Status Bar -->
-      <div class="crew-status-bar" v-if="store.currentCrewSession">
-        <div class="crew-status-info">
-          <span class="crew-status-icon" v-html="icons.crew"></span>
-          <span class="crew-status-goal">{{ store.currentCrewSession.goal }}</span>
-        </div>
-        <div class="crew-status-meta">
-          <span class="crew-status-roles">
-            <span v-for="role in store.currentCrewSession.roles" :key="role.name"
-              class="crew-role-badge"
-              :class="{ active: isRoleActive(role.name), 'decision-maker': role.isDecisionMaker }"
-              :style="getRoleStyle(role.name)"
-              :title="getRoleBadgeTitle(role)"
-              @contextmenu.prevent="openRoleMenu($event, role)">
-              {{ role.icon }}
-            </span>
-            <button class="crew-add-role-btn" @click="showAddRole = true" title="添加角色">
-              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-            </button>
-          </span>
-          <span class="crew-role-tool-hint" v-if="activeToolHint">{{ activeToolHint }}</span>
-          <span class="crew-status-state" :class="statusClass">{{ statusText }}</span>
-          <span class="crew-status-rounds" v-if="store.currentCrewStatus">{{ store.currentCrewStatus.round }}/{{ store.currentCrewStatus.maxRounds }}</span>
-          <span class="crew-status-cost" v-if="store.currentCrewStatus">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
-        </div>
-        <div class="crew-controls">
-          <div class="crew-control-dropdown" v-if="controlOpen" @click.stop>
-            <button class="crew-control-item" @click="controlAction('pause')" v-if="store.currentCrewStatus?.status === 'running'">
-              <span class="crew-control-icon" v-html="icons.pause"></span> 暂停全部
-            </button>
-            <button class="crew-control-item" @click="controlAction('resume')" v-if="store.currentCrewStatus?.status === 'paused'">
-              <span class="crew-control-icon" v-html="icons.play"></span> 恢复
-            </button>
-            <div class="crew-control-divider" v-if="store.currentCrewSession?.roles?.length > 0"></div>
-            <button class="crew-control-item danger" v-for="role in store.currentCrewSession?.roles" :key="role.name" @click="controlAction('stop_role', role.name)">
-              <span class="crew-control-icon" v-html="icons.stop"></span> 停止 {{ role.displayName }}
-            </button>
-            <div class="crew-control-divider"></div>
-            <button class="crew-control-item danger" @click="controlAction('stop_all')">
-              <span class="crew-control-icon" v-html="icons.close"></span> 终止 Session
-            </button>
-          </div>
-          <button class="crew-control-btn" @click.stop="controlOpen = !controlOpen" title="控制">
-            <span v-if="store.currentCrewStatus?.status === 'running'" v-html="icons.stop"></span>
-            <span v-else-if="store.currentCrewStatus?.status === 'paused'" v-html="icons.play"></span>
-            <span v-else v-html="icons.settings"></span>
-          </button>
-        </div>
-      </div>
-
       <!-- Role Context Menu -->
       <div v-if="roleMenuVisible" class="crew-role-context-menu" :style="roleMenuStyle" @click.stop>
         <div class="crew-role-menu-header">{{ roleMenuTarget?.icon }} {{ roleMenuTarget?.displayName }}</div>
@@ -182,9 +132,40 @@ export default {
         <div class="crew-input-hints" v-if="store.currentCrewSession">
           <span class="crew-at-hint" v-for="role in store.currentCrewSession.roles" :key="role.name"
             @click="insertAt(role.name)" :title="role.displayName"
-            :style="getRoleStyle(role.name)">
+            :style="getRoleStyle(role.name)"
+            @contextmenu.prevent="openRoleMenu($event, role)">
             @{{ role.displayName }}
           </span>
+          <button class="crew-hint-btn" @click="showAddRole = true" title="添加角色">
+            <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          </button>
+          <span class="crew-hint-separator"></span>
+          <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
+          <span class="crew-hint-meta" v-if="store.currentCrewStatus">{{ store.currentCrewStatus.round }}/{{ store.currentCrewStatus.maxRounds }}</span>
+          <span class="crew-hint-meta" v-if="store.currentCrewStatus">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
+          <div class="crew-hint-controls" style="position: relative;">
+            <button class="crew-hint-btn" @click.stop="controlOpen = !controlOpen" title="控制">
+              <span v-if="store.currentCrewStatus?.status === 'running'" v-html="icons.pause"></span>
+              <span v-else-if="store.currentCrewStatus?.status === 'paused'" v-html="icons.play"></span>
+              <span v-else v-html="icons.settings"></span>
+            </button>
+            <div class="crew-control-dropdown" v-if="controlOpen" @click.stop>
+              <button class="crew-control-item" @click="controlAction('pause')" v-if="store.currentCrewStatus?.status === 'running'">
+                <span class="crew-control-icon" v-html="icons.pause"></span> 暂停全部
+              </button>
+              <button class="crew-control-item" @click="controlAction('resume')" v-if="store.currentCrewStatus?.status === 'paused'">
+                <span class="crew-control-icon" v-html="icons.play"></span> 恢复
+              </button>
+              <div class="crew-control-divider" v-if="store.currentCrewSession?.roles?.length > 0"></div>
+              <button class="crew-control-item danger" v-for="role in store.currentCrewSession?.roles" :key="role.name" @click="controlAction('stop_role', role.name)">
+                <span class="crew-control-icon" v-html="icons.stop"></span> 停止 {{ role.displayName }}
+              </button>
+              <div class="crew-control-divider"></div>
+              <button class="crew-control-item danger" @click="controlAction('stop_all')">
+                <span class="crew-control-icon" v-html="icons.close"></span> 终止 Session
+              </button>
+            </div>
+          </div>
         </div>
         <div class="attachments-preview" v-if="attachments.length > 0">
           <div class="attachment-item" v-for="(file, index) in attachments" :key="index">
