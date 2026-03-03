@@ -79,6 +79,8 @@ export const useChatStore = defineStore('chat', {
     loadingMoreMessages: false,
     // 可用的 slash commands 列表（从 Claude SDK init 消息获取）
     slashCommands: [],
+    // 输入框草稿（按 conversationId 保存，切换时不丢失）
+    inputDrafts: {},
 
     // =====================
     // Crew (multi-agent) 状态 — 按 sessionId 存储，融入 conversation 体系

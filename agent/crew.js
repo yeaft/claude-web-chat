@@ -80,10 +80,28 @@ async function upsertCrewIndex(session) {
 
 export async function removeFromCrewIndex(sessionId) {
   const index = await loadCrewIndex();
+  const entry = index.find(e => e.sessionId === sessionId);
   const filtered = index.filter(e => e.sessionId !== sessionId);
   if (filtered.length !== index.length) {
     await saveCrewIndex(filtered);
     console.log(`[Crew] Removed session ${sessionId} from index`);
+  }
+  // 从内存中也移除（防止 sendConversationList 重新加入）
+  if (crewSessions.has(sessionId)) {
+    crewSessions.delete(sessionId);
+    console.log(`[Crew] Removed session ${sessionId} from active sessions`);
+  }
+  // 删除磁盘上的 session 数据文件
+  const sharedDir = entry?.sharedDir;
+  if (sharedDir) {
+    try {
+      for (const file of ['session.json', 'messages.json']) {
+        await fs.unlink(join(sharedDir, file)).catch(() => {});
+      }
+      console.log(`[Crew] Cleaned session files in ${sharedDir}`);
+    } catch (e) {
+      console.warn(`[Crew] Failed to clean session files:`, e.message);
+    }
   }
 }
 

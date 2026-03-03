@@ -749,6 +749,7 @@ export default {
       this.store.sendCrewMessage(text, null, attachmentInfos.length > 0 ? attachmentInfos : undefined);
       this.inputText = '';
       this.attachments = [];
+      delete this.store.inputDrafts[this.store.currentConversation];
       if (this.$refs.inputRef) this.$refs.inputRef.style.height = 'auto';
     },
 
@@ -810,11 +811,21 @@ export default {
     };
     document.addEventListener('click', closeMenus);
     this._cleanupClick = closeMenus;
+    // 恢复草稿
+    const convId = this.store.currentConversation;
+    if (convId && this.store.inputDrafts[convId]) {
+      this.inputText = this.store.inputDrafts[convId];
+    }
   },
 
   beforeUnmount() {
     if (this._cleanupClick) {
       document.removeEventListener('click', this._cleanupClick);
+    }
+    // 保存草稿
+    const convId = this.store.currentConversation;
+    if (convId && this.inputText) {
+      this.store.inputDrafts[convId] = this.inputText;
     }
   }
 };

@@ -83,6 +83,30 @@ export default {
     const inputAreaRef = Vue.ref(null);
     const autocompleteRef = Vue.ref(null);
 
+    // 恢复当前会话的草稿
+    if (store.currentConversation && store.inputDrafts[store.currentConversation]) {
+      inputText.value = store.inputDrafts[store.currentConversation];
+    }
+
+    // 监听输入变化，保存草稿到 store
+    Vue.watch(inputText, (val) => {
+      if (store.currentConversation) {
+        if (val) {
+          store.inputDrafts[store.currentConversation] = val;
+        } else {
+          delete store.inputDrafts[store.currentConversation];
+        }
+      }
+    });
+
+    // 切换会话时恢复/保存草稿
+    Vue.watch(() => store.currentConversation, (newId, oldId) => {
+      if (oldId && inputText.value) {
+        store.inputDrafts[oldId] = inputText.value;
+      }
+      inputText.value = (newId && store.inputDrafts[newId]) || '';
+    });
+
     // Slash command 自动补全状态
     const showAutocomplete = Vue.ref(false);
     const selectedIndex = Vue.ref(0);
@@ -281,6 +305,7 @@ export default {
 
       attachments.value = [];
       inputText.value = '';
+      delete store.inputDrafts[store.currentConversation];
 
       if (inputRef.value) {
         inputRef.value.style.height = 'auto';
