@@ -22,6 +22,11 @@ import ctx from './context.js';
 
 const execFile = promisify(execFileCb);
 
+/** Format role label: "icon displayName" or just "displayName" if no icon */
+function roleLabel(r) {
+  return r.icon ? `${r.icon} ${r.displayName}` : r.displayName;
+}
+
 // =====================================================================
 // Data Structures
 // =====================================================================
@@ -643,7 +648,7 @@ export async function addRoleToSession(msg) {
     // 发送系统消息
     sendCrewOutput(session, 'system', 'system', {
       type: 'assistant',
-      message: { role: 'assistant', content: [{ type: 'text', text: `${r.icon} ${r.displayName} 加入了群聊` }] }
+      message: { role: 'assistant', content: [{ type: 'text', text: `${roleLabel(r)} 加入了群聊` }] }
     });
   }
 
@@ -709,7 +714,7 @@ export async function removeRoleFromSession(msg) {
 
   sendCrewOutput(session, 'system', 'system', {
     type: 'assistant',
-    message: { role: 'assistant', content: [{ type: 'text', text: `${role.icon} ${role.displayName} 离开了群聊` }] }
+    message: { role: 'assistant', content: [{ type: 'text', text: `${roleLabel(role)} 离开了群聊` }] }
   });
 
   sendStatusUpdate(session);
@@ -775,7 +780,7 @@ ${projectDir}
 所有代码操作请使用此绝对路径。
 
 # 团队成员
-${roles.length > 0 ? roles.map(r => `- ${r.icon} ${r.displayName}(${r.name}): ${r.description}${r.isDecisionMaker ? ' (决策者)' : ''}`).join('\n') : '_暂无成员_'}
+${roles.length > 0 ? roles.map(r => `- ${roleLabel(r)}(${r.name}): ${r.description}${r.isDecisionMaker ? ' (决策者)' : ''}`).join('\n') : '_暂无成员_'}
 
 # 工作约定
 - 文档产出写入 context/ 目录
@@ -796,7 +801,7 @@ _团队共同维护，记录重要的共识、决策和信息。_
 async function writeRoleClaudeMd(sharedDir, role) {
   const roleDir = join(sharedDir, 'roles', role.name);
 
-  let claudeMd = `# 角色: ${role.icon} ${role.displayName}
+  let claudeMd = `# 角色: ${roleLabel(role)}
 ${role.claudeMd || role.description}
 `;
 
@@ -941,7 +946,7 @@ function buildRoleSystemPrompt(role, session) {
 你正在一个 AI 团队中工作。${session.goal ? `项目目标是: ${session.goal}` : '等待用户提出任务或问题。'}
 
 团队成员:
-${allRoles.map(r => `- ${r.icon} ${r.displayName}: ${r.description}${r.isDecisionMaker ? ' (决策者)' : ''}`).join('\n')}`;
+${allRoles.map(r => `- ${roleLabel(r)}: ${r.description}${r.isDecisionMaker ? ' (决策者)' : ''}`).join('\n')}`;
 
   const hasMultiInstance = allRoles.some(r => r.groupIndex > 0);
 
@@ -958,7 +963,7 @@ summary: <简要说明要传递什么>
 \`\`\`
 
 可用的路由目标:
-${routeTargets.map(r => `- ${r.name}: ${r.icon} ${r.displayName} — ${r.description}`).join('\n')}
+${routeTargets.map(r => `- ${r.name}: ${roleLabel(r)} — ${r.description}`).join('\n')}
 - human: 人工（只在决策者也无法决定时使用）
 
 注意：
@@ -1063,8 +1068,8 @@ summary: 请实现注册页面，包括邮箱验证
     if (rev && test) {
       prompt += `\n\n# 开发组绑定
 你属于开发组 ${gi}。你的搭档：
-- 审查者: ${rev.icon} ${rev.name}
-- 测试: ${test.icon} ${test.name}
+- 审查者: ${roleLabel(rev)} (${rev.name})
+- 测试: ${roleLabel(test)} (${test.name})
 
 开发完成后，请同时发两个 ROUTE 块分别给 ${rev.name} 和 ${test.name}：
 
@@ -1099,7 +1104,7 @@ function buildInitialTask(goal, firstRole, allRoles) {
 完成后，通过 ROUTE 块将结果传递给下一个合适的角色。
 
 团队中可用的角色:
-${allRoles.map(r => `- ${r.icon} ${r.name}: ${r.displayName} - ${r.description}`).join('\n')}`;
+${allRoles.map(r => `- ${r.name}: ${roleLabel(r)} - ${r.description}`).join('\n')}`;
 }
 
 // =====================================================================
@@ -1359,7 +1364,7 @@ async function executeRoute(session, fromRole, route) {
  */
 function buildRoutePrompt(fromRole, summary, session) {
   const fromRoleConfig = session.roles.get(fromRole);
-  const fromName = fromRoleConfig ? `${fromRoleConfig.icon} ${fromRoleConfig.displayName}` : fromRole;
+  const fromName = fromRoleConfig ? roleLabel(fromRoleConfig) : fromRole;
   return `来自 ${fromName} 的消息:\n${summary}\n\n请开始你的工作。完成后通过 ROUTE 块传递给下一个角色。`;
 }
 
@@ -1426,7 +1431,7 @@ export async function handleCrewHumanInput(msg) {
   // 注意：不在这里发送人的消息到 Web（前端已本地添加，避免重复）
   // 但需要记录到 uiMessages 用于恢复时重放
   session.uiMessages.push({
-    role: 'human', roleIcon: 'H', roleName: '你',
+    role: 'human', roleIcon: '', roleName: '你',
     type: 'text', content,
     timestamp: Date.now()
   });
@@ -1688,7 +1693,7 @@ function sendCrewMessage(msg) {
  */
 function sendCrewOutput(session, roleName, outputType, rawMessage, extra = {}) {
   const role = session.roles.get(roleName);
-  const roleIcon = role?.icon || (roleName === 'human' ? 'H' : roleName === 'system' ? 'S' : 'A');
+  const roleIcon = role?.icon || '';
   const displayName = role?.displayName || roleName;
 
   // 从 roleState 获取当前 task 信息

@@ -24,7 +24,7 @@ export default {
     <div class="crew-chat-view">
       <!-- Role Context Menu -->
       <div v-if="roleMenuVisible" class="crew-role-context-menu" :style="roleMenuStyle" @click.stop>
-        <div class="crew-role-menu-header">{{ roleMenuTarget?.icon }} {{ roleMenuTarget?.displayName }}</div>
+        <div class="crew-role-menu-header"><span v-if="roleMenuTarget?.icon">{{ roleMenuTarget.icon }} </span>{{ roleMenuTarget?.displayName }}</div>
         <button class="crew-role-menu-item" @click="removeRole(roleMenuTarget?.name)">
           <span class="crew-control-icon" v-html="icons.trash"></span> 移除
         </button>
@@ -72,9 +72,9 @@ export default {
           <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': turn.message.role === 'human' && turn.message.type === 'text' }]" :style="getRoleStyle(turn.message.role)">
             <div class="crew-msg-body">
               <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-header">
-                <span class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
+                <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
                 <span class="crew-msg-name" :class="{ 'is-human': turn.message.role === 'human', 'is-system': turn.message.role === 'system' }">{{ turn.message.roleName }}</span>
-                <span v-if="turn.message.type === 'route'" class="crew-route-target">→ {{ getRoleIcon(turn.message.routeTo) }} {{ getRoleDisplayName(turn.message.routeTo) }}</span>
+                <span v-if="turn.message.type === 'route'" class="crew-route-target">→ {{ getRoleDisplayName(turn.message.routeTo) }}</span>
                 <span v-if="turn.message.taskTitle" class="crew-task-label" :style="getTaskColor(turn.message.taskId)">{{ turn.message.taskTitle }}</span>
                 <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
               </div>
@@ -98,7 +98,7 @@ export default {
           <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :style="getRoleStyle(turn.role)">
             <div class="crew-msg-body">
               <div class="crew-msg-header">
-                <span class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
+                <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
                 <span class="crew-msg-name">{{ turn.roleName }}</span>
                 <span v-if="turn.taskTitle" class="crew-task-label" :style="getTaskColor(turn.taskId)">{{ turn.taskTitle }}</span>
                 <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
@@ -234,7 +234,7 @@ export default {
               <div v-for="(role, idx) in filteredAtRoles" :key="role.name"
                 class="crew-at-menu-item" :class="{ active: idx === atMenuIndex }"
                 @mousedown.prevent="selectAtRole(role)">
-                <span class="crew-at-menu-icon">{{ role.icon }}</span>
+                <span v-if="role.icon" class="crew-at-menu-icon">{{ role.icon }}</span>
                 <span class="crew-at-menu-name">{{ role.displayName }}</span>
                 <span class="crew-at-menu-desc">{{ role.description }}</span>
               </div>
@@ -254,7 +254,7 @@ export default {
           <!-- 一键添加预设 -->
           <div class="crew-add-role-presets">
             <button v-for="preset in availablePresets" :key="preset.name" class="crew-preset-btn" @click="quickAddPreset(preset)">
-              {{ preset.icon }} {{ preset.displayName }}
+              <span v-if="preset.icon">{{ preset.icon }} </span>{{ preset.displayName }}
             </button>
           </div>
 
@@ -306,8 +306,8 @@ export default {
       rolePresets: [
         {
           name: 'pm',
-          displayName: 'PM',
-          icon: '\u{1F4CB}',
+          displayName: 'PM-乔布斯',
+          icon: '',
           description: '项目管理，需求分析，任务拆分和进度跟踪',
           model: 'sonnet',
           isDecisionMaker: true,
@@ -322,8 +322,8 @@ export default {
         },
         {
           name: 'architect',
-          displayName: '架构师',
-          icon: '\u{1F3D7}\uFE0F',
+          displayName: '架构师-福勒',
+          icon: '',
           description: '系统设计和技术决策',
           model: 'opus',
           isDecisionMaker: false,
@@ -333,8 +333,8 @@ export default {
         },
         {
           name: 'developer',
-          displayName: '开发者',
-          icon: '\u{1F468}\u200D\u{1F4BB}',
+          displayName: '开发者-托瓦兹',
+          icon: '',
           description: '代码编写和功能实现',
           model: 'sonnet',
           isDecisionMaker: false,
@@ -349,8 +349,8 @@ export default {
         },
         {
           name: 'reviewer',
-          displayName: '审查者',
-          icon: '\u{1F50D}',
+          displayName: '审查者-马丁',
+          icon: '',
           description: '代码审查和质量把控',
           model: 'sonnet',
           isDecisionMaker: false,
@@ -360,8 +360,8 @@ export default {
         },
         {
           name: 'tester',
-          displayName: '测试者',
-          icon: '\u{1F9EA}',
+          displayName: '测试-贝克',
+          icon: '',
           description: '测试用例编写和质量验证',
           model: 'sonnet',
           isDecisionMaker: false,
@@ -371,8 +371,8 @@ export default {
         },
         {
           name: 'designer',
-          displayName: 'UI/UX设计师',
-          icon: '\u{1F3A8}',
+          displayName: '设计师-拉姆斯',
+          icon: '',
           description: '用户交互设计和页面视觉设计',
           model: 'sonnet',
           isDecisionMaker: false,
@@ -382,8 +382,8 @@ export default {
         },
         {
           name: 'writer',
-          displayName: '技术写作',
-          icon: '\u270D\uFE0F',
+          displayName: '写作-Procida',
+          icon: '',
           description: '技术文档和 API 文档编写',
           model: 'sonnet',
           isDecisionMaker: false,
