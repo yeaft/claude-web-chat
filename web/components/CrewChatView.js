@@ -79,6 +79,11 @@ export default {
                     <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
                     <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
                     <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
+                    <span v-if="turn.askMsg" class="crew-ask-badge" :class="{ answered: isCrewAskAnswered(turn.askMsg), waiting: !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId, pending: !isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId }">
+                      <template v-if="isCrewAskAnswered(turn.askMsg)">✓ 已回答</template>
+                      <template v-else-if="turn.askMsg.askRequestId">❓ 需要确认</template>
+                      <template v-else>⏳ 等待回答</template>
+                    </span>
                   </div>
                   <template v-if="turn.textMsg">
                     <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
@@ -100,6 +105,34 @@ export default {
                       </button>
                     </div>
                   </div>
+                  <template v-if="turn.askMsg">
+                    <div class="crew-ask-card" :class="{ 'is-answered': isCrewAskAnswered(turn.askMsg), 'is-waiting': !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId }">
+                      <div v-for="(q, qIdx) in getCrewAskQuestions(turn.askMsg)" :key="qIdx" class="crew-ask-question">
+                        <div class="crew-ask-q-text">
+                          <span class="crew-ask-q-chip" v-if="q.header">{{ q.header }}</span>
+                          {{ q.question }}
+                        </div>
+                        <template v-if="!isCrewAskAnswered(turn.askMsg)">
+                          <div class="crew-ask-options">
+                            <button v-for="opt in q.options" :key="opt.label" class="crew-ask-opt" :class="{ selected: isCrewOptSelected(turn.askMsg.id, q.question, opt.label) }" :disabled="!turn.askMsg.askRequestId" @click="selectCrewOpt(turn.askMsg.id, q, opt)">
+                              <span class="crew-ask-radio" :class="{ checked: isCrewOptSelected(turn.askMsg.id, q.question, opt.label) }"></span>
+                              <span><span class="crew-ask-opt-label">{{ opt.label }}</span><span class="crew-ask-opt-desc" v-if="opt.description">{{ opt.description }}</span></span>
+                            </button>
+                          </div>
+                          <div class="crew-ask-custom" v-if="turn.askMsg.askRequestId">
+                            <input type="text" placeholder="自定义回答..." :value="crewAskCustom[turn.askMsg.id + ':' + q.question] || ''" @input="setCrewAskCustom(turn.askMsg.id, q.question, $event.target.value)" @keyup.enter="submitCrewAsk(turn.askMsg)" />
+                          </div>
+                        </template>
+                        <div v-else class="crew-ask-answer">{{ getCrewAskAnswer(turn.askMsg, q.question) }}</div>
+                      </div>
+                      <div v-if="!isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId">
+                        <button class="crew-ask-submit" @click="submitCrewAsk(turn.askMsg)" :disabled="!hasCrewAskSelection(turn.askMsg)">提交回答 ▶</button>
+                      </div>
+                      <div v-if="!isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId" class="crew-ask-waiting-hint">
+                        <span class="crew-typing-dot"></span><span class="crew-typing-dot"></span><span class="crew-typing-dot"></span> 等待连接...
+                      </div>
+                    </div>
+                  </template>
                   <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
                     <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
                       <span class="crew-route-arrow">→</span>
@@ -167,6 +200,11 @@ export default {
                         <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
                         <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
                         <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
+                        <span v-if="turn.askMsg" class="crew-ask-badge" :class="{ answered: isCrewAskAnswered(turn.askMsg), waiting: !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId, pending: !isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId }">
+                          <template v-if="isCrewAskAnswered(turn.askMsg)">✓ 已回答</template>
+                          <template v-else-if="turn.askMsg.askRequestId">❓ 需要确认</template>
+                          <template v-else>⏳ 等待回答</template>
+                        </span>
                       </div>
                       <template v-if="turn.textMsg">
                         <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
@@ -188,6 +226,34 @@ export default {
                           </button>
                         </div>
                       </div>
+                      <template v-if="turn.askMsg">
+                        <div class="crew-ask-card" :class="{ 'is-answered': isCrewAskAnswered(turn.askMsg), 'is-waiting': !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId }">
+                          <div v-for="(q, qIdx) in getCrewAskQuestions(turn.askMsg)" :key="qIdx" class="crew-ask-question">
+                            <div class="crew-ask-q-text">
+                              <span class="crew-ask-q-chip" v-if="q.header">{{ q.header }}</span>
+                              {{ q.question }}
+                            </div>
+                            <template v-if="!isCrewAskAnswered(turn.askMsg)">
+                              <div class="crew-ask-options">
+                                <button v-for="opt in q.options" :key="opt.label" class="crew-ask-opt" :class="{ selected: isCrewOptSelected(turn.askMsg.id, q.question, opt.label) }" :disabled="!turn.askMsg.askRequestId" @click="selectCrewOpt(turn.askMsg.id, q, opt)">
+                                  <span class="crew-ask-radio" :class="{ checked: isCrewOptSelected(turn.askMsg.id, q.question, opt.label) }"></span>
+                                  <span><span class="crew-ask-opt-label">{{ opt.label }}</span><span class="crew-ask-opt-desc" v-if="opt.description">{{ opt.description }}</span></span>
+                                </button>
+                              </div>
+                              <div class="crew-ask-custom" v-if="turn.askMsg.askRequestId">
+                                <input type="text" placeholder="自定义回答..." :value="crewAskCustom[turn.askMsg.id + ':' + q.question] || ''" @input="setCrewAskCustom(turn.askMsg.id, q.question, $event.target.value)" @keyup.enter="submitCrewAsk(turn.askMsg)" />
+                              </div>
+                            </template>
+                            <div v-else class="crew-ask-answer">{{ getCrewAskAnswer(turn.askMsg, q.question) }}</div>
+                          </div>
+                          <div v-if="!isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId">
+                            <button class="crew-ask-submit" @click="submitCrewAsk(turn.askMsg)" :disabled="!hasCrewAskSelection(turn.askMsg)">提交回答 ▶</button>
+                          </div>
+                          <div v-if="!isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId" class="crew-ask-waiting-hint">
+                            <span class="crew-typing-dot"></span><span class="crew-typing-dot"></span><span class="crew-typing-dot"></span> 等待连接...
+                          </div>
+                        </div>
+                      </template>
                       <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
                         <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
                           <span class="crew-route-arrow">→</span>
@@ -223,6 +289,11 @@ export default {
                         <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
                         <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
                         <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
+                        <span v-if="turn.askMsg" class="crew-ask-badge" :class="{ answered: isCrewAskAnswered(turn.askMsg), waiting: !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId, pending: !isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId }">
+                          <template v-if="isCrewAskAnswered(turn.askMsg)">✓ 已回答</template>
+                          <template v-else-if="turn.askMsg.askRequestId">❓ 需要确认</template>
+                          <template v-else>⏳ 等待回答</template>
+                        </span>
                       </div>
                       <template v-if="turn.textMsg">
                         <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
@@ -244,6 +315,34 @@ export default {
                           </button>
                         </div>
                       </div>
+                      <template v-if="turn.askMsg">
+                        <div class="crew-ask-card" :class="{ 'is-answered': isCrewAskAnswered(turn.askMsg), 'is-waiting': !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId }">
+                          <div v-for="(q, qIdx) in getCrewAskQuestions(turn.askMsg)" :key="qIdx" class="crew-ask-question">
+                            <div class="crew-ask-q-text">
+                              <span class="crew-ask-q-chip" v-if="q.header">{{ q.header }}</span>
+                              {{ q.question }}
+                            </div>
+                            <template v-if="!isCrewAskAnswered(turn.askMsg)">
+                              <div class="crew-ask-options">
+                                <button v-for="opt in q.options" :key="opt.label" class="crew-ask-opt" :class="{ selected: isCrewOptSelected(turn.askMsg.id, q.question, opt.label) }" :disabled="!turn.askMsg.askRequestId" @click="selectCrewOpt(turn.askMsg.id, q, opt)">
+                                  <span class="crew-ask-radio" :class="{ checked: isCrewOptSelected(turn.askMsg.id, q.question, opt.label) }"></span>
+                                  <span><span class="crew-ask-opt-label">{{ opt.label }}</span><span class="crew-ask-opt-desc" v-if="opt.description">{{ opt.description }}</span></span>
+                                </button>
+                              </div>
+                              <div class="crew-ask-custom" v-if="turn.askMsg.askRequestId">
+                                <input type="text" placeholder="自定义回答..." :value="crewAskCustom[turn.askMsg.id + ':' + q.question] || ''" @input="setCrewAskCustom(turn.askMsg.id, q.question, $event.target.value)" @keyup.enter="submitCrewAsk(turn.askMsg)" />
+                              </div>
+                            </template>
+                            <div v-else class="crew-ask-answer">{{ getCrewAskAnswer(turn.askMsg, q.question) }}</div>
+                          </div>
+                          <div v-if="!isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId">
+                            <button class="crew-ask-submit" @click="submitCrewAsk(turn.askMsg)" :disabled="!hasCrewAskSelection(turn.askMsg)">提交回答 ▶</button>
+                          </div>
+                          <div v-if="!isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId" class="crew-ask-waiting-hint">
+                            <span class="crew-typing-dot"></span><span class="crew-typing-dot"></span><span class="crew-typing-dot"></span> 等待连接...
+                          </div>
+                        </div>
+                      </template>
                       <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
                         <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
                           <span class="crew-route-arrow">→</span>
@@ -412,6 +511,8 @@ export default {
       isAtBottom: true,
       visibleBlockCount: 20,
       isLoadingMore: false,
+      crewAskSelections: {},
+      crewAskCustom: {},
       atMenuVisible: false,
       atQuery: '',
       atMenuIndex: 0,
@@ -1005,6 +1106,14 @@ summary: 请测试以下变更...
           currentTurn.textMsg = currentTurn.messages.find(m => m.type === 'text') || null;
           currentTurn.toolMsgs = currentTurn.messages.filter(m => m.type === 'tool');
           currentTurn.routeMsgs = currentTurn.messages.filter(m => m.type === 'route');
+          // Extract AskUserQuestion from toolMsgs into askMsg
+          const askIdx = currentTurn.toolMsgs.findIndex(m => m.toolName === 'AskUserQuestion');
+          if (askIdx !== -1) {
+            currentTurn.askMsg = currentTurn.toolMsgs[askIdx];
+            currentTurn.toolMsgs = currentTurn.toolMsgs.filter((_, i) => i !== askIdx);
+          } else {
+            currentTurn.askMsg = null;
+          }
           turns.push(currentTurn);
           currentTurn = null;
         }
@@ -1355,6 +1464,58 @@ summary: 请测试以下变更...
       this.store.addCrewRole({ ...this.newRole });
       this.showAddRole = false;
       this.newRole = this.getEmptyRole();
+    },
+
+    // -- AskUserQuestion card methods --
+    isCrewAskAnswered(askMsg) {
+      return !!askMsg.askAnswered;
+    },
+    getCrewAskQuestions(askMsg) {
+      const input = askMsg.toolInput || {};
+      return input.questions || askMsg.askQuestions || [];
+    },
+    isCrewOptSelected(msgId, question, label) {
+      return this.crewAskSelections[msgId + ':' + question] === label;
+    },
+    selectCrewOpt(msgId, q, opt) {
+      this.crewAskSelections[msgId + ':' + q.question] = opt.label;
+      this.crewAskCustom[msgId + ':' + q.question] = '';
+    },
+    setCrewAskCustom(msgId, question, value) {
+      this.crewAskCustom[msgId + ':' + question] = value;
+      if (value) this.crewAskSelections[msgId + ':' + question] = '';
+    },
+    hasCrewAskSelection(askMsg) {
+      const questions = this.getCrewAskQuestions(askMsg);
+      return questions.some(q => {
+        const key = askMsg.id + ':' + q.question;
+        return this.crewAskSelections[key] || this.crewAskCustom[key];
+      });
+    },
+    getCrewAskAnswer(askMsg, question) {
+      const answers = askMsg.selectedAnswers;
+      if (!answers) return '-';
+      return answers[question] || '-';
+    },
+    submitCrewAsk(askMsg) {
+      if (askMsg.askAnswered || !this.hasCrewAskSelection(askMsg)) return;
+      const questions = this.getCrewAskQuestions(askMsg);
+      const answers = {};
+      for (const q of questions) {
+        const key = askMsg.id + ':' + q.question;
+        const custom = this.crewAskCustom[key];
+        if (custom) {
+          answers[q.question] = custom;
+        } else {
+          const sel = this.crewAskSelections[key];
+          if (sel) answers[q.question] = sel;
+        }
+      }
+      const requestId = askMsg.askRequestId;
+      if (!requestId) return;
+      this.store.answerUserQuestion(requestId, answers);
+      askMsg.askAnswered = true;
+      askMsg.selectedAnswers = answers;
     },
 
     scrollToBottom() {
