@@ -1525,9 +1525,23 @@ async function processHumanQueue(session) {
   if (session._processingHumanQueue) return;
   session._processingHumanQueue = true;
   try {
-    const msg = session.humanMessageQueue.shift();
-    const humanPrompt = `人工消息:\n${msg.content}`;
-    await dispatchToRole(session, msg.target, humanPrompt, 'human');
+    const msgs = session.humanMessageQueue.splice(0);
+    if (msgs.length === 1) {
+      const humanPrompt = `人工消息:\n${msgs[0].content}`;
+      await dispatchToRole(session, msgs[0].target, humanPrompt, 'human');
+    } else {
+      // 按 target 分组，合并发送
+      const byTarget = new Map();
+      for (const m of msgs) {
+        if (!byTarget.has(m.target)) byTarget.set(m.target, []);
+        byTarget.get(m.target).push(m.content);
+      }
+      for (const [target, contents] of byTarget) {
+        const combined = contents.join('\n\n---\n\n');
+        const humanPrompt = `人工消息:\n你有 ${contents.length} 条待处理消息，请一并分析并用多个 ROUTE 块并行分配：\n\n${combined}`;
+        await dispatchToRole(session, target, humanPrompt, 'human');
+      }
+    }
   } finally {
     session._processingHumanQueue = false;
   }
