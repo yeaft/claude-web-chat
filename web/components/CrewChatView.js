@@ -125,6 +125,10 @@ export default {
                   <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
                     <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
                   </div>
+                  <div v-else-if="turn.message.type === 'role_error'" class="crew-msg-role-error">
+                    <span class="crew-error-icon">{{ turn.message.recoverable ? '\ud83d\udd04' : '\u274c' }}</span>
+                    <span>{{ turn.message.content }}</span>
+                  </div>
                   <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
                   <div v-if="turn.message.attachments && turn.message.attachments.length > 0" class="user-attachments" style="margin-top: 6px;">
                     <div v-for="(att, aidx) in turn.message.attachments" :key="aidx" class="user-attachment-item" :class="{ 'is-image': att.isImage }">
@@ -262,6 +266,10 @@ export default {
                       <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
                         <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
                       </div>
+                      <div v-else-if="turn.message.type === 'role_error'" class="crew-msg-role-error">
+                        <span class="crew-error-icon">{{ turn.message.recoverable ? '\ud83d\udd04' : '\u274c' }}</span>
+                        <span>{{ turn.message.content }}</span>
+                      </div>
                       <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
                     </div>
                   </div>
@@ -359,6 +367,10 @@ export default {
                       <div v-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
                       <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
                         <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
+                      </div>
+                      <div v-else-if="turn.message.type === 'role_error'" class="crew-msg-role-error">
+                        <span class="crew-error-icon">{{ turn.message.recoverable ? '\ud83d\udd04' : '\u274c' }}</span>
+                        <span>{{ turn.message.content }}</span>
                       </div>
                       <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
                     </div>
@@ -1526,7 +1538,7 @@ summary: 请测试以下变更...
       };
 
       for (const msg of messages) {
-        if (msg.type === 'system' || msg.type === 'human_needed') {
+        if (msg.type === 'system' || msg.type === 'human_needed' || msg.type === 'role_error') {
           flushTurn();
           turns.push({ type: msg.type, message: msg, id: 'standalone_' + (msg.id || turnCounter++) });
           continue;

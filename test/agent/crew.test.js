@@ -4967,11 +4967,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- HTML Tag Balance ---
 
   describe('HTML and CSS structure balance', () => {
-    it('should have balanced div tags (160/160)', () => {
+    it('should have balanced div tags (163/163)', () => {
       const opens = (viewSource.match(/<div[\s>]/g) || []).length;
       const closes = (viewSource.match(/<\/div>/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(160);
+      expect(opens).toBe(163);
     });
 
     it('should have balanced template tags', () => {
@@ -4999,11 +4999,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2068/2068)', () => {
+    it('should have balanced CSS braces (2071/2071)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2068);
+      expect(opens).toBe(2071);
     });
   });
 });

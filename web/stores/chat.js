@@ -760,6 +760,25 @@ export const useChatStore = defineStore('chat', {
         return;
       }
 
+      if (msg.type === 'crew_role_error') {
+        ensureMessages(sid).push({
+          id: Date.now() + Math.random(),
+          role: 'system',
+          roleIcon: '\u26a0',
+          roleName: msg.role,
+          type: 'role_error',
+          content: msg.recoverable
+            ? `${msg.role} 遇到 ${msg.reason}，正在自动恢复 (${msg.retryCount}/3)...`
+            : `${msg.role} 发生不可恢复错误: ${msg.error}`,
+          error: msg.error,
+          reason: msg.reason,
+          recoverable: msg.recoverable,
+          retryCount: msg.retryCount,
+          timestamp: Date.now()
+        });
+        return;
+      }
+
       if (msg.type === 'crew_human_needed') {
         ensureMessages(sid).push({
           id: Date.now(),

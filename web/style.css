@@ -11130,6 +11130,26 @@ body {
   border: 1px solid var(--border-color);
 }
 
+/* Crew Role Error */
+.crew-msg-role-error {
+  padding: 6px 12px;
+  margin: 4px 0;
+  border-radius: 6px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 152, 0, 0.1);
+  color: #e65100;
+}
+[data-theme="dark"] .crew-msg-role-error {
+  background: rgba(255, 152, 0, 0.08);
+  color: #ffb74d;
+}
+.crew-error-icon {
+  flex-shrink: 0;
+}
+
 .crew-msg-send-failed {
   font-size: 12px;
   color: var(--error);

@@ -926,6 +926,43 @@ async function loadRoleSessionId(sharedDir, roleName) {
   }
 }
 
+
+/**
+ * 清除角色的 savedSessionId（用于强制新建 conversation）
+ */
+async function clearRoleSessionId(sharedDir, roleName) {
+  const filePath = join(sharedDir, 'sessions', `${roleName}.json`);
+  try {
+    await fs.unlink(filePath);
+    console.log(`[Crew] Cleared sessionId for ${roleName} (force new conversation)`);
+  } catch {
+    // 文件不存在也正常
+  }
+}
+
+/**
+ * 判断角色错误是否可恢复
+ */
+function classifyRoleError(error) {
+  const msg = error.message || '';
+  if (/context.*(window|limit|exceeded)|token.*limit|too.*(long|large)|max.*token/i.test(msg)) {
+    return { recoverable: true, reason: 'context_exceeded', skipResume: true };
+  }
+  if (/compact|compress|context.*reduc/i.test(msg)) {
+    return { recoverable: true, reason: 'compact_failed', skipResume: true };
+  }
+  if (/rate.?limit|429|overloaded|503|502|timeout|ECONNRESET|ETIMEDOUT/i.test(msg)) {
+    return { recoverable: true, reason: 'transient_api_error', skipResume: false };
+  }
+  if (/exited with code [1-9]/i.test(msg) && msg.length < 100) {
+    return { recoverable: true, reason: 'process_crashed', skipResume: false };
+  }
+  if (/spawn|ENOENT|not found/i.test(msg)) {
+    return { recoverable: false, reason: 'spawn_failed' };
+  }
+  return { recoverable: true, reason: 'unknown', skipResume: false };
+}
+
 // =====================================================================
 // Role Query Management
 // =====================================================================
@@ -980,7 +1017,12 @@ async function createRoleQuery(session, roleName) {
     claudeSessionId: savedSessionId,
     lastCostUsd: 0,
     lastInputTokens: 0,
-    lastOutputTokens: 0
+    lastOutputTokens: 0,
+    consecutiveErrors: 0,
+    lastDispatchContent: null,
+    lastDispatchFrom: null,
+    lastDispatchTaskId: null,
+    lastDispatchTaskTitle: null
   };
 
   session.roleStates.set(roleName, roleState);
@@ -1241,6 +1283,7 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
       } else if (message.type === 'result') {
         // ★ Turn 完成！
         console.log(`[Crew] ${roleName} turn completed`);
+        roleState.consecutiveErrors = 0;
 
         // ★ 修复2: 反向搜索该角色最后一条 streaming 消息并结束
         endRoleStreaming(session, roleName);
@@ -1325,21 +1368,80 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
       }
     } else {
       console.error(`[Crew] ${roleName} error:`, error.message);
-      // 通知决策者
-      if (roleName !== session.decisionMaker) {
-        const errorMsg = `角色 ${roleName} 发生错误: ${error.message}`;
-        await dispatchToRole(session, session.decisionMaker, errorMsg, roleName);
+
+      // Step 1: 清理 roleState（防止后续写入死进程）
+      endRoleStreaming(session, roleName);
+      roleState.query = null;
+      roleState.inputStream = null;
+      roleState.turnActive = false;
+      roleState.accumulatedText = '';
+
+      // Step 2: 错误分类
+      const classification = classifyRoleError(error);
+      roleState.consecutiveErrors++;
+
+      // Step 3: 通知前端
+      sendCrewMessage({
+        type: 'crew_role_error',
+        sessionId: session.id,
+        role: roleName,
+        error: error.message.substring(0, 500),
+        reason: classification.reason,
+        recoverable: classification.recoverable,
+        retryCount: roleState.consecutiveErrors
+      });
+      sendStatusUpdate(session);
+
+      // Step 4: 判断是否重试
+      const MAX_RETRIES = 3;
+      if (!classification.recoverable || roleState.consecutiveErrors > MAX_RETRIES) {
+        const exhausted = roleState.consecutiveErrors > MAX_RETRIES;
+        const errDetail = exhausted
+          ? `角色 ${roleName} 连续 ${MAX_RETRIES} 次错误后停止重试。最后错误: ${error.message}`
+          : `角色 ${roleName} 不可恢复错误: ${error.message}`;
+        if (roleName !== session.decisionMaker) {
+          await dispatchToRole(session, session.decisionMaker, errDetail, 'system');
+        } else {
+          session.status = 'waiting_human';
+          sendCrewMessage({
+            type: 'crew_human_needed',
+            sessionId: session.id,
+            fromRole: roleName,
+            reason: 'error',
+            message: errDetail
+          });
+          sendStatusUpdate(session);
+        }
+        return;
+      }
+
+      // Step 5: 可恢复 → 自动重建并重试
+      console.log(`[Crew] ${roleName} attempting recovery (${classification.reason}), retry ${roleState.consecutiveErrors}/${MAX_RETRIES}`);
+
+      sendCrewOutput(session, 'system', 'system', {
+        type: 'assistant',
+        message: { role: 'assistant', content: [{
+          type: 'text',
+          text: `${roleName} 遇到 ${classification.reason}，正在自动恢复 (${roleState.consecutiveErrors}/${MAX_RETRIES})...`
+        }] }
+      });
+
+      if (roleState.lastDispatchContent) {
+        if (classification.skipResume) {
+          await clearRoleSessionId(session.sharedDir, roleName);
+        }
+        await dispatchToRole(
+          session, roleName,
+          roleState.lastDispatchContent,
+          roleState.lastDispatchFrom || 'system',
+          roleState.lastDispatchTaskId,
+          roleState.lastDispatchTaskTitle
+        );
       } else {
-        // 决策者自己出错了，通知人
-        sendCrewMessage({
-          type: 'crew_human_needed',
-          sessionId: session.id,
-          fromRole: roleName,
-          reason: 'error',
-          message: `决策者 ${roleName} 发生错误: ${error.message}`
-        });
-        session.status = 'waiting_human';
-        sendStatusUpdate(session);
+        const msg = `角色 ${roleName} 已恢复（${classification.reason}），但无待重试消息。`;
+        if (roleName !== session.decisionMaker) {
+          await dispatchToRole(session, session.decisionMaker, msg, 'system');
+        }
       }
     }
   }
@@ -1491,6 +1593,10 @@ async function dispatchToRole(session, roleName, content, fromSource, taskId, ta
   });
 
   // 发送
+  roleState.lastDispatchContent = content;
+  roleState.lastDispatchFrom = fromSource;
+  roleState.lastDispatchTaskId = taskId || null;
+  roleState.lastDispatchTaskTitle = taskTitle || null;
   roleState.turnActive = true;
   roleState.accumulatedText = '';
   roleState.inputStream.enqueue({
