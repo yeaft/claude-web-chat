@@ -796,7 +796,7 @@ ${roles.length > 0 ? roles.map(r => `- ${roleLabel(r)}(${r.name}): ${r.descripti
 2. 等待其他角色的产出但迟迟没有收到
 3. 任务描述不清楚或有歧义，无法判断正确做法
 4. 遇到超出自己职责范围的问题
-5. 连续尝试2次相同操作仍然失败
+5. 连续尝试5次相同操作仍然失败
 上报时请说明：你在做什么任务、卡在哪里、你认为需要谁来协助。
 
 # Worktree 隔离规则
@@ -807,6 +807,7 @@ ${roles.length > 0 ? roles.map(r => `- ${roleLabel(r)}(${r.name}): ${r.descripti
 - 合并完成后，PM 会清理旧的 worktree
 - 每次新任务/新 feature 必须基于最新的 main 分支创建新的 worktree，确保在最新代码上开发
 - 禁止复用旧的 worktree 开发新任务，因为旧 worktree 的代码基线可能已过时
+- 绝对禁止在其他开发组的 branch 或 worktree 中操作代码，只能在自己的 worktree 中工作
 
 # 共享记忆
 _团队共同维护，记录重要的共识、决策和信息。_
