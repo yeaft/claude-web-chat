@@ -1682,6 +1682,9 @@ async function pauseAll(session) {
     message: { role: 'assistant', content: [{ type: 'text', text: 'Session 已暂停' }] }
   });
   sendStatusUpdate(session);
+
+  // 显式 await 保存，确保暂停状态落盘
+  await saveSessionMeta(session);
 }
 
 /**
@@ -1775,6 +1778,10 @@ async function stopAll(session) {
 
   // 清理 git worktrees
   await cleanupWorktrees(session.projectDir);
+
+  // 显式 await 保存，确保 session.json 落盘后再从内存中移除
+  await saveSessionMeta(session);
+  await upsertCrewIndex(session);
 
   // 从活跃 sessions 中移除
   crewSessions.delete(session.id);
