@@ -353,7 +353,7 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
-    sendCrewMessage(content, targetRole = null, attachments = undefined, interrupt = false) {
+    sendCrewMessage(content, targetRole = null, attachments = undefined) {
       const sessionId = this.currentConversation;
       // 添加人的消息到本地显示
       if (!this.crewMessagesMap[sessionId]) this.crewMessagesMap[sessionId] = [];
@@ -373,7 +373,6 @@ export const useChatStore = defineStore('chat', {
         sessionId,
         content,
         targetRole,
-        interrupt,
         agentId: this.currentAgent
       };
       if (attachments && attachments.length > 0) {
