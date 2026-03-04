@@ -847,10 +847,16 @@ export default {
       this.folderPickerSelected = entry.name;
     },
     folderPickerEnter(entry) {
-      const sep = this.folderPickerPath.includes('\\') || /^[A-Z]:/.test(entry.name) ? '\\' : '/';
+      const isWin = this.folderPickerPath.includes('\\') || /^[A-Z]:/.test(entry.name);
+      const sep = isWin ? '\\' : '/';
       let newPath;
       if (!this.folderPickerPath) {
-        newPath = entry.name + (entry.name.endsWith('\\') ? '' : '\\');
+        // At root level: Windows drive (C:) or Unix root (/)
+        if (/^[A-Z]:$/.test(entry.name)) {
+          newPath = entry.name + '\\';
+        } else {
+          newPath = '/' + entry.name;
+        }
       } else {
         newPath = this.folderPickerPath.replace(/[/\\]$/, '') + sep + entry.name;
       }
