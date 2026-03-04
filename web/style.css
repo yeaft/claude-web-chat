@@ -86,6 +86,8 @@ select option:checked {
   --sidebar-hover: #e8e6e1;
   --session-active: #e2e0db;
   --inline-code-bg: rgba(0, 0, 0, 0.05);
+  --crew-tool-bg: #f0efec;
+  --crew-tool-border: #e0ddd8;
   /* Crew Role Colors — light theme: muted ink tones */
   --crew-color-pm: #5a7394;
   --crew-color-pm-bg: rgba(90, 115, 148, 0.06);
@@ -168,6 +170,8 @@ select option:checked {
   --sidebar-hover: #252523;
   --session-active: #302e2c;
   --inline-code-bg: rgba(255, 255, 255, 0.07);
+  --crew-tool-bg: #1e1e1e;
+  --crew-tool-border: #363330;
   /* Diff colors - warm muted style */
   --diff-add-bg: rgba(120, 170, 120, 0.10);
   --diff-add-border: rgba(120, 170, 120, 0.28);
@@ -11743,9 +11747,9 @@ body {
 /* Crew Turn Group — terminal-style tool panel */
 .crew-turn-tools {
   margin-top: 6px;
-  background: var(--code-bg);
+  background: var(--crew-tool-bg);
   border-radius: 8px;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--crew-tool-border);
   padding: 4px 0;
   overflow: hidden;
 }
