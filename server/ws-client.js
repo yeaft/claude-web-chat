@@ -630,6 +630,8 @@ async function handleWebMessage(clientId, msg) {
       const proxyAgentId = msg.agentId || client.currentAgent;
       if (!proxyAgentId) break;
       if (!await checkAgentAccess(proxyAgentId)) break;
+      const agent = agents.get(proxyAgentId);
+      if (agent) agent.proxyPorts = msg.ports || [];
       await forwardToAgent(proxyAgentId, {
         type: 'proxy_update_ports',
         ports: msg.ports || []
