@@ -510,6 +510,8 @@ export const useChatStore = defineStore('chat', {
             routeSummary: m.routeSummary || '',
             toolName: m.toolName || null,
             toolId: m.toolId || null,
+            toolInput: m.toolInput || null,
+            toolResult: null,
             hasResult: m.hasResult || false,
             taskId: m.taskId || null,
             taskTitle: m.taskTitle || null,
