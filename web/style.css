@@ -10727,10 +10727,8 @@ body {
 .crew-route-summary {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  word-break: normal;
+  white-space: normal;
+  word-wrap: break-word;
 }
 
 .crew-route-summary::before {
