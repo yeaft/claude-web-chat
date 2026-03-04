@@ -30,16 +30,9 @@ export default {
         </button>
       </div>
 
-      <!-- Mobile Tab Bar -->
-      <div class="crew-mobile-tabs">
-        <button class="crew-mobile-tab" :class="{ active: mobileTab === 'chat' }" @click="mobileTab = 'chat'">对话</button>
-        <button class="crew-mobile-tab" :class="{ active: mobileTab === 'roles' }" @click="mobileTab = 'roles'">角色</button>
-        <button class="crew-mobile-tab" :class="{ active: mobileTab === 'kanban' }" @click="mobileTab = 'kanban'">看板</button>
-      </div>
-
       <div class="crew-workspace">
         <!-- Left Panel: Role Cards -->
-        <aside class="crew-panel-left" :class="{ 'mobile-visible': mobileTab === 'roles' }">
+        <aside class="crew-panel-left">
           <div class="crew-panel-left-scroll">
             <div class="crew-role-list">
               <div v-for="role in sessionRoles" :key="role.name"
@@ -72,7 +65,7 @@ export default {
         </aside>
 
         <!-- Center Panel: Chat Flow -->
-        <div class="crew-panel-center" :class="{ 'mobile-visible': mobileTab === 'chat' }">
+        <div class="crew-panel-center">
 
       <!-- Messages -->
       <div class="crew-messages" ref="messagesRef" @scroll="onScroll">
@@ -554,7 +547,7 @@ export default {
         </div><!-- /crew-panel-center -->
 
         <!-- Right Panel: Feature Kanban -->
-        <aside class="crew-panel-right" :class="{ 'mobile-visible': mobileTab === 'kanban' }">
+        <aside class="crew-panel-right">
           <div class="crew-panel-right-scroll">
 
             <!-- Feature Cards -->
@@ -703,7 +696,6 @@ export default {
       expandedFeatures: {},
       expandedHistories: {},
       expandedFeatureCards: {},
-      mobileTab: 'chat',
       isAtBottom: true,
       visibleBlockCount: 20,
       isLoadingMore: false,

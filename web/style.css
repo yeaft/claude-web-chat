@@ -11871,11 +11871,6 @@ body {
   color: var(--text-muted);
 }
 
-/* --- Mobile Tab Bar --- */
-.crew-mobile-tabs {
-  display: none;
-}
-
 /* --- Responsive Breakpoints --- */
 
 /* 1024-1279px: Left panel collapses to icon bar */
@@ -11925,55 +11920,15 @@ body {
   }
 }
 
-/* <768px: Mobile — single panel with tab switching */
+/* <768px: Mobile — chat only, hide side panels */
 @media (max-width: 767px) {
-  .crew-mobile-tabs {
-    display: flex;
-    border-bottom: 1px solid var(--border-color);
-    background: var(--bg-sidebar);
-    flex-shrink: 0;
-  }
-
-  .crew-mobile-tab {
-    flex: 1;
-    padding: 8px;
-    text-align: center;
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-muted);
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    background: none;
-    border-top: none;
-    border-left: none;
-    border-right: none;
-    font-family: inherit;
-  }
-
-  .crew-mobile-tab.active {
-    color: var(--text-primary);
-    border-bottom-color: var(--accent-blue);
-  }
-
   .crew-panel-left,
   .crew-panel-right {
     display: none;
-    width: 100%;
-    border: none;
   }
 
   .crew-panel-center {
-    display: none;
-  }
-
-  .crew-panel-left.mobile-visible,
-  .crew-panel-center.mobile-visible,
-  .crew-panel-right.mobile-visible {
     display: flex;
-  }
-
-  .crew-panel-right.mobile-visible {
-    flex-direction: column;
   }
 }
 
