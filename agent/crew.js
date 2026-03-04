@@ -1944,21 +1944,28 @@ function sendCrewOutput(session, roleName, outputType, rawMessage, extra = {}) {
       for (const block of content) {
         if (block.type === 'tool_use') {
           // Save trimmed toolInput for restore — only key fields, skip large content
+          // TodoWrite: preserve full input (todos array is small and needed for sticky banner)
           const input = block.input || {};
-          const trimmedInput = {};
-          if (input.file_path) trimmedInput.file_path = input.file_path;
-          if (input.command) trimmedInput.command = input.command.substring(0, 200);
-          if (input.pattern) trimmedInput.pattern = input.pattern;
-          if (input.old_string) trimmedInput.old_string = input.old_string.substring(0, 100);
-          if (input.new_string) trimmedInput.new_string = input.new_string.substring(0, 100);
-          if (input.url) trimmedInput.url = input.url;
-          if (input.query) trimmedInput.query = input.query;
+          let savedInput;
+          if (block.name === 'TodoWrite') {
+            savedInput = input;
+          } else {
+            const trimmedInput = {};
+            if (input.file_path) trimmedInput.file_path = input.file_path;
+            if (input.command) trimmedInput.command = input.command.substring(0, 200);
+            if (input.pattern) trimmedInput.pattern = input.pattern;
+            if (input.old_string) trimmedInput.old_string = input.old_string.substring(0, 100);
+            if (input.new_string) trimmedInput.new_string = input.new_string.substring(0, 100);
+            if (input.url) trimmedInput.url = input.url;
+            if (input.query) trimmedInput.query = input.query;
+            savedInput = Object.keys(trimmedInput).length > 0 ? trimmedInput : null;
+          }
           session.uiMessages.push({
             role: roleName, roleIcon, roleName: displayName,
             type: 'tool',
             toolName: block.name,
             toolId: block.id,
-            toolInput: Object.keys(trimmedInput).length > 0 ? trimmedInput : null,
+            toolInput: savedInput,
             content: `${block.name} ${block.input?.file_path || block.input?.command?.substring(0, 60) || ''}`,
             hasResult: false,
             taskId, taskTitle,
