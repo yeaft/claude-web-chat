@@ -1016,7 +1016,6 @@ ${allRoles.map(r => `- ${roleLabel(r)}: ${r.description}${r.isDecisionMaker ? ' 
   const hasMultiInstance = allRoles.some(r => r.groupIndex > 0);
 
   if (routeTargets.length > 0) {
-    const multiRouteAllowed = role.isDecisionMaker && hasMultiInstance;
     prompt += `\n\n# 路由规则
 当你完成当前任务并需要将结果传递给其他角色时，在你的回复最末尾添加一个 ROUTE 块：
 
@@ -1035,7 +1034,7 @@ ${routeTargets.map(r => `- ${r.name}: ${roleLabel(r)} — ${r.description}`).joi
 - 如果你的工作还没完成，不需要添加 ROUTE 块
 - 如果你遇到不确定的问题，@ 决策者 "${session.decisionMaker}"，而不是直接 @ human
 - 如果你是决策者且遇到需要人类判断的问题，才 @ human
-${multiRouteAllowed ? '- 决策者可以一次发多个 ROUTE 块来并行分配任务' : '- 每次回复最多只能有一个 ROUTE 块'}
+- 可以一次发多个 ROUTE 块来并行分配任务给不同角色
 - ROUTE 块必须在回复的最末尾
 - 当你的任务已完成且不需要其他角色继续时，ROUTE 回决策者 "${session.decisionMaker}" 做总结
 - 在正文中可用 @角色name 提及某个角色（如 @developer），但这不会触发路由，仅供阅读`;
