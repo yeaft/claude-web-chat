@@ -11398,11 +11398,9 @@ body {
   flex-shrink: 0;
 }
 
-/* Todo Progress Banner — sticky top */
+/* ===== Todo Banner Redesign ===== */
+
 .crew-todo-banner {
-  position: sticky;
-  top: 0;
-  z-index: 19;
   max-width: 800px;
   margin: 0 auto 8px;
   padding: 0 24px;
@@ -11415,72 +11413,236 @@ body {
   border: 1px solid var(--border-color);
   border-radius: 10px;
   padding: 10px 14px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 
 [data-theme="dark"] .crew-todo-banner-card {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
+/* Header: progress dots + title + count */
 .crew-todo-banner-header {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 6px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
 }
 
-.crew-todo-banner-header .icon {
-  font-size: 14px;
+.crew-todo-banner-dots {
+  display: inline-flex;
+  gap: 3px;
 }
 
-.crew-todo-progress {
-  font-weight: 400;
+.crew-todo-banner-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-color);
+  transition: background 0.3s;
+}
+
+.crew-todo-banner-dot.lit {
+  background: var(--accent-blue);
+}
+
+.crew-todo-banner-dot.done {
+  background: var(--success);
+}
+
+.crew-todo-banner-count {
+  margin-left: auto;
   font-size: 12px;
+  font-weight: 400;
   color: var(--text-muted);
-  margin-left: 2px;
 }
 
-.crew-todo-banner-list {
+/* Feature Group */
+.crew-todo-group {
+  margin-bottom: 4px;
+}
+
+.crew-todo-group:last-child {
+  margin-bottom: 0;
+}
+
+.crew-todo-group-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 3px 0;
+  border-radius: 4px;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.crew-todo-group-header:hover {
+  color: var(--text-primary);
+}
+
+.crew-todo-group-chevron {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.crew-todo-group.is-expanded .crew-todo-group-chevron {
+  transform: rotate(90deg);
+}
+
+.crew-todo-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-todo-group-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* Todo Items List */
+.crew-todo-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
+  padding-left: 0;
+}
+
+/* Indented list under group header */
+.crew-todo-group .crew-todo-list {
+  padding-left: 16px;
 }
 
 .crew-todo-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 12px;
-  padding: 2px 0;
+  padding: 3px 0;
+  line-height: 1.4;
 }
 
-.crew-todo-icon {
-  font-size: 12px;
+/* Status icons: CSS-drawn circles */
+.crew-todo-status {
   flex-shrink: 0;
-  width: 16px;
-  text-align: center;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
+/* Pending: empty circle */
+.crew-todo-item.is-pending .crew-todo-status {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-muted);
+  opacity: 0.6;
+}
+
+/* In-progress: filled blue dot with pulse */
+.crew-todo-item.is-in-progress .crew-todo-status {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  animation: todoPulse 2s ease-in-out infinite;
+}
+
+@keyframes todoPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.85); }
+}
+
+/* Completed: green circle with check */
+.crew-todo-item.is-completed .crew-todo-status {
+  width: 14px;
+  height: 14px;
+  color: var(--success);
+}
+
+.crew-todo-item.is-completed .crew-todo-status svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Todo text */
 .crew-todo-text {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.crew-todo-completed .crew-todo-text {
+.crew-todo-item.is-completed .crew-todo-text {
   color: var(--text-muted);
   text-decoration: line-through;
+  text-decoration-color: var(--border-color);
 }
 
-.crew-todo-in_progress .crew-todo-text {
-  color: var(--accent-blue);
+.crew-todo-item.is-in-progress .crew-todo-text {
+  color: var(--text-primary);
   font-weight: 500;
 }
 
-.crew-todo-pending .crew-todo-text {
+.crew-todo-item.is-pending .crew-todo-text {
   color: var(--text-secondary);
+}
+
+/* Role tag: small inline label for multi-role context */
+.crew-todo-role {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.crew-todo-role-icon {
+  font-size: 10px;
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .crew-todo-banner {
+    padding: 0 12px;
+  }
+
+  .crew-todo-banner-card {
+    padding: 8px 10px;
+  }
+
+  .crew-todo-banner-header {
+    font-size: 12px;
+  }
+
+  .crew-todo-group .crew-todo-list {
+    padding-left: 12px;
+  }
+
+  .crew-todo-item {
+    font-size: 11px;
+  }
+
+  .crew-todo-role {
+    display: none;
+  }
 }
 
 /* Crew Load More - pagination indicator at top */
