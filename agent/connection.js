@@ -470,10 +470,12 @@ async function handleMessage(msg) {
               `${npmBatCmd} >> "%LOGFILE%" 2>&1`,
               'if errorlevel 1 (',
               '  echo [Upgrade] npm install failed with exit code %errorlevel% >> "%LOGFILE%"',
-              '  goto CLEANUP',
+              ') else (',
+              '  echo [Upgrade] Successfully installed %PKG% >> "%LOGFILE%"',
               ')',
-              'echo [Upgrade] Successfully installed %PKG% >> "%LOGFILE%"',
             );
+
+            batLines.push(':CLEANUP');
 
             if (isPm2) {
               batLines.push(
@@ -482,10 +484,7 @@ async function handleMessage(msg) {
               );
             }
 
-            batLines.push(
-              ':CLEANUP',
-              `del /F /Q "${batPath}"`,
-            );
+            batLines.push(`del /F /Q "${batPath}"`);
 
             writeFileSync(batPath, batLines.join('\r\n'));
             const child = spawn('cmd.exe', ['/c', batPath], {
