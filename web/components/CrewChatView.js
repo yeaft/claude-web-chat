@@ -107,74 +107,143 @@ export default {
           </template>
 
           <!-- Feature block: messages with taskId, render as collapsible thread -->
-          <div v-else class="crew-feature-thread" :class="{ 'is-completed': block.isCompleted }" :style="getTaskColor(block.taskId)">
+          <div v-else class="crew-feature-thread" :class="{ 'is-completed': block.isCompleted, 'is-expanded': isFeatureExpanded(block) }">
             <div class="crew-feature-header" @click="toggleFeature(block.taskId)">
-              <svg v-if="isFeatureExpanded(block)" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
-              <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+              <svg class="crew-feature-chevron" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 6l6 6-6 6z"/></svg>
               <span class="crew-feature-title">{{ block.taskTitle }}</span>
-              <span v-if="block.isCompleted" class="crew-feature-badge completed">已完成</span>
-              <span v-else-if="block.hasStreaming" class="crew-feature-badge active">进行中</span>
-              <span v-if="block.activeRoles.length > 0" class="crew-feature-roles">
-                <span v-for="ar in block.activeRoles" :key="ar.role" class="crew-feature-role-tag" :style="getRoleStyle(ar.role)">{{ ar.roleIcon }} {{ shortName(ar.roleName) }}</span>
+              <span v-if="block.activeRoles && block.activeRoles.length > 0" class="crew-feature-actives">
+                <span v-for="ar in block.activeRoles.slice(0, 3)" :key="ar.role" class="crew-feature-active-icon" :title="ar.roleName">{{ ar.roleIcon }}</span>
+                <span v-if="block.activeRoles.length > 3" class="crew-feature-active-more">+{{ block.activeRoles.length - 3 }}</span>
               </span>
-              <span class="crew-feature-meta">{{ block.turns.length }} 条</span>
+              <span v-if="block.isCompleted" class="crew-feature-status completed">
+                <span class="crew-feature-status-dot"></span> 已完成
+              </span>
+              <span v-else-if="block.hasStreaming" class="crew-feature-status active">
+                <span class="crew-feature-status-dot"></span> 进行中
+              </span>
             </div>
             <div v-if="isFeatureExpanded(block)" class="crew-feature-body">
-              <template v-for="(turn, tidx) in block.turns" :key="turn.id">
-                <div v-if="tidx > 0 && shouldShowTurnDivider(block.turns, tidx)" class="crew-turn-divider"></div>
-                <div v-if="turn.type === 'turn' && getMaxRound(turn) > 0" class="crew-round-divider">
-                  <div class="crew-round-line"></div>
-                  <span class="crew-round-label">Round {{ getMaxRound(turn) }}</span>
-                  <div class="crew-round-line"></div>
-                </div>
-                <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :style="getRoleStyle(turn.message.role)">
-                  <div class="crew-msg-body">
-                    <div class="crew-msg-header">
-                      <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
-                      <span class="crew-msg-name">{{ shortName(turn.message.roleName) }}</span>
-                      <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
-                    </div>
-                    <div v-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
-                    <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
-                      <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
-                    </div>
-                    <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
+              <!-- History toggle (only when there are older turns) -->
+              <button v-if="block.turns.length > 1"
+                      class="crew-feature-history-toggle"
+                      :class="{ 'is-expanded': expandedHistories[block.taskId] }"
+                      @click.stop="toggleHistory(block.taskId)">
+                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 6l6 6-6 6z"/></svg>
+                查看 {{ block.turns.length - 1 }} 条历史消息
+              </button>
+
+              <!-- History messages (collapsed by default) -->
+              <div v-if="expandedHistories[block.taskId] && block.turns.length > 1" class="crew-feature-history">
+                <template v-for="(turn, tidx) in block.turns.slice(0, -1)" :key="turn.id">
+                  <div v-if="tidx > 0 && shouldShowTurnDivider(block.turns, tidx)" class="crew-turn-divider"></div>
+                  <div v-if="turn.type === 'turn' && getMaxRound(turn) > 0" class="crew-round-divider">
+                    <div class="crew-round-line"></div>
+                    <span class="crew-round-label">Round {{ getMaxRound(turn) }}</span>
+                    <div class="crew-round-line"></div>
                   </div>
-                </div>
-                <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :style="getRoleStyle(turn.role)">
-                  <div class="crew-msg-body">
-                    <div class="crew-msg-header">
-                      <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
-                      <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
-                      <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
-                    </div>
-                    <template v-if="turn.textMsg">
-                      <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
-                    </template>
-                    <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
-                      <div class="crew-turn-tool-latest">
-                        <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
-                        <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
-                          <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-                          <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
-                          <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
-                        </button>
+                  <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :style="getRoleStyle(turn.message.role)">
+                    <div class="crew-msg-body">
+                      <div class="crew-msg-header">
+                        <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
+                        <span class="crew-msg-name">{{ shortName(turn.message.roleName) }}</span>
+                        <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
                       </div>
-                      <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
-                        <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
-                          <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
-                        </template>
+                      <div v-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
+                      <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
+                        <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
                       </div>
-                    </div>
-                    <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
-                      <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
-                        <span class="crew-route-arrow">→</span>
-                        <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
-                        <span v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</span>
-                      </div>
+                      <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
                     </div>
                   </div>
-                </div>
+                  <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :style="getRoleStyle(turn.role)">
+                    <div class="crew-msg-body">
+                      <div class="crew-msg-header">
+                        <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
+                        <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
+                        <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
+                      </div>
+                      <template v-if="turn.textMsg">
+                        <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
+                      </template>
+                      <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
+                        <div class="crew-turn-tool-latest">
+                          <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
+                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
+                            <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                            <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
+                            <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
+                          </button>
+                        </div>
+                        <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
+                          <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
+                            <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
+                          </template>
+                        </div>
+                      </div>
+                      <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
+                        <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
+                          <span class="crew-route-arrow">→</span>
+                          <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
+                          <span v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+
+              <!-- Latest turn (always visible) -->
+              <template v-if="block.turns.length > 0">
+                <template v-for="turn in [block.turns[block.turns.length - 1]]" :key="turn.id">
+                  <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :style="getRoleStyle(turn.message.role)">
+                    <div class="crew-msg-body">
+                      <div class="crew-msg-header">
+                        <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
+                        <span class="crew-msg-name">{{ shortName(turn.message.roleName) }}</span>
+                        <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
+                      </div>
+                      <div v-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
+                      <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
+                        <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
+                      </div>
+                      <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
+                    </div>
+                  </div>
+                  <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :style="getRoleStyle(turn.role)">
+                    <div class="crew-msg-body">
+                      <div class="crew-msg-header">
+                        <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
+                        <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
+                        <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
+                      </div>
+                      <template v-if="turn.textMsg">
+                        <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
+                      </template>
+                      <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
+                        <div class="crew-turn-tool-latest">
+                          <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
+                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
+                            <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                            <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
+                            <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
+                          </button>
+                        </div>
+                        <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
+                          <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
+                            <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
+                          </template>
+                        </div>
+                      </div>
+                      <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
+                        <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
+                          <span class="crew-route-arrow">→</span>
+                          <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
+                          <span v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
               </template>
             </div>
           </div>
@@ -322,6 +391,7 @@ export default {
       uploading: false,
       expandedTurns: {},
       expandedFeatures: {},
+      expandedHistories: {},
       isAtBottom: true,
       atMenuVisible: false,
       atQuery: '',
@@ -870,6 +940,10 @@ summary: 请测试以下变更...
 
     toggleFeature(taskId) {
       this.expandedFeatures[taskId] = !this.expandedFeatures[taskId];
+    },
+
+    toggleHistory(taskId) {
+      this.expandedHistories[taskId] = !this.expandedHistories[taskId];
     },
 
     isFeatureExpanded(block) {

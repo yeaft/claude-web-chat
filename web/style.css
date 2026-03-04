@@ -10725,24 +10725,25 @@ body {
   white-space: nowrap;
 }
 
-/* Crew Feature Thread — task-based message grouping */
+/* Crew Feature Thread — Linear/Notion-inspired minimal design */
 .crew-feature-thread {
   max-width: 800px;
-  margin: 6px auto;
+  margin: 8px auto;
   padding: 0 24px;
   width: 100%;
   box-sizing: border-box;
 }
 
+/* Header: transparent, text-only */
 .crew-feature-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 12px;
+  padding: 6px 8px;
   cursor: pointer;
-  border-radius: 8px;
-  background: var(--bg-sidebar);
-  border-left: 3px solid var(--task-color, var(--accent-blue));
+  border-radius: 6px;
+  background: transparent;
+  border: none;
   transition: background 0.15s;
   user-select: none;
 }
@@ -10751,11 +10752,20 @@ body {
   background: var(--sidebar-hover);
 }
 
-.crew-feature-header svg {
+/* Chevron: rotates on expand */
+.crew-feature-chevron {
   flex-shrink: 0;
+  width: 16px;
+  height: 16px;
   color: var(--text-muted);
+  transition: transform 0.15s ease;
 }
 
+.crew-feature-thread.is-expanded .crew-feature-chevron {
+  transform: rotate(90deg);
+}
+
+/* Title */
 .crew-feature-title {
   font-size: 13px;
   font-weight: 600;
@@ -10767,57 +10777,139 @@ body {
   white-space: nowrap;
 }
 
-.crew-feature-badge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.crew-feature-badge.completed {
-  background: rgba(74, 158, 92, 0.12);
-  color: var(--success);
-}
-
-.crew-feature-badge.active {
-  background: rgba(59, 130, 246, 0.12);
-  color: var(--accent-blue, #4a9eff);
-}
-
-.crew-feature-roles {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.crew-feature-role-tag {
-  font-size: 11px;
-  padding: 1px 5px;
-  border-radius: 6px;
-  background: var(--role-bg, transparent);
-  color: var(--role-color, var(--text-secondary));
-  white-space: nowrap;
-}
-
-.crew-feature-meta {
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
 .crew-feature-thread.is-completed .crew-feature-title {
   color: var(--text-muted);
 }
 
+/* Status indicator: dot + text */
+.crew-feature-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.crew-feature-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.crew-feature-status.active .crew-feature-status-dot {
+  background: var(--accent-blue);
+}
+
+.crew-feature-status.active {
+  color: var(--accent-blue);
+}
+
+.crew-feature-status.completed .crew-feature-status-dot {
+  background: var(--success);
+}
+
+.crew-feature-status.completed {
+  color: var(--text-muted);
+}
+
+/* Active roles: emoji icon stack */
+.crew-feature-actives {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.crew-feature-active-icon {
+  font-size: 14px;
+  line-height: 1;
+  margin-left: -4px;
+  cursor: default;
+}
+
+.crew-feature-active-icon:first-child {
+  margin-left: 0;
+}
+
+.crew-feature-active-more {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 2px;
+}
+
+/* Feature body: no border, no background */
 .crew-feature-body {
-  border-left: 3px solid var(--task-color, var(--border-color));
+  border: none;
   margin-left: 0;
   padding-left: 0;
 }
 
 .crew-feature-body .crew-message {
   border-left: none;
+}
+
+/* History toggle button */
+.crew-feature-history-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  margin: 0 0 2px 0;
+  max-width: 800px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  font-style: italic;
+  transition: background 0.15s, color 0.15s;
+  font-family: inherit;
+}
+
+.crew-feature-history-toggle:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-secondary);
+}
+
+.crew-feature-history-toggle svg {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  transition: transform 0.15s ease;
+}
+
+.crew-feature-history-toggle.is-expanded svg {
+  transform: rotate(90deg);
+}
+
+/* History messages area */
+.crew-feature-history {
+  position: relative;
+  margin-bottom: 4px;
+}
+
+.crew-feature-history::before {
+  content: '';
+  display: block;
+  height: 1px;
+  margin: 4px 8px;
+  border-top: 1px dashed var(--border-color);
+  opacity: 0.5;
+}
+
+.crew-feature-history::after {
+  content: '';
+  display: block;
+  height: 1px;
+  margin: 4px 8px;
+  border-top: 1px dashed var(--border-color);
+  opacity: 0.5;
+}
+
+.crew-feature-history .crew-message {
+  opacity: 0.75;
 }
 
 /* Crew Round Divider */
@@ -12126,15 +12218,16 @@ body {
     max-width: 100%;
   }
 
+  .crew-feature-thread {
+    padding: 0 12px;
+  }
+
   .crew-feature-header {
-    padding: 8px 12px;
+    padding: 8px 8px;
   }
 
   .crew-feature-title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 50vw;
+    max-width: 55vw;
   }
 
   .crew-feature-body {
@@ -12233,5 +12326,10 @@ body {
   .crew-input-area {
     padding: 8px;
     padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .crew-feature-thread {
+    padding: 0 8px;
+    margin: 4px auto;
   }
 }

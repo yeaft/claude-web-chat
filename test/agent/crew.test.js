@@ -2925,9 +2925,9 @@ describe('Feature blocks - removed task panel and filter bar', () => {
     expect(fileContent).toContain('条');
   });
 
-  it('should show active roles in feature header using shortName', () => {
+  it('should show active roles in feature header using emoji icons', () => {
     expect(fileContent).toContain('block.activeRoles');
-    expect(fileContent).toContain('shortName(ar.roleName)');
+    expect(fileContent).toContain('ar.roleIcon');
   });
 });
 
@@ -2953,19 +2953,604 @@ describe('Feature blocks CSS verification', () => {
     expect(cssContent).toContain('.crew-feature-thread.is-completed .crew-feature-title');
   });
 
-  it('should have feature badge styles for completed and active', () => {
-    expect(cssContent).toContain('.crew-feature-badge.completed');
-    expect(cssContent).toContain('.crew-feature-badge.active');
+  it('should have feature status styles for completed and active', () => {
+    expect(cssContent).toContain('.crew-feature-status.completed');
+    expect(cssContent).toContain('.crew-feature-status.active');
   });
 
   it('should have hover effect on feature header', () => {
     expect(cssContent).toContain('.crew-feature-header:hover');
   });
 
-  it('should use border-left for feature body thread line', () => {
+  it('should have feature body without border-left (minimal design)', () => {
     expect(cssContent).toContain('.crew-feature-body');
-    // Feature body has border-left for visual thread
-    const bodyRule = cssContent.match(/\.crew-feature-body\s*\{[^}]*border-left[^}]*/);
+    // New design: no border-left, uses border: none
+    const bodyRule = cssContent.match(/\.crew-feature-body\s*\{[^}]*border:\s*none[^}]*/);
     expect(bodyRule).toBeTruthy();
+  });
+});
+
+// =====================================================================
+// Route messages merged into turns (cdf117c)
+// =====================================================================
+
+describe('_buildTurns - route messages merged into same-role turns', () => {
+  // Replicate the updated _buildTurns from CrewChatView.js (cdf117c)
+  function buildTurnsNew(messages) {
+    const turns = [];
+    let currentTurn = null;
+    let turnCounter = 0;
+
+    const flushTurn = () => {
+      if (currentTurn) {
+        currentTurn.textMsg = currentTurn.messages.find(m => m.type === 'text') || null;
+        currentTurn.toolMsgs = currentTurn.messages.filter(m => m.type === 'tool');
+        currentTurn.routeMsgs = currentTurn.messages.filter(m => m.type === 'route');
+        turns.push(currentTurn);
+        currentTurn = null;
+      }
+    };
+
+    for (const msg of messages) {
+      if (msg.type === 'system' || msg.type === 'human_needed') {
+        flushTurn();
+        turns.push({ type: msg.type, message: msg, id: 'standalone_' + (msg.id || turnCounter++) });
+        continue;
+      }
+      if (msg.type === 'route') {
+        // Merge route into current turn if same role
+        if (currentTurn && currentTurn.role === msg.role) {
+          currentTurn.messages.push(msg);
+        } else {
+          flushTurn();
+          currentTurn = {
+            type: 'turn',
+            role: msg.role,
+            roleName: msg.roleName,
+            roleIcon: msg.roleIcon,
+            messages: [msg],
+            textMsg: null,
+            toolMsgs: [],
+            routeMsgs: [],
+            id: 'turn_' + (turnCounter++)
+          };
+        }
+        continue;
+      }
+      if (msg.role === 'human') {
+        flushTurn();
+        turns.push({ type: 'text', message: msg, id: 'human_' + (msg.id || turnCounter++) });
+        continue;
+      }
+      if (currentTurn && currentTurn.role === msg.role) {
+        currentTurn.messages.push(msg);
+      } else {
+        flushTurn();
+        currentTurn = {
+          type: 'turn',
+          role: msg.role,
+          roleName: msg.roleName,
+          roleIcon: msg.roleIcon,
+          messages: [msg],
+          textMsg: null,
+          toolMsgs: [],
+          routeMsgs: [],
+          id: 'turn_' + (turnCounter++)
+        };
+      }
+    }
+    flushTurn();
+    return turns;
+  }
+
+  it('should merge route into preceding turn of same role', () => {
+    const messages = [
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: '分析完成' },
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'route', routeTo: 'developer', routeToName: '开发者', routeSummary: '请实现功能' }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(1);
+    expect(turns[0].type).toBe('turn');
+    expect(turns[0].role).toBe('pm');
+    expect(turns[0].messages.length).toBe(2);
+    expect(turns[0].routeMsgs.length).toBe(1);
+    expect(turns[0].routeMsgs[0].routeTo).toBe('developer');
+    expect(turns[0].textMsg.content).toBe('分析完成');
+  });
+
+  it('should NOT merge route into turn of different role', () => {
+    const messages = [
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: 'PM 说话' },
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'route', routeTo: 'reviewer', routeToName: '审查者', routeSummary: '请审查' }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(2);
+    expect(turns[0].role).toBe('pm');
+    expect(turns[0].routeMsgs.length).toBe(0);
+    expect(turns[1].role).toBe('developer');
+    expect(turns[1].routeMsgs.length).toBe(1);
+    expect(turns[1].routeMsgs[0].routeTo).toBe('reviewer');
+  });
+
+  it('should create a new turn for route when no preceding turn', () => {
+    const messages = [
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'route', routeTo: 'developer', routeSummary: '开始' }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(1);
+    expect(turns[0].type).toBe('turn');
+    expect(turns[0].role).toBe('pm');
+    expect(turns[0].textMsg).toBe(null);
+    expect(turns[0].routeMsgs.length).toBe(1);
+  });
+
+  it('should handle multiple routes in same turn', () => {
+    const messages = [
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: '规划完成' },
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'route', routeTo: 'developer', routeSummary: '实现功能A', round: 1 },
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'route', routeTo: 'tester', routeSummary: '测试功能B', round: 2 }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(1);
+    expect(turns[0].routeMsgs.length).toBe(2);
+    expect(turns[0].routeMsgs[0].routeTo).toBe('developer');
+    expect(turns[0].routeMsgs[1].routeTo).toBe('tester');
+  });
+
+  it('should NOT treat route as standalone anymore', () => {
+    const messages = [
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: 'PM text' },
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'route', routeTo: 'developer' },
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'text', content: 'dev text' }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    // Route is merged into PM turn, not standalone
+    const routeStandalone = turns.find(t => t.type === 'route');
+    expect(routeStandalone).toBeUndefined();
+  });
+
+  it('should still treat system messages as standalone', () => {
+    const messages = [
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: 'PM 说' },
+      { type: 'system', role: 'system', content: '系统通知' },
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'text', content: '收到' }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(3);
+    expect(turns[1].type).toBe('system');
+    expect(turns[1].message.content).toBe('系统通知');
+  });
+
+  it('should still treat human_needed messages as standalone', () => {
+    const messages = [
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: 'PM 说' },
+      { type: 'human_needed', role: 'pm', content: '需要人工介入' }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(2);
+    expect(turns[1].type).toBe('human_needed');
+  });
+
+  it('should have routeMsgs array on all turns (even empty)', () => {
+    const messages = [
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'text', content: '开发中' },
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'tool', toolName: 'Read' }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(1);
+    expect(turns[0].routeMsgs).toEqual([]);
+    expect(turns[0].toolMsgs.length).toBe(1);
+  });
+
+  it('should handle text → route → text (different role) sequence', () => {
+    const messages = [
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: '分析完成' },
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'route', routeTo: 'developer', routeSummary: '请实现' },
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'text', content: '收到，开始实现' }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(2);
+    // PM turn has text + route
+    expect(turns[0].role).toBe('pm');
+    expect(turns[0].textMsg.content).toBe('分析完成');
+    expect(turns[0].routeMsgs.length).toBe(1);
+    // Developer turn follows
+    expect(turns[1].role).toBe('developer');
+    expect(turns[1].textMsg.content).toBe('收到，开始实现');
+    expect(turns[1].routeMsgs).toEqual([]);
+  });
+
+  it('should handle route-only turn (route from a new role without preceding text)', () => {
+    const messages = [
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: 'PM 说话' },
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'route', routeTo: 'reviewer', routeSummary: '请审查代码' }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(2);
+    expect(turns[1].type).toBe('turn');
+    expect(turns[1].role).toBe('developer');
+    expect(turns[1].textMsg).toBe(null); // no text, only route
+    expect(turns[1].routeMsgs.length).toBe(1);
+  });
+
+  it('should merge route after tool message in same role turn', () => {
+    const messages = [
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'text', content: '正在编码' },
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'tool', toolName: 'Write' },
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'route', routeTo: 'reviewer', routeSummary: '代码写完了' }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(1);
+    expect(turns[0].textMsg.content).toBe('正在编码');
+    expect(turns[0].toolMsgs.length).toBe(1);
+    expect(turns[0].routeMsgs.length).toBe(1);
+  });
+});
+
+describe('getMaxRound - derives round from turn routeMsgs', () => {
+  function getMaxRound(turn) {
+    if (!turn.routeMsgs || turn.routeMsgs.length === 0) return 0;
+    let max = 0;
+    for (const rm of turn.routeMsgs) {
+      if (rm.round > max) max = rm.round;
+    }
+    return max;
+  }
+
+  it('should return 0 when no routeMsgs', () => {
+    expect(getMaxRound({ routeMsgs: [] })).toBe(0);
+  });
+
+  it('should return 0 when routeMsgs is undefined', () => {
+    expect(getMaxRound({})).toBe(0);
+  });
+
+  it('should return the single route round', () => {
+    const turn = { routeMsgs: [{ round: 3 }] };
+    expect(getMaxRound(turn)).toBe(3);
+  });
+
+  it('should return the maximum round from multiple routes', () => {
+    const turn = { routeMsgs: [{ round: 1 }, { round: 5 }, { round: 3 }] };
+    expect(getMaxRound(turn)).toBe(5);
+  });
+
+  it('should handle routes with round=0 (no round divider)', () => {
+    const turn = { routeMsgs: [{ round: 0 }] };
+    expect(getMaxRound(turn)).toBe(0);
+  });
+
+  it('should handle mixed round values including undefined', () => {
+    const turn = { routeMsgs: [{ round: undefined }, { round: 4 }] };
+    // undefined > max(0) is false, so skipped
+    expect(getMaxRound(turn)).toBe(4);
+  });
+});
+
+describe('shouldShowTurnDivider - updated without route type check', () => {
+  // After cdf117c: route check removed since routes are no longer standalone
+  function shouldShowTurnDividerNew(turns, tidx) {
+    const prev = turns[tidx - 1];
+    const curr = turns[tidx];
+    const prevRole = prev.type === 'turn' ? prev.role : prev.message?.role;
+    const currRole = curr.type === 'turn' ? curr.role : curr.message?.role;
+    return prevRole && currRole && prevRole !== currRole;
+  }
+
+  it('should show divider between different role turns', () => {
+    const turns = [
+      { type: 'turn', role: 'pm' },
+      { type: 'turn', role: 'developer' }
+    ];
+    expect(shouldShowTurnDividerNew(turns, 1)).toBe(true);
+  });
+
+  it('should not show divider for same role turns', () => {
+    const turns = [
+      { type: 'turn', role: 'pm' },
+      { type: 'turn', role: 'pm' }
+    ];
+    expect(shouldShowTurnDividerNew(turns, 1)).toBe(false);
+  });
+
+  it('should show divider between turn with route and different-role turn', () => {
+    // Since routes are now inside turns, a PM turn (with route) followed by
+    // developer turn should show divider
+    const turns = [
+      { type: 'turn', role: 'pm' },   // has routeMsgs inside
+      { type: 'turn', role: 'developer' }
+    ];
+    expect(shouldShowTurnDividerNew(turns, 1)).toBe(true);
+  });
+
+  it('should work with standalone system message between turns', () => {
+    const turns = [
+      { type: 'turn', role: 'pm' },
+      { type: 'system', message: { role: 'system' } },
+      { type: 'turn', role: 'developer' }
+    ];
+    // system → developer: roles differ
+    expect(shouldShowTurnDividerNew(turns, 2)).toBe(true);
+  });
+
+  it('should work with human standalone messages', () => {
+    const turns = [
+      { type: 'text', message: { role: 'human' } },
+      { type: 'turn', role: 'pm' }
+    ];
+    expect(shouldShowTurnDividerNew(turns, 1)).toBe(true);
+  });
+});
+
+describe('Route inline rendering - template structure verification', () => {
+  let fileContent;
+
+  it('should load source file', async () => {
+    fileContent = await fs.readFile(
+      join(__dirname, '../../web/components/CrewChatView.js'),
+      'utf-8'
+    );
+    expect(fileContent).toBeTruthy();
+  });
+
+  it('should render route messages as crew-turn-route-item inside turns', () => {
+    expect(fileContent).toContain('crew-turn-route-item');
+    expect(fileContent).toContain('crew-turn-routes');
+  });
+
+  it('should display route arrow (→) and target name', () => {
+    expect(fileContent).toContain('crew-route-arrow');
+    expect(fileContent).toContain('crew-route-target-name');
+  });
+
+  it('should display route summary when present', () => {
+    expect(fileContent).toContain('crew-route-summary');
+    expect(fileContent).toContain('rm.routeSummary');
+  });
+
+  it('should iterate over turn.routeMsgs for inline rendering', () => {
+    expect(fileContent).toContain('turn.routeMsgs');
+    expect(fileContent).toContain('v-for="rm in turn.routeMsgs"');
+  });
+
+  it('should use getMaxRound for round divider instead of turn.message.round', () => {
+    expect(fileContent).toContain('getMaxRound(turn)');
+    expect(fileContent).not.toContain("turn.type === 'route' && turn.message.round");
+  });
+
+  it('should show round divider on turns (not standalone route)', () => {
+    // Template: v-if="turn.type === 'turn' && getMaxRound(turn) > 0"
+    expect(fileContent).toContain("turn.type === 'turn' && getMaxRound(turn) > 0");
+  });
+
+  it('should not render route as standalone with crew-route-target anymore', () => {
+    // The old pattern was: <span class="crew-route-target">→ ...</span>
+    // This should no longer exist
+    expect(fileContent).not.toContain("class=\"crew-route-target\"");
+  });
+
+  it('should not have standalone route content rendering', () => {
+    // Old: v-if="turn.message.type === 'route' && turn.message.routeSummary"
+    expect(fileContent).not.toContain("turn.message.type === 'route' && turn.message.routeSummary");
+  });
+
+  it('should include routeMsgs in flushTurn', () => {
+    expect(fileContent).toContain("currentTurn.routeMsgs = currentTurn.messages.filter(m => m.type === 'route')");
+  });
+
+  it('should handle route messages in both global and feature block templates', () => {
+    // There should be two instances of crew-turn-route-item rendering (global + feature)
+    const matches = fileContent.match(/crew-turn-route-item/g);
+    expect(matches).toBeTruthy();
+    expect(matches.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('Route inline CSS verification', () => {
+  let cssContent;
+
+  it('should load style.css', async () => {
+    cssContent = await fs.readFile(
+      join(__dirname, '../../web/style.css'),
+      'utf-8'
+    );
+    expect(cssContent).toBeTruthy();
+  });
+
+  it('should define crew-turn-routes container style', () => {
+    expect(cssContent).toContain('.crew-turn-routes');
+    const routesRule = cssContent.match(/\.crew-turn-routes\s*\{[^}]+\}/);
+    expect(routesRule).toBeTruthy();
+    expect(routesRule[0]).toContain('flex-direction: column');
+    expect(routesRule[0]).toContain('margin-top');
+  });
+
+  it('should define crew-turn-route-item style', () => {
+    expect(cssContent).toContain('.crew-turn-route-item');
+    const itemRule = cssContent.match(/\.crew-turn-route-item\s*\{[^}]+\}/);
+    expect(itemRule).toBeTruthy();
+    expect(itemRule[0]).toContain('font-style: italic');
+    expect(itemRule[0]).toContain('font-size: 12px');
+  });
+
+  it('should define crew-route-arrow style', () => {
+    expect(cssContent).toContain('.crew-route-arrow');
+  });
+
+  it('should define crew-route-target-name with emphasis', () => {
+    expect(cssContent).toContain('.crew-route-target-name');
+    const nameRule = cssContent.match(/\.crew-route-target-name\s*\{[^}]+\}/);
+    expect(nameRule).toBeTruthy();
+    expect(nameRule[0]).toContain('font-weight: 500');
+    expect(nameRule[0]).toContain('font-style: normal');
+  });
+
+  it('should define crew-route-summary with ellipsis overflow', () => {
+    expect(cssContent).toContain('.crew-route-summary');
+    const summaryRule = cssContent.match(/\.crew-route-summary\s*\{[^}]+\}/);
+    expect(summaryRule).toBeTruthy();
+    expect(summaryRule[0]).toContain('text-overflow: ellipsis');
+    expect(summaryRule[0]).toContain('white-space: nowrap');
+    expect(summaryRule[0]).toContain('overflow: hidden');
+  });
+});
+
+describe('_buildTurns - integration: full conversation flow with merged routes', () => {
+  // Simulate a realistic crew conversation
+  function buildTurnsNew(messages) {
+    const turns = [];
+    let currentTurn = null;
+    let turnCounter = 0;
+
+    const flushTurn = () => {
+      if (currentTurn) {
+        currentTurn.textMsg = currentTurn.messages.find(m => m.type === 'text') || null;
+        currentTurn.toolMsgs = currentTurn.messages.filter(m => m.type === 'tool');
+        currentTurn.routeMsgs = currentTurn.messages.filter(m => m.type === 'route');
+        turns.push(currentTurn);
+        currentTurn = null;
+      }
+    };
+
+    for (const msg of messages) {
+      if (msg.type === 'system' || msg.type === 'human_needed') {
+        flushTurn();
+        turns.push({ type: msg.type, message: msg, id: 'standalone_' + (msg.id || turnCounter++) });
+        continue;
+      }
+      if (msg.type === 'route') {
+        if (currentTurn && currentTurn.role === msg.role) {
+          currentTurn.messages.push(msg);
+        } else {
+          flushTurn();
+          currentTurn = {
+            type: 'turn', role: msg.role, roleName: msg.roleName, roleIcon: msg.roleIcon,
+            messages: [msg], textMsg: null, toolMsgs: [], routeMsgs: [],
+            id: 'turn_' + (turnCounter++)
+          };
+        }
+        continue;
+      }
+      if (msg.role === 'human') {
+        flushTurn();
+        turns.push({ type: 'text', message: msg, id: 'human_' + (msg.id || turnCounter++) });
+        continue;
+      }
+      if (currentTurn && currentTurn.role === msg.role) {
+        currentTurn.messages.push(msg);
+      } else {
+        flushTurn();
+        currentTurn = {
+          type: 'turn', role: msg.role, roleName: msg.roleName, roleIcon: msg.roleIcon,
+          messages: [msg], textMsg: null, toolMsgs: [], routeMsgs: [],
+          id: 'turn_' + (turnCounter++)
+        };
+      }
+    }
+    flushTurn();
+    return turns;
+  }
+
+  function getMaxRound(turn) {
+    if (!turn.routeMsgs || turn.routeMsgs.length === 0) return 0;
+    let max = 0;
+    for (const rm of turn.routeMsgs) {
+      if (rm.round > max) max = rm.round;
+    }
+    return max;
+  }
+
+  it('should handle realistic multi-role conversation flow', () => {
+    const messages = [
+      // Human starts
+      { role: 'human', type: 'text', content: '实现登录功能' },
+      // PM analyzes and routes to architect
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: '收到需求' },
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'route', routeTo: 'architect', routeToName: '架构师', routeSummary: '请设计登录架构', round: 1 },
+      // Architect designs and routes to developer
+      { role: 'architect', roleIcon: '🏗️', roleName: '架构师', type: 'text', content: '设计完成' },
+      { role: 'architect', roleIcon: '🏗️', roleName: '架构师', type: 'route', routeTo: 'developer', routeToName: '开发者', routeSummary: '请按方案实现', round: 1 },
+      // Developer implements with tools and routes to reviewer
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'text', content: '开始编码' },
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'tool', toolName: 'Write' },
+      { role: 'developer', roleIcon: '💻', roleName: '开发者', type: 'route', routeTo: 'reviewer', routeToName: '审查者', routeSummary: '请审查', round: 1 },
+      // System notification
+      { type: 'system', role: 'system', content: 'Round 1 完成' }
+    ];
+
+    const turns = buildTurnsNew(messages);
+
+    // Expected: human(standalone) + pm(turn w/ route) + architect(turn w/ route)
+    //           + developer(turn w/ tool + route) + system(standalone)
+    expect(turns.length).toBe(5);
+
+    // Human standalone
+    expect(turns[0].type).toBe('text');
+    expect(turns[0].message.role).toBe('human');
+
+    // PM turn with route
+    expect(turns[1].type).toBe('turn');
+    expect(turns[1].role).toBe('pm');
+    expect(turns[1].routeMsgs.length).toBe(1);
+    expect(turns[1].routeMsgs[0].routeSummary).toBe('请设计登录架构');
+    expect(getMaxRound(turns[1])).toBe(1);
+
+    // Architect turn with route
+    expect(turns[2].type).toBe('turn');
+    expect(turns[2].role).toBe('architect');
+    expect(turns[2].routeMsgs.length).toBe(1);
+
+    // Developer turn with tool + route
+    expect(turns[3].type).toBe('turn');
+    expect(turns[3].role).toBe('developer');
+    expect(turns[3].toolMsgs.length).toBe(1);
+    expect(turns[3].routeMsgs.length).toBe(1);
+    expect(turns[3].textMsg.content).toBe('开始编码');
+
+    // System standalone
+    expect(turns[4].type).toBe('system');
+  });
+
+  it('should handle PM dispatching to multiple roles in sequence', () => {
+    const messages = [
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: '任务分配' },
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'route', routeTo: 'developer', routeSummary: '实现功能A', round: 1 },
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'route', routeTo: 'tester', routeSummary: '准备测试用例', round: 1 }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(1);
+    expect(turns[0].routeMsgs.length).toBe(2);
+    expect(turns[0].routeMsgs[0].routeSummary).toBe('实现功能A');
+    expect(turns[0].routeMsgs[1].routeSummary).toBe('准备测试用例');
+  });
+
+  it('should handle human intervention mid-conversation', () => {
+    const messages = [
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: 'PM 分析' },
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'route', routeTo: 'developer', routeSummary: '请实现' },
+      { role: 'human', type: 'text', content: '等一下，需求有变更' },
+      { role: 'pm', roleIcon: '📋', roleName: 'PM', type: 'text', content: '好的，重新分析' }
+    ];
+    const turns = buildTurnsNew(messages);
+
+    expect(turns.length).toBe(3);
+    expect(turns[0].role).toBe('pm');
+    expect(turns[0].routeMsgs.length).toBe(1);
+    expect(turns[1].type).toBe('text');
+    expect(turns[1].message.role).toBe('human');
+    expect(turns[2].role).toBe('pm');
+    expect(turns[2].routeMsgs).toEqual([]);
   });
 });
