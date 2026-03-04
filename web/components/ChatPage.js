@@ -682,7 +682,7 @@ export default {
       return undefined;
     },
     getCrewTitle(conv) {
-      return 'Crew Session';
+      return conv.name || 'Crew Session';
     },
     getConversationTime(conv) {
       // 优先显示最后活动时间，其次创建时间

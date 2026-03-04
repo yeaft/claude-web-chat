@@ -4197,7 +4197,7 @@ describe('writeSharedClaudeMd - team best practices (b7b48d3)', () => {
   // --- Worktree 隔离规则 ---
 
   it('should have 8 worktree rules (was 7, added cross-group prohibition)', () => {
-    const section = crewContent.split('# Worktree 隔离规则')[1].split('# 共享记忆')[0];
+    const section = crewContent.split('# Worktree 隔离规则')[1].split('${sharedMemoryContent}')[0];
     const bullets = section.match(/^- /gm);
     expect(bullets).toHaveLength(8);
   });
@@ -4207,7 +4207,7 @@ describe('writeSharedClaudeMd - team best practices (b7b48d3)', () => {
   });
 
   it('cross-group rule should be the 3rd rule', () => {
-    const section = crewContent.split('# Worktree 隔离规则')[1].split('# 共享记忆')[0];
+    const section = crewContent.split('# Worktree 隔离规则')[1].split('${sharedMemoryContent}')[0];
     const lines = section.trim().split('\n').filter(l => l.startsWith('- '));
     expect(lines).toHaveLength(8);
     expect(lines[2]).toContain('绝对禁止在其他开发组的 branch 或 worktree 中操作代码');

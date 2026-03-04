@@ -254,6 +254,7 @@ function sessionToIndexEntry(session) {
     sharedDir: session.sharedDir,
     status: session.status,
     goal: session.goal,
+    name: session.name || '',
     userId: session.userId,
     username: session.username,
     createdAt: session.createdAt,
@@ -306,6 +307,8 @@ async function saveSessionMeta(session) {
     projectDir: session.projectDir,
     sharedDir: session.sharedDir,
     goal: session.goal,
+    name: session.name || '',
+    sharedKnowledge: session.sharedKnowledge || '',
     status: session.status,
     roles: Array.from(session.roles.values()).map(r => ({
       name: r.name, displayName: r.displayName, icon: r.icon,
@@ -391,6 +394,8 @@ export async function resumeCrewSession(msg) {
       projectDir: session.projectDir,
       sharedDir: session.sharedDir,
       goal: session.goal,
+      name: session.name || '',
+      sharedKnowledge: session.sharedKnowledge || '',
       roles: roles.map(r => ({
         name: r.name, displayName: r.displayName, icon: r.icon,
         description: r.description, isDecisionMaker: r.isDecisionMaker || false
@@ -428,6 +433,8 @@ export async function resumeCrewSession(msg) {
     projectDir: meta.projectDir,
     sharedDir: meta.sharedDir || indexEntry.sharedDir,
     goal: meta.goal,
+    name: meta.name || '',
+    sharedKnowledge: meta.sharedKnowledge || '',
     roles: new Map(roles.map(r => [r.name, r])),
     roleStates: new Map(),
     decisionMaker,
@@ -458,6 +465,8 @@ export async function resumeCrewSession(msg) {
     projectDir: session.projectDir,
     sharedDir: session.sharedDir,
     goal: session.goal,
+    name: session.name || '',
+    sharedKnowledge: session.sharedKnowledge || '',
     roles: roles.map(r => ({
       name: r.name, displayName: r.displayName, icon: r.icon,
       description: r.description, isDecisionMaker: r.isDecisionMaker || false
@@ -491,6 +500,8 @@ export async function createCrewSession(msg) {
     projectDir,
     sharedDir: sharedDirRel,
     goal,
+    name,
+    sharedKnowledge,
     roles: rawRoles = [],     // [{ name, displayName, icon, description, claudeMd, model, budget, isDecisionMaker, count }]
     maxRounds = 20,
     userId,
@@ -506,7 +517,7 @@ export async function createCrewSession(msg) {
     : join(projectDir, sharedDirRel || '.crew');
 
   // 初始化共享区
-  await initSharedDir(sharedDir, goal, roles, projectDir);
+  await initSharedDir(sharedDir, goal, roles, projectDir, sharedKnowledge);
 
   // 初始化 git worktrees（仅多实例时）
   const worktreeMap = await initWorktrees(projectDir, roles);
@@ -527,6 +538,8 @@ export async function createCrewSession(msg) {
     projectDir,
     sharedDir,
     goal,
+    name: name || '',
+    sharedKnowledge: sharedKnowledge || '',
     roles: new Map(roles.map(r => [r.name, r])),
     roleStates: new Map(),
     decisionMaker,
@@ -555,6 +568,8 @@ export async function createCrewSession(msg) {
     projectDir,
     sharedDir,
     goal,
+    name: name || '',
+    sharedKnowledge: sharedKnowledge || '',
     roles: roles.map(r => ({
       name: r.name,
       displayName: r.displayName,
@@ -723,6 +738,23 @@ export async function removeRoleFromSession(msg) {
   sendStatusUpdate(session);
 }
 
+/**
+ * 更新 crew session 的 name 和 sharedKnowledge
+ */
+export async function handleUpdateCrewSession(msg) {
+  const { sessionId, name, sharedKnowledge } = msg;
+  const session = crewSessions.get(sessionId);
+  if (!session) {
+    console.warn(`[Crew] Session not found for update: ${sessionId}`);
+    return;
+  }
+  if (name !== undefined) session.name = name;
+  if (sharedKnowledge !== undefined) session.sharedKnowledge = sharedKnowledge;
+  await updateSharedClaudeMd(session);
+  await saveSessionMeta(session);
+  await upsertCrewIndex(session);
+}
+
 // =====================================================================
 // Shared Directory & Memory
 // =====================================================================
@@ -738,7 +770,7 @@ export async function removeRoleFromSession(msg) {
  *       └── {roleName}/
  *           └── CLAUDE.md ← 角色定义 + 个人记忆
  */
-async function initSharedDir(sharedDir, goal, roles, projectDir) {
+async function initSharedDir(sharedDir, goal, roles, projectDir, sharedKnowledge = '') {
   await fs.mkdir(sharedDir, { recursive: true });
   await fs.mkdir(join(sharedDir, 'context'), { recursive: true });
   await fs.mkdir(join(sharedDir, 'sessions'), { recursive: true });
@@ -750,7 +782,7 @@ async function initSharedDir(sharedDir, goal, roles, projectDir) {
   }
 
   // 生成 .crew/CLAUDE.md（共享级）
-  await writeSharedClaudeMd(sharedDir, goal, roles, projectDir);
+  await writeSharedClaudeMd(sharedDir, goal, roles, projectDir, sharedKnowledge);
 }
 
 /**
@@ -774,7 +806,11 @@ async function initRoleDir(sharedDir, role) {
  * 写入 .crew/CLAUDE.md — 共享级（所有角色自动继承）
  * 记忆直接写在 CLAUDE.md 中，Claude Code 会自动加载
  */
-async function writeSharedClaudeMd(sharedDir, goal, roles, projectDir) {
+async function writeSharedClaudeMd(sharedDir, goal, roles, projectDir, sharedKnowledge = '') {
+  const sharedMemoryContent = sharedKnowledge
+    ? `# 共享记忆\n${sharedKnowledge}\n`
+    : `# 共享记忆\n_团队共同维护，记录重要的共识、决策和信息。_\n`;
+
   const claudeMd = `# 项目目标
 ${goal}
 
@@ -809,9 +845,7 @@ ${roles.length > 0 ? roles.map(r => `- ${roleLabel(r)}(${r.name}): ${r.descripti
 - 每次新任务/新 feature 必须基于最新的 main 分支创建新的 worktree，确保在最新代码上开发
 - 禁止复用旧的 worktree 开发新任务，因为旧 worktree 的代码基线可能已过时
 
-# 共享记忆
-_团队共同维护，记录重要的共识、决策和信息。_
-`;
+${sharedMemoryContent}`;
 
   await fs.writeFile(join(sharedDir, 'CLAUDE.md'), claudeMd);
 }
@@ -852,7 +886,7 @@ _在这里记录重要的信息、决策、进展和待办事项。_
  */
 async function updateSharedClaudeMd(session) {
   const roles = Array.from(session.roles.values());
-  await writeSharedClaudeMd(session.sharedDir, session.goal, roles, session.projectDir);
+  await writeSharedClaudeMd(session.sharedDir, session.goal, roles, session.projectDir, session.sharedKnowledge);
 }
 
 // =====================================================================

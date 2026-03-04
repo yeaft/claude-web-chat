@@ -308,6 +308,10 @@ async function handleMessage(msg) {
       (await import('./conversation.js')).sendConversationList();
       break;
 
+    case 'update_crew_session':
+      await (await import('./crew.js')).handleUpdateCrewSession(msg);
+      break;
+
     // Port proxy
     case 'proxy_request':
       handleProxyHttpRequest(msg);
