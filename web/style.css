@@ -10600,6 +10600,43 @@ body {
   font-size: 12.5px;
 }
 
+/* Route items merged into turn group */
+.crew-turn-routes {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.crew-turn-route-item {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+  padding: 2px 0;
+}
+
+.crew-route-arrow {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.crew-route-target-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  font-style: normal;
+}
+
+.crew-route-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Crew Task Panel */
 .crew-task-panel {
   max-width: 800px;

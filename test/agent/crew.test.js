@@ -2441,11 +2441,9 @@ describe('Source file verification - shortName usage in template', () => {
     expect(fileContent).toBeTruthy();
   });
 
-  it('should use shortName for non-route standalone messages', () => {
-    // Line 95: route uses full roleName, others use shortName
-    expect(fileContent).toContain(
-      "turn.message.type === 'route' ? turn.message.roleName : shortName(turn.message.roleName)"
-    );
+  it('should use shortName for standalone messages', () => {
+    // Standalone messages (system, human_needed) use shortName
+    expect(fileContent).toContain('shortName(turn.message.roleName)');
   });
 
   it('should use shortName for grouped turn headers', () => {
@@ -2460,13 +2458,11 @@ describe('Source file verification - shortName usage in template', () => {
     expect(fileContent).toContain("displayName.substring(idx + 1)");
   });
 
-  it('should NOT use shortName for route message names', () => {
-    // The ternary ensures route messages show full roleName
-    // Verify the pattern: route ? roleName : shortName(roleName)
-    const routePattern = fileContent.match(
-      /type\s*===\s*'route'\s*\?\s*turn\.message\.roleName\s*:\s*shortName\(turn\.message\.roleName\)/
-    );
-    expect(routePattern).toBeTruthy();
+  it('should render route messages inline within turns', () => {
+    // Route messages are now merged into turn groups, shown as crew-turn-route-item
+    expect(fileContent).toContain('crew-turn-route-item');
+    expect(fileContent).toContain('crew-route-target-name');
+    expect(fileContent).toContain('crew-route-summary');
   });
 });
 

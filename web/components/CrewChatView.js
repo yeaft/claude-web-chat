@@ -43,21 +43,19 @@ export default {
           <template v-if="block.type === 'global'">
             <template v-for="(turn, tidx) in block.turns" :key="turn.id">
               <div v-if="tidx > 0 && shouldShowTurnDivider(block.turns, tidx)" class="crew-turn-divider"></div>
-              <div v-if="turn.type === 'route' && turn.message.round > 0" class="crew-round-divider">
+              <div v-if="turn.type === 'turn' && getMaxRound(turn) > 0" class="crew-round-divider">
                 <div class="crew-round-line"></div>
-                <span class="crew-round-label">Round {{ turn.message.round }}</span>
+                <span class="crew-round-label">Round {{ getMaxRound(turn) }}</span>
                 <div class="crew-round-line"></div>
               </div>
               <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': turn.message.role === 'human' && turn.message.type === 'text' }]" :style="getRoleStyle(turn.message.role)">
                 <div class="crew-msg-body">
                   <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-header">
                     <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
-                    <span class="crew-msg-name" :class="{ 'is-human': turn.message.role === 'human', 'is-system': turn.message.role === 'system' }">{{ turn.message.type === 'route' ? turn.message.roleName : shortName(turn.message.roleName) }}</span>
-                    <span v-if="turn.message.type === 'route'" class="crew-route-target">→ {{ turn.message.routeToName || getRoleDisplayName(turn.message.routeTo) }}</span>
+                    <span class="crew-msg-name" :class="{ 'is-human': turn.message.role === 'human', 'is-system': turn.message.role === 'system' }">{{ shortName(turn.message.roleName) }}</span>
                     <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
                   </div>
-                  <div v-if="turn.message.type === 'route' && turn.message.routeSummary" class="crew-msg-content">{{ turn.message.routeSummary }}</div>
-                  <div v-else-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
+                  <div v-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
                   <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
                     <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
                   </div>
@@ -96,6 +94,13 @@ export default {
                       </template>
                     </div>
                   </div>
+                  <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
+                    <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
+                      <span class="crew-route-arrow">→</span>
+                      <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
+                      <span v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </template>
@@ -117,21 +122,19 @@ export default {
             <div v-if="isFeatureExpanded(block)" class="crew-feature-body">
               <template v-for="(turn, tidx) in block.turns" :key="turn.id">
                 <div v-if="tidx > 0 && shouldShowTurnDivider(block.turns, tidx)" class="crew-turn-divider"></div>
-                <div v-if="turn.type === 'route' && turn.message.round > 0" class="crew-round-divider">
+                <div v-if="turn.type === 'turn' && getMaxRound(turn) > 0" class="crew-round-divider">
                   <div class="crew-round-line"></div>
-                  <span class="crew-round-label">Round {{ turn.message.round }}</span>
+                  <span class="crew-round-label">Round {{ getMaxRound(turn) }}</span>
                   <div class="crew-round-line"></div>
                 </div>
                 <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :style="getRoleStyle(turn.message.role)">
                   <div class="crew-msg-body">
                     <div class="crew-msg-header">
                       <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
-                      <span class="crew-msg-name">{{ turn.message.type === 'route' ? turn.message.roleName : shortName(turn.message.roleName) }}</span>
-                      <span v-if="turn.message.type === 'route'" class="crew-route-target">→ {{ turn.message.routeToName || getRoleDisplayName(turn.message.routeTo) }}</span>
+                      <span class="crew-msg-name">{{ shortName(turn.message.roleName) }}</span>
                       <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
                     </div>
-                    <div v-if="turn.message.type === 'route' && turn.message.routeSummary" class="crew-msg-content">{{ turn.message.routeSummary }}</div>
-                    <div v-else-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
+                    <div v-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
                     <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
                       <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
                     </div>
@@ -161,6 +164,13 @@ export default {
                         <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
                           <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
                         </template>
+                      </div>
+                    </div>
+                    <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
+                      <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
+                        <span class="crew-route-arrow">→</span>
+                        <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
+                        <span v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</span>
                       </div>
                     </div>
                   </div>
@@ -849,6 +859,15 @@ summary: 请测试以下变更...
       this.expandedTurns[turnId] = !this.expandedTurns[turnId];
     },
 
+    getMaxRound(turn) {
+      if (!turn.routeMsgs || turn.routeMsgs.length === 0) return 0;
+      let max = 0;
+      for (const rm of turn.routeMsgs) {
+        if (rm.round > max) max = rm.round;
+      }
+      return max;
+    },
+
     toggleFeature(taskId) {
       this.expandedFeatures[taskId] = !this.expandedFeatures[taskId];
     },
@@ -865,7 +884,6 @@ summary: 请测试以下变更...
     shouldShowTurnDivider(turns, tidx) {
       const prev = turns[tidx - 1];
       const curr = turns[tidx];
-      if (curr.type === 'route' || prev.type === 'route') return false;
       const prevRole = prev.type === 'turn' ? prev.role : prev.message?.role;
       const currRole = curr.type === 'turn' ? curr.role : curr.message?.role;
       return prevRole && currRole && prevRole !== currRole;
@@ -880,15 +898,36 @@ summary: 请测试以下变更...
         if (currentTurn) {
           currentTurn.textMsg = currentTurn.messages.find(m => m.type === 'text') || null;
           currentTurn.toolMsgs = currentTurn.messages.filter(m => m.type === 'tool');
+          currentTurn.routeMsgs = currentTurn.messages.filter(m => m.type === 'route');
           turns.push(currentTurn);
           currentTurn = null;
         }
       };
 
       for (const msg of messages) {
-        if (msg.type === 'route' || msg.type === 'system' || msg.type === 'human_needed') {
+        if (msg.type === 'system' || msg.type === 'human_needed') {
           flushTurn();
           turns.push({ type: msg.type, message: msg, id: 'standalone_' + (msg.id || turnCounter++) });
+          continue;
+        }
+        if (msg.type === 'route') {
+          // Merge route into current turn if same role
+          if (currentTurn && currentTurn.role === msg.role) {
+            currentTurn.messages.push(msg);
+          } else {
+            flushTurn();
+            currentTurn = {
+              type: 'turn',
+              role: msg.role,
+              roleName: msg.roleName,
+              roleIcon: msg.roleIcon,
+              messages: [msg],
+              textMsg: null,
+              toolMsgs: [],
+              routeMsgs: [],
+              id: 'turn_' + (turnCounter++)
+            };
+          }
           continue;
         }
         if (msg.role === 'human') {
@@ -908,6 +947,7 @@ summary: 请测试以下变更...
             messages: [msg],
             textMsg: null,
             toolMsgs: [],
+            routeMsgs: [],
             id: 'turn_' + (turnCounter++)
           };
         }
