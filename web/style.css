@@ -11414,8 +11414,7 @@ body {
 .crew-panel-left {
   width: 200px;
   flex-shrink: 0;
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border-color);
+  background: var(--bg-main);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -11588,8 +11587,7 @@ body {
 .crew-panel-right {
   width: 260px;
   flex-shrink: 0;
-  background: var(--bg-sidebar);
-  border-left: 1px solid var(--border-color);
+  background: var(--bg-main);
   display: flex;
   flex-direction: column;
   overflow: hidden;
