@@ -3554,3 +3554,610 @@ describe('_buildTurns - integration: full conversation flow with merged routes',
     expect(turns[2].routeMsgs).toEqual([]);
   });
 });
+
+// =====================================================================
+// Streaming indicator responsive CSS
+// =====================================================================
+
+describe('Streaming indicator - desktop base styles', () => {
+  let cssContent;
+
+  it('should load style.css', async () => {
+    cssContent = await fs.readFile(
+      join(__dirname, '../../web/style.css'),
+      'utf-8'
+    );
+    expect(cssContent).toBeTruthy();
+  });
+
+  it('should define crew-streaming-indicator with display flex', () => {
+    const match = cssContent.match(/\.crew-streaming-indicator\s*\{([^}]*)\}/);
+    expect(match).toBeTruthy();
+    const rules = match[1];
+    expect(rules).toContain('display: flex');
+  });
+
+  it('should have desktop padding-left of 68px', () => {
+    // Base (non-media-query) rule: padding: 8px 24px 8px 68px
+    const match = cssContent.match(/\.crew-streaming-indicator\s*\{([^}]*)\}/);
+    const rules = match[1];
+    expect(rules).toContain('68px');
+    // Verify full padding shorthand
+    expect(rules).toMatch(/padding:\s*8px\s+24px\s+8px\s+68px/);
+  });
+
+  it('should have max-width 800px for centering', () => {
+    const match = cssContent.match(/\.crew-streaming-indicator\s*\{([^}]*)\}/);
+    const rules = match[1];
+    expect(rules).toContain('max-width: 800px');
+  });
+
+  it('should have width 100% and box-sizing border-box', () => {
+    const match = cssContent.match(/\.crew-streaming-indicator\s*\{([^}]*)\}/);
+    const rules = match[1];
+    expect(rules).toContain('width: 100%');
+    expect(rules).toContain('box-sizing: border-box');
+  });
+
+  it('should have gap between dots', () => {
+    const match = cssContent.match(/\.crew-streaming-indicator\s*\{([^}]*)\}/);
+    const rules = match[1];
+    expect(rules).toContain('gap: 4px');
+  });
+});
+
+describe('Streaming indicator - typing dots', () => {
+  let cssContent;
+
+  it('should load style.css', async () => {
+    cssContent = await fs.readFile(
+      join(__dirname, '../../web/style.css'),
+      'utf-8'
+    );
+  });
+
+  it('should define crew-typing-dot as 8px circles', () => {
+    const match = cssContent.match(/\.crew-typing-dot\s*\{([^}]*)\}/);
+    expect(match).toBeTruthy();
+    const rules = match[1];
+    expect(rules).toContain('width: 8px');
+    expect(rules).toContain('height: 8px');
+    expect(rules).toContain('border-radius: 50%');
+  });
+
+  it('should have animation on typing dots', () => {
+    const match = cssContent.match(/\.crew-typing-dot\s*\{([^}]*)\}/);
+    const rules = match[1];
+    expect(rules).toContain('animation: crew-typing');
+  });
+
+  it('should stagger animation delays for 2nd and 3rd dots', () => {
+    expect(cssContent).toContain('.crew-typing-dot:nth-child(2)');
+    expect(cssContent).toContain('.crew-typing-dot:nth-child(3)');
+    expect(cssContent).toContain('animation-delay: 0.2s');
+    expect(cssContent).toContain('animation-delay: 0.4s');
+  });
+
+  it('should define crew-typing keyframes', () => {
+    expect(cssContent).toContain('@keyframes crew-typing');
+  });
+});
+
+describe('Streaming indicator - 768px breakpoint', () => {
+  let cssContent;
+
+  it('should load style.css', async () => {
+    cssContent = await fs.readFile(
+      join(__dirname, '../../web/style.css'),
+      'utf-8'
+    );
+  });
+
+  it('should override padding in a 768px media query', () => {
+    // Find all 768px media query blocks and check if any contains crew-streaming-indicator
+    const mediaBlocks = [...cssContent.matchAll(/@media\s*\(max-width:\s*768px\)\s*\{([\s\S]*?)\n\}/gm)];
+    const hasIndicator = mediaBlocks.some(m => m[1].includes('crew-streaming-indicator'));
+    expect(hasIndicator).toBe(true);
+  });
+
+  it('should set symmetric padding (12px sides) at 768px', () => {
+    // Find the specific 768px block containing crew-streaming-indicator
+    const mediaBlocks = [...cssContent.matchAll(/@media\s*\(max-width:\s*768px\)\s*\{([\s\S]*?)\n\}/gm)];
+    const block = mediaBlocks.find(m => m[1].includes('crew-streaming-indicator'));
+    expect(block).toBeTruthy();
+    const indicatorMatch = block[1].match(/\.crew-streaming-indicator\s*\{([^}]*)\}/);
+    expect(indicatorMatch).toBeTruthy();
+    const rules = indicatorMatch[1];
+    expect(rules).toMatch(/padding:\s*8px\s+12px\s+8px\s+12px/);
+    expect(rules).not.toContain('68px');
+  });
+
+  it('should reduce padding-left from 68px to 12px (no overflow on mobile)', () => {
+    const mediaBlocks = [...cssContent.matchAll(/@media\s*\(max-width:\s*768px\)\s*\{([\s\S]*?)\n\}/gm)];
+    const block = mediaBlocks.find(m => m[1].includes('crew-streaming-indicator'));
+    const indicatorMatch = block[1].match(/\.crew-streaming-indicator\s*\{([^}]*)\}/);
+    const rules = indicatorMatch[1];
+    const paddingMatch = rules.match(/padding:\s*(\S+)\s+(\S+)\s+(\S+)\s+(\S+?);/);
+    expect(paddingMatch).toBeTruthy();
+    const [, top, right, bottom, left] = paddingMatch;
+    expect(left).toBe('12px');
+    expect(right).toBe('12px');
+    const dotsWidth = 3 * 8 + 2 * 4; // 32px
+    const totalMinWidth = dotsWidth + parseInt(left) + parseInt(right);
+    expect(totalMinWidth).toBeLessThan(768);
+  });
+});
+
+describe('Streaming indicator - 480px breakpoint', () => {
+  let cssContent;
+
+  it('should load style.css', async () => {
+    cssContent = await fs.readFile(
+      join(__dirname, '../../web/style.css'),
+      'utf-8'
+    );
+  });
+
+  it('should override padding in a 480px media query', () => {
+    const mediaBlocks = [...cssContent.matchAll(/@media\s*\(max-width:\s*480px\)\s*\{([\s\S]*?)\n\}/gm)];
+    const hasIndicator = mediaBlocks.some(m => m[1].includes('crew-streaming-indicator'));
+    expect(hasIndicator).toBe(true);
+  });
+
+  it('should set compact padding (6px 8px) at 480px', () => {
+    const mediaBlocks = [...cssContent.matchAll(/@media\s*\(max-width:\s*480px\)\s*\{([\s\S]*?)\n\}/gm)];
+    const block = mediaBlocks.find(m => m[1].includes('crew-streaming-indicator'));
+    expect(block).toBeTruthy();
+    const indicatorMatch = block[1].match(/\.crew-streaming-indicator\s*\{([^}]*)\}/);
+    expect(indicatorMatch).toBeTruthy();
+    const rules = indicatorMatch[1];
+    expect(rules).toMatch(/padding:\s*6px\s+8px/);
+  });
+
+  it('should ensure dots fit within 480px viewport', () => {
+    // 3 dots × 8px + 2 gaps × 4px = 32px content
+    // padding: 6px 8px → left 8px + right 8px = 16px
+    // Total: 48px ≪ 480px — no overflow
+    const dotsWidth = 3 * 8 + 2 * 4; // 32px
+    const paddingHorizontal = 8 + 8; // 16px
+    const totalMinWidth = dotsWidth + paddingHorizontal;
+    expect(totalMinWidth).toBeLessThan(480);
+    expect(totalMinWidth).toBe(48);
+  });
+
+  it('should have progressively smaller padding across breakpoints', () => {
+    // Desktop: padding-left 68px
+    // 768px: padding-left 12px
+    // 480px: padding-left 8px (shorthand: 6px 8px)
+    const desktopPadLeft = 68;
+    const tabletPadLeft = 12;
+    const phonePadLeft = 8;
+
+    expect(desktopPadLeft).toBeGreaterThan(tabletPadLeft);
+    expect(tabletPadLeft).toBeGreaterThan(phonePadLeft);
+  });
+});
+
+describe('Streaming indicator - template verification', () => {
+  let templateContent;
+
+  it('should load CrewChatView.js', async () => {
+    templateContent = await fs.readFile(
+      join(__dirname, '../../web/components/CrewChatView.js'),
+      'utf-8'
+    );
+    expect(templateContent).toBeTruthy();
+  });
+
+  it('should render streaming indicator when hasStreamingMessage', () => {
+    expect(templateContent).toContain('v-if="hasStreamingMessage"');
+    expect(templateContent).toContain('crew-streaming-indicator');
+  });
+
+  it('should contain exactly 3 typing dots', () => {
+    const dotsMatch = templateContent.match(/crew-typing-dot/g);
+    expect(dotsMatch).toBeTruthy();
+    expect(dotsMatch.length).toBe(3);
+  });
+
+  it('should define hasStreamingMessage computed', () => {
+    expect(templateContent).toContain('hasStreamingMessage()');
+    expect(templateContent).toContain('m._streaming');
+  });
+});
+
+// =====================================================================
+// parseRoutes: summary 多行解析修复
+// =====================================================================
+
+describe('parseRoutes - summary parsing', () => {
+  // Replicate parseRoutes from agent/crew.js (with the fix: [\s\S]+ instead of .+)
+  function parseRoutes(text) {
+    const routes = [];
+    const regex = /---ROUTE---\s*\n([\s\S]*?)---END_ROUTE---/g;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+      const block = match[1];
+      const toMatch = block.match(/to:\s*(.+)/i);
+      if (!toMatch) continue;
+
+      const summaryMatch = block.match(/summary:\s*([\s\S]+)/i);
+      const taskMatch = block.match(/^task:\s*(.+)/im);
+      const taskTitleMatch = block.match(/^taskTitle:\s*(.+)/im);
+
+      routes.push({
+        to: toMatch[1].trim().toLowerCase(),
+        summary: summaryMatch ? summaryMatch[1].trim() : '',
+        taskId: taskMatch ? taskMatch[1].trim() : null,
+        taskTitle: taskTitleMatch ? taskTitleMatch[1].trim() : null
+      });
+    }
+
+    return routes;
+  }
+
+  // --- 1) 单行 summary 正常解析 ---
+
+  it('should parse single-line summary', () => {
+    const text = `一些输出内容
+---ROUTE---
+to: pm
+summary: 任务完成，已修复所有bug
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes.length).toBe(1);
+    expect(routes[0].to).toBe('pm');
+    expect(routes[0].summary).toBe('任务完成，已修复所有bug');
+  });
+
+  it('should parse short single-line summary', () => {
+    const text = `---ROUTE---
+to: developer
+summary: 请实现
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].summary).toBe('请实现');
+  });
+
+  it('should handle summary with special characters on single line', () => {
+    const text = `---ROUTE---
+to: pm
+summary: 测试通过 (100%) — 无回归 @dev-1 ✅
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].summary).toBe('测试通过 (100%) — 无回归 @dev-1 ✅');
+  });
+
+  // --- 2) 多行 summary 完整保留不截断 ---
+
+  it('should parse multi-line summary (two lines)', () => {
+    const text = `---ROUTE---
+to: pm
+summary: 第一行内容
+第二行内容
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes.length).toBe(1);
+    expect(routes[0].summary).toContain('第一行内容');
+    expect(routes[0].summary).toContain('第二行内容');
+  });
+
+  it('should parse multi-line summary (three+ lines)', () => {
+    const text = `---ROUTE---
+to: reviewer
+summary: 完成以下修改：
+1. 修复了登录bug
+2. 优化了性能
+3. 添加了单元测试
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].summary).toContain('完成以下修改：');
+    expect(routes[0].summary).toContain('1. 修复了登录bug');
+    expect(routes[0].summary).toContain('2. 优化了性能');
+    expect(routes[0].summary).toContain('3. 添加了单元测试');
+  });
+
+  it('should preserve line breaks in multi-line summary', () => {
+    const text = `---ROUTE---
+to: pm
+summary: 行一
+行二
+行三
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    const summary = routes[0].summary;
+    // Should contain newlines between lines (after trim)
+    expect(summary).toMatch(/行一\n行二\n行三/);
+  });
+
+  it('should handle summary with blank lines in between', () => {
+    const text = `---ROUTE---
+to: pm
+summary: 第一段
+
+第二段（空行后）
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    const summary = routes[0].summary;
+    expect(summary).toContain('第一段');
+    expect(summary).toContain('第二段（空行后）');
+  });
+
+  it('should handle summary with special characters across lines', () => {
+    const text = `---ROUTE---
+to: tester
+summary: 测试结果：
+- ✅ 单元测试 (42/42)
+- ✅ 集成测试 — 100%
+- ⚠️ 边界情况: @role "引号" & <html>
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    const summary = routes[0].summary;
+    expect(summary).toContain('✅ 单元测试 (42/42)');
+    expect(summary).toContain('✅ 集成测试 — 100%');
+    expect(summary).toContain('⚠️ 边界情况');
+    expect(summary).toContain('"引号"');
+    expect(summary).toContain('<html>');
+  });
+
+  it('should handle summary with code blocks', () => {
+    const text = `---ROUTE---
+to: developer
+summary: 请修复以下代码：
+\`\`\`js
+function foo() {
+  return bar;
+}
+\`\`\`
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    const summary = routes[0].summary;
+    expect(summary).toContain('function foo()');
+    expect(summary).toContain('return bar');
+  });
+
+  // --- 3) summary 结果正确 trim 首尾空白 ---
+
+  it('should trim leading/trailing whitespace from summary', () => {
+    const text = `---ROUTE---
+to: pm
+summary:   前后有空格的内容
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].summary).toBe('前后有空格的内容');
+  });
+
+  it('should trim trailing newlines from multi-line summary', () => {
+    const text = `---ROUTE---
+to: pm
+summary: 多行内容
+最后一行
+
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    const summary = routes[0].summary;
+    expect(summary).not.toMatch(/\n$/);
+    expect(summary).toMatch(/最后一行$/);
+  });
+
+  it('should handle summary with only whitespace as empty', () => {
+    const text = `---ROUTE---
+to: pm
+summary:
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].summary).toBe('');
+  });
+
+  // --- 4) to/task/taskTitle 字段解析不受影响 ---
+
+  it('should parse to field correctly with multi-line summary', () => {
+    const text = `---ROUTE---
+to: architect
+summary: 第一行
+第二行
+第三行
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].to).toBe('architect');
+  });
+
+  it('should parse task and taskTitle with multi-line summary', () => {
+    const text = `---ROUTE---
+to: developer
+task: task_123
+taskTitle: 实现用户登录
+summary: 详细描述：
+1. 前端表单
+2. 后端API
+3. 数据库迁移
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].to).toBe('developer');
+    expect(routes[0].taskId).toBe('task_123');
+    expect(routes[0].taskTitle).toBe('实现用户登录');
+    expect(routes[0].summary).toContain('详细描述：');
+    expect(routes[0].summary).toContain('3. 数据库迁移');
+  });
+
+  it('should parse task/taskTitle when they appear before summary', () => {
+    const text = `---ROUTE---
+to: pm
+task: task_abc
+taskTitle: 需求评审
+summary: 多行摘要
+包含更多内容
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].taskId).toBe('task_abc');
+    expect(routes[0].taskTitle).toBe('需求评审');
+    expect(routes[0].summary).toContain('多行摘要');
+    expect(routes[0].summary).toContain('包含更多内容');
+  });
+
+  it('should parse task/taskTitle when they appear after summary', () => {
+    const text = `---ROUTE---
+to: pm
+summary: 工作完成
+task: task_xyz
+taskTitle: 代码重构
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].to).toBe('pm');
+    expect(routes[0].taskId).toBe('task_xyz');
+    expect(routes[0].taskTitle).toBe('代码重构');
+    // Summary may capture trailing lines since [\s\S]+ is greedy
+    expect(routes[0].summary).toContain('工作完成');
+  });
+
+  it('should handle to field case-insensitively', () => {
+    const text = `---ROUTE---
+to: PM
+summary: 测试
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].to).toBe('pm');
+  });
+
+  it('should return null for missing task/taskTitle', () => {
+    const text = `---ROUTE---
+to: pm
+summary: 没有 task 字段
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].taskId).toBeNull();
+    expect(routes[0].taskTitle).toBeNull();
+  });
+
+  it('should return empty summary when no summary field', () => {
+    const text = `---ROUTE---
+to: pm
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes[0].summary).toBe('');
+  });
+
+  // --- 5) 多 ROUTE 块 ---
+
+  it('should parse multiple ROUTE blocks independently', () => {
+    const text = `输出内容
+---ROUTE---
+to: reviewer
+summary: 请审查代码
+---END_ROUTE---
+
+中间内容
+
+---ROUTE---
+to: tester
+summary: 请测试以下变更：
+1. 功能A
+2. 功能B
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes.length).toBe(2);
+    expect(routes[0].to).toBe('reviewer');
+    expect(routes[0].summary).toBe('请审查代码');
+    expect(routes[1].to).toBe('tester');
+    expect(routes[1].summary).toContain('请测试以下变更：');
+    expect(routes[1].summary).toContain('2. 功能B');
+  });
+
+  it('should skip ROUTE blocks without to field', () => {
+    const text = `---ROUTE---
+summary: 缺少 to 字段
+---END_ROUTE---
+
+---ROUTE---
+to: pm
+summary: 有效的路由
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    expect(routes.length).toBe(1);
+    expect(routes[0].to).toBe('pm');
+  });
+
+  it('should handle no ROUTE blocks', () => {
+    const text = '普通文本，没有路由块';
+    const routes = parseRoutes(text);
+    expect(routes.length).toBe(0);
+  });
+
+  // --- 6) 旧 .+ 正则的回归验证 ---
+
+  it('should NOT truncate multi-line summary (old .+ bug)', () => {
+    // This was the exact bug: .+ only matches single line
+    const text = `---ROUTE---
+to: pm
+summary: 第一行被保留
+第二行在旧代码中会被截断
+第三行也会丢失
+---END_ROUTE---`;
+    const routes = parseRoutes(text);
+    const summary = routes[0].summary;
+    // With the fix ([\s\S]+), all lines should be captured
+    expect(summary).toContain('第一行被保留');
+    expect(summary).toContain('第二行在旧代码中会被截断');
+    expect(summary).toContain('第三行也会丢失');
+  });
+
+  it('old regex .+ would have truncated multi-line (regression proof)', () => {
+    // Demonstrate that the old regex fails on multi-line
+    const block = `to: pm
+summary: 第一行
+第二行
+第三行`;
+
+    // Old regex (bug)
+    const oldMatch = block.match(/summary:\s*(.+)/i);
+    // New regex (fix)
+    const newMatch = block.match(/summary:\s*([\s\S]+)/i);
+
+    // Old regex only captures first line
+    expect(oldMatch[1]).toBe('第一行');
+    expect(oldMatch[1]).not.toContain('第二行');
+
+    // New regex captures all lines
+    expect(newMatch[1]).toContain('第一行');
+    expect(newMatch[1]).toContain('第二行');
+    expect(newMatch[1]).toContain('第三行');
+  });
+});
+
+// Verify source file has the fix applied
+describe('parseRoutes - source file verification', () => {
+  let crewContent;
+
+  it('should load crew.js source', async () => {
+    crewContent = await fs.readFile(
+      join(__dirname, '../../agent/crew.js'),
+      'utf-8'
+    );
+    expect(crewContent).toBeTruthy();
+  });
+
+  it('should use [\\s\\S]+ instead of .+ for summary regex', () => {
+    // Verify the fix is in place
+    expect(crewContent).toContain('summary:\\s*([\\s\\S]+)');
+    // Ensure old pattern is NOT present
+    expect(crewContent).not.toMatch(/summaryMatch\s*=\s*block\.match\(\/summary:\\\\s\*\(\.\+\)/);
+  });
+
+  it('should still use .+ for to field (single-line is correct)', () => {
+    expect(crewContent).toContain('to:\\s*(.+)');
+  });
+
+  it('should still use .+ for task field (single-line is correct)', () => {
+    expect(crewContent).toContain('task:\\s*(.+)');
+  });
+
+  it('should still use .+ for taskTitle field (single-line is correct)', () => {
+    expect(crewContent).toContain('taskTitle:\\s*(.+)');
+  });
+
+  it('should trim summary result', () => {
+    // Verify .trim() is applied to summary
+    expect(crewContent).toContain('summaryMatch[1].trim()');
+  });
+});

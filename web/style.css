@@ -12307,6 +12307,11 @@ body {
   .git-file-item {
     padding: 6px 10px;
   }
+
+  /* Crew streaming indicator — reduce padding for mobile */
+  .crew-streaming-indicator {
+    padding: 8px 12px 8px 12px;
+  }
 }
 
 /* Small phone — 480px breakpoint */
@@ -12331,5 +12336,9 @@ body {
   .crew-feature-thread {
     padding: 0 8px;
     margin: 4px auto;
+  }
+
+  .crew-streaming-indicator {
+    padding: 6px 8px;
   }
 }

@@ -1305,7 +1305,7 @@ function parseRoutes(text) {
     const toMatch = block.match(/to:\s*(.+)/i);
     if (!toMatch) continue;
 
-    const summaryMatch = block.match(/summary:\s*(.+)/i);
+    const summaryMatch = block.match(/summary:\s*([\s\S]+)/i);
     const taskMatch = block.match(/^task:\s*(.+)/im);
     const taskTitleMatch = block.match(/^taskTitle:\s*(.+)/im);
 
