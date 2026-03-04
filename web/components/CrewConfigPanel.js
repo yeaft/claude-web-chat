@@ -594,12 +594,23 @@ export default {
         roleData.name = roleData.name || roleData.displayName.toLowerCase().replace(/\s+/g, '_');
         this.store.addCrewRole(roleData);
       }
+      const sid = this.store.currentConversation;
+      const trimmedName = this.name.trim();
+      const trimmedKnowledge = this.sharedKnowledge.trim();
       this.store.sendWsMessage({
         type: 'update_crew_session',
-        sessionId: this.store.currentConversation,
-        name: this.name.trim(),
-        sharedKnowledge: this.sharedKnowledge.trim()
+        sessionId: sid,
+        name: trimmedName,
+        sharedKnowledge: trimmedKnowledge
       });
+      // Update local state so sidebar title refreshes immediately
+      const conv = this.store.conversations.find(c => c.id === sid);
+      if (conv) conv.name = trimmedName;
+      const cs = this.store.crewSessions[sid];
+      if (cs) {
+        cs.name = trimmedName;
+        cs.sharedKnowledge = trimmedKnowledge;
+      }
       this.pendingRemovals = [];
       this.roles.forEach(r => { delete r._isNew; });
       this.$emit('close');
