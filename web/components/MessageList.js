@@ -84,7 +84,7 @@ export default {
       return store.agents.filter(a => a.online);
     });
 
-    // 处理消息列表：将 tool-result 合并到对应的 tool-use 中
+    // 处理消息列表：将 tool-result 合并到对应的 tool-use 中，并标记 tool-use 序列位置
     const processedMessages = Vue.computed(() => {
       const messages = store.messages;
       const result = [];
@@ -97,13 +97,27 @@ export default {
           continue;
         }
 
-        // 对于 tool-use 消息，检查下一条是否是 tool-result
+        // 对于 tool-use 消息，检查下一条是否是 tool-result，并标记序列位置
         if (msg.type === 'tool-use') {
           const nextMsg = messages[i + 1];
           const hasResult = nextMsg && nextMsg.type === 'tool-result';
+
+          // 检查前一条非 tool-result 消息是否也是 tool-use
+          let prevIdx = i - 1;
+          while (prevIdx >= 0 && messages[prevIdx].type === 'tool-result') prevIdx--;
+          const prevIsToolUse = prevIdx >= 0 && messages[prevIdx].type === 'tool-use';
+
+          // 检查下一条非 tool-result 消息是否也是 tool-use
+          let nextIdx = hasResult ? i + 2 : i + 1;
+          const nextIsToolUse = nextIdx < messages.length && messages[nextIdx].type === 'tool-use';
+
           result.push({
             ...msg,
-            hasResult // 标记是否有结果
+            hasResult,
+            isFirst: !prevIsToolUse,
+            isLast: !nextIsToolUse,
+            isRunning: !hasResult && !msg.isHistory,
+            isCompleted: !!hasResult
           });
         } else {
           result.push(msg);
