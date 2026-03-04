@@ -727,7 +727,6 @@ export default {
       isLoadingMore: false,
       crewAskSelections: {},
       crewAskCustom: {},
-      nowTick: Date.now(),
       atMenuVisible: false,
       atQuery: '',
       atMenuIndex: 0,
@@ -1326,10 +1325,6 @@ summary: 请测试以下变更...
       return result;
     },
 
-    hasInProgressTodo() {
-      return this.todosByFeature.some(g => g.entries.some(e => e.todos.some(t => t.status === 'in_progress')));
-    },
-
     todoTotalProgress() {
       let total = 0, done = 0;
       for (const group of this.todosByFeature) {
@@ -1414,14 +1409,6 @@ summary: 请测试以下变更...
         this.$nextTick(() => this.smartScrollToBottom());
       },
       deep: true
-    },
-    hasInProgressTodo(hasIP) {
-      if (hasIP && !this._tickTimer) {
-        this._tickTimer = setInterval(() => { this.nowTick = Date.now(); }, 1000);
-      } else if (!hasIP && this._tickTimer) {
-        clearInterval(this._tickTimer);
-        this._tickTimer = null;
-      }
     }
   },
 
@@ -1434,23 +1421,6 @@ summary: 请测试以下变更...
       if (!ts) return '';
       const d = new Date(ts);
       return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    },
-
-    formatElapsed(startedAt) {
-      if (!startedAt) return '';
-      const seconds = Math.floor((this.nowTick - startedAt) / 1000);
-      if (seconds < 60) return `${seconds}s`;
-      const minutes = Math.floor(seconds / 60);
-      const secs = seconds % 60;
-      if (minutes < 60) return `${minutes}m${secs > 0 ? secs + 's' : ''}`;
-      const hours = Math.floor(minutes / 60);
-      const mins = minutes % 60;
-      return `${hours}h${mins > 0 ? mins + 'm' : ''}`;
-    },
-
-    isLongRunning(startedAt) {
-      if (!startedAt) return false;
-      return (this.nowTick - startedAt) > 5 * 60 * 1000;
     },
 
     formatTokens(n) {
@@ -1702,10 +1672,6 @@ summary: 请测试以下变更...
         title += ` — ${tools[role.name]}`;
       }
       return title;
-    },
-
-    isRoleActive(roleName) {
-      return this.store.currentCrewStatus?.activeRoles?.includes(roleName);
     },
 
     isRoleStreaming(roleName) {
@@ -2126,10 +2092,6 @@ summary: 请测试以下变更...
   beforeUnmount() {
     if (this._cleanupClick) {
       document.removeEventListener('click', this._cleanupClick);
-    }
-    if (this._tickTimer) {
-      clearInterval(this._tickTimer);
-      this._tickTimer = null;
     }
     // 保存草稿
     const convId = this.store.currentConversation;
