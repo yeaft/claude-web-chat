@@ -10692,40 +10692,52 @@ body {
   font-size: 12.5px;
 }
 
-/* Route items merged into turn group */
+/* Route items merged into turn group — demoted to inline metadata */
 .crew-turn-routes {
-  margin-top: 6px;
+  margin-top: 4px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .crew-turn-route-item {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 4px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-style: italic;
-  padding: 2px 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: normal;
+  padding: 1px 0;
+  opacity: 0.7;
 }
 
 .crew-route-arrow {
   color: var(--text-muted);
   flex-shrink: 0;
+  font-size: 10px;
 }
 
 .crew-route-target-name {
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--text-muted);
   font-style: normal;
+  flex-shrink: 0;
 }
 
 .crew-route-summary {
   flex: 1;
   min-width: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
+}
+
+.crew-route-summary::before {
+  content: '\00B7';
+  margin-right: 4px;
+  color: var(--text-muted);
+  opacity: 0.5;
 }
 
 /* Crew Task Panel */
@@ -11256,6 +11268,96 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* Ask highlight animation (scrollToAsk) */
+.crew-ask-card.crew-ask-highlight {
+  animation: askHighlight 2s ease-out;
+}
+
+@keyframes askHighlight {
+  0% { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.4); }
+  100% { box-shadow: none; }
+}
+
+/* Pending Ask Banner — sticky top */
+.crew-pending-asks {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  max-width: 800px;
+  margin: 0 auto 8px;
+  padding: 0 24px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.crew-pending-asks-card {
+  background: var(--bg-main);
+  border: 1px solid var(--accent-blue);
+  border-radius: 10px;
+  padding: 10px 14px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="dark"] .crew-pending-asks-card {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.crew-pending-asks-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-blue);
+  margin-bottom: 6px;
+}
+
+.crew-pending-asks-header .icon {
+  font-size: 14px;
+}
+
+.crew-pending-asks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.crew-pending-ask-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.crew-pending-ask-item:hover {
+  background: var(--sidebar-hover);
+}
+
+.crew-pending-ask-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.crew-pending-ask-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-pending-ask-goto {
+  color: var(--accent-blue);
+  font-weight: 500;
+  font-size: 11px;
+  flex-shrink: 0;
 }
 
 /* Crew Load More - pagination indicator at top */

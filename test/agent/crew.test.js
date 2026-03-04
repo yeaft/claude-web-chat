@@ -3376,12 +3376,12 @@ describe('Route inline CSS verification', () => {
     expect(routesRule[0]).toContain('margin-top');
   });
 
-  it('should define crew-turn-route-item style', () => {
+  it('should define crew-turn-route-item style with demoted visual weight', () => {
     expect(cssContent).toContain('.crew-turn-route-item');
     const itemRule = cssContent.match(/\.crew-turn-route-item\s*\{[^}]+\}/);
     expect(itemRule).toBeTruthy();
-    expect(itemRule[0]).toContain('font-style: italic');
-    expect(itemRule[0]).toContain('font-size: 12px');
+    expect(itemRule[0]).toContain('font-size: 11px');
+    expect(itemRule[0]).toContain('opacity: 0.7');
   });
 
   it('should define crew-route-arrow style', () => {
@@ -3396,12 +3396,12 @@ describe('Route inline CSS verification', () => {
     expect(nameRule[0]).toContain('font-style: normal');
   });
 
-  it('should define crew-route-summary with pre-wrap display', () => {
+  it('should define crew-route-summary with nowrap and ellipsis truncation', () => {
     expect(cssContent).toContain('.crew-route-summary');
     const summaryRule = cssContent.match(/\.crew-route-summary\s*\{[^}]+\}/);
     expect(summaryRule).toBeTruthy();
-    expect(summaryRule[0]).toContain('white-space: pre-wrap');
-    expect(summaryRule[0]).toContain('word-break: break-word');
+    expect(summaryRule[0]).toContain('white-space: nowrap');
+    expect(summaryRule[0]).toContain('text-overflow: ellipsis');
   });
 });
 
