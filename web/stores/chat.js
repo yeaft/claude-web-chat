@@ -567,6 +567,17 @@ export const useChatStore = defineStore('chat', {
               break;
             }
           }
+          // 如果没有 _streaming 消息，查找同角色最后一条 text（可能被 tool_use 关闭了 _streaming）
+          // 如果中间只隔了 tool/tool_result（同角色），说明在同一 turn 内，重新 append
+          if (!streamMsg) {
+            for (let i = messages.length - 1; i >= 0; i--) {
+              const m = messages[i];
+              if (m.role !== msg.role) break; // 碰到其他角色的消息，停止
+              if (m.type === 'text') { streamMsg = m; break; }
+              if (m.type !== 'tool') break; // 碰到非 tool 类型（如 route/system），停止
+            }
+            if (streamMsg) streamMsg._streaming = true;
+          }
           if (streamMsg) {
             const content = msg.data?.message?.content;
             if (content) {

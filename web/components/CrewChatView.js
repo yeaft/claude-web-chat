@@ -1177,7 +1177,12 @@ summary: 请测试以下变更...
 
       const flushTurn = () => {
         if (currentTurn) {
-          currentTurn.textMsg = currentTurn.messages.find(m => m.type === 'text') || null;
+          const textMsgs = currentTurn.messages.filter(m => m.type === 'text');
+          if (textMsgs.length > 1) {
+            currentTurn.textMsg = { ...textMsgs[0], content: textMsgs.map(m => m.content).join('') };
+          } else {
+            currentTurn.textMsg = textMsgs[0] || null;
+          }
           currentTurn.toolMsgs = currentTurn.messages.filter(m => m.type === 'tool');
           currentTurn.routeMsgs = currentTurn.messages.filter(m => m.type === 'route');
           currentTurn.imageMsgs = currentTurn.messages.filter(m => m.type === 'image');
