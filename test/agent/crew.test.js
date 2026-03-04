@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -4158,5 +4158,82 @@ describe('parseRoutes - source file verification', () => {
   it('should trim summary result', () => {
     // Verify .trim() is applied to summary
     expect(crewContent).toContain('summaryMatch[1].trim()');
+  });
+});
+
+// =====================================================================
+// Team best practices (commit b7b48d3)
+// writeSharedClaudeMd: retry 5次, 8条 Worktree 规则(含跨组禁令)
+// =====================================================================
+
+describe('writeSharedClaudeMd - team best practices (b7b48d3)', () => {
+  let crewContent;
+
+  beforeAll(async () => {
+    const { promises: fs } = await import('fs');
+    crewContent = await fs.readFile(
+      join(process.cwd(), 'agent/crew.js'),
+      'utf-8'
+    );
+  });
+
+  // --- 卡住上报规则 ---
+
+  it('should have "5次" in escalation rule #5 (changed from 2次)', () => {
+    expect(crewContent).toContain('5. 连续尝试5次相同操作仍然失败');
+  });
+
+  it('should NOT have old "2次" in escalation rule', () => {
+    expect(crewContent).not.toContain('连续尝试2次相同操作仍然失败');
+  });
+
+  it('should still have 5 escalation rules', () => {
+    // Extract the escalation section
+    const section = crewContent.split('# 卡住上报规则')[1].split('# Worktree 隔离规则')[0];
+    const numbered = section.match(/^\d\.\s/gm);
+    expect(numbered).toHaveLength(5);
+  });
+
+  // --- Worktree 隔离规则 ---
+
+  it('should have 8 worktree rules (was 7, added cross-group prohibition)', () => {
+    const section = crewContent.split('# Worktree 隔离规则')[1].split('# 共享记忆')[0];
+    const bullets = section.match(/^- /gm);
+    expect(bullets).toHaveLength(8);
+  });
+
+  it('should contain cross-group prohibition rule', () => {
+    expect(crewContent).toContain('绝对禁止在其他开发组的 branch 或 worktree 中操作代码');
+  });
+
+  it('cross-group rule should be the 3rd rule', () => {
+    const section = crewContent.split('# Worktree 隔离规则')[1].split('# 共享记忆')[0];
+    const lines = section.trim().split('\n').filter(l => l.startsWith('- '));
+    expect(lines).toHaveLength(8);
+    expect(lines[2]).toContain('绝对禁止在其他开发组的 branch 或 worktree 中操作代码');
+  });
+
+  it('should contain all 8 worktree rules with PR-based merge flow', () => {
+    expect(crewContent).toContain('每个开发组（dev-N/rev-N/test-N）在独立的 git worktree 中工作');
+    expect(crewContent).toContain('每个角色必须在自己的 worktree 路径下操作代码');
+    expect(crewContent).toContain('绝对禁止在其他开发组的 branch 或 worktree 中操作代码');
+    expect(crewContent).toContain('dev 自己提 PR 合并到 main 分支');
+    expect(crewContent).toContain('PM 不做 cherry-pick，只负责打 tag');
+    expect(crewContent).toContain('合并完成后清理旧的 worktree');
+    expect(crewContent).toContain('每次新任务/新 feature 必须基于最新的 main 分支创建新的 worktree');
+    expect(crewContent).toContain('禁止复用旧的 worktree 开发新任务');
+  });
+
+  // --- writeRoleClaudeMd stronger warning ---
+
+  it('should have "代码工作目录（重要！）" header for roles with workDir', () => {
+    expect(crewContent).toContain('# 代码工作目录（重要！）');
+  });
+
+  it('should have 4 warning lines in workDir section', () => {
+    expect(crewContent).toContain('所有代码操作必须在此 worktree 路径下进行');
+    expect(crewContent).toContain('绝对禁止直接操作项目主目录或其他组的 worktree，否则会覆盖其他开发组的修改');
+    expect(crewContent).toContain('代码完成并通过 review 后，自己提 PR 合并到 main');
+    expect(crewContent).toContain('此 worktree 仅用于当前任务，合并后会被清理，新任务会创建新的 worktree');
   });
 });

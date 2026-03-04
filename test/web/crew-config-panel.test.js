@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 /**
  * Tests for CrewConfigPanel developer count:3 default value change.
@@ -386,5 +386,163 @@ describe('Verify actual source code consistency', () => {
     expect(content).toContain("developer: 'dev'");
     expect(content).toContain("tester: 'test'");
     expect(content).toContain("reviewer: 'rev'");
+  });
+});
+
+// =====================================================================
+// Team best practices in dev template (commit b7b48d3)
+// developer claudeMd: 代码质量要求 + Worktree 纪律
+// reviewer claudeMd: 审查标准（严格执行） + 10分制评分
+// =====================================================================
+
+describe('CrewConfigPanel - developer claudeMd best practices (b7b48d3)', () => {
+  let configContent;
+
+  beforeAll(async () => {
+    const { promises: fs } = await import('fs');
+    const { join } = await import('path');
+    configContent = await fs.readFile(
+      join(process.cwd(), 'web/components/CrewConfigPanel.js'),
+      'utf-8'
+    );
+  });
+
+  // --- Developer: 代码质量要求 ---
+
+  it('developer claudeMd should contain "代码质量要求" section', () => {
+    expect(configContent).toContain('# 代码质量要求');
+  });
+
+  it('developer claudeMd should prohibit workarounds', () => {
+    expect(configContent).toContain('禁止 workaround');
+    expect(configContent).toContain('不用临时变通绕过问题，要从根本解决');
+  });
+
+  it('developer claudeMd should prohibit lazy implementations', () => {
+    expect(configContent).toContain('禁止偷懒');
+    expect(configContent).toContain('不硬编码、不 copy-paste、不跳过边界条件');
+  });
+
+  it('developer claudeMd should require simple & correct implementations', () => {
+    expect(configContent).toContain('实现必须简约且正确，走正确的路，不走捷径');
+  });
+
+  it('developer claudeMd should reference 10分 scoring standard', () => {
+    expect(configContent).toContain('10分制，9分以上才通过');
+  });
+
+  // --- Developer: Worktree 纪律 ---
+
+  it('developer claudeMd should contain "Worktree 纪律" section', () => {
+    expect(configContent).toContain('# Worktree 纪律');
+  });
+
+  it('developer worktree discipline should prohibit operating main dir or other group worktrees', () => {
+    expect(configContent).toContain('必须在自己的 worktree 中工作，绝对不要操作项目主目录或其他组的 worktree');
+  });
+
+  it('developer worktree discipline should require new worktree based on latest main', () => {
+    expect(configContent).toContain('每次新任务基于最新 main 创建新 worktree');
+  });
+
+  it('developer worktree discipline should mention PR merge', () => {
+    expect(configContent).toContain('代码完成并通过 review 后，自己提 PR 合并到 main');
+  });
+
+  // --- Developer: 代码质量要求 appears before Worktree 纪律 ---
+
+  it('"代码质量要求" should appear before "Worktree 纪律" in developer claudeMd', () => {
+    const qualityIdx = configContent.indexOf('# 代码质量要求');
+    const worktreeIdx = configContent.indexOf('# Worktree 纪律');
+    expect(qualityIdx).toBeGreaterThan(-1);
+    expect(worktreeIdx).toBeGreaterThan(-1);
+    expect(qualityIdx).toBeLessThan(worktreeIdx);
+  });
+
+  // --- Developer: Worktree 纪律 appears before 协作流程 ---
+
+  it('"Worktree 纪律" should appear before "协作流程" in developer claudeMd', () => {
+    // Extract developer claudeMd section (between 'name: \'developer\'' and next role)
+    const devSection = configContent.split("name: 'developer'")[1].split("name: 'reviewer'")[0];
+    const worktreeIdx = devSection.indexOf('# Worktree 纪律');
+    const workflowIdx = devSection.indexOf('# 协作流程');
+    expect(worktreeIdx).toBeGreaterThan(-1);
+    expect(workflowIdx).toBeGreaterThan(-1);
+    expect(worktreeIdx).toBeLessThan(workflowIdx);
+  });
+});
+
+describe('CrewConfigPanel - reviewer claudeMd best practices (b7b48d3)', () => {
+  let configContent;
+
+  beforeAll(async () => {
+    const { promises: fs } = await import('fs');
+    const { join } = await import('path');
+    configContent = await fs.readFile(
+      join(process.cwd(), 'web/components/CrewConfigPanel.js'),
+      'utf-8'
+    );
+  });
+
+  // --- Reviewer: 审查标准（严格执行）---
+
+  it('reviewer claudeMd should contain "审查标准（严格执行）" section', () => {
+    expect(configContent).toContain('# 审查标准（严格执行）');
+  });
+
+  it('reviewer claudeMd should use 10分制 scoring', () => {
+    expect(configContent).toContain('10分制评分');
+  });
+
+  it('reviewer claudeMd should require 9分 to pass', () => {
+    expect(configContent).toContain('9分以上才能通过');
+    expect(configContent).toContain('8分及以下必须打回修改');
+  });
+
+  it('reviewer claudeMd should define 4 scoring dimensions', () => {
+    expect(configContent).toContain('正确性(3分)');
+    expect(configContent).toContain('简洁性(3分)');
+    expect(configContent).toContain('可维护性(2分)');
+    expect(configContent).toContain('测试覆盖(2分)');
+  });
+
+  it('reviewer claudeMd should have zero-tolerance items', () => {
+    expect(configContent).toContain('零容忍项（发现任何一项直接打回）');
+  });
+
+  it('reviewer zero-tolerance should include workaround', () => {
+    expect(configContent).toContain('workaround 式实现');
+    expect(configContent).toContain('不接受临时变通或绕过方案');
+  });
+
+  it('reviewer zero-tolerance should include lazy implementation', () => {
+    expect(configContent).toContain('偷懒实现');
+    expect(configContent).toContain('硬编码、copy-paste、跳过边界检查');
+  });
+
+  it('reviewer zero-tolerance should include over-engineering', () => {
+    expect(configContent).toContain('过度工程');
+    expect(configContent).toContain('不必要的抽象、过度封装、提前优化');
+  });
+
+  it('reviewer claudeMd should require simplicity', () => {
+    expect(configContent).toContain('能用3行代码解决的不用10行，但不能牺牲可读性');
+  });
+
+  it('reviewer claudeMd should require worktree verification', () => {
+    expect(configContent).toContain('必须验证 dev 是否在自己的 worktree 中工作');
+    expect(configContent).toContain('检查 commit 所在分支');
+  });
+
+  // --- Section ordering ---
+
+  it('"审查标准（严格执行）" should appear before "协作流程" in reviewer claudeMd', () => {
+    // Get reviewer section specifically (between 'reviewer' and 'tester')
+    const reviewerSection = configContent.split("name: 'reviewer'")[1].split("name: 'tester'")[0];
+    const standardIdx = reviewerSection.indexOf('审查标准（严格执行）');
+    const workflowIdx = reviewerSection.indexOf('协作流程');
+    expect(standardIdx).toBeGreaterThan(-1);
+    expect(workflowIdx).toBeGreaterThan(-1);
+    expect(standardIdx).toBeLessThan(workflowIdx);
   });
 });
