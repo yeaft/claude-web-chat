@@ -3753,10 +3753,10 @@ describe('Streaming indicator - template verification', () => {
     expect(templateContent).toContain('crew-streaming-indicator');
   });
 
-  it('should contain exactly 3 typing dots', () => {
+  it('should contain typing dots for streaming indicator and ask waiting hints', () => {
     const dotsMatch = templateContent.match(/crew-typing-dot/g);
     expect(dotsMatch).toBeTruthy();
-    expect(dotsMatch.length).toBe(3);
+    expect(dotsMatch.length).toBe(12); // 3 for streaming + 3×3 for ask card waiting hints
   });
 
   it('should define hasStreamingMessage computed', () => {

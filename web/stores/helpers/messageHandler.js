@@ -516,6 +516,7 @@ export function handleMessage(store, msg) {
     case 'ask_user_question':
       if (msg.conversationId) {
         const tryLink = () => {
+          // Try chat messages first
           const msgs = msg.conversationId === store.currentConversation
             ? store.messages
             : (store.messagesCache[msg.conversationId] || []);
@@ -524,6 +525,17 @@ export function handleMessage(store, msg) {
               msgs[i].askRequestId = msg.requestId;
               msgs[i].askQuestions = msg.questions;
               return true;
+            }
+          }
+          // Try crew messages
+          const crewMsgs = store.crewMessagesMap?.[msg.conversationId];
+          if (crewMsgs) {
+            for (let i = crewMsgs.length - 1; i >= 0; i--) {
+              if (crewMsgs[i].type === 'tool' && crewMsgs[i].toolName === 'AskUserQuestion' && !crewMsgs[i].askRequestId) {
+                crewMsgs[i].askRequestId = msg.requestId;
+                crewMsgs[i].askQuestions = msg.questions;
+                return true;
+              }
             }
           }
           return false;
