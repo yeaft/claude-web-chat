@@ -95,7 +95,7 @@ export default {
                 <template v-for="entry in todosByFeature[0].entries" :key="entry.role">
                   <div v-for="(todo, i) in entry.todos" :key="i"
                        class="crew-todo-item"
-                       :class="'is-' + todo.status">
+                       :class="['is-' + todo.status, { 'is-long': todo.status === 'in_progress' && isLongRunning(todo.startedAt) }]">
                     <span class="crew-todo-status">
                       <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24">
                         <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
@@ -104,9 +104,13 @@ export default {
                     <span class="crew-todo-text">
                       {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
                     </span>
-                    <span v-if="todosByFeature[0].entries.length > 1" class="crew-todo-role">
+                    <span class="crew-todo-role">
                       <span class="crew-todo-role-icon">{{ entry.roleIcon }}</span>
                       {{ shortName(entry.roleName) }}
+                    </span>
+                    <span v-if="todo.status === 'in_progress' && todo.startedAt" class="crew-todo-elapsed"
+                          :class="{ 'is-long': isLongRunning(todo.startedAt) }">
+                      {{ formatElapsed(todo.startedAt) }}
                     </span>
                   </div>
                 </template>
@@ -133,7 +137,7 @@ export default {
                   <template v-for="entry in group.entries" :key="entry.role">
                     <div v-for="(todo, i) in entry.todos" :key="i"
                          class="crew-todo-item"
-                         :class="'is-' + todo.status">
+                         :class="['is-' + todo.status, { 'is-long': todo.status === 'in_progress' && isLongRunning(todo.startedAt) }]">
                       <span class="crew-todo-status">
                         <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24">
                           <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
@@ -142,9 +146,13 @@ export default {
                       <span class="crew-todo-text">
                         {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
                       </span>
-                      <span v-if="group.entries.length > 1" class="crew-todo-role">
+                      <span class="crew-todo-role">
                         <span class="crew-todo-role-icon">{{ entry.roleIcon }}</span>
                         {{ shortName(entry.roleName) }}
+                      </span>
+                      <span v-if="todo.status === 'in_progress' && todo.startedAt" class="crew-todo-elapsed"
+                            :class="{ 'is-long': isLongRunning(todo.startedAt) }">
+                        {{ formatElapsed(todo.startedAt) }}
                       </span>
                     </div>
                   </template>
@@ -653,6 +661,7 @@ export default {
       isLoadingMore: false,
       crewAskSelections: {},
       crewAskCustom: {},
+      nowTick: Date.now(),
       atMenuVisible: false,
       atQuery: '',
       atMenuIndex: 0,
@@ -1195,25 +1204,46 @@ summary: 请测试以下变更...
       const messages = this.store.currentCrewMessages;
       if (!messages) return [];
 
-      // 按 (taskId, role) 分组，取每组最新的 TodoWrite
-      const map = new Map();
+      // Phase 1: 收集所有 TodoWrite 消息，按 (taskId, role) 分组
+      const historyMap = new Map();
+      const latestMap = new Map();
+
       for (const m of messages) {
         if (m.type !== 'tool' || m.toolName !== 'TodoWrite' || !m.toolInput?.todos) continue;
         const key = `${m.taskId || 'global'}::${m.role}`;
-        map.set(key, {
+
+        if (!historyMap.has(key)) historyMap.set(key, []);
+        historyMap.get(key).push({ timestamp: m.timestamp, todos: m.toolInput.todos });
+
+        latestMap.set(key, {
           taskId: m.taskId || null,
           taskTitle: m.taskTitle || null,
-          role: m.role,
-          roleIcon: m.roleIcon,
-          roleName: m.roleName,
+          role: m.role, roleIcon: m.roleIcon, roleName: m.roleName,
           todos: m.toolInput.todos,
           timestamp: m.timestamp,
         });
       }
 
-      // 转为数组，按 taskId 分组
+      // Phase 2: 为每个 in_progress todo 推算 startedAt
+      for (const [key, entry] of latestMap) {
+        const history = historyMap.get(key) || [];
+        entry.todos = entry.todos.map(todo => {
+          if (todo.status !== 'in_progress') return todo;
+          let startedAt = entry.timestamp;
+          for (const snapshot of history) {
+            const match = snapshot.todos.find(t => t.content === todo.content);
+            if (match && match.status === 'in_progress') {
+              startedAt = snapshot.timestamp;
+              break;
+            }
+          }
+          return { ...todo, startedAt };
+        });
+      }
+
+      // Phase 3: 转为数组，按 taskId 分组
       const groups = new Map();
-      for (const entry of map.values()) {
+      for (const entry of latestMap.values()) {
         const tid = entry.taskId || '_global';
         if (!groups.has(tid)) {
           groups.set(tid, { taskId: entry.taskId, taskTitle: entry.taskTitle, entries: [] });
@@ -1228,6 +1258,10 @@ summary: 请测试以下变更...
         if (!allDone) result.push(group);
       }
       return result;
+    },
+
+    hasInProgressTodo() {
+      return this.todosByFeature.some(g => g.entries.some(e => e.todos.some(t => t.status === 'in_progress')));
     },
 
     todoTotalProgress() {
@@ -1254,6 +1288,14 @@ summary: 请测试以下变更...
         this.$nextTick(() => this.smartScrollToBottom());
       },
       deep: true
+    },
+    hasInProgressTodo(hasIP) {
+      if (hasIP && !this._tickTimer) {
+        this._tickTimer = setInterval(() => { this.nowTick = Date.now(); }, 1000);
+      } else if (!hasIP && this._tickTimer) {
+        clearInterval(this._tickTimer);
+        this._tickTimer = null;
+      }
     }
   },
 
@@ -1266,6 +1308,23 @@ summary: 请测试以下变更...
       if (!ts) return '';
       const d = new Date(ts);
       return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    },
+
+    formatElapsed(startedAt) {
+      if (!startedAt) return '';
+      const seconds = Math.floor((this.nowTick - startedAt) / 1000);
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      if (minutes < 60) return `${minutes}m${secs > 0 ? secs + 's' : ''}`;
+      const hours = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+      return `${hours}h${mins > 0 ? mins + 'm' : ''}`;
+    },
+
+    isLongRunning(startedAt) {
+      if (!startedAt) return false;
+      return (this.nowTick - startedAt) > 5 * 60 * 1000;
     },
 
     formatTokens(n) {
@@ -1905,6 +1964,10 @@ summary: 请测试以下变更...
   beforeUnmount() {
     if (this._cleanupClick) {
       document.removeEventListener('click', this._cleanupClick);
+    }
+    if (this._tickTimer) {
+      clearInterval(this._tickTimer);
+      this._tickTimer = null;
     }
     // 保存草稿
     const convId = this.store.currentConversation;
