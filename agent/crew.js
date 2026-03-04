@@ -978,6 +978,7 @@ async function createRoleQuery(session, roleName) {
     accumulatedText: '',
     turnActive: false,
     claudeSessionId: savedSessionId,
+    lastCostUsd: 0,
     lastInputTokens: 0,
     lastOutputTokens: 0
   };
@@ -1244,9 +1245,11 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
         // ★ 修复2: 反向搜索该角色最后一条 streaming 消息并结束
         endRoleStreaming(session, roleName);
 
-        // 更新费用（total_cost_usd 是全局进程级累计值，直接赋值）
+        // 更新费用（差值计算：每个角色独立进程，total_cost_usd 是该角色的累计值）
         if (message.total_cost_usd != null) {
-          session.costUsd = message.total_cost_usd;
+          const costDelta = message.total_cost_usd - roleState.lastCostUsd;
+          if (costDelta > 0) session.costUsd += costDelta;
+          roleState.lastCostUsd = message.total_cost_usd;
         }
         // 更新 token 用量（差值计算：usage 是 query 实例级累计值）
         if (message.usage) {
