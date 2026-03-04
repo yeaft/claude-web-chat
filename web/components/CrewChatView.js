@@ -38,7 +38,11 @@ export default {
           <div class="crew-empty-text" v-else>等待 Crew Session 启动...</div>
         </div>
 
-        <template v-for="(block, bidx) in featureBlocks" :key="block.id">
+        <div v-if="hiddenBlockCount > 0" class="crew-load-more" @click="loadMoreBlocks">
+          ↑ 加载更早的消息 <span class="crew-load-more-count">({{ hiddenBlockCount }})</span>
+        </div>
+
+        <template v-for="(block, bidx) in visibleBlocks" :key="block.id">
           <!-- Global block: messages without taskId, render inline -->
           <template v-if="block.type === 'global'">
             <template v-for="(turn, tidx) in block.turns" :key="turn.id">
@@ -249,6 +253,13 @@ export default {
           </div>
         </template>
 
+        <!-- 回到最新按钮 -->
+        <div class="crew-scroll-bottom"
+             :class="{ 'is-hidden': isAtBottom }"
+             @click="scrollToBottomAndReset">
+          ↓ 最新
+        </div>
+
         <!-- 流式指示器 -->
         <div v-if="hasStreamingMessage" class="crew-streaming-indicator">
           <span class="crew-typing-dot"></span>
@@ -393,6 +404,8 @@ export default {
       expandedFeatures: {},
       expandedHistories: {},
       isAtBottom: true,
+      visibleBlockCount: 20,
+      isLoadingMore: false,
       atMenuVisible: false,
       atQuery: '',
       atMenuIndex: 0,
@@ -894,10 +907,23 @@ summary: 请测试以下变更...
         }
       }
       return blocks;
+    },
+
+    visibleBlocks() {
+      const all = this.featureBlocks;
+      if (all.length <= this.visibleBlockCount) return all;
+      return all.slice(all.length - this.visibleBlockCount);
+    },
+
+    hiddenBlockCount() {
+      return Math.max(0, this.featureBlocks.length - this.visibleBlockCount);
     }
   },
 
   watch: {
+    'store.currentConversation'() {
+      this.visibleBlockCount = 20;
+    },
     'store.currentCrewMessages': {
       handler() {
         this.$nextTick(() => this.smartScrollToBottom());
@@ -1338,6 +1364,36 @@ summary: 请测试以下变更...
 
     onScroll() {
       this.isAtBottom = this.checkIfAtBottom();
+      // 接近顶部时自动加载更多
+      const scrollEl = this.$refs.messagesRef;
+      if (scrollEl && scrollEl.scrollTop < 100 && this.hiddenBlockCount > 0) {
+        this.loadMoreBlocks();
+      }
+    },
+
+    loadMoreBlocks() {
+      if (this.isLoadingMore || this.hiddenBlockCount <= 0) return;
+      this.isLoadingMore = true;
+
+      const scrollEl = this.$refs.messagesRef;
+      const oldScrollHeight = scrollEl.scrollHeight;
+      const oldScrollTop = scrollEl.scrollTop;
+
+      this.visibleBlockCount = Math.min(
+        this.visibleBlockCount + 10,
+        this.featureBlocks.length
+      );
+
+      this.$nextTick(() => {
+        const newScrollHeight = scrollEl.scrollHeight;
+        scrollEl.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight);
+        this.isLoadingMore = false;
+      });
+    },
+
+    scrollToBottomAndReset() {
+      this.visibleBlockCount = 20;
+      this.$nextTick(() => this.scrollToBottom());
     },
 
     smartScrollToBottom() {

@@ -10962,6 +10962,74 @@ body {
   margin-top: 4px;
 }
 
+/* Crew Load More - pagination indicator at top */
+.crew-load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 24px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  transition: color 0.15s;
+  user-select: none;
+}
+
+.crew-load-more:hover {
+  color: var(--text-primary);
+}
+
+.crew-load-more::before,
+.crew-load-more::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  border-top: 1px dashed var(--border-color);
+  opacity: 0.5;
+}
+
+.crew-load-more-count {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* Crew Scroll-to-bottom floating button */
+.crew-scroll-bottom {
+  position: sticky;
+  bottom: 12px;
+  align-self: flex-end;
+  margin-right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  border-radius: 16px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  transition: opacity 0.2s, transform 0.2s, background 0.15s;
+  z-index: 10;
+}
+
+.crew-scroll-bottom:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.crew-scroll-bottom.is-hidden {
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+}
+
+[data-theme="dark"] .crew-scroll-bottom {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+}
+
 /* Crew Streaming Indicator */
 .crew-streaming-indicator {
   display: flex;
@@ -12311,6 +12379,18 @@ body {
   .crew-streaming-indicator {
     padding: 8px 12px 8px 12px;
   }
+
+  .crew-load-more {
+    padding: 8px 12px;
+    font-size: 11px;
+  }
+
+  .crew-scroll-bottom {
+    margin-right: 12px;
+    bottom: 8px;
+    padding: 6px 12px;
+    font-size: 11px;
+  }
 }
 
 /* Small phone — 480px breakpoint */
@@ -12339,5 +12419,13 @@ body {
 
   .crew-streaming-indicator {
     padding: 6px 8px;
+  }
+
+  .crew-load-more {
+    padding: 6px 8px;
+  }
+
+  .crew-scroll-bottom {
+    margin-right: 8px;
   }
 }
