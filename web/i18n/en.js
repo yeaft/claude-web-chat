@@ -429,4 +429,21 @@ export default {
   'store.convClosed': 'Conversation closed',
   'store.convCreated': 'New conversation created [{agent}], work directory: {workDir}',
   'store.convResumed': 'Conversation resumed [{agent}]: {sessionId}',
+
+  // ============ Group Chat ============
+  'groupChat.create': 'Create Group Chat',
+  'groupChat.topic': 'Discussion Topic',
+  'groupChat.join': 'Join',
+  'groupChat.leave': 'Leave',
+  'groupChat.stop': 'Stop Discussion',
+  'groupChat.waiting': 'Waiting for participants',
+  'groupChat.discussing': 'Discussing',
+  'groupChat.consensus': 'Consensus Reached',
+  'groupChat.stopped': 'Stopped',
+  'groupChat.observerNotice': 'Observer mode — you cannot participate in the discussion, only watch',
+  'groupChat.memberJoined': '{name} joined the discussion ({count} participants)',
+  'groupChat.memberLeft': '{name} left the discussion',
+  'groupChat.round': 'Round {round}',
+  'groupChat.conclusion': 'Discussion Conclusion',
+  'groupChat.createHint': 'After creating, select your Agents to join. Discussion starts automatically when 2+ Agents join.',
 };

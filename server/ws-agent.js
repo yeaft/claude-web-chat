@@ -58,6 +58,8 @@ export function handleAgentConnection(ws, url) {
         }
       }
       clearAgentDirCache(agentId);
+      // Group Chat: 处理 agent 断连
+      import('./ws-group-chat.js').then(m => m.handleAgentDisconnect(agentId)).catch(() => {});
       if (agent?._syncTimeout) {
         clearTimeout(agent._syncTimeout);
         delete agent._syncTimeout;
@@ -245,7 +247,9 @@ async function handleAgentMessage(agentId, msg) {
     'agent_sync_complete', 'sync_sessions', 'proxy_response', 'proxy_response_chunk',
     'proxy_response_end', 'proxy_ports_update', 'proxy_ws_opened', 'proxy_ws_message',
     'proxy_ws_closed', 'proxy_ws_error', 'restart_agent_ack', 'upgrade_agent_ack',
-    'directory_listing', 'folders_list'
+    'directory_listing', 'folders_list',
+    'group_chat_member_joined', 'group_chat_member_left',
+    'group_chat_output', 'group_chat_speak_done'
   ]);
   if (msg.conversationId && !CONV_EXEMPT_TYPES.has(msg.type)) {
     if (!agent.conversations.has(msg.conversationId)) {
@@ -735,6 +739,33 @@ async function handleAgentMessage(agentId, msg) {
       // 定向转发给请求者（参照 folders_list）
       await notifyConversationUpdate(agentId, msg);
       break;
+
+    // =====================================================================
+    // Group Chat messages — 处理 agent 端发来的讨论消息
+    // =====================================================================
+    case 'group_chat_member_joined': {
+      // Agent 确认已加入，不需要额外操作（server 端已在 handleAgentJoin 中处理）
+      break;
+    }
+
+    case 'group_chat_member_left': {
+      // Agent 确认已退出
+      break;
+    }
+
+    case 'group_chat_output': {
+      // Agent 的流式讨论输出 — 广播给所有 clients
+      const { handleGroupChatOutput } = await import('./ws-group-chat.js');
+      await handleGroupChatOutput(agentId, msg);
+      break;
+    }
+
+    case 'group_chat_speak_done': {
+      // Agent 发言完成 — 触发下一个发言者
+      const { handleSpeakDone } = await import('./ws-group-chat.js');
+      await handleSpeakDone(agentId, msg);
+      break;
+    }
 
     // Terminal messages (forward to web clients)
     case 'terminal_created':

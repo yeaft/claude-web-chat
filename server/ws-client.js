@@ -811,5 +811,48 @@ async function handleWebMessage(clientId, msg) {
       });
       break;
     }
+
+    // =====================================================================
+    // Group Chat (broadcast discussion channel) messages
+    // =====================================================================
+    case 'create_group_chat': {
+      const { createGroupChat } = await import('./ws-group-chat.js');
+      createGroupChat(clientId, client.userId, msg);
+      break;
+    }
+
+    case 'join_group_chat': {
+      const gcJoinAgentId = msg.agentId || client.currentAgent;
+      if (!await checkAgentAccess(gcJoinAgentId)) break;
+      const { handleAgentJoin } = await import('./ws-group-chat.js');
+      await handleAgentJoin(clientId, client.userId, { ...msg, agentId: gcJoinAgentId });
+      break;
+    }
+
+    case 'leave_group_chat': {
+      const gcLeaveAgentId = msg.agentId || client.currentAgent;
+      if (!await checkAgentAccess(gcLeaveAgentId)) break;
+      const { handleAgentLeave } = await import('./ws-group-chat.js');
+      await handleAgentLeave(clientId, client.userId, { ...msg, agentId: gcLeaveAgentId });
+      break;
+    }
+
+    case 'stop_group_chat': {
+      const { stopGroupChatSession } = await import('./ws-group-chat.js');
+      await stopGroupChatSession(clientId, client.userId, msg);
+      break;
+    }
+
+    case 'list_group_chats': {
+      const { listGroupChats } = await import('./ws-group-chat.js');
+      listGroupChats(clientId);
+      break;
+    }
+
+    case 'delete_group_chat': {
+      const { deleteGroupChat } = await import('./ws-group-chat.js');
+      deleteGroupChat(msg.sessionId);
+      break;
+    }
   }
 }

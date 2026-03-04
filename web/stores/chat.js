@@ -91,6 +91,15 @@ export const useChatStore = defineStore('chat', {
     crewSessionsList: [],         // 从索引加载的所有 crew sessions（含已停止的）
     crewConfigOpen: false,        // crew 配置面板是否打开
     crewConfigMode: 'create',    // 'create' | 'edit'
+
+    // =====================
+    // Group Chat (broadcast discussion channel) 状态
+    // =====================
+    groupChatSessions: {},        // { [sessionId]: { id, topic, status, participants, conclusion, round, ... } }
+    groupChatMessagesMap: {},     // { [sessionId]: messages[] }
+    groupChatSessionsList: [],    // 从 server 获取的频道列表
+    groupChatConfigOpen: false,   // 创建面板是否打开
+    groupChatStreaming: null,     // { sessionId, agentName, text } 当前流式输出
   }),
 
   getters: {
@@ -168,6 +177,22 @@ export const useChatStore = defineStore('chat', {
     currentCrewMessages: (state) => {
       if (!state.currentConversation) return [];
       return state.crewMessagesMap[state.currentConversation] || [];
+    },
+    // 当前 conversation 是否是 Group Chat
+    currentConversationIsGroupChat: (state) => {
+      if (!state.currentConversation) return false;
+      const conv = state.conversations.find(c => c.id === state.currentConversation);
+      return conv?.type === 'group_chat';
+    },
+    // 当前 Group Chat session 信息
+    currentGroupChatSession: (state) => {
+      if (!state.currentConversation) return null;
+      return state.groupChatSessions[state.currentConversation] || null;
+    },
+    // 当前 Group Chat 消息列表
+    currentGroupChatMessages: (state) => {
+      if (!state.currentConversation) return [];
+      return state.groupChatMessagesMap[state.currentConversation] || [];
     }
   },
 
@@ -803,6 +828,260 @@ export const useChatStore = defineStore('chat', {
       }));
     },
 
+    // =====================
+    // Group Chat (broadcast discussion channel) actions
+    // =====================
+    enterGroupChatMode() {
+      this.groupChatConfigOpen = true;
+      this.listGroupChats();
+    },
+
+    listGroupChats() {
+      this.sendWsMessage({ type: 'list_group_chats' });
+    },
+
+    createGroupChat(config) {
+      this.sendWsMessage({
+        type: 'create_group_chat',
+        topic: config.topic
+      });
+      this.groupChatConfigOpen = false;
+    },
+
+    joinGroupChat(sessionId, agentId) {
+      this.sendWsMessage({
+        type: 'join_group_chat',
+        sessionId,
+        agentId
+      });
+    },
+
+    leaveGroupChat(sessionId, agentId) {
+      this.sendWsMessage({
+        type: 'leave_group_chat',
+        sessionId,
+        agentId
+      });
+    },
+
+    stopGroupChat(sessionId) {
+      this.sendWsMessage({
+        type: 'stop_group_chat',
+        sessionId
+      });
+    },
+
+    deleteGroupChat(sessionId) {
+      this.sendWsMessage({
+        type: 'delete_group_chat',
+        sessionId
+      });
+      delete this.groupChatSessions[sessionId];
+      delete this.groupChatMessagesMap[sessionId];
+      // 从 conversations 移除
+      this.conversations = this.conversations.filter(c => c.id !== sessionId);
+      if (this.currentConversation === sessionId) {
+        this.currentConversation = null;
+      }
+    },
+
+    selectGroupChat(sessionId, sessionData) {
+      // 确保 session 数据存在
+      if (!this.groupChatSessions[sessionId]) {
+        this.groupChatSessions[sessionId] = sessionData
+          ? { id: sessionId, topic: sessionData.topic, status: sessionData.status, participants: sessionData.participants || [], conclusion: sessionData.conclusion, round: sessionData.round || 0, createdAt: sessionData.createdAt }
+          : { id: sessionId, status: 'unknown' };
+      }
+      if (!this.groupChatMessagesMap[sessionId]) {
+        this.groupChatMessagesMap[sessionId] = [];
+      }
+
+      // 确保在 conversations 列表中
+      const existing = this.conversations.find(c => c.id === sessionId);
+      if (!existing) {
+        const session = this.groupChatSessions[sessionId];
+        this.conversations.push({
+          id: sessionId,
+          type: 'group_chat',
+          topic: session.topic || '',
+          createdAt: session.createdAt || Date.now()
+        });
+      }
+
+      this.currentConversation = sessionId;
+    },
+
+    handleGroupChatOutput(msg) {
+      const sid = msg.sessionId;
+
+      switch (msg.type) {
+        case 'group_chat_created': {
+          // 创建 session
+          this.groupChatSessions[sid] = {
+            id: sid,
+            topic: msg.topic,
+            status: msg.status || 'waiting',
+            participants: [],
+            conclusion: null,
+            round: 0,
+            createdAt: msg.createdAt
+          };
+          this.groupChatMessagesMap[sid] = [];
+
+          // 添加到 conversations 并切换
+          this.conversations.push({
+            id: sid,
+            type: 'group_chat',
+            topic: msg.topic,
+            createdAt: msg.createdAt
+          });
+          this.currentConversation = sid;
+
+          // 添加系统消息
+          this.groupChatMessagesMap[sid].push({
+            id: 'sys_' + Date.now(),
+            type: 'system',
+            content: `讨论频道已创建，主题: "${msg.topic}"`,
+            timestamp: Date.now()
+          });
+          break;
+        }
+
+        case 'group_chat_member_joined': {
+          const session = this.groupChatSessions[sid];
+          if (session) {
+            session.participants = msg.participants || [];
+          }
+
+          // 添加系统消息
+          if (this.groupChatMessagesMap[sid]) {
+            this.groupChatMessagesMap[sid].push({
+              id: 'sys_' + Date.now() + '_join',
+              type: 'system',
+              content: `${msg.agentName} 加入了讨论 (${msg.participantCount} 位参与者)`,
+              timestamp: Date.now()
+            });
+          }
+          break;
+        }
+
+        case 'group_chat_member_left': {
+          const session = this.groupChatSessions[sid];
+          if (session && msg.participants) {
+            session.participants = msg.participants;
+          }
+
+          if (this.groupChatMessagesMap[sid]) {
+            this.groupChatMessagesMap[sid].push({
+              id: 'sys_' + Date.now() + '_leave',
+              type: 'system',
+              content: `${msg.agentName} 退出了讨论${msg.reason === 'disconnected' ? ' (断开连接)' : ''}`,
+              timestamp: Date.now()
+            });
+          }
+          break;
+        }
+
+        case 'group_chat_status': {
+          const session = this.groupChatSessions[sid];
+          if (session) {
+            session.status = msg.status;
+            if (msg.round !== undefined) session.round = msg.round;
+            if (msg.currentSpeaker) session.currentSpeaker = msg.currentSpeaker;
+            if (msg.currentSpeakerAgentId) session.currentSpeakerAgentId = msg.currentSpeakerAgentId;
+
+            // 更新参与者中的发言状态
+            if (msg.currentSpeakerAgentId && session.participants) {
+              session.participants = session.participants.map(p => ({
+                ...p,
+                status: p.agentId === msg.currentSpeakerAgentId ? 'speaking' : (p.status === 'speaking' ? 'idle' : p.status)
+              }));
+            }
+          }
+
+          if (msg.status === 'discussing' && msg.round && this.groupChatMessagesMap[sid]) {
+            // 讨论开始/新轮次的系统消息只在第一轮加
+            if (msg.round === 1) {
+              this.groupChatMessagesMap[sid].push({
+                id: 'sys_round_' + msg.round,
+                type: 'system',
+                content: `讨论开始！第 1 轮`,
+                timestamp: Date.now()
+              });
+            }
+          }
+          break;
+        }
+
+        case 'group_chat_output': {
+          // 流式输出
+          if (msg.streaming) {
+            if (!this.groupChatStreaming || this.groupChatStreaming.sessionId !== sid) {
+              this.groupChatStreaming = { sessionId: sid, agentName: msg.agentName, text: '' };
+            }
+            this.groupChatStreaming.text += msg.content || '';
+            this.groupChatStreaming.agentName = msg.agentName;
+          }
+          break;
+        }
+
+        case 'group_chat_message': {
+          // 完整发言消息
+          if (this.groupChatMessagesMap[sid]) {
+            this.groupChatMessagesMap[sid].push({
+              id: msg.message.id,
+              type: 'text',
+              agentId: msg.message.agentId,
+              agentName: msg.message.agentName,
+              content: msg.message.content,
+              round: msg.message.round,
+              timestamp: msg.message.timestamp
+            });
+          }
+          // 清除流式输出
+          if (this.groupChatStreaming?.sessionId === sid) {
+            this.groupChatStreaming = null;
+          }
+          // 重置发言者状态
+          const sessionForMsg = this.groupChatSessions[sid];
+          if (sessionForMsg?.participants) {
+            sessionForMsg.participants = sessionForMsg.participants.map(p => ({
+              ...p,
+              status: p.agentId === msg.message.agentId ? 'done' : p.status
+            }));
+          }
+          break;
+        }
+
+        case 'group_chat_consensus': {
+          const session = this.groupChatSessions[sid];
+          if (session) {
+            session.status = 'consensus';
+            session.conclusion = msg.conclusion;
+          }
+
+          if (this.groupChatMessagesMap[sid]) {
+            this.groupChatMessagesMap[sid].push({
+              id: 'consensus_' + Date.now(),
+              type: 'system',
+              content: `讨论达成共识！经过 ${msg.round} 轮讨论。`,
+              timestamp: Date.now()
+            });
+          }
+          // 清除流式输出
+          if (this.groupChatStreaming?.sessionId === sid) {
+            this.groupChatStreaming = null;
+          }
+          break;
+        }
+
+        case 'group_chat_list': {
+          this.groupChatSessionsList = msg.sessions || [];
+          break;
+        }
+      }
+    },
+
     logout() {
       const authStore = useAuthStore();
       authStore.logout();
@@ -819,6 +1098,12 @@ export const useChatStore = defineStore('chat', {
       this.processingConversations = {};
       this.executionStatusMap = {};
       this.workbenchExpanded = false;
+      // Group Chat cleanup
+      this.groupChatSessions = {};
+      this.groupChatMessagesMap = {};
+      this.groupChatSessionsList = [];
+      this.groupChatConfigOpen = false;
+      this.groupChatStreaming = null;
       if (this.ws) {
         this.ws.close();
       }

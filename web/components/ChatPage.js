@@ -6,11 +6,13 @@ import ProxyTab from './ProxyTab.js';
 import SettingsPanel from './SettingsPanel.js';
 import CrewConfigPanel from './CrewConfigPanel.js';
 import CrewChatView from './CrewChatView.js';
+import GroupChatView from './GroupChatView.js';
+import GroupChatCreatePanel from './GroupChatCreatePanel.js';
 import { useAuthStore } from '../stores/auth.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView, GroupChatView, GroupChatCreatePanel },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': showMobileSidebar }">
       <!-- Mobile Menu Button -->
@@ -139,14 +141,18 @@ export default {
               <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
               <span>Crew</span>
             </button>
+            <button class="sidebar-nav-item gc-nav-item" @click="newGroupChat" title="Group Chat">
+              <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+              <span>Group</span>
+            </button>
           </nav>
         </div>
 
         <!-- Conversation List -->
         <div class="session-list">
-          <!-- 活跃会话（显示 agent 名称） -->
+          <!-- 普通会话 (chat + crew) -->
           <div
-            v-for="conv in store.conversations"
+            v-for="conv in normalConversations"
             :key="conv.id"
             class="session-item"
             :class="{ active: conv.id === store.currentConversation, processing: store.isConversationProcessing(conv.id), 'session-item-crew': conv.type === 'crew' }"
@@ -171,6 +177,36 @@ export default {
                 <svg viewBox="0 0 24 24" width="10" height="10"><circle cx="12" cy="12" r="5" fill="currentColor"/></svg>
                 {{ getAgentLatency(conv.agentId) }}ms
               </span>
+            </div>
+          </div>
+
+          <!-- Group Chat 折叠分组 -->
+          <div v-if="groupChatConversations.length > 0" class="session-group">
+            <div class="session-group-header" @click="gcGroupCollapsed = !gcGroupCollapsed">
+              <svg class="session-group-chevron" :class="{ collapsed: gcGroupCollapsed }" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+              <svg class="gc-conv-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+              <span class="session-group-label">Group Chat</span>
+              <span class="session-group-count">{{ groupChatConversations.length }}</span>
+            </div>
+            <div v-show="!gcGroupCollapsed" class="session-group-items">
+              <div
+                v-for="conv in groupChatConversations"
+                :key="conv.id"
+                class="session-item session-item-gc"
+                :class="{ active: conv.id === store.currentConversation }"
+                @click="selectConversation(conv.id, conv.agentId)"
+              >
+                <div class="session-item-header">
+                  <div class="title" :title="getGroupChatTitle(conv)">
+                    {{ getGroupChatTitle(conv) }}
+                    <span v-if="store.groupChatSessions[conv.id]?.status === 'consensus'" class="gc-consensus-tag">已达共识</span>
+                    <span v-if="store.groupChatSessions[conv.id]?.status === 'stopped'" class="gc-stopped-tag">已停止</span>
+                  </div>
+                  <button class="session-delete-btn" @click.stop="deleteConversation(conv.id, conv.agentId)" :title="$t('chat.sidebar.closeConv')">
+                    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -207,6 +243,11 @@ export default {
           <ChatHeader />
           <CrewChatView />
         </template>
+        <!-- Group Chat Conversation -->
+        <template v-else-if="isCurrentGroupChatConversation">
+          <ChatHeader />
+          <GroupChatView />
+        </template>
         <!-- Normal Chat Mode -->
         <template v-else>
           <ChatHeader />
@@ -232,6 +273,15 @@ export default {
         @close="store.crewConfigOpen = false"
         @start="startCrewSession"
         @browse="openCrewFolderPicker"
+      />
+
+      <!-- Group Chat Create Panel -->
+      <GroupChatCreatePanel
+        v-if="store.groupChatConfigOpen"
+        :sessions="store.groupChatSessionsList"
+        @close="store.groupChatConfigOpen = false"
+        @create="createGroupChat"
+        @select="selectGroupChatSession"
       />
 
       <!-- Unified Conversation Modal (New + Resume) -->
@@ -429,7 +479,8 @@ export default {
       folderPickerLoading: false,
       folderPickerSelected: '',
       folderPickerTarget: '', // 'convModal'
-      serverVersion: ''
+      serverVersion: '',
+      gcGroupCollapsed: false
     };
   },
   computed: {
@@ -454,6 +505,15 @@ export default {
     isCurrentCrewConversation() {
       return this.store.currentConversationIsCrew;
     },
+    isCurrentGroupChatConversation() {
+      return this.store.currentConversationIsGroupChat;
+    },
+    normalConversations() {
+      return this.store.conversations.filter(c => c.type !== 'group_chat');
+    },
+    groupChatConversations() {
+      return this.store.conversations.filter(c => c.type === 'group_chat');
+    },
     currentAgentLatency() {
       if (!this.store.currentAgent) return null;
       const agent = this.store.agents.find(a => a.id === this.store.currentAgent);
@@ -475,6 +535,24 @@ export default {
     // Crew mode methods
     newCrewSession() {
       this.store.enterCrewMode();
+    },
+    // Group Chat methods
+    newGroupChat() {
+      this.store.enterGroupChatMode();
+    },
+    createGroupChat(config) {
+      this.store.createGroupChat(config);
+    },
+    selectGroupChatSession(session) {
+      this.store.groupChatConfigOpen = false;
+      this.store.selectGroupChat(session.id, session);
+    },
+    getGroupChatTitle(conv) {
+      const session = this.store.groupChatSessions[conv.id];
+      if (session?.topic) {
+        return session.topic.length > 30 ? session.topic.slice(0, 30) + '...' : session.topic;
+      }
+      return conv.topic || 'Group Chat';
     },
     startCrewSession(config) {
       this.store.createCrewSession(config);
@@ -628,6 +706,12 @@ export default {
     },
     selectConversation(conversationId, agentId) {
       const conv = this.store.conversations.find(c => c.id === conversationId);
+      // Group Chat: 直接切换
+      if (conv?.type === 'group_chat') {
+        this.store.selectGroupChat(conversationId);
+        this.showMobileSidebar = false;
+        return;
+      }
       // 如果是已停止的 crew conversation（不在活跃 crewSessions 中），先切换再触发恢复
       if (conv?.type === 'crew' && !this.store.crewSessions[conversationId]) {
         if (agentId) this.store.selectAgent(agentId);
@@ -641,8 +725,16 @@ export default {
     },
     deleteConversation(conversationId, agentId) {
       const conv = this.store.conversations.find(c => c.id === conversationId);
-      const confirmMsg = conv?.type === 'crew' ? '终止并关闭此 Crew Session？' : this.$t('chat.delete.confirm');
+      const confirmMsg = conv?.type === 'crew' ? '终止并关闭此 Crew Session？'
+        : conv?.type === 'group_chat' ? '关闭此讨论频道？'
+        : this.$t('chat.delete.confirm');
       if (confirm(confirmMsg)) {
+        // Group Chat 需要先停止
+        if (conv?.type === 'group_chat') {
+          this.store.stopGroupChat(conversationId);
+          this.store.deleteGroupChat(conversationId);
+          return;
+        }
         // Crew conversation 需要先终止 session
         if (conv?.type === 'crew' && this.store.crewSessions[conversationId]) {
           this.store.sendWsMessage({

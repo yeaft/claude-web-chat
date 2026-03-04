@@ -429,4 +429,21 @@ export default {
   'store.convClosed': '会话已关闭',
   'store.convCreated': '新会话已创建 [{agent}]，工作目录: {workDir}',
   'store.convResumed': '已恢复会话 [{agent}]: {sessionId}',
+
+  // ============ Group Chat ============
+  'groupChat.create': '创建讨论频道',
+  'groupChat.topic': '讨论主题',
+  'groupChat.join': '加入',
+  'groupChat.leave': '退出',
+  'groupChat.stop': '停止讨论',
+  'groupChat.waiting': '等待参与者',
+  'groupChat.discussing': '讨论中',
+  'groupChat.consensus': '已达共识',
+  'groupChat.stopped': '已停止',
+  'groupChat.observerNotice': '观看模式 — 你无法参与讨论，只能观看 Agent 之间的自动讨论',
+  'groupChat.memberJoined': '{name} 加入了讨论 ({count} 位参与者)',
+  'groupChat.memberLeft': '{name} 退出了讨论',
+  'groupChat.round': '第 {round} 轮',
+  'groupChat.conclusion': '讨论结论',
+  'groupChat.createHint': '创建后，选择你的 Agent 加入频道。当 2 个以上 Agent 加入后，讨论将自动开始。',
 };

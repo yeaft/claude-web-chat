@@ -100,8 +100,8 @@ export function handleMessage(store, msg) {
             store.conversations.push(serverConv);
           }
         }
-        // 清理不在 server 中的 conversations
-        store.conversations = store.conversations.filter(c => allServerConvIds.has(c.id));
+        // 清理不在 server 中的 conversations（保留 group_chat 类型，它们独立管理不在 agent.conversations 中）
+        store.conversations = store.conversations.filter(c => allServerConvIds.has(c.id) || c.type === 'group_chat');
 
         // 同步 processing 状态
         for (const serverConv of allServerConvs) {
@@ -310,6 +310,9 @@ export function handleMessage(store, msg) {
       delete store.crewSessions?.[msg.conversationId];
       delete store.crewMessagesMap?.[msg.conversationId];
       delete store.crewStatuses?.[msg.conversationId];
+      // 清理 group chat 数据
+      delete store.groupChatSessions?.[msg.conversationId];
+      delete store.groupChatMessagesMap?.[msg.conversationId];
       window.dispatchEvent(new CustomEvent('conversation-deleted', { detail: { conversationId: msg.conversationId } }));
       if (store.currentConversation === msg.conversationId) {
         store.currentConversation = null;
@@ -609,6 +612,20 @@ export function handleMessage(store, msg) {
     case 'crew_role_added':
     case 'crew_role_removed':
       store.handleCrewOutput(msg);
+      break;
+
+    // =====================================================================
+    // Group Chat (broadcast discussion channel) messages
+    // =====================================================================
+    case 'group_chat_created':
+    case 'group_chat_member_joined':
+    case 'group_chat_member_left':
+    case 'group_chat_status':
+    case 'group_chat_output':
+    case 'group_chat_message':
+    case 'group_chat_consensus':
+    case 'group_chat_list':
+      store.handleGroupChatOutput(msg);
       break;
   }
 }

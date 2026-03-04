@@ -25,6 +25,9 @@ import {
   addRoleToSession, removeRoleFromSession,
   handleListCrewSessions, resumeCrewSession, removeFromCrewIndex
 } from './crew.js';
+import {
+  joinGroupChat, leaveGroupChat, handleSpeakRequest, stopGroupChat
+} from './group-chat.js';
 
 // 需要在断连期间缓冲的消息类型（Claude 输出相关的关键消息）
 const BUFFERABLE_TYPES = new Set([
@@ -33,7 +36,9 @@ const BUFFERABLE_TYPES = new Set([
   'background_task_started', 'background_task_output',
   'crew_output', 'crew_status', 'crew_turn_completed',
   'crew_session_created', 'crew_session_restored', 'crew_human_needed',
-  'crew_role_added', 'crew_role_removed'
+  'crew_role_added', 'crew_role_removed',
+  'group_chat_output', 'group_chat_speak_done',
+  'group_chat_member_joined', 'group_chat_member_left'
 ]);
 
 // Send message to server (with encryption if available)
@@ -310,6 +315,23 @@ async function handleMessage(msg) {
 
     case 'update_crew_session':
       await (await import('./crew.js')).handleUpdateCrewSession(msg);
+      break;
+
+    // Group Chat (broadcast discussion channel) messages
+    case 'join_group_chat':
+      await joinGroupChat(msg);
+      break;
+
+    case 'leave_group_chat':
+      await leaveGroupChat(msg);
+      break;
+
+    case 'group_chat_speak':
+      await handleSpeakRequest(msg);
+      break;
+
+    case 'stop_group_chat':
+      stopGroupChat(msg);
       break;
 
     // Port proxy
