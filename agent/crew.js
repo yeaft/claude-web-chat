@@ -1854,7 +1854,9 @@ function sendCrewOutput(session, roleName, outputType, rawMessage, extra = {}) {
     session.uiMessages.push({
       role: roleName, roleIcon, roleName: displayName,
       type: 'route', routeTo: extra.routeTo,
+      routeSummary: extra.routeSummary || '',
       content: `→ @${extra.routeTo} ${extra.routeSummary || ''}`,
+      taskId, taskTitle,
       timestamp: Date.now()
     });
   } else if (outputType === 'system') {
@@ -1871,8 +1873,39 @@ function sendCrewOutput(session, roleName, outputType, rawMessage, extra = {}) {
       type: 'system', content: text,
       timestamp: Date.now()
     });
+  } else if (outputType === 'tool_use') {
+    // 结束该角色前一条 streaming
+    endRoleStreaming(session, roleName);
+    const content = rawMessage?.message?.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block.type === 'tool_use') {
+          session.uiMessages.push({
+            role: roleName, roleIcon, roleName: displayName,
+            type: 'tool',
+            toolName: block.name,
+            toolId: block.id,
+            content: `${block.name} ${block.input?.file_path || block.input?.command?.substring(0, 60) || ''}`,
+            hasResult: false,
+            taskId, taskTitle,
+            timestamp: Date.now()
+          });
+        }
+      }
+    }
+  } else if (outputType === 'tool_result') {
+    // 标记对应 tool 的 hasResult
+    const toolId = rawMessage?.message?.tool_use_id;
+    if (toolId) {
+      for (let i = session.uiMessages.length - 1; i >= 0; i--) {
+        if (session.uiMessages[i].type === 'tool' && session.uiMessages[i].toolId === toolId) {
+          session.uiMessages[i].hasResult = true;
+          break;
+        }
+      }
+    }
   }
-  // tool_use 和 tool_result 不记录（太大，恢复时不需要）
+  // tool 只保存精简信息（toolName + 摘要），不存完整 toolInput/toolResult
 }
 
 /**

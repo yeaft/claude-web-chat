@@ -506,6 +506,10 @@ export const useChatStore = defineStore('chat', {
             type: m.type,
             content: m.content,
             routeTo: m.routeTo,
+            routeSummary: m.routeSummary || '',
+            toolName: m.toolName || null,
+            toolId: m.toolId || null,
+            hasResult: m.hasResult || false,
             taskId: m.taskId || null,
             taskTitle: m.taskTitle || null,
             timestamp: m.timestamp || Date.now()
