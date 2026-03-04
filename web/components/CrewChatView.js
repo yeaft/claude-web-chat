@@ -209,7 +209,7 @@ export default {
             </div>
           </div>
           <button class="crew-hint-btn" @click="showAddRole = true" title="添加角色">
-            <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           </button>
         </div>
         <div class="attachments-preview" v-if="attachments.length > 0">

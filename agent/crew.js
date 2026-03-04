@@ -317,7 +317,10 @@ async function saveSessionMeta(session) {
     createdAt: session.createdAt,
     updatedAt: Date.now(),
     userId: session.userId,
-    username: session.username
+    username: session.username,
+    costUsd: session.costUsd,
+    totalInputTokens: session.totalInputTokens,
+    totalOutputTokens: session.totalOutputTokens
   };
   await fs.writeFile(join(session.sharedDir, 'session.json'), JSON.stringify(meta, null, 2));
   // 保存 UI 消息历史（用于恢复时重放）
@@ -431,9 +434,9 @@ export async function resumeCrewSession(msg) {
     status: 'waiting_human',
     round: meta.round || 0,
     maxRounds: meta.maxRounds || 20,
-    costUsd: 0,
-    totalInputTokens: 0,
-    totalOutputTokens: 0,
+    costUsd: meta.costUsd || 0,
+    totalInputTokens: meta.totalInputTokens || 0,
+    totalOutputTokens: meta.totalOutputTokens || 0,
     messageHistory: [],
     uiMessages: [],          // will be loaded from messages.json
     humanMessageQueue: [],
