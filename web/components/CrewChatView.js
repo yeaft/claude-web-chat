@@ -543,7 +543,6 @@ export default {
         <!-- Right Panel: Feature Kanban -->
         <aside class="crew-panel-right" :class="{ 'mobile-visible': mobileTab === 'kanban' }">
           <div class="crew-panel-right-scroll">
-            <div class="crew-kanban-title">Feature 看板</div>
 
             <!-- Feature Cards -->
             <div v-for="feature in featureKanban" :key="feature.taskId"

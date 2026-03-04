@@ -11442,11 +11442,10 @@ body {
 .crew-panel-left {
   width: 200px;
   flex-shrink: 0;
-  background: var(--bg-sidebar);
+  background: var(--bg-main);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid var(--border-light);
 }
 
 .crew-panel-left-scroll {
@@ -11540,15 +11539,14 @@ body {
 .crew-session-meta {
   margin-top: auto;
   padding-top: 12px;
-  border-top: 1px solid var(--border-light, var(--border-color));
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .crew-meta-row {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   font-size: 11px;
   color: var(--text-muted);
 }
@@ -11605,25 +11603,16 @@ body {
 .crew-panel-right {
   width: 260px;
   flex-shrink: 0;
-  background: var(--bg-sidebar);
+  background: var(--bg-main);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-left: 1px solid var(--border-light);
 }
 
 .crew-panel-right-scroll {
   flex: 1;
   overflow-y: auto;
   padding: 12px;
-}
-
-/* Kanban Title */
-.crew-kanban-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin-bottom: 10px;
 }
 
 /* Feature Kanban Card */

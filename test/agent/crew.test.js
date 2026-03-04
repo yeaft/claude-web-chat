@@ -4364,9 +4364,8 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- Right Panel: Feature Kanban v2 ---
 
   describe('right panel feature kanban', () => {
-    it('should have kanban title "Feature 看板"', () => {
-      expect(viewSource).toContain('class="crew-kanban-title"');
-      expect(viewSource).toContain('Feature 看板');
+    it('should NOT have kanban title element (removed)', () => {
+      expect(viewSource).not.toContain('class="crew-kanban-title"');
     });
 
     it('should iterate over featureKanban (not kanbanFeatures)', () => {
@@ -4767,28 +4766,28 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- CSS Verification ---
 
   describe('CSS panel backgrounds and borders', () => {
-    it('should set crew-panel-left background to bg-sidebar', () => {
+    it('should set crew-panel-left background to bg-main', () => {
       const idx = cssSource.indexOf('.crew-panel-left {');
       const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-      expect(block).toContain('background: var(--bg-sidebar)');
+      expect(block).toContain('background: var(--bg-main)');
     });
 
-    it('should set crew-panel-left border-right', () => {
+    it('should NOT have crew-panel-left border-right', () => {
       const idx = cssSource.indexOf('.crew-panel-left {');
       const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-      expect(block).toContain('border-right: 1px solid var(--border-light)');
+      expect(block).not.toContain('border-right');
     });
 
-    it('should set crew-panel-right background to bg-sidebar', () => {
+    it('should set crew-panel-right background to bg-main', () => {
       const idx = cssSource.indexOf('.crew-panel-right {');
       const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-      expect(block).toContain('background: var(--bg-sidebar)');
+      expect(block).toContain('background: var(--bg-main)');
     });
 
-    it('should set crew-panel-right border-left', () => {
+    it('should NOT have crew-panel-right border-left', () => {
       const idx = cssSource.indexOf('.crew-panel-right {');
       const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-      expect(block).toContain('border-left: 1px solid var(--border-light)');
+      expect(block).not.toContain('border-left');
     });
   });
 
@@ -4967,11 +4966,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- HTML Tag Balance ---
 
   describe('HTML and CSS structure balance', () => {
-    it('should have balanced div tags (165/165)', () => {
+    it('should have balanced div tags (164/164)', () => {
       const opens = (viewSource.match(/<div[\s>]/g) || []).length;
       const closes = (viewSource.match(/<\/div>/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(165);
+      expect(opens).toBe(164);
     });
 
     it('should have balanced template tags', () => {
@@ -4999,11 +4998,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2068/2068)', () => {
+    it('should have balanced CSS braces (2067/2067)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2068);
+      expect(opens).toBe(2067);
     });
   });
 });
