@@ -685,6 +685,8 @@ async function handleWebMessage(clientId, msg) {
         projectDir: msg.projectDir,
         sharedDir: msg.sharedDir,
         goal: msg.goal,
+        name: msg.name || '',
+        sharedKnowledge: msg.sharedKnowledge || '',
         roles: msg.roles,
         maxRounds: msg.maxRounds,
         userId: client.userId,
@@ -760,6 +762,19 @@ async function handleWebMessage(clientId, msg) {
         sessionId: msg.sessionId,
         userId: client.userId,
         username: client.username
+      });
+      break;
+    }
+
+    case 'update_crew_session': {
+      const updateCrewAgentId = msg.agentId || client.currentAgent;
+      if (!updateCrewAgentId) break;
+      if (!await checkAgentAccess(updateCrewAgentId)) break;
+      await forwardToAgent(updateCrewAgentId, {
+        type: 'update_crew_session',
+        sessionId: msg.sessionId,
+        name: msg.name,
+        sharedKnowledge: msg.sharedKnowledge
       });
       break;
     }

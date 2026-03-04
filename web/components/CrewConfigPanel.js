@@ -27,7 +27,7 @@ export default {
                   @click="resumeStoppedSession(sc)"
                 >
                   <div class="crew-stopped-info">
-                    <span class="crew-stopped-goal">{{ sc.goal || 'Crew Session' }}</span>
+                    <span class="crew-stopped-goal">{{ sc.name || sc.goal || 'Crew Session' }}</span>
                     <span class="crew-stopped-meta">
                       {{ shortenPath(sc.projectDir) }}
                       <span class="crew-stopped-status-tag" :class="'status-' + (sc.status || 'stopped')">{{ formatStatus(sc.status) }}</span>
@@ -70,6 +70,14 @@ export default {
                   <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
                 </button>
               </div>
+            </div>
+
+            <!-- 团队名称 -->
+            <div class="crew-config-section" v-if="selectedAgent">
+              <label class="crew-config-label">团队名称</label>
+              <input class="crew-config-input" v-model="name"
+                     placeholder="给团队起个名字（如：前端重构组）"
+                     maxlength="30" />
             </div>
 
             <!-- 角色模板 -->
@@ -116,6 +124,15 @@ export default {
               <button class="crew-add-role-btn" @click="addRole">+ 添加角色</button>
             </div>
 
+            <!-- 共享知识 -->
+            <div class="crew-config-section" v-if="selectedAgent">
+              <label class="crew-config-label">共享知识</label>
+              <textarea class="crew-config-textarea" v-model="sharedKnowledge"
+                        placeholder="项目特有信息：技术栈、业务背景、特殊约定...（追加到团队 CLAUDE.md）"
+                        rows="3"></textarea>
+              <span class="crew-config-hint-text">内容将追加到团队共享的 CLAUDE.md，所有角色都能看到</span>
+            </div>
+
             <!-- 高级设置 (折叠) -->
             <details class="crew-config-section crew-advanced-section" v-if="selectedAgent">
               <summary class="crew-config-label crew-summary-label">高级设置</summary>
@@ -130,6 +147,14 @@ export default {
 
           <!-- 编辑模式 -->
           <template v-else>
+            <!-- 团队名称 -->
+            <div class="crew-config-section">
+              <label class="crew-config-label">团队名称</label>
+              <input class="crew-config-input" v-model="name"
+                     placeholder="给团队起个名字（如：前端重构组）"
+                     maxlength="30" />
+            </div>
+
             <!-- 角色配置 -->
             <div class="crew-config-section">
               <label class="crew-config-label">角色配置</label>
@@ -152,6 +177,15 @@ export default {
                 </div>
               </div>
               <button class="crew-add-role-btn" @click="addRole">+ 添加角色</button>
+            </div>
+
+            <!-- 共享知识 -->
+            <div class="crew-config-section">
+              <label class="crew-config-label">共享知识</label>
+              <textarea class="crew-config-textarea" v-model="sharedKnowledge"
+                        placeholder="项目特有信息：技术栈、业务背景、特殊约定..."
+                        rows="3"></textarea>
+              <span class="crew-config-hint-text">内容将追加到团队共享的 CLAUDE.md，所有角色都能看到</span>
             </div>
 
             <!-- Session 控制 -->
@@ -195,7 +229,7 @@ export default {
           <template v-if="isEditMode">
             <span class="crew-config-hint" v-if="pendingNewRoles.length > 0">{{ pendingNewRoles.length }} 个新角色待添加</span>
             <button class="modern-btn" @click="$emit('close')">关闭</button>
-            <button class="modern-btn" @click="applyChanges" :disabled="pendingNewRoles.length === 0 && pendingRemovals.length === 0" v-if="pendingNewRoles.length > 0 || pendingRemovals.length > 0">应用变更</button>
+            <button class="modern-btn" @click="applyChanges">应用变更</button>
           </template>
           <template v-else>
             <button class="modern-btn" @click="$emit('close')">取消</button>
@@ -229,6 +263,8 @@ export default {
       projectDir: this.defaultWorkDir || '',
       sharedDir: '.crew',
       goal: '',
+      name: '',
+      sharedKnowledge: '',
       maxRounds: 20,
       currentTemplate: 'dev',
       roles: [],
@@ -301,6 +337,8 @@ export default {
   created() {
     if (this.isEditMode) {
       this.goal = this.session.goal || '';
+      this.name = this.session.name || '';
+      this.sharedKnowledge = this.session.sharedKnowledge || '';
       this.projectDir = this.session.projectDir || '';
       this.sharedDir = this.session.sharedDir || '.crew';
       this.maxRounds = this.session.maxRounds || 20;
@@ -540,6 +578,8 @@ export default {
         projectDir: this.projectDir.trim(),
         sharedDir: this.sharedDir.trim() || '.crew',
         goal: '',
+        name: this.name.trim(),
+        sharedKnowledge: this.sharedKnowledge.trim(),
         roles,
         maxRounds: this.maxRounds
       });
@@ -553,6 +593,23 @@ export default {
         const { _isNew, ...roleData } = role;
         roleData.name = roleData.name || roleData.displayName.toLowerCase().replace(/\s+/g, '_');
         this.store.addCrewRole(roleData);
+      }
+      const sid = this.store.currentConversation;
+      const trimmedName = this.name.trim();
+      const trimmedKnowledge = this.sharedKnowledge.trim();
+      this.store.sendWsMessage({
+        type: 'update_crew_session',
+        sessionId: sid,
+        name: trimmedName,
+        sharedKnowledge: trimmedKnowledge
+      });
+      // Update local state so sidebar title refreshes immediately
+      const conv = this.store.conversations.find(c => c.id === sid);
+      if (conv) conv.name = trimmedName;
+      const cs = this.store.crewSessions[sid];
+      if (cs) {
+        cs.name = trimmedName;
+        cs.sharedKnowledge = trimmedKnowledge;
       }
       this.pendingRemovals = [];
       this.roles.forEach(r => { delete r._isNew; });

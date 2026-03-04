@@ -11378,6 +11378,14 @@ body {
   resize: vertical;
 }
 
+.crew-config-hint-text {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-muted);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
 .crew-config-row {
   display: flex;
   align-items: center;

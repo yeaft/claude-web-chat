@@ -334,6 +334,8 @@ export const useChatStore = defineStore('chat', {
         projectDir: config.projectDir,
         sharedDir: config.sharedDir || '.crew',
         goal: config.goal,
+        name: config.name || '',
+        sharedKnowledge: config.sharedKnowledge || '',
         roles: config.roles,
         maxRounds: config.maxRounds || 20,
         agentId
@@ -433,6 +435,8 @@ export const useChatStore = defineStore('chat', {
           projectDir: msg.projectDir,
           sharedDir: msg.sharedDir,
           goal: msg.goal,
+          name: msg.name || '',
+          sharedKnowledge: msg.sharedKnowledge || '',
           roles: msg.roles,
           decisionMaker: msg.decisionMaker,
           maxRounds: msg.maxRounds
@@ -459,12 +463,14 @@ export const useChatStore = defineStore('chat', {
             createdAt: Date.now(),
             processing: false,
             type: 'crew',
-            goal: msg.goal
+            goal: msg.goal,
+            name: msg.name || ''
           };
           this.conversations.push(conv);
         } else {
           conv.type = 'crew';
           conv.goal = msg.goal;
+          conv.name = msg.name || '';
         }
         // 缓存当前消息，切换到 crew conversation
         if (this.currentConversation && this.messages.length > 0) {
@@ -484,6 +490,8 @@ export const useChatStore = defineStore('chat', {
           projectDir: msg.projectDir,
           sharedDir: msg.sharedDir,
           goal: msg.goal,
+          name: msg.name || '',
+          sharedKnowledge: msg.sharedKnowledge || '',
           roles: msg.roles,
           decisionMaker: msg.decisionMaker,
           maxRounds: msg.maxRounds
@@ -519,12 +527,14 @@ export const useChatStore = defineStore('chat', {
             createdAt: Date.now(),
             processing: false,
             type: 'crew',
-            goal: msg.goal
+            goal: msg.goal,
+            name: msg.name || ''
           };
           this.conversations.push(conv);
         } else {
           conv.type = 'crew';
           conv.goal = msg.goal;
+          conv.name = msg.name || '';
         }
         this.saveOpenSessions();
         return;
