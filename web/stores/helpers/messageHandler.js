@@ -605,6 +605,7 @@ export function handleMessage(store, msg) {
     case 'crew_turn_completed':
     case 'crew_human_needed':
     case 'crew_message_queued':
+    case 'crew_image':
     case 'crew_role_added':
     case 'crew_role_removed':
       store.handleCrewOutput(msg);
