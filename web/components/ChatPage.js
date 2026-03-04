@@ -491,13 +491,23 @@ export default {
       const defaultDir = crewPanel?.projectDir || agent?.workDir || '';
       this.folderPickerPath = defaultDir;
       this.folderPickerEntries = [];
-      this.store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: '_workdir_picker',
-        agentId: agentId,
-        dirPath: defaultDir,
-        workDir: agent?.workDir || ''
-      });
+      const sendRequest = () => {
+        this.store.sendWsMessage({
+          type: 'list_directory',
+          conversationId: '_workdir_picker',
+          agentId: agentId,
+          dirPath: defaultDir,
+          workDir: agent?.workDir || ''
+        });
+      };
+      sendRequest();
+      if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
+      this._folderPickerTimer = setTimeout(() => {
+        if (this.folderPickerLoading && this.folderPickerOpen) {
+          console.log('[FolderPicker] Retrying crew directory request for:', defaultDir);
+          sendRequest();
+        }
+      }, 5000);
     },
 
     openConversationModal() {
@@ -768,13 +778,23 @@ export default {
       const defaultDir = currentWorkDir || agent?.workDir || '';
       this.folderPickerPath = defaultDir;
       this.folderPickerEntries = [];
-      this.store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: '_workdir_picker',
-        agentId: agentId,
-        dirPath: defaultDir,
-        workDir: agent?.workDir || ''
-      });
+      const sendRequest = () => {
+        this.store.sendWsMessage({
+          type: 'list_directory',
+          conversationId: '_workdir_picker',
+          agentId: agentId,
+          dirPath: defaultDir,
+          workDir: agent?.workDir || ''
+        });
+      };
+      sendRequest();
+      if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
+      this._folderPickerTimer = setTimeout(() => {
+        if (this.folderPickerLoading && this.folderPickerOpen) {
+          console.log('[FolderPicker] Retrying initial directory request for:', defaultDir);
+          sendRequest();
+        }
+      }, 5000);
     },
     loadFolderPickerDir(dirPath) {
       let agentId = this.convModalAgent;
@@ -784,14 +804,26 @@ export default {
       if (!agentId) return;
       this.folderPickerLoading = true;
       this.folderPickerSelected = '';
+      this.folderPickerEntries = [];
       const agent = this.store.agents.find(a => a.id === agentId);
-      this.store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: '_workdir_picker',
-        agentId: agentId,
-        dirPath: dirPath,
-        workDir: agent?.workDir || ''
-      });
+      const sendRequest = () => {
+        this.store.sendWsMessage({
+          type: 'list_directory',
+          conversationId: '_workdir_picker',
+          agentId: agentId,
+          dirPath: dirPath,
+          workDir: agent?.workDir || ''
+        });
+      };
+      sendRequest();
+      // Retry once if no response within 5 seconds
+      if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
+      this._folderPickerTimer = setTimeout(() => {
+        if (this.folderPickerLoading && this.folderPickerOpen) {
+          console.log('[FolderPicker] Retrying directory request for:', dirPath);
+          sendRequest();
+        }
+      }, 5000);
     },
     folderPickerNavigateUp() {
       if (!this.folderPickerPath) return;
@@ -849,6 +881,10 @@ export default {
     handleFolderPickerMessage(event) {
       const msg = event.detail;
       if (!msg || msg.type !== 'directory_listing' || msg.conversationId !== '_workdir_picker') return;
+      if (this._folderPickerTimer) {
+        clearTimeout(this._folderPickerTimer);
+        this._folderPickerTimer = null;
+      }
       this.folderPickerLoading = false;
       this.folderPickerEntries = (msg.entries || [])
         .filter(e => e.type === 'directory')
@@ -935,5 +971,6 @@ export default {
     window.removeEventListener('agent-restart-ack', this._agentRestartAckHandler);
     window.removeEventListener('agent-upgrade-ack', this._agentUpgradeAckHandler);
     if (this._checkRestartingAgents) this._checkRestartingAgents();
+    if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
   }
 };
