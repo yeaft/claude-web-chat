@@ -374,6 +374,12 @@ export default {
     const messageClass = Vue.computed(() => {
       const base = ['message', props.message.type];
       if (props.message.isStreaming) base.push('streaming');
+      if (props.message.type === 'tool-use') {
+        if (props.message.isFirst) base.push('is-first');
+        if (props.message.isLast) base.push('is-last');
+        if (props.message.isRunning) base.push('is-running');
+        if (props.message.isCompleted) base.push('is-completed');
+      }
       return base;
     });
 

@@ -3789,8 +3789,83 @@ body {
   background: transparent;
   border: none;
   border-radius: 0;
-  padding: 0;
+  padding: 2px 0;
   font-size: 14px;
+  margin-left: 24px;
+  position: relative;
+}
+
+/* Connection line on left */
+.message.tool-use::before {
+  content: '';
+  position: absolute;
+  left: -16px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-color);
+}
+
+/* Node dot */
+.message.tool-use::after {
+  content: '';
+  position: absolute;
+  left: -19px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bg-main);
+  border: 1.5px solid var(--border-color);
+}
+
+/* Running tool: pulsing dot */
+.message.tool-use.is-running::after {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue);
+  animation: toolNodePulse 1.5s ease-in-out infinite;
+}
+
+@keyframes toolNodePulse {
+  0%, 100% { opacity: 1; transform: translateY(-50%) scale(1); }
+  50% { opacity: 0.5; transform: translateY(-50%) scale(0.7); }
+}
+
+/* Completed tool: green dot */
+.message.tool-use.is-completed::after {
+  border-color: var(--success);
+  background: var(--success);
+}
+
+/* First tool in sequence: line starts at midpoint */
+.message.tool-use.is-first::before {
+  top: 50%;
+}
+
+/* Last tool in sequence: line ends at midpoint */
+.message.tool-use.is-last::before {
+  bottom: 50%;
+}
+
+/* AskUserQuestion cards — no indent/line */
+.message.tool-use:has(.ask-card) {
+  margin-left: 0;
+}
+
+.message.tool-use:has(.ask-card)::before,
+.message.tool-use:has(.ask-card)::after {
+  display: none;
+}
+
+/* TodoWrite cards — no indent/line */
+.message.tool-use:has(.todo-list) {
+  margin-left: 0;
+}
+
+.message.tool-use:has(.todo-list)::before,
+.message.tool-use:has(.todo-list)::after {
+  display: none;
 }
 
 .message.tool-result {
@@ -3801,6 +3876,23 @@ body {
   font-size: 13px;
   max-height: 200px;
   overflow-y: auto;
+}
+
+/* Mobile: reduce tool-use indent */
+@media (max-width: 768px) {
+  .message.tool-use {
+    margin-left: 16px;
+  }
+
+  .message.tool-use::before {
+    left: -10px;
+  }
+
+  .message.tool-use::after {
+    left: -13px;
+    width: 5px;
+    height: 5px;
+  }
 }
 
 /* Tool Header */
