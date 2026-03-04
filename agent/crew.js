@@ -1501,9 +1501,8 @@ export async function handleCrewHumanInput(msg) {
     }
   }
 
-  // 没有 @ 指定目标，发给决策者或当前活跃角色
-  const activeRole = findActiveRole(session);
-  const target = targetRole || activeRole || session.decisionMaker;
+  // 没有 @ 指定目标，默认发给决策者（PM）
+  const target = targetRole || session.decisionMaker;
 
   // 检查目标是否忙
   const targetState = session.roleStates.get(target);
