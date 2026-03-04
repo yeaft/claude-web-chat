@@ -420,7 +420,10 @@ async function handleMessage(msg) {
             const pid = process.pid;
             const configDir = getConfigDir();
             mkdirSync(configDir, { recursive: true });
+            const logDir = join(configDir, 'logs');
+            mkdirSync(logDir, { recursive: true });
             const batPath = join(configDir, 'upgrade.bat');
+            const logPath = join(logDir, 'upgrade.log');
             const isPm2 = !!process.env.pm_id;
             const installDirWin = installDir.replace(/\//g, '\\');
 
@@ -430,14 +433,18 @@ async function handleMessage(msg) {
               `set PID=${pid}`,
               `set PKG=${pkgName}@latest`,
               `set INSTALL_DIR=${installDirWin}`,
+              `set LOGFILE=${logPath}`,
               `set MAX_WAIT=30`,
               `set COUNT=0`,
+              '',
+              ':: Redirect all output to log file',
+              'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
               ':WAIT_LOOP',
               'tasklist /FI "PID eq %PID%" 2>NUL | find /I "%PID%" >NUL',
               'if errorlevel 1 goto PID_EXITED',
               'set /A COUNT+=1',
               'if %COUNT% GEQ %MAX_WAIT% (',
-              '  echo [Upgrade] Timeout waiting for PID %PID% to exit after 60s',
+              '  echo [Upgrade] Timeout waiting for PID %PID% to exit after 60s >> "%LOGFILE%"',
               '  goto PID_EXITED',
               ')',
               'timeout /T 2 /NOBREAK >NUL',
@@ -446,10 +453,10 @@ async function handleMessage(msg) {
             ];
 
             if (isPm2) {
-              // pm2 可能已自动重启旧代码（exit 1 触发），先 stop 释放文件锁
+              // pm2 可能已自动重启旧代码（exit 触发），先 stop 释放文件锁
               batLines.push(
-                'echo [Upgrade] Stopping pm2 agent to release file locks...',
-                'call pm2 stop yeaft-agent 2>NUL',
+                'echo [Upgrade] Stopping pm2 agent to release file locks... >> "%LOGFILE%"',
+                'call pm2 stop yeaft-agent >> "%LOGFILE%" 2>&1',
                 'timeout /T 3 /NOBREAK >NUL',
               );
             }
@@ -459,23 +466,26 @@ async function handleMessage(msg) {
               : 'cd /d "%INSTALL_DIR%" && call npm install %PKG%';
 
             batLines.push(
-              'echo [Upgrade] Installing %PKG%...',
-              npmBatCmd,
+              'echo [Upgrade] Installing %PKG%... >> "%LOGFILE%"',
+              `${npmBatCmd} >> "%LOGFILE%" 2>&1`,
               'if errorlevel 1 (',
-              '  echo [Upgrade] npm install failed with exit code %errorlevel%',
-              ') else (',
-              '  echo [Upgrade] Successfully installed %PKG%',
+              '  echo [Upgrade] npm install failed with exit code %errorlevel% >> "%LOGFILE%"',
+              '  goto CLEANUP',
               ')',
+              'echo [Upgrade] Successfully installed %PKG% >> "%LOGFILE%"',
             );
 
             if (isPm2) {
               batLines.push(
-                'echo [Upgrade] Starting agent via pm2...',
-                'call pm2 start yeaft-agent',
+                'echo [Upgrade] Starting agent via pm2... >> "%LOGFILE%"',
+                'call pm2 start yeaft-agent >> "%LOGFILE%" 2>&1',
               );
             }
 
-            batLines.push(`del /F /Q "${batPath}"`);
+            batLines.push(
+              ':CLEANUP',
+              `del /F /Q "${batPath}"`,
+            );
 
             writeFileSync(batPath, batLines.join('\r\n'));
             const child = spawn('cmd.exe', ['/c', batPath], {
@@ -486,6 +496,11 @@ async function handleMessage(msg) {
             child.unref();
             console.log(`[Agent] Spawned upgrade script (PID wait for ${pid}, pm2=${isPm2}, dir=${installDir}): ${batPath}`);
             sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
+
+            if (isPm2) {
+              // PM2 环境：先同步 pm2 stop 防止 autorestart 竞态，再 exit
+              try { execSync('pm2 stop yeaft-agent', { timeout: 5000 }); } catch {}
+            }
           } else {
             // Linux/macOS: 生成 detached shell 脚本，先停止服务再升级再启动
             // 避免在升级过程中 systemd 不断重启已删除的旧版本
