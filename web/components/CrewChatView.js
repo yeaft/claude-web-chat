@@ -1286,7 +1286,7 @@ summary: 请测试以下变更...
 
     toggleTodoGroup(taskId) {
       const key = taskId || '_global';
-      this.expandedTodoGroups[key] = !this.expandedTodoGroups[key];
+      this.expandedTodoGroups[key] = !(key in this.expandedTodoGroups ? this.expandedTodoGroups[key] : true);
     },
 
     isTodoGroupExpanded(taskId) {
