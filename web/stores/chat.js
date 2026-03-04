@@ -353,7 +353,7 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
-    sendCrewMessage(content, targetRole = null, attachments = undefined) {
+    sendCrewMessage(content, targetRole = null, attachments = undefined, interrupt = false) {
       const sessionId = this.currentConversation;
       // 添加人的消息到本地显示
       if (!this.crewMessagesMap[sessionId]) this.crewMessagesMap[sessionId] = [];
@@ -373,6 +373,7 @@ export const useChatStore = defineStore('chat', {
         sessionId,
         content,
         targetRole,
+        interrupt,
         agentId: this.currentAgent
       };
       if (attachments && attachments.length > 0) {
@@ -708,9 +709,23 @@ export const useChatStore = defineStore('chat', {
         for (let i = messages.length - 1; i >= 0; i--) {
           if (messages[i].role === msg.role && messages[i]._streaming) {
             messages[i]._streaming = false;
+            if (msg.interrupted) {
+              messages[i].interrupted = true;
+            }
             break;
           }
         }
+        return;
+      }
+
+      if (msg.type === 'crew_message_queued') {
+        ensureMessages(sid).push({
+          id: Date.now() + Math.random(),
+          role: 'system',
+          type: 'system',
+          content: `消息已排队，等待 ${msg.target} 完成当前任务（队列: ${msg.queueLength}）`,
+          timestamp: Date.now()
+        });
         return;
       }
 

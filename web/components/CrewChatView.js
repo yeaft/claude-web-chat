@@ -1468,7 +1468,30 @@ summary: 请测试以下变更...
           mimeType: a.file?.type || ''
         }));
 
-      this.store.sendCrewMessage(text, null, attachmentInfos.length > 0 ? attachmentInfos : undefined);
+      // 检查 @角色 是否 busy，自动中断
+      let interrupt = false;
+      const atMatch = text.match(/^@(\S+)\s/);
+      if (atMatch) {
+        const atTarget = atMatch[1];
+        const session = this.store.currentCrewSession;
+        if (session?.roles) {
+          let target = null;
+          for (const r of session.roles) {
+            if (r.name === atTarget.toLowerCase() || r.displayName === atTarget) {
+              target = r.name;
+              break;
+            }
+          }
+          if (target) {
+            const activeRoles = this.store.currentCrewStatus?.activeRoles || [];
+            if (activeRoles.includes(target)) {
+              interrupt = true;
+            }
+          }
+        }
+      }
+
+      this.store.sendCrewMessage(text, null, attachmentInfos.length > 0 ? attachmentInfos : undefined, interrupt);
       this.inputText = '';
       this.attachments = [];
       delete this.store.inputDrafts[this.store.currentConversation];

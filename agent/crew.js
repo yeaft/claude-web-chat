@@ -1553,9 +1553,21 @@ export async function handleCrewHumanInput(msg) {
       // 检查目标角色是否正在忙
       const targetState = session.roleStates.get(target);
       if (targetState?.turnActive) {
-        // 排队
-        session.humanMessageQueue.push({ target, content: message, timestamp: Date.now() });
-        console.log(`[Crew] Human message queued for ${target} (busy)`);
+        if (msg.interrupt) {
+          // 中断模式：立即打断角色
+          const humanPrompt = `人工消息（中断）:\n${message}`;
+          await interruptRole(session, target, humanPrompt, 'human');
+        } else {
+          // 排队
+          session.humanMessageQueue.push({ target, content: message, timestamp: Date.now() });
+          console.log(`[Crew] Human message queued for ${target} (busy)`);
+          sendCrewMessage({
+            type: 'crew_message_queued',
+            sessionId: session.id,
+            target,
+            queueLength: session.humanMessageQueue.filter(m => m.target === target).length
+          });
+        }
         return;
       }
       const humanPrompt = `人工消息:\n${message}`;
@@ -1572,6 +1584,12 @@ export async function handleCrewHumanInput(msg) {
   if (targetState?.turnActive) {
     session.humanMessageQueue.push({ target, content, timestamp: Date.now() });
     console.log(`[Crew] Human message queued for ${target} (busy)`);
+    sendCrewMessage({
+      type: 'crew_message_queued',
+      sessionId: session.id,
+      target,
+      queueLength: session.humanMessageQueue.filter(m => m.target === target).length
+    });
     return;
   }
 
@@ -1643,6 +1661,11 @@ export async function handleCrewControl(msg) {
       break;
     case 'stop_role':
       if (targetRole) await stopRole(session, targetRole);
+      break;
+    case 'interrupt_role':
+      if (targetRole && msg.content) {
+        await interruptRole(session, targetRole, msg.content, 'human');
+      }
       break;
     case 'stop_all':
       await stopAll(session);
@@ -1726,6 +1749,58 @@ async function resumeSession(session) {
 /**
  * 停止单个角色
  */
+/**
+ * 中断角色当前 turn 并发送新消息
+ */
+async function interruptRole(session, roleName, newContent, fromSource = 'human') {
+  const roleState = session.roleStates.get(roleName);
+  if (!roleState) {
+    console.warn(`[Crew] Cannot interrupt ${roleName}: no roleState`);
+    return;
+  }
+
+  console.log(`[Crew] Interrupting ${roleName}`);
+
+  // 结束 streaming 状态
+  endRoleStreaming(session, roleName);
+
+  // 保存 sessionId 用于 resume 上下文连续性
+  if (roleState.claudeSessionId) {
+    await saveRoleSessionId(session.sharedDir, roleName, roleState.claudeSessionId)
+      .catch(e => console.warn(`[Crew] Failed to save sessionId for ${roleName}:`, e.message));
+  }
+
+  // Abort 当前 query
+  if (roleState.abortController) {
+    roleState.abortController.abort();
+  }
+
+  // 清理旧状态
+  roleState.query = null;
+  roleState.inputStream = null;
+  roleState.turnActive = false;
+  roleState.accumulatedText = '';
+
+  // 通知前端中断
+  sendCrewMessage({
+    type: 'crew_turn_completed',
+    sessionId: session.id,
+    role: roleName,
+    interrupted: true
+  });
+
+  sendStatusUpdate(session);
+
+  // 系统消息记录
+  sendCrewOutput(session, 'system', 'system', {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: `${roleName} 被中断` }] }
+  });
+
+  // 创建新 query 并 dispatch
+  await dispatchToRole(session, roleName, newContent, fromSource);
+}
+
 async function stopRole(session, roleName) {
   const roleState = session.roleStates.get(roleName);
   if (roleState) {
