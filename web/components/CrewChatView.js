@@ -61,6 +61,23 @@ export default {
           </div>
         </div>
 
+        <!-- Todo Progress Banner -->
+        <div v-if="latestTodos.length > 0" class="crew-todo-banner">
+          <div class="crew-todo-banner-card">
+            <div class="crew-todo-banner-header">
+              <span class="icon">📋</span>
+              任务进度 <span class="crew-todo-progress">{{ latestTodos.filter(t => t.status === 'completed').length }}/{{ latestTodos.length }}</span>
+            </div>
+            <div class="crew-todo-banner-list">
+              <div v-for="(todo, i) in latestTodos" :key="i"
+                   :class="['crew-todo-item', 'crew-todo-' + todo.status]">
+                <span class="crew-todo-icon">{{ todo.status === 'completed' ? '✅' : todo.status === 'in_progress' ? '🔄' : '⬜' }}</span>
+                <span class="crew-todo-text">{{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <template v-for="(block, bidx) in visibleBlocks" :key="block.id">
           <!-- Global block: messages without taskId, render inline -->
           <template v-if="block.type === 'global'">
@@ -1086,6 +1103,18 @@ summary: 请测试以下变更...
         }
       }
       return asks;
+    },
+
+    latestTodos() {
+      const messages = this.store.currentCrewMessages;
+      if (!messages) return [];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.type === 'tool' && m.toolName === 'TodoWrite' && m.toolInput?.todos) {
+          return m.toolInput.todos;
+        }
+      }
+      return [];
     }
   },
 
@@ -1512,30 +1541,7 @@ summary: 请测试以下变更...
           mimeType: a.file?.type || ''
         }));
 
-      // 检查 @角色 是否 busy，自动中断
-      let interrupt = false;
-      const atMatch = text.match(/^@(\S+)\s/);
-      if (atMatch) {
-        const atTarget = atMatch[1];
-        const session = this.store.currentCrewSession;
-        if (session?.roles) {
-          let target = null;
-          for (const r of session.roles) {
-            if (r.name === atTarget.toLowerCase() || r.displayName === atTarget) {
-              target = r.name;
-              break;
-            }
-          }
-          if (target) {
-            const activeRoles = this.store.currentCrewStatus?.activeRoles || [];
-            if (activeRoles.includes(target)) {
-              interrupt = true;
-            }
-          }
-        }
-      }
-
-      this.store.sendCrewMessage(text, null, attachmentInfos.length > 0 ? attachmentInfos : undefined, interrupt);
+      this.store.sendCrewMessage(text, null, attachmentInfos.length > 0 ? attachmentInfos : undefined);
       this.inputText = '';
       this.attachments = [];
       delete this.store.inputDrafts[this.store.currentConversation];

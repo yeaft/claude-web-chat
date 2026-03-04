@@ -1567,25 +1567,6 @@ export async function handleCrewHumanInput(msg) {
     }
 
     if (target) {
-      // 检查目标角色是否正在忙
-      const targetState = session.roleStates.get(target);
-      if (targetState?.turnActive) {
-        if (msg.interrupt) {
-          // 中断模式：立即打断角色
-          await interruptRole(session, target, buildHumanContent('人工消息（中断）:', message), 'human');
-        } else {
-          // 排队
-          session.humanMessageQueue.push({ target, content: message, timestamp: Date.now() });
-          console.log(`[Crew] Human message queued for ${target} (busy)`);
-          sendCrewMessage({
-            type: 'crew_message_queued',
-            sessionId: session.id,
-            target,
-            queueLength: session.humanMessageQueue.filter(m => m.target === target).length
-          });
-        }
-        return;
-      }
       await dispatchToRole(session, target, buildHumanContent('人工消息:', message), 'human');
       return;
     }
@@ -1593,20 +1574,6 @@ export async function handleCrewHumanInput(msg) {
 
   // 没有 @ 指定目标，默认发给决策者（PM）
   const target = targetRole || session.decisionMaker;
-
-  // 检查目标是否忙
-  const targetState = session.roleStates.get(target);
-  if (targetState?.turnActive) {
-    session.humanMessageQueue.push({ target, content, timestamp: Date.now() });
-    console.log(`[Crew] Human message queued for ${target} (busy)`);
-    sendCrewMessage({
-      type: 'crew_message_queued',
-      sessionId: session.id,
-      target,
-      queueLength: session.humanMessageQueue.filter(m => m.target === target).length
-    });
-    return;
-  }
 
   await dispatchToRole(session, target, buildHumanContent('人工消息:', content), 'human');
 }

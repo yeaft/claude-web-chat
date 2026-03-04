@@ -11390,6 +11390,91 @@ body {
   flex-shrink: 0;
 }
 
+/* Todo Progress Banner — sticky top */
+.crew-todo-banner {
+  position: sticky;
+  top: 0;
+  z-index: 19;
+  max-width: 800px;
+  margin: 0 auto 8px;
+  padding: 0 24px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.crew-todo-banner-card {
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 10px 14px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="dark"] .crew-todo-banner-card {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.crew-todo-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.crew-todo-banner-header .icon {
+  font-size: 14px;
+}
+
+.crew-todo-progress {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 2px;
+}
+
+.crew-todo-banner-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.crew-todo-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.crew-todo-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+}
+
+.crew-todo-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.crew-todo-completed .crew-todo-text {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.crew-todo-in_progress .crew-todo-text {
+  color: var(--accent-blue);
+  font-weight: 500;
+}
+
+.crew-todo-pending .crew-todo-text {
+  color: var(--text-secondary);
+}
+
 /* Crew Load More - pagination indicator at top */
 .crew-load-more {
   display: flex;
