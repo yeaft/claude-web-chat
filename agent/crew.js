@@ -790,6 +790,21 @@ ${roles.length > 0 ? roles.map(r => `- ${roleLabel(r)}(${r.name}): ${r.descripti
 - 重要决策记录在 context/decisions.md
 - 代码修改使用项目代码路径的绝对路径
 
+# 卡住上报规则
+当你遇到以下情况时，不要自己空转或反复重试，立即 ROUTE 给 PM（pm）请求协调：
+1. 缺少前置依赖（如需要的文件、目录、代码不存在）
+2. 等待其他角色的产出但迟迟没有收到
+3. 任务描述不清楚或有歧义，无法判断正确做法
+4. 遇到超出自己职责范围的问题
+5. 连续尝试2次相同操作仍然失败
+上报时请说明：你在做什么任务、卡在哪里、你认为需要谁来协助。
+
+# Worktree 隔离规则
+- 多实例模式下，每个开发组（dev-N/rev-N/test-N）在独立的 git worktree 中工作
+- 每个角色必须在自己的 worktree 路径下操作代码，绝对不要操作项目主目录
+- 代码完成后在 worktree 中 commit，由 PM 负责 cherry-pick 合并到 main 分支
+- 直接在主目录操作会导致多组之间的修改互相覆盖
+
 # 共享记忆
 _团队共同维护，记录重要的共识、决策和信息。_
 `;
@@ -811,9 +826,11 @@ ${role.claudeMd || role.description}
   // 有独立 worktree 的角色，覆盖代码工作目录
   if (role.workDir) {
     claudeMd += `
-# 代码工作目录
+# 代码工作目录（重要！）
 ${role.workDir}
-所有代码操作请使用此路径。不要使用项目主目录。
+所有代码操作必须在此 worktree 路径下进行。
+绝对禁止直接操作项目主目录，否则会覆盖其他开发组的修改。
+代码完成后在 worktree 中 commit，由 PM 负责 cherry-pick 合并到 main。
 `;
   }
 
