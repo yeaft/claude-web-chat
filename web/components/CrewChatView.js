@@ -31,7 +31,7 @@ export default {
       </div>
 
       <!-- Messages -->
-      <div class="crew-messages" ref="messagesRef">
+      <div class="crew-messages" ref="messagesRef" @scroll="onScroll">
         <div v-if="store.currentCrewMessages.length === 0" class="crew-empty">
           <div class="crew-empty-icon" v-html="icons.crew.replace(/16/g, '48')"></div>
           <div class="crew-empty-text" v-if="store.currentCrewSession">等待角色开始工作...</div>
@@ -312,6 +312,7 @@ export default {
       uploading: false,
       expandedTurns: {},
       expandedFeatures: {},
+      isAtBottom: true,
       atMenuVisible: false,
       atQuery: '',
       atMenuIndex: 0,
@@ -675,7 +676,7 @@ summary: 请测试以下变更...
   watch: {
     'store.currentCrewMessages': {
       handler() {
-        this.$nextTick(() => this.scrollToBottom());
+        this.$nextTick(() => this.smartScrollToBottom());
       },
       deep: true
     }
@@ -1017,6 +1018,8 @@ summary: 请测试以下变更...
       this.attachments = [];
       delete this.store.inputDrafts[this.store.currentConversation];
       if (this.$refs.inputRef) this.$refs.inputRef.style.height = 'auto';
+      this.isAtBottom = true;
+      this.$nextTick(() => this.scrollToBottom());
     },
 
     controlAction(action, targetRole = null) {
@@ -1067,6 +1070,20 @@ summary: 请测试以下变更...
     scrollToBottom() {
       const el = this.$refs.messagesRef;
       if (el) el.scrollTop = el.scrollHeight;
+    },
+
+    checkIfAtBottom() {
+      const el = this.$refs.messagesRef;
+      if (!el) return true;
+      return el.scrollHeight - el.scrollTop - el.clientHeight <= 50;
+    },
+
+    onScroll() {
+      this.isAtBottom = this.checkIfAtBottom();
+    },
+
+    smartScrollToBottom() {
+      if (this.isAtBottom) this.$nextTick(() => this.scrollToBottom());
     }
   },
 
@@ -1082,6 +1099,7 @@ summary: 请测试以下变更...
     if (convId && this.store.inputDrafts[convId]) {
       this.inputText = this.store.inputDrafts[convId];
     }
+    this.$nextTick(() => this.scrollToBottom());
   },
 
   beforeUnmount() {
