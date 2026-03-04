@@ -257,6 +257,7 @@ function sessionToIndexEntry(session) {
     name: session.name || '',
     userId: session.userId,
     username: session.username,
+    agentId: session.agentId || null,
     createdAt: session.createdAt,
     updatedAt: Date.now()
   };
@@ -321,6 +322,7 @@ async function saveSessionMeta(session) {
     updatedAt: Date.now(),
     userId: session.userId,
     username: session.username,
+    agentId: session.agentId || null,
     costUsd: session.costUsd,
     totalInputTokens: session.totalInputTokens,
     totalOutputTokens: session.totalOutputTokens
@@ -358,8 +360,14 @@ export async function handleListCrewSessions(msg) {
   const { requestId, _requestClientId } = msg;
   const index = await loadCrewIndex();
 
+  // 按 agentId 过滤（兼容旧数据：无 agentId 的 session 在所有 agent 中显示）
+  const agentId = ctx.CONFIG?.agentName || null;
+  const filtered = agentId
+    ? index.filter(e => !e.agentId || e.agentId === agentId)
+    : index;
+
   // 用活跃 session 更新实时状态
-  for (const entry of index) {
+  for (const entry of filtered) {
     const active = crewSessions.get(entry.sessionId);
     if (active) {
       entry.status = active.status;
@@ -370,7 +378,7 @@ export async function handleListCrewSessions(msg) {
     type: 'crew_sessions_list',
     requestId,
     _requestClientId,
-    sessions: index
+    sessions: filtered
   });
 }
 
@@ -457,6 +465,7 @@ export async function resumeCrewSession(msg) {
     pendingRoutes: [],
     userId: userId || meta.userId,
     username: username || meta.username,
+    agentId: meta.agentId || ctx.CONFIG?.agentName || null,
     createdAt: meta.createdAt || Date.now()
   };
   crewSessions.set(sessionId, session);
@@ -492,6 +501,36 @@ export async function resumeCrewSession(msg) {
   console.log(`[Crew] Session ${sessionId} resumed, waiting for human input`);
 }
 
+/**
+ * 查找指定 projectDir 的已有 crew session（内存活跃 > 磁盘索引）
+ */
+async function findExistingSessionByProjectDir(projectDir) {
+  const normalizedDir = projectDir.replace(/\/+$/, '');
+
+  for (const [, session] of crewSessions) {
+    if (session.projectDir.replace(/\/+$/, '') === normalizedDir
+        && session.status !== 'completed') {
+      return { sessionId: session.id, source: 'active' };
+    }
+  }
+
+  const index = await loadCrewIndex();
+  const agentId = ctx.CONFIG?.agentName || null;
+  const match = index.find(e =>
+    e.projectDir.replace(/\/+$/, '') === normalizedDir
+    && (!agentId || !e.agentId || e.agentId === agentId)
+    && e.status !== 'completed'
+  );
+
+  if (match) {
+    const meta = await loadSessionMeta(match.sharedDir);
+    if (meta) return { sessionId: match.sessionId, source: 'index' };
+    await removeFromCrewIndex(match.sessionId);
+  }
+
+  return null;
+}
+
 // =====================================================================
 // Session Lifecycle
 // =====================================================================
@@ -513,6 +552,14 @@ export async function createCrewSession(msg) {
     userId,
     username
   } = msg;
+
+  // 同目录检查：如果 projectDir 已有活跃或可恢复的 session，自动 resume
+  const existingSession = await findExistingSessionByProjectDir(projectDir);
+  if (existingSession) {
+    console.log(`[Crew] Found existing session for ${projectDir}: ${existingSession.sessionId}, auto-resuming`);
+    await resumeCrewSession({ sessionId: existingSession.sessionId, userId, username });
+    return;
+  }
 
   // 展开多实例角色（count > 1 的执行者角色）
   const roles = expandRoles(rawRoles);
@@ -562,6 +609,7 @@ export async function createCrewSession(msg) {
     pendingRoutes: [],        // [{ fromRole, route }] — 暂停时未完成的路由
     userId,
     username,
+    agentId: ctx.CONFIG?.agentName || null,
     createdAt: Date.now()
   };
 

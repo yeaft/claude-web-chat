@@ -4323,7 +4323,7 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
 
     it('should have CSS styles for add role button', () => {
       expect(cssSource).toContain('.crew-add-role-btn {');
-      expect(cssSource).toContain('border: 1.5px dashed var(--border-color)');
+      expect(cssSource).toContain('border: none');
     });
   });
 
@@ -4886,11 +4886,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   });
 
   describe('CSS add role button', () => {
-    it('should have dashed border button', () => {
+    it('should have plain text button without dashed border', () => {
       const idx = cssSource.indexOf('.crew-add-role-btn {');
       const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-      expect(block).toContain('border: 1.5px dashed');
-      expect(block).toContain('border-radius: 8px');
+      expect(block).toContain('border: none');
+      expect(block).toContain('color: var(--text-muted)');
     });
 
     it('should have hover effect', () => {
@@ -4908,13 +4908,12 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(cssSource).toContain('.crew-role-card-tool,');
     });
 
-    it('should make add-role-btn circular at 1279px', () => {
+    it('should adjust add-role-btn at 1279px', () => {
       expect(cssSource).toContain('.crew-add-role-btn {');
-      // The 1279 breakpoint should have circular button
+      // The 1279 breakpoint should have compact button
       const mediaIdx = cssSource.indexOf('@media (max-width: 1279px)');
       const mediaSection = cssSource.substring(mediaIdx, cssSource.indexOf('@media', mediaIdx + 1) > 0 ? cssSource.indexOf('@media', mediaIdx + 1) : cssSource.length);
       expect(mediaSection).toContain('.crew-add-role-btn');
-      expect(mediaSection).toContain('border-radius: 50%');
     });
 
     it('should hide add-role-btn label text at 1279px', () => {
