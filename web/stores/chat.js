@@ -670,6 +670,25 @@ export const useChatStore = defineStore('chat', {
         }
       }
 
+      if (msg.type === 'crew_image') {
+        const messages = ensureMessages(sid);
+        messages.push({
+          id: Date.now() + Math.random(),
+          role: msg.role,
+          roleIcon: msg.roleIcon,
+          roleName: msg.roleName,
+          type: 'image',
+          fileId: msg.fileId,
+          previewToken: msg.previewToken,
+          mimeType: msg.mimeType,
+          toolId: msg.toolId,
+          taskId: msg.taskId || null,
+          taskTitle: msg.taskTitle || null,
+          timestamp: Date.now()
+        });
+        return;
+      }
+
       if (msg.type === 'crew_status') {
         this.crewStatuses[sid] = {
           status: msg.status,

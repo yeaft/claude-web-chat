@@ -124,6 +124,12 @@ export default {
                       </button>
                     </div>
                   </div>
+                  <div v-if="turn.imageMsgs.length > 0" class="crew-msg-images">
+                    <div v-for="img in turn.imageMsgs" :key="img.id" class="crew-msg-image">
+                      <img v-if="img.fileId" :src="getImageUrl(img)" class="crew-screenshot" @error="handleImageError($event)" @click="openImagePreview(getImageUrl(img))" :alt="'Screenshot by ' + (img.roleName || img.role)" />
+                      <div v-else class="crew-screenshot-expired">图片已过期</div>
+                    </div>
+                  </div>
                   <template v-if="turn.askMsg">
                     <div class="crew-ask-card" :data-ask-id="turn.askMsg.id" :class="{ 'is-answered': isCrewAskAnswered(turn.askMsg), 'is-waiting': !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId }">
                       <div v-for="(q, qIdx) in getCrewAskQuestions(turn.askMsg)" :key="qIdx" class="crew-ask-question">
@@ -245,6 +251,12 @@ export default {
                           </button>
                         </div>
                       </div>
+                      <div v-if="turn.imageMsgs.length > 0" class="crew-msg-images">
+                        <div v-for="img in turn.imageMsgs" :key="img.id" class="crew-msg-image">
+                          <img v-if="img.fileId" :src="getImageUrl(img)" class="crew-screenshot" @error="handleImageError($event)" @click="openImagePreview(getImageUrl(img))" :alt="'Screenshot by ' + (img.roleName || img.role)" />
+                          <div v-else class="crew-screenshot-expired">图片已过期</div>
+                        </div>
+                      </div>
                       <template v-if="turn.askMsg">
                         <div class="crew-ask-card" :data-ask-id="turn.askMsg.id" :class="{ 'is-answered': isCrewAskAnswered(turn.askMsg), 'is-waiting': !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId }">
                           <div v-for="(q, qIdx) in getCrewAskQuestions(turn.askMsg)" :key="qIdx" class="crew-ask-question">
@@ -332,6 +344,12 @@ export default {
                             <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
                             <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
                           </button>
+                        </div>
+                      </div>
+                      <div v-if="turn.imageMsgs.length > 0" class="crew-msg-images">
+                        <div v-for="img in turn.imageMsgs" :key="img.id" class="crew-msg-image">
+                          <img v-if="img.fileId" :src="getImageUrl(img)" class="crew-screenshot" @error="handleImageError($event)" @click="openImagePreview(getImageUrl(img))" :alt="'Screenshot by ' + (img.roleName || img.role)" />
+                          <div v-else class="crew-screenshot-expired">图片已过期</div>
                         </div>
                       </div>
                       <template v-if="turn.askMsg">
@@ -1162,6 +1180,7 @@ summary: 请测试以下变更...
           currentTurn.textMsg = currentTurn.messages.find(m => m.type === 'text') || null;
           currentTurn.toolMsgs = currentTurn.messages.filter(m => m.type === 'tool');
           currentTurn.routeMsgs = currentTurn.messages.filter(m => m.type === 'route');
+          currentTurn.imageMsgs = currentTurn.messages.filter(m => m.type === 'image');
           // Extract AskUserQuestion from toolMsgs into askMsg
           const askIdx = currentTurn.toolMsgs.findIndex(m => m.toolName === 'AskUserQuestion');
           if (askIdx !== -1) {
@@ -1196,6 +1215,7 @@ summary: 请测试以下变更...
               textMsg: null,
               toolMsgs: [],
               routeMsgs: [],
+              imageMsgs: [],
               id: 'turn_' + (turnCounter++)
             };
           }
@@ -1219,6 +1239,7 @@ summary: 请测试以下变更...
             textMsg: null,
             toolMsgs: [],
             routeMsgs: [],
+            imageMsgs: [],
             id: 'turn_' + (turnCounter++)
           };
         }
@@ -1245,6 +1266,24 @@ summary: 请测试以下变更...
       if (!displayName) return '';
       const idx = displayName.indexOf('-');
       return idx > 0 ? displayName.substring(idx + 1) : displayName;
+    },
+
+    getImageUrl(msg) {
+      if (!msg.fileId) return '';
+      const token = msg.previewToken || '';
+      return `/api/preview/${msg.fileId}?token=${token}`;
+    },
+
+    handleImageError(event) {
+      const img = event.target;
+      const expired = document.createElement('div');
+      expired.className = 'crew-screenshot-expired';
+      expired.textContent = '图片已过期';
+      img.parentNode.replaceChild(expired, img);
+    },
+
+    openImagePreview(src) {
+      window.open(src, '_blank');
     },
 
     getRoleStyle(roleName) {

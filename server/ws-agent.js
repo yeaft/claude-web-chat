@@ -678,6 +678,39 @@ async function handleAgentMessage(agentId, msg) {
       await forwardToClients(agentId, msg.sessionId, msg);
       break;
 
+    case 'crew_image': {
+      // Size check
+      const dataSize = msg.data ? Buffer.byteLength(msg.data, 'base64') : 0;
+      if (dataSize > 10 * 1024 * 1024) {
+        console.warn(`[Server] Crew image too large: ${dataSize} bytes, skipping`);
+        break;
+      }
+      const fileId = randomUUID();
+      const token = randomUUID();
+      previewFiles.set(fileId, {
+        buffer: Buffer.from(msg.data, 'base64'),
+        mimeType: msg.mimeType,
+        filename: `crew-${msg.role}-${Date.now()}.${(msg.mimeType || 'image/png').split('/')[1] || 'png'}`,
+        createdAt: Date.now(),
+        token
+      });
+      await forwardToClients(agentId, msg.sessionId, {
+        type: 'crew_image',
+        sessionId: msg.sessionId,
+        role: msg.role,
+        roleIcon: msg.roleIcon,
+        roleName: msg.roleName,
+        toolId: msg.toolId,
+        fileId,
+        previewToken: token,
+        mimeType: msg.mimeType,
+        taskId: msg.taskId,
+        taskTitle: msg.taskTitle
+      });
+      console.log(`[Server] Cached crew image: fileId=${fileId}, role=${msg.role}, mime=${msg.mimeType}`);
+      break;
+    }
+
     case 'crew_status':
       await forwardToClients(agentId, msg.sessionId, msg);
       break;

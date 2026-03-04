@@ -1501,11 +1501,29 @@ async function dispatchToRole(session, roleName, content, fromSource, taskId, ta
  * 处理人的输入
  */
 export async function handleCrewHumanInput(msg) {
-  const { sessionId, content, targetRole } = msg;
+  const { sessionId, content, targetRole, files } = msg;
   const session = crewSessions.get(sessionId);
   if (!session) {
     console.warn(`[Crew] Session not found: ${sessionId}`);
     return;
+  }
+
+  // Build dispatch content (supports image attachments)
+  function buildHumanContent(prefix, text) {
+    if (files && files.length > 0) {
+      const blocks = [];
+      for (const file of files) {
+        if (file.isImage || file.mimeType?.startsWith('image/')) {
+          blocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: file.mimeType, data: file.data }
+          });
+        }
+      }
+      blocks.push({ type: 'text', text: `${prefix}\n${text}` });
+      return blocks;
+    }
+    return `${prefix}\n${text}`;
   }
 
   // 注意：不在这里发送人的消息到 Web（前端已本地添加，避免重复）
@@ -1525,8 +1543,7 @@ export async function handleCrewHumanInput(msg) {
 
     // 发给请求人工介入的角色，或指定的目标角色
     const target = targetRole || waitingContext?.fromRole || session.decisionMaker;
-    const humanPrompt = `人工回复:\n${content}`;
-    await dispatchToRole(session, target, humanPrompt, 'human');
+    await dispatchToRole(session, target, buildHumanContent('人工回复:', content), 'human');
     return;
   }
 
@@ -1555,8 +1572,7 @@ export async function handleCrewHumanInput(msg) {
       if (targetState?.turnActive) {
         if (msg.interrupt) {
           // 中断模式：立即打断角色
-          const humanPrompt = `人工消息（中断）:\n${message}`;
-          await interruptRole(session, target, humanPrompt, 'human');
+          await interruptRole(session, target, buildHumanContent('人工消息（中断）:', message), 'human');
         } else {
           // 排队
           session.humanMessageQueue.push({ target, content: message, timestamp: Date.now() });
@@ -1570,8 +1586,7 @@ export async function handleCrewHumanInput(msg) {
         }
         return;
       }
-      const humanPrompt = `人工消息:\n${message}`;
-      await dispatchToRole(session, target, humanPrompt, 'human');
+      await dispatchToRole(session, target, buildHumanContent('人工消息:', message), 'human');
       return;
     }
   }
@@ -1593,8 +1608,7 @@ export async function handleCrewHumanInput(msg) {
     return;
   }
 
-  const humanPrompt = `人工消息:\n${content}`;
-  await dispatchToRole(session, target, humanPrompt, 'human');
+  await dispatchToRole(session, target, buildHumanContent('人工消息:', content), 'human');
 }
 
 /**
@@ -1983,6 +1997,32 @@ function sendCrewOutput(session, roleName, outputType, rawMessage, extra = {}) {
         if (session.uiMessages[i].type === 'tool' && session.uiMessages[i].toolId === toolId) {
           session.uiMessages[i].hasResult = true;
           break;
+        }
+      }
+    }
+    // Check for image blocks in tool_result content
+    const resultContent = rawMessage?.message?.content;
+    if (Array.isArray(resultContent)) {
+      for (const item of resultContent) {
+        if (item.type === 'image' && item.source?.type === 'base64') {
+          sendCrewMessage({
+            type: 'crew_image',
+            sessionId: session.id,
+            role: roleName,
+            roleIcon,
+            roleName: displayName,
+            toolId: toolId || '',
+            mimeType: item.source.media_type,
+            data: item.source.data,
+            taskId, taskTitle
+          });
+          session.uiMessages.push({
+            role: roleName, roleIcon, roleName: displayName,
+            type: 'image', toolId: toolId || '',
+            mimeType: item.source.media_type,
+            taskId, taskTitle,
+            timestamp: Date.now()
+          });
         }
       }
     }

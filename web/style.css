@@ -10740,6 +10740,38 @@ body {
   opacity: 0.5;
 }
 
+/* Crew Image Messages */
+.crew-msg-images {
+  margin: 4px 0;
+}
+
+.crew-msg-image {
+  margin: 4px 0;
+}
+
+.crew-screenshot {
+  max-width: 100%;
+  max-height: 400px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  transition: opacity 0.2s;
+}
+
+.crew-screenshot:hover {
+  opacity: 0.9;
+}
+
+.crew-screenshot-expired {
+  display: inline-block;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--code-bg);
+  border-radius: 6px;
+  border: 1px dashed var(--border-color);
+}
+
 /* Crew Task Panel */
 .crew-task-panel {
   max-width: 800px;
