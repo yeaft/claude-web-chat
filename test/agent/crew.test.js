@@ -1986,13 +1986,15 @@ describe('Hints bar - source file verification', () => {
     expect(hintsArea).not.toContain('insertAt(role.name)');
   });
 
-  it('should have add-role button in hints area', () => {
-    const hintsAreaMatch = fileContent.match(
-      /class="crew-input-hints"[\s\S]*?<\/div>\s*(?=<div class="attachments-preview|<div class="input-wrapper")/
+  it('should have add-role button in left panel (moved from hints area)', () => {
+    // v2: add-role button moved from hints area to left panel
+    const leftPanel = fileContent.substring(
+      fileContent.indexOf('crew-panel-left'),
+      fileContent.indexOf('</aside>')
     );
-    const hintsArea = hintsAreaMatch[0];
-    expect(hintsArea).toContain('showAddRole = true');
-    expect(hintsArea).toContain('添加角色');
+    expect(leftPanel).toContain('crew-add-role-btn');
+    expect(leftPanel).toContain('showAddRole = true');
+    expect(leftPanel).toContain('添加角色');
   });
 });
 
@@ -4235,5 +4237,773 @@ describe('writeSharedClaudeMd - team best practices (b7b48d3)', () => {
     expect(crewContent).toContain('绝对禁止直接操作项目主目录或其他组的 worktree，否则会覆盖其他开发组的修改');
     expect(crewContent).toContain('代码完成并通过 review 后，自己提 PR 合并到 main');
     expect(crewContent).toContain('此 worktree 仅用于当前任务，合并后会被清理，新任务会创建新的 worktree');
+  });
+});
+
+// ============================================================================
+// task-22: Crew Three-Column v2 — Feature Kanban + Visual Polish (commit ec6210e)
+// ============================================================================
+
+describe('task-22: Three-Column v2 — Feature Kanban', () => {
+  let viewSource;
+  let cssSource;
+
+  beforeAll(async () => {
+    viewSource = await fs.readFile(join(__dirname, '../../web/components/CrewChatView.js'), 'utf-8');
+    cssSource = await fs.readFile(join(__dirname, '../../web/style.css'), 'utf-8');
+  });
+
+  // --- Left Panel: Role Cards v2 ---
+
+  describe('left panel role card restructure', () => {
+    it('should have role card with is-streaming class', () => {
+      expect(viewSource).toContain("'is-streaming': isRoleStreaming(role.name)");
+    });
+
+    it('should NOT have crew-role-card-status indicator (removed)', () => {
+      expect(viewSource).not.toContain('crew-role-card-status');
+    });
+
+    it('should show feature title via crew-role-card-feature', () => {
+      expect(viewSource).toContain('class="crew-role-card-feature"');
+      expect(viewSource).toContain('getRoleCurrentTask(role.name)');
+    });
+
+    it('should show tool only when streaming AND has tool', () => {
+      expect(viewSource).toContain('isRoleStreaming(role.name) && getRoleCurrentTool(role.name)');
+    });
+
+    it('should use crew-role-card-feature instead of crew-role-card-task', () => {
+      expect(viewSource).not.toContain('crew-role-card-task');
+      expect(viewSource).toContain('crew-role-card-feature');
+    });
+
+    it('should NOT have crew-role-card-details wrapper (removed)', () => {
+      expect(viewSource).not.toContain('crew-role-card-details');
+    });
+  });
+
+  describe('left panel colored left border for streaming', () => {
+    it('should have is-streaming CSS with left border', () => {
+      expect(cssSource).toContain('.crew-role-card.is-streaming');
+      const idx = cssSource.indexOf('.crew-role-card.is-streaming {');
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain('border-left: 3px solid var(--role-color)');
+    });
+
+    it('should NOT have rolePulse animation (removed)', () => {
+      expect(cssSource).not.toContain('@keyframes rolePulse');
+    });
+
+    it('should NOT have crew-role-card-status CSS (removed)', () => {
+      expect(cssSource).not.toContain('.crew-role-card-status');
+    });
+  });
+
+  describe('add role button in left panel', () => {
+    it('should have crew-add-role-btn in template', () => {
+      expect(viewSource).toContain('class="crew-add-role-btn"');
+    });
+
+    it('should trigger showAddRole on click', () => {
+      expect(viewSource).toContain('@click="showAddRole = true"');
+    });
+
+    it('should have label text "添加角色"', () => {
+      expect(viewSource).toContain('<span>添加角色</span>');
+    });
+
+    it('should NOT have add role button in input area (removed)', () => {
+      // The old button in crew-hint-controls was removed
+      const inputArea = viewSource.substring(viewSource.indexOf('class="input-area'));
+      const panelCenter = viewSource.indexOf('</div><!-- /crew-panel-center -->');
+      const inputSection = viewSource.substring(viewSource.indexOf('class="input-area'), panelCenter);
+      expect(inputSection).not.toContain('添加角色');
+    });
+
+    it('should have CSS styles for add role button', () => {
+      expect(cssSource).toContain('.crew-add-role-btn {');
+      expect(cssSource).toContain('border: 1.5px dashed var(--border-color)');
+    });
+  });
+
+  // --- Session Meta moved to right panel ---
+
+  describe('session meta relocated to right panel', () => {
+    it('should have session meta outside crew-panel-right-scroll (in aside)', () => {
+      // Meta should be after the scroll div, still within aside
+      const rightPanel = viewSource.substring(viewSource.indexOf('crew-panel-right'));
+      expect(rightPanel).toContain('class="crew-session-meta"');
+    });
+
+    it('should show round count without maxRounds', () => {
+      // v2 simplified: just round number without "/ maxRounds"
+      expect(viewSource).toContain('store.currentCrewStatus.round || 0');
+      // Should NOT contain maxRounds in the meta section
+      const metaSection = viewSource.substring(viewSource.indexOf('crew-session-meta'));
+      const metaEnd = metaSection.indexOf('</aside>');
+      const meta = metaSection.substring(0, metaEnd);
+      expect(meta).not.toContain('maxRounds');
+    });
+
+    it('should show cost, token, and status', () => {
+      expect(viewSource).toContain("class=\"crew-meta-label\">成本</span>");
+      expect(viewSource).toContain("class=\"crew-meta-label\">Token</span>");
+      expect(viewSource).toContain("class=\"crew-meta-label\">状态</span>");
+    });
+
+    it('should NOT have session meta in left panel', () => {
+      const leftPanel = viewSource.substring(
+        viewSource.indexOf('crew-panel-left'),
+        viewSource.indexOf('</aside>')
+      );
+      expect(leftPanel).not.toContain('crew-session-meta');
+    });
+  });
+
+  // --- Right Panel: Feature Kanban v2 ---
+
+  describe('right panel feature kanban', () => {
+    it('should have kanban title "Feature 看板"', () => {
+      expect(viewSource).toContain('class="crew-kanban-title"');
+      expect(viewSource).toContain('Feature 看板');
+    });
+
+    it('should iterate over featureKanban (not kanbanFeatures)', () => {
+      expect(viewSource).toContain('v-for="feature in featureKanban"');
+      expect(viewSource).not.toContain('v-for="feature in kanbanFeatures"');
+    });
+
+    it('should use crew-feature-card class', () => {
+      expect(viewSource).toContain('class="crew-feature-card"');
+    });
+
+    it('should have has-streaming and is-completed classes', () => {
+      expect(viewSource).toContain("'has-streaming': feature.hasStreaming");
+      expect(viewSource).toContain("'is-completed': feature.isCompleted");
+    });
+
+    it('should have expandable header with click and dblclick', () => {
+      expect(viewSource).toContain('@click="toggleFeatureCard(feature.taskId)"');
+      expect(viewSource).toContain('@dblclick="scrollToFeature(feature.taskId)"');
+    });
+
+    it('should show feature title and done/total count', () => {
+      expect(viewSource).toContain('class="crew-feature-card-title"');
+      expect(viewSource).toContain('feature.doneCount');
+      expect(viewSource).toContain('feature.totalCount');
+    });
+
+    it('should have per-feature progress bar', () => {
+      expect(viewSource).toContain('class="crew-feature-card-bar"');
+      expect(viewSource).toContain('class="crew-feature-card-bar-fill"');
+    });
+
+    it('should show active roles with icons', () => {
+      expect(viewSource).toContain('class="crew-feature-card-roles"');
+      expect(viewSource).toContain('feature.activeRoles');
+      expect(viewSource).toContain('ar.roleIcon');
+      expect(viewSource).toContain('工作中');
+    });
+
+    it('should show todo items when expanded', () => {
+      expect(viewSource).toContain('class="crew-feature-card-todos"');
+      expect(viewSource).toContain('class="crew-feature-card-todo"');
+      expect(viewSource).toContain('todo.roleIcon');
+    });
+
+    it('should show empty state when no todos', () => {
+      expect(viewSource).toContain('class="crew-feature-card-empty"');
+      expect(viewSource).toContain("feature.isCompleted ? '已完成' : '进行中'");
+    });
+
+    it('should show empty state "暂无 Feature"', () => {
+      expect(viewSource).toContain('暂无 Feature');
+    });
+  });
+
+  // --- Total Progress (bottom fixed) ---
+
+  describe('total progress in right panel', () => {
+    it('should have crew-kanban-total section', () => {
+      expect(viewSource).toContain('class="crew-kanban-total"');
+    });
+
+    it('should show total done / total with percentage', () => {
+      expect(viewSource).toContain('kanbanProgress.done');
+      expect(viewSource).toContain('kanbanProgress.total');
+      expect(viewSource).toContain('Math.round(kanbanProgress.done / kanbanProgress.total * 100)');
+    });
+
+    it('should have total progress bar', () => {
+      expect(viewSource).toContain('class="crew-kanban-total-bar"');
+      expect(viewSource).toContain('class="crew-kanban-total-fill"');
+    });
+  });
+
+  // --- Data Properties ---
+
+  describe('updated data properties', () => {
+    it('should have expandedFeatureCards instead of expandedKanbanFeatures', () => {
+      expect(viewSource).toContain('expandedFeatureCards: {}');
+      expect(viewSource).not.toContain('expandedKanbanFeatures');
+    });
+
+    it('should NOT have kanbanCompletedExpanded (removed)', () => {
+      expect(viewSource).not.toContain('kanbanCompletedExpanded');
+    });
+  });
+
+  // --- Computed Properties ---
+
+  describe('featureKanban computed', () => {
+    it('should have featureKanban computed (not kanbanFeatures)', () => {
+      expect(viewSource).toContain('featureKanban()');
+      expect(viewSource).not.toMatch(/kanbanFeatures\(\)/);
+    });
+
+    it('should collect from activeTasks', () => {
+      expect(viewSource).toContain('this.activeTasks');
+    });
+
+    it('should merge todosByFeature data', () => {
+      expect(viewSource).toContain('this.todosByFeature');
+    });
+
+    it('should merge featureBlocks for active roles', () => {
+      expect(viewSource).toContain('this.featureBlocks');
+      expect(viewSource).toContain('block.activeRoles');
+      expect(viewSource).toContain('block.hasStreaming');
+    });
+
+    it('should sort: streaming first, completed last', () => {
+      expect(viewSource).toContain('a.hasStreaming');
+      expect(viewSource).toContain('a.isCompleted');
+    });
+
+    it('should NOT have kanbanAllItems, kanbanInProgress, kanbanPending, kanbanCompleted', () => {
+      expect(viewSource).not.toContain('kanbanAllItems()');
+      expect(viewSource).not.toContain('kanbanInProgress()');
+      expect(viewSource).not.toContain('kanbanPending()');
+      expect(viewSource).not.toContain('kanbanCompleted()');
+    });
+
+    it('kanbanProgress should sum from featureKanban', () => {
+      expect(viewSource).toContain('kanbanProgress()');
+      expect(viewSource).toContain('this.featureKanban');
+    });
+  });
+
+  // --- Methods ---
+
+  describe('feature card methods', () => {
+    it('should have toggleFeatureCard (not toggleKanbanFeature)', () => {
+      expect(viewSource).toContain('toggleFeatureCard(taskId)');
+      expect(viewSource).not.toContain('toggleKanbanFeature(');
+    });
+
+    it('should have isFeatureCardExpanded (not isKanbanFeatureExpanded)', () => {
+      expect(viewSource).toContain('isFeatureCardExpanded(taskId)');
+      expect(viewSource).not.toContain('isKanbanFeatureExpanded(');
+    });
+
+    it('should have scrollToFeature method', () => {
+      expect(viewSource).toContain('scrollToFeature(taskId)');
+      expect(viewSource).toContain('data-task-id');
+      expect(viewSource).toContain('scrollIntoView');
+    });
+
+    it('should default expand if has in_progress todos or not completed', () => {
+      expect(viewSource).toContain("t.status === 'in_progress'");
+      expect(viewSource).toContain('!feature.isCompleted');
+    });
+  });
+
+  // --- Feature thread data-task-id attribute ---
+
+  describe('feature thread data-task-id for scroll targeting', () => {
+    it('should have data-task-id on crew-feature-thread', () => {
+      expect(viewSource).toContain(':data-task-id="block.taskId"');
+    });
+  });
+
+  // --- Role style with bg-glow ---
+
+  describe('getRoleStyle with bg-glow', () => {
+    it('should include --role-bg-glow in getRoleStyle', () => {
+      expect(viewSource).toContain("'--role-bg-glow'");
+    });
+  });
+
+  // --- Functional Logic: featureKanban ---
+
+  describe('featureKanban logic', () => {
+    function computeFeatureKanban(activeTasks, todosByFeature, featureBlocks, completedTaskIds) {
+      const features = new Map();
+      for (const task of activeTasks) {
+        features.set(task.id, {
+          taskId: task.id,
+          taskTitle: task.title,
+          todos: [],
+          doneCount: 0,
+          totalCount: 0,
+          activeRoles: [],
+          isCompleted: completedTaskIds.has(task.id),
+          hasStreaming: false,
+        });
+      }
+      for (const group of todosByFeature) {
+        const tid = group.taskId || '_global';
+        let feature = features.get(tid);
+        if (!feature) {
+          feature = {
+            taskId: tid,
+            taskTitle: group.taskTitle || '全局任务',
+            todos: [],
+            doneCount: 0,
+            totalCount: 0,
+            activeRoles: [],
+            isCompleted: false,
+            hasStreaming: false,
+          };
+          features.set(tid, feature);
+        }
+        for (const entry of group.entries) {
+          for (const todo of entry.todos) {
+            feature.todos.push({
+              ...todo,
+              roleIcon: entry.roleIcon,
+              roleName: entry.roleName,
+              id: `${tid}_${entry.role}_${feature.todos.length}`
+            });
+            feature.totalCount++;
+            if (todo.status === 'completed') feature.doneCount++;
+          }
+        }
+      }
+      for (const block of featureBlocks) {
+        if (block.type !== 'feature') continue;
+        const feature = features.get(block.taskId);
+        if (feature) {
+          if (block.activeRoles) feature.activeRoles = block.activeRoles;
+          if (block.hasStreaming) feature.hasStreaming = true;
+        }
+      }
+      return Array.from(features.values()).sort((a, b) => {
+        if (a.hasStreaming !== b.hasStreaming) return a.hasStreaming ? -1 : 1;
+        if (a.isCompleted !== b.isCompleted) return a.isCompleted ? 1 : -1;
+        return 0;
+      });
+    }
+
+    it('should return empty array with no data', () => {
+      const result = computeFeatureKanban([], [], [], new Set());
+      expect(result).toEqual([]);
+    });
+
+    it('should create features from activeTasks', () => {
+      const tasks = [
+        { id: 't1', title: '功能A' },
+        { id: 't2', title: '功能B' },
+      ];
+      const result = computeFeatureKanban(tasks, [], [], new Set());
+      expect(result).toHaveLength(2);
+      expect(result[0].taskTitle).toBe('功能A');
+      expect(result[1].taskTitle).toBe('功能B');
+    });
+
+    it('should merge todos from todosByFeature', () => {
+      const tasks = [{ id: 't1', title: '功能A' }];
+      const todoGroups = [{
+        taskId: 't1',
+        entries: [{
+          role: 'dev-1', roleIcon: '💻', roleName: 'Dev',
+          todos: [
+            { content: '写代码', status: 'in_progress', activeForm: '写代码中' },
+            { content: '写测试', status: 'pending' },
+          ]
+        }]
+      }];
+      const result = computeFeatureKanban(tasks, todoGroups, [], new Set());
+      expect(result[0].todos).toHaveLength(2);
+      expect(result[0].totalCount).toBe(2);
+      expect(result[0].doneCount).toBe(0);
+      expect(result[0].todos[0].roleIcon).toBe('💻');
+    });
+
+    it('should create new feature for unknown taskId in todosByFeature', () => {
+      const result = computeFeatureKanban([], [{
+        taskId: null,
+        entries: [{
+          role: 'pm', roleIcon: '📋', roleName: 'PM',
+          todos: [{ content: '计划', status: 'pending' }]
+        }]
+      }], [], new Set());
+      expect(result).toHaveLength(1);
+      expect(result[0].taskId).toBe('_global');
+      expect(result[0].taskTitle).toBe('全局任务');
+    });
+
+    it('should merge active roles from featureBlocks', () => {
+      const tasks = [{ id: 't1', title: 'F1' }];
+      const blocks = [{
+        type: 'feature', taskId: 't1',
+        activeRoles: [{ role: 'dev-1', roleIcon: '💻' }],
+        hasStreaming: true,
+      }];
+      const result = computeFeatureKanban(tasks, [], blocks, new Set());
+      expect(result[0].activeRoles).toHaveLength(1);
+      expect(result[0].hasStreaming).toBe(true);
+    });
+
+    it('should mark completed features', () => {
+      const tasks = [{ id: 't1', title: 'F1' }];
+      const completedIds = new Set(['t1']);
+      const result = computeFeatureKanban(tasks, [], [], completedIds);
+      expect(result[0].isCompleted).toBe(true);
+    });
+
+    it('should sort streaming features first, completed last', () => {
+      const tasks = [
+        { id: 't1', title: 'Completed' },
+        { id: 't2', title: 'Normal' },
+        { id: 't3', title: 'Streaming' },
+      ];
+      const blocks = [{ type: 'feature', taskId: 't3', hasStreaming: true }];
+      const completedIds = new Set(['t1']);
+      const result = computeFeatureKanban(tasks, [], blocks, completedIds);
+      expect(result[0].taskTitle).toBe('Streaming');
+      expect(result[1].taskTitle).toBe('Normal');
+      expect(result[2].taskTitle).toBe('Completed');
+    });
+
+    it('should count done items correctly', () => {
+      const tasks = [{ id: 't1', title: 'F1' }];
+      const todoGroups = [{
+        taskId: 't1',
+        entries: [{
+          role: 'a', roleIcon: '', roleName: 'A',
+          todos: [
+            { content: 'x', status: 'completed' },
+            { content: 'y', status: 'completed' },
+            { content: 'z', status: 'in_progress' },
+          ]
+        }]
+      }];
+      const result = computeFeatureKanban(tasks, todoGroups, [], new Set());
+      expect(result[0].doneCount).toBe(2);
+      expect(result[0].totalCount).toBe(3);
+    });
+  });
+
+  // --- Functional Logic: kanbanProgress ---
+
+  describe('kanbanProgress logic', () => {
+    function computeKanbanProgress(featureKanban) {
+      let total = 0, done = 0;
+      for (const f of featureKanban) {
+        total += f.totalCount;
+        done += f.doneCount;
+      }
+      return { total, done };
+    }
+
+    it('should return 0 for empty', () => {
+      const p = computeKanbanProgress([]);
+      expect(p.total).toBe(0);
+      expect(p.done).toBe(0);
+    });
+
+    it('should sum across multiple features', () => {
+      const features = [
+        { totalCount: 3, doneCount: 1 },
+        { totalCount: 5, doneCount: 4 },
+      ];
+      const p = computeKanbanProgress(features);
+      expect(p.total).toBe(8);
+      expect(p.done).toBe(5);
+    });
+  });
+
+  // --- Functional Logic: isFeatureCardExpanded ---
+
+  describe('isFeatureCardExpanded logic', () => {
+    function isFeatureCardExpanded(taskId, expandedMap, featureKanban) {
+      if (taskId in expandedMap) {
+        return expandedMap[taskId];
+      }
+      const feature = featureKanban.find(f => f.taskId === taskId);
+      if (feature) {
+        return feature.todos.some(t => t.status === 'in_progress') || !feature.isCompleted;
+      }
+      return true;
+    }
+
+    it('should use explicit value from map', () => {
+      expect(isFeatureCardExpanded('t1', { t1: false }, [])).toBe(false);
+      expect(isFeatureCardExpanded('t1', { t1: true }, [])).toBe(true);
+    });
+
+    it('should default expand if not completed', () => {
+      const features = [{ taskId: 't1', todos: [], isCompleted: false }];
+      expect(isFeatureCardExpanded('t1', {}, features)).toBe(true);
+    });
+
+    it('should default expand if has in_progress todos', () => {
+      const features = [{ taskId: 't1', todos: [{ status: 'in_progress' }], isCompleted: false }];
+      expect(isFeatureCardExpanded('t1', {}, features)).toBe(true);
+    });
+
+    it('should default collapse if completed and no in_progress', () => {
+      const features = [{ taskId: 't1', todos: [{ status: 'completed' }], isCompleted: true }];
+      expect(isFeatureCardExpanded('t1', {}, features)).toBe(false);
+    });
+
+    it('should return true for unknown feature', () => {
+      expect(isFeatureCardExpanded('unknown', {}, [])).toBe(true);
+    });
+  });
+
+  // --- CSS Verification ---
+
+  describe('CSS panel backgrounds and borders', () => {
+    it('should set crew-panel-left background to bg-sidebar', () => {
+      const idx = cssSource.indexOf('.crew-panel-left {');
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain('background: var(--bg-sidebar)');
+    });
+
+    it('should set crew-panel-left border-right', () => {
+      const idx = cssSource.indexOf('.crew-panel-left {');
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain('border-right: 1px solid var(--border-light)');
+    });
+
+    it('should set crew-panel-right background to bg-sidebar', () => {
+      const idx = cssSource.indexOf('.crew-panel-right {');
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain('background: var(--bg-sidebar)');
+    });
+
+    it('should set crew-panel-right border-left', () => {
+      const idx = cssSource.indexOf('.crew-panel-right {');
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain('border-left: 1px solid var(--border-light)');
+    });
+  });
+
+  describe('CSS feature card styles', () => {
+    it('should have crew-feature-card with bg-main background and border', () => {
+      expect(cssSource).toContain('.crew-feature-card {');
+      const idx = cssSource.indexOf('.crew-feature-card {');
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain('background: var(--bg-main)');
+      expect(block).toContain('border: 1px solid var(--border-light)');
+      expect(block).toContain('border-radius: 10px');
+    });
+
+    it('should highlight streaming feature with accent-blue border', () => {
+      expect(cssSource).toContain('.crew-feature-card.has-streaming');
+      const idx = cssSource.indexOf('.crew-feature-card.has-streaming {');
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain('border-color: var(--accent-blue)');
+    });
+
+    it('should dim completed feature card', () => {
+      expect(cssSource).toContain('.crew-feature-card.is-completed');
+      const idx = cssSource.indexOf('.crew-feature-card.is-completed {');
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain('opacity: 0.7');
+    });
+
+    it('should have feature card progress bar', () => {
+      expect(cssSource).toContain('.crew-feature-card-bar {');
+      expect(cssSource).toContain('.crew-feature-card-bar-fill {');
+    });
+
+    it('should use accent-blue for streaming feature bar', () => {
+      expect(cssSource).toContain('.crew-feature-card.has-streaming .crew-feature-card-bar-fill');
+      const idx = cssSource.indexOf('.crew-feature-card.has-streaming .crew-feature-card-bar-fill {');
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain('background: var(--accent-blue)');
+    });
+
+    it('should have todo items with status-based styling', () => {
+      expect(cssSource).toContain('.crew-feature-card-todo.is-completed .todo-text');
+      expect(cssSource).toContain('.crew-feature-card-todo.is-in_progress .todo-text');
+      expect(cssSource).toContain('.crew-feature-card-todo.is-pending .todo-text');
+    });
+  });
+
+  describe('CSS kanban total progress', () => {
+    it('should have crew-kanban-total styles', () => {
+      expect(cssSource).toContain('.crew-kanban-total {');
+      expect(cssSource).toContain('.crew-kanban-total-bar {');
+      expect(cssSource).toContain('.crew-kanban-total-fill {');
+    });
+
+    it('should have margin-top: auto for bottom positioning', () => {
+      const idx = cssSource.indexOf('.crew-kanban-total {');
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain('margin-top: auto');
+    });
+  });
+
+  describe('CSS bg-glow variables', () => {
+    it('should have light mode bg-glow variables', () => {
+      expect(cssSource).toContain('--crew-color-pm-bg-glow');
+      expect(cssSource).toContain('--crew-color-architect-bg-glow');
+      expect(cssSource).toContain('--crew-color-developer-bg-glow');
+      expect(cssSource).toContain('--crew-color-reviewer-bg-glow');
+      expect(cssSource).toContain('--crew-color-tester-bg-glow');
+    });
+
+    it('should have dark mode bg-glow variables', () => {
+      // Check within dark theme block
+      const darkIdx = cssSource.indexOf('[data-theme="dark"]');
+      const darkSection = cssSource.substring(darkIdx);
+      expect(darkSection).toContain('--crew-color-pm-bg-glow');
+      expect(darkSection).toContain('--crew-color-developer-bg-glow');
+    });
+
+    it('should have fallback bg-glow variables', () => {
+      expect(cssSource).toContain('--crew-color-fallback-0-bg-glow');
+      expect(cssSource).toContain('--crew-color-fallback-3-bg-glow');
+    });
+  });
+
+  describe('CSS crew-role-card-feature style', () => {
+    it('should have crew-role-card-feature CSS', () => {
+      expect(cssSource).toContain('.crew-role-card-feature {');
+    });
+
+    it('should have arrow before content for feature', () => {
+      expect(cssSource).toContain(".crew-role-card-feature::before");
+      const idx = cssSource.indexOf(".crew-role-card-feature::before {");
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain("content: '\\2192");
+    });
+  });
+
+  describe('CSS add role button', () => {
+    it('should have dashed border button', () => {
+      const idx = cssSource.indexOf('.crew-add-role-btn {');
+      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
+      expect(block).toContain('border: 1.5px dashed');
+      expect(block).toContain('border-radius: 8px');
+    });
+
+    it('should have hover effect', () => {
+      expect(cssSource).toContain('.crew-add-role-btn:hover');
+    });
+  });
+
+  // --- Responsive Breakpoints ---
+
+  describe('responsive breakpoints v2', () => {
+    it('should hide role-card-feature, tool, dm at 1279px', () => {
+      expect(cssSource).toContain('@media (max-width: 1279px)');
+      // These should be hidden in icon-bar mode
+      expect(cssSource).toContain('.crew-role-card-feature,');
+      expect(cssSource).toContain('.crew-role-card-tool,');
+    });
+
+    it('should make add-role-btn circular at 1279px', () => {
+      expect(cssSource).toContain('.crew-add-role-btn {');
+      // The 1279 breakpoint should have circular button
+      const mediaIdx = cssSource.indexOf('@media (max-width: 1279px)');
+      const mediaSection = cssSource.substring(mediaIdx, cssSource.indexOf('@media', mediaIdx + 1) > 0 ? cssSource.indexOf('@media', mediaIdx + 1) : cssSource.length);
+      expect(mediaSection).toContain('.crew-add-role-btn');
+      expect(mediaSection).toContain('border-radius: 50%');
+    });
+
+    it('should hide add-role-btn label text at 1279px', () => {
+      const mediaIdx = cssSource.indexOf('@media (max-width: 1279px)');
+      const nextMedia = cssSource.indexOf('@media', mediaIdx + 1);
+      const mediaSection = cssSource.substring(mediaIdx, nextMedia > 0 ? nextMedia : cssSource.length);
+      expect(mediaSection).toContain('.crew-add-role-btn span');
+    });
+
+    it('should still have streaming left border in icon mode', () => {
+      const mediaIdx = cssSource.indexOf('@media (max-width: 1279px)');
+      const nextMedia = cssSource.indexOf('@media', mediaIdx + 1);
+      const mediaSection = cssSource.substring(mediaIdx, nextMedia > 0 ? nextMedia : cssSource.length);
+      expect(mediaSection).toContain('.crew-role-card.is-streaming');
+    });
+  });
+
+  // --- Removed Items ---
+
+  describe('removed v1 kanban elements', () => {
+    it('should NOT have kanbanFeatures computed', () => {
+      expect(viewSource).not.toMatch(/\bkanbanFeatures\(\)/);
+    });
+
+    it('should NOT have kanbanAllItems computed', () => {
+      expect(viewSource).not.toContain('kanbanAllItems()');
+    });
+
+    it('should NOT have kanbanInProgress, kanbanPending, kanbanCompleted', () => {
+      expect(viewSource).not.toContain('kanbanInProgress()');
+      expect(viewSource).not.toContain('kanbanPending()');
+      expect(viewSource).not.toContain('kanbanCompleted()');
+    });
+
+    it('should NOT have crew-kanban-section in template', () => {
+      expect(viewSource).not.toContain('crew-kanban-section');
+    });
+
+    it('should NOT have crew-kanban-item in template', () => {
+      expect(viewSource).not.toContain('crew-kanban-item');
+    });
+
+    it('should NOT have old kanban CSS classes', () => {
+      expect(cssSource).not.toContain('.crew-kanban-section {');
+      expect(cssSource).not.toContain('.crew-kanban-item {');
+      expect(cssSource).not.toContain('.crew-kanban-feature {');
+    });
+  });
+
+  // --- HTML Tag Balance ---
+
+  describe('HTML and CSS structure balance', () => {
+    it('should have balanced div tags (165/165)', () => {
+      const opens = (viewSource.match(/<div[\s>]/g) || []).length;
+      const closes = (viewSource.match(/<\/div>/g) || []).length;
+      expect(opens).toBe(closes);
+      expect(opens).toBe(165);
+    });
+
+    it('should have balanced template tags', () => {
+      const opens = (viewSource.match(/<template[\s>]/g) || []).length;
+      const closes = (viewSource.match(/<\/template>/g) || []).length;
+      expect(opens).toBe(closes);
+    });
+
+    it('should have balanced aside tags (2/2)', () => {
+      const opens = (viewSource.match(/<aside[\s>]/g) || []).length;
+      const closes = (viewSource.match(/<\/aside>/g) || []).length;
+      expect(opens).toBe(closes);
+      expect(opens).toBe(2);
+    });
+
+    it('should have balanced span tags', () => {
+      const opens = (viewSource.match(/<span[\s>]/g) || []).length;
+      const closes = (viewSource.match(/<\/span>/g) || []).length;
+      expect(opens).toBe(closes);
+    });
+
+    it('should have balanced button tags', () => {
+      const opens = (viewSource.match(/<button[\s>]/g) || []).length;
+      const closes = (viewSource.match(/<\/button>/g) || []).length;
+      expect(opens).toBe(closes);
+    });
+
+    it('should have balanced CSS braces (2068/2068)', () => {
+      const opens = (cssSource.match(/\{/g) || []).length;
+      const closes = (cssSource.match(/\}/g) || []).length;
+      expect(opens).toBe(closes);
+      expect(opens).toBe(2068);
+    });
   });
 });
