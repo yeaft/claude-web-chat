@@ -11964,3 +11964,237 @@ body {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* =====================================================================
+   Mobile Optimization — Global
+   ===================================================================== */
+
+/* Touch target sizing for coarse pointers (mobile/tablet) */
+@media (pointer: coarse) {
+  .wb-tab-action {
+    width: 40px;
+    height: 40px;
+  }
+
+  .crew-hint-btn {
+    width: 32px;
+    height: 32px;
+    padding: 8px;
+  }
+
+  .crew-hint-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .proxy-action-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .vscode-action-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .tree-item {
+    min-height: 36px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .crew-control-item {
+    padding: 10px 14px;
+    min-height: 40px;
+  }
+}
+
+/* Tablet / small desktop — 768px breakpoint */
+@media (max-width: 768px) {
+  /* --- Problem 1: Workbench close button reorder --- */
+  .workbench-tabs .wb-tab-action:last-child {
+    order: -1;
+    width: 40px;
+    height: 40px;
+    margin-right: 4px;
+  }
+
+  .workbench-tabs .wb-tab-action:nth-last-child(2) {
+    display: none;
+  }
+
+  /* --- Problem 2: File tree touch targets --- */
+  .tree-item {
+    padding: 8px 10px !important;
+    min-height: 36px;
+  }
+
+  .vscode-folder-row {
+    min-height: 36px;
+    padding: 6px 10px;
+  }
+
+  .file-tree-panel {
+    width: 100%;
+  }
+
+  .vscode-action-btn {
+    width: 28px;
+    height: 28px;
+  }
+
+  /* --- Problem 3: Proxy tab layout --- */
+  .proxy-add-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .proxy-select-wrapper.proxy-agent-inline {
+    width: 100%;
+    flex: none;
+  }
+
+  .proxy-input-host {
+    flex: 1;
+    min-width: 60px;
+  }
+
+  .proxy-input-label {
+    flex: 1;
+    min-width: 80px;
+  }
+
+  .proxy-port-row {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .proxy-port-actions {
+    margin-left: auto;
+  }
+
+  .proxy-port-url code {
+    font-size: 11px;
+    word-break: break-all;
+  }
+
+  /* --- Problem 4: Crew chat mobile --- */
+  .crew-message {
+    padding: 6px 12px;
+  }
+
+  .crew-turn-divider,
+  .crew-round-divider {
+    padding: 0 12px;
+    max-width: 100%;
+  }
+
+  .crew-feature-header {
+    padding: 8px 12px;
+  }
+
+  .crew-feature-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 50vw;
+  }
+
+  .crew-feature-body {
+    padding-left: 0;
+  }
+
+  .crew-input-area .crew-input-hints {
+    padding: 0 12px;
+    gap: 4px;
+    font-size: 10px;
+  }
+
+  .crew-hint-status {
+    font-size: 10px;
+  }
+
+  .crew-hint-meta {
+    font-size: 10px;
+  }
+
+  .crew-control-dropdown {
+    right: 0;
+    left: auto;
+  }
+
+  .crew-add-role-modal {
+    width: calc(100vw - 32px);
+    max-height: 85vh;
+  }
+
+  .crew-config-panel .crew-config-dialog {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+  }
+
+  /* --- Problem 5: Code block overflow --- */
+  .crew-msg-content pre {
+    max-width: calc(100vw - 32px);
+  }
+
+  .crew-msg-content .table-scroll-wrapper {
+    max-width: calc(100vw - 32px);
+  }
+
+  /* --- Problem 6: Chat header overflow --- */
+  .chat-header .context-usage-hint {
+    display: none;
+  }
+
+  .chat-header h1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: calc(100vw - 140px);
+  }
+
+  /* --- Problem 7: Terminal touch targets --- */
+  .terminal-toolbar {
+    padding: 8px 10px;
+  }
+
+  .terminal-toolbar button {
+    padding: 6px 12px;
+    font-size: 14px;
+    min-height: 36px;
+  }
+
+  /* --- Problem 9: Git status mobile --- */
+  .git-diff-preview pre {
+    font-size: 11px;
+    tab-size: 2;
+  }
+
+  .git-file-item {
+    padding: 6px 10px;
+  }
+}
+
+/* Small phone — 480px breakpoint */
+@media (max-width: 480px) {
+  .crew-message {
+    padding: 4px 8px;
+  }
+
+  .crew-msg-name {
+    font-size: 12px;
+  }
+
+  .crew-msg-time {
+    font-size: 10px;
+  }
+
+  .crew-input-area {
+    padding: 8px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+}
