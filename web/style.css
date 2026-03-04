@@ -11446,11 +11446,6 @@ body {
   background: var(--sidebar-hover);
 }
 
-.crew-role-card.is-streaming {
-  background: var(--role-bg, rgba(128, 128, 128, 0.06));
-  border: 1px solid var(--role-border, var(--border-light, var(--border-color)));
-}
-
 .crew-role-card:not(.is-streaming) {
   padding: 5px 10px;
 }
