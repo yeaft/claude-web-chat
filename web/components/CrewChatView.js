@@ -84,18 +84,20 @@ export default {
                     <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
                   </template>
                   <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
-                    <div class="crew-turn-tool-latest">
-                      <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
-                      <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
-                        <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-                        <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
-                        <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
-                      </button>
-                    </div>
+                    <!-- Expanded history (above latest, chronological order) -->
                     <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
                       <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
                         <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
                       </template>
+                    </div>
+                    <!-- Latest tool + expand button -->
+                    <div class="crew-turn-tool-latest">
+                      <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
+                      <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
+                        <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                        <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
+                        <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
+                      </button>
                     </div>
                   </div>
                   <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
@@ -170,18 +172,20 @@ export default {
                         <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
                       </template>
                       <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
-                        <div class="crew-turn-tool-latest">
-                          <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
-                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
-                            <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-                            <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
-                            <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
-                          </button>
-                        </div>
+                        <!-- Expanded history (above latest, chronological order) -->
                         <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
                           <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
                             <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
                           </template>
+                        </div>
+                        <!-- Latest tool + expand button -->
+                        <div class="crew-turn-tool-latest">
+                          <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
+                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
+                            <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                            <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
+                            <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
+                          </button>
                         </div>
                       </div>
                       <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
@@ -224,18 +228,20 @@ export default {
                         <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
                       </template>
                       <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
-                        <div class="crew-turn-tool-latest">
-                          <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
-                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
-                            <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-                            <svg v-else viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
-                            <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
-                          </button>
-                        </div>
+                        <!-- Expanded history (above latest, chronological order) -->
                         <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
                           <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
                             <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
                           </template>
+                        </div>
+                        <!-- Latest tool + expand button -->
+                        <div class="crew-turn-tool-latest">
+                          <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
+                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
+                            <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                            <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
+                            <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
+                          </button>
                         </div>
                       </div>
                       <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">

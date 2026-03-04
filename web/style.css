@@ -11057,17 +11057,41 @@ body {
   30% { opacity: 1; transform: scale(1); }
 }
 
-/* Crew Turn Group — collapsed tool section */
+/* Crew Turn Group — terminal-style tool panel */
 .crew-turn-tools {
   margin-top: 6px;
-  border-top: 1px solid var(--border-color, rgba(255,255,255,0.06));
-  padding-top: 4px;
+  background: var(--code-bg);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  padding: 4px 0;
+  overflow: hidden;
+}
+
+/* Override tool-line inside crew panel */
+.crew-turn-tools .tool-line {
+  padding: 3px 10px;
+  font-size: 12px;
+  border-radius: 0;
+  transition: background 0.1s;
+}
+
+.crew-turn-tools .tool-line.expandable:hover,
+.crew-turn-tools .tool-line.has-file:hover {
+  background: rgba(128, 128, 128, 0.08);
+}
+
+.crew-turn-tools .tool-line.completed {
+  opacity: 0.85;
+}
+
+.crew-turn-tools .tool-line.running {
+  opacity: 1;
+  color: var(--text-secondary);
 }
 
 .crew-turn-tool-latest {
   display: flex;
   align-items: center;
-  gap: 4px;
 }
 
 .crew-turn-tool-latest > .tool-line {
@@ -11075,39 +11099,49 @@ body {
   min-width: 0;
 }
 
+/* Expand button: inline within panel */
 .crew-turn-expand-btn {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   background: none;
-  border: 1px solid var(--border-color, rgba(255,255,255,0.1));
-  border-radius: 4px;
-  color: var(--text-secondary);
+  border: none;
+  color: var(--text-muted);
   cursor: pointer;
-  padding: 2px 6px;
+  padding: 3px 10px;
   font-size: 11px;
+  transition: color 0.15s;
+  font-family: inherit;
+  margin-left: auto;
   flex-shrink: 0;
-  transition: all 0.15s;
 }
 
 .crew-turn-expand-btn:hover {
-  background: var(--bg-tertiary, rgba(255,255,255,0.05));
-  color: var(--text-primary);
-  border-color: var(--accent-blue);
+  color: var(--text-secondary);
 }
 
 .crew-turn-expand-count {
-  font-size: 10px;
-  opacity: 0.7;
+  font-size: 11px;
+  font-weight: 500;
+  background: rgba(128, 128, 128, 0.15);
+  padding: 0 5px;
+  border-radius: 3px;
+  line-height: 1.6;
 }
 
+/* Expanded tools */
 .crew-turn-tools-expanded {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding-top: 2px;
-  border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));
-  margin-top: 4px;
+  border-bottom: 1px dashed var(--border-color);
+  margin-bottom: 2px;
+  padding-bottom: 2px;
+}
+
+/* Tool expand content inside panel */
+.crew-turn-tools .tool-expand {
+  margin: 2px 10px 4px 10px;
+  border-radius: 4px;
 }
 
 /* Crew Input Area — reuses .input-area, .input-wrapper, .attach-btn, .send-btn */
