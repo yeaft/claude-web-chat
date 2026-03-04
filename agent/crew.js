@@ -804,6 +804,9 @@ ${roles.length > 0 ? roles.map(r => `- ${roleLabel(r)}(${r.name}): ${r.descripti
 - 每个角色必须在自己的 worktree 路径下操作代码，绝对不要操作项目主目录
 - 代码完成后在 worktree 中 commit，由 PM 负责 cherry-pick 合并到 main 分支
 - 直接在主目录操作会导致多组之间的修改互相覆盖
+- 合并完成后，PM 会清理旧的 worktree
+- 每次新任务/新 feature 必须基于最新的 main 分支创建新的 worktree，确保在最新代码上开发
+- 禁止复用旧的 worktree 开发新任务，因为旧 worktree 的代码基线可能已过时
 
 # 共享记忆
 _团队共同维护，记录重要的共识、决策和信息。_
@@ -831,6 +834,7 @@ ${role.workDir}
 所有代码操作必须在此 worktree 路径下进行。
 绝对禁止直接操作项目主目录，否则会覆盖其他开发组的修改。
 代码完成后在 worktree 中 commit，由 PM 负责 cherry-pick 合并到 main。
+此 worktree 仅用于当前任务，合并后会被清理，新任务会创建新的 worktree。
 `;
   }
 
