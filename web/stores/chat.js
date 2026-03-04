@@ -353,8 +353,6 @@ export const useChatStore = defineStore('chat', {
 
     sendCrewMessage(content, targetRole = null, attachments = undefined) {
       const sessionId = this.currentConversation;
-      const session = this.crewSessions[sessionId];
-      if (!session) return;
       // 添加人的消息到本地显示
       if (!this.crewMessagesMap[sessionId]) this.crewMessagesMap[sessionId] = [];
       this.crewMessagesMap[sessionId].push({
@@ -390,8 +388,6 @@ export const useChatStore = defineStore('chat', {
 
     sendCrewControl(action, targetRole = null) {
       const sessionId = this.currentConversation;
-      const session = this.crewSessions[sessionId];
-      if (!session) return;
       this.sendWsMessage({
         type: 'crew_control',
         sessionId,
@@ -403,7 +399,6 @@ export const useChatStore = defineStore('chat', {
 
     addCrewRole(role) {
       const sessionId = this.currentConversation;
-      if (!this.crewSessions[sessionId]) return;
       this.sendWsMessage({
         type: 'crew_add_role',
         sessionId,
@@ -414,7 +409,6 @@ export const useChatStore = defineStore('chat', {
 
     removeCrewRole(roleName) {
       const sessionId = this.currentConversation;
-      if (!this.crewSessions[sessionId]) return;
       this.sendWsMessage({
         type: 'crew_remove_role',
         sessionId,
