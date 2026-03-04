@@ -46,6 +46,7 @@ export default {
                    class="crew-role-card"
                    :class="{ 'is-streaming': isRoleStreaming(role.name) }"
                    :style="getRoleStyle(role.name)"
+                   @click="insertAt(role.name)"
                    @contextmenu.prevent="openRoleMenu($event, role)">
                 <div class="crew-role-card-header">
                   <span class="crew-role-card-icon">{{ role.icon }}</span>
@@ -1765,7 +1766,12 @@ summary: 请测试以下变更...
 
     insertAt(roleName) {
       const displayName = this.getRoleDisplayName(roleName);
-      this.inputText = `@${displayName} ` + this.inputText;
+      const mention = `@${displayName} `;
+      if (this.inputText) {
+        this.inputText = this.inputText.trimEnd() + ' ' + mention;
+      } else {
+        this.inputText = mention;
+      }
       this.$refs.inputRef?.focus();
     },
 
