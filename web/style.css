@@ -128,6 +128,20 @@ select option:checked {
   --crew-color-fallback-3: #5e8040;
   --crew-color-fallback-3-bg: rgba(94, 128, 64, 0.06);
   --crew-color-fallback-3-border: rgba(94, 128, 64, 0.20);
+  /* Crew Role Colors — breathing glow (light) */
+  --crew-color-pm-bg-glow: rgba(90, 115, 148, 0.14);
+  --crew-color-architect-bg-glow: rgba(122, 106, 154, 0.14);
+  --crew-color-developer-bg-glow: rgba(74, 138, 112, 0.14);
+  --crew-color-reviewer-bg-glow: rgba(138, 117, 80, 0.14);
+  --crew-color-tester-bg-glow: rgba(74, 126, 130, 0.14);
+  --crew-color-designer-bg-glow: rgba(154, 90, 90, 0.14);
+  --crew-color-writer-bg-glow: rgba(138, 90, 114, 0.14);
+  --crew-color-human-bg-glow: rgba(138, 110, 64, 0.14);
+  --crew-color-system-bg-glow: rgba(107, 114, 128, 0.10);
+  --crew-color-fallback-0-bg-glow: rgba(96, 96, 160, 0.14);
+  --crew-color-fallback-1-bg-glow: rgba(74, 126, 120, 0.14);
+  --crew-color-fallback-2-bg-glow: rgba(154, 90, 90, 0.14);
+  --crew-color-fallback-3-bg-glow: rgba(94, 128, 64, 0.14);
 
   /* Diff colors */
   --diff-add-bg: rgba(46, 140, 67, 0.08);
@@ -221,6 +235,20 @@ select option:checked {
   --crew-color-fallback-3: #9ab87e;
   --crew-color-fallback-3-bg: rgba(154, 184, 126, 0.10);
   --crew-color-fallback-3-border: rgba(154, 184, 126, 0.25);
+  /* Crew Role Colors — breathing glow (dark) */
+  --crew-color-pm-bg-glow: rgba(138, 164, 200, 0.18);
+  --crew-color-architect-bg-glow: rgba(169, 155, 196, 0.18);
+  --crew-color-developer-bg-glow: rgba(125, 184, 160, 0.18);
+  --crew-color-reviewer-bg-glow: rgba(180, 158, 100, 0.18);
+  --crew-color-tester-bg-glow: rgba(120, 175, 180, 0.18);
+  --crew-color-designer-bg-glow: rgba(200, 130, 130, 0.18);
+  --crew-color-writer-bg-glow: rgba(175, 130, 155, 0.18);
+  --crew-color-human-bg-glow: rgba(180, 150, 100, 0.18);
+  --crew-color-system-bg-glow: rgba(140, 150, 170, 0.14);
+  --crew-color-fallback-0-bg-glow: rgba(140, 140, 200, 0.18);
+  --crew-color-fallback-1-bg-glow: rgba(120, 175, 165, 0.18);
+  --crew-color-fallback-2-bg-glow: rgba(200, 130, 130, 0.18);
+  --crew-color-fallback-3-bg-glow: rgba(140, 175, 100, 0.18);
 }
 
 html {
@@ -11414,10 +11442,11 @@ body {
 .crew-panel-left {
   width: 200px;
   flex-shrink: 0;
-  background: var(--bg-main);
+  background: var(--bg-sidebar);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-right: 1px solid var(--border-light);
 }
 
 .crew-panel-left-scroll {
@@ -11432,22 +11461,18 @@ body {
 .crew-role-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .crew-role-card {
   padding: 8px 10px;
   border-radius: 8px;
   cursor: default;
-  transition: background 0.15s;
+  transition: background 0.2s, box-shadow 0.2s;
 }
 
 .crew-role-card:hover {
   background: var(--sidebar-hover);
-}
-
-.crew-role-card:not(.is-streaming) {
-  padding: 5px 10px;
 }
 
 .crew-role-card-header {
@@ -11457,17 +11482,13 @@ body {
 }
 
 .crew-role-card-icon {
-  font-size: 16px;
+  font-size: 15px;
   flex-shrink: 0;
-}
-
-.crew-role-card:not(.is-streaming) .crew-role-card-icon {
-  font-size: 13px;
 }
 
 .crew-role-card-name {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-primary);
   flex: 1;
   min-width: 0;
@@ -11482,63 +11503,40 @@ body {
   flex-shrink: 0;
 }
 
-.crew-role-card-status {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
+/* 活跃角色：左侧彩色竖线 */
+.crew-role-card.is-streaming {
+  background: var(--role-bg);
+  border-left: 3px solid var(--role-color);
+  padding-left: 7px;
 }
 
-.crew-role-card-status.idle {
-  border: 1.5px solid var(--text-muted);
-  opacity: 0.5;
+.crew-role-card-feature {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding-left: 21px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.crew-role-card-status.active {
-  background: var(--accent-blue);
-  animation: rolePulse 2s ease-in-out infinite;
-}
-
-@keyframes rolePulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.6; transform: scale(0.8); }
-}
-
-.crew-role-card-details {
-  margin-top: 6px;
-  padding-left: 22px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.crew-role-card:not(.is-streaming) .crew-role-card-details {
-  display: none;
+.crew-role-card-feature::before {
+  content: '\2192  ';
+  color: var(--text-muted);
 }
 
 .crew-role-card-tool {
   font-size: 11px;
   color: var(--text-muted);
+  padding-left: 21px;
+  margin-top: 1px;
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.crew-role-card-task {
-  font-size: 11px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.crew-role-card-task::before {
-  content: '\2192  ';
-  color: var(--text-muted);
-}
-
-/* Session Meta */
+/* Session Meta — right panel bottom */
 .crew-session-meta {
   margin-top: auto;
   padding-top: 12px;
@@ -11568,6 +11566,31 @@ body {
   color: var(--accent-blue);
 }
 
+/* Add Role Button — left panel bottom */
+.crew-add-role-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  padding: 8px;
+  border: 1.5px dashed var(--border-color);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  margin-top: 8px;
+}
+
+.crew-add-role-btn:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  background: rgba(74, 124, 201, 0.04);
+}
+
 /* --- Center Panel --- */
 .crew-panel-center {
   flex: 1;
@@ -11578,14 +11601,15 @@ body {
   background: var(--bg-main);
 }
 
-/* --- Right Panel: Task Kanban --- */
+/* --- Right Panel: Feature Kanban --- */
 .crew-panel-right {
   width: 260px;
   flex-shrink: 0;
-  background: var(--bg-main);
+  background: var(--bg-sidebar);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-left: 1px solid var(--border-light);
 }
 
 .crew-panel-right-scroll {
@@ -11594,192 +11618,57 @@ body {
   padding: 12px;
 }
 
-/* Progress Summary */
-.crew-kanban-progress {
+/* Kanban Title */
+.crew-kanban-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+/* Feature Kanban Card */
+.crew-feature-card {
+  background: var(--bg-main);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
   padding: 10px 12px;
-  margin-bottom: 12px;
-}
-
-.crew-kanban-progress-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   margin-bottom: 8px;
+  transition: border-color 0.15s;
 }
 
-.crew-kanban-progress-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
+.crew-feature-card.has-streaming {
+  border-color: var(--accent-blue);
 }
 
-.crew-kanban-progress-count {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.crew-kanban-progress-bar {
-  width: 100%;
-  height: 6px;
-  background: var(--border-color);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.crew-kanban-progress-fill {
-  height: 100%;
-  background: var(--success);
-  border-radius: 3px;
-  transition: width 0.3s ease;
-}
-
-/* Kanban Sections */
-.crew-kanban-section {
-  margin-bottom: 12px;
-}
-
-.crew-kanban-section-header {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 4px 0;
-  margin-bottom: 4px;
-  cursor: pointer;
-}
-
-.crew-kanban-section-count {
-  font-weight: 400;
+.crew-feature-card.is-completed {
   opacity: 0.7;
 }
 
-.crew-kanban-section-chevron {
-  width: 10px;
-  height: 10px;
-  transition: transform 0.15s;
-  flex-shrink: 0;
-}
-
-.crew-kanban-section.is-collapsed .crew-kanban-section-chevron {
-  transform: rotate(-90deg);
-}
-
-/* Kanban Items */
-.crew-kanban-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 5px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  line-height: 1.5;
-  transition: background 0.15s;
-}
-
-.crew-kanban-item:hover {
-  background: var(--sidebar-hover);
-}
-
-.crew-kanban-item-status {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 1px;
-}
-
-.crew-kanban-item.is-in-progress .crew-kanban-item-status {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--accent-blue);
-  animation: todoPulse 2s ease-in-out infinite;
-}
-
-.crew-kanban-item.is-pending .crew-kanban-item-status {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  border: 1.5px solid var(--text-muted);
-  opacity: 0.5;
-}
-
-.crew-kanban-item.is-completed .crew-kanban-item-status {
-  color: var(--success);
-}
-
-@keyframes todoPulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.6; transform: scale(0.85); }
-}
-
-.crew-kanban-item-text {
-  flex: 1;
-  min-width: 0;
-  color: var(--text-primary);
-}
-
-.crew-kanban-item.is-in-progress .crew-kanban-item-text {
-  font-weight: 500;
-}
-
-.crew-kanban-item.is-completed .crew-kanban-item-text {
-  color: var(--text-muted);
-  text-decoration: line-through;
-  text-decoration-color: var(--border-color);
-}
-
-.crew-kanban-item-role {
-  flex-shrink: 0;
-  font-size: 10px;
-  color: var(--text-muted);
-  opacity: 0.7;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-/* Feature Group (multi-feature mode) */
-.crew-kanban-feature {
-  margin-bottom: 8px;
-}
-
-.crew-kanban-feature-header {
+/* Card Header */
+.crew-feature-card-header {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 6px;
-  border-radius: 4px;
   cursor: pointer;
-  transition: background 0.15s;
+  user-select: none;
 }
 
-.crew-kanban-feature-header:hover {
-  background: var(--sidebar-hover);
-}
-
-.crew-kanban-feature-chevron {
+.crew-feature-card-chevron {
   width: 12px;
   height: 12px;
   color: var(--text-muted);
-  transition: transform 0.15s;
   flex-shrink: 0;
+  transition: transform 0.15s;
 }
 
-.crew-kanban-feature.is-expanded .crew-kanban-feature-chevron {
+.crew-feature-card.is-expanded .crew-feature-card-chevron {
   transform: rotate(90deg);
 }
 
-.crew-kanban-feature-title {
+.crew-feature-card-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -11787,15 +11676,177 @@ body {
   white-space: nowrap;
 }
 
-.crew-kanban-feature-count {
+.crew-feature-card.is-completed .crew-feature-card-title {
+  color: var(--text-muted);
+}
+
+.crew-feature-card-count {
   font-size: 11px;
   color: var(--text-muted);
   flex-shrink: 0;
+  font-weight: 500;
 }
 
-.crew-kanban-feature-items {
-  padding-left: 16px;
-  margin-top: 2px;
+/* Progress Bar */
+.crew-feature-card-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--border-color);
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 6px 0;
+}
+
+.crew-feature-card-bar-fill {
+  height: 100%;
+  background: var(--success);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.crew-feature-card.has-streaming .crew-feature-card-bar-fill {
+  background: var(--accent-blue);
+}
+
+/* Active Roles in Feature */
+.crew-feature-card-roles {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.crew-feature-card-roles-icons {
+  display: inline-flex;
+  gap: 1px;
+  font-size: 12px;
+}
+
+.crew-feature-card-roles-label {
+  margin-left: 4px;
+}
+
+/* Todo Items inside Feature Card */
+.crew-feature-card-todos {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-light);
+}
+
+.crew-feature-card-todo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.crew-feature-card-todo .todo-status {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.crew-feature-card-todo.is-completed .todo-status {
+  color: var(--success);
+}
+
+.crew-feature-card-todo.is-in_progress .todo-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  animation: todoPulse 2s ease-in-out infinite;
+}
+
+.crew-feature-card-todo.is-pending .todo-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-muted);
+  opacity: 0.5;
+}
+
+@keyframes todoPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.85); }
+}
+
+.crew-feature-card-todo .todo-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-feature-card-todo.is-completed .todo-text {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-color);
+}
+
+.crew-feature-card-todo.is-in_progress .todo-text {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.crew-feature-card-todo.is-pending .todo-text {
+  color: var(--text-secondary);
+}
+
+.crew-feature-card-todo .todo-role {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+/* Feature Card Empty State */
+.crew-feature-card-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 0;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-light);
+}
+
+/* 总进度 — 右栏底部 */
+.crew-kanban-total {
+  margin-top: auto;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-light);
+}
+
+.crew-kanban-total-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.crew-kanban-total-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--border-color);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.crew-kanban-total-fill {
+  height: 100%;
+  background: var(--success);
+  border-radius: 3px;
+  transition: width 0.3s ease;
 }
 
 /* Kanban empty state */
@@ -11836,24 +11887,32 @@ body {
   }
 
   .crew-role-card-name,
-  .crew-role-card-details,
-  .crew-role-card-dm {
+  .crew-role-card-feature,
+  .crew-role-card-tool,
+  .crew-role-card-dm,
+  .crew-session-meta {
     display: none;
   }
 
   .crew-role-card-icon {
-    font-size: 18px;
+    font-size: 20px;
   }
 
-  .crew-role-card-status {
-    position: absolute;
-    bottom: 2px;
-    right: 2px;
-    width: 6px;
-    height: 6px;
+  /* 活跃角色在图标模式下仍有左边条 */
+  .crew-role-card.is-streaming {
+    padding-left: 3px;
   }
 
-  .crew-session-meta {
+  /* 添加角色按钮变为圆形 + 图标 */
+  .crew-add-role-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    padding: 0;
+    margin: 8px auto;
+  }
+
+  .crew-add-role-btn span {
     display: none;
   }
 }

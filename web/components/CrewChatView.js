@@ -51,36 +51,22 @@ export default {
                   <span class="crew-role-card-icon">{{ role.icon }}</span>
                   <span class="crew-role-card-name">{{ role.displayName }}</span>
                   <span v-if="role.isDecisionMaker" class="crew-role-card-dm">★</span>
-                  <span class="crew-role-card-status" :class="isRoleStreaming(role.name) ? 'active' : 'idle'"></span>
                 </div>
-                <div v-if="isRoleStreaming(role.name)" class="crew-role-card-details">
-                  <div v-if="getRoleCurrentTool(role.name)" class="crew-role-card-tool">
-                    {{ getRoleCurrentTool(role.name) }}
-                  </div>
-                  <div v-if="getRoleCurrentTask(role.name)" class="crew-role-card-task">
-                    {{ getRoleCurrentTask(role.name) }}
-                  </div>
+                <div v-if="getRoleCurrentTask(role.name)" class="crew-role-card-feature">
+                  {{ getRoleCurrentTask(role.name) }}
+                </div>
+                <div v-if="isRoleStreaming(role.name) && getRoleCurrentTool(role.name)"
+                     class="crew-role-card-tool">
+                  {{ getRoleCurrentTool(role.name) }}
                 </div>
               </div>
             </div>
-            <div class="crew-session-meta" v-if="store.currentCrewStatus">
-              <div class="crew-meta-row">
-                <span class="crew-meta-label">轮次</span>
-                <span class="crew-meta-value">{{ store.currentCrewStatus.round || 0 }} / {{ store.currentCrewStatus.maxRounds || '∞' }}</span>
-              </div>
-              <div class="crew-meta-row">
-                <span class="crew-meta-label">成本</span>
-                <span class="crew-meta-value">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
-              </div>
-              <div class="crew-meta-row" v-if="totalTokens > 0">
-                <span class="crew-meta-label">Token</span>
-                <span class="crew-meta-value">{{ formatTokens(totalTokens) }}</span>
-              </div>
-              <div class="crew-meta-row">
-                <span class="crew-meta-label">状态</span>
-                <span class="crew-meta-value" :class="{ 'is-running': store.currentCrewStatus.status === 'running' }">{{ statusText }}</span>
-              </div>
-            </div>
+
+            <!-- 添加角色按钮 -->
+            <button class="crew-add-role-btn" @click="showAddRole = true">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              <span>添加角色</span>
+            </button>
           </div>
         </aside>
 
@@ -231,7 +217,7 @@ export default {
           </template>
 
           <!-- Feature block: messages with taskId, render as collapsible thread -->
-          <div v-else class="crew-feature-thread" :data-block-id="block.id" :class="{ 'is-completed': block.isCompleted, 'is-expanded': isFeatureExpanded(block) }">
+          <div v-else class="crew-feature-thread" :data-block-id="block.id" :data-task-id="block.taskId" :class="{ 'is-completed': block.isCompleted, 'is-expanded': isFeatureExpanded(block) }">
             <div class="crew-feature-header" @click="toggleFeature(block.taskId)">
               <svg class="crew-feature-chevron" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 6l6 6-6 6z"/></svg>
               <span class="crew-feature-title">{{ block.taskTitle }}</span>
@@ -503,9 +489,6 @@ export default {
               </button>
             </div>
           </div>
-          <button class="crew-hint-btn" @click="showAddRole = true" title="添加角色">
-            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-          </button>
         </div>
         <div class="attachments-preview" v-if="attachments.length > 0">
           <div class="attachment-item" v-for="(file, index) in attachments" :key="index">
@@ -557,109 +540,106 @@ export default {
 
         </div><!-- /crew-panel-center -->
 
-        <!-- Right Panel: Task Kanban -->
+        <!-- Right Panel: Feature Kanban -->
         <aside class="crew-panel-right" :class="{ 'mobile-visible': mobileTab === 'kanban' }">
           <div class="crew-panel-right-scroll">
-            <!-- Progress Summary -->
-            <div v-if="kanbanProgress.total > 0" class="crew-kanban-progress">
-              <div class="crew-kanban-progress-header">
-                <span class="crew-kanban-progress-title">任务进度</span>
-                <span class="crew-kanban-progress-count">{{ kanbanProgress.done }} / {{ kanbanProgress.total }}</span>
+            <div class="crew-kanban-title">Feature 看板</div>
+
+            <!-- Feature Cards -->
+            <div v-for="feature in featureKanban" :key="feature.taskId"
+                 class="crew-feature-card"
+                 :class="{
+                   'is-expanded': isFeatureCardExpanded(feature.taskId),
+                   'has-streaming': feature.hasStreaming,
+                   'is-completed': feature.isCompleted
+                 }">
+              <!-- Header -->
+              <div class="crew-feature-card-header"
+                   @click="toggleFeatureCard(feature.taskId)"
+                   @dblclick="scrollToFeature(feature.taskId)">
+                <svg class="crew-feature-card-chevron" viewBox="0 0 24 24" width="12" height="12">
+                  <path fill="currentColor" d="M10 6l6 6-6 6z"/>
+                </svg>
+                <span class="crew-feature-card-title">{{ feature.taskTitle }}</span>
+                <span class="crew-feature-card-count">
+                  {{ feature.doneCount }} / {{ feature.totalCount }}
+                </span>
               </div>
-              <div class="crew-kanban-progress-bar">
-                <div class="crew-kanban-progress-fill" :style="{ width: kanbanProgress.percent + '%' }"></div>
+
+              <!-- Progress Bar -->
+              <div class="crew-feature-card-bar">
+                <div class="crew-feature-card-bar-fill"
+                     :style="{ width: (feature.totalCount > 0 ? (feature.doneCount / feature.totalCount * 100) : 0) + '%' }">
+                </div>
+              </div>
+
+              <!-- Active Roles -->
+              <div v-if="feature.activeRoles.length > 0" class="crew-feature-card-roles">
+                <span class="crew-feature-card-roles-icons">
+                  <span v-for="ar in feature.activeRoles" :key="ar.role">{{ ar.roleIcon }}</span>
+                </span>
+                <span class="crew-feature-card-roles-label">工作中</span>
+              </div>
+
+              <!-- Todo Items (expanded) -->
+              <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length > 0"
+                   class="crew-feature-card-todos">
+                <div v-for="todo in feature.todos" :key="todo.id"
+                     class="crew-feature-card-todo" :class="'is-' + todo.status">
+                  <span class="todo-status">
+                    <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24" width="12" height="12">
+                      <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                    </svg>
+                  </span>
+                  <span class="todo-text">
+                    {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
+                  </span>
+                  <span v-if="todo.roleIcon" class="todo-role">{{ todo.roleIcon }}</span>
+                </div>
+              </div>
+
+              <!-- No todos: 显示简要状态 -->
+              <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length === 0"
+                   class="crew-feature-card-empty">
+                {{ feature.isCompleted ? '已完成' : '进行中' }}
               </div>
             </div>
 
-            <!-- Single feature mode -->
-            <template v-if="kanbanFeatures.length <= 1">
-              <!-- In Progress -->
-              <div v-if="kanbanInProgress.length > 0" class="crew-kanban-section">
-                <div class="crew-kanban-section-header">
-                  进行中
-                  <span class="crew-kanban-section-count">({{ kanbanInProgress.length }})</span>
-                </div>
-                <div v-for="item in kanbanInProgress" :key="item.id" class="crew-kanban-item is-in-progress">
-                  <span class="crew-kanban-item-status"></span>
-                  <span class="crew-kanban-item-text">{{ item.activeForm || item.content }}</span>
-                  <span v-if="item.roleName" class="crew-kanban-item-role">
-                    {{ item.roleIcon }} {{ shortName(item.roleName) }}
-                  </span>
-                </div>
-              </div>
-
-              <!-- Pending -->
-              <div v-if="kanbanPending.length > 0" class="crew-kanban-section">
-                <div class="crew-kanban-section-header">
-                  待办
-                  <span class="crew-kanban-section-count">({{ kanbanPending.length }})</span>
-                </div>
-                <div v-for="item in kanbanPending" :key="item.id" class="crew-kanban-item is-pending">
-                  <span class="crew-kanban-item-status"></span>
-                  <span class="crew-kanban-item-text">{{ item.content }}</span>
-                </div>
-              </div>
-
-              <!-- Completed (collapsed by default) -->
-              <div v-if="kanbanCompleted.length > 0"
-                   class="crew-kanban-section"
-                   :class="{ 'is-collapsed': !kanbanCompletedExpanded }">
-                <div class="crew-kanban-section-header" @click="kanbanCompletedExpanded = !kanbanCompletedExpanded">
-                  <svg class="crew-kanban-section-chevron" viewBox="0 0 24 24" width="10" height="10">
-                    <path fill="currentColor" d="M10 6l6 6-6 6z"/>
-                  </svg>
-                  已完成
-                  <span class="crew-kanban-section-count">({{ kanbanCompleted.length }})</span>
-                </div>
-                <template v-if="kanbanCompletedExpanded">
-                  <div v-for="item in kanbanCompleted" :key="item.id" class="crew-kanban-item is-completed">
-                    <span class="crew-kanban-item-status">
-                      <svg viewBox="0 0 24 24" width="14" height="14">
-                        <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-                      </svg>
-                    </span>
-                    <span class="crew-kanban-item-text">{{ item.content }}</span>
-                  </div>
-                </template>
-              </div>
-            </template>
-
-            <!-- Multi-feature mode -->
-            <template v-else>
-              <div v-for="feature in kanbanFeatures" :key="feature.taskId"
-                   class="crew-kanban-feature"
-                   :class="{ 'is-expanded': isKanbanFeatureExpanded(feature.taskId) }">
-                <div class="crew-kanban-feature-header" @click="toggleKanbanFeature(feature.taskId)">
-                  <svg class="crew-kanban-feature-chevron" viewBox="0 0 24 24" width="12" height="12">
-                    <path fill="currentColor" d="M10 6l6 6-6 6z"/>
-                  </svg>
-                  <span class="crew-kanban-feature-title">{{ feature.taskTitle }}</span>
-                  <span class="crew-kanban-feature-count">
-                    {{ feature.doneCount }} / {{ feature.totalCount }}
-                  </span>
-                </div>
-                <div v-if="isKanbanFeatureExpanded(feature.taskId)" class="crew-kanban-feature-items">
-                  <div v-for="item in feature.items" :key="item.id"
-                       class="crew-kanban-item" :class="'is-' + item.status">
-                    <span class="crew-kanban-item-status">
-                      <svg v-if="item.status === 'completed'" viewBox="0 0 24 24" width="14" height="14">
-                        <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-                      </svg>
-                    </span>
-                    <span class="crew-kanban-item-text">
-                      {{ item.status === 'in_progress' ? (item.activeForm || item.content) : item.content }}
-                    </span>
-                    <span v-if="item.roleName" class="crew-kanban-item-role">
-                      {{ item.roleIcon }}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </template>
-
             <!-- Empty state -->
-            <div v-if="kanbanProgress.total === 0" class="crew-kanban-empty">
-              <div class="crew-kanban-empty-text">暂无任务</div>
+            <div v-if="featureKanban.length === 0" class="crew-kanban-empty">
+              <div class="crew-kanban-empty-text">暂无 Feature</div>
+            </div>
+          </div>
+
+          <!-- 总进度 (底部固定) -->
+          <div class="crew-kanban-total" v-if="kanbanProgress.total > 0">
+            <div class="crew-kanban-total-header">
+              <span>总进度</span>
+              <span>{{ kanbanProgress.done }} / {{ kanbanProgress.total }}  {{ Math.round(kanbanProgress.done / kanbanProgress.total * 100) }}%</span>
+            </div>
+            <div class="crew-kanban-total-bar">
+              <div class="crew-kanban-total-fill"
+                   :style="{ width: (kanbanProgress.done / kanbanProgress.total * 100) + '%' }"></div>
+            </div>
+          </div>
+
+          <!-- 元信息 — 右栏底部 -->
+          <div class="crew-session-meta" v-if="store.currentCrewStatus">
+            <div class="crew-meta-row">
+              <span class="crew-meta-label">轮次</span>
+              <span class="crew-meta-value">{{ store.currentCrewStatus.round || 0 }}</span>
+            </div>
+            <div class="crew-meta-row">
+              <span class="crew-meta-label">成本</span>
+              <span class="crew-meta-value">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
+            </div>
+            <div class="crew-meta-row" v-if="totalTokens > 0">
+              <span class="crew-meta-label">Token</span>
+              <span class="crew-meta-value">{{ formatTokens(totalTokens) }}</span>
+            </div>
+            <div class="crew-meta-row">
+              <span class="crew-meta-label">状态</span>
+              <span class="crew-meta-value" :class="{ 'is-running': store.currentCrewStatus.status === 'running' }">{{ statusText }}</span>
             </div>
           </div>
         </aside>
@@ -719,8 +699,7 @@ export default {
       expandedTodoGroups: {},
       expandedFeatures: {},
       expandedHistories: {},
-      expandedKanbanFeatures: {},
-      kanbanCompletedExpanded: false,
+      expandedFeatureCards: {},
       mobileTab: 'chat',
       isAtBottom: true,
       visibleBlockCount: 20,
@@ -1340,60 +1319,80 @@ summary: 请测试以下变更...
       return this.store.currentCrewSession?.roles || [];
     },
 
-    kanbanFeatures() {
-      const groups = this.todosByFeature;
-      if (!groups || groups.length === 0) return [];
-      return groups.map(g => {
-        const items = [];
-        for (const entry of g.entries) {
+    featureKanban() {
+      // 1. 收集所有 feature
+      const features = new Map();
+
+      // 从 activeTasks 获取所有 feature
+      for (const task of this.activeTasks) {
+        features.set(task.id, {
+          taskId: task.id,
+          taskTitle: task.title,
+          todos: [],
+          doneCount: 0,
+          totalCount: 0,
+          activeRoles: [],
+          isCompleted: this.completedTaskIds.has(task.id),
+          hasStreaming: false,
+        });
+      }
+
+      // 2. 合并 todosByFeature 的 todo 数据
+      for (const group of this.todosByFeature) {
+        const tid = group.taskId || '_global';
+        let feature = features.get(tid);
+        if (!feature) {
+          feature = {
+            taskId: tid,
+            taskTitle: group.taskTitle || '全局任务',
+            todos: [],
+            doneCount: 0,
+            totalCount: 0,
+            activeRoles: [],
+            isCompleted: false,
+            hasStreaming: false,
+          };
+          features.set(tid, feature);
+        }
+        for (const entry of group.entries) {
           for (const todo of entry.todos) {
-            items.push({
-              id: `${entry.role}::${todo.content}`,
-              content: todo.content,
-              activeForm: todo.activeForm,
-              status: todo.status,
-              startedAt: todo.startedAt,
+            feature.todos.push({
+              ...todo,
               roleIcon: entry.roleIcon,
               roleName: entry.roleName,
+              id: `${tid}_${entry.role}_${feature.todos.length}`
             });
+            feature.totalCount++;
+            if (todo.status === 'completed') feature.doneCount++;
           }
         }
-        const doneCount = items.filter(i => i.status === 'completed').length;
-        return {
-          taskId: g.taskId,
-          taskTitle: g.taskTitle || '全局任务',
-          items,
-          doneCount,
-          totalCount: items.length,
-        };
+      }
+
+      // 3. 合并 featureBlocks 的活跃角色数据
+      for (const block of this.featureBlocks) {
+        if (block.type !== 'feature') continue;
+        const feature = features.get(block.taskId);
+        if (feature) {
+          if (block.activeRoles) feature.activeRoles = block.activeRoles;
+          if (block.hasStreaming) feature.hasStreaming = true;
+        }
+      }
+
+      // 4. 转为数组，排序：有活跃的在前，已完成的在后
+      return Array.from(features.values()).sort((a, b) => {
+        if (a.hasStreaming !== b.hasStreaming) return a.hasStreaming ? -1 : 1;
+        if (a.isCompleted !== b.isCompleted) return a.isCompleted ? 1 : -1;
+        return 0;
       });
     },
 
-    kanbanAllItems() {
-      const items = [];
-      for (const f of this.kanbanFeatures) {
-        items.push(...f.items);
-      }
-      return items;
-    },
-
-    kanbanInProgress() {
-      return this.kanbanAllItems.filter(i => i.status === 'in_progress');
-    },
-
-    kanbanPending() {
-      return this.kanbanAllItems.filter(i => i.status === 'pending');
-    },
-
-    kanbanCompleted() {
-      return this.kanbanAllItems.filter(i => i.status === 'completed');
-    },
-
     kanbanProgress() {
-      const total = this.kanbanAllItems.length;
-      const done = this.kanbanCompleted.length;
-      const percent = total > 0 ? Math.round((done / total) * 100) : 0;
-      return { total, done, percent };
+      let total = 0, done = 0;
+      for (const f of this.featureKanban) {
+        total += f.totalCount;
+        done += f.doneCount;
+      }
+      return { total, done };
     }
   },
 
@@ -1633,7 +1632,8 @@ summary: 请测试以下变更...
         return {
           '--role-color': `var(--crew-color-${roleName})`,
           '--role-bg': `var(--crew-color-${roleName}-bg)`,
-          '--role-border': `var(--crew-color-${roleName}-border)`
+          '--role-border': `var(--crew-color-${roleName}-border)`,
+          '--role-bg-glow': `var(--crew-color-${roleName}-bg-glow)`
         };
       }
       // Dynamic role: hash name to pick a fallback color
@@ -1642,7 +1642,8 @@ summary: 请测试以下变更...
       return {
         '--role-color': `var(--crew-color-fallback-${idx})`,
         '--role-bg': `var(--crew-color-fallback-${idx}-bg)`,
-        '--role-border': `var(--crew-color-fallback-${idx}-border)`
+        '--role-border': `var(--crew-color-fallback-${idx}-border)`,
+        '--role-bg-glow': `var(--crew-color-fallback-${idx}-bg-glow)`
       };
     },
 
@@ -1692,22 +1693,30 @@ summary: 请测试以下变更...
       return null;
     },
 
-    toggleKanbanFeature(taskId) {
-      const key = taskId || '_global';
-      this.expandedKanbanFeatures[key] = !this.isKanbanFeatureExpanded(taskId);
+    toggleFeatureCard(taskId) {
+      this.expandedFeatureCards[taskId] = !this.isFeatureCardExpanded(taskId);
     },
 
-    isKanbanFeatureExpanded(taskId) {
-      const key = taskId || '_global';
-      if (key in this.expandedKanbanFeatures) {
-        return this.expandedKanbanFeatures[key];
+    isFeatureCardExpanded(taskId) {
+      if (taskId in this.expandedFeatureCards) {
+        return this.expandedFeatureCards[taskId];
       }
-      // Default: expand if has in_progress items
-      const feature = this.kanbanFeatures.find(f => (f.taskId || '_global') === key);
+      // Default: expand if has in_progress todos or not completed
+      const feature = this.featureKanban.find(f => f.taskId === taskId);
       if (feature) {
-        return feature.items.some(i => i.status === 'in_progress') || feature.doneCount < feature.totalCount;
+        return feature.todos.some(t => t.status === 'in_progress') || !feature.isCompleted;
       }
       return true;
+    },
+
+    scrollToFeature(taskId) {
+      this.expandedFeatures[taskId] = true;
+      this.$nextTick(() => {
+        const el = this.$el.querySelector(`.crew-feature-thread[data-task-id="${taskId}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
     },
 
     handleInput() {
