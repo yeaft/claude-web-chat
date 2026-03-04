@@ -62,19 +62,95 @@ export default {
         </div>
 
         <!-- Todo Progress Banner -->
-        <div v-if="latestTodos.length > 0" class="crew-todo-banner">
+        <div v-if="todosByFeature.length > 0" class="crew-todo-banner">
           <div class="crew-todo-banner-card">
+            <!-- Header -->
             <div class="crew-todo-banner-header">
-              <span class="icon">📋</span>
-              任务进度 <span class="crew-todo-progress">{{ latestTodos.filter(t => t.status === 'completed').length }}/{{ latestTodos.length }}</span>
+              <span class="crew-todo-banner-dots">
+                <span class="crew-todo-banner-dot"
+                      :class="{
+                        done: todoTotalProgress.done === todoTotalProgress.total,
+                        lit: todoTotalProgress.done > 0 && todoTotalProgress.done < todoTotalProgress.total
+                      }"></span>
+                <span class="crew-todo-banner-dot"
+                      :class="{
+                        done: todoTotalProgress.done === todoTotalProgress.total,
+                        lit: todoTotalProgress.done >= todoTotalProgress.total * 0.5
+                      }"></span>
+                <span class="crew-todo-banner-dot"
+                      :class="{
+                        done: todoTotalProgress.done === todoTotalProgress.total,
+                        lit: todoTotalProgress.done >= todoTotalProgress.total * 0.8
+                      }"></span>
+              </span>
+              任务进度
+              <span class="crew-todo-banner-count">
+                {{ todoTotalProgress.done }} / {{ todoTotalProgress.total }}
+              </span>
             </div>
-            <div class="crew-todo-banner-list">
-              <div v-for="(todo, i) in latestTodos" :key="i"
-                   :class="['crew-todo-item', 'crew-todo-' + todo.status]">
-                <span class="crew-todo-icon">{{ todo.status === 'completed' ? '✅' : todo.status === 'in_progress' ? '🔄' : '⬜' }}</span>
-                <span class="crew-todo-text">{{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}</span>
+
+            <!-- Single feature: flat list (no group header) -->
+            <template v-if="todosByFeature.length === 1">
+              <div class="crew-todo-list">
+                <template v-for="entry in todosByFeature[0].entries" :key="entry.role">
+                  <div v-for="(todo, i) in entry.todos" :key="i"
+                       class="crew-todo-item"
+                       :class="'is-' + todo.status">
+                    <span class="crew-todo-status">
+                      <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24">
+                        <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                      </svg>
+                    </span>
+                    <span class="crew-todo-text">
+                      {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
+                    </span>
+                    <span v-if="todosByFeature[0].entries.length > 1" class="crew-todo-role">
+                      <span class="crew-todo-role-icon">{{ entry.roleIcon }}</span>
+                      {{ shortName(entry.roleName) }}
+                    </span>
+                  </div>
+                </template>
               </div>
-            </div>
+            </template>
+
+            <!-- Multiple features: grouped with collapsible sections -->
+            <template v-else>
+              <div v-for="group in todosByFeature" :key="group.taskId || '_global'"
+                   class="crew-todo-group"
+                   :class="{ 'is-expanded': isTodoGroupExpanded(group.taskId) }">
+                <!-- Group header -->
+                <div class="crew-todo-group-header" @click="toggleTodoGroup(group.taskId)">
+                  <svg class="crew-todo-group-chevron" viewBox="0 0 24 24" width="12" height="12">
+                    <path fill="currentColor" d="M10 6l6 6-6 6z"/>
+                  </svg>
+                  <span class="crew-todo-group-title">{{ group.taskTitle || '全局任务' }}</span>
+                  <span class="crew-todo-group-count">
+                    {{ groupDoneCount(group) }} / {{ groupTotalCount(group) }}
+                  </span>
+                </div>
+                <!-- Group items (collapsible) -->
+                <div v-if="isTodoGroupExpanded(group.taskId)" class="crew-todo-list">
+                  <template v-for="entry in group.entries" :key="entry.role">
+                    <div v-for="(todo, i) in entry.todos" :key="i"
+                         class="crew-todo-item"
+                         :class="'is-' + todo.status">
+                      <span class="crew-todo-status">
+                        <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24">
+                          <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                        </svg>
+                      </span>
+                      <span class="crew-todo-text">
+                        {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
+                      </span>
+                      <span v-if="group.entries.length > 1" class="crew-todo-role">
+                        <span class="crew-todo-role-icon">{{ entry.roleIcon }}</span>
+                        {{ shortName(entry.roleName) }}
+                      </span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -560,6 +636,7 @@ export default {
       attachments: [],   // { file, name, preview?, uploading, fileId? }
       uploading: false,
       expandedTurns: {},
+      expandedTodoGroups: {},
       expandedFeatures: {},
       expandedHistories: {},
       isAtBottom: true,
@@ -1105,16 +1182,54 @@ summary: 请测试以下变更...
       return asks;
     },
 
-    latestTodos() {
+    todosByFeature() {
       const messages = this.store.currentCrewMessages;
       if (!messages) return [];
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i];
-        if (m.type === 'tool' && m.toolName === 'TodoWrite' && m.toolInput?.todos) {
-          return m.toolInput.todos;
+
+      // 按 (taskId, role) 分组，取每组最新的 TodoWrite
+      const map = new Map();
+      for (const m of messages) {
+        if (m.type !== 'tool' || m.toolName !== 'TodoWrite' || !m.toolInput?.todos) continue;
+        const key = `${m.taskId || 'global'}::${m.role}`;
+        map.set(key, {
+          taskId: m.taskId || null,
+          taskTitle: m.taskTitle || null,
+          role: m.role,
+          roleIcon: m.roleIcon,
+          roleName: m.roleName,
+          todos: m.toolInput.todos,
+          timestamp: m.timestamp,
+        });
+      }
+
+      // 转为数组，按 taskId 分组
+      const groups = new Map();
+      for (const entry of map.values()) {
+        const tid = entry.taskId || '_global';
+        if (!groups.has(tid)) {
+          groups.set(tid, { taskId: entry.taskId, taskTitle: entry.taskTitle, entries: [] });
+        }
+        groups.get(tid).entries.push(entry);
+      }
+
+      // 过滤掉所有 todo 都已完成的分组
+      const result = [];
+      for (const group of groups.values()) {
+        const allDone = group.entries.every(e => e.todos.every(t => t.status === 'completed'));
+        if (!allDone) result.push(group);
+      }
+      return result;
+    },
+
+    todoTotalProgress() {
+      let total = 0, done = 0;
+      for (const group of this.todosByFeature) {
+        for (const entry of group.entries) {
+          total += entry.todos.length;
+          done += entry.todos.filter(t => t.status === 'completed').length;
         }
       }
-      return [];
+      return { total, done };
     }
   },
 
@@ -1167,6 +1282,35 @@ summary: 请测试以下变更...
 
     toggleFeature(taskId) {
       this.expandedFeatures[taskId] = !this.expandedFeatures[taskId];
+    },
+
+    toggleTodoGroup(taskId) {
+      const key = taskId || '_global';
+      this.expandedTodoGroups[key] = !this.expandedTodoGroups[key];
+    },
+
+    isTodoGroupExpanded(taskId) {
+      const key = taskId || '_global';
+      if (!(key in this.expandedTodoGroups)) {
+        return true;
+      }
+      return this.expandedTodoGroups[key];
+    },
+
+    groupDoneCount(group) {
+      let count = 0;
+      for (const entry of group.entries) {
+        count += entry.todos.filter(t => t.status === 'completed').length;
+      }
+      return count;
+    },
+
+    groupTotalCount(group) {
+      let count = 0;
+      for (const entry of group.entries) {
+        count += entry.todos.length;
+      }
+      return count;
     },
 
     toggleHistory(taskId) {
