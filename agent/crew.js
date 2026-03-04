@@ -385,6 +385,12 @@ export async function resumeCrewSession(msg) {
     if ((!session.uiMessages || session.uiMessages.length === 0) && session.sharedDir) {
       session.uiMessages = await loadSessionMessages(session.sharedDir);
     }
+    // 发送前清理 _streaming 标记（跟磁盘保存逻辑保持一致）
+    const cleanedMessages = (session.uiMessages || []).map(m => {
+      const { _streaming, ...rest } = m;
+      return rest;
+    });
+
     sendCrewMessage({
       type: 'crew_session_restored',
       sessionId,
@@ -399,7 +405,7 @@ export async function resumeCrewSession(msg) {
       maxRounds: session.maxRounds,
       userId: session.userId,
       username: session.username,
-      uiMessages: session.uiMessages || []
+      uiMessages: cleanedMessages
     });
     sendStatusUpdate(session);
     return;

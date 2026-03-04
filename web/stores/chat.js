@@ -498,7 +498,10 @@ export const useChatStore = defineStore('chat', {
             type: m.type,
             content: m.content,
             routeTo: m.routeTo,
+            taskId: m.taskId || null,
+            taskTitle: m.taskTitle || null,
             timestamp: m.timestamp || Date.now()
+            // 显式不包含 _streaming — 恢复的消息不应有 streaming 状态
           }));
         } else {
           ensureMessages(sid);
@@ -666,6 +669,22 @@ export const useChatStore = defineStore('chat', {
         };
         if (msg.roles && this.crewSessions[sid]) {
           this.crewSessions[sid].roles = msg.roles;
+        }
+        // 根据 activeRoles 同步 _streaming 标记
+        const messages = this.crewMessagesMap[sid];
+        if (messages) {
+          const activeSet = new Set(msg.activeRoles || []);
+          if (activeSet.size === 0) {
+            for (const m of messages) {
+              if (m._streaming) m._streaming = false;
+            }
+          } else {
+            for (const m of messages) {
+              if (m._streaming && !activeSet.has(m.role)) {
+                m._streaming = false;
+              }
+            }
+          }
         }
         return;
       }
