@@ -3396,12 +3396,12 @@ describe('Route inline CSS verification', () => {
     expect(nameRule[0]).toContain('font-style: normal');
   });
 
-  it('should define crew-route-summary with nowrap and ellipsis truncation', () => {
+  it('should define crew-route-summary with normal wrap', () => {
     expect(cssContent).toContain('.crew-route-summary');
     const summaryRule = cssContent.match(/\.crew-route-summary\s*\{[^}]+\}/);
     expect(summaryRule).toBeTruthy();
-    expect(summaryRule[0]).toContain('white-space: nowrap');
-    expect(summaryRule[0]).toContain('text-overflow: ellipsis');
+    expect(summaryRule[0]).toContain('white-space: normal');
+    expect(summaryRule[0]).toContain('word-wrap: break-word');
   });
 });
 
