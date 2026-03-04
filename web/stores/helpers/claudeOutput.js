@@ -157,6 +157,9 @@ export function handleClaudeOutput(store, conversationId, data) {
     // ★ 设置防护窗口，防止后续 agent_list 中的 stale processing:true 重新设回
     if (!store._closedAt) store._closedAt = {};
     store._closedAt[conversationId] = Date.now();
+    // ★ 持久标记：阻止 agent_list 重新设置 processing 直到下次 sendMessage
+    if (!store._turnCompletedConvs) store._turnCompletedConvs = new Set();
+    store._turnCompletedConvs.add(conversationId);
     execStatus.currentTool = null;
     const msgs = conversationId === store.currentConversation
       ? store.messages

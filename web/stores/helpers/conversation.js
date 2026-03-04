@@ -176,6 +176,7 @@ export function sendMessage(store, text, attachments = []) {
     if (store._closedAt?.[store.currentConversation]) {
       delete store._closedAt[store.currentConversation];
     }
+    store._turnCompletedConvs?.delete(store.currentConversation);
     // 预初始化 executionStatus entry，确保 getter 返回 reactive 对象
     store.getOrCreateExecutionStatus(store.currentConversation);
     startProcessingWatchdog(store, store.currentConversation);

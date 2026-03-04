@@ -3,7 +3,7 @@
 
 export function isRecentlyClosed(store, conversationId) {
   if (!store._closedAt?.[conversationId]) return false;
-  return (Date.now() - store._closedAt[conversationId]) < 5000;
+  return (Date.now() - store._closedAt[conversationId]) < 30000;
 }
 
 export function startProcessingWatchdog(store, conversationId) {
