@@ -11593,25 +11593,20 @@ body {
 .crew-add-role-btn {
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 4px;
-  width: 100%;
-  padding: 8px;
-  border: 1.5px dashed var(--border-color);
-  border-radius: 8px;
-  background: transparent;
+  background: none;
+  border: none;
   color: var(--text-muted);
   font-size: 12px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s;
   font-family: inherit;
-  margin-top: 8px;
+  padding: 6px 2px;
+  margin-top: 4px;
 }
 
 .crew-add-role-btn:hover {
-  border-color: var(--accent-blue);
   color: var(--accent-blue);
-  background: rgba(74, 124, 201, 0.04);
 }
 
 /* --- Center Panel --- */
@@ -11912,13 +11907,10 @@ body {
     font-size: 20px;
   }
 
-  /* 添加角色按钮变为圆形 + 图标 */
+  /* 添加角色按钮：小屏只显示图标 */
   .crew-add-role-btn {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    padding: 0;
-    margin: 8px auto;
+    padding: 4px 2px;
+    margin: 4px auto;
   }
 
   .crew-add-role-btn span {
@@ -12654,21 +12646,19 @@ body {
 }
 
 /* Config panel add-role button */
+/* Config panel add-role button — plain text style */
 .crew-config-section > .crew-add-role-btn {
   background: none;
-  border: 1px dashed var(--border-color);
+  border: none;
   color: var(--text-muted);
-  padding: 10px;
-  border-radius: 12px;
+  padding: 6px 2px;
   cursor: pointer;
-  font-size: 13px;
-  transition: all 0.15s;
+  font-size: 12px;
+  transition: color 0.15s;
 }
 
 .crew-config-section > .crew-add-role-btn:hover {
-  border-color: var(--text-muted);
-  color: var(--text-secondary);
-  background: var(--sidebar-hover);
+  color: var(--accent-blue);
 }
 
 /* Crew Templates */
