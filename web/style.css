@@ -11486,7 +11486,7 @@ body {
 .crew-role-card {
   padding: 8px 10px;
   border-radius: 8px;
-  cursor: default;
+  cursor: pointer;
   transition: background 0.2s, box-shadow 0.2s;
 }
 
