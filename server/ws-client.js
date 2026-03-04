@@ -698,12 +698,34 @@ async function handleWebMessage(clientId, msg) {
     case 'crew_human_input': {
       const crewHumanAgentId = msg.agentId || client.currentAgent;
       if (!await checkAgentAccess(crewHumanAgentId)) break;
-      await forwardToAgent(crewHumanAgentId, {
+      // Resolve attachment fileIds to base64 data for agent
+      let resolvedFiles;
+      if (msg.attachments && msg.attachments.length > 0) {
+        resolvedFiles = [];
+        for (const att of msg.attachments) {
+          if (att.fileId) {
+            const file = pendingFiles.get(att.fileId);
+            if (file && (!file.userId || CONFIG.skipAuth || file.userId === client.userId)) {
+              resolvedFiles.push({
+                name: file.name,
+                mimeType: file.mimeType,
+                data: file.buffer.toString('base64'),
+                isImage: att.isImage || false
+              });
+              pendingFiles.delete(att.fileId);
+            }
+          }
+        }
+      }
+      const fwd = {
         type: 'crew_human_input',
         sessionId: msg.sessionId,
         content: msg.content,
         targetRole: msg.targetRole
-      });
+      };
+      if (msg.interrupt) fwd.interrupt = true;
+      if (resolvedFiles && resolvedFiles.length > 0) fwd.files = resolvedFiles;
+      await forwardToAgent(crewHumanAgentId, fwd);
       break;
     }
 
