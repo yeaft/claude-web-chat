@@ -1048,7 +1048,8 @@ summary: 请实现注册页面，包括邮箱验证
 \`\`\`
 
 4. 每个 dev 完成后会独立经过 reviewer 和 tester 审核，最后 ROUTE 回你
-5. 等待**所有子任务完成**后再做汇总报告`;
+5. 等待**所有子任务完成**后再做汇总报告
+6. **每次 ROUTE 都必须包含 task 和 taskTitle 字段，不能省略。没有 task 字段的 ROUTE 会导致消息无法按 feature 分组显示**`;
     }
 
     prompt += `\n

@@ -346,6 +346,7 @@ export default {
 # 工作约束
 - 收到新任务后，先制定实施计划，然后 @human 请用户审核计划，审核通过后再分配执行。
 - 收到包含多个独立任务的消息时，必须用多个 ROUTE 块一次性并行分配给不同的 dev，不要逐个处理。
+- 分配任务时必须在 ROUTE 块中指定 task（唯一ID如 task-1）和 taskTitle（简短描述），用于消息按 feature 分组显示。
 - PM 拥有 commit + push + tag 的自主权。测试全通过即可自行 commit/push/tag。`
         },
         {
