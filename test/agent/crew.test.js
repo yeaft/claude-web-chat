@@ -4283,12 +4283,12 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
   });
 
-  describe('left panel colored left border for streaming', () => {
-    it('should have is-streaming CSS with left border', () => {
+  describe('left panel breathing animation for streaming', () => {
+    it('should have is-streaming CSS with breathing animation', () => {
       expect(cssSource).toContain('.crew-role-card.is-streaming');
       const idx = cssSource.indexOf('.crew-role-card.is-streaming {');
       const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-      expect(block).toContain('border-left: 3px solid var(--role-color)');
+      expect(block).toContain('animation: roleBreathing');
     });
 
     it('should NOT have rolePulse animation (removed)', () => {
@@ -4346,10 +4346,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(meta).not.toContain('maxRounds');
     });
 
-    it('should show cost, token, and status', () => {
-      expect(viewSource).toContain("class=\"crew-meta-label\">成本</span>");
-      expect(viewSource).toContain("class=\"crew-meta-label\">Token</span>");
-      expect(viewSource).toContain("class=\"crew-meta-label\">状态</span>");
+    it('should show cost, token, and status as inline items', () => {
+      expect(viewSource).toContain('class="crew-meta-item"');
+      expect(viewSource).toContain('class="crew-meta-sep"');
+      expect(viewSource).toContain('costUsd');
+      expect(viewSource).toContain('statusText');
     });
 
     it('should NOT have session meta in left panel', () => {
@@ -4923,11 +4924,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(mediaSection).toContain('.crew-add-role-btn span');
     });
 
-    it('should still have streaming left border in icon mode', () => {
+    it('should NOT have streaming override in icon mode (removed)', () => {
       const mediaIdx = cssSource.indexOf('@media (max-width: 1279px)');
       const nextMedia = cssSource.indexOf('@media', mediaIdx + 1);
       const mediaSection = cssSource.substring(mediaIdx, nextMedia > 0 ? nextMedia : cssSource.length);
-      expect(mediaSection).toContain('.crew-role-card.is-streaming');
+      expect(mediaSection).not.toContain('.crew-role-card.is-streaming');
     });
   });
 
@@ -4966,11 +4967,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- HTML Tag Balance ---
 
   describe('HTML and CSS structure balance', () => {
-    it('should have balanced div tags (164/164)', () => {
+    it('should have balanced div tags (160/160)', () => {
       const opens = (viewSource.match(/<div[\s>]/g) || []).length;
       const closes = (viewSource.match(/<\/div>/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(164);
+      expect(opens).toBe(160);
     });
 
     it('should have balanced template tags', () => {
@@ -4998,11 +4999,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2067/2067)', () => {
+    it('should have balanced CSS braces (2068/2068)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2067);
+      expect(opens).toBe(2068);
     });
   });
 });

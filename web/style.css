@@ -11502,11 +11502,15 @@ body {
   flex-shrink: 0;
 }
 
-/* 活跃角色：左侧彩色竖线 */
+/* 活跃角色：呼吸动画 */
 .crew-role-card.is-streaming {
   background: var(--role-bg);
-  border-left: 3px solid var(--role-color);
-  padding-left: 7px;
+  animation: roleBreathing 3s ease-in-out infinite;
+}
+
+@keyframes roleBreathing {
+  0%, 100% { box-shadow: inset 0 0 0 1px transparent; }
+  50% { box-shadow: inset 0 0 0 1px var(--role-border, var(--border-color)); }
 }
 
 .crew-role-card-feature {
@@ -11535,33 +11539,31 @@ body {
   white-space: nowrap;
 }
 
-/* Session Meta — right panel bottom */
+/* Session Meta — right panel bottom, horizontal single line */
 .crew-session-meta {
   margin-top: auto;
-  padding-top: 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-light, var(--border-color));
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.crew-meta-row {
-  display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
   font-size: 11px;
   color: var(--text-muted);
+  white-space: nowrap;
 }
 
-.crew-meta-label {
+.crew-meta-item {
   color: var(--text-muted);
 }
 
-.crew-meta-value {
-  color: var(--text-secondary);
-  font-weight: 500;
+.crew-meta-item.status-running {
+  color: var(--accent-blue);
 }
 
-.crew-meta-value.is-running {
-  color: var(--accent-blue);
+.crew-meta-sep {
+  margin: 0 5px;
+  opacity: 0.4;
 }
 
 /* Add Role Button — left panel bottom */
@@ -11885,11 +11887,6 @@ body {
 
   .crew-role-card-icon {
     font-size: 20px;
-  }
-
-  /* 活跃角色在图标模式下仍有左边条 */
-  .crew-role-card.is-streaming {
-    padding-left: 3px;
   }
 
   /* 添加角色按钮变为圆形 + 图标 */

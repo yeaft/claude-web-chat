@@ -622,24 +622,15 @@ export default {
             </div>
           </div>
 
-          <!-- 元信息 — 右栏底部 -->
+          <!-- 元信息 — 右栏底部横排 -->
           <div class="crew-session-meta" v-if="store.currentCrewStatus">
-            <div class="crew-meta-row">
-              <span class="crew-meta-label">轮次</span>
-              <span class="crew-meta-value">{{ store.currentCrewStatus.round || 0 }}</span>
-            </div>
-            <div class="crew-meta-row">
-              <span class="crew-meta-label">成本</span>
-              <span class="crew-meta-value">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
-            </div>
-            <div class="crew-meta-row" v-if="totalTokens > 0">
-              <span class="crew-meta-label">Token</span>
-              <span class="crew-meta-value">{{ formatTokens(totalTokens) }}</span>
-            </div>
-            <div class="crew-meta-row">
-              <span class="crew-meta-label">状态</span>
-              <span class="crew-meta-value" :class="{ 'is-running': store.currentCrewStatus.status === 'running' }">{{ statusText }}</span>
-            </div>
+            <span class="crew-meta-item">R{{ store.currentCrewStatus.round || 0 }}</span>
+            <span class="crew-meta-sep">&middot;</span>
+            <span class="crew-meta-item">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(2) }}</span>
+            <span v-if="totalTokens > 0" class="crew-meta-sep">&middot;</span>
+            <span v-if="totalTokens > 0" class="crew-meta-item">{{ formatTokens(totalTokens) }}</span>
+            <span class="crew-meta-sep">&middot;</span>
+            <span class="crew-meta-item" :class="statusClass">{{ statusText }}</span>
           </div>
         </aside>
       </div><!-- /crew-workspace -->
