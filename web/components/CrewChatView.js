@@ -42,6 +42,25 @@ export default {
           ↑ 加载更早的消息 <span class="crew-load-more-count">({{ hiddenBlockCount }})</span>
         </div>
 
+        <!-- Pending Ask Banner -->
+        <div v-if="pendingAsks.length > 0" class="crew-pending-asks">
+          <div class="crew-pending-asks-card">
+            <div class="crew-pending-asks-header">
+              <span class="icon">❓</span>
+              {{ pendingAsks.length }} 个问题等待回答
+            </div>
+            <div class="crew-pending-asks-list">
+              <div v-for="ask in pendingAsks" :key="ask.askMsg.id"
+                   class="crew-pending-ask-item"
+                   @click="scrollToAsk(ask)">
+                <span class="crew-pending-ask-icon">{{ ask.roleIcon }}</span>
+                <span class="crew-pending-ask-text">{{ ask.question }}</span>
+                <span class="crew-pending-ask-goto">→ 查看</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <template v-for="(block, bidx) in visibleBlocks" :key="block.id">
           <!-- Global block: messages without taskId, render inline -->
           <template v-if="block.type === 'global'">
@@ -106,7 +125,7 @@ export default {
                     </div>
                   </div>
                   <template v-if="turn.askMsg">
-                    <div class="crew-ask-card" :class="{ 'is-answered': isCrewAskAnswered(turn.askMsg), 'is-waiting': !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId }">
+                    <div class="crew-ask-card" :data-ask-id="turn.askMsg.id" :class="{ 'is-answered': isCrewAskAnswered(turn.askMsg), 'is-waiting': !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId }">
                       <div v-for="(q, qIdx) in getCrewAskQuestions(turn.askMsg)" :key="qIdx" class="crew-ask-question">
                         <div class="crew-ask-q-text">
                           <span class="crew-ask-q-chip" v-if="q.header">{{ q.header }}</span>
@@ -137,7 +156,7 @@ export default {
                     <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
                       <span class="crew-route-arrow">→</span>
                       <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
-                      <span v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</span>
+                      <span v-if="rm.routeSummary" class="crew-route-summary" :title="rm.routeSummary">{{ rm.routeSummary }}</span>
                     </div>
                   </div>
                 </div>
@@ -146,7 +165,7 @@ export default {
           </template>
 
           <!-- Feature block: messages with taskId, render as collapsible thread -->
-          <div v-else class="crew-feature-thread" :class="{ 'is-completed': block.isCompleted, 'is-expanded': isFeatureExpanded(block) }">
+          <div v-else class="crew-feature-thread" :data-block-id="block.id" :class="{ 'is-completed': block.isCompleted, 'is-expanded': isFeatureExpanded(block) }">
             <div class="crew-feature-header" @click="toggleFeature(block.taskId)">
               <svg class="crew-feature-chevron" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 6l6 6-6 6z"/></svg>
               <span class="crew-feature-title">{{ block.taskTitle }}</span>
@@ -227,7 +246,7 @@ export default {
                         </div>
                       </div>
                       <template v-if="turn.askMsg">
-                        <div class="crew-ask-card" :class="{ 'is-answered': isCrewAskAnswered(turn.askMsg), 'is-waiting': !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId }">
+                        <div class="crew-ask-card" :data-ask-id="turn.askMsg.id" :class="{ 'is-answered': isCrewAskAnswered(turn.askMsg), 'is-waiting': !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId }">
                           <div v-for="(q, qIdx) in getCrewAskQuestions(turn.askMsg)" :key="qIdx" class="crew-ask-question">
                             <div class="crew-ask-q-text">
                               <span class="crew-ask-q-chip" v-if="q.header">{{ q.header }}</span>
@@ -258,7 +277,7 @@ export default {
                         <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
                           <span class="crew-route-arrow">→</span>
                           <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
-                          <span v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</span>
+                          <span v-if="rm.routeSummary" class="crew-route-summary" :title="rm.routeSummary">{{ rm.routeSummary }}</span>
                         </div>
                       </div>
                     </div>
@@ -316,7 +335,7 @@ export default {
                         </div>
                       </div>
                       <template v-if="turn.askMsg">
-                        <div class="crew-ask-card" :class="{ 'is-answered': isCrewAskAnswered(turn.askMsg), 'is-waiting': !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId }">
+                        <div class="crew-ask-card" :data-ask-id="turn.askMsg.id" :class="{ 'is-answered': isCrewAskAnswered(turn.askMsg), 'is-waiting': !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId }">
                           <div v-for="(q, qIdx) in getCrewAskQuestions(turn.askMsg)" :key="qIdx" class="crew-ask-question">
                             <div class="crew-ask-q-text">
                               <span class="crew-ask-q-chip" v-if="q.header">{{ q.header }}</span>
@@ -347,7 +366,7 @@ export default {
                         <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
                           <span class="crew-route-arrow">→</span>
                           <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
-                          <span v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</span>
+                          <span v-if="rm.routeSummary" class="crew-route-summary" :title="rm.routeSummary">{{ rm.routeSummary }}</span>
                         </div>
                       </div>
                     </div>
@@ -994,6 +1013,9 @@ summary: 请测试以下变更...
               activeRoles.push({ role: m.role, roleName: m.roleName, roleIcon: m.roleIcon });
             }
           }
+          const hasPendingAsk = turns.some(t =>
+            t.askMsg && !this.isCrewAskAnswered(t.askMsg)
+          );
           blocks.push({
             type: 'feature',
             taskId: seg.taskId,
@@ -1002,6 +1024,7 @@ summary: 请测试以下变更...
             isCompleted,
             hasStreaming,
             activeRoles,
+            hasPendingAsk,
             id: 'feature_' + seg.taskId + '_' + (blockCounter++)
           });
         } else {
@@ -1024,12 +1047,36 @@ summary: 请测试以下变更...
 
     hiddenBlockCount() {
       return Math.max(0, this.featureBlocks.length - this.visibleBlockCount);
+    },
+
+    pendingAsks() {
+      const asks = [];
+      for (const block of this.featureBlocks) {
+        if (block.type !== 'feature') continue;
+        for (const turn of block.turns) {
+          if (turn.askMsg && !this.isCrewAskAnswered(turn.askMsg)) {
+            asks.push({
+              blockId: block.id,
+              taskId: block.taskId,
+              taskTitle: block.taskTitle,
+              roleIcon: turn.roleIcon || turn.askMsg.roleIcon,
+              roleName: turn.roleName || turn.askMsg.roleName,
+              question: this.getCrewAskQuestions(turn.askMsg)?.[0]?.question || 'Question',
+              askMsg: turn.askMsg,
+            });
+          }
+        }
+      }
+      return asks;
     }
   },
 
   watch: {
     'store.currentConversation'() {
       this.visibleBlockCount = 20;
+      this.$nextTick(() => {
+        setTimeout(() => this.scrollToMeaningfulContent(), 300);
+      });
     },
     'store.currentCrewMessages': {
       handler() {
@@ -1084,8 +1131,17 @@ summary: 请测试以下变更...
       if (block.taskId in this.expandedFeatures) {
         return this.expandedFeatures[block.taskId];
       }
-      // Default: expand if not completed or has streaming
-      return !block.isCompleted || block.hasStreaming;
+      // Has pending ask → force expand
+      if (block.hasPendingAsk) return true;
+      // Streaming → expand
+      if (block.hasStreaming) return true;
+      // Not completed → expand
+      if (!block.isCompleted) return true;
+      // Completed: expand last 2 feature blocks, collapse earlier ones
+      const featureOnly = this.featureBlocks.filter(b => b.type === 'feature');
+      const idx = featureOnly.findIndex(b => b.id === block.id);
+      const fromEnd = featureOnly.length - 1 - idx;
+      return fromEnd < 2;
     },
 
     shouldShowTurnDivider(turns, tidx) {
@@ -1516,6 +1572,43 @@ summary: 请测试以下变更...
       this.store.answerUserQuestion(requestId, answers);
       askMsg.askAnswered = true;
       askMsg.selectedAnswers = answers;
+    },
+
+    scrollToAsk(ask) {
+      this.expandedFeatures[ask.taskId] = true;
+      this.expandedHistories[ask.taskId] = true;
+      this.$nextTick(() => {
+        const el = this.$el.querySelector(
+          `.crew-ask-card[data-ask-id="${ask.askMsg.id}"]`
+        );
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('crew-ask-highlight');
+          setTimeout(() => el.classList.remove('crew-ask-highlight'), 2000);
+        }
+      });
+    },
+
+    scrollToBlock(block) {
+      const el = this.$el.querySelector(`[data-block-id="${block.id}"]`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    },
+
+    scrollToMeaningfulContent() {
+      this.$nextTick(() => {
+        if (this.pendingAsks.length > 0) {
+          this.scrollToAsk(this.pendingAsks[0]);
+          return;
+        }
+        const lastActive = [...this.featureBlocks]
+          .reverse()
+          .find(b => b.type === 'feature' && !b.isCompleted);
+        if (lastActive) {
+          this.scrollToBlock(lastActive);
+          return;
+        }
+        this.scrollToBottom();
+      });
     },
 
     scrollToBottom() {
