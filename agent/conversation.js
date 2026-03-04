@@ -395,6 +395,7 @@ export async function handleUserInput(msg) {
   state.turnActive = true;
   state.turnResultReceived = false; // 重置 per-turn 去重标志
   sendConversationList(); // 在 turnActive=true 后通知 server，确保 processing 状态正确
+  sendOutput(conversationId, userMessage);
   state.inputStream.enqueue(userMessage);
 }
 

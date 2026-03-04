@@ -136,6 +136,19 @@ export function handleClaudeOutput(store, conversationId, data) {
       }
 
       execStatus.currentTool = null;
+    } else if (typeof userContent === 'string' && userContent.trim()) {
+      // 普通用户消息（agent 广播回来的）
+      // 发送端已通过 addMessage 本地添加，检查是否已存在以避免重复
+      const msgs = conversationId === store.currentConversation
+        ? store.messages
+        : (store.messagesCache[conversationId] || []);
+      const duplicate = msgs.some(m => m.type === 'user' && m.content === userContent);
+      if (!duplicate) {
+        store.addMessageToConversation(conversationId, {
+          type: 'user',
+          content: userContent
+        });
+      }
     }
   } else if (data.type === 'result') {
     // ★ result 表示当前 turn 已完成，立即清除 processing 状态
