@@ -4284,11 +4284,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   });
 
   describe('left panel breathing animation for streaming', () => {
-    it('should have is-streaming CSS with breathing animation', () => {
+    it('should have is-streaming CSS with name breathing animation', () => {
       expect(cssSource).toContain('.crew-role-card.is-streaming');
-      const idx = cssSource.indexOf('.crew-role-card.is-streaming {');
-      const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-      expect(block).toContain('animation: roleBreathing');
+      expect(cssSource).toContain('.crew-role-card.is-streaming .crew-role-card-name');
+      expect(cssSource).toContain('animation: nameBreathing');
+      expect(cssSource).toContain('@keyframes nameBreathing');
     });
 
     it('should NOT have rolePulse animation (removed)', () => {
@@ -4999,11 +4999,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2071/2071)', () => {
+    it('should have balanced CSS braces (2072/2072)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2071);
+      expect(opens).toBe(2072);
     });
   });
 });

@@ -1604,6 +1604,7 @@ async function dispatchToRole(session, roleName, content, fromSource, taskId, ta
     message: { role: 'user', content }
   });
 
+  sendStatusUpdate(session);
   console.log(`[Crew] Dispatched to ${roleName} from ${fromSource}${taskId ? ` (task: ${taskId})` : ''}`);
 }
 

@@ -11522,15 +11522,18 @@ body {
   flex-shrink: 0;
 }
 
-/* 活跃角色：呼吸动画 */
+/* 活跃角色：名字呼吸动画 */
 .crew-role-card.is-streaming {
   background: var(--role-bg);
-  animation: roleBreathing 3s ease-in-out infinite;
 }
 
-@keyframes roleBreathing {
-  0%, 100% { box-shadow: inset 0 0 0 1px transparent; }
-  50% { box-shadow: inset 0 0 0 1px var(--role-border, var(--border-color)); }
+.crew-role-card.is-streaming .crew-role-card-name {
+  animation: nameBreathing 3s ease-in-out infinite;
+}
+
+@keyframes nameBreathing {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 .crew-role-card-feature {
