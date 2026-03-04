@@ -177,9 +177,12 @@ export default {
                   </template>
                   <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
                     <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
-                      <span class="crew-route-arrow">→</span>
-                      <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
-                      <span v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</span>
+                      <div class="crew-route-header">
+                        <span class="crew-route-from">{{ shortName(turn.roleName) }}</span>
+                        <span class="crew-route-arrow">→</span>
+                        <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
+                      </div>
+                      <div v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</div>
                     </div>
                   </div>
                 </div>
@@ -304,9 +307,12 @@ export default {
                       </template>
                       <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
                         <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
-                          <span class="crew-route-arrow">→</span>
-                          <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
-                          <span v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</span>
+                          <div class="crew-route-header">
+                            <span class="crew-route-from">{{ shortName(turn.roleName) }}</span>
+                            <span class="crew-route-arrow">→</span>
+                            <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
+                          </div>
+                          <div v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</div>
                         </div>
                       </div>
                     </div>
@@ -399,9 +405,12 @@ export default {
                       </template>
                       <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
                         <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
-                          <span class="crew-route-arrow">→</span>
-                          <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
-                          <span v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</span>
+                          <div class="crew-route-header">
+                            <span class="crew-route-from">{{ shortName(turn.roleName) }}</span>
+                            <span class="crew-route-arrow">→</span>
+                            <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
+                          </div>
+                          <div v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</div>
                         </div>
                       </div>
                     </div>
