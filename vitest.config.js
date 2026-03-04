@@ -7,6 +7,7 @@ export default defineConfig({
     hookTimeout: 10000,
     pool: 'forks',
     fileParallelism: false,
+    exclude: ['**/node_modules/**', 'e2e/**'],
     coverage: {
       provider: 'v8',
       include: ['server/**/*.js', 'agent/**/*.js'],
