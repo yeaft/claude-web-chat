@@ -30,6 +30,63 @@ export default {
         </button>
       </div>
 
+      <!-- Mobile Tab Bar -->
+      <div class="crew-mobile-tabs">
+        <button class="crew-mobile-tab" :class="{ active: mobileTab === 'chat' }" @click="mobileTab = 'chat'">对话</button>
+        <button class="crew-mobile-tab" :class="{ active: mobileTab === 'roles' }" @click="mobileTab = 'roles'">角色</button>
+        <button class="crew-mobile-tab" :class="{ active: mobileTab === 'kanban' }" @click="mobileTab = 'kanban'">看板</button>
+      </div>
+
+      <div class="crew-workspace">
+        <!-- Left Panel: Role Cards -->
+        <aside class="crew-panel-left" :class="{ 'mobile-visible': mobileTab === 'roles' }">
+          <div class="crew-panel-left-scroll">
+            <div class="crew-role-list">
+              <div v-for="role in sessionRoles" :key="role.name"
+                   class="crew-role-card"
+                   :class="{ 'is-streaming': isRoleStreaming(role.name) }"
+                   :style="getRoleStyle(role.name)"
+                   @contextmenu.prevent="openRoleMenu($event, role)">
+                <div class="crew-role-card-header">
+                  <span class="crew-role-card-icon">{{ role.icon }}</span>
+                  <span class="crew-role-card-name">{{ role.displayName }}</span>
+                  <span v-if="role.isDecisionMaker" class="crew-role-card-dm">★</span>
+                  <span class="crew-role-card-status" :class="isRoleStreaming(role.name) ? 'active' : 'idle'"></span>
+                </div>
+                <div v-if="isRoleStreaming(role.name)" class="crew-role-card-details">
+                  <div v-if="getRoleCurrentTool(role.name)" class="crew-role-card-tool">
+                    {{ getRoleCurrentTool(role.name) }}
+                  </div>
+                  <div v-if="getRoleCurrentTask(role.name)" class="crew-role-card-task">
+                    {{ getRoleCurrentTask(role.name) }}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="crew-session-meta" v-if="store.currentCrewStatus">
+              <div class="crew-meta-row">
+                <span class="crew-meta-label">轮次</span>
+                <span class="crew-meta-value">{{ store.currentCrewStatus.round || 0 }} / {{ store.currentCrewStatus.maxRounds || '∞' }}</span>
+              </div>
+              <div class="crew-meta-row">
+                <span class="crew-meta-label">成本</span>
+                <span class="crew-meta-value">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
+              </div>
+              <div class="crew-meta-row" v-if="totalTokens > 0">
+                <span class="crew-meta-label">Token</span>
+                <span class="crew-meta-value">{{ formatTokens(totalTokens) }}</span>
+              </div>
+              <div class="crew-meta-row">
+                <span class="crew-meta-label">状态</span>
+                <span class="crew-meta-value" :class="{ 'is-running': store.currentCrewStatus.status === 'running' }">{{ statusText }}</span>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <!-- Center Panel: Chat Flow -->
+        <div class="crew-panel-center" :class="{ 'mobile-visible': mobileTab === 'chat' }">
+
       <!-- Messages -->
       <div class="crew-messages" ref="messagesRef" @scroll="onScroll">
         <div v-if="store.currentCrewMessages.length === 0" class="crew-empty">
@@ -58,107 +115,6 @@ export default {
                 <span class="crew-pending-ask-goto">→ 查看</span>
               </div>
             </div>
-          </div>
-        </div>
-
-        <!-- Todo Progress Banner -->
-        <div v-if="todosByFeature.length > 0" class="crew-todo-banner">
-          <div class="crew-todo-banner-card">
-            <!-- Header -->
-            <div class="crew-todo-banner-header">
-              <span class="crew-todo-banner-dots">
-                <span class="crew-todo-banner-dot"
-                      :class="{
-                        done: todoTotalProgress.done === todoTotalProgress.total,
-                        lit: todoTotalProgress.done > 0 && todoTotalProgress.done < todoTotalProgress.total
-                      }"></span>
-                <span class="crew-todo-banner-dot"
-                      :class="{
-                        done: todoTotalProgress.done === todoTotalProgress.total,
-                        lit: todoTotalProgress.done >= todoTotalProgress.total * 0.5
-                      }"></span>
-                <span class="crew-todo-banner-dot"
-                      :class="{
-                        done: todoTotalProgress.done === todoTotalProgress.total,
-                        lit: todoTotalProgress.done >= todoTotalProgress.total * 0.8
-                      }"></span>
-              </span>
-              任务进度
-              <span class="crew-todo-banner-count">
-                {{ todoTotalProgress.done }} / {{ todoTotalProgress.total }}
-              </span>
-            </div>
-
-            <!-- Single feature: flat list (no group header) -->
-            <template v-if="todosByFeature.length === 1">
-              <div class="crew-todo-list">
-                <template v-for="entry in todosByFeature[0].entries" :key="entry.role">
-                  <div v-for="(todo, i) in entry.todos" :key="i"
-                       class="crew-todo-item"
-                       :class="['is-' + todo.status, { 'is-long': todo.status === 'in_progress' && isLongRunning(todo.startedAt) }]">
-                    <span class="crew-todo-status">
-                      <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24">
-                        <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                      </svg>
-                    </span>
-                    <span class="crew-todo-text">
-                      {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
-                    </span>
-                    <span class="crew-todo-role">
-                      <span class="crew-todo-role-icon">{{ entry.roleIcon }}</span>
-                      {{ shortName(entry.roleName) }}
-                    </span>
-                    <span v-if="todo.status === 'in_progress' && todo.startedAt" class="crew-todo-elapsed"
-                          :class="{ 'is-long': isLongRunning(todo.startedAt) }">
-                      {{ formatElapsed(todo.startedAt) }}
-                    </span>
-                  </div>
-                </template>
-              </div>
-            </template>
-
-            <!-- Multiple features: grouped with collapsible sections -->
-            <template v-else>
-              <div v-for="group in todosByFeature" :key="group.taskId || '_global'"
-                   class="crew-todo-group"
-                   :class="{ 'is-expanded': isTodoGroupExpanded(group.taskId) }">
-                <!-- Group header -->
-                <div class="crew-todo-group-header" @click="toggleTodoGroup(group.taskId)">
-                  <svg class="crew-todo-group-chevron" viewBox="0 0 24 24" width="12" height="12">
-                    <path fill="currentColor" d="M10 6l6 6-6 6z"/>
-                  </svg>
-                  <span class="crew-todo-group-title">{{ group.taskTitle || '全局任务' }}</span>
-                  <span class="crew-todo-group-count">
-                    {{ groupDoneCount(group) }} / {{ groupTotalCount(group) }}
-                  </span>
-                </div>
-                <!-- Group items (collapsible) -->
-                <div v-if="isTodoGroupExpanded(group.taskId)" class="crew-todo-list">
-                  <template v-for="entry in group.entries" :key="entry.role">
-                    <div v-for="(todo, i) in entry.todos" :key="i"
-                         class="crew-todo-item"
-                         :class="['is-' + todo.status, { 'is-long': todo.status === 'in_progress' && isLongRunning(todo.startedAt) }]">
-                      <span class="crew-todo-status">
-                        <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24">
-                          <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                        </svg>
-                      </span>
-                      <span class="crew-todo-text">
-                        {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
-                      </span>
-                      <span class="crew-todo-role">
-                        <span class="crew-todo-role-icon">{{ entry.roleIcon }}</span>
-                        {{ shortName(entry.roleName) }}
-                      </span>
-                      <span v-if="todo.status === 'in_progress' && todo.startedAt" class="crew-todo-elapsed"
-                            :class="{ 'is-long': isLongRunning(todo.startedAt) }">
-                        {{ formatElapsed(todo.startedAt) }}
-                      </span>
-                    </div>
-                  </template>
-                </div>
-              </div>
-            </template>
           </div>
         </div>
 
@@ -524,9 +480,6 @@ export default {
       <div class="input-area crew-input-area">
         <div class="crew-input-hints" v-if="store.currentCrewSession">
           <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
-          <span class="crew-hint-meta" v-if="store.currentCrewStatus">轮次 {{ store.currentCrewStatus.round || 0 }}</span>
-          <span class="crew-hint-meta" v-if="store.currentCrewStatus">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(3) }}</span>
-          <span class="crew-hint-meta" v-if="store.currentCrewStatus && totalTokens > 0">{{ formatTokens(totalTokens) }} tok</span>
           <div class="crew-hint-controls" style="position: relative;">
             <button class="crew-hint-btn" @click.stop="controlOpen = !controlOpen" title="控制">
               <span v-if="store.currentCrewStatus?.status === 'running'" v-html="icons.pause"></span>
@@ -602,6 +555,116 @@ export default {
         </div>
       </div>
 
+        </div><!-- /crew-panel-center -->
+
+        <!-- Right Panel: Task Kanban -->
+        <aside class="crew-panel-right" :class="{ 'mobile-visible': mobileTab === 'kanban' }">
+          <div class="crew-panel-right-scroll">
+            <!-- Progress Summary -->
+            <div v-if="kanbanProgress.total > 0" class="crew-kanban-progress">
+              <div class="crew-kanban-progress-header">
+                <span class="crew-kanban-progress-title">任务进度</span>
+                <span class="crew-kanban-progress-count">{{ kanbanProgress.done }} / {{ kanbanProgress.total }}</span>
+              </div>
+              <div class="crew-kanban-progress-bar">
+                <div class="crew-kanban-progress-fill" :style="{ width: kanbanProgress.percent + '%' }"></div>
+              </div>
+            </div>
+
+            <!-- Single feature mode -->
+            <template v-if="kanbanFeatures.length <= 1">
+              <!-- In Progress -->
+              <div v-if="kanbanInProgress.length > 0" class="crew-kanban-section">
+                <div class="crew-kanban-section-header">
+                  进行中
+                  <span class="crew-kanban-section-count">({{ kanbanInProgress.length }})</span>
+                </div>
+                <div v-for="item in kanbanInProgress" :key="item.id" class="crew-kanban-item is-in-progress">
+                  <span class="crew-kanban-item-status"></span>
+                  <span class="crew-kanban-item-text">{{ item.activeForm || item.content }}</span>
+                  <span v-if="item.roleName" class="crew-kanban-item-role">
+                    {{ item.roleIcon }} {{ shortName(item.roleName) }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- Pending -->
+              <div v-if="kanbanPending.length > 0" class="crew-kanban-section">
+                <div class="crew-kanban-section-header">
+                  待办
+                  <span class="crew-kanban-section-count">({{ kanbanPending.length }})</span>
+                </div>
+                <div v-for="item in kanbanPending" :key="item.id" class="crew-kanban-item is-pending">
+                  <span class="crew-kanban-item-status"></span>
+                  <span class="crew-kanban-item-text">{{ item.content }}</span>
+                </div>
+              </div>
+
+              <!-- Completed (collapsed by default) -->
+              <div v-if="kanbanCompleted.length > 0"
+                   class="crew-kanban-section"
+                   :class="{ 'is-collapsed': !kanbanCompletedExpanded }">
+                <div class="crew-kanban-section-header" @click="kanbanCompletedExpanded = !kanbanCompletedExpanded">
+                  <svg class="crew-kanban-section-chevron" viewBox="0 0 24 24" width="10" height="10">
+                    <path fill="currentColor" d="M10 6l6 6-6 6z"/>
+                  </svg>
+                  已完成
+                  <span class="crew-kanban-section-count">({{ kanbanCompleted.length }})</span>
+                </div>
+                <template v-if="kanbanCompletedExpanded">
+                  <div v-for="item in kanbanCompleted" :key="item.id" class="crew-kanban-item is-completed">
+                    <span class="crew-kanban-item-status">
+                      <svg viewBox="0 0 24 24" width="14" height="14">
+                        <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                      </svg>
+                    </span>
+                    <span class="crew-kanban-item-text">{{ item.content }}</span>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- Multi-feature mode -->
+            <template v-else>
+              <div v-for="feature in kanbanFeatures" :key="feature.taskId"
+                   class="crew-kanban-feature"
+                   :class="{ 'is-expanded': isKanbanFeatureExpanded(feature.taskId) }">
+                <div class="crew-kanban-feature-header" @click="toggleKanbanFeature(feature.taskId)">
+                  <svg class="crew-kanban-feature-chevron" viewBox="0 0 24 24" width="12" height="12">
+                    <path fill="currentColor" d="M10 6l6 6-6 6z"/>
+                  </svg>
+                  <span class="crew-kanban-feature-title">{{ feature.taskTitle }}</span>
+                  <span class="crew-kanban-feature-count">
+                    {{ feature.doneCount }} / {{ feature.totalCount }}
+                  </span>
+                </div>
+                <div v-if="isKanbanFeatureExpanded(feature.taskId)" class="crew-kanban-feature-items">
+                  <div v-for="item in feature.items" :key="item.id"
+                       class="crew-kanban-item" :class="'is-' + item.status">
+                    <span class="crew-kanban-item-status">
+                      <svg v-if="item.status === 'completed'" viewBox="0 0 24 24" width="14" height="14">
+                        <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                      </svg>
+                    </span>
+                    <span class="crew-kanban-item-text">
+                      {{ item.status === 'in_progress' ? (item.activeForm || item.content) : item.content }}
+                    </span>
+                    <span v-if="item.roleName" class="crew-kanban-item-role">
+                      {{ item.roleIcon }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- Empty state -->
+            <div v-if="kanbanProgress.total === 0" class="crew-kanban-empty">
+              <div class="crew-kanban-empty-text">暂无任务</div>
+            </div>
+          </div>
+        </aside>
+      </div><!-- /crew-workspace -->
+
       <!-- Add Role Modal -->
       <div v-if="showAddRole" class="crew-add-role-overlay" @click.self="showAddRole = false">
         <div class="crew-add-role-modal">
@@ -656,6 +719,9 @@ export default {
       expandedTodoGroups: {},
       expandedFeatures: {},
       expandedHistories: {},
+      expandedKanbanFeatures: {},
+      kanbanCompletedExpanded: false,
+      mobileTab: 'chat',
       isAtBottom: true,
       visibleBlockCount: 20,
       isLoadingMore: false,
@@ -1273,6 +1339,66 @@ summary: 请测试以下变更...
         }
       }
       return { total, done };
+    },
+
+    sessionRoles() {
+      return this.store.currentCrewSession?.roles || [];
+    },
+
+    kanbanFeatures() {
+      const groups = this.todosByFeature;
+      if (!groups || groups.length === 0) return [];
+      return groups.map(g => {
+        const items = [];
+        for (const entry of g.entries) {
+          for (const todo of entry.todos) {
+            items.push({
+              id: `${entry.role}::${todo.content}`,
+              content: todo.content,
+              activeForm: todo.activeForm,
+              status: todo.status,
+              startedAt: todo.startedAt,
+              roleIcon: entry.roleIcon,
+              roleName: entry.roleName,
+            });
+          }
+        }
+        const doneCount = items.filter(i => i.status === 'completed').length;
+        return {
+          taskId: g.taskId,
+          taskTitle: g.taskTitle || '全局任务',
+          items,
+          doneCount,
+          totalCount: items.length,
+        };
+      });
+    },
+
+    kanbanAllItems() {
+      const items = [];
+      for (const f of this.kanbanFeatures) {
+        items.push(...f.items);
+      }
+      return items;
+    },
+
+    kanbanInProgress() {
+      return this.kanbanAllItems.filter(i => i.status === 'in_progress');
+    },
+
+    kanbanPending() {
+      return this.kanbanAllItems.filter(i => i.status === 'pending');
+    },
+
+    kanbanCompleted() {
+      return this.kanbanAllItems.filter(i => i.status === 'completed');
+    },
+
+    kanbanProgress() {
+      const total = this.kanbanAllItems.length;
+      const done = this.kanbanCompleted.length;
+      const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+      return { total, done, percent };
     }
   },
 
@@ -1580,6 +1706,42 @@ summary: 请测试以下变更...
 
     isRoleActive(roleName) {
       return this.store.currentCrewStatus?.activeRoles?.includes(roleName);
+    },
+
+    isRoleStreaming(roleName) {
+      return this.store.currentCrewStatus?.activeRoles?.includes(roleName);
+    },
+
+    getRoleCurrentTool(roleName) {
+      return this.store.currentCrewStatus?.currentToolByRole?.[roleName] || null;
+    },
+
+    getRoleCurrentTask(roleName) {
+      const messages = this.store.currentCrewMessages;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === roleName && messages[i].taskTitle) {
+          return messages[i].taskTitle;
+        }
+      }
+      return null;
+    },
+
+    toggleKanbanFeature(taskId) {
+      const key = taskId || '_global';
+      this.expandedKanbanFeatures[key] = !this.isKanbanFeatureExpanded(taskId);
+    },
+
+    isKanbanFeatureExpanded(taskId) {
+      const key = taskId || '_global';
+      if (key in this.expandedKanbanFeatures) {
+        return this.expandedKanbanFeatures[key];
+      }
+      // Default: expand if has in_progress items
+      const feature = this.kanbanFeatures.find(f => (f.taskId || '_global') === key);
+      if (feature) {
+        return feature.items.some(i => i.status === 'in_progress') || feature.doneCount < feature.totalCount;
+      }
+      return true;
     },
 
     handleInput() {
