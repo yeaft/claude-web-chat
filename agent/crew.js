@@ -977,7 +977,9 @@ async function createRoleQuery(session, roleName) {
     abortController,
     accumulatedText: '',
     turnActive: false,
-    claudeSessionId: savedSessionId
+    claudeSessionId: savedSessionId,
+    lastInputTokens: 0,
+    lastOutputTokens: 0
   };
 
   session.roleStates.set(roleName, roleState);
@@ -1242,14 +1244,18 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
         // ★ 修复2: 反向搜索该角色最后一条 streaming 消息并结束
         endRoleStreaming(session, roleName);
 
-        // 更新费用
-        if (message.total_cost_usd) {
-          session.costUsd += message.total_cost_usd;
+        // 更新费用（total_cost_usd 是全局进程级累计值，直接赋值）
+        if (message.total_cost_usd != null) {
+          session.costUsd = message.total_cost_usd;
         }
-        // 更新 token 用量
+        // 更新 token 用量（差值计算：usage 是 query 实例级累计值）
         if (message.usage) {
-          session.totalInputTokens += message.usage.input_tokens || 0;
-          session.totalOutputTokens += message.usage.output_tokens || 0;
+          const inputDelta = (message.usage.input_tokens || 0) - (roleState.lastInputTokens || 0);
+          const outputDelta = (message.usage.output_tokens || 0) - (roleState.lastOutputTokens || 0);
+          if (inputDelta > 0) session.totalInputTokens += inputDelta;
+          if (outputDelta > 0) session.totalOutputTokens += outputDelta;
+          roleState.lastInputTokens = message.usage.input_tokens || 0;
+          roleState.lastOutputTokens = message.usage.output_tokens || 0;
         }
 
         // ★ 持久化 sessionId（每次 turn 完成后保存，用于后续 resume）

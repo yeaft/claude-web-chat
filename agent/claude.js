@@ -346,14 +346,21 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
       // 捕获 result 消息中的 usage 信息
       if (message.type === 'result') {
-        // 累计 usage（无论是否重复，始终统计）
+        // 差值计算：usage 中的值是 query 实例级累计值
         if (message.usage) {
-          state.usage.inputTokens += message.usage.input_tokens || 0;
-          state.usage.outputTokens += message.usage.output_tokens || 0;
-          state.usage.cacheRead += message.usage.cache_read_input_tokens || 0;
-          state.usage.cacheCreation += message.usage.cache_creation_input_tokens || 0;
+          const inputDelta = (message.usage.input_tokens || 0) - (state.lastResultInputTokens || 0);
+          const outputDelta = (message.usage.output_tokens || 0) - (state.lastResultOutputTokens || 0);
+          if (inputDelta > 0) state.usage.inputTokens += inputDelta;
+          if (outputDelta > 0) state.usage.outputTokens += outputDelta;
+          state.usage.cacheRead += Math.max(0, (message.usage.cache_read_input_tokens || 0) - (state.lastResultCacheRead || 0));
+          state.usage.cacheCreation += Math.max(0, (message.usage.cache_creation_input_tokens || 0) - (state.lastResultCacheCreation || 0));
+          state.lastResultInputTokens = message.usage.input_tokens || 0;
+          state.lastResultOutputTokens = message.usage.output_tokens || 0;
+          state.lastResultCacheRead = message.usage.cache_read_input_tokens || 0;
+          state.lastResultCacheCreation = message.usage.cache_creation_input_tokens || 0;
         }
-        state.usage.totalCostUsd += message.total_cost_usd || 0;
+        // total_cost_usd 是全局累计值，直接赋值
+        state.usage.totalCostUsd = message.total_cost_usd || 0;
 
         // 计算上下文使用百分比
         const inputTokens = message.usage?.input_tokens || 0;
