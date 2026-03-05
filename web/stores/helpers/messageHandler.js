@@ -176,6 +176,7 @@ export function handleMessage(store, msg) {
         } else {
           console.log('[Reconnect] Agent not online yet:', store.currentAgent);
           // agent 还没上线，保留 currentAgent 等下次 agent_list 更新
+          break;
         }
       }
       // ★ 自动恢复上次查看的 conversation（UI 刷新后）
