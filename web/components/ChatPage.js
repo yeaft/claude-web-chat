@@ -834,7 +834,10 @@ export default {
       }
       if (this.folderPickerTarget === 'crew') {
         const crewPanel = this.$refs.crewPanel;
-        if (crewPanel) crewPanel.projectDir = path;
+        if (crewPanel) {
+          crewPanel.projectDir = path;
+          crewPanel.onWorkDirChange();
+        }
         this.folderPickerOpen = false;
         return;
       }
