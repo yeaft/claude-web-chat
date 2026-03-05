@@ -25,8 +25,8 @@ function getDevTemplateRoles() {
       claudeMd: 'PM prompt...'
     },
     {
-      name: 'developer', displayName: '超人-托瓦兹', icon: '',
-      description: '全栈开发：架构设计、编码实现、代码审查、测试验证',
+      name: 'developer', displayName: '开发者-托瓦兹', icon: '',
+      description: '架构设计 + 代码实现（不负责 review 和测试）',
       isDecisionMaker: false,
       count: 3,
       claudeMd: 'Developer prompt...'
@@ -211,7 +211,7 @@ describe('CrewConfigPanel - developer count:3 default', () => {
       expect(devRoles).toHaveLength(3);
       expect(devRoles.map(r => r.name)).toEqual(['dev-1', 'dev-2', 'dev-3']);
       expect(devRoles.map(r => r.displayName)).toEqual([
-        '超人-托瓦兹-1', '超人-托瓦兹-2', '超人-托瓦兹-3'
+        '开发者-托瓦兹-1', '开发者-托瓦兹-2', '开发者-托瓦兹-3'
       ]);
     });
 
@@ -406,8 +406,8 @@ describe('CrewConfigPanel - developer claudeMd best practices (b7b48d3)', () => 
     expect(configContent).toContain('实现必须简约且正确，走正确的路，不走捷径');
   });
 
-  it('developer claudeMd should describe self-review responsibility', () => {
-    expect(configContent).toContain('完成编码后自己做 code review');
+  it('developer claudeMd should describe review handoff to reviewer', () => {
+    expect(configContent).toContain('代码要经得起审查者的严格审查');
   });
 
   // --- Developer: Worktree 纪律 ---
@@ -422,7 +422,7 @@ describe('CrewConfigPanel - developer claudeMd best practices (b7b48d3)', () => 
   });
 
   it('developer worktree discipline should require PR merge', () => {
-    expect(configContent).toContain('代码完成并通过自检后，自己提 PR 合并到 main');
+    expect(configContent).toContain('代码完成并通过 review 后，自己提 PR 合并到 main');
   });
 
   // --- Developer: 代码质量要求 appears before Worktree 纪律 ---
@@ -439,7 +439,7 @@ describe('CrewConfigPanel - developer claudeMd best practices (b7b48d3)', () => 
 
   it('"Worktree 纪律" should appear before "协作流程" in developer claudeMd', () => {
     // Extract developer claudeMd section (between 'name: \'developer\'' and next role)
-    const devSection = configContent.split("name: 'developer'")[1].split("name: 'designer'")[0];
+    const devSection = configContent.split("name: 'developer'")[1].split("name: 'reviewer'")[0];
     const worktreeIdx = devSection.indexOf('# Worktree 纪律');
     const workflowIdx = devSection.indexOf('# 协作流程');
     expect(worktreeIdx).toBeGreaterThan(-1);
@@ -448,7 +448,7 @@ describe('CrewConfigPanel - developer claudeMd best practices (b7b48d3)', () => 
   });
 });
 
-describe('CrewConfigPanel - developer self-review capabilities (superman model)', () => {
+describe('CrewConfigPanel - developer team model with reviewer/tester', () => {
   let configContent;
 
   beforeAll(async () => {
@@ -460,22 +460,22 @@ describe('CrewConfigPanel - developer self-review capabilities (superman model)'
     );
   });
 
-  // --- Developer as "superman" should include review + test capabilities ---
+  // --- Developer delegates review to reviewer and testing to tester ---
 
-  it('developer claudeMd should describe self-review capability', () => {
-    expect(configContent).toContain('完成编码后自己做 code review');
+  it('developer claudeMd should describe handoff to reviewer', () => {
+    expect(configContent).toContain('代码要经得起审查者的严格审查');
   });
 
-  it('developer claudeMd should describe self-testing capability', () => {
-    expect(configContent).toContain('自己写测试并运行通过');
+  it('developer claudeMd should describe handoff to tester', () => {
+    expect(configContent).toContain('交给审查者 review、测试者测试');
   });
 
-  it('developer should be named 超人-托瓦兹 in dev template', () => {
-    expect(configContent).toContain("displayName: '超人-托瓦兹'");
+  it('developer should be named 开发者-托瓦兹 in dev template', () => {
+    expect(configContent).toContain("displayName: '开发者-托瓦兹'");
   });
 
-  it('developer description should mention full-stack capabilities', () => {
-    expect(configContent).toContain('全栈开发：架构设计、编码实现、代码审查、测试验证');
+  it('developer description should mention architecture and implementation', () => {
+    expect(configContent).toContain('架构设计 + 代码实现');
   });
 
   it('developer claudeMd should reference Linus Torvalds personality', () => {
@@ -487,17 +487,17 @@ describe('CrewConfigPanel - developer self-review capabilities (superman model)'
     expect(configContent).toContain('禁止偷懒');
   });
 
-  it('developer claudeMd should describe direct PM reporting (no reviewer/tester)', () => {
-    // In superman model, developer reports directly to PM
-    const devSection = configContent.split("name: 'developer'")[1].split("name: 'designer'")[0];
-    expect(devSection).toContain('ROUTE 给 📋 PM(pm) 报告完成');
+  it('dev template should include reviewer and tester roles', () => {
+    const devTemplateSection = configContent.split("type === 'dev'")[1].split("type === 'writing'")[0];
+    expect(devTemplateSection).toContain("name: 'reviewer'");
+    expect(devTemplateSection).toContain("name: 'tester'");
   });
 
-  it('dev template should not include standalone reviewer or tester roles', () => {
-    // Extract only the dev template section
-    const devTemplateSection = configContent.split("loadTemplate('dev')")[1].split("loadTemplate('writing')")[0];
-    // Should not have reviewer or tester as separate roles
-    expect(devTemplateSection).not.toContain("name: 'reviewer'");
-    expect(devTemplateSection).not.toContain("name: 'tester'");
+  it('dev template should have reviewer with Robert C. Martin persona', () => {
+    expect(configContent).toContain('Robert C. Martin');
+  });
+
+  it('dev template should have tester with Kent Beck persona', () => {
+    expect(configContent).toContain('Kent Beck');
   });
 });
