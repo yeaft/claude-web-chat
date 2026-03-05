@@ -11434,32 +11434,6 @@ body {
   white-space: nowrap;
 }
 
-/* Session Meta — right panel bottom, horizontal single line */
-.crew-session-meta {
-  margin-top: auto;
-  padding: 8px 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0;
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.crew-meta-item {
-  color: var(--text-muted);
-}
-
-.crew-meta-item.status-running {
-  color: var(--accent-blue);
-}
-
-.crew-meta-sep {
-  margin: 0 5px;
-  opacity: 0.4;
-}
-
 /* Add Role Button — left panel bottom */
 .crew-add-role-btn {
   display: flex;
@@ -11828,8 +11802,7 @@ body {
   .crew-role-card-name,
   .crew-role-card-feature,
   .crew-role-card-tool,
-  .crew-role-card-dm,
-  .crew-session-meta {
+  .crew-role-card-dm {
     display: none;
   }
 
@@ -12101,17 +12074,11 @@ body {
   margin-left: auto;
 }
 
-.crew-hint-status {
+.crew-hint-sep {
+  color: var(--text-muted);
+  opacity: 0.4;
   font-size: 11px;
-  font-weight: 500;
-  white-space: nowrap;
 }
-
-.crew-hint-status.status-running { color: var(--success); }
-.crew-hint-status.status-paused { color: #eab308; }
-.crew-hint-status.status-waiting { color: var(--accent-blue); }
-.crew-hint-status.status-completed,
-.crew-hint-status.status-stopped { color: var(--text-muted); }
 
 .crew-hint-meta {
   font-size: 11px;
@@ -13425,11 +13392,8 @@ body {
     font-size: 10px;
   }
 
-  .crew-hint-status {
-    font-size: 10px;
-  }
-
-  .crew-hint-meta {
+  .crew-hint-meta,
+  .crew-hint-sep {
     font-size: 10px;
   }
 

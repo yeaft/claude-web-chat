@@ -4324,41 +4324,6 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
   });
 
-  // --- Session Meta moved to right panel ---
-
-  describe('session meta relocated to right panel', () => {
-    it('should have session meta outside crew-panel-right-scroll (in aside)', () => {
-      // Meta should be after the scroll div, still within aside
-      const rightPanel = viewSource.substring(viewSource.indexOf('crew-panel-right'));
-      expect(rightPanel).toContain('class="crew-session-meta"');
-    });
-
-    it('should show round count without maxRounds', () => {
-      // v2 simplified: just round number without "/ maxRounds"
-      expect(viewSource).toContain('store.currentCrewStatus.round || 0');
-      // Should NOT contain maxRounds in the meta section
-      const metaSection = viewSource.substring(viewSource.indexOf('crew-session-meta'));
-      const metaEnd = metaSection.indexOf('</aside>');
-      const meta = metaSection.substring(0, metaEnd);
-      expect(meta).not.toContain('maxRounds');
-    });
-
-    it('should show cost, token, and status as inline items', () => {
-      expect(viewSource).toContain('class="crew-meta-item"');
-      expect(viewSource).toContain('class="crew-meta-sep"');
-      expect(viewSource).toContain('costUsd');
-      expect(viewSource).toContain('statusText');
-    });
-
-    it('should NOT have session meta in left panel', () => {
-      const leftPanel = viewSource.substring(
-        viewSource.indexOf('crew-panel-left'),
-        viewSource.indexOf('</aside>')
-      );
-      expect(leftPanel).not.toContain('crew-session-meta');
-    });
-  });
-
   // --- Right Panel: Feature Kanban v2 ---
 
   describe('right panel feature kanban', () => {
@@ -4964,11 +4929,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- HTML Tag Balance ---
 
   describe('HTML and CSS structure balance', () => {
-    it('should have balanced div tags (157/157)', () => {
+    it('should have balanced div tags (156/156)', () => {
       const opens = (viewSource.match(/<div[\s>]/g) || []).length;
       const closes = (viewSource.match(/<\/div>/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(157);
+      expect(opens).toBe(156);
     });
 
     it('should have balanced template tags', () => {
@@ -4996,11 +4961,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2084/2084)', () => {
+    it('should have balanced CSS braces (2075/2075)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2084);
+      expect(opens).toBe(2075);
     });
   });
 

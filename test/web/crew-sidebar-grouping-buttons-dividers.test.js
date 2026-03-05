@@ -497,24 +497,6 @@ describe('divider removal (bf79ad0)', () => {
     });
   });
 
-  describe('crew-session-meta: border-top removed', () => {
-    it('should NOT have border-top', () => {
-      const metaBlock = styleContent.split('.crew-session-meta')[1];
-      const blockEnd = metaBlock.indexOf('}');
-      const block = metaBlock.substring(0, blockEnd);
-      expect(block).not.toContain('border-top');
-    });
-
-    it('should still have margin-top, padding, display (structure preserved)', () => {
-      const metaBlock = styleContent.split('.crew-session-meta')[1];
-      const blockEnd = metaBlock.indexOf('}');
-      const block = metaBlock.substring(0, blockEnd);
-      expect(block).toContain('margin-top: auto');
-      expect(block).toContain('padding:');
-      expect(block).toContain('display: flex');
-    });
-  });
-
   describe('crew-panel-left-actions: border-top removed', () => {
     it('should NOT have border-top', () => {
       const actionsBlock = styleContent.split('.crew-panel-left-actions')[1];
