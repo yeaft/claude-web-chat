@@ -4970,7 +4970,7 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       const opens = (viewSource.match(/<div[\s>]/g) || []).length;
       const closes = (viewSource.match(/<\/div>/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(162);
+      expect(opens).toBe(161);
     });
 
     it('should have balanced template tags', () => {

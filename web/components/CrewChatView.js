@@ -485,13 +485,9 @@ export default {
               <button class="crew-control-item" @click="controlAction('resume')" v-if="store.currentCrewStatus?.status === 'paused'">
                 <span class="crew-control-icon" v-html="icons.play"></span> 恢复
               </button>
-              <div class="crew-control-divider" v-if="store.currentCrewSession?.roles?.length > 0"></div>
-              <button class="crew-control-item danger" v-for="role in store.currentCrewSession?.roles" :key="role.name" @click="controlAction('stop_role', role.name)">
-                <span class="crew-control-icon" v-html="icons.stop"></span> 停止 {{ role.displayName }}
-              </button>
               <div class="crew-control-divider"></div>
-              <button class="crew-control-item danger" @click="controlAction('stop_all')">
-                <span class="crew-control-icon" v-html="icons.close"></span> 终止 Session
+              <button class="crew-control-item" @click="controlAction('clear')">
+                <span class="crew-control-icon" v-html="icons.close"></span> 清空会话
               </button>
             </div>
           </div>
@@ -1894,8 +1890,8 @@ summary: 请测试以下变更...
 
     controlAction(action, targetRole = null) {
       this.controlOpen = false;
-      if (action === 'stop_all') {
-        if (!confirm('确定要终止整个 Session？所有角色将被停止。')) return;
+      if (action === 'clear') {
+        if (!confirm('确定要清空所有对话？角色配置将保留，但所有对话历史将被重置。')) return;
       }
       this.store.sendCrewControl(action, targetRole);
     },
