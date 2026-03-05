@@ -425,7 +425,8 @@ async function handleMessage(msg) {
 
           if (isWindows) {
             // Windows: 进程持有文件锁，npm install 无法覆盖正在运行的模块文件 (EBUSY)
-            // 策略：生成 detached bat 脚本，等当前进程退出后再 npm install
+            // 策略：生成 detached bat 脚本，等当前进程退出后 pm2 stop（防止 autorestart），
+            //       再 npm install
             const pid = process.pid;
             const configDir = getConfigDir();
             mkdirSync(configDir, { recursive: true });
@@ -448,6 +449,13 @@ async function handleMessage(msg) {
               '',
               ':: Redirect all output to log file',
               'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
+            ];
+
+            // 先等原始 agent 进程退出。
+            // 不能在这之前 pm2 stop，因为 pm2 stop 会发 SIGTERM 杀当前进程，
+            // 导致 agent 还没来得及发 upgrade_agent_ack 就被杀掉。
+            // PID 退出后再由 bat 脚本执行 pm2 stop 阻止 autorestart。
+            batLines.push(
               ':WAIT_LOOP',
               'tasklist /FI "PID eq %PID%" 2>NUL | find /I "%PID%" >NUL',
               'if errorlevel 1 goto PID_EXITED',
@@ -456,17 +464,20 @@ async function handleMessage(msg) {
               '  echo [Upgrade] Timeout waiting for PID %PID% to exit after 60s >> "%LOGFILE%"',
               '  goto PID_EXITED',
               ')',
-              'timeout /T 2 /NOBREAK >NUL',
+              'ping -n 3 127.0.0.1 >NUL',
               'goto WAIT_LOOP',
               ':PID_EXITED',
-            ];
+            );
 
             if (isPm2) {
-              // pm2 可能已自动重启旧代码（exit 触发），先 stop 释放文件锁
+              // PID已退出。但如果 agent 端 pm2 stop 失败，PM2 的 autorestart 可能
+              // 已在 restart_delay(5s) 后启动了新实例。这里 pm2 stop 会停掉新实例，
+              // 确保 npm install 时无进程锁文件。
               batLines.push(
-                'echo [Upgrade] Stopping pm2 agent to release file locks... >> "%LOGFILE%"',
+                'echo [Upgrade] Stopping pm2 to prevent autorestart... >> "%LOGFILE%"',
                 'call pm2 stop yeaft-agent >> "%LOGFILE%" 2>&1',
-                'timeout /T 3 /NOBREAK >NUL',
+                ':: Wait for pm2 to fully terminate the process and release file locks',
+                'ping -n 6 127.0.0.1 >NUL',
               );
             }
 
@@ -504,11 +515,6 @@ async function handleMessage(msg) {
             child.unref();
             console.log(`[Agent] Spawned upgrade script (PID wait for ${pid}, pm2=${isPm2}, dir=${installDir}): ${batPath}`);
             sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
-
-            if (isPm2) {
-              // PM2 环境：先同步 pm2 stop 防止 autorestart 竞态，再 exit
-              try { execSync('pm2 stop yeaft-agent', { timeout: 5000 }); } catch {}
-            }
           } else {
             // Linux/macOS: 生成 detached shell 脚本，先停止服务再升级再启动
             // 避免在升级过程中 systemd 不断重启已删除的旧版本
@@ -611,6 +617,8 @@ async function handleMessage(msg) {
           }
 
           // 清理并退出，让升级脚本接管
+          // 注意: PM2 环境下不能在进程内调用 pm2 stop（会杀死自身进程，后续代码不会执行）
+          // 由 bat 脚本在检测到 PID 退出后执行 pm2 stop，阻止 autorestart
           setTimeout(() => {
             for (const [, term] of ctx.terminals) {
               if (term.pty) { try { term.pty.kill(); } catch {} }
