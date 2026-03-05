@@ -1,8 +1,9 @@
 import MessageItem from './MessageItem.js';
+import AssistantTurn from './AssistantTurn.js';
 
 export default {
   name: 'MessageList',
-  components: { MessageItem },
+  components: { MessageItem, AssistantTurn },
   template: `
     <main class="chat-container" ref="containerRef">
       <!-- Session Loading Overlay - only covers message area -->
@@ -58,18 +59,12 @@ export default {
       <div v-else class="messages">
         <div v-if="store.loadingMoreMessages" class="loading-more">{{ $t('message.loadingMore') }}</div>
         <div v-else-if="store.hasMoreMessages" class="load-more-hint" @click="store.loadMoreMessages()">{{ $t('message.loadMore') }}</div>
-        <template v-for="msg in processedMessages" :key="msg.id">
-          <MessageItem
-            v-if="!msg.groupId || msg.isLastInGroup || expandedGroups[msg.groupId]"
-            :message="msg"
-            v-show="!msg.groupId || msg.isLastInGroup || expandedGroups[msg.groupId]"
-          />
-          <!-- Collapse/expand button after last tool in group -->
-          <div v-if="msg.isLastInGroup && msg.groupSize > 1" class="tool-group-toggle" @click="toggleToolGroup(msg.groupId)">
-            <svg v-if="!expandedGroups[msg.groupId]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-            <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
-            <span>{{ expandedGroups[msg.groupId] ? '收起' : msg.groupSize + ' 个操作' }}</span>
-          </div>
+        <template v-for="item in turnGroups" :key="item.id">
+          <!-- User / system / error messages: rendered by MessageItem -->
+          <MessageItem v-if="item.type === 'user' || item.type === 'system' || item.type === 'error'" :message="item.message" />
+
+          <!-- Assistant Turn card: aggregated rendering -->
+          <AssistantTurn v-else-if="item.type === 'assistant-turn'" :turn="item" />
         </template>
 
         <!-- Minimal Status Indicator -->
@@ -92,72 +87,95 @@ export default {
       return store.agents.filter(a => a.online);
     });
 
-    // 处理消息列表：将 tool-result 合并到对应的 tool-use 中，标记 tool-use 序列位置，分配折叠分组
-    const processedMessages = Vue.computed(() => {
+    // Turn aggregation: group flat messages into turn groups
+    const turnGroups = Vue.computed(() => {
       const messages = store.messages;
       const result = [];
+      let currentTurn = null;
+      let turnCounter = 0;
+
+      const finishTurn = () => {
+        if (currentTurn) {
+          result.push(currentTurn);
+          currentTurn = null;
+        }
+      };
+
+      const startTurn = () => {
+        turnCounter++;
+        currentTurn = {
+          type: 'assistant-turn',
+          id: 'turn_' + turnCounter,
+          textContent: '',
+          isStreaming: false,
+          todoMsg: null,
+          toolMsgs: [],
+          askMsg: null,
+          messages: []
+        };
+      };
 
       for (let i = 0; i < messages.length; i++) {
         const msg = messages[i];
 
-        // 跳过 tool-result 类型的消息（它会被合并到 tool-use 中）
-        if (msg.type === 'tool-result') {
+        if (msg.type === 'user') {
+          finishTurn();
+          result.push({ type: 'user', id: msg.id || 'u_' + i, message: msg });
           continue;
         }
 
-        // 对于 tool-use 消息，检查下一条是否是 tool-result，并标记序列位置
-        if (msg.type === 'tool-use') {
-          const nextMsg = messages[i + 1];
-          const hasResult = nextMsg && nextMsg.type === 'tool-result';
-
-          // 检查前一条非 tool-result 消息是否也是 tool-use
-          let prevIdx = i - 1;
-          while (prevIdx >= 0 && messages[prevIdx].type === 'tool-result') prevIdx--;
-          const prevIsToolUse = prevIdx >= 0 && messages[prevIdx].type === 'tool-use';
-
-          // 检查下一条非 tool-result 消息是否也是 tool-use
-          let nextIdx = hasResult ? i + 2 : i + 1;
-          const nextIsToolUse = nextIdx < messages.length && messages[nextIdx].type === 'tool-use';
-
-          result.push({
-            ...msg,
-            hasResult,
-            isFirst: !prevIsToolUse,
-            isLast: !nextIsToolUse,
-            isRunning: !hasResult && !msg.isHistory,
-            isCompleted: !!hasResult
-          });
-        } else {
-          result.push(msg);
+        if (msg.type === 'system' || msg.type === 'error') {
+          finishTurn();
+          result.push({ type: msg.type, id: msg.id || 's_' + i, message: msg });
+          continue;
         }
-      }
 
-      // 第二遍：为连续 tool-use 分配折叠分组
-      let groupId = 0;
-      let groupStart = -1;
-      for (let i = 0; i <= result.length; i++) {
-        const msg = result[i];
-        const isToolUse = msg && msg.type === 'tool-use';
+        // tool-result: skip (merged into tool-use)
+        if (msg.type === 'tool-result' || msg.type === 'tool_result') {
+          continue;
+        }
 
-        if (isToolUse && groupStart === -1) {
-          // 新分组开始
-          groupStart = i;
-          groupId++;
-        } else if (!isToolUse && groupStart !== -1) {
-          // 分组结束
-          const groupSize = i - groupStart;
-          if (groupSize > 1) {
-            const gid = 'tg-' + groupId;
-            for (let j = groupStart; j < i; j++) {
-              result[j].groupId = gid;
-              result[j].groupSize = groupSize;
-              result[j].isLastInGroup = j === i - 1;
-            }
+        if (msg.type === 'assistant') {
+          if (!currentTurn) startTurn();
+          if (msg.content) {
+            currentTurn.textContent += msg.content;
           }
-          groupStart = -1;
+          if (msg.isStreaming) {
+            currentTurn.isStreaming = true;
+          }
+          currentTurn.messages.push(msg);
+          continue;
         }
+
+        if (msg.type === 'tool-use') {
+          if (!currentTurn) startTurn();
+
+          // Merge tool-result from next message
+          const nextMsg = messages[i + 1];
+          const hasResult = nextMsg && (nextMsg.type === 'tool-result' || nextMsg.type === 'tool_result');
+          const toolEntry = {
+            ...msg,
+            hasResult: hasResult || msg.hasResult || false,
+            toolResult: msg.toolResult || null
+          };
+
+          if (msg.toolName === 'TodoWrite') {
+            currentTurn.todoMsg = toolEntry;
+          } else if (msg.toolName === 'AskUserQuestion') {
+            currentTurn.askMsg = toolEntry;
+          } else {
+            currentTurn.toolMsgs.push(toolEntry);
+          }
+          currentTurn.messages.push(msg);
+          continue;
+        }
+
+        // Unknown type: pass through
+        finishTurn();
+        result.push({ type: msg.type || 'unknown', id: msg.id || 'x_' + i, message: msg });
       }
 
+      finishTurn();
       return result;
     });
 
@@ -172,37 +190,22 @@ export default {
 
     // Track if user is at bottom (within threshold)
     const isAtBottom = Vue.ref(true);
-    const SCROLL_THRESHOLD = 50; // pixels from bottom to consider "at bottom"
-
-    // Tool group collapse state
-    const expandedGroups = Vue.reactive({});
-    const toggleToolGroup = (groupId) => {
-      expandedGroups[groupId] = !expandedGroups[groupId];
-    };
+    const SCROLL_THRESHOLD = 50;
 
     const hasStreamingMessage = Vue.computed(() => {
       return store.messages.some(m => m.isStreaming);
     });
 
-    // 执行状态相关
+    // Execution status
     const currentTool = Vue.computed(() => store.executionStatus.currentTool);
 
     const statusIcon = Vue.computed(() => {
       const tool = currentTool.value;
       if (!tool) return '💭';
-
-      // 根据工具类型返回不同图标
       const iconMap = {
-        'Read': '📖',
-        'Write': '✍️',
-        'Edit': '✏️',
-        'Bash': '⚡',
-        'Glob': '🔍',
-        'Grep': '🔎',
-        'Task': '🤖',
-        'WebFetch': '🌐',
-        'WebSearch': '🔍',
-        'TodoWrite': '📝'
+        'Read': '📖', 'Write': '✍️', 'Edit': '✏️', 'Bash': '⚡',
+        'Glob': '🔍', 'Grep': '🔎', 'Task': '🤖', 'WebFetch': '🌐',
+        'WebSearch': '🔍', 'TodoWrite': '📝'
       };
       return iconMap[tool.name] || '⚙️';
     });
@@ -214,18 +217,12 @@ export default {
     const statusText = Vue.computed(() => {
       const tool = currentTool.value;
       if (!tool) return t('status.thinking');
-
       const textMap = {
-        'Read': t('status.reading'),
-        'Write': t('status.writing'),
-        'Edit': t('status.editing'),
-        'Bash': t('status.executing'),
-        'Glob': t('status.searchingFiles'),
-        'Grep': t('status.searchingContent'),
-        'Task': t('status.executingTask'),
-        'WebFetch': t('status.fetching'),
-        'WebSearch': t('status.searching'),
-        'TodoWrite': t('status.updatingTasks')
+        'Read': t('status.reading'), 'Write': t('status.writing'),
+        'Edit': t('status.editing'), 'Bash': t('status.executing'),
+        'Glob': t('status.searchingFiles'), 'Grep': t('status.searchingContent'),
+        'Task': t('status.executingTask'), 'WebFetch': t('status.fetching'),
+        'WebSearch': t('status.searching'), 'TodoWrite': t('status.updatingTasks')
       };
       return textMap[tool.name] || t('status.executingTool', { name: tool.name });
     });
@@ -233,49 +230,34 @@ export default {
     const statusDetail = Vue.computed(() => {
       const tool = currentTool.value;
       if (!tool || !tool.input) return '';
-
-      // 根据工具类型显示关键信息
-      if (tool.name === 'Read' && tool.input.file_path) {
-        return shortenPath(tool.input.file_path);
-      }
-      if (tool.name === 'Edit' && tool.input.file_path) {
-        return shortenPath(tool.input.file_path);
-      }
-      if (tool.name === 'Write' && tool.input.file_path) {
-        return shortenPath(tool.input.file_path);
-      }
+      if (tool.name === 'Read' && tool.input.file_path) return shortenPath(tool.input.file_path);
+      if (tool.name === 'Edit' && tool.input.file_path) return shortenPath(tool.input.file_path);
+      if (tool.name === 'Write' && tool.input.file_path) return shortenPath(tool.input.file_path);
       if (tool.name === 'Bash' && tool.input.command) {
         const cmd = tool.input.command;
         return cmd.length > 30 ? cmd.slice(0, 30) + '...' : cmd;
       }
-      if (tool.name === 'Glob' && tool.input.pattern) {
-        return tool.input.pattern;
-      }
-      if (tool.name === 'Grep' && tool.input.pattern) {
-        return tool.input.pattern;
-      }
+      if (tool.name === 'Glob' && tool.input.pattern) return tool.input.pattern;
+      if (tool.name === 'Grep' && tool.input.pattern) return tool.input.pattern;
       return '';
     });
 
-    // Check if scrolled to bottom
+    // Scroll handling
     const checkIfAtBottom = () => {
       if (!containerRef.value) return true;
       const { scrollTop, scrollHeight, clientHeight } = containerRef.value;
       return scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;
     };
 
-    // Handle scroll events to track user position
     const onScroll = () => {
       isAtBottom.value = checkIfAtBottom();
 
-      // ★ 检测是否滚动到顶部，加载更多
       if (containerRef.value) {
         const { scrollTop } = containerRef.value;
         if (scrollTop < 100 && store.hasMoreMessages && !store.loadingMoreMessages) {
           const prevScrollHeight = containerRef.value.scrollHeight;
           store.loadMoreMessages();
 
-          // 等新消息渲染后恢复滚动位置
           const unwatch = Vue.watch(
             () => store.loadingMoreMessages,
             (loading) => {
@@ -301,26 +283,14 @@ export default {
       }
     };
 
-    // Only auto-scroll if user is at bottom
     const smartScrollToBottom = () => {
       if (isAtBottom.value) {
         Vue.nextTick(scrollToBottom);
       }
     };
 
-    // Auto-scroll when messages change (only if at bottom)
-    Vue.watch(
-      () => store.messages.length,
-      smartScrollToBottom
-    );
-
-    // Also scroll when streaming content updates (only if at bottom)
-    Vue.watch(
-      () => store.messages[store.messages.length - 1]?.content,
-      smartScrollToBottom
-    );
-
-    // When switching conversations, always scroll to bottom
+    Vue.watch(() => store.messages.length, smartScrollToBottom);
+    Vue.watch(() => store.messages[store.messages.length - 1]?.content, smartScrollToBottom);
     Vue.watch(
       () => store.currentConversation,
       () => {
@@ -331,7 +301,6 @@ export default {
 
     Vue.onMounted(() => {
       scrollToBottom();
-      // Add scroll listener
       if (containerRef.value) {
         containerRef.value.addEventListener('scroll', onScroll);
       }
@@ -349,9 +318,7 @@ export default {
       hasStreamingMessage,
       onlineAgents,
       shortenPath,
-      processedMessages,
-      expandedGroups,
-      toggleToolGroup,
+      turnGroups,
       statusIcon,
       statusIconClass,
       statusText,
