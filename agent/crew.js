@@ -441,6 +441,20 @@ export async function handleCheckCrewExists(msg) {
 }
 
 /**
+ * 删除工作目录下的 .crew 目录
+ */
+export async function handleDeleteCrewDir(msg) {
+  const { projectDir, _requestClientId } = msg;
+  if (!projectDir) return;
+  const crewDir = join(projectDir, '.crew');
+  try {
+    await fs.rm(crewDir, { recursive: true, force: true });
+  } catch {
+    // ignore errors (dir may not exist)
+  }
+}
+
+/**
  * 恢复已停止的 crew session
  */
 export async function resumeCrewSession(msg) {

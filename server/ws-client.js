@@ -788,6 +788,18 @@ async function handleWebMessage(clientId, msg) {
       break;
     }
 
+    case 'delete_crew_dir': {
+      const delCrewAgentId = msg.agentId || client.currentAgent;
+      if (!delCrewAgentId) break;
+      if (!await checkAgentAccess(delCrewAgentId)) break;
+      await forwardToAgent(delCrewAgentId, {
+        type: 'delete_crew_dir',
+        projectDir: msg.projectDir,
+        _requestClientId: clientId
+      });
+      break;
+    }
+
     case 'resume_crew_session': {
       const resumeCrewAgentId = msg.agentId || client.currentAgent;
       if (!await checkAgentAccess(resumeCrewAgentId)) break;

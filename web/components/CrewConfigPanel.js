@@ -52,7 +52,7 @@ export default {
               </div>
             </div>
 
-            <!-- .crew 已存在：显示恢复选项 -->
+            <!-- .crew 已存在：显示恢复/删除选项 -->
             <div class="crew-config-section" v-if="selectedAgent && crewCheckState === 'exists'">
               <div class="crew-exists-banner">
                 <div class="crew-exists-icon">
@@ -67,10 +67,21 @@ export default {
                   <div class="crew-exists-path">{{ shortenPath(projectDir) }}/.crew</div>
                 </div>
               </div>
-              <button class="crew-restore-btn" @click="restoreFromDisk" :disabled="!crewExistsSessionInfo?.sessionId">
-                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
-                恢复此 Crew
-              </button>
+
+              <!-- 操作按钮区 -->
+              <div class="crew-exists-actions">
+                <button class="crew-exists-action-btn" @click="restoreFromDisk"
+                        :disabled="!crewExistsSessionInfo?.sessionId"
+                        v-if="crewExistsSessionInfo?.sessionId">
+                  <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+                  恢复此 Crew
+                </button>
+                <button class="crew-exists-action-btn danger" @click="deleteCrewDir">
+                  <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                  {{ crewExistsSessionInfo?.sessionId ? '删除配置' : '删除并重新创建' }}
+                </button>
+              </div>
+
               <div class="crew-exists-hint" v-if="crewExistsSessionInfo?.sessionId">工作目录已存在 .crew 配置，建议恢复而非重新创建</div>
               <div class="crew-exists-hint" v-else>发现 .crew 目录但无可恢复的 session，请删除后重新创建</div>
             </div>
@@ -431,6 +442,15 @@ export default {
       if (!sessionId) return;
       this.store.resumeCrewSession(sessionId, agentId);
       this.$emit('close');
+    },
+
+    deleteCrewDir() {
+      if (!confirm('确定要删除 .crew 目录？所有 Crew 配置将被清除。')) return;
+      const dir = this.projectDir.trim();
+      if (!dir || !this.selectedAgent) return;
+      this.store.deleteCrewDir(dir, this.selectedAgent);
+      this.crewCheckState = 'none';
+      this.crewExistsSessionInfo = null;
     },
 
     formatStatus(s) {

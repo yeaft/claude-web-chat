@@ -872,6 +872,23 @@ body {
   font-weight: 500;
 }
 
+/* 会话分组标题 */
+.session-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 12px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.session-group-header .session-group-icon {
+  opacity: 0.6;
+}
+
 .session-item {
   padding: 10px 12px;
   border-radius: 8px;
@@ -11092,8 +11109,6 @@ body {
   display: block;
   height: 1px;
   margin: 4px 8px;
-  border-top: 1px dashed var(--border-color);
-  opacity: 0.5;
 }
 
 .crew-feature-history::after {
@@ -11101,8 +11116,6 @@ body {
   display: block;
   height: 1px;
   margin: 4px 8px;
-  border-top: 1px dashed var(--border-color);
-  opacity: 0.5;
 }
 
 .crew-feature-history .crew-message {
@@ -11124,7 +11137,6 @@ body {
 .crew-round-line {
   flex: 1;
   height: 1px;
-  background: var(--border-color);
 }
 
 .crew-round-label {
@@ -11590,7 +11602,6 @@ body {
 .crew-session-meta {
   margin-top: auto;
   padding: 8px 12px;
-  border-top: 1px solid var(--border-light, var(--border-color));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -11702,7 +11713,6 @@ body {
   align-items: center;
   gap: 4px;
   padding: 4px 2px;
-  border-top: 1px solid var(--border-subtle, #333);
   margin-top: 4px;
 }
 
@@ -12809,26 +12819,57 @@ body {
   font-family: monospace;
 }
 
-.crew-restore-btn {
+/* Crew exists - action buttons */
+.crew-exists-actions {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 10px 16px;
-  background: var(--accent-blue);
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-  font-family: inherit;
-  font-weight: 500;
-  transition: opacity 0.15s;
+  gap: 8px;
+  margin-top: 4px;
   margin-bottom: 6px;
 }
 
-.crew-restore-btn:hover {
-  opacity: 0.9;
+.crew-exists-action-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.crew-exists-action-btn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+}
+
+.crew-exists-action-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.crew-exists-action-btn.danger {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.crew-exists-action-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: #ef4444;
+}
+
+.crew-exists-action-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 .crew-exists-hint {

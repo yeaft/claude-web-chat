@@ -23,7 +23,7 @@ import {
 import {
   createCrewSession, handleCrewHumanInput, handleCrewControl,
   addRoleToSession, removeRoleFromSession,
-  handleListCrewSessions, handleCheckCrewExists, resumeCrewSession, removeFromCrewIndex
+  handleListCrewSessions, handleCheckCrewExists, handleDeleteCrewDir, resumeCrewSession, removeFromCrewIndex
 } from './crew.js';
 
 // 需要在断连期间缓冲的消息类型（Claude 输出相关的关键消息）
@@ -302,6 +302,10 @@ async function handleMessage(msg) {
 
     case 'check_crew_exists':
       await handleCheckCrewExists(msg);
+      break;
+
+    case 'delete_crew_dir':
+      await handleDeleteCrewDir(msg);
       break;
 
     case 'resume_crew_session':
