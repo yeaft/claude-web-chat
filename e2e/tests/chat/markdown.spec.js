@@ -28,7 +28,7 @@ test.describe('Markdown 渲染', () => {
     mockAgent.simulateClaudeOutput(convId, markdownText);
     mockAgent.simulateTurnComplete(convId);
 
-    const assistant = chatPage.locator('.message.assistant').last();
+    const assistant = chatPage.locator('.assistant-turn').last();
     await expect(assistant).toBeVisible({ timeout: 5000 });
     return assistant;
   }

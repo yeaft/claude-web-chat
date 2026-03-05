@@ -104,7 +104,7 @@ test.describe('Conversation Management', () => {
 
     mockAgent.simulateClaudeOutput(firstConversationId, 'Reply to first conversation');
     mockAgent.simulateTurnComplete(firstConversationId);
-    await expect(chatPage.locator('.message.assistant').last())
+    await expect(chatPage.locator('.assistant-turn').last())
       .toContainText('Reply to first conversation', { timeout: 5000 });
 
     // Create second conversation

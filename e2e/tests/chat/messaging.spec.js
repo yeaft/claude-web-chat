@@ -64,7 +64,7 @@ test.describe('Messaging', () => {
     mockAgent.simulateTurnComplete(convId);
 
     // Assistant reply should appear
-    await expect(chatPage.locator('.message.assistant').last())
+    await expect(chatPage.locator('.assistant-turn').last())
       .toContainText('Hello! How can I help you today?', { timeout: 5000 });
   });
 
@@ -84,25 +84,25 @@ test.describe('Messaging', () => {
     mockAgent.simulateClaudeOutput(convId, 'Once upon a time');
 
     // Should see the first chunk
-    await expect(chatPage.locator('.message.assistant').last())
+    await expect(chatPage.locator('.assistant-turn').last())
       .toContainText('Once upon a time', { timeout: 5000 });
 
     // The message should have streaming indicator
-    await expect(chatPage.locator('.message.assistant.streaming').last())
+    await expect(chatPage.locator('.assistant-turn.streaming').last())
       .toBeVisible({ timeout: 3000 });
 
     // Simulate streaming: second chunk
     mockAgent.simulateClaudeOutput(convId, ' there was a developer');
 
     // Should see both chunks together
-    await expect(chatPage.locator('.message.assistant').last())
+    await expect(chatPage.locator('.assistant-turn').last())
       .toContainText('Once upon a time', { timeout: 5000 });
 
     // Complete the turn
     mockAgent.simulateTurnComplete(convId);
 
     // Streaming indicator should disappear after turn complete
-    await expect(chatPage.locator('.message.assistant.streaming'))
+    await expect(chatPage.locator('.assistant-turn.streaming'))
       .toHaveCount(0, { timeout: 5000 });
   });
 
@@ -124,7 +124,7 @@ test.describe('Messaging', () => {
       mockAgent.simulateTurnComplete(convId);
 
       // Wait for assistant reply
-      await expect(chatPage.locator('.message.assistant').last())
+      await expect(chatPage.locator('.assistant-turn').last())
         .toContainText(`Reply ${i + 1}`, { timeout: 5000 });
     }
 
