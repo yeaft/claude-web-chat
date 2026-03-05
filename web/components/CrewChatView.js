@@ -1375,11 +1375,31 @@ summary: 请测试以下变更...
   },
 
   watch: {
-    'store.currentConversation'() {
+    'store.currentConversation'(newId, oldId) {
+      // 保存旧会话草稿
+      if (oldId && this.inputText) {
+        this.store.inputDrafts[oldId] = this.inputText;
+      } else if (oldId) {
+        delete this.store.inputDrafts[oldId];
+      }
+      // 恢复新会话草稿
+      this.inputText = (newId && this.store.inputDrafts[newId]) || '';
+      this._draftConvId = newId;
+
       this.visibleBlockCount = 20;
       this.$nextTick(() => {
         setTimeout(() => this.scrollToMeaningfulContent(), 300);
       });
+    },
+    inputText(val) {
+      const convId = this.store.currentConversation;
+      if (convId) {
+        if (val) {
+          this.store.inputDrafts[convId] = val;
+        } else {
+          delete this.store.inputDrafts[convId];
+        }
+      }
     },
     'store.currentCrewMessages': {
       handler() {
@@ -2014,13 +2034,6 @@ summary: 请测试以下变更...
           this.scrollToAsk(this.pendingAsks[0]);
           return;
         }
-        const lastActive = [...this.featureBlocks]
-          .reverse()
-          .find(b => b.type === 'feature' && !b.isCompleted);
-        if (lastActive) {
-          this.scrollToBlock(lastActive);
-          return;
-        }
         this.scrollToBottom();
       });
     },
@@ -2083,6 +2096,7 @@ summary: 请测试以下变更...
     this._cleanupClick = closeMenus;
     // 恢复草稿
     const convId = this.store.currentConversation;
+    this._draftConvId = convId;
     if (convId && this.store.inputDrafts[convId]) {
       this.inputText = this.store.inputDrafts[convId];
     }
@@ -2094,7 +2108,7 @@ summary: 请测试以下变更...
       document.removeEventListener('click', this._cleanupClick);
     }
     // 保存草稿
-    const convId = this.store.currentConversation;
+    const convId = this._draftConvId || this.store.currentConversation;
     if (convId && this.inputText) {
       this.store.inputDrafts[convId] = this.inputText;
     }
