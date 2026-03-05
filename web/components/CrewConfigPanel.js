@@ -226,35 +226,6 @@ export default {
               <span class="crew-config-hint-text">内容将追加到团队共享的 CLAUDE.md，所有角色都能看到</span>
             </div>
 
-            <!-- Session 控制 -->
-            <div class="crew-config-section" v-if="status">
-              <label class="crew-config-label">Session 控制</label>
-              <div class="crew-config-controls">
-                <div class="crew-config-status-info">
-                  <span>状态: <strong>{{ statusLabel }}</strong></span>
-                  <span v-if="status.round">轮次: {{ status.round }}</span>
-                  <span v-if="status.costUsd">费用: \${{ (status.costUsd || 0).toFixed(3) }}</span>
-                </div>
-                <div class="crew-config-control-btns">
-                  <button class="crew-control-action-btn" @click="doControl('pause')" v-if="status.status === 'running'">
-                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-                    暂停
-                  </button>
-                  <button class="crew-control-action-btn" @click="doControl('resume')" v-if="status.status === 'paused'">
-                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-                    恢复
-                  </button>
-                  <button class="crew-control-action-btn" @click="doControl('clear')" v-if="status.status === 'running' || status.status === 'paused'">
-                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M5 13h14v-2H5v2zm-2 4h14v-2H3v2zM7 7v2h14V7H7z"/></svg>
-                    清空
-                  </button>
-                  <button class="crew-control-action-btn danger" @click="doControl('stop_all')">
-                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
-                    终止
-                  </button>
-                </div>
-              </div>
-            </div>
           </template>
 
           <!-- 没有选择 Agent 时的提示 -->
@@ -341,15 +312,6 @@ export default {
     devCount() {
       const dev = this.roles.find(r => r.name === 'developer');
       return dev?.count > 1 ? dev.count : 1;
-    },
-    statusLabel() {
-      const s = this.status?.status;
-      if (s === 'running') return '运行中';
-      if (s === 'paused') return '已暂停';
-      if (s === 'waiting_human') return '等待人工';
-      if (s === 'completed') return '已完成';
-      if (s === 'stopped') return '已停止';
-      return '初始化';
     },
     // 可选的内置角色（排除已添加的）
     availableBuiltinRoles() {
@@ -453,15 +415,6 @@ export default {
       this.crewExistsSessionInfo = null;
     },
 
-    formatStatus(s) {
-      if (s === 'running') return '运行中';
-      if (s === 'paused') return '已暂停';
-      if (s === 'waiting_human') return '等待人工';
-      if (s === 'completed') return '已完成';
-      if (s === 'stopped') return '已停止';
-      if (s === 'max_rounds_reached') return '达到上限';
-      return '已停止';
-    },
     formatSessionTime(ts) {
       if (!ts) return '';
       const d = new Date(ts);
@@ -685,16 +638,6 @@ export default {
       this.pendingRemovals = [];
       this.roles.forEach(r => { delete r._isNew; });
       this.$emit('close');
-    },
-
-    doControl(action) {
-      if (action === 'stop_all') {
-        if (!confirm('确定要终止整个 Session？')) return;
-      }
-      if (action === 'clear') {
-        if (!confirm('确定要清空所有对话？角色配置将保留，但所有对话历史将被重置。')) return;
-      }
-      this.store.sendCrewControl(action);
     }
   }
 };

@@ -103,7 +103,7 @@ export default {
               <button class="crew-action-btn" @click="controlAction('clear')" title="清空会话">
                 <span v-html="icons.close"></span>
               </button>
-              <button class="crew-action-btn danger" @click="controlAction('stop_all')" title="终止 Session">
+              <button class="crew-action-btn danger" @click="controlAction('stop_all')" title="停止当前轮次">
                 <span v-html="icons.stop"></span>
               </button>
             </div>
@@ -1929,9 +1929,6 @@ summary: 请测试以下变更...
       this.controlOpen = false;
       if (action === 'clear') {
         if (!confirm('确定要清空所有对话？角色配置将保留，但所有对话历史将被重置。')) return;
-      }
-      if (action === 'stop_all') {
-        if (!confirm('确定要终止整个 Session？所有角色将被停止。')) return;
       }
       this.store.sendCrewControl(action, targetRole);
     },
