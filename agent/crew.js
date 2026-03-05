@@ -69,12 +69,12 @@ function expandRoles(roles) {
     // reviewer/tester 跟随 developer 的 count
     const count = isExpandable ? devCount : 1;
 
-    if (count <= 1 || !isExpandable) {
-      // 单实例：保持原样，添加元数据
+    if (count <= 1) {
+      // 单实例：保持原名，expandable 角色也分配 groupIndex=1 以获得独立 worktree
       expanded.push({
         ...role,
         roleType: role.name,
-        groupIndex: 0
+        groupIndex: isExpandable ? 1 : 0
       });
     } else {
       // 多实例展开
@@ -99,9 +99,9 @@ function expandRoles(roles) {
 // =====================================================================
 
 /**
- * 为多实例开发组创建 git worktree
+ * 为开发组创建 git worktree
  * 每个 groupIndex 对应一个 worktree，同组的 dev/rev/test 共享
- * count=1 时不创建（向后兼容）
+ * 所有 EXPANDABLE_ROLES（包括 count=1）都会获得独立 worktree
  *
  * @param {string} projectDir - 主项目目录
  * @param {Array} roles - 展开后的角色列表
@@ -572,9 +572,9 @@ export async function createCrewSession(msg) {
   // 初始化共享区
   await initSharedDir(sharedDir, goal, roles, projectDir, sharedKnowledge);
 
-  // 初始化 git worktrees（仅多实例时）
+  // 初始化 git worktrees（所有 EXPANDABLE_ROLES 都会获得独立 worktree）
   const worktreeMap = await initWorktrees(projectDir, roles);
-  // 回填 workDir：同组的 dev-N/rev-N/test-N 共享同一个 worktree
+  // 回填 workDir：同组的 dev/rev/test 共享同一个 worktree
   for (const role of roles) {
     if (role.groupIndex > 0 && worktreeMap.has(role.groupIndex)) {
       role.workDir = worktreeMap.get(role.groupIndex);
