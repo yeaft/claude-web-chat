@@ -437,15 +437,6 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
-    removeCrewGroup(groupIndex) {
-      const session = this.currentCrewSession;
-      if (!session?.roles) return;
-      const rolesToRemove = session.roles.filter(r => r.groupIndex === groupIndex);
-      for (const r of rolesToRemove) {
-        this.removeCrewRole(r.name);
-      }
-    },
-
     handleCrewOutput(msg) {
       if (!msg) return;
       const sid = msg.sessionId;
@@ -466,8 +457,7 @@ export const useChatStore = defineStore('chat', {
           sharedKnowledge: msg.sharedKnowledge || '',
           roles: msg.roles,
           decisionMaker: msg.decisionMaker,
-          maxRounds: msg.maxRounds,
-          groupNames: msg.groupNames || {}
+          maxRounds: msg.maxRounds
         };
         ensureMessages(sid).push({
           id: Date.now(),
@@ -522,8 +512,7 @@ export const useChatStore = defineStore('chat', {
           sharedKnowledge: msg.sharedKnowledge || '',
           roles: msg.roles,
           decisionMaker: msg.decisionMaker,
-          maxRounds: msg.maxRounds,
-          groupNames: msg.groupNames || {}
+          maxRounds: msg.maxRounds
         };
         // 恢复 UI 消息历史
         if (msg.uiMessages && msg.uiMessages.length > 0) {
@@ -745,9 +734,6 @@ export const useChatStore = defineStore('chat', {
         };
         if (msg.roles && this.crewSessions[sid]) {
           this.crewSessions[sid].roles = msg.roles;
-        }
-        if (msg.groupNames && this.crewSessions[sid]) {
-          this.crewSessions[sid].groupNames = msg.groupNames;
         }
         // 根据 activeRoles 同步 _streaming 标记
         const messages = this.crewMessagesMap[sid];

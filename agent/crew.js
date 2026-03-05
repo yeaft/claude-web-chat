@@ -327,8 +327,7 @@ async function saveSessionMeta(session) {
     costUsd: session.costUsd,
     totalInputTokens: session.totalInputTokens,
     totalOutputTokens: session.totalOutputTokens,
-    features: Array.from(session.features.values()),
-    groupNames: session.groupNames || {}
+    features: Array.from(session.features.values())
   };
   await fs.writeFile(join(session.sharedDir, 'session.json'), JSON.stringify(meta, null, 2));
   // 保存 UI 消息历史（用于恢复时重放）
@@ -549,7 +548,6 @@ export async function resumeCrewSession(msg) {
     waitingHumanContext: null,
     pendingRoutes: [],
     features: new Map((meta.features || []).map(f => [f.taskId, f])),
-    groupNames: meta.groupNames || {},
     userId: userId || meta.userId,
     username: username || meta.username,
     agentId: meta.agentId || ctx.CONFIG?.agentName || null,
@@ -671,20 +669,6 @@ export async function createCrewSession(msg) {
     }
   }
 
-  // 生成组名
-  const groupNames = {};
-  const maxGroup = Math.max(0, ...roles.map(r => r.groupIndex || 0));
-  for (let g = 1; g <= maxGroup; g++) {
-    const members = roles.filter(r => r.groupIndex === g);
-    const hasRev = members.some(r => r.roleType === 'reviewer');
-    const hasTest = members.some(r => r.roleType === 'tester');
-    if (hasRev && hasTest) {
-      groupNames[g] = maxGroup > 1 ? `全栈开发组 ${g}` : '全栈开发组';
-    } else {
-      groupNames[g] = maxGroup > 1 ? `开发组 ${g}` : '开发组';
-    }
-  }
-
   // 找到决策者
   const decisionMaker = roles.find(r => r.isDecisionMaker)?.name || roles[0]?.name || null;
 
@@ -710,7 +694,6 @@ export async function createCrewSession(msg) {
     waitingHumanContext: null, // { fromRole, reason, message }
     pendingRoutes: [],        // [{ fromRole, route }] — 暂停时未完成的路由
     features: new Map(),      // taskId → { taskId, taskTitle, createdAt } — 持久化 feature 列表
-    groupNames,               // groupIndex → 组名
     userId,
     username,
     agentId: ctx.CONFIG?.agentName || null,
@@ -740,7 +723,6 @@ export async function createCrewSession(msg) {
     })),
     decisionMaker,
     maxRounds,
-    groupNames,
     userId,
     username
   });
@@ -2758,8 +2740,7 @@ function sendStatusUpdate(session) {
         .filter(([, s]) => s.turnActive && s.currentTool)
         .map(([name, s]) => [name, s.currentTool])
     ),
-    features: Array.from(session.features.values()),
-    groupNames: session.groupNames || {}
+    features: Array.from(session.features.values())
   });
 
   // 异步更新持久化

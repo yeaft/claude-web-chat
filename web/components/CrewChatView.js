@@ -29,8 +29,7 @@ export default {
         <aside class="crew-panel-left">
           <div class="crew-panel-left-scroll">
             <div class="crew-role-list">
-              <!-- 独立角色 (groupIndex=0): pm, designer 等 -->
-              <div v-for="role in groupedRoles.standalone" :key="role.name"
+              <div v-for="role in sessionRoles" :key="role.name"
                    class="crew-role-card"
                    :class="{ 'is-streaming': isRoleStreaming(role.name) }"
                    :style="getRoleStyle(role.name)"
@@ -50,44 +49,6 @@ export default {
                 <div v-if="isRoleStreaming(role.name) && getRoleCurrentTool(role.name)"
                      class="crew-role-card-tool">
                   {{ getRoleCurrentTool(role.name) }}
-                </div>
-              </div>
-              <div v-for="(group, gIdx) in groupedRoles.groups" :key="'g'+gIdx" class="crew-role-group">
-                <div class="crew-role-group-header">
-                  <span class="crew-role-group-name" @dblclick="startEditGroupName(gIdx)">
-                    <template v-if="editingGroupName === gIdx">
-                      <input class="crew-group-name-input" :value="getGroupName(gIdx)"
-                             @blur="saveGroupName(gIdx, $event.target.value)"
-                             @keydown.enter="saveGroupName(gIdx, $event.target.value)"
-                             @keydown.escape="editingGroupName = null"
-                             ref="groupNameInput" />
-                    </template>
-                    <template v-else>{{ getGroupName(gIdx) }}</template>
-                  </span>
-                  <button class="crew-role-group-remove" @click="removeGroup(gIdx)" title="移除整组">
-                    <span v-html="icons.close"></span>
-                  </button>
-                </div>
-                <div v-for="role in group" :key="role.name"
-                     class="crew-role-card crew-role-card-grouped"
-                     :class="{ 'is-streaming': isRoleStreaming(role.name) }"
-                     :style="getRoleStyle(role.name)"
-                     @click="insertAt(role.name)">
-                  <div class="crew-role-card-header">
-                    <span class="crew-role-card-icon">{{ role.icon }}</span>
-                    <span class="crew-role-card-name">{{ role.displayName }}</span>
-                    <span class="crew-role-card-header-actions" @click.stop>
-                      <button class="crew-role-action-btn" @click.stop="compactRole(role.name)" title="压缩上下文">🗜</button>
-                      <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" title="清空对话">🗑</button>
-                    </span>
-                  </div>
-                  <div v-if="getRoleCurrentTask(role.name)" class="crew-role-card-feature">
-                    {{ getRoleCurrentTask(role.name) }}
-                  </div>
-                  <div v-if="isRoleStreaming(role.name) && getRoleCurrentTool(role.name)"
-                       class="crew-role-card-tool">
-                    {{ getRoleCurrentTool(role.name) }}
-                  </div>
                 </div>
               </div>
             </div>
@@ -707,7 +668,6 @@ export default {
       inputText: '',
       controlOpen: false,
       showAddRole: false,
-      editingGroupName: null,
       attachments: [],   // { file, name, preview?, uploading, fileId? }
       uploading: false,
       expandedTurns: {},
@@ -1337,16 +1297,6 @@ summary: 请测试以下变更...
       return this.store.currentCrewSession?.roles || [];
     },
 
-    groupedRoles() {
-      const roles = this.sessionRoles;
-      const standalone = roles.filter(r => !r.groupIndex || r.groupIndex === 0);
-      const groupMap = {};
-      for (const r of roles.filter(r => r.groupIndex > 0)) {
-        (groupMap[r.groupIndex] ||= []).push(r);
-      }
-      return { standalone, groups: groupMap };
-    },
-
     featureKanban() {
       // 1. 收集所有 feature
       const features = new Map();
@@ -1954,39 +1904,6 @@ summary: 请测试以下变更...
       if (!roleName) return;
       if (!confirm(`确定要移除 ${roleName}？角色的 Memory 将保留。`)) return;
       this.store.removeCrewRole(roleName);
-    },
-
-    getGroupName(groupIndex) {
-      return this.store.currentCrewSession?.groupNames?.[groupIndex] || `开发组 ${groupIndex}`;
-    },
-
-    startEditGroupName(groupIndex) {
-      this.editingGroupName = groupIndex;
-      this.$nextTick(() => {
-        const input = this.$refs.groupNameInput;
-        if (input) {
-          const el = Array.isArray(input) ? input[0] : input;
-          el?.focus();
-          el?.select();
-        }
-      });
-    },
-
-    saveGroupName(groupIndex, value) {
-      this.editingGroupName = null;
-      const name = value.trim();
-      if (!name) return;
-      const session = this.store.currentCrewSession;
-      if (session) {
-        if (!session.groupNames) session.groupNames = {};
-        session.groupNames[groupIndex] = name;
-      }
-    },
-
-    removeGroup(groupIndex) {
-      const groupName = this.getGroupName(groupIndex);
-      if (!confirm(`确定要移除整个 ${groupName}？组内所有角色将被移除。`)) return;
-      this.store.removeCrewGroup(Number(groupIndex));
     },
 
     quickAddPreset(preset) {
