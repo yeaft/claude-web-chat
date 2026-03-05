@@ -1,5 +1,17 @@
 version: '3'
 services:
+  # =========================================
+  # MongoDB
+  # =========================================
+  mongo:
+    image: mongo:5.0.6
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+      - mongo-configdb:/data/configdb
+    restart: unless-stopped
   nginx:
     image: nginx:alpine
     container_name: nginx_for_servers
@@ -10,7 +22,6 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
     depends_on:
       - imanage-flask-app
-      - data-api-flask-app
       - claude-webchat
     networks:
       - webnet
@@ -27,67 +38,78 @@ services:
     networks:
       - webnet
 
-  data-api-flask-app:
+  # data-api-flask-app:
+  #   build:
+  #     context: ./
+  #     dockerfile: ServerDockerFile
+  #   container_name: data-api-flask-app
+  #   expose:
+  #     - "8080"
+  #   environment:
+  #     - FLASK_ENV=production
+  #     - MONGODB_HOST=host.docker.internal
+  #   networks:
+  #     - webnet
+  #   extra_hosts:
+  #     - "host.docker.internal:172.17.0.1"
+
+  # reader-app:
+  #   build:
+  #     context: ./reader
+  #     dockerfile: Dockerfile
+  #   container_name: reader-app
+  #   expose:
+  #     - "5123"
+  #   environment:
+  #     - FLASK_ENV=production
+  #     - MONGODB_HOST=host.docker.internal
+  #   networks:
+  #     - webnet
+  #   extra_hosts:
+  #     - "host.docker.internal:172.17.0.1"
+
+  # =========================================
+  # AI-Writor Services (disabled)
+  # =========================================
+  # ai-writor-backend:
+  #   build:
+  #     context: ../ai-writor/backend
+  #     dockerfile: Dockerfile
+  #   container_name: ai-writor-backend
+  #   expose:
+  #     - "5000"
+  #   env_file:
+  #     - ../ai-writor/backend/.env
+  #   environment:
+  #     - FLASK_ENV=production
+  #     - DATABASE_PATH=/app/data/chat.db
+  #   volumes:
+  #     - ../ai-writor/backend/data:/app/data
+  #     - ../ai-writor/backend/uploads:/app/uploads
+  #   networks:
+  #     - webnet
+  #   restart: unless-stopped
+
+  # ai-writor-frontend:
+  #   build:
+  #     context: ../ai-writor/frontend
+  #     dockerfile: Dockerfile
+  #   container_name: ai-writor-frontend
+  #   expose:
+  #     - "9000"
+  #   networks:
+  #     - webnet
+  #   restart: unless-stopped
+
+  # =========================================
+  # Realtime Futures Data Collector
+  # =========================================
+  realtime-collector:
     build:
       context: ./
-      dockerfile: ServerDockerFile
-    container_name: data-api-flask-app
-    expose:
-      - "8080"
-    environment:
-      - FLASK_ENV=production
-      - MONGODB_HOST=host.docker.internal
-    networks:
-      - webnet
-    extra_hosts:
-      - "host.docker.internal:172.17.0.1"
-
-  reader-app:
-    build:
-      context: ./reader
       dockerfile: Dockerfile
-    container_name: reader-app
-    expose:
-      - "5123"
-    environment:
-      - FLASK_ENV=production
-      - MONGODB_HOST=host.docker.internal
-    networks:
-      - webnet
-    extra_hosts:
-      - "host.docker.internal:172.17.0.1"
-
-  # =========================================
-  # AI-Writor Services
-  # =========================================
-  ai-writor-backend:
-    build:
-      context: ../ai-writor/backend
-      dockerfile: Dockerfile
-    container_name: ai-writor-backend
-    expose:
-      - "5000"
-    env_file:
-      - ../ai-writor/backend/.env
-    environment:
-      - FLASK_ENV=production
-      - DATABASE_PATH=/app/data/chat.db
-    volumes:
-      - ../ai-writor/backend/data:/app/data
-      - ../ai-writor/backend/uploads:/app/uploads
-    networks:
-      - webnet
-    restart: unless-stopped
-
-  ai-writor-frontend:
-    build:
-      context: ../ai-writor/frontend
-      dockerfile: Dockerfile
-    container_name: ai-writor-frontend
-    expose:
-      - "9000"
-    networks:
-      - webnet
+    container_name: realtime-collector
+    network_mode: host
     restart: unless-stopped
 
   # =========================================
@@ -107,6 +129,9 @@ services:
     networks:
       - webnet
     restart: unless-stopped
+    stop_grace_period: 10s
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
 
   # =========================================
   # Copilot Proxy Server (copilot.yeaft.com)
@@ -129,6 +154,39 @@ services:
     networks:
       - webnet
     restart: unless-stopped
+
+  # =========================================
+  # V2Ray 443 Proxy (pp.yeaft.com)
+  # =========================================
+  v2ray-443:
+    image: teddysun/xray:latest
+    container_name: v2ray-443
+    expose:
+      - "10086"
+      - "10087"
+    volumes:
+      - /etc/v2ray-443:/etc/xray
+    networks:
+      - webnet
+    restart: unless-stopped
+
+  # =========================================
+  # Watchtower - Auto-update claude-webchat
+  # =========================================
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_POLL_INTERVAL=60
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_CLEANUP=true
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
+  mongo-configdb:
 
 networks:
   webnet:
