@@ -985,49 +985,12 @@ ${roles.length > 0 ? roles.map(r => `- ${roleLabel(r)}(${r.name}): ${r.descripti
 - PM 不做 cherry-pick，只负责打 tag
 - 每次新任务/新 feature 必须基于最新的 main 分支创建新的 worktree，确保在最新代码上开发
 
-# Feature 进度管理
-每个 Feature 使用独立的进度文件来跟踪状态，存放在 context/features/ 目录下。
-
-## 文件命名规范
-- 文件名格式: \`context/features/{task-id}.md\`（如 \`context/features/task-1.md\`）
-- 由 PM 在分配任务时指示 developer 创建初始文件
-
-## 文件格式
-\`\`\`markdown
-# Feature: {taskTitle}
-- task-id: {task-id}
-- 状态: 待开发 | 开发中 | 待审查 | 审查中 | 已完成 | 已阻塞
-- 负责人: {dev角色name}
-- 审查者: {reviewer角色name}
-- 测试者: {tester角色name}
-- 创建时间: {ISO时间}
-
-## 需求描述
-{PM写的需求}
-
-## 实现记录
-_由开发者填写_
-
-## 审查记录
-_由审查者填写_
-
-## 测试记录
-_由测试者填写_
-\`\`\`
-
-## 状态流转规则
-1. PM 创建文件 → 状态「待开发」
-2. dev 开始工作 → 更新为「开发中」，填写实现方案
-3. dev 完成 → 更新为「待审查」，记录改动摘要（reviewer 和 tester 并行工作）
-4. reviewer/tester 开始工作 → 更新为「审查中」，各自填写审查/测试记录
-5. 发现问题需返工 → 更新回「开发中」
-6. 全部通过 → PM 更新为「已完成」
-
-## 角色职责
-- **PM**: 规划 feature 文件（通过 ROUTE 让 dev 创建），填写需求描述，最终标记完成
-- **Developer**: 更新开发状态，填写「实现记录」（方案、改动文件、注意事项）
-- **Reviewer**: 填写「审查记录」（评分、问题列表、是否通过）
-- **Tester**: 填写「测试记录」（测试用例、结果、发现的 Bug）
+# Feature 工作记录
+系统自动管理 \`context/features/{task-id}.md\` 工作记录文件：
+- PM 通过 ROUTE 分配任务（带 task + taskTitle 字段）时自动创建
+- 每次角色 ROUTE 传递时自动追加工作记录
+- 角色收到消息时自动注入对应 task 文件内容作为上下文
+角色不需要手动创建或更新这些文件。
 
 ${sharedMemoryContent}`;
 
@@ -1068,6 +1031,86 @@ _在这里记录重要的信息、决策、进展和待办事项。_
 async function updateSharedClaudeMd(session) {
   const roles = Array.from(session.roles.values());
   await writeSharedClaudeMd(session.sharedDir, session.goal, roles, session.projectDir, session.sharedKnowledge);
+}
+
+// =====================================================================
+// Task File Management (auto-managed by system)
+// =====================================================================
+
+/**
+ * 自动创建 task 进度文件
+ * 当 ROUTE 带有 taskId + taskTitle 时，如果文件不存在则自动创建
+ */
+async function ensureTaskFile(session, taskId, taskTitle, assignee, summary) {
+  const featuresDir = join(session.sharedDir, 'context', 'features');
+  const filePath = join(featuresDir, `${taskId}.md`);
+
+  try {
+    await fs.access(filePath);
+    // 文件已存在，不覆盖
+    return;
+  } catch {
+    // 文件不存在，创建
+  }
+
+  await fs.mkdir(featuresDir, { recursive: true });
+
+  const now = new Date().toISOString();
+  const content = `# Feature: ${taskTitle}
+- task-id: ${taskId}
+- 状态: 待开发
+- 负责人: ${assignee}
+- 创建时间: ${now}
+
+## 需求描述
+${summary}
+
+## 工作记录
+`;
+
+  await fs.writeFile(filePath, content);
+
+  // 同步到 session.features
+  if (!session.features.has(taskId)) {
+    session.features.set(taskId, { taskId, taskTitle, createdAt: Date.now() });
+  }
+
+  console.log(`[Crew] Task file created: ${taskId} (${taskTitle})`);
+}
+
+/**
+ * 追加工作记录到 task 文件
+ * 当角色 ROUTE 时，自动将 summary 追加到对应 task 文件
+ */
+async function appendTaskRecord(session, taskId, roleName, summary) {
+  const filePath = join(session.sharedDir, 'context', 'features', `${taskId}.md`);
+
+  try {
+    await fs.access(filePath);
+  } catch {
+    // 文件不存在，跳过（不应该发生，但防御性处理）
+    return;
+  }
+
+  const role = session.roles.get(roleName);
+  const label = role ? roleLabel(role) : roleName;
+  const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  const record = `\n### ${label} - ${now}\n${summary}\n`;
+
+  await fs.appendFile(filePath, record);
+  console.log(`[Crew] Task record appended: ${taskId} by ${roleName}`);
+}
+
+/**
+ * 读取 task 文件内容（用于注入上下文）
+ */
+async function readTaskFile(session, taskId) {
+  const filePath = join(session.sharedDir, 'context', 'features', `${taskId}.md`);
+  try {
+    return await fs.readFile(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
 }
 
 // =====================================================================
@@ -1359,46 +1402,13 @@ summary: 请实现注册页面，包括邮箱验证
 - TASKS 块不需要在回复最末尾，可以放在任意位置`;
   }
 
-  // Feature 进度记录要求（按角色类型注入）
-  if (role.isDecisionMaker) {
-    prompt += `\n\n# Feature 进度文件管理
-当你分配任务时，需要确保对应的 feature 进度文件被创建：
-1. 文件路径: \`context/features/{task-id}.md\`（如 \`context/features/task-1.md\`）
-2. 使用共享 CLAUDE.md 中定义的文件格式，填写需求描述
-3. 初始状态设为「待开发」
-4. 所有子任务完成后，通过 ROUTE 让 dev 将状态更新为「已完成」
-
-因为你不能使用 Write/Edit 工具，feature 文件的创建和更新都通过 ROUTE 给 developer 执行。在 ROUTE 的 summary 中明确要求 dev 创建/更新 feature 文件，并提供需求描述内容。`;
-  } else if (role.roleType === 'developer') {
-    prompt += `\n\n# Feature 进度记录
-收到任务后，你必须维护 feature 进度文件 \`context/features/{task-id}.md\`：
-1. 如果 PM 要求创建 feature 文件，先创建它（确保 context/features/ 目录存在）
-2. 开始开发时：将状态更新为「开发中」
-3. 开发完成时：将状态更新为「待审查」，在「实现记录」中填写：
-   - 实现方案概述
-   - 修改的文件列表
-   - 需要注意的事项
-4. 收到审查/测试反馈需要修改时：将状态更新回「开发中」，追加修改记录`;
-  } else if (role.roleType === 'reviewer') {
-    prompt += `\n\n# Feature 进度记录
-完成代码审查后，你必须更新 feature 进度文件 \`context/features/{task-id}.md\`：
-1. 在「审查记录」中填写：
-   - 代码质量评分（10分制）
-   - 发现的问题列表（如有）
-   - 审查结论（通过/需修改）
-2. 如果审查通过：不修改状态（等测试也通过后由 PM 标记完成）
-3. 如果需要修改：将状态更新为「开发中」`;
-  } else if (role.roleType === 'tester') {
-    prompt += `\n\n# Feature 进度记录
-完成测试后，你必须更新 feature 进度文件 \`context/features/{task-id}.md\`：
-1. 在「测试记录」中填写：
-   - 测试用例列表及结果
-   - 发现的 Bug（如有）
-   - 测试结论（通过/不通过）
-2. 如果测试通过：不修改状态（等审查也通过后由 PM 标记完成）
-3. 如果发现 Bug：将状态更新为「开发中」`;
-  }
-  // designer 等其他角色不需要维护 feature 进度文件，无需注入额外 prompt
+  // Feature 进度文件说明（系统自动管理，告知角色即可）
+  prompt += `\n\n# Feature 工作记录
+系统会自动管理 \`context/features/{task-id}.md\` 工作记录文件：
+- PM 分配任务时自动创建文件（包含 task-id、标题、需求描述）
+- 每次 ROUTE 传递时自动追加工作记录（角色名、时间、summary）
+- 你收到的消息中会包含 <task-context> 标签，里面是该任务的完整工作记录
+你不需要手动创建或更新这些文件，专注于你的本职工作即可。`;
 
   // 执行者角色的组绑定 prompt（count > 1 时）
   if (role.groupIndex > 0 && role.roleType === 'developer') {
@@ -1909,6 +1919,19 @@ async function executeRoute(session, fromRole, route) {
     return;
   }
 
+  // ★ Task 文件自动管理（fire-and-forget，不阻塞路由执行）
+  if (taskId && summary) {
+    // 如果是决策者发出的 ROUTE（分配任务），自动创建 task 文件
+    const fromRoleConfig = session.roles.get(fromRole);
+    if (fromRoleConfig?.isDecisionMaker && taskTitle && to !== 'human') {
+      ensureTaskFile(session, taskId, taskTitle, to, summary)
+        .catch(e => console.warn(`[Crew] Failed to create task file ${taskId}:`, e.message));
+    }
+    // 任何角色的 ROUTE 都追加工作记录
+    appendTaskRecord(session, taskId, fromRole, summary)
+      .catch(e => console.warn(`[Crew] Failed to append task record ${taskId}:`, e.message));
+  }
+
   // 发送路由消息（UI 显示 → @xxx）
   sendCrewOutput(session, fromRole, 'route', null, { routeTo: to, routeSummary: summary });
 
@@ -1983,6 +2006,15 @@ async function dispatchToRole(session, roleName, content, fromSource, taskId, ta
   // 设置 task（createRoleQuery 之后 roleState 一定存在）
   if (taskId) {
     roleState.currentTask = { taskId, taskTitle };
+  }
+
+  // ★ Task 上下文注入：如果有 taskId，读取 task 文件注入到消息中
+  const effectiveTaskId = taskId || roleState.currentTask?.taskId;
+  if (effectiveTaskId && typeof content === 'string') {
+    const taskContent = await readTaskFile(session, effectiveTaskId);
+    if (taskContent) {
+      content = `${content}\n\n---\n<task-context file="context/features/${effectiveTaskId}.md">\n${taskContent}\n</task-context>`;
+    }
   }
 
   // 记录消息历史
