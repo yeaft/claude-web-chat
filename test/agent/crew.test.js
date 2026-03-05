@@ -4839,10 +4839,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(cssSource).toContain('.crew-kanban-total-fill {');
     });
 
-    it('should have margin-top: auto for bottom positioning', () => {
+    it('should not have margin-top: auto (moved to top)', () => {
       const idx = cssSource.indexOf('.crew-kanban-total {');
       const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-      expect(block).toContain('margin-top: auto');
+      expect(block).not.toContain('margin-top: auto');
+      expect(block).toContain('padding:');
     });
   });
 

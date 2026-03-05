@@ -532,6 +532,18 @@ export default {
         <aside class="crew-panel-right">
           <div class="crew-panel-right-scroll">
 
+            <!-- 总进度 (顶部概览) -->
+            <div class="crew-kanban-total" v-if="kanbanProgress.total > 0">
+              <div class="crew-kanban-total-header">
+                <span>总进度</span>
+                <span>{{ kanbanProgress.done }} / {{ kanbanProgress.total }}  {{ Math.round(kanbanProgress.done / kanbanProgress.total * 100) }}%</span>
+              </div>
+              <div class="crew-kanban-total-bar">
+                <div class="crew-kanban-total-fill"
+                     :style="{ width: (kanbanProgress.done / kanbanProgress.total * 100) + '%' }"></div>
+              </div>
+            </div>
+
             <!-- Feature Cards -->
             <div v-for="feature in featureKanban" :key="feature.taskId"
                  class="crew-feature-card"
@@ -595,18 +607,6 @@ export default {
             <!-- Empty state -->
             <div v-if="featureKanban.length === 0" class="crew-kanban-empty">
               <div class="crew-kanban-empty-text">暂无 Feature</div>
-            </div>
-          </div>
-
-          <!-- 总进度 (底部固定) -->
-          <div class="crew-kanban-total" v-if="kanbanProgress.total > 0">
-            <div class="crew-kanban-total-header">
-              <span>总进度</span>
-              <span>{{ kanbanProgress.done }} / {{ kanbanProgress.total }}  {{ Math.round(kanbanProgress.done / kanbanProgress.total * 100) }}%</span>
-            </div>
-            <div class="crew-kanban-total-bar">
-              <div class="crew-kanban-total-fill"
-                   :style="{ width: (kanbanProgress.done / kanbanProgress.total * 100) + '%' }"></div>
             </div>
           </div>
 
