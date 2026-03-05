@@ -4998,11 +4998,305 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2072/2072)', () => {
+    it('should have balanced CSS braces (2066/2066)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
       expect(opens).toBe(2066);
+    });
+  });
+
+  // =====================================================================
+  // task-41: Stale processing dot — crew 停止后白点消失
+  // =====================================================================
+  describe('task-41: Stale processing dot 清除', () => {
+    let wsAgentSource;
+    let chatStoreSource;
+    let messageHandlerSource;
+
+    beforeAll(async () => {
+      wsAgentSource = await fs.readFile(join(__dirname, '../../server/ws-agent.js'), 'utf-8');
+      chatStoreSource = await fs.readFile(join(__dirname, '../../web/stores/chat.js'), 'utf-8');
+      messageHandlerSource = await fs.readFile(join(__dirname, '../../web/stores/helpers/messageHandler.js'), 'utf-8');
+    });
+
+    // --- 1. server/ws-agent.js: crew_status 时设置 processing = false ---
+    describe('ws-agent: crew_status 设置 processing=false', () => {
+      it('should have crew_status case block', () => {
+        expect(wsAgentSource).toContain("case 'crew_status':");
+      });
+
+      it('should get crew conversation from agent.conversations', () => {
+        expect(wsAgentSource).toContain('agent.conversations.get(msg.sessionId)');
+      });
+
+      it('should check for stopped or completed status', () => {
+        expect(wsAgentSource).toMatch(/msg\.status\s*===\s*'stopped'\s*\|\|\s*msg\.status\s*===\s*'completed'/);
+      });
+
+      it('should set crewConv.processing = false on stop/complete', () => {
+        expect(wsAgentSource).toContain('crewConv.processing = false');
+      });
+
+      it('should still forward to clients after updating processing', () => {
+        const crewStatusMatch = wsAgentSource.match(/case 'crew_status':\s*\{([\s\S]*?)break;/);
+        expect(crewStatusMatch).toBeTruthy();
+        if (crewStatusMatch) {
+          const block = crewStatusMatch[1];
+          expect(block).toContain('crewConv.processing = false');
+          expect(block).toContain('forwardToClients');
+        }
+      });
+
+      it('should guard with crewConv existence check', () => {
+        expect(wsAgentSource).toMatch(/if\s*\(crewConv\s*&&/);
+      });
+    });
+
+    // --- 2. web/stores/chat.js: crew_status handler 删除 processingConversations ---
+    describe('chat.js: crew_status 删除 processingConversations', () => {
+      it('should have crew_status handler in chat store', () => {
+        expect(chatStoreSource).toContain("msg.type === 'crew_status'");
+      });
+
+      it('should delete processingConversations on stopped status', () => {
+        const crewStatusMatch = chatStoreSource.match(/if\s*\(msg\.type\s*===\s*'crew_status'\)([\s\S]*?)return;/);
+        expect(crewStatusMatch).toBeTruthy();
+        if (crewStatusMatch) {
+          const block = crewStatusMatch[1];
+          expect(block).toContain("msg.status === 'stopped'");
+          expect(block).toContain('delete this.processingConversations[sid]');
+        }
+      });
+
+      it('should delete processingConversations on completed status', () => {
+        const crewStatusMatch = chatStoreSource.match(/if\s*\(msg\.type\s*===\s*'crew_status'\)([\s\S]*?)return;/);
+        expect(crewStatusMatch).toBeTruthy();
+        if (crewStatusMatch) {
+          const block = crewStatusMatch[1];
+          expect(block).toContain("msg.status === 'completed'");
+        }
+      });
+
+      it('should check stopped OR completed condition', () => {
+        const crewStatusMatch = chatStoreSource.match(/if\s*\(msg\.type\s*===\s*'crew_status'\)([\s\S]*?)return;/);
+        expect(crewStatusMatch).toBeTruthy();
+        if (crewStatusMatch) {
+          const block = crewStatusMatch[1];
+          expect(block).toMatch(/msg\.status\s*===\s*'stopped'\s*\|\|\s*msg\.status\s*===\s*'completed'/);
+        }
+      });
+
+      it('should still update crewStatuses before clearing processing', () => {
+        const crewStatusMatch = chatStoreSource.match(/if\s*\(msg\.type\s*===\s*'crew_status'\)([\s\S]*?)return;/);
+        expect(crewStatusMatch).toBeTruthy();
+        if (crewStatusMatch) {
+          const block = crewStatusMatch[1];
+          const statusIdx = block.indexOf('this.crewStatuses[sid]');
+          const deleteIdx = block.indexOf('delete this.processingConversations[sid]');
+          expect(statusIdx).toBeGreaterThan(-1);
+          expect(deleteIdx).toBeGreaterThan(-1);
+          expect(statusIdx).toBeLessThan(deleteIdx);
+        }
+      });
+    });
+
+    // --- 3. messageHandler.js: isStaleCrewProcessing 防重连白点 ---
+    describe('messageHandler: isStaleCrewProcessing 防重连白点', () => {
+      it('should define isStaleCrewProcessing variable', () => {
+        expect(messageHandlerSource).toContain('isStaleCrewProcessing');
+      });
+
+      it('should check serverConv.processing && serverConv.type === crew', () => {
+        expect(messageHandlerSource).toContain("serverConv.processing && serverConv.type === 'crew'");
+      });
+
+      it('should check for missing crewSessions as stale indicator', () => {
+        expect(messageHandlerSource).toContain('!store.crewSessions?.[serverConv.id]');
+      });
+
+      it('should combine all three conditions for isStaleCrewProcessing', () => {
+        const match = messageHandlerSource.match(/const isStaleCrewProcessing\s*=\s*([\s\S]*?);/);
+        expect(match).toBeTruthy();
+        if (match) {
+          const condition = match[1];
+          expect(condition).toContain('serverConv.processing');
+          expect(condition).toContain("serverConv.type === 'crew'");
+          expect(condition).toContain('!store.crewSessions?.[serverConv.id]');
+        }
+      });
+
+      it('should use isStaleCrewProcessing in processing sync guard', () => {
+        expect(messageHandlerSource).toContain('&& !isStaleCrewProcessing');
+      });
+
+      it('should prevent stale crew processing from being set to true', () => {
+        const syncMatch = messageHandlerSource.match(
+          /if\s*\(serverConv\.processing\s*&&\s*!isRecentlyClosed[\s\S]*?!isStaleCrewProcessing\)/
+        );
+        expect(syncMatch).toBeTruthy();
+      });
+    });
+
+    // --- 4. 逻辑验证: isStaleCrewProcessing 函数行为 ---
+    describe('逻辑验证: isStaleCrewProcessing 判定', () => {
+      it('should detect stale: processing=true, type=crew, no crewSession', () => {
+        const serverConv = { id: 's1', processing: true, type: 'crew' };
+        const store = { crewSessions: {} };
+        const isStale = serverConv.processing && serverConv.type === 'crew'
+          && !store.crewSessions?.[serverConv.id];
+        expect(isStale).toBe(true);
+      });
+
+      it('should NOT detect stale: processing=true, type=crew, HAS crewSession', () => {
+        const serverConv = { id: 's1', processing: true, type: 'crew' };
+        const store = { crewSessions: { s1: { status: 'running' } } };
+        const isStale = serverConv.processing && serverConv.type === 'crew'
+          && !store.crewSessions?.[serverConv.id];
+        expect(isStale).toBe(false);
+      });
+
+      it('should NOT detect stale: processing=true, type=chat (not crew)', () => {
+        const serverConv = { id: 's1', processing: true, type: 'chat' };
+        const store = { crewSessions: {} };
+        const isStale = serverConv.processing && serverConv.type === 'crew'
+          && !store.crewSessions?.[serverConv.id];
+        expect(isStale).toBe(false);
+      });
+
+      it('should NOT detect stale: processing=false, type=crew, no crewSession', () => {
+        const serverConv = { id: 's1', processing: false, type: 'crew' };
+        const store = { crewSessions: {} };
+        const isStale = serverConv.processing && serverConv.type === 'crew'
+          && !store.crewSessions?.[serverConv.id];
+        expect(isStale).toBe(false);
+      });
+
+      it('should handle missing crewSessions (null/undefined)', () => {
+        const serverConv = { id: 's1', processing: true, type: 'crew' };
+        const store = {};
+        const isStale = serverConv.processing && serverConv.type === 'crew'
+          && !store.crewSessions?.[serverConv.id];
+        expect(isStale).toBe(true);
+      });
+    });
+
+    // --- 5. 端到端场景验证 ---
+    describe('端到端: processing dot 生命周期', () => {
+      it('scenario: crew running → stopped → processing cleared', () => {
+        const processingConversations = { 'crew-1': true };
+        const msg = { type: 'crew_status', status: 'stopped' };
+
+        if (msg.status === 'stopped' || msg.status === 'completed') {
+          delete processingConversations['crew-1'];
+        }
+        expect(processingConversations['crew-1']).toBeUndefined();
+      });
+
+      it('scenario: crew running → completed → processing cleared', () => {
+        const processingConversations = { 'crew-1': true };
+        const msg = { type: 'crew_status', status: 'completed' };
+
+        if (msg.status === 'stopped' || msg.status === 'completed') {
+          delete processingConversations['crew-1'];
+        }
+        expect(processingConversations['crew-1']).toBeUndefined();
+      });
+
+      it('scenario: crew running → paused → processing NOT cleared', () => {
+        const processingConversations = { 'crew-1': true };
+        const msg = { type: 'crew_status', status: 'paused' };
+
+        if (msg.status === 'stopped' || msg.status === 'completed') {
+          delete processingConversations['crew-1'];
+        }
+        expect(processingConversations['crew-1']).toBe(true);
+      });
+
+      it('scenario: reconnect — stale crew processing skipped', () => {
+        const serverConv = { id: 'crew-1', processing: true, type: 'crew' };
+        const store = {
+          crewSessions: {},
+          processingConversations: {},
+          _turnCompletedConvs: new Set()
+        };
+
+        const isStaleCrewProcessing = serverConv.processing && serverConv.type === 'crew'
+          && !store.crewSessions?.[serverConv.id];
+        const isRecentlyClosed = false;
+
+        if (serverConv.processing && !isRecentlyClosed
+            && !store._turnCompletedConvs?.has(serverConv.id)
+            && !isStaleCrewProcessing) {
+          store.processingConversations[serverConv.id] = true;
+        }
+        expect(store.processingConversations['crew-1']).toBeUndefined();
+      });
+
+      it('scenario: reconnect — active crew processing preserved', () => {
+        const serverConv = { id: 'crew-1', processing: true, type: 'crew' };
+        const store = {
+          crewSessions: { 'crew-1': { status: 'running' } },
+          processingConversations: {},
+          _turnCompletedConvs: new Set()
+        };
+
+        const isStaleCrewProcessing = serverConv.processing && serverConv.type === 'crew'
+          && !store.crewSessions?.[serverConv.id];
+        const isRecentlyClosed = false;
+
+        if (serverConv.processing && !isRecentlyClosed
+            && !store._turnCompletedConvs?.has(serverConv.id)
+            && !isStaleCrewProcessing) {
+          store.processingConversations[serverConv.id] = true;
+        }
+        expect(store.processingConversations['crew-1']).toBe(true);
+      });
+
+      it('scenario: reconnect — normal chat processing unaffected', () => {
+        const serverConv = { id: 'chat-1', processing: true, type: 'chat' };
+        const store = {
+          crewSessions: {},
+          processingConversations: {},
+          _turnCompletedConvs: new Set()
+        };
+
+        const isStaleCrewProcessing = serverConv.processing && serverConv.type === 'crew'
+          && !store.crewSessions?.[serverConv.id];
+        const isRecentlyClosed = false;
+
+        if (serverConv.processing && !isRecentlyClosed
+            && !store._turnCompletedConvs?.has(serverConv.id)
+            && !isStaleCrewProcessing) {
+          store.processingConversations[serverConv.id] = true;
+        }
+        expect(store.processingConversations['chat-1']).toBe(true);
+      });
+    });
+
+    // --- 6. server 端 processing 同步: crewConv.processing 影响 conv_list ---
+    describe('ws-agent: crewConv.processing 影响 conv_list', () => {
+      it('should set processing=false BEFORE forwarding to clients', () => {
+        const crewStatusMatch = wsAgentSource.match(/case 'crew_status':\s*\{([\s\S]*?)break;/);
+        expect(crewStatusMatch).toBeTruthy();
+        if (crewStatusMatch) {
+          const block = crewStatusMatch[1];
+          const processingIdx = block.indexOf('crewConv.processing = false');
+          const forwardIdx = block.indexOf('forwardToClients');
+          expect(processingIdx).toBeGreaterThan(-1);
+          expect(forwardIdx).toBeGreaterThan(-1);
+          expect(processingIdx).toBeLessThan(forwardIdx);
+        }
+      });
+
+      it('should handle missing crewConv gracefully (guard check)', () => {
+        const crewStatusMatch = wsAgentSource.match(/case 'crew_status':\s*\{([\s\S]*?)break;/);
+        expect(crewStatusMatch).toBeTruthy();
+        if (crewStatusMatch) {
+          const block = crewStatusMatch[1];
+          expect(block).toMatch(/if\s*\(crewConv\s*&&/);
+        }
+      });
     });
   });
 });
