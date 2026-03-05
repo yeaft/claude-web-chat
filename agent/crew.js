@@ -414,14 +414,14 @@ export async function handleCheckCrewExists(msg) {
   try {
     const stat = await fs.stat(crewDir);
     if (stat.isDirectory()) {
-      // 尝试读取 crew-session.json 获取 session 信息
+      // 尝试读取 session.json 获取 session 信息
       let sessionInfo = null;
       try {
-        const sessionPath = join(crewDir, 'crew-session.json');
+        const sessionPath = join(crewDir, 'session.json');
         const data = await fs.readFile(sessionPath, 'utf-8');
         sessionInfo = JSON.parse(data);
       } catch {
-        // crew-session.json 可能不存在，不影响
+        // session.json 可能不存在，不影响
       }
       ctx.sendToServer({
         type: 'crew_exists_result',
