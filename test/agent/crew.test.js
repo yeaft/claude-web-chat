@@ -4200,7 +4200,7 @@ describe('writeSharedClaudeMd - team best practices (b7b48d3)', () => {
   // --- Worktree 隔离规则 ---
 
   it('should have 7 worktree rules', () => {
-    const section = crewContent.split('# Worktree 隔离规则')[1].split('# Feature 进度管理')[0];
+    const section = crewContent.split('# Worktree 隔离规则')[1].split('# Feature 工作记录')[0];
     const bullets = section.match(/^- /gm);
     expect(bullets).toHaveLength(7);
   });
@@ -4210,7 +4210,7 @@ describe('writeSharedClaudeMd - team best practices (b7b48d3)', () => {
   });
 
   it('cross-group rule should be the 4th rule', () => {
-    const section = crewContent.split('# Worktree 隔离规则')[1].split('# Feature 进度管理')[0];
+    const section = crewContent.split('# Worktree 隔离规则')[1].split('# Feature 工作记录')[0];
     const lines = section.trim().split('\n').filter(l => l.startsWith('- '));
     expect(lines).toHaveLength(7);
     expect(lines[3]).toContain('绝对禁止在其他开发组的 worktree 中操作代码');
@@ -6059,10 +6059,10 @@ describe('Context usage monitoring messages', () => {
 });
 
 // =====================================================================
-// Feature 进度管理 — writeSharedClaudeMd 章节完整性 (commit 8f42cd9)
+// Feature 工作记录 — writeSharedClaudeMd 简化章节 + 系统自动化
 // =====================================================================
 
-describe('writeSharedClaudeMd - Feature 进度管理章节 (8f42cd9)', () => {
+describe('writeSharedClaudeMd - Feature 工作记录章节 (auto-managed)', () => {
   let crewContent;
 
   beforeAll(async () => {
@@ -6075,88 +6075,43 @@ describe('writeSharedClaudeMd - Feature 进度管理章节 (8f42cd9)', () => {
 
   // --- 章节存在性 ---
 
-  it('should have "# Feature 进度管理" section header', () => {
-    expect(crewContent).toContain('# Feature 进度管理');
+  it('should have "# Feature 工作记录" section header', () => {
+    expect(crewContent).toContain('# Feature 工作记录');
   });
 
   it('should place Feature section after Worktree rules and before sharedMemoryContent', () => {
     const worktreeIdx = crewContent.indexOf('# Worktree 隔离规则');
-    const featureIdx = crewContent.indexOf('# Feature 进度管理');
+    const featureIdx = crewContent.indexOf('# Feature 工作记录');
     const memoryIdx = crewContent.indexOf('${sharedMemoryContent}');
     expect(worktreeIdx).toBeLessThan(featureIdx);
     expect(featureIdx).toBeLessThan(memoryIdx);
   });
 
-  // --- 文件命名规范 ---
+  // --- 自动化说明 ---
 
-  it('should have file naming convention with context/features/{task-id}.md', () => {
+  it('should mention automatic management of task files', () => {
+    expect(crewContent).toContain('系统自动管理');
     expect(crewContent).toContain('context/features/{task-id}.md');
-    expect(crewContent).toContain('context/features/task-1.md');
   });
 
-  it('should specify PM instructs developer to create initial file', () => {
-    expect(crewContent).toContain('由 PM 在分配任务时指示 developer 创建初始文件');
+  it('should describe 3 automatic behaviors', () => {
+    expect(crewContent).toContain('PM 通过 ROUTE 分配任务');
+    expect(crewContent).toContain('自动创建');
+    expect(crewContent).toContain('自动追加工作记录');
+    expect(crewContent).toContain('自动注入');
   });
 
-  // --- 文件格式模板 ---
-
-  it('should contain Feature file format template with all required fields', () => {
-    expect(crewContent).toContain('# Feature: {taskTitle}');
-    expect(crewContent).toContain('- task-id: {task-id}');
-    expect(crewContent).toContain('- 状态: 待开发 | 开发中 | 待审查 | 审查中 | 已完成 | 已阻塞');
-    expect(crewContent).toContain('- 负责人: {dev角色name}');
-    expect(crewContent).toContain('- 审查者: {reviewer角色name}');
-    expect(crewContent).toContain('- 测试者: {tester角色name}');
-    expect(crewContent).toContain('- 创建时间: {ISO时间}');
-  });
-
-  it('should contain all 4 sections in Feature file template', () => {
-    expect(crewContent).toContain('## 需求描述');
-    expect(crewContent).toContain('## 实现记录');
-    expect(crewContent).toContain('## 审查记录');
-    expect(crewContent).toContain('## 测试记录');
-  });
-
-  // --- 状态流转规则 ---
-
-  it('should have 6 status flow rules', () => {
-    const section = crewContent.split('## 状态流转规则')[1].split('## 角色职责')[0];
-    const numbered = section.match(/^\d\.\s/gm);
-    expect(numbered).toHaveLength(6);
-  });
-
-  it('should define correct status flow sequence', () => {
-    expect(crewContent).toContain('PM 创建文件 → 状态「待开发」');
-    expect(crewContent).toContain('dev 开始工作 → 更新为「开发中」');
-    expect(crewContent).toContain('dev 完成 → 更新为「待审查」');
-    expect(crewContent).toContain('reviewer/tester 开始工作 → 更新为「审查中」');
-    expect(crewContent).toContain('发现问题需返工 → 更新回「开发中」');
-    expect(crewContent).toContain('全部通过 → PM 更新为「已完成」');
-  });
-
-  // --- 角色职责 ---
-
-  it('should define responsibilities for all 4 role types', () => {
-    const section = crewContent.split('## 角色职责')[1].split('${sharedMemoryContent}')[0];
-    expect(section).toContain('**PM**');
-    expect(section).toContain('**Developer**');
-    expect(section).toContain('**Reviewer**');
-    expect(section).toContain('**Tester**');
-  });
-
-  it('should have 4 role responsibility entries', () => {
-    const section = crewContent.split('## 角色职责')[1].split('${sharedMemoryContent}')[0];
-    const bullets = section.match(/^- \*\*/gm);
-    expect(bullets).toHaveLength(4);
+  it('should state roles do not need manual management', () => {
+    expect(crewContent).toContain('不需要手动创建或更新这些文件');
   });
 });
 
 // =====================================================================
-// buildRoleSystemPrompt — Feature 进度记录指令注入 (commit 8f42cd9)
+// buildRoleSystemPrompt — Feature 工作记录（系统自动管理）
 // =====================================================================
 
-describe('buildRoleSystemPrompt - Feature 进度记录 (8f42cd9)', () => {
-  // Replicate buildRoleSystemPrompt logic with Feature progress tracking
+describe('buildRoleSystemPrompt - Feature 工作记录 (auto-managed)', () => {
+  // Replicate buildRoleSystemPrompt logic with auto-managed Feature tracking
   function roleLabel(r) {
     return r.icon ? `${r.icon} ${r.displayName}` : r.displayName;
   }
@@ -6178,8 +6133,6 @@ describe('buildRoleSystemPrompt - Feature 进度记录 (8f42cd9)', () => {
 
 团队成员:
 ${allRoles.map(r => `- ${roleLabel(r)}: ${r.description}${r.isDecisionMaker ? ' (决策者)' : ''}`).join('\n')}`;
-
-    const hasMultiInstance = allRoles.some(r => r.groupIndex > 0);
 
     if (routeTargets.length > 0) {
       prompt += `\n\n# 路由规则
@@ -6208,140 +6161,19 @@ ${routeTargets.map(r => `- ${r.name}: ${roleLabel(r)} — ${r.description}`).joi
 
     // 决策者额外 prompt
     if (role.isDecisionMaker) {
-      prompt += `\n\n# 工具使用限制（绝对禁令）
-你**绝对不能**使用以下工具修改任何文件：
-- Edit 工具 — 禁止
-- Write 工具 — 禁止
-- NotebookEdit 工具 — 禁止
-
-你**可以**使用的工具：
-- Read — 读取文件内容
-- Grep — 搜索代码
-- Glob — 查找文件
-- Bash — 仅限 git 命令（git status/add/commit/push/tag/log/diff）和只读命令
-
-如果你需要修改任何文件（无论多小的改动），必须 ROUTE 给 developer 执行。`;
-
+      prompt += `\n\n# 工具使用规则
+你**不能**使用 Edit/Write/NotebookEdit 工具修改代码文件。`;
       prompt += `\n\n# 决策者职责
-你是团队的决策者。其他角色遇到不确定的情况会请求你的决策。
-- 如果你有足够的信息做出决策，直接决定并 @相关角色执行
-- 如果你需要更多信息，@具体角色请求补充
-- 如果问题超出你的能力范围或需要业务判断，@human 请人类决定
-- 你可以随时审查其他角色的工作并给出反馈
-- PM 拥有 commit + push + tag 的自主权。只要修改没有大的 regression 影响（测试全通过），PM 可以自行决定 commit、push 和 tag，无需等待人工确认。只有当改动会直接影响对话交互逻辑时，才需要人工介入审核。`;
-
-      if (hasMultiInstance) {
-        const maxGroup = Math.max(...allRoles.map(r => r.groupIndex));
-        const groupLines = [];
-        for (let g = 1; g <= maxGroup; g++) {
-          const members = allRoles.filter(r => r.groupIndex === g);
-          const memberStrs = members.map(r => {
-            const state = session.roleStates.get(r.name);
-            const busy = state?.turnActive;
-            const task = state?.currentTask;
-            if (busy && task) return `${r.name}(忙:${task.taskId} ${task.taskTitle})`;
-            if (busy) return `${r.name}(忙)`;
-            return `${r.name}(空闲)`;
-          });
-          groupLines.push(`组${g}: ${memberStrs.join(' ')}`);
-        }
-
-        prompt += `\n\n# 执行组状态
-${groupLines.join(' / ')}
-
-# 并行任务调度规则
-你有 ${maxGroup} 个开发组可以并行工作。拆分任务时：
-1. 每个子任务分配 task-id（如 task-1）和 taskTitle（如 "实现登录页面"）
-2. 优先分配给**空闲**的开发组，避免给忙碌的 dev 发新任务
-3. 一次可以发**多个 ROUTE 块**来并行分配任务：
-
-\`\`\`
----ROUTE---
-to: dev-1
-task: task-1
-taskTitle: 实现登录页面
-summary: 请实现登录页面，包括表单验证和API调用
----END_ROUTE---
-
----ROUTE---
-to: dev-2
-task: task-2
-taskTitle: 实现注册页面
-summary: 请实现注册页面，包括邮箱验证
----END_ROUTE---
-\`\`\`
-
-4. 每个 dev 完成后会独立经过 reviewer 和 tester 审核，最后 ROUTE 回你
-5. 等待**所有子任务完成**后再做汇总报告
-6. **每次 ROUTE 都必须包含 task 和 taskTitle 字段，不能省略。没有 task 字段的 ROUTE 会导致消息无法按 feature 分组显示**`;
-      }
-
-      prompt += `\n
-# 工作流终结点
-团队的工作流有明确的结束条件。当以下任一条件满足时，你应该给出总结并结束当前工作流：
-1. **代码已提交** - 所有代码修改已经 commit（如需要，可让 developer 执行 git commit）
-2. **需要用户输入** - 遇到需要用户决定的问题时，@human 提出具体问题，等待用户回复
-3. **任务完成** - 所有任务已完成，给出完成总结（列出完成了什么、变更了哪些文件、还有什么后续建议）
-
-重要：不要无限循环地在角色之间传递。当工作实质性完成时，主动给出总结并结束。
-
-# 任务清单
-你可以在回复中添加 TASKS 块来发布/更新任务清单，团队界面会自动展示：
-
-\`\`\`
----TASKS---
-- [ ] 任务描述 #task-1 @角色name
-- [x] 已完成的任务 #task-2 @角色name
----END_TASKS---
-\`\`\`
-
-注意：
-- 每行一个任务，[ ] 表示待办，[x] 表示已完成
-- #taskId 标注对应的 feature ID（如 #task-1），用于精确关联任务完成状态
-- @角色name 标注负责人（可选）
-- 后续回复中可更新 TASKS 块（标记完成的任务）
-- TASKS 块不需要在回复最末尾，可以放在任意位置`;
+你是团队的决策者。`;
     }
 
-    // Feature 进度记录要求（按角色类型注入）
-    if (role.isDecisionMaker) {
-      prompt += `\n\n# Feature 进度文件管理
-当你分配任务时，需要确保对应的 feature 进度文件被创建：
-1. 文件路径: \`context/features/{task-id}.md\`（如 \`context/features/task-1.md\`）
-2. 使用共享 CLAUDE.md 中定义的文件格式，填写需求描述
-3. 初始状态设为「待开发」
-4. 所有子任务完成后，通过 ROUTE 让 dev 将状态更新为「已完成」
-
-因为你不能使用 Write/Edit 工具，feature 文件的创建和更新都通过 ROUTE 给 developer 执行。在 ROUTE 的 summary 中明确要求 dev 创建/更新 feature 文件，并提供需求描述内容。`;
-    } else if (role.roleType === 'developer') {
-      prompt += `\n\n# Feature 进度记录
-收到任务后，你必须维护 feature 进度文件 \`context/features/{task-id}.md\`：
-1. 如果 PM 要求创建 feature 文件，先创建它（确保 context/features/ 目录存在）
-2. 开始开发时：将状态更新为「开发中」
-3. 开发完成时：将状态更新为「待审查」，在「实现记录」中填写：
-   - 实现方案概述
-   - 修改的文件列表
-   - 需要注意的事项
-4. 收到审查/测试反馈需要修改时：将状态更新回「开发中」，追加修改记录`;
-    } else if (role.roleType === 'reviewer') {
-      prompt += `\n\n# Feature 进度记录
-完成代码审查后，你必须更新 feature 进度文件 \`context/features/{task-id}.md\`：
-1. 在「审查记录」中填写：
-   - 代码质量评分（10分制）
-   - 发现的问题列表（如有）
-   - 审查结论（通过/需修改）
-2. 如果审查通过：不修改状态（等测试也通过后由 PM 标记完成）
-3. 如果需要修改：将状态更新为「开发中」`;
-    } else if (role.roleType === 'tester') {
-      prompt += `\n\n# Feature 进度记录
-完成测试后，你必须更新 feature 进度文件 \`context/features/{task-id}.md\`：
-1. 在「测试记录」中填写：
-   - 测试用例列表及结果
-   - 发现的 Bug（如有）
-   - 测试结论（通过/不通过）
-2. 如果测试通过：不修改状态（等审查也通过后由 PM 标记完成）
-3. 如果发现 Bug：将状态更新为「开发中」`;
-    }
+    // Feature 工作记录说明（所有角色统一注入）
+    prompt += `\n\n# Feature 工作记录
+系统会自动管理 \`context/features/{task-id}.md\` 工作记录文件：
+- PM 分配任务时自动创建文件（包含 task-id、标题、需求描述）
+- 每次 ROUTE 传递时自动追加工作记录（角色名、时间、summary）
+- 你收到的消息中会包含 <task-context> 标签，里面是该任务的完整工作记录
+你不需要手动创建或更新这些文件，专注于你的本职工作即可。`;
 
     // 执行者角色的组绑定 prompt（count > 1 时）
     if (role.groupIndex > 0 && role.roleType === 'developer') {
@@ -6404,289 +6236,43 @@ summary: 请实现注册页面，包括邮箱验证
     };
   }
 
-  // --- PM (决策者) Feature 进度文件管理 ---
+  // --- All roles get same Feature 工作记录 section ---
 
-  it('should include "Feature 进度文件管理" for decision maker (PM)', () => {
+  it('should include "Feature 工作记录" for PM (decision maker)', () => {
     const session = createMultiRoleSession();
     const pmRole = session.roles.get('pm');
     const prompt = buildRoleSystemPrompt(pmRole, session);
 
-    expect(prompt).toContain('# Feature 进度文件管理');
+    expect(prompt).toContain('# Feature 工作记录');
+    expect(prompt).toContain('系统会自动管理');
   });
 
-  it('PM prompt should require creating feature files in context/features/', () => {
-    const session = createMultiRoleSession();
-    const pmRole = session.roles.get('pm');
-    const prompt = buildRoleSystemPrompt(pmRole, session);
-
-    expect(prompt).toContain('context/features/');
-    expect(prompt).toContain('{task-id}.md');
-    expect(prompt).toContain('context/features/task-1.md');
-  });
-
-  it('PM prompt should require initial status "待开发"', () => {
-    const session = createMultiRoleSession();
-    const pmRole = session.roles.get('pm');
-    const prompt = buildRoleSystemPrompt(pmRole, session);
-
-    expect(prompt).toContain('初始状态设为「待开发」');
-  });
-
-  it('PM prompt should require marking completed via dev ROUTE', () => {
-    const session = createMultiRoleSession();
-    const pmRole = session.roles.get('pm');
-    const prompt = buildRoleSystemPrompt(pmRole, session);
-
-    expect(prompt).toContain('通过 ROUTE 让 dev 将状态更新为「已完成」');
-  });
-
-  it('PM prompt should note that feature file ops go through developer', () => {
-    const session = createMultiRoleSession();
-    const pmRole = session.roles.get('pm');
-    const prompt = buildRoleSystemPrompt(pmRole, session);
-
-    expect(prompt).toContain('ROUTE 给 developer 执行');
-    expect(prompt).toContain('因为你不能使用 Write/Edit 工具');
-  });
-
-  it('PM prompt should have 4 numbered steps for feature file management', () => {
-    const session = createMultiRoleSession();
-    const pmRole = session.roles.get('pm');
-    const prompt = buildRoleSystemPrompt(pmRole, session);
-
-    const section = prompt.split('# Feature 进度文件管理')[1];
-    const numbered = section.match(/^\d\.\s/gm);
-    expect(numbered).toHaveLength(4);
-  });
-
-  // --- Developer Feature 进度记录 ---
-
-  it('should include "Feature 进度记录" for developer role', () => {
+  it('should include "Feature 工作记录" for developer', () => {
     const session = createMultiRoleSession();
     const devRole = session.roles.get('dev-1');
     const prompt = buildRoleSystemPrompt(devRole, session);
 
-    expect(prompt).toContain('# Feature 进度记录');
+    expect(prompt).toContain('# Feature 工作记录');
+    expect(prompt).toContain('不需要手动创建或更新这些文件');
   });
 
-  it('developer prompt should require maintaining feature progress file', () => {
-    const session = createMultiRoleSession();
-    const devRole = session.roles.get('dev-1');
-    const prompt = buildRoleSystemPrompt(devRole, session);
-
-    expect(prompt).toContain('context/features/{task-id}.md');
-  });
-
-  it('developer prompt should include status "开发中" and "待审查"', () => {
-    const session = createMultiRoleSession();
-    const devRole = session.roles.get('dev-1');
-    const prompt = buildRoleSystemPrompt(devRole, session);
-
-    expect(prompt).toContain('将状态更新为「开发中」');
-    expect(prompt).toContain('将状态更新为「待审查」');
-  });
-
-  it('developer prompt should require filling implementation record', () => {
-    const session = createMultiRoleSession();
-    const devRole = session.roles.get('dev-1');
-    const prompt = buildRoleSystemPrompt(devRole, session);
-
-    expect(prompt).toContain('实现方案概述');
-    expect(prompt).toContain('修改的文件列表');
-    expect(prompt).toContain('需要注意的事项');
-  });
-
-  it('developer prompt should have 4 numbered steps', () => {
-    const session = createMultiRoleSession();
-    const devRole = session.roles.get('dev-1');
-    const prompt = buildRoleSystemPrompt(devRole, session);
-
-    const section = prompt.split('# Feature 进度记录')[1].split('# 开发组绑定')[0];
-    const numbered = section.match(/^\d\.\s/gm);
-    expect(numbered).toHaveLength(4);
-  });
-
-  it('developer prompt should handle feedback rollback to "开发中"', () => {
-    const session = createMultiRoleSession();
-    const devRole = session.roles.get('dev-1');
-    const prompt = buildRoleSystemPrompt(devRole, session);
-
-    expect(prompt).toContain('收到审查/测试反馈需要修改时：将状态更新回「开发中」');
-  });
-
-  // --- Reviewer Feature 进度记录 ---
-
-  it('should include "Feature 进度记录" for reviewer role', () => {
+  it('should include "Feature 工作记录" for reviewer', () => {
     const session = createMultiRoleSession();
     const revRole = session.roles.get('rev-1');
     const prompt = buildRoleSystemPrompt(revRole, session);
 
-    expect(prompt).toContain('# Feature 进度记录');
+    expect(prompt).toContain('# Feature 工作记录');
   });
 
-  it('reviewer prompt should require filling review record', () => {
-    const session = createMultiRoleSession();
-    const revRole = session.roles.get('rev-1');
-    const prompt = buildRoleSystemPrompt(revRole, session);
-
-    expect(prompt).toContain('代码质量评分（10分制）');
-    expect(prompt).toContain('发现的问题列表（如有）');
-    expect(prompt).toContain('审查结论（通过/需修改）');
-  });
-
-  it('reviewer prompt should not modify status on pass', () => {
-    const session = createMultiRoleSession();
-    const revRole = session.roles.get('rev-1');
-    const prompt = buildRoleSystemPrompt(revRole, session);
-
-    expect(prompt).toContain('如果审查通过：不修改状态');
-  });
-
-  it('reviewer prompt should set status to "开发中" on rejection', () => {
-    const session = createMultiRoleSession();
-    const revRole = session.roles.get('rev-1');
-    const prompt = buildRoleSystemPrompt(revRole, session);
-
-    expect(prompt).toContain('如果需要修改：将状态更新为「开发中」');
-  });
-
-  it('reviewer prompt should have 3 numbered steps', () => {
-    const session = createMultiRoleSession();
-    const revRole = session.roles.get('rev-1');
-    const prompt = buildRoleSystemPrompt(revRole, session);
-
-    const section = prompt.split('# Feature 进度记录')[1];
-    const numbered = section.match(/^\d\.\s/gm);
-    expect(numbered).toHaveLength(3);
-  });
-
-  // --- Tester Feature 进度记录 ---
-
-  it('should include "Feature 进度记录" for tester role', () => {
+  it('should include "Feature 工作记录" for tester', () => {
     const session = createMultiRoleSession();
     const testRole = session.roles.get('test-1');
     const prompt = buildRoleSystemPrompt(testRole, session);
 
-    expect(prompt).toContain('# Feature 进度记录');
+    expect(prompt).toContain('# Feature 工作记录');
   });
 
-  it('tester prompt should require filling test record', () => {
-    const session = createMultiRoleSession();
-    const testRole = session.roles.get('test-1');
-    const prompt = buildRoleSystemPrompt(testRole, session);
-
-    expect(prompt).toContain('测试用例列表及结果');
-    expect(prompt).toContain('发现的 Bug（如有）');
-    expect(prompt).toContain('测试结论（通过/不通过）');
-  });
-
-  it('tester prompt should not modify status on pass', () => {
-    const session = createMultiRoleSession();
-    const testRole = session.roles.get('test-1');
-    const prompt = buildRoleSystemPrompt(testRole, session);
-
-    expect(prompt).toContain('如果测试通过：不修改状态');
-  });
-
-  it('tester prompt should set status to "开发中" on bug found', () => {
-    const session = createMultiRoleSession();
-    const testRole = session.roles.get('test-1');
-    const prompt = buildRoleSystemPrompt(testRole, session);
-
-    expect(prompt).toContain('如果发现 Bug：将状态更新为「开发中」');
-  });
-
-  it('tester prompt should have 3 numbered steps', () => {
-    const session = createMultiRoleSession();
-    const testRole = session.roles.get('test-1');
-    const prompt = buildRoleSystemPrompt(testRole, session);
-
-    const section = prompt.split('# Feature 进度记录')[1];
-    const numbered = section.match(/^\d\.\s/gm);
-    expect(numbered).toHaveLength(3);
-  });
-
-  // --- 角色互斥验证 ---
-
-  it('PM should NOT have "Feature 进度记录" (developer/reviewer/tester section)', () => {
-    const session = createMultiRoleSession();
-    const pmRole = session.roles.get('pm');
-    const prompt = buildRoleSystemPrompt(pmRole, session);
-
-    // PM has "Feature 进度文件管理", not "Feature 进度记录"
-    expect(prompt).toContain('# Feature 进度文件管理');
-    expect(prompt).not.toContain('# Feature 进度记录');
-  });
-
-  it('developer should NOT have "Feature 进度文件管理" (PM section)', () => {
-    const session = createMultiRoleSession();
-    const devRole = session.roles.get('dev-1');
-    const prompt = buildRoleSystemPrompt(devRole, session);
-
-    expect(prompt).toContain('# Feature 进度记录');
-    expect(prompt).not.toContain('# Feature 进度文件管理');
-  });
-
-  it('reviewer should NOT have PM or developer feature sections', () => {
-    const session = createMultiRoleSession();
-    const revRole = session.roles.get('rev-1');
-    const prompt = buildRoleSystemPrompt(revRole, session);
-
-    expect(prompt).not.toContain('# Feature 进度文件管理');
-    expect(prompt).not.toContain('维护 feature 进度文件');
-    expect(prompt).toContain('更新 feature 进度文件');
-  });
-
-  it('tester should NOT have PM or developer feature sections', () => {
-    const session = createMultiRoleSession();
-    const testRole = session.roles.get('test-1');
-    const prompt = buildRoleSystemPrompt(testRole, session);
-
-    expect(prompt).not.toContain('# Feature 进度文件管理');
-    expect(prompt).not.toContain('维护 feature 进度文件');
-    expect(prompt).toContain('更新 feature 进度文件');
-  });
-
-  // --- 原有功能不受影响 ---
-
-  it('PM should still have decision maker responsibilities', () => {
-    const session = createMultiRoleSession();
-    const pmRole = session.roles.get('pm');
-    const prompt = buildRoleSystemPrompt(pmRole, session);
-
-    expect(prompt).toContain('# 决策者职责');
-    expect(prompt).toContain('# 工作流终结点');
-    expect(prompt).toContain('# 任务清单');
-  });
-
-  it('developer should still have routing rules', () => {
-    const session = createMultiRoleSession();
-    const devRole = session.roles.get('dev-1');
-    const prompt = buildRoleSystemPrompt(devRole, session);
-
-    expect(prompt).toContain('# 路由规则');
-    expect(prompt).toContain('---ROUTE---');
-  });
-
-  it('PM should still have tool restrictions', () => {
-    const session = createMultiRoleSession();
-    const pmRole = session.roles.get('pm');
-    const prompt = buildRoleSystemPrompt(pmRole, session);
-
-    expect(prompt).toContain('# 工具使用限制（绝对禁令）');
-    expect(prompt).toContain('Edit 工具 — 禁止');
-  });
-
-  it('developer should still have group binding section', () => {
-    const session = createMultiRoleSession();
-    const devRole = session.roles.get('dev-1');
-    const prompt = buildRoleSystemPrompt(devRole, session);
-
-    expect(prompt).toContain('# 开发组绑定');
-    expect(prompt).toContain('你属于开发组 1');
-  });
-
-  it('non-decision-maker without roleType should NOT get any feature section', () => {
+  it('should include "Feature 工作记录" for designer (non-standard role)', () => {
     const roles = new Map([
       ['pm', {
         name: 'pm', displayName: 'PM', icon: '📋',
@@ -6703,7 +6289,72 @@ summary: 请实现注册页面，包括邮箱验证
     const designerRole = session.roles.get('designer');
     const prompt = buildRoleSystemPrompt(designerRole, session);
 
+    expect(prompt).toContain('# Feature 工作记录');
+  });
+
+  // --- Content verification ---
+
+  it('should mention auto-create, auto-append, and auto-inject', () => {
+    const session = createMultiRoleSession();
+    const devRole = session.roles.get('dev-1');
+    const prompt = buildRoleSystemPrompt(devRole, session);
+
+    expect(prompt).toContain('自动创建文件');
+    expect(prompt).toContain('自动追加工作记录');
+    expect(prompt).toContain('<task-context>');
+  });
+
+  it('should mention context/features/{task-id}.md path', () => {
+    const session = createMultiRoleSession();
+    const pmRole = session.roles.get('pm');
+    const prompt = buildRoleSystemPrompt(pmRole, session);
+
+    expect(prompt).toContain('context/features/{task-id}.md');
+  });
+
+  // --- No old per-role sections ---
+
+  it('should NOT have old role-specific "Feature 进度文件管理" section', () => {
+    const session = createMultiRoleSession();
+    const pmRole = session.roles.get('pm');
+    const prompt = buildRoleSystemPrompt(pmRole, session);
+
     expect(prompt).not.toContain('# Feature 进度文件管理');
+  });
+
+  it('should NOT have old role-specific "Feature 进度记录" section', () => {
+    const session = createMultiRoleSession();
+    const devRole = session.roles.get('dev-1');
+    const prompt = buildRoleSystemPrompt(devRole, session);
+
     expect(prompt).not.toContain('# Feature 进度记录');
+  });
+
+  // --- Original functionality preserved ---
+
+  it('PM should still have decision maker responsibilities', () => {
+    const session = createMultiRoleSession();
+    const pmRole = session.roles.get('pm');
+    const prompt = buildRoleSystemPrompt(pmRole, session);
+
+    expect(prompt).toContain('# 决策者职责');
+  });
+
+  it('developer should still have routing rules', () => {
+    const session = createMultiRoleSession();
+    const devRole = session.roles.get('dev-1');
+    const prompt = buildRoleSystemPrompt(devRole, session);
+
+    expect(prompt).toContain('# 路由规则');
+    expect(prompt).toContain('---ROUTE---');
+  });
+
+  it('developer should still have group binding section', () => {
+    const session = createMultiRoleSession();
+    const devRole = session.roles.get('dev-1');
+    const prompt = buildRoleSystemPrompt(devRole, session);
+
+    expect(prompt).toContain('# 开发组绑定');
+    expect(prompt).toContain('你属于开发组 1');
   });
 });
