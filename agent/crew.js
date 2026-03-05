@@ -1090,7 +1090,7 @@ async function clearRoleSessionId(sharedDir, roleName) {
 function classifyRoleError(error) {
   const msg = error.message || '';
   if (/context.*(window|limit|exceeded)|token.*limit|too.*(long|large)|max.*token/i.test(msg)) {
-    return { recoverable: true, reason: 'context_exceeded', skipResume: true, needContentTrim: true };
+    return { recoverable: true, reason: 'context_exceeded', skipResume: true };
   }
   if (/compact|compress|context.*reduc/i.test(msg)) {
     return { recoverable: true, reason: 'compact_failed', skipResume: true };
@@ -1105,22 +1105,6 @@ function classifyRoleError(error) {
     return { recoverable: false, reason: 'spawn_failed' };
   }
   return { recoverable: true, reason: 'unknown', skipResume: false };
-}
-
-/**
- * context 超限时精简重派内容
- */
-function trimContentForRetry(content) {
-  if (typeof content === 'string' && content.length > 2000) {
-    return `[注意: 上一轮因 context 超限被截断重发]\n\n${content.substring(0, 2000)}\n\n[内容已截断，请基于已知信息继续工作]`;
-  }
-  if (Array.isArray(content)) {
-    return content.filter(b => b.type === 'text').map(b => ({
-      ...b,
-      text: b.text.length > 2000 ? b.text.substring(0, 2000) + '\n[已截断]' : b.text
-    }));
-  }
-  return content;
 }
 
 // =====================================================================
