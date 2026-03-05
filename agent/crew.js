@@ -889,18 +889,17 @@ ${roles.length > 0 ? roles.map(r => `- ${roleLabel(r)}(${r.name}): ${r.descripti
 2. 等待其他角色的产出但迟迟没有收到
 3. 任务描述不清楚或有歧义，无法判断正确做法
 4. 遇到超出自己职责范围的问题
-5. 连续尝试5次相同操作仍然失败
-上报时请说明：你在做什么任务、卡在哪里、你认为需要谁来协助。
+5. 连续尝试 2 次相同操作仍然失败
+上报时请说明：你在做什么任务、卡在哪里、你认为需要谁来协助。PM 会统筹全局，判断是分配给合适的人还是调整任务顺序。
 
 # Worktree 隔离规则
-- 多实例模式下，每个开发组（dev-N/rev-N/test-N）在独立的 git worktree 中工作
-- 每个角色必须在自己的 worktree 路径下操作代码，绝对不要操作项目主目录
-- 绝对禁止在其他开发组的 branch 或 worktree 中操作代码
+- dev/reviewer/tester 角色必须在各自分配的 worktree 中工作，绝对禁止在项目主目录或 main 分支上修改代码
+- 每个角色的 CLAUDE.md 会标明「代码工作目录」，该路径就是你的 worktree，所有文件操作必须使用该路径
+- PM 和 designer 不使用 worktree，他们在项目主目录下以只读方式工作
+- 绝对禁止在其他开发组的 worktree 中操作代码
 - 代码完成并通过 review 后，dev 自己提 PR 合并到 main 分支
 - PM 不做 cherry-pick，只负责打 tag
-- 合并完成后清理旧的 worktree
 - 每次新任务/新 feature 必须基于最新的 main 分支创建新的 worktree，确保在最新代码上开发
-- 禁止复用旧的 worktree 开发新任务，因为旧 worktree 的代码基线可能已过时
 
 ${sharedMemoryContent}`;
 
@@ -921,12 +920,9 @@ ${role.claudeMd || role.description}
   // 有独立 worktree 的角色，覆盖代码工作目录
   if (role.workDir) {
     claudeMd += `
-# 代码工作目录（重要！）
+# 代码工作目录
 ${role.workDir}
-所有代码操作必须在此 worktree 路径下进行。
-绝对禁止直接操作项目主目录或其他组的 worktree，否则会覆盖其他开发组的修改。
-代码完成并通过 review 后，自己提 PR 合并到 main。
-此 worktree 仅用于当前任务，合并后会被清理，新任务会创建新的 worktree。
+所有代码操作请使用此路径。不要使用项目主目录。
 `;
   }
 
