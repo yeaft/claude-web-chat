@@ -474,20 +474,19 @@ export default {
           <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
           <div class="crew-hint-controls" style="position: relative;">
             <button class="crew-hint-btn" @click.stop="controlOpen = !controlOpen" title="控制">
-              <span v-if="store.currentCrewStatus?.status === 'running'" v-html="icons.pause"></span>
-              <span v-else-if="store.currentCrewStatus?.status === 'paused'" v-html="icons.play"></span>
-              <span v-else v-html="icons.settings"></span>
+              <span v-html="icons.settings"></span>
             </button>
             <div class="crew-control-dropdown" v-if="controlOpen" @click.stop>
-              <button class="crew-control-item" @click="controlAction('pause')" v-if="store.currentCrewStatus?.status === 'running'">
-                <span class="crew-control-icon" v-html="icons.pause"></span> 暂停全部
-              </button>
-              <button class="crew-control-item" @click="controlAction('resume')" v-if="store.currentCrewStatus?.status === 'paused'">
-                <span class="crew-control-icon" v-html="icons.play"></span> 恢复
-              </button>
-              <div class="crew-control-divider"></div>
               <button class="crew-control-item" @click="controlAction('clear')">
                 <span class="crew-control-icon" v-html="icons.close"></span> 清空会话
+              </button>
+              <div class="crew-control-divider" v-if="store.currentCrewSession?.roles?.length > 0"></div>
+              <button class="crew-control-item danger" v-for="role in store.currentCrewSession?.roles" :key="role.name" @click="controlAction('stop_role', role.name)">
+                <span class="crew-control-icon" v-html="icons.stop"></span> 停止 {{ role.displayName }}
+              </button>
+              <div class="crew-control-divider"></div>
+              <button class="crew-control-item danger" @click="controlAction('stop_all')">
+                <span class="crew-control-icon" v-html="icons.close"></span> 终止 Session
               </button>
             </div>
           </div>
@@ -968,7 +967,7 @@ summary: 请测试以下变更...
   computed: {
     statusText() {
       const status = this.store.currentCrewStatus?.status;
-      if (status === 'running') return '运行中';
+      if (status === 'running') return '已完成';
       if (status === 'paused') return '已暂停';
       if (status === 'waiting_human') return '等待人工';
       if (status === 'completed') return '已完成';
@@ -1892,6 +1891,9 @@ summary: 请测试以下变更...
       this.controlOpen = false;
       if (action === 'clear') {
         if (!confirm('确定要清空所有对话？角色配置将保留，但所有对话历史将被重置。')) return;
+      }
+      if (action === 'stop_all') {
+        if (!confirm('确定要终止整个 Session？所有角色将被停止。')) return;
       }
       this.store.sendCrewControl(action, targetRole);
     },
