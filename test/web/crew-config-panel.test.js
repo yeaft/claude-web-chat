@@ -25,29 +25,11 @@ function getDevTemplateRoles() {
       claudeMd: 'PM prompt...'
     },
     {
-      name: 'architect', displayName: '架构师-福勒', icon: '',
-      description: '系统设计和技术决策',
-      isDecisionMaker: false,
-      claudeMd: 'Architect prompt...'
-    },
-    {
-      name: 'developer', displayName: '开发者-托瓦兹', icon: '',
-      description: '代码编写和功能实现',
+      name: 'developer', displayName: '超人-托瓦兹', icon: '',
+      description: '全栈开发：架构设计、编码实现、代码审查、测试验证',
       isDecisionMaker: false,
       count: 3,
       claudeMd: 'Developer prompt...'
-    },
-    {
-      name: 'reviewer', displayName: '审查者-马丁', icon: '',
-      description: '代码审查和质量把控',
-      isDecisionMaker: false,
-      claudeMd: 'Reviewer prompt...'
-    },
-    {
-      name: 'tester', displayName: '测试-贝克', icon: '',
-      description: '测试用例编写和质量验证',
-      isDecisionMaker: false,
-      claudeMd: 'Tester prompt...'
     },
     {
       name: 'designer', displayName: '设计师-拉姆斯', icon: '',
@@ -141,19 +123,15 @@ describe('CrewConfigPanel - developer count:3 default', () => {
     it('should NOT have count on non-expandable roles', () => {
       const roles = getDevTemplateRoles();
       const pm = roles.find(r => r.name === 'pm');
-      const architect = roles.find(r => r.name === 'architect');
       const designer = roles.find(r => r.name === 'designer');
       expect(pm.count).toBeUndefined();
-      expect(architect.count).toBeUndefined();
       expect(designer.count).toBeUndefined();
     });
 
-    it('reviewer and tester should not have explicit count (they follow developer)', () => {
+    it('dev template should have 3 roles (pm, developer, designer)', () => {
       const roles = getDevTemplateRoles();
-      const reviewer = roles.find(r => r.name === 'reviewer');
-      const tester = roles.find(r => r.name === 'tester');
-      expect(reviewer.count).toBeUndefined();
-      expect(tester.count).toBeUndefined();
+      expect(roles).toHaveLength(3);
+      expect(roles.map(r => r.name)).toEqual(['pm', 'developer', 'designer']);
     });
   });
 
@@ -219,11 +197,9 @@ describe('CrewConfigPanel - developer count:3 default', () => {
       const roles = getDevTemplateRoles();
       const mapped = mapRolesForStart(roles);
       const pm = mapped.find(r => r.name === 'pm');
-      const reviewer = mapped.find(r => r.name === 'reviewer');
-      const tester = mapped.find(r => r.name === 'tester');
+      const designer = mapped.find(r => r.name === 'designer');
       expect(pm.count).toBe(1);
-      expect(reviewer.count).toBe(1);
-      expect(tester.count).toBe(1);
+      expect(designer.count).toBe(1);
     });
   });
 
@@ -235,12 +211,15 @@ describe('CrewConfigPanel - developer count:3 default', () => {
       expect(devRoles).toHaveLength(3);
       expect(devRoles.map(r => r.name)).toEqual(['dev-1', 'dev-2', 'dev-3']);
       expect(devRoles.map(r => r.displayName)).toEqual([
-        '开发者-托瓦兹-1', '开发者-托瓦兹-2', '开发者-托瓦兹-3'
+        '超人-托瓦兹-1', '超人-托瓦兹-2', '超人-托瓦兹-3'
       ]);
     });
 
-    it('should expand reviewer into rev-1, rev-2, rev-3 (following developer count)', () => {
-      const roles = mapRolesForStart(getDevTemplateRoles());
+    it('should expand reviewer into rev-1, rev-2, rev-3 when present (following developer count)', () => {
+      const roles = mapRolesForStart([
+        ...getDevTemplateRoles(),
+        { name: 'reviewer', displayName: '审查者-马丁', icon: '', description: '代码审查', claudeMd: '' }
+      ]);
       const expanded = expandRoles(roles);
       const revRoles = expanded.filter(r => r.roleType === 'reviewer');
       expect(revRoles).toHaveLength(3);
@@ -250,8 +229,11 @@ describe('CrewConfigPanel - developer count:3 default', () => {
       ]);
     });
 
-    it('should expand tester into test-1, test-2, test-3 (following developer count)', () => {
-      const roles = mapRolesForStart(getDevTemplateRoles());
+    it('should expand tester into test-1, test-2, test-3 when present (following developer count)', () => {
+      const roles = mapRolesForStart([
+        ...getDevTemplateRoles(),
+        { name: 'tester', displayName: '测试-贝克', icon: '', description: '测试验证', claudeMd: '' }
+      ]);
       const expanded = expandRoles(roles);
       const testRoles = expanded.filter(r => r.roleType === 'tester');
       expect(testRoles).toHaveLength(3);
@@ -261,16 +243,13 @@ describe('CrewConfigPanel - developer count:3 default', () => {
       ]);
     });
 
-    it('should NOT expand pm, architect, designer', () => {
+    it('should NOT expand pm, designer', () => {
       const roles = mapRolesForStart(getDevTemplateRoles());
       const expanded = expandRoles(roles);
       const pm = expanded.filter(r => r.roleType === 'pm');
-      const architect = expanded.filter(r => r.roleType === 'architect');
       const designer = expanded.filter(r => r.roleType === 'designer');
       expect(pm).toHaveLength(1);
       expect(pm[0].name).toBe('pm');
-      expect(architect).toHaveLength(1);
-      expect(architect[0].name).toBe('architect');
       expect(designer).toHaveLength(1);
       expect(designer[0].name).toBe('designer');
     });
@@ -300,12 +279,12 @@ describe('CrewConfigPanel - developer count:3 default', () => {
       });
     });
 
-    it('total expanded roles should be 6 (non-expandable) + 9 (3 expandable × 3) = 12', () => {
+    it('total expanded roles should be 2 (non-expandable) + 3 (developer × 3) = 5', () => {
       const roles = mapRolesForStart(getDevTemplateRoles());
       const expanded = expandRoles(roles);
-      // pm + architect + designer = 3 non-expandable, kept as-is
-      // developer + reviewer + tester = 3 expandable × 3 = 9
-      expect(expanded).toHaveLength(12);
+      // pm + designer = 2 non-expandable, kept as-is
+      // developer = 1 expandable × 3 = 3
+      expect(expanded).toHaveLength(5);
     });
   });
 
@@ -427,8 +406,8 @@ describe('CrewConfigPanel - developer claudeMd best practices (b7b48d3)', () => 
     expect(configContent).toContain('实现必须简约且正确，走正确的路，不走捷径');
   });
 
-  it('developer claudeMd should reference 10分 scoring standard', () => {
-    expect(configContent).toContain('10分制，9分以上才通过');
+  it('developer claudeMd should describe self-review responsibility', () => {
+    expect(configContent).toContain('完成编码后自己做 code review');
   });
 
   // --- Developer: Worktree 纪律 ---
@@ -443,7 +422,7 @@ describe('CrewConfigPanel - developer claudeMd best practices (b7b48d3)', () => 
   });
 
   it('developer worktree discipline should require PR merge', () => {
-    expect(configContent).toContain('代码完成并通过 review 后，自己提 PR 合并到 main');
+    expect(configContent).toContain('代码完成并通过自检后，自己提 PR 合并到 main');
   });
 
   // --- Developer: 代码质量要求 appears before Worktree 纪律 ---
@@ -460,7 +439,7 @@ describe('CrewConfigPanel - developer claudeMd best practices (b7b48d3)', () => 
 
   it('"Worktree 纪律" should appear before "协作流程" in developer claudeMd', () => {
     // Extract developer claudeMd section (between 'name: \'developer\'' and next role)
-    const devSection = configContent.split("name: 'developer'")[1].split("name: 'reviewer'")[0];
+    const devSection = configContent.split("name: 'developer'")[1].split("name: 'designer'")[0];
     const worktreeIdx = devSection.indexOf('# Worktree 纪律');
     const workflowIdx = devSection.indexOf('# 协作流程');
     expect(worktreeIdx).toBeGreaterThan(-1);
@@ -469,7 +448,7 @@ describe('CrewConfigPanel - developer claudeMd best practices (b7b48d3)', () => 
   });
 });
 
-describe('CrewConfigPanel - reviewer claudeMd best practices (b7b48d3)', () => {
+describe('CrewConfigPanel - developer self-review capabilities (superman model)', () => {
   let configContent;
 
   beforeAll(async () => {
@@ -481,64 +460,44 @@ describe('CrewConfigPanel - reviewer claudeMd best practices (b7b48d3)', () => {
     );
   });
 
-  // --- Reviewer: 审查标准（严格执行）---
+  // --- Developer as "superman" should include review + test capabilities ---
 
-  it('reviewer claudeMd should contain "审查标准（严格执行）" section', () => {
-    expect(configContent).toContain('# 审查标准（严格执行）');
+  it('developer claudeMd should describe self-review capability', () => {
+    expect(configContent).toContain('完成编码后自己做 code review');
   });
 
-  it('reviewer claudeMd should use 10分制 scoring', () => {
-    expect(configContent).toContain('10分制评分');
+  it('developer claudeMd should describe self-testing capability', () => {
+    expect(configContent).toContain('自己写测试并运行通过');
   });
 
-  it('reviewer claudeMd should require 9分 to pass', () => {
-    expect(configContent).toContain('9分以上才能通过');
-    expect(configContent).toContain('8分及以下必须打回修改');
+  it('developer should be named 超人-托瓦兹 in dev template', () => {
+    expect(configContent).toContain("displayName: '超人-托瓦兹'");
   });
 
-  it('reviewer claudeMd should define 4 scoring dimensions', () => {
-    expect(configContent).toContain('正确性(3分)');
-    expect(configContent).toContain('简洁性(3分)');
-    expect(configContent).toContain('可维护性(2分)');
-    expect(configContent).toContain('测试覆盖(2分)');
+  it('developer description should mention full-stack capabilities', () => {
+    expect(configContent).toContain('全栈开发：架构设计、编码实现、代码审查、测试验证');
   });
 
-  it('reviewer claudeMd should have zero-tolerance items', () => {
-    expect(configContent).toContain('零容忍项（发现任何一项直接打回）');
+  it('developer claudeMd should reference Linus Torvalds personality', () => {
+    expect(configContent).toContain('Linus Torvalds');
   });
 
-  it('reviewer zero-tolerance should include workaround', () => {
-    expect(configContent).toContain('workaround 式实现');
-    expect(configContent).toContain('不接受临时变通或绕过方案');
+  it('developer claudeMd should emphasize code quality standards', () => {
+    expect(configContent).toContain('禁止 workaround');
+    expect(configContent).toContain('禁止偷懒');
   });
 
-  it('reviewer zero-tolerance should include lazy implementation', () => {
-    expect(configContent).toContain('偷懒实现');
-    expect(configContent).toContain('硬编码、copy-paste、跳过边界检查');
+  it('developer claudeMd should describe direct PM reporting (no reviewer/tester)', () => {
+    // In superman model, developer reports directly to PM
+    const devSection = configContent.split("name: 'developer'")[1].split("name: 'designer'")[0];
+    expect(devSection).toContain('ROUTE 给 📋 PM(pm) 报告完成');
   });
 
-  it('reviewer zero-tolerance should include over-engineering', () => {
-    expect(configContent).toContain('过度工程');
-    expect(configContent).toContain('不必要的抽象、过度封装、提前优化');
-  });
-
-  it('reviewer claudeMd should require simplicity', () => {
-    expect(configContent).toContain('能用3行代码解决的不用10行，但不能牺牲可读性');
-  });
-
-  it('reviewer claudeMd should require worktree verification', () => {
-    expect(configContent).toContain('审查时必须验证 dev 是否在正确的 worktree 分支上提交');
-  });
-
-  // --- Section ordering ---
-
-  it('"审查标准（严格执行）" should appear before "协作流程" in reviewer claudeMd', () => {
-    // Get reviewer section specifically (between 'reviewer' and 'tester')
-    const reviewerSection = configContent.split("name: 'reviewer'")[1].split("name: 'tester'")[0];
-    const standardIdx = reviewerSection.indexOf('审查标准（严格执行）');
-    const workflowIdx = reviewerSection.indexOf('协作流程');
-    expect(standardIdx).toBeGreaterThan(-1);
-    expect(workflowIdx).toBeGreaterThan(-1);
-    expect(standardIdx).toBeLessThan(workflowIdx);
+  it('dev template should not include standalone reviewer or tester roles', () => {
+    // Extract only the dev template section
+    const devTemplateSection = configContent.split("loadTemplate('dev')")[1].split("loadTemplate('writing')")[0];
+    // Should not have reviewer or tester as separate roles
+    expect(devTemplateSection).not.toContain("name: 'reviewer'");
+    expect(devTemplateSection).not.toContain("name: 'tester'");
   });
 });
