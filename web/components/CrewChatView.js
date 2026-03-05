@@ -1637,8 +1637,11 @@ summary: 请测试以下变更...
       // 找该角色最后一条带 taskTitle 的消息
       const messages = this.store.currentCrewMessages;
       for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].role === roleName && messages[i].taskTitle) {
-          return messages[i].taskTitle;
+        const msg = messages[i];
+        if (msg.role === roleName && msg.taskTitle) {
+          // 如果最后一条带 taskTitle 的消息是 ROUTE 回 PM，说明任务已完成
+          if (msg.type === 'route' && msg.routeTo === 'pm') return null;
+          return msg.taskTitle;
         }
       }
       return null;
@@ -1664,8 +1667,11 @@ summary: 请测试以下变更...
     getRoleCurrentTask(roleName) {
       const messages = this.store.currentCrewMessages;
       for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].role === roleName && messages[i].taskTitle) {
-          return messages[i].taskTitle;
+        const msg = messages[i];
+        if (msg.role === roleName && msg.taskTitle) {
+          // 如果最后一条带 taskTitle 的消息是 ROUTE 回 PM，说明任务已完成
+          if (msg.type === 'route' && msg.routeTo === 'pm') return null;
+          return msg.taskTitle;
         }
       }
       return null;
