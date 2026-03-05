@@ -711,9 +711,15 @@ async function handleAgentMessage(agentId, msg) {
       break;
     }
 
-    case 'crew_status':
+    case 'crew_status': {
+      // Update conversation processing state based on crew session status
+      const crewConv = agent.conversations.get(msg.sessionId);
+      if (crewConv && (msg.status === 'stopped' || msg.status === 'completed')) {
+        crewConv.processing = false;
+      }
       await forwardToClients(agentId, msg.sessionId, msg);
       break;
+    }
 
     case 'crew_turn_completed':
       await forwardToClients(agentId, msg.sessionId, msg);
