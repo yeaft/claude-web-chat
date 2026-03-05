@@ -35,7 +35,8 @@ export default {
         <aside class="crew-panel-left">
           <div class="crew-panel-left-scroll">
             <div class="crew-role-list">
-              <div v-for="role in sessionRoles" :key="role.name"
+              <!-- 独立角色 (groupIndex=0): pm, designer 等 -->
+              <div v-for="role in groupedRoles.standalone" :key="role.name"
                    class="crew-role-card"
                    :class="{ 'is-streaming': isRoleStreaming(role.name) }"
                    :style="getRoleStyle(role.name)"
@@ -44,7 +45,7 @@ export default {
                 <div class="crew-role-card-header">
                   <span class="crew-role-card-icon">{{ role.icon }}</span>
                   <span class="crew-role-card-name">{{ role.displayName }}</span>
-                  <span v-if="role.isDecisionMaker" class="crew-role-card-dm">★</span>
+                  <span v-if="role.isDecisionMaker" class="crew-role-card-dm">\u2605</span>
                 </div>
                 <div v-if="getRoleCurrentTask(role.name)" class="crew-role-card-feature">
                   {{ getRoleCurrentTask(role.name) }}
@@ -54,13 +55,58 @@ export default {
                   {{ getRoleCurrentTool(role.name) }}
                 </div>
               </div>
+
+              <!-- 分组角色 (groupIndex>0): dev+rev+test 组 -->
+              <div v-for="(group, gIdx) in groupedRoles.groups" :key="'g'+gIdx" class="crew-role-group">
+                <div class="crew-role-group-header">
+                  <span class="crew-role-group-name" @dblclick="startEditGroupName(gIdx)">
+                    <template v-if="editingGroupName === gIdx">
+                      <input class="crew-group-name-input" :value="getGroupName(gIdx)"
+                             @blur="saveGroupName(gIdx, $event.target.value)"
+                             @keydown.enter="saveGroupName(gIdx, $event.target.value)"
+                             @keydown.escape="editingGroupName = null"
+                             ref="groupNameInput" />
+                    </template>
+                    <template v-else>{{ getGroupName(gIdx) }}</template>
+                  </span>
+                  <button class="crew-role-group-remove" @click="removeGroup(gIdx)" title="移除整组">
+                    <span v-html="icons.close"></span>
+                  </button>
+                </div>
+                <div v-for="role in group" :key="role.name"
+                     class="crew-role-card crew-role-card-grouped"
+                     :class="{ 'is-streaming': isRoleStreaming(role.name) }"
+                     :style="getRoleStyle(role.name)"
+                     @click="insertAt(role.name)"
+                     @contextmenu.prevent="openRoleMenu($event, role)">
+                  <div class="crew-role-card-header">
+                    <span class="crew-role-card-icon">{{ role.icon }}</span>
+                    <span class="crew-role-card-name">{{ role.displayName }}</span>
+                  </div>
+                  <div v-if="getRoleCurrentTask(role.name)" class="crew-role-card-feature">
+                    {{ getRoleCurrentTask(role.name) }}
+                  </div>
+                  <div v-if="isRoleStreaming(role.name) && getRoleCurrentTool(role.name)"
+                       class="crew-role-card-tool">
+                    {{ getRoleCurrentTool(role.name) }}
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <!-- 添加角色按钮 -->
-            <button class="crew-add-role-btn" @click="showAddRole = true">
-              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-              <span>添加角色</span>
-            </button>
+            <!-- 底部操作区 -->
+            <div class="crew-panel-left-actions">
+              <button class="crew-add-role-btn" @click="showAddRole = true">
+                <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                <span>添加角色</span>
+              </button>
+              <button class="crew-action-btn" @click="controlAction('clear')" title="清空会话">
+                <span v-html="icons.close"></span>
+              </button>
+              <button class="crew-action-btn danger" @click="controlAction('stop_all')" title="终止 Session">
+                <span v-html="icons.stop"></span>
+              </button>
+            </div>
           </div>
         </aside>
 
@@ -472,24 +518,6 @@ export default {
       <div class="input-area crew-input-area">
         <div class="crew-input-hints" v-if="store.currentCrewSession">
           <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
-          <div class="crew-hint-controls" style="position: relative;">
-            <button class="crew-hint-btn" @click.stop="controlOpen = !controlOpen" title="控制">
-              <span v-html="icons.settings"></span>
-            </button>
-            <div class="crew-control-dropdown" v-if="controlOpen" @click.stop>
-              <button class="crew-control-item" @click="controlAction('clear')">
-                <span class="crew-control-icon" v-html="icons.close"></span> 清空会话
-              </button>
-              <div class="crew-control-divider" v-if="store.currentCrewSession?.roles?.length > 0"></div>
-              <button class="crew-control-item danger" v-for="role in store.currentCrewSession?.roles" :key="role.name" @click="controlAction('stop_role', role.name)">
-                <span class="crew-control-icon" v-html="icons.stop"></span> 停止 {{ role.displayName }}
-              </button>
-              <div class="crew-control-divider"></div>
-              <button class="crew-control-item danger" @click="controlAction('stop_all')">
-                <span class="crew-control-icon" v-html="icons.close"></span> 终止 Session
-              </button>
-            </div>
-          </div>
         </div>
         <div class="attachments-preview" v-if="attachments.length > 0">
           <div class="attachment-item" v-for="(file, index) in attachments" :key="index">
@@ -681,6 +709,7 @@ export default {
       inputText: '',
       controlOpen: false,
       showAddRole: false,
+      editingGroupName: null,
       roleMenuVisible: false,
       roleMenuTarget: null,
       roleMenuStyle: {},
@@ -1301,6 +1330,16 @@ summary: 请测试以下变更...
       return this.store.currentCrewSession?.roles || [];
     },
 
+    groupedRoles() {
+      const roles = this.sessionRoles;
+      const standalone = roles.filter(r => !r.groupIndex || r.groupIndex === 0);
+      const groupMap = {};
+      for (const r of roles.filter(r => r.groupIndex > 0)) {
+        (groupMap[r.groupIndex] ||= []).push(r);
+      }
+      return { standalone, groups: groupMap };
+    },
+
     featureKanban() {
       // 1. 收集所有 feature
       const features = new Map();
@@ -1908,6 +1947,39 @@ summary: 请测试以下变更...
       if (!roleName) return;
       if (!confirm(`确定要移除 ${roleName}？角色的 Memory 将保留。`)) return;
       this.store.removeCrewRole(roleName);
+    },
+
+    getGroupName(groupIndex) {
+      return this.store.currentCrewSession?.groupNames?.[groupIndex] || `开发组 ${groupIndex}`;
+    },
+
+    startEditGroupName(groupIndex) {
+      this.editingGroupName = groupIndex;
+      this.$nextTick(() => {
+        const input = this.$refs.groupNameInput;
+        if (input) {
+          const el = Array.isArray(input) ? input[0] : input;
+          el?.focus();
+          el?.select();
+        }
+      });
+    },
+
+    saveGroupName(groupIndex, value) {
+      this.editingGroupName = null;
+      const name = value.trim();
+      if (!name) return;
+      const session = this.store.currentCrewSession;
+      if (session) {
+        if (!session.groupNames) session.groupNames = {};
+        session.groupNames[groupIndex] = name;
+      }
+    },
+
+    removeGroup(groupIndex) {
+      const groupName = this.getGroupName(groupIndex);
+      if (!confirm(`确定要移除整个 ${groupName}？组内所有角色将被移除。`)) return;
+      this.store.removeCrewGroup(Number(groupIndex));
     },
 
     quickAddPreset(preset) {

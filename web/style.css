@@ -11633,6 +11633,104 @@ body {
   color: var(--accent-blue);
 }
 
+/* --- Role Group --- */
+.crew-role-group {
+  margin-top: 6px;
+  border-left: 2px solid var(--border-subtle, #333);
+  padding-left: 4px;
+}
+
+.crew-role-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px;
+  margin-bottom: 2px;
+}
+
+.crew-role-group-name {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+  cursor: default;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-group-name-input {
+  font-size: 10px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--accent-blue);
+  border-radius: 3px;
+  padding: 1px 4px;
+  width: 100%;
+  outline: none;
+  font-family: inherit;
+}
+
+.crew-role-group-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  line-height: 1;
+}
+
+.crew-role-group:hover .crew-role-group-remove {
+  opacity: 0.6;
+}
+
+.crew-role-group-remove:hover {
+  opacity: 1 !important;
+  color: var(--error-color, #ef4444);
+}
+
+.crew-role-card-grouped {
+  margin-left: 2px;
+}
+
+/* --- Left Panel Bottom Actions --- */
+.crew-panel-left-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 2px;
+  border-top: 1px solid var(--border-subtle, #333);
+  margin-top: 4px;
+}
+
+.crew-panel-left-actions .crew-add-role-btn {
+  flex: 1;
+  margin-top: 0;
+}
+
+.crew-action-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+  line-height: 1;
+}
+
+.crew-action-btn:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-secondary);
+}
+
+.crew-action-btn.danger:hover {
+  color: var(--error-color, #ef4444);
+}
+
 /* --- Center Panel --- */
 .crew-panel-center {
   flex: 1;
