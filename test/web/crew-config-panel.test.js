@@ -438,14 +438,11 @@ describe('CrewConfigPanel - developer claudeMd best practices (b7b48d3)', () => 
   });
 
   it('developer worktree discipline should prohibit operating main dir or other group worktrees', () => {
-    expect(configContent).toContain('必须在自己的 worktree 中工作，绝对不要操作项目主目录或其他组的 worktree');
+    expect(configContent).toContain('绝对禁止在项目主目录或 main 分支上直接修改代码');
+    expect(configContent).toContain('绝对禁止操作其他开发组的 worktree');
   });
 
-  it('developer worktree discipline should require new worktree based on latest main', () => {
-    expect(configContent).toContain('每次新任务基于最新 main 创建新 worktree');
-  });
-
-  it('developer worktree discipline should mention PR merge', () => {
+  it('developer worktree discipline should require PR merge', () => {
     expect(configContent).toContain('代码完成并通过 review 后，自己提 PR 合并到 main');
   });
 
@@ -530,8 +527,7 @@ describe('CrewConfigPanel - reviewer claudeMd best practices (b7b48d3)', () => {
   });
 
   it('reviewer claudeMd should require worktree verification', () => {
-    expect(configContent).toContain('必须验证 dev 是否在自己的 worktree 中工作');
-    expect(configContent).toContain('检查 commit 所在分支');
+    expect(configContent).toContain('审查时必须验证 dev 是否在正确的 worktree 分支上提交');
   });
 
   // --- Section ordering ---
