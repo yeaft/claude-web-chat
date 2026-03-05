@@ -25,6 +25,9 @@ export default {
       <!-- Role Context Menu -->
       <div v-if="roleMenuVisible" class="crew-role-context-menu" :style="roleMenuStyle" @click.stop>
         <div class="crew-role-menu-header"><span v-if="roleMenuTarget?.icon">{{ roleMenuTarget.icon }} </span>{{ roleMenuTarget?.displayName }}</div>
+        <button class="crew-role-menu-item" @click="compactRole(roleMenuTarget?.name)">
+          <span class="crew-control-icon">🗜</span> 压缩上下文
+        </button>
         <button class="crew-role-menu-item" @click="removeRole(roleMenuTarget?.name)">
           <span class="crew-control-icon" v-html="icons.trash"></span> 移除
         </button>
@@ -1949,6 +1952,12 @@ summary: 请测试以下变更...
       this.roleMenuTarget = role;
       this.roleMenuStyle = { left: event.clientX + 'px', top: event.clientY + 'px' };
       this.roleMenuVisible = true;
+    },
+
+    compactRole(roleName) {
+      this.roleMenuVisible = false;
+      if (!roleName) return;
+      this.controlAction('compact_role', roleName);
     },
 
     removeRole(roleName) {

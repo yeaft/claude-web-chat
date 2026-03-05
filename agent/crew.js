@@ -1187,6 +1187,7 @@ async function createRoleQuery(session, roleName) {
     _compacting: false,           // 是否正在 compact
     _compactSummaryPending: false, // 是否等待过滤 compact summary
     _pendingCompactRoutes: null,  // compact 期间缓存的待执行路由 Array|null
+    _pendingDispatch: null,       // compact 完成后待重派的内容 { content, from, taskId, taskTitle }
     _fromRole: null               // 缓存路由的来源角色
   };
 
@@ -1539,6 +1540,10 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
                   console.warn(`[Crew] Route execution failed:`, r.reason);
                 }
               }
+            } else if (roleState._pendingDispatch) {
+              const pd = roleState._pendingDispatch;
+              roleState._pendingDispatch = null;
+              await dispatchToRole(session, roleName, pd.content, pd.from, pd.taskId, pd.taskTitle);
             }
             return; // abort 后 query 已清空，退出 processRoleOutput
           }
@@ -1558,6 +1563,10 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
                 console.warn(`[Crew] Route execution failed:`, r.reason);
               }
             }
+          } else if (roleState._pendingDispatch) {
+            const pd = roleState._pendingDispatch;
+            roleState._pendingDispatch = null;
+            await dispatchToRole(session, roleName, pd.content, pd.from, pd.taskId, pd.taskTitle);
           }
           continue; // 不要重复处理这个 compact result
         }
@@ -1741,23 +1750,46 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
       });
 
       if (roleState.lastDispatchContent) {
-        let retryContent = roleState.lastDispatchContent;
-
-        // ★ context 超限时精简重派内容
-        if (classification.needContentTrim) {
-          retryContent = trimContentForRetry(retryContent);
-        }
-
-        if (classification.skipResume) {
+        // ★ context_exceeded: clear sessionId → rebuild query → /compact → 重派
+        if (classification.reason === 'context_exceeded') {
           await clearRoleSessionId(session.sharedDir, roleName);
+          const newState = await createRoleQuery(session, roleName);
+
+          // 缓存待重派内容，compact 完成后自动发送
+          newState._pendingDispatch = {
+            content: roleState.lastDispatchContent,
+            from: roleState.lastDispatchFrom || 'system',
+            taskId: roleState.lastDispatchTaskId,
+            taskTitle: roleState.lastDispatchTaskTitle
+          };
+          newState._compacting = true;
+          newState._compactSummaryPending = false;
+          newState.consecutiveErrors = roleState.consecutiveErrors;
+
+          newState.inputStream.enqueue({
+            type: 'user',
+            message: { role: 'user', content: '/compact' }
+          });
+
+          sendCrewMessage({
+            type: 'crew_role_compact',
+            sessionId: session.id,
+            role: roleName,
+            status: 'compacting'
+          });
+        } else {
+          // 其他可恢复错误：原有重派逻辑
+          if (classification.skipResume) {
+            await clearRoleSessionId(session.sharedDir, roleName);
+          }
+          await dispatchToRole(
+            session, roleName,
+            roleState.lastDispatchContent,
+            roleState.lastDispatchFrom || 'system',
+            roleState.lastDispatchTaskId,
+            roleState.lastDispatchTaskTitle
+          );
         }
-        await dispatchToRole(
-          session, roleName,
-          retryContent,
-          roleState.lastDispatchFrom || 'system',
-          roleState.lastDispatchTaskId,
-          roleState.lastDispatchTaskTitle
-        );
       } else {
         const msg = `角色 ${roleName} 已恢复（${classification.reason}），但无待重试消息。`;
         if (roleName !== session.decisionMaker) {
@@ -2059,6 +2091,66 @@ function findActiveRole(session) {
 // =====================================================================
 
 /**
+ * 手动压缩指定角色的上下文
+ * - 无活跃 query → 重建 query 后发 /compact
+ * - 有 query 且非 turnActive → 直接发 /compact
+ * - turnActive → 提示用户先停止该角色
+ */
+async function compactRole(session, roleName) {
+  const roleState = session.roleStates.get(roleName);
+
+  // Case 1: 角色正在 streaming，不能 compact
+  if (roleState?.turnActive) {
+    sendCrewMessage({
+      type: 'crew_role_compact',
+      sessionId: session.id,
+      role: roleName,
+      status: 'rejected',
+      reason: '角色正在工作中，请先停止该角色再压缩上下文'
+    });
+    return;
+  }
+
+  // Case 2: 已经在 compacting
+  if (roleState?._compacting) {
+    sendCrewMessage({
+      type: 'crew_role_compact',
+      sessionId: session.id,
+      role: roleName,
+      status: 'rejected',
+      reason: '该角色正在压缩中，请等待完成'
+    });
+    return;
+  }
+
+  // Case 3: 无活跃 query → 重建
+  let state = roleState;
+  if (!state || !state.query || !state.inputStream) {
+    console.log(`[Crew] ${roleName} has no active query, rebuilding for compact`);
+    state = await createRoleQuery(session, roleName);
+  }
+
+  // 发送 /compact
+  console.log(`[Crew] Manual compact requested for ${roleName}`);
+  state._compacting = true;
+  state._compactSummaryPending = false;
+  state._pendingCompactRoutes = null;
+  state._fromRole = null;
+
+  state.inputStream.enqueue({
+    type: 'user',
+    message: { role: 'user', content: '/compact' }
+  });
+
+  sendCrewMessage({
+    type: 'crew_role_compact',
+    sessionId: session.id,
+    role: roleName,
+    status: 'compacting'
+  });
+}
+
+/**
  * 处理控制命令
  */
 export async function handleCrewControl(msg) {
@@ -2083,6 +2175,9 @@ export async function handleCrewControl(msg) {
       if (targetRole && msg.content) {
         await interruptRole(session, targetRole, msg.content, 'human');
       }
+      break;
+    case 'compact_role':
+      if (targetRole) await compactRole(session, targetRole);
       break;
     case 'stop_all':
       await stopAll(session);
