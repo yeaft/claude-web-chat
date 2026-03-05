@@ -1066,7 +1066,7 @@ async function clearRoleSessionId(sharedDir, roleName) {
 function classifyRoleError(error) {
   const msg = error.message || '';
   if (/context.*(window|limit|exceeded)|token.*limit|too.*(long|large)|max.*token/i.test(msg)) {
-    return { recoverable: true, reason: 'context_exceeded', skipResume: true };
+    return { recoverable: true, reason: 'context_exceeded', skipResume: true, needContentTrim: true };
   }
   if (/compact|compress|context.*reduc/i.test(msg)) {
     return { recoverable: true, reason: 'compact_failed', skipResume: true };
@@ -1081,6 +1081,22 @@ function classifyRoleError(error) {
     return { recoverable: false, reason: 'spawn_failed' };
   }
   return { recoverable: true, reason: 'unknown', skipResume: false };
+}
+
+/**
+ * context 超限时精简重派内容
+ */
+function trimContentForRetry(content) {
+  if (typeof content === 'string' && content.length > 2000) {
+    return `[注意: 上一轮因 context 超限被截断重发]\n\n${content.substring(0, 2000)}\n\n[内容已截断，请基于已知信息继续工作]`;
+  }
+  if (Array.isArray(content)) {
+    return content.filter(b => b.type === 'text').map(b => ({
+      ...b,
+      text: b.text.length > 2000 ? b.text.substring(0, 2000) + '\n[已截断]' : b.text
+    }));
+  }
+  return content;
 }
 
 // =====================================================================
@@ -1142,7 +1158,12 @@ async function createRoleQuery(session, roleName) {
     lastDispatchContent: null,
     lastDispatchFrom: null,
     lastDispatchTaskId: null,
-    lastDispatchTaskTitle: null
+    lastDispatchTaskTitle: null,
+    // compact 状态
+    _compacting: false,           // 是否正在 compact
+    _compactSummaryPending: false, // 是否等待过滤 compact summary
+    _pendingCompactRoutes: null,  // compact 期间缓存的待执行路由 Array|null
+    _fromRole: null               // 缓存路由的来源角色
   };
 
   session.roleStates.set(roleName, roleState);
@@ -1355,6 +1376,11 @@ ${allRoles.map(r => `- ${r.name}: ${roleLabel(r)} - ${r.description}`).join('\n'
 // Role Output Processing
 // =====================================================================
 
+// Context 使用率阈值常量
+const MAX_CONTEXT = 128000;       // API max_prompt_tokens 限制
+const COMPACT_THRESHOLD = 0.85;   // 85% → 触发预防性 compact
+const CLEAR_THRESHOLD = 0.95;     // 95% → compact 后仍超限则 clear + rebuild
+
 /**
  * 处理角色的流式输出
  */
@@ -1367,6 +1393,22 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
       if (message.type === 'system' && message.subtype === 'init') {
         roleState.claudeSessionId = message.session_id;
         console.log(`[Crew] ${roleName} session: ${message.session_id}`);
+        continue;
+      }
+
+      // ★ compact 消息过滤（compact 期间只放行 result，其余过滤）
+      if (roleState._compacting && message.type !== 'result') {
+        if (message.type === 'system') {
+          if (message.subtype === 'compact_boundary') {
+            roleState._compactSummaryPending = true;
+          }
+          continue; // 过滤所有 compact 期间的 system 消息
+        }
+        if (message.type === 'user' && roleState._compactSummaryPending) {
+          roleState._compactSummaryPending = false;
+          continue; // 过滤 compact summary
+        }
+        // 其他消息（assistant 等）在 compact 期间也过滤
         continue;
       }
 
@@ -1424,11 +1466,98 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
           roleState.lastOutputTokens = message.usage.output_tokens || 0;
         }
 
+        // ★ compact turn 完成的处理
+        if (roleState._compacting) {
+          roleState._compacting = false;
+          const postCompactTokens = message.usage?.input_tokens || 0;
+          const postCompactPercentage = postCompactTokens / MAX_CONTEXT;
+          console.log(`[Crew] ${roleName} compact completed, context now at ${Math.round(postCompactPercentage * 100)}%`);
+
+          sendCrewMessage({
+            type: 'crew_role_compact',
+            sessionId: session.id,
+            role: roleName,
+            contextPercentage: Math.round(postCompactPercentage * 100),
+            status: 'completed'
+          });
+
+          // Layer 2: compact 后仍超 95% → clear + rebuild
+          if (postCompactPercentage >= CLEAR_THRESHOLD) {
+            console.warn(`[Crew] ${roleName} still at ${Math.round(postCompactPercentage * 100)}% after compact, escalating to clear`);
+
+            await clearRoleSessionId(session.sharedDir, roleName);
+            roleState.claudeSessionId = null;
+
+            if (roleState.abortController) roleState.abortController.abort();
+            roleState.query = null;
+            roleState.inputStream = null;
+
+            sendCrewMessage({
+              type: 'crew_role_compact',
+              sessionId: session.id,
+              role: roleName,
+              status: 'cleared'
+            });
+
+            // 重新 dispatch 缓存的路由（用新会话）
+            if (roleState._pendingCompactRoutes) {
+              const routes = roleState._pendingCompactRoutes;
+              const fromRole = roleState._fromRole;
+              roleState._pendingCompactRoutes = null;
+              roleState._fromRole = null;
+              session.round++;
+              const results = await Promise.allSettled(routes.map(route =>
+                executeRoute(session, fromRole, route)
+              ));
+              for (const r of results) {
+                if (r.status === 'rejected') {
+                  console.warn(`[Crew] Route execution failed:`, r.reason);
+                }
+              }
+            }
+            return; // abort 后 query 已清空，退出 processRoleOutput
+          }
+
+          // 执行之前缓存的路由
+          if (roleState._pendingCompactRoutes) {
+            const routes = roleState._pendingCompactRoutes;
+            const fromRole = roleState._fromRole;
+            roleState._pendingCompactRoutes = null;
+            roleState._fromRole = null;
+            session.round++;
+            const results = await Promise.allSettled(routes.map(route =>
+              executeRoute(session, fromRole, route)
+            ));
+            for (const r of results) {
+              if (r.status === 'rejected') {
+                console.warn(`[Crew] Route execution failed:`, r.reason);
+              }
+            }
+          }
+          continue; // 不要重复处理这个 compact result
+        }
+
         // ★ 持久化 sessionId（每次 turn 完成后保存，用于后续 resume）
         if (roleState.claudeSessionId) {
           saveRoleSessionId(session.sharedDir, roleName, roleState.claudeSessionId)
             .catch(e => console.warn(`[Crew] Failed to save sessionId for ${roleName}:`, e.message));
         }
+
+        // ★ context 使用率监控
+        const inputTokens = message.usage?.input_tokens || 0;
+        if (inputTokens > 0) {
+          sendCrewMessage({
+            type: 'crew_context_usage',
+            sessionId: session.id,
+            role: roleName,
+            inputTokens,
+            maxTokens: MAX_CONTEXT,
+            percentage: Math.min(100, Math.round((inputTokens / MAX_CONTEXT) * 100))
+          });
+        }
+
+        const contextPercentage = inputTokens / MAX_CONTEXT;
+        const needCompact = contextPercentage >= COMPACT_THRESHOLD;
 
         // 解析路由（支持多 ROUTE 块）
         const routes = parseRoutes(roleState.accumulatedText);
@@ -1445,7 +1574,44 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
         // 发送状态更新
         sendStatusUpdate(session);
 
-        // 执行路由
+        // ★ 需要 compact：缓存路由，先执行 compact
+        if (needCompact) {
+          console.log(`[Crew] ${roleName} context at ${Math.round(contextPercentage * 100)}%, compacting before next dispatch`);
+
+          roleState._pendingCompactRoutes = routes.length > 0 ? routes : null;
+          roleState._compacting = true;
+          roleState._compactSummaryPending = false;
+          roleState._fromRole = roleName;
+
+          // task 继承
+          const currentTask = roleState.currentTask;
+          if (roleState._pendingCompactRoutes) {
+            for (const route of roleState._pendingCompactRoutes) {
+              if (!route.taskId && currentTask) {
+                route.taskId = currentTask.taskId;
+                route.taskTitle = currentTask.taskTitle;
+              }
+            }
+          }
+
+          // 发送 /compact
+          roleState.inputStream.enqueue({
+            type: 'user',
+            message: { role: 'user', content: '/compact' }
+          });
+
+          sendCrewMessage({
+            type: 'crew_role_compact',
+            sessionId: session.id,
+            role: roleName,
+            contextPercentage: Math.round(contextPercentage * 100),
+            status: 'compacting'
+          });
+
+          continue; // 等 compact turn 完成
+        }
+
+        // 执行路由（无需 compact 时）
         if (routes.length > 0) {
           // ★ 修复1: 多 ROUTE 只增 1 轮（round++ 从 executeRoute 移到这里）
           session.round++;
@@ -1495,6 +1661,9 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
       roleState.inputStream = null;
       roleState.turnActive = false;
       roleState.accumulatedText = '';
+      // 重置 compact 状态（防止 compact 期间出错导致后续消息被永久过滤）
+      roleState._compacting = false;
+      roleState._compactSummaryPending = false;
 
       // Step 2: 错误分类
       const classification = classifyRoleError(error);
@@ -1547,12 +1716,19 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
       });
 
       if (roleState.lastDispatchContent) {
+        let retryContent = roleState.lastDispatchContent;
+
+        // ★ context 超限时精简重派内容
+        if (classification.needContentTrim) {
+          retryContent = trimContentForRetry(retryContent);
+        }
+
         if (classification.skipResume) {
           await clearRoleSessionId(session.sharedDir, roleName);
         }
         await dispatchToRole(
           session, roleName,
-          roleState.lastDispatchContent,
+          retryContent,
           roleState.lastDispatchFrom || 'system',
           roleState.lastDispatchTaskId,
           roleState.lastDispatchTaskTitle

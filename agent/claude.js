@@ -364,7 +364,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
         // 计算上下文使用百分比
         const inputTokens = message.usage?.input_tokens || 0;
-        const maxContextTokens = 200000; // Claude 模型 context window
+        const maxContextTokens = 128000; // API max_prompt_tokens 限制
         if (inputTokens > 0) {
           ctx.sendToServer({
             type: 'context_usage',

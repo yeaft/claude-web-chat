@@ -33,7 +33,8 @@ const BUFFERABLE_TYPES = new Set([
   'background_task_started', 'background_task_output',
   'crew_output', 'crew_status', 'crew_turn_completed',
   'crew_session_created', 'crew_session_restored', 'crew_human_needed',
-  'crew_role_added', 'crew_role_removed'
+  'crew_role_added', 'crew_role_removed',
+  'crew_role_compact', 'crew_context_usage'
 ]);
 
 // Send message to server (with encryption if available)
