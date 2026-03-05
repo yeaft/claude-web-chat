@@ -325,7 +325,8 @@ async function saveSessionMeta(session) {
     agentId: session.agentId || null,
     costUsd: session.costUsd,
     totalInputTokens: session.totalInputTokens,
-    totalOutputTokens: session.totalOutputTokens
+    totalOutputTokens: session.totalOutputTokens,
+    features: Array.from(session.features.values())
   };
   await fs.writeFile(join(session.sharedDir, 'session.json'), JSON.stringify(meta, null, 2));
   // 保存 UI 消息历史（用于恢复时重放）
@@ -463,6 +464,7 @@ export async function resumeCrewSession(msg) {
     humanMessageQueue: [],
     waitingHumanContext: null,
     pendingRoutes: [],
+    features: new Map((meta.features || []).map(f => [f.taskId, f])),
     userId: userId || meta.userId,
     username: username || meta.username,
     agentId: meta.agentId || ctx.CONFIG?.agentName || null,
@@ -607,6 +609,7 @@ export async function createCrewSession(msg) {
     humanMessageQueue: [],   // 人的消息排队
     waitingHumanContext: null, // { fromRole, reason, message }
     pendingRoutes: [],        // [{ fromRole, route }] — 暂停时未完成的路由
+    features: new Map(),      // taskId → { taskId, taskTitle, createdAt } — 持久化 feature 列表
     userId,
     username,
     agentId: ctx.CONFIG?.agentName || null,
@@ -2103,6 +2106,11 @@ function sendCrewOutput(session, roleName, outputType, rawMessage, extra = {}) {
     ...extra
   });
 
+  // ★ 累积 feature 到持久化列表
+  if (taskId && taskTitle && !session.features.has(taskId)) {
+    session.features.set(taskId, { taskId, taskTitle, createdAt: Date.now() });
+  }
+
   // ★ 记录精简 UI 消息用于恢复（跳过 tool_use/tool_result，只记录可见内容）
   if (outputType === 'text') {
     const content = rawMessage?.message?.content;
@@ -2266,7 +2274,8 @@ function sendStatusUpdate(session) {
       Array.from(session.roleStates.entries())
         .filter(([, s]) => s.turnActive && s.currentTool)
         .map(([name, s]) => [name, s.currentTool])
-    )
+    ),
+    features: Array.from(session.features.values())
   });
 
   // 异步更新持久化

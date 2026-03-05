@@ -1077,10 +1077,15 @@ summary: 请测试以下变更...
       return Math.round((this.completedTaskCount / this.crewTasks.length) * 100);
     },
     activeTasks() {
-      // 从消息中收集所有出现过的 taskId/taskTitle
+      // 优先使用后端持久化的 features 列表（包含历史完成的 feature）
       const taskMap = new Map();
+      const persistedFeatures = this.store.currentCrewStatus?.features || [];
+      for (const f of persistedFeatures) {
+        taskMap.set(f.taskId, f.taskTitle);
+      }
+      // 补充从消息中收集的（兜底，确保实时性）
       for (const msg of this.store.currentCrewMessages) {
-        if (msg.taskId && msg.taskTitle) {
+        if (msg.taskId && msg.taskTitle && !taskMap.has(msg.taskId)) {
           taskMap.set(msg.taskId, msg.taskTitle);
         }
       }
@@ -1278,13 +1283,7 @@ summary: 请测试以下变更...
         groups.get(tid).entries.push(entry);
       }
 
-      // 过滤掉所有 todo 都已完成的分组
-      const result = [];
-      for (const group of groups.values()) {
-        const allDone = group.entries.every(e => e.todos.every(t => t.status === 'completed'));
-        if (!allDone) result.push(group);
-      }
-      return result;
+      return Array.from(groups.values());
     },
 
     todoTotalProgress() {
