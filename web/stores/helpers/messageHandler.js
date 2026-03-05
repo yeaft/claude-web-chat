@@ -131,6 +131,9 @@ export function handleMessage(store, msg) {
           }
         }
       }
+      // ★ Reconnect: 清空客户端残留状态，以 server 上报为准
+      store._turnCompletedConvs?.clear();
+      store._closedAt = {};
       // ★ Reconnect 恢复：currentAgent 已有值说明是 WebSocket 重连（非页面刷新）
       if (store.currentAgent) {
         const agent = msg.agents.find(a => a.id === store.currentAgent && a.online);
