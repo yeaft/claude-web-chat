@@ -67,11 +67,12 @@ export default {
                   <div class="crew-exists-path">{{ shortenPath(projectDir) }}/.crew</div>
                 </div>
               </div>
-              <button class="crew-restore-btn" @click="restoreFromDisk">
+              <button class="crew-restore-btn" @click="restoreFromDisk" :disabled="!crewExistsSessionInfo?.sessionId">
                 <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
                 恢复此 Crew
               </button>
-              <div class="crew-exists-hint">工作目录已存在 .crew 配置，建议恢复而非重新创建</div>
+              <div class="crew-exists-hint" v-if="crewExistsSessionInfo?.sessionId">工作目录已存在 .crew 配置，建议恢复而非重新创建</div>
+              <div class="crew-exists-hint" v-else>发现 .crew 目录但无可恢复的 session，请删除后重新创建</div>
             </div>
 
             <!-- .crew 不存在或确认新建：正常创建流程 -->
@@ -426,19 +427,9 @@ export default {
     restoreFromDisk() {
       const agentId = this.selectedAgent;
       if (agentId) this.store.selectAgent(agentId);
-      // 使用 sessionInfo 中的 sessionId 来恢复，如果没有则从 .crew 目录恢复
       const sessionId = this.crewExistsSessionInfo?.sessionId;
-      if (sessionId) {
-        this.store.resumeCrewSession(sessionId, agentId);
-      } else {
-        // 无 sessionId：创建一个新 session 但 agent 端会从 .crew 读取配置
-        // 通过 resume_crew_session 传入 projectDir 让 agent 从磁盘恢复
-        this.store.sendWsMessage({
-          type: 'resume_crew_session',
-          projectDir: this.projectDir.trim(),
-          agentId
-        });
-      }
+      if (!sessionId) return;
+      this.store.resumeCrewSession(sessionId, agentId);
       this.$emit('close');
     },
 
