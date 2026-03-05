@@ -11707,6 +11707,39 @@ body {
   margin-left: 2px;
 }
 
+.crew-role-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.crew-role-card:hover .crew-role-card-actions {
+  opacity: 0.6;
+}
+
+.crew-role-card-actions:hover {
+  opacity: 1 !important;
+}
+
+.crew-role-action-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 1px 3px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 4px;
+  transition: background 0.15s;
+  color: var(--text-muted);
+}
+
+.crew-role-action-btn:hover {
+  background: var(--sidebar-hover);
+}
+
 /* --- Left Panel Bottom Actions --- */
 .crew-panel-left-actions {
   display: flex;
@@ -13274,50 +13307,6 @@ body {
 .crew-status-bar .crew-add-role-btn:hover {
   border-color: var(--text-muted);
   color: var(--text-secondary);
-  background: var(--sidebar-hover);
-}
-
-/* =====================================================================
-   Crew: Role Context Menu
-   ===================================================================== */
-.crew-role-context-menu {
-  position: fixed;
-  background: var(--bg-main);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
-  z-index: 1000;
-  min-width: 160px;
-  padding: 4px;
-}
-
-[data-theme="dark"] .crew-role-context-menu {
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-}
-
-.crew-role-menu-header {
-  padding: 8px 12px;
-  font-size: 12px;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-color);
-  margin-bottom: 4px;
-}
-
-.crew-role-menu-item {
-  display: block;
-  width: 100%;
-  padding: 8px 12px;
-  background: none;
-  border: none;
-  color: var(--text-primary);
-  font-size: 13px;
-  cursor: pointer;
-  text-align: left;
-  border-radius: 8px;
-  transition: background 0.15s;
-}
-
-.crew-role-menu-item:hover {
   background: var(--sidebar-hover);
 }
 

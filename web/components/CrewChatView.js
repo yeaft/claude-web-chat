@@ -22,16 +22,7 @@ export default {
   name: 'CrewChatView',
   template: `
     <div class="crew-chat-view">
-      <!-- Role Context Menu -->
-      <div v-if="roleMenuVisible" class="crew-role-context-menu" :style="roleMenuStyle" @click.stop>
-        <div class="crew-role-menu-header"><span v-if="roleMenuTarget?.icon">{{ roleMenuTarget.icon }} </span>{{ roleMenuTarget?.displayName }}</div>
-        <button class="crew-role-menu-item" @click="compactRole(roleMenuTarget?.name)">
-          <span class="crew-control-icon">🗜</span> 压缩上下文
-        </button>
-        <button class="crew-role-menu-item" @click="removeRole(roleMenuTarget?.name)">
-          <span class="crew-control-icon" v-html="icons.trash"></span> 移除
-        </button>
-      </div>
+      <!-- Role Context Menu removed: compact/clear now on card actions -->
 
       <div class="crew-workspace">
         <!-- Left Panel: Role Cards -->
@@ -43,8 +34,7 @@ export default {
                    class="crew-role-card"
                    :class="{ 'is-streaming': isRoleStreaming(role.name) }"
                    :style="getRoleStyle(role.name)"
-                   @click="insertAt(role.name)"
-                   @contextmenu.prevent="openRoleMenu($event, role)">
+                   @click="insertAt(role.name)">
                 <div class="crew-role-card-header">
                   <span class="crew-role-card-icon">{{ role.icon }}</span>
                   <span class="crew-role-card-name">{{ role.displayName }}</span>
@@ -56,6 +46,10 @@ export default {
                 <div v-if="isRoleStreaming(role.name) && getRoleCurrentTool(role.name)"
                      class="crew-role-card-tool">
                   {{ getRoleCurrentTool(role.name) }}
+                </div>
+                <div class="crew-role-card-actions" @click.stop>
+                  <button class="crew-role-action-btn" @click.stop="compactRole(role.name)" title="压缩上下文">🗜</button>
+                  <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" title="清空对话">🗑</button>
                 </div>
               </div>
 
@@ -80,8 +74,7 @@ export default {
                      class="crew-role-card crew-role-card-grouped"
                      :class="{ 'is-streaming': isRoleStreaming(role.name) }"
                      :style="getRoleStyle(role.name)"
-                     @click="insertAt(role.name)"
-                     @contextmenu.prevent="openRoleMenu($event, role)">
+                     @click="insertAt(role.name)">
                   <div class="crew-role-card-header">
                     <span class="crew-role-card-icon">{{ role.icon }}</span>
                     <span class="crew-role-card-name">{{ role.displayName }}</span>
@@ -92,6 +85,10 @@ export default {
                   <div v-if="isRoleStreaming(role.name) && getRoleCurrentTool(role.name)"
                        class="crew-role-card-tool">
                     {{ getRoleCurrentTool(role.name) }}
+                  </div>
+                  <div class="crew-role-card-actions" @click.stop>
+                    <button class="crew-role-action-btn" @click.stop="compactRole(role.name)" title="压缩上下文">🗜</button>
+                    <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" title="清空对话">🗑</button>
                   </div>
                 </div>
               </div>
@@ -713,9 +710,6 @@ export default {
       controlOpen: false,
       showAddRole: false,
       editingGroupName: null,
-      roleMenuVisible: false,
-      roleMenuTarget: null,
-      roleMenuStyle: {},
       attachments: [],   // { file, name, preview?, uploading, fileId? }
       uploading: false,
       expandedTurns: {},
@@ -1948,20 +1942,17 @@ summary: 请测试以下变更...
       this.store.sendCrewControl(action, targetRole);
     },
 
-    openRoleMenu(event, role) {
-      this.roleMenuTarget = role;
-      this.roleMenuStyle = { left: event.clientX + 'px', top: event.clientY + 'px' };
-      this.roleMenuVisible = true;
-    },
-
     compactRole(roleName) {
-      this.roleMenuVisible = false;
       if (!roleName) return;
       this.controlAction('compact_role', roleName);
     },
 
+    clearRole(roleName) {
+      if (!roleName) return;
+      this.controlAction('clear_role', roleName);
+    },
+
     removeRole(roleName) {
-      this.roleMenuVisible = false;
       if (!roleName) return;
       if (!confirm(`确定要移除 ${roleName}？角色的 Memory 将保留。`)) return;
       this.store.removeCrewRole(roleName);
@@ -2166,7 +2157,6 @@ summary: 请测试以下变更...
   mounted() {
     const closeMenus = () => {
       this.controlOpen = false;
-      this.roleMenuVisible = false;
     };
     document.addEventListener('click', closeMenus);
     this._cleanupClick = closeMenus;
