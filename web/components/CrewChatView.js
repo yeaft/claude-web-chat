@@ -967,7 +967,7 @@ summary: 请测试以下变更...
   computed: {
     statusText() {
       const status = this.store.currentCrewStatus?.status;
-      if (status === 'running') return '已完成';
+      if (status === 'running') return '运行中';
       if (status === 'paused') return '已暂停';
       if (status === 'waiting_human') return '等待人工';
       if (status === 'completed') return '已完成';
