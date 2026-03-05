@@ -6290,6 +6290,30 @@ body {
   word-break: break-all;
 }
 
+/* Tool group collapse toggle */
+.tool-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  transition: color 0.15s;
+  margin: -2px 0 2px 18px;
+}
+
+.tool-group-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.tool-group-toggle svg {
+  flex-shrink: 0;
+}
+
 /* Compact Diff View */
 .diff-compact {
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;

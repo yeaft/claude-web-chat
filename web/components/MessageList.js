@@ -58,11 +58,19 @@ export default {
       <div v-else class="messages">
         <div v-if="store.loadingMoreMessages" class="loading-more">{{ $t('message.loadingMore') }}</div>
         <div v-else-if="store.hasMoreMessages" class="load-more-hint" @click="store.loadMoreMessages()">{{ $t('message.loadMore') }}</div>
-        <MessageItem
-          v-for="msg in processedMessages"
-          :key="msg.id"
-          :message="msg"
-        />
+        <template v-for="msg in processedMessages" :key="msg.id">
+          <MessageItem
+            v-if="!msg.groupId || msg.isLastInGroup || expandedGroups[msg.groupId]"
+            :message="msg"
+            v-show="!msg.groupId || msg.isLastInGroup || expandedGroups[msg.groupId]"
+          />
+          <!-- Collapse/expand button after last tool in group -->
+          <div v-if="msg.isLastInGroup && msg.groupSize > 1" class="tool-group-toggle" @click="toggleToolGroup(msg.groupId)">
+            <svg v-if="!expandedGroups[msg.groupId]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+            <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
+            <span>{{ expandedGroups[msg.groupId] ? '收起' : msg.groupSize + ' 个操作' }}</span>
+          </div>
+        </template>
 
         <!-- Minimal Status Indicator -->
         <div v-if="store.isProcessing" class="processing-hint">
@@ -84,7 +92,7 @@ export default {
       return store.agents.filter(a => a.online);
     });
 
-    // 处理消息列表：将 tool-result 合并到对应的 tool-use 中，并标记 tool-use 序列位置
+    // 处理消息列表：将 tool-result 合并到对应的 tool-use 中，标记 tool-use 序列位置，分配折叠分组
     const processedMessages = Vue.computed(() => {
       const messages = store.messages;
       const result = [];
@@ -124,6 +132,32 @@ export default {
         }
       }
 
+      // 第二遍：为连续 tool-use 分配折叠分组
+      let groupId = 0;
+      let groupStart = -1;
+      for (let i = 0; i <= result.length; i++) {
+        const msg = result[i];
+        const isToolUse = msg && msg.type === 'tool-use';
+
+        if (isToolUse && groupStart === -1) {
+          // 新分组开始
+          groupStart = i;
+          groupId++;
+        } else if (!isToolUse && groupStart !== -1) {
+          // 分组结束
+          const groupSize = i - groupStart;
+          if (groupSize > 1) {
+            const gid = 'tg-' + groupId;
+            for (let j = groupStart; j < i; j++) {
+              result[j].groupId = gid;
+              result[j].groupSize = groupSize;
+              result[j].isLastInGroup = j === i - 1;
+            }
+          }
+          groupStart = -1;
+        }
+      }
+
       return result;
     });
 
@@ -139,6 +173,12 @@ export default {
     // Track if user is at bottom (within threshold)
     const isAtBottom = Vue.ref(true);
     const SCROLL_THRESHOLD = 50; // pixels from bottom to consider "at bottom"
+
+    // Tool group collapse state
+    const expandedGroups = Vue.reactive({});
+    const toggleToolGroup = (groupId) => {
+      expandedGroups[groupId] = !expandedGroups[groupId];
+    };
 
     const hasStreamingMessage = Vue.computed(() => {
       return store.messages.some(m => m.isStreaming);
@@ -310,6 +350,8 @@ export default {
       onlineAgents,
       shortenPath,
       processedMessages,
+      expandedGroups,
+      toggleToolGroup,
       statusIcon,
       statusIconClass,
       statusText,
