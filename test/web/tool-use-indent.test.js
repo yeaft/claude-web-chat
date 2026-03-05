@@ -1,77 +1,92 @@
 import { describe, it, expect } from 'vitest';
 
 /**
- * Tests for tool-use indent/connection line logic.
+ * Tests for Chat message layout:
  *
- * Verifies the processedMessages logic from MessageList.js:
- * 1) tool-use messages get isFirst/isLast/isRunning/isCompleted flags
- * 2) Consecutive tool-use sequences have correct first/last markers
- * 3) Single tool-use is both first and last (dot only, no line)
- * 4) Running state = no result + not history; Completed = has result
- * 5) Non-tool-use messages are passed through unchanged
- *
- * Verifies the messageClass logic from MessageItem.js:
- * 6) CSS classes are correctly generated from flags
- *
- * Verifies CSS rules (source verification):
- * 7) tool-use has margin-left: 24px
- * 8) AskUserQuestion (.ask-card) and TodoWrite (.todo-list) excluded
- * 9) Mobile responsive reduces to 16px
+ * Part 1: Turn aggregation logic (turnGroups from MessageList.js)
+ * Part 2: CSS source verification for .assistant-turn styles
+ * Part 3: Legacy processMessages logic (still used for tool-use flag computation)
  */
 
 // =====================================================================
-// Replicate processedMessages logic from MessageList.js:88-128
+// Replicate turnGroups logic from MessageList.js
 // =====================================================================
-function processMessages(messages) {
+function buildTurnGroups(messages) {
   const result = [];
+  let currentTurn = null;
+  let turnCounter = 0;
+
+  const finishTurn = () => {
+    if (currentTurn) {
+      result.push(currentTurn);
+      currentTurn = null;
+    }
+  };
+
+  const startTurn = () => {
+    turnCounter++;
+    currentTurn = {
+      type: 'assistant-turn',
+      id: 'turn_' + turnCounter,
+      textContent: '',
+      isStreaming: false,
+      todoMsg: null,
+      toolMsgs: [],
+      askMsg: null,
+      messages: []
+    };
+  };
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
 
-    if (msg.type === 'tool-result') {
+    if (msg.type === 'user') {
+      finishTurn();
+      result.push({ type: 'user', id: msg.id || 'u_' + i, message: msg });
+      continue;
+    }
+
+    if (msg.type === 'system' || msg.type === 'error') {
+      finishTurn();
+      result.push({ type: msg.type, id: msg.id || 's_' + i, message: msg });
+      continue;
+    }
+
+    if (msg.type === 'tool-result' || msg.type === 'tool_result') {
+      continue;
+    }
+
+    if (msg.type === 'assistant') {
+      if (!currentTurn) startTurn();
+      if (msg.content) currentTurn.textContent += msg.content;
+      if (msg.isStreaming) currentTurn.isStreaming = true;
+      currentTurn.messages.push(msg);
       continue;
     }
 
     if (msg.type === 'tool-use') {
+      if (!currentTurn) startTurn();
       const nextMsg = messages[i + 1];
-      const hasResult = nextMsg && nextMsg.type === 'tool-result';
+      const hasResult = nextMsg && (nextMsg.type === 'tool-result' || nextMsg.type === 'tool_result');
+      const toolEntry = { ...msg, hasResult: hasResult || msg.hasResult || false, toolResult: msg.toolResult || null };
 
-      // Check previous non-tool-result message
-      let prevIdx = i - 1;
-      while (prevIdx >= 0 && messages[prevIdx].type === 'tool-result') prevIdx--;
-      const prevIsToolUse = prevIdx >= 0 && messages[prevIdx].type === 'tool-use';
-
-      // Check next non-tool-result message
-      let nextIdx = hasResult ? i + 2 : i + 1;
-      const nextIsToolUse = nextIdx < messages.length && messages[nextIdx].type === 'tool-use';
-
-      result.push({
-        ...msg,
-        hasResult,
-        isFirst: !prevIsToolUse,
-        isLast: !nextIsToolUse,
-        isRunning: !hasResult && !msg.isHistory,
-        isCompleted: !!hasResult
-      });
-    } else {
-      result.push(msg);
+      if (msg.toolName === 'TodoWrite') {
+        currentTurn.todoMsg = toolEntry;
+      } else if (msg.toolName === 'AskUserQuestion') {
+        currentTurn.askMsg = toolEntry;
+      } else {
+        currentTurn.toolMsgs.push(toolEntry);
+      }
+      currentTurn.messages.push(msg);
+      continue;
     }
+
+    finishTurn();
+    result.push({ type: msg.type || 'unknown', id: msg.id || 'x_' + i, message: msg });
   }
 
+  finishTurn();
   return result;
-}
-
-// Replicate messageClass logic from MessageItem.js:374-384
-function computeMessageClass(message) {
-  const base = ['message', message.type];
-  if (message.isStreaming) base.push('streaming');
-  if (message.type === 'tool-use') {
-    if (message.isFirst) base.push('is-first');
-    if (message.isLast) base.push('is-last');
-    if (message.isRunning) base.push('is-running');
-    if (message.isCompleted) base.push('is-completed');
-  }
-  return base;
 }
 
 // Helper to create test messages
@@ -80,421 +95,394 @@ function msg(type, extra = {}) {
 }
 
 // =====================================================================
-// Tests
+// Part 1: Turn aggregation tests
 // =====================================================================
 
-describe('Tool-use sequence position marking', () => {
-
-  describe('Single tool-use (dot only, no connecting line)', () => {
-    it('single tool-use with result should be both isFirst and isLast', () => {
-      const messages = [
-        msg('assistant'),
-        msg('tool-use', { toolName: 'Read' }),
-        msg('tool-result'),
-        msg('assistant'),
-      ];
-      const processed = processMessages(messages);
-      const toolUse = processed.find(m => m.type === 'tool-use');
-      expect(toolUse.isFirst).toBe(true);
-      expect(toolUse.isLast).toBe(true);
+describe('Turn aggregation logic (turnGroups)', () => {
+  describe('Basic aggregation', () => {
+    it('single assistant message creates one turn', () => {
+      const messages = [msg('assistant', { content: 'hello' })];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].type).toBe('assistant-turn');
+      expect(groups[0].textContent).toBe('hello');
     });
 
-    it('single tool-use without result should be both isFirst and isLast', () => {
-      const messages = [
-        msg('assistant'),
-        msg('tool-use', { toolName: 'Read' }),
-      ];
-      const processed = processMessages(messages);
-      const toolUse = processed.find(m => m.type === 'tool-use');
-      expect(toolUse.isFirst).toBe(true);
-      expect(toolUse.isLast).toBe(true);
-    });
-  });
-
-  describe('Consecutive tool-use sequence (connecting lines)', () => {
-    it('three consecutive tool-uses: first/middle/last marked correctly', () => {
-      const messages = [
-        msg('tool-use', { toolName: 'Read' }),
-        msg('tool-result'),
-        msg('tool-use', { toolName: 'Edit' }),
-        msg('tool-result'),
-        msg('tool-use', { toolName: 'Bash' }),
-        msg('tool-result'),
-      ];
-      const processed = processMessages(messages);
-      const tools = processed.filter(m => m.type === 'tool-use');
-      expect(tools).toHaveLength(3);
-
-      // First tool
-      expect(tools[0].isFirst).toBe(true);
-      expect(tools[0].isLast).toBe(false);
-
-      // Middle tool
-      expect(tools[1].isFirst).toBe(false);
-      expect(tools[1].isLast).toBe(false);
-
-      // Last tool
-      expect(tools[2].isFirst).toBe(false);
-      expect(tools[2].isLast).toBe(true);
+    it('user message is a standalone item', () => {
+      const messages = [msg('user', { content: 'hi' })];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].type).toBe('user');
+      expect(groups[0].message.content).toBe('hi');
     });
 
-    it('two consecutive tool-uses: both are first/last respectively', () => {
-      const messages = [
-        msg('tool-use', { toolName: 'Read' }),
-        msg('tool-result'),
-        msg('tool-use', { toolName: 'Edit' }),
-        msg('tool-result'),
-      ];
-      const processed = processMessages(messages);
-      const tools = processed.filter(m => m.type === 'tool-use');
-      expect(tools).toHaveLength(2);
+    it('system message is a standalone item', () => {
+      const messages = [msg('system', { content: 'connected' })];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].type).toBe('system');
+    });
 
-      expect(tools[0].isFirst).toBe(true);
-      expect(tools[0].isLast).toBe(false);
-
-      expect(tools[1].isFirst).toBe(false);
-      expect(tools[1].isLast).toBe(true);
+    it('error message is a standalone item', () => {
+      const messages = [msg('error', { content: 'oops' })];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].type).toBe('error');
     });
   });
 
-  describe('Tool-use sequence broken by non-tool messages', () => {
-    it('assistant message between tool-uses breaks the sequence', () => {
+  describe('Multi-message turns', () => {
+    it('consecutive assistant messages merge into one turn', () => {
       const messages = [
-        msg('tool-use', { toolName: 'Read' }),
-        msg('tool-result'),
-        msg('assistant'),  // breaks sequence
-        msg('tool-use', { toolName: 'Edit' }),
-        msg('tool-result'),
+        msg('assistant', { content: 'part1' }),
+        msg('assistant', { content: 'part2' }),
       ];
-      const processed = processMessages(messages);
-      const tools = processed.filter(m => m.type === 'tool-use');
-      expect(tools).toHaveLength(2);
-
-      // Each tool-use should be isolated (both first and last)
-      expect(tools[0].isFirst).toBe(true);
-      expect(tools[0].isLast).toBe(true);
-
-      expect(tools[1].isFirst).toBe(true);
-      expect(tools[1].isLast).toBe(true);
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].type).toBe('assistant-turn');
+      expect(groups[0].textContent).toBe('part1part2');
     });
 
-    it('user message between tool-uses breaks the sequence', () => {
+    it('assistant + tool-use merge into one turn', () => {
       const messages = [
-        msg('tool-use', { toolName: 'Read' }),
-        msg('tool-result'),
-        msg('user'),
-        msg('tool-use', { toolName: 'Edit' }),
+        msg('assistant', { content: 'thinking...' }),
+        msg('tool-use', { toolName: 'Read', toolInput: { file_path: '/a.js' } }),
         msg('tool-result'),
       ];
-      const processed = processMessages(messages);
-      const tools = processed.filter(m => m.type === 'tool-use');
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].type).toBe('assistant-turn');
+      expect(groups[0].textContent).toBe('thinking...');
+      expect(groups[0].toolMsgs).toHaveLength(1);
+      expect(groups[0].toolMsgs[0].toolName).toBe('Read');
+    });
 
-      expect(tools[0].isFirst).toBe(true);
-      expect(tools[0].isLast).toBe(true);
+    it('assistant + tool-use + assistant merge into one turn', () => {
+      const messages = [
+        msg('assistant', { content: 'first' }),
+        msg('tool-use', { toolName: 'Bash', toolInput: {} }),
+        msg('tool-result'),
+        msg('assistant', { content: 'second' }),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].textContent).toBe('firstsecond');
+      expect(groups[0].toolMsgs).toHaveLength(1);
+    });
+  });
 
-      expect(tools[1].isFirst).toBe(true);
-      expect(tools[1].isLast).toBe(true);
+  describe('Turn boundaries', () => {
+    it('user message ends current turn and starts new one', () => {
+      const messages = [
+        msg('assistant', { content: 'reply' }),
+        msg('user', { content: 'question' }),
+        msg('assistant', { content: 'answer' }),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(3);
+      expect(groups[0].type).toBe('assistant-turn');
+      expect(groups[0].textContent).toBe('reply');
+      expect(groups[1].type).toBe('user');
+      expect(groups[2].type).toBe('assistant-turn');
+      expect(groups[2].textContent).toBe('answer');
+    });
+
+    it('system message ends current turn', () => {
+      const messages = [
+        msg('assistant', { content: 'text' }),
+        msg('system', { content: 'sys' }),
+        msg('assistant', { content: 'more' }),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(3);
+      expect(groups[0].type).toBe('assistant-turn');
+      expect(groups[1].type).toBe('system');
+      expect(groups[2].type).toBe('assistant-turn');
+    });
+
+    it('error message ends current turn', () => {
+      const messages = [
+        msg('assistant', { content: 'text' }),
+        msg('error', { content: 'err' }),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(2);
+      expect(groups[0].type).toBe('assistant-turn');
+      expect(groups[1].type).toBe('error');
+    });
+  });
+
+  describe('Special tool handling', () => {
+    it('TodoWrite goes to todoMsg (only latest kept)', () => {
+      const messages = [
+        msg('assistant', { content: 'working' }),
+        msg('tool-use', { toolName: 'TodoWrite', toolInput: { todos: [{ content: 'a', status: 'pending' }] } }),
+        msg('tool-result'),
+        msg('tool-use', { toolName: 'TodoWrite', toolInput: { todos: [{ content: 'a', status: 'completed' }] } }),
+        msg('tool-result'),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].todoMsg).toBeTruthy();
+      expect(groups[0].todoMsg.toolInput.todos[0].status).toBe('completed');
+      expect(groups[0].toolMsgs).toHaveLength(0); // TodoWrite not in toolMsgs
+    });
+
+    it('AskUserQuestion goes to askMsg', () => {
+      const messages = [
+        msg('assistant', { content: 'need input' }),
+        msg('tool-use', { toolName: 'AskUserQuestion', toolInput: { questions: [{ question: 'q1' }] } }),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].askMsg).toBeTruthy();
+      expect(groups[0].askMsg.toolName).toBe('AskUserQuestion');
+      expect(groups[0].toolMsgs).toHaveLength(0);
+    });
+
+    it('regular tools go to toolMsgs', () => {
+      const messages = [
+        msg('tool-use', { toolName: 'Read', toolInput: {} }),
+        msg('tool-result'),
+        msg('tool-use', { toolName: 'Edit', toolInput: {} }),
+        msg('tool-result'),
+        msg('tool-use', { toolName: 'Bash', toolInput: {} }),
+        msg('tool-result'),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].toolMsgs).toHaveLength(3);
+      expect(groups[0].toolMsgs[0].toolName).toBe('Read');
+      expect(groups[0].toolMsgs[1].toolName).toBe('Edit');
+      expect(groups[0].toolMsgs[2].toolName).toBe('Bash');
+    });
+  });
+
+  describe('Streaming', () => {
+    it('streaming assistant marks turn as streaming', () => {
+      const messages = [
+        msg('assistant', { content: 'typing...', isStreaming: true }),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups[0].isStreaming).toBe(true);
+    });
+
+    it('non-streaming assistant does not mark turn as streaming', () => {
+      const messages = [
+        msg('assistant', { content: 'done' }),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups[0].isStreaming).toBe(false);
+    });
+  });
+
+  describe('tool-result filtering', () => {
+    it('tool-result messages are skipped', () => {
+      const messages = [
+        msg('tool-use', { toolName: 'Read', toolInput: {} }),
+        msg('tool-result'),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      // tool-result should not appear anywhere
+      expect(groups[0].messages).toHaveLength(1);
+      expect(groups[0].messages[0].type).toBe('tool-use');
+    });
+  });
+
+  describe('Edge cases', () => {
+    it('empty message list returns empty', () => {
+      expect(buildTurnGroups([])).toEqual([]);
+    });
+
+    it('only tool-results returns empty', () => {
+      const messages = [msg('tool-result'), msg('tool-result')];
+      expect(buildTurnGroups(messages)).toEqual([]);
+    });
+
+    it('tool-use without any assistant text', () => {
+      const messages = [
+        msg('tool-use', { toolName: 'Grep', toolInput: {} }),
+        msg('tool-result'),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].textContent).toBe('');
+      expect(groups[0].toolMsgs).toHaveLength(1);
+    });
+
+    it('complex conversation with multiple turns', () => {
+      const messages = [
+        msg('system', { content: 'connected' }),
+        msg('user', { content: 'help me' }),
+        msg('assistant', { content: 'sure' }),
+        msg('tool-use', { toolName: 'Read', toolInput: {} }),
+        msg('tool-result'),
+        msg('tool-use', { toolName: 'Edit', toolInput: {} }),
+        msg('tool-result'),
+        msg('assistant', { content: 'done!' }),
+        msg('user', { content: 'thanks' }),
+        msg('assistant', { content: 'welcome' }),
+      ];
+      const groups = buildTurnGroups(messages);
+      expect(groups).toHaveLength(5); // system, user, turn1, user, turn2
+      expect(groups[0].type).toBe('system');
+      expect(groups[1].type).toBe('user');
+      expect(groups[2].type).toBe('assistant-turn');
+      expect(groups[2].textContent).toBe('suredone!');
+      expect(groups[2].toolMsgs).toHaveLength(2);
+      expect(groups[3].type).toBe('user');
+      expect(groups[4].type).toBe('assistant-turn');
+      expect(groups[4].textContent).toBe('welcome');
     });
   });
 });
 
-describe('Tool-use running/completed state', () => {
+// =====================================================================
+// Part 2: CSS source verification for .assistant-turn styles
+// =====================================================================
 
-  it('tool-use with result is completed', () => {
-    const messages = [
-      msg('tool-use', { toolName: 'Read' }),
-      msg('tool-result'),
-    ];
-    const processed = processMessages(messages);
-    const tool = processed.find(m => m.type === 'tool-use');
-    expect(tool.isCompleted).toBe(true);
-    expect(tool.isRunning).toBe(false);
-  });
-
-  it('tool-use without result and not history is running', () => {
-    const messages = [
-      msg('tool-use', { toolName: 'Read', isHistory: false }),
-    ];
-    const processed = processMessages(messages);
-    const tool = processed.find(m => m.type === 'tool-use');
-    expect(tool.isRunning).toBe(true);
-    expect(tool.isCompleted).toBe(false);
-  });
-
-  it('tool-use without result but isHistory is NOT running', () => {
-    const messages = [
-      msg('tool-use', { toolName: 'Read', isHistory: true }),
-    ];
-    const processed = processMessages(messages);
-    const tool = processed.find(m => m.type === 'tool-use');
-    expect(tool.isRunning).toBe(false);
-    expect(tool.isCompleted).toBe(false);
-  });
-
-  it('last tool in sequence without result is running (active tool)', () => {
-    const messages = [
-      msg('tool-use', { toolName: 'Read' }),
-      msg('tool-result'),
-      msg('tool-use', { toolName: 'Edit' }),
-      msg('tool-result'),
-      msg('tool-use', { toolName: 'Bash' }),  // no result = running
-    ];
-    const processed = processMessages(messages);
-    const tools = processed.filter(m => m.type === 'tool-use');
-
-    expect(tools[0].isCompleted).toBe(true);
-    expect(tools[0].isRunning).toBe(false);
-
-    expect(tools[1].isCompleted).toBe(true);
-    expect(tools[1].isRunning).toBe(false);
-
-    expect(tools[2].isCompleted).toBe(false);
-    expect(tools[2].isRunning).toBe(true);
-  });
-});
-
-describe('tool-result messages are filtered out', () => {
-  it('tool-result should not appear in processed output', () => {
-    const messages = [
-      msg('tool-use'),
-      msg('tool-result'),
-      msg('tool-use'),
-      msg('tool-result'),
-      msg('assistant'),
-    ];
-    const processed = processMessages(messages);
-    const toolResults = processed.filter(m => m.type === 'tool-result');
-    expect(toolResults).toHaveLength(0);
-  });
-
-  it('non-tool messages pass through unchanged', () => {
-    const messages = [
-      msg('user', { content: 'hello' }),
-      msg('assistant', { content: 'hi' }),
-    ];
-    const processed = processMessages(messages);
-    expect(processed).toHaveLength(2);
-    expect(processed[0].type).toBe('user');
-    expect(processed[1].type).toBe('assistant');
-    // Should NOT have tool-use specific flags
-    expect(processed[0].isFirst).toBeUndefined();
-    expect(processed[0].isLast).toBeUndefined();
-    expect(processed[0].isRunning).toBeUndefined();
-    expect(processed[0].isCompleted).toBeUndefined();
-  });
-});
-
-describe('CSS class generation (MessageItem messageClass)', () => {
-  it('completed first+last tool-use gets correct classes', () => {
-    const message = {
-      type: 'tool-use',
-      isFirst: true,
-      isLast: true,
-      isRunning: false,
-      isCompleted: true
-    };
-    const classes = computeMessageClass(message);
-    expect(classes).toContain('message');
-    expect(classes).toContain('tool-use');
-    expect(classes).toContain('is-first');
-    expect(classes).toContain('is-last');
-    expect(classes).toContain('is-completed');
-    expect(classes).not.toContain('is-running');
-  });
-
-  it('running middle tool-use gets correct classes', () => {
-    const message = {
-      type: 'tool-use',
-      isFirst: false,
-      isLast: false,
-      isRunning: true,
-      isCompleted: false
-    };
-    const classes = computeMessageClass(message);
-    expect(classes).toContain('message');
-    expect(classes).toContain('tool-use');
-    expect(classes).toContain('is-running');
-    expect(classes).not.toContain('is-first');
-    expect(classes).not.toContain('is-last');
-    expect(classes).not.toContain('is-completed');
-  });
-
-  it('streaming tool-use includes streaming class', () => {
-    const message = {
-      type: 'tool-use',
-      isFirst: true,
-      isLast: true,
-      isRunning: true,
-      isCompleted: false,
-      isStreaming: true
-    };
-    const classes = computeMessageClass(message);
-    expect(classes).toContain('streaming');
-    expect(classes).toContain('is-running');
-  });
-
-  it('non-tool-use message does not get tool-use flags', () => {
-    const message = { type: 'assistant', isFirst: true };
-    const classes = computeMessageClass(message);
-    expect(classes).toEqual(['message', 'assistant']);
-    // isFirst is ignored for non-tool-use types
-    expect(classes).not.toContain('is-first');
-  });
-});
-
-describe('CSS source verification', () => {
+describe('CSS source verification (assistant-turn)', () => {
   let cssContent;
 
-  it('should load style.css from dev-3 worktree', async () => {
+  it('should load style.css', async () => {
     const { promises: fs } = await import('fs');
     const { join } = await import('path');
-    // Try worktree first, fallback to main
-    const worktreePath = join(process.cwd(), '.worktrees/dev-3/web/style.css');
     const mainPath = join(process.cwd(), 'web/style.css');
-    try {
-      cssContent = await fs.readFile(worktreePath, 'utf-8');
-    } catch {
-      cssContent = await fs.readFile(mainPath, 'utf-8');
-    }
+    cssContent = await fs.readFile(mainPath, 'utf-8');
     expect(cssContent).toBeDefined();
     expect(cssContent.length).toBeGreaterThan(0);
   });
 
-  it('tool-use should have margin-left: 24px', () => {
-    // The CSS block for .message.tool-use should contain margin-left: 24px
-    expect(cssContent).toContain('margin-left: 24px');
+  it('should have .assistant-turn base styles', () => {
+    expect(cssContent).toContain('.assistant-turn');
+    expect(cssContent).toContain('border-radius: 8px');
   });
 
-  it('should have connection line via ::before pseudo-element', () => {
-    expect(cssContent).toContain('.message.tool-use::before');
+  it('should have .assistant-turn.streaming style', () => {
+    expect(cssContent).toContain('.assistant-turn.streaming');
   });
 
-  it('should have node dot via ::after pseudo-element', () => {
-    expect(cssContent).toContain('.message.tool-use::after');
+  it('should have .turn-content styles', () => {
+    expect(cssContent).toContain('.turn-content');
   });
 
-  it('running tool should have pulse animation', () => {
-    expect(cssContent).toContain('.message.tool-use.is-running::after');
-    expect(cssContent).toContain('toolNodePulse');
+  it('should have .turn-todos with border-top separator', () => {
+    expect(cssContent).toContain('.turn-todos');
+    const todosSection = cssContent.split('.turn-todos')[1];
+    expect(todosSection).toContain('border-top');
   });
 
-  it('completed tool should have green dot', () => {
-    expect(cssContent).toContain('.message.tool-use.is-completed::after');
-    expect(cssContent).toContain('var(--success)');
+  it('should have .turn-actions with border-top separator', () => {
+    expect(cssContent).toContain('.turn-actions');
+    const actionsSection = cssContent.split('.turn-actions {')[1];
+    expect(actionsSection).toContain('border-top');
   });
 
-  it('is-first should clip line to start at midpoint', () => {
-    expect(cssContent).toContain('.message.tool-use.is-first::before');
+  it('should have .turn-expand-btn styles', () => {
+    expect(cssContent).toContain('.turn-expand-btn');
   });
 
-  it('is-last should clip line to end at midpoint', () => {
-    expect(cssContent).toContain('.message.tool-use.is-last::before');
+  it('should have .turn-ask styles', () => {
+    expect(cssContent).toContain('.turn-ask');
   });
 
-  it('AskUserQuestion (.ask-card) should be excluded from indent', () => {
-    expect(cssContent).toContain('.message.tool-use:has(.ask-card)');
-    // Check that it resets margin-left
-    const askCardSection = cssContent.split('.message.tool-use:has(.ask-card)')[1];
-    expect(askCardSection).toContain('margin-left: 0');
+  it('should still have .copy-btn styles', () => {
+    expect(cssContent).toContain('.copy-btn');
   });
 
-  it('TodoWrite (.todo-list) should be excluded from indent', () => {
-    expect(cssContent).toContain('.message.tool-use:has(.todo-list)');
-    const todoSection = cssContent.split('.message.tool-use:has(.todo-list)')[1];
-    expect(todoSection).toContain('margin-left: 0');
+  it('should still have .todo-item styles', () => {
+    expect(cssContent).toContain('.todo-item');
+    expect(cssContent).toContain('.todo-item.completed');
+    expect(cssContent).toContain('.todo-item.in_progress');
   });
 
-  it('AskUserQuestion pseudo-elements should be hidden', () => {
-    expect(cssContent).toContain('.message.tool-use:has(.ask-card)::before');
-    expect(cssContent).toContain('.message.tool-use:has(.ask-card)::after');
+  it('should still have .ask-card styles', () => {
+    expect(cssContent).toContain('.ask-card');
   });
 
-  it('TodoWrite pseudo-elements should be hidden', () => {
-    expect(cssContent).toContain('.message.tool-use:has(.todo-list)::before');
-    expect(cssContent).toContain('.message.tool-use:has(.todo-list)::after');
-  });
-
-  it('mobile responsive should reduce indent to 16px', () => {
-    // Check that @media (max-width: 768px) section contains reduced margin
-    const mobileSection = cssContent.split('@media (max-width: 768px)').slice(1).join('');
-    expect(mobileSection).toContain('margin-left: 16px');
+  it('should still have .cursor-blink animation', () => {
+    expect(cssContent).toContain('.cursor-blink');
+    expect(cssContent).toContain('@keyframes blink');
   });
 });
 
-describe('Edge cases', () => {
-  it('empty message list returns empty', () => {
-    expect(processMessages([])).toEqual([]);
-  });
+// =====================================================================
+// Part 3: Legacy processMessages logic tests (kept for regression)
+// =====================================================================
 
-  it('only tool-result messages (orphaned) are all filtered', () => {
-    const messages = [
-      msg('tool-result'),
-      msg('tool-result'),
-    ];
-    expect(processMessages(messages)).toEqual([]);
-  });
+function processMessages(messages) {
+  const result = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.type === 'tool-result') continue;
+    if (m.type === 'tool-use') {
+      const nextMsg = messages[i + 1];
+      const hasResult = nextMsg && nextMsg.type === 'tool-result';
+      let prevIdx = i - 1;
+      while (prevIdx >= 0 && messages[prevIdx].type === 'tool-result') prevIdx--;
+      const prevIsToolUse = prevIdx >= 0 && messages[prevIdx].type === 'tool-use';
+      let nextIdx = hasResult ? i + 2 : i + 1;
+      const nextIsToolUse = nextIdx < messages.length && messages[nextIdx].type === 'tool-use';
+      result.push({
+        ...m, hasResult,
+        isFirst: !prevIsToolUse, isLast: !nextIsToolUse,
+        isRunning: !hasResult && !m.isHistory, isCompleted: !!hasResult
+      });
+    } else {
+      result.push(m);
+    }
+  }
+  return result;
+}
 
-  it('tool-use at start of messages is isFirst', () => {
-    const messages = [
-      msg('tool-use', { toolName: 'Read' }),
-      msg('tool-result'),
-    ];
-    const processed = processMessages(messages);
-    expect(processed[0].isFirst).toBe(true);
-  });
-
-  it('tool-use at end of messages is isLast', () => {
-    const messages = [
-      msg('assistant'),
-      msg('tool-use', { toolName: 'Read' }),
-    ];
+describe('Legacy processMessages logic', () => {
+  it('single tool-use is both isFirst and isLast', () => {
+    const messages = [msg('assistant'), msg('tool-use', { toolName: 'Read' }), msg('tool-result'), msg('assistant')];
     const processed = processMessages(messages);
     const tool = processed.find(m => m.type === 'tool-use');
+    expect(tool.isFirst).toBe(true);
     expect(tool.isLast).toBe(true);
   });
 
-  it('five consecutive tool-uses: only first and last marked', () => {
-    const messages = [];
-    for (let i = 0; i < 5; i++) {
-      messages.push(msg('tool-use', { toolName: `Tool${i}` }));
-      messages.push(msg('tool-result'));
-    }
-    const processed = processMessages(messages);
-    const tools = processed.filter(m => m.type === 'tool-use');
-    expect(tools).toHaveLength(5);
-
-    expect(tools[0].isFirst).toBe(true);
-    expect(tools[0].isLast).toBe(false);
-
-    for (let i = 1; i < 4; i++) {
-      expect(tools[i].isFirst).toBe(false);
-      expect(tools[i].isLast).toBe(false);
-    }
-
-    expect(tools[4].isFirst).toBe(false);
-    expect(tools[4].isLast).toBe(true);
-  });
-
-  it('tool-use without result followed by tool-use: first is running, second starts new context', () => {
-    // Scenario: tool-use (no result) → tool-use (with result)
-    // This can happen if a tool times out and the next tool starts
+  it('three consecutive tool-uses: first/middle/last', () => {
     const messages = [
-      msg('tool-use', { toolName: 'Bash' }),  // no result
-      msg('tool-use', { toolName: 'Read' }),   // has result
-      msg('tool-result'),
+      msg('tool-use'), msg('tool-result'),
+      msg('tool-use'), msg('tool-result'),
+      msg('tool-use'), msg('tool-result'),
     ];
     const processed = processMessages(messages);
     const tools = processed.filter(m => m.type === 'tool-use');
-    expect(tools).toHaveLength(2);
-
-    // First tool: is first, NOT last (next is also tool-use)
     expect(tools[0].isFirst).toBe(true);
     expect(tools[0].isLast).toBe(false);
-    expect(tools[0].isRunning).toBe(true);  // no result, not history
-
-    // Second tool: NOT first (prev is tool-use), is last
     expect(tools[1].isFirst).toBe(false);
-    expect(tools[1].isLast).toBe(true);
-    expect(tools[1].isCompleted).toBe(true);
+    expect(tools[1].isLast).toBe(false);
+    expect(tools[2].isFirst).toBe(false);
+    expect(tools[2].isLast).toBe(true);
+  });
+
+  it('tool-result filtered out', () => {
+    const messages = [msg('tool-use'), msg('tool-result')];
+    const processed = processMessages(messages);
+    expect(processed.filter(m => m.type === 'tool-result')).toHaveLength(0);
+  });
+
+  it('tool-use with result is completed', () => {
+    const messages = [msg('tool-use', { toolName: 'Read' }), msg('tool-result')];
+    const processed = processMessages(messages);
+    expect(processed[0].isCompleted).toBe(true);
+    expect(processed[0].isRunning).toBe(false);
+  });
+
+  it('tool-use without result is running', () => {
+    const messages = [msg('tool-use', { toolName: 'Read' })];
+    const processed = processMessages(messages);
+    expect(processed[0].isRunning).toBe(true);
+  });
+
+  it('history tool-use without result is not running', () => {
+    const messages = [msg('tool-use', { toolName: 'Read', isHistory: true })];
+    const processed = processMessages(messages);
+    expect(processed[0].isRunning).toBe(false);
   });
 });

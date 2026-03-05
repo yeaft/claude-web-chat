@@ -1674,15 +1674,6 @@ body {
   font-size: 15px;
 }
 
-.message.assistant {
-  padding: 0;
-  padding-right: 40px; /* Space for copy button */
-}
-
-.message.assistant .message-content {
-  color: var(--text-primary);
-}
-
 .message.system {
   text-align: center;
   font-size: 13px;
@@ -1704,50 +1695,94 @@ body {
   align-self: center;
 }
 
-/* Tool Messages - Inline Style */
-.message.tool-use {
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  font-size: 14px;
-}
-
-.message.tool-use .tool-name {
-  color: var(--text-secondary);
-  font-weight: 500;
-  font-size: 12px;
-}
-
-.message.tool-use .tool-input {
-  background: var(--code-bg);
-  color: var(--code-text);
-  padding: 10px 12px;
-  border-radius: 6px;
-  overflow-x: auto;
-  margin: 0;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 12px;
-}
-
-.message.tool-result {
-  background: var(--tool-result-bg);
-  border: 1px solid var(--tool-result-border);
+/* ========================================
+   Assistant Turn Card
+   ======================================== */
+.assistant-turn {
   border-radius: 8px;
-  padding: 12px;
-  font-size: 13px;
-  max-height: 200px;
-  overflow-y: auto;
+  background: var(--bg-assistant-msg, transparent);
+  display: flex;
+  flex-direction: column;
+  position: relative;
 }
 
-.message.tool-result .tool-output {
-  background: var(--code-bg);
+.assistant-turn.streaming {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+/* Turn: text content */
+.turn-content {
+  padding: 0;
+  padding-right: 40px;
+  position: relative;
+}
+
+.turn-content .turn-header {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.turn-content:hover .turn-header {
+  opacity: 1;
+}
+
+/* Turn: todo progress */
+.turn-todos {
+  border-top: 1px solid var(--border-light);
+  padding: 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* Turn: tool actions */
+.turn-actions {
+  border-top: 1px solid var(--border-light);
+  padding: 4px 8px;
+}
+
+.turn-actions-history {
+  margin-bottom: 2px;
+}
+
+.turn-actions-latest {
+  display: flex;
+  flex-direction: column;
+}
+
+.turn-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 11px;
+  font-family: inherit;
+  transition: color 0.15s;
+  margin-bottom: 2px;
+}
+
+.turn-expand-btn:hover {
+  color: var(--text-secondary);
+}
+
+.turn-expand-btn svg {
+  flex-shrink: 0;
+}
+
+/* Turn: AskUserQuestion */
+.turn-ask {
+  border-top: 1px solid var(--border-light);
   padding: 8px;
-  border-radius: 6px;
-  overflow-x: auto;
-  margin: 0;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 12px;
 }
 
 /* Code Styling */
@@ -3789,25 +3824,6 @@ body {
   color: var(--code-text);
 }
 
-/* Message Header with Copy Button */
-.message.assistant {
-  position: relative;
-}
-
-.message.assistant .message-header {
-  position: absolute;
-  top: 0;
-  right: 0;
-  display: flex;
-  gap: 4px;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-
-.message.assistant:hover .message-header {
-  opacity: 1;
-}
-
 /* Copy Button */
 .copy-btn {
   display: flex;
@@ -3831,162 +3847,6 @@ body {
 .copy-btn.small {
   width: 24px;
   height: 24px;
-}
-
-/* Tool Messages - Inline Style (override) */
-.message.tool-use {
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  padding: 2px 0;
-  font-size: 14px;
-  margin-left: 24px;
-  position: relative;
-}
-
-/* Connection line on left */
-.message.tool-use::before {
-  content: '';
-  position: absolute;
-  left: -16px;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--border-color);
-}
-
-/* Node dot */
-.message.tool-use::after {
-  content: '';
-  position: absolute;
-  left: -19px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--bg-main);
-  border: 1.5px solid var(--border-color);
-}
-
-/* Running tool: pulsing dot */
-.message.tool-use.is-running::after {
-  border-color: var(--accent-blue);
-  background: var(--accent-blue);
-  animation: toolNodePulse 1.5s ease-in-out infinite;
-}
-
-@keyframes toolNodePulse {
-  0%, 100% { opacity: 1; transform: translateY(-50%) scale(1); }
-  50% { opacity: 0.5; transform: translateY(-50%) scale(0.7); }
-}
-
-/* Completed tool: green dot */
-.message.tool-use.is-completed::after {
-  border-color: var(--success);
-  background: var(--success);
-}
-
-/* First tool in sequence: line starts at midpoint */
-.message.tool-use.is-first::before {
-  top: 50%;
-}
-
-/* Last tool in sequence: line ends at midpoint */
-.message.tool-use.is-last::before {
-  bottom: 50%;
-}
-
-/* AskUserQuestion cards — no indent/line */
-.message.tool-use:has(.ask-card) {
-  margin-left: 0;
-}
-
-.message.tool-use:has(.ask-card)::before,
-.message.tool-use:has(.ask-card)::after {
-  display: none;
-}
-
-/* TodoWrite cards — no indent/line */
-.message.tool-use:has(.todo-list) {
-  margin-left: 0;
-}
-
-.message.tool-use:has(.todo-list)::before,
-.message.tool-use:has(.todo-list)::after {
-  display: none;
-}
-
-.message.tool-result {
-  background: var(--tool-result-bg);
-  border: 1px solid var(--tool-result-border);
-  border-radius: 8px;
-  padding: 12px 14px;
-  font-size: 13px;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-/* Mobile: reduce tool-use indent */
-@media (max-width: 768px) {
-  .message.tool-use {
-    margin-left: 16px;
-  }
-
-  .message.tool-use::before {
-    left: -10px;
-  }
-
-  .message.tool-use::after {
-    left: -13px;
-    width: 5px;
-    height: 5px;
-  }
-}
-
-/* Tool Header */
-.tool-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.message.tool-use .tool-name {
-  color: var(--text-secondary);
-  font-weight: 500;
-  font-size: 12px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.message.tool-use .tool-name::before {
-  content: '';
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  background: var(--text-secondary);
-  border-radius: 50%;
-}
-
-.tool-result-label {
-  font-size: 12px;
-  color: var(--success);
-  font-weight: 500;
-}
-
-.message.tool-use .tool-input,
-.message.tool-result .tool-output {
-  background: var(--code-bg);
-  color: var(--code-text);
-  padding: 10px 12px;
-  border-radius: 6px;
-  overflow-x: auto;
-  margin: 0;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 /* Syntax Highlighting Theme Overrides */
@@ -6305,30 +6165,6 @@ body {
   padding: 0;
   white-space: pre-wrap;
   word-break: break-all;
-}
-
-/* Tool group collapse toggle */
-.tool-group-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 2px 8px;
-  font-size: 11px;
-  font-family: inherit;
-  transition: color 0.15s;
-  margin: -2px 0 2px 18px;
-}
-
-.tool-group-toggle:hover {
-  color: var(--text-secondary);
-}
-
-.tool-group-toggle svg {
-  flex-shrink: 0;
 }
 
 /* Compact Diff View */
