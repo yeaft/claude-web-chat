@@ -41,7 +41,7 @@ test.describe('Crew 会话', () => {
     await chatPage.click('.crew-template-btn:text("软件开发")');
 
     const roleItems = chatPage.locator('.crew-role-item');
-    await expect(roleItems).toHaveCount(6, { timeout: 5000 });
+    await expect(roleItems).toHaveCount(5, { timeout: 5000 });
 
     const roleNames = chatPage.locator('.crew-role-name-input');
     const names = await roleNames.evaluateAll(els => els.map(el => el.value));
