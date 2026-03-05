@@ -313,7 +313,8 @@ async function saveSessionMeta(session) {
     status: session.status,
     roles: Array.from(session.roles.values()).map(r => ({
       name: r.name, displayName: r.displayName, icon: r.icon,
-      description: r.description, isDecisionMaker: r.isDecisionMaker || false
+      description: r.description, isDecisionMaker: r.isDecisionMaker || false,
+      groupIndex: r.groupIndex, roleType: r.roleType, model: r.model
     })),
     decisionMaker: session.decisionMaker,
     maxRounds: session.maxRounds,
@@ -326,7 +327,8 @@ async function saveSessionMeta(session) {
     costUsd: session.costUsd,
     totalInputTokens: session.totalInputTokens,
     totalOutputTokens: session.totalOutputTokens,
-    features: Array.from(session.features.values())
+    features: Array.from(session.features.values()),
+    groupNames: session.groupNames || {}
   };
   await fs.writeFile(join(session.sharedDir, 'session.json'), JSON.stringify(meta, null, 2));
   // 保存 UI 消息历史（用于恢复时重放）
@@ -494,7 +496,8 @@ export async function resumeCrewSession(msg) {
       sharedKnowledge: session.sharedKnowledge || '',
       roles: roles.map(r => ({
         name: r.name, displayName: r.displayName, icon: r.icon,
-        description: r.description, isDecisionMaker: r.isDecisionMaker || false
+        description: r.description, isDecisionMaker: r.isDecisionMaker || false,
+        groupIndex: r.groupIndex, roleType: r.roleType, model: r.model
       })),
       decisionMaker: session.decisionMaker,
       maxRounds: session.maxRounds,
@@ -546,6 +549,7 @@ export async function resumeCrewSession(msg) {
     waitingHumanContext: null,
     pendingRoutes: [],
     features: new Map((meta.features || []).map(f => [f.taskId, f])),
+    groupNames: meta.groupNames || {},
     userId: userId || meta.userId,
     username: username || meta.username,
     agentId: meta.agentId || ctx.CONFIG?.agentName || null,
@@ -567,7 +571,8 @@ export async function resumeCrewSession(msg) {
     sharedKnowledge: session.sharedKnowledge || '',
     roles: roles.map(r => ({
       name: r.name, displayName: r.displayName, icon: r.icon,
-      description: r.description, isDecisionMaker: r.isDecisionMaker || false
+      description: r.description, isDecisionMaker: r.isDecisionMaker || false,
+      groupIndex: r.groupIndex, roleType: r.roleType, model: r.model
     })),
     decisionMaker,
     maxRounds: session.maxRounds,

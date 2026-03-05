@@ -11707,20 +11707,19 @@ body {
   margin-left: 2px;
 }
 
-.crew-role-card-actions {
+.crew-role-card-header-actions {
   display: flex;
-  justify-content: flex-end;
   gap: 2px;
-  margin-top: 2px;
+  margin-left: auto;
   opacity: 0;
   transition: opacity 0.15s;
 }
 
-.crew-role-card:hover .crew-role-card-actions {
+.crew-role-card:hover .crew-role-card-header-actions {
   opacity: 0.6;
 }
 
-.crew-role-card-actions:hover {
+.crew-role-card-header-actions:hover {
   opacity: 1 !important;
 }
 

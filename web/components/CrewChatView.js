@@ -39,6 +39,10 @@ export default {
                   <span class="crew-role-card-icon">{{ role.icon }}</span>
                   <span class="crew-role-card-name">{{ role.displayName }}</span>
                   <span v-if="role.isDecisionMaker" class="crew-role-card-dm">\u2605</span>
+                  <span class="crew-role-card-header-actions" @click.stop>
+                    <button class="crew-role-action-btn" @click.stop="compactRole(role.name)" title="压缩上下文">🗜</button>
+                    <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" title="清空对话">🗑</button>
+                  </span>
                 </div>
                 <div v-if="getRoleCurrentTask(role.name)" class="crew-role-card-feature">
                   {{ getRoleCurrentTask(role.name) }}
@@ -47,13 +51,7 @@ export default {
                      class="crew-role-card-tool">
                   {{ getRoleCurrentTool(role.name) }}
                 </div>
-                <div class="crew-role-card-actions" @click.stop>
-                  <button class="crew-role-action-btn" @click.stop="compactRole(role.name)" title="压缩上下文">🗜</button>
-                  <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" title="清空对话">🗑</button>
-                </div>
               </div>
-
-              <!-- 分组角色 (groupIndex>0): dev+rev+test 组 -->
               <div v-for="(group, gIdx) in groupedRoles.groups" :key="'g'+gIdx" class="crew-role-group">
                 <div class="crew-role-group-header">
                   <span class="crew-role-group-name" @dblclick="startEditGroupName(gIdx)">
@@ -78,6 +76,10 @@ export default {
                   <div class="crew-role-card-header">
                     <span class="crew-role-card-icon">{{ role.icon }}</span>
                     <span class="crew-role-card-name">{{ role.displayName }}</span>
+                    <span class="crew-role-card-header-actions" @click.stop>
+                      <button class="crew-role-action-btn" @click.stop="compactRole(role.name)" title="压缩上下文">🗜</button>
+                      <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" title="清空对话">🗑</button>
+                    </span>
                   </div>
                   <div v-if="getRoleCurrentTask(role.name)" class="crew-role-card-feature">
                     {{ getRoleCurrentTask(role.name) }}
@@ -85,10 +87,6 @@ export default {
                   <div v-if="isRoleStreaming(role.name) && getRoleCurrentTool(role.name)"
                        class="crew-role-card-tool">
                     {{ getRoleCurrentTool(role.name) }}
-                  </div>
-                  <div class="crew-role-card-actions" @click.stop>
-                    <button class="crew-role-action-btn" @click.stop="compactRole(role.name)" title="压缩上下文">🗜</button>
-                    <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" title="清空对话">🗑</button>
                   </div>
                 </div>
               </div>
