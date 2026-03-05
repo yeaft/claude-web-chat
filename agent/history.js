@@ -63,6 +63,11 @@ export function getWorkDirFromProjectFolder(projectFolderPath, folderName) {
 
 // 获取指定目录的历史会话列表
 export async function getHistorySessions(workDir) {
+  // 过滤掉 crew 角色目录的 sessions
+  if (workDir && /[/\\]\.crew[/\\]roles[/\\]/.test(workDir)) {
+    return [];
+  }
+
   const projectsDir = getClaudeProjectsDir();
   const projectFolder = pathToProjectFolder(workDir);
   const projectPath = join(projectsDir, projectFolder);
@@ -224,6 +229,12 @@ export async function handleListFolders(msg) {
         const stats = statSync(entryPath);
 
         if (stats.isDirectory()) {
+          // 过滤掉 crew 角色的 session 文件夹
+          // crew 角色的 cwd 在 .crew/roles/{roleName} 下，对应的文件夹名包含 --crew-roles-
+          if (entry.includes('--crew-roles-')) {
+            continue;
+          }
+
           // 从 session 文件读取真实的工作目录路径
           const originalPath = getWorkDirFromProjectFolder(entryPath, entry);
 
