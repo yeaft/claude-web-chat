@@ -59,7 +59,7 @@ const fileConfig = loadConfig();
 const CONFIG = {
   serverUrl: process.env.SERVER_URL || fileConfig.serverUrl,
   agentName: process.env.AGENT_NAME || fileConfig.agentName,
-  workDir: process.env.WORK_DIR || fileConfig.workDir,
+  workDir: process.env.WORK_DIR || fileConfig.workDir || process.cwd(),
   reconnectInterval: fileConfig.reconnectInterval,
   agentSecret: process.env.AGENT_SECRET || fileConfig.agentSecret,
   // MCP 白名单：只允许这些 MCP 服务器的工具，其余自动禁用

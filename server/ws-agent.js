@@ -18,7 +18,7 @@ import {
 export function handleAgentConnection(ws, url) {
   const agentId = url.searchParams.get('id') || randomUUID();
   const agentName = url.searchParams.get('name') || `Agent-${agentId.slice(0, 8)}`;
-  const workDir = url.searchParams.get('workDir') || 'unknown';
+  const workDir = url.searchParams.get('workDir') || '';
 
   // Helper function to set up message handler for authenticated agents
   const setupAuthenticatedMessageHandler = (agentIdToUse) => {
