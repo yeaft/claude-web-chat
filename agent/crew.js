@@ -384,6 +384,63 @@ export async function handleListCrewSessions(msg) {
 }
 
 /**
+ * 检查工作目录下是否存在 .crew 目录
+ */
+export async function handleCheckCrewExists(msg) {
+  const { projectDir, requestId, _requestClientId } = msg;
+  if (!projectDir) {
+    ctx.sendToServer({
+      type: 'crew_exists_result',
+      requestId,
+      _requestClientId,
+      exists: false,
+      error: 'projectDir is required'
+    });
+    return;
+  }
+
+  const crewDir = join(projectDir, '.crew');
+  try {
+    const stat = await fs.stat(crewDir);
+    if (stat.isDirectory()) {
+      // 尝试读取 crew-session.json 获取 session 信息
+      let sessionInfo = null;
+      try {
+        const sessionPath = join(crewDir, 'crew-session.json');
+        const data = await fs.readFile(sessionPath, 'utf-8');
+        sessionInfo = JSON.parse(data);
+      } catch {
+        // crew-session.json 可能不存在，不影响
+      }
+      ctx.sendToServer({
+        type: 'crew_exists_result',
+        requestId,
+        _requestClientId,
+        exists: true,
+        projectDir,
+        sessionInfo
+      });
+    } else {
+      ctx.sendToServer({
+        type: 'crew_exists_result',
+        requestId,
+        _requestClientId,
+        exists: false,
+        projectDir
+      });
+    }
+  } catch {
+    ctx.sendToServer({
+      type: 'crew_exists_result',
+      requestId,
+      _requestClientId,
+      exists: false,
+      projectDir
+    });
+  }
+}
+
+/**
  * 恢复已停止的 crew session
  */
 export async function resumeCrewSession(msg) {

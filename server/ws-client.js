@@ -775,6 +775,19 @@ async function handleWebMessage(clientId, msg) {
       break;
     }
 
+    case 'check_crew_exists': {
+      const checkCrewAgentId = msg.agentId || client.currentAgent;
+      if (!checkCrewAgentId) break;
+      if (!await checkAgentAccess(checkCrewAgentId)) break;
+      await forwardToAgent(checkCrewAgentId, {
+        type: 'check_crew_exists',
+        projectDir: msg.projectDir,
+        requestId: msg.requestId,
+        _requestClientId: clientId
+      });
+      break;
+    }
+
     case 'resume_crew_session': {
       const resumeCrewAgentId = msg.agentId || client.currentAgent;
       if (!await checkAgentAccess(resumeCrewAgentId)) break;

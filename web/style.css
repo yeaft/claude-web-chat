@@ -12640,6 +12640,192 @@ body {
   color: var(--accent-blue);
 }
 
+/* Crew .crew exists detection */
+.crew-check-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 8px 0;
+}
+
+.crew-check-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--accent-blue);
+  border-radius: 50%;
+  animation: crew-spin 0.6s linear infinite;
+}
+
+@keyframes crew-spin {
+  to { transform: rotate(360deg); }
+}
+
+.crew-exists-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  background: var(--sidebar-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.crew-exists-icon {
+  color: #22c55e;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.crew-exists-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.crew-exists-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.crew-exists-detail {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.crew-exists-session-id {
+  color: var(--text-muted);
+  font-family: monospace;
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+.crew-exists-path {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: monospace;
+}
+
+.crew-restore-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 16px;
+  background: var(--accent-blue);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  transition: opacity 0.15s;
+  margin-bottom: 6px;
+}
+
+.crew-restore-btn:hover {
+  opacity: 0.9;
+}
+
+.crew-exists-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* Add role area */
+.crew-add-role-area {
+  margin-top: 4px;
+}
+
+.crew-add-role-builtin {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.crew-builtin-role-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.crew-builtin-role-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.crew-builtin-role-item:last-child {
+  border-bottom: none;
+}
+
+.crew-builtin-role-item:hover {
+  background: var(--sidebar-hover);
+}
+
+.crew-builtin-role-icon {
+  font-size: 16px;
+  width: 24px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.crew-builtin-role-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.crew-builtin-role-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-add-role-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-color);
+  background: var(--sidebar-hover);
+}
+
+.crew-add-custom-btn,
+.crew-add-cancel-btn {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+
+.crew-add-custom-btn:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.crew-add-cancel-btn:hover {
+  border-color: var(--text-muted);
+}
+
 /* Crew Templates */
 .crew-template-btns {
   display: flex;

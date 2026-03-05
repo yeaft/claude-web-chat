@@ -454,6 +454,15 @@ export function handleMessage(store, msg) {
       store.crewSessionsList = msg.sessions || [];
       break;
 
+    case 'crew_exists_result':
+      store.crewExistsResult = {
+        exists: msg.exists,
+        projectDir: msg.projectDir,
+        sessionInfo: msg.sessionInfo || null,
+        requestId: msg.requestId
+      };
+      break;
+
     case 'conversation_refresh':
       if (msg.conversationId) {
         if (msg.isProcessing && !isRecentlyClosed(store, msg.conversationId)) {
