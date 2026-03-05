@@ -2075,6 +2075,46 @@ function findActiveRole(session) {
 // =====================================================================
 
 /**
+ * 清空单个角色的对话（重置为全新状态）
+ */
+async function clearSingleRole(session, roleName) {
+  const roleState = session.roleStates.get(roleName);
+
+  // 如果角色正在 streaming，先 abort
+  if (roleState) {
+    if (roleState.abortController) {
+      roleState.abortController.abort();
+    }
+    roleState.query = null;
+    roleState.inputStream = null;
+    roleState.turnActive = false;
+    roleState._compacting = false;
+    roleState._compactSummaryPending = false;
+    roleState._pendingCompactRoutes = null;
+    roleState._pendingDispatch = null;
+    roleState._fromRole = null;
+    roleState.claudeSessionId = null;
+  }
+
+  // 清除持久化的 sessionId
+  await clearRoleSessionId(session.sharedDir, roleName);
+
+  sendCrewMessage({
+    type: 'crew_role_compact',
+    sessionId: session.id,
+    role: roleName,
+    status: 'cleared'
+  });
+
+  sendCrewOutput(session, 'system', 'system', {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: `${roleName} 对话已清空` }] }
+  });
+  sendStatusUpdate(session);
+  console.log(`[Crew] Role ${roleName} cleared`);
+}
+
+/**
  * 手动压缩指定角色的上下文
  * - 无活跃 query → 重建 query 后发 /compact
  * - 有 query 且非 turnActive → 直接发 /compact
@@ -2162,6 +2202,9 @@ export async function handleCrewControl(msg) {
       break;
     case 'compact_role':
       if (targetRole) await compactRole(session, targetRole);
+      break;
+    case 'clear_role':
+      if (targetRole) await clearSingleRole(session, targetRole);
       break;
     case 'stop_all':
       await stopAll(session);
