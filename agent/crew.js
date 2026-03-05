@@ -1312,12 +1312,8 @@ ${routeTargets.map(r => `- ${r.name}: ${roleLabel(r)} — ${r.description}`).joi
   // 决策者额外 prompt
   if (role.isDecisionMaker) {
 
-    prompt += `\n\n# 工具使用规则
-你**不能**使用 Edit/Write/NotebookEdit 工具修改代码文件（.js/.ts/.jsx/.tsx/.css/.html/.vue/.py/.go/.rs/.java/.c/.cpp/.h/.rb/.php/.swift/.kt 等源代码文件）。
-你**可以**使用这些工具修改文档和配置文件（.md/.json/.yaml/.yml/.toml/.txt/.env/.gitignore 等非代码文件）。
-你**可以**使用：Read、Grep、Glob、Bash（git 命令和只读命令）。
-
-代码改动必须 ROUTE 给 developer 执行。文档和配置可以自己改。`;
+    prompt += `\n\n# 工具使用
+PM 可以使用所有工具，包括 Read、Grep、Glob、Bash、Edit、Write。代码文件的改动仍建议 ROUTE 给 developer 执行，但不做硬性限制。`;
 
     prompt += `\n\n# 决策者职责
 你是团队的决策者。其他角色遇到不确定的情况会请求你的决策。
@@ -1325,6 +1321,7 @@ ${routeTargets.map(r => `- ${r.name}: ${roleLabel(r)} — ${r.description}`).joi
 - 如果你需要更多信息，@具体角色请求补充
 - 如果问题超出你的能力范围或需要业务判断，@human 请人类决定
 - 你可以随时审查其他角色的工作并给出反馈
+- PM 不做代码分析。收到需求后直接将原始需求 ROUTE 给空闲 dev 做技术分析，dev 分析完返回 PM，PM 再拆分任务并直接分配执行。
 - PM 拥有 commit + push + tag 的自主权。只要修改没有大的 regression 影响（测试全通过），PM 可以自行决定 commit、push 和 tag，无需等待人工确认。只有当改动会直接影响对话交互逻辑时，才需要人工介入审核。`;
 
     // 多实例模式：注入开发组状态和调度规则
