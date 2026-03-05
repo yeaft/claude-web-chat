@@ -2094,6 +2094,12 @@ async function clearSingleRole(session, roleName) {
     roleState._pendingDispatch = null;
     roleState._fromRole = null;
     roleState.claudeSessionId = null;
+    roleState.consecutiveErrors = 0;
+    roleState.accumulatedText = '';
+    roleState.lastDispatchContent = null;
+    roleState.lastDispatchFrom = null;
+    roleState.lastDispatchTaskId = null;
+    roleState.lastDispatchTaskTitle = null;
   }
 
   // 清除持久化的 sessionId
