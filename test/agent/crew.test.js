@@ -1431,7 +1431,8 @@ describe('WebSocket message buffering', () => {
     'background_task_started', 'background_task_output',
     'crew_output', 'crew_status', 'crew_turn_completed',
     'crew_session_created', 'crew_session_restored', 'crew_human_needed',
-    'crew_role_added', 'crew_role_removed'
+    'crew_role_added', 'crew_role_removed',
+    'crew_role_compact', 'crew_context_usage'
   ]);
 
   it('should buffer crew-related message types', () => {
@@ -4994,11 +4995,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2066/2066)', () => {
+    it('should have balanced CSS braces (2116/2116)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2109);
+      expect(opens).toBe(2116);
     });
   });
 
@@ -5294,5 +5295,765 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
         }
       });
     });
+  });
+});
+
+// =====================================================================
+// Context 超限自动恢复 (Compact / Trim / Clear+Rebuild)
+// =====================================================================
+
+describe('processRoleOutput - compact message filtering', () => {
+  // Replicate compact filtering logic from crew.js processRoleOutput
+  function filterMessages(messages, roleState) {
+    const passed = [];
+    for (const message of messages) {
+      // compact 期间只放行 result，其余过滤
+      if (roleState._compacting && message.type !== 'result') {
+        if (message.type === 'system') {
+          if (message.subtype === 'compact_boundary') {
+            roleState._compactSummaryPending = true;
+          }
+          continue; // 过滤所有 compact 期间的 system 消息
+        }
+        if (message.type === 'user' && roleState._compactSummaryPending) {
+          roleState._compactSummaryPending = false;
+          continue; // 过滤 compact summary
+        }
+        // 其他消息（assistant 等）在 compact 期间也过滤
+        continue;
+      }
+      passed.push(message);
+    }
+    return passed;
+  }
+
+  it('should filter system messages during compact', () => {
+    const roleState = { _compacting: true, _compactSummaryPending: false };
+    const messages = [
+      { type: 'system', subtype: 'info' },
+      { type: 'system', subtype: 'init' },
+    ];
+    const passed = filterMessages(messages, roleState);
+    expect(passed).toHaveLength(0);
+  });
+
+  it('should filter assistant messages during compact', () => {
+    const roleState = { _compacting: true, _compactSummaryPending: false };
+    const messages = [
+      { type: 'assistant', message: { role: 'assistant', content: 'some text' } },
+    ];
+    const passed = filterMessages(messages, roleState);
+    expect(passed).toHaveLength(0);
+  });
+
+  it('should allow result messages through during compact', () => {
+    const roleState = { _compacting: true, _compactSummaryPending: false };
+    const messages = [
+      { type: 'result', usage: { input_tokens: 50000 } },
+    ];
+    const passed = filterMessages(messages, roleState);
+    expect(passed).toHaveLength(1);
+    expect(passed[0].type).toBe('result');
+  });
+
+  it('should set _compactSummaryPending on compact_boundary', () => {
+    const roleState = { _compacting: true, _compactSummaryPending: false };
+    const messages = [
+      { type: 'system', subtype: 'compact_boundary' },
+    ];
+    filterMessages(messages, roleState);
+    expect(roleState._compactSummaryPending).toBe(true);
+  });
+
+  it('should filter user message after compact_boundary (compact summary)', () => {
+    const roleState = { _compacting: true, _compactSummaryPending: false };
+    const messages = [
+      { type: 'system', subtype: 'compact_boundary' },
+      { type: 'user', message: { role: 'user', content: 'compact summary...' } },
+    ];
+    const passed = filterMessages(messages, roleState);
+    expect(passed).toHaveLength(0);
+    // _compactSummaryPending should be reset after consuming the summary
+    expect(roleState._compactSummaryPending).toBe(false);
+  });
+
+  it('should not filter user messages when _compactSummaryPending is false', () => {
+    // When not compacting, user messages pass through
+    const roleState = { _compacting: false, _compactSummaryPending: false };
+    const messages = [
+      { type: 'user', message: { role: 'user', content: 'tool result' } },
+    ];
+    const passed = filterMessages(messages, roleState);
+    expect(passed).toHaveLength(1);
+  });
+
+  it('should pass all messages when not compacting', () => {
+    const roleState = { _compacting: false, _compactSummaryPending: false };
+    const messages = [
+      { type: 'system', subtype: 'info' },
+      { type: 'assistant', message: { role: 'assistant', content: 'hello' } },
+      { type: 'user', message: { role: 'user', content: 'result' } },
+      { type: 'result', usage: {} },
+    ];
+    const passed = filterMessages(messages, roleState);
+    expect(passed).toHaveLength(4);
+  });
+
+  it('should handle full compact cycle: system → compact_boundary → user summary → assistant → result', () => {
+    const roleState = { _compacting: true, _compactSummaryPending: false };
+    const messages = [
+      { type: 'system', subtype: 'init' },           // filtered
+      { type: 'system', subtype: 'compact_boundary' }, // filtered, sets pending
+      { type: 'user', message: { content: 'summary' } }, // filtered (compact summary)
+      { type: 'assistant', message: { content: 'ack' } }, // filtered
+      { type: 'result', usage: { input_tokens: 40000 } }, // passes through
+    ];
+    const passed = filterMessages(messages, roleState);
+    expect(passed).toHaveLength(1);
+    expect(passed[0].type).toBe('result');
+  });
+});
+
+describe('Context threshold - compact trigger at 85%', () => {
+  const MAX_CONTEXT = 128000;
+  const COMPACT_THRESHOLD = 0.85;
+
+  function checkNeedCompact(inputTokens) {
+    return (inputTokens / MAX_CONTEXT) >= COMPACT_THRESHOLD;
+  }
+
+  it('should trigger compact when context >= 85%', () => {
+    // 85% of 128000 = 108800
+    expect(checkNeedCompact(108800)).toBe(true);
+    expect(checkNeedCompact(120000)).toBe(true);
+    expect(checkNeedCompact(128000)).toBe(true);
+  });
+
+  it('should not trigger compact when context < 85%', () => {
+    expect(checkNeedCompact(108799)).toBe(false);
+    expect(checkNeedCompact(50000)).toBe(false);
+    expect(checkNeedCompact(0)).toBe(false);
+  });
+
+  it('should cache routes and set compact state when compact is needed', () => {
+    const roleState = {
+      _compacting: false,
+      _compactSummaryPending: false,
+      _pendingCompactRoutes: null,
+      _fromRole: null,
+    };
+
+    const routes = [
+      { to: 'developer', summary: '请实现功能' },
+      { to: 'tester', summary: '请测试' },
+    ];
+    const roleName = 'pm';
+
+    // Simulate compact trigger logic
+    const inputTokens = 115000;
+    const needCompact = (inputTokens / MAX_CONTEXT) >= COMPACT_THRESHOLD;
+    expect(needCompact).toBe(true);
+
+    if (needCompact) {
+      roleState._pendingCompactRoutes = routes.length > 0 ? routes : null;
+      roleState._compacting = true;
+      roleState._compactSummaryPending = false;
+      roleState._fromRole = roleName;
+    }
+
+    expect(roleState._compacting).toBe(true);
+    expect(roleState._pendingCompactRoutes).toEqual(routes);
+    expect(roleState._fromRole).toBe('pm');
+  });
+
+  it('should set _pendingCompactRoutes to null when no routes', () => {
+    const roleState = {
+      _compacting: false,
+      _compactSummaryPending: false,
+      _pendingCompactRoutes: null,
+      _fromRole: null,
+    };
+
+    const routes = [];
+    const needCompact = true;
+
+    if (needCompact) {
+      roleState._pendingCompactRoutes = routes.length > 0 ? routes : null;
+      roleState._compacting = true;
+      roleState._fromRole = 'dev';
+    }
+
+    expect(roleState._compacting).toBe(true);
+    expect(roleState._pendingCompactRoutes).toBeNull();
+  });
+
+  it('should execute cached routes after compact completes (< 95%)', () => {
+    const executedRoutes = [];
+
+    const roleState = {
+      _compacting: true,
+      _pendingCompactRoutes: [
+        { to: 'developer', summary: '实现功能A' },
+        { to: 'tester', summary: '编写测试' },
+      ],
+      _fromRole: 'pm',
+    };
+
+    const session = { round: 3 };
+
+    // Simulate compact result with context below 95%
+    const postCompactTokens = 60000;
+    const postCompactPercentage = postCompactTokens / MAX_CONTEXT;
+    const CLEAR_THRESHOLD = 0.95;
+
+    roleState._compacting = false;
+
+    if (postCompactPercentage >= CLEAR_THRESHOLD) {
+      // Would escalate — not in this test
+    } else if (roleState._pendingCompactRoutes) {
+      const routes = roleState._pendingCompactRoutes;
+      const fromRole = roleState._fromRole;
+      roleState._pendingCompactRoutes = null;
+      roleState._fromRole = null;
+      session.round++;
+
+      for (const route of routes) {
+        executedRoutes.push({ from: fromRole, ...route });
+      }
+    }
+
+    expect(executedRoutes).toHaveLength(2);
+    expect(executedRoutes[0]).toEqual({ from: 'pm', to: 'developer', summary: '实现功能A' });
+    expect(executedRoutes[1]).toEqual({ from: 'pm', to: 'tester', summary: '编写测试' });
+    expect(session.round).toBe(4);
+    expect(roleState._pendingCompactRoutes).toBeNull();
+    expect(roleState._fromRole).toBeNull();
+  });
+});
+
+describe('Context threshold - clear + rebuild at 95%', () => {
+  const MAX_CONTEXT = 128000;
+  const CLEAR_THRESHOLD = 0.95;
+
+  it('should escalate to clear when post-compact context >= 95%', () => {
+    const postCompactTokens = 122000; // ~95.3%
+    const postCompactPercentage = postCompactTokens / MAX_CONTEXT;
+
+    expect(postCompactPercentage >= CLEAR_THRESHOLD).toBe(true);
+  });
+
+  it('should not escalate when post-compact context < 95%', () => {
+    const postCompactTokens = 120000; // ~93.75%
+    const postCompactPercentage = postCompactTokens / MAX_CONTEXT;
+
+    expect(postCompactPercentage >= CLEAR_THRESHOLD).toBe(false);
+  });
+
+  it('should clear session, abort controller, and re-dispatch routes on escalation', () => {
+    const roleState = {
+      _compacting: true,
+      _pendingCompactRoutes: [
+        { to: 'reviewer', summary: '请审查' },
+      ],
+      _fromRole: 'developer',
+      claudeSessionId: 'sess-abc',
+      abortController: { abort: () => { roleState._aborted = true; } },
+      query: {},
+      inputStream: {},
+      _aborted: false,
+    };
+
+    const session = { round: 5 };
+    const clearedSessionIds = [];
+    const executedRoutes = [];
+
+    // Simulate clear + rebuild logic
+    const postCompactTokens = 125000; // ~97.7%
+    const postCompactPercentage = postCompactTokens / MAX_CONTEXT;
+
+    roleState._compacting = false;
+
+    if (postCompactPercentage >= CLEAR_THRESHOLD) {
+      // Clear session
+      clearedSessionIds.push(roleState.claudeSessionId);
+      roleState.claudeSessionId = null;
+
+      if (roleState.abortController) roleState.abortController.abort();
+      roleState.query = null;
+      roleState.inputStream = null;
+
+      // Re-dispatch cached routes
+      if (roleState._pendingCompactRoutes) {
+        const routes = roleState._pendingCompactRoutes;
+        const fromRole = roleState._fromRole;
+        roleState._pendingCompactRoutes = null;
+        roleState._fromRole = null;
+        session.round++;
+        for (const route of routes) {
+          executedRoutes.push({ from: fromRole, ...route });
+        }
+      }
+    }
+
+    expect(roleState.claudeSessionId).toBeNull();
+    expect(roleState._aborted).toBe(true);
+    expect(roleState.query).toBeNull();
+    expect(roleState.inputStream).toBeNull();
+    expect(clearedSessionIds).toEqual(['sess-abc']);
+    expect(executedRoutes).toHaveLength(1);
+    expect(executedRoutes[0]).toEqual({ from: 'developer', to: 'reviewer', summary: '请审查' });
+    expect(session.round).toBe(6);
+  });
+
+  it('should handle escalation with no pending routes', () => {
+    const roleState = {
+      _compacting: true,
+      _pendingCompactRoutes: null,
+      _fromRole: null,
+      claudeSessionId: 'sess-xyz',
+      abortController: { abort: () => {} },
+      query: {},
+      inputStream: {},
+    };
+
+    const session = { round: 2 };
+
+    const postCompactPercentage = 0.97;
+
+    roleState._compacting = false;
+
+    if (postCompactPercentage >= CLEAR_THRESHOLD) {
+      roleState.claudeSessionId = null;
+      if (roleState.abortController) roleState.abortController.abort();
+      roleState.query = null;
+      roleState.inputStream = null;
+
+      if (roleState._pendingCompactRoutes) {
+        // Would execute routes — not in this case
+        session.round++;
+      }
+    }
+
+    expect(roleState.claudeSessionId).toBeNull();
+    expect(roleState.query).toBeNull();
+    // round should NOT increment when there are no pending routes
+    expect(session.round).toBe(2);
+  });
+});
+
+describe('classifyRoleError - needContentTrim', () => {
+  // Replicate classifyRoleError from crew.js
+  function classifyRoleError(error) {
+    const msg = error.message || '';
+    if (/context.*(window|limit|exceeded)|token.*limit|too.*(long|large)|max.*token/i.test(msg)) {
+      return { recoverable: true, reason: 'context_exceeded', skipResume: true, needContentTrim: true };
+    }
+    if (/compact|compress|context.*reduc/i.test(msg)) {
+      return { recoverable: true, reason: 'compact_failed', skipResume: true };
+    }
+    if (/rate.?limit|429|overloaded|503|502|timeout|ECONNRESET|ETIMEDOUT/i.test(msg)) {
+      return { recoverable: true, reason: 'transient_api_error', skipResume: false };
+    }
+    if (/exited with code [1-9]/i.test(msg) && msg.length < 100) {
+      return { recoverable: true, reason: 'process_crashed', skipResume: false };
+    }
+    if (/spawn|ENOENT|not found/i.test(msg)) {
+      return { recoverable: false, reason: 'spawn_failed' };
+    }
+    return { recoverable: true, reason: 'unknown', skipResume: false };
+  }
+
+  it('should return needContentTrim for context window exceeded', () => {
+    const result = classifyRoleError({ message: 'context window exceeded' });
+    expect(result.needContentTrim).toBe(true);
+    expect(result.reason).toBe('context_exceeded');
+    expect(result.recoverable).toBe(true);
+    expect(result.skipResume).toBe(true);
+  });
+
+  it('should return needContentTrim for token limit errors', () => {
+    const result = classifyRoleError({ message: 'token limit reached' });
+    expect(result.needContentTrim).toBe(true);
+    expect(result.reason).toBe('context_exceeded');
+  });
+
+  it('should return needContentTrim for "too long" errors', () => {
+    const result = classifyRoleError({ message: 'Request too long for model' });
+    expect(result.needContentTrim).toBe(true);
+  });
+
+  it('should return needContentTrim for "too large" errors', () => {
+    const result = classifyRoleError({ message: 'Payload too large' });
+    expect(result.needContentTrim).toBe(true);
+  });
+
+  it('should return needContentTrim for "max token" errors', () => {
+    const result = classifyRoleError({ message: 'Exceeded max token count' });
+    expect(result.needContentTrim).toBe(true);
+  });
+
+  it('should return needContentTrim for "context limit" errors', () => {
+    const result = classifyRoleError({ message: 'context limit exceeded' });
+    expect(result.needContentTrim).toBe(true);
+  });
+
+  it('should NOT return needContentTrim for compact_failed', () => {
+    const result = classifyRoleError({ message: 'compact operation failed' });
+    expect(result.needContentTrim).toBeUndefined();
+    expect(result.reason).toBe('compact_failed');
+    expect(result.skipResume).toBe(true);
+  });
+
+  it('should NOT return needContentTrim for transient API errors', () => {
+    const result = classifyRoleError({ message: 'rate limit exceeded' });
+    expect(result.needContentTrim).toBeUndefined();
+    expect(result.reason).toBe('transient_api_error');
+  });
+
+  it('should NOT return needContentTrim for 429 errors', () => {
+    const result = classifyRoleError({ message: 'HTTP 429 Too Many Requests' });
+    expect(result.needContentTrim).toBeUndefined();
+    expect(result.reason).toBe('transient_api_error');
+  });
+
+  it('should NOT return needContentTrim for process crashes', () => {
+    const result = classifyRoleError({ message: 'exited with code 1' });
+    expect(result.needContentTrim).toBeUndefined();
+    expect(result.reason).toBe('process_crashed');
+  });
+
+  it('should NOT return needContentTrim for spawn failures', () => {
+    const result = classifyRoleError({ message: 'spawn ENOENT' });
+    expect(result.needContentTrim).toBeUndefined();
+    expect(result.reason).toBe('spawn_failed');
+    expect(result.recoverable).toBe(false);
+  });
+
+  it('should NOT return needContentTrim for unknown errors', () => {
+    const result = classifyRoleError({ message: 'something unexpected' });
+    expect(result.needContentTrim).toBeUndefined();
+    expect(result.reason).toBe('unknown');
+  });
+
+  it('should handle empty error message', () => {
+    const result = classifyRoleError({ message: '' });
+    expect(result.reason).toBe('unknown');
+  });
+
+  it('should handle missing error message', () => {
+    const result = classifyRoleError({});
+    expect(result.reason).toBe('unknown');
+  });
+});
+
+describe('trimContentForRetry', () => {
+  // Replicate trimContentForRetry from crew.js
+  function trimContentForRetry(content) {
+    if (typeof content === 'string' && content.length > 2000) {
+      return `[注意: 上一轮因 context 超限被截断重发]\n\n${content.substring(0, 2000)}\n\n[内容已截断，请基于已知信息继续工作]`;
+    }
+    if (Array.isArray(content)) {
+      return content.filter(b => b.type === 'text').map(b => ({
+        ...b,
+        text: b.text.length > 2000 ? b.text.substring(0, 2000) + '\n[已截断]' : b.text
+      }));
+    }
+    return content;
+  }
+
+  it('should truncate strings longer than 2000 chars', () => {
+    const longStr = 'x'.repeat(5000);
+    const result = trimContentForRetry(longStr);
+    expect(typeof result).toBe('string');
+    expect(result).toContain('[注意: 上一轮因 context 超限被截断重发]');
+    expect(result).toContain('[内容已截断，请基于已知信息继续工作]');
+    // Should contain first 2000 chars of original
+    expect(result).toContain('x'.repeat(2000));
+    // Total length should be much less than original
+    expect(result.length).toBeLessThan(longStr.length);
+  });
+
+  it('should not truncate strings <= 2000 chars', () => {
+    const shortStr = 'y'.repeat(2000);
+    const result = trimContentForRetry(shortStr);
+    expect(result).toBe(shortStr); // returned as-is
+  });
+
+  it('should not truncate strings exactly 2000 chars', () => {
+    const exactStr = 'z'.repeat(2000);
+    const result = trimContentForRetry(exactStr);
+    expect(result).toBe(exactStr);
+  });
+
+  it('should filter arrays to only text blocks', () => {
+    const content = [
+      { type: 'text', text: 'hello' },
+      { type: 'tool_use', name: 'bash', input: {} },
+      { type: 'text', text: 'world' },
+      { type: 'tool_result', content: 'result data' },
+    ];
+    const result = trimContentForRetry(content);
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(2);
+    expect(result[0].text).toBe('hello');
+    expect(result[1].text).toBe('world');
+  });
+
+  it('should truncate long text blocks in arrays', () => {
+    const content = [
+      { type: 'text', text: 'a'.repeat(3000) },
+      { type: 'text', text: 'short' },
+    ];
+    const result = trimContentForRetry(content);
+    expect(result[0].text).toBe('a'.repeat(2000) + '\n[已截断]');
+    expect(result[1].text).toBe('short');
+  });
+
+  it('should not truncate text blocks <= 2000 chars in arrays', () => {
+    const content = [
+      { type: 'text', text: 'b'.repeat(2000) },
+    ];
+    const result = trimContentForRetry(content);
+    expect(result[0].text).toBe('b'.repeat(2000));
+  });
+
+  it('should preserve extra properties on text blocks', () => {
+    const content = [
+      { type: 'text', text: 'hello', citations: [1, 2] },
+    ];
+    const result = trimContentForRetry(content);
+    expect(result[0].citations).toEqual([1, 2]);
+    expect(result[0].type).toBe('text');
+  });
+
+  it('should return non-string, non-array content unchanged', () => {
+    expect(trimContentForRetry(null)).toBeNull();
+    expect(trimContentForRetry(undefined)).toBeUndefined();
+    expect(trimContentForRetry(42)).toBe(42);
+    expect(trimContentForRetry({ custom: 'obj' })).toEqual({ custom: 'obj' });
+  });
+
+  it('should handle empty array', () => {
+    const result = trimContentForRetry([]);
+    expect(result).toEqual([]);
+  });
+
+  it('should handle array with no text blocks', () => {
+    const content = [
+      { type: 'tool_use', name: 'bash', input: {} },
+      { type: 'tool_result', content: 'data' },
+    ];
+    const result = trimContentForRetry(content);
+    expect(result).toEqual([]);
+  });
+});
+
+describe('BUFFERABLE_TYPES - new compact/context types', () => {
+  // The BUFFERABLE_TYPES set from connection.js must include the new types
+  // added for context auto-recovery: crew_role_compact and crew_context_usage
+  const BUFFERABLE_TYPES = new Set([
+    'claude_output', 'turn_completed', 'conversation_closed',
+    'session_id_update', 'compact_status', 'slash_commands_update',
+    'background_task_started', 'background_task_output',
+    'crew_output', 'crew_status', 'crew_turn_completed',
+    'crew_session_created', 'crew_session_restored', 'crew_human_needed',
+    'crew_role_added', 'crew_role_removed',
+    'crew_role_compact', 'crew_context_usage'
+  ]);
+
+  it('should include crew_role_compact in BUFFERABLE_TYPES', () => {
+    expect(BUFFERABLE_TYPES.has('crew_role_compact')).toBe(true);
+  });
+
+  it('should include crew_context_usage in BUFFERABLE_TYPES', () => {
+    expect(BUFFERABLE_TYPES.has('crew_context_usage')).toBe(true);
+  });
+
+  it('should still include all previously existing crew types', () => {
+    const existingCrewTypes = [
+      'crew_output', 'crew_status', 'crew_turn_completed',
+      'crew_session_created', 'crew_session_restored', 'crew_human_needed',
+      'crew_role_added', 'crew_role_removed',
+    ];
+    for (const t of existingCrewTypes) {
+      expect(BUFFERABLE_TYPES.has(t)).toBe(true);
+    }
+  });
+
+  it('should verify connection.js source includes new types', () => {
+    // Source-level verification: read the actual connection.js file
+    const connectionSource = require('fs').readFileSync(
+      require('path').join(__dirname, '../../agent/connection.js'), 'utf-8'
+    );
+    expect(connectionSource).toContain("'crew_role_compact'");
+    expect(connectionSource).toContain("'crew_context_usage'");
+  });
+});
+
+describe('Compact state initialization in roleState', () => {
+  it('should initialize all compact-related fields correctly', () => {
+    // Simulate the roleState creation from createRoleQuery
+    const roleState = {
+      _compacting: false,
+      _compactSummaryPending: false,
+      _pendingCompactRoutes: null,
+      _fromRole: null,
+    };
+
+    expect(roleState._compacting).toBe(false);
+    expect(roleState._compactSummaryPending).toBe(false);
+    expect(roleState._pendingCompactRoutes).toBeNull();
+    expect(roleState._fromRole).toBeNull();
+  });
+});
+
+describe('Error recovery flow with needContentTrim', () => {
+  // Replicate the combined flow: classifyRoleError → trimContentForRetry
+  function classifyRoleError(error) {
+    const msg = error.message || '';
+    if (/context.*(window|limit|exceeded)|token.*limit|too.*(long|large)|max.*token/i.test(msg)) {
+      return { recoverable: true, reason: 'context_exceeded', skipResume: true, needContentTrim: true };
+    }
+    if (/compact|compress|context.*reduc/i.test(msg)) {
+      return { recoverable: true, reason: 'compact_failed', skipResume: true };
+    }
+    if (/rate.?limit|429|overloaded|503|502|timeout|ECONNRESET|ETIMEDOUT/i.test(msg)) {
+      return { recoverable: true, reason: 'transient_api_error', skipResume: false };
+    }
+    return { recoverable: true, reason: 'unknown', skipResume: false };
+  }
+
+  function trimContentForRetry(content) {
+    if (typeof content === 'string' && content.length > 2000) {
+      return `[注意: 上一轮因 context 超限被截断重发]\n\n${content.substring(0, 2000)}\n\n[内容已截断，请基于已知信息继续工作]`;
+    }
+    if (Array.isArray(content)) {
+      return content.filter(b => b.type === 'text').map(b => ({
+        ...b,
+        text: b.text.length > 2000 ? b.text.substring(0, 2000) + '\n[已截断]' : b.text
+      }));
+    }
+    return content;
+  }
+
+  it('should trim content only when classification says needContentTrim', () => {
+    const error = { message: 'context window exceeded' };
+    const classification = classifyRoleError(error);
+    const originalContent = 'x'.repeat(5000);
+
+    let retryContent = originalContent;
+    if (classification.needContentTrim) {
+      retryContent = trimContentForRetry(retryContent);
+    }
+
+    // Content should be trimmed
+    expect(retryContent).not.toBe(originalContent);
+    expect(retryContent).toContain('[注意: 上一轮因 context 超限被截断重发]');
+  });
+
+  it('should NOT trim content for transient errors', () => {
+    const error = { message: 'HTTP 429 rate limit' };
+    const classification = classifyRoleError(error);
+    const originalContent = 'x'.repeat(5000);
+
+    let retryContent = originalContent;
+    if (classification.needContentTrim) {
+      retryContent = trimContentForRetry(retryContent);
+    }
+
+    // Content should NOT be trimmed for rate limit errors
+    expect(retryContent).toBe(originalContent);
+  });
+
+  it('should handle array content with needContentTrim', () => {
+    const error = { message: 'max token limit exceeded' };
+    const classification = classifyRoleError(error);
+    const originalContent = [
+      { type: 'text', text: 'a'.repeat(3000) },
+      { type: 'tool_use', name: 'read', input: {} },
+    ];
+
+    let retryContent = originalContent;
+    if (classification.needContentTrim) {
+      retryContent = trimContentForRetry(retryContent);
+    }
+
+    expect(retryContent).toHaveLength(1); // tool_use filtered out
+    expect(retryContent[0].text.length).toBeLessThan(3000); // truncated
+  });
+
+  it('should skip resume for context_exceeded (skipResume=true)', () => {
+    const classification = classifyRoleError({ message: 'context window exceeded' });
+    expect(classification.skipResume).toBe(true);
+  });
+
+  it('should not skip resume for transient errors (skipResume=false)', () => {
+    const classification = classifyRoleError({ message: 'ECONNRESET' });
+    expect(classification.skipResume).toBe(false);
+  });
+});
+
+describe('Context usage monitoring messages', () => {
+  const MAX_CONTEXT = 128000;
+
+  it('should compute context percentage correctly', () => {
+    const inputTokens = 64000;
+    const percentage = Math.min(100, Math.round((inputTokens / MAX_CONTEXT) * 100));
+    expect(percentage).toBe(50);
+  });
+
+  it('should cap percentage at 100', () => {
+    const inputTokens = 200000; // over max
+    const percentage = Math.min(100, Math.round((inputTokens / MAX_CONTEXT) * 100));
+    expect(percentage).toBe(100);
+  });
+
+  it('should send crew_context_usage message format', () => {
+    const inputTokens = 100000;
+    const msg = {
+      type: 'crew_context_usage',
+      sessionId: 'sess-1',
+      role: 'developer',
+      inputTokens,
+      maxTokens: MAX_CONTEXT,
+      percentage: Math.min(100, Math.round((inputTokens / MAX_CONTEXT) * 100))
+    };
+    expect(msg.type).toBe('crew_context_usage');
+    expect(msg.percentage).toBe(78);
+    expect(msg.maxTokens).toBe(128000);
+  });
+
+  it('should send crew_role_compact message with compacting status', () => {
+    const msg = {
+      type: 'crew_role_compact',
+      sessionId: 'sess-1',
+      role: 'developer',
+      contextPercentage: 88,
+      status: 'compacting'
+    };
+    expect(msg.type).toBe('crew_role_compact');
+    expect(msg.status).toBe('compacting');
+    expect(msg.contextPercentage).toBe(88);
+  });
+
+  it('should send crew_role_compact message with completed status', () => {
+    const msg = {
+      type: 'crew_role_compact',
+      sessionId: 'sess-1',
+      role: 'developer',
+      contextPercentage: 45,
+      status: 'completed'
+    };
+    expect(msg.status).toBe('completed');
+  });
+
+  it('should send crew_role_compact message with cleared status on escalation', () => {
+    const msg = {
+      type: 'crew_role_compact',
+      sessionId: 'sess-1',
+      role: 'developer',
+      status: 'cleared'
+    };
+    expect(msg.status).toBe('cleared');
   });
 });

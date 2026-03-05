@@ -328,6 +328,14 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
+    deleteCrewDir(projectDir, agentId) {
+      this.sendWsMessage({
+        type: 'delete_crew_dir',
+        projectDir,
+        agentId: agentId || this.currentAgent
+      });
+    },
+
     openCrewConfig() {
       this.crewConfigMode = 'edit';
       this.crewConfigOpen = true;

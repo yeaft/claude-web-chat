@@ -283,7 +283,7 @@ describe('CrewConfigPanel - restore flow when .crew exists', () => {
     it('source should contain restore banner elements', () => {
       expect(configContent).toContain('crew-exists-banner');
       expect(configContent).toContain('发现已有 Crew 配置');
-      expect(configContent).toContain('crew-restore-btn');
+      expect(configContent).toContain('crew-exists-action-btn');
       expect(configContent).toContain('恢复此 Crew');
     });
 
