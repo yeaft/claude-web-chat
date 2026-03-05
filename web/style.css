@@ -10387,8 +10387,6 @@ body {
 .crew-message {
   display: flex;
   padding: 8px 24px;
-  max-width: 800px;
-  margin: 0 auto;
   width: 100%;
   box-sizing: border-box;
 }
@@ -10411,8 +10409,6 @@ body {
 
 /* Turn divider between different roles */
 .crew-turn-divider {
-  max-width: 800px;
-  margin: 2px auto;
   width: 100%;
   padding: 0 24px;
   box-sizing: border-box;
@@ -10689,9 +10685,8 @@ body {
 
 /* Crew Task Panel */
 .crew-task-panel {
-  max-width: 800px;
-  margin: 8px auto 4px;
   padding: 0 24px;
+  margin: 8px 0 4px;
   width: 100%;
   box-sizing: border-box;
 }
@@ -10777,9 +10772,8 @@ body {
 
 /* Crew Feature Thread — Linear/Notion-inspired minimal design */
 .crew-feature-thread {
-  max-width: 800px;
-  margin: 8px auto;
   padding: 0 24px;
+  margin: 8px 0;
   width: 100%;
   box-sizing: border-box;
 }
@@ -10906,7 +10900,6 @@ body {
   gap: 6px;
   padding: 4px 8px;
   margin: 0 0 2px 0;
-  max-width: 800px;
   font-size: 12px;
   color: var(--text-muted);
   cursor: pointer;
@@ -10964,8 +10957,6 @@ body {
   align-items: center;
   gap: 12px;
   padding: 12px 24px 4px;
-  max-width: 800px;
-  margin: 0 auto;
   width: 100%;
   box-sizing: border-box;
 }
@@ -11247,9 +11238,8 @@ body {
   position: sticky;
   top: 0;
   z-index: 20;
-  max-width: 800px;
-  margin: 0 auto 8px;
   padding: 0 24px;
+  margin: 0 0 8px;
   width: 100%;
   box-sizing: border-box;
 }
@@ -11913,8 +11903,6 @@ body {
   display: flex;
   gap: 4px;
   padding: 8px 24px 8px 68px;
-  max-width: 800px;
-  margin: 0 auto;
   width: 100%;
   box-sizing: border-box;
 }
@@ -12030,7 +12018,6 @@ body {
 }
 
 .crew-input-area .crew-input-hints {
-  max-width: 768px;
   margin: 0 auto 8px;
   display: flex;
   gap: 6px;
@@ -12038,6 +12025,14 @@ body {
   align-items: center;
   justify-content: flex-end;
   overflow: visible;
+}
+
+/* Override shared input max-width inside crew panel */
+.crew-input-area .input-hints {
+  max-width: none;
+}
+.crew-input-area .input-wrapper {
+  max-width: none;
 }
 
 .crew-hint-btn {
