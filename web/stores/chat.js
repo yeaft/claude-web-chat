@@ -732,6 +732,10 @@ export const useChatStore = defineStore('chat', {
             }
           }
         }
+        // Clear processing dot when crew session stops or completes
+        if (msg.status === 'stopped' || msg.status === 'completed') {
+          delete this.processingConversations[sid];
+        }
         return;
       }
 

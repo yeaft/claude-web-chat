@@ -105,8 +105,12 @@ export function handleMessage(store, msg) {
 
         // 同步 processing 状态
         for (const serverConv of allServerConvs) {
+          // Skip stale processing for crew convs with no active session
+          const isStaleCrewProcessing = serverConv.processing && serverConv.type === 'crew'
+            && !store.crewSessions?.[serverConv.id];
           if (serverConv.processing && !isRecentlyClosed(store, serverConv.id)
-              && !store._turnCompletedConvs?.has(serverConv.id)) {
+              && !store._turnCompletedConvs?.has(serverConv.id)
+              && !isStaleCrewProcessing) {
             store.processingConversations[serverConv.id] = true;
           } else if (store.processingConversations[serverConv.id]) {
             delete store.processingConversations[serverConv.id];
