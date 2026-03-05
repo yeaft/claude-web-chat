@@ -895,7 +895,7 @@ ${roles.length > 0 ? roles.map(r => `- ${roleLabel(r)}(${r.name}): ${r.descripti
 # Worktree 隔离规则
 - dev/reviewer/tester 角色必须在各自分配的 worktree 中工作，绝对禁止在项目主目录或 main 分支上修改代码
 - 每个角色的 CLAUDE.md 会标明「代码工作目录」，该路径就是你的 worktree，所有文件操作必须使用该路径
-- PM 和 designer 不使用 worktree，它们在项目主目录下以只读方式工作
+- PM 和 designer 不使用 worktree，他们在项目主目录下以只读方式工作
 - 绝对禁止在其他开发组的 worktree 中操作代码
 - 代码完成并通过 review 后，dev 自己提 PR 合并到 main 分支
 - PM 不做 cherry-pick，只负责打 tag
