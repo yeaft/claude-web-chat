@@ -793,6 +793,12 @@ export const useChatStore = defineStore('chat', {
         return;
       }
 
+      if (msg.type === 'crew_session_cleared') {
+        // 清空前端消息，保留 session 配置
+        this.crewMessagesMap[sid] = [];
+        return;
+      }
+
       if (msg.type === 'crew_role_added') {
         if (this.crewSessions[sid]) {
           this.crewSessions[sid].roles = [...(this.crewSessions[sid].roles || []), msg.role];

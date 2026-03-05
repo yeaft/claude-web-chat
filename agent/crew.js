@@ -1814,6 +1814,9 @@ export async function handleCrewControl(msg) {
     case 'stop_all':
       await stopAll(session);
       break;
+    case 'clear':
+      await clearSession(session);
+      break;
     default:
       console.warn(`[Crew] Unknown control action: ${action}`);
   }
@@ -2005,6 +2008,60 @@ async function stopAll(session) {
   // 从活跃 sessions 中移除
   crewSessions.delete(session.id);
   console.log(`[Crew] Session ${session.id} stopped`);
+}
+
+/**
+ * 清空 session：保留角色配置，重置所有对话
+ * 每个角色创建全新的 Claude conversation
+ */
+async function clearSession(session) {
+  // 1. Abort 所有运行中的 queries
+  for (const [roleName, roleState] of session.roleStates) {
+    if (roleState.abortController) {
+      roleState.abortController.abort();
+    }
+    console.log(`[Crew] Clearing role: ${roleName}`);
+  }
+  session.roleStates.clear();
+
+  // 2. 删除所有角色的 savedSessionId（强制新建 conversation）
+  for (const [roleName] of session.roles) {
+    await clearRoleSessionId(session.sharedDir, roleName);
+  }
+
+  // 3. 清空消息历史
+  session.messageHistory = [];
+  session.uiMessages = [];
+  session.humanMessageQueue = [];
+  session.waitingHumanContext = null;
+  session.pendingRoutes = [];
+
+  // 4. 重置计数
+  session.round = 0;
+
+  // 5. 清空磁盘上的 messages.json
+  const messagesPath = join(session.sharedDir, 'messages.json');
+  await fs.writeFile(messagesPath, '[]').catch(() => {});
+
+  // 6. 恢复运行状态
+  session.status = 'running';
+
+  // 7. 通知前端
+  sendCrewMessage({
+    type: 'crew_session_cleared',
+    sessionId: session.id
+  });
+
+  sendCrewOutput(session, 'system', 'system', {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: '会话已清空，所有角色将使用全新对话' }] }
+  });
+  sendStatusUpdate(session);
+
+  // 8. 保存 meta
+  await saveSessionMeta(session);
+
+  console.log(`[Crew] Session ${session.id} cleared`);
 }
 
 // =====================================================================

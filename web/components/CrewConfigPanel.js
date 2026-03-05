@@ -206,6 +206,10 @@ export default {
                     <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
                     恢复
                   </button>
+                  <button class="crew-control-action-btn" @click="doControl('clear')" v-if="status.status === 'running' || status.status === 'paused'">
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M5 13h14v-2H5v2zm-2 4h14v-2H3v2zM7 7v2h14V7H7z"/></svg>
+                    清空
+                  </button>
                   <button class="crew-control-action-btn danger" @click="doControl('stop_all')">
                     <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
                     终止
@@ -613,6 +617,9 @@ export default {
     doControl(action) {
       if (action === 'stop_all') {
         if (!confirm('确定要终止整个 Session？')) return;
+      }
+      if (action === 'clear') {
+        if (!confirm('确定要清空所有对话？角色配置将保留，但所有对话历史将被重置。')) return;
       }
       this.store.sendCrewControl(action);
     }
