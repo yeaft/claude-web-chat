@@ -1,7 +1,7 @@
 // Conversation lifecycle helpers
 
 import { startProcessingWatchdog, stopProcessingWatchdog } from './watchdog.js';
-import { setSessionLoading } from './session.js';
+import { setSessionLoading, saveOpenSessions } from './session.js';
 import { t } from '../../utils/i18n.js';
 
 export function selectAgent(store, agentId) {
@@ -106,6 +106,9 @@ export function selectConversation(store, conversationId, agentId) {
   // ★ Bug #4: 重置分页状态
   store.hasMoreMessages = false;
   store.loadingMoreMessages = false;
+
+  // 保存 lastViewedConversation 到 localStorage
+  saveOpenSessions(store);
 }
 
 export function updateConversationSettings(store, conversationId, settings) {
