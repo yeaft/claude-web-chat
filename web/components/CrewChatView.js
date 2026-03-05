@@ -1065,12 +1065,18 @@ summary: 请测试以下变更...
           const done = m[1] !== ' ';
           let text = m[2].trim();
           let assignee = null;
+          let taskId = null;
           const atMatch = text.match(/@(\w+)\s*$/);
           if (atMatch) {
             assignee = atMatch[1];
             text = text.replace(/@\w+\s*$/, '').trim();
           }
-          parsed.push({ done, text, assignee });
+          const idMatch = text.match(/#(\S+)/);
+          if (idMatch) {
+            taskId = idMatch[1];
+            text = text.replace(/#\S+/, '').trim();
+          }
+          parsed.push({ done, text, assignee, taskId });
         }
         if (parsed.length > 0) tasks = parsed;
       }
@@ -1086,16 +1092,22 @@ summary: 请测试以下变更...
       return this.crewTasks.filter(t => t.done);
     },
     completedTaskIds() {
-      // Match done crewTasks (text) to activeTasks (title) to get taskIds
+      // Match done crewTasks to activeTasks to get taskIds
+      // Priority: exact taskId match > text fuzzy match (fallback)
       const ids = new Set();
       const done = this.doneTasks;
       if (done.length === 0) return ids;
+      const activeTaskIdSet = new Set(this.activeTasks.map(at => at.id));
       for (const task of done) {
-        const t = task.text.toLowerCase();
-        for (const at of this.activeTasks) {
-          const title = at.title.toLowerCase();
-          if (t.includes(title) || title.includes(t)) {
-            ids.add(at.id);
+        if (task.taskId && activeTaskIdSet.has(task.taskId)) {
+          ids.add(task.taskId);
+        } else {
+          const t = task.text.toLowerCase();
+          for (const at of this.activeTasks) {
+            const title = at.title.toLowerCase();
+            if (t.includes(title) || title.includes(t)) {
+              ids.add(at.id);
+            }
           }
         }
       }
