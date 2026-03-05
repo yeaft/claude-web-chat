@@ -25,7 +25,7 @@ test.describe('Agent 断线重连', () => {
     const convId = msg.conversationId;
     mockAgent.simulateClaudeOutput(convId, 'response before disconnect');
     mockAgent.simulateTurnComplete(convId);
-    await expect(chatPage.locator('.message.assistant')).toBeVisible({ timeout: 5000 });
+    await expect(chatPage.locator('.assistant-turn')).toBeVisible({ timeout: 5000 });
 
     const sessionCount = await chatPage.locator('.session-item').count();
 

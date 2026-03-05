@@ -24,7 +24,7 @@ test.describe('Server 重启恢复', () => {
     const msg = await mockAgent.waitForMessage('execute', 10000);
     mockAgent.simulateClaudeOutput(msg.conversationId, 'I am here');
     mockAgent.simulateTurnComplete(msg.conversationId);
-    await expect(chatPage.locator('.message.assistant')).toBeVisible({ timeout: 5000 });
+    await expect(chatPage.locator('.assistant-turn')).toBeVisible({ timeout: 5000 });
 
     // Kill server
     await testServer.kill();
