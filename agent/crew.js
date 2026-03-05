@@ -14,7 +14,7 @@
 
 import { query, Stream } from './sdk/index.js';
 import { promises as fs } from 'fs';
-import { join } from 'path';
+import { join, isAbsolute } from 'path';
 import { homedir } from 'os';
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
@@ -384,11 +384,21 @@ export async function handleListCrewSessions(msg) {
 }
 
 /**
+ * 验证 projectDir 路径安全性：必须是绝对路径且不包含路径遍历
+ */
+function isValidProjectDir(dir) {
+  if (!dir || typeof dir !== 'string') return false;
+  if (!isAbsolute(dir)) return false;
+  if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(dir)) return false;
+  return true;
+}
+
+/**
  * 检查工作目录下是否存在 .crew 目录
  */
 export async function handleCheckCrewExists(msg) {
   const { projectDir, requestId, _requestClientId } = msg;
-  if (!projectDir) {
+  if (!projectDir || !isValidProjectDir(projectDir)) {
     ctx.sendToServer({
       type: 'crew_exists_result',
       requestId,
@@ -445,7 +455,7 @@ export async function handleCheckCrewExists(msg) {
  */
 export async function handleDeleteCrewDir(msg) {
   const { projectDir, _requestClientId } = msg;
-  if (!projectDir) return;
+  if (!isValidProjectDir(projectDir)) return;
   const crewDir = join(projectDir, '.crew');
   try {
     await fs.rm(crewDir, { recursive: true, force: true });
