@@ -89,6 +89,7 @@ export const useChatStore = defineStore('chat', {
     crewMessagesMap: {},          // { [sessionId]: messages[] }
     crewStatuses: {},             // { [sessionId]: { status, currentRole, round, maxRounds, costUsd, activeRoles } }
     crewSessionsList: [],         // 从索引加载的所有 crew sessions（含已停止的）
+    crewExistsResult: null,       // check_crew_exists 结果: { exists, projectDir, sessionInfo }
     crewConfigOpen: false,        // crew 配置面板是否打开
     crewConfigMode: 'create',    // 'create' | 'edit'
   }),
@@ -315,6 +316,15 @@ export const useChatStore = defineStore('chat', {
       this.sendWsMessage({
         type: 'list_crew_sessions',
         agentId: this.currentAgent
+      });
+    },
+
+    checkCrewExists(projectDir, agentId) {
+      this.crewExistsResult = null;
+      this.sendWsMessage({
+        type: 'check_crew_exists',
+        projectDir,
+        agentId: agentId || this.currentAgent
       });
     },
 

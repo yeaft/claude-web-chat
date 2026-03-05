@@ -742,6 +742,11 @@ async function handleAgentMessage(agentId, msg) {
       await notifyConversationUpdate(agentId, msg);
       break;
 
+    case 'crew_exists_result':
+      // 定向转发给请求者
+      await notifyConversationUpdate(agentId, msg);
+      break;
+
     // Terminal messages (forward to web clients)
     case 'terminal_created':
     case 'terminal_output':
