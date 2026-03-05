@@ -51,3 +51,4 @@ data/
 # Claude Code
 CLAUDE.md
 .claude/
+.crew/
