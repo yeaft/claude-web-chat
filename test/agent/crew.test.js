@@ -4936,12 +4936,12 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- HTML Tag Balance ---
 
   describe('HTML and CSS structure balance', () => {
-    // 170 = 168 (PR#35 feature-index + PR#37 kanban-groups) + 2 (message sharding load-more)
-    it('should have balanced div tags (170/170)', () => {
+    // 171 = 170 (PR#38 merge-feature-segments) + 1 (mobile overlay div)
+    it('should have balanced div tags (171/171)', () => {
       const opens = (viewSource.match(/<div[\s>]/g) || []).length;
       const closes = (viewSource.match(/<\/div>/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(170);
+      expect(opens).toBe(171);
     });
 
     it('should have balanced template tags', () => {
@@ -4969,11 +4969,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2094/2094)', () => {
+    it('should have balanced CSS braces (2110/2110)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2094);
+      expect(opens).toBe(2110);
     });
   });
 

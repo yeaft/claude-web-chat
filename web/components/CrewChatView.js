@@ -24,10 +24,22 @@ export default {
     <div class="crew-chat-view">
       <!-- Role Context Menu removed: compact/clear now on card actions -->
 
-      <div class="crew-workspace">
+      <div class="crew-workspace" :class="{ 'mobile-panel-roles': mobilePanel === 'roles', 'mobile-panel-features': mobilePanel === 'features' }">
+        <!-- Mobile FABs (CSS hides on desktop) -->
+        <button class="crew-mobile-fab crew-mobile-fab-left" @click="mobilePanel = 'roles'" v-if="!mobilePanel">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+          <span v-if="streamingRoleCount > 0" class="crew-mobile-fab-badge">{{ streamingRoleCount }}</span>
+        </button>
+        <button class="crew-mobile-fab crew-mobile-fab-right" @click="mobilePanel = 'features'" v-if="!mobilePanel">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zM7 12h2v5H7zm4-3h2v8h-2zm4-3h2v11h-2z"/></svg>
+          <span v-if="kanbanInProgressCount > 0" class="crew-mobile-fab-badge">{{ kanbanInProgressCount }}</span>
+        </button>
+        <div class="crew-mobile-overlay" v-if="mobilePanel" @click="mobilePanel = null"></div>
+
         <!-- Left Panel: Role Cards -->
         <aside class="crew-panel-left">
           <div class="crew-panel-left-scroll">
+            <button class="crew-mobile-close" @click="mobilePanel = null"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> 关闭</button>
             <div class="crew-role-list">
               <div v-for="role in sessionRoles" :key="role.name"
                    class="crew-role-card"
@@ -555,6 +567,7 @@ export default {
         <!-- Right Panel: Feature Kanban -->
         <aside class="crew-panel-right">
           <div class="crew-panel-right-scroll">
+            <button class="crew-mobile-close" @click="mobilePanel = null"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> 关闭</button>
 
             <!-- 总进度 (顶部概览) -->
             <div class="crew-kanban-total" v-if="kanbanProgress.total > 0">
@@ -747,6 +760,7 @@ export default {
       visibleBlockCount: 20,
       isLoadingMore: false,
       isLoadingHistory: false,
+      mobilePanel: null,  // null | 'roles' | 'features'
       crewAskSelections: {},
       crewAskCustom: {},
       atMenuVisible: false,
@@ -1418,6 +1432,15 @@ summary: 请测试以下变更...
         done += f.doneCount;
       }
       return { total, done };
+    },
+
+    streamingRoleCount() {
+      const activeRoles = this.store.currentCrewStatus?.activeRoles;
+      return activeRoles ? activeRoles.length : 0;
+    },
+
+    kanbanInProgressCount() {
+      return this.featureKanbanGrouped.inProgress.length;
     }
   },
 
