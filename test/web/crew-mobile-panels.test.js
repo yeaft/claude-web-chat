@@ -483,7 +483,46 @@ describe('auto-close on navigation', () => {
 });
 
 // =====================================================================
-// 14) Structural integrity
+// 14) Abort role button on role cards
+// =====================================================================
+
+describe('abort role button', () => {
+  it('has abort button with crew-role-abort-btn class', () => {
+    expect(viewSource).toContain('crew-role-abort-btn');
+  });
+
+  it('abort button only visible when role is streaming', () => {
+    // v-if="isRoleStreaming(role.name)" on the abort button
+    const lines = viewSource.split('\n');
+    const abortLine = lines.find(l => l.includes('crew-role-abort-btn'));
+    expect(abortLine).toContain('isRoleStreaming');
+  });
+
+  it('abort button calls abortRole method', () => {
+    expect(viewSource).toContain('abortRole(role.name)');
+  });
+
+  it('abortRole method sends abort_role control action', () => {
+    expect(viewSource).toContain("'abort_role'");
+    // The method should delegate to controlAction
+    const methodSection = viewSource.split('abortRole(roleName)')[1]?.split('}')[0] || '';
+    expect(methodSection).toContain('abort_role');
+  });
+
+  it('abort button has stop icon', () => {
+    const lines = viewSource.split('\n');
+    const abortLine = lines.find(l => l.includes('crew-role-abort-btn'));
+    expect(abortLine).toBeTruthy();
+  });
+
+  it('CSS has crew-role-abort-btn style with error color', () => {
+    expect(cssSource).toContain('.crew-role-abort-btn');
+    expect(cssSource).toContain('error-color');
+  });
+});
+
+// =====================================================================
+// 15) Structural integrity
 // =====================================================================
 
 describe('structural integrity', () => {
@@ -499,10 +538,10 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
   });
 
-  it('CSS has balanced braces (2119/2119)', () => {
+  it('CSS has balanced braces (2121/2121)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2119);
+    expect(opens).toBe(2121);
   });
 });
