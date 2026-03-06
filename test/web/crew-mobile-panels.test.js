@@ -538,10 +538,10 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
   });
 
-  it('CSS has balanced braces (2127/2127)', () => {
+  it('CSS has balanced braces (2135/2135)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2127);
+    expect(opens).toBe(2135);
   });
 });

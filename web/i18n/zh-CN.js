@@ -100,6 +100,7 @@ export default {
   'chat.sidebar.portProxy': '端口映射',
   'chat.sidebar.workbench': '工具面板',
   'chat.sidebar.newConv': '会话',
+  'chat.sidebar.recentChats': '最近会话',
   'chat.sidebar.resumeConv': '恢复会话',
   'chat.sidebar.lightMode': '浅色模式',
   'chat.sidebar.darkMode': '深色模式',
