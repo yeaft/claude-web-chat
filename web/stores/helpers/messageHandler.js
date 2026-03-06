@@ -318,6 +318,7 @@ export function handleMessage(store, msg) {
       // 清理 crew 数据
       delete store.crewSessions?.[msg.conversationId];
       delete store.crewMessagesMap?.[msg.conversationId];
+      delete store.crewOlderMessages?.[msg.conversationId];
       delete store.crewStatuses?.[msg.conversationId];
       window.dispatchEvent(new CustomEvent('conversation-deleted', { detail: { conversationId: msg.conversationId } }));
       if (store.currentConversation === msg.conversationId) {

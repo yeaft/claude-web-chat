@@ -291,6 +291,8 @@ export async function removeFromCrewIndex(sessionId) {
       for (const file of ['session.json', 'messages.json']) {
         await fs.unlink(join(sharedDir, file)).catch(() => {});
       }
+      // Clean up message shard files
+      await cleanupMessageShards(sharedDir);
       console.log(`[Crew] Cleaned session files in ${sharedDir}`);
     } catch (e) {
       console.warn(`[Crew] Failed to clean session files:`, e.message);
@@ -301,6 +303,8 @@ export async function removeFromCrewIndex(sessionId) {
 // =====================================================================
 // Session Metadata (.crew/session.json)
 // =====================================================================
+
+const MESSAGE_SHARD_SIZE = 256 * 1024; // 256KB per shard
 
 async function saveSessionMeta(session) {
   const meta = {
@@ -339,8 +343,99 @@ async function saveSessionMeta(session) {
       const { _streaming, ...rest } = m;
       return rest;
     });
-    await fs.writeFile(join(session.sharedDir, 'messages.json'), JSON.stringify(cleaned));
+    const json = JSON.stringify(cleaned);
+    await fs.writeFile(join(session.sharedDir, 'messages.json'), json);
+    // 超过阈值时自动归档旧消息
+    if (json.length > MESSAGE_SHARD_SIZE && !session._rotating) {
+      await rotateMessages(session, cleaned);
+    }
   }
+}
+
+/**
+ * 归档旧消息到分片文件（logrotate 风格）
+ * messages.json = 当前活跃分片（最新消息）
+ * messages.1.json = 最近归档，messages.2.json = 更早归档 ...
+ */
+async function rotateMessages(session, cleaned) {
+  session._rotating = true;
+  try {
+    // 找到分割点：优先在 turn 边界（route/system 消息）分割，约归档前半部分
+    const halfLen = Math.floor(cleaned.length / 2);
+    let splitIdx = halfLen;
+    // 从 halfLen 附近向前搜索 turn 边界
+    for (let i = halfLen; i > Math.max(0, halfLen - 20); i--) {
+      if (cleaned[i].type === 'route' || cleaned[i].type === 'system') {
+        splitIdx = i + 1; // 在边界消息之后分割
+        break;
+      }
+    }
+    // 如果向前没找到，向后搜索
+    if (splitIdx === halfLen) {
+      for (let i = halfLen + 1; i < Math.min(cleaned.length - 1, halfLen + 20); i++) {
+        if (cleaned[i].type === 'route' || cleaned[i].type === 'system') {
+          splitIdx = i + 1;
+          break;
+        }
+      }
+    }
+    // 确保至少归档 1 条且保留 1 条
+    splitIdx = Math.max(1, Math.min(splitIdx, cleaned.length - 1));
+
+    const archivePart = cleaned.slice(0, splitIdx);
+    const remainPart = cleaned.slice(splitIdx);
+
+    // 将现有归档文件编号 +1（从最大编号开始，避免覆盖）
+    const maxShard = await getMaxShardIndex(session.sharedDir);
+    for (let i = maxShard; i >= 1; i--) {
+      const src = join(session.sharedDir, `messages.${i}.json`);
+      const dst = join(session.sharedDir, `messages.${i + 1}.json`);
+      await fs.rename(src, dst).catch(() => {});
+    }
+
+    // 写入归档分片
+    await fs.writeFile(join(session.sharedDir, 'messages.1.json'), JSON.stringify(archivePart));
+    // 重写当前活跃文件
+    await fs.writeFile(join(session.sharedDir, 'messages.json'), JSON.stringify(remainPart));
+    // 同步内存中的 uiMessages
+    session.uiMessages = remainPart.map(m => ({ ...m }));
+
+    console.log(`[Crew] Rotated messages: archived ${archivePart.length} msgs to shard 1, kept ${remainPart.length} in active`);
+  } finally {
+    session._rotating = false;
+  }
+}
+
+/**
+ * 获取当前最大分片编号
+ */
+async function getMaxShardIndex(sharedDir) {
+  let max = 0;
+  try {
+    const files = await fs.readdir(sharedDir);
+    for (const f of files) {
+      const match = f.match(/^messages\.(\d+)\.json$/);
+      if (match) {
+        const idx = parseInt(match[1], 10);
+        if (idx > max) max = idx;
+      }
+    }
+  } catch { /* dir may not exist */ }
+  return max;
+}
+
+/**
+ * 删除所有消息分片文件（messages.1.json, messages.2.json, ...）
+ */
+async function cleanupMessageShards(sharedDir) {
+  try {
+    const files = await fs.readdir(sharedDir);
+    for (const f of files) {
+      if (/^messages\.\d+\.json$/.test(f)) {
+        await fs.unlink(join(sharedDir, f)).catch(() => {});
+      }
+    }
+  } catch { /* dir may not exist */ }
 }
 
 async function loadSessionMeta(sharedDir) {
@@ -349,8 +444,54 @@ async function loadSessionMeta(sharedDir) {
 }
 
 async function loadSessionMessages(sharedDir) {
-  try { return JSON.parse(await fs.readFile(join(sharedDir, 'messages.json'), 'utf-8')); }
-  catch { return []; }
+  let messages = [];
+  try { messages = JSON.parse(await fs.readFile(join(sharedDir, 'messages.json'), 'utf-8')); }
+  catch { /* file may not exist */ }
+  // Check if older shards exist
+  let hasOlderMessages = false;
+  try {
+    await fs.access(join(sharedDir, 'messages.1.json'));
+    hasOlderMessages = true;
+  } catch { /* no older shards */ }
+  return { messages, hasOlderMessages };
+}
+
+/**
+ * 加载历史消息分片
+ * 前端上滑到顶部时按需请求
+ */
+export async function handleLoadCrewHistory(msg) {
+  const { sessionId, shardIndex, requestId } = msg;
+  const session = crewSessions.get(sessionId);
+  if (!session) {
+    sendCrewMessage({
+      type: 'crew_history_loaded',
+      sessionId,
+      shardIndex,
+      requestId,
+      messages: [],
+      hasMore: false
+    });
+    return;
+  }
+
+  const shardPath = join(session.sharedDir, `messages.${shardIndex}.json`);
+  let messages = [];
+  try {
+    messages = JSON.parse(await fs.readFile(shardPath, 'utf-8'));
+  } catch { /* shard file doesn't exist */ }
+
+  // Check if there's an even older shard
+  const hasMore = shardIndex < await getMaxShardIndex(session.sharedDir);
+
+  sendCrewMessage({
+    type: 'crew_history_loaded',
+    sessionId,
+    shardIndex,
+    requestId,
+    messages,
+    hasMore
+  });
 }
 
 // =====================================================================
@@ -479,13 +620,16 @@ export async function resumeCrewSession(msg) {
     const roles = Array.from(session.roles.values());
     // 如果内存中没有 uiMessages，尝试从磁盘加载
     if ((!session.uiMessages || session.uiMessages.length === 0) && session.sharedDir) {
-      session.uiMessages = await loadSessionMessages(session.sharedDir);
+      const loaded = await loadSessionMessages(session.sharedDir);
+      session.uiMessages = loaded.messages;
     }
     // 发送前清理 _streaming 标记（跟磁盘保存逻辑保持一致）
     const cleanedMessages = (session.uiMessages || []).map(m => {
       const { _streaming, ...rest } = m;
       return rest;
     });
+    // 检查是否有历史分片
+    const hasOlderMessages = await getMaxShardIndex(session.sharedDir) > 0;
 
     sendCrewMessage({
       type: 'crew_session_restored',
@@ -504,7 +648,8 @@ export async function resumeCrewSession(msg) {
       maxRounds: session.maxRounds,
       userId: session.userId,
       username: session.username,
-      uiMessages: cleanedMessages
+      uiMessages: cleanedMessages,
+      hasOlderMessages
     });
     sendStatusUpdate(session);
     return;
@@ -559,8 +704,9 @@ export async function resumeCrewSession(msg) {
   };
   crewSessions.set(sessionId, session);
 
-  // 加载 UI 消息历史
-  session.uiMessages = await loadSessionMessages(session.sharedDir);
+  // 加载 UI 消息历史（仅最新分片）
+  const loaded = await loadSessionMessages(session.sharedDir);
+  session.uiMessages = loaded.messages;
 
   // 通知 server
   sendCrewMessage({
@@ -580,7 +726,8 @@ export async function resumeCrewSession(msg) {
     maxRounds: session.maxRounds,
     userId: session.userId,
     username: session.username,
-    uiMessages: session.uiMessages
+    uiMessages: session.uiMessages,
+    hasOlderMessages: loaded.hasOlderMessages
   });
   sendStatusUpdate(session);
 
@@ -2730,9 +2877,10 @@ async function clearSession(session) {
   // 4. 重置计数
   session.round = 0;
 
-  // 5. 清空磁盘上的 messages.json
+  // 5. 清空磁盘上的 messages.json 和所有分片
   const messagesPath = join(session.sharedDir, 'messages.json');
   await fs.writeFile(messagesPath, '[]').catch(() => {});
+  await cleanupMessageShards(session.sharedDir);
 
   // 6. 恢复运行状态
   session.status = 'running';

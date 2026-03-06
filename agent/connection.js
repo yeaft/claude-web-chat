@@ -23,7 +23,8 @@ import {
 import {
   createCrewSession, handleCrewHumanInput, handleCrewControl,
   addRoleToSession, removeRoleFromSession,
-  handleListCrewSessions, handleCheckCrewExists, handleDeleteCrewDir, resumeCrewSession, removeFromCrewIndex
+  handleListCrewSessions, handleCheckCrewExists, handleDeleteCrewDir, resumeCrewSession, removeFromCrewIndex,
+  handleLoadCrewHistory
 } from './crew.js';
 
 // 需要在断连期间缓冲的消息类型（Claude 输出相关的关键消息）
@@ -319,6 +320,10 @@ async function handleMessage(msg) {
 
     case 'update_crew_session':
       await (await import('./crew.js')).handleUpdateCrewSession(msg);
+      break;
+
+    case 'crew_load_history':
+      await handleLoadCrewHistory(msg);
       break;
 
     // Port proxy

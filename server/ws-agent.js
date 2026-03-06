@@ -747,6 +747,10 @@ async function handleAgentMessage(agentId, msg) {
       await notifyConversationUpdate(agentId, msg);
       break;
 
+    case 'crew_history_loaded':
+      await forwardToClients(agentId, msg.sessionId, msg);
+      break;
+
     // Terminal messages (forward to web clients)
     case 'terminal_created':
     case 'terminal_output':

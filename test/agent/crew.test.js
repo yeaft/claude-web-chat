@@ -3765,7 +3765,7 @@ describe('Streaming indicator - template verification', () => {
   it('should contain typing dots for streaming indicator and ask waiting hints', () => {
     const dotsMatch = templateContent.match(/crew-typing-dot/g);
     expect(dotsMatch).toBeTruthy();
-    expect(dotsMatch.length).toBe(15); // 3 for streaming + 3 for init progress + 3×3 for ask card waiting hints
+    expect(dotsMatch.length).toBe(18); // 3 for streaming + 3 for init progress + 3 for history loading + 3×3 for ask card waiting hints
   });
 
   it('should define hasStreamingMessage computed', () => {
@@ -4936,11 +4936,12 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- HTML Tag Balance ---
 
   describe('HTML and CSS structure balance', () => {
-    it('should have balanced div tags (168/168)', () => {
+    // 170 = 168 (PR#35 feature-index + PR#37 kanban-groups) + 2 (message sharding load-more)
+    it('should have balanced div tags (170/170)', () => {
       const opens = (viewSource.match(/<div[\s>]/g) || []).length;
       const closes = (viewSource.match(/<\/div>/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(168);
+      expect(opens).toBe(170);
     });
 
     it('should have balanced template tags', () => {
