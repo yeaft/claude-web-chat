@@ -96,8 +96,8 @@ describe('independent scroll panels', () => {
     expect(chatPageSource).not.toContain('session-panel-divider');
   });
 
-  it('has add buttons in group headers', () => {
-    expect(chatPageSource).toContain('session-header-add-btn');
+  it('has add icons in group headers', () => {
+    expect(chatPageSource).toContain('session-header-add-icon');
   });
 });
 

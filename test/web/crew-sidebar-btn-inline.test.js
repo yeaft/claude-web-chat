@@ -3,17 +3,17 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
 /**
- * Tests for sidebar add buttons in group headers.
+ * Tests for sidebar clickable group headers.
  *
- * The "+ 会话" and "+ Crew" buttons are placed in the session-group-header
- * row, right-aligned next to the group title. This keeps them always visible
- * without taking up list space.
+ * The session-group-header rows are fully clickable to create new
+ * conversations. A "+" icon (session-header-add-icon) is right-aligned
+ * as a visual hint.
  *
  * Verifies:
- * 1) Both add buttons are inside their respective session-group-header
- * 2) Buttons are right-aligned via margin-left: auto
- * 3) Button functionality preserved (@click handlers, disabled state)
- * 4) CSS styles for compact header button
+ * 1) Both add icons are inside their respective session-group-header
+ * 2) Click handlers are on the header div, not on a separate button
+ * 3) CSS styles for header add icon
+ * 4) Old layout patterns removed
  * 5) Structural integrity
  */
 
@@ -47,128 +47,112 @@ function extractCssBlock(selector) {
 }
 
 // =====================================================================
-// 1. Add buttons are INSIDE session-group-header
+// 1. Add icons are INSIDE session-group-header
 // =====================================================================
-describe('add buttons inside session-group-header', () => {
-  it('chat add button is inside session-group-header (before session-panel-list)', () => {
+describe('add icons inside session-group-header', () => {
+  it('chat add icon is inside session-group-header (before session-panel-list)', () => {
     const chatHeaderIdx = chatPageSource.indexOf('class="session-group-header"');
     const chatListIdx = chatPageSource.indexOf('class="session-panel-list"');
-    const chatAddIdx = chatPageSource.indexOf('session-header-add-btn', chatHeaderIdx);
+    const chatAddIdx = chatPageSource.indexOf('session-header-add-icon', chatHeaderIdx);
     expect(chatAddIdx).toBeGreaterThan(chatHeaderIdx);
     expect(chatAddIdx).toBeLessThan(chatListIdx);
   });
 
-  it('crew add button is inside crew session-group-header', () => {
+  it('crew add icon is inside crew session-group-header', () => {
     const crewSessionsIdx = chatPageSource.indexOf('Crew Sessions');
     const crewHeaderIdx = chatPageSource.lastIndexOf('class="session-group-header"', crewSessionsIdx);
     const crewListIdx = chatPageSource.indexOf('class="session-panel-list"', crewHeaderIdx);
-    const crewAddIdx = chatPageSource.indexOf('session-header-add-btn', crewHeaderIdx);
+    const crewAddIdx = chatPageSource.indexOf('session-header-add-icon', crewHeaderIdx);
     expect(crewAddIdx).toBeGreaterThan(crewHeaderIdx);
     expect(crewAddIdx).toBeLessThan(crewListIdx);
   });
 
-  it('add buttons are in headers, not in list v-for content', () => {
-    // The session-panel-list should only contain session items (v-for), no add buttons
-    // Verify by checking: add buttons appear BEFORE the list, not inside
-    const firstHeaderBtn = chatPageSource.indexOf('session-header-add-btn');
+  it('add icons are in headers, not in list v-for content', () => {
+    const firstIcon = chatPageSource.indexOf('session-header-add-icon');
     const firstListStart = chatPageSource.indexOf('class="session-panel-list"');
-    expect(firstHeaderBtn).toBeLessThan(firstListStart);
+    expect(firstIcon).toBeLessThan(firstListStart);
 
-    const secondHeaderBtn = chatPageSource.indexOf('session-header-add-btn', firstHeaderBtn + 1);
+    const secondIcon = chatPageSource.indexOf('session-header-add-icon', firstIcon + 1);
     const secondListStart = chatPageSource.indexOf('class="session-panel-list"', firstListStart + 1);
-    expect(secondHeaderBtn).toBeLessThan(secondListStart);
+    expect(secondIcon).toBeLessThan(secondListStart);
   });
 });
 
 // =====================================================================
-// 2. Button functionality preserved
+// 2. Click handlers on header row (not separate button)
 // =====================================================================
-describe('button functionality preserved', () => {
-  it('chat add button triggers openConversationModal', () => {
-    const chatAddIdx = chatPageSource.indexOf('session-header-add-btn');
-    const btnBlock = chatPageSource.substring(chatAddIdx, chatAddIdx + 300);
-    expect(btnBlock).toContain('@click="openConversationModal"');
+describe('clickable header rows', () => {
+  it('chat header triggers openConversationModal on click', () => {
+    const chatHeaderIdx = chatPageSource.indexOf('class="session-group-header"');
+    const headerLine = chatPageSource.substring(chatHeaderIdx - 200, chatHeaderIdx + 200);
+    expect(headerLine).toContain('openConversationModal');
   });
 
-  it('chat add button is disabled when no agents online', () => {
-    const chatAddIdx = chatPageSource.indexOf('session-header-add-btn');
-    const btnBlock = chatPageSource.substring(chatAddIdx, chatAddIdx + 300);
-    expect(btnBlock).toContain(':disabled="onlineAgentCount === 0"');
+  it('crew header triggers newCrewSession on click', () => {
+    const crewSpanIdx = chatPageSource.indexOf('<span>Crew Sessions</span>');
+    const divStart = chatPageSource.lastIndexOf('<div', crewSpanIdx);
+    const headerLine = chatPageSource.substring(divStart, crewSpanIdx);
+    expect(headerLine).toContain('@click="newCrewSession"');
   });
 
-  it('crew add button triggers newCrewSession', () => {
-    const crewSessionsIdx = chatPageSource.indexOf('Crew Sessions');
-    const crewAddIdx = chatPageSource.indexOf('session-header-add-btn', crewSessionsIdx);
-    const btnBlock = chatPageSource.substring(crewAddIdx, crewAddIdx + 300);
-    expect(btnBlock).toContain('@click="newCrewSession"');
+  it('both headers have plus icon SVG', () => {
+    const firstIcon = chatPageSource.indexOf('session-header-add-icon');
+    const firstBlock = chatPageSource.substring(firstIcon, firstIcon + 200);
+    expect(firstBlock).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
+
+    const secondIcon = chatPageSource.indexOf('session-header-add-icon', firstIcon + 1);
+    const secondBlock = chatPageSource.substring(secondIcon, secondIcon + 200);
+    expect(secondBlock).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
   });
 
-  it('both add buttons have plus icon SVG', () => {
-    const firstAddIdx = chatPageSource.indexOf('session-header-add-btn');
-    const firstBtn = chatPageSource.substring(firstAddIdx, firstAddIdx + 400);
-    expect(firstBtn).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
-
-    const secondAddIdx = chatPageSource.indexOf('session-header-add-btn', firstAddIdx + 1);
-    const secondBtn = chatPageSource.substring(secondAddIdx, secondAddIdx + 400);
-    expect(secondBtn).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
-  });
-
-  it('exactly 2 session-header-add-btn in template', () => {
-    const matches = chatPageSource.match(/session-header-add-btn/g) || [];
+  it('exactly 2 session-header-add-icon in template', () => {
+    const matches = chatPageSource.match(/session-header-add-icon/g) || [];
     expect(matches.length).toBe(2);
   });
+
+  it('no separate add button elements (click is on header)', () => {
+    expect(chatPageSource).not.toContain('session-header-add-btn');
+  });
 });
 
 // =====================================================================
-// 3. CSS styles for header add button
+// 3. CSS styles for header add icon
 // =====================================================================
-describe('CSS — session-header-add-btn styles', () => {
-  it('has .session-header-add-btn rule', () => {
-    expect(cssSource).toContain('.session-header-add-btn {');
+describe('CSS — session-header-add-icon styles', () => {
+  it('has .session-header-add-icon rule', () => {
+    expect(cssSource).toContain('.session-header-add-icon {');
   });
 
   it('is right-aligned via margin-left: auto', () => {
-    const block = extractCssBlock('.session-header-add-btn {');
+    const block = extractCssBlock('.session-header-add-icon {');
     expect(block).toContain('margin-left: auto');
   });
 
-  it('is a compact square button', () => {
-    const block = extractCssBlock('.session-header-add-btn {');
-    expect(block).toContain('width: 22px');
-    expect(block).toContain('height: 22px');
-  });
-
-  it('has no border', () => {
-    const block = extractCssBlock('.session-header-add-btn {');
-    expect(block).toContain('border: none');
-  });
-
-  it('has transparent background', () => {
-    const block = extractCssBlock('.session-header-add-btn {');
-    expect(block).toContain('background: transparent');
-  });
-
-  it('has rounded corners', () => {
-    const block = extractCssBlock('.session-header-add-btn {');
-    expect(block).toContain('border-radius: 6px');
-  });
-
-  it('hover shows sidebar-hover background', () => {
-    const block = extractCssBlock('.session-header-add-btn:hover {');
-    expect(block).toContain('background: var(--sidebar-hover)');
-    expect(block).toContain('color: var(--text-primary)');
-  });
-
-  it('disabled state has reduced opacity', () => {
-    const block = extractCssBlock('.session-header-add-btn:disabled {');
-    expect(block).toContain('opacity: 0.3');
-    expect(block).toContain('cursor: not-allowed');
-  });
-
-  it('SVG has fixed 14px size', () => {
-    const block = extractCssBlock('.session-header-add-btn svg {');
+  it('has 14px size', () => {
+    const block = extractCssBlock('.session-header-add-icon {');
     expect(block).toContain('width: 14px');
     expect(block).toContain('height: 14px');
+  });
+
+  it('icon becomes visible on header hover', () => {
+    const block = extractCssBlock('.session-group-header:hover .session-header-add-icon {');
+    expect(block).toContain('opacity: 1');
+  });
+
+  it('header has cursor pointer', () => {
+    const block = extractCssBlock('.session-group-header {');
+    expect(block).toContain('cursor: pointer');
+  });
+
+  it('header has hover background', () => {
+    const block = extractCssBlock('.session-group-header:hover {');
+    expect(block).toContain('background: var(--sidebar-hover)');
+  });
+
+  it('disabled header has reduced opacity', () => {
+    const block = extractCssBlock('.session-group-header.disabled {');
+    expect(block).toContain('opacity: 0.4');
+    expect(block).toContain('cursor: not-allowed');
   });
 });
 
@@ -176,12 +160,16 @@ describe('CSS — session-header-add-btn styles', () => {
 // 4. Old layout patterns removed
 // =====================================================================
 describe('no old layout remnants', () => {
-  it('no session-panel-add-btn class in template', () => {
-    expect(chatPageSource).not.toContain('session-panel-add-btn');
+  it('no session-header-add-btn class in template', () => {
+    expect(chatPageSource).not.toContain('session-header-add-btn');
   });
 
-  it('no session-panel-add-btn CSS rule', () => {
-    expect(cssSource).not.toContain('.session-panel-add-btn {');
+  it('no session-header-add-btn CSS rule', () => {
+    expect(cssSource).not.toContain('.session-header-add-btn {');
+  });
+
+  it('no session-panel-add-btn class in template', () => {
+    expect(chatPageSource).not.toContain('session-panel-add-btn');
   });
 
   it('no crew-add-btn class in template', () => {
@@ -205,13 +193,7 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
   });
 
-  it('ChatPage.js button tags are balanced', () => {
-    const opens = (chatPageSource.match(/<button[\s>]/g) || []).length;
-    const closes = (chatPageSource.match(/<\/button>/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-
-  it('CSS brace count unchanged (2109/2109)', () => {
+  it('CSS brace count is correct', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);

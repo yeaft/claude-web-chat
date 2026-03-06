@@ -92,40 +92,31 @@ describe('dual independent scroll containers', () => {
 });
 
 // =====================================================================
-// 2. Header inline add buttons
+// 2. Header inline add icons (clickable header rows)
 // =====================================================================
-describe('header inline add buttons', () => {
-  it('chat panel header has add button with openConversationModal', () => {
+describe('header inline add icons', () => {
+  it('chat panel header triggers openConversationModal on click', () => {
     const chatHeaderIdx = chatPageSource.indexOf('class="session-group-header"');
     const chatListIdx = chatPageSource.indexOf('class="session-panel-list"');
-    const chatHeader = chatPageSource.substring(chatHeaderIdx, chatListIdx);
-    expect(chatHeader).toContain('session-header-add-btn');
-    expect(chatHeader).toContain('@click="openConversationModal"');
+    const chatHeader = chatPageSource.substring(chatHeaderIdx - 200, chatListIdx);
+    expect(chatHeader).toContain('openConversationModal');
   });
 
-  it('chat add button is disabled when no agents online', () => {
-    const chatHeaderIdx = chatPageSource.indexOf('class="session-group-header"');
-    const chatListIdx = chatPageSource.indexOf('class="session-panel-list"');
-    const chatHeader = chatPageSource.substring(chatHeaderIdx, chatListIdx);
-    expect(chatHeader).toContain(':disabled="onlineAgentCount === 0"');
-  });
-
-  it('crew panel header has add button with newCrewSession', () => {
+  it('crew panel header triggers newCrewSession on click', () => {
     const crewHeaderIdx = chatPageSource.indexOf('Crew Sessions');
     const crewListIdx = chatPageSource.indexOf('class="session-panel-list"', crewHeaderIdx);
-    const crewHeader = chatPageSource.substring(crewHeaderIdx, crewListIdx);
-    expect(crewHeader).toContain('session-header-add-btn');
+    const crewHeader = chatPageSource.substring(crewHeaderIdx - 200, crewListIdx);
     expect(crewHeader).toContain('@click="newCrewSession"');
   });
 
-  it('both add buttons have plus icon SVG', () => {
-    const firstAddIdx = chatPageSource.indexOf('session-header-add-btn');
-    const firstBtn = chatPageSource.substring(firstAddIdx, firstAddIdx + 400);
-    expect(firstBtn).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
+  it('both headers have plus icon SVG', () => {
+    const firstIcon = chatPageSource.indexOf('session-header-add-icon');
+    const firstBlock = chatPageSource.substring(firstIcon, firstIcon + 200);
+    expect(firstBlock).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
 
-    const secondAddIdx = chatPageSource.indexOf('session-header-add-btn', firstAddIdx + 1);
-    const secondBtn = chatPageSource.substring(secondAddIdx, secondAddIdx + 400);
-    expect(secondBtn).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
+    const secondIcon = chatPageSource.indexOf('session-header-add-icon', firstIcon + 1);
+    const secondBlock = chatPageSource.substring(secondIcon, secondIcon + 200);
+    expect(secondBlock).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
   });
 });
 
@@ -232,58 +223,39 @@ describe('no panel divider between panels', () => {
 });
 
 // =====================================================================
-// 6. CSS styles for header add buttons
+// 6. CSS styles for header add icon
 // =====================================================================
-describe('CSS — session-header-add-btn styles', () => {
-  it('add button is right-aligned via margin-left: auto', () => {
-    const block = extractCssBlock('.session-header-add-btn {');
+describe('CSS — session-header-add-icon styles', () => {
+  it('add icon is right-aligned via margin-left: auto', () => {
+    const block = extractCssBlock('.session-header-add-icon {');
     expect(block).toContain('margin-left: auto');
   });
 
-  it('add button uses flexbox for centered content', () => {
-    const block = extractCssBlock('.session-header-add-btn {');
-    expect(block).toContain('display: flex');
-    expect(block).toContain('align-items: center');
-    expect(block).toContain('justify-content: center');
-  });
-
-  it('add button is compact square', () => {
-    const block = extractCssBlock('.session-header-add-btn {');
-    expect(block).toContain('width: 22px');
-    expect(block).toContain('height: 22px');
-  });
-
-  it('add button has no border', () => {
-    const block = extractCssBlock('.session-header-add-btn {');
-    expect(block).toContain('border: none');
-  });
-
-  it('add button has transparent background', () => {
-    const block = extractCssBlock('.session-header-add-btn {');
-    expect(block).toContain('background: transparent');
-  });
-
-  it('add button has border-radius', () => {
-    const block = extractCssBlock('.session-header-add-btn {');
-    expect(block).toContain('border-radius: 6px');
-  });
-
-  it('add button hover changes background and text', () => {
-    const block = extractCssBlock('.session-header-add-btn:hover {');
-    expect(block).toContain('background: var(--sidebar-hover)');
-    expect(block).toContain('color: var(--text-primary)');
-  });
-
-  it('add button disabled state has reduced opacity', () => {
-    const block = extractCssBlock('.session-header-add-btn:disabled {');
-    expect(block).toContain('opacity: 0.3');
-    expect(block).toContain('cursor: not-allowed');
-  });
-
-  it('add button SVG has fixed size', () => {
-    const block = extractCssBlock('.session-header-add-btn svg {');
+  it('add icon has 14px size', () => {
+    const block = extractCssBlock('.session-header-add-icon {');
     expect(block).toContain('width: 14px');
     expect(block).toContain('height: 14px');
+  });
+
+  it('header has cursor pointer for full-row click', () => {
+    const block = extractCssBlock('.session-group-header {');
+    expect(block).toContain('cursor: pointer');
+  });
+
+  it('header has hover background', () => {
+    const block = extractCssBlock('.session-group-header:hover {');
+    expect(block).toContain('background: var(--sidebar-hover)');
+  });
+
+  it('icon becomes visible on header hover', () => {
+    const block = extractCssBlock('.session-group-header:hover .session-header-add-icon {');
+    expect(block).toContain('opacity: 1');
+  });
+
+  it('disabled header has reduced opacity', () => {
+    const block = extractCssBlock('.session-group-header.disabled {');
+    expect(block).toContain('opacity: 0.4');
+    expect(block).toContain('cursor: not-allowed');
   });
 });
 
@@ -358,11 +330,11 @@ describe('template layout order', () => {
     expect(panelsIdx).toBeLessThan(bottomIdx);
   });
 
-  it('panel structure: header (with add button) → list for each panel', () => {
+  it('panel structure: header (with add icon) → list for each panel', () => {
     // Chat panel
     const chatPanelIdx = chatPageSource.indexOf('class="session-panel"');
     const chatHeaderIdx = chatPageSource.indexOf('session-group-header', chatPanelIdx);
-    const chatAddIdx = chatPageSource.indexOf('session-header-add-btn', chatPanelIdx);
+    const chatAddIdx = chatPageSource.indexOf('session-header-add-icon', chatPanelIdx);
     const chatListIdx = chatPageSource.indexOf('session-panel-list', chatPanelIdx);
     expect(chatHeaderIdx).toBeLessThan(chatAddIdx);
     expect(chatAddIdx).toBeLessThan(chatListIdx);
@@ -370,7 +342,7 @@ describe('template layout order', () => {
     // Crew panel
     const crewPanelIdx = chatPageSource.indexOf('class="session-panel"', chatPanelIdx + 1);
     const crewHeaderIdx = chatPageSource.indexOf('session-group-header', crewPanelIdx);
-    const crewAddIdx = chatPageSource.indexOf('session-header-add-btn', crewPanelIdx);
+    const crewAddIdx = chatPageSource.indexOf('session-header-add-icon', crewPanelIdx);
     const crewListIdx = chatPageSource.indexOf('session-panel-list', crewPanelIdx);
     expect(crewHeaderIdx).toBeLessThan(crewAddIdx);
     expect(crewAddIdx).toBeLessThan(crewListIdx);

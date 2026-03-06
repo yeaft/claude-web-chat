@@ -898,38 +898,15 @@ body {
   padding: 0 8px;
 }
 
-/* Add button in group header, right-aligned */
-.session-header-add-btn {
+/* Add icon in group header, right-aligned */
+.session-header-add-icon {
   margin-left: auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-  flex-shrink: 0;
-  padding: 0;
-}
-
-.session-header-add-btn:hover {
-  background: var(--sidebar-hover);
-  color: var(--text-primary);
-}
-
-.session-header-add-btn:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.session-header-add-btn svg {
   width: 14px;
   height: 14px;
   fill: currentColor;
+  opacity: 0.5;
+  flex-shrink: 0;
+  transition: opacity 0.15s;
 }
 
 .session-group-title {
@@ -948,14 +925,30 @@ body {
   margin: 0 8px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   flex-shrink: 0;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.session-group-header:hover {
+  background: var(--sidebar-hover);
+}
+
+.session-group-header:hover .session-header-add-icon {
+  opacity: 1;
+}
+
+.session-group-header.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .session-group-header .session-group-icon {
-  opacity: 0.6;
+  opacity: 0.7;
 }
 
 .session-item {
