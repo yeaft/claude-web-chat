@@ -689,6 +689,7 @@ async function handleWebMessage(clientId, msg) {
         sharedKnowledge: msg.sharedKnowledge || '',
         roles: msg.roles,
         maxRounds: msg.maxRounds,
+        teamType: msg.teamType || 'dev',
         userId: client.userId,
         username: client.username
       });
