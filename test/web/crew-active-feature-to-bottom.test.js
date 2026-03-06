@@ -165,33 +165,35 @@ describe('global segment handling unaffected', () => {
 });
 
 // =====================================================================
-// 5. activeMessages computed — persistent (not just streaming)
+// 5. activeMessages computed — max 2 messages (human + crew)
 // =====================================================================
 describe('activeMessages computed property', () => {
   it('activeMessages computed exists', () => {
     expect(jsSource).toContain('activeMessages()');
   });
 
-  it('collects latest text messages per role (not just streaming)', () => {
+  it('returns latest human and crew messages (not per-role dedup)', () => {
     const activeIdx = jsSource.indexOf('activeMessages()');
     const nextComputed = jsSource.indexOf('() {', activeIdx + 20);
     const section = jsSource.substring(activeIdx, nextComputed);
-    expect(section).toContain("m.type === 'text'");
+    expect(section).toContain("m.type !== 'text'");
     expect(section).not.toContain('m._streaming');
   });
 
-  it('deduplicates by role (one message per role)', () => {
+  it('tracks latestHuman and latestCrew', () => {
     const activeIdx = jsSource.indexOf('activeMessages()');
     const nextComputed = jsSource.indexOf('() {', activeIdx + 20);
     const section = jsSource.substring(activeIdx, nextComputed);
-    expect(section).toContain('seen.has(m.role)');
+    expect(section).toContain('latestHuman');
+    expect(section).toContain('latestCrew');
   });
 
-  it('returns results in chronological order', () => {
+  it('does not use Set-based deduplication', () => {
     const activeIdx = jsSource.indexOf('activeMessages()');
     const nextComputed = jsSource.indexOf('() {', activeIdx + 20);
     const section = jsSource.substring(activeIdx, nextComputed);
-    expect(section).toContain('result.reverse()');
+    expect(section).not.toContain('seen.has(m.role)');
+    expect(section).not.toContain('result.reverse()');
   });
 });
 
