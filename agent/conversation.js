@@ -75,8 +75,7 @@ export async function sendConversationList() {
           processing: false,
           userId: entry.userId,
           username: entry.username,
-          type: 'crew',
-          status: entry.status
+          type: 'crew'
         });
       }
     }

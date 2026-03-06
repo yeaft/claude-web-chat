@@ -329,11 +329,11 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
   });
 
-  it('CSS has balanced braces (2102/2102)', () => {
+  it('CSS has balanced braces (2086/2086)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2104);
+    expect(opens).toBe(2086);
   });
 
   it('MessageList.js exports a valid component', () => {

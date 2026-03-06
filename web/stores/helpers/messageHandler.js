@@ -146,7 +146,6 @@ export function handleMessage(store, msg) {
             existing.agentName = serverConv.agentName;
             if (serverConv.type) existing.type = serverConv.type;
             if (serverConv.goal) existing.goal = serverConv.goal;
-            if (serverConv.status) existing.status = serverConv.status;
           } else {
             store.conversations.push(serverConv);
           }
@@ -488,7 +487,6 @@ export function handleMessage(store, msg) {
       break;
 
     case 'crew_sessions_list':
-      store.crewSessionsList = msg.sessions || [];
       break;
 
     case 'crew_exists_result':

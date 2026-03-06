@@ -10006,111 +10006,6 @@ body {
   opacity: 1;
 }
 
-.crew-stopped-tag {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: var(--bg-tertiary, #374151);
-  color: var(--text-secondary, #9ca3af);
-  flex-shrink: 0;
-  line-height: 1.2;
-}
-
-.crew-stopped-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.crew-stopped-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  background: var(--bg-main);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: border-color 0.15s;
-}
-
-.crew-stopped-item:hover {
-  border-color: var(--accent-blue);
-}
-
-.crew-stopped-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.crew-stopped-goal {
-  font-size: 13px;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.crew-stopped-meta {
-  font-size: 11px;
-  color: var(--text-secondary);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.crew-stopped-status-tag {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: var(--bg-tertiary, #374151);
-  color: var(--text-secondary, #9ca3af);
-  line-height: 1.2;
-}
-
-.crew-stopped-status-tag.status-paused {
-  color: var(--text-warning, #f59e0b);
-  background: rgba(245, 158, 11, 0.1);
-}
-
-.crew-stopped-status-tag.status-completed {
-  color: var(--accent-green, #10b981);
-  background: rgba(16, 185, 129, 0.1);
-}
-
-.crew-stopped-time {
-  color: var(--text-muted, #6b7280);
-}
-
-.crew-stopped-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.crew-stopped-delete-btn {
-  width: 24px;
-  height: 24px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  border-radius: 4px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s;
-}
-
-.crew-stopped-delete-btn:hover {
-  color: var(--error, #ef4444);
-  background: rgba(239, 68, 68, 0.1);
-}
-
 .crew-config-divider {
   display: flex;
   align-items: center;
@@ -10125,27 +10020,6 @@ body {
   flex: 1;
   height: 1px;
   background: var(--border-color);
-}
-
-/* Crew config toggle in header (matches mcp-toggle) */
-.crew-config-toggle.crew-running {
-  color: var(--accent-blue);
-  border-color: var(--accent-blue);
-}
-
-.crew-config-toggle.crew-paused {
-  color: var(--text-warning, #f59e0b);
-  border-color: var(--text-warning, #f59e0b);
-}
-
-.crew-config-toggle.crew-waiting {
-  color: var(--text-warning, #f59e0b);
-  border-color: var(--text-warning, #f59e0b);
-}
-
-.crew-config-toggle.crew-stopped {
-  color: var(--text-muted);
-  border-color: var(--border-color);
 }
 
 /* Crew config panel: Session controls (edit mode) */
