@@ -175,10 +175,10 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   if (existingAgent) {
     conversations = existingAgent.conversations;
   } else {
-    // Server 重启场景：从 DB 恢复历史 conversations
+    // Server 重启场景：从 DB 恢复最近 1 个 conversation，避免 sidebar 显示大量历史
     conversations = new Map();
     try {
-      const dbSessions = sessionDb.getByAgent(agentId);
+      const dbSessions = sessionDb.getByAgent(agentId, 1);
       for (const s of dbSessions) {
         conversations.set(s.id, {
           id: s.id,
@@ -192,7 +192,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
         });
       }
       if (dbSessions.length > 0) {
-        console.log(`[AgentReg] Restored ${dbSessions.length} conversations from DB for ${agentName}`);
+        console.log(`[AgentReg] Restored ${dbSessions.length} conversation(s) from DB for ${agentName}`);
       }
     } catch (e) {
       console.error(`[AgentReg] Failed to restore conversations from DB:`, e.message);
