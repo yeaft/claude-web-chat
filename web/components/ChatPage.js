@@ -709,6 +709,7 @@ export default {
           // 清理 crew 数据
           delete this.store.crewSessions[conversationId];
           delete this.store.crewMessagesMap[conversationId];
+          delete this.store.crewOlderMessages[conversationId];
           delete this.store.crewStatuses[conversationId];
         }
         this.store.deleteConversation(conversationId, agentId);

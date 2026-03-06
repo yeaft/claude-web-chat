@@ -87,6 +87,7 @@ export const useChatStore = defineStore('chat', {
     // =====================
     crewSessions: {},             // { [sessionId]: { id, projectDir, sharedDir, goal, roles, decisionMaker, maxRounds } }
     crewMessagesMap: {},          // { [sessionId]: messages[] }
+    crewOlderMessages: {},       // { [sessionId]: { hasMore, nextShard, loading } }
     crewStatuses: {},             // { [sessionId]: { status, currentRole, round, maxRounds, costUsd, activeRoles } }
     crewSessionsList: [],         // 从索引加载的所有 crew sessions（含已停止的）
     crewExistsResult: null,       // check_crew_exists 结果: { exists, projectDir, sessionInfo }
@@ -372,6 +373,19 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
+    loadCrewHistory(sessionId) {
+      const older = this.crewOlderMessages[sessionId];
+      if (!older || !older.hasMore || older.loading) return false;
+      older.loading = true;
+      this.sendWsMessage({
+        type: 'crew_load_history',
+        sessionId,
+        shardIndex: older.nextShard,
+        agentId: this.currentAgent
+      });
+      return true;
+    },
+
     sendCrewMessage(content, targetRole = null, attachments = undefined) {
       const sessionId = this.currentConversation;
       // 添加人的消息到本地显示
@@ -538,6 +552,12 @@ export const useChatStore = defineStore('chat', {
           }));
         } else {
           ensureMessages(sid);
+        }
+        // 记录是否有历史分片可加载
+        if (msg.hasOlderMessages) {
+          this.crewOlderMessages[sid] = { hasMore: true, nextShard: 1, loading: false };
+        } else {
+          delete this.crewOlderMessages[sid];
         }
         // 确保 conversation 存在
         let conv = this.conversations.find(c => c.id === sid);
@@ -821,6 +841,44 @@ export const useChatStore = defineStore('chat', {
       if (msg.type === 'crew_session_cleared') {
         // 清空前端消息，保留 session 配置
         this.crewMessagesMap[sid] = [];
+        delete this.crewOlderMessages[sid];
+        return;
+      }
+
+      if (msg.type === 'crew_history_loaded') {
+        const older = this.crewOlderMessages[sid];
+        if (!older) return;
+        older.loading = false;
+        // Prepend historical messages to the front of the array
+        if (msg.messages && msg.messages.length > 0) {
+          const mapped = msg.messages.map(m => ({
+            id: m.timestamp || Date.now() + Math.random(),
+            role: m.role,
+            roleIcon: m.roleIcon,
+            roleName: m.roleName,
+            type: m.type,
+            content: m.content,
+            routeTo: m.routeTo,
+            routeSummary: m.routeSummary || '',
+            toolName: m.toolName || null,
+            toolId: m.toolId || null,
+            toolInput: m.toolInput || null,
+            toolResult: null,
+            hasResult: m.hasResult || false,
+            taskId: m.taskId || null,
+            taskTitle: m.taskTitle || null,
+            timestamp: m.timestamp || Date.now()
+          }));
+          const existing = this.crewMessagesMap[sid] || [];
+          // Replace the array ref to trigger featureBlocks cache invalidation
+          this.crewMessagesMap[sid] = [...mapped, ...existing];
+        }
+        if (msg.hasMore) {
+          older.nextShard = (msg.shardIndex || 1) + 1;
+          older.hasMore = true;
+        } else {
+          older.hasMore = false;
+        }
         return;
       }
 

@@ -837,5 +837,18 @@ async function handleWebMessage(clientId, msg) {
       });
       break;
     }
+
+    case 'crew_load_history': {
+      const historyAgentId = msg.agentId || client.currentAgent;
+      if (!historyAgentId) break;
+      if (!await checkAgentAccess(historyAgentId)) break;
+      await forwardToAgent(historyAgentId, {
+        type: 'crew_load_history',
+        sessionId: msg.sessionId,
+        shardIndex: msg.shardIndex,
+        requestId: msg.requestId
+      });
+      break;
+    }
   }
 }

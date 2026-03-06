@@ -80,8 +80,17 @@ export default {
           <div class="crew-empty-text" v-else>等待 Crew Session 启动...</div>
         </div>
 
-        <div v-if="hiddenBlockCount > 0" class="crew-load-more" @click="loadMoreBlocks">
+        <div v-if="isLoadingHistory" class="crew-load-more crew-load-more-loading">
+          <span class="crew-typing-dot"></span>
+          <span class="crew-typing-dot"></span>
+          <span class="crew-typing-dot"></span>
+          加载历史消息中...
+        </div>
+        <div v-else-if="hiddenBlockCount > 0" class="crew-load-more" @click="loadMoreBlocks">
           ↑ 加载更早的消息 <span class="crew-load-more-count">({{ hiddenBlockCount }})</span>
+        </div>
+        <div v-else-if="hasOlderMessages" class="crew-load-more" @click="loadHistory">
+          ↑ 加载历史消息
         </div>
 
         <!-- Pending Ask Banner -->
@@ -734,6 +743,7 @@ export default {
       isAtBottom: true,
       visibleBlockCount: 20,
       isLoadingMore: false,
+      isLoadingHistory: false,
       crewAskSelections: {},
       crewAskCustom: {},
       atMenuVisible: false,
@@ -1215,6 +1225,12 @@ summary: 请测试以下变更...
 
     hiddenBlockCount() {
       return Math.max(0, this.featureBlocks.length - this.visibleBlockCount);
+    },
+
+    hasOlderMessages() {
+      const sid = this.store.currentConversation;
+      const older = this.store.crewOlderMessages[sid];
+      return older?.hasMore || false;
     },
 
     pendingAsks() {
@@ -2275,8 +2291,12 @@ summary: 请测试以下变更...
       this.isAtBottom = this.checkIfAtBottom();
       // 接近顶部时自动加载更多
       const scrollEl = this.$refs.messagesRef;
-      if (scrollEl && scrollEl.scrollTop < 100 && this.hiddenBlockCount > 0) {
-        this.loadMoreBlocks();
+      if (scrollEl && scrollEl.scrollTop < 100) {
+        if (this.hiddenBlockCount > 0) {
+          this.loadMoreBlocks();
+        } else if (this.hasOlderMessages && !this.isLoadingHistory) {
+          this.loadHistory();
+        }
       }
     },
 
@@ -2298,6 +2318,36 @@ summary: 请测试以下变更...
         scrollEl.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight);
         this.isLoadingMore = false;
       });
+    },
+
+    loadHistory() {
+      if (this.isLoadingHistory || !this.hasOlderMessages) return;
+      const sid = this.store.currentConversation;
+      const requested = this.store.loadCrewHistory(sid);
+      if (requested) {
+        this.isLoadingHistory = true;
+        // Watch for the response to arrive
+        const unwatch = this.$watch(
+          () => this.store.crewOlderMessages[sid]?.loading,
+          (loading) => {
+            if (loading === false) {
+              unwatch();
+              this.isLoadingHistory = false;
+              // Expand visibleBlockCount to show new blocks
+              const scrollEl = this.$refs.messagesRef;
+              const oldScrollHeight = scrollEl?.scrollHeight || 0;
+              const oldScrollTop = scrollEl?.scrollTop || 0;
+              this.visibleBlockCount = this.featureBlocks.length;
+              this.$nextTick(() => {
+                if (scrollEl) {
+                  const newScrollHeight = scrollEl.scrollHeight;
+                  scrollEl.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight);
+                }
+              });
+            }
+          }
+        );
+      }
     },
 
     scrollToBottomAndReset() {

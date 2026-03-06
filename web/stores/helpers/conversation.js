@@ -126,6 +126,7 @@ export function deleteConversation(store, conversationId, agentId) {
   if (conv?.type === 'crew') {
     delete store.crewSessions?.[conversationId];
     delete store.crewMessagesMap?.[conversationId];
+    delete store.crewOlderMessages?.[conversationId];
     delete store.crewStatuses?.[conversationId];
     // 从 agent 的 crew index 中移除，防止 sendConversationList 重新加载
     store.sendWsMessage({
