@@ -1445,7 +1445,12 @@ summary: 请测试以下变更...
   },
 
   watch: {
+    '$route'() {
+      this.mobilePanel = null;
+    },
     'store.currentConversation'(newId, oldId) {
+      // Close mobile drawer on conversation switch
+      this.mobilePanel = null;
       // 保存旧会话草稿
       if (oldId && this.inputText) {
         this.store.inputDrafts[oldId] = this.inputText;

@@ -11942,6 +11942,36 @@ body {
     display: flex;
   }
 
+  /* Reset icon-only overrides from 1279px breakpoint for drawer mode */
+  .crew-panel-left {
+    width: min(280px, 80vw);
+  }
+
+  .crew-panel-left-scroll {
+    padding: 12px 16px;
+  }
+
+  .crew-role-card {
+    padding: 8px 10px;
+    justify-content: flex-start;
+  }
+
+  .crew-role-card-name,
+  .crew-role-card-feature,
+  .crew-role-card-tool,
+  .crew-role-card-dm {
+    display: block;
+  }
+
+  .crew-add-role-btn {
+    padding: 8px 12px;
+    margin: 4px 8px;
+  }
+
+  .crew-add-role-btn span {
+    display: inline;
+  }
+
   /* Mobile FAB buttons */
   .crew-mobile-fab {
     display: flex;
