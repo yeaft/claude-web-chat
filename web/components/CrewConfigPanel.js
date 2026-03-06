@@ -1145,7 +1145,8 @@ export default {
         sharedKnowledge: this.sharedKnowledge.trim(),
         roles,
         maxRounds: this.maxRounds,
-        teamType: this.teamType || 'dev'
+        teamType: this.teamType || 'dev',
+        language: this.$locale?.value || 'zh-CN'
       });
     },
 

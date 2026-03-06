@@ -4183,6 +4183,9 @@ describe('writeSharedClaudeMd - team best practices (b7b48d3)', () => {
     crewContent = await fs.readFile(
       join(process.cwd(), 'agent/crew.js'),
       'utf-8'
+    ) + await fs.readFile(
+      join(process.cwd(), 'agent/crew-i18n.js'),
+      'utf-8'
     );
   });
 
@@ -4205,9 +4208,10 @@ describe('writeSharedClaudeMd - team best practices (b7b48d3)', () => {
 
   // --- Worktree 隔离规则 ---
 
-  it('should have 7 worktree rules', () => {
-    const section = crewContent.split('# Worktree 隔离规则')[1].split('# Feature 工作记录')[0];
-    const bullets = section.match(/^- /gm);
+  it('should have 7 worktree rules', async () => {
+    const { getMessages } = await import('../../agent/crew-i18n.js');
+    const m = getMessages('zh-CN');
+    const bullets = m.worktreeRulesContent.match(/^- /gm);
     expect(bullets).toHaveLength(7);
   });
 
@@ -4215,9 +4219,10 @@ describe('writeSharedClaudeMd - team best practices (b7b48d3)', () => {
     expect(crewContent).toContain('绝对禁止在其他开发组的 worktree 中操作代码');
   });
 
-  it('cross-group rule should be the 4th rule', () => {
-    const section = crewContent.split('# Worktree 隔离规则')[1].split('# Feature 工作记录')[0];
-    const lines = section.trim().split('\n').filter(l => l.startsWith('- '));
+  it('cross-group rule should be the 4th rule', async () => {
+    const { getMessages } = await import('../../agent/crew-i18n.js');
+    const m = getMessages('zh-CN');
+    const lines = m.worktreeRulesContent.trim().split('\n').filter(l => l.startsWith('- '));
     expect(lines).toHaveLength(7);
     expect(lines[3]).toContain('绝对禁止在其他开发组的 worktree 中操作代码');
   });
@@ -6044,6 +6049,9 @@ describe('writeSharedClaudeMd - Feature 工作记录章节 (auto-managed)', () =
     crewContent = await fs.readFile(
       join(process.cwd(), 'agent/crew.js'),
       'utf-8'
+    ) + await fs.readFile(
+      join(process.cwd(), 'agent/crew-i18n.js'),
+      'utf-8'
     );
   });
 
@@ -6053,10 +6061,15 @@ describe('writeSharedClaudeMd - Feature 工作记录章节 (auto-managed)', () =
     expect(crewContent).toContain('# Feature 工作记录');
   });
 
-  it('should place Feature section after Worktree rules and before sharedMemoryContent', () => {
-    const worktreeIdx = crewContent.indexOf('# Worktree 隔离规则');
-    const featureIdx = crewContent.indexOf('# Feature 工作记录');
-    const memoryIdx = crewContent.indexOf('${sharedMemoryContent}');
+  it('should place Feature section after Worktree rules and before sharedMemoryContent', async () => {
+    // In writeSharedClaudeMd template, verify the order is: worktreeRules → featureRecordShared → sharedMemoryContent
+    const crewJs = await (await import('fs')).promises.readFile(join(process.cwd(), 'agent/crew.js'), 'utf-8');
+    // Find the template string section in writeSharedClaudeMd
+    const tmplStart = crewJs.indexOf('const claudeMd = `', crewJs.indexOf('writeSharedClaudeMd'));
+    const worktreeIdx = crewJs.indexOf('m.worktreeRules', tmplStart);
+    const featureIdx = crewJs.indexOf('m.featureRecordShared', tmplStart);
+    const memoryIdx = crewJs.indexOf('sharedMemoryContent}', tmplStart);
+    expect(worktreeIdx).toBeGreaterThan(0);
     expect(worktreeIdx).toBeLessThan(featureIdx);
     expect(featureIdx).toBeLessThan(memoryIdx);
   });

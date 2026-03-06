@@ -367,6 +367,7 @@ export const useChatStore = defineStore('chat', {
         roles: config.roles,
         maxRounds: config.maxRounds || 20,
         teamType: config.teamType || 'dev',
+        language: config.language || 'zh-CN',
         agentId
       });
       this.crewConfigOpen = false;
