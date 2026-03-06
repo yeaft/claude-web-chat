@@ -3594,10 +3594,10 @@ describe('Streaming indicator - desktop base styles', () => {
     expect(rules).toMatch(/padding:\s*8px\s+24px\s+8px\s+68px/);
   });
 
-  it('should have max-width 800px for centering', () => {
+  it('should not have max-width constraint (fills panel width)', () => {
     const match = cssContent.match(/\.crew-streaming-indicator\s*\{([^}]*)\}/);
     const rules = match[1];
-    expect(rules).toContain('max-width: 800px');
+    expect(rules).not.toContain('max-width');
   });
 
   it('should have width 100% and box-sizing border-box', () => {
@@ -4967,11 +4967,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2075/2075)', () => {
+    it('should have balanced CSS braces (2077/2077)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2075);
+      expect(opens).toBe(2077);
     });
   });
 
