@@ -9,7 +9,7 @@ import { resolve } from 'path';
  * Verifies:
  * 1) data-role attribute present on all crew-message elements (6 template sites)
  * 2) scrollToRoleLatest method exists with correct logic
- * 3) insertAt calls scrollToRoleLatest after focus
+ * 3) Role card click calls scrollToRoleLatest directly
  * 4) CSS highlight animation (.crew-msg-highlight + @keyframes msgHighlight)
  * 5) Feature block expand/history expand logic in scrollToRoleLatest
  * 6) visibleBlockCount expansion logic
@@ -131,20 +131,15 @@ describe('scrollToRoleLatest method', () => {
 });
 
 // =====================================================================
-// 3. insertAt calls scrollToRoleLatest
+// 3. Role card click calls scrollToRoleLatest directly
 // =====================================================================
-describe('insertAt integration', () => {
-  it('insertAt method calls scrollToRoleLatest', () => {
-    const methodBody = extractMethod('insertAt');
-    expect(methodBody).toContain('this.scrollToRoleLatest(roleName)');
+describe('role card click', () => {
+  it('role card @click calls scrollToRoleLatest', () => {
+    expect(jsSource).toContain('@click="scrollToRoleLatest(role.name)"');
   });
 
-  it('scrollToRoleLatest is called after focus', () => {
-    const methodBody = extractMethod('insertAt');
-    const focusIdx = methodBody.indexOf('focus()');
-    const scrollIdx = methodBody.indexOf('scrollToRoleLatest');
-    expect(focusIdx).toBeGreaterThan(-1);
-    expect(scrollIdx).toBeGreaterThan(focusIdx);
+  it('insertAt method has been removed', () => {
+    expect(jsSource).not.toContain('insertAt(roleName)');
   });
 });
 
@@ -315,7 +310,6 @@ function extractMethod(methodName) {
   // Find the method definition (starts at beginning of line or after whitespace, with a paren)
   // We need the actual definition, not a call site like "this.scrollToRoleLatest(roleName)"
   // Method definitions look like: "    scrollToRoleLatest(roleName) {"
-  // or "    insertAt(roleName) {"
   const lines = jsSource.split('\n');
   let startIdx = -1;
   for (let i = 0; i < lines.length; i++) {
