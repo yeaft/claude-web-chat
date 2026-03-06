@@ -1705,9 +1705,20 @@ summary: 请测试以下变更...
         } else {
           // Feature messages: merge into existing segment for this taskId
           if (segIndex.has(taskId)) {
-            const seg = segments[segIndex.get(taskId)];
+            const oldIdx = segIndex.get(taskId);
+            const seg = segments[oldIdx];
             seg.messages.push(msg);
             seg._dirty = true;
+            // Move segment to end so active features float to bottom
+            if (oldIdx !== segments.length - 1) {
+              segments.splice(oldIdx, 1);
+              segments.push(seg);
+              // Rebuild segIndex for all feature segments
+              segIndex.clear();
+              for (let j = 0; j < segments.length; j++) {
+                if (segments[j].taskId) segIndex.set(segments[j].taskId, j);
+              }
+            }
           } else {
             const idx = segments.length;
             segments.push({ taskId, messages: [msg], _dirty: true });
