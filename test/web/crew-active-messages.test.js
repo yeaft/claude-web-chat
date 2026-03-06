@@ -8,9 +8,9 @@ import { resolve } from 'path';
  * Verifies:
  * 1) activeMessages computed returns exactly 1 message (latest text, any role)
  * 2) Reverse-scan picks the latest text message
- * 3) Template: no getRoleStyle border, shows taskTitle, has "Latest Message" label
+ * 3) Template: getRoleStyle for role color, shows taskTitle, has "Latest Message" label
  * 4) No typing dots in dynamic message area
- * 5) CSS: .crew-active-messages styling + no border-left + task label
+ * 5) CSS: .crew-active-messages styling + no border-left override + task label
  * 6) Hidden when all tasks completed (no active features)
  * 7) Structural integrity
  */
@@ -147,7 +147,7 @@ describe('activeMessages data source', () => {
 // =====================================================================
 // 4. Template — no border, task info, label, feature block structure
 // =====================================================================
-describe('template — no border, task info, label', () => {
+describe('template — role color, task info, label', () => {
   it('active messages use crew-message class', () => {
     expect(getActiveArea()).toContain('crew-message');
   });
@@ -160,8 +160,8 @@ describe('template — no border, task info, label', () => {
     expect(getActiveArea()).toContain('crew-msg-human-bubble');
   });
 
-  it('does NOT use getRoleStyle (no border-left)', () => {
-    expect(getActiveArea()).not.toContain('getRoleStyle');
+  it('uses getRoleStyle for role color', () => {
+    expect(getActiveArea()).toContain('getRoleStyle');
   });
 
   it('shows taskTitle for feature context', () => {

@@ -216,12 +216,12 @@ describe('Active Messages template section', () => {
     expect(activeArea).toContain('crew-active-messages-label');
   });
 
-  it('does NOT use getRoleStyle (no border-left)', () => {
+  it('uses getRoleStyle for role color', () => {
     const activeArea = jsSource.substring(
       jsSource.indexOf('crew-active-messages'),
       jsSource.indexOf('crew-scroll-bottom')
     );
-    expect(activeArea).not.toContain('getRoleStyle');
+    expect(activeArea).toContain('getRoleStyle');
   });
 
   it('shows taskTitle for feature context', () => {
