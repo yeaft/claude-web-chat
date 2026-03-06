@@ -73,7 +73,13 @@ export function handleMessage(store, msg) {
           authStore.role = msg.role;
         }
 
-        store.sendWsMessage({ type: 'get_agents' });
+        // 请求 agent 列表时附带当前 UI 中的 conversation IDs，
+        // 以便 server 重启后能从 DB 恢复这些 conversations
+        const knownConvIds = store.conversations.map(c => c.id).filter(Boolean);
+        store.sendWsMessage({
+          type: 'get_agents',
+          conversationIds: knownConvIds.length > 0 ? knownConvIds : undefined
+        });
 
         // ★ Reconnect 时不再提前发 select_agent/sync_messages/refresh_conversation
         // 等 agent_list 返回后，确认 agent 在线再恢复状态，避免时序问题导致 "Agent access denied"

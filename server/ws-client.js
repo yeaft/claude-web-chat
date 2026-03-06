@@ -167,6 +167,28 @@ async function handleWebMessage(clientId, msg) {
       break;
 
     case 'get_agents':
+      // 前端可能附带 conversationIds（server 重启后恢复场景）
+      if (msg.conversationIds?.length > 0 && client.userId) {
+        for (const convId of msg.conversationIds) {
+          const dbSession = sessionDb.get(convId);
+          if (!dbSession) continue;
+          // 安全校验：只恢复属于当前用户的 session
+          if (dbSession.user_id && dbSession.user_id !== client.userId && !CONFIG.skipAuth) continue;
+          const agent = agents.get(dbSession.agent_id);
+          if (!agent) continue;
+          if (agent.conversations.has(convId)) continue;
+          agent.conversations.set(convId, {
+            id: convId,
+            workDir: dbSession.work_dir,
+            claudeSessionId: dbSession.claude_session_id,
+            title: dbSession.title,
+            createdAt: dbSession.created_at,
+            userId: dbSession.user_id || client.userId,
+            username: client.username,
+            fromDb: true
+          });
+        }
+      }
       await broadcastAgentList();
       break;
 

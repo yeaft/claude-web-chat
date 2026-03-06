@@ -169,35 +169,10 @@ export function handleAgentConnection(ws, url) {
 }
 
 function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null) {
-  // 如果是重连，保留 conversations
+  // 如果是重连，保留 conversations；否则（server 重启）创建空 Map
+  // DB 恢复由 web client 的 get_agents 消息按需触发
   const existingAgent = agents.get(agentId);
-  let conversations;
-  if (existingAgent) {
-    conversations = existingAgent.conversations;
-  } else {
-    // Server 重启场景：从 DB 恢复历史 conversations
-    conversations = new Map();
-    try {
-      const dbSessions = sessionDb.getByAgent(agentId);
-      for (const s of dbSessions) {
-        conversations.set(s.id, {
-          id: s.id,
-          workDir: s.work_dir,
-          claudeSessionId: s.claude_session_id,
-          title: s.title,
-          createdAt: s.created_at,
-          userId: s.user_id || ownerId,
-          username: ownerUsername,
-          fromDb: true
-        });
-      }
-      if (dbSessions.length > 0) {
-        console.log(`[AgentReg] Restored ${dbSessions.length} conversations from DB for ${agentName}`);
-      }
-    } catch (e) {
-      console.error(`[AgentReg] Failed to restore conversations from DB:`, e.message);
-    }
-  }
+  const conversations = existingAgent?.conversations || new Map();
   const proxyPorts = (existingAgent?.proxyPorts || []).map(p => ({ ...p, enabled: false }));
 
   // 兼容旧版 agent：未上报 capabilities 时默认全部开启
