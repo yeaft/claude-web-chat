@@ -1935,10 +1935,14 @@ describe('Hints bar - role badges and add button removed', () => {
   // 验证不再包含 crew-at-hint 角色标签和添加角色按钮
 
   const hintsTemplate = `
-        <div class="crew-input-hints" v-if="store.currentCrewSession">
-          <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
-          <template v-if="activeTasks.length > 0">
-            <span class="crew-hint-separator"></span>
+        <div class="crew-input-hints" v-if="store.currentCrewSession && store.currentCrewStatus">
+          <span class="crew-hint-meta">R{{ store.currentCrewStatus.round || 0 }}</span>
+          <span class="crew-hint-sep">&middot;</span>
+          <span class="crew-hint-meta">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(2) }}</span>
+          <template v-if="totalTokens > 0">
+            <span class="crew-hint-sep">&middot;</span>
+            <span class="crew-hint-meta">{{ formatTokens(totalTokens) }}</span>
+          </template>
   `;
 
   it('should NOT contain crew-at-hint role badges in hints bar', () => {
@@ -1953,14 +1957,16 @@ describe('Hints bar - role badges and add button removed', () => {
     expect(hintsTemplate).not.toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
   });
 
-  it('should still show status text in hints bar', () => {
-    expect(hintsTemplate).toContain('crew-hint-status');
-    expect(hintsTemplate).toContain('statusText');
+  it('should NOT show status text in hints bar', () => {
+    expect(hintsTemplate).not.toContain('crew-hint-status');
+    expect(hintsTemplate).not.toContain('statusText');
   });
 
-  it('should still show task filters after status', () => {
-    expect(hintsTemplate).toContain('activeTasks.length > 0');
-    expect(hintsTemplate).toContain('crew-hint-separator');
+  it('should show session stats (round, cost, tokens) in hints bar', () => {
+    expect(hintsTemplate).toContain('crew-hint-meta');
+    expect(hintsTemplate).toContain('store.currentCrewStatus.round');
+    expect(hintsTemplate).toContain('costUsd');
+    expect(hintsTemplate).toContain('formatTokens');
   });
 });
 

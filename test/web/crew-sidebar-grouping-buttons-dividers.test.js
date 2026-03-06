@@ -6,7 +6,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
  * Three features:
  * 1) Sidebar grouping — Crew Sessions at top, normal conversations below, group headers shown conditionally
  * 2) CrewConfigPanel dual buttons — restore + delete when sessionId exists, only delete when not
- * 3) Divider removal — crew-feature-history, crew-round-divider, crew-panel-left-actions, crew-session-meta
+ * 3) Divider removal — crew-feature-history, crew-round-divider, crew-panel-left-actions
  */
 
 // =====================================================================
