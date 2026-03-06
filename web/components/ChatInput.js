@@ -20,16 +20,17 @@ export default {
         <input
           type="file"
           ref="fileInput"
+          id="chat-file-input"
           @change="handleFileSelect"
           multiple
           accept="image/*,text/*,.pdf,.doc,.docx,.xls,.xlsx,.json,.md,.py,.js,.ts,.css,.html"
-          style="display: none;"
+          class="file-input-hidden"
         />
-        <button class="attach-btn" @click="triggerFileSelect" :title="$t('chatInput.upload')">
+        <label class="attach-btn" for="chat-file-input" :title="$t('chatInput.upload')">
           <svg viewBox="0 0 24 24" width="20" height="20">
             <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
           </svg>
-        </button>
+        </label>
         <div class="textarea-wrapper">
           <div class="slash-autocomplete" v-if="showAutocomplete && filteredCommands.length > 0" ref="autocompleteRef">
             <div
@@ -173,12 +174,6 @@ export default {
       setTimeout(() => {
         showAutocomplete.value = false;
       }, 150);
-    };
-
-    const triggerFileSelect = (e) => {
-      e?.preventDefault();
-      e?.stopPropagation();
-      fileInput.value?.click();
     };
 
     const handleFileSelect = async (e) => {
@@ -365,7 +360,6 @@ export default {
       handleInput,
       selectCommand,
       onBlur,
-      triggerFileSelect,
       handleFileSelect,
       handlePaste,
       removeAttachment,
