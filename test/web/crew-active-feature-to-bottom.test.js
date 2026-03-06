@@ -198,7 +198,7 @@ describe('activeMessages computed property', () => {
 });
 
 // =====================================================================
-// 6. Active Messages template area — plain styling
+// 6. Active Messages template area — identical to feature block rendering
 // =====================================================================
 describe('Active Messages template section', () => {
   it('has crew-active-messages container', () => {
@@ -220,6 +220,22 @@ describe('Active Messages template section', () => {
     expect(activeArea).not.toContain('crew-active-messages-title');
   });
 
+  it('uses dynamic crew-msg-type class like feature block', () => {
+    const activeArea = jsSource.substring(
+      jsSource.indexOf('crew-active-messages'),
+      jsSource.indexOf('crew-scroll-bottom')
+    );
+    expect(activeArea).toContain("'crew-msg-' + am.type");
+  });
+
+  it('has crew-msg-human-bubble conditional class', () => {
+    const activeArea = jsSource.substring(
+      jsSource.indexOf('crew-active-messages'),
+      jsSource.indexOf('crew-scroll-bottom')
+    );
+    expect(activeArea).toContain('crew-msg-human-bubble');
+  });
+
   it('iterates activeMessages with v-for', () => {
     expect(jsSource).toContain('v-for="am in activeMessages"');
   });
@@ -234,12 +250,12 @@ describe('Active Messages template section', () => {
     expect(activeArea).toContain('am.roleName');
   });
 
-  it('shows task title when available', () => {
+  it('shows timestamp with formatTime', () => {
     const activeArea = jsSource.substring(
       jsSource.indexOf('crew-active-messages'),
       jsSource.indexOf('crew-scroll-bottom')
     );
-    expect(activeArea).toContain('am.taskTitle');
+    expect(activeArea).toContain('formatTime(am.timestamp)');
   });
 
   it('renders markdown content', () => {

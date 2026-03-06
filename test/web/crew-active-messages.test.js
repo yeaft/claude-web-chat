@@ -9,7 +9,7 @@ import { resolve } from 'path';
  * Verifies:
  * 1) activeMessages computed returns at most 2 messages (1 human + 1 crew)
  * 2) Reverse-scan picks latest of each category
- * 3) Template renders with v-for and standard classes
+ * 3) Template identical to feature block single-message rendering
  * 4) No special header/title
  * 5) CSS: .crew-active-messages has only simple margin
  * 6) Structural integrity
@@ -169,9 +169,9 @@ describe('activeMessages data source', () => {
 });
 
 // =====================================================================
-// 4. Template uses standard crew-message classes (plain styling)
+// 4. Template identical to feature block single-message rendering
 // =====================================================================
-describe('template — plain styling with standard classes', () => {
+describe('template — identical to feature block rendering', () => {
   it('active messages use crew-message class', () => {
     const activeArea = jsSource.substring(
       jsSource.indexOf('crew-active-messages'),
@@ -180,12 +180,45 @@ describe('template — plain styling with standard classes', () => {
     expect(activeArea).toContain('crew-message');
   });
 
-  it('active messages use crew-msg-text class', () => {
+  it('uses dynamic crew-msg-type class like feature block', () => {
     const activeArea = jsSource.substring(
       jsSource.indexOf('crew-active-messages'),
       jsSource.indexOf('crew-scroll-bottom')
     );
-    expect(activeArea).toContain('crew-msg-text');
+    expect(activeArea).toContain("'crew-msg-' + am.type");
+  });
+
+  it('has crew-msg-human-bubble conditional class', () => {
+    const activeArea = jsSource.substring(
+      jsSource.indexOf('crew-active-messages'),
+      jsSource.indexOf('crew-scroll-bottom')
+    );
+    expect(activeArea).toContain('crew-msg-human-bubble');
+  });
+
+  it('header conditionally hidden for human text messages', () => {
+    const activeArea = jsSource.substring(
+      jsSource.indexOf('crew-active-messages'),
+      jsSource.indexOf('crew-scroll-bottom')
+    );
+    expect(activeArea).toContain("am.role !== 'human' || am.type !== 'text'");
+  });
+
+  it('crew-msg-name has is-human/is-system class binding', () => {
+    const activeArea = jsSource.substring(
+      jsSource.indexOf('crew-active-messages'),
+      jsSource.indexOf('crew-scroll-bottom')
+    );
+    expect(activeArea).toContain("'is-human': am.role === 'human'");
+    expect(activeArea).toContain("'is-system': am.role === 'system'");
+  });
+
+  it('shows formatTime(am.timestamp) for time display', () => {
+    const activeArea = jsSource.substring(
+      jsSource.indexOf('crew-active-messages'),
+      jsSource.indexOf('crew-scroll-bottom')
+    );
+    expect(activeArea).toContain('formatTime(am.timestamp)');
   });
 
   it('uses crew-msg-body wrapper', () => {

@@ -473,12 +473,12 @@ export default {
 
         <!-- Active Messages: latest human + latest crew (max 2) -->
         <div v-if="activeMessages.length > 0" class="crew-active-messages">
-          <div v-for="am in activeMessages" :key="am.id" class="crew-message crew-msg-text" :class="'crew-role-' + am.role" :data-role="am.role" :style="getRoleStyle(am.role)">
+          <div v-for="am in activeMessages" :key="am.id" class="crew-message" :class="['crew-msg-' + am.type, 'crew-role-' + am.role, { 'crew-msg-human-bubble': am.role === 'human' && am.type === 'text' }]" :data-role="am.role" :style="getRoleStyle(am.role)">
             <div class="crew-msg-body">
-              <div class="crew-msg-header">
+              <div v-if="am.role !== 'human' || am.type !== 'text'" class="crew-msg-header">
                 <span v-if="am.roleIcon" class="crew-msg-header-icon">{{ am.roleIcon }}</span>
-                <span class="crew-msg-name">{{ shortName(am.roleName) }}</span>
-                <span v-if="am.taskTitle" class="crew-msg-time">{{ am.taskTitle }}</span>
+                <span class="crew-msg-name" :class="{ 'is-human': am.role === 'human', 'is-system': am.role === 'system' }">{{ shortName(am.roleName) }}</span>
+                <span class="crew-msg-time">{{ formatTime(am.timestamp) }}</span>
               </div>
               <div class="crew-msg-content markdown-body" v-html="mdRender(am.content)"></div>
             </div>
