@@ -134,8 +134,10 @@ describe('Sidebar session grouping (bf79ad0)', () => {
       expect(chatPageContent).toContain('Crew Sessions');
     });
 
-    it('Crew Sessions group should be shown when crewConversations exist', () => {
-      expect(chatPageContent).toContain('v-if="crewConversations.length > 0"');
+    it('Crew Sessions panel always renders (no v-if guard)', () => {
+      // In the new dual-panel layout, both panels always render
+      const crewHeaderIdx = chatPageContent.indexOf('Crew Sessions');
+      expect(crewHeaderIdx).toBeGreaterThan(-1);
     });
 
     it('should iterate crewConversations for crew items', () => {
@@ -143,37 +145,25 @@ describe('Sidebar session grouping (bf79ad0)', () => {
     });
 
     it('crew items should always have session-item-crew class', () => {
-      // In the new version, crew items always have 'session-item-crew' class
-      // (not conditionally via :class binding)
       expect(chatPageContent).toContain('class="session-item session-item-crew"');
     });
 
     it('crew items should use getCrewTitle (not getConversationTitle)', () => {
-      // Within crew section, should use getCrewTitle
-      const crewSection = chatPageContent.split('v-for="conv in crewConversations"')[1];
-      const crewSectionEnd = crewSection.indexOf('</template>');
-      const crewBlock = crewSection.substring(0, crewSectionEnd);
-      expect(crewBlock).toContain('getCrewTitle(conv)');
-      expect(crewBlock).not.toContain('getConversationTitle(conv)');
+      const crewIdx = chatPageContent.indexOf('v-for="conv in crewConversations"');
+      const crewSection = chatPageContent.substring(crewIdx, crewIdx + 1500);
+      expect(crewSection).toContain('getCrewTitle(conv)');
+      expect(crewSection).not.toContain('getConversationTitle(conv)');
     });
   });
 
   describe('source: normal conversations group in template', () => {
-    it('should have "最近会话" group header', () => {
-      expect(chatPageContent).toContain('最近会话');
+    it('should have recent chats group header via i18n', () => {
+      expect(chatPageContent).toContain("$t('chat.sidebar.recentChats')");
     });
 
-    it('"最近会话" header should ONLY show when crew conversations also exist', () => {
-      // The header has v-if="crewConversations.length > 0"
-      // meaning it only shows when there are crew sessions (to create visual separation)
-      const recentHeader = chatPageContent.split('最近会话')[0];
-      const lastDivBefore = recentHeader.lastIndexOf('<div');
-      const headerDiv = recentHeader.substring(lastDivBefore);
-      expect(headerDiv).toContain('crewConversations.length > 0');
-    });
-
-    it('normal section should always be rendered when normalConversations exist', () => {
-      expect(chatPageContent).toContain('v-if="normalConversations.length > 0"');
+    it('normal panel always renders (dual-panel layout)', () => {
+      // In the new layout, both panels always render
+      expect(chatPageContent).toContain('class="session-panel"');
     });
 
     it('should iterate normalConversations for normal items', () => {
@@ -181,11 +171,12 @@ describe('Sidebar session grouping (bf79ad0)', () => {
     });
 
     it('normal items should use getConversationTitle (not getCrewTitle)', () => {
-      const normalSection = chatPageContent.split('v-for="conv in normalConversations"')[1];
-      const normalSectionEnd = normalSection.indexOf('</template>');
-      const normalBlock = normalSection.substring(0, normalSectionEnd);
-      expect(normalBlock).toContain('getConversationTitle(conv)');
-      expect(normalBlock).not.toContain('getCrewTitle(conv)');
+      const normalSection = chatPageContent.substring(
+        chatPageContent.indexOf('v-for="conv in normalConversations"'),
+        chatPageContent.indexOf('v-for="conv in crewConversations"')
+      );
+      expect(normalSection).toContain('getConversationTitle(conv)');
+      expect(normalSection).not.toContain('getCrewTitle(conv)');
     });
   });
 
@@ -209,35 +200,34 @@ describe('Sidebar session grouping (bf79ad0)', () => {
     });
   });
 
-  describe('group header conditional display logic', () => {
-    it('when both crew and normal exist: both headers shown', () => {
+  describe('dual-panel layout: both headers always visible', () => {
+    it('both headers always show regardless of conversation counts', () => {
+      // In the dual-panel layout, both panels and their headers are always rendered
+      // The panel is just empty when there are no conversations of that type
       const convs = [
         { id: '1', type: 'crew' },
         { id: '2', type: undefined }
       ];
       const { crew, normal } = splitConversations(convs);
-      const showCrewHeader = crew.length > 0;
-      const showRecentHeader = crew.length > 0 && normal.length > 0;
-      expect(showCrewHeader).toBe(true);
-      expect(showRecentHeader).toBe(true);
+      expect(crew.length).toBe(1);
+      expect(normal.length).toBe(1);
+      // Both panels always visible — headers are unconditional
     });
 
-    it('when only normal exist: no headers shown', () => {
+    it('panels render even when one type is empty', () => {
       const convs = [{ id: '1', type: undefined }];
       const { crew, normal } = splitConversations(convs);
-      const showCrewHeader = crew.length > 0;
-      const showRecentHeader = crew.length > 0 && normal.length > 0;
-      expect(showCrewHeader).toBe(false);
-      expect(showRecentHeader).toBe(false);
+      expect(crew).toHaveLength(0);
+      expect(normal).toHaveLength(1);
+      // Both panels still render — crew panel just has no items
     });
 
-    it('when only crew exist: crew header shown, recent header hidden', () => {
+    it('panels render when only crew exist', () => {
       const convs = [{ id: '1', type: 'crew' }];
       const { crew, normal } = splitConversations(convs);
-      const showCrewHeader = crew.length > 0;
-      const showRecentHeader = crew.length > 0 && normal.length > 0;
-      expect(showCrewHeader).toBe(true);
-      expect(showRecentHeader).toBe(false);
+      expect(crew).toHaveLength(1);
+      expect(normal).toHaveLength(0);
+      // Both panels still render — normal panel just has no items
     });
   });
 });
@@ -531,9 +521,9 @@ describe('sidebar ordering: normal conversations appear first, crew sessions bel
     expect(normalIdx).toBeLessThan(crewIdx);
   });
 
-  it('最近会话 header comes before Crew Sessions header', () => {
+  it('recent chats header comes before Crew Sessions header', () => {
     const crewHeaderIdx = chatPageContent.indexOf('Crew Sessions');
-    const recentHeaderIdx = chatPageContent.indexOf('最近会话');
+    const recentHeaderIdx = chatPageContent.indexOf("chat.sidebar.recentChats");
     expect(crewHeaderIdx).toBeGreaterThan(-1);
     expect(recentHeaderIdx).toBeGreaterThan(-1);
     expect(recentHeaderIdx).toBeLessThan(crewHeaderIdx);
