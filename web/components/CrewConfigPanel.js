@@ -24,7 +24,7 @@ export default {
               <label class="crew-config-label">Agent</label>
               <div class="crew-select-wrapper">
                 <select class="crew-config-select" v-model="selectedAgent">
-                  <option value="">选择 Agent</option>
+                  <option value="">{{ $t('crewConfig.selectAgent') }}</option>
                   <option v-for="agent in crewAgents" :key="agent.id" :value="agent.id">
                     {{ agent.name }}{{ agent.latency ? ' (' + agent.latency + 'ms)' : '' }}
                   </option>
@@ -35,10 +35,10 @@ export default {
 
             <!-- 工作区 -->
             <div class="crew-config-section" v-if="selectedAgent">
-              <label class="crew-config-label">工作区</label>
+              <label class="crew-config-label">{{ $t('crewConfig.workspace') }}</label>
               <div class="crew-workdir-group">
                 <input class="crew-config-input" v-model="projectDir" :placeholder="selectedAgentWorkDir || '/home/user/projects/app'" @change="onWorkDirChange" />
-                <button class="crew-browse-btn" @click="$emit('browse', 'crew')" title="浏览">
+                <button class="crew-browse-btn" @click="$emit('browse', 'crew')" :title="$t('crewConfig.browse')">
                   <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
                 </button>
               </div>
@@ -48,7 +48,7 @@ export default {
             <div class="crew-config-section" v-if="selectedAgent && projectDir && crewCheckState === 'checking'">
               <div class="crew-check-status">
                 <span class="crew-check-spinner"></span>
-                检测 .crew 目录...
+                {{ $t('crewConfig.checkingCrew') }}
               </div>
             </div>
 
@@ -59,9 +59,9 @@ export default {
                   <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
                 </div>
                 <div class="crew-exists-info">
-                  <div class="crew-exists-title">发现已有 Crew 配置</div>
+                  <div class="crew-exists-title">{{ $t('crewConfig.foundConfig') }}</div>
                   <div class="crew-exists-detail" v-if="crewExistsSessionInfo">
-                    {{ crewExistsSessionInfo.name || '未命名团队' }}
+                    {{ crewExistsSessionInfo.name || $t('crewConfig.unnamedTeam') }}
                     <span v-if="crewExistsSessionInfo.sessionId" class="crew-exists-session-id">{{ crewExistsSessionInfo.sessionId.slice(0, 12) }}...</span>
                   </div>
                   <div class="crew-exists-path">{{ shortenPath(projectDir) }}/.crew</div>
@@ -74,67 +74,67 @@ export default {
                         :disabled="!crewExistsSessionInfo?.sessionId"
                         v-if="crewExistsSessionInfo?.sessionId">
                   <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
-                  恢复此 Crew
+                  {{ $t('crewConfig.restoreCrew') }}
                 </button>
                 <button class="crew-exists-action-btn danger" @click="deleteCrewDir">
                   <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-                  {{ crewExistsSessionInfo?.sessionId ? '删除配置' : '删除并重新创建' }}
+                  {{ crewExistsSessionInfo?.sessionId ? $t('crewConfig.deleteConfig') : $t('crewConfig.deleteAndRecreate') }}
                 </button>
               </div>
 
-              <div class="crew-exists-hint" v-if="crewExistsSessionInfo?.sessionId">工作目录已存在 .crew 配置，建议恢复而非重新创建</div>
-              <div class="crew-exists-hint" v-else>发现 .crew 目录但无可恢复的 session，请删除后重新创建</div>
+              <div class="crew-exists-hint" v-if="crewExistsSessionInfo?.sessionId">{{ $t('crewConfig.existsHintRestore') }}</div>
+              <div class="crew-exists-hint" v-else>{{ $t('crewConfig.existsHintDelete') }}</div>
             </div>
 
             <!-- .crew 不存在或确认新建：正常创建流程 -->
             <template v-if="selectedAgent && crewCheckState === 'none'">
               <!-- 团队名称 -->
               <div class="crew-config-section">
-                <label class="crew-config-label">团队名称</label>
+                <label class="crew-config-label">{{ $t('crewConfig.teamName') }}</label>
                 <input class="crew-config-input" v-model="name"
-                       placeholder="给团队起个名字（如：前端重构组）"
+                       :placeholder="$t('crewConfig.teamNamePlaceholder')"
                        maxlength="30" />
               </div>
 
               <!-- 角色模板 -->
               <div class="crew-config-section">
-                <label class="crew-config-label">团队模板</label>
+                <label class="crew-config-label">{{ $t('crewConfig.teamTemplate') }}</label>
                 <div class="crew-template-btns">
-                  <button class="crew-template-btn" @click="loadTemplate('dev')" :class="{ active: currentTemplate === 'dev' }">软件开发</button>
-                  <button class="crew-template-btn" @click="loadTemplate('writing')" :class="{ active: currentTemplate === 'writing' }">写作团队</button>
-                  <button class="crew-template-btn" @click="loadTemplate('trading')" :class="{ active: currentTemplate === 'trading' }">交易投资</button>
-                  <button class="crew-template-btn" @click="loadTemplate('video')" :class="{ active: currentTemplate === 'video' }">短视频</button>
-                  <button class="crew-template-btn" @click="loadTemplate('custom')" :class="{ active: currentTemplate === 'custom' }">自定义</button>
+                  <button class="crew-template-btn" @click="loadTemplate('dev')" :class="{ active: currentTemplate === 'dev' }">{{ $t('crewConfig.tplDev') }}</button>
+                  <button class="crew-template-btn" @click="loadTemplate('writing')" :class="{ active: currentTemplate === 'writing' }">{{ $t('crewConfig.tplWriting') }}</button>
+                  <button class="crew-template-btn" @click="loadTemplate('trading')" :class="{ active: currentTemplate === 'trading' }">{{ $t('crewConfig.tplTrading') }}</button>
+                  <button class="crew-template-btn" @click="loadTemplate('video')" :class="{ active: currentTemplate === 'video' }">{{ $t('crewConfig.tplVideo') }}</button>
+                  <button class="crew-template-btn" @click="loadTemplate('custom')" :class="{ active: currentTemplate === 'custom' }">{{ $t('crewConfig.tplCustom') }}</button>
                 </div>
               </div>
 
               <!-- 角色配置（可编辑卡片） -->
               <div class="crew-config-section">
-                <label class="crew-config-label">角色配置</label>
+                <label class="crew-config-label">{{ $t('crewConfig.roleConfig') }}</label>
                 <div class="crew-roles-list">
                   <div v-for="(role, idx) in roles" :key="idx" class="crew-role-item" :class="{ 'is-decision-maker': role.isDecisionMaker }">
                     <div class="crew-role-header">
                       <input class="crew-role-icon-input" v-model="role.icon" maxlength="4" />
-                      <input class="crew-role-name-input" v-model="role.displayName" placeholder="角色名" />
-                      <label class="crew-role-decision-label" :title="role.isDecisionMaker ? '决策者' : '设为决策者'">
+                      <input class="crew-role-name-input" v-model="role.displayName" :placeholder="$t('crewConfig.roleName')" />
+                      <label class="crew-role-decision-label" :title="role.isDecisionMaker ? $t('crewConfig.isDecisionMaker') : $t('crewConfig.setDecisionMaker')">
                         <input type="radio" name="decisionMaker" :checked="role.isDecisionMaker" @change="setDecisionMaker(idx)" />
                         <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
                       </label>
                       <button class="crew-role-remove" @click="removeRole(idx)">&times;</button>
                     </div>
-                    <input class="crew-role-desc-input" v-model="role.description" placeholder="角色职责描述" />
+                    <input class="crew-role-desc-input" v-model="role.description" :placeholder="$t('crewConfig.roleDesc')" />
                     <div v-if="isExpandableRole(role.name)" class="crew-role-concurrency">
                       <template v-if="role.name === 'developer'">
-                        <span class="crew-concurrency-label">并发:</span>
+                        <span class="crew-concurrency-label">{{ $t('crewConfig.concurrency') }}</span>
                         <button v-for="n in 3" :key="n" class="crew-concurrency-btn" :class="{ active: (role.count || 1) === n }" @click="setDevCount(n)">{{ n }}</button>
                       </template>
                       <template v-else>
-                        <span class="crew-concurrency-follow">跟随开发者: {{ devCount }}</span>
+                        <span class="crew-concurrency-follow">{{ $t('crewConfig.followDev', { count: devCount }) }}</span>
                       </template>
                     </div>
                     <details class="crew-role-advanced">
-                      <summary>高级设置</summary>
-                      <textarea class="crew-config-textarea" v-model="role.claudeMd" placeholder="自定义 system prompt（可选）" rows="3"></textarea>
+                      <summary>{{ $t('crewConfig.advancedSettings') }}</summary>
+                      <textarea class="crew-config-textarea" v-model="role.claudeMd" :placeholder="$t('crewConfig.customPrompt')" rows="3"></textarea>
                     </details>
                   </div>
                 </div>
@@ -149,21 +149,21 @@ export default {
                       </div>
                     </div>
                     <div class="crew-add-role-actions">
-                      <button class="crew-add-custom-btn" @click="addCustomRole">自定义角色</button>
-                      <button class="crew-add-cancel-btn" @click="showBuiltinRolePicker = false">取消</button>
+                      <button class="crew-add-custom-btn" @click="addCustomRole">{{ $t('crewConfig.customRoleBtn') }}</button>
+                      <button class="crew-add-cancel-btn" @click="showBuiltinRolePicker = false">{{ $t('common.cancel') }}</button>
                     </div>
                   </div>
-                  <button v-else class="crew-add-role-btn" @click="showBuiltinRolePicker = true">+ 添加角色</button>
+                  <button v-else class="crew-add-role-btn" @click="showBuiltinRolePicker = true">{{ $t('crewConfig.addRoleBtn') }}</button>
                 </div>
               </div>
 
               <!-- 共享知识 -->
               <div class="crew-config-section">
-                <label class="crew-config-label">共享知识</label>
+                <label class="crew-config-label">{{ $t('crewConfig.sharedKnowledge') }}</label>
                 <textarea class="crew-config-textarea" v-model="sharedKnowledge"
-                          placeholder="项目特有信息：技术栈、业务背景、特殊约定...（追加到团队 CLAUDE.md）"
+                          :placeholder="$t('crewConfig.sharedKnowledgePlaceholder')"
                           rows="3"></textarea>
-                <span class="crew-config-hint-text">内容将追加到团队共享的 CLAUDE.md，所有角色都能看到</span>
+                <span class="crew-config-hint-text">{{ $t('crewConfig.sharedKnowledgeHint') }}</span>
               </div>
             </template>
           </template>
@@ -172,30 +172,30 @@ export default {
           <template v-else>
             <!-- 团队名称 -->
             <div class="crew-config-section">
-              <label class="crew-config-label">团队名称</label>
+              <label class="crew-config-label">{{ $t('crewConfig.teamName') }}</label>
               <input class="crew-config-input" v-model="name"
-                     placeholder="给团队起个名字（如：前端重构组）"
+                     :placeholder="$t('crewConfig.teamNamePlaceholder')"
                      maxlength="30" />
             </div>
 
             <!-- 角色配置 -->
             <div class="crew-config-section">
-              <label class="crew-config-label">角色配置</label>
+              <label class="crew-config-label">{{ $t('crewConfig.roleConfig') }}</label>
               <div class="crew-roles-list">
                 <div v-for="(role, idx) in roles" :key="idx" class="crew-role-item" :class="{ 'is-decision-maker': role.isDecisionMaker }">
                   <div class="crew-role-header">
                     <input class="crew-role-icon-input" v-model="role.icon" maxlength="4" :disabled="!role._isNew" />
-                    <input class="crew-role-name-input" v-model="role.displayName" placeholder="角色名" :disabled="!role._isNew" />
-                    <label class="crew-role-decision-label" :title="role.isDecisionMaker ? '决策者' : '设为决策者'">
+                    <input class="crew-role-name-input" v-model="role.displayName" :placeholder="$t('crewConfig.roleName')" :disabled="!role._isNew" />
+                    <label class="crew-role-decision-label" :title="role.isDecisionMaker ? $t('crewConfig.isDecisionMaker') : $t('crewConfig.setDecisionMaker')">
                       <input type="radio" name="decisionMaker" :checked="role.isDecisionMaker" @change="setDecisionMaker(idx)" />
                       <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
                     </label>
                     <button class="crew-role-remove" @click="removeRole(idx)">&times;</button>
                   </div>
-                  <input class="crew-role-desc-input" v-model="role.description" placeholder="角色职责描述" :disabled="!role._isNew" />
+                  <input class="crew-role-desc-input" v-model="role.description" :placeholder="$t('crewConfig.roleDesc')" :disabled="!role._isNew" />
                   <details class="crew-role-advanced">
-                    <summary>高级设置</summary>
-                    <textarea class="crew-config-textarea" v-model="role.claudeMd" placeholder="自定义 system prompt（可选）" rows="3" :disabled="!role._isNew"></textarea>
+                    <summary>{{ $t('crewConfig.advancedSettings') }}</summary>
+                    <textarea class="crew-config-textarea" v-model="role.claudeMd" :placeholder="$t('crewConfig.customPrompt')" rows="3" :disabled="!role._isNew"></textarea>
                   </details>
                 </div>
               </div>
@@ -210,21 +210,21 @@ export default {
                     </div>
                   </div>
                   <div class="crew-add-role-actions">
-                    <button class="crew-add-custom-btn" @click="addCustomRole">自定义角色</button>
-                    <button class="crew-add-cancel-btn" @click="showBuiltinRolePicker = false">取消</button>
+                    <button class="crew-add-custom-btn" @click="addCustomRole">{{ $t('crewConfig.customRoleBtn') }}</button>
+                    <button class="crew-add-cancel-btn" @click="showBuiltinRolePicker = false">{{ $t('common.cancel') }}</button>
                   </div>
                 </div>
-                <button v-else class="crew-add-role-btn" @click="showBuiltinRolePicker = true">+ 添加角色</button>
+                <button v-else class="crew-add-role-btn" @click="showBuiltinRolePicker = true">{{ $t('crewConfig.addRoleBtn') }}</button>
               </div>
             </div>
 
             <!-- 共享知识 -->
             <div class="crew-config-section">
-              <label class="crew-config-label">共享知识</label>
+              <label class="crew-config-label">{{ $t('crewConfig.sharedKnowledge') }}</label>
               <textarea class="crew-config-textarea" v-model="sharedKnowledge"
-                        placeholder="项目特有信息：技术栈、业务背景、特殊约定..."
+                        :placeholder="$t('crewConfig.sharedKnowledgePlaceholderShort')"
                         rows="3"></textarea>
-              <span class="crew-config-hint-text">内容将追加到团队共享的 CLAUDE.md，所有角色都能看到</span>
+              <span class="crew-config-hint-text">{{ $t('crewConfig.sharedKnowledgeHint') }}</span>
             </div>
 
           </template>
@@ -234,22 +234,22 @@ export default {
             <div class="crew-empty-icon">
               <svg viewBox="0 0 24 24" width="40" height="40"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
             </div>
-            <div class="crew-empty-text" v-if="crewAgents.length === 0">没有支持 Crew 模式的在线 Agent</div>
-            <div class="crew-empty-text" v-else>请选择一个 Agent 开始配置</div>
+            <div class="crew-empty-text" v-if="crewAgents.length === 0">{{ $t('crewConfig.noCrewAgents') }}</div>
+            <div class="crew-empty-text" v-else>{{ $t('crewConfig.selectAgentHint') }}</div>
           </div>
         </div>
 
         <div class="crew-config-footer" v-if="isEditMode || (selectedAgent && crewCheckState === 'none')">
           <template v-if="isEditMode">
-            <span class="crew-config-hint" v-if="pendingNewRoles.length > 0">{{ pendingNewRoles.length }} 个新角色待添加</span>
-            <button class="modern-btn" @click="$emit('close')">关闭</button>
-            <button class="modern-btn" @click="applyChanges">应用变更</button>
+            <span class="crew-config-hint" v-if="pendingNewRoles.length > 0">{{ $t('crewConfig.pendingRoles', { count: pendingNewRoles.length }) }}</span>
+            <button class="modern-btn" @click="$emit('close')">{{ $t('crew.close') }}</button>
+            <button class="modern-btn" @click="applyChanges">{{ $t('crewConfig.applyChanges') }}</button>
           </template>
           <template v-else>
-            <button class="modern-btn" @click="$emit('close')">取消</button>
+            <button class="modern-btn" @click="$emit('close')">{{ $t('common.cancel') }}</button>
             <button class="modern-btn" @click="startSession" :disabled="!canStart">
               <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-              启动
+              {{ $t('crewConfig.start') }}
             </button>
           </template>
         </div>
@@ -409,7 +409,7 @@ export default {
     },
 
     deleteCrewDir() {
-      if (!confirm('确定要删除 .crew 目录？所有 Crew 配置将被清除。')) return;
+      if (!confirm(this.$t('crewConfig.confirmDeleteCrew'))) return;
       const dir = this.projectDir.trim();
       if (!dir || !this.selectedAgent) return;
       this.store.deleteCrewDir(dir, this.selectedAgent);

@@ -253,20 +253,20 @@ describe('template — completed features collapsed by default', () => {
     expect(jsSource).toContain('featureKanbanGrouped.completed.length');
   });
 
-  it('completed feature card empty state shows 已完成', () => {
+  it('completed feature card empty state uses i18n crew.statusCompleted', () => {
     const completedSection = jsSource.substring(
       jsSource.indexOf('v-for="feature in featureKanbanGrouped.completed"'),
       jsSource.indexOf('<!-- Empty state -->')
     );
-    expect(completedSection).toContain('已完成');
+    expect(completedSection).toContain('crew.statusCompleted');
   });
 
-  it('in-progress feature card empty state shows 进行中', () => {
+  it('in-progress feature card empty state uses i18n crew.statusInProgress', () => {
     const inProgressSection = jsSource.substring(
       jsSource.indexOf('v-for="feature in featureKanbanGrouped.inProgress"'),
       jsSource.indexOf('v-for="feature in featureKanbanGrouped.completed"')
     );
-    expect(inProgressSection).toContain('进行中');
+    expect(inProgressSection).toContain('crew.statusInProgress');
   });
 });
 

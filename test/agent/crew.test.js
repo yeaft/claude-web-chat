@@ -2001,7 +2001,7 @@ describe('Hints bar - source file verification', () => {
     );
     expect(leftPanel).toContain('crew-add-role-btn');
     expect(leftPanel).toContain('showAddRole = true');
-    expect(leftPanel).toContain('添加角色');
+    expect(leftPanel).toContain('crew.addRole');
   });
 });
 
@@ -2921,12 +2921,12 @@ describe('Feature blocks - removed task panel and filter bar', () => {
 
   it('should show completed badge for completed features', () => {
     expect(fileContent).toContain("block.isCompleted");
-    expect(fileContent).toContain('已完成');
+    expect(fileContent).toContain('crew.statusCompleted');
   });
 
   it('should show active badge for streaming features', () => {
     expect(fileContent).toContain("block.hasStreaming");
-    expect(fileContent).toContain('进行中');
+    expect(fileContent).toContain('crew.statusInProgress');
   });
 
   it('should display message count in feature header', () => {
@@ -4312,8 +4312,8 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(viewSource).toContain('@click="showAddRole = true"');
     });
 
-    it('should have label text "添加角色"', () => {
-      expect(viewSource).toContain('<span>添加角色</span>');
+    it('should have label text using i18n key crew.addRole', () => {
+      expect(viewSource).toContain('crew.addRole');
     });
 
     it('should NOT have add role button in input area (removed)', () => {
@@ -4321,7 +4321,7 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       const inputArea = viewSource.substring(viewSource.indexOf('class="input-area'));
       const panelCenter = viewSource.indexOf('</div><!-- /crew-panel-center -->');
       const inputSection = viewSource.substring(viewSource.indexOf('class="input-area'), panelCenter);
-      expect(inputSection).not.toContain('添加角色');
+      expect(inputSection).not.toContain('crew.addRole');
     });
 
     it('should have CSS styles for add role button', () => {
@@ -4371,7 +4371,7 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(viewSource).toContain('class="crew-feature-card-roles"');
       expect(viewSource).toContain('feature.activeRoles');
       expect(viewSource).toContain('ar.roleIcon');
-      expect(viewSource).toContain('工作中');
+      expect(viewSource).toContain('crew.working');
     });
 
     it('should show todo items when expanded', () => {
@@ -4382,12 +4382,12 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
 
     it('should show empty state when no todos', () => {
       expect(viewSource).toContain('class="crew-feature-card-empty"');
-      expect(viewSource).toContain('进行中');
-      expect(viewSource).toContain('已完成');
+      expect(viewSource).toContain('crew.statusInProgress');
+      expect(viewSource).toContain('crew.statusCompleted');
     });
 
-    it('should show empty state "暂无 Feature"', () => {
-      expect(viewSource).toContain('暂无 Feature');
+    it('should show empty state using i18n key crew.noFeatures', () => {
+      expect(viewSource).toContain('crew.noFeatures');
     });
   });
 

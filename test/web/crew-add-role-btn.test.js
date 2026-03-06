@@ -123,19 +123,15 @@ describe('task-32: CrewConfigPanel HTML template', () => {
     expect(templateContent).toContain('crew-add-role-btn');
   });
 
-  it('button text should include "+" and "添加角色"', () => {
-    // The button should have "+" as direct text and "添加角色"
-    const btnMatches = templateContent.match(/crew-add-role-btn[^>]*>([^<]*)</g);
-    expect(btnMatches).not.toBeNull();
-    // At least one match should contain "+"
-    const hasPlus = btnMatches.some(m => m.includes('+'));
-    expect(hasPlus).toBe(true);
+  it('button text should include "+" via i18n key crewConfig.addRoleBtn', () => {
+    // The button should use $t('crewConfig.addRoleBtn') which contains "+"
+    expect(templateContent).toContain("crewConfig.addRoleBtn");
   });
 
-  it('button should contain text "添加角色"', () => {
-    // Check that "添加角色" appears near the button
+  it('button should use i18n key for add role text', () => {
+    // Check that crewConfig.addRoleBtn i18n key appears near the button
     const btnRegion = templateContent.split('crew-add-role-btn')[1].split('</button>')[0];
-    expect(btnRegion).toContain('添加角色');
+    expect(btnRegion).toContain("crewConfig.addRoleBtn");
   });
 });
 

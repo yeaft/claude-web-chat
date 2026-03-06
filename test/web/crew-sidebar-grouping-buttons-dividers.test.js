@@ -295,11 +295,12 @@ describe('CrewConfigPanel - restore/delete dual buttons (bf79ad0)', () => {
     });
 
     it('delete button text should be conditional', () => {
-      expect(configContent).toContain("crewExistsSessionInfo?.sessionId ? '删除配置' : '删除并重新创建'");
+      expect(configContent).toContain("crewConfig.deleteConfig");
+      expect(configContent).toContain("crewConfig.deleteAndRecreate");
     });
 
-    it('restore button should show "恢复此 Crew"', () => {
-      expect(configContent).toContain('恢复此 Crew');
+    it('restore button should use i18n key crewConfig.restoreCrew', () => {
+      expect(configContent).toContain("crewConfig.restoreCrew");
     });
   });
 
@@ -309,7 +310,7 @@ describe('CrewConfigPanel - restore/delete dual buttons (bf79ad0)', () => {
     });
 
     it('source: should show confirmation dialog', () => {
-      expect(configContent).toContain("confirm('确定要删除 .crew 目录？所有 Crew 配置将被清除。')");
+      expect(configContent).toContain("crewConfig.confirmDeleteCrew");
     });
 
     it('source: should call store.deleteCrewDir', () => {
