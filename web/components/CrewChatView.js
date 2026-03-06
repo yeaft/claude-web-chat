@@ -559,64 +559,114 @@ export default {
               </div>
             </div>
 
-            <!-- Feature Cards -->
-            <div v-for="feature in featureKanban" :key="feature.taskId"
-                 class="crew-feature-card"
-                 :class="{
-                   'is-expanded': isFeatureCardExpanded(feature.taskId),
-                   'has-streaming': feature.hasStreaming,
-                   'is-completed': feature.isCompleted
-                 }">
-              <!-- Header -->
-              <div class="crew-feature-card-header"
-                   @click="toggleFeatureCard(feature.taskId)"
-                   @dblclick="scrollToFeature(feature.taskId)">
-                <svg class="crew-feature-card-chevron" viewBox="0 0 24 24" width="12" height="12">
+            <!-- In-Progress Features -->
+            <div v-if="featureKanbanGrouped.inProgress.length > 0" class="crew-kanban-group">
+              <div class="crew-kanban-group-header is-active">
+                <span class="crew-kanban-group-dot is-active"></span>
+                进行中 ({{ featureKanbanGrouped.inProgress.length }})
+              </div>
+              <div v-for="feature in featureKanbanGrouped.inProgress" :key="feature.taskId"
+                   class="crew-feature-card"
+                   :class="{
+                     'is-expanded': isFeatureCardExpanded(feature.taskId),
+                     'has-streaming': feature.hasStreaming
+                   }">
+                <div class="crew-feature-card-header"
+                     @click="toggleFeatureCard(feature.taskId)"
+                     @dblclick="scrollToFeature(feature.taskId)">
+                  <svg class="crew-feature-card-chevron" viewBox="0 0 24 24" width="12" height="12">
+                    <path fill="currentColor" d="M10 6l6 6-6 6z"/>
+                  </svg>
+                  <span class="crew-feature-card-title">{{ feature.taskTitle }}</span>
+                  <span class="crew-feature-card-count">
+                    {{ feature.doneCount }} / {{ feature.totalCount }}
+                  </span>
+                </div>
+                <div class="crew-feature-card-bar">
+                  <div class="crew-feature-card-bar-fill"
+                       :style="{ width: (feature.totalCount > 0 ? (feature.doneCount / feature.totalCount * 100) : 0) + '%' }">
+                  </div>
+                </div>
+                <div v-if="feature.activeRoles.length > 0" class="crew-feature-card-roles">
+                  <span class="crew-feature-card-roles-icons">
+                    <span v-for="ar in feature.activeRoles" :key="ar.role">{{ ar.roleIcon }}</span>
+                  </span>
+                  <span class="crew-feature-card-roles-label">工作中</span>
+                </div>
+                <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length > 0"
+                     class="crew-feature-card-todos">
+                  <div v-for="todo in feature.todos" :key="todo.id"
+                       class="crew-feature-card-todo" :class="'is-' + todo.status">
+                    <span class="todo-status">
+                      <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24" width="12" height="12">
+                        <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                      </svg>
+                    </span>
+                    <span class="todo-text">
+                      {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
+                    </span>
+                    <span v-if="todo.roleIcon" class="todo-role">{{ todo.roleIcon }}</span>
+                  </div>
+                </div>
+                <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length === 0"
+                     class="crew-feature-card-empty">
+                  进行中
+                </div>
+              </div>
+            </div>
+
+            <!-- Completed Features (collapsed by default) -->
+            <div v-if="featureKanbanGrouped.completed.length > 0" class="crew-kanban-group">
+              <div class="crew-kanban-group-header is-completed" @click="showCompletedFeatures = !showCompletedFeatures">
+                <svg class="crew-kanban-group-chevron" :class="{ 'is-expanded': showCompletedFeatures }" viewBox="0 0 24 24" width="12" height="12">
                   <path fill="currentColor" d="M10 6l6 6-6 6z"/>
                 </svg>
-                <span class="crew-feature-card-title">{{ feature.taskTitle }}</span>
-                <span class="crew-feature-card-count">
-                  {{ feature.doneCount }} / {{ feature.totalCount }}
-                </span>
+                <span class="crew-kanban-group-dot is-completed"></span>
+                已完成 ({{ featureKanbanGrouped.completed.length }})
               </div>
-
-              <!-- Progress Bar -->
-              <div class="crew-feature-card-bar">
-                <div class="crew-feature-card-bar-fill"
-                     :style="{ width: (feature.totalCount > 0 ? (feature.doneCount / feature.totalCount * 100) : 0) + '%' }">
-                </div>
-              </div>
-
-              <!-- Active Roles -->
-              <div v-if="feature.activeRoles.length > 0" class="crew-feature-card-roles">
-                <span class="crew-feature-card-roles-icons">
-                  <span v-for="ar in feature.activeRoles" :key="ar.role">{{ ar.roleIcon }}</span>
-                </span>
-                <span class="crew-feature-card-roles-label">工作中</span>
-              </div>
-
-              <!-- Todo Items (expanded) -->
-              <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length > 0"
-                   class="crew-feature-card-todos">
-                <div v-for="todo in feature.todos" :key="todo.id"
-                     class="crew-feature-card-todo" :class="'is-' + todo.status">
-                  <span class="todo-status">
-                    <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24" width="12" height="12">
-                      <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+              <template v-if="showCompletedFeatures">
+                <div v-for="feature in featureKanbanGrouped.completed" :key="feature.taskId"
+                     class="crew-feature-card is-completed"
+                     :class="{
+                       'is-expanded': isFeatureCardExpanded(feature.taskId)
+                     }">
+                  <div class="crew-feature-card-header"
+                       @click="toggleFeatureCard(feature.taskId)"
+                       @dblclick="scrollToFeature(feature.taskId)">
+                    <svg class="crew-feature-card-chevron" viewBox="0 0 24 24" width="12" height="12">
+                      <path fill="currentColor" d="M10 6l6 6-6 6z"/>
                     </svg>
-                  </span>
-                  <span class="todo-text">
-                    {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
-                  </span>
-                  <span v-if="todo.roleIcon" class="todo-role">{{ todo.roleIcon }}</span>
+                    <span class="crew-feature-card-title">{{ feature.taskTitle }}</span>
+                    <span class="crew-feature-card-count">
+                      {{ feature.doneCount }} / {{ feature.totalCount }}
+                    </span>
+                  </div>
+                  <div class="crew-feature-card-bar">
+                    <div class="crew-feature-card-bar-fill"
+                         :style="{ width: (feature.totalCount > 0 ? (feature.doneCount / feature.totalCount * 100) : 0) + '%' }">
+                    </div>
+                  </div>
+                  <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length > 0"
+                       class="crew-feature-card-todos">
+                    <div v-for="todo in feature.todos" :key="todo.id"
+                         class="crew-feature-card-todo" :class="'is-' + todo.status">
+                      <span class="todo-status">
+                        <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24" width="12" height="12">
+                          <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                        </svg>
+                      </span>
+                      <span class="todo-text">
+                        {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
+                      </span>
+                      <span v-if="todo.roleIcon" class="todo-role">{{ todo.roleIcon }}</span>
+                    </div>
+                  </div>
+                  <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length === 0"
+                       class="crew-feature-card-empty">
+                    已完成
+                  </div>
                 </div>
-              </div>
-
-              <!-- No todos: 显示简要状态 -->
-              <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length === 0"
-                   class="crew-feature-card-empty">
-                {{ feature.isCompleted ? '已完成' : '进行中' }}
-              </div>
+              </template>
             </div>
 
             <!-- Empty state -->
@@ -680,6 +730,7 @@ export default {
       expandedFeatures: {},
       expandedHistories: {},
       expandedFeatureCards: {},
+      showCompletedFeatures: false,
       isAtBottom: true,
       visibleBlockCount: 20,
       isLoadingMore: false,
@@ -1071,15 +1122,15 @@ summary: 请测试以下变更...
       const taskMap = new Map();
       const persistedFeatures = this.store.currentCrewStatus?.features || [];
       for (const f of persistedFeatures) {
-        taskMap.set(f.taskId, f.taskTitle);
+        taskMap.set(f.taskId, { title: f.taskTitle, createdAt: f.createdAt || 0 });
       }
       // 补充从消息中收集的（兜底，确保实时性）
       for (const msg of this.store.currentCrewMessages) {
         if (msg.taskId && msg.taskTitle && !taskMap.has(msg.taskId)) {
-          taskMap.set(msg.taskId, msg.taskTitle);
+          taskMap.set(msg.taskId, { title: msg.taskTitle, createdAt: msg.timestamp || 0 });
         }
       }
-      return Array.from(taskMap, ([id, title]) => ({ id, title }));
+      return Array.from(taskMap, ([id, info]) => ({ id, title: info.title, createdAt: info.createdAt }));
     },
     activeRolesTasks() {
       // 找出当前活跃角色（正在 streaming 的）及其 task
@@ -1259,7 +1310,7 @@ summary: 请测试以下变更...
       // 1. 收集所有 feature
       const features = new Map();
 
-      // 从 activeTasks 获取所有 feature
+      // 从 activeTasks 获取所有 feature（含 createdAt）
       for (const task of this.activeTasks) {
         features.set(task.id, {
           taskId: task.id,
@@ -1270,6 +1321,7 @@ summary: 请测试以下变更...
           activeRoles: [],
           isCompleted: this.completedTaskIds.has(task.id),
           hasStreaming: false,
+          createdAt: task.createdAt || 0,
         });
       }
 
@@ -1287,6 +1339,7 @@ summary: 请测试以下变更...
             activeRoles: [],
             isCompleted: false,
             hasStreaming: false,
+            createdAt: 0,
           };
           features.set(tid, feature);
         }
@@ -1314,12 +1367,21 @@ summary: 请测试以下变更...
         }
       }
 
-      // 4. 转为数组，排序：有活跃的在前，已完成的在后
-      return Array.from(features.values()).sort((a, b) => {
-        if (a.hasStreaming !== b.hasStreaming) return a.hasStreaming ? -1 : 1;
-        if (a.isCompleted !== b.isCompleted) return a.isCompleted ? 1 : -1;
-        return 0;
-      });
+      // 4. 转为数组，按 createdAt 倒序（最新的在前）
+      return Array.from(features.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    },
+
+    featureKanbanGrouped() {
+      const inProgress = [];
+      const completed = [];
+      for (const f of this.featureKanban) {
+        if (f.isCompleted) {
+          completed.push(f);
+        } else {
+          inProgress.push(f);
+        }
+      }
+      return { inProgress, completed };
     },
 
     kanbanProgress() {
