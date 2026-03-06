@@ -70,15 +70,13 @@ function simulateRestoreFromDisk(selectedAgent, crewExistsSessionInfo, projectDi
 }
 
 // Simulate startSession output
-function simulateStartSession(selectedAgent, projectDir, name, roles, sharedKnowledge) {
+function simulateStartSession(selectedAgent, projectDir, name, roles) {
   if (!selectedAgent || !projectDir?.trim()) return null;
   return {
     agentId: selectedAgent,
     projectDir: projectDir.trim(),
     sharedDir: '.crew',
-    goal: '',
     name: name?.trim() || '',
-    sharedKnowledge: sharedKnowledge?.trim() || '',
     roles: roles.map(r => ({
       name: r.name || r.displayName.toLowerCase().replace(/\s+/g, '_'),
       displayName: r.displayName,
@@ -89,7 +87,6 @@ function simulateStartSession(selectedAgent, projectDir, name, roles, sharedKnow
       isDecisionMaker: r.isDecisionMaker || false,
       count: r.count || 1
     })),
-    maxRounds: 20
   };
 }
 
@@ -403,26 +400,23 @@ describe('CrewConfigPanel - create flow when .crew does not exist', () => {
       const roles = [
         { name: 'pm', displayName: 'PM', icon: '', description: 'PM desc', isDecisionMaker: true }
       ];
-      const result = simulateStartSession('agent-1', '/project', '团队A', roles, '共享知识');
+      const result = simulateStartSession('agent-1', '/project', '团队A', roles);
       expect(result).not.toBeNull();
       expect(result.agentId).toBe('agent-1');
       expect(result.projectDir).toBe('/project');
       expect(result.sharedDir).toBe('.crew');
-      expect(result.goal).toBe('');
       expect(result.name).toBe('团队A');
-      expect(result.sharedKnowledge).toBe('共享知识');
-      expect(result.maxRounds).toBe(20);
       expect(result.roles).toHaveLength(1);
       expect(result.roles[0].name).toBe('pm');
       expect(result.roles[0].count).toBe(1);
     });
 
     it('should return null when agent not selected', () => {
-      expect(simulateStartSession('', '/project', '', [], '')).toBeNull();
+      expect(simulateStartSession('', '/project', '', [])).toBeNull();
     });
 
     it('should return null when projectDir empty', () => {
-      expect(simulateStartSession('agent-1', '', '', [], '')).toBeNull();
+      expect(simulateStartSession('agent-1', '', '', [])).toBeNull();
     });
   });
 
@@ -443,11 +437,6 @@ describe('CrewConfigPanel - create flow when .crew does not exist', () => {
     it('should have roles configuration section', () => {
       expect(configContent).toContain("crewConfig.roleConfig");
       expect(configContent).toContain('crew-roles-list');
-    });
-
-    it('should have shared knowledge textarea', () => {
-      expect(configContent).toContain("crewConfig.sharedKnowledge");
-      expect(configContent).toContain("crewConfig.sharedKnowledgePlaceholder");
     });
 
     it('should have start button in footer', () => {
@@ -508,7 +497,7 @@ describe('CrewConfigPanel - sharedDir removal', () => {
 
   it('startSession output should always have sharedDir: ".crew"', () => {
     const roles = [{ name: 'pm', displayName: 'PM', icon: '', description: '', isDecisionMaker: true }];
-    const result = simulateStartSession('agent-1', '/project', '', roles, '');
+    const result = simulateStartSession('agent-1', '/project', '', roles);
     expect(result.sharedDir).toBe('.crew');
   });
 });

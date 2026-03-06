@@ -197,7 +197,7 @@ describe('structural integrity', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2086);
+    expect(opens).toBe(2085);
   });
 
   it('session-panels wrapper still exists', () => {

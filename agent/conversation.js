@@ -60,7 +60,6 @@ export async function sendConversationList() {
       userId: session.userId,
       username: session.username,
       type: 'crew',
-      goal: session.goal
     });
   }
   // 追加索引中已停止的 crew sessions（不重复）

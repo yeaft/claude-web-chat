@@ -145,7 +145,6 @@ export function handleMessage(store, msg) {
             existing.agentId = serverConv.agentId;
             existing.agentName = serverConv.agentName;
             if (serverConv.type) existing.type = serverConv.type;
-            if (serverConv.goal) existing.goal = serverConv.goal;
           } else {
             store.conversations.push(serverConv);
           }
