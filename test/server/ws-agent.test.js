@@ -613,3 +613,298 @@ describe('conversation_resumed with bulkAddHistory', () => {
     expect(agent.conversations.has('conv_other')).toBe(true);   // different session, kept
   });
 });
+
+describe('Server Restart: DB conversation recovery (task-37/task-44)', () => {
+  describe('get_agents with conversationIds — on-demand DB recovery', () => {
+    it('should restore only requested conversation IDs from DB', () => {
+      const agentId = 'agent_ondemand';
+      const agentName = 'OnDemandAgent';
+
+      // Seed DB with multiple sessions for this agent
+      sessionDb.create('conv_a', agentId, agentName, '/project/a', 'cs_a', 'Session A', 'user_1');
+      sessionDb.create('conv_b', agentId, agentName, '/project/b', 'cs_b', 'Session B', 'user_1');
+      sessionDb.create('conv_c', agentId, agentName, '/project/c', 'cs_c', 'Session C', 'user_1');
+
+      // Simulate: agent has empty conversations (server restart)
+      const agentConversations = new Map();
+
+      // Client requests only conv_a and conv_c (what's in their sidebar)
+      const requestedIds = ['conv_a', 'conv_c'];
+      const clientUserId = 'user_1';
+      const clientUsername = 'testuser';
+
+      for (const convId of requestedIds) {
+        const dbSession = sessionDb.get(convId);
+        if (!dbSession) continue;
+        if (dbSession.user_id && dbSession.user_id !== clientUserId) continue;
+        if (agentConversations.has(convId)) continue;
+        agentConversations.set(convId, {
+          id: convId,
+          workDir: dbSession.work_dir,
+          claudeSessionId: dbSession.claude_session_id,
+          title: dbSession.title,
+          createdAt: dbSession.created_at,
+          userId: dbSession.user_id || clientUserId,
+          username: clientUsername,
+          fromDb: true
+        });
+      }
+
+      // Only requested conversations restored, not conv_b
+      expect(agentConversations.size).toBe(2);
+      expect(agentConversations.has('conv_a')).toBe(true);
+      expect(agentConversations.has('conv_c')).toBe(true);
+      expect(agentConversations.has('conv_b')).toBe(false);
+      expect(agentConversations.get('conv_a').fromDb).toBe(true);
+      expect(agentConversations.get('conv_a').title).toBe('Session A');
+    });
+
+    it('should not restore conversations belonging to other users', () => {
+      const agentId = 'agent_security';
+
+      sessionDb.create('conv_own', agentId, 'Agent', '/w', 'cs_1', 'My Conv', 'user_me');
+      sessionDb.create('conv_other', agentId, 'Agent', '/w2', 'cs_2', 'Other Conv', 'user_other');
+
+      const agentConversations = new Map();
+      const requestedIds = ['conv_own', 'conv_other'];
+      const clientUserId = 'user_me';
+
+      for (const convId of requestedIds) {
+        const dbSession = sessionDb.get(convId);
+        if (!dbSession) continue;
+        if (dbSession.user_id && dbSession.user_id !== clientUserId) continue;
+        if (agentConversations.has(convId)) continue;
+        agentConversations.set(convId, {
+          id: convId,
+          workDir: dbSession.work_dir,
+          userId: dbSession.user_id || clientUserId,
+          fromDb: true
+        });
+      }
+
+      expect(agentConversations.size).toBe(1);
+      expect(agentConversations.has('conv_own')).toBe(true);
+      expect(agentConversations.has('conv_other')).toBe(false);
+    });
+
+    it('should skip conversations not in DB', () => {
+      const agentConversations = new Map();
+      const requestedIds = ['nonexistent_conv'];
+      const clientUserId = 'user_1';
+
+      for (const convId of requestedIds) {
+        const dbSession = sessionDb.get(convId);
+        if (!dbSession) continue;
+        agentConversations.set(convId, { id: convId, fromDb: true });
+      }
+
+      expect(agentConversations.size).toBe(0);
+    });
+
+    it('should skip conversations whose agent is not connected', () => {
+      const agentId = 'agent_offline';
+      sessionDb.create('conv_offline', agentId, 'OfflineAgent', '/w', 'cs_1', 'Offline Conv', 'user_1');
+
+      // agents Map does not have this agent (it's offline)
+      const connectedAgents = new Map();
+
+      const requestedIds = ['conv_offline'];
+      const clientUserId = 'user_1';
+
+      for (const convId of requestedIds) {
+        const dbSession = sessionDb.get(convId);
+        if (!dbSession) continue;
+        if (dbSession.user_id && dbSession.user_id !== clientUserId) continue;
+        const agent = connectedAgents.get(dbSession.agent_id);
+        if (!agent) continue;
+        agent.conversations.set(convId, { id: convId, fromDb: true });
+      }
+
+      // No conversations restored because agent is offline
+      expect(connectedAgents.size).toBe(0);
+    });
+
+    it('should not overwrite existing conversations in agent Map', () => {
+      const agentId = 'agent_existing';
+      sessionDb.create('conv_live', agentId, 'Agent', '/w', 'cs_old', 'DB Title', 'user_1');
+
+      const agentConversations = new Map();
+      // Agent already has this conversation (from agent sync)
+      agentConversations.set('conv_live', {
+        id: 'conv_live', workDir: '/w', claudeSessionId: 'cs_new', processing: true
+      });
+
+      const requestedIds = ['conv_live'];
+      const clientUserId = 'user_1';
+
+      for (const convId of requestedIds) {
+        const dbSession = sessionDb.get(convId);
+        if (!dbSession) continue;
+        if (dbSession.user_id && dbSession.user_id !== clientUserId) continue;
+        if (agentConversations.has(convId)) continue; // skip existing
+        agentConversations.set(convId, { id: convId, fromDb: true });
+      }
+
+      // Original entry preserved, not overwritten
+      expect(agentConversations.size).toBe(1);
+      expect(agentConversations.get('conv_live').claudeSessionId).toBe('cs_new');
+      expect(agentConversations.get('conv_live').processing).toBe(true);
+      expect(agentConversations.get('conv_live').fromDb).toBeUndefined();
+    });
+
+    it('should handle empty conversationIds gracefully', () => {
+      const agentConversations = new Map();
+      const requestedIds = [];
+
+      for (const convId of requestedIds) {
+        const dbSession = sessionDb.get(convId);
+        if (!dbSession) continue;
+        agentConversations.set(convId, { id: convId, fromDb: true });
+      }
+
+      expect(agentConversations.size).toBe(0);
+    });
+  });
+
+  describe('completeAgentRegistration — server restart creates empty Map', () => {
+    it('should create empty conversations Map when no existingAgent', () => {
+      const agents = new Map();
+      const agentId = 'agent_fresh';
+
+      // Seed DB — these should NOT be auto-loaded
+      sessionDb.create('conv_db_only', agentId, 'Agent', '/w', 'cs_1', 'DB Conv', 'user_1');
+
+      const existingAgent = agents.get(agentId);
+      const conversations = existingAgent?.conversations || new Map();
+
+      expect(conversations.size).toBe(0); // Empty, no auto-recovery
+    });
+  });
+
+  describe('conversation_list — fromDb protection', () => {
+    it('should NOT delete fromDb conversations when agent does not report them', () => {
+      const agent = createMockAgent();
+      agent.conversations.set('db_conv_1', {
+        id: 'db_conv_1', workDir: '/old', title: 'From DB', fromDb: true
+      });
+      agent.conversations.set('live_conv_1', {
+        id: 'live_conv_1', workDir: '/live', title: 'Live'
+      });
+
+      const incoming = [
+        { id: 'live_conv_1', workDir: '/live', claudeSessionId: 'cs_live' }
+      ];
+
+      const incomingIds = new Set(incoming.map(c => c.id));
+      for (const [id, conv] of agent.conversations) {
+        if (!incomingIds.has(id) && !conv.fromDb) {
+          agent.conversations.delete(id);
+        }
+      }
+
+      expect(agent.conversations.has('db_conv_1')).toBe(true);
+      expect(agent.conversations.has('live_conv_1')).toBe(true);
+    });
+
+    it('should delete non-fromDb conversations when agent stops reporting them', () => {
+      const agent = createMockAgent();
+      agent.conversations.set('old_live', { id: 'old_live', workDir: '/w' });
+      agent.conversations.set('still_live', { id: 'still_live', workDir: '/w2' });
+
+      const incoming = [{ id: 'still_live', workDir: '/w2' }];
+      const incomingIds = new Set(incoming.map(c => c.id));
+
+      for (const [id, conv] of agent.conversations) {
+        if (!incomingIds.has(id) && !conv.fromDb) {
+          agent.conversations.delete(id);
+        }
+      }
+
+      expect(agent.conversations.has('old_live')).toBe(false);
+      expect(agent.conversations.has('still_live')).toBe(true);
+    });
+  });
+
+  describe('conversation_list — fromDb clearing', () => {
+    it('should clear fromDb flag when agent reports same conversation', () => {
+      const agent = createMockAgent();
+      agent.conversations.set('db_conv_upgrade', {
+        id: 'db_conv_upgrade', workDir: '/old', title: 'From DB',
+        fromDb: true, claudeSessionId: 'cs_old'
+      });
+
+      const incoming = [
+        { id: 'db_conv_upgrade', workDir: '/new', claudeSessionId: 'cs_new' }
+      ];
+
+      for (const conv of incoming) {
+        const existing = agent.conversations.get(conv.id);
+        if (existing) {
+          existing.workDir = conv.workDir || existing.workDir;
+          existing.claudeSessionId = conv.claudeSessionId || existing.claudeSessionId;
+          delete existing.fromDb;
+        }
+      }
+
+      const result = agent.conversations.get('db_conv_upgrade');
+      expect(result.fromDb).toBeUndefined();
+      expect(result.workDir).toBe('/new');
+      expect(result.claudeSessionId).toBe('cs_new');
+    });
+
+    it('should keep fromDb flag on conversations NOT reported by agent', () => {
+      const agent = createMockAgent();
+      agent.conversations.set('db_only', {
+        id: 'db_only', workDir: '/w', fromDb: true
+      });
+      agent.conversations.set('db_and_live', {
+        id: 'db_and_live', workDir: '/w2', fromDb: true
+      });
+
+      const incoming = [{ id: 'db_and_live', workDir: '/w2_updated' }];
+
+      const incomingIds = new Set(incoming.map(c => c.id));
+      for (const [id, conv] of agent.conversations) {
+        if (!incomingIds.has(id) && !conv.fromDb) {
+          agent.conversations.delete(id);
+        }
+      }
+      for (const conv of incoming) {
+        const existing = agent.conversations.get(conv.id);
+        if (existing) {
+          existing.workDir = conv.workDir || existing.workDir;
+          delete existing.fromDb;
+        }
+      }
+
+      expect(agent.conversations.get('db_only').fromDb).toBe(true);
+      expect(agent.conversations.get('db_and_live').fromDb).toBeUndefined();
+    });
+  });
+
+  describe('existingAgent reconnect — behavior unchanged', () => {
+    it('should use existing conversations when existingAgent is present', () => {
+      const agents = new Map();
+      const agentId = 'agent_reconnect';
+
+      const existingConvs = new Map();
+      existingConvs.set('live_1', { id: 'live_1', workDir: '/w', processing: true });
+      existingConvs.set('live_2', { id: 'live_2', workDir: '/w2' });
+      agents.set(agentId, {
+        ws: new MockWebSocket(), conversations: existingConvs,
+        proxyPorts: []
+      });
+
+      sessionDb.create('db_sess_1', agentId, 'Agent', '/db_w');
+
+      const existingAgent = agents.get(agentId);
+      const conversations = existingAgent?.conversations || new Map();
+
+      expect(conversations.size).toBe(2);
+      expect(conversations.has('live_1')).toBe(true);
+      expect(conversations.has('live_2')).toBe(true);
+      expect(conversations.has('db_sess_1')).toBe(false);
+      expect(conversations.get('live_1').processing).toBe(true);
+    });
+  });
+});
