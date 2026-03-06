@@ -7,6 +7,51 @@ import { t } from '../../utils/i18n.js';
 import { stopProcessingWatchdog } from './watchdog.js';
 import { clearSessionLoading, setSessionLoading } from './session.js';
 
+/**
+ * 恢复上次查看的 conversation（公共逻辑）。
+ * @param {object} store
+ * @param {object} [agentSetup] - 若需同时设置 agent，传入 { agentId, agentInfo }
+ * @returns {boolean} 是否成功恢复
+ */
+function restoreLastViewedConversation(store, agentSetup) {
+  const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
+  if (!lastViewed) return false;
+
+  const conv = store.conversations.find(c => c.id === lastViewed);
+  if (!conv) return false;
+
+  const agentId = agentSetup?.agentId || store.currentAgent;
+
+  // 设置 agent（AutoRestore 路径需要）
+  if (agentSetup) {
+    store.currentAgent = agentSetup.agentId;
+    store.currentAgentInfo = agentSetup.agentInfo;
+    store.sendWsMessage({ type: 'select_agent', agentId: agentSetup.agentId, silent: true });
+  }
+
+  // 设置 conversation 状态
+  store.currentConversation = lastViewed;
+  store.currentWorkDir = conv.workDir;
+  store.messages = [];
+  store.sendWsMessage({ type: 'select_conversation', conversationId: lastViewed });
+
+  if (conv.type === 'crew') {
+    store.sendWsMessage({
+      type: 'resume_crew_session',
+      sessionId: lastViewed,
+      agentId
+    });
+  } else {
+    store.sendWsMessage({
+      type: 'sync_messages',
+      conversationId: lastViewed,
+      turns: 5
+    });
+    store.sendWsMessage({ type: 'refresh_conversation', conversationId: lastViewed });
+  }
+  return true;
+}
+
 export function handleMessage(store, msg) {
   const authStore = useAuthStore();
 
@@ -174,6 +219,12 @@ export function handleMessage(store, msg) {
                 conversationId: store.currentConversation
               });
             }
+          } else if (!store.recoveryDismissed) {
+            // ★ Fix: currentAgent 已设置但 currentConversation 为空
+            // 这发生在：首次 agent_list 到达时 conversation 列表为空（agent 仍在同步），
+            // AutoRestore 失败并回退到 selectAgent，后续 agent_list 中 conversation 才出现。
+            console.log('[Reconnect] currentConversation null, attempting restore');
+            restoreLastViewedConversation(store);
           }
           break;
         } else {
@@ -194,32 +245,7 @@ export function handleMessage(store, msg) {
             const agent = msg.agents.find(a => a.id === conv.agentId && a.online);
             if (agent) {
               console.log('[AutoRestore] Restoring last viewed conversation:', lastViewed, 'on agent:', conv.agentId);
-              store.currentAgent = conv.agentId;
-              store.currentAgentInfo = agent;
-              store.currentConversation = lastViewed;
-              store.currentWorkDir = conv.workDir;
-              store.messages = [];
-              // 通知 server 选择了这个 agent 和 conversation
-              store.sendWsMessage({ type: 'select_agent', agentId: conv.agentId, silent: true });
-              store.sendWsMessage({ type: 'select_conversation', conversationId: lastViewed });
-              if (conv.type === 'crew') {
-                // Crew conversation: 恢复 crew session 状态
-                console.log('[AutoRestore] Crew conversation, resuming crew session:', lastViewed);
-                store.sendWsMessage({
-                  type: 'resume_crew_session',
-                  sessionId: lastViewed,
-                  agentId: conv.agentId
-                });
-              } else {
-                // 加载最近 5 turns 消息
-                store.sendWsMessage({
-                  type: 'sync_messages',
-                  conversationId: lastViewed,
-                  turns: 5
-                });
-                // 查询 processing 状态
-                store.sendWsMessage({ type: 'refresh_conversation', conversationId: lastViewed });
-              }
+              restoreLastViewedConversation(store, { agentId: conv.agentId, agentInfo: agent });
               break;
             }
           }
