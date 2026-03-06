@@ -2657,6 +2657,9 @@ export async function handleCrewControl(msg) {
         await interruptRole(session, targetRole, msg.content, 'human');
       }
       break;
+    case 'abort_role':
+      if (targetRole) await abortRole(session, targetRole);
+      break;
     case 'compact_role':
       if (targetRole) await compactRole(session, targetRole);
       break;
@@ -2798,6 +2801,61 @@ async function interruptRole(session, roleName, newContent, fromSource = 'human'
 
   // 创建新 query 并 dispatch
   await dispatchToRole(session, roleName, newContent, fromSource);
+}
+
+/**
+ * 中止角色当前 turn（不删除角色状态，不注入新内容）
+ * 与 stopRole 区别：stopRole 会 delete roleState，abortRole 只中断当前 query
+ * 与 interruptRole 区别：interruptRole 中断后会 dispatch 新消息，abortRole 不会
+ */
+async function abortRole(session, roleName) {
+  const roleState = session.roleStates.get(roleName);
+  if (!roleState) {
+    console.warn(`[Crew] Cannot abort ${roleName}: no roleState`);
+    return;
+  }
+
+  if (!roleState.turnActive) {
+    console.log(`[Crew] ${roleName} is not active, nothing to abort`);
+    return;
+  }
+
+  console.log(`[Crew] Aborting ${roleName}`);
+
+  // 结束 streaming 状态
+  endRoleStreaming(session, roleName);
+
+  // 保存 sessionId 以便后续继续对话
+  if (roleState.claudeSessionId) {
+    await saveRoleSessionId(session.sharedDir, roleName, roleState.claudeSessionId)
+      .catch(e => console.warn(`[Crew] Failed to save sessionId for ${roleName}:`, e.message));
+  }
+
+  // Abort 当前 query
+  if (roleState.abortController) {
+    roleState.abortController.abort();
+  }
+
+  // 清理 turn 状态，角色变为 idle
+  roleState.query = null;
+  roleState.inputStream = null;
+  roleState.turnActive = false;
+  roleState.accumulatedText = '';
+
+  // 通知前端 turn 已完成（中断方式）
+  sendCrewMessage({
+    type: 'crew_turn_completed',
+    sessionId: session.id,
+    role: roleName,
+    interrupted: true
+  });
+
+  sendStatusUpdate(session);
+
+  sendCrewOutput(session, 'system', 'system', {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: `${roleName} 已中止` }] }
+  });
 }
 
 async function stopRole(session, roleName) {

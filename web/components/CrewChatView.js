@@ -42,6 +42,7 @@ export default {
                   <span class="crew-role-card-name">{{ role.displayName }}</span>
                   <span v-if="role.isDecisionMaker" class="crew-role-card-dm">\u2605</span>
                   <span class="crew-role-card-header-actions" @click.stop>
+                    <button v-if="isRoleStreaming(role.name)" class="crew-role-action-btn crew-role-abort-btn" @click.stop="abortRole(role.name)" title="中止当前任务">⏹</button>
                     <button class="crew-role-action-btn" @click.stop="compactRole(role.name)" title="压缩上下文">🗜</button>
                     <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" title="清空对话">🗑</button>
                   </span>
@@ -2154,6 +2155,11 @@ summary: 请测试以下变更...
     clearRole(roleName) {
       if (!roleName) return;
       this.controlAction('clear_role', roleName);
+    },
+
+    abortRole(roleName) {
+      if (!roleName) return;
+      this.controlAction('abort_role', roleName);
     },
 
     removeRole(roleName) {

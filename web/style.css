@@ -11495,6 +11495,14 @@ body {
   background: var(--sidebar-hover);
 }
 
+.crew-role-abort-btn {
+  color: var(--error-color, #e74c3c);
+}
+
+.crew-role-abort-btn:hover {
+  background: rgba(231, 76, 60, 0.15);
+}
+
 /* --- Left Panel Bottom Actions --- */
 .crew-panel-left-actions {
   display: flex;

@@ -4969,11 +4969,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2119/2119)', () => {
+    it('should have balanced CSS braces (2121/2121)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2119);
+      expect(opens).toBe(2121);
     });
   });
 
@@ -6330,5 +6330,65 @@ ${routeTargets.map(r => `- ${r.name}: ${roleLabel(r)} — ${r.description}`).joi
 
     expect(prompt).toContain('# 开发组绑定');
     expect(prompt).toContain('你属于开发组 1');
+  });
+});
+
+// =====================================================================
+// task-31: abort_role — backend source verification
+// =====================================================================
+describe('task-31: abort_role backend', () => {
+  let crewSource;
+
+  beforeAll(async () => {
+    crewSource = await fs.readFile(join(__dirname, '../../agent/crew.js'), 'utf-8');
+  });
+
+  it('handleCrewControl has abort_role case', () => {
+    expect(crewSource).toContain("case 'abort_role':");
+  });
+
+  it('abortRole function exists', () => {
+    expect(crewSource).toContain('async function abortRole(session, roleName)');
+  });
+
+  it('abortRole calls endRoleStreaming', () => {
+    const fn = crewSource.split('async function abortRole')[1]?.split('\nasync function')[0] || '';
+    expect(fn).toContain('endRoleStreaming(session, roleName)');
+  });
+
+  it('abortRole aborts the controller', () => {
+    const fn = crewSource.split('async function abortRole')[1]?.split('\nasync function')[0] || '';
+    expect(fn).toContain('abortController.abort()');
+  });
+
+  it('abortRole sets turnActive to false', () => {
+    const fn = crewSource.split('async function abortRole')[1]?.split('\nasync function')[0] || '';
+    expect(fn).toContain('turnActive = false');
+  });
+
+  it('abortRole does NOT delete roleState (unlike stopRole)', () => {
+    const fn = crewSource.split('async function abortRole')[1]?.split('\nasync function')[0] || '';
+    expect(fn).not.toContain('roleStates.delete');
+  });
+
+  it('abortRole does NOT dispatch new message (unlike interruptRole)', () => {
+    const fn = crewSource.split('async function abortRole')[1]?.split('\nasync function')[0] || '';
+    expect(fn).not.toContain('dispatchToRole');
+  });
+
+  it('abortRole sends crew_turn_completed with interrupted flag', () => {
+    const fn = crewSource.split('async function abortRole')[1]?.split('\nasync function')[0] || '';
+    expect(fn).toContain('crew_turn_completed');
+    expect(fn).toContain('interrupted: true');
+  });
+
+  it('abortRole sends status update', () => {
+    const fn = crewSource.split('async function abortRole')[1]?.split('\nasync function')[0] || '';
+    expect(fn).toContain('sendStatusUpdate(session)');
+  });
+
+  it('abortRole skips if role is not active', () => {
+    const fn = crewSource.split('async function abortRole')[1]?.split('\nasync function')[0] || '';
+    expect(fn).toContain('!roleState.turnActive');
   });
 });
