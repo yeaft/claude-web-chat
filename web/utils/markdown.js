@@ -67,7 +67,11 @@ export function simpleMarkdownFallback(text) {
  * Render markdown text to HTML.
  * Strips ROUTE blocks, uses marked.js with code highlighting,
  * falls back to simple regex-based rendering.
+ * Results are cached by input text to avoid repeated parsing.
  */
+const _mdCache = new Map();
+const _MD_CACHE_MAX = 2000;
+
 export function renderMarkdown(text) {
   if (!text || typeof text !== 'string') return '';
   // Strip ROUTE blocks and TASKS blocks (tasks shown in dedicated panel)
@@ -75,15 +79,33 @@ export function renderMarkdown(text) {
   text = text.replace(/---TASKS---[\s\S]*?---END_TASKS---/g, '').trim();
   if (!text) return '';
 
+  const cached = _mdCache.get(text);
+  if (cached !== undefined) return cached;
+
   configureMarked();
 
+  let html;
   if (typeof marked !== 'undefined') {
     try {
-      const html = marked.parse(text);
-      return wrapTables(addCodeBlockCopyButtons(html));
+      html = wrapTables(addCodeBlockCopyButtons(marked.parse(text)));
     } catch (e) {
       console.error('Markdown parsing error:', e);
     }
   }
-  return simpleMarkdownFallback(text);
+  if (!html) html = simpleMarkdownFallback(text);
+
+  // Evict oldest entries when cache is full
+  if (_mdCache.size >= _MD_CACHE_MAX) {
+    const firstKey = _mdCache.keys().next().value;
+    _mdCache.delete(firstKey);
+  }
+  _mdCache.set(text, html);
+  return html;
+}
+
+/**
+ * Clear the markdown render cache (for testing or conversation switch).
+ */
+export function clearMarkdownCache() {
+  _mdCache.clear();
 }

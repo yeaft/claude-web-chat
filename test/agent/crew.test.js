@@ -2930,7 +2930,7 @@ describe('Feature blocks - removed task panel and filter bar', () => {
   });
 
   it('should display message count in feature header', () => {
-    expect(fileContent).toContain('block.turns.length');
+    expect(fileContent).toContain('getBlockTurns(block).length');
     expect(fileContent).toContain('条');
   });
 
