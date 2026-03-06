@@ -231,6 +231,9 @@ export default {
   'chatHeader.newConv': 'Conversation',
   'chatHeader.compacting': 'Compressing context...',
   'chatHeader.compactDone': 'Context compression complete',
+  'chatHeader.compact': 'Compact context',
+  'chatHeader.clear': 'Clear messages',
+  'chatHeader.confirmClear': 'Are you sure you want to clear all messages in this conversation?',
 
   // ============ Settings ============
   'settings.close': 'Close settings',
