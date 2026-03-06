@@ -165,20 +165,24 @@ describe('global segment handling unaffected', () => {
 });
 
 // =====================================================================
-// 5. activeMessages computed for streaming preview
+// 5. activeMessages computed — persistent latest per role
 // =====================================================================
 describe('activeMessages computed property', () => {
   it('activeMessages computed exists', () => {
     expect(jsSource).toContain('activeMessages()');
   });
 
-  it('collects streaming text messages', () => {
-    // Should check m._streaming && m.type === 'text'
-    expect(jsSource).toContain("m._streaming && m.type === 'text'");
+  it('collects latest text messages per role (not just streaming)', () => {
+    // Should check m.type === 'text' without requiring _streaming
+    expect(jsSource).toContain("m.type === 'text'");
+    const body = jsSource.substring(
+      jsSource.indexOf('activeMessages()'),
+      jsSource.indexOf('featureBlocks()')
+    );
+    expect(body).not.toContain('_streaming');
   });
 
   it('deduplicates by role (one message per role)', () => {
-    // seen set to track roles
     const activeIdx = jsSource.indexOf('activeMessages()');
     const nextComputed = jsSource.indexOf('() {', activeIdx + 20);
     const section = jsSource.substring(activeIdx, nextComputed);
@@ -194,7 +198,7 @@ describe('activeMessages computed property', () => {
 });
 
 // =====================================================================
-// 6. Active Messages template area
+// 6. Active Messages template area (plain message style)
 // =====================================================================
 describe('Active Messages template section', () => {
   it('has crew-active-messages container', () => {
@@ -205,10 +209,14 @@ describe('Active Messages template section', () => {
     expect(jsSource).toContain('v-if="activeMessages.length > 0"');
   });
 
-  it('has header with i18n title', () => {
-    expect(jsSource).toContain("crew.activeMessages");
-    expect(jsSource).toContain('crew-active-messages-header');
-    expect(jsSource).toContain('crew-active-messages-title');
+  it('uses standard crew-message styling (no special header/title)', () => {
+    const activeArea = jsSource.substring(
+      jsSource.indexOf('crew-active-messages'),
+      jsSource.indexOf('crew-scroll-bottom')
+    );
+    expect(activeArea).toContain('crew-message crew-msg-text');
+    expect(activeArea).not.toContain('crew-active-messages-header');
+    expect(activeArea).not.toContain('crew-active-messages-title');
   });
 
   it('iterates activeMessages with v-for', () => {
@@ -216,7 +224,6 @@ describe('Active Messages template section', () => {
   });
 
   it('shows role icon and name in each active message', () => {
-    expect(jsSource).toContain('crew-active-msg-header');
     expect(jsSource).toContain('am.roleIcon');
     expect(jsSource).toContain('am.roleName');
   });
