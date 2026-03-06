@@ -11616,6 +11616,15 @@ body {
   font-weight: 500;
 }
 
+.crew-feature-card-elapsed {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: auto;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
 /* Progress Bar */
 .crew-feature-card-bar {
   width: 100%;

@@ -290,9 +290,9 @@ describe('CSS structural integrity', () => {
     expect(opens).toBe(closes);
   });
 
-  it('brace count is 2093 (updated after adding highlight rules)', () => {
+  it('brace count is 2094 (updated after adding highlight rules)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
-    expect(opens).toBe(2093);
+    expect(opens).toBe(2094);
   });
 });
 
@@ -300,11 +300,11 @@ describe('CSS structural integrity', () => {
 // 9. test/agent/crew.test.js brace count also updated
 // =====================================================================
 describe('agent test — brace count synchronized', () => {
-  it('agent crew test uses 2093 brace count', () => {
+  it('agent crew test uses 2094 brace count', () => {
     const agentTestPath = resolve(__dirname, '../../test/agent/crew.test.js');
     const agentTestSource = readFileSync(agentTestPath, 'utf-8');
-    // The brace count test should reference 2093
-    expect(agentTestSource).toContain("expect(opens).toBe(2093)");
+    // The brace count test should reference 2094
+    expect(agentTestSource).toContain("expect(opens).toBe(2094)");
   });
 });
 
