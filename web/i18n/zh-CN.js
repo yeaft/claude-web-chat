@@ -232,6 +232,7 @@ export default {
   'chatHeader.compacting': '正在压缩上下文...',
   'chatHeader.compactDone': '上下文压缩完成',
   'chatHeader.compact': '压缩上下文',
+  'chatHeader.resume': '恢复会话',
   'chatHeader.clear': '清空消息',
   'chatHeader.confirmClear': '确定要清空当前会话的所有消息吗？',
 

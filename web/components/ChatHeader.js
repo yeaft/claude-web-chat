@@ -18,6 +18,11 @@ export default {
         <span class="context-usage-hint" v-if="contextUsage" :class="contextColorClass" :title="contextLabel">
           {{ contextUsage.percentage }}%
         </span>
+        <button class="header-action-btn" @click="resumeSession" :disabled="!canResume" :title="$t('chatHeader.resume')" v-if="canResume">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+        </button>
         <button class="header-action-btn" @click="compactContext" :disabled="isCompacting" :title="$t('chatHeader.compact')">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>
@@ -123,6 +128,18 @@ export default {
         && store.compactStatus?.conversationId === store.currentConversation;
     });
 
+    const canResume = Vue.computed(() => {
+      if (!store.currentConversation) return false;
+      const conv = store.conversations.find(c => c.id === store.currentConversation);
+      return conv?.claudeSessionId && !store.processingConversations[store.currentConversation];
+    });
+
+    const resumeSession = () => {
+      if (!canResume.value) return;
+      const conv = store.conversations.find(c => c.id === store.currentConversation);
+      store.resumeConversation(conv.claudeSessionId, store.currentWorkDir);
+    };
+
     const compactContext = () => {
       if (isCompacting.value) return;
       store.sendMessage('/compact');
@@ -148,6 +165,6 @@ export default {
       return store.crewPanelVisible[panel];
     };
 
-    return { store, headerTitle, folderPath, showCompactStatus, compactStatusClass, compactMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive };
+    return { store, headerTitle, folderPath, showCompactStatus, compactStatusClass, compactMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, canResume, resumeSession, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive };
   }
 };
