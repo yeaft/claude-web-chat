@@ -459,6 +459,7 @@ export default {
   'crew.statusInProgress': '进行中',
   'crew.viewHistory': '查看 {count} 条历史消息',
   'crew.activeMessages': '实时动态',
+  'crew.latestMessage': '最新消息',
   'crew.scrollToLatest': '↓ 最新',
   'crew.uploadFile': '上传文件',
   'crew.inputPlaceholder': '输入消息... (@角色名 发送给指定角色，Shift+Enter 换行)',

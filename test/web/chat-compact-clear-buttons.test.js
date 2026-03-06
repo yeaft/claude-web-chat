@@ -233,10 +233,10 @@ describe('CSS — header-action-btn styling', () => {
 // 7. Structural integrity
 // =====================================================================
 describe('structural integrity', () => {
-  it('CSS has balanced braces (2106/2106)', () => {
+  it('CSS has balanced braces (2109/2109)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2106);
+    expect(opens).toBe(2109);
   });
 });

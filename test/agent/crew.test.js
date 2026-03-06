@@ -3757,15 +3757,15 @@ describe('Streaming indicator - template verification', () => {
     expect(templateContent).toBeTruthy();
   });
 
-  it('should render streaming indicator when hasStreamingMessage', () => {
-    expect(templateContent).toContain('v-if="hasStreamingMessage"');
-    expect(templateContent).toContain('crew-streaming-indicator');
+  it('should use hasStreamingMessage in active messages v-if guard', () => {
+    expect(templateContent).toContain('hasStreamingMessage');
+    expect(templateContent).not.toContain('crew-streaming-indicator');
   });
 
-  it('should contain typing dots for streaming indicator', () => {
+  it('should contain typing dots for init progress and history loading', () => {
     const dotsMatch = templateContent.match(/crew-typing-dot/g);
     expect(dotsMatch).toBeTruthy();
-    expect(dotsMatch.length).toBe(9); // 3 for streaming + 3 for init progress + 3 for history loading
+    expect(dotsMatch.length).toBe(6); // 3 for init progress + 3 for history loading
   });
 
   it('should define hasStreamingMessage computed', () => {
@@ -4974,11 +4974,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2106/2106)', () => {
+    it('should have balanced CSS braces (2109/2109)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2106);
+      expect(opens).toBe(2109);
     });
   });
 

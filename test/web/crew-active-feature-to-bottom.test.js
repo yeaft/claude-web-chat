@@ -165,14 +165,14 @@ describe('global segment handling unaffected', () => {
 });
 
 // =====================================================================
-// 5. activeMessages computed — max 2 messages (human + crew)
+// 5. activeMessages computed — single latest text message
 // =====================================================================
 describe('activeMessages computed property', () => {
   it('activeMessages computed exists', () => {
     expect(jsSource).toContain('activeMessages()');
   });
 
-  it('returns latest human and crew messages (not per-role dedup)', () => {
+  it('returns single latest text message (not per-role dedup)', () => {
     const activeIdx = jsSource.indexOf('activeMessages()');
     const nextComputed = jsSource.indexOf('() {', activeIdx + 20);
     const section = jsSource.substring(activeIdx, nextComputed);
@@ -180,44 +180,66 @@ describe('activeMessages computed property', () => {
     expect(section).not.toContain('m._streaming');
   });
 
-  it('tracks latestHuman and latestCrew', () => {
+  it('does not track latestHuman or latestCrew', () => {
     const activeIdx = jsSource.indexOf('activeMessages()');
     const nextComputed = jsSource.indexOf('() {', activeIdx + 20);
     const section = jsSource.substring(activeIdx, nextComputed);
-    expect(section).toContain('latestHuman');
-    expect(section).toContain('latestCrew');
+    expect(section).not.toContain('latestHuman');
+    expect(section).not.toContain('latestCrew');
   });
 
-  it('does not use Set-based deduplication', () => {
+  it('returns directly via return [m]', () => {
     const activeIdx = jsSource.indexOf('activeMessages()');
     const nextComputed = jsSource.indexOf('() {', activeIdx + 20);
     const section = jsSource.substring(activeIdx, nextComputed);
-    expect(section).not.toContain('seen.has(m.role)');
-    expect(section).not.toContain('result.reverse()');
+    expect(section).toContain('return [m]');
   });
 });
 
 // =====================================================================
-// 6. Active Messages template area — identical to feature block rendering
+// 6. Active Messages template area — no border, task info, label
 // =====================================================================
 describe('Active Messages template section', () => {
   it('has crew-active-messages container', () => {
     expect(jsSource).toContain('class="crew-active-messages"');
   });
 
-  it('only renders when activeMessages has items', () => {
-    expect(jsSource).toContain('v-if="activeMessages.length > 0"');
+  it('hidden when all tasks completed', () => {
+    expect(jsSource).toMatch(/v-if="activeMessages\.length > 0 && \(hasStreamingMessage \|\| kanbanInProgressCount > 0\)"/);
   });
 
-  it('uses standard crew-message classes (no special header/title)', () => {
+  it('has "Latest Message" label', () => {
+    const activeArea = jsSource.substring(
+      jsSource.indexOf('crew-active-messages'),
+      jsSource.indexOf('crew-scroll-bottom')
+    );
+    expect(activeArea).toContain('crew-active-messages-label');
+  });
+
+  it('does NOT use getRoleStyle (no border-left)', () => {
+    const activeArea = jsSource.substring(
+      jsSource.indexOf('crew-active-messages'),
+      jsSource.indexOf('crew-scroll-bottom')
+    );
+    expect(activeArea).not.toContain('getRoleStyle');
+  });
+
+  it('shows taskTitle for feature context', () => {
+    const activeArea = jsSource.substring(
+      jsSource.indexOf('crew-active-messages'),
+      jsSource.indexOf('crew-scroll-bottom')
+    );
+    expect(activeArea).toContain('am.taskTitle');
+    expect(activeArea).toContain('crew-msg-task');
+  });
+
+  it('uses standard crew-message classes', () => {
     const activeArea = jsSource.substring(
       jsSource.indexOf('crew-active-messages'),
       jsSource.indexOf('crew-scroll-bottom')
     );
     expect(activeArea).toContain('crew-message');
     expect(activeArea).toContain('crew-msg-body');
-    expect(activeArea).not.toContain('crew-active-messages-header');
-    expect(activeArea).not.toContain('crew-active-messages-title');
   });
 
   it('uses dynamic crew-msg-type class like feature block', () => {

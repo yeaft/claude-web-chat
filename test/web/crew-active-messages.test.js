@@ -3,16 +3,16 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
 /**
- * Tests for task-46: Active Messages shows max 2 messages
- * (latest human + latest crew).
+ * Tests for task-46c: Active Messages — single latest text message.
  *
  * Verifies:
- * 1) activeMessages computed returns at most 2 messages (1 human + 1 crew)
- * 2) Reverse-scan picks latest of each category
- * 3) Template identical to feature block single-message rendering
- * 4) No special header/title
- * 5) CSS: .crew-active-messages has only simple margin
- * 6) Structural integrity
+ * 1) activeMessages computed returns exactly 1 message (latest text, any role)
+ * 2) Reverse-scan picks the latest text message
+ * 3) Template: no getRoleStyle border, shows taskTitle, has "Latest Message" label
+ * 4) No typing dots in dynamic message area
+ * 5) CSS: .crew-active-messages styling + no border-left + task label
+ * 6) Hidden when all tasks completed (no active features)
+ * 7) Structural integrity
  */
 
 let jsSource;
@@ -62,10 +62,20 @@ function extractComputedBody(name) {
   return jsSource.substring(braceStart + 1, end).trim();
 }
 
+/**
+ * Extract the active messages template area (between crew-active-messages and crew-scroll-bottom).
+ */
+function getActiveArea() {
+  return jsSource.substring(
+    jsSource.indexOf('crew-active-messages'),
+    jsSource.indexOf('crew-scroll-bottom')
+  );
+}
+
 // =====================================================================
-// 1. activeMessages computed — max 2 messages (human + crew)
+// 1. activeMessages computed — single latest text message
 // =====================================================================
-describe('activeMessages computed — max 2 messages', () => {
+describe('activeMessages computed — single latest message', () => {
   it('activeMessages method exists', () => {
     const body = extractComputedBody('activeMessages');
     expect(body.length).toBeGreaterThan(0);
@@ -81,65 +91,41 @@ describe('activeMessages computed — max 2 messages', () => {
     expect(body).toContain("m.type !== 'text'");
   });
 
-  it('tracks latestHuman variable', () => {
+  it('skips system role', () => {
     const body = extractComputedBody('activeMessages');
-    expect(body).toContain('latestHuman');
+    expect(body).toContain("m.role === 'system'");
   });
 
-  it('tracks latestCrew variable', () => {
+  it('returns array with single message via return [m]', () => {
     const body = extractComputedBody('activeMessages');
-    expect(body).toContain('latestCrew');
+    expect(body).toContain('return [m]');
   });
 
-  it('identifies human messages by role', () => {
+  it('does NOT track latestHuman or latestCrew', () => {
     const body = extractComputedBody('activeMessages');
-    expect(body).toContain("m.role === 'human'");
+    expect(body).not.toContain('latestHuman');
+    expect(body).not.toContain('latestCrew');
   });
 
-  it('excludes system role from crew messages', () => {
+  it('returns empty array when no text messages', () => {
     const body = extractComputedBody('activeMessages');
-    expect(body).toContain("m.role !== 'system'");
-  });
-
-  it('breaks early when both found', () => {
-    const body = extractComputedBody('activeMessages');
-    expect(body).toContain('if (latestHuman && latestCrew) break');
-  });
-
-  it('pushes latestHuman to result when found', () => {
-    const body = extractComputedBody('activeMessages');
-    expect(body).toContain('result.push(latestHuman)');
-  });
-
-  it('pushes latestCrew to result when found', () => {
-    const body = extractComputedBody('activeMessages');
-    expect(body).toContain('result.push(latestCrew)');
-  });
-
-  it('v-if guard shows area when any messages exist', () => {
-    expect(jsSource).toContain('v-if="activeMessages.length > 0"');
+    expect(body).toContain('return []');
   });
 });
 
 // =====================================================================
 // 2. Reverse scan algorithm
 // =====================================================================
-describe('reverse scan for latest messages', () => {
+describe('reverse scan for latest message', () => {
   it('scans messages in reverse order', () => {
     const body = extractComputedBody('activeMessages');
     expect(body).toMatch(/for\s*\(\s*let\s+i\s*=\s*messages\.length\s*-\s*1;\s*i\s*>=\s*0;\s*i--\)/);
   });
 
-  it('does NOT use Set for deduplication (no per-role grouping)', () => {
+  it('does NOT use Set for deduplication', () => {
     const body = extractComputedBody('activeMessages');
     expect(body).not.toContain('new Set()');
     expect(body).not.toContain('seen.has');
-    expect(body).not.toContain('seen.add');
-  });
-
-  it('does NOT reverse result (human always before crew)', () => {
-    const body = extractComputedBody('activeMessages');
-    expect(body).not.toContain('result.reverse()');
   });
 });
 
@@ -152,89 +138,61 @@ describe('activeMessages data source', () => {
     expect(body).toContain('this.store.currentCrewMessages');
   });
 
-  it('result is an array', () => {
+  it('does NOT use result array (returns directly)', () => {
     const body = extractComputedBody('activeMessages');
-    expect(body).toContain('const result = []');
-  });
-
-  it('initializes latestHuman as null', () => {
-    const body = extractComputedBody('activeMessages');
-    expect(body).toContain('let latestHuman = null');
-  });
-
-  it('initializes latestCrew as null', () => {
-    const body = extractComputedBody('activeMessages');
-    expect(body).toContain('let latestCrew = null');
+    expect(body).not.toContain('const result = []');
   });
 });
 
 // =====================================================================
-// 4. Template identical to feature block single-message rendering
+// 4. Template — no border, task info, label, feature block structure
 // =====================================================================
-describe('template — identical to feature block rendering', () => {
+describe('template — no border, task info, label', () => {
   it('active messages use crew-message class', () => {
-    const activeArea = jsSource.substring(
-      jsSource.indexOf('crew-active-messages'),
-      jsSource.indexOf('crew-scroll-bottom')
-    );
-    expect(activeArea).toContain('crew-message');
+    expect(getActiveArea()).toContain('crew-message');
   });
 
   it('uses dynamic crew-msg-type class like feature block', () => {
-    const activeArea = jsSource.substring(
-      jsSource.indexOf('crew-active-messages'),
-      jsSource.indexOf('crew-scroll-bottom')
-    );
-    expect(activeArea).toContain("'crew-msg-' + am.type");
+    expect(getActiveArea()).toContain("'crew-msg-' + am.type");
   });
 
   it('has crew-msg-human-bubble conditional class', () => {
-    const activeArea = jsSource.substring(
-      jsSource.indexOf('crew-active-messages'),
-      jsSource.indexOf('crew-scroll-bottom')
-    );
-    expect(activeArea).toContain('crew-msg-human-bubble');
+    expect(getActiveArea()).toContain('crew-msg-human-bubble');
+  });
+
+  it('does NOT use getRoleStyle (no border-left)', () => {
+    expect(getActiveArea()).not.toContain('getRoleStyle');
+  });
+
+  it('shows taskTitle for feature context', () => {
+    expect(getActiveArea()).toContain('am.taskTitle');
+    expect(getActiveArea()).toContain('crew-msg-task');
+  });
+
+  it('has "Latest Message" label at top', () => {
+    expect(getActiveArea()).toContain('crew-active-messages-label');
+    expect(getActiveArea()).toContain("$t('crew.latestMessage')");
   });
 
   it('header conditionally hidden for human text messages', () => {
-    const activeArea = jsSource.substring(
-      jsSource.indexOf('crew-active-messages'),
-      jsSource.indexOf('crew-scroll-bottom')
-    );
-    expect(activeArea).toContain("am.role !== 'human' || am.type !== 'text'");
+    expect(getActiveArea()).toContain("am.role !== 'human' || am.type !== 'text'");
   });
 
   it('crew-msg-name has is-human/is-system class binding', () => {
-    const activeArea = jsSource.substring(
-      jsSource.indexOf('crew-active-messages'),
-      jsSource.indexOf('crew-scroll-bottom')
-    );
-    expect(activeArea).toContain("'is-human': am.role === 'human'");
-    expect(activeArea).toContain("'is-system': am.role === 'system'");
+    expect(getActiveArea()).toContain("'is-human': am.role === 'human'");
+    expect(getActiveArea()).toContain("'is-system': am.role === 'system'");
   });
 
   it('shows formatTime(am.timestamp) for time display', () => {
-    const activeArea = jsSource.substring(
-      jsSource.indexOf('crew-active-messages'),
-      jsSource.indexOf('crew-scroll-bottom')
-    );
-    expect(activeArea).toContain('formatTime(am.timestamp)');
+    expect(getActiveArea()).toContain('formatTime(am.timestamp)');
   });
 
   it('uses crew-msg-body wrapper', () => {
-    const activeArea = jsSource.substring(
-      jsSource.indexOf('crew-active-messages'),
-      jsSource.indexOf('crew-scroll-bottom')
-    );
-    expect(activeArea).toContain('crew-msg-body');
+    expect(getActiveArea()).toContain('crew-msg-body');
   });
 
   it('uses crew-msg-header for role info', () => {
-    const activeArea = jsSource.substring(
-      jsSource.indexOf('crew-active-messages'),
-      jsSource.indexOf('crew-scroll-bottom')
-    );
-    expect(activeArea).toContain('crew-msg-header');
+    expect(getActiveArea()).toContain('crew-msg-header');
   });
 
   it('iterates activeMessages with v-for', () => {
@@ -247,30 +205,32 @@ describe('template — identical to feature block rendering', () => {
 });
 
 // =====================================================================
-// 5. No special header/title
+// 5. No typing dots in dynamic message area
 // =====================================================================
-describe('no special header or title', () => {
-  it('does NOT have crew-active-messages-header', () => {
-    expect(jsSource).not.toContain('crew-active-messages-header');
+describe('no typing dots in active messages area', () => {
+  it('does NOT have typing dots between active messages and scroll-bottom', () => {
+    expect(getActiveArea()).not.toContain('crew-typing-dot');
   });
 
-  it('does NOT have crew-active-messages-title', () => {
-    expect(jsSource).not.toContain('crew-active-messages-title');
-  });
-
-  it('does NOT have typing dots in active messages area', () => {
-    const activeArea = jsSource.substring(
-      jsSource.indexOf('crew-active-messages'),
-      jsSource.indexOf('crew-scroll-bottom')
-    );
-    expect(activeArea).not.toContain('crew-typing-dot');
+  it('does NOT have crew-streaming-indicator between active messages and scroll-bottom', () => {
+    expect(getActiveArea()).not.toContain('crew-streaming-indicator');
   });
 });
 
 // =====================================================================
-// 6. CSS — minimal .crew-active-messages styling
+// 6. Hidden when all tasks completed
 // =====================================================================
-describe('CSS — minimal active messages styling', () => {
+describe('hidden when all tasks completed', () => {
+  it('v-if includes hasStreamingMessage or kanbanInProgressCount > 0', () => {
+    const vifMatch = jsSource.match(/v-if="activeMessages\.length > 0 && \(hasStreamingMessage \|\| kanbanInProgressCount > 0\)"/);
+    expect(vifMatch).not.toBeNull();
+  });
+});
+
+// =====================================================================
+// 7. CSS — .crew-active-messages styling
+// =====================================================================
+describe('CSS — active messages styling', () => {
   it('has .crew-active-messages rule', () => {
     expect(cssSource).toContain('.crew-active-messages {');
   });
@@ -280,16 +240,18 @@ describe('CSS — minimal active messages styling', () => {
     expect(block).toContain('margin: 8px 0');
   });
 
-  it('does NOT have special border', () => {
-    const block = extractCssBlock('.crew-active-messages {');
-    expect(block).not.toContain('border:');
-    expect(block).not.toContain('border-radius');
+  it('overrides border-left to none for messages inside', () => {
+    expect(cssSource).toContain('.crew-active-messages .crew-message');
+    const block = extractCssBlock('.crew-active-messages .crew-message');
+    expect(block).toContain('border-left: none');
   });
 
-  it('does NOT have special background with color-mix', () => {
-    const block = extractCssBlock('.crew-active-messages {');
-    expect(block).not.toContain('color-mix');
-    expect(block).not.toContain('background');
+  it('has .crew-msg-task style', () => {
+    expect(cssSource).toContain('.crew-msg-task');
+  });
+
+  it('has .crew-active-messages-label style', () => {
+    expect(cssSource).toContain('.crew-active-messages-label');
   });
 
   it('removed .crew-active-msg CSS', () => {
@@ -298,7 +260,7 @@ describe('CSS — minimal active messages styling', () => {
 });
 
 // =====================================================================
-// 7. Structural integrity
+// 8. Structural integrity
 // =====================================================================
 describe('structural integrity', () => {
   it('CSS has balanced braces', () => {
