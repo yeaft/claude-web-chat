@@ -337,11 +337,11 @@ describe('CrewConfigPanel - developer count:3 default', () => {
 });
 
 describe('Verify actual source code consistency', () => {
-  it('CrewConfigPanel.js dev template should have count:3 on developer', async () => {
+  it('dev-zh template should have count:3 on developer', async () => {
     const { promises: fs } = await import('fs');
     const { join } = await import('path');
     const content = await fs.readFile(
-      join(process.cwd(), 'web/components/CrewConfigPanel.js'),
+      join(process.cwd(), 'web/crew-templates/dev-zh.js'),
       'utf-8'
     );
 
@@ -366,6 +366,17 @@ describe('Verify actual source code consistency', () => {
     expect(content).toContain("tester: 'test'");
     expect(content).toContain("reviewer: 'rev'");
   });
+
+  it('CrewConfigPanel.js should import getTemplate from crew-templates', async () => {
+    const { promises: fs } = await import('fs');
+    const { join } = await import('path');
+    const content = await fs.readFile(
+      join(process.cwd(), 'web/components/CrewConfigPanel.js'),
+      'utf-8'
+    );
+
+    expect(content).toContain("import { getTemplate } from '../crew-templates/index.js'");
+  });
 });
 
 // =====================================================================
@@ -381,7 +392,7 @@ describe('CrewConfigPanel - developer claudeMd best practices (b7b48d3)', () => 
     const { promises: fs } = await import('fs');
     const { join } = await import('path');
     configContent = await fs.readFile(
-      join(process.cwd(), 'web/components/CrewConfigPanel.js'),
+      join(process.cwd(), 'web/crew-templates/dev-zh.js'),
       'utf-8'
     );
   });
@@ -455,7 +466,7 @@ describe('CrewConfigPanel - developer team model with reviewer/tester', () => {
     const { promises: fs } = await import('fs');
     const { join } = await import('path');
     configContent = await fs.readFile(
-      join(process.cwd(), 'web/components/CrewConfigPanel.js'),
+      join(process.cwd(), 'web/crew-templates/dev-zh.js'),
       'utf-8'
     );
   });
@@ -488,9 +499,8 @@ describe('CrewConfigPanel - developer team model with reviewer/tester', () => {
   });
 
   it('dev template should include reviewer and tester roles', () => {
-    const devTemplateSection = configContent.split("type === 'dev'")[1].split("type === 'writing'")[0];
-    expect(devTemplateSection).toContain("name: 'reviewer'");
-    expect(devTemplateSection).toContain("name: 'tester'");
+    expect(configContent).toContain("name: 'reviewer'");
+    expect(configContent).toContain("name: 'tester'");
   });
 
   it('dev template should have reviewer with Robert C. Martin persona', () => {
