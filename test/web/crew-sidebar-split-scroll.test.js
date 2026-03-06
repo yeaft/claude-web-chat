@@ -169,9 +169,9 @@ describe('collapsed sidebar hides session-panels', () => {
 });
 
 // =====================================================================
-// 4. Two panels each use flex:1 to split space evenly
+// 4. Adaptive layout — first panel shrinks to content, second fills rest
 // =====================================================================
-describe('flex:1 space splitting', () => {
+describe('adaptive layout', () => {
   it('session-panels is flex column container', () => {
     const block = extractCssBlock('.session-panels {');
     expect(block).toContain('display: flex');
@@ -188,30 +188,25 @@ describe('flex:1 space splitting', () => {
     expect(block).toContain('min-height: 0');
   });
 
-  it('each session-panel has flex: 1 for equal distribution', () => {
-    const block = extractCssBlock('.session-panel {');
-    expect(block).toContain('flex: 1');
-  });
-
-  it('each session-panel is a flex column container', () => {
+  it('session-panel is a flex column container', () => {
     const block = extractCssBlock('.session-panel {');
     expect(block).toContain('display: flex');
     expect(block).toContain('flex-direction: column');
   });
 
-  it('each session-panel has min-height for usability', () => {
-    const block = extractCssBlock('.session-panel {');
-    expect(block).toContain('min-height: 80px');
+  it('first panel shrinks to content with max-height cap', () => {
+    const block = extractCssBlock('.session-panel:first-child {');
+    expect(block).toContain('flex: 0 1 auto');
+    expect(block).toContain('max-height: 50%');
   });
 
-  it('each session-panel has overflow: hidden to contain scroll child', () => {
-    const block = extractCssBlock('.session-panel {');
-    expect(block).toContain('overflow: hidden');
-  });
-
-  it('session-panel-list takes flex: 1 and scrolls independently', () => {
-    const block = extractCssBlock('.session-panel-list {');
+  it('second panel fills remaining space', () => {
+    const block = extractCssBlock('.session-panel:last-child {');
     expect(block).toContain('flex: 1');
+  });
+
+  it('session-panel-list scrolls independently', () => {
+    const block = extractCssBlock('.session-panel-list {');
     expect(block).toContain('overflow-y: auto');
   });
 });
@@ -402,7 +397,7 @@ describe('structural integrity', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2112);
+    expect(opens).toBe(2114);
   });
 
   it('session-group-header CSS rule exists', () => {

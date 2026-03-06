@@ -131,7 +131,7 @@ export default {
 
         </div>
 
-        <!-- Session Panels — independent scroll areas -->
+        <!-- Session Panels — adaptive scroll layout -->
         <div class="session-panels">
           <!-- Chat Sessions Panel -->
           <div class="session-panel">
