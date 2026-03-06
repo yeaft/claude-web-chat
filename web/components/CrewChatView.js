@@ -30,7 +30,7 @@ export default {
         <!-- Left Panel: Role Cards -->
         <aside class="crew-panel-left">
           <div class="crew-panel-left-scroll">
-            <button class="crew-mobile-close" @click="store.crewMobilePanel = null"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> 关闭</button>
+            <button class="crew-mobile-close" @click="store.crewMobilePanel = null"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> {{ $t('crew.close') }}</button>
             <div class="crew-role-list">
               <div v-for="role in sessionRoles" :key="role.name"
                    class="crew-role-card"
@@ -42,9 +42,9 @@ export default {
                   <span class="crew-role-card-name">{{ role.displayName }}</span>
                   <span v-if="role.isDecisionMaker" class="crew-role-card-dm">\u2605</span>
                   <span class="crew-role-card-header-actions" @click.stop>
-                    <button v-if="isRoleStreaming(role.name)" class="crew-role-action-btn crew-role-abort-btn" @click.stop="abortRole(role.name)" title="中止当前任务">⏹</button>
-                    <button class="crew-role-action-btn" @click.stop="compactRole(role.name)" title="压缩上下文">🗜</button>
-                    <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" title="清空对话">🗑</button>
+                    <button v-if="isRoleStreaming(role.name)" class="crew-role-action-btn crew-role-abort-btn" @click.stop="abortRole(role.name)" :title="$t('crew.abortTask')">⏹</button>
+                    <button class="crew-role-action-btn" @click.stop="compactRole(role.name)" :title="$t('crew.compactContext')">🗜</button>
+                    <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" :title="$t('crew.clearChat')">🗑</button>
                   </span>
                 </div>
                 <div v-if="getRoleCurrentTask(role.name)" class="crew-role-card-feature">
@@ -61,12 +61,12 @@ export default {
             <div class="crew-panel-left-actions">
               <button class="crew-add-role-btn" @click="showAddRole = true">
                 <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-                <span>添加角色</span>
+                <span>{{ $t('crew.addRole') }}</span>
               </button>
-              <button class="crew-action-btn" @click="controlAction('clear')" title="清空会话">
+              <button class="crew-action-btn" @click="controlAction('clear')" :title="$t('crew.clearSession')">
                 <span v-html="icons.close"></span>
               </button>
-              <button class="crew-action-btn danger" @click="controlAction('stop_all')" title="停止当前轮次">
+              <button class="crew-action-btn danger" @click="controlAction('stop_all')" :title="$t('crew.stopRound')">
                 <span v-html="icons.stop"></span>
               </button>
             </div>
@@ -80,21 +80,21 @@ export default {
       <div class="crew-messages" ref="messagesRef" @scroll="onScroll">
         <div v-if="store.currentCrewMessages.length === 0" class="crew-empty">
           <div class="crew-empty-icon" v-html="icons.crew.replace(/16/g, '48')"></div>
-          <div class="crew-empty-text" v-if="store.currentCrewSession">等待角色开始工作...</div>
-          <div class="crew-empty-text" v-else>等待 Crew Session 启动...</div>
+          <div class="crew-empty-text" v-if="store.currentCrewSession">{{ $t('crew.emptyWaiting') }}</div>
+          <div class="crew-empty-text" v-else>{{ $t('crew.emptyWaitingSession') }}</div>
         </div>
 
         <div v-if="isLoadingHistory" class="crew-load-more crew-load-more-loading">
           <span class="crew-typing-dot"></span>
           <span class="crew-typing-dot"></span>
           <span class="crew-typing-dot"></span>
-          加载历史消息中...
+          {{ $t('crew.loadingHistory') }}
         </div>
         <div v-else-if="hiddenBlockCount > 0" class="crew-load-more" @click="loadMoreBlocks">
-          ↑ 加载更早的消息 <span class="crew-load-more-count">({{ hiddenBlockCount }})</span>
+          {{ $t('crew.loadOlder') }} <span class="crew-load-more-count">({{ hiddenBlockCount }})</span>
         </div>
         <div v-else-if="hasOlderMessages" class="crew-load-more" @click="loadHistory">
-          ↑ 加载历史消息
+          {{ $t('crew.loadHistory') }}
         </div>
 
         <!-- Pending Ask Banner -->
@@ -102,7 +102,7 @@ export default {
           <div class="crew-pending-asks-card">
             <div class="crew-pending-asks-header">
               <span class="icon">❓</span>
-              {{ pendingAsks.length }} 个问题等待回答
+              {{ $t('crew.pendingAsks', { count: pendingAsks.length }) }}
             </div>
             <div class="crew-pending-asks-list">
               <div v-for="ask in pendingAsks" :key="ask.askMsg.id"
@@ -110,7 +110,7 @@ export default {
                    @click="scrollToAsk(ask)">
                 <span class="crew-pending-ask-icon">{{ ask.roleIcon }}</span>
                 <span class="crew-pending-ask-text">{{ ask.question }}</span>
-                <span class="crew-pending-ask-goto">→ 查看</span>
+                <span class="crew-pending-ask-goto">{{ $t('crew.goToAsk') }}</span>
               </div>
             </div>
           </div>
@@ -148,7 +148,7 @@ export default {
                       <div v-else class="user-attachment-file"><span class="file-name">{{ att.name }}</span></div>
                     </div>
                   </div>
-                  <div v-if="turn.message._sendFailed" class="crew-msg-send-failed">发送失败，请检查网络连接后重试</div>
+                  <div v-if="turn.message._sendFailed" class="crew-msg-send-failed">{{ $t('crew.sendFailed') }}</div>
                 </div>
               </div>
               <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :data-role="turn.role" :style="getRoleStyle(turn.role)">
@@ -158,9 +158,9 @@ export default {
                     <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
                     <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
                     <span v-if="turn.askMsg" class="crew-ask-badge" :class="{ answered: isCrewAskAnswered(turn.askMsg), waiting: !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId, pending: !isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId }">
-                      <template v-if="isCrewAskAnswered(turn.askMsg)">✓ 已回答</template>
-                      <template v-else-if="turn.askMsg.askRequestId">❓ 需要确认</template>
-                      <template v-else>⏳ 等待回答</template>
+                      <template v-if="isCrewAskAnswered(turn.askMsg)">{{ $t('crew.askAnswered') }}</template>
+                      <template v-else-if="turn.askMsg.askRequestId">{{ $t('crew.askNeedConfirm') }}</template>
+                      <template v-else>{{ $t('crew.askWaiting') }}</template>
                     </span>
                   </div>
                   <template v-if="turn.textMsg">
@@ -176,7 +176,7 @@ export default {
                     <!-- Latest tool + expand button -->
                     <div class="crew-turn-tool-latest">
                       <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
-                      <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
+                      <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? $t('crew.collapse') : $t('crew.expandOps', { count: turn.toolMsgs.length - 1 })">
                         <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
                         <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
                         <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
@@ -186,7 +186,7 @@ export default {
                   <div v-if="turn.imageMsgs.length > 0" class="crew-msg-images">
                     <div v-for="img in turn.imageMsgs" :key="img.id" class="crew-msg-image">
                       <img v-if="img.fileId" :src="getImageUrl(img)" class="crew-screenshot" @error="handleImageError($event)" @click="openImagePreview(getImageUrl(img))" :alt="'Screenshot by ' + (img.roleName || img.role)" />
-                      <div v-else class="crew-screenshot-expired">图片已过期</div>
+                      <div v-else class="crew-screenshot-expired">{{ $t('crew.imageExpired') }}</div>
                     </div>
                   </div>
                   <template v-if="turn.askMsg">
@@ -204,16 +204,16 @@ export default {
                             </button>
                           </div>
                           <div class="crew-ask-custom" v-if="turn.askMsg.askRequestId">
-                            <input type="text" placeholder="自定义回答..." :value="crewAskCustom[turn.askMsg.id + ':' + q.question] || ''" @input="setCrewAskCustom(turn.askMsg.id, q.question, $event.target.value)" @keyup.enter="submitCrewAsk(turn.askMsg)" />
+                            <input type="text" :placeholder="$t('crew.customAnswer')" :value="crewAskCustom[turn.askMsg.id + ':' + q.question] || ''" @input="setCrewAskCustom(turn.askMsg.id, q.question, $event.target.value)" @keyup.enter="submitCrewAsk(turn.askMsg)" />
                           </div>
                         </template>
                         <div v-else class="crew-ask-answer">{{ getCrewAskAnswer(turn.askMsg, q.question) }}</div>
                       </div>
                       <div v-if="!isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId">
-                        <button class="crew-ask-submit" @click="submitCrewAsk(turn.askMsg)" :disabled="!hasCrewAskSelection(turn.askMsg)">提交回答 ▶</button>
+                        <button class="crew-ask-submit" @click="submitCrewAsk(turn.askMsg)" :disabled="!hasCrewAskSelection(turn.askMsg)">{{ $t('crew.submitAnswer') }}</button>
                       </div>
                       <div v-if="!isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId" class="crew-ask-waiting-hint">
-                        <span class="crew-typing-dot"></span><span class="crew-typing-dot"></span><span class="crew-typing-dot"></span> 等待连接...
+                        <span class="crew-typing-dot"></span><span class="crew-typing-dot"></span><span class="crew-typing-dot"></span> {{ $t('crew.waitingConnection') }}
                       </div>
                     </div>
                   </template>
@@ -242,10 +242,10 @@ export default {
                 <span v-if="block.activeRoles.length > 3" class="crew-feature-active-more">+{{ block.activeRoles.length - 3 }}</span>
               </span>
               <span v-if="block.isCompleted" class="crew-feature-status completed">
-                <span class="crew-feature-status-dot"></span> 已完成
+                <span class="crew-feature-status-dot"></span> {{ $t('crew.statusCompleted') }}
               </span>
               <span v-else-if="block.hasStreaming" class="crew-feature-status active">
-                <span class="crew-feature-status-dot"></span> 进行中
+                <span class="crew-feature-status-dot"></span> {{ $t('crew.statusInProgress') }}
               </span>
             </div>
             <div v-if="isFeatureExpanded(block)" class="crew-feature-body">
@@ -255,7 +255,7 @@ export default {
                       :class="{ 'is-expanded': expandedHistories[block.taskId] }"
                       @click.stop="toggleHistory(block.taskId)">
                 <svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 6l6 6-6 6z"/></svg>
-                查看 {{ getBlockTurns(block).length - 1 }} 条历史消息
+                {{ $t('crew.viewHistory', { count: getBlockTurns(block).length - 1 }) }}
               </button>
 
               <!-- History messages (collapsed by default) -->
@@ -292,9 +292,9 @@ export default {
                         <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
                         <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
                         <span v-if="turn.askMsg" class="crew-ask-badge" :class="{ answered: isCrewAskAnswered(turn.askMsg), waiting: !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId, pending: !isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId }">
-                          <template v-if="isCrewAskAnswered(turn.askMsg)">✓ 已回答</template>
-                          <template v-else-if="turn.askMsg.askRequestId">❓ 需要确认</template>
-                          <template v-else>⏳ 等待回答</template>
+                          <template v-if="isCrewAskAnswered(turn.askMsg)">{{ $t('crew.askAnswered') }}</template>
+                          <template v-else-if="turn.askMsg.askRequestId">{{ $t('crew.askNeedConfirm') }}</template>
+                          <template v-else>{{ $t('crew.askWaiting') }}</template>
                         </span>
                       </div>
                       <template v-if="turn.textMsg">
@@ -310,7 +310,7 @@ export default {
                         <!-- Latest tool + expand button -->
                         <div class="crew-turn-tool-latest">
                           <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
-                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
+                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? $t('crew.collapse') : $t('crew.expandOps', { count: turn.toolMsgs.length - 1 })">
                             <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
                             <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
                             <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
@@ -320,7 +320,7 @@ export default {
                       <div v-if="turn.imageMsgs.length > 0" class="crew-msg-images">
                         <div v-for="img in turn.imageMsgs" :key="img.id" class="crew-msg-image">
                           <img v-if="img.fileId" :src="getImageUrl(img)" class="crew-screenshot" @error="handleImageError($event)" @click="openImagePreview(getImageUrl(img))" :alt="'Screenshot by ' + (img.roleName || img.role)" />
-                          <div v-else class="crew-screenshot-expired">图片已过期</div>
+                          <div v-else class="crew-screenshot-expired">{{ $t('crew.imageExpired') }}</div>
                         </div>
                       </div>
                       <template v-if="turn.askMsg">
@@ -338,16 +338,16 @@ export default {
                                 </button>
                               </div>
                               <div class="crew-ask-custom" v-if="turn.askMsg.askRequestId">
-                                <input type="text" placeholder="自定义回答..." :value="crewAskCustom[turn.askMsg.id + ':' + q.question] || ''" @input="setCrewAskCustom(turn.askMsg.id, q.question, $event.target.value)" @keyup.enter="submitCrewAsk(turn.askMsg)" />
+                                <input type="text" :placeholder="$t('crew.customAnswer')" :value="crewAskCustom[turn.askMsg.id + ':' + q.question] || ''" @input="setCrewAskCustom(turn.askMsg.id, q.question, $event.target.value)" @keyup.enter="submitCrewAsk(turn.askMsg)" />
                               </div>
                             </template>
                             <div v-else class="crew-ask-answer">{{ getCrewAskAnswer(turn.askMsg, q.question) }}</div>
                           </div>
                           <div v-if="!isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId">
-                            <button class="crew-ask-submit" @click="submitCrewAsk(turn.askMsg)" :disabled="!hasCrewAskSelection(turn.askMsg)">提交回答 ▶</button>
+                            <button class="crew-ask-submit" @click="submitCrewAsk(turn.askMsg)" :disabled="!hasCrewAskSelection(turn.askMsg)">{{ $t('crew.submitAnswer') }}</button>
                           </div>
                           <div v-if="!isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId" class="crew-ask-waiting-hint">
-                            <span class="crew-typing-dot"></span><span class="crew-typing-dot"></span><span class="crew-typing-dot"></span> 等待连接...
+                            <span class="crew-typing-dot"></span><span class="crew-typing-dot"></span><span class="crew-typing-dot"></span> {{ $t('crew.waitingConnection') }}
                           </div>
                         </div>
                       </template>
@@ -394,9 +394,9 @@ export default {
                         <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
                         <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
                         <span v-if="turn.askMsg" class="crew-ask-badge" :class="{ answered: isCrewAskAnswered(turn.askMsg), waiting: !isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId, pending: !isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId }">
-                          <template v-if="isCrewAskAnswered(turn.askMsg)">✓ 已回答</template>
-                          <template v-else-if="turn.askMsg.askRequestId">❓ 需要确认</template>
-                          <template v-else>⏳ 等待回答</template>
+                          <template v-if="isCrewAskAnswered(turn.askMsg)">{{ $t('crew.askAnswered') }}</template>
+                          <template v-else-if="turn.askMsg.askRequestId">{{ $t('crew.askNeedConfirm') }}</template>
+                          <template v-else>{{ $t('crew.askWaiting') }}</template>
                         </span>
                       </div>
                       <template v-if="turn.textMsg">
@@ -412,7 +412,7 @@ export default {
                         <!-- Latest tool + expand button -->
                         <div class="crew-turn-tool-latest">
                           <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
-                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? '收起' : '展开 ' + (turn.toolMsgs.length - 1) + ' 个操作'">
+                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? $t('crew.collapse') : $t('crew.expandOps', { count: turn.toolMsgs.length - 1 })">
                             <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
                             <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
                             <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
@@ -422,7 +422,7 @@ export default {
                       <div v-if="turn.imageMsgs.length > 0" class="crew-msg-images">
                         <div v-for="img in turn.imageMsgs" :key="img.id" class="crew-msg-image">
                           <img v-if="img.fileId" :src="getImageUrl(img)" class="crew-screenshot" @error="handleImageError($event)" @click="openImagePreview(getImageUrl(img))" :alt="'Screenshot by ' + (img.roleName || img.role)" />
-                          <div v-else class="crew-screenshot-expired">图片已过期</div>
+                          <div v-else class="crew-screenshot-expired">{{ $t('crew.imageExpired') }}</div>
                         </div>
                       </div>
                       <template v-if="turn.askMsg">
@@ -440,16 +440,16 @@ export default {
                                 </button>
                               </div>
                               <div class="crew-ask-custom" v-if="turn.askMsg.askRequestId">
-                                <input type="text" placeholder="自定义回答..." :value="crewAskCustom[turn.askMsg.id + ':' + q.question] || ''" @input="setCrewAskCustom(turn.askMsg.id, q.question, $event.target.value)" @keyup.enter="submitCrewAsk(turn.askMsg)" />
+                                <input type="text" :placeholder="$t('crew.customAnswer')" :value="crewAskCustom[turn.askMsg.id + ':' + q.question] || ''" @input="setCrewAskCustom(turn.askMsg.id, q.question, $event.target.value)" @keyup.enter="submitCrewAsk(turn.askMsg)" />
                               </div>
                             </template>
                             <div v-else class="crew-ask-answer">{{ getCrewAskAnswer(turn.askMsg, q.question) }}</div>
                           </div>
                           <div v-if="!isCrewAskAnswered(turn.askMsg) && turn.askMsg.askRequestId">
-                            <button class="crew-ask-submit" @click="submitCrewAsk(turn.askMsg)" :disabled="!hasCrewAskSelection(turn.askMsg)">提交回答 ▶</button>
+                            <button class="crew-ask-submit" @click="submitCrewAsk(turn.askMsg)" :disabled="!hasCrewAskSelection(turn.askMsg)">{{ $t('crew.submitAnswer') }}</button>
                           </div>
                           <div v-if="!isCrewAskAnswered(turn.askMsg) && !turn.askMsg.askRequestId" class="crew-ask-waiting-hint">
-                            <span class="crew-typing-dot"></span><span class="crew-typing-dot"></span><span class="crew-typing-dot"></span> 等待连接...
+                            <span class="crew-typing-dot"></span><span class="crew-typing-dot"></span><span class="crew-typing-dot"></span> {{ $t('crew.waitingConnection') }}
                           </div>
                         </div>
                       </template>
@@ -475,7 +475,7 @@ export default {
         <div class="crew-scroll-bottom"
              :class="{ 'is-hidden': isAtBottom }"
              @click="scrollToBottomAndReset">
-          ↓ 最新
+          {{ $t('crew.scrollToLatest') }}
         </div>
 
         <!-- 流式指示器 -->
@@ -523,7 +523,7 @@ export default {
             accept="image/*,text/*,.pdf,.doc,.docx,.xls,.xlsx,.json,.md,.py,.js,.ts,.css,.html"
             class="file-input-hidden"
           />
-          <label class="attach-btn" for="crew-file-input" title="上传文件">
+          <label class="attach-btn" for="crew-file-input" :title="$t('crew.uploadFile')">
             <svg viewBox="0 0 24 24" width="20" height="20">
               <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
             </svg>
@@ -535,7 +535,7 @@ export default {
               @input="handleInput"
               @keydown="handleKeydown"
               @paste="handlePaste"
-              placeholder="输入消息... (@角色名 发送给指定角色，Shift+Enter 换行)"
+              :placeholder="$t('crew.inputPlaceholder')"
               rows="1"
             ></textarea>
             <div class="crew-at-menu" v-if="atMenuVisible && filteredAtRoles.length > 0">
@@ -548,7 +548,7 @@ export default {
               </div>
             </div>
           </div>
-          <button class="send-btn" @click="sendMessage" :disabled="!canSend" title="发送">
+          <button class="send-btn" @click="sendMessage" :disabled="!canSend" :title="$t('crew.send')">
             <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
           </button>
         </div>
@@ -559,12 +559,12 @@ export default {
         <!-- Right Panel: Feature Kanban -->
         <aside class="crew-panel-right">
           <div class="crew-panel-right-scroll">
-            <button class="crew-mobile-close" @click="store.crewMobilePanel = null"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> 关闭</button>
+            <button class="crew-mobile-close" @click="store.crewMobilePanel = null"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> {{ $t('crew.close') }}</button>
 
             <!-- 总进度 (顶部概览) -->
             <div class="crew-kanban-total" v-if="kanbanProgress.total > 0">
               <div class="crew-kanban-total-header">
-                <span>总进度</span>
+                <span>{{ $t('crew.totalProgress') }}</span>
                 <span>{{ kanbanProgress.done }} / {{ kanbanProgress.total }}  {{ Math.round(kanbanProgress.done / kanbanProgress.total * 100) }}%</span>
               </div>
               <div class="crew-kanban-total-bar">
@@ -577,7 +577,7 @@ export default {
             <div v-if="featureKanbanGrouped.inProgress.length > 0" class="crew-kanban-group">
               <div class="crew-kanban-group-header is-active">
                 <span class="crew-kanban-group-dot is-active"></span>
-                进行中 ({{ featureKanbanGrouped.inProgress.length }})
+                {{ $t('crew.statusInProgress') }} ({{ featureKanbanGrouped.inProgress.length }})
               </div>
               <div v-for="feature in featureKanbanGrouped.inProgress" :key="feature.taskId"
                    class="crew-feature-card"
@@ -595,7 +595,7 @@ export default {
                   <span class="crew-feature-card-count">
                     {{ feature.doneCount }} / {{ feature.totalCount }}
                   </span>
-                  <span v-if="feature.createdAt" class="crew-feature-card-elapsed">总耗时 {{ formatDuration(nowTick - feature.createdAt) }}</span>
+                  <span v-if="feature.createdAt" class="crew-feature-card-elapsed">{{ $t('crew.elapsed', { duration: formatDuration(nowTick - feature.createdAt) }) }}</span>
                 </div>
                 <div class="crew-feature-card-bar">
                   <div class="crew-feature-card-bar-fill"
@@ -606,7 +606,7 @@ export default {
                   <span class="crew-feature-card-roles-icons">
                     <span v-for="ar in feature.activeRoles" :key="ar.role">{{ ar.roleIcon }}</span>
                   </span>
-                  <span class="crew-feature-card-roles-label">工作中</span>
+                  <span class="crew-feature-card-roles-label">{{ $t('crew.working') }}</span>
                 </div>
                 <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length > 0"
                      class="crew-feature-card-todos">
@@ -625,8 +625,8 @@ export default {
                 </div>
                 <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length === 0"
                      class="crew-feature-card-empty">
-                  进行中
-                </div>
+                  {{ $t('crew.statusInProgress') }}
+</div>
               </div>
             </div>
 
@@ -637,7 +637,7 @@ export default {
                   <path fill="currentColor" d="M10 6l6 6-6 6z"/>
                 </svg>
                 <span class="crew-kanban-group-dot is-completed"></span>
-                已完成 ({{ featureKanbanGrouped.completed.length }})
+                {{ $t('crew.statusCompleted') }} ({{ featureKanbanGrouped.completed.length }})
               </div>
               <template v-if="showCompletedFeatures">
                 <div v-for="feature in featureKanbanGrouped.completed" :key="feature.taskId"
@@ -655,7 +655,7 @@ export default {
                     <span class="crew-feature-card-count">
                       {{ feature.doneCount }} / {{ feature.totalCount }}
                     </span>
-                    <span v-if="feature.createdAt && feature.lastActivityAt" class="crew-feature-card-elapsed">总耗时 {{ formatDuration(feature.lastActivityAt - feature.createdAt) }}</span>
+                    <span v-if="feature.createdAt && feature.lastActivityAt" class="crew-feature-card-elapsed">{{ $t('crew.elapsed', { duration: formatDuration(feature.lastActivityAt - feature.createdAt) }) }}</span>
                   </div>
                   <div class="crew-feature-card-bar">
                     <div class="crew-feature-card-bar-fill"
@@ -679,7 +679,7 @@ export default {
                   </div>
                   <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length === 0"
                        class="crew-feature-card-empty">
-                    已完成
+                    {{ $t('crew.statusCompleted') }}
                   </div>
                 </div>
               </template>
@@ -687,7 +687,7 @@ export default {
 
             <!-- Empty state -->
             <div v-if="featureKanban.length === 0" class="crew-kanban-empty">
-              <div class="crew-kanban-empty-text">暂无 Feature</div>
+              <div class="crew-kanban-empty-text">{{ $t('crew.noFeatures') }}</div>
             </div>
           </div>
 
@@ -697,7 +697,7 @@ export default {
       <!-- Add Role Modal -->
       <div v-if="showAddRole" class="crew-add-role-overlay" @click.self="showAddRole = false">
         <div class="crew-add-role-modal">
-          <div class="crew-add-role-title">添加角色</div>
+          <div class="crew-add-role-title">{{ $t('crew.addRoleTitle') }}</div>
 
           <!-- 一键添加预设 -->
           <div class="crew-add-role-presets">
@@ -708,17 +708,17 @@ export default {
 
           <!-- 自定义角色（折叠） -->
           <details class="crew-add-custom-details">
-            <summary class="crew-add-custom-summary">自定义角色</summary>
+            <summary class="crew-add-custom-summary">{{ $t('crew.customRole') }}</summary>
             <div class="crew-add-role-form">
               <div class="crew-add-role-row">
-                <input v-model="newRole.name" placeholder="英文标识 (如 analyst)" class="crew-add-input" />
-                <input v-model="newRole.displayName" placeholder="显示名称" class="crew-add-input" />
-                <input v-model="newRole.icon" placeholder="图标" class="crew-add-input" style="width: 50px; flex: none;" />
+                <input v-model="newRole.name" :placeholder="$t('crew.namePlaceholder')" class="crew-add-input" />
+                <input v-model="newRole.displayName" :placeholder="$t('crew.displayNamePlaceholder')" class="crew-add-input" />
+                <input v-model="newRole.icon" :placeholder="$t('crew.iconPlaceholder')" class="crew-add-input" style="width: 50px; flex: none;" />
               </div>
-              <input v-model="newRole.description" placeholder="角色描述 (可选)" class="crew-add-input" />
-              <textarea v-model="newRole.claudeMd" placeholder="自定义 Prompt (可选)" rows="2" class="crew-add-input"></textarea>
+              <input v-model="newRole.description" :placeholder="$t('crew.descPlaceholder')" class="crew-add-input" />
+              <textarea v-model="newRole.claudeMd" :placeholder="$t('crew.promptPlaceholder')" rows="2" class="crew-add-input"></textarea>
               <div class="crew-add-role-actions">
-                <button class="crew-add-role-confirm" @click="confirmAddRole" :disabled="!newRole.name || !newRole.displayName">添加</button>
+                <button class="crew-add-role-confirm" @click="confirmAddRole" :disabled="!newRole.name || !newRole.displayName">{{ $t('crew.add') }}</button>
               </div>
             </div>
           </details>
@@ -1028,9 +1028,9 @@ summary: 请测试以下变更...
     },
     initProgressText() {
       const p = this.store.currentCrewStatus?.initProgress;
-      if (p === 'roles') return '正在初始化角色配置...';
-      if (p === 'worktrees') return '正在创建工作区...';
-      return '正在准备工作环境...';
+      if (p === 'roles') return this.$t('crew.initRoles');
+      if (p === 'worktrees') return this.$t('crew.initWorktrees');
+      return this.$t('crew.initPreparing');
     },
     hasStreamingMessage() {
       return this.store.currentCrewMessages.some(m => m._streaming);
@@ -1360,7 +1360,7 @@ summary: 请测试以下变更...
         if (!feature) {
           feature = {
             taskId: tid,
-            taskTitle: group.taskTitle || '全局任务',
+            taskTitle: group.taskTitle || this.$t('crew.globalTask'),
             todos: [],
             doneCount: 0,
             totalCount: 0,
@@ -1864,7 +1864,7 @@ summary: 请测试以下变更...
       const img = event.target;
       const expired = document.createElement('div');
       expired.className = 'crew-screenshot-expired';
-      expired.textContent = '图片已过期';
+      expired.textContent = this.$t('crew.imageExpired');
       img.parentNode.replaceChild(expired, img);
     },
 
@@ -1916,7 +1916,7 @@ summary: 请测试以下变更...
 
     getRoleBadgeTitle(role) {
       const tools = this.store.currentCrewStatus?.currentToolByRole;
-      let title = role.displayName + (role.isDecisionMaker ? ' (决策者)' : '');
+      let title = role.displayName + (role.isDecisionMaker ? ` (${this.$t('crew.decisionMaker')})` : '');
       if (tools?.[role.name]) {
         title += ` — ${tools[role.name]}`;
       }
@@ -2141,7 +2141,7 @@ summary: 请测试以下变更...
     controlAction(action, targetRole = null) {
       this.controlOpen = false;
       if (action === 'clear') {
-        if (!confirm('确定要清空所有对话？角色配置将保留，但所有对话历史将被重置。')) return;
+        if (!confirm(this.$t('crew.confirmClear'))) return;
       }
       this.store.sendCrewControl(action, targetRole);
     },
@@ -2163,7 +2163,7 @@ summary: 请测试以下变更...
 
     removeRole(roleName) {
       if (!roleName) return;
-      if (!confirm(`确定要移除 ${roleName}？角色的 Memory 将保留。`)) return;
+      if (!confirm(this.$t('crew.confirmRemoveRole', { name: roleName }))) return;
       this.store.removeCrewRole(roleName);
     },
 

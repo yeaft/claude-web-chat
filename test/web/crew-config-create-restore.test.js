@@ -282,9 +282,9 @@ describe('CrewConfigPanel - restore flow when .crew exists', () => {
   describe('restore banner content', () => {
     it('source should contain restore banner elements', () => {
       expect(configContent).toContain('crew-exists-banner');
-      expect(configContent).toContain('发现已有 Crew 配置');
+      expect(configContent).toContain("crewConfig.foundConfig");
       expect(configContent).toContain('crew-exists-action-btn');
-      expect(configContent).toContain('恢复此 Crew');
+      expect(configContent).toContain("crewConfig.restoreCrew");
     });
 
     it('should display session info when available', () => {
@@ -294,7 +294,7 @@ describe('CrewConfigPanel - restore flow when .crew exists', () => {
     });
 
     it('should show hint text about restoring vs creating', () => {
-      expect(configContent).toContain('工作目录已存在 .crew 配置，建议恢复而非重新创建');
+      expect(configContent).toContain("crewConfig.existsHintRestore");
     });
   });
 
@@ -428,31 +428,31 @@ describe('CrewConfigPanel - create flow when .crew does not exist', () => {
 
   describe('create form elements exist in source', () => {
     it('should have team name input', () => {
-      expect(configContent).toContain('团队名称');
-      expect(configContent).toContain("placeholder=\"给团队起个名字");
+      expect(configContent).toContain("crewConfig.teamName");
+      expect(configContent).toContain("crewConfig.teamNamePlaceholder");
     });
 
     it('should have template selector buttons', () => {
-      expect(configContent).toContain('团队模板');
-      expect(configContent).toContain('软件开发');
-      expect(configContent).toContain('写作团队');
-      expect(configContent).toContain('交易投资');
-      expect(configContent).toContain('自定义');
+      expect(configContent).toContain("crewConfig.teamTemplate");
+      expect(configContent).toContain("crewConfig.tplDev");
+      expect(configContent).toContain("crewConfig.tplWriting");
+      expect(configContent).toContain("crewConfig.tplTrading");
+      expect(configContent).toContain("crewConfig.tplCustom");
     });
 
     it('should have roles configuration section', () => {
-      expect(configContent).toContain('角色配置');
+      expect(configContent).toContain("crewConfig.roleConfig");
       expect(configContent).toContain('crew-roles-list');
     });
 
     it('should have shared knowledge textarea', () => {
-      expect(configContent).toContain('共享知识');
-      expect(configContent).toContain('项目特有信息');
+      expect(configContent).toContain("crewConfig.sharedKnowledge");
+      expect(configContent).toContain("crewConfig.sharedKnowledgePlaceholder");
     });
 
     it('should have start button in footer', () => {
       expect(configContent).toContain(':disabled="!canStart"');
-      expect(configContent).toContain('启动');
+      expect(configContent).toContain("crewConfig.start");
     });
   });
 
@@ -618,9 +618,9 @@ describe('CrewConfigPanel - addRole builtin role picker', () => {
 
   describe('UI: builtin role picker vs custom entry', () => {
     it('addRole button should toggle builtin role picker', () => {
-      // Template: @click="showBuiltinRolePicker = true" on the + 添加角色 button
+      // Template: @click="showBuiltinRolePicker = true" on the add role button
       expect(configContent).toContain('showBuiltinRolePicker = true');
-      expect(configContent).toContain('+ 添加角色');
+      expect(configContent).toContain("crewConfig.addRoleBtn");
     });
 
     it('builtin role picker should show builtin role list', () => {
@@ -634,12 +634,12 @@ describe('CrewConfigPanel - addRole builtin role picker', () => {
       // The custom role button uses a separate class (crew-add-custom-btn)
       // while builtin roles are primary list items
       expect(configContent).toContain('crew-add-custom-btn');
-      expect(configContent).toContain('自定义角色');
+      expect(configContent).toContain("crewConfig.customRoleBtn");
     });
 
     it('builtin role picker should have cancel button', () => {
       expect(configContent).toContain('crew-add-cancel-btn');
-      expect(configContent).toContain('取消');
+      expect(configContent).toContain("common.cancel");
     });
 
     it('builtin role items should show icon, name and description', () => {
@@ -666,7 +666,7 @@ describe('CrewConfigPanel - Agent and workspace selection', () => {
   describe('agent selection', () => {
     it('should have agent select dropdown', () => {
       expect(configContent).toContain('v-model="selectedAgent"');
-      expect(configContent).toContain('选择 Agent');
+      expect(configContent).toContain("crewConfig.selectAgent");
     });
 
     it('should filter agents by crew capability', () => {
@@ -697,7 +697,7 @@ describe('CrewConfigPanel - Agent and workspace selection', () => {
   describe('checking state spinner', () => {
     it('should show spinner during checking state', () => {
       expect(configContent).toContain('crew-check-spinner');
-      expect(configContent).toContain('检测 .crew 目录...');
+      expect(configContent).toContain("crewConfig.checkingCrew");
     });
 
     it('spinner should only show when checking', () => {
@@ -708,11 +708,11 @@ describe('CrewConfigPanel - Agent and workspace selection', () => {
   describe('empty state', () => {
     it('should show empty state when no agent is selected', () => {
       expect(configContent).toContain('crew-empty-state');
-      expect(configContent).toContain('请选择一个 Agent 开始配置');
+      expect(configContent).toContain("crewConfig.selectAgentHint");
     });
 
     it('should show "no agents" message when no crew agents available', () => {
-      expect(configContent).toContain('没有支持 Crew 模式的在线 Agent');
+      expect(configContent).toContain("crewConfig.noCrewAgents");
     });
   });
 });
