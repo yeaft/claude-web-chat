@@ -113,7 +113,7 @@ export default {
                 <span class="crew-round-label">Round {{ getMaxRound(turn) }}</span>
                 <div class="crew-round-line"></div>
               </div>
-              <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': turn.message.role === 'human' && turn.message.type === 'text' }]" :style="getRoleStyle(turn.message.role)">
+              <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': turn.message.role === 'human' && turn.message.type === 'text' }]" :data-role="turn.message.role" :style="getRoleStyle(turn.message.role)">
                 <div class="crew-msg-body">
                   <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-header">
                     <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
@@ -138,7 +138,7 @@ export default {
                   <div v-if="turn.message._sendFailed" class="crew-msg-send-failed">发送失败，请检查网络连接后重试</div>
                 </div>
               </div>
-              <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :style="getRoleStyle(turn.role)">
+              <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :data-role="turn.role" :style="getRoleStyle(turn.role)">
                 <div class="crew-msg-body">
                   <div class="crew-msg-header">
                     <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
@@ -254,7 +254,7 @@ export default {
                     <span class="crew-round-label">Round {{ getMaxRound(turn) }}</span>
                     <div class="crew-round-line"></div>
                   </div>
-                  <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :style="getRoleStyle(turn.message.role)">
+                  <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :data-role="turn.message.role" :style="getRoleStyle(turn.message.role)">
                     <div class="crew-msg-body">
                       <div class="crew-msg-header">
                         <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
@@ -272,7 +272,7 @@ export default {
                       <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
                     </div>
                   </div>
-                  <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :style="getRoleStyle(turn.role)">
+                  <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :data-role="turn.role" :style="getRoleStyle(turn.role)">
                     <div class="crew-msg-body">
                       <div class="crew-msg-header">
                         <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
@@ -356,7 +356,7 @@ export default {
               <!-- Latest turn (always visible) -->
               <template v-if="block.turns.length > 0">
                 <template v-for="turn in [block.turns[block.turns.length - 1]]" :key="turn.id">
-                  <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :style="getRoleStyle(turn.message.role)">
+                  <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :data-role="turn.message.role" :style="getRoleStyle(turn.message.role)">
                     <div class="crew-msg-body">
                       <div class="crew-msg-header">
                         <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
@@ -374,7 +374,7 @@ export default {
                       <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
                     </div>
                   </div>
-                  <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :style="getRoleStyle(turn.role)">
+                  <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :data-role="turn.role" :style="getRoleStyle(turn.role)">
                     <div class="crew-msg-body">
                       <div class="crew-msg-header">
                         <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
@@ -1751,6 +1751,7 @@ summary: 请测试以下变更...
         this.inputText = mention;
       }
       this.$refs.inputRef?.focus();
+      this.scrollToRoleLatest(roleName);
     },
 
     autoResize() {
@@ -1990,6 +1991,57 @@ summary: 请测试以下变更...
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           el.classList.add('crew-ask-highlight');
           setTimeout(() => el.classList.remove('crew-ask-highlight'), 2000);
+        }
+      });
+    },
+
+    scrollToRoleLatest(roleName) {
+      // Find the latest block containing this role's message
+      const blocks = this.featureBlocks;
+      let targetBlock = null;
+      let isInLatestTurn = false;
+
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const block = blocks[i];
+        const turns = block.turns;
+        for (let j = turns.length - 1; j >= 0; j--) {
+          const turn = turns[j];
+          const turnRole = turn.type === 'turn' ? turn.role : turn.message?.role;
+          if (turnRole === roleName) {
+            targetBlock = block;
+            isInLatestTurn = j === turns.length - 1;
+            break;
+          }
+        }
+        if (targetBlock) break;
+      }
+
+      if (!targetBlock) return;
+
+      // Ensure block is in visible range
+      const allBlocks = this.featureBlocks;
+      const blockIdx = allBlocks.indexOf(targetBlock);
+      const needed = allBlocks.length - blockIdx;
+      if (needed > this.visibleBlockCount) {
+        this.visibleBlockCount = needed;
+      }
+
+      // For feature blocks: expand the feature and history if needed
+      if (targetBlock.type === 'feature' && targetBlock.taskId) {
+        this.expandedFeatures[targetBlock.taskId] = true;
+        if (!isInLatestTurn) {
+          this.expandedHistories[targetBlock.taskId] = true;
+        }
+      }
+
+      this.$nextTick(() => {
+        // Find all messages for this role, take the last one
+        const els = this.$el.querySelectorAll(`.crew-message[data-role="${roleName}"]`);
+        const el = els.length > 0 ? els[els.length - 1] : null;
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('crew-msg-highlight');
+          setTimeout(() => el.classList.remove('crew-msg-highlight'), 2000);
         }
       });
     },

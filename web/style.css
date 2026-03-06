@@ -11243,6 +11243,15 @@ body {
   100% { box-shadow: none; }
 }
 
+.crew-message.crew-msg-highlight {
+  animation: msgHighlight 2s ease-out;
+}
+
+@keyframes msgHighlight {
+  0% { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.4); border-radius: 8px; }
+  100% { box-shadow: none; }
+}
+
 /* Pending Ask Banner — sticky top */
 .crew-pending-asks {
   position: sticky;
