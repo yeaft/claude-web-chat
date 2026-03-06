@@ -12,7 +12,7 @@ import { resolve } from 'path';
  *    no longer have max-width in their base rules
  * 2) crew-input-area .input-hints and .input-wrapper max-width overridden to none
  * 3) Responsive breakpoints (1279px/1023px/767px) still work
- * 4) Normal chat .input-hints and .input-wrapper still have max-width: 768px
+ * 4) Normal chat .input-hints and .input-wrapper still have max-width: min(90%, 960px)
  */
 
 let cssSource;
@@ -289,7 +289,7 @@ describe('responsive breakpoints — still present', () => {
 });
 
 // =====================================================================
-// 4. Normal chat .input-hints and .input-wrapper still have max-width: 768px
+// 4. Normal chat .input-hints and .input-wrapper still have max-width: min(90%, 960px)
 // =====================================================================
 describe('normal chat — max-width preserved', () => {
   describe('.input-hints (global)', () => {
@@ -297,12 +297,12 @@ describe('normal chat — max-width preserved', () => {
       expect(cssSource).toContain('.input-hints {');
     });
 
-    it('has max-width: 768px', () => {
+    it('has max-width: min(90%, 960px)', () => {
       // Find the global .input-hints (not .crew-input-area .input-hints)
       // The global rule starts with just ".input-hints {" not prefixed by .crew
       const block = extractBlock('.input-hints {');
       expect(block).not.toBeNull();
-      expect(block).toContain('max-width: 768px');
+      expect(block).toContain('max-width: min(90%, 960px)');
     });
   });
 
@@ -311,10 +311,10 @@ describe('normal chat — max-width preserved', () => {
       expect(cssSource).toContain('.input-wrapper {');
     });
 
-    it('has max-width: 768px', () => {
+    it('has max-width: min(90%, 960px)', () => {
       const block = extractBlock('.input-wrapper {');
       expect(block).not.toBeNull();
-      expect(block).toContain('max-width: 768px');
+      expect(block).toContain('max-width: min(90%, 960px)');
     });
   });
 
@@ -322,7 +322,7 @@ describe('normal chat — max-width preserved', () => {
     const globalBlock = extractBlock('.input-hints {');
     const crewBlock = extractBlock('.crew-input-area .input-hints {');
 
-    expect(globalBlock).toContain('max-width: 768px');
+    expect(globalBlock).toContain('max-width: min(90%, 960px)');
     expect(crewBlock).toContain('max-width: none');
   });
 
@@ -330,7 +330,7 @@ describe('normal chat — max-width preserved', () => {
     const globalBlock = extractBlock('.input-wrapper {');
     const crewBlock = extractBlock('.crew-input-area .input-wrapper {');
 
-    expect(globalBlock).toContain('max-width: 768px');
+    expect(globalBlock).toContain('max-width: min(90%, 960px)');
     expect(crewBlock).toContain('max-width: none');
   });
 });

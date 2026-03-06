@@ -6,7 +6,7 @@ import { resolve } from 'path';
  * Tests for task-36: Chat message area responsive width adaptation.
  *
  * Verifies:
- * 1) Base .messages rule has max-width: 800px, width: 100%, box-sizing: border-box
+ * 1) Base .messages rule has max-width: min(90%, 960px), width: 100%, box-sizing: border-box
  * 2) At ≤768px: .messages gets max-width: none, padding: 0 16px
  * 3) At ≤480px: .messages padding shrinks to 0 10px, input-area padding reduces
  * 4) Workbench active at ≤1024px: .messages gets max-width: none
@@ -77,8 +77,8 @@ describe('base .messages rule — wide screen defaults', () => {
     block = extractBlock('.messages {');
   });
 
-  it('has max-width: 800px for centering on wide screens', () => {
-    expect(block).toContain('max-width: 800px');
+  it('has max-width: min(90%, 960px) for responsive centering', () => {
+    expect(block).toContain('max-width: min(90%, 960px)');
   });
 
   it('has width: 100% to fill container up to max-width', () => {
@@ -240,9 +240,9 @@ describe('padding progression — decreases with viewport', () => {
     expect(block480).toContain('padding: 0 10px');
   });
 
-  it('wide screen max-width: 800px is removed at 768px breakpoint', () => {
+  it('wide screen max-width is removed at 768px breakpoint', () => {
     const baseBlock = extractBlock('.messages {');
-    expect(baseBlock).toContain('max-width: 800px');
+    expect(baseBlock).toContain('max-width: min(90%, 960px)');
 
     const media768 = findMediaBlockContaining('768px', '.messages');
     const msg768Idx = media768.indexOf('.messages');
