@@ -3765,7 +3765,7 @@ describe('Streaming indicator - template verification', () => {
   it('should contain typing dots for streaming indicator and ask waiting hints', () => {
     const dotsMatch = templateContent.match(/crew-typing-dot/g);
     expect(dotsMatch).toBeTruthy();
-    expect(dotsMatch.length).toBe(18); // 3 for streaming + 3 for init progress + 3 for history loading + 3×3 for ask card waiting hints
+    expect(dotsMatch.length).toBe(21); // 3 for streaming + 3 for init progress + 3 for history loading + 3×3 for ask card waiting hints + 3 for active messages header
   });
 
   it('should define hasStreamingMessage computed', () => {
@@ -4941,12 +4941,12 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- HTML Tag Balance ---
 
   describe('HTML and CSS structure balance', () => {
-    // 171 = 170 (PR#38 merge-feature-segments) + 1 (mobile overlay div)
-    it('should have balanced div tags (171/171)', () => {
+    // 176 = 171 + 5 (active messages area: container, header, msg, msg-header, content)
+    it('should have balanced div tags (176/176)', () => {
       const opens = (viewSource.match(/<div[\s>]/g) || []).length;
       const closes = (viewSource.match(/<\/div>/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(171);
+      expect(opens).toBe(176);
     });
 
     it('should have balanced template tags', () => {
@@ -4974,11 +4974,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2143/2143)', () => {
+    it('should have balanced CSS braces (2151/2151)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2143);
+      expect(opens).toBe(2151);
     });
   });
 

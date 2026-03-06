@@ -471,6 +471,24 @@ export default {
           </div>
         </template>
 
+        <!-- Active Messages: live preview of streaming role outputs -->
+        <div v-if="activeMessages.length > 0" class="crew-active-messages">
+          <div class="crew-active-messages-header">
+            <span class="crew-typing-dot"></span>
+            <span class="crew-typing-dot"></span>
+            <span class="crew-typing-dot"></span>
+            <span class="crew-active-messages-title">{{ $t('crew.activeMessages') }}</span>
+          </div>
+          <div v-for="am in activeMessages" :key="am.id" class="crew-active-msg" :data-role="am.role" :style="getRoleStyle(am.role)">
+            <div class="crew-active-msg-header">
+              <span v-if="am.roleIcon" class="crew-msg-header-icon">{{ am.roleIcon }}</span>
+              <span class="crew-msg-name">{{ shortName(am.roleName) }}</span>
+              <span v-if="am.taskTitle" class="crew-active-msg-task">{{ am.taskTitle }}</span>
+            </div>
+            <div class="crew-msg-content markdown-body" v-html="mdRender(am.content)"></div>
+          </div>
+        </div>
+
         <!-- 回到最新按钮 -->
         <div class="crew-scroll-bottom"
              :class="{ 'is-hidden': isAtBottom }"
@@ -1169,6 +1187,21 @@ summary: 请测试以下变更...
       }
       return active;
     },
+    activeMessages() {
+      // Collect the latest streaming text message from each active role
+      const messages = this.store.currentCrewMessages;
+      const result = [];
+      const seen = new Set();
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m._streaming && m.type === 'text' && m.role && !seen.has(m.role)) {
+          seen.add(m.role);
+          result.push(m);
+        }
+      }
+      result.reverse(); // chronological order
+      return result;
+    },
     featureBlocks() {
       const allMessages = this.store.currentCrewMessages;
       const completed = this.completedTaskIds;
@@ -1705,21 +1738,11 @@ summary: 请测试以下变更...
           }
         } else {
           // Feature messages: merge into existing segment for this taskId
+          // Segments stay in first-appearance order (no repositioning)
           if (segIndex.has(taskId)) {
-            const oldIdx = segIndex.get(taskId);
-            const seg = segments[oldIdx];
+            const seg = segments[segIndex.get(taskId)];
             seg.messages.push(msg);
             seg._dirty = true;
-            // Move segment to end so active features float to bottom
-            if (oldIdx !== segments.length - 1) {
-              segments.splice(oldIdx, 1);
-              segments.push(seg);
-              // Rebuild segIndex for all feature segments
-              segIndex.clear();
-              for (let j = 0; j < segments.length; j++) {
-                if (segments[j].taskId) segIndex.set(segments[j].taskId, j);
-              }
-            }
           } else {
             const idx = segments.length;
             segments.push({ taskId, messages: [msg], _dirty: true });
