@@ -520,21 +520,21 @@ describe('divider removal (bf79ad0)', () => {
 // =====================================================================
 // 5. Integration: sidebar ordering is crew-first
 // =====================================================================
-describe('sidebar ordering: crew sessions appear first', () => {
+describe('sidebar ordering: normal conversations appear first, crew sessions below', () => {
 
-  it('in template, crewConversations section comes before normalConversations', () => {
+  it('in template, normalConversations section comes before crewConversations', () => {
     const crewIdx = chatPageContent.indexOf('v-for="conv in crewConversations"');
     const normalIdx = chatPageContent.indexOf('v-for="conv in normalConversations"');
     expect(crewIdx).toBeGreaterThan(-1);
     expect(normalIdx).toBeGreaterThan(-1);
-    expect(crewIdx).toBeLessThan(normalIdx);
+    expect(normalIdx).toBeLessThan(crewIdx);
   });
 
-  it('Crew Sessions header comes before 最近会话 header', () => {
+  it('最近会话 header comes before Crew Sessions header', () => {
     const crewHeaderIdx = chatPageContent.indexOf('Crew Sessions');
     const recentHeaderIdx = chatPageContent.indexOf('最近会话');
     expect(crewHeaderIdx).toBeGreaterThan(-1);
     expect(recentHeaderIdx).toBeGreaterThan(-1);
-    expect(crewHeaderIdx).toBeLessThan(recentHeaderIdx);
+    expect(recentHeaderIdx).toBeLessThan(crewHeaderIdx);
   });
 });
