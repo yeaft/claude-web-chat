@@ -684,7 +684,7 @@ export async function createCrewSession(msg) {
     waitingHumanContext: null, // { fromRole, reason, message }
     pendingRoutes: [],        // [{ fromRole, route }] — 暂停时未完成的路由
     features: new Map(),      // taskId → { taskId, taskTitle, createdAt } — 持久化 feature 列表
-    initProgress: null,       // { phase, current, total } — 初始化进度
+    initProgress: null,       // 'roles' | 'worktrees' | null — 初始化阶段
     userId,
     username,
     agentId: ctx.CONFIG?.agentName || null,
@@ -724,14 +724,14 @@ export async function createCrewSession(msg) {
   // ★ 阶段2：异步完成文件系统和 worktree 初始化
   try {
     // 初始化共享区（角色目录 + CLAUDE.md）
-    session.initProgress = { phase: 'roles', current: 0, total: roles.length };
+    session.initProgress = 'roles';
     sendStatusUpdate(session);
     await initSharedDir(sharedDir, goal, roles, projectDir, sharedKnowledge);
 
     // 初始化 git worktrees
     const groupIndices = [...new Set(roles.filter(r => r.groupIndex > 0).map(r => r.groupIndex))];
     if (groupIndices.length > 0) {
-      session.initProgress = { phase: 'worktrees', current: 0, total: groupIndices.length };
+      session.initProgress = 'worktrees';
       sendStatusUpdate(session);
     }
     const worktreeMap = await initWorktrees(projectDir, roles);
@@ -748,13 +748,15 @@ export async function createCrewSession(msg) {
     await upsertCrewIndex(session);
     await saveSessionMeta(session);
 
-    // 初始化完成，切换到 running
-    session.status = 'running';
+    // 初始化完成，仅在 initializing 状态下切换到 running（避免覆盖用户手动暂停/停止）
+    if (session.status === 'initializing') {
+      session.status = 'running';
+    }
     session.initProgress = null;
     sendStatusUpdate(session);
 
-    // 如果有目标，自动启动第一个角色
-    if (goal && roles.length > 0) {
+    // 如果有目标且状态为 running，自动启动第一个角色
+    if (goal && roles.length > 0 && session.status === 'running') {
       const firstRole = roles.find(r => r.name === 'pm') || roles[0];
       if (firstRole) {
         const initialPrompt = buildInitialTask(goal, firstRole, roles);
@@ -763,9 +765,20 @@ export async function createCrewSession(msg) {
     }
   } catch (e) {
     console.error('[Crew] Session initialization failed:', e);
-    session.status = 'running';
+    if (session.status === 'initializing') {
+      session.status = 'running';
+    }
     session.initProgress = null;
     sendStatusUpdate(session);
+    sendCrewMessage({
+      type: 'crew_output',
+      sessionId,
+      roleName: 'system',
+      roleIcon: 'S',
+      roleDisplayName: '系统',
+      content: `工作环境初始化失败: ${e.message}`,
+      isTurnEnd: true
+    });
   }
 
   return session;
@@ -2028,7 +2041,7 @@ function buildRoutePrompt(fromRole, summary, session) {
  * 向角色发送消息
  */
 async function dispatchToRole(session, roleName, content, fromSource, taskId, taskTitle) {
-  if (session.status === 'paused' || session.status === 'stopped') {
+  if (session.status === 'paused' || session.status === 'stopped' || session.status === 'initializing') {
     console.log(`[Crew] Session ${session.status}, skipping dispatch to ${roleName}`);
     return;
   }

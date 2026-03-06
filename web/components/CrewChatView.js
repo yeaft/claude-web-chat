@@ -959,9 +959,8 @@ summary: 请测试以下变更...
     },
     initProgressText() {
       const p = this.store.currentCrewStatus?.initProgress;
-      if (!p) return '正在准备工作环境...';
-      if (p.phase === 'roles') return '正在初始化角色配置...';
-      if (p.phase === 'worktrees') return `正在创建工作区 (${p.current}/${p.total})...`;
+      if (p === 'roles') return '正在初始化角色配置...';
+      if (p === 'worktrees') return '正在创建工作区...';
       return '正在准备工作环境...';
     },
     hasStreamingMessage() {
