@@ -889,48 +889,38 @@ body {
   padding: 0 8px;
 }
 
-.session-panel-divider {
-  height: 1px;
-  background: var(--border-color);
-  margin: 0 12px;
-  flex-shrink: 0;
-}
-
-/* Add button inside scrollable list, follows last item */
-.session-panel-add-btn {
+/* Add button in group header, right-aligned */
+.session-header-add-btn {
+  margin-left: auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  width: calc(100% - 16px);
-  margin: 4px 8px 8px;
-  padding: 8px 12px;
-  border: 1.5px dashed var(--border-color);
-  border-radius: 10px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
   background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 500;
+  color: var(--text-muted);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+  padding: 0;
 }
 
-.session-panel-add-btn:hover {
+.session-header-add-btn:hover {
   background: var(--sidebar-hover);
   color: var(--text-primary);
-  border-color: var(--text-secondary);
 }
 
-.session-panel-add-btn:disabled {
-  opacity: 0.4;
+.session-header-add-btn:disabled {
+  opacity: 0.3;
   cursor: not-allowed;
 }
 
-.session-panel-add-btn svg {
-  width: 18px;
-  height: 18px;
+.session-header-add-btn svg {
+  width: 14px;
+  height: 14px;
   fill: currentColor;
-  flex-shrink: 0;
 }
 
 .session-group-title {

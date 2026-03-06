@@ -357,11 +357,11 @@ describe('CSS — minimal active messages styling', () => {
 // 8. Structural integrity
 // =====================================================================
 describe('structural integrity', () => {
-  it('CSS has balanced braces (2144/2144)', () => {
+  it('CSS has balanced braces (2143/2143)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2144);
+    expect(opens).toBe(2143);
   });
 
   it('JS template has balanced div tags', () => {

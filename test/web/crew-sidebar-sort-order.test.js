@@ -92,12 +92,12 @@ describe('independent scroll panels', () => {
     expect(chatPageSource).toContain('class="session-panel-list"');
   });
 
-  it('has a panel divider between the two panels', () => {
-    expect(chatPageSource).toContain('session-panel-divider');
+  it('has no divider between panels (clean layout)', () => {
+    expect(chatPageSource).not.toContain('session-panel-divider');
   });
 
-  it('has inline add buttons at panel bottoms', () => {
-    expect(chatPageSource).toContain('session-panel-add-btn');
+  it('has add buttons in group headers', () => {
+    expect(chatPageSource).toContain('session-header-add-btn');
   });
 });
 
