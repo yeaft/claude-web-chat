@@ -171,7 +171,33 @@ export function handleAgentConnection(ws, url) {
 function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null) {
   // 如果是重连，保留 conversations
   const existingAgent = agents.get(agentId);
-  const conversations = existingAgent?.conversations || new Map();
+  let conversations;
+  if (existingAgent) {
+    conversations = existingAgent.conversations;
+  } else {
+    // Server 重启场景：从 DB 恢复历史 conversations
+    conversations = new Map();
+    try {
+      const dbSessions = sessionDb.getByAgent(agentId);
+      for (const s of dbSessions) {
+        conversations.set(s.id, {
+          id: s.id,
+          workDir: s.work_dir,
+          claudeSessionId: s.claude_session_id,
+          title: s.title,
+          createdAt: s.created_at,
+          userId: s.user_id || ownerId,
+          username: ownerUsername,
+          fromDb: true
+        });
+      }
+      if (dbSessions.length > 0) {
+        console.log(`[AgentReg] Restored ${dbSessions.length} conversations from DB for ${agentName}`);
+      }
+    } catch (e) {
+      console.error(`[AgentReg] Failed to restore conversations from DB:`, e.message);
+    }
+  }
   const proxyPorts = (existingAgent?.proxyPorts || []).map(p => ({ ...p, enabled: false }));
 
   // 兼容旧版 agent：未上报 capabilities 时默认全部开启
@@ -258,8 +284,9 @@ async function handleAgentMessage(agentId, msg) {
     case 'conversation_list': {
       // Agent 发送的 conversation 列表 - 合并而非覆盖，保留已有的 userId/username
       const incomingIds = new Set(msg.conversations.map(c => c.id));
-      for (const id of agent.conversations.keys()) {
-        if (!incomingIds.has(id)) {
+      for (const [id, conv] of agent.conversations) {
+        // 保留从 DB 恢复的历史 conversations（agent 不会上报已完成的会话）
+        if (!incomingIds.has(id) && !conv.fromDb) {
           agent.conversations.delete(id);
         }
       }
@@ -271,6 +298,8 @@ async function handleAgentMessage(agentId, msg) {
           existing.claudeSessionId = conv.claudeSessionId || existing.claudeSessionId;
           existing.createdAt = conv.createdAt || existing.createdAt;
           if (conv.processing !== undefined) existing.processing = conv.processing;
+          // Agent 主动上报了这个 conversation，清除 DB 恢复标记
+          delete existing.fromDb;
           // 保留 crew 相关字段
           if (conv.type) existing.type = conv.type;
           if (conv.goal) existing.goal = conv.goal;
