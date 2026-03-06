@@ -11414,6 +11414,7 @@ body {
   flex-direction: column;
   overflow: hidden;
   background: var(--bg-main);
+  transition: padding 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* --- Right Panel: Feature Kanban --- */
@@ -11450,6 +11451,15 @@ body {
   min-width: 0;
   padding: 0;
   border: none;
+}
+
+/* When side panels are hidden, add padding to center so content doesn't hug edges */
+.crew-workspace.hide-roles .crew-panel-center {
+  padding-left: 48px;
+}
+
+.crew-workspace.hide-features .crew-panel-center {
+  padding-right: 48px;
 }
 
 /* Feature Kanban Card */
@@ -11915,6 +11925,13 @@ body {
     min-width: auto;
     padding: unset;
     border: unset;
+  }
+
+  /* Mobile: hide-* should NOT add padding to center (panels are drawers) */
+  .crew-workspace.hide-roles .crew-panel-center,
+  .crew-workspace.hide-features .crew-panel-center {
+    padding-left: 0;
+    padding-right: 0;
   }
 
   .crew-panel-center {
