@@ -1,8 +1,56 @@
 # Claude Web Chat
 
+![CI](https://github.com/yeaft/claude-web-chat/actions/workflows/ci.yml/badge.svg)
+[![npm](https://img.shields.io/npm/v/@yeaft/webchat-agent)](https://www.npmjs.com/package/@yeaft/webchat-agent)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/yeaft/claude-web-chat)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Node.js](https://img.shields.io/badge/node-%3E%3D18-green)
+
 [English](README.md) | [中文](README.zh-CN.md)
 
-远程访问 [Claude Code](https://claude.ai/code) CLI 的 Web 界面，支持多台工作机器的统一管理。采用中心辐射架构：中央 WebSocket 服务器 + 分布式 Agent + Vue.js 前端。
+> 远程访问 Claude Code CLI 的 Web 界面 — 多机器管理、端到端加密、多角色协作
+
+![Screenshot](docs/images/hero.png)
+<!-- TODO: 添加产品截图 -->
+
+## 功能特性
+
+### Chat
+
+ChatGPT 风格对话界面，实时工具追踪，会话管理和文件上传。
+
+- Claude 响应实时流式输出
+- 可视化显示 Read、Edit、Bash 等工具操作
+- SQLite 会话持久化，支持历史恢复
+- 拖放上传文件和图片
+- 移动端响应式布局
+
+![Chat](docs/images/chat.png)
+<!-- TODO: 添加 Chat 截图 -->
+
+### Crew（多角色协作）
+
+多角色 AI 团队协作，PM、开发者、审查者、测试者等角色协同完成 Feature 开发。
+
+- 角色间自动任务路由
+- Feature 进度追踪与看板视图
+- 按角色分组的消息展示与状态指示
+- 多 Agent 并行执行
+
+![Crew](docs/images/crew.png)
+<!-- TODO: 添加 Crew 截图 -->
+
+### Workbench（工作台）
+
+集成开发环境：终端、Git 操作、文件浏览器和端口代理。
+
+- 全功能终端模拟器 (xterm.js)，支持 PTY
+- Git 状态查看、差异对比、分支管理
+- 文件浏览器 + CodeMirror 代码编辑器
+- 端口代理：将 Agent 本地端口转发到浏览器
+
+![Workbench](docs/images/workbench.png)
+<!-- TODO: 添加 Workbench 截图 -->
 
 ## 前置要求
 
@@ -221,20 +269,6 @@ yeaft-agent --version               显示版本号
 环境变量（替代命令行参数）：
   SERVER_URL, AGENT_NAME, AGENT_SECRET, WORK_DIR
 ```
-
-## 功能特性
-
-- **多 Agent 管理**：同时连接多台工作机器
-- **会话持久化**：SQLite 存储会话历史，支持 `--resume` 恢复
-- **实时工具追踪**：可视化显示 Read、Edit、Bash 等操作
-- **工作台**：集成终端 (xterm.js)、Git 状态/差异、文件浏览器 + CodeMirror 编辑器
-- **端口代理**：将 Agent 本地端口通过服务器转发到浏览器
-- **文件上传**：拖放上传文件和图片
-- **交互式问答**：Claude 的 AskUserQuestion 渲染为交互式卡片
-- **角色权限**：`admin`、`pro`、`user` 三级权限，服务端强制校验
-- **端到端加密**：TweetNaCl secretbox (XSalsa20-Poly1305)
-- **自动升级**：`yeaft-agent upgrade` 自更新 + 服务端推送升级通知
-- **移动端适配**：响应式三栏布局
 
 ## 安全
 

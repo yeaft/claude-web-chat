@@ -1,8 +1,56 @@
 # Claude Web Chat
 
+![CI](https://github.com/yeaft/claude-web-chat/actions/workflows/ci.yml/badge.svg)
+[![npm](https://img.shields.io/npm/v/@yeaft/webchat-agent)](https://www.npmjs.com/package/@yeaft/webchat-agent)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/yeaft/claude-web-chat)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Node.js](https://img.shields.io/badge/node-%3E%3D18-green)
+
 [English](README.md) | [中文](README.zh-CN.md)
 
-A web interface for remotely accessing [Claude Code](https://claude.ai/code) CLI across multiple machines. Hub-and-spoke architecture with a central WebSocket server, distributed agents, and a Vue.js frontend.
+> A web interface for remotely accessing Claude Code CLI — multi-machine management, end-to-end encryption, multi-role collaboration
+
+![Screenshot](docs/images/hero.png)
+<!-- TODO: Add product screenshot -->
+
+## Features
+
+### Chat
+
+ChatGPT-style conversational interface with real-time tool tracking, session management, and file uploads.
+
+- Real-time streaming of Claude responses
+- Visual display of Read, Edit, Bash, and other tool executions
+- Session persistence with SQLite-backed history
+- Drag-and-drop file/image attachments
+- Mobile-responsive layout
+
+![Chat](docs/images/chat.png)
+<!-- TODO: Add chat screenshot -->
+
+### Crew (Multi-Agent Collaboration)
+
+Multi-role AI team collaboration with PM, Developer, Reviewer, and Tester roles working together on features.
+
+- Automated task routing between roles
+- Feature progress tracking with Kanban board
+- Role-based message grouping and status indicators
+- Parallel multi-agent execution
+
+![Crew](docs/images/crew.png)
+<!-- TODO: Add crew screenshot -->
+
+### Workbench
+
+Integrated development environment with terminal, Git operations, file browser, and port proxy.
+
+- Full terminal emulator (xterm.js) with PTY support
+- Git status, diff viewer, and branch management
+- File browser with CodeMirror editor
+- Port proxy: forward agent local ports to your browser
+
+![Workbench](docs/images/workbench.png)
+<!-- TODO: Add workbench screenshot -->
 
 ## Prerequisites
 
@@ -169,20 +217,6 @@ Options:
 Environment variables (alternative to flags):
   SERVER_URL, AGENT_NAME, AGENT_SECRET, WORK_DIR
 ```
-
-## Features
-
-- **Multi-Agent**: Connect multiple worker machines simultaneously
-- **Session Persistence**: SQLite-backed conversation history with resume support
-- **Real-time Tool Tracking**: Visual display of Read, Edit, Bash, and other tool executions
-- **Workbench**: Integrated terminal (xterm.js), Git status/diff, file browser with CodeMirror editor
-- **Port Proxy**: Forward agent local ports through the server to your browser
-- **File Upload**: Drag-and-drop file/image attachments
-- **Interactive Questions**: Claude's AskUserQuestion prompts rendered as interactive cards
-- **Role-based Access**: `admin`, `pro`, `user` roles with server-enforced permissions
-- **E2E Encryption**: TweetNaCl secretbox (XSalsa20-Poly1305) for all WebSocket messages
-- **Auto Upgrade**: Agent self-update via `yeaft-agent upgrade` + server push notifications
-- **Mobile Responsive**: 3-column layout adapts to mobile screens
 
 ## Security
 
