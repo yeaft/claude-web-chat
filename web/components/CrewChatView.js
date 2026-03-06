@@ -1168,7 +1168,7 @@ summary: 请测试以下变更...
 
       // Initialize instance cache if needed
       if (!this._fbCache) {
-        this._fbCache = { segments: [], blocks: [], processedLen: 0, blockCounter: 0, turnsCache: new Map(), _lastArr: null };
+        this._fbCache = { segments: [], blocks: [], processedLen: 0, blockCounter: 0, turnsCache: new Map(), _lastArr: null, _segIndex: new Map() };
       }
       const cache = this._fbCache;
 
@@ -1179,6 +1179,7 @@ summary: 请测试以下变更...
         cache.processedLen = 0;
         cache.blockCounter = 0;
         cache.turnsCache.clear();
+        cache._segIndex = new Map();
         cache._lastArr = allMessages;
         if (len === 0) return cache.blocks;
         return this._fullBuildFeatureBlocks(allMessages, completed, cache);
@@ -1191,6 +1192,7 @@ summary: 请测试以下变更...
         cache.processedLen = 0;
         cache.blockCounter = 0;
         cache.turnsCache.clear();
+        cache._segIndex = new Map();
         return cache.blocks;
       }
 
@@ -1203,6 +1205,7 @@ summary: 请测试以下变更...
         cache.processedLen = 0;
         cache.blockCounter = 0;
         cache.turnsCache.clear();
+        cache._segIndex = new Map();
         return this._fullBuildFeatureBlocks(allMessages, completed, cache);
       }
 
@@ -1635,6 +1638,7 @@ summary: 请测试以下变更...
       cache.segments = [];
       cache.blockCounter = 0;
       cache.turnsCache.clear();
+      cache._segIndex = new Map();
       this._appendToSegments(allMessages, 0, cache);
       this._rebuildBlocksFromSegments(cache, completed);
       return cache.blocks;
@@ -1642,34 +1646,38 @@ summary: 请测试以下变更...
 
     /**
      * Incrementally append new messages (from startIdx) to cached segments.
-     * Only the last segment may be extended; new segments are created as needed.
+     * Feature segments are merged by taskId (using _segIndex Map for O(1) lookup),
+     * so parallel role outputs for the same feature go into one segment/block.
+     * Global segments are always appended at the end.
      */
     _appendToSegments(allMessages, startIdx, cache) {
       const segments = cache.segments;
+      const segIndex = cache._segIndex || (cache._segIndex = new Map());
 
       for (let i = startIdx; i < allMessages.length; i++) {
         const msg = allMessages[i];
         const taskId = msg.taskId || null;
         const isGlobal = !taskId || msg.role === 'human';
-        const lastSeg = segments.length > 0 ? segments[segments.length - 1] : null;
 
         if (isGlobal) {
+          // Global messages: merge into the last segment if it's also global
+          const lastSeg = segments.length > 0 ? segments[segments.length - 1] : null;
           if (lastSeg && !lastSeg.taskId) {
-            // Extend existing global segment
             lastSeg.messages.push(msg);
             lastSeg._dirty = true;
           } else {
-            // Start new global segment
             segments.push({ taskId: null, messages: [msg], _dirty: true });
           }
         } else {
-          if (lastSeg && lastSeg.taskId === taskId) {
-            // Extend existing feature segment
-            lastSeg.messages.push(msg);
-            lastSeg._dirty = true;
+          // Feature messages: merge into existing segment for this taskId
+          if (segIndex.has(taskId)) {
+            const seg = segments[segIndex.get(taskId)];
+            seg.messages.push(msg);
+            seg._dirty = true;
           } else {
-            // Start new feature segment
+            const idx = segments.length;
             segments.push({ taskId, messages: [msg], _dirty: true });
+            segIndex.set(taskId, idx);
           }
         }
       }
