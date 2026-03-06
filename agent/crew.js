@@ -324,6 +324,7 @@ async function saveSessionMeta(session) {
     userId: session.userId,
     username: session.username,
     agentId: session.agentId || null,
+    teamType: session.teamType || 'dev',
     costUsd: session.costUsd,
     totalInputTokens: session.totalInputTokens,
     totalOutputTokens: session.totalOutputTokens,
@@ -551,6 +552,7 @@ export async function resumeCrewSession(msg) {
     userId: userId || meta.userId,
     username: username || meta.username,
     agentId: meta.agentId || ctx.CONFIG?.agentName || null,
+    teamType: meta.teamType || 'dev',
     createdAt: meta.createdAt || Date.now()
   };
   crewSessions.set(sessionId, session);
@@ -635,6 +637,7 @@ export async function createCrewSession(msg) {
     sharedKnowledge,
     roles: rawRoles = [],     // [{ name, displayName, icon, description, claudeMd, model, budget, isDecisionMaker, count }]
     maxRounds = 20,
+    teamType = 'dev',
     userId,
     username
   } = msg;
@@ -697,6 +700,7 @@ export async function createCrewSession(msg) {
     userId,
     username,
     agentId: ctx.CONFIG?.agentName || null,
+    teamType,
     createdAt: Date.now()
   };
 
@@ -1311,21 +1315,37 @@ ${routeTargets.map(r => `- ${r.name}: ${roleLabel(r)} — ${r.description}`).joi
 
   // 决策者额外 prompt
   if (role.isDecisionMaker) {
+    const isDevTeam = session.teamType === 'dev';
 
     prompt += `\n\n# 工具使用
-PM 可以使用所有工具，包括 Read、Grep、Glob、Bash、Edit、Write。代码文件的改动仍建议 ROUTE 给 developer 执行，但不做硬性限制。`;
+PM 可以使用所有工具，包括 Read、Grep、Glob、Bash、Edit、Write。${isDevTeam ? '代码文件的改动仍建议 ROUTE 给 developer 执行，但不做硬性限制。' : ''}`;
 
     prompt += `\n\n# 决策者职责
 你是团队的决策者。其他角色遇到不确定的情况会请求你的决策。
 - 如果你有足够的信息做出决策，直接决定并 @相关角色执行
 - 如果你需要更多信息，@具体角色请求补充
 - 如果问题超出你的能力范围或需要业务判断，@human 请人类决定
-- 你可以随时审查其他角色的工作并给出反馈
+- 你可以随时审查其他角色的工作并给出反馈`;
+
+    if (isDevTeam) {
+      prompt += `
 - PM 不做代码分析。收到需求后直接将原始需求 ROUTE 给空闲 dev 做技术分析，dev 分析完返回 PM，PM 再拆分任务并直接分配执行。
 - PM 拥有 commit + push + tag 的自主权。只要修改没有大的 regression 影响（测试全通过），PM 可以自行决定 commit、push 和 tag，无需等待人工确认。只有当改动会直接影响对话交互逻辑时，才需要人工介入审核。`;
+    }
 
-    // 多实例模式：注入开发组状态和调度规则
-    if (hasMultiInstance) {
+    // 非开发团队：注入讨论模式 prompt
+    if (!isDevTeam) {
+      prompt += `\n\n# 协作模式
+这是一个协作讨论团队，不走严格的 PM→执行→审查→测试 工作流。
+- 角色之间可以自由讨论、相互请教、提出不同意见
+- 不需要严格的"分配→执行→审查"流程，鼓励角色之间直接对话
+- 当一个角色需要另一个角色的输入时，直接 ROUTE 给对方并说明需要什么
+- 决策者负责把控整体方向和最终决策，但日常讨论不需要经过决策者中转
+- 每次 ROUTE 仍建议包含 task 和 taskTitle 字段，用于消息按 feature 分组显示`;
+    }
+
+    // 多实例模式（仅开发团队使用）：注入开发组状态和调度规则
+    if (isDevTeam && hasMultiInstance) {
       // 构建开发组实时状态
       const maxGroup = Math.max(...allRoles.map(r => r.groupIndex));
       const groupLines = [];
@@ -1375,9 +1395,8 @@ summary: 请实现注册页面，包括邮箱验证
     prompt += `\n
 # 工作流终结点
 团队的工作流有明确的结束条件。当以下任一条件满足时，你应该给出总结并结束当前工作流：
-1. **代码已提交** - 所有代码修改已经 commit（如需要，可让 developer 执行 git commit）
-2. **需要用户输入** - 遇到需要用户决定的问题时，@human 提出具体问题，等待用户回复
-3. **任务完成** - 所有任务已完成，给出完成总结（列出完成了什么、变更了哪些文件、还有什么后续建议）
+${isDevTeam ? '1. **代码已提交** - 所有代码修改已经 commit（如需要，可让 developer 执行 git commit）\n' : ''}${isDevTeam ? '2' : '1'}. **需要用户输入** - 遇到需要用户决定的问题时，@human 提出具体问题，等待用户回复
+${isDevTeam ? '3' : '2'}. **任务完成** - 所有任务已完成，给出完成总结（列出完成了什么${isDevTeam ? '、变更了哪些文件' : ''}、还有什么后续建议）
 
 重要：不要无限循环地在角色之间传递。当工作实质性完成时，主动给出总结并结束。
 

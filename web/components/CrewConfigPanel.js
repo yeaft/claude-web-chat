@@ -280,6 +280,7 @@ export default {
       sharedKnowledge: '',
       maxRounds: 20,
       currentTemplate: 'dev',
+      teamType: 'dev',
       roles: [],
       pendingRemovals: [],
       // .crew 检测状态: 'idle' | 'checking' | 'exists' | 'none'
@@ -445,6 +446,7 @@ export default {
     },
     loadTemplate(type) {
       this.currentTemplate = type;
+      this.teamType = type === 'custom' ? 'discussion' : type;
       if (type === 'dev') {
         this.roles = [
           {
@@ -1142,7 +1144,8 @@ export default {
         name: this.name.trim(),
         sharedKnowledge: this.sharedKnowledge.trim(),
         roles,
-        maxRounds: this.maxRounds
+        maxRounds: this.maxRounds,
+        teamType: this.teamType || 'dev'
       });
     },
 

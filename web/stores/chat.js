@@ -356,6 +356,7 @@ export const useChatStore = defineStore('chat', {
         sharedKnowledge: config.sharedKnowledge || '',
         roles: config.roles,
         maxRounds: config.maxRounds || 20,
+        teamType: config.teamType || 'dev',
         agentId
       });
       this.crewConfigOpen = false;
