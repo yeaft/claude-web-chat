@@ -475,8 +475,14 @@ export default {
 
       <!-- Input -->
       <div class="input-area crew-input-area">
-        <div class="crew-input-hints" v-if="store.currentCrewSession">
-          <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
+        <div class="crew-input-hints" v-if="store.currentCrewSession && store.currentCrewStatus">
+          <span class="crew-hint-meta">R{{ store.currentCrewStatus.round || 0 }}</span>
+          <span class="crew-hint-sep">&middot;</span>
+          <span class="crew-hint-meta">${{ (store.currentCrewStatus.costUsd || 0).toFixed(2) }}</span>
+          <template v-if="totalTokens > 0">
+            <span class="crew-hint-sep">&middot;</span>
+            <span class="crew-hint-meta">{{ formatTokens(totalTokens) }}</span>
+          </template>
         </div>
         <div class="attachments-preview" v-if="attachments.length > 0">
           <div class="attachment-item" v-for="(file, index) in attachments" :key="index">
@@ -610,16 +616,6 @@ export default {
             </div>
           </div>
 
-          <!-- 元信息 — 右栏底部横排 -->
-          <div class="crew-session-meta" v-if="store.currentCrewStatus">
-            <span class="crew-meta-item">R{{ store.currentCrewStatus.round || 0 }}</span>
-            <span class="crew-meta-sep">&middot;</span>
-            <span class="crew-meta-item">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(2) }}</span>
-            <span v-if="totalTokens > 0" class="crew-meta-sep">&middot;</span>
-            <span v-if="totalTokens > 0" class="crew-meta-item">{{ formatTokens(totalTokens) }}</span>
-            <span class="crew-meta-sep">&middot;</span>
-            <span class="crew-meta-item" :class="statusClass">{{ statusText }}</span>
-          </div>
         </aside>
       </div><!-- /crew-workspace -->
 
@@ -949,26 +945,6 @@ summary: 请测试以下变更...
   },
 
   computed: {
-    statusText() {
-      const status = this.store.currentCrewStatus?.status;
-      if (status === 'running') return '运行中';
-      if (status === 'paused') return '已暂停';
-      if (status === 'waiting_human') return '等待人工';
-      if (status === 'completed') return '已完成';
-      if (status === 'stopped') return '已停止';
-      if (status === 'max_rounds_reached') return '达到上限';
-      return '初始化';
-    },
-    statusClass() {
-      const status = this.store.currentCrewStatus?.status;
-      return {
-        'status-running': status === 'running',
-        'status-paused': status === 'paused',
-        'status-waiting': status === 'waiting_human',
-        'status-completed': status === 'completed',
-        'status-stopped': status === 'stopped'
-      };
-    },
     hasStreamingMessage() {
       return this.store.currentCrewMessages.some(m => m._streaming);
     },

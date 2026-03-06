@@ -6,7 +6,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
  * Three features:
  * 1) Sidebar grouping — Crew Sessions at top, normal conversations below, group headers shown conditionally
  * 2) CrewConfigPanel dual buttons — restore + delete when sessionId exists, only delete when not
- * 3) Divider removal — crew-feature-history, crew-round-divider, crew-panel-left-actions, crew-session-meta
+ * 3) Divider removal — crew-feature-history, crew-round-divider, crew-panel-left-actions
  */
 
 // =====================================================================
@@ -494,24 +494,6 @@ describe('divider removal (bf79ad0)', () => {
       const block = roundLineBlock.substring(0, blockEnd);
       expect(block).toContain('flex: 1');
       expect(block).toContain('height: 1px');
-    });
-  });
-
-  describe('crew-session-meta: border-top removed', () => {
-    it('should NOT have border-top', () => {
-      const metaBlock = styleContent.split('.crew-session-meta')[1];
-      const blockEnd = metaBlock.indexOf('}');
-      const block = metaBlock.substring(0, blockEnd);
-      expect(block).not.toContain('border-top');
-    });
-
-    it('should still have margin-top, padding, display (structure preserved)', () => {
-      const metaBlock = styleContent.split('.crew-session-meta')[1];
-      const blockEnd = metaBlock.indexOf('}');
-      const block = metaBlock.substring(0, blockEnd);
-      expect(block).toContain('margin-top: auto');
-      expect(block).toContain('padding:');
-      expect(block).toContain('display: flex');
     });
   });
 

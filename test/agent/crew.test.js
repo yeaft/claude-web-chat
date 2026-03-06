@@ -1935,10 +1935,14 @@ describe('Hints bar - role badges and add button removed', () => {
   // 验证不再包含 crew-at-hint 角色标签和添加角色按钮
 
   const hintsTemplate = `
-        <div class="crew-input-hints" v-if="store.currentCrewSession">
-          <span class="crew-hint-status" :class="statusClass">{{ statusText }}</span>
-          <template v-if="activeTasks.length > 0">
-            <span class="crew-hint-separator"></span>
+        <div class="crew-input-hints" v-if="store.currentCrewSession && store.currentCrewStatus">
+          <span class="crew-hint-meta">R{{ store.currentCrewStatus.round || 0 }}</span>
+          <span class="crew-hint-sep">&middot;</span>
+          <span class="crew-hint-meta">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(2) }}</span>
+          <template v-if="totalTokens > 0">
+            <span class="crew-hint-sep">&middot;</span>
+            <span class="crew-hint-meta">{{ formatTokens(totalTokens) }}</span>
+          </template>
   `;
 
   it('should NOT contain crew-at-hint role badges in hints bar', () => {
@@ -1953,14 +1957,16 @@ describe('Hints bar - role badges and add button removed', () => {
     expect(hintsTemplate).not.toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
   });
 
-  it('should still show status text in hints bar', () => {
-    expect(hintsTemplate).toContain('crew-hint-status');
-    expect(hintsTemplate).toContain('statusText');
+  it('should NOT show status text in hints bar', () => {
+    expect(hintsTemplate).not.toContain('crew-hint-status');
+    expect(hintsTemplate).not.toContain('statusText');
   });
 
-  it('should still show task filters after status', () => {
-    expect(hintsTemplate).toContain('activeTasks.length > 0');
-    expect(hintsTemplate).toContain('crew-hint-separator');
+  it('should show session stats (round, cost, tokens) in hints bar', () => {
+    expect(hintsTemplate).toContain('crew-hint-meta');
+    expect(hintsTemplate).toContain('store.currentCrewStatus.round');
+    expect(hintsTemplate).toContain('costUsd');
+    expect(hintsTemplate).toContain('formatTokens');
   });
 });
 
@@ -4324,41 +4330,6 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
   });
 
-  // --- Session Meta moved to right panel ---
-
-  describe('session meta relocated to right panel', () => {
-    it('should have session meta outside crew-panel-right-scroll (in aside)', () => {
-      // Meta should be after the scroll div, still within aside
-      const rightPanel = viewSource.substring(viewSource.indexOf('crew-panel-right'));
-      expect(rightPanel).toContain('class="crew-session-meta"');
-    });
-
-    it('should show round count without maxRounds', () => {
-      // v2 simplified: just round number without "/ maxRounds"
-      expect(viewSource).toContain('store.currentCrewStatus.round || 0');
-      // Should NOT contain maxRounds in the meta section
-      const metaSection = viewSource.substring(viewSource.indexOf('crew-session-meta'));
-      const metaEnd = metaSection.indexOf('</aside>');
-      const meta = metaSection.substring(0, metaEnd);
-      expect(meta).not.toContain('maxRounds');
-    });
-
-    it('should show cost, token, and status as inline items', () => {
-      expect(viewSource).toContain('class="crew-meta-item"');
-      expect(viewSource).toContain('class="crew-meta-sep"');
-      expect(viewSource).toContain('costUsd');
-      expect(viewSource).toContain('statusText');
-    });
-
-    it('should NOT have session meta in left panel', () => {
-      const leftPanel = viewSource.substring(
-        viewSource.indexOf('crew-panel-left'),
-        viewSource.indexOf('</aside>')
-      );
-      expect(leftPanel).not.toContain('crew-session-meta');
-    });
-  });
-
   // --- Right Panel: Feature Kanban v2 ---
 
   describe('right panel feature kanban', () => {
@@ -4964,11 +4935,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- HTML Tag Balance ---
 
   describe('HTML and CSS structure balance', () => {
-    it('should have balanced div tags (157/157)', () => {
+    it('should have balanced div tags (156/156)', () => {
       const opens = (viewSource.match(/<div[\s>]/g) || []).length;
       const closes = (viewSource.match(/<\/div>/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(157);
+      expect(opens).toBe(156);
     });
 
     it('should have balanced template tags', () => {
@@ -4996,11 +4967,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2084/2084)', () => {
+    it('should have balanced CSS braces (2075/2075)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2084);
+      expect(opens).toBe(2075);
     });
   });
 
