@@ -11898,13 +11898,74 @@ body {
 }
 
 /* Mobile-only elements: hidden on desktop */
-.crew-mobile-fab,
 .crew-mobile-overlay,
 .crew-mobile-close {
   display: none;
 }
 
-/* <768px: Mobile — Drawer panels with FAB buttons */
+/* Header nav for Crew mode: hidden on desktop */
+.crew-header-nav {
+  display: none;
+}
+
+.crew-header-nav-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  cursor: pointer;
+  position: relative;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.crew-header-nav-btn:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.crew-header-nav-btn:active {
+  background: var(--border-color);
+}
+
+.crew-header-nav-btn.active {
+  color: var(--accent-blue, #4a9eff);
+  background: var(--sidebar-hover);
+}
+
+.crew-header-nav-btn .active-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-green, #34d058);
+  animation: pulse 2s infinite;
+}
+
+.crew-header-nav-btn .nav-badge {
+  position: absolute;
+  top: 2px;
+  right: 0px;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--accent-blue, #4a9eff);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+}
+
+/* <768px: Mobile — Drawer panels with header nav */
 @media (max-width: 767px) {
   .crew-panel-left,
   .crew-panel-right {
@@ -11972,52 +12033,15 @@ body {
     display: inline;
   }
 
-  /* Mobile FAB buttons */
-  .crew-mobile-fab {
+  /* Header nav: visible on mobile */
+  .crew-header-nav {
     display: flex;
     align-items: center;
-    justify-content: center;
-    position: fixed;
-    bottom: 80px;
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    background: var(--bg-input-wrapper, #2a2a2a);
-    border: 1px solid var(--border-color, #444);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-    z-index: 50;
-    cursor: pointer;
-    transition: transform 0.15s ease-out;
-    color: var(--text-secondary, #aaa);
-  }
-
-  .crew-mobile-fab:active {
-    transform: scale(0.9);
-  }
-
-  .crew-mobile-fab-left {
-    left: 16px;
-  }
-
-  .crew-mobile-fab-right {
-    right: 16px;
-  }
-
-  .crew-mobile-fab-badge {
+    gap: 4px;
     position: absolute;
-    top: -4px;
-    right: -4px;
-    min-width: 18px;
-    height: 18px;
-    border-radius: 9px;
-    background: var(--accent-blue, #4a9eff);
-    color: #fff;
-    font-size: 11px;
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 4px;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
   }
 
   /* Mobile overlay */
