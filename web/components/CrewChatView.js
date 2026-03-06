@@ -486,7 +486,7 @@ export default {
         <div class="crew-input-hints" v-if="store.currentCrewSession && store.currentCrewStatus">
           <span class="crew-hint-meta">R{{ store.currentCrewStatus.round || 0 }}</span>
           <span class="crew-hint-sep">&middot;</span>
-          <span class="crew-hint-meta">${{ (store.currentCrewStatus.costUsd || 0).toFixed(2) }}</span>
+          <span class="crew-hint-meta">\${{ (store.currentCrewStatus.costUsd || 0).toFixed(2) }}</span>
           <template v-if="totalTokens > 0">
             <span class="crew-hint-sep">&middot;</span>
             <span class="crew-hint-meta">{{ formatTokens(totalTokens) }}</span>
