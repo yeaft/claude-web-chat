@@ -471,21 +471,17 @@ export default {
           </div>
         </template>
 
-        <!-- Active Messages: live preview of streaming role outputs -->
+        <!-- Active Messages: latest message from each role -->
         <div v-if="activeMessages.length > 0" class="crew-active-messages">
-          <div class="crew-active-messages-header">
-            <span class="crew-typing-dot"></span>
-            <span class="crew-typing-dot"></span>
-            <span class="crew-typing-dot"></span>
-            <span class="crew-active-messages-title">{{ $t('crew.activeMessages') }}</span>
-          </div>
-          <div v-for="am in activeMessages" :key="am.id" class="crew-active-msg" :data-role="am.role" :style="getRoleStyle(am.role)">
-            <div class="crew-active-msg-header">
-              <span v-if="am.roleIcon" class="crew-msg-header-icon">{{ am.roleIcon }}</span>
-              <span class="crew-msg-name">{{ shortName(am.roleName) }}</span>
-              <span v-if="am.taskTitle" class="crew-active-msg-task">{{ am.taskTitle }}</span>
+          <div v-for="am in activeMessages" :key="am.id" class="crew-message crew-msg-text" :class="'crew-role-' + am.role" :data-role="am.role" :style="getRoleStyle(am.role)">
+            <div class="crew-msg-body">
+              <div class="crew-msg-header">
+                <span v-if="am.roleIcon" class="crew-msg-header-icon">{{ am.roleIcon }}</span>
+                <span class="crew-msg-name">{{ shortName(am.roleName) }}</span>
+                <span v-if="am.taskTitle" class="crew-msg-time">{{ am.taskTitle }}</span>
+              </div>
+              <div class="crew-msg-content markdown-body" v-html="mdRender(am.content)"></div>
             </div>
-            <div class="crew-msg-content markdown-body" v-html="mdRender(am.content)"></div>
           </div>
         </div>
 
@@ -1188,13 +1184,13 @@ summary: 请测试以下变更...
       return active;
     },
     activeMessages() {
-      // Collect the latest streaming text message from each active role
+      // Collect the latest text message from each role (persistent, not just streaming)
       const messages = this.store.currentCrewMessages;
       const result = [];
       const seen = new Set();
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
-        if (m._streaming && m.type === 'text' && m.role && !seen.has(m.role)) {
+        if (m.type === 'text' && m.role && m.role !== 'human' && m.role !== 'system' && !seen.has(m.role)) {
           seen.add(m.role);
           result.push(m);
         }
