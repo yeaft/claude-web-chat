@@ -174,6 +174,36 @@ export function handleMessage(store, msg) {
                 conversationId: store.currentConversation
               });
             }
+          } else {
+            // ★ Fix: currentAgent 已设置但 currentConversation 为空
+            // 这发生在：首次 agent_list 到达时 conversation 列表为空（agent 仍在同步），
+            // AutoRestore 失败并回退到 selectAgent，后续 agent_list 中 conversation 才出现。
+            // 此时需要重新尝试恢复 lastViewedConversation。
+            const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
+            if (lastViewed && !store.recoveryDismissed) {
+              const conv = store.conversations.find(c => c.id === lastViewed);
+              if (conv) {
+                console.log('[Reconnect] Restoring last viewed conversation (was null):', lastViewed);
+                store.currentConversation = lastViewed;
+                store.currentWorkDir = conv.workDir;
+                store.messages = [];
+                store.sendWsMessage({ type: 'select_conversation', conversationId: lastViewed });
+                if (conv.type === 'crew') {
+                  store.sendWsMessage({
+                    type: 'resume_crew_session',
+                    sessionId: lastViewed,
+                    agentId: store.currentAgent
+                  });
+                } else {
+                  store.sendWsMessage({
+                    type: 'sync_messages',
+                    conversationId: lastViewed,
+                    turns: 5
+                  });
+                  store.sendWsMessage({ type: 'refresh_conversation', conversationId: lastViewed });
+                }
+              }
+            }
           }
           break;
         } else {
