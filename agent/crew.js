@@ -344,10 +344,11 @@ async function saveSessionMeta(session) {
       return rest;
     });
     const json = JSON.stringify(cleaned);
-    await fs.writeFile(join(session.sharedDir, 'messages.json'), json);
-    // 超过阈值时自动归档旧消息
+    // 超过阈值时直接归档（rotateMessages 内部写两个文件，避免双写）
     if (json.length > MESSAGE_SHARD_SIZE && !session._rotating) {
       await rotateMessages(session, cleaned);
+    } else {
+      await fs.writeFile(join(session.sharedDir, 'messages.json'), json);
     }
   }
 }
@@ -461,7 +462,20 @@ async function loadSessionMessages(sharedDir) {
  * 前端上滑到顶部时按需请求
  */
 export async function handleLoadCrewHistory(msg) {
-  const { sessionId, shardIndex, requestId } = msg;
+  const { sessionId, requestId } = msg;
+  // Validate shardIndex: must be a positive integer to prevent path traversal
+  const shardIndex = parseInt(msg.shardIndex, 10);
+  if (!Number.isFinite(shardIndex) || shardIndex < 1) {
+    sendCrewMessage({
+      type: 'crew_history_loaded',
+      sessionId,
+      shardIndex: msg.shardIndex,
+      requestId,
+      messages: [],
+      hasMore: false
+    });
+    return;
+  }
   const session = crewSessions.get(sessionId);
   if (!session) {
     sendCrewMessage({
