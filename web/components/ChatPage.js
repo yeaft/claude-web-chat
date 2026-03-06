@@ -144,7 +144,40 @@ export default {
 
         <!-- Conversation List -->
         <div class="session-list">
-          <!-- Crew Sessions 分组 -->
+          <!-- 普通会话分组（上方） -->
+          <template v-if="normalConversations.length > 0">
+            <div class="session-group-header" v-if="crewConversations.length > 0">
+              <span>最近会话</span>
+            </div>
+            <div
+              v-for="conv in normalConversations"
+              :key="conv.id"
+              class="session-item"
+              :class="{ active: conv.id === store.currentConversation, processing: store.isConversationProcessing(conv.id) }"
+              @click="selectConversation(conv.id, conv.agentId)"
+            >
+              <div class="session-item-header">
+                <div class="title" :title="getConversationFullTitle(conv)">
+                  <span v-if="store.isConversationProcessing(conv.id)" class="processing-dot"></span>
+                  {{ getConversationTitle(conv) }}
+                </div>
+                <span class="session-time">{{ getConversationTime(conv) }}</span>
+                <button class="session-delete-btn" @click.stop="deleteConversation(conv.id, conv.agentId)" :title="$t('chat.sidebar.closeConv')">
+                  <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                </button>
+              </div>
+              <div class="session-info">
+                <span class="session-path">{{ shortenPath(conv.workDir) }}</span>
+                <span class="session-agent" v-if="conv.agentName">{{ conv.agentName }}</span>
+                <span class="latency-indicator" v-if="getAgentLatency(conv.agentId)" :class="getLatencyClass(getAgentLatency(conv.agentId))" :title="getAgentLatency(conv.agentId) + 'ms'">
+                  <svg viewBox="0 0 24 24" width="10" height="10"><circle cx="12" cy="12" r="5" fill="currentColor"/></svg>
+                  {{ getAgentLatency(conv.agentId) }}ms
+                </span>
+              </div>
+            </div>
+          </template>
+
+          <!-- Crew Sessions 分组（下方） -->
           <template v-if="crewConversations.length > 0">
             <div class="session-group-header">
               <svg class="session-group-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
@@ -163,39 +196,6 @@ export default {
                   <svg class="crew-conv-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
                   {{ getCrewTitle(conv) }}
                   <span v-if="!store.crewSessions[conv.id]" class="crew-stopped-tag">已停止</span>
-                </div>
-                <span class="session-time">{{ getConversationTime(conv) }}</span>
-                <button class="session-delete-btn" @click.stop="deleteConversation(conv.id, conv.agentId)" :title="$t('chat.sidebar.closeConv')">
-                  <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-                </button>
-              </div>
-              <div class="session-info">
-                <span class="session-path">{{ shortenPath(conv.workDir) }}</span>
-                <span class="session-agent" v-if="conv.agentName">{{ conv.agentName }}</span>
-                <span class="latency-indicator" v-if="getAgentLatency(conv.agentId)" :class="getLatencyClass(getAgentLatency(conv.agentId))" :title="getAgentLatency(conv.agentId) + 'ms'">
-                  <svg viewBox="0 0 24 24" width="10" height="10"><circle cx="12" cy="12" r="5" fill="currentColor"/></svg>
-                  {{ getAgentLatency(conv.agentId) }}ms
-                </span>
-              </div>
-            </div>
-          </template>
-
-          <!-- 普通会话分组 -->
-          <template v-if="normalConversations.length > 0">
-            <div class="session-group-header" v-if="crewConversations.length > 0">
-              <span>最近会话</span>
-            </div>
-            <div
-              v-for="conv in normalConversations"
-              :key="conv.id"
-              class="session-item"
-              :class="{ active: conv.id === store.currentConversation, processing: store.isConversationProcessing(conv.id) }"
-              @click="selectConversation(conv.id, conv.agentId)"
-            >
-              <div class="session-item-header">
-                <div class="title" :title="getConversationFullTitle(conv)">
-                  <span v-if="store.isConversationProcessing(conv.id)" class="processing-dot"></span>
-                  {{ getConversationTitle(conv) }}
                 </div>
                 <span class="session-time">{{ getConversationTime(conv) }}</span>
                 <button class="session-delete-btn" @click.stop="deleteConversation(conv.id, conv.agentId)" :title="$t('chat.sidebar.closeConv')">
