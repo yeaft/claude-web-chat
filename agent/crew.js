@@ -254,7 +254,6 @@ function sessionToIndexEntry(session) {
     projectDir: session.projectDir,
     sharedDir: session.sharedDir,
     status: session.status,
-    goal: session.goal,
     name: session.name || '',
     userId: session.userId,
     username: session.username,
@@ -312,9 +311,7 @@ async function saveSessionMeta(session) {
     sessionId: session.id,
     projectDir: session.projectDir,
     sharedDir: session.sharedDir,
-    goal: session.goal,
     name: session.name || '',
-    sharedKnowledge: session.sharedKnowledge || '',
     status: session.status,
     roles: Array.from(session.roles.values()).map(r => ({
       name: r.name, displayName: r.displayName, icon: r.icon,
@@ -322,7 +319,6 @@ async function saveSessionMeta(session) {
       groupIndex: r.groupIndex, roleType: r.roleType, model: r.model
     })),
     decisionMaker: session.decisionMaker,
-    maxRounds: session.maxRounds,
     round: session.round,
     createdAt: session.createdAt,
     updatedAt: Date.now(),
@@ -652,16 +648,13 @@ export async function resumeCrewSession(msg) {
       sessionId,
       projectDir: session.projectDir,
       sharedDir: session.sharedDir,
-      goal: session.goal,
       name: session.name || '',
-      sharedKnowledge: session.sharedKnowledge || '',
       roles: roles.map(r => ({
         name: r.name, displayName: r.displayName, icon: r.icon,
         description: r.description, isDecisionMaker: r.isDecisionMaker || false,
         groupIndex: r.groupIndex, roleType: r.roleType, model: r.model
       })),
       decisionMaker: session.decisionMaker,
-      maxRounds: session.maxRounds,
       userId: session.userId,
       username: session.username,
       uiMessages: cleanedMessages,
@@ -693,15 +686,12 @@ export async function resumeCrewSession(msg) {
     id: sessionId,
     projectDir: meta.projectDir,
     sharedDir: meta.sharedDir || indexEntry.sharedDir,
-    goal: meta.goal,
     name: meta.name || '',
-    sharedKnowledge: meta.sharedKnowledge || '',
     roles: new Map(roles.map(r => [r.name, r])),
     roleStates: new Map(),
     decisionMaker,
     status: 'waiting_human',
     round: meta.round || 0,
-    maxRounds: meta.maxRounds || 20,
     costUsd: meta.costUsd || 0,
     totalInputTokens: meta.totalInputTokens || 0,
     totalOutputTokens: meta.totalOutputTokens || 0,
@@ -731,16 +721,13 @@ export async function resumeCrewSession(msg) {
     sessionId,
     projectDir: session.projectDir,
     sharedDir: session.sharedDir,
-    goal: session.goal,
     name: session.name || '',
-    sharedKnowledge: session.sharedKnowledge || '',
     roles: roles.map(r => ({
       name: r.name, displayName: r.displayName, icon: r.icon,
       description: r.description, isDecisionMaker: r.isDecisionMaker || false,
       groupIndex: r.groupIndex, roleType: r.roleType, model: r.model
     })),
     decisionMaker,
-    maxRounds: session.maxRounds,
     userId: session.userId,
     username: session.username,
     uiMessages: session.uiMessages,
@@ -798,11 +785,8 @@ export async function createCrewSession(msg) {
     sessionId,
     projectDir,
     sharedDir: sharedDirRel,
-    goal,
     name,
-    sharedKnowledge,
     roles: rawRoles = [],     // [{ name, displayName, icon, description, claudeMd, model, budget, isDecisionMaker, count }]
-    maxRounds = 20,
     teamType = 'dev',
     language = 'zh-CN',
     userId,
@@ -833,15 +817,12 @@ export async function createCrewSession(msg) {
     id: sessionId,
     projectDir,
     sharedDir,
-    goal,
     name: name || '',
-    sharedKnowledge: sharedKnowledge || '',
     roles: new Map(roles.map(r => [r.name, r])),
     roleStates: new Map(),
     decisionMaker,
     status: 'initializing',  // ← 新增初始化状态
     round: 0,
-    maxRounds,
     costUsd: 0,
     totalInputTokens: 0,
     totalOutputTokens: 0,
@@ -869,9 +850,7 @@ export async function createCrewSession(msg) {
     sessionId,
     projectDir,
     sharedDir,
-    goal,
     name: name || '',
-    sharedKnowledge: sharedKnowledge || '',
     roles: roles.map(r => ({
       name: r.name,
       displayName: r.displayName,
@@ -883,7 +862,6 @@ export async function createCrewSession(msg) {
       groupIndex: r.groupIndex
     })),
     decisionMaker,
-    maxRounds,
     userId,
     username
   });
@@ -895,7 +873,7 @@ export async function createCrewSession(msg) {
     // 初始化共享区（角色目录 + CLAUDE.md）
     session.initProgress = 'roles';
     sendStatusUpdate(session);
-    await initSharedDir(sharedDir, goal, roles, projectDir, sharedKnowledge, language);
+    await initSharedDir(sharedDir, roles, projectDir, language);
 
     // 初始化 git worktrees
     const groupIndices = [...new Set(roles.filter(r => r.groupIndex > 0).map(r => r.groupIndex))];
@@ -923,15 +901,6 @@ export async function createCrewSession(msg) {
     }
     session.initProgress = null;
     sendStatusUpdate(session);
-
-    // 如果有目标且状态为 running，自动启动第一个角色
-    if (goal && roles.length > 0 && session.status === 'running') {
-      const firstRole = roles.find(r => r.name === 'pm') || roles[0];
-      if (firstRole) {
-        const initialPrompt = buildInitialTask(goal, firstRole, roles, language);
-        await dispatchToRole(session, firstRole.name, initialPrompt, 'system');
-      }
-    }
   } catch (e) {
     console.error('[Crew] Session initialization failed:', e);
     if (session.status === 'initializing') {
@@ -1087,18 +1056,16 @@ export async function removeRoleFromSession(msg) {
 }
 
 /**
- * 更新 crew session 的 name 和 sharedKnowledge
+ * 更新 crew session 的 name
  */
 export async function handleUpdateCrewSession(msg) {
-  const { sessionId, name, sharedKnowledge } = msg;
+  const { sessionId, name } = msg;
   const session = crewSessions.get(sessionId);
   if (!session) {
     console.warn(`[Crew] Session not found for update: ${sessionId}`);
     return;
   }
   if (name !== undefined) session.name = name;
-  if (sharedKnowledge !== undefined) session.sharedKnowledge = sharedKnowledge;
-  await updateSharedClaudeMd(session);
   await saveSessionMeta(session);
   await upsertCrewIndex(session);
 }
@@ -1118,7 +1085,7 @@ export async function handleUpdateCrewSession(msg) {
  *       └── {roleName}/
  *           └── CLAUDE.md ← 角色定义 + 个人记忆
  */
-async function initSharedDir(sharedDir, goal, roles, projectDir, sharedKnowledge = '', language = 'zh-CN') {
+async function initSharedDir(sharedDir, roles, projectDir, language = 'zh-CN') {
   await fs.mkdir(sharedDir, { recursive: true });
   await fs.mkdir(join(sharedDir, 'context'), { recursive: true });
   await fs.mkdir(join(sharedDir, 'sessions'), { recursive: true });
@@ -1130,7 +1097,7 @@ async function initSharedDir(sharedDir, goal, roles, projectDir, sharedKnowledge
   }
 
   // 生成 .crew/CLAUDE.md（共享级）
-  await writeSharedClaudeMd(sharedDir, goal, roles, projectDir, sharedKnowledge, language);
+  await writeSharedClaudeMd(sharedDir, roles, projectDir, language);
 }
 
 /**
@@ -1154,14 +1121,10 @@ async function initRoleDir(sharedDir, role, language = 'zh-CN') {
  * 写入 .crew/CLAUDE.md — 共享级（所有角色自动继承）
  * 记忆直接写在 CLAUDE.md 中，Claude Code 会自动加载
  */
-async function writeSharedClaudeMd(sharedDir, goal, roles, projectDir, sharedKnowledge = '', language = 'zh-CN') {
+async function writeSharedClaudeMd(sharedDir, roles, projectDir, language = 'zh-CN') {
   const m = getMessages(language);
-  const sharedMemoryContent = sharedKnowledge
-    ? `${m.sharedMemoryTitle}\n${sharedKnowledge}\n`
-    : `${m.sharedMemoryTitle}\n${m.sharedMemoryDefault}\n`;
 
   const claudeMd = `${m.projectGoal}
-${goal}
 
 ${m.projectCodePath}
 ${projectDir}
@@ -1181,7 +1144,9 @@ ${m.worktreeRulesContent}
 
 ${m.featureRecordShared}
 
-${sharedMemoryContent}`;
+${m.sharedMemoryTitle}
+${m.sharedMemoryDefault}
+`;
 
   await fs.writeFile(join(sharedDir, 'CLAUDE.md'), claudeMd);
 }
@@ -1220,7 +1185,7 @@ ${m.personalMemoryDefault}
  */
 async function updateSharedClaudeMd(session) {
   const roles = Array.from(session.roles.values());
-  await writeSharedClaudeMd(session.sharedDir, session.goal, roles, session.projectDir, session.sharedKnowledge, session.language || 'zh-CN');
+  await writeSharedClaudeMd(session.sharedDir, roles, session.projectDir, session.language || 'zh-CN');
 }
 
 // =====================================================================
@@ -1584,7 +1549,7 @@ function buildRoleSystemPrompt(role, session) {
   const m = getMessages(session.language || 'zh-CN');
 
   let prompt = `${m.teamCollab}
-${m.teamCollabIntro(session.goal)}
+${m.teamCollabIntro()}
 
 ${m.teamMembers}
 ${allRoles.map(r => `- ${roleLabel(r)}: ${r.description}${r.isDecisionMaker ? ` (${m.decisionMakerTag})` : ''}`).join('\n')}`;
@@ -1725,17 +1690,6 @@ Always respond in 中文. Use 中文 for all explanations, comments, and communi
   }
 
   return prompt;
-}
-function buildInitialTask(goal, firstRole, allRoles, language = 'zh-CN') {
-  const m = getMessages(language);
-  return `${m.projectStart}
-
-${m.goalLabel}: ${goal}
-
-${m.firstRoleInstruction}
-
-${m.availableRoles}
-${allRoles.map(r => `- ${r.name}: ${roleLabel(r)} - ${r.description}`).join('\n')}`;
 }
 
 // =====================================================================
@@ -3117,7 +3071,6 @@ function sendStatusUpdate(session) {
     status: session.status,
     currentRole,
     round: session.round,
-    maxRounds: session.maxRounds,
     costUsd: session.costUsd,
     totalInputTokens: session.totalInputTokens,
     totalOutputTokens: session.totalOutputTokens,

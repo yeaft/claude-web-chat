@@ -85,10 +85,10 @@ export const useChatStore = defineStore('chat', {
     // =====================
     // Crew (multi-agent) 状态 — 按 sessionId 存储，融入 conversation 体系
     // =====================
-    crewSessions: {},             // { [sessionId]: { id, projectDir, sharedDir, goal, roles, decisionMaker, maxRounds } }
+    crewSessions: {},             // { [sessionId]: { id, projectDir, sharedDir, roles, decisionMaker } }
     crewMessagesMap: {},          // { [sessionId]: messages[] }
     crewOlderMessages: {},       // { [sessionId]: { hasMore, nextShard, loading } }
-    crewStatuses: {},             // { [sessionId]: { status, currentRole, round, maxRounds, costUsd, activeRoles } }
+    crewStatuses: {},             // { [sessionId]: { status, currentRole, round, costUsd, activeRoles } }
     crewExistsResult: null,       // check_crew_exists 结果: { exists, projectDir, sessionInfo }
     crewConfigOpen: false,        // crew 配置面板是否打开
     crewConfigMode: 'create',    // 'create' | 'edit'
@@ -364,11 +364,8 @@ export const useChatStore = defineStore('chat', {
         sessionId,
         projectDir: config.projectDir,
         sharedDir: config.sharedDir || '.crew',
-        goal: config.goal,
         name: config.name || '',
-        sharedKnowledge: config.sharedKnowledge || '',
         roles: config.roles,
-        maxRounds: config.maxRounds || 20,
         teamType: config.teamType || 'dev',
         language: config.language || 'zh-CN',
         agentId
@@ -480,12 +477,9 @@ export const useChatStore = defineStore('chat', {
           id: sid,
           projectDir: msg.projectDir,
           sharedDir: msg.sharedDir,
-          goal: msg.goal,
           name: msg.name || '',
-          sharedKnowledge: msg.sharedKnowledge || '',
           roles: msg.roles,
-          decisionMaker: msg.decisionMaker,
-          maxRounds: msg.maxRounds
+          decisionMaker: msg.decisionMaker
         };
         ensureMessages(sid).push({
           id: Date.now(),
@@ -493,7 +487,7 @@ export const useChatStore = defineStore('chat', {
           roleIcon: 'S',
           roleName: '系统',
           type: 'system',
-          content: `Crew Session 已创建，目标: ${msg.goal}`,
+          content: `Crew Session 已创建`,
           timestamp: Date.now()
         });
         // 创建或更新 conversation
@@ -509,13 +503,11 @@ export const useChatStore = defineStore('chat', {
             createdAt: Date.now(),
             processing: false,
             type: 'crew',
-            goal: msg.goal,
             name: msg.name || ''
           };
           this.conversations.push(conv);
         } else {
           conv.type = 'crew';
-          conv.goal = msg.goal;
           conv.name = msg.name || '';
         }
         // 缓存当前消息，切换到 crew conversation
@@ -535,12 +527,9 @@ export const useChatStore = defineStore('chat', {
           id: sid,
           projectDir: msg.projectDir,
           sharedDir: msg.sharedDir,
-          goal: msg.goal,
           name: msg.name || '',
-          sharedKnowledge: msg.sharedKnowledge || '',
           roles: msg.roles,
-          decisionMaker: msg.decisionMaker,
-          maxRounds: msg.maxRounds
+          decisionMaker: msg.decisionMaker
         };
         // 恢复 UI 消息历史
         if (msg.uiMessages && msg.uiMessages.length > 0) {
@@ -585,13 +574,11 @@ export const useChatStore = defineStore('chat', {
             createdAt: Date.now(),
             processing: false,
             type: 'crew',
-            goal: msg.goal,
             name: msg.name || ''
           };
           this.conversations.push(conv);
         } else {
           conv.type = 'crew';
-          conv.goal = msg.goal;
           conv.name = msg.name || '';
         }
         this.saveOpenSessions();
@@ -772,7 +759,6 @@ export const useChatStore = defineStore('chat', {
           status: msg.status,
           currentRole: msg.currentRole,
           round: msg.round,
-          maxRounds: msg.maxRounds,
           costUsd: msg.costUsd,
           totalInputTokens: msg.totalInputTokens || 0,
           totalOutputTokens: msg.totalOutputTokens || 0,

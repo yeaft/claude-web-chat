@@ -277,7 +277,6 @@ async function handleAgentMessage(agentId, msg) {
           delete existing.fromDb;
           // 保留 crew 相关字段
           if (conv.type) existing.type = conv.type;
-          if (conv.goal) existing.goal = conv.goal;
           // ★ Security: 不信任 agent 上报的 userId/username，保留 server 端已有值
           // 仅在 server 端无值时，从 DB 或 agent.ownerId 补充
           if (!existing.userId) {
@@ -641,13 +640,12 @@ async function handleAgentMessage(agentId, msg) {
         createdAt: Date.now(),
         processing: true,
         type: 'crew',
-        goal: msg.goal,
         roles: msg.roles
       });
       // 持久化到 sessionDb，这样 server 重启后删除操作仍能通过 ownership 检查
       try {
         if (!sessionDb.exists(msg.sessionId)) {
-          sessionDb.create(msg.sessionId, agentId, agent.name, msg.projectDir, null, msg.goal, crewUserId);
+          sessionDb.create(msg.sessionId, agentId, agent.name, msg.projectDir, null, msg.name || null, crewUserId);
         }
       } catch (e) {
         console.error('Failed to save crew session to database:', e.message);
@@ -670,7 +668,6 @@ async function handleAgentMessage(agentId, msg) {
           createdAt: Date.now(),
           processing: true,
           type: 'crew',
-          goal: msg.goal,
           roles: msg.roles
         });
       }

@@ -159,15 +159,7 @@ export default {
                 </div>
               </div>
 
-              <!-- 共享知识 -->
-              <div class="crew-config-section">
-                <label class="crew-config-label">{{ $t('crewConfig.sharedKnowledge') }}</label>
-                <textarea class="crew-config-textarea" v-model="sharedKnowledge"
-                          :placeholder="$t('crewConfig.sharedKnowledgePlaceholder')"
-                          rows="3"></textarea>
-                <span class="crew-config-hint-text">{{ $t('crewConfig.sharedKnowledgeHint') }}</span>
-              </div>
-            </template>
+              </template>
           </template>
 
           <!-- 编辑模式 -->
@@ -220,15 +212,6 @@ export default {
               </div>
             </div>
 
-            <!-- 共享知识 -->
-            <div class="crew-config-section">
-              <label class="crew-config-label">{{ $t('crewConfig.sharedKnowledge') }}</label>
-              <textarea class="crew-config-textarea" v-model="sharedKnowledge"
-                        :placeholder="$t('crewConfig.sharedKnowledgePlaceholderShort')"
-                        rows="3"></textarea>
-              <span class="crew-config-hint-text">{{ $t('crewConfig.sharedKnowledgeHint') }}</span>
-            </div>
-
           </template>
 
           <!-- 没有选择 Agent 时的提示 -->
@@ -277,10 +260,7 @@ export default {
     return {
       selectedAgent: '',
       projectDir: this.defaultWorkDir || '',
-      goal: '',
       name: '',
-      sharedKnowledge: '',
-      maxRounds: 20,
       currentTemplate: 'dev',
       teamType: 'dev',
       roles: [],
@@ -352,11 +332,8 @@ export default {
 
   created() {
     if (this.isEditMode) {
-      this.goal = this.session.goal || '';
       this.name = this.session.name || '';
-      this.sharedKnowledge = this.session.sharedKnowledge || '';
       this.projectDir = this.session.projectDir || '';
-      this.maxRounds = this.session.maxRounds || 20;
       this.roles = (this.session.roles || []).map(r => ({ ...r }));
     } else {
       this.loadTemplate('dev');
@@ -528,11 +505,8 @@ export default {
         agentId: this.selectedAgent,
         projectDir: this.projectDir.trim(),
         sharedDir: '.crew',
-        goal: '',
         name: this.name.trim(),
-        sharedKnowledge: this.sharedKnowledge.trim(),
         roles,
-        maxRounds: this.maxRounds,
         teamType: this.teamType || 'dev',
         language: this.$locale?.value || 'zh-CN'
       });
@@ -549,12 +523,10 @@ export default {
       }
       const sid = this.store.currentConversation;
       const trimmedName = this.name.trim();
-      const trimmedKnowledge = this.sharedKnowledge.trim();
       this.store.sendWsMessage({
         type: 'update_crew_session',
         sessionId: sid,
-        name: trimmedName,
-        sharedKnowledge: trimmedKnowledge
+        name: trimmedName
       });
       // Update local state so sidebar title refreshes immediately
       const conv = this.store.conversations.find(c => c.id === sid);
@@ -562,7 +534,6 @@ export default {
       const cs = this.store.crewSessions[sid];
       if (cs) {
         cs.name = trimmedName;
-        cs.sharedKnowledge = trimmedKnowledge;
       }
       this.pendingRemovals = [];
       this.roles.forEach(r => { delete r._isNew; });

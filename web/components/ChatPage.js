@@ -720,7 +720,7 @@ export default {
     },
     getConversationFullTitle(conv) {
       if (conv.type === 'crew') {
-        return conv.goal || 'Crew Session';
+        return conv.name || 'Crew Session';
       }
       const cachedTitle = this.store.getConversationTitle(conv.id);
       if (cachedTitle && cachedTitle.length > 30) {

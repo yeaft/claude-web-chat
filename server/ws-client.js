@@ -706,11 +706,8 @@ async function handleWebMessage(clientId, msg) {
         sessionId: msg.sessionId || randomUUID(),
         projectDir: msg.projectDir,
         sharedDir: msg.sharedDir,
-        goal: msg.goal,
         name: msg.name || '',
-        sharedKnowledge: msg.sharedKnowledge || '',
         roles: msg.roles,
-        maxRounds: msg.maxRounds,
         teamType: msg.teamType || 'dev',
         userId: client.userId,
         username: client.username
@@ -843,8 +840,7 @@ async function handleWebMessage(clientId, msg) {
       await forwardToAgent(updateCrewAgentId, {
         type: 'update_crew_session',
         sessionId: msg.sessionId,
-        name: msg.name,
-        sharedKnowledge: msg.sharedKnowledge
+        name: msg.name
       });
       break;
     }

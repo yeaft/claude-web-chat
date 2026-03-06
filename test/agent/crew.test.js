@@ -19,7 +19,6 @@ function sessionToIndexEntry(session) {
     projectDir: session.projectDir,
     sharedDir: session.sharedDir,
     status: session.status,
-    goal: session.goal,
     userId: session.userId,
     username: session.username,
     createdAt: session.createdAt,
@@ -32,14 +31,12 @@ function buildSessionMeta(session) {
     sessionId: session.id,
     projectDir: session.projectDir,
     sharedDir: session.sharedDir,
-    goal: session.goal,
     status: session.status,
     roles: Array.from(session.roles.values()).map(r => ({
       name: r.name, displayName: r.displayName, icon: r.icon,
       description: r.description, isDecisionMaker: r.isDecisionMaker || false
     })),
     decisionMaker: session.decisionMaker,
-    maxRounds: session.maxRounds,
     round: session.round,
     createdAt: session.createdAt,
     updatedAt: Date.now(),
@@ -58,13 +55,11 @@ function createTestSession(overrides = {}) {
     id: overrides.id || 'crew_test_001',
     projectDir: overrides.projectDir || '/tmp/test-project',
     sharedDir: overrides.sharedDir || '/tmp/test-project/.crew',
-    goal: 'goal' in overrides ? overrides.goal : '测试目标',
     roles,
     roleStates: new Map(),
     decisionMaker: overrides.decisionMaker || 'pm',
     status: overrides.status || 'running',
     round: overrides.round || 0,
-    maxRounds: overrides.maxRounds || 20,
     costUsd: 0,
     messageHistory: [],
     humanMessageQueue: [],
@@ -93,11 +88,10 @@ describe('Crew Index Operations', () => {
       expect(entry.updatedAt).toBeGreaterThan(0);
     });
 
-    it('should include goal, userId, username but not roles', () => {
+    it('should include userId, username but not roles', () => {
       const session = createTestSession();
       const entry = sessionToIndexEntry(session);
 
-      expect(entry.goal).toBe('测试目标');
       expect(entry.userId).toBe('user_123');
       expect(entry.username).toBe('testuser');
       expect(entry.roles).toBeUndefined();
@@ -185,7 +179,6 @@ describe('Session Metadata (.crew/session.json)', () => {
       const meta = buildSessionMeta(session);
 
       expect(meta.sessionId).toBe('crew_test_001');
-      expect(meta.goal).toBe('测试目标');
       expect(meta.roles).toBeInstanceOf(Array);
       expect(meta.roles.length).toBe(2);
       expect(meta.roles[0].name).toBe('pm');
@@ -195,11 +188,10 @@ describe('Session Metadata (.crew/session.json)', () => {
     });
 
     it('should include all required fields', () => {
-      const session = createTestSession({ round: 5, maxRounds: 10 });
+      const session = createTestSession({ round: 5 });
       const meta = buildSessionMeta(session);
 
       expect(meta.decisionMaker).toBe('pm');
-      expect(meta.maxRounds).toBe(10);
       expect(meta.round).toBe(5);
       expect(meta.userId).toBe('user_123');
       expect(meta.username).toBe('testuser');
@@ -301,13 +293,11 @@ describe('resumeCrewSession Logic', () => {
       sessionId: 'crew_001',
       projectDir: '/project',
       sharedDir: '/project/.crew',
-      goal: 'Build feature X',
       roles: [
         { name: 'pm', displayName: 'PM', icon: '📋', description: 'desc', isDecisionMaker: true },
         { name: 'developer', displayName: '开发者', icon: '💻', description: 'desc', isDecisionMaker: false }
       ],
       decisionMaker: 'pm',
-      maxRounds: 20,
       round: 5,
       createdAt: 1000000,
       userId: 'user_orig',
@@ -321,13 +311,11 @@ describe('resumeCrewSession Logic', () => {
       id: meta.sessionId,
       projectDir: meta.projectDir,
       sharedDir: meta.sharedDir,
-      goal: meta.goal,
       roles: new Map(roles.map(r => [r.name, r])),
       roleStates: new Map(),
       decisionMaker,
       status: 'waiting_human',
       round: meta.round || 0,
-      maxRounds: meta.maxRounds || 20,
       costUsd: 0,
       messageHistory: [],
       humanMessageQueue: [],
@@ -385,8 +373,7 @@ describe('sendConversationList with Crew Sessions', () => {
     const crewSessions = new Map();
     crewSessions.set('crew_001', {
       projectDir: '/project', createdAt: 2000,
-      status: 'running', userId: 'u1', username: 'user1',
-      goal: 'Build X'
+      status: 'running', userId: 'u1', username: 'user1'
     });
 
     const list = [];
@@ -404,7 +391,7 @@ describe('sendConversationList with Crew Sessions', () => {
         id, workDir: session.projectDir, createdAt: session.createdAt,
         processing: session.status === 'running',
         userId: session.userId, username: session.username,
-        type: 'crew', goal: session.goal
+        type: 'crew'
       });
     }
 
@@ -413,13 +400,12 @@ describe('sendConversationList with Crew Sessions', () => {
     expect(list[0].type).toBeUndefined();
     expect(list[1].id).toBe('crew_001');
     expect(list[1].type).toBe('crew');
-    expect(list[1].goal).toBe('Build X');
     expect(list[1].processing).toBe(true);
   });
 
   it('should include stopped crew sessions from index', () => {
     const crewSessions = new Map();
-    crewSessions.set('crew_active', { projectDir: '/p', createdAt: 1000, status: 'running', goal: 'A' });
+    crewSessions.set('crew_active', { projectDir: '/p', createdAt: 1000, status: 'running' });
 
     const index = [
       { sessionId: 'crew_active', projectDir: '/p', createdAt: 1000 },
@@ -475,32 +461,30 @@ describe('sendConversationList with Crew Sessions', () => {
 });
 
 describe('Server conversation_list Crew Field Preservation', () => {
-  it('should preserve type and goal when updating existing conversation', () => {
+  it('should preserve type when updating existing conversation', () => {
     const agent = { conversations: new Map() };
     agent.conversations.set('crew_001', {
       id: 'crew_001', workDir: '/old', userId: 'u1'
     });
 
-    const incoming = { id: 'crew_001', workDir: '/new', type: 'crew', goal: 'Build X' };
+    const incoming = { id: 'crew_001', workDir: '/new', type: 'crew' };
 
     // Replicate ws-agent.js merge logic
     const existing = agent.conversations.get(incoming.id);
     if (existing) {
       existing.workDir = incoming.workDir || existing.workDir;
       if (incoming.type) existing.type = incoming.type;
-      if (incoming.goal) existing.goal = incoming.goal;
     }
 
     expect(existing.workDir).toBe('/new');
     expect(existing.type).toBe('crew');
-    expect(existing.goal).toBe('Build X');
     expect(existing.userId).toBe('u1');
   });
 
-  it('should include type and goal for new crew conversations', () => {
+  it('should include type for new crew conversations', () => {
     const agent = { conversations: new Map() };
     const incoming = {
-      id: 'crew_new', workDir: '/project', type: 'crew', goal: 'Feature Y',
+      id: 'crew_new', workDir: '/project', type: 'crew',
       userId: null, username: null
     };
 
@@ -513,17 +497,16 @@ describe('Server conversation_list Crew Field Preservation', () => {
 
     const conv = agent.conversations.get('crew_new');
     expect(conv.type).toBe('crew');
-    expect(conv.goal).toBe('Feature Y');
   });
 
-  it('should not strip type/goal during sync cleanup', () => {
+  it('should not strip type during sync cleanup', () => {
     const agent = { conversations: new Map() };
     agent.conversations.set('conv_001', { id: 'conv_001' });
-    agent.conversations.set('crew_001', { id: 'crew_001', type: 'crew', goal: 'X' });
+    agent.conversations.set('crew_001', { id: 'crew_001', type: 'crew' });
 
     const incomingList = [
       { id: 'conv_001', workDir: '/w' },
-      { id: 'crew_001', workDir: '/p', type: 'crew', goal: 'X updated' }
+      { id: 'crew_001', workDir: '/p', type: 'crew' }
     ];
 
     // Replicate sync: delete missing, update existing
@@ -536,7 +519,6 @@ describe('Server conversation_list Crew Field Preservation', () => {
       if (existing) {
         existing.workDir = conv.workDir || existing.workDir;
         if (conv.type) existing.type = conv.type;
-        if (conv.goal) existing.goal = conv.goal;
       } else {
         agent.conversations.set(conv.id, conv);
       }
@@ -544,7 +526,6 @@ describe('Server conversation_list Crew Field Preservation', () => {
 
     expect(agent.conversations.size).toBe(2);
     expect(agent.conversations.get('crew_001').type).toBe('crew');
-    expect(agent.conversations.get('crew_001').goal).toBe('X updated');
   });
 });
 
@@ -638,21 +619,13 @@ describe('Crew Session Lifecycle', () => {
   });
 
   it('should increment rounds', () => {
-    const session = createTestSession({ round: 0, maxRounds: 5 });
+    const session = createTestSession({ round: 0 });
 
     session.round++;
     expect(session.round).toBe(1);
 
     session.round++;
     expect(session.round).toBe(2);
-  });
-
-  it('should detect max rounds reached', () => {
-    const session = createTestSession({ round: 19, maxRounds: 20 });
-
-    session.round++;
-    const maxReached = session.round >= session.maxRounds;
-    expect(maxReached).toBe(true);
   });
 
   it('should clean up on stopAll', () => {
@@ -1055,11 +1028,9 @@ describe('createCrewSession / resumeCrewSession - pendingRoute initialization', 
       sessionId: 'crew_resume_001',
       projectDir: '/project',
       sharedDir: '/project/.crew',
-      goal: 'Test',
       roles: [{ name: 'pm', displayName: 'PM', icon: '📋', description: 'desc', isDecisionMaker: true }],
       decisionMaker: 'pm',
       round: 3,
-      maxRounds: 20,
       createdAt: 1000
     };
 
@@ -1192,7 +1163,7 @@ describe('buildRoleSystemPrompt', () => {
     const otherRoles = allRoles.filter(r => r.name !== role.name);
 
     let prompt = `# 团队协作
-你正在一个 AI 团队中工作。${session.goal ? `项目目标是: ${session.goal}` : '等待用户提出任务或问题。'}
+你正在一个 AI 团队中工作。等待用户提出任务或问题。
 
 团队成员:
 ${allRoles.map(r => `- ${r.icon} ${r.displayName}: ${r.description}${r.isDecisionMaker ? ' (决策者)' : ''}`).join('\n')}`;
@@ -1655,19 +1626,17 @@ describe('removeFromCrewIndex logic', () => {
 });
 
 // =====================================================================
-// sessionToIndexEntry - new fields (goal, userId, username)
+// sessionToIndexEntry - fields (userId, username)
 // =====================================================================
 
 describe('sessionToIndexEntry - extended fields', () => {
-  it('should include goal, userId, username in index entry', () => {
+  it('should include userId, username in index entry', () => {
     const session = createTestSession({
-      goal: '构建用户认证系统',
       userId: 'user_456',
       username: 'alice'
     });
     const entry = sessionToIndexEntry(session);
 
-    expect(entry.goal).toBe('构建用户认证系统');
     expect(entry.userId).toBe('user_456');
     expect(entry.username).toBe('alice');
   });
@@ -6061,14 +6030,14 @@ describe('writeSharedClaudeMd - Feature 工作记录章节 (auto-managed)', () =
     expect(crewContent).toContain('# Feature 工作记录');
   });
 
-  it('should place Feature section after Worktree rules and before sharedMemoryContent', async () => {
-    // In writeSharedClaudeMd template, verify the order is: worktreeRules → featureRecordShared → sharedMemoryContent
+  it('should place Feature section after Worktree rules and before sharedMemoryDefault', async () => {
+    // In writeSharedClaudeMd template, verify the order is: worktreeRules → featureRecordShared → sharedMemoryDefault
     const crewJs = await (await import('fs')).promises.readFile(join(process.cwd(), 'agent/crew.js'), 'utf-8');
     // Find the template string section in writeSharedClaudeMd
     const tmplStart = crewJs.indexOf('const claudeMd = `', crewJs.indexOf('writeSharedClaudeMd'));
     const worktreeIdx = crewJs.indexOf('m.worktreeRules', tmplStart);
     const featureIdx = crewJs.indexOf('m.featureRecordShared', tmplStart);
-    const memoryIdx = crewJs.indexOf('sharedMemoryContent}', tmplStart);
+    const memoryIdx = crewJs.indexOf('sharedMemoryDefault}', tmplStart);
     expect(worktreeIdx).toBeGreaterThan(0);
     expect(worktreeIdx).toBeLessThan(featureIdx);
     expect(featureIdx).toBeLessThan(memoryIdx);
@@ -6116,7 +6085,7 @@ describe('buildRoleSystemPrompt - Feature 工作记录 (auto-managed)', () => {
     }
 
     let prompt = `# 团队协作
-你正在一个 AI 团队中工作。${session.goal ? `项目目标是: ${session.goal}` : '等待用户提出任务或问题。'}
+你正在一个 AI 团队中工作。等待用户提出任务或问题。
 
 团队成员:
 ${allRoles.map(r => `- ${roleLabel(r)}: ${r.description}${r.isDecisionMaker ? ' (决策者)' : ''}`).join('\n')}`;
@@ -6206,13 +6175,11 @@ ${routeTargets.map(r => `- ${r.name}: ${roleLabel(r)} — ${r.description}`).joi
       id: overrides.id || 'crew_test_feature',
       projectDir: '/tmp/test-project',
       sharedDir: '/tmp/test-project/.crew',
-      goal: 'goal' in overrides ? overrides.goal : '测试 Feature 进度',
       roles,
       roleStates: new Map(),
       decisionMaker: 'pm',
       status: 'running',
       round: 0,
-      maxRounds: 20,
       costUsd: 0,
       messageHistory: [],
       humanMessageQueue: [],
