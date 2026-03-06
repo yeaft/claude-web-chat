@@ -595,7 +595,7 @@ export default {
                   <span class="crew-feature-card-count">
                     {{ feature.doneCount }} / {{ feature.totalCount }}
                   </span>
-                  <span v-if="feature.createdAt" class="crew-feature-card-elapsed">{{ formatDuration(nowTick - feature.createdAt) }}</span>
+                  <span v-if="feature.createdAt" class="crew-feature-card-elapsed">总耗时 {{ formatDuration(nowTick - feature.createdAt) }}</span>
                 </div>
                 <div class="crew-feature-card-bar">
                   <div class="crew-feature-card-bar-fill"
@@ -655,7 +655,7 @@ export default {
                     <span class="crew-feature-card-count">
                       {{ feature.doneCount }} / {{ feature.totalCount }}
                     </span>
-                    <span v-if="feature.createdAt && feature.lastActivityAt" class="crew-feature-card-elapsed">{{ formatDuration(feature.lastActivityAt - feature.createdAt) }}</span>
+                    <span v-if="feature.createdAt && feature.lastActivityAt" class="crew-feature-card-elapsed">总耗时 {{ formatDuration(feature.lastActivityAt - feature.createdAt) }}</span>
                   </div>
                   <div class="crew-feature-card-bar">
                     <div class="crew-feature-card-bar-fill"
