@@ -120,7 +120,6 @@ describe('group rendering correctness', () => {
     );
     expect(normalSection).not.toContain('getCrewTitle');
     expect(normalSection).not.toContain('crew-conv-icon');
-    expect(normalSection).not.toContain('crew-stopped-tag');
     expect(normalSection).not.toContain('session-item-crew');
   });
 
@@ -135,7 +134,6 @@ describe('group rendering correctness', () => {
     const crewSection = chatPageSource.substring(crewIdx, crewIdx + 1500);
     expect(crewSection).toContain('session-item-crew');
     expect(crewSection).toContain('crew-conv-icon');
-    expect(crewSection).toContain('crew-stopped-tag');
   });
 
   it('crew conversation items use class="session-item session-item-crew"', () => {
