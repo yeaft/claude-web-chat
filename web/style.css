@@ -1966,51 +1966,6 @@ body {
   opacity: 1;
 }
 
-/* Processing Hint - minimal ChatGPT-style */
-.processing-hint {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 0;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.processing-hint .processing-icon {
-  font-size: 14px;
-  animation: processingPulse 1.5s ease-in-out infinite;
-}
-
-@keyframes processingPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-
-.processing-hint .processing-text {
-  color: var(--text-secondary);
-}
-
-.processing-hint .processing-detail {
-  color: var(--text-muted);
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
-  font-size: 11px;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-@media (max-width: 640px) {
-  .processing-hint {
-    font-size: 11px;
-  }
-
-  .processing-hint .processing-detail {
-    max-width: 120px;
-    font-size: 10px;
-  }
-}
-
 /* Input Area */
 .input-area {
   padding: 16px 24px 24px;

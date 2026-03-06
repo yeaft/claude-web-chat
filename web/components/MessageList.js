@@ -66,13 +66,6 @@ export default {
           <!-- Assistant Turn card: aggregated rendering -->
           <AssistantTurn v-else-if="item.type === 'assistant-turn'" :turn="item" />
         </template>
-
-        <!-- Minimal Status Indicator -->
-        <div v-if="store.isProcessing" class="processing-hint">
-          <span class="processing-icon">{{ statusIcon }}</span>
-          <span class="processing-text">{{ statusText }}</span>
-          <span v-if="statusDetail" class="processing-detail">· {{ statusDetail }}</span>
-        </div>
       </div>
     </main>
   `,
@@ -80,7 +73,6 @@ export default {
   setup() {
     const store = Pinia.useChatStore();
     const containerRef = Vue.ref(null);
-    const t = Vue.inject('t');
 
     // Online agents
     const onlineAgents = Vue.computed(() => {
@@ -179,67 +171,12 @@ export default {
       return result;
     });
 
-    // Shorten path for display
-    const shortenPath = (path) => {
-      if (!path) return '-';
-      if (path.length <= 30) return path;
-      const parts = path.split(/[/\\]/);
-      if (parts.length <= 2) return path;
-      return '...' + parts.slice(-2).join('/');
-    };
-
     // Track if user is at bottom (within threshold)
     const isAtBottom = Vue.ref(true);
     const SCROLL_THRESHOLD = 50;
 
     const hasStreamingMessage = Vue.computed(() => {
       return store.messages.some(m => m.isStreaming);
-    });
-
-    // Execution status
-    const currentTool = Vue.computed(() => store.executionStatus.currentTool);
-
-    const statusIcon = Vue.computed(() => {
-      const tool = currentTool.value;
-      if (!tool) return '💭';
-      const iconMap = {
-        'Read': '📖', 'Write': '✍️', 'Edit': '✏️', 'Bash': '⚡',
-        'Glob': '🔍', 'Grep': '🔎', 'Task': '🤖', 'WebFetch': '🌐',
-        'WebSearch': '🔍', 'TodoWrite': '📝'
-      };
-      return iconMap[tool.name] || '⚙️';
-    });
-
-    const statusIconClass = Vue.computed(() => {
-      return currentTool.value ? 'executing' : 'thinking';
-    });
-
-    const statusText = Vue.computed(() => {
-      const tool = currentTool.value;
-      if (!tool) return t('status.thinking');
-      const textMap = {
-        'Read': t('status.reading'), 'Write': t('status.writing'),
-        'Edit': t('status.editing'), 'Bash': t('status.executing'),
-        'Glob': t('status.searchingFiles'), 'Grep': t('status.searchingContent'),
-        'Task': t('status.executingTask'), 'WebFetch': t('status.fetching'),
-        'WebSearch': t('status.searching'), 'TodoWrite': t('status.updatingTasks')
-      };
-      return textMap[tool.name] || t('status.executingTool', { name: tool.name });
-    });
-
-    const statusDetail = Vue.computed(() => {
-      const tool = currentTool.value;
-      if (!tool || !tool.input) return '';
-      if (tool.name === 'Read' && tool.input.file_path) return shortenPath(tool.input.file_path);
-      if (tool.name === 'Edit' && tool.input.file_path) return shortenPath(tool.input.file_path);
-      if (tool.name === 'Write' && tool.input.file_path) return shortenPath(tool.input.file_path);
-      if (tool.name === 'Bash' && tool.input.command) {
-        const cmd = tool.input.command;
-        return cmd.length > 30 ? cmd.slice(0, 30) + '...' : cmd;
-      }
-      if (tool.name === 'Glob' && tool.input.pattern) return tool.input.pattern;
-      if (tool.name === 'Grep' && tool.input.pattern) return tool.input.pattern;
-      return '';
     });
 
     // Scroll handling
@@ -317,12 +254,7 @@ export default {
       containerRef,
       hasStreamingMessage,
       onlineAgents,
-      shortenPath,
-      turnGroups,
-      statusIcon,
-      statusIconClass,
-      statusText,
-      statusDetail
+      turnGroups
     };
   }
 };
