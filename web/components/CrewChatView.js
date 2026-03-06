@@ -1107,11 +1107,23 @@ summary: 请测试以下变更...
 
       // Initialize instance cache if needed
       if (!this._fbCache) {
-        this._fbCache = { segments: [], blocks: [], processedLen: 0, blockCounter: 0, turnsCache: new Map() };
+        this._fbCache = { segments: [], blocks: [], processedLen: 0, blockCounter: 0, turnsCache: new Map(), _lastArr: null };
       }
       const cache = this._fbCache;
 
-      // Detect full rebuild scenarios: conversation switch (array ref change) or messages shrunk (clear)
+      // Detect array reference change (e.g. crew_session_restored replaces the array)
+      if (cache._lastArr !== allMessages) {
+        cache.segments = [];
+        cache.blocks = [];
+        cache.processedLen = 0;
+        cache.blockCounter = 0;
+        cache.turnsCache.clear();
+        cache._lastArr = allMessages;
+        if (len === 0) return cache.blocks;
+        return this._fullBuildFeatureBlocks(allMessages, completed, cache);
+      }
+
+      // Empty messages — reset cache
       if (len === 0) {
         cache.segments = [];
         cache.blocks = [];
