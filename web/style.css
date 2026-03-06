@@ -935,7 +935,7 @@ body {
 }
 
 .session-group-header:hover {
-  background: var(--hover-bg);
+  background: var(--sidebar-hover);
 }
 
 .session-group-header:hover .session-header-add-icon {

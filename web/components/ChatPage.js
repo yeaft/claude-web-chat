@@ -135,7 +135,7 @@ export default {
         <div class="session-panels">
           <!-- Chat Sessions Panel -->
           <div class="session-panel">
-            <div class="session-group-header" @click="openConversationModal" :class="{ disabled: onlineAgentCount === 0 }">
+            <div class="session-group-header" @click="onlineAgentCount > 0 && openConversationModal()" :class="{ disabled: onlineAgentCount === 0 }">
               <svg class="session-group-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
               <span>{{ $t('chat.sidebar.recentChats') }}</span>
               <svg class="session-header-add-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>

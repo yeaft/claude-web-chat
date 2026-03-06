@@ -99,7 +99,7 @@ describe('header inline add icons', () => {
     const chatHeaderIdx = chatPageSource.indexOf('class="session-group-header"');
     const chatListIdx = chatPageSource.indexOf('class="session-panel-list"');
     const chatHeader = chatPageSource.substring(chatHeaderIdx - 200, chatListIdx);
-    expect(chatHeader).toContain('@click="openConversationModal"');
+    expect(chatHeader).toContain('openConversationModal');
   });
 
   it('crew panel header triggers newCrewSession on click', () => {
@@ -244,7 +244,7 @@ describe('CSS — session-header-add-icon styles', () => {
 
   it('header has hover background', () => {
     const block = extractCssBlock('.session-group-header:hover {');
-    expect(block).toContain('background: var(--hover-bg)');
+    expect(block).toContain('background: var(--sidebar-hover)');
   });
 
   it('icon becomes visible on header hover', () => {
