@@ -471,7 +471,7 @@ export default {
           </div>
         </template>
 
-        <!-- Active Messages: latest message from each role -->
+        <!-- Active Messages: latest human + latest crew (max 2) -->
         <div v-if="activeMessages.length > 0" class="crew-active-messages">
           <div v-for="am in activeMessages" :key="am.id" class="crew-message crew-msg-text" :class="'crew-role-' + am.role" :data-role="am.role" :style="getRoleStyle(am.role)">
             <div class="crew-msg-body">
@@ -1184,18 +1184,20 @@ summary: 请测试以下变更...
       return active;
     },
     activeMessages() {
-      // Collect the latest text message from each role (persistent, not just streaming)
+      // Return at most 2 messages: latest human + latest crew (any non-human/system role)
       const messages = this.store.currentCrewMessages;
-      const result = [];
-      const seen = new Set();
+      let latestHuman = null;
+      let latestCrew = null;
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
-        if (m.type === 'text' && m.role && m.role !== 'human' && m.role !== 'system' && !seen.has(m.role)) {
-          seen.add(m.role);
-          result.push(m);
-        }
+        if (m.type !== 'text' || !m.role) continue;
+        if (!latestHuman && m.role === 'human') latestHuman = m;
+        if (!latestCrew && m.role !== 'human' && m.role !== 'system') latestCrew = m;
+        if (latestHuman && latestCrew) break;
       }
-      result.reverse(); // chronological order
+      const result = [];
+      if (latestHuman) result.push(latestHuman);
+      if (latestCrew) result.push(latestCrew);
       return result;
     },
     featureBlocks() {
