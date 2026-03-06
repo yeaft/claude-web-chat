@@ -3,7 +3,7 @@
  * 显示多角色的群聊消息，包括状态栏和控制按钮
  * 支持动态添加/移除角色
  */
-import { renderMarkdown } from '../utils/markdown.js';
+import { renderMarkdown, clearMarkdownCache } from '../utils/markdown.js';
 
 const ICONS = {
   crew: '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>',
@@ -237,18 +237,18 @@ export default {
             </div>
             <div v-if="isFeatureExpanded(block)" class="crew-feature-body">
               <!-- History toggle (only when there are older turns) -->
-              <button v-if="block.turns.length > 1"
+              <button v-if="getBlockTurns(block).length > 1"
                       class="crew-feature-history-toggle"
                       :class="{ 'is-expanded': expandedHistories[block.taskId] }"
                       @click.stop="toggleHistory(block.taskId)">
                 <svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 6l6 6-6 6z"/></svg>
-                查看 {{ block.turns.length - 1 }} 条历史消息
+                查看 {{ getBlockTurns(block).length - 1 }} 条历史消息
               </button>
 
               <!-- History messages (collapsed by default) -->
-              <div v-if="expandedHistories[block.taskId] && block.turns.length > 1" class="crew-feature-history">
-                <template v-for="(turn, tidx) in block.turns.slice(0, -1)" :key="turn.id">
-                  <div v-if="tidx > 0 && shouldShowTurnDivider(block.turns, tidx)" class="crew-turn-divider"></div>
+              <div v-if="expandedHistories[block.taskId] && getBlockTurns(block).length > 1" class="crew-feature-history">
+                <template v-for="(turn, tidx) in getBlockTurns(block).slice(0, -1)" :key="turn.id">
+                  <div v-if="tidx > 0 && shouldShowTurnDivider(getBlockTurns(block), tidx)" class="crew-turn-divider"></div>
                   <div v-if="turn.type === 'turn' && getMaxRound(turn) > 0" class="crew-round-divider">
                     <div class="crew-round-line"></div>
                     <span class="crew-round-label">Round {{ getMaxRound(turn) }}</span>
@@ -354,8 +354,8 @@ export default {
               </div>
 
               <!-- Latest turn (always visible) -->
-              <template v-if="block.turns.length > 0">
-                <template v-for="turn in [block.turns[block.turns.length - 1]]" :key="turn.id">
+              <template v-if="getBlockTurns(block).length > 0">
+                <template v-for="turn in [getBlockTurns(block)[getBlockTurns(block).length - 1]]" :key="turn.id">
                   <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :data-role="turn.message.role" :style="getRoleStyle(turn.message.role)">
                     <div class="crew-msg-body">
                       <div class="crew-msg-header">
@@ -1103,92 +1103,57 @@ summary: 请测试以下变更...
     featureBlocks() {
       const allMessages = this.store.currentCrewMessages;
       const completed = this.completedTaskIds;
+      const len = allMessages.length;
 
-      // Step 1: Split messages into segments by taskId continuity
-      // Messages with the same taskId that appear consecutively are grouped.
-      // Messages without taskId (or structural messages like route/system) go to 'global'.
-      const segments = [];
-      let currentSegment = null;
-
-      const flushSegment = () => {
-        if (currentSegment && currentSegment.messages.length > 0) {
-          segments.push(currentSegment);
-        }
-        currentSegment = null;
-      };
-
-      for (const msg of allMessages) {
-        const taskId = msg.taskId || null;
-        // Human messages, system messages, and messages without taskId go to global
-        const isGlobal = !taskId || msg.role === 'human';
-
-        if (isGlobal) {
-          // If current segment is a feature, flush it
-          if (currentSegment && currentSegment.taskId) {
-            flushSegment();
-          }
-          // Append to current global segment or create one
-          if (!currentSegment || currentSegment.taskId) {
-            flushSegment();
-            currentSegment = { taskId: null, messages: [] };
-          }
-          currentSegment.messages.push(msg);
-        } else {
-          // Feature message
-          if (currentSegment && currentSegment.taskId === taskId) {
-            currentSegment.messages.push(msg);
-          } else {
-            flushSegment();
-            currentSegment = { taskId, messages: [msg] };
-          }
-        }
+      // Initialize instance cache if needed
+      if (!this._fbCache) {
+        this._fbCache = { segments: [], blocks: [], processedLen: 0, blockCounter: 0, turnsCache: new Map(), _lastArr: null };
       }
-      flushSegment();
+      const cache = this._fbCache;
 
-      // Step 2: Convert segments to blocks with turns
-      const blocks = [];
-      let blockCounter = 0;
-      for (const seg of segments) {
-        const turns = this._buildTurns(seg.messages);
-        if (seg.taskId) {
-          // Feature block
-          const taskTitle = seg.messages.find(m => m.taskTitle)?.taskTitle || seg.taskId;
-          const isCompleted = completed.has(seg.taskId);
-          const hasStreaming = seg.messages.some(m => m._streaming);
-          // Active roles: roles currently streaming in this feature
-          const activeRoles = [];
-          const seenRoles = new Set();
-          for (let i = seg.messages.length - 1; i >= 0; i--) {
-            const m = seg.messages[i];
-            if (m._streaming && m.role && !seenRoles.has(m.role)) {
-              seenRoles.add(m.role);
-              activeRoles.push({ role: m.role, roleName: m.roleName, roleIcon: m.roleIcon });
-            }
-          }
-          const hasPendingAsk = turns.some(t =>
-            t.askMsg && !this.isCrewAskAnswered(t.askMsg)
-          );
-          blocks.push({
-            type: 'feature',
-            taskId: seg.taskId,
-            taskTitle,
-            turns,
-            isCompleted,
-            hasStreaming,
-            activeRoles,
-            hasPendingAsk,
-            id: 'feature_' + seg.taskId + '_' + (blockCounter++)
-          });
-        } else {
-          // Global block
-          blocks.push({
-            type: 'global',
-            turns,
-            id: 'global_' + (blockCounter++)
-          });
-        }
+      // Detect array reference change (e.g. crew_session_restored replaces the array)
+      if (cache._lastArr !== allMessages) {
+        cache.segments = [];
+        cache.blocks = [];
+        cache.processedLen = 0;
+        cache.blockCounter = 0;
+        cache.turnsCache.clear();
+        cache._lastArr = allMessages;
+        if (len === 0) return cache.blocks;
+        return this._fullBuildFeatureBlocks(allMessages, completed, cache);
       }
-      return blocks;
+
+      // Empty messages — reset cache
+      if (len === 0) {
+        cache.segments = [];
+        cache.blocks = [];
+        cache.processedLen = 0;
+        cache.blockCounter = 0;
+        cache.turnsCache.clear();
+        return cache.blocks;
+      }
+
+      // Step 1: Incremental segmentation — only process new messages
+      const startIdx = cache.processedLen;
+      if (startIdx > len) {
+        // Messages shrunk (e.g. clear) — full rebuild
+        cache.segments = [];
+        cache.blocks = [];
+        cache.processedLen = 0;
+        cache.blockCounter = 0;
+        cache.turnsCache.clear();
+        return this._fullBuildFeatureBlocks(allMessages, completed, cache);
+      }
+
+      if (startIdx < len) {
+        // New messages to process — extend segments incrementally
+        this._appendToSegments(allMessages, startIdx, cache);
+      }
+
+      // Step 2: Rebuild blocks from segments (segments are stable, turns are cached)
+      this._rebuildBlocksFromSegments(cache, completed);
+
+      return cache.blocks;
     },
 
     visibleBlocks() {
@@ -1202,21 +1167,20 @@ summary: 请测试以下变更...
     },
 
     pendingAsks() {
+      // Scan messages directly for pending AskUserQuestion (avoids dependence on turns)
       const asks = [];
-      for (const block of this.featureBlocks) {
-        if (block.type !== 'feature') continue;
-        for (const turn of block.turns) {
-          if (turn.askMsg && !this.isCrewAskAnswered(turn.askMsg)) {
-            asks.push({
-              blockId: block.id,
-              taskId: block.taskId,
-              taskTitle: block.taskTitle,
-              roleIcon: turn.roleIcon || turn.askMsg.roleIcon,
-              roleName: turn.roleName || turn.askMsg.roleName,
-              question: this.getCrewAskQuestions(turn.askMsg)?.[0]?.question || 'Question',
-              askMsg: turn.askMsg,
-            });
-          }
+      const messages = this.store.currentCrewMessages;
+      for (const msg of messages) {
+        if (msg.type === 'tool' && msg.toolName === 'AskUserQuestion' && !msg.askAnswered) {
+          asks.push({
+            blockId: null,  // resolved lazily if needed
+            taskId: msg.taskId || null,
+            taskTitle: msg.taskTitle || msg.taskId || '',
+            roleIcon: msg.roleIcon,
+            roleName: msg.roleName,
+            question: (msg.toolInput?.questions?.[0]?.question) || (msg.askQuestions?.[0]?.question) || 'Question',
+            askMsg: msg,
+          });
         }
       }
       return asks;
@@ -1379,6 +1343,10 @@ summary: 请测试以下变更...
       // 恢复新会话草稿
       this.inputText = (newId && this.store.inputDrafts[newId]) || '';
       this._draftConvId = newId;
+
+      // Reset featureBlocks cache on conversation switch
+      this._fbCache = null;
+      clearMarkdownCache();
 
       this.visibleBlockCount = 20;
       this.$nextTick(() => {
@@ -1579,6 +1547,158 @@ summary: 请测试以下变更...
       }
       flushTurn();
       return turns;
+    },
+
+    /**
+     * Full rebuild of feature blocks from all messages.
+     * Used on conversation switch or message clear.
+     */
+    _fullBuildFeatureBlocks(allMessages, completed, cache) {
+      cache.segments = [];
+      cache.blockCounter = 0;
+      cache.turnsCache.clear();
+      this._appendToSegments(allMessages, 0, cache);
+      this._rebuildBlocksFromSegments(cache, completed);
+      return cache.blocks;
+    },
+
+    /**
+     * Incrementally append new messages (from startIdx) to cached segments.
+     * Only the last segment may be extended; new segments are created as needed.
+     */
+    _appendToSegments(allMessages, startIdx, cache) {
+      const segments = cache.segments;
+
+      for (let i = startIdx; i < allMessages.length; i++) {
+        const msg = allMessages[i];
+        const taskId = msg.taskId || null;
+        const isGlobal = !taskId || msg.role === 'human';
+        const lastSeg = segments.length > 0 ? segments[segments.length - 1] : null;
+
+        if (isGlobal) {
+          if (lastSeg && !lastSeg.taskId) {
+            // Extend existing global segment
+            lastSeg.messages.push(msg);
+            lastSeg._dirty = true;
+          } else {
+            // Start new global segment
+            segments.push({ taskId: null, messages: [msg], _dirty: true });
+          }
+        } else {
+          if (lastSeg && lastSeg.taskId === taskId) {
+            // Extend existing feature segment
+            lastSeg.messages.push(msg);
+            lastSeg._dirty = true;
+          } else {
+            // Start new feature segment
+            segments.push({ taskId, messages: [msg], _dirty: true });
+          }
+        }
+      }
+
+      cache.processedLen = allMessages.length;
+    },
+
+    /**
+     * Rebuild blocks array from segments.
+     * Reuses cached turns for clean segments; rebuilds dirty ones.
+     * Segments with streaming messages always rebuild turns for freshness.
+     * Computes dynamic fields (streaming, activeRoles, etc.) for all blocks.
+     */
+    _rebuildBlocksFromSegments(cache, completed) {
+      const segments = cache.segments;
+      const blocks = [];
+
+      for (let si = 0; si < segments.length; si++) {
+        const seg = segments[si];
+        // Segments with streaming messages must always rebuild turns
+        // because streaming mutates message content in-place
+        const hasStreaming = seg.messages.some(m => m._streaming);
+
+        if (seg.taskId) {
+          const taskTitle = seg.messages.find(m => m.taskTitle)?.taskTitle || seg.taskId;
+          const isCompleted = completed.has(seg.taskId);
+          const hasPendingAsk = seg.messages.some(m =>
+            m.type === 'tool' && m.toolName === 'AskUserQuestion' && !m.askAnswered
+          );
+          // Active roles: roles currently streaming in this feature
+          const activeRoles = [];
+          const seenRoles = new Set();
+          for (let i = seg.messages.length - 1; i >= 0; i--) {
+            const m = seg.messages[i];
+            if (m._streaming && m.role && !seenRoles.has(m.role)) {
+              seenRoles.add(m.role);
+              activeRoles.push({ role: m.role, roleName: m.roleName, roleIcon: m.roleIcon });
+            }
+          }
+
+          // Lazy turns: skip _buildTurns for completed, non-streaming, non-ask blocks
+          // Turns will be built on-demand when block is expanded via getBlockTurns()
+          const canDefer = isCompleted && !hasStreaming && !hasPendingAsk;
+          let turns;
+          if (canDefer && seg._turnsCache && !seg._dirty) {
+            turns = seg._turnsCache;  // reuse existing cache
+          } else if (canDefer && !seg._turnsCache && !seg._dirty) {
+            turns = null;  // defer building — will be built on expand
+          } else {
+            turns = this._buildTurns(seg.messages);
+            seg._turnsCache = turns;
+            seg._dirty = false;
+          }
+
+          blocks.push({
+            type: 'feature',
+            taskId: seg.taskId,
+            taskTitle,
+            turns,
+            _segIndex: si,  // for lazy resolution
+            isCompleted,
+            hasStreaming,
+            activeRoles,
+            hasPendingAsk,
+            id: 'feature_' + seg.taskId + '_' + si
+          });
+        } else {
+          // Global blocks always need turns (they're always visible)
+          const needsRebuild = seg._dirty || !seg._turnsCache || hasStreaming;
+          let turns;
+          if (needsRebuild) {
+            turns = this._buildTurns(seg.messages);
+            seg._turnsCache = turns;
+            seg._dirty = false;
+          } else {
+            turns = seg._turnsCache;
+          }
+          blocks.push({
+            type: 'global',
+            turns,
+            id: 'global_' + si
+          });
+        }
+      }
+
+      cache.blocks = blocks;
+    },
+
+    /**
+     * Get turns for a block, building lazily if deferred.
+     */
+    getBlockTurns(block) {
+      if (block.turns !== null) return block.turns;
+      // Lazy build: resolve from segment cache
+      if (this._fbCache && block._segIndex != null) {
+        const seg = this._fbCache.segments[block._segIndex];
+        if (seg) {
+          if (!seg._turnsCache) {
+            seg._turnsCache = this._buildTurns(seg.messages);
+            seg._dirty = false;
+          }
+          block.turns = seg._turnsCache;
+          return block.turns;
+        }
+      }
+      // Fallback: empty
+      return [];
     },
 
     getRoleIcon(roleName) {
