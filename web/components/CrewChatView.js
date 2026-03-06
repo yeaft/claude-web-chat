@@ -471,6 +471,14 @@ export default {
           <span class="crew-typing-dot"></span>
           <span class="crew-typing-dot"></span>
         </div>
+
+        <!-- 初始化进度 -->
+        <div v-if="isInitializing" class="crew-init-progress">
+          <span class="crew-typing-dot"></span>
+          <span class="crew-typing-dot"></span>
+          <span class="crew-typing-dot"></span>
+          <span class="crew-init-text">{{ initProgressText }}</span>
+        </div>
       </div>
 
       <!-- Input -->
@@ -946,6 +954,15 @@ summary: 请测试以下变更...
   },
 
   computed: {
+    isInitializing() {
+      return this.store.currentCrewStatus?.status === 'initializing';
+    },
+    initProgressText() {
+      const p = this.store.currentCrewStatus?.initProgress;
+      if (p === 'roles') return '正在初始化角色配置...';
+      if (p === 'worktrees') return '正在创建工作区...';
+      return '正在准备工作环境...';
+    },
     hasStreamingMessage() {
       return this.store.currentCrewMessages.some(m => m._streaming);
     },

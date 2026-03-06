@@ -731,7 +731,8 @@ export const useChatStore = defineStore('chat', {
           totalOutputTokens: msg.totalOutputTokens || 0,
           activeRoles: msg.activeRoles || [],
           currentToolByRole: msg.currentToolByRole || {},
-          features: msg.features || []
+          features: msg.features || [],
+          initProgress: msg.initProgress || null
         };
         if (msg.roles && this.crewSessions[sid]) {
           this.crewSessions[sid].roles = msg.roles;

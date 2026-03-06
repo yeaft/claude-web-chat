@@ -658,23 +658,10 @@ export async function createCrewSession(msg) {
     ? sharedDirRel
     : join(projectDir, sharedDirRel || '.crew');
 
-  // 初始化共享区
-  await initSharedDir(sharedDir, goal, roles, projectDir, sharedKnowledge);
-
-  // 初始化 git worktrees（所有 EXPANDABLE_ROLES 都会获得独立 worktree）
-  const worktreeMap = await initWorktrees(projectDir, roles);
-  // 回填 workDir：同组的 dev/rev/test 共享同一个 worktree
-  for (const role of roles) {
-    if (role.groupIndex > 0 && worktreeMap.has(role.groupIndex)) {
-      role.workDir = worktreeMap.get(role.groupIndex);
-      // 重新写入 CLAUDE.md（加入工作目录信息）
-      await writeRoleClaudeMd(sharedDir, role);
-    }
-  }
-
   // 找到决策者
   const decisionMaker = roles.find(r => r.isDecisionMaker)?.name || roles[0]?.name || null;
 
+  // ★ 阶段1：立即构建 session 并通知前端，让 UI 先显示
   const session = {
     id: sessionId,
     projectDir,
@@ -685,7 +672,7 @@ export async function createCrewSession(msg) {
     roles: new Map(roles.map(r => [r.name, r])),
     roleStates: new Map(),
     decisionMaker,
-    status: 'running',       // running | paused | waiting_human | completed | stopped
+    status: 'initializing',  // ← 新增初始化状态
     round: 0,
     maxRounds,
     costUsd: 0,
@@ -697,6 +684,7 @@ export async function createCrewSession(msg) {
     waitingHumanContext: null, // { fromRole, reason, message }
     pendingRoutes: [],        // [{ fromRole, route }] — 暂停时未完成的路由
     features: new Map(),      // taskId → { taskId, taskTitle, createdAt } — 持久化 feature 列表
+    initProgress: null,       // 'roles' | 'worktrees' | null — 初始化阶段
     userId,
     username,
     agentId: ctx.CONFIG?.agentName || null,
@@ -706,7 +694,7 @@ export async function createCrewSession(msg) {
 
   crewSessions.set(sessionId, session);
 
-  // 通知 server
+  // 立即通知前端：session 已创建，可以显示 UI
   sendCrewMessage({
     type: 'crew_session_created',
     sessionId,
@@ -731,20 +719,66 @@ export async function createCrewSession(msg) {
     username
   });
 
-  // 发送状态
   sendStatusUpdate(session);
 
-  // 持久化到索引和 session.json
-  await upsertCrewIndex(session);
-  await saveSessionMeta(session);
+  // ★ 阶段2：异步完成文件系统和 worktree 初始化
+  try {
+    // 初始化共享区（角色目录 + CLAUDE.md）
+    session.initProgress = 'roles';
+    sendStatusUpdate(session);
+    await initSharedDir(sharedDir, goal, roles, projectDir, sharedKnowledge);
 
-  // 如果有目标，自动启动第一个角色；否则等待用户输入
-  if (goal && roles.length > 0) {
-    const firstRole = roles.find(r => r.name === 'pm') || roles[0];
-    if (firstRole) {
-      const initialPrompt = buildInitialTask(goal, firstRole, roles);
-      await dispatchToRole(session, firstRole.name, initialPrompt, 'system');
+    // 初始化 git worktrees
+    const groupIndices = [...new Set(roles.filter(r => r.groupIndex > 0).map(r => r.groupIndex))];
+    if (groupIndices.length > 0) {
+      session.initProgress = 'worktrees';
+      sendStatusUpdate(session);
     }
+    const worktreeMap = await initWorktrees(projectDir, roles);
+
+    // 回填 workDir
+    for (const role of roles) {
+      if (role.groupIndex > 0 && worktreeMap.has(role.groupIndex)) {
+        role.workDir = worktreeMap.get(role.groupIndex);
+        await writeRoleClaudeMd(sharedDir, role);
+      }
+    }
+
+    // 持久化
+    await upsertCrewIndex(session);
+    await saveSessionMeta(session);
+
+    // 初始化完成，仅在 initializing 状态下切换到 running（避免覆盖用户手动暂停/停止）
+    if (session.status === 'initializing') {
+      session.status = 'running';
+    }
+    session.initProgress = null;
+    sendStatusUpdate(session);
+
+    // 如果有目标且状态为 running，自动启动第一个角色
+    if (goal && roles.length > 0 && session.status === 'running') {
+      const firstRole = roles.find(r => r.name === 'pm') || roles[0];
+      if (firstRole) {
+        const initialPrompt = buildInitialTask(goal, firstRole, roles);
+        await dispatchToRole(session, firstRole.name, initialPrompt, 'system');
+      }
+    }
+  } catch (e) {
+    console.error('[Crew] Session initialization failed:', e);
+    if (session.status === 'initializing') {
+      session.status = 'running';
+    }
+    session.initProgress = null;
+    sendStatusUpdate(session);
+    sendCrewMessage({
+      type: 'crew_output',
+      sessionId,
+      roleName: 'system',
+      roleIcon: 'S',
+      roleDisplayName: '系统',
+      content: `工作环境初始化失败: ${e.message}`,
+      isTurnEnd: true
+    });
   }
 
   return session;
@@ -2007,7 +2041,7 @@ function buildRoutePrompt(fromRole, summary, session) {
  * 向角色发送消息
  */
 async function dispatchToRole(session, roleName, content, fromSource, taskId, taskTitle) {
-  if (session.status === 'paused' || session.status === 'stopped') {
+  if (session.status === 'paused' || session.status === 'stopped' || session.status === 'initializing') {
     console.log(`[Crew] Session ${session.status}, skipping dispatch to ${roleName}`);
     return;
   }
@@ -2788,7 +2822,8 @@ function sendStatusUpdate(session) {
         .filter(([, s]) => s.turnActive && s.currentTool)
         .map(([name, s]) => [name, s.currentTool])
     ),
-    features: Array.from(session.features.values())
+    features: Array.from(session.features.values()),
+    initProgress: session.initProgress || null
   });
 
   // 异步更新持久化

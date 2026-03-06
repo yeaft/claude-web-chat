@@ -11942,6 +11942,21 @@ body {
   30% { opacity: 1; transform: scale(1); }
 }
 
+.crew-init-progress {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 24px 12px 68px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.crew-init-text {
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* Crew Turn Group — terminal-style tool panel */
 .crew-turn-tools {
   margin-top: 6px;
