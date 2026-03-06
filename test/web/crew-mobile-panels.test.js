@@ -277,12 +277,12 @@ describe('CSS — header nav button styles', () => {
 // 8) CSS — mobile: header nav visible
 // =====================================================================
 
-describe('CSS — header nav visible on all viewports', () => {
-  it('header nav has display: flex in base rule', () => {
+describe('CSS — mobile: header nav visible', () => {
+  it('header nav display: flex in base styles (visible on all viewports)', () => {
     expect(cssSource).toMatch(/\.crew-header-nav\s*\{[^}]*display:\s*flex/);
   });
 
-  it('header nav positioned absolute right in base rule', () => {
+  it('header nav positioned absolute right in base styles', () => {
     const navStart = cssSource.indexOf('.crew-header-nav {');
     const navSection = cssSource.substring(navStart, navStart + 300);
     expect(navSection).toContain('position: absolute');
@@ -535,10 +535,10 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
   });
 
-  it('CSS has balanced braces (2143/2143)', () => {
+  it('CSS has balanced braces (2151/2151)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2143);
+    expect(opens).toBe(2151);
   });
 });
