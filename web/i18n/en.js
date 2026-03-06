@@ -459,6 +459,7 @@ export default {
   'crew.statusInProgress': 'In Progress',
   'crew.viewHistory': 'View {count} history message(s)',
   'crew.activeMessages': 'Active Messages',
+  'crew.latestMessage': 'Latest Message',
   'crew.scrollToLatest': '↓ Latest',
   'crew.uploadFile': 'Upload file',
   'crew.inputPlaceholder': 'Type a message... (@role to send to a specific role, Shift+Enter for newline)',

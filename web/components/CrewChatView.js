@@ -353,13 +353,15 @@ export default {
           </div>
         </template>
 
-        <!-- Active Messages: latest human + latest crew (max 2) -->
-        <div v-if="activeMessages.length > 0" class="crew-active-messages">
-          <div v-for="am in activeMessages" :key="am.id" class="crew-message" :class="['crew-msg-' + am.type, 'crew-role-' + am.role, { 'crew-msg-human-bubble': am.role === 'human' && am.type === 'text' }]" :data-role="am.role" :style="getRoleStyle(am.role)">
+        <!-- Active Messages: single latest text message (hidden when all tasks completed) -->
+        <div v-if="activeMessages.length > 0 && (hasStreamingMessage || kanbanInProgressCount > 0)" class="crew-active-messages">
+          <div class="crew-active-messages-label">{{ $t('crew.latestMessage') }}</div>
+          <div v-for="am in activeMessages" :key="am.id" class="crew-message" :class="['crew-msg-' + am.type, 'crew-role-' + am.role, { 'crew-msg-human-bubble': am.role === 'human' && am.type === 'text' }]" :data-role="am.role">
             <div class="crew-msg-body">
               <div v-if="am.role !== 'human' || am.type !== 'text'" class="crew-msg-header">
                 <span v-if="am.roleIcon" class="crew-msg-header-icon">{{ am.roleIcon }}</span>
                 <span class="crew-msg-name" :class="{ 'is-human': am.role === 'human', 'is-system': am.role === 'system' }">{{ shortName(am.roleName) }}</span>
+                <span v-if="am.taskTitle" class="crew-msg-task">{{ am.taskTitle }}</span>
                 <span class="crew-msg-time">{{ formatTime(am.timestamp) }}</span>
               </div>
               <div class="crew-msg-content markdown-body" v-html="mdRender(am.content)"></div>
@@ -372,13 +374,6 @@ export default {
              :class="{ 'is-hidden': isAtBottom }"
              @click="scrollToBottomAndReset">
           {{ $t('crew.scrollToLatest') }}
-        </div>
-
-        <!-- 流式指示器 -->
-        <div v-if="hasStreamingMessage" class="crew-streaming-indicator">
-          <span class="crew-typing-dot"></span>
-          <span class="crew-typing-dot"></span>
-          <span class="crew-typing-dot"></span>
         </div>
 
         <!-- 初始化进度 -->
@@ -1069,21 +1064,15 @@ summary: 请测试以下变更...
       return active;
     },
     activeMessages() {
-      // Return at most 2 messages: latest human + latest crew (any non-human/system role)
+      // Return the single latest text message (regardless of role)
       const messages = this.store.currentCrewMessages;
-      let latestHuman = null;
-      let latestCrew = null;
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
         if (m.type !== 'text' || !m.role) continue;
-        if (!latestHuman && m.role === 'human') latestHuman = m;
-        if (!latestCrew && m.role !== 'human' && m.role !== 'system') latestCrew = m;
-        if (latestHuman && latestCrew) break;
+        if (m.role === 'system') continue;
+        return [m];
       }
-      const result = [];
-      if (latestHuman) result.push(latestHuman);
-      if (latestCrew) result.push(latestCrew);
-      return result;
+      return [];
     },
     featureBlocks() {
       const allMessages = this.store.currentCrewMessages;
