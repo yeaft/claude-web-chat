@@ -1717,7 +1717,7 @@ body {
 }
 
 .messages {
-  max-width: 800px;
+  max-width: min(90%, 960px);
   width: 100%;
   margin: 0 auto;
   padding: 0 24px;
@@ -1990,7 +1990,7 @@ body {
 
 /* Attachments Preview */
 .attachments-preview {
-  max-width: 768px;
+  max-width: min(90%, 960px);
   margin: 0 auto 12px;
   display: flex;
   flex-wrap: wrap;
@@ -2052,7 +2052,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  max-width: 768px;
+  max-width: min(90%, 960px);
   margin: 0 auto 4px;
   gap: 8px;
   font-size: 12px;
@@ -2064,7 +2064,7 @@ body {
 
 .input-wrapper {
   position: relative;
-  max-width: 768px;
+  max-width: min(90%, 960px);
   margin: 0 auto;
   display: flex;
   align-items: center;
