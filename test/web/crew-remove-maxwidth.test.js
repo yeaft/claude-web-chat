@@ -229,8 +229,8 @@ describe('responsive breakpoints — still present', () => {
     });
   });
 
-  describe('767px breakpoint — mobile chat only', () => {
-    it('hides both side panels', () => {
+  describe('767px breakpoint — mobile drawer panels', () => {
+    function get767Block() {
       const idx = cssSource.indexOf('@media (max-width: 767px)');
       const blockStart = cssSource.indexOf('{', idx);
       let depth = 0;
@@ -240,10 +240,23 @@ describe('responsive breakpoints — still present', () => {
         if (cssSource[i] === '}') depth--;
         if (depth === 0) { end = i; break; }
       }
-      const mediaBlock = cssSource.substring(blockStart, end + 1);
+      return cssSource.substring(blockStart, end + 1);
+    }
+
+    it('panels use fixed position drawer mode', () => {
+      const mediaBlock = get767Block();
       expect(mediaBlock).toContain('.crew-panel-left');
       expect(mediaBlock).toContain('.crew-panel-right');
-      expect(mediaBlock).toContain('display: none');
+      expect(mediaBlock).toContain('position: fixed');
+      expect(mediaBlock).toContain('transform: translateX(-100%)');
+      expect(mediaBlock).toContain('transform: translateX(100%)');
+    });
+
+    it('panels slide in via mobile-panel classes', () => {
+      const mediaBlock = get767Block();
+      expect(mediaBlock).toContain('.crew-workspace.mobile-panel-roles .crew-panel-left');
+      expect(mediaBlock).toContain('.crew-workspace.mobile-panel-features .crew-panel-right');
+      expect(mediaBlock).toContain('transform: translateX(0)');
     });
   });
 
@@ -335,11 +348,11 @@ describe('normal chat — max-width preserved', () => {
 // 5. CSS structural integrity
 // =====================================================================
 describe('CSS structural integrity', () => {
-  it('CSS has balanced braces (2094 open / 2094 close)', () => {
+  it('CSS has balanced braces (2110 open / 2110 close)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2094);
+    expect(opens).toBe(2110);
   });
 
   it('no duplicate max-width declarations accidentally left in crew selectors', () => {

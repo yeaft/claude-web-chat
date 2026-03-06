@@ -11897,15 +11897,129 @@ body {
   }
 }
 
-/* <768px: Mobile — chat only, hide side panels */
+/* Mobile-only elements: hidden on desktop */
+.crew-mobile-fab,
+.crew-mobile-overlay,
+.crew-mobile-close {
+  display: none;
+}
+
+/* <768px: Mobile — Drawer panels with FAB buttons */
 @media (max-width: 767px) {
   .crew-panel-left,
   .crew-panel-right {
-    display: none;
+    display: flex;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    z-index: 200;
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.15);
+  }
+
+  .crew-panel-left {
+    left: 0;
+    width: min(280px, 80vw);
+    transform: translateX(-100%);
+  }
+
+  .crew-panel-right {
+    right: 0;
+    width: min(320px, 85vw);
+    transform: translateX(100%);
+    box-shadow: -2px 0 12px rgba(0, 0, 0, 0.15);
+  }
+
+  .crew-workspace.mobile-panel-roles .crew-panel-left {
+    transform: translateX(0);
+  }
+
+  .crew-workspace.mobile-panel-features .crew-panel-right {
+    transform: translateX(0);
   }
 
   .crew-panel-center {
     display: flex;
+  }
+
+  /* Mobile FAB buttons */
+  .crew-mobile-fab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    bottom: 80px;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: var(--bg-input-wrapper, #2a2a2a);
+    border: 1px solid var(--border-color, #444);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    z-index: 50;
+    cursor: pointer;
+    transition: transform 0.15s ease-out;
+    color: var(--text-secondary, #aaa);
+  }
+
+  .crew-mobile-fab:active {
+    transform: scale(0.9);
+  }
+
+  .crew-mobile-fab-left {
+    left: 16px;
+  }
+
+  .crew-mobile-fab-right {
+    right: 16px;
+  }
+
+  .crew-mobile-fab-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    background: var(--accent-blue, #4a9eff);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+  }
+
+  /* Mobile overlay */
+  .crew-mobile-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 199;
+    animation: crew-overlay-fadein 0.3s ease;
+  }
+
+  @keyframes crew-overlay-fadein {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  /* Mobile close button (inside panels) */
+  .crew-mobile-close {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: none;
+    border: none;
+    color: var(--text-muted, #888);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 4px 0;
+    margin-bottom: 8px;
+  }
+
+  .crew-mobile-close:hover {
+    color: var(--text-primary, #fff);
   }
 }
 
