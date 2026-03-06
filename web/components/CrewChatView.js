@@ -24,7 +24,7 @@ export default {
     <div class="crew-chat-view">
       <!-- Role Context Menu removed: compact/clear now on card actions -->
 
-      <div class="crew-workspace" :class="{ 'mobile-panel-roles': store.crewMobilePanel === 'roles', 'mobile-panel-features': store.crewMobilePanel === 'features' }">
+      <div class="crew-workspace" :class="{ 'hide-roles': !store.crewPanelVisible.roles, 'hide-features': !store.crewPanelVisible.features, 'mobile-panel-roles': store.crewMobilePanel === 'roles', 'mobile-panel-features': store.crewMobilePanel === 'features' }">
         <div class="crew-mobile-overlay" v-if="store.crewMobilePanel" @click="store.crewMobilePanel = null"></div>
 
         <!-- Left Panel: Role Cards -->

@@ -11689,6 +11689,26 @@ body {
   padding: 12px;
 }
 
+/* Desktop panel toggle: width transition */
+.crew-panel-left,
+.crew-panel-right {
+  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.crew-workspace.hide-roles .crew-panel-left {
+  width: 0 !important;
+  min-width: 0;
+  padding: 0;
+  border: none;
+}
+
+.crew-workspace.hide-features .crew-panel-right {
+  width: 0 !important;
+  min-width: 0;
+  padding: 0;
+  border: none;
+}
+
 /* Feature Kanban Card */
 .crew-feature-card {
   background: var(--bg-main);
@@ -12037,9 +12057,15 @@ body {
   display: none;
 }
 
-/* Header nav for Crew mode: hidden on desktop */
+/* Header nav for Crew mode: visible on both desktop and mobile */
 .crew-header-nav {
-  display: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .crew-header-nav-btn {
@@ -12133,6 +12159,21 @@ body {
     transform: translateX(0);
   }
 
+  /* Mobile: hide-* classes should NOT affect drawer panels */
+  .crew-workspace.hide-roles .crew-panel-left {
+    width: min(280px, 80vw) !important;
+    min-width: auto;
+    padding: unset;
+    border: unset;
+  }
+
+  .crew-workspace.hide-features .crew-panel-right {
+    width: min(320px, 85vw) !important;
+    min-width: auto;
+    padding: unset;
+    border: unset;
+  }
+
   .crew-panel-center {
     display: flex;
   }
@@ -12165,17 +12206,6 @@ body {
 
   .crew-add-role-btn span {
     display: inline;
-  }
-
-  /* Header nav: visible on mobile */
-  .crew-header-nav {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    position: absolute;
-    right: 12px;
-    top: 50%;
-    transform: translateY(-50%);
   }
 
   /* Mobile overlay */

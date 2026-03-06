@@ -81,19 +81,19 @@ describe('ChatHeader: crew-header-nav', () => {
   });
 
   it('has roles button with toggle action', () => {
-    expect(headerSource).toContain("store.toggleCrewMobilePanel('roles')");
+    expect(headerSource).toContain("onCrewPanelToggle('roles')");
   });
 
   it('has features button with toggle action', () => {
-    expect(headerSource).toContain("store.toggleCrewMobilePanel('features')");
+    expect(headerSource).toContain("onCrewPanelToggle('features')");
   });
 
   it('roles button has active class binding', () => {
-    expect(headerSource).toContain("active: store.crewMobilePanel === 'roles'");
+    expect(headerSource).toContain("active: isCrewPanelActive('roles')");
   });
 
   it('features button has active class binding', () => {
-    expect(headerSource).toContain("active: store.crewMobilePanel === 'features'");
+    expect(headerSource).toContain("active: isCrewPanelActive('features')");
   });
 
   it('roles button has streaming indicator (active-dot)', () => {
@@ -210,8 +210,8 @@ describe('close button inside panels', () => {
 // =====================================================================
 
 describe('CSS — desktop: mobile elements hidden', () => {
-  it('crew-header-nav hidden by default (display: none)', () => {
-    expect(cssSource).toMatch(/\.crew-header-nav\s*\{[^}]*display:\s*none/);
+  it('crew-header-nav visible by default (display: flex)', () => {
+    expect(cssSource).toMatch(/\.crew-header-nav\s*\{[^}]*display:\s*flex/);
   });
 
   it('crew-mobile-overlay hidden by default (display: none)', () => {
@@ -277,17 +277,14 @@ describe('CSS — header nav button styles', () => {
 // 8) CSS — mobile: header nav visible
 // =====================================================================
 
-describe('CSS — mobile: header nav visible', () => {
-  it('header nav display: flex inside 767px media query', () => {
-    const mediaBlock = get767Block();
-    expect(mediaBlock).toContain('.crew-header-nav');
-    expect(mediaBlock).toMatch(/\.crew-header-nav\s*\{[^}]*display:\s*flex/);
+describe('CSS — header nav visible on all viewports', () => {
+  it('header nav has display: flex in base rule', () => {
+    expect(cssSource).toMatch(/\.crew-header-nav\s*\{[^}]*display:\s*flex/);
   });
 
-  it('header nav positioned absolute right', () => {
-    const mediaBlock = get767Block();
-    const navStart = mediaBlock.indexOf('.crew-header-nav');
-    const navSection = mediaBlock.substring(navStart, navStart + 300);
+  it('header nav positioned absolute right in base rule', () => {
+    const navStart = cssSource.indexOf('.crew-header-nav {');
+    const navSection = cssSource.substring(navStart, navStart + 300);
     expect(navSection).toContain('position: absolute');
     expect(navSection).toContain('right: 12px');
   });
@@ -538,10 +535,10 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
   });
 
-  it('CSS has balanced braces (2139/2139)', () => {
+  it('CSS has balanced braces (2143/2143)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2139);
+    expect(opens).toBe(2143);
   });
 });
