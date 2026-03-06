@@ -4337,18 +4337,18 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(viewSource).not.toContain('class="crew-kanban-title"');
     });
 
-    it('should iterate over featureKanban (not kanbanFeatures)', () => {
-      expect(viewSource).toContain('v-for="feature in featureKanban"');
-      expect(viewSource).not.toContain('v-for="feature in kanbanFeatures"');
+    it('should iterate over featureKanbanGrouped (inProgress and completed)', () => {
+      expect(viewSource).toContain('v-for="feature in featureKanbanGrouped.inProgress"');
+      expect(viewSource).toContain('v-for="feature in featureKanbanGrouped.completed"');
     });
 
     it('should use crew-feature-card class', () => {
       expect(viewSource).toContain('class="crew-feature-card"');
     });
 
-    it('should have has-streaming and is-completed classes', () => {
+    it('should have has-streaming class on in-progress and is-completed class on completed group', () => {
       expect(viewSource).toContain("'has-streaming': feature.hasStreaming");
-      expect(viewSource).toContain("'is-completed': feature.isCompleted");
+      expect(viewSource).toContain('crew-feature-card is-completed');
     });
 
     it('should have expandable header with click and dblclick', () => {
@@ -4382,7 +4382,8 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
 
     it('should show empty state when no todos', () => {
       expect(viewSource).toContain('class="crew-feature-card-empty"');
-      expect(viewSource).toContain("feature.isCompleted ? '已完成' : '进行中'");
+      expect(viewSource).toContain('进行中');
+      expect(viewSource).toContain('已完成');
     });
 
     it('should show empty state "暂无 Feature"', () => {
@@ -4444,9 +4445,9 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(viewSource).toContain('block.hasStreaming');
     });
 
-    it('should sort: streaming first, completed last', () => {
-      expect(viewSource).toContain('a.hasStreaming');
-      expect(viewSource).toContain('a.isCompleted');
+    it('should sort by createdAt descending', () => {
+      expect(viewSource).toContain('b.createdAt');
+      expect(viewSource).toContain('a.createdAt');
     });
 
     it('should NOT have kanbanAllItems, kanbanInProgress, kanbanPending, kanbanCompleted', () => {
@@ -4935,11 +4936,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- HTML Tag Balance ---
 
   describe('HTML and CSS structure balance', () => {
-    it('should have balanced div tags (157/157)', () => {
+    it('should have balanced div tags (168/168)', () => {
       const opens = (viewSource.match(/<div[\s>]/g) || []).length;
       const closes = (viewSource.match(/<\/div>/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(157);
+      expect(opens).toBe(168);
     });
 
     it('should have balanced template tags', () => {
@@ -4967,11 +4968,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2084/2084)', () => {
+    it('should have balanced CSS braces (2093/2093)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2084);
+      expect(opens).toBe(2093);
     });
   });
 
