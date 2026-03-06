@@ -328,7 +328,8 @@ async function saveSessionMeta(session) {
     costUsd: session.costUsd,
     totalInputTokens: session.totalInputTokens,
     totalOutputTokens: session.totalOutputTokens,
-    features: Array.from(session.features.values())
+    features: Array.from(session.features.values()),
+    _completedTaskIds: Array.from(session._completedTaskIds || [])
   };
   await fs.writeFile(join(session.sharedDir, 'session.json'), JSON.stringify(meta, null, 2));
   // 保存 UI 消息历史（用于恢复时重放）
@@ -549,6 +550,7 @@ export async function resumeCrewSession(msg) {
     waitingHumanContext: null,
     pendingRoutes: [],
     features: new Map((meta.features || []).map(f => [f.taskId, f])),
+    _completedTaskIds: new Set(meta._completedTaskIds || []),
     userId: userId || meta.userId,
     username: username || meta.username,
     agentId: meta.agentId || ctx.CONFIG?.agentName || null,
@@ -684,6 +686,7 @@ export async function createCrewSession(msg) {
     waitingHumanContext: null, // { fromRole, reason, message }
     pendingRoutes: [],        // [{ fromRole, route }] — 暂停时未完成的路由
     features: new Map(),      // taskId → { taskId, taskTitle, createdAt } — 持久化 feature 列表
+    _completedTaskIds: new Set(), // 已完成的 taskId 集合（用于检测新完成的任务）
     initProgress: null,       // 'roles' | 'worktrees' | null — 初始化阶段
     userId,
     username,
@@ -1114,6 +1117,9 @@ ${summary}
   }
 
   console.log(`[Crew] Task file created: ${taskId} (${taskTitle})`);
+
+  // 更新 feature 索引
+  updateFeatureIndex(session).catch(e => console.warn('[Crew] Failed to update feature index:', e.message));
 }
 
 /**
@@ -1149,6 +1155,112 @@ async function readTaskFile(session, taskId) {
   } catch {
     return null;
   }
+}
+
+/**
+ * 从 TASKS block 文本中提取已完成任务的 taskId 集合
+ */
+function parseCompletedTasks(text) {
+  const ids = new Set();
+  const match = text.match(/---TASKS---([\s\S]*?)---END_TASKS---/);
+  if (!match) return ids;
+  for (const line of match[1].split('\n')) {
+    const m = line.match(/^-\s*\[[xX]\]\s*.+#(\S+)/);
+    if (m) ids.add(m[1]);
+  }
+  return ids;
+}
+
+/**
+ * 更新 feature 索引文件 context/features/index.md
+ * 全量重建：根据 session.features 和 session._completedTaskIds 生成分类表格
+ */
+async function updateFeatureIndex(session) {
+  const featuresDir = join(session.sharedDir, 'context', 'features');
+  await fs.mkdir(featuresDir, { recursive: true });
+
+  const completed = session._completedTaskIds || new Set();
+  const allFeatures = Array.from(session.features.values());
+
+  // 按创建时间排序
+  allFeatures.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+  const inProgress = allFeatures.filter(f => !completed.has(f.taskId));
+  const done = allFeatures.filter(f => completed.has(f.taskId));
+
+  const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  let content = `# Feature Index\n> 最后更新: ${now}\n`;
+
+  content += `\n## 进行中 (${inProgress.length})\n`;
+  if (inProgress.length > 0) {
+    content += '| task-id | 标题 | 创建时间 |\n|---------|------|----------|\n';
+    for (const f of inProgress) {
+      const date = f.createdAt ? new Date(f.createdAt).toLocaleDateString('zh-CN') : '-';
+      content += `| ${f.taskId} | ${f.taskTitle} | ${date} |\n`;
+    }
+  }
+
+  content += `\n## 已完成 (${done.length})\n`;
+  if (done.length > 0) {
+    content += '| task-id | 标题 | 创建时间 |\n|---------|------|----------|\n';
+    for (const f of done) {
+      const date = f.createdAt ? new Date(f.createdAt).toLocaleDateString('zh-CN') : '-';
+      content += `| ${f.taskId} | ${f.taskTitle} | ${date} |\n`;
+    }
+  }
+
+  await fs.writeFile(join(featuresDir, 'index.md'), content);
+  console.log(`[Crew] Feature index updated: ${inProgress.length} in progress, ${done.length} completed`);
+}
+
+/**
+ * 追加完成汇总到 context/changelog.md
+ * 从 feature 文件的工作记录中提取最后一条记录作为摘要
+ */
+async function appendChangelog(session, taskId, taskTitle) {
+  const contextDir = join(session.sharedDir, 'context');
+  await fs.mkdir(contextDir, { recursive: true });
+  const changelogPath = join(contextDir, 'changelog.md');
+
+  // 读取 feature 文件提取最后一条工作记录作为摘要
+  const taskContent = await readTaskFile(session, taskId);
+  let summaryText = '';
+  if (taskContent) {
+    // 提取最后一个 ### 块作为摘要
+    const records = taskContent.split(/\n### /);
+    if (records.length > 1) {
+      const lastRecord = records[records.length - 1];
+      // 取第一行之后的内容作为摘要（第一行是角色名和时间）
+      const lines = lastRecord.split('\n');
+      summaryText = lines.slice(1).join('\n').trim();
+    }
+  }
+  if (!summaryText) {
+    summaryText = '（无详细摘要）';
+  }
+
+  // 限制摘要长度
+  if (summaryText.length > 500) {
+    summaryText = summaryText.substring(0, 497) + '...';
+  }
+
+  const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  const entry = `\n## ${taskId}: ${taskTitle}\n- 完成时间: ${now}\n- 摘要: ${summaryText}\n`;
+
+  // 如果文件不存在，先写 header
+  let exists = false;
+  try {
+    await fs.access(changelogPath);
+    exists = true;
+  } catch {}
+
+  if (!exists) {
+    await fs.writeFile(changelogPath, `# Changelog\n${entry}`);
+  } else {
+    await fs.appendFile(changelogPath, entry);
+  }
+
+  console.log(`[Crew] Changelog appended: ${taskId} (${taskTitle})`);
 }
 
 // =====================================================================
@@ -1458,6 +1570,10 @@ ${isDevTeam ? '3' : '2'}. **任务完成** - 所有任务已完成，给出完�
 - PM 分配任务时自动创建文件（包含 task-id、标题、需求描述）
 - 每次 ROUTE 传递时自动追加工作记录（角色名、时间、summary）
 - 你收到的消息中会包含 <task-context> 标签，里面是该任务的完整工作记录
+
+系统还维护以下文件（自动更新，无需手动管理）：
+- \`context/features/index.md\`：所有 feature 的索引（进行中/已完成分类），快速查看项目状态
+- \`context/changelog.md\`：已完成任务的变更记录，每个任务完成时自动追加摘要
 你不需要手动创建或更新这些文件，专注于你的本职工作即可。`;
 
   // 执行者角色的组绑定 prompt（count > 1 时）
@@ -1704,6 +1820,33 @@ async function processRoleOutput(session, roleName, roleQuery, roleState) {
 
         // 解析路由（支持多 ROUTE 块）
         const routes = parseRoutes(roleState.accumulatedText);
+
+        // ★ 决策者 turn 完成：检测 TASKS block 中新完成的任务
+        const roleConfig = session.roles.get(roleName);
+        if (roleConfig?.isDecisionMaker) {
+          const nowCompleted = parseCompletedTasks(roleState.accumulatedText);
+          if (nowCompleted.size > 0) {
+            const prev = session._completedTaskIds || new Set();
+            const newlyDone = [];
+            for (const tid of nowCompleted) {
+              if (!prev.has(tid)) {
+                prev.add(tid);
+                newlyDone.push(tid);
+              }
+            }
+            session._completedTaskIds = prev;
+            if (newlyDone.length > 0) {
+              // 更新索引 + 追加 changelog（fire-and-forget）
+              updateFeatureIndex(session).catch(e => console.warn('[Crew] Failed to update feature index:', e.message));
+              for (const tid of newlyDone) {
+                const feature = session.features.get(tid);
+                const title = feature?.taskTitle || tid;
+                appendChangelog(session, tid, title).catch(e => console.warn(`[Crew] Failed to append changelog for ${tid}:`, e.message));
+              }
+            }
+          }
+        }
+
         roleState.accumulatedText = '';
         roleState.turnActive = false;
 
