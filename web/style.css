@@ -1628,11 +1628,13 @@ body {
 
 .messages {
   max-width: 800px;
+  width: 100%;
   margin: 0 auto;
   padding: 0 24px;
   display: flex;
   flex-direction: column;
   gap: 18px;
+  box-sizing: border-box;
 }
 
 /* Load More Button */
@@ -2630,7 +2632,8 @@ body {
   }
 
   .messages {
-    padding: 0 12px;
+    max-width: none;
+    padding: 0 16px;
   }
 
   .message.user {
@@ -2647,12 +2650,28 @@ body {
   }
 
   .input-wrapper {
+    max-width: none;
     padding: 10px 10px 10px 14px;
+  }
+
+  .attachments-preview {
+    max-width: none;
   }
 
   .input-wrapper textarea,
   .textarea-wrapper textarea {
     font-size: 16px; /* Prevent zoom on iOS */
+  }
+}
+
+@media (max-width: 480px) {
+  .messages {
+    padding: 0 10px;
+  }
+
+  .input-area {
+    padding: 8px 10px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -6377,6 +6396,14 @@ body {
   }
   .main-content.workbench-active {
     min-width: 0;
+  }
+  .main-content.workbench-active .messages {
+    max-width: none;
+    padding: 0 16px;
+  }
+  .main-content.workbench-active .input-wrapper,
+  .main-content.workbench-active .attachments-preview {
+    max-width: none;
   }
 }
 
