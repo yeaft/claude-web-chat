@@ -356,7 +356,7 @@ export default {
         <!-- Active Messages: single latest text message (hidden when all tasks completed) -->
         <div v-if="activeMessages.length > 0 && (hasStreamingMessage || kanbanInProgressCount > 0)" class="crew-active-messages">
           <div class="crew-active-messages-label">{{ $t('crew.latestMessage') }}</div>
-          <div v-for="am in activeMessages" :key="am.id" class="crew-message" :class="['crew-msg-' + am.type, 'crew-role-' + am.role, { 'crew-msg-human-bubble': am.role === 'human' && am.type === 'text' }]" :data-role="am.role">
+          <div v-for="am in activeMessages" :key="am.id" class="crew-message" :class="['crew-msg-' + am.type, 'crew-role-' + am.role, { 'crew-msg-human-bubble': am.role === 'human' && am.type === 'text' }]" :data-role="am.role" :style="getRoleStyle(am.role)">
             <div class="crew-msg-body">
               <div v-if="am.role !== 'human' || am.type !== 'text'" class="crew-msg-header">
                 <span v-if="am.roleIcon" class="crew-msg-header-icon">{{ am.roleIcon }}</span>
