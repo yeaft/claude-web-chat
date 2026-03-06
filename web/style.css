@@ -896,15 +896,15 @@ body {
   flex-shrink: 0;
 }
 
-/* Add button at bottom of each panel */
+/* Add button inside scrollable list, follows last item */
 .session-panel-add-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   width: calc(100% - 16px);
-  margin: 6px 8px 8px;
-  padding: 10px 12px;
+  margin: 4px 8px 8px;
+  padding: 8px 12px;
   border: 1.5px dashed var(--border-color);
   border-radius: 10px;
   background: transparent;
@@ -913,7 +913,6 @@ body {
   font-weight: 500;
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
-  flex-shrink: 0;
 }
 
 .session-panel-add-btn:hover {

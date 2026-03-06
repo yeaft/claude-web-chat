@@ -166,11 +166,11 @@ export default {
                   </span>
                 </div>
               </div>
+              <button class="session-panel-add-btn" @click="openConversationModal" :disabled="onlineAgentCount === 0">
+                <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                <span>{{ $t('chat.sidebar.newConv') }}</span>
+              </button>
             </div>
-            <button class="session-panel-add-btn" @click="openConversationModal" :disabled="onlineAgentCount === 0">
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-              <span>{{ $t('chat.sidebar.newConv') }}</span>
-            </button>
           </div>
 
           <!-- Panel Divider -->
@@ -211,11 +211,11 @@ export default {
                   </span>
                 </div>
               </div>
+              <button class="session-panel-add-btn crew-add-btn" @click="newCrewSession">
+                <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                <span>Crew</span>
+              </button>
             </div>
-            <button class="session-panel-add-btn crew-add-btn" @click="newCrewSession">
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-              <span>Crew</span>
-            </button>
           </div>
         </div>
 

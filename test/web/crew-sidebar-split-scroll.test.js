@@ -318,9 +318,9 @@ describe('CSS — session-panel-add-btn styles', () => {
     expect(block).toContain('color: var(--text-secondary)');
   });
 
-  it('add button does not shrink in flex layout', () => {
+  it('add button is inside scrollable list (no flex-shrink needed)', () => {
     const block = extractCssBlock('.session-panel-add-btn {');
-    expect(block).toContain('flex-shrink: 0');
+    expect(block).not.toContain('flex-shrink');
   });
 
   it('add button hover changes background and text', () => {
