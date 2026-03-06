@@ -94,6 +94,7 @@ export const useChatStore = defineStore('chat', {
     crewConfigOpen: false,        // crew 配置面板是否打开
     crewConfigMode: 'create',    // 'create' | 'edit'
     crewMobilePanel: null,       // null | 'roles' | 'features' — 移动端 Drawer 状态
+    crewPanelVisible: { roles: true, features: true }, // 桌面端面板可见性
     crewInProgressCount: 0,      // 进行中 Feature 数量（由 CrewChatView 同步）
   }),
 
@@ -177,10 +178,13 @@ export const useChatStore = defineStore('chat', {
 
   actions: {
     // =====================
-    // Crew mobile panel toggle
+    // Crew panel toggle
     // =====================
     toggleCrewMobilePanel(panel) {
       this.crewMobilePanel = this.crewMobilePanel === panel ? null : panel;
+    },
+    toggleCrewPanel(panel) {
+      this.crewPanelVisible[panel] = !this.crewPanelVisible[panel];
     },
 
     // =====================
