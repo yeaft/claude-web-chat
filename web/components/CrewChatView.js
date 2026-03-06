@@ -590,6 +590,7 @@ export default {
                   <span class="crew-feature-card-count">
                     {{ feature.doneCount }} / {{ feature.totalCount }}
                   </span>
+                  <span v-if="feature.createdAt" class="crew-feature-card-elapsed">{{ formatDuration(nowTick - feature.createdAt) }}</span>
                 </div>
                 <div class="crew-feature-card-bar">
                   <div class="crew-feature-card-bar-fill"
@@ -649,6 +650,7 @@ export default {
                     <span class="crew-feature-card-count">
                       {{ feature.doneCount }} / {{ feature.totalCount }}
                     </span>
+                    <span v-if="feature.createdAt && feature.lastActivityAt" class="crew-feature-card-elapsed">{{ formatDuration(feature.lastActivityAt - feature.createdAt) }}</span>
                   </div>
                   <div class="crew-feature-card-bar">
                     <div class="crew-feature-card-bar-fill"
@@ -740,6 +742,7 @@ export default {
       expandedHistories: {},
       expandedFeatureCards: {},
       showCompletedFeatures: false,
+      nowTick: Date.now(),
       isAtBottom: true,
       visibleBlockCount: 20,
       isLoadingMore: false,
@@ -1341,6 +1344,7 @@ summary: 请测试以下变更...
           isCompleted: this.completedTaskIds.has(task.id),
           hasStreaming: false,
           createdAt: task.createdAt || 0,
+          lastActivityAt: 0,
         });
       }
 
@@ -1359,6 +1363,7 @@ summary: 请测试以下变更...
             isCompleted: false,
             hasStreaming: false,
             createdAt: 0,
+            lastActivityAt: 0,
           };
           features.set(tid, feature);
         }
@@ -1376,13 +1381,16 @@ summary: 请测试以下变更...
         }
       }
 
-      // 3. 合并 featureBlocks 的活跃角色数据
+      // 3. 合并 featureBlocks 的活跃角色数据和最后活动时间
       for (const block of this.featureBlocks) {
         if (block.type !== 'feature') continue;
         const feature = features.get(block.taskId);
         if (feature) {
           if (block.activeRoles) feature.activeRoles = block.activeRoles;
           if (block.hasStreaming) feature.hasStreaming = true;
+          if (block.lastActivityAt > feature.lastActivityAt) {
+            feature.lastActivityAt = block.lastActivityAt;
+          }
         }
       }
 
@@ -1467,6 +1475,16 @@ summary: 请测试以下变更...
       if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
       if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
       return String(n);
+    },
+
+    formatDuration(ms) {
+      if (!ms || ms < 0) return '';
+      const s = Math.floor(ms / 1000);
+      if (s < 60) return s + 's';
+      const m = Math.floor(s / 60);
+      if (m < 60) return m + 'm ' + (s % 60) + 's';
+      const h = Math.floor(m / 60);
+      return h + 'h ' + (m % 60) + 'm';
     },
 
     mdRender: renderMarkdown,
@@ -1742,6 +1760,7 @@ summary: 请测试以下变更...
             hasStreaming,
             activeRoles,
             hasPendingAsk,
+            lastActivityAt: seg.messages[seg.messages.length - 1]?.timestamp || 0,
             id: 'feature_' + seg.taskId + '_' + si
           });
         } else {
@@ -2374,6 +2393,8 @@ summary: 请测试以下变更...
     };
     document.addEventListener('click', closeMenus);
     this._cleanupClick = closeMenus;
+    // 耗时计时器：每秒更新 nowTick
+    this._elapsedTimer = setInterval(() => { this.nowTick = Date.now(); }, 1000);
     // 恢复草稿
     const convId = this.store.currentConversation;
     this._draftConvId = convId;
@@ -2386,6 +2407,9 @@ summary: 请测试以下变更...
   beforeUnmount() {
     if (this._cleanupClick) {
       document.removeEventListener('click', this._cleanupClick);
+    }
+    if (this._elapsedTimer) {
+      clearInterval(this._elapsedTimer);
     }
     // 保存草稿
     const convId = this._draftConvId || this.store.currentConversation;
