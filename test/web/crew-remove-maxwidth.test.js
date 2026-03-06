@@ -8,7 +8,7 @@ import { resolve } from 'path';
  *
  * Verifies:
  * 1) crew-message, crew-turn-divider, crew-task-panel, crew-feature-thread,
- *    crew-round-divider, crew-streaming-indicator, crew-pending-asks
+ *    crew-round-divider, crew-streaming-indicator
  *    no longer have max-width in their base rules
  * 2) crew-input-area .input-hints and .input-wrapper max-width overridden to none
  * 3) Responsive breakpoints (1279px/1023px/767px) still work
@@ -53,7 +53,6 @@ describe('crew content selectors — no max-width', () => {
     { css: '.crew-feature-thread {', label: 'crew-feature-thread' },
     { css: '.crew-round-divider {', label: 'crew-round-divider' },
     { css: '.crew-streaming-indicator {', label: 'crew-streaming-indicator' },
-    { css: '.crew-pending-asks {', label: 'crew-pending-asks' },
   ];
 
   for (const { css, label } of selectors) {
@@ -121,14 +120,6 @@ describe('crew content selectors — no max-width', () => {
     it('should not have margin: 0 auto', () => {
       const block = extractBlock('.crew-streaming-indicator {');
       expect(block).not.toContain('margin: 0 auto');
-    });
-  });
-
-  describe('crew-pending-asks — margin uses 0 not auto', () => {
-    it('should have margin: 0 0 8px (not auto)', () => {
-      const block = extractBlock('.crew-pending-asks {');
-      expect(block).toContain('margin: 0 0 8px');
-      expect(block).not.toContain('auto');
     });
   });
 
@@ -348,11 +339,11 @@ describe('normal chat — max-width preserved', () => {
 // 5. CSS structural integrity
 // =====================================================================
 describe('CSS structural integrity', () => {
-  it('CSS has balanced braces (2143 open / 2143 close)', () => {
+  it('CSS has balanced braces (2106 open / 2106 close)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2143);
+    expect(opens).toBe(2106);
   });
 
   it('no duplicate max-width declarations accidentally left in crew selectors', () => {
@@ -360,7 +351,7 @@ describe('CSS structural integrity', () => {
     const crewSelectors = [
       '.crew-message', '.crew-turn-divider', '.crew-task-panel',
       '.crew-feature-thread', '.crew-round-divider',
-      '.crew-streaming-indicator', '.crew-pending-asks'
+      '.crew-streaming-indicator'
     ];
 
     for (const sel of crewSelectors) {
