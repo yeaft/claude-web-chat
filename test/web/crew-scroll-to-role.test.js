@@ -179,13 +179,6 @@ describe('CSS highlight animation', () => {
     const keyframesBlock = extractCssBlock('@keyframes msgHighlight {');
     expect(keyframesBlock).toContain('border-radius: 8px');
   });
-
-  it('highlight animation appears after askHighlight keyframes', () => {
-    const askIdx = cssSource.indexOf('@keyframes askHighlight');
-    const msgIdx = cssSource.indexOf('.crew-message.crew-msg-highlight');
-    expect(askIdx).toBeGreaterThan(-1);
-    expect(msgIdx).toBeGreaterThan(askIdx);
-  });
 });
 
 // =====================================================================
@@ -285,9 +278,9 @@ describe('CSS structural integrity', () => {
     expect(opens).toBe(closes);
   });
 
-  it('brace count is 2143 (updated after adding mobile panel styles)', () => {
+  it('brace count is 2106 (updated after adding mobile panel styles)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
-    expect(opens).toBe(2143);
+    expect(opens).toBe(2106);
   });
 });
 
@@ -295,11 +288,11 @@ describe('CSS structural integrity', () => {
 // 9. test/agent/crew.test.js brace count also updated
 // =====================================================================
 describe('agent test — brace count synchronized', () => {
-  it('agent crew test uses 2143 brace count', () => {
+  it('agent crew test uses 2106 brace count', () => {
     const agentTestPath = resolve(__dirname, '../../test/agent/crew.test.js');
     const agentTestSource = readFileSync(agentTestPath, 'utf-8');
-    // The brace count test should reference 2143
-    expect(agentTestSource).toContain("expect(opens).toBe(2143)");
+    // The brace count test should reference 2106
+    expect(agentTestSource).toContain("expect(opens).toBe(2106)");
   });
 });
 

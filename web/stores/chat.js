@@ -682,6 +682,20 @@ export const useChatStore = defineStore('chat', {
                   toolResult: null,
                   content: `${block.name} ${block.input?.file_path || block.input?.command?.substring(0, 60) || ''}`
                 });
+                // AskUserQuestion: 提取 question 内容作为普通消息显示在聊天区
+                if (block.name === 'AskUserQuestion') {
+                  const questions = block.input?.questions || [];
+                  const questionText = questions.map(q => q.question).filter(Boolean).join('\n') || block.input?.question || '';
+                  if (questionText) {
+                    messages.push({
+                      ...crewMsg,
+                      id: crewMsg.id + '_ask_text',
+                      type: 'text',
+                      content: questionText,
+                      _askQuestion: true,  // 标记为 ask 问题消息
+                    });
+                  }
+                }
               }
             }
           }
