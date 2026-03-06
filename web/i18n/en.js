@@ -232,6 +232,7 @@ export default {
   'chatHeader.compacting': 'Compressing context...',
   'chatHeader.compactDone': 'Context compression complete',
   'chatHeader.compact': 'Compact context',
+  'chatHeader.resume': 'Resume session',
   'chatHeader.clear': 'Clear messages',
   'chatHeader.confirmClear': 'Are you sure you want to clear all messages in this conversation?',
 
