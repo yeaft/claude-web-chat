@@ -1,0 +1,257 @@
+/* ============ Dashboard Tab ============ */
+
+.db-stats-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.db-stat-card {
+  flex: 1;
+  min-width: 0;
+  padding: 16px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+}
+
+.db-stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.db-stat-value.is-active {
+  color: var(--success);
+}
+
+.db-stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* Section container */
+.db-section {
+  margin-bottom: 24px;
+}
+
+.db-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.db-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+/* Refresh button */
+.db-refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.db-refresh-btn:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.db-refresh-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.db-refresh-btn.is-loading svg {
+  animation: spin 0.8s linear infinite;
+}
+
+/* Table */
+.db-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.db-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.db-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 8px 10px;
+  border-bottom: 2px solid var(--border-light);
+  white-space: nowrap;
+}
+
+.db-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+}
+
+.db-table tbody tr:hover {
+  background: var(--sidebar-hover);
+}
+
+.db-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.db-cell-name {
+  font-weight: 500;
+  color: var(--text-primary) !important;
+}
+
+.db-cell-num {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px !important;
+}
+
+.db-cell-time {
+  font-size: 12px !important;
+  color: var(--text-muted) !important;
+  white-space: nowrap;
+}
+
+/* Status dot */
+.db-status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.db-status-dot.online {
+  background: var(--success);
+  box-shadow: 0 0 4px rgba(74, 158, 92, 0.4);
+}
+
+.db-status-dot.offline {
+  background: var(--text-muted);
+}
+
+/* Latency colors */
+.db-latency-good { color: var(--success); }
+.db-latency-warn { color: #eab308; }
+.db-latency-bad { color: var(--error); }
+
+/* Mobile card list — hidden on desktop */
+.db-card-list { display: none; }
+
+/* Loading & empty states */
+.db-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  color: var(--text-muted);
+  font-size: 13px;
+  gap: 8px;
+}
+
+.db-loading::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--text-muted);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.db-empty {
+  text-align: center;
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* ============ Mobile responsive ============ */
+@media (max-width: 640px) {
+  .db-stats-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .db-stat-card {
+    padding: 12px;
+  }
+
+  .db-stat-value {
+    font-size: 20px;
+  }
+
+  .db-table-wrap { display: none; }
+  .db-card-list { display: flex; flex-direction: column; gap: 2px; }
+
+  .db-user-card,
+  .db-agent-card,
+  .db-online-card {
+    padding: 12px;
+    border-bottom: 1px solid var(--border-light);
+  }
+
+  .db-user-card:last-child,
+  .db-agent-card:last-child,
+  .db-online-card:last-child {
+    border-bottom: none;
+  }
+
+  .db-user-card-name,
+  .db-agent-card-name,
+  .db-online-card-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+
+  .db-online-card-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .db-user-card-stats,
+  .db-agent-card-stats {
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .db-user-card-meta,
+  .db-agent-card-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+}
