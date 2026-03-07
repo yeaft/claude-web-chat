@@ -1,5 +1,6 @@
 export default {
   name: 'ChatHeader',
+  emits: ['toggle-sidebar'],
   template: `
     <header class="chat-header">
       <div class="chat-title-group">
@@ -35,6 +36,12 @@ export default {
         </button>
       </div>
       <div class="crew-header-nav" v-if="store.currentConversationIsCrew">
+        <button class="crew-header-nav-btn crew-sidebar-toggle"
+                @click="$emit('toggle-sidebar')">
+          <svg viewBox="0 0 24 24" width="16" height="16">
+            <path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
+          </svg>
+        </button>
         <button class="crew-header-nav-btn"
                 :class="{ 'btn-loading': store.refreshingSession }"
                 @click="refreshSession"

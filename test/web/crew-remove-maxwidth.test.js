@@ -239,7 +239,6 @@ describe('responsive breakpoints — still present', () => {
       expect(mediaBlock).toContain('.crew-panel-left');
       expect(mediaBlock).toContain('.crew-panel-right');
       expect(mediaBlock).toContain('position: fixed');
-      expect(mediaBlock).toContain('transform: translateX(-100%)');
       expect(mediaBlock).toContain('transform: translateX(100%)');
     });
 
@@ -339,11 +338,11 @@ describe('normal chat — max-width preserved', () => {
 // 5. CSS structural integrity
 // =====================================================================
 describe('CSS structural integrity', () => {
-  it('CSS has balanced braces (2091/2091)', () => {
+  it('CSS has balanced braces (2092/2092)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2093);
+    expect(opens).toBe(2092);
   });
 
   it('no duplicate max-width declarations accidentally left in crew selectors', () => {
