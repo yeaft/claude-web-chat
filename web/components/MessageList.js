@@ -72,6 +72,10 @@ export default {
           <!-- Assistant Turn card: aggregated rendering -->
           <AssistantTurn v-else-if="item.type === 'assistant-turn'" :turn="item" />
         </template>
+        <!-- Typing dots: visible when processing but not streaming text -->
+        <div v-if="showTypingDots" class="typing-indicator">
+          <span></span><span></span><span></span>
+        </div>
       </div>
     </main>
   `,
@@ -185,6 +189,11 @@ export default {
       return store.messages.some(m => m.isStreaming);
     });
 
+    // Show typing dots when AI is processing but hasn't started streaming text yet
+    const showTypingDots = Vue.computed(() => {
+      return store.isProcessing && !hasStreamingMessage.value;
+    });
+
     // Scroll handling
     const checkIfAtBottom = () => {
       if (!containerRef.value) return true;
@@ -234,6 +243,7 @@ export default {
 
     Vue.watch(() => store.messages.length, smartScrollToBottom);
     Vue.watch(() => store.messages[store.messages.length - 1]?.content, smartScrollToBottom);
+    Vue.watch(showTypingDots, (show) => { if (show) smartScrollToBottom(); });
     Vue.watch(
       () => store.currentConversation,
       () => {
@@ -259,6 +269,7 @@ export default {
       store,
       containerRef,
       hasStreamingMessage,
+      showTypingDots,
       onlineAgents,
       turnGroups
     };
