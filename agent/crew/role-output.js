@@ -125,6 +125,8 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
           }
         }
 
+        // 保存 accumulatedText 供后续 saveRoleWorkSummary 使用（清空前）
+        const turnText = roleState.accumulatedText;
         roleState.accumulatedText = '';
         roleState.turnActive = false;
 
@@ -141,7 +143,7 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
           console.log(`[Crew] ${roleName} context at ${Math.round(contextPercentage * 100)}%, clearing and rebuilding`);
 
           // 保存工作摘要到 feature 文件
-          await saveRoleWorkSummary(session, roleName, roleState.accumulatedText || '').catch(e =>
+          await saveRoleWorkSummary(session, roleName, turnText).catch(e =>
             console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
 
           // Clear 角色
@@ -228,6 +230,7 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
 
       // Step 1: 清理 roleState
       endRoleStreaming(session, roleName);
+      const errorTurnText = roleState.accumulatedText;
       roleState.query = null;
       roleState.inputStream = null;
       roleState.turnActive = false;
@@ -285,7 +288,7 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
 
       if (roleState.lastDispatchContent) {
         // 保存工作摘要
-        await saveRoleWorkSummary(session, roleName, roleState.accumulatedText || '').catch(e =>
+        await saveRoleWorkSummary(session, roleName, errorTurnText).catch(e =>
           console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
 
         // 所有可恢复错误统一 clear + rebuild

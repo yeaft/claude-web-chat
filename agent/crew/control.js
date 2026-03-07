@@ -83,10 +83,10 @@ async function clearSingleRole(session, roleName) {
   await clearRoleSessionId(session.sharedDir, roleName);
 
   sendCrewMessage({
-    type: 'crew_role_compact',
+    type: 'crew_role_cleared',
     sessionId: session.id,
     role: roleName,
-    status: 'cleared'
+    reason: 'manual'
   });
 
   sendCrewOutput(session, 'system', 'system', {

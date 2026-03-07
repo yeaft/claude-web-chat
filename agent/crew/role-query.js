@@ -62,21 +62,21 @@ export async function clearRoleSessionId(sharedDir, roleName) {
 export function classifyRoleError(error) {
   const msg = error.message || '';
   if (/context.*(window|limit|exceeded)|token.*limit|too.*(long|large)|max.*token/i.test(msg)) {
-    return { recoverable: true, reason: 'context_exceeded', skipResume: true };
+    return { recoverable: true, reason: 'context_exceeded' };
   }
   if (/compact|compress|context.*reduc/i.test(msg)) {
-    return { recoverable: true, reason: 'compact_failed', skipResume: true };
+    return { recoverable: true, reason: 'compact_failed' };
   }
   if (/rate.?limit|429|overloaded|503|502|timeout|ECONNRESET|ETIMEDOUT/i.test(msg)) {
-    return { recoverable: true, reason: 'transient_api_error', skipResume: false };
+    return { recoverable: true, reason: 'transient_api_error' };
   }
   if (/exited with code [1-9]/i.test(msg) && msg.length < 100) {
-    return { recoverable: true, reason: 'process_crashed', skipResume: false };
+    return { recoverable: true, reason: 'process_crashed' };
   }
   if (/spawn|ENOENT|not found/i.test(msg)) {
     return { recoverable: false, reason: 'spawn_failed' };
   }
-  return { recoverable: true, reason: 'unknown', skipResume: false };
+  return { recoverable: true, reason: 'unknown' };
 }
 
 // =====================================================================

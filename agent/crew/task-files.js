@@ -218,22 +218,6 @@ export async function saveRoleWorkSummary(session, roleName, accumulatedText) {
 let _kanbanWriteLock = Promise.resolve();
 
 /**
- * 推断任务状态：根据路由目标角色类型
- */
-function inferStatus(session, toRole, m) {
-  const roleConfig = session.roles.get(toRole);
-  if (!roleConfig) return m.kanbanStatusDev;
-  switch (roleConfig.roleType) {
-    case 'developer': return m.kanbanStatusDev;
-    case 'reviewer': return m.kanbanStatusReview;
-    case 'tester': return m.kanbanStatusTest;
-    default:
-      if (roleConfig.isDecisionMaker) return m.kanbanStatusDecision;
-      return m.kanbanStatusDev;
-  }
-}
-
-/**
  * 更新工作看板 context/kanban.md
  *
  * @param {object} session
