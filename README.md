@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Node.js](https://img.shields.io/badge/node-%3E%3D18-green)
 
-[English](README.md) | [中文](README.zh-CN.md)
+[English](README.md) | [中文](README.zh-CN.md) | [Documentation](https://yeaft.github.io/claude-web-chat/)
 
 > A web interface for remotely accessing Claude Code CLI — multi-machine management, end-to-end encryption, multi-role collaboration
 

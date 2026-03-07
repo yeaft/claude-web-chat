@@ -4,6 +4,8 @@ node_modules/
 # Build outputs
 web/dist/
 build/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
 
 # Sub-package lock files (root package-lock.json is the source of truth)
 agent/package-lock.json
