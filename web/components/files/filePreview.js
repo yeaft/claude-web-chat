@@ -4,7 +4,7 @@
  */
 import { isMarkdownFile } from './fileEditor.js';
 
-export function createFilePreview(activeFile, { editorContainer, createEditor }) {
+export function createFilePreview(activeFile, { editorContainer, createEditor, t }) {
   const mdPreviewMode = Vue.ref(true);
   const mdPreviewRef = Vue.ref(null);
   const officePreviewContainer = Vue.ref(null);
@@ -102,7 +102,6 @@ export function createFilePreview(activeFile, { editorContainer, createEditor })
         });
       } catch (e) { file.previewError = e.message; }
     } else if (ext === '.pptx' || ext === '.ppt') {
-      const t = Vue.inject('t');
       container.innerHTML = '<div class="preview-unsupported">' + (t ? t('files.pptxNotSupported') : 'PowerPoint preview not supported') + '</div>';
     }
   };

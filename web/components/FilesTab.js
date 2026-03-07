@@ -526,7 +526,7 @@ export default {
       cleanupUndoHistory, deleteConversationHistory } = editor;
 
     // File preview
-    const preview = createFilePreview(activeFile, { editorContainer, createEditor });
+    const preview = createFilePreview(activeFile, { editorContainer, createEditor, t });
     const { mdPreviewMode, mdPreviewRef, officePreviewContainer,
       isActiveMarkdown, mdRenderedHtml, initMermaid, renderMermaidBlocks,
       switchToMdEdit, renderOfficeLocal } = preview;
