@@ -248,14 +248,16 @@ If no users are configured, the server starts with a warning — create the firs
 
 ### Roles & Permissions
 
-| Feature | `user` | `pro` | `admin` |
-|---|:---:|:---:|:---:|
-| Chat | yes | yes | yes |
-| Own agents (per-user secret) | yes | yes | yes |
-| Global agents (AGENT_SECRET) | - | - | yes |
-| Workbench (Terminal, Git, Files) | - | yes | yes |
-| Port Proxy | - | yes | yes |
-| Manage invitations | - | - | yes |
+All registered users are **Pro** by default. The first user created via CLI is **Admin**.
+
+| Feature | `pro` | `admin` |
+|---|:---:|:---:|
+| Chat | yes | yes |
+| Own agents (per-user secret) | yes | yes |
+| Global agents (AGENT_SECRET) | - | yes |
+| Workbench (Terminal, Git, Files) | yes | yes |
+| Port Proxy | yes | yes |
+| Manage invitations | - | yes |
 
 ## Project Structure
 
