@@ -170,6 +170,8 @@ docker compose exec webchat node server/create-user.js admin your-password admin
 
 后续用户可通过邀请码注册（admin 在设置页面创建邀请码）。
 
+![登录页面](docs/images/login.png)
+
 ### Nginx 反向代理
 
 ```nginx
@@ -240,6 +242,14 @@ node cli.js status
 node cli.js logs
 node cli.js uninstall
 ```
+
+Agent Secret 可在 Web 界面的 **设置 > 安全** 中找到：
+
+![设置 Agent](docs/images/setup-agent.png)
+
+当没有 Agent 连接时，首页会引导你前往设置页面：
+
+![无 Agent](docs/images/no-agent.png)
 
 ### Agent CLI 命令
 

@@ -150,6 +150,8 @@ docker compose exec webchat node server/create-user.js admin your-password admin
 
 Additional users can register via invitation codes (admin creates them in Settings).
 
+![Login](docs/images/login.png)
+
 ### Agent
 
 **Via npm** (recommended):
@@ -188,6 +190,14 @@ node cli.js status
 node cli.js logs
 node cli.js uninstall
 ```
+
+You can find the Agent secret in **Settings > Security** within the web interface:
+
+![Setup Agent](docs/images/setup-agent.png)
+
+When no Agent is connected, the welcome page guides you to Settings:
+
+![No Agent](docs/images/no-agent.png)
 
 ### Agent CLI
 
