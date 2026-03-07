@@ -1,9 +1,10 @@
 import { useAuthStore } from '../stores/auth.js';
 import ProxyTab from './ProxyTab.js';
+import DashboardTab from './DashboardTab.js';
 
 export default {
   name: 'SettingsPanel',
-  components: { ProxyTab },
+  components: { ProxyTab, DashboardTab },
   props: {
     visible: Boolean
   },
@@ -26,6 +27,7 @@ export default {
             <svg v-else-if="tab.key === 'security'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
             <svg v-else-if="tab.key === 'proxy'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
             <svg v-else-if="tab.key === 'invitations'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+            <svg v-else-if="tab.key === 'dashboard'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
             <span>{{ tab.label }}</span>
           </button>
         </div>
@@ -254,6 +256,11 @@ export default {
             <div v-show="activeTab === 'proxy'" class="settings-pane">
               <ProxyTab />
             </div>
+
+            <!-- Dashboard (admin only) -->
+            <div v-show="activeTab === 'dashboard'" class="settings-pane" v-if="authStore.role === 'admin'">
+              <DashboardTab />
+            </div>
           </div>
         </div>
       </div>
@@ -322,6 +329,7 @@ export default {
       }
       if (this.authStore.role === 'admin') {
         tabs.push({ key: 'invitations', label: this.$t('settings.tabs.invitations') });
+        tabs.push({ key: 'dashboard', label: this.$t('settings.tabs.dashboard') });
       }
       return tabs;
     },
