@@ -33,8 +33,12 @@
   },
   "files": [
     "*.js",
+    "connection/",
+    "crew/",
     "sdk/",
-    "scripts/"
+    "scripts/",
+    "service/",
+    "workbench/"
   ],
   "license": "MIT",
   "author": "Yeaft",

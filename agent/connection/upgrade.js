@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'child_process';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
-import { join } from 'path';
+import { writeFileSync, mkdirSync, existsSync, cpSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { platform } from 'os';
 import ctx from '../context.js';
 import { getConfigDir } from '../service.js';
@@ -79,9 +80,6 @@ export async function handleUpgradeAgent() {
     });
 
     const isWindows = platform() === 'win32';
-    const npmArgs = isGlobalInstall
-      ? ['install', '-g', `${pkgName}@latest`]
-      : ['install', `${pkgName}@latest`];
 
     if (isWindows) {
       spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion);
@@ -108,15 +106,29 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
   const isPm2 = !!process.env.pm_id;
   const installDirWin = installDir.replace(/\//g, '\\');
 
+  // Copy upgrade-worker-template.js to config dir (runs as CJS there, away from ESM context)
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const workerSrc = join(thisDir, 'upgrade-worker-template.js');
+  const workerDst = join(configDir, 'upgrade-worker.js');
+  cpSync(workerSrc, workerDst);
+
+  // Determine the target package directory inside node_modules
+  const pkgDir = join(installDir, 'node_modules', ...pkgName.split('/')).replace(/\//g, '\\');
+
   const batLines = [
     '@echo off',
     'setlocal',
     `set PID=${pid}`,
     `set PKG=${pkgName}@latest`,
     `set INSTALL_DIR=${installDirWin}`,
+    `set PKG_DIR=${pkgDir}`,
     `set LOGFILE=${logPath}`,
+    `set WORKER=${workerDst}`,
     `set MAX_WAIT=30`,
     `set COUNT=0`,
+    '',
+    ':: Change to temp dir to avoid EBUSY on cwd',
+    'cd /d "%TEMP%"',
     '',
     ':: Redirect all output to log file',
     'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
@@ -145,18 +157,15 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
     );
   }
 
-  const npmBatCmd = isGlobalInstall
-    ? 'call npm install -g %PKG%'
-    : 'cd /d "%INSTALL_DIR%" && call npm install %PKG%';
-
+  // Use Node.js worker for file-level upgrade (avoids EBUSY on directory rename)
   batLines.push(
-    'echo [Upgrade] Installing %PKG%... >> "%LOGFILE%"',
-    `${npmBatCmd} >> "%LOGFILE%" 2>&1`,
-    'if errorlevel 1 (',
-    '  echo [Upgrade] npm install failed with exit code %errorlevel% >> "%LOGFILE%"',
-    ') else (',
-    '  echo [Upgrade] Successfully installed %PKG% >> "%LOGFILE%"',
+    'echo [Upgrade] Running upgrade worker... >> "%LOGFILE%"',
+    'node "%WORKER%" "%PKG%" "%PKG_DIR%" "%LOGFILE%"',
+    'if not "%errorlevel%"=="0" (',
+    '  echo [Upgrade] Worker failed with exit code %errorlevel% >> "%LOGFILE%"',
+    '  goto CLEANUP',
     ')',
+    'echo [Upgrade] Worker completed successfully >> "%LOGFILE%"',
   );
 
   batLines.push(':CLEANUP');
@@ -168,7 +177,11 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
     );
   }
 
-  batLines.push(`del /F /Q "${batPath}"`);
+  // Clean up worker and bat script
+  batLines.push(
+    `del /F /Q "${workerDst}" 2>NUL`,
+    `del /F /Q "${batPath}"`,
+  );
 
   writeFileSync(batPath, batLines.join('\r\n'));
   const child = spawn('cmd.exe', ['/c', batPath], {
