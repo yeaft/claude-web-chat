@@ -25,7 +25,9 @@ beforeAll(async () => {
   const base = process.cwd();
   crewSource = await fs.readFile(join(base, 'agent/crew.js'), 'utf-8');
   viewSource = await fs.readFile(join(base, 'web/components/CrewChatView.js'), 'utf-8');
-  storeSource = await fs.readFile(join(base, 'web/stores/chat.js'), 'utf-8');
+  const chatMain = await fs.readFile(join(base, 'web/stores/chat.js'), 'utf-8');
+  const crewHelper = await fs.readFile(join(base, 'web/stores/helpers/crew.js'), 'utf-8');
+  storeSource = chatMain + '\n' + crewHelper;
 });
 
 // =====================================================================

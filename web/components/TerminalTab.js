@@ -1,181 +1,5 @@
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) return resolve();
-    const s = document.createElement('script');
-    s.src = src;
-    s.onload = resolve;
-    s.onerror = reject;
-    document.head.appendChild(s);
-  });
-}
-
-// ========================================
-// 树操作辅助函数
-// ========================================
-
-function generateTerminalId(convId) {
-  return convId + ':' + Math.random().toString(36).slice(2, 8);
-}
-
-function collectLeaves(node) {
-  if (!node) return [];
-  if (node.type === 'pane') return [node.terminalId];
-  return [...collectLeaves(node.first), ...collectLeaves(node.second)];
-}
-
-function findFirstLeaf(node) {
-  if (!node) return null;
-  if (node.type === 'pane') return node.terminalId;
-  return findFirstLeaf(node.first);
-}
-
-// 替换叶子节点（用于 split）— 返回新树
-function replaceNode(tree, targetId, replacement) {
-  if (!tree) return tree;
-  if (tree.type === 'pane') {
-    return tree.terminalId === targetId ? replacement : tree;
-  }
-  return {
-    ...tree,
-    first: replaceNode(tree.first, targetId, replacement),
-    second: replaceNode(tree.second, targetId, replacement)
-  };
-}
-
-// 移除叶子节点，提升兄弟 — 返回新树或 null
-function removeNode(tree, targetId) {
-  if (!tree) return null;
-  if (tree.type === 'pane') {
-    return tree.terminalId === targetId ? null : tree;
-  }
-  // 如果 first 是目标，返回 second
-  if (tree.first?.type === 'pane' && tree.first.terminalId === targetId) {
-    return tree.second;
-  }
-  // 如果 second 是目标，返回 first
-  if (tree.second?.type === 'pane' && tree.second.terminalId === targetId) {
-    return tree.first;
-  }
-  // 递归
-  const newFirst = removeNode(tree.first, targetId);
-  const newSecond = removeNode(tree.second, targetId);
-  if (!newFirst) return newSecond;
-  if (!newSecond) return newFirst;
-  return { ...tree, first: newFirst, second: newSecond };
-}
-
-// ========================================
-// PaneTree 递归组件
-// ========================================
-
-const PaneTree = {
-  name: 'PaneTree',
-  props: {
-    node: Object,
-    terminals: Object,
-    activePane: String,
-    onActivate: Function,
-    onClosePane: Function,
-    setMountRef: Function
-  },
-  template: `
-    <div v-if="node.type === 'pane'"
-      class="terminal-pane"
-      :class="{ active: node.terminalId === activePane }"
-      @click.stop="onActivate(node.terminalId)"
-    >
-      <div class="xterm-mount" :ref="el => setMountRef(node.terminalId, el)"></div>
-    </div>
-    <div v-else-if="node.type === 'split'"
-      class="terminal-split"
-      :class="'split-' + node.direction"
-    >
-      <div class="split-child" :style="firstStyle">
-        <PaneTree
-          :node="node.first"
-          :terminals="terminals"
-          :activePane="activePane"
-          :onActivate="onActivate"
-          :onClosePane="onClosePane"
-          :setMountRef="setMountRef"
-        />
-      </div>
-      <div
-        class="split-divider"
-        :class="'divider-' + node.direction"
-        @mousedown.prevent="startDrag($event, node)"
-        @touchstart.prevent="startDrag($event, node)"
-      ></div>
-      <div class="split-child" :style="secondStyle">
-        <PaneTree
-          :node="node.second"
-          :terminals="terminals"
-          :activePane="activePane"
-          :onActivate="onActivate"
-          :onClosePane="onClosePane"
-          :setMountRef="setMountRef"
-        />
-      </div>
-    </div>
-  `,
-  setup(props) {
-    const firstStyle = Vue.computed(() => {
-      if (props.node.type !== 'split') return {};
-      const pct = (props.node.ratio * 100).toFixed(2) + '%';
-      return { flexBasis: pct, flexGrow: 0, flexShrink: 0 };
-    });
-    const secondStyle = Vue.computed(() => {
-      if (props.node.type !== 'split') return {};
-      const pct = ((1 - props.node.ratio) * 100).toFixed(2) + '%';
-      return { flexBasis: pct, flexGrow: 0, flexShrink: 0 };
-    });
-
-    const startDrag = (e, splitNode) => {
-      const container = e.target.closest('.terminal-split');
-      if (!container) return;
-      const isTouch = e.type === 'touchstart';
-      const isHorizontal = splitNode.direction === 'horizontal';
-      const startPos = isHorizontal
-        ? (isTouch ? e.touches[0].clientX : e.clientX)
-        : (isTouch ? e.touches[0].clientY : e.clientY);
-      const containerRect = container.getBoundingClientRect();
-      const totalSize = isHorizontal ? containerRect.width : containerRect.height;
-      const startRatio = splitNode.ratio;
-
-      document.body.style.cursor = isHorizontal ? 'col-resize' : 'row-resize';
-      document.body.style.userSelect = 'none';
-
-      const onMove = (ev) => {
-        const currentPos = isHorizontal
-          ? (isTouch ? ev.touches[0].clientX : ev.clientX)
-          : (isTouch ? ev.touches[0].clientY : ev.clientY);
-        const delta = currentPos - startPos;
-        const newRatio = Math.max(0.1, Math.min(0.9, startRatio + delta / totalSize));
-        splitNode.ratio = newRatio;
-      };
-
-      const onEnd = () => {
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onEnd);
-        document.removeEventListener('touchmove', onMove);
-        document.removeEventListener('touchend', onEnd);
-        // Fit all terminals after drag
-        window.dispatchEvent(new CustomEvent('terminal-fit-all'));
-      };
-
-      document.addEventListener(isTouch ? 'touchmove' : 'mousemove', onMove);
-      document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
-    };
-
-    return { firstStyle, secondStyle, startDrag };
-  }
-};
-
-// ========================================
-// TerminalTab 主组件
-// ========================================
+import { loadScript, generateTerminalId, collectLeaves, findFirstLeaf, replaceNode, removeNode } from './terminal/paneLayout.js';
+import PaneTree from './terminal/PaneTree.js';
 
 export default {
   name: 'TerminalTab',
@@ -219,18 +43,14 @@ export default {
     const store = Pinia.useChatStore();
     const t = Vue.inject('t');
 
-    // terminalId -> { created, connected, terminal, fitAddon }
     const terminals = Vue.reactive({});
-    // convId -> layout tree root node (reactive)
     const layoutTrees = Vue.reactive({});
-    // convId -> active terminalId
     const activePanes = Vue.reactive({});
 
     const terminalError = Vue.ref('');
     const mountRefs = {};
     let xtermLoaded = false;
 
-    // 当前 conversation 的布局树
     const currentTree = Vue.computed(() => {
       const convId = store.currentConversation;
       return convId ? layoutTrees[convId] || null : null;
@@ -248,13 +68,11 @@ export default {
         const oldEl = mountRefs[terminalId];
         mountRefs[terminalId] = el;
 
-        // 如果 DOM 元素变了（split 后 Vue 重建了 DOM），重新附加 xterm
         if (oldEl && oldEl !== el) {
           const info = terminals[terminalId];
           if (info?.terminal?.element) {
             el.innerHTML = '';
             el.appendChild(info.terminal.element);
-            // 布局变了后需要重新 fit
             Vue.nextTick(() => {
               try { info.fitAddon?.fit(); } catch {}
             });
@@ -268,10 +86,7 @@ export default {
       if (convId) activePanes[convId] = terminalId;
     };
 
-    // ========================================
     // xterm.js 加载
-    // ========================================
-
     async function ensureXterm() {
       if (xtermLoaded) return true;
       let TermClass = (typeof Terminal !== 'undefined') ? (Terminal.Terminal || Terminal) : null;
@@ -291,10 +106,6 @@ export default {
       xtermLoaded = true;
       return true;
     }
-
-    // ========================================
-    // 终端主题
-    // ========================================
 
     function getTermTheme() {
       const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -321,10 +132,6 @@ export default {
       };
     }
 
-    // ========================================
-    // 创建单个终端 pane（仅创建 xterm 实例，不挂载）
-    // ========================================
-
     async function createPane(convId) {
       if (!convId || !store.currentAgent) return null;
       if (!(await ensureXterm())) return null;
@@ -343,11 +150,8 @@ export default {
       const fitAddon = new FitClass();
       term.loadAddon(fitAddon);
 
-      // 让 Ctrl+V / Ctrl+C（有选区时复制）/ Ctrl+Shift+V 交给浏览器处理
       term.attachCustomKeyEventHandler((e) => {
-        // Ctrl+V 或 Ctrl+Shift+V：让浏览器处理粘贴
         if ((e.ctrlKey || e.metaKey) && e.key === 'v') return false;
-        // Ctrl+C 且有选区：让浏览器处理复制（无选区时发送 SIGINT）
         if ((e.ctrlKey || e.metaKey) && e.key === 'c' && term.hasSelection()) return false;
         return true;
       });
@@ -359,7 +163,6 @@ export default {
         fitAddon: fitAddon
       };
 
-      // Terminal 输入 → agent
       term.onData((data) => {
         store.sendWsMessage({
           type: 'terminal_input',
@@ -373,19 +176,15 @@ export default {
       return terminalId;
     }
 
-    // 挂载终端到 DOM 并发送 create 消息
     async function mountPane(convId, terminalId) {
       const info = terminals[terminalId];
       if (!info) return false;
 
-      // 等待 DOM 更新（布局树已设置后调用，PaneTree 会渲染出 xterm-mount）
-      // 递归组件可能需要多个渲染周期才能完成
       let el = null;
       for (let attempt = 0; attempt < 10; attempt++) {
         await Vue.nextTick();
         el = mountRefs[terminalId];
         if (el) break;
-        // 额外等待一小段时间让递归组件完成渲染
         if (attempt >= 2) {
           await new Promise(r => setTimeout(r, 50));
           el = mountRefs[terminalId];
@@ -413,16 +212,12 @@ export default {
       }
     }
 
-    // ========================================
-    // 自动创建 — 当 terminal tab 可见且无布局树时
-    // ========================================
-
     let autoCreatePending = false;
 
     async function autoCreateIfNeeded() {
       const convId = store.currentConversation;
       if (!convId || !store.currentAgent) return;
-      if (layoutTrees[convId]) return; // 已有布局
+      if (layoutTrees[convId]) return;
       if (autoCreatePending) return;
 
       autoCreatePending = true;
@@ -431,23 +226,16 @@ export default {
       const terminalId = await createPane(convId);
       if (!terminalId) { autoCreatePending = false; return; }
 
-      // 先设置布局树，让 PaneTree 渲染出 DOM
       layoutTrees[convId] = Vue.reactive({ type: 'pane', terminalId });
       activePanes[convId] = terminalId;
 
-      // 再挂载 xterm 到 DOM
       const ok = await mountPane(convId, terminalId);
       if (!ok) {
-        // 挂载失败，清理布局树
         delete layoutTrees[convId];
         delete activePanes[convId];
       }
       autoCreatePending = false;
     }
-
-    // ========================================
-    // Split / Close
-    // ========================================
 
     async function splitPane(direction) {
       const convId = store.currentConversation;
@@ -457,7 +245,6 @@ export default {
       const newTerminalId = await createPane(convId);
       if (!newTerminalId) return;
 
-      // 替换活跃 pane 为 split 节点（先更新布局树让 DOM 渲染）
       const splitNode = Vue.reactive({
         type: 'split',
         direction,
@@ -470,13 +257,8 @@ export default {
       layoutTrees[convId] = Vue.reactive(newTree);
       activePanes[convId] = newTerminalId;
 
-      // 布局树更新后，Vue 重新渲染 PaneTree，setMountRef 会自动
-      // 检测旧 pane 的 DOM 变化并重新附加 xterm 实例
-
-      // 挂载新 pane
       const ok = await mountPane(convId, newTerminalId);
       if (!ok) {
-        // 挂载失败，回滚 split：移除新 pane，恢复旧结构
         const rollbackTree = removeNode(layoutTrees[convId], newTerminalId);
         if (rollbackTree) {
           layoutTrees[convId] = Vue.reactive(rollbackTree);
@@ -485,7 +267,6 @@ export default {
         return;
       }
 
-      // fit 所有 pane（包括被分割的旧 pane，它的尺寸变了）
       await Vue.nextTick();
       fitAllPanes(convId);
     }
@@ -494,7 +275,6 @@ export default {
       const convId = store.currentConversation;
       if (!convId) return;
 
-      // 发送关闭消息给 agent
       const info = terminals[terminalId];
       if (info) {
         store.sendWsMessage({
@@ -508,20 +288,16 @@ export default {
         delete mountRefs[terminalId];
       }
 
-      // 从布局树中移除
       const newTree = removeNode(layoutTrees[convId], terminalId);
       if (newTree) {
         layoutTrees[convId] = Vue.reactive(newTree);
-        // 如果关闭的是活跃 pane，切换到第一个叶子
         if (activePanes[convId] === terminalId) {
           activePanes[convId] = findFirstLeaf(layoutTrees[convId]) || '';
         }
         Vue.nextTick(() => fitAllPanes(convId));
       } else {
-        // 没有 pane 了，清理布局
         delete layoutTrees[convId];
         delete activePanes[convId];
-        // 自动重新创建终端（下一个 tick 让 UI 先更新）
         Vue.nextTick(() => autoCreateIfNeeded());
       }
     }
@@ -531,10 +307,6 @@ export default {
       if (!convId || !activePanes[convId]) return;
       closePane(activePanes[convId]);
     }
-
-    // ========================================
-    // Fit all panes
-    // ========================================
 
     function fitAllPanes(convId) {
       if (!convId) convId = store.currentConversation;
@@ -558,10 +330,6 @@ export default {
       }
     }
 
-    // ========================================
-    // 消息处理
-    // ========================================
-
     function handleWorkbenchMessage(event) {
       const msg = event.detail;
       if (!msg) return;
@@ -578,7 +346,6 @@ export default {
               terminalError.value = msg.error || t('terminal.createFailed');
               info.terminal?.dispose();
               delete terminals[tid];
-              // 从布局树移除
               const convId = msg.conversationId;
               if (convId && layoutTrees[convId]) {
                 const newTree = removeNode(layoutTrees[convId], tid);
@@ -608,7 +375,6 @@ export default {
             info.terminal?.dispose();
             delete terminals[tid];
             delete mountRefs[tid];
-            // 从布局树移除
             const convId = msg.conversationId;
             if (convId && layoutTrees[convId]) {
               const newTree = removeNode(layoutTrees[convId], tid);
@@ -647,10 +413,6 @@ export default {
       }
     }
 
-    // ========================================
-    // Resize handler
-    // ========================================
-
     let resizeTimer = null;
     function handleResize() {
       clearTimeout(resizeTimer);
@@ -661,14 +423,9 @@ export default {
       fitAllPanes();
     }
 
-    // ========================================
-    // 清理已删除会话
-    // ========================================
-
     function handleConversationDeleted(event) {
       const { conversationId } = event.detail;
       if (!conversationId) return;
-      // 清理所有该 conversation 的终端
       if (layoutTrees[conversationId]) {
         const leaves = collectLeaves(layoutTrees[conversationId]);
         for (const tid of leaves) {
@@ -684,10 +441,6 @@ export default {
       }
     }
 
-    // ========================================
-    // 生命周期
-    // ========================================
-
     Vue.onMounted(() => {
       window.addEventListener('workbench-message', handleWorkbenchMessage);
       window.addEventListener('resize', handleResize);
@@ -701,22 +454,17 @@ export default {
       window.removeEventListener('terminal-fit-all', handleFitAll);
       window.removeEventListener('conversation-deleted', handleConversationDeleted);
       clearTimeout(resizeTimer);
-      // 清理所有终端
       for (const tid of Object.keys(terminals)) {
         terminals[tid]?.terminal?.dispose();
       }
     });
 
-    // 自动创建：监听 conversation 切换 + workbench 状态
-    // 使用 watch 检测 terminal tab 可见时自动创建
     Vue.watch(
       () => [store.currentConversation, store.workbenchExpanded],
       () => {
         Vue.nextTick(() => {
           const convId = store.currentConversation;
           if (!convId || !store.workbenchExpanded) return;
-          // 只在 terminal tab 被选中时自动创建
-          // WorkbenchPanel 通过 activeTab 控制显示，这里检查组件是否可见
           const tabEl = document.querySelector('.terminal-tab');
           if (tabEl && tabEl.offsetParent !== null) {
             autoCreateIfNeeded();
@@ -726,7 +474,6 @@ export default {
       { immediate: true }
     );
 
-    // WebSocket 重连时清理所有旧终端（agent 端的 PTY 已失效）
     Vue.watch(
       () => store.connectionState,
       (newState, oldState) => {
@@ -741,21 +488,17 @@ export default {
             delete layoutTrees[convId];
             delete activePanes[convId];
           }
-          // 重连后自动创建终端
           Vue.nextTick(() => autoCreateIfNeeded());
         }
       }
     );
 
-    // 当 conversation 切换时 fit 终端
     Vue.watch(() => store.currentConversation, () => {
       Vue.nextTick(() => fitAllPanes());
     });
 
-    // 监听 MutationObserver 来检测 terminal-tab 可见性变化
     let visibilityObserver = null;
     Vue.onMounted(() => {
-      // 检查 terminal tab 是否从隐藏变为可见（v-show 切换）
       const checkVisibility = () => {
         const tabEl = document.querySelector('.terminal-tab');
         if (tabEl && tabEl.offsetParent !== null) {
@@ -764,7 +507,6 @@ export default {
         }
       };
 
-      // 使用 MutationObserver 监听 display 变化
       visibilityObserver = new MutationObserver(() => {
         setTimeout(checkVisibility, 50);
       });

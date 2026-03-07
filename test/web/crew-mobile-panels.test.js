@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
  * Tests for mobile drawer panels (header nav + drawer + overlay).
@@ -29,7 +30,7 @@ beforeAll(async () => {
   viewSource = await fs.readFile(join(base, 'web/components/CrewChatView.js'), 'utf-8');
   headerSource = await fs.readFile(join(base, 'web/components/ChatHeader.js'), 'utf-8');
   storeSource = await fs.readFile(join(base, 'web/stores/chat.js'), 'utf-8');
-  cssSource = await fs.readFile(join(base, 'web/style.css'), 'utf-8');
+  cssSource = loadAllCss();
 });
 
 // Helper: extract CSS @media (max-width: 767px) block

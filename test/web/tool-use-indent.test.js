@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
  * Tests for Chat message layout:
@@ -346,10 +347,7 @@ describe('CSS source verification (assistant-turn)', () => {
   let cssContent;
 
   it('should load style.css', async () => {
-    const { promises: fs } = await import('fs');
-    const { join } = await import('path');
-    const mainPath = join(process.cwd(), 'web/style.css');
-    cssContent = await fs.readFile(mainPath, 'utf-8');
+    cssContent = loadAllCss();
     expect(cssContent).toBeDefined();
     expect(cssContent.length).toBeGreaterThan(0);
   });

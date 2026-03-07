@@ -753,8 +753,13 @@ describe('CrewConfigPanel - backend message chain verification', () => {
       join(process.cwd(), 'web/stores/chat.js'),
       'utf-8'
     );
-    expect(chatContent).toContain('checkCrewExists(projectDir, agentId)');
-    expect(chatContent).toContain("type: 'check_crew_exists'");
+    const crewContent = await fs.readFile(
+      join(process.cwd(), 'web/stores/helpers/crew.js'),
+      'utf-8'
+    );
+    const combined = chatContent + '\n' + crewContent;
+    expect(combined).toContain('checkCrewExists');
+    expect(combined).toContain("type: 'check_crew_exists'");
   });
 
   it('store should have resumeCrewSession action', async () => {
@@ -764,8 +769,13 @@ describe('CrewConfigPanel - backend message chain verification', () => {
       join(process.cwd(), 'web/stores/chat.js'),
       'utf-8'
     );
-    expect(chatContent).toContain('resumeCrewSession(sessionId, agentId)');
-    expect(chatContent).toContain("type: 'resume_crew_session'");
+    const crewContent = await fs.readFile(
+      join(process.cwd(), 'web/stores/helpers/crew.js'),
+      'utf-8'
+    );
+    const combined = chatContent + '\n' + crewContent;
+    expect(combined).toContain('resumeCrewSession');
+    expect(combined).toContain("type: 'resume_crew_session'");
   });
 });
 

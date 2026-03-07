@@ -1,56 +1,24 @@
-// handleMessage switch dispatcher
+/**
+ * Message handler — thin switch dispatcher.
+ * Delegates to sub-handlers for complex message types.
+ */
 
 import { useAuthStore } from '../auth.js';
 import { decodeKey } from '../../utils/encryption.js';
-import { isRecentlyClosed } from './watchdog.js';
 import { t } from '../../utils/i18n.js';
 import { stopProcessingWatchdog } from './watchdog.js';
-import { clearSessionLoading, setSessionLoading } from './session.js';
-
-/**
- * 恢复上次查看的 conversation（公共逻辑）。
- * @param {object} store
- * @param {object} [agentSetup] - 若需同时设置 agent，传入 { agentId, agentInfo }
- * @returns {boolean} 是否成功恢复
- */
-function restoreLastViewedConversation(store, agentSetup) {
-  const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
-  if (!lastViewed) return false;
-
-  const conv = store.conversations.find(c => c.id === lastViewed);
-  if (!conv) return false;
-
-  const agentId = agentSetup?.agentId || store.currentAgent;
-
-  // 设置 agent（AutoRestore 路径需要）
-  if (agentSetup) {
-    store.currentAgent = agentSetup.agentId;
-    store.currentAgentInfo = agentSetup.agentInfo;
-    store.sendWsMessage({ type: 'select_agent', agentId: agentSetup.agentId, silent: true });
-  }
-
-  // 设置 conversation 状态
-  store.currentConversation = lastViewed;
-  store.currentWorkDir = conv.workDir;
-  store.messages = [];
-  store.sendWsMessage({ type: 'select_conversation', conversationId: lastViewed });
-
-  if (conv.type === 'crew') {
-    store.sendWsMessage({
-      type: 'resume_crew_session',
-      sessionId: lastViewed,
-      agentId
-    });
-  } else {
-    store.sendWsMessage({
-      type: 'sync_messages',
-      conversationId: lastViewed,
-      turns: 5
-    });
-    store.sendWsMessage({ type: 'refresh_conversation', conversationId: lastViewed });
-  }
-  return true;
-}
+import { clearSessionLoading } from './session.js';
+import { handleAgentList, handleAgentSelected } from './handlers/agentHandler.js';
+import {
+  handleConversationCreated,
+  handleConversationResumed,
+  handleConversationDeleted,
+  handleTurnCompleted,
+  handleConversationClosed,
+  handleConversationRefresh,
+  handleExecutionCancelled,
+  handleSyncMessagesResult
+} from './handlers/conversationHandler.js';
 
 export function handleMessage(store, msg) {
   const authStore = useAuthStore();
@@ -68,21 +36,15 @@ export function handleMessage(store, msg) {
           authStore.setSessionKey(msg.sessionKey);
         }
 
-        // Save role from WebSocket auth
         if (msg.role) {
           authStore.role = msg.role;
         }
 
-        // 请求 agent 列表时附带当前 UI 中的 conversation IDs，
-        // 以便 server 重启后能从 DB 恢复这些 conversations
         const knownConvIds = store.conversations.map(c => c.id).filter(Boolean);
         store.sendWsMessage({
           type: 'get_agents',
           conversationIds: knownConvIds.length > 0 ? knownConvIds : undefined
         });
-
-        // ★ Reconnect 时不再提前发 select_agent/sync_messages/refresh_conversation
-        // 等 agent_list 返回后，确认 agent 在线再恢复状态，避免时序问题导致 "Agent access denied"
 
         store.checkPendingRecovery();
       } else {
@@ -95,177 +57,7 @@ export function handleMessage(store, msg) {
       break;
 
     case 'agent_list':
-      store.agents = msg.agents;
-      {
-        const agentIds = new Set(msg.agents.map(a => a.id));
-        for (const agent of msg.agents) {
-          store.proxyPorts[agent.id] = agent.proxyPorts || [];
-        }
-        for (const id of Object.keys(store.proxyPorts)) {
-          if (!agentIds.has(id)) {
-            delete store.proxyPorts[id];
-          }
-        }
-      }
-      if (store.currentAgent) {
-        const agent = msg.agents.find(a => a.id === store.currentAgent);
-        if (agent) {
-          store.currentAgentInfo = agent;
-        }
-      }
-      // ★ 同步所有 agent 的 conversations 到 store.conversations
-      {
-        // 收集所有 server 端的 conversations
-        const allServerConvs = [];
-        const allServerConvIds = new Set();
-        for (const agent of msg.agents) {
-          for (const serverConv of (agent.conversations || [])) {
-            if (allServerConvIds.has(serverConv.id)) continue;
-            allServerConvIds.add(serverConv.id);
-            allServerConvs.push({
-              ...serverConv,
-              agentId: agent.id,
-              agentName: agent.name
-            });
-            // 同步 title
-            if (serverConv.title && !store.conversationTitles[serverConv.id]) {
-              store.conversationTitles[serverConv.id] = serverConv.title;
-            }
-          }
-        }
-
-        // 合并到 store.conversations：更新已有的，添加缺失的
-        for (const serverConv of allServerConvs) {
-          const existing = store.conversations.find(c => c.id === serverConv.id);
-          if (existing) {
-            existing.claudeSessionId = serverConv.claudeSessionId || existing.claudeSessionId;
-            existing.processing = serverConv.processing;
-            existing.userId = serverConv.userId;
-            existing.username = serverConv.username;
-            existing.agentId = serverConv.agentId;
-            existing.agentName = serverConv.agentName;
-            if (serverConv.type) existing.type = serverConv.type;
-          } else {
-            store.conversations.push(serverConv);
-          }
-        }
-        // 清理不在 server 中的 conversations
-        store.conversations = store.conversations.filter(c => allServerConvIds.has(c.id));
-
-        // 同步 processing 状态
-        for (const serverConv of allServerConvs) {
-          // Skip stale processing for crew convs with no active session
-          const isStaleCrewProcessing = serverConv.processing && serverConv.type === 'crew'
-            && !store.crewSessions?.[serverConv.id];
-          if (serverConv.processing && !isRecentlyClosed(store, serverConv.id)
-              && !store._turnCompletedConvs?.has(serverConv.id)
-              && !isStaleCrewProcessing) {
-            store.processingConversations[serverConv.id] = true;
-          } else if (store.processingConversations[serverConv.id]) {
-            delete store.processingConversations[serverConv.id];
-            stopProcessingWatchdog(store, serverConv.id);
-            const status = store.executionStatusMap[serverConv.id];
-            if (status) status.currentTool = null;
-            store.finishStreamingForConversation(serverConv.id);
-          }
-        }
-        for (const convId of Object.keys(store.processingConversations)) {
-          if (!allServerConvIds.has(convId)) {
-            console.log(`[agent_list] Clearing stale processing state for ${convId}`);
-            delete store.processingConversations[convId];
-            stopProcessingWatchdog(store, convId);
-            const status = store.executionStatusMap[convId];
-            if (status) status.currentTool = null;
-            store.finishStreamingForConversation(convId);
-          }
-        }
-      }
-      // ★ Reconnect: 清空客户端残留状态，以 server 上报为准
-      store._turnCompletedConvs?.clear();
-      store._closedAt = {};
-      // ★ Reconnect 恢复：currentAgent 已有值说明是 WebSocket 重连（非页面刷新）
-      if (store.currentAgent) {
-        const agent = msg.agents.find(a => a.id === store.currentAgent && a.online);
-        if (agent) {
-          console.log('[Reconnect] Agent online, restoring selection:', store.currentAgent);
-          store.currentAgentInfo = agent;
-          store.sendWsMessage({ type: 'select_agent', agentId: store.currentAgent, silent: true });
-          if (store.currentConversation) {
-            store.sendWsMessage({ type: 'select_conversation', conversationId: store.currentConversation });
-            // Crew conversation: 恢复 crew session 状态
-            const conv = store.conversations.find(c => c.id === store.currentConversation);
-            if (conv?.type === 'crew') {
-              console.log('[Reconnect] Crew conversation detected, resuming crew session:', store.currentConversation);
-              store.sendWsMessage({
-                type: 'resume_crew_session',
-                sessionId: store.currentConversation,
-                agentId: store.currentAgent
-              });
-            } else {
-              // 普通 conversation: 同步聊天消息
-              if (store.messages.length > 0) {
-                const lastMessageId = store.messages[store.messages.length - 1]?.id;
-                console.log('[Reconnect] Requesting missed messages after:', lastMessageId);
-                store.sendWsMessage({
-                  type: 'sync_messages',
-                  conversationId: store.currentConversation,
-                  afterMessageId: lastMessageId
-                });
-              } else {
-                store.sendWsMessage({
-                  type: 'sync_messages',
-                  conversationId: store.currentConversation,
-                  turns: 5
-                });
-              }
-              store.sendWsMessage({
-                type: 'refresh_conversation',
-                conversationId: store.currentConversation
-              });
-            }
-          } else if (!store.recoveryDismissed) {
-            // ★ Fix: currentAgent 已设置但 currentConversation 为空
-            // 这发生在：首次 agent_list 到达时 conversation 列表为空（agent 仍在同步），
-            // AutoRestore 失败并回退到 selectAgent，后续 agent_list 中 conversation 才出现。
-            console.log('[Reconnect] currentConversation null, attempting restore');
-            restoreLastViewedConversation(store);
-          }
-          break;
-        } else {
-          console.log('[Reconnect] Agent not online yet:', store.currentAgent);
-          // agent 还没上线，保留 currentAgent 等下次 agent_list 更新
-          break;
-        }
-      }
-      // ★ 自动恢复上次查看的 conversation（UI 刷新后）
-      if (!store.currentConversation && !store.currentAgent && !store.recoveryDismissed) {
-        const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
-        const lastAgent = store.lastUsedAgent;
-
-        if (lastViewed) {
-          // 优先恢复上次查看的 conversation
-          const conv = store.conversations.find(c => c.id === lastViewed);
-          if (conv) {
-            const agent = msg.agents.find(a => a.id === conv.agentId && a.online);
-            if (agent) {
-              console.log('[AutoRestore] Restoring last viewed conversation:', lastViewed, 'on agent:', conv.agentId);
-              restoreLastViewedConversation(store, { agentId: conv.agentId, agentInfo: agent });
-              break;
-            }
-          }
-        }
-
-        // 回退：恢复上次使用的 agent
-        if (lastAgent) {
-          const agent = store.agents.find(a => a.id === lastAgent && a.online);
-          if (agent) {
-            console.log('[AutoRestore] Auto-selecting last used agent:', lastAgent);
-            store.selectAgent(lastAgent);
-          } else {
-            store.checkPendingRecovery();
-          }
-        }
-      }
+      handleAgentList(store, msg);
       break;
 
     case 'agent_selected':
@@ -304,113 +96,19 @@ export function handleMessage(store, msg) {
     }
 
     case 'sync_messages_result':
-      if (msg.conversationId === store.currentConversation) {
-        const formatted = (msg.messages || []).map(m => store.formatDbMessage(m)).filter(Boolean);
-
-        if (formatted.length > 0) {
-          // ★ Phase 6.1: 判断是向上分页还是正常加载
-          // 找到当前消息列表中第一条有 dbMessageId 的消息
-          const firstDbMsg = store.messages.find(m => m.dbMessageId);
-          if (firstDbMsg &&
-              formatted[0].dbMessageId &&
-              formatted[formatted.length - 1].dbMessageId < firstDbMsg.dbMessageId) {
-            // 向上加载：插入到消息列表中第一条 DB 消息之前
-            const insertIdx = store.messages.indexOf(firstDbMsg);
-            console.log(`[Sync] Prepending ${formatted.length} older messages at index ${insertIdx}`);
-            store.messages.splice(insertIdx, 0, ...formatted);
-          } else {
-            // 正常同步（首次加载或追加）
-            console.log(`[Sync] Received ${formatted.length} messages`);
-            for (const m of formatted) {
-              // ★ Bug #3: 去重：检查是否已存在
-              if (m.dbMessageId && store.messages.some(existing => existing.dbMessageId === m.dbMessageId)) {
-                continue;
-              }
-              store.messages.push(m);
-            }
-          }
-        }
-
-        store.hasMoreMessages = msg.hasMore ?? false;
-        clearSessionLoading(store);
-      }
-      store.loadingMoreMessages = false;
+      handleSyncMessagesResult(store, msg);
       break;
 
     case 'conversation_deleted':
-      store.conversations = store.conversations.filter(c => c.id !== msg.conversationId);
-      delete store.messagesCache[msg.conversationId];
-      delete store.conversationTitles[msg.conversationId];
-      delete store.processingConversations[msg.conversationId];
-      if (store._closedAt) delete store._closedAt[msg.conversationId];
-      stopProcessingWatchdog(store, msg.conversationId);
-      delete store.executionStatusMap[msg.conversationId];
-      // 清理 crew 数据
-      delete store.crewSessions?.[msg.conversationId];
-      delete store.crewMessagesMap?.[msg.conversationId];
-      delete store.crewOlderMessages?.[msg.conversationId];
-      delete store.crewStatuses?.[msg.conversationId];
-      window.dispatchEvent(new CustomEvent('conversation-deleted', { detail: { conversationId: msg.conversationId } }));
-      if (store.currentConversation === msg.conversationId) {
-        store.currentConversation = null;
-        store.messages = [];
-        store.addMessage({
-          type: 'system',
-          content: t('chat.session.closed')
-        });
-      }
-      store.saveOpenSessions();
+      handleConversationDeleted(store, msg);
       break;
 
-    // ★ turn_completed: 一个 turn 结束，Claude 进程仍在运行
     case 'turn_completed':
-      {
-        const convId = msg.conversationId;
-        if (convId) {
-          delete store.processingConversations[convId];
-          stopProcessingWatchdog(store, convId);
-          // ★ 设置防护窗口，防止后续 agent_list 中的 stale processing:true 重新设回
-          if (!store._closedAt) store._closedAt = {};
-          store._closedAt[convId] = Date.now();
-          const status = store.executionStatusMap[convId];
-          if (status) {
-            status.currentTool = null;
-          }
-          store.finishStreamingForConversation(convId);
-          // 更新 conversation 的 claudeSessionId 和 workDir
-          const conv = store.conversations.find(c => c.id === convId);
-          if (conv) {
-            if (msg.claudeSessionId) conv.claudeSessionId = msg.claudeSessionId;
-            if (msg.workDir) conv.workDir = msg.workDir;
-          }
-          store.saveOpenSessions();
-        }
-      }
+      handleTurnCompleted(store, msg);
       break;
 
-    // ★ conversation_closed: Claude 进程真正退出
     case 'conversation_closed':
-      {
-        const convId = msg.conversationId;
-        if (convId) {
-          delete store.processingConversations[convId];
-          stopProcessingWatchdog(store, convId);
-          if (!store._closedAt) store._closedAt = {};
-          store._closedAt[convId] = Date.now();
-          const status = store.executionStatusMap[convId];
-          if (status) {
-            status.currentTool = null;
-          }
-          store.finishStreamingForConversation(convId);
-          // 更新 conversation 的 claudeSessionId 和 workDir
-          const conv = store.conversations.find(c => c.id === convId);
-          if (conv) {
-            if (msg.claudeSessionId) conv.claudeSessionId = msg.claudeSessionId;
-            if (msg.workDir) conv.workDir = msg.workDir;
-          }
-          store.saveOpenSessions();
-        }
-      }
+      handleConversationClosed(store, msg);
       break;
 
     case 'claude_output':
@@ -422,7 +120,6 @@ export function handleMessage(store, msg) {
       const isSystemError = ['Permission denied', 'Agent not found', 'No conversation selected', 'Agent is still syncing', 'Agent access denied'].some(
         s => msg.message?.includes(s)
       );
-      // ★ Bug #6: 清除 sessionLoading 状态
       if (msg.message?.includes('Agent is still syncing') || msg.message?.includes('Agent not found')) {
         clearSessionLoading(store);
       }
@@ -463,7 +160,6 @@ export function handleMessage(store, msg) {
 
     case 'history_sessions_list':
       if (msg.requestId && store._historySessionsRequestId && msg.requestId !== store._historySessionsRequestId) {
-        console.log('[history_sessions_list] Stale response ignored');
         break;
       }
       store.historySessions = msg.sessions || [];
@@ -472,7 +168,6 @@ export function handleMessage(store, msg) {
 
     case 'folders_list':
       console.log('[folders_list] Received:', msg.folders?.length || 0, 'folders, requestId:', msg.requestId);
-      // 忽略过期的请求（竞态条件：快速切换 agent 时旧请求晚到）
       if (msg.requestId && store._foldersRequestId && msg.requestId !== store._foldersRequestId) {
         console.log('[folders_list] Stale response ignored, expected:', store._foldersRequestId);
         break;
@@ -498,34 +193,11 @@ export function handleMessage(store, msg) {
       break;
 
     case 'conversation_refresh':
-      if (msg.conversationId) {
-        if (msg.isProcessing && !isRecentlyClosed(store, msg.conversationId)) {
-          store.processingConversations[msg.conversationId] = true;
-        } else if (store.processingConversations[msg.conversationId]) {
-          delete store.processingConversations[msg.conversationId];
-          stopProcessingWatchdog(store, msg.conversationId);
-          const status = store.executionStatusMap[msg.conversationId];
-          if (status) status.currentTool = null;
-          store.finishStreamingForConversation(msg.conversationId);
-        }
-      }
+      handleConversationRefresh(store, msg);
       break;
 
     case 'execution_cancelled':
-      {
-        const convId = msg.conversationId || store.currentConversation;
-        if (convId) {
-          delete store.processingConversations[convId];
-          stopProcessingWatchdog(store, convId);
-          if (!store._closedAt) store._closedAt = {};
-          store._closedAt[convId] = Date.now();
-          const status = store.executionStatusMap[convId];
-          if (status) {
-            status.currentTool = null;
-          }
-          store.finishStreamingForConversation(convId);
-        }
-      }
+      handleExecutionCancelled(store, msg);
       break;
 
     case 'slash_commands_update':
@@ -550,7 +222,6 @@ export function handleMessage(store, msg) {
             }
           }, 3000);
         } else if (msg.status === 'compacting') {
-          // 安全超时：30 秒后如果仍在 compacting 状态，自动清除
           setTimeout(() => {
             if (store.compactStatus?.conversationId === convId && store.compactStatus?.status === 'compacting') {
               console.warn(`[Compact] Timeout: clearing stale compacting status for ${convId}`);
@@ -564,7 +235,6 @@ export function handleMessage(store, msg) {
     case 'ask_user_question':
       if (msg.conversationId) {
         const tryLink = () => {
-          // Try chat messages first
           const msgs = msg.conversationId === store.currentConversation
             ? store.messages
             : (store.messagesCache[msg.conversationId] || []);
@@ -575,7 +245,6 @@ export function handleMessage(store, msg) {
               return true;
             }
           }
-          // Try crew messages
           const crewMsgs = store.crewMessagesMap?.[msg.conversationId];
           if (crewMsgs) {
             for (let i = crewMsgs.length - 1; i >= 0; i--) {
@@ -602,7 +271,6 @@ export function handleMessage(store, msg) {
 
     case 'restart_agent_ack':
       console.log(`[Agent] Restart acknowledged by agent: ${msg.agentId}`);
-      // Agent 即将重启，通过 CustomEvent 通知 UI 组件
       window.dispatchEvent(new CustomEvent('agent-restart-ack', { detail: { agentId: msg.agentId } }));
       break;
 
@@ -643,9 +311,7 @@ export function handleMessage(store, msg) {
       };
       break;
 
-    // =====================================================================
     // Crew (multi-agent) messages
-    // =====================================================================
     case 'crew_session_created':
     case 'crew_session_restored':
     case 'crew_output':
@@ -659,193 +325,4 @@ export function handleMessage(store, msg) {
       store.handleCrewOutput(msg);
       break;
   }
-}
-
-// Internal helpers for handleMessage
-
-function handleAgentSelected(store, msg) {
-  console.log('[agent_selected] Switching to agent:', msg.agentId);
-  store.agentSwitching = false;
-  const isSameAgent = store.currentAgent === msg.agentId;
-  store.currentAgent = msg.agentId;
-  store.currentAgentInfo = {
-    id: msg.agentId,
-    name: msg.agentName,
-    workDir: msg.workDir,
-    capabilities: msg.capabilities || ['terminal', 'file_editor', 'background_tasks']
-  };
-
-  // 加载 agent 缓存的 slash commands（如果有）
-  if (msg.slashCommands && msg.slashCommands.length > 0) {
-    store.slashCommands = msg.slashCommands;
-  }
-
-  const serverConvs = msg.conversations || [];
-  const seenIds = new Set();
-  let activeConvs = serverConvs.filter(c => {
-    if (seenIds.has(c.id)) return false;
-    seenIds.add(c.id);
-    return true;
-  }).map(c => ({
-    ...c,
-    agentId: msg.agentId,
-    agentName: msg.agentName
-  }));
-
-  if (isSameAgent && store.currentConversation) {
-    const currentConvInServer = serverConvs.find(c => c.id === store.currentConversation);
-    if (currentConvInServer && !activeConvs.find(c => c.id === currentConvInServer.id)) {
-      activeConvs.push({
-        ...currentConvInServer,
-        agentId: msg.agentId,
-        agentName: msg.agentName
-      });
-    }
-  }
-
-  const otherAgentConvs = store.conversations.filter(c => c.agentId !== msg.agentId);
-  store.conversations = [...otherAgentConvs, ...activeConvs];
-
-  // Populate conversation titles from server data
-  for (const conv of serverConvs) {
-    if (conv.title && !store.conversationTitles[conv.id]) {
-      store.conversationTitles[conv.id] = conv.title;
-    }
-  }
-
-  console.log('[agent_selected] Merged conversations:', store.conversations.length,
-              'from agent:', msg.agentId, 'kept from others:', otherAgentConvs.length);
-
-  const agentConvIds = new Set(serverConvs.map(c => c.id));
-  for (const conv of serverConvs) {
-    if (conv.processing && !isRecentlyClosed(store, conv.id)) {
-      store.processingConversations[conv.id] = true;
-    } else if (store.processingConversations[conv.id]) {
-      delete store.processingConversations[conv.id];
-      stopProcessingWatchdog(store, conv.id);
-      const status = store.executionStatusMap[conv.id];
-      if (status) status.currentTool = null;
-      store.finishStreamingForConversation(conv.id);
-    }
-  }
-  for (const convId of Object.keys(store.processingConversations)) {
-    if (!agentConvIds.has(convId)) {
-      const isOtherAgent = otherAgentConvs.some(c => c.id === convId);
-      if (!isOtherAgent) {
-        console.log(`[agent_selected] Clearing stale processing state for ${convId}`);
-        delete store.processingConversations[convId];
-        stopProcessingWatchdog(store, convId);
-        const status = store.executionStatusMap[convId];
-        if (status) status.currentTool = null;
-        store.finishStreamingForConversation(convId);
-      }
-    }
-  }
-
-  if (isSameAgent && store.currentConversation) {
-    const currentConv = store.conversations.find(c => c.id === store.currentConversation);
-    store.currentWorkDir = currentConv?.workDir || store.currentWorkDir || msg.workDir;
-    console.log('[Reconnect] Restoring conversation selection:', store.currentConversation);
-    clearSessionLoading(store);
-    store.sendWsMessage({
-      type: 'select_conversation',
-      conversationId: store.currentConversation
-    });
-    // 确保消息被加载（重连时 auth_result 已发 sync_messages，这里不再重复）
-  } else {
-    store.currentConversation = null;
-    store.currentWorkDir = msg.workDir;
-    store.messages = [];
-
-    const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
-    if (lastViewed && store.conversations.find(c => c.id === lastViewed)) {
-      console.log('[AutoRestore] Restoring last viewed conversation:', lastViewed);
-      store.autoRestoreConversation(lastViewed);
-      store.pendingRecovery = null;
-    }
-  }
-}
-
-function handleConversationCreated(store, msg) {
-  clearSessionLoading(store);
-  if (store.currentConversation && store.messages.length > 0) {
-    store.messagesCache[store.currentConversation] = store.messages;
-  }
-  const createdAgent = store.agents.find(a => a.id === msg.agentId);
-  store.conversations = store.conversations.filter(c => c.id !== msg.conversationId);
-  store.conversations.push({
-    id: msg.conversationId,
-    agentId: msg.agentId,
-    agentName: createdAgent?.name || msg.agentId,
-    workDir: msg.workDir,
-    claudeSessionId: null,
-    createdAt: Date.now(),
-    processing: false,
-    type: 'chat',
-    disallowedTools: msg.disallowedTools ?? null
-  });
-  store.currentAgent = msg.agentId;
-  store.currentAgentInfo = createdAgent;
-  store.currentConversation = msg.conversationId;
-  store.currentWorkDir = msg.workDir;
-  store.messages = [];
-  store.sendWsMessage({
-    type: 'select_conversation',
-    conversationId: msg.conversationId
-  });
-  store.addMessage({
-    type: 'system',
-    content: t('store.convCreated', { agent: createdAgent?.name || msg.agentId, workDir: msg.workDir })
-  });
-  store.saveOpenSessions();
-}
-
-function handleConversationResumed(store, msg) {
-  clearSessionLoading(store);
-  if (store.currentConversation && store.messages.length > 0) {
-    store.messagesCache[store.currentConversation] = store.messages;
-  }
-  const resumedAgent = store.agents.find(a => a.id === msg.agentId);
-  store.conversations = store.conversations.filter(c =>
-    c.id !== msg.conversationId &&
-    !(c.claudeSessionId && c.claudeSessionId === msg.claudeSessionId)
-  );
-  store.conversations.push({
-    id: msg.conversationId,
-    agentId: msg.agentId,
-    agentName: resumedAgent?.name || msg.agentId,
-    workDir: msg.workDir,
-    claudeSessionId: msg.claudeSessionId,
-    createdAt: Date.now(),
-    processing: false,
-    type: 'chat',
-    disallowedTools: msg.disallowedTools ?? null
-  });
-  store.currentAgent = msg.agentId;
-  store.currentAgentInfo = resumedAgent;
-  store.currentConversation = msg.conversationId;
-  store.currentWorkDir = msg.workDir;
-  store.messages = [];
-  if (store._pendingSessionTitle) {
-    store.conversationTitles[msg.conversationId] = store._pendingSessionTitle;
-    store._pendingSessionTitle = null;
-  }
-  store.sendWsMessage({
-    type: 'select_conversation',
-    conversationId: msg.conversationId
-  });
-  store.addMessage({
-    type: 'system',
-    content: t('store.convResumed', { agent: resumedAgent?.name || msg.agentId, sessionId: msg.claudeSessionId ? msg.claudeSessionId.slice(0, 8) + '...' : '' })
-  });
-  console.log('dbMessages received:', msg.dbMessages?.length || 0, 'dbMessageCount:', msg.dbMessageCount || 0);
-  // ★ Phase 6.1: server 已将 history 写入 DB 并返回最后 5 turns 的 DB 消息
-  if (msg.dbMessages && msg.dbMessages.length > 0) {
-    const formatted = msg.dbMessages.map(m => store.formatDbMessage(m)).filter(Boolean);
-    for (const m of formatted) {
-      store.messages.push(m);
-    }
-  }
-  store.hasMoreMessages = !!msg.hasMoreMessages;
-  store.saveOpenSessions();
 }

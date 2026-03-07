@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
  * Tests for task-32: crew-add-role-btn style optimization.
@@ -19,12 +20,7 @@ describe('task-32: crew-add-role-btn style optimization', () => {
   let cssContent;
 
   beforeAll(async () => {
-    const { promises: fs } = await import('fs');
-    const { join } = await import('path');
-    cssContent = await fs.readFile(
-      join(process.cwd(), 'web/style.css'),
-      'utf-8'
-    );
+    cssContent = loadAllCss();
   });
 
   describe('Base button style (plain text, no border)', () => {

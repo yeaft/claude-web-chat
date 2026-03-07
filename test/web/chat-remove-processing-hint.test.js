@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
  * Tests for task-50: Remove redundant processing-hint status bar from Chat mode.
@@ -35,9 +36,7 @@ beforeAll(() => {
   chatPageSource = readFileSync(
     resolve(__dirname, '../../web/components/ChatPage.js'), 'utf-8'
   );
-  cssSource = readFileSync(
-    resolve(__dirname, '../../web/style.css'), 'utf-8'
-  );
+  cssSource = loadAllCss();
   storeSource = readFileSync(
     resolve(__dirname, '../../web/stores/chat.js'), 'utf-8'
   );
