@@ -337,6 +337,7 @@ export default {
   'settings.dashboard.online': 'Online',
   'settings.dashboard.offline': 'Offline',
   'settings.dashboard.noAgents': 'No agents registered',
+  'settings.dashboard.noUserData': 'No user data',
   'settings.dashboard.noOnlineUsers': 'No users online',
   'settings.dashboard.loading': 'Loading...',
   'settings.dashboard.error': 'Failed to load data',

@@ -337,6 +337,7 @@ export default {
   'settings.dashboard.online': '在线',
   'settings.dashboard.offline': '离线',
   'settings.dashboard.noAgents': '暂无注册 Agent',
+  'settings.dashboard.noUserData': '暂无用户数据',
   'settings.dashboard.noOnlineUsers': '暂无在线用户',
   'settings.dashboard.loading': '加载中...',
   'settings.dashboard.error': '数据加载失败',

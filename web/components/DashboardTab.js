@@ -83,7 +83,7 @@ export default {
               </div>
               <div class="db-user-card-meta">{{ $t('settings.dashboard.lastLogin') }}: {{ formatRelativeTime(user.lastLoginAt) }}</div>
             </div>
-            <div v-if="userStats.length === 0" class="db-empty">{{ $t('settings.dashboard.noOnlineUsers') }}</div>
+            <div v-if="userStats.length === 0" class="db-empty">{{ $t('settings.dashboard.noUserData') }}</div>
           </div>
         </div>
 
