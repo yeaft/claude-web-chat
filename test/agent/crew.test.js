@@ -4089,9 +4089,9 @@ summary: 第一行
 describe('parseRoutes - source file verification', () => {
   let crewContent;
 
-  it('should load crew.js source', async () => {
+  it('should load crew routing module source', async () => {
     crewContent = await fs.readFile(
-      join(__dirname, '../../agent/crew.js'),
+      join(__dirname, '../../agent/crew/routing.js'),
       'utf-8'
     );
     expect(crewContent).toBeTruthy();
@@ -4133,7 +4133,7 @@ describe('writeSharedClaudeMd - team best practices (b7b48d3)', () => {
   beforeAll(async () => {
     const { promises: fs } = await import('fs');
     crewContent = await fs.readFile(
-      join(process.cwd(), 'agent/crew.js'),
+      join(process.cwd(), 'agent/crew/shared-dir.js'),
       'utf-8'
     ) + await fs.readFile(
       join(process.cwd(), 'agent/crew-i18n.js'),
@@ -6008,7 +6008,7 @@ describe('writeSharedClaudeMd - Feature 工作记录章节 (auto-managed)', () =
   beforeAll(async () => {
     const { promises: fs } = await import('fs');
     crewContent = await fs.readFile(
-      join(process.cwd(), 'agent/crew.js'),
+      join(process.cwd(), 'agent/crew/shared-dir.js'),
       'utf-8'
     ) + await fs.readFile(
       join(process.cwd(), 'agent/crew-i18n.js'),
@@ -6024,7 +6024,7 @@ describe('writeSharedClaudeMd - Feature 工作记录章节 (auto-managed)', () =
 
   it('should place Feature section after Worktree rules and before sharedMemoryDefault', async () => {
     // In writeSharedClaudeMd template, verify the order is: worktreeRules → featureRecordShared → sharedMemoryDefault
-    const crewJs = await (await import('fs')).promises.readFile(join(process.cwd(), 'agent/crew.js'), 'utf-8');
+    const crewJs = await (await import('fs')).promises.readFile(join(process.cwd(), 'agent/crew/shared-dir.js'), 'utf-8');
     // Find the template string section in writeSharedClaudeMd
     const tmplStart = crewJs.indexOf('const claudeMd = `', crewJs.indexOf('writeSharedClaudeMd'));
     const worktreeIdx = crewJs.indexOf('m.worktreeRules', tmplStart);
@@ -6312,7 +6312,7 @@ describe('task-31: abort_role backend', () => {
   let crewSource;
 
   beforeAll(async () => {
-    crewSource = await fs.readFile(join(__dirname, '../../agent/crew.js'), 'utf-8');
+    crewSource = await fs.readFile(join(__dirname, '../../agent/crew/control.js'), 'utf-8');
   });
 
   it('handleCrewControl has abort_role case', () => {
