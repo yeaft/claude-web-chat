@@ -28,6 +28,11 @@ beforeAll(async () => {
   const { join } = await import('path');
   const base = process.cwd();
   viewSource = await fs.readFile(join(base, 'web/components/CrewChatView.js'), 'utf-8');
+  // Sub-modules and sub-components extracted from CrewChatView during refactor
+  const crewDir = join(base, 'web/components/crew');
+  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
+    viewSource += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+  }
   headerSource = await fs.readFile(join(base, 'web/components/ChatHeader.js'), 'utf-8');
   storeSource = await fs.readFile(join(base, 'web/stores/chat.js'), 'utf-8');
   cssSource = loadAllCss();
@@ -497,7 +502,8 @@ describe('abort role button', () => {
   });
 
   it('abort button calls abortRole method', () => {
-    expect(viewSource).toContain('abortRole(role.name)');
+    // Sub-component emits 'abort-role' event, parent handles with abortRole method
+    expect(viewSource).toContain("$emit('abort-role', role.name)");
   });
 
   it('abortRole method sends abort_role control action', () => {

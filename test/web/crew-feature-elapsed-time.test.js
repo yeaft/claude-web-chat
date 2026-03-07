@@ -24,7 +24,7 @@ beforeAll(() => {
   jsSource = readFileSync(jsPath, 'utf-8');
   // Sub-modules extracted from CrewChatView during refactor
   const crewDir = resolve(__dirname, '../../web/components/crew');
-  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js']) {
+  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
     jsSource += '\n' + readFileSync(resolve(crewDir, mod), 'utf-8');
   }
 

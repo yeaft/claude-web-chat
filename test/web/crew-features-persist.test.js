@@ -33,7 +33,7 @@ beforeAll(async () => {
   viewSource = await fs.readFile(join(base, 'web/components/CrewChatView.js'), 'utf-8');
   // Sub-modules extracted from CrewChatView during refactor
   const crewDir = join(base, 'web/components/crew');
-  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js']) {
+  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
     viewSource += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
   }
   const chatMain = await fs.readFile(join(base, 'web/stores/chat.js'), 'utf-8');
