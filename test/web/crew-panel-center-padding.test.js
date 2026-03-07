@@ -241,6 +241,7 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
     expect(opens).toBe(2095);
     expect(opens).toBe(2095);
+    expect(opens).toBe(2095);
   });
 
   it('padding values are consistent (both 48px)', () => {

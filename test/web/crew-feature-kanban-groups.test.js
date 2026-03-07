@@ -392,6 +392,7 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
     expect(opens).toBe(2095);
     expect(opens).toBe(2095);
+    expect(opens).toBe(2095);
   });
 
   it('JS template has balanced div tags', () => {
@@ -405,6 +406,7 @@ describe('structural integrity', () => {
     const agentTestSource = readFileSync(agentTestPath, 'utf-8');
     expect(agentTestSource).toContain('expect(opens).toBe(2095)');
     expect(agentTestSource).toContain('expect(opens).toBe(2095)');
+    expect(agentTestSource).toContain('expect(opens).toBe(2095)');
   });
 
   it('crew-remove-maxwidth test brace count synchronized to 2106', () => {
@@ -412,11 +414,13 @@ describe('structural integrity', () => {
     const rmTestSource = readFileSync(rmTestPath, 'utf-8');
     expect(rmTestSource).toContain('expect(opens).toBe(2095)');
     expect(rmTestSource).toContain('expect(opens).toBe(2095)');
+    expect(rmTestSource).toContain('expect(opens).toBe(2095)');
   });
 
   it('crew-scroll-to-role test brace count synchronized to 2106', () => {
     const scrollTestPath = resolve(__dirname, '../../test/web/crew-scroll-to-role.test.js');
     const scrollTestSource = readFileSync(scrollTestPath, 'utf-8');
+    expect(scrollTestSource).toContain('expect(opens).toBe(2095)');
     expect(scrollTestSource).toContain('expect(opens).toBe(2095)');
     expect(scrollTestSource).toContain('expect(opens).toBe(2095)');
   });

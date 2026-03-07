@@ -1333,35 +1333,7 @@
   color: var(--text-primary);
 }
 
-/* Mobile Menu Button */
-.mobile-menu-btn {
-  display: none;
-  position: fixed;
-  top: 10px;
-  left: 10px;
-  z-index: 101;
-  width: 40px;
-  height: 40px;
-  border: none;
-  border-radius: 10px;
-  background: var(--bg-main);
-  cursor: pointer;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border-color);
-}
-
-.mobile-menu-btn svg {
-  width: 20px;
-  height: 20px;
-  fill: var(--text-primary);
-}
-
-.mobile-menu-btn:hover {
-  background: var(--sidebar-hover);
-}
-
-/* Header Sidebar Toggle — inline ghost button, replaces fixed .mobile-menu-btn */
+/* Header Sidebar Toggle — inline ghost button for mobile sidebar */
 .header-sidebar-toggle {
   display: none;
   width: 32px;

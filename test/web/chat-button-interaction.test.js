@@ -531,6 +531,7 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
     expect(opens).toBe(2095);
     expect(opens).toBe(2095);
+    expect(opens).toBe(2095);
   });
 
   it('all 4 buttons with btn-loading binding (3 chat + 1 crew refresh)', () => {

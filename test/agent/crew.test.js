@@ -4964,6 +4964,7 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
       expect(opens).toBe(2095);
       expect(opens).toBe(2095);
+      expect(opens).toBe(2095);
     });
   });
 

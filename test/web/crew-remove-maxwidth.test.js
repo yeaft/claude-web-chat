@@ -344,6 +344,7 @@ describe('CSS structural integrity', () => {
     expect(opens).toBe(closes);
     expect(opens).toBe(2095);
     expect(opens).toBe(2095);
+    expect(opens).toBe(2095);
   });
 
   it('no duplicate max-width declarations accidentally left in crew selectors', () => {
