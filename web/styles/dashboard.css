@@ -10,8 +10,8 @@
   flex: 1;
   min-width: 0;
   padding: 16px;
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border-light);
+  background: var(--bg-user-msg);
+  border: 1px solid var(--border-color);
   border-radius: 10px;
 }
 
@@ -36,6 +36,10 @@
 /* Section container */
 .db-section {
   margin-bottom: 24px;
+  padding: 16px;
+  background: var(--bg-user-msg);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
 }
 
 .db-section-header {
@@ -43,6 +47,8 @@
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .db-section-title {
@@ -101,13 +107,13 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 8px 8px 10px;
-  border-bottom: 2px solid var(--border-light);
+  border-bottom: 2px solid var(--border-color);
   white-space: nowrap;
 }
 
 .db-table td {
   padding: 10px 8px;
-  border-bottom: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-color);
   color: var(--text-secondary);
 }
 
@@ -215,7 +221,7 @@
   .db-agent-card,
   .db-online-card {
     padding: 12px;
-    border-bottom: 1px solid var(--border-light);
+    border-bottom: 1px solid var(--border-color);
   }
 
   .db-user-card:last-child,
