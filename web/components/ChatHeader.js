@@ -3,6 +3,13 @@ export default {
   emits: ['toggle-sidebar'],
   template: `
     <header class="chat-header">
+      <!-- Mobile sidebar toggle (Chat mode) — hidden on desktop -->
+      <button class="header-sidebar-toggle" v-if="!store.currentConversationIsCrew"
+              @click="$emit('toggle-sidebar')">
+        <svg viewBox="0 0 24 24" width="16" height="16">
+          <path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
+        </svg>
+      </button>
       <div class="chat-title-group">
         <div class="chat-title">{{ headerTitle }}</div>
         <div v-if="folderPath" class="chat-title-path">{{ folderPath }}</div>
