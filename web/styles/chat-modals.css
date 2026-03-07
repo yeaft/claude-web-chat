@@ -1361,6 +1361,27 @@
   background: var(--sidebar-hover);
 }
 
+/* Header Sidebar Toggle — inline ghost button, replaces fixed .mobile-menu-btn */
+.header-sidebar-toggle {
+  display: none;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.header-sidebar-toggle:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
 /* Sidebar Overlay */
 .sidebar-overlay {
   display: none;
@@ -1374,13 +1395,9 @@
 }
 
 @media (max-width: 768px) {
-  .mobile-menu-btn {
+  /* Show inline sidebar toggle in header on mobile */
+  .header-sidebar-toggle {
     display: flex;
-  }
-
-  /* Hide menu button when sidebar is open */
-  .chat-page.show-sidebar .mobile-menu-btn {
-    display: none;
   }
 
   /* Show sidebar header on mobile */
@@ -1411,10 +1428,9 @@
     transform: translateX(0);
   }
 
-  /* Adjust header for mobile menu button */
+  /* Adjust header for mobile — no extra padding needed, sidebar toggle is inline */
   .chat-header {
-    padding-left: 60px;
-    min-height: 60px;
+    min-height: 48px;
   }
 
   .chat-header h1 {

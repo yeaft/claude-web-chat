@@ -13,10 +13,6 @@ export default {
   components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': showMobileSidebar }">
-      <!-- Mobile Menu Button (hidden in Crew mode — replaced by header toggle) -->
-      <button v-if="!store.currentConversationIsCrew" class="mobile-menu-btn" @click="showMobileSidebar = !showMobileSidebar">
-        <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
-      </button>
 
       <!-- Sidebar Overlay -->
       <div class="sidebar-overlay" v-if="showMobileSidebar" @click="showMobileSidebar = false"></div>
@@ -239,7 +235,7 @@ export default {
         </template>
         <!-- Normal Chat Mode -->
         <template v-else>
-          <ChatHeader />
+          <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
           <MessageList
             @new-conversation="openConversationModal"
             @resume-conversation="openConversationModalResume"
