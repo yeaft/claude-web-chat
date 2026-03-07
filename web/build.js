@@ -119,7 +119,7 @@ const highlightCss = readFileSync(join(vendorDir, 'highlight.min.css'), 'utf-8')
 const xtermCss = readFileSync(join(vendorDir, 'xterm.min.css'), 'utf-8');
 const codemirrorCss = readFileSync(join(vendorDir, 'codemirror.min.css'), 'utf-8');
 const codemirrorThemeCss = readFileSync(join(vendorDir, 'codemirror-material-darker.css'), 'utf-8');
-const appCssFiles = ['variables', 'login', 'sidebar', 'chat', 'workbench', 'files', 'terminal', 'git', 'settings', 'crew'];
+const appCssFiles = ['variables', 'login', 'sidebar', 'chat-messages', 'chat-input', 'chat-modals', 'workbench', 'files', 'terminal', 'git', 'settings', 'crew-base', 'crew-workspace', 'crew-config'];
 const appCss = appCssFiles.map(f => readFileSync(join(__dirname, 'styles', f + '.css'), 'utf-8')).join('\n');
 
 // Minify combined CSS with esbuild
