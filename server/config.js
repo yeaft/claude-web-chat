@@ -143,7 +143,7 @@ export function getUserByUsername(username) {
       email: dbUser.email,
       totpSecret: dbUser.totp_secret,
       totpEnabled: !!dbUser.totp_enabled,
-      role: dbUser.role || 'user',
+      role: dbUser.role === 'admin' ? 'admin' : 'pro',
       id: dbUser.id
     };
   }

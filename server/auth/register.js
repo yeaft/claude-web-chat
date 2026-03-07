@@ -66,7 +66,7 @@ export async function register(username, password, email, invitationCode) {
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  const role = invitation.role || 'user';
+  const role = invitation.role === 'admin' ? 'admin' : 'pro';
 
   let user;
   if (existing && !existing.password_hash) {

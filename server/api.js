@@ -54,7 +54,7 @@ function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 
-  req.user = { username: result.username, role: result.role || 'user' };
+  req.user = { username: result.username, role: result.role === 'admin' ? 'admin' : 'pro' };
   next();
 }
 

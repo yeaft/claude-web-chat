@@ -37,7 +37,7 @@ export function handleWebConnection(ws, url) {
       authenticated = true;
       sessionKey = result.sessionKey;
       username = result.username;
-      role = result.role || 'user';
+      role = result.role === 'admin' ? 'admin' : 'pro';
     }
   }
 
@@ -143,7 +143,7 @@ async function handleWebMessage(clientId, msg) {
   const client = webClients.get(clientId);
   if (!client || !client.authenticated) return;
 
-  // Workbench 权限检查：普通用户禁止使用
+  // Workbench 权限检查：仅 admin 和 pro 可用（当前所有用户都是 pro 或 admin）
   if (!CONFIG.skipAuth && WORKBENCH_TYPES.has(msg.type) && client.role !== 'admin' && client.role !== 'pro') {
     console.warn(`[Security] User ${client.userId} (role=${client.role}) denied workbench action: ${msg.type}`);
     await sendToWebClient(client, { type: 'error', message: 'Permission denied: workbench access requires pro or admin role' });

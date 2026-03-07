@@ -11,9 +11,9 @@ export function registerInvitationRoutes(app, { requireAuth, requireAdmin }) {
       if (!user) {
         return res.status(400).json({ error: 'User not found' });
       }
-      const role = req.body.role || 'user';
-      if (!['user', 'pro'].includes(role)) {
-        return res.status(400).json({ error: 'Invalid role. Must be "user" or "pro"' });
+      const role = req.body.role || 'pro';
+      if (!['pro'].includes(role)) {
+        return res.status(400).json({ error: 'Invalid role. Must be "pro"' });
       }
       const expiresInDays = parseInt(req.body.expiresInDays, 10) || 7;
       const expiresInMs = expiresInDays * 24 * 60 * 60 * 1000;

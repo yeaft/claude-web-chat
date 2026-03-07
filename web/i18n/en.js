@@ -256,7 +256,6 @@ export default {
   'settings.account.logout': 'Log Out',
   'settings.account.roleAdmin': 'Admin',
   'settings.account.rolePro': 'Pro',
-  'settings.account.roleUser': 'User',
 
   // Settings - Security
   'settings.security.agentKey': 'Agent Secret',
