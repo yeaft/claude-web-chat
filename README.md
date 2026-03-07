@@ -11,7 +11,6 @@
 > A web interface for remotely accessing Claude Code CLI — multi-machine management, end-to-end encryption, multi-role collaboration
 
 ![Screenshot](docs/images/hero.png)
-<!-- TODO: Add product screenshot -->
 
 ## Features
 
@@ -26,7 +25,6 @@ ChatGPT-style conversational interface with real-time tool tracking, session man
 - Mobile-responsive layout
 
 ![Chat](docs/images/chat.png)
-<!-- TODO: Add chat screenshot -->
 
 ### Crew (Multi-Agent Collaboration)
 
@@ -38,7 +36,6 @@ Multi-role AI team collaboration with PM, Developer, Reviewer, and Tester roles 
 - Parallel multi-agent execution
 
 ![Crew](docs/images/crew.png)
-<!-- TODO: Add crew screenshot -->
 
 ### Workbench
 
@@ -50,7 +47,6 @@ Integrated development environment with terminal, Git operations, file browser, 
 - Port proxy: forward agent local ports to your browser
 
 ![Workbench](docs/images/workbench.png)
-<!-- TODO: Add workbench screenshot -->
 
 ## Prerequisites
 

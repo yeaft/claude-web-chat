@@ -11,7 +11,6 @@
 > 远程访问 Claude Code CLI 的 Web 界面 — 多机器管理、端到端加密、多角色协作
 
 ![Screenshot](docs/images/hero.png)
-<!-- TODO: 添加产品截图 -->
 
 ## 功能特性
 
@@ -26,7 +25,6 @@ ChatGPT 风格对话界面，实时工具追踪，会话管理和文件上传。
 - 移动端响应式布局
 
 ![Chat](docs/images/chat.png)
-<!-- TODO: 添加 Chat 截图 -->
 
 ### Crew（多角色协作）
 
@@ -38,7 +36,6 @@ ChatGPT 风格对话界面，实时工具追踪，会话管理和文件上传。
 - 多 Agent 并行执行
 
 ![Crew](docs/images/crew.png)
-<!-- TODO: 添加 Crew 截图 -->
 
 ### Workbench（工作台）
 
@@ -50,7 +47,6 @@ ChatGPT 风格对话界面，实时工具追踪，会话管理和文件上传。
 - 端口代理：将 Agent 本地端口转发到浏览器
 
 ![Workbench](docs/images/workbench.png)
-<!-- TODO: 添加 Workbench 截图 -->
 
 ## 前置要求
 
