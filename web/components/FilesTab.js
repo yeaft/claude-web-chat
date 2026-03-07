@@ -1,6 +1,11 @@
 import { getFileIconSvg, getFolderIconSvg } from '../utils/fileIcons.js';
 import { createFindReplace } from './files/findReplace.js';
 import { createFileOperations } from './files/fileOperations.js';
+import { createFileTree } from './files/fileTree.js';
+import { createFileEditor, getFileType, isMarkdownFile } from './files/fileEditor.js';
+import { createFilePreview } from './files/filePreview.js';
+import { createQuickOpen } from './files/quickOpen.js';
+import { createFolderPicker } from './files/folderPicker.js';
 
 export default {
   name: 'FilesTab',
@@ -423,275 +428,28 @@ export default {
     const store = Pinia.useChatStore();
     const t = Vue.inject('t');
 
-    // --- 层级树状态 ---
-    const treePath = Vue.ref('');
-    const treeRootPath = Vue.ref('');
-    const treeNodes = Vue.reactive({}); // dirPath -> { entries: [{name,type,path,size}], expanded, loaded, loading }
-
-    // --- VS Code 风格 header 状态 ---
-    const editingTreePath = Vue.ref(false);
-    const treePathInputRef = Vue.ref(null);
-
-    const rootFolderName = Vue.computed(() => {
-      if (!treeRootPath.value) return 'EXPLORER';
-      const parts = treeRootPath.value.replace(/[\\/]+$/, '').split(/[\\/]/);
-      return (parts[parts.length - 1] || treeRootPath.value).toUpperCase();
-    });
-
-    const rootExpanded = Vue.computed(() => {
-      if (!treeRootPath.value) return false;
-      return !!treeNodes[treeRootPath.value]?.expanded;
-    });
-
-    const toggleRootExpand = () => {
-      if (!treeRootPath.value) return;
-      const node = treeNodes[treeRootPath.value];
-      if (node) {
-        node.expanded = !node.expanded;
-      }
+    // --- Shared utilities ---
+    const getEffectiveWorkDir = () => store.currentWorkDir || store.currentAgentWorkDir || '';
+    const normalizePath = (p) => p ? p.replace(/\\/g, '/') : '';
+    const getFileIconHtml = (name) => getFileIconSvg(name);
+    const getFolderIcon = (isOpen) => getFolderIconSvg(isOpen);
+    const formatSize = (bytes) => {
+      if (bytes == null) return '';
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     };
 
-    const collapseAll = () => {
-      for (const key of Object.keys(treeNodes)) {
-        if (treeNodes[key]) {
-          treeNodes[key].expanded = false;
-        }
-      }
-    };
-
-    const startTreePathEdit = () => {
-      editingTreePath.value = true;
-      Vue.nextTick(() => treePathInputRef.value?.focus());
-    };
-
-    const confirmTreePath = () => {
-      editingTreePath.value = false;
-      loadRootDirectory();
-    };
-
-    const cancelTreePathEdit = () => {
-      editingTreePath.value = false;
-    };
-
-    // --- 可调宽度 ---
-    const treePanelWidth = Vue.ref(parseInt(localStorage.getItem('filePanelWidth')) || 220);
-    const isTreeResizing = Vue.ref(false);
-
-    // --- Per-conversation file tabs persistence ---
-    const fileTabsMap = Vue.reactive({});
+    // --- DOM refs ---
+    const rootEl = Vue.ref(null);
+    const editorContainer = Vue.ref(null);
 
     // --- File tabs state ---
-    const openFiles = Vue.ref([]); // [{ path, name, content, originalContent, isDirty, cmInstance, fileType, blobUrl, previewUrl, ... }]
+    const fileTabsMap = Vue.reactive({});
+    const openFiles = Vue.ref([]);
     const activeFileIndex = Vue.ref(-1);
     const fileLoading = Vue.ref(false);
     const fileSaving = Vue.ref(false);
-    const editorContainer = Vue.ref(null);
-    const officePreviewContainer = Vue.ref(null);
-    const rootEl = Vue.ref(null);
-
-    // --- File type detection ---
-    const OFFICE_EXT = new Set(['.docx', '.xlsx', '.xls', '.pptx', '.ppt']);
-    const PDF_EXT = new Set(['.pdf']);
-    const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico']);
-    const MD_EXT = new Set(['.md', '.markdown', '.mdx']);
-
-    function getFileType(name) {
-      const dot = name.lastIndexOf('.');
-      if (dot < 0) return 'text';
-      const ext = name.substring(dot).toLowerCase();
-      if (OFFICE_EXT.has(ext)) return 'office';
-      if (PDF_EXT.has(ext)) return 'pdf';
-      if (IMAGE_EXT.has(ext)) return 'image';
-      return 'text';
-    }
-
-    function isMarkdownFile(name) {
-      const dot = name.lastIndexOf('.');
-      if (dot < 0) return false;
-      return MD_EXT.has(name.substring(dot).toLowerCase());
-    }
-
-    // --- Markdown preview ---
-    const mdPreviewMode = Vue.ref(true);
-    const mdPreviewRef = Vue.ref(null);
-    let mermaidInitialized = false;
-
-    const isActiveMarkdown = Vue.computed(() => {
-      const f = activeFile.value;
-      return !!(f && isMarkdownFile(f.name));
-    });
-
-    const mdRenderedHtml = Vue.computed(() => {
-      const f = activeFile.value;
-      if (!f || !isMarkdownFile(f.name) || f.content == null) return '';
-      try {
-        if (typeof marked !== 'undefined') {
-          return marked.parse(f.content);
-        }
-      } catch (e) {
-        console.error('Markdown parse error:', e);
-      }
-      return '<pre>' + (f.content || '') + '</pre>';
-    });
-
-    function initMermaid() {
-      if (mermaidInitialized || typeof mermaid === 'undefined') return;
-      try {
-        const theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'default';
-        mermaid.initialize({ startOnLoad: false, theme });
-        mermaidInitialized = true;
-      } catch (e) {
-        console.error('Mermaid init error:', e);
-      }
-    }
-
-    async function renderMermaidBlocks() {
-      const container = mdPreviewRef.value;
-      if (!container || typeof mermaid === 'undefined') return;
-      initMermaid();
-      const codeBlocks = container.querySelectorAll('pre code.language-mermaid');
-      for (let i = 0; i < codeBlocks.length; i++) {
-        const codeEl = codeBlocks[i];
-        const pre = codeEl.parentElement;
-        const code = codeEl.textContent;
-        try {
-          const id = 'mermaid-' + Date.now() + '-' + i;
-          const { svg } = await mermaid.render(id, code);
-          const div = document.createElement('div');
-          div.className = 'mermaid-rendered';
-          div.innerHTML = svg;
-          pre.replaceWith(div);
-        } catch (e) {
-          console.warn('Mermaid render error:', e);
-        }
-      }
-    }
-
-    function switchToMdEdit() {
-      mdPreviewMode.value = false;
-      Vue.nextTick(() => {
-        const file = activeFile.value;
-        if (file && editorContainer.value) createEditor(file);
-      });
-    }
-
-    // --- Office local rendering ---
-    const renderOfficeLocal = (file) => {
-      const container = officePreviewContainer.value;
-      if (!container || !file._arrayBuffer) return;
-      container.innerHTML = '';
-      const ext = ('.' + file.name.split('.').pop()).toLowerCase();
-
-      if (ext === '.docx' && window.docx) {
-        window.docx.renderAsync(file._arrayBuffer, container, null, {
-          className: 'docx-preview-content',
-          inWrapper: true,
-          ignoreWidth: false,
-          ignoreHeight: true
-        }).catch(e => { file.previewError = e.message; });
-      } else if (ext === '.xlsx' || ext === '.xls') {
-        try {
-          const wb = XLSX.read(file._arrayBuffer, { type: 'array' });
-          const sheetName = wb.SheetNames[0];
-          const html = XLSX.utils.sheet_to_html(wb.Sheets[sheetName], { editable: false });
-          container.innerHTML = '<div class="xlsx-sheet-tabs">' +
-            wb.SheetNames.map((n, i) => `<button class="xlsx-sheet-tab${i === 0 ? ' active' : ''}" data-idx="${i}">${n}</button>`).join('') +
-            '</div><div class="xlsx-table-wrap">' + html + '</div>';
-          // Sheet tab switching
-          container.querySelectorAll('.xlsx-sheet-tab').forEach(btn => {
-            btn.addEventListener('click', () => {
-              const idx = parseInt(btn.dataset.idx);
-              const sn = wb.SheetNames[idx];
-              const h = XLSX.utils.sheet_to_html(wb.Sheets[sn], { editable: false });
-              container.querySelector('.xlsx-table-wrap').innerHTML = h;
-              container.querySelectorAll('.xlsx-sheet-tab').forEach(b => b.classList.remove('active'));
-              btn.classList.add('active');
-            });
-          });
-        } catch (e) { file.previewError = e.message; }
-      } else if (ext === '.pptx' || ext === '.ppt') {
-        container.innerHTML = '<div class="preview-unsupported">' + t('files.pptxNotSupported') + '</div>';
-      }
-    };
-
-    // --- Per-session undo history ---
-    const undoHistoryMap = Vue.reactive({}); // convId -> { filePath -> cmHistory }
-
-    // --- Debug status (visible fallback when console doesn't work) ---
-    const debugStatus = Vue.ref('');
-
-    // --- Find/Replace (delegated) ---
-    const find = createFindReplace(activeFile);
-
-    // --- Font size zoom ---
-    const fontSize = Vue.ref(parseInt(localStorage.getItem('filesFontSize')) || 15);
-    const setFontSize = (size) => {
-      fontSize.value = Math.max(8, Math.min(24, size));
-      localStorage.setItem('filesFontSize', fontSize.value.toString());
-      // Update CodeMirror font size if active
-      const file = activeFile.value;
-      if (file?.cmInstance) {
-        file.cmInstance.getWrapperElement().style.fontSize = fontSize.value + 'px';
-        file.cmInstance.refresh();
-      }
-    };
-    const zoomIn = () => setFontSize(fontSize.value + 1);
-    const zoomOut = () => setFontSize(fontSize.value - 1);
-    const onWheel = (e) => {
-      if (e.deltaY < 0) zoomIn();
-      else if (e.deltaY > 0) zoomOut();
-    };
-
-    // --- 文件夹选择器状态 ---
-    const folderPickerOpen = Vue.ref(false);
-    const folderPickerPath = Vue.ref('');
-    const folderPickerEntries = Vue.ref([]);
-    const folderPickerLoading = Vue.ref(false);
-    const folderPickerSelected = Vue.ref('');
-
-    // --- 文件搜索状态 ---
-    const searchQuery = Vue.ref('');
-    const searchResults = Vue.ref([]);
-    const searchLoading = Vue.ref(false);
-    let searchDebounceTimer = null;
-
-    // --- Quick Open (Ctrl+P) ---
-    const quickOpenVisible = Vue.ref(false);
-    const quickOpenQuery = Vue.ref('');
-    const quickOpenResults = Vue.ref([]);
-    const quickOpenSelectedIndex = Vue.ref(0);
-    const quickOpenLoading = Vue.ref(false);
-    const quickOpenInput = Vue.ref(null);
-    let quickOpenDebounceTimer = null;
-
-    // --- Go to Line (Ctrl+G) ---
-    const goToLineVisible = Vue.ref(false);
-    const goToLineValue = Vue.ref('');
-    const goToLineInput = Vue.ref(null);
-
-    // --- File operations (delegated) ---
-    const ops = createFileOperations(store, { getEffectiveWorkDir, treePath });
-
-    // ===========================
-    // Flattened tree computed
-    // ===========================
-    const flattenedTree = Vue.computed(() => {
-      const result = [];
-      const walk = (dirPath, depth) => {
-        const node = treeNodes[dirPath];
-        if (!node || !node.entries) return;
-        for (const entry of node.entries) {
-          result.push({ ...entry, depth });
-          if (entry.type === 'directory' && treeNodes[entry.path]?.expanded) {
-            walk(entry.path, depth + 1);
-          }
-        }
-      };
-      if (treeRootPath.value && treeNodes[treeRootPath.value]?.expanded) {
-        walk(treeRootPath.value, 0);
-      }
-      return result;
-    });
 
     const activeFile = Vue.computed(() => {
       if (activeFileIndex.value >= 0 && activeFileIndex.value < openFiles.value.length) {
@@ -700,156 +458,25 @@ export default {
       return null;
     });
 
-    // ===========================
-    // Utility functions
-    // ===========================
-    const getFileIconHtml = (name) => getFileIconSvg(name);
-    const getFolderIcon = (isOpen) => getFolderIconSvg(isOpen);
-
-    const getFileIcon = (path) => {
-      // Legacy fallback — no longer used in template but kept for compatibility
-      return '';
-    };
-
-    const formatSize = (bytes) => {
-      if (bytes == null) return '';
-      if (bytes < 1024) return bytes + ' B';
-      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    };
-
-    const getEffectiveWorkDir = () => {
-      return store.currentWorkDir || store.currentAgentWorkDir || '';
-    };
-
-    // Normalize path separators to forward slashes for consistent key matching
-    const normalizePath = (p) => p ? p.replace(/\\/g, '/') : '';
-
-    const getModeForFile = (filename) => {
-      const ext = filename.split('.').pop()?.toLowerCase();
-      const modeMap = {
-        'js': 'javascript', 'mjs': 'javascript', 'jsx': 'javascript',
-        'ts': { name: 'javascript', typescript: true },
-        'tsx': { name: 'javascript', typescript: true },
-        'json': { name: 'javascript', json: true },
-        'py': 'python',
-        'html': 'htmlmixed', 'htm': 'htmlmixed', 'vue': 'htmlmixed',
-        'xml': 'xml', 'svg': 'xml',
-        'css': 'css', 'scss': 'css', 'less': 'css',
-        'sh': 'shell', 'bash': 'shell', 'zsh': 'shell',
-        'c': 'text/x-csrc', 'h': 'text/x-csrc',
-        'cpp': 'text/x-c++src', 'hpp': 'text/x-c++src',
-        'cs': 'text/x-csharp',
-        'java': 'text/x-java',
-        'md': 'markdown', 'markdown': 'markdown',
-      };
-      return modeMap[ext] || 'text/plain';
-    };
-
-    const placeholderPath = Vue.computed(() => {
-      const dir = getEffectiveWorkDir();
-      return dir ? t('files.workDir', { dir }) : t('files.enterDirPath');
-    });
-
-    // ===========================
-    // Tree operations
-    // ===========================
-    const loadTreeDirectory = (dirPath) => {
-      const nDir = normalizePath(dirPath);
-      if (!treeNodes[nDir]) {
-        treeNodes[nDir] = { entries: [], expanded: true, loaded: false, loading: true };
-      } else {
-        treeNodes[nDir].loading = true;
-      }
-      store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        dirPath: dirPath,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    const loadRootDirectory = () => {
-      const dir = treePath.value.trim();
-      if (!dir) return;
-      const nDir = normalizePath(dir);
-      treeRootPath.value = nDir;
-      // Clear old nodes for a fresh root
-      Object.keys(treeNodes).forEach(k => delete treeNodes[k]);
-      treeNodes[nDir] = { entries: [], expanded: true, loaded: false, loading: true };
-      store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        dirPath: dir,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    const toggleDirectory = (dirPath) => {
-      const nDir = normalizePath(dirPath);
-      const node = treeNodes[nDir];
-      if (node) {
-        if (node.loaded) {
-          node.expanded = !node.expanded;
-        } else {
-          node.expanded = true;
-          loadTreeDirectory(dirPath);
-        }
-      } else {
-        treeNodes[nDir] = { entries: [], expanded: true, loaded: false, loading: false };
-        loadTreeDirectory(dirPath);
+    // --- Font size zoom ---
+    const fontSize = Vue.ref(parseInt(localStorage.getItem('filesFontSize')) || 15);
+    const setFontSize = (size) => {
+      fontSize.value = Math.max(8, Math.min(24, size));
+      localStorage.setItem('filesFontSize', fontSize.value.toString());
+      const file = activeFile.value;
+      if (file?.cmInstance) {
+        file.cmInstance.getWrapperElement().style.fontSize = fontSize.value + 'px';
+        file.cmInstance.refresh();
       }
     };
+    const zoomIn = () => setFontSize(fontSize.value + 1);
+    const zoomOut = () => setFontSize(fontSize.value - 1);
+    const onWheel = (e) => { e.deltaY < 0 ? zoomIn() : zoomOut(); };
 
-    const onTreeItemClick = (entry, event) => {
-      const tree = flattenedTree.value;
-      const clickedIndex = tree.findIndex(e => e.path === entry.path);
+    // --- Resizable tree panel ---
+    const treePanelWidth = Vue.ref(parseInt(localStorage.getItem('filePanelWidth')) || 220);
+    const isTreeResizing = Vue.ref(false);
 
-      if (event && (event.shiftKey || event.ctrlKey || event.metaKey)) {
-        // Shift+Click: range select from last clicked to current
-        if (event.shiftKey && lastClickedIndex.value >= 0 && clickedIndex >= 0) {
-          const start = Math.min(lastClickedIndex.value, clickedIndex);
-          const end = Math.max(lastClickedIndex.value, clickedIndex);
-          // If Ctrl is not also held, clear existing selection first
-          if (!event.ctrlKey && !event.metaKey) {
-            selectedPaths.clear();
-          }
-          for (let i = start; i <= end; i++) {
-            selectedPaths.add(tree[i].path);
-          }
-        } else {
-          // Ctrl+Click or first Shift+Click (no anchor yet): toggle single item
-          if (selectedPaths.has(entry.path)) {
-            selectedPaths.delete(entry.path);
-          } else {
-            selectedPaths.add(entry.path);
-          }
-        }
-        lastClickedIndex.value = clickedIndex;
-        return;
-      }
-
-      // Normal click: clear selection and perform default action
-      if (selectedPaths.size > 0) {
-        selectedPaths.clear();
-        lastClickedIndex.value = -1;
-      }
-
-      if (entry.type === 'directory') {
-        toggleDirectory(entry.path);
-      } else {
-        openFileInTab(entry.path, entry.name);
-      }
-      lastClickedIndex.value = clickedIndex;
-    };
-
-    // ===========================
-    // Resizable tree panel
-    // ===========================
     const startTreeResize = (e) => {
       e.preventDefault();
       const isTouch = e.type === 'touchstart';
@@ -858,16 +485,12 @@ export default {
       const startWidth = treePanelWidth.value;
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
-
       const container = e.target.closest('.file-two-col');
       const maxWidth = container ? container.offsetWidth * 0.5 : 400;
-
       const onMove = (ev) => {
         const clientX = isTouch ? ev.touches[0].clientX : ev.clientX;
-        const delta = clientX - startX;
-        treePanelWidth.value = Math.max(120, Math.min(maxWidth, startWidth + delta));
+        treePanelWidth.value = Math.max(120, Math.min(maxWidth, startWidth + (clientX - startX)));
       };
-
       const onEnd = () => {
         isTreeResizing.value = false;
         document.body.style.cursor = '';
@@ -878,144 +501,107 @@ export default {
         document.removeEventListener('touchmove', onMove);
         document.removeEventListener('touchend', onEnd);
       };
-
       document.addEventListener(isTouch ? 'touchmove' : 'mousemove', onMove);
       document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
     };
 
-    // ===========================
-    // Find / Replace — delegated to composable
-    // ===========================
+    // --- Initialize composables ---
+    // Find/Replace
+    const find = createFindReplace(activeFile);
     const { clearFindMarkers, performFind, openFindBar, closeFindBar } = find;
 
-    // ===========================
-    // CodeMirror editor
-    // ===========================
-    const createEditor = (fileObj, retryCount = 0) => {
-      if (!editorContainer.value) {
-        if (retryCount < 20) {
-          setTimeout(() => createEditor(fileObj, retryCount + 1), 100);
-        }
-        return;
-      }
-      if (!fileObj) return;
+    // File tree
+    const tree = createFileTree(store, { getEffectiveWorkDir, normalizePath });
 
-      editorContainer.value.innerHTML = '';
+    // File editor
+    const editor = createFileEditor(store, {
+      activeFile, editorContainer, fontSize,
+      clearFindMarkers, openFindBar,
+      openQuickOpen: () => qo.openQuickOpen(),
+      openGoToLine: () => qo.openGoToLine(),
+      saveFile
+    });
+    const { debugStatus, createEditor, destroyEditor,
+      saveCurrentUndoHistory, saveAllUndoHistory,
+      cleanupUndoHistory, deleteConversationHistory } = editor;
 
-      if (typeof CodeMirror === 'undefined') {
-        // Fallback: plain textarea if CodeMirror somehow not loaded
-        const ta = document.createElement('textarea');
-        ta.value = fileObj.content || '';
-        ta.style.cssText = 'width:100%;height:100%;border:none;outline:none;resize:none;padding:12px;font-family:monospace;font-size:12px;background:var(--bg-main);color:var(--text-main);white-space:pre;tab-size:4;';
-        ta.spellcheck = false;
-        ta.addEventListener('input', () => {
-          fileObj.content = ta.value;
-          fileObj.isDirty = (ta.value !== fileObj.originalContent);
-        });
-        ta.addEventListener('keydown', (e) => {
-          if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveFile(); }
-        });
-        editorContainer.value.appendChild(ta);
-        debugStatus.value = '';
-        return;
-      }
+    // File preview
+    const preview = createFilePreview(activeFile, { editorContainer, createEditor });
+    const { mdPreviewMode, mdPreviewRef, officePreviewContainer,
+      isActiveMarkdown, mdRenderedHtml, initMermaid, renderMermaidBlocks,
+      switchToMdEdit, renderOfficeLocal } = preview;
 
-      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-      const theme = isDark ? 'material-darker' : 'default';
-      try {
-        const cm = CodeMirror(editorContainer.value, {
-          value: fileObj.content || '',
-          mode: getModeForFile(fileObj.name),
-          theme: theme,
-          lineNumbers: true,
-          tabSize: 4,
-          indentWithTabs: false,
-          lineWrapping: false,
-          readOnly: false,
-          extraKeys: {
-            'Ctrl-S': () => saveFile(),
-            'Cmd-S': () => saveFile(),
-            'Ctrl-P': () => openQuickOpen(),
-            'Cmd-P': () => openQuickOpen(),
-            'Ctrl-G': () => openGoToLine(),
-            'Cmd-G': () => openGoToLine(),
-            'Ctrl-F': () => openFindBar(false),
-            'Cmd-F': () => openFindBar(false),
-            'Ctrl-R': () => openFindBar(true),
-            'Cmd-R': () => openFindBar(true),
-            'Ctrl-H': () => openFindBar(true),
-            'Cmd-H': () => openFindBar(true),
-          }
-        });
+    // File operations
+    const ops = createFileOperations(store, { getEffectiveWorkDir, treePath: tree.treePath });
 
-        cm.on('change', () => {
-          const current = cm.getValue();
-          fileObj.content = current;
-          fileObj.isDirty = (current !== fileObj.originalContent);
-        });
+    // Quick Open / Go to Line / Search
+    const qo = createQuickOpen(store, {
+      getEffectiveWorkDir, treePath: tree.treePath, openFileInTab, normalizePath
+    });
 
-        fileObj.cmInstance = cm;
+    // Folder picker
+    const fp = createFolderPicker(store, {
+      getEffectiveWorkDir,
+      treePath: tree.treePath, treeRootPath: tree.treeRootPath,
+      treeNodes: tree.treeNodes, normalizePath, loadTreeDirectory: tree.loadTreeDirectory
+    });
 
-        // Apply current font size
-        cm.getWrapperElement().style.fontSize = fontSize.value + 'px';
+    // --- Wrapped operations ---
+    const { selectedPaths, lastClickedIndex, fileOperating, fileOpFeedback } = ops;
+    const clearSelection = ops.clearSelection;
+    const showNewFileDialog = ops.showNewFileDialog;
+    const confirmNewFile = ops.confirmNewFile;
+    const deleteSingleFile = (entry) => ops.deleteSingleFile(entry, t);
+    const deleteSelected = () => ops.deleteSelected(t);
+    const openMoveDialog = ops.openMoveDialog;
+    const confirmMove = ops.confirmMove;
+    const showContextMenu = ops.showContextMenu;
+    const hideContextMenu = ops.hideContextMenu;
+    const ctxRename = ops.ctxRename;
+    const confirmRename = ops.confirmRename;
+    const ctxCopy = ops.ctxCopy;
+    const ctxMoveTo = ops.ctxMoveTo;
+    const ctxDelete = () => ops.ctxDelete(t);
+    const ctxDownload = ops.ctxDownload;
+    const onDragStart = ops.onDragStart;
+    const onDragOver = ops.onDragOver;
+    const onDragLeave = ops.onDragLeave;
+    const onDrop = (event, entry) => ops.onDrop(event, entry, ops.handleExternalFileDrop);
+    const onTreeDragOver = ops.onTreeDragOver;
+    const onTreeDragLeave = ops.onTreeDragLeave;
+    const onTreeDrop = (event) => ops.onTreeDrop(event, tree.treeRootPath.value, ops.handleExternalFileDrop);
 
-        // Restore undo history if available
-        const convId = store.currentConversation;
-        if (convId && undoHistoryMap[convId]?.[fileObj.path]) {
-          cm.setHistory(undoHistoryMap[convId][fileObj.path]);
-        }
-
-        Vue.nextTick(() => {
-          cm.refresh();
-          setTimeout(() => cm.refresh(), 200);
-        });
-
-        debugStatus.value = '';
-      } catch (err) {
-        debugStatus.value = `Editor error: ${err.message}`;
-        console.error('[FilesTab] createEditor:', err);
-      }
+    // --- Tree item click (bridges tree + ops + tabs) ---
+    const onTreeItemClick = (entry, event) => {
+      tree.onTreeItemClick(entry, event, {
+        selectedPaths, lastClickedIndex, openFileInTab, clearSelection
+      });
     };
 
-    const destroyEditor = () => {
-      // Clear find markers before destroying editor to prevent stale marker references
-      clearFindMarkers();
-      // 正确销毁 CodeMirror 实例
-      const file = activeFile.value;
-      if (file?.cmInstance) {
-        file.cmInstance.toTextArea && file.cmInstance.toTextArea();
-        file.cmInstance = null;
-      }
-      if (editorContainer.value) {
-        editorContainer.value.innerHTML = '';
-      }
+    // --- Search result click (bridges qo + tree) ---
+    const onSearchResultClick = (r) => {
+      qo.onSearchResultClick(r, {
+        treeRootPath: tree.treeRootPath, treeNodes: tree.treeNodes,
+        loadTreeDirectory: tree.loadTreeDirectory
+      });
     };
 
-    // ===========================
-    // Undo history persistence
-    // ===========================
-    const saveCurrentUndoHistory = () => {
-      const convId = store.currentConversation;
-      if (!convId) return;
-      const file = activeFile.value;
-      if (file?.cmInstance) {
-        if (!undoHistoryMap[convId]) undoHistoryMap[convId] = {};
-        undoHistoryMap[convId][file.path] = file.cmInstance.getHistory();
-      }
+    // --- Go to line confirm (bridges qo + activeFile) ---
+    const goToLineConfirm = () => qo.goToLineConfirm(activeFile);
+
+    // --- File tabs management ---
+    let _syncTabsTimer = null;
+    const syncFileTabsToServer = () => {
+      if (_syncTabsTimer) clearTimeout(_syncTabsTimer);
+      _syncTabsTimer = setTimeout(() => {
+        store.sendWsMessage({
+          type: 'update_file_tabs',
+          openFiles: openFiles.value.map(f => ({ path: f.path })),
+          activeIndex: activeFileIndex.value
+        });
+      }, 500);
     };
 
-    const saveAllUndoHistory = (convId) => {
-      if (!convId) return;
-      const file = activeFile.value;
-      if (file?.cmInstance) {
-        if (!undoHistoryMap[convId]) undoHistoryMap[convId] = {};
-        undoHistoryMap[convId][file.path] = file.cmInstance.getHistory();
-      }
-    };
-
-    // ===========================
-    // File tabs management
-    // ===========================
     const saveTabsState = (convId) => {
       if (!convId) return;
       saveAllUndoHistory(convId);
@@ -1031,21 +617,7 @@ export default {
       } else {
         delete fileTabsMap[convId];
       }
-      // ★ 同步 file tab 路径到 server（debounced）
       syncFileTabsToServer();
-    };
-
-    // Debounced sync to server
-    let _syncTabsTimer = null;
-    const syncFileTabsToServer = () => {
-      if (_syncTabsTimer) clearTimeout(_syncTabsTimer);
-      _syncTabsTimer = setTimeout(() => {
-        store.sendWsMessage({
-          type: 'update_file_tabs',
-          openFiles: openFiles.value.map(f => ({ path: f.path })),
-          activeIndex: activeFileIndex.value
-        });
-      }, 500);
     };
 
     const restoreTabsState = (convId) => {
@@ -1062,14 +634,10 @@ export default {
         originalContent: f.originalContent || f.content,
         cmInstance: null,
         fileType: f.fileType || getFileType(f.name || ''),
-        blobUrl: null,
-        previewUrl: null,
-        previewLoading: false,
-        localPreviewReady: false,
-        previewError: null
+        blobUrl: null, previewUrl: null, previewLoading: false,
+        localPreviewReady: false, previewError: null
       }));
       activeFileIndex.value = saved.activeIndex;
-
       Vue.nextTick(() => {
         const file = activeFile.value;
         if (file && (!file.fileType || file.fileType === 'text') && editorContainer.value) {
@@ -1078,7 +646,7 @@ export default {
       });
     };
 
-    const openFileInTab = (fullPath, name) => {
+    function openFileInTab(fullPath, name) {
       const nPath = normalizePath(fullPath);
       const existingIndex = openFiles.value.findIndex(f => f.path === nPath);
       if (existingIndex >= 0) {
@@ -1098,21 +666,12 @@ export default {
       saveCurrentUndoHistory();
       const displayName = name || nPath.split(/[/\\]/).pop();
       const fileType = getFileType(displayName);
-      const newFile = {
-        path: nPath,
-        name: displayName,
-        content: null,
-        originalContent: null,
-        isDirty: false,
-        cmInstance: null,
-        fileType,
-        blobUrl: null,
-        previewUrl: null,
-        previewLoading: fileType !== 'text',
-        localPreviewReady: false,
-        previewError: null
-      };
-      openFiles.value.push(newFile);
+      openFiles.value.push({
+        path: nPath, name: displayName, content: null, originalContent: null,
+        isDirty: false, cmInstance: null, fileType,
+        blobUrl: null, previewUrl: null,
+        previewLoading: fileType !== 'text', localPreviewReady: false, previewError: null
+      });
       activeFileIndex.value = openFiles.value.length - 1;
       fileLoading.value = true;
       if (fileType === 'text') destroyEditor();
@@ -1127,7 +686,7 @@ export default {
         workDir: getEffectiveWorkDir(),
         _clientId: store.clientId
       });
-    };
+    }
 
     const switchToTab = (index) => {
       if (index === activeFileIndex.value) return;
@@ -1159,17 +718,8 @@ export default {
       if (file?.isDirty) {
         if (!confirm(t('files.unsavedConfirm', { name: file.name }))) return;
       }
-
-      // Clean up undo history for this file
-      const convId = store.currentConversation;
-      if (convId && undoHistoryMap[convId]) {
-        delete undoHistoryMap[convId][file.path];
-      }
-
-      // Clean up blob URL
-      if (file.blobUrl) {
-        URL.revokeObjectURL(file.blobUrl);
-      }
+      cleanupUndoHistory(store.currentConversation, file.path);
+      if (file.blobUrl) URL.revokeObjectURL(file.blobUrl);
 
       const wasActive = (index === activeFileIndex.value);
       openFiles.value.splice(index, 1);
@@ -1197,14 +747,10 @@ export default {
       }
     };
 
-    // ===========================
-    // Save file
-    // ===========================
-    const saveFile = () => {
+    function saveFile() {
       const file = activeFile.value;
       if (!file || !file.isDirty) return;
       fileSaving.value = true;
-
       store.sendWsMessage({
         type: 'write_file',
         conversationId: store.currentConversation || '_explorer',
@@ -1214,314 +760,20 @@ export default {
         workDir: getEffectiveWorkDir(),
         _clientId: store.clientId
       });
-    };
+    }
 
-    // ===========================
-    // Folder picker
-    // ===========================
-    const openFolderPicker = () => {
-      folderPickerOpen.value = true;
-      folderPickerSelected.value = '';
-      folderPickerLoading.value = true;
-      // Default to current workDir or tree root, not drive root
-      const defaultDir = treePath.value || getEffectiveWorkDir() || '';
-      folderPickerPath.value = defaultDir;
-      folderPickerEntries.value = [];
-      store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: '_folder_picker',
-        agentId: store.currentAgent,
-        dirPath: defaultDir,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    const loadFolderPickerDir = (dirPath) => {
-      folderPickerLoading.value = true;
-      folderPickerSelected.value = '';
-      store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: '_folder_picker',
-        agentId: store.currentAgent,
-        dirPath: dirPath,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    const folderPickerNavigateUp = () => {
-      if (!folderPickerPath.value) return;
-      const isWin = folderPickerPath.value.includes('\\');
-      const sep = isWin ? '\\' : '/';
-      const parts = folderPickerPath.value.replace(/[/\\]$/, '').split(/[/\\]/);
-      parts.pop();
-      if (parts.length === 0) {
-        folderPickerPath.value = '';
-        loadFolderPickerDir('');
-      } else if (isWin && parts.length === 1 && /^[A-Za-z]:$/.test(parts[0])) {
-        folderPickerPath.value = parts[0] + '\\';
-        loadFolderPickerDir(parts[0] + '\\');
-      } else {
-        const parent = parts.join(sep);
-        folderPickerPath.value = parent;
-        loadFolderPickerDir(parent);
-      }
-    };
-
-    const folderPickerSelectItem = (entry) => {
-      folderPickerSelected.value = entry.name;
-      const sep = folderPickerPath.value.includes('\\') || /^[A-Z]:/.test(folderPickerPath.value) ? '\\' : '/';
-      // Don't update folderPickerPath on single click - just mark selection
-    };
-
-    const folderPickerEnter = (entry) => {
-      const sep = folderPickerPath.value.includes('\\') || /^[A-Z]:/.test(entry.name) ? '\\' : '/';
-      let newPath;
-      if (!folderPickerPath.value) {
-        // At drive level
-        newPath = entry.name + (entry.name.endsWith('\\') ? '' : '\\');
-      } else {
-        newPath = folderPickerPath.value.replace(/[/\\]$/, '') + sep + entry.name;
-      }
-      folderPickerPath.value = newPath;
-      loadFolderPickerDir(newPath);
-    };
-
-    const confirmFolderPicker = () => {
-      let path = folderPickerPath.value;
-      if (!path) return;
-      // If a subfolder is selected, include it in the path
-      if (folderPickerSelected.value) {
-        const sep = path.includes('\\') ? '\\' : '/';
-        path = path.replace(/[/\\]$/, '') + sep + folderPickerSelected.value;
-      }
-      treePath.value = path;
-      folderPickerOpen.value = false;
-      const nPath = normalizePath(path);
-      treeRootPath.value = nPath;
-      Object.keys(treeNodes).forEach(k => delete treeNodes[k]);
-      treeNodes[nPath] = { entries: [], expanded: true, loaded: false, loading: true };
-      store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        dirPath: path,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    // ===========================
-    // File Search
-    // ===========================
-    const sendFileSearch = (query, isQuickOpen = false) => {
-      if (!store.currentAgent || !query.trim()) return;
-      store.sendWsMessage({
-        type: 'file_search',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        query: query.trim(),
-        dirPath: treePath.value || getEffectiveWorkDir() || '',
-        _clientId: store.clientId
-      });
-    };
-
-    const onSearchInput = () => {
-      if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-      if (!searchQuery.value.trim()) {
-        searchResults.value = [];
-        searchLoading.value = false;
-        return;
-      }
-      searchLoading.value = true;
-      searchDebounceTimer = setTimeout(() => {
-        sendFileSearch(searchQuery.value);
-      }, 300);
-    };
-
-    const clearSearch = () => {
-      searchQuery.value = '';
-      searchResults.value = [];
-      searchLoading.value = false;
-    };
-
-    const onSearchResultClick = (r) => {
-      if (r.type === 'directory') {
-        // Navigate tree to this directory
-        const nDir = normalizePath(r.fullPath);
-        treeRootPath.value = nDir;
-        treePath.value = r.fullPath;
-        Object.keys(treeNodes).forEach(k => delete treeNodes[k]);
-        loadTreeDirectory(r.fullPath);
-        clearSearch();
-      } else {
-        openFileInTab(r.fullPath, r.name);
-        clearSearch();
-      }
-    };
-
-    // ===========================
-    // Quick Open (Ctrl+P)
-    // ===========================
-    const openQuickOpen = () => {
-      quickOpenVisible.value = true;
-      quickOpenQuery.value = '';
-      quickOpenResults.value = [];
-      quickOpenSelectedIndex.value = 0;
-      quickOpenLoading.value = false;
-      Vue.nextTick(() => quickOpenInput.value?.focus());
-    };
-
-    const closeQuickOpen = () => {
-      quickOpenVisible.value = false;
-      quickOpenQuery.value = '';
-      quickOpenResults.value = [];
-    };
-
-    const onQuickOpenInput = () => {
-      if (quickOpenDebounceTimer) clearTimeout(quickOpenDebounceTimer);
-      if (!quickOpenQuery.value.trim()) {
-        quickOpenResults.value = [];
-        quickOpenLoading.value = false;
-        return;
-      }
-      quickOpenLoading.value = true;
-      quickOpenSelectedIndex.value = 0;
-      quickOpenDebounceTimer = setTimeout(() => {
-        sendFileSearch(quickOpenQuery.value, true);
-      }, 200);
-    };
-
-    const quickOpenSelectNext = () => {
-      if (quickOpenResults.value.length > 0) {
-        quickOpenSelectedIndex.value = (quickOpenSelectedIndex.value + 1) % quickOpenResults.value.length;
-      }
-    };
-
-    const quickOpenSelectPrev = () => {
-      if (quickOpenResults.value.length > 0) {
-        quickOpenSelectedIndex.value = (quickOpenSelectedIndex.value - 1 + quickOpenResults.value.length) % quickOpenResults.value.length;
-      }
-    };
-
-    const quickOpenConfirm = () => {
-      const sel = quickOpenResults.value[quickOpenSelectedIndex.value];
-      if (sel) quickOpenOpenFile(sel);
-    };
-
-    const quickOpenOpenFile = (r) => {
-      if (r.type !== 'directory') {
-        openFileInTab(r.fullPath, r.name);
-      }
-      closeQuickOpen();
-    };
-
-    // ===========================
-    // Go to Line (Ctrl+G)
-    // ===========================
-    const openGoToLine = () => {
-      goToLineVisible.value = true;
-      goToLineValue.value = '';
-      Vue.nextTick(() => goToLineInput.value?.focus());
-    };
-
-    const closeGoToLine = () => {
-      goToLineVisible.value = false;
-      goToLineValue.value = '';
-    };
-
-    const goToLineConfirm = () => {
-      const line = parseInt(goToLineValue.value);
-      if (isNaN(line) || line < 1) return;
-      const file = activeFile.value;
-      if (file?.cmInstance) {
-        const cm = file.cmInstance;
-        const targetLine = Math.min(line - 1, cm.lineCount() - 1);
-        cm.setCursor({ line: targetLine, ch: 0 });
-        cm.scrollIntoView({ line: targetLine, ch: 0 }, 100);
-        cm.focus();
-      }
-      closeGoToLine();
-    };
-
-    // ===========================
-    // File operations — delegated to composable
-    // ===========================
-    const { selectedPaths, lastClickedIndex, fileOperating, fileOpFeedback } = ops;
-    const showFileOpFeedback = ops.showFileOpFeedback;
-    const toggleSelection = ops.toggleSelection;
-    const clearSelection = ops.clearSelection;
-    const showNewFileDialog = ops.showNewFileDialog;
-    const confirmNewFile = ops.confirmNewFile;
-    const deleteSingleFile = (entry) => ops.deleteSingleFile(entry, t);
-    const deleteSelected = () => ops.deleteSelected(t);
-    const openMoveDialog = ops.openMoveDialog;
-    const confirmMove = ops.confirmMove;
-    const showContextMenu = ops.showContextMenu;
-    const hideContextMenu = ops.hideContextMenu;
-    const ctxRename = ops.ctxRename;
-    const confirmRename = ops.confirmRename;
-    const ctxCopy = ops.ctxCopy;
-    const ctxMoveTo = ops.ctxMoveTo;
-    const ctxDelete = () => ops.ctxDelete(t);
-    const ctxDownload = ops.ctxDownload;
-    const onDragStart = ops.onDragStart;
-    const onDragOver = ops.onDragOver;
-    const onDragLeave = ops.onDragLeave;
-    const onDrop = (event, entry) => ops.onDrop(event, entry, ops.handleExternalFileDrop);
-    const onTreeDragOver = ops.onTreeDragOver;
-    const onTreeDragLeave = ops.onTreeDragLeave;
-    const onTreeDrop = (event) => ops.onTreeDrop(event, treeRootPath.value, ops.handleExternalFileDrop);
-
-    // ===========================
-    // Handle messages from server
-    // ===========================
+    // --- Handle messages from server ---
     const handleWorkbenchMessage = (event) => {
       const msg = event.detail;
       if (!msg) return;
 
       switch (msg.type) {
         case 'directory_listing': {
-          // Route to folder picker if applicable
           if (msg.conversationId === '_folder_picker') {
-            folderPickerLoading.value = false;
-            folderPickerEntries.value = (msg.entries || [])
-              .filter(e => e.type === 'directory')
-              .sort((a, b) => a.name.localeCompare(b.name));
-            if (msg.dirPath != null) folderPickerPath.value = msg.dirPath;
+            fp.handleFolderPickerListing(msg);
             return;
           }
-
-          const nDirPath = normalizePath(msg.dirPath);
-          if (msg.error) {
-            if (treeNodes[nDirPath]) {
-              treeNodes[nDirPath].loading = false;
-            }
-            return;
-          }
-          const entries = (msg.entries || []).sort((a, b) => {
-            if (a.type === b.type) return a.name.localeCompare(b.name);
-            return a.type === 'directory' ? -1 : 1;
-          });
-          const basePath = nDirPath.replace(/\/$/, '');
-          const enriched = entries.map(e => ({
-            ...e,
-            path: basePath + '/' + e.name
-          }));
-
-          if (!treeNodes[nDirPath]) {
-            treeNodes[nDirPath] = { entries: enriched, expanded: true, loaded: true, loading: false };
-          } else {
-            treeNodes[nDirPath].entries = enriched;
-            treeNodes[nDirPath].loaded = true;
-            treeNodes[nDirPath].loading = false;
-          }
-
-          // Update treePath display if this is the root
-          if (nDirPath === treeRootPath.value) {
-            treePath.value = msg.dirPath;
-          }
+          tree.handleDirectoryListing(msg);
           break;
         }
         case 'file_content': {
@@ -1529,13 +781,9 @@ export default {
           if (msg.error) {
             debugStatus.value = `Error: ${msg.error}`;
             ops.clearPendingDownload();
-            // Reset preview loading state for the file tab
             const errFilePath = normalizePath(msg.filePath);
             const errTab = openFiles.value.find(f => f.path === errFilePath);
-            if (errTab) {
-              errTab.previewLoading = false;
-              errTab.previewError = msg.error;
-            }
+            if (errTab) { errTab.previewLoading = false; errTab.previewError = msg.error; }
             return;
           }
           const nFilePath = normalizePath(msg.filePath);
@@ -1545,88 +793,56 @@ export default {
             ops.clearPendingDownload();
             try {
               if (msg.binary) {
-                // Binary: download via preview endpoint
                 const dlUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
                 const a = document.createElement('a');
-                a.href = dlUrl;
-                a.download = nFilePath.split('/').pop() || 'download';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
+                a.href = dlUrl; a.download = nFilePath.split('/').pop() || 'download';
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
               } else {
                 const blob = new Blob([msg.content || ''], { type: 'application/octet-stream' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
-                a.href = url;
-                a.download = nFilePath.split('/').pop() || 'download';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
+                a.href = url; a.download = nFilePath.split('/').pop() || 'download';
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
                 URL.revokeObjectURL(url);
               }
-            } catch (e) {
-              console.error('Download failed:', e);
-            }
+            } catch (e) { console.error('Download failed:', e); }
             return;
           }
 
           const tabIndex = openFiles.value.findIndex(f => f.path === nFilePath);
           if (tabIndex >= 0) {
             const file = openFiles.value[tabIndex];
-
-            // Binary file (Office / PDF / Image)
             if (msg.binary) {
               file.previewLoading = false;
               const previewBaseUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
               const ft = file.fileType || getFileType(file.name);
               file.fileType = ft;
-
               if (ft === 'pdf' || ft === 'image') {
-                // Fetch binary and create local blob URL
-                fetch(previewBaseUrl)
-                  .then(r => r.blob())
-                  .then(blob => {
-                    file.blobUrl = URL.createObjectURL(blob);
-                  })
+                fetch(previewBaseUrl).then(r => r.blob()).then(blob => { file.blobUrl = URL.createObjectURL(blob); })
                   .catch(e => { file.previewError = e.message; });
               } else if (ft === 'office') {
                 const mode = localStorage.getItem('officePreviewMode') || 'local';
                 if (mode === 'online') {
-                  // Office Online iframe
                   file.previewUrl = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(previewBaseUrl);
                 } else {
-                  // Local rendering
-                  fetch(previewBaseUrl)
-                    .then(r => r.arrayBuffer())
-                    .then(buf => {
-                      file._arrayBuffer = buf;
-                      file.localPreviewReady = true;
-                      if (tabIndex === activeFileIndex.value) {
-                        Vue.nextTick(() => renderOfficeLocal(file));
-                      }
-                    })
-                    .catch(e => { file.previewError = e.message; });
+                  fetch(previewBaseUrl).then(r => r.arrayBuffer()).then(buf => {
+                    file._arrayBuffer = buf; file.localPreviewReady = true;
+                    if (tabIndex === activeFileIndex.value) Vue.nextTick(() => renderOfficeLocal(file));
+                  }).catch(e => { file.previewError = e.message; });
                 }
               }
               saveTabsState(store.currentConversation);
               return;
             }
-
-            // Text file
             file.content = msg.content || '';
             file.originalContent = msg.content || '';
             file.isDirty = false;
             saveTabsState(store.currentConversation);
             if (tabIndex === activeFileIndex.value) {
-              // Markdown file in preview mode — skip creating editor
               if (isMarkdownFile(file.name) && mdPreviewMode.value) {
-                // Content already set, mdRenderedHtml computed will update automatically
+                // mdRenderedHtml computed updates automatically
               } else {
-                Vue.nextTick(() => {
-                  setTimeout(() => {
-                    createEditor(file);
-                  }, 100);
-                });
+                Vue.nextTick(() => { setTimeout(() => createEditor(file), 100); });
               }
             }
           }
@@ -1634,10 +850,7 @@ export default {
         }
         case 'file_saved': {
           fileSaving.value = false;
-          if (msg.error) {
-            console.error('File save failed:', msg.error);
-            return;
-          }
+          if (msg.error) { console.error('File save failed:', msg.error); return; }
           const nSavedPath = normalizePath(msg.filePath);
           const savedFile = openFiles.value.find(f => f.path === nSavedPath);
           if (savedFile) {
@@ -1648,53 +861,27 @@ export default {
           break;
         }
         case 'file_search_result': {
-          const results = msg.results || [];
-          if (quickOpenVisible.value) {
-            // Only accept results matching current query to avoid stale results
-            if (msg.query && msg.query.trim() === quickOpenQuery.value.trim()) {
-              quickOpenResults.value = results;
-              quickOpenLoading.value = false;
-              quickOpenSelectedIndex.value = 0;
-            }
-          } else {
-            // Only accept results matching current query to avoid stale results
-            if (msg.query && msg.query.trim() === searchQuery.value.trim()) {
-              searchResults.value = results;
-              searchLoading.value = false;
-            }
-          }
+          qo.handleFileSearchResult(msg);
           break;
         }
         case 'file_op_result': {
-          ops.handleFileOpResult(msg, loadTreeDirectory, treeRootPath.value);
+          ops.handleFileOpResult(msg, tree.loadTreeDirectory, tree.treeRootPath.value);
           break;
         }
         case 'file_tabs_restored': {
-          // ★ Server 返回保存的文件 tabs — 打开这些文件
           if (msg.openFiles?.length > 0 && openFiles.value.length === 0) {
             const pendingRestoreIndex = msg.activeIndex || 0;
-            let loadedCount = 0;
             const totalFiles = msg.openFiles.length;
-
             for (const file of msg.openFiles) {
               const nPath = normalizePath(file.path);
               const name = nPath.split('/').pop();
               const fileType = getFileType(name);
               openFiles.value.push({
-                path: nPath,
-                name,
-                content: null,
-                originalContent: null,
-                isDirty: false,
-                cmInstance: null,
-                fileType,
-                blobUrl: null,
-                previewUrl: null,
-                previewLoading: fileType !== 'text',
-                localPreviewReady: false,
-                previewError: null
+                path: nPath, name, content: null, originalContent: null,
+                isDirty: false, cmInstance: null, fileType,
+                blobUrl: null, previewUrl: null,
+                previewLoading: fileType !== 'text', localPreviewReady: false, previewError: null
               });
-              // 请求文件内容
               store.sendWsMessage({
                 type: 'read_file',
                 conversationId: store.currentConversation || '_explorer',
@@ -1702,13 +889,8 @@ export default {
                 filePath: file.path
               });
             }
-
-            // 设置 active index
-            if (pendingRestoreIndex >= 0 && pendingRestoreIndex < totalFiles) {
-              activeFileIndex.value = pendingRestoreIndex;
-            } else {
-              activeFileIndex.value = 0;
-            }
+            activeFileIndex.value = (pendingRestoreIndex >= 0 && pendingRestoreIndex < totalFiles)
+              ? pendingRestoreIndex : 0;
           }
           break;
         }
@@ -1718,167 +900,102 @@ export default {
     const handleOpenFile = (event) => {
       const { filePath: path } = event.detail;
       const nPath = normalizePath(path);
-      const name = nPath.split('/').pop();
-      openFileInTab(nPath, name);
+      openFileInTab(nPath, nPath.split('/').pop());
     };
 
-    // 清理已删除会话的缓存资源
     const handleConversationDeleted = (event) => {
       const { conversationId } = event.detail;
       if (conversationId) {
         delete fileTabsMap[conversationId];
-        delete undoHistoryMap[conversationId];
+        deleteConversationHistory(conversationId);
       }
     };
 
-    // ===========================
-    // Init
-    // ===========================
-    const initFileBrowser = () => {
-      const dir = getEffectiveWorkDir();
-      if (dir) {
-        const nDir = normalizePath(dir);
-        treePath.value = dir;
-        treeRootPath.value = nDir;
-        Object.keys(treeNodes).forEach(k => delete treeNodes[k]);
-        loadTreeDirectory(dir);
-      }
-    };
-
-    const refresh = () => {
-      if (treeRootPath.value) {
-        loadTreeDirectory(treeRootPath.value);
-      }
-    };
-
-    // ===========================
-    // Watchers
-    // ===========================
-
-    // Watch agent changes
+    // --- Watchers ---
     Vue.watch(() => store.currentAgent, () => {
       saveTabsState(store.currentConversation);
       destroyEditor();
-      Object.keys(treeNodes).forEach(k => delete treeNodes[k]);
+      tree.clearTreeNodes();
       openFiles.value = [];
       activeFileIndex.value = -1;
       fileLoading.value = false;
-      if (store.currentAgent) {
-        Vue.nextTick(() => initFileBrowser());
-      }
+      if (store.currentAgent) Vue.nextTick(() => tree.initFileBrowser());
     });
 
-    // Watch conversation changes
     let previousConversation = store.currentConversation;
     Vue.watch(() => store.currentConversation, (newConv) => {
       saveTabsState(previousConversation);
       previousConversation = newConv;
       restoreTabsState(newConv);
-
       const dir = getEffectiveWorkDir();
       const nDir = normalizePath(dir);
-      if (dir && nDir !== treeRootPath.value) {
-        treePath.value = dir;
-        treeRootPath.value = nDir;
-        Object.keys(treeNodes).forEach(k => delete treeNodes[k]);
-        loadTreeDirectory(dir);
+      if (dir && nDir !== tree.treeRootPath.value) {
+        tree.treePath.value = dir;
+        tree.treeRootPath.value = nDir;
+        tree.clearTreeNodes();
+        tree.loadTreeDirectory(dir);
       }
     });
 
-    // Watch theme changes — update CodeMirror theme
     Vue.watch(() => store.theme, (newTheme) => {
-      const cmTheme = newTheme === 'dark' ? 'material-darker' : 'default';
       const file = activeFile.value;
-      if (file?.cmInstance) {
-        file.cmInstance.setOption('theme', cmTheme);
-      }
+      if (file?.cmInstance) file.cmInstance.setOption('theme', newTheme === 'dark' ? 'material-darker' : 'default');
     });
 
-    // Watch workDir changes — auto-load tree if not yet loaded
     Vue.watch(() => getEffectiveWorkDir(), (dir) => {
-      if (dir && !treeRootPath.value) {
+      if (dir && !tree.treeRootPath.value) {
         const nDir = normalizePath(dir);
-        treePath.value = dir;
-        treeRootPath.value = nDir;
-        Object.keys(treeNodes).forEach(k => delete treeNodes[k]);
-        loadTreeDirectory(dir);
+        tree.treePath.value = dir;
+        tree.treeRootPath.value = nDir;
+        tree.clearTreeNodes();
+        tree.loadTreeDirectory(dir);
       }
     });
 
-    // Watch activeFile content — auto-create editor when content arrives
-    // Note: file_content handler also calls createEditor, but the check for cmInstance prevents double creation
     Vue.watch(
       () => activeFile.value?.content,
       (newContent, oldContent) => {
         const file = activeFile.value;
         if (file && newContent != null && oldContent == null && !file.cmInstance && (!file.fileType || file.fileType === 'text')) {
-          // Skip auto-creating editor for markdown files in preview mode
           if (isMarkdownFile(file.name) && mdPreviewMode.value) return;
-          Vue.nextTick(() => {
-            setTimeout(() => {
-              if (!file.cmInstance) {
-                createEditor(file);
-              }
-            }, 150);
-          });
+          Vue.nextTick(() => { setTimeout(() => { if (!file.cmInstance) createEditor(file); }, 150); });
         }
       }
     );
 
-    // Watch markdown preview — render mermaid blocks after HTML is inserted
     Vue.watch(
       [mdRenderedHtml, mdPreviewMode],
-      ([html, preview]) => {
-        if (html && preview) {
-          Vue.nextTick(() => {
-            setTimeout(() => renderMermaidBlocks(), 50);
-          });
-        }
+      ([html, previewOn]) => {
+        if (html && previewOn) Vue.nextTick(() => { setTimeout(() => renderMermaidBlocks(), 50); });
       }
     );
 
-    // ===========================
-    // Global keyboard shortcuts
-    // ===========================
+    // --- Global keyboard shortcuts ---
     const handleGlobalKeydown = (e) => {
-      // Only handle shortcuts when Files tab is visible
       const isVisible = rootEl.value && rootEl.value.offsetParent !== null;
-      if (!isVisible && !quickOpenVisible.value && !goToLineVisible.value && !find.findBarVisible.value) return;
+      if (!isVisible && !qo.quickOpenVisible.value && !qo.goToLineVisible.value && !find.findBarVisible.value) return;
 
       if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
         e.preventDefault();
-        if (quickOpenVisible.value) {
-          closeQuickOpen();
-        } else {
-          openQuickOpen();
-        }
+        qo.quickOpenVisible.value ? qo.closeQuickOpen() : qo.openQuickOpen();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
         e.preventDefault();
-        if (goToLineVisible.value) {
-          closeGoToLine();
-        } else {
-          openGoToLine();
-        }
+        qo.goToLineVisible.value ? qo.closeGoToLine() : qo.openGoToLine();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-        if (activeFile.value) {
-          e.preventDefault();
-          openFindBar(false);
-        }
+        if (activeFile.value) { e.preventDefault(); openFindBar(false); }
       } else if ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'h')) {
-        if (activeFile.value) {
-          e.preventDefault();
-          openFindBar(true);
-        }
+        if (activeFile.value) { e.preventDefault(); openFindBar(true); }
       } else if (e.key === 'Escape') {
         if (find.findBarVisible.value) closeFindBar();
         if (selectedPaths.size > 0) clearSelection();
-        if (quickOpenVisible.value) closeQuickOpen();
-        if (goToLineVisible.value) closeGoToLine();
+        if (qo.quickOpenVisible.value) qo.closeQuickOpen();
+        if (qo.goToLineVisible.value) qo.closeGoToLine();
       }
     };
 
     const handleDocumentClick = () => { hideContextMenu(); };
 
+    // --- Lifecycle ---
     Vue.onMounted(() => {
       window.addEventListener('workbench-message', handleWorkbenchMessage);
       window.addEventListener('open-file-in-explorer', handleOpenFile);
@@ -1887,8 +1004,7 @@ export default {
       document.addEventListener('click', handleDocumentClick);
       initMermaid();
       if (store.currentAgent) {
-        initFileBrowser();
-        // ★ 请求恢复文件 tabs
+        tree.initFileBrowser();
         store.sendWsMessage({ type: 'restore_file_tabs' });
       }
     });
@@ -1906,21 +1022,31 @@ export default {
     return {
       store, debugStatus, rootEl,
       fontSize, zoomIn, zoomOut, onWheel,
-      treePath, treeRootPath, treeNodes, flattenedTree,
-      editingTreePath, treePathInputRef, rootFolderName, rootExpanded,
-      toggleRootExpand, collapseAll, startTreePathEdit, confirmTreePath, cancelTreePathEdit,
+      treePath: tree.treePath, treeRootPath: tree.treeRootPath,
+      treeNodes: tree.treeNodes, flattenedTree: tree.flattenedTree,
+      editingTreePath: tree.editingTreePath, treePathInputRef: tree.treePathInputRef,
+      rootFolderName: tree.rootFolderName, rootExpanded: tree.rootExpanded,
+      toggleRootExpand: tree.toggleRootExpand, collapseAll: tree.collapseAll,
+      startTreePathEdit: tree.startTreePathEdit,
+      confirmTreePath: tree.confirmTreePath, cancelTreePathEdit: tree.cancelTreePathEdit,
       treePanelWidth, isTreeResizing, startTreeResize,
       openFiles, activeFileIndex, activeFile, fileLoading, fileSaving,
       editorContainer, officePreviewContainer, mdPreviewRef,
-      // Markdown preview
       isActiveMarkdown, mdPreviewMode, mdRenderedHtml, switchToMdEdit,
-      folderPickerOpen, folderPickerPath, folderPickerEntries, folderPickerLoading, folderPickerSelected,
-      searchQuery, searchResults, searchLoading, onSearchInput, clearSearch, onSearchResultClick,
-      quickOpenVisible, quickOpenQuery, quickOpenResults, quickOpenSelectedIndex, quickOpenLoading, quickOpenInput,
-      openQuickOpen, closeQuickOpen, onQuickOpenInput,
-      quickOpenSelectNext, quickOpenSelectPrev, quickOpenConfirm, quickOpenOpenFile,
-      goToLineVisible, goToLineValue, goToLineInput, openGoToLine, closeGoToLine, goToLineConfirm,
-      // Find/Replace
+      folderPickerOpen: fp.folderPickerOpen, folderPickerPath: fp.folderPickerPath,
+      folderPickerEntries: fp.folderPickerEntries, folderPickerLoading: fp.folderPickerLoading,
+      folderPickerSelected: fp.folderPickerSelected,
+      searchQuery: qo.searchQuery, searchResults: qo.searchResults, searchLoading: qo.searchLoading,
+      onSearchInput: qo.onSearchInput, clearSearch: qo.clearSearch, onSearchResultClick,
+      quickOpenVisible: qo.quickOpenVisible, quickOpenQuery: qo.quickOpenQuery,
+      quickOpenResults: qo.quickOpenResults, quickOpenSelectedIndex: qo.quickOpenSelectedIndex,
+      quickOpenLoading: qo.quickOpenLoading, quickOpenInput: qo.quickOpenInput,
+      openQuickOpen: qo.openQuickOpen, closeQuickOpen: qo.closeQuickOpen, onQuickOpenInput: qo.onQuickOpenInput,
+      quickOpenSelectNext: qo.quickOpenSelectNext, quickOpenSelectPrev: qo.quickOpenSelectPrev,
+      quickOpenConfirm: qo.quickOpenConfirm, quickOpenOpenFile: qo.quickOpenOpenFile,
+      goToLineVisible: qo.goToLineVisible, goToLineValue: qo.goToLineValue,
+      goToLineInput: qo.goToLineInput, openGoToLine: qo.openGoToLine,
+      closeGoToLine: qo.closeGoToLine, goToLineConfirm,
       findBarVisible: find.findBarVisible, replaceBarVisible: find.replaceBarVisible,
       findQuery: find.findQuery, replaceQuery: find.replaceQuery,
       findCaseSensitive: find.findCaseSensitive, findUseRegex: find.findUseRegex,
@@ -1929,29 +1055,32 @@ export default {
       onFindInput: find.onFindInput, findNext: find.findNext, findPrev: find.findPrev,
       openFindBar, closeFindBar,
       toggleReplaceBar: find.toggleReplaceBar, replaceOne: find.replaceOne, replaceAll: find.replaceAll,
-      // File operations
       selectedPaths, fileOperating, fileOpFeedback,
       newFileDialogVisible: ops.newFileDialogVisible, newFileName: ops.newFileName,
       newFileType: ops.newFileType, newFileInput: ops.newFileInput,
       moveDialogVisible: ops.moveDialogVisible, moveDestination: ops.moveDestination,
       moveDestInput: ops.moveDestInput,
-      toggleSelection, clearSelection,
+      toggleSelection: ops.toggleSelection, clearSelection,
       showNewFileDialog, confirmNewFile,
       deleteSingleFile, deleteSelected,
       openMoveDialog, confirmMove,
-      // Context menu
       contextMenu: ops.contextMenu, showContextMenu, hideContextMenu,
       ctxRename, ctxCopy, ctxMoveTo, ctxDelete, ctxDownload,
       renameDialogVisible: ops.renameDialogVisible, renameNewName: ops.renameNewName,
       renameInput: ops.renameInput, confirmRename,
-      // Drag & drop
       dragState: ops.dragState, externalDropActive: ops.externalDropActive,
       onDragStart, onDragOver, onDragLeave, onDrop,
       onTreeDragOver, onTreeDragLeave, onTreeDrop,
-      loadRootDirectory, onTreeItemClick, openFileInTab,
+      loadRootDirectory: tree.loadRootDirectory, onTreeItemClick, openFileInTab,
       switchToTab, closeFileTab, saveFile,
-      openFolderPicker, folderPickerNavigateUp, folderPickerSelectItem, folderPickerEnter, confirmFolderPicker,
-      getFileIcon, getFileIconHtml, getFolderIcon, formatSize, refresh, placeholderPath,
+      openFolderPicker: fp.openFolderPicker, folderPickerNavigateUp: fp.folderPickerNavigateUp,
+      folderPickerSelectItem: fp.folderPickerSelectItem, folderPickerEnter: fp.folderPickerEnter,
+      confirmFolderPicker: fp.confirmFolderPicker,
+      getFileIcon: () => '', getFileIconHtml, getFolderIcon, formatSize,
+      refresh: tree.refresh, placeholderPath: Vue.computed(() => {
+        const dir = getEffectiveWorkDir();
+        return dir ? t('files.workDir', { dir }) : t('files.enterDirPath');
+      }),
     };
   }
 };

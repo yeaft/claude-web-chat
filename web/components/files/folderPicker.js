@@ -1,0 +1,116 @@
+/**
+ * folderPicker — Folder picker dialog composable for FilesTab.
+ */
+
+export function createFolderPicker(store, { getEffectiveWorkDir, treePath, treeRootPath, treeNodes, normalizePath, loadTreeDirectory }) {
+  const folderPickerOpen = Vue.ref(false);
+  const folderPickerPath = Vue.ref('');
+  const folderPickerEntries = Vue.ref([]);
+  const folderPickerLoading = Vue.ref(false);
+  const folderPickerSelected = Vue.ref('');
+
+  const openFolderPicker = () => {
+    folderPickerOpen.value = true;
+    folderPickerSelected.value = '';
+    folderPickerLoading.value = true;
+    const defaultDir = treePath.value || getEffectiveWorkDir() || '';
+    folderPickerPath.value = defaultDir;
+    folderPickerEntries.value = [];
+    store.sendWsMessage({
+      type: 'list_directory',
+      conversationId: '_folder_picker',
+      agentId: store.currentAgent,
+      dirPath: defaultDir,
+      workDir: getEffectiveWorkDir(),
+      _clientId: store.clientId
+    });
+  };
+
+  const loadFolderPickerDir = (dirPath) => {
+    folderPickerLoading.value = true;
+    folderPickerSelected.value = '';
+    store.sendWsMessage({
+      type: 'list_directory',
+      conversationId: '_folder_picker',
+      agentId: store.currentAgent,
+      dirPath: dirPath,
+      workDir: getEffectiveWorkDir(),
+      _clientId: store.clientId
+    });
+  };
+
+  const folderPickerNavigateUp = () => {
+    if (!folderPickerPath.value) return;
+    const isWin = folderPickerPath.value.includes('\\');
+    const sep = isWin ? '\\' : '/';
+    const parts = folderPickerPath.value.replace(/[/\\]$/, '').split(/[/\\]/);
+    parts.pop();
+    if (parts.length === 0) {
+      folderPickerPath.value = '';
+      loadFolderPickerDir('');
+    } else if (isWin && parts.length === 1 && /^[A-Za-z]:$/.test(parts[0])) {
+      folderPickerPath.value = parts[0] + '\\';
+      loadFolderPickerDir(parts[0] + '\\');
+    } else {
+      const parent = parts.join(sep);
+      folderPickerPath.value = parent;
+      loadFolderPickerDir(parent);
+    }
+  };
+
+  const folderPickerSelectItem = (entry) => {
+    folderPickerSelected.value = entry.name;
+  };
+
+  const folderPickerEnter = (entry) => {
+    let newPath;
+    if (!folderPickerPath.value) {
+      newPath = entry.name + (entry.name.endsWith('\\') ? '' : '\\');
+    } else {
+      const sep = folderPickerPath.value.includes('\\') || /^[A-Z]:/.test(entry.name) ? '\\' : '/';
+      newPath = folderPickerPath.value.replace(/[/\\]$/, '') + sep + entry.name;
+    }
+    folderPickerPath.value = newPath;
+    loadFolderPickerDir(newPath);
+  };
+
+  const confirmFolderPicker = () => {
+    let path = folderPickerPath.value;
+    if (!path) return;
+    if (folderPickerSelected.value) {
+      const sep = path.includes('\\') ? '\\' : '/';
+      path = path.replace(/[/\\]$/, '') + sep + folderPickerSelected.value;
+    }
+    treePath.value = path;
+    folderPickerOpen.value = false;
+    const nPath = normalizePath(path);
+    treeRootPath.value = nPath;
+    Object.keys(treeNodes).forEach(k => delete treeNodes[k]);
+    treeNodes[nPath] = { entries: [], expanded: true, loaded: false, loading: true };
+    store.sendWsMessage({
+      type: 'list_directory',
+      conversationId: store.currentConversation || '_explorer',
+      agentId: store.currentAgent,
+      dirPath: path,
+      workDir: getEffectiveWorkDir(),
+      _clientId: store.clientId
+    });
+  };
+
+  // Handle directory listing for folder picker
+  const handleFolderPickerListing = (msg) => {
+    folderPickerLoading.value = false;
+    folderPickerEntries.value = (msg.entries || [])
+      .filter(e => e.type === 'directory')
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (msg.dirPath != null) folderPickerPath.value = msg.dirPath;
+  };
+
+  return {
+    folderPickerOpen, folderPickerPath, folderPickerEntries,
+    folderPickerLoading, folderPickerSelected,
+    openFolderPicker, folderPickerNavigateUp,
+    folderPickerSelectItem, folderPickerEnter, confirmFolderPicker,
+    handleFolderPickerListing
+  };
+}
