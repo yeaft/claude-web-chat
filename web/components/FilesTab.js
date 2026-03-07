@@ -6,6 +6,8 @@ import { createFileEditor, getFileType, isMarkdownFile } from './files/fileEdito
 import { createFilePreview } from './files/filePreview.js';
 import { createQuickOpen } from './files/quickOpen.js';
 import { createFolderPicker } from './files/folderPicker.js';
+import { createFileTabs } from './files/fileTabs.js';
+import { createWsHandler } from './files/wsHandler.js';
 
 export default {
   name: 'FilesTab',
@@ -444,26 +446,12 @@ export default {
     const rootEl = Vue.ref(null);
     const editorContainer = Vue.ref(null);
 
-    // --- File tabs state ---
-    const fileTabsMap = Vue.reactive({});
-    const openFiles = Vue.ref([]);
-    const activeFileIndex = Vue.ref(-1);
-    const fileLoading = Vue.ref(false);
-    const fileSaving = Vue.ref(false);
-
-    const activeFile = Vue.computed(() => {
-      if (activeFileIndex.value >= 0 && activeFileIndex.value < openFiles.value.length) {
-        return openFiles.value[activeFileIndex.value];
-      }
-      return null;
-    });
-
     // --- Font size zoom ---
     const fontSize = Vue.ref(parseInt(localStorage.getItem('filesFontSize')) || 15);
     const setFontSize = (size) => {
       fontSize.value = Math.max(8, Math.min(24, size));
       localStorage.setItem('filesFontSize', fontSize.value.toString());
-      const file = activeFile.value;
+      const file = tabs.activeFile.value;
       if (file?.cmInstance) {
         file.cmInstance.getWrapperElement().style.fontSize = fontSize.value + 'px';
         file.cmInstance.refresh();
@@ -476,7 +464,6 @@ export default {
     // --- Resizable tree panel ---
     const treePanelWidth = Vue.ref(parseInt(localStorage.getItem('filePanelWidth')) || 220);
     const isTreeResizing = Vue.ref(false);
-
     const startTreeResize = (e) => {
       e.preventDefault();
       const isTouch = e.type === 'touchstart';
@@ -505,428 +492,122 @@ export default {
       document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
     };
 
-    // --- Initialize composables ---
-    // Find/Replace
-    const find = createFindReplace(activeFile);
-    const { clearFindMarkers, performFind, openFindBar, closeFindBar } = find;
+    // --- Initialize composables (dependency order: find → editor → preview → tabs → ops → tree → qo → fp → ws) ---
 
-    // File tree
-    const tree = createFileTree(store, { getEffectiveWorkDir, normalizePath });
+    // 1. Find/Replace (no deps on others)
+    const find = createFindReplace(Vue.computed(() => tabs.activeFile.value));
 
-    // File editor
+    // 2. File editor (depends on find)
     const editor = createFileEditor(store, {
-      activeFile, editorContainer, fontSize,
-      clearFindMarkers, openFindBar,
-      openQuickOpen: () => qo.openQuickOpen(),
-      openGoToLine: () => qo.openGoToLine(),
-      saveFile
+      activeFile: Vue.computed(() => tabs.activeFile.value),
+      editorContainer, fontSize,
+      clearFindMarkers: find.clearFindMarkers,
+      openFindBar: find.openFindBar,
+      saveFile: () => tabs.saveFile()
     });
-    const { debugStatus, createEditor, destroyEditor,
-      saveCurrentUndoHistory, saveAllUndoHistory,
-      cleanupUndoHistory, deleteConversationHistory } = editor;
 
-    // File preview
-    const preview = createFilePreview(activeFile, { editorContainer, createEditor, t });
-    const { mdPreviewMode, mdPreviewRef, officePreviewContainer,
-      isActiveMarkdown, mdRenderedHtml, initMermaid, renderMermaidBlocks,
-      switchToMdEdit, renderOfficeLocal } = preview;
+    // 3. File preview (depends on editor)
+    const preview = createFilePreview(Vue.computed(() => tabs.activeFile.value), {
+      editorContainer, createEditor: editor.createEditor, t
+    });
 
-    // File operations
-    const ops = createFileOperations(store, { getEffectiveWorkDir, treePath: tree.treePath });
+    // 4. File operations (no deps on tabs/tree)
+    const ops = createFileOperations(store, { getEffectiveWorkDir, treePath: Vue.computed(() => tree.treePath.value) });
 
-    // Quick Open / Go to Line / Search
+    // 5. File tabs (depends on editor, find, preview)
+    const tabs = createFileTabs(store, {
+      normalizePath, getEffectiveWorkDir,
+      editorContainer,
+      createEditor: editor.createEditor,
+      destroyEditor: editor.destroyEditor,
+      clearFindMarkers: find.clearFindMarkers,
+      saveCurrentUndoHistory: editor.saveCurrentUndoHistory,
+      saveAllUndoHistory: editor.saveAllUndoHistory,
+      cleanupUndoHistory: editor.cleanupUndoHistory,
+      deleteConversationHistory: editor.deleteConversationHistory,
+      debugStatus: editor.debugStatus,
+      mdPreviewMode: preview.mdPreviewMode,
+      renderOfficeLocal: preview.renderOfficeLocal,
+      performFind: find.performFind,
+      findBarVisible: find.findBarVisible,
+      findQuery: find.findQuery,
+      t
+    });
+
+    // 6. File tree (depends on ops, tabs)
+    const tree = createFileTree(store, {
+      getEffectiveWorkDir, normalizePath,
+      selectedPaths: ops.selectedPaths,
+      lastClickedIndex: ops.lastClickedIndex,
+      openFileInTab: (...args) => tabs.openFileInTab(...args),
+      clearSelection: ops.clearSelection
+    });
+
+    // 7. Quick Open (depends on tree, tabs)
     const qo = createQuickOpen(store, {
-      getEffectiveWorkDir, treePath: tree.treePath, openFileInTab, normalizePath
+      getEffectiveWorkDir,
+      treePath: tree.treePath,
+      openFileInTab: (...args) => tabs.openFileInTab(...args),
+      normalizePath,
+      treeRootPath: tree.treeRootPath,
+      treeNodes: tree.treeNodes,
+      loadTreeDirectory: tree.loadTreeDirectory
     });
 
-    // Folder picker
+    // 8. Bind late-bound key bindings (resolves forward ref: editor → qo)
+    editor.setKeyBindings({
+      openQuickOpen: qo.openQuickOpen,
+      openGoToLine: qo.openGoToLine
+    });
+
+    // 9. Folder picker (depends on tree)
     const fp = createFolderPicker(store, {
       getEffectiveWorkDir,
       treePath: tree.treePath, treeRootPath: tree.treeRootPath,
       treeNodes: tree.treeNodes, normalizePath, loadTreeDirectory: tree.loadTreeDirectory
     });
 
-    // --- Wrapped operations ---
-    const { selectedPaths, lastClickedIndex, fileOperating, fileOpFeedback } = ops;
-    const clearSelection = ops.clearSelection;
-    const showNewFileDialog = ops.showNewFileDialog;
-    const confirmNewFile = ops.confirmNewFile;
+    // 10. WebSocket message handler (depends on all)
+    const ws = createWsHandler({
+      store, normalizePath, getEffectiveWorkDir,
+      openFiles: tabs.openFiles,
+      activeFileIndex: tabs.activeFileIndex,
+      activeFile: tabs.activeFile,
+      fileLoading: tabs.fileLoading,
+      fileSaving: tabs.fileSaving,
+      saveTabsState: tabs.saveTabsState,
+      createEditor: editor.createEditor,
+      openFileInTab: tabs.openFileInTab,
+      tree, fp, qo, ops,
+      mdPreviewMode: preview.mdPreviewMode,
+      renderOfficeLocal: preview.renderOfficeLocal,
+      editorContainer, debugStatus: editor.debugStatus
+    });
+
+    // --- Wrapped operation callbacks (pass t at init time) ---
     const deleteSingleFile = (entry) => ops.deleteSingleFile(entry, t);
     const deleteSelected = () => ops.deleteSelected(t);
-    const openMoveDialog = ops.openMoveDialog;
-    const confirmMove = ops.confirmMove;
-    const showContextMenu = ops.showContextMenu;
-    const hideContextMenu = ops.hideContextMenu;
-    const ctxRename = ops.ctxRename;
-    const confirmRename = ops.confirmRename;
-    const ctxCopy = ops.ctxCopy;
-    const ctxMoveTo = ops.ctxMoveTo;
     const ctxDelete = () => ops.ctxDelete(t);
-    const ctxDownload = ops.ctxDownload;
-    const onDragStart = ops.onDragStart;
-    const onDragOver = ops.onDragOver;
-    const onDragLeave = ops.onDragLeave;
     const onDrop = (event, entry) => ops.onDrop(event, entry, ops.handleExternalFileDrop);
-    const onTreeDragOver = ops.onTreeDragOver;
-    const onTreeDragLeave = ops.onTreeDragLeave;
     const onTreeDrop = (event) => ops.onTreeDrop(event, tree.treeRootPath.value, ops.handleExternalFileDrop);
-
-    // --- Tree item click (bridges tree + ops + tabs) ---
-    const onTreeItemClick = (entry, event) => {
-      tree.onTreeItemClick(entry, event, {
-        selectedPaths, lastClickedIndex, openFileInTab, clearSelection
-      });
-    };
-
-    // --- Search result click (bridges qo + tree) ---
-    const onSearchResultClick = (r) => {
-      qo.onSearchResultClick(r, {
-        treeRootPath: tree.treeRootPath, treeNodes: tree.treeNodes,
-        loadTreeDirectory: tree.loadTreeDirectory
-      });
-    };
-
-    // --- Go to line confirm (bridges qo + activeFile) ---
-    const goToLineConfirm = () => qo.goToLineConfirm(activeFile);
-
-    // --- File tabs management ---
-    let _syncTabsTimer = null;
-    const syncFileTabsToServer = () => {
-      if (_syncTabsTimer) clearTimeout(_syncTabsTimer);
-      _syncTabsTimer = setTimeout(() => {
-        store.sendWsMessage({
-          type: 'update_file_tabs',
-          openFiles: openFiles.value.map(f => ({ path: f.path })),
-          activeIndex: activeFileIndex.value
-        });
-      }, 500);
-    };
-
-    const saveTabsState = (convId) => {
-      if (!convId) return;
-      saveAllUndoHistory(convId);
-      if (openFiles.value.length > 0) {
-        fileTabsMap[convId] = {
-          files: openFiles.value.map(f => ({
-            path: f.path, name: f.name, content: f.content,
-            originalContent: f.originalContent, isDirty: f.isDirty,
-            fileType: f.fileType
-          })),
-          activeIndex: activeFileIndex.value
-        };
-      } else {
-        delete fileTabsMap[convId];
-      }
-      syncFileTabsToServer();
-    };
-
-    const restoreTabsState = (convId) => {
-      destroyEditor();
-      if (!convId || !fileTabsMap[convId]) {
-        openFiles.value = [];
-        activeFileIndex.value = -1;
-        return;
-      }
-      const saved = fileTabsMap[convId];
-      openFiles.value = saved.files.map(f => ({
-        ...f,
-        isDirty: f.isDirty || false,
-        originalContent: f.originalContent || f.content,
-        cmInstance: null,
-        fileType: f.fileType || getFileType(f.name || ''),
-        blobUrl: null, previewUrl: null, previewLoading: false,
-        localPreviewReady: false, previewError: null
-      }));
-      activeFileIndex.value = saved.activeIndex;
-      Vue.nextTick(() => {
-        const file = activeFile.value;
-        if (file && (!file.fileType || file.fileType === 'text') && editorContainer.value) {
-          createEditor(file);
-        }
-      });
-    };
-
-    function openFileInTab(fullPath, name) {
-      const nPath = normalizePath(fullPath);
-      const existingIndex = openFiles.value.findIndex(f => f.path === nPath);
-      if (existingIndex >= 0) {
-        if (activeFileIndex.value !== existingIndex) {
-          clearFindMarkers();
-          saveCurrentUndoHistory();
-          activeFileIndex.value = existingIndex;
-          Vue.nextTick(() => {
-            const file = openFiles.value[existingIndex];
-            if (file && file.content != null && (!file.fileType || file.fileType === 'text')) createEditor(file);
-          });
-        }
-        saveTabsState(store.currentConversation);
-        return;
-      }
-
-      saveCurrentUndoHistory();
-      const displayName = name || nPath.split(/[/\\]/).pop();
-      const fileType = getFileType(displayName);
-      openFiles.value.push({
-        path: nPath, name: displayName, content: null, originalContent: null,
-        isDirty: false, cmInstance: null, fileType,
-        blobUrl: null, previewUrl: null,
-        previewLoading: fileType !== 'text', localPreviewReady: false, previewError: null
-      });
-      activeFileIndex.value = openFiles.value.length - 1;
-      fileLoading.value = true;
-      if (fileType === 'text') destroyEditor();
-      saveTabsState(store.currentConversation);
-
-      debugStatus.value = `Loading: ${fullPath}`;
-      store.sendWsMessage({
-        type: 'read_file',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        filePath: fullPath,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    }
-
-    const switchToTab = (index) => {
-      if (index === activeFileIndex.value) return;
-      clearFindMarkers();
-      saveCurrentUndoHistory();
-      activeFileIndex.value = index;
-      saveTabsState(store.currentConversation);
-
-      Vue.nextTick(() => {
-        const file = openFiles.value[index];
-        if (!file) return;
-        if (!file.fileType || file.fileType === 'text') {
-          if (isMarkdownFile(file.name)) {
-            mdPreviewMode.value = true;
-          } else if (file.content != null && editorContainer.value) {
-            createEditor(file);
-            if (find.findBarVisible.value && find.findQuery.value) {
-              Vue.nextTick(() => performFind());
-            }
-          }
-        } else if (file.fileType === 'office' && file.localPreviewReady) {
-          Vue.nextTick(() => renderOfficeLocal(file));
-        }
-      });
-    };
-
-    const closeFileTab = (index) => {
-      const file = openFiles.value[index];
-      if (file?.isDirty) {
-        if (!confirm(t('files.unsavedConfirm', { name: file.name }))) return;
-      }
-      cleanupUndoHistory(store.currentConversation, file.path);
-      if (file.blobUrl) URL.revokeObjectURL(file.blobUrl);
-
-      const wasActive = (index === activeFileIndex.value);
-      openFiles.value.splice(index, 1);
-
-      if (openFiles.value.length === 0) {
-        activeFileIndex.value = -1;
-        destroyEditor();
-      } else if (activeFileIndex.value >= openFiles.value.length) {
-        activeFileIndex.value = openFiles.value.length - 1;
-      } else if (activeFileIndex.value > index) {
-        activeFileIndex.value--;
-      } else if (wasActive && activeFileIndex.value >= openFiles.value.length) {
-        activeFileIndex.value = openFiles.value.length - 1;
-      }
-
-      saveTabsState(store.currentConversation);
-
-      if (openFiles.value.length > 0 && wasActive) {
-        Vue.nextTick(() => {
-          const newActive = openFiles.value[activeFileIndex.value];
-          if (newActive && (!newActive.fileType || newActive.fileType === 'text') && newActive.content != null && editorContainer.value) {
-            createEditor(newActive);
-          }
-        });
-      }
-    };
-
-    function saveFile() {
-      const file = activeFile.value;
-      if (!file || !file.isDirty) return;
-      fileSaving.value = true;
-      store.sendWsMessage({
-        type: 'write_file',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        filePath: file.path,
-        content: file.content,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    }
-
-    // --- Handle messages from server ---
-    const handleWorkbenchMessage = (event) => {
-      const msg = event.detail;
-      if (!msg) return;
-
-      switch (msg.type) {
-        case 'directory_listing': {
-          if (msg.conversationId === '_folder_picker') {
-            fp.handleFolderPickerListing(msg);
-            return;
-          }
-          tree.handleDirectoryListing(msg);
-          break;
-        }
-        case 'file_content': {
-          fileLoading.value = false;
-          if (msg.error) {
-            debugStatus.value = `Error: ${msg.error}`;
-            ops.clearPendingDownload();
-            const errFilePath = normalizePath(msg.filePath);
-            const errTab = openFiles.value.find(f => f.path === errFilePath);
-            if (errTab) { errTab.previewLoading = false; errTab.previewError = msg.error; }
-            return;
-          }
-          const nFilePath = normalizePath(msg.filePath);
-
-          // Handle pending download
-          if (ops.getPendingDownload() && normalizePath(ops.getPendingDownload()) === nFilePath) {
-            ops.clearPendingDownload();
-            try {
-              if (msg.binary) {
-                const dlUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
-                const a = document.createElement('a');
-                a.href = dlUrl; a.download = nFilePath.split('/').pop() || 'download';
-                document.body.appendChild(a); a.click(); document.body.removeChild(a);
-              } else {
-                const blob = new Blob([msg.content || ''], { type: 'application/octet-stream' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = nFilePath.split('/').pop() || 'download';
-                document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-              }
-            } catch (e) { console.error('Download failed:', e); }
-            return;
-          }
-
-          const tabIndex = openFiles.value.findIndex(f => f.path === nFilePath);
-          if (tabIndex >= 0) {
-            const file = openFiles.value[tabIndex];
-            if (msg.binary) {
-              file.previewLoading = false;
-              const previewBaseUrl = `${location.protocol}//${location.host}/api/preview/${msg.fileId}?token=${msg.previewToken}`;
-              const ft = file.fileType || getFileType(file.name);
-              file.fileType = ft;
-              if (ft === 'pdf' || ft === 'image') {
-                fetch(previewBaseUrl).then(r => r.blob()).then(blob => { file.blobUrl = URL.createObjectURL(blob); })
-                  .catch(e => { file.previewError = e.message; });
-              } else if (ft === 'office') {
-                const mode = localStorage.getItem('officePreviewMode') || 'local';
-                if (mode === 'online') {
-                  file.previewUrl = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(previewBaseUrl);
-                } else {
-                  fetch(previewBaseUrl).then(r => r.arrayBuffer()).then(buf => {
-                    file._arrayBuffer = buf; file.localPreviewReady = true;
-                    if (tabIndex === activeFileIndex.value) Vue.nextTick(() => renderOfficeLocal(file));
-                  }).catch(e => { file.previewError = e.message; });
-                }
-              }
-              saveTabsState(store.currentConversation);
-              return;
-            }
-            file.content = msg.content || '';
-            file.originalContent = msg.content || '';
-            file.isDirty = false;
-            saveTabsState(store.currentConversation);
-            if (tabIndex === activeFileIndex.value) {
-              if (isMarkdownFile(file.name) && mdPreviewMode.value) {
-                // mdRenderedHtml computed updates automatically
-              } else {
-                Vue.nextTick(() => { setTimeout(() => createEditor(file), 100); });
-              }
-            }
-          }
-          break;
-        }
-        case 'file_saved': {
-          fileSaving.value = false;
-          if (msg.error) { console.error('File save failed:', msg.error); return; }
-          const nSavedPath = normalizePath(msg.filePath);
-          const savedFile = openFiles.value.find(f => f.path === nSavedPath);
-          if (savedFile) {
-            savedFile.originalContent = savedFile.content;
-            savedFile.isDirty = false;
-            saveTabsState(store.currentConversation);
-          }
-          break;
-        }
-        case 'file_search_result': {
-          qo.handleFileSearchResult(msg);
-          break;
-        }
-        case 'file_op_result': {
-          ops.handleFileOpResult(msg, tree.loadTreeDirectory, tree.treeRootPath.value);
-          break;
-        }
-        case 'file_tabs_restored': {
-          if (msg.openFiles?.length > 0 && openFiles.value.length === 0) {
-            const pendingRestoreIndex = msg.activeIndex || 0;
-            const totalFiles = msg.openFiles.length;
-            for (const file of msg.openFiles) {
-              const nPath = normalizePath(file.path);
-              const name = nPath.split('/').pop();
-              const fileType = getFileType(name);
-              openFiles.value.push({
-                path: nPath, name, content: null, originalContent: null,
-                isDirty: false, cmInstance: null, fileType,
-                blobUrl: null, previewUrl: null,
-                previewLoading: fileType !== 'text', localPreviewReady: false, previewError: null
-              });
-              store.sendWsMessage({
-                type: 'read_file',
-                conversationId: store.currentConversation || '_explorer',
-                agentId: store.currentAgent,
-                filePath: file.path
-              });
-            }
-            activeFileIndex.value = (pendingRestoreIndex >= 0 && pendingRestoreIndex < totalFiles)
-              ? pendingRestoreIndex : 0;
-          }
-          break;
-        }
-      }
-    };
-
-    const handleOpenFile = (event) => {
-      const { filePath: path } = event.detail;
-      const nPath = normalizePath(path);
-      openFileInTab(nPath, nPath.split('/').pop());
-    };
-
-    const handleConversationDeleted = (event) => {
-      const { conversationId } = event.detail;
-      if (conversationId) {
-        delete fileTabsMap[conversationId];
-        deleteConversationHistory(conversationId);
-      }
-    };
+    const goToLineConfirm = () => qo.goToLineConfirm(tabs.activeFile);
 
     // --- Watchers ---
     Vue.watch(() => store.currentAgent, () => {
-      saveTabsState(store.currentConversation);
-      destroyEditor();
+      tabs.saveTabsState(store.currentConversation);
+      editor.destroyEditor();
       tree.clearTreeNodes();
-      openFiles.value = [];
-      activeFileIndex.value = -1;
-      fileLoading.value = false;
+      tabs.openFiles.value = [];
+      tabs.activeFileIndex.value = -1;
+      tabs.fileLoading.value = false;
       if (store.currentAgent) Vue.nextTick(() => tree.initFileBrowser());
     });
 
     let previousConversation = store.currentConversation;
     Vue.watch(() => store.currentConversation, (newConv) => {
-      saveTabsState(previousConversation);
+      tabs.saveTabsState(previousConversation);
       previousConversation = newConv;
-      restoreTabsState(newConv);
+      tabs.restoreTabsState(newConv);
       const dir = getEffectiveWorkDir();
       const nDir = normalizePath(dir);
       if (dir && nDir !== tree.treeRootPath.value) {
@@ -938,7 +619,7 @@ export default {
     });
 
     Vue.watch(() => store.theme, (newTheme) => {
-      const file = activeFile.value;
+      const file = tabs.activeFile.value;
       if (file?.cmInstance) file.cmInstance.setOption('theme', newTheme === 'dark' ? 'material-darker' : 'default');
     });
 
@@ -953,20 +634,20 @@ export default {
     });
 
     Vue.watch(
-      () => activeFile.value?.content,
+      () => tabs.activeFile.value?.content,
       (newContent, oldContent) => {
-        const file = activeFile.value;
+        const file = tabs.activeFile.value;
         if (file && newContent != null && oldContent == null && !file.cmInstance && (!file.fileType || file.fileType === 'text')) {
-          if (isMarkdownFile(file.name) && mdPreviewMode.value) return;
-          Vue.nextTick(() => { setTimeout(() => { if (!file.cmInstance) createEditor(file); }, 150); });
+          if (isMarkdownFile(file.name) && preview.mdPreviewMode.value) return;
+          Vue.nextTick(() => { setTimeout(() => { if (!file.cmInstance) editor.createEditor(file); }, 150); });
         }
       }
     );
 
     Vue.watch(
-      [mdRenderedHtml, mdPreviewMode],
+      [preview.mdRenderedHtml, preview.mdPreviewMode],
       ([html, previewOn]) => {
-        if (html && previewOn) Vue.nextTick(() => { setTimeout(() => renderMermaidBlocks(), 50); });
+        if (html && previewOn) Vue.nextTick(() => { setTimeout(() => preview.renderMermaidBlocks(), 50); });
       }
     );
 
@@ -982,27 +663,27 @@ export default {
         e.preventDefault();
         qo.goToLineVisible.value ? qo.closeGoToLine() : qo.openGoToLine();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-        if (activeFile.value) { e.preventDefault(); openFindBar(false); }
+        if (tabs.activeFile.value) { e.preventDefault(); find.openFindBar(false); }
       } else if ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'h')) {
-        if (activeFile.value) { e.preventDefault(); openFindBar(true); }
+        if (tabs.activeFile.value) { e.preventDefault(); find.openFindBar(true); }
       } else if (e.key === 'Escape') {
-        if (find.findBarVisible.value) closeFindBar();
-        if (selectedPaths.size > 0) clearSelection();
+        if (find.findBarVisible.value) find.closeFindBar();
+        if (ops.selectedPaths.size > 0) ops.clearSelection();
         if (qo.quickOpenVisible.value) qo.closeQuickOpen();
         if (qo.goToLineVisible.value) qo.closeGoToLine();
       }
     };
 
-    const handleDocumentClick = () => { hideContextMenu(); };
+    const handleDocumentClick = () => { ops.hideContextMenu(); };
 
     // --- Lifecycle ---
     Vue.onMounted(() => {
-      window.addEventListener('workbench-message', handleWorkbenchMessage);
-      window.addEventListener('open-file-in-explorer', handleOpenFile);
-      window.addEventListener('conversation-deleted', handleConversationDeleted);
+      window.addEventListener('workbench-message', ws.handleWorkbenchMessage);
+      window.addEventListener('open-file-in-explorer', ws.handleOpenFile);
+      window.addEventListener('conversation-deleted', tabs.handleConversationDeleted);
       window.addEventListener('keydown', handleGlobalKeydown);
       document.addEventListener('click', handleDocumentClick);
-      initMermaid();
+      preview.initMermaid();
       if (store.currentAgent) {
         tree.initFileBrowser();
         store.sendWsMessage({ type: 'restore_file_tabs' });
@@ -1010,17 +691,17 @@ export default {
     });
 
     Vue.onUnmounted(() => {
-      window.removeEventListener('workbench-message', handleWorkbenchMessage);
-      window.removeEventListener('open-file-in-explorer', handleOpenFile);
-      window.removeEventListener('conversation-deleted', handleConversationDeleted);
+      window.removeEventListener('workbench-message', ws.handleWorkbenchMessage);
+      window.removeEventListener('open-file-in-explorer', ws.handleOpenFile);
+      window.removeEventListener('conversation-deleted', tabs.handleConversationDeleted);
       window.removeEventListener('keydown', handleGlobalKeydown);
       document.removeEventListener('click', handleDocumentClick);
-      destroyEditor();
+      editor.destroyEditor();
       ops.cleanup();
     });
 
     return {
-      store, debugStatus, rootEl,
+      store, debugStatus: editor.debugStatus, rootEl,
       fontSize, zoomIn, zoomOut, onWheel,
       treePath: tree.treePath, treeRootPath: tree.treeRootPath,
       treeNodes: tree.treeNodes, flattenedTree: tree.flattenedTree,
@@ -1030,18 +711,23 @@ export default {
       startTreePathEdit: tree.startTreePathEdit,
       confirmTreePath: tree.confirmTreePath, cancelTreePathEdit: tree.cancelTreePathEdit,
       treePanelWidth, isTreeResizing, startTreeResize,
-      openFiles, activeFileIndex, activeFile, fileLoading, fileSaving,
-      editorContainer, officePreviewContainer, mdPreviewRef,
-      isActiveMarkdown, mdPreviewMode, mdRenderedHtml, switchToMdEdit,
+      openFiles: tabs.openFiles, activeFileIndex: tabs.activeFileIndex,
+      activeFile: tabs.activeFile, fileLoading: tabs.fileLoading, fileSaving: tabs.fileSaving,
+      editorContainer, officePreviewContainer: preview.officePreviewContainer,
+      mdPreviewRef: preview.mdPreviewRef,
+      isActiveMarkdown: preview.isActiveMarkdown, mdPreviewMode: preview.mdPreviewMode,
+      mdRenderedHtml: preview.mdRenderedHtml, switchToMdEdit: preview.switchToMdEdit,
       folderPickerOpen: fp.folderPickerOpen, folderPickerPath: fp.folderPickerPath,
       folderPickerEntries: fp.folderPickerEntries, folderPickerLoading: fp.folderPickerLoading,
       folderPickerSelected: fp.folderPickerSelected,
       searchQuery: qo.searchQuery, searchResults: qo.searchResults, searchLoading: qo.searchLoading,
-      onSearchInput: qo.onSearchInput, clearSearch: qo.clearSearch, onSearchResultClick,
+      onSearchInput: qo.onSearchInput, clearSearch: qo.clearSearch,
+      onSearchResultClick: qo.onSearchResultClick,
       quickOpenVisible: qo.quickOpenVisible, quickOpenQuery: qo.quickOpenQuery,
       quickOpenResults: qo.quickOpenResults, quickOpenSelectedIndex: qo.quickOpenSelectedIndex,
       quickOpenLoading: qo.quickOpenLoading, quickOpenInput: qo.quickOpenInput,
-      openQuickOpen: qo.openQuickOpen, closeQuickOpen: qo.closeQuickOpen, onQuickOpenInput: qo.onQuickOpenInput,
+      openQuickOpen: qo.openQuickOpen, closeQuickOpen: qo.closeQuickOpen,
+      onQuickOpenInput: qo.onQuickOpenInput,
       quickOpenSelectNext: qo.quickOpenSelectNext, quickOpenSelectPrev: qo.quickOpenSelectPrev,
       quickOpenConfirm: qo.quickOpenConfirm, quickOpenOpenFile: qo.quickOpenOpenFile,
       goToLineVisible: qo.goToLineVisible, goToLineValue: qo.goToLineValue,
@@ -1053,26 +739,31 @@ export default {
       findMatchCount: find.findMatchCount, findMatchIndex: find.findMatchIndex,
       findInputRef: find.findInputRef, replaceInputRef: find.replaceInputRef,
       onFindInput: find.onFindInput, findNext: find.findNext, findPrev: find.findPrev,
-      openFindBar, closeFindBar,
+      openFindBar: find.openFindBar, closeFindBar: find.closeFindBar,
       toggleReplaceBar: find.toggleReplaceBar, replaceOne: find.replaceOne, replaceAll: find.replaceAll,
-      selectedPaths, fileOperating, fileOpFeedback,
+      selectedPaths: ops.selectedPaths, fileOperating: ops.fileOperating,
+      fileOpFeedback: ops.fileOpFeedback,
       newFileDialogVisible: ops.newFileDialogVisible, newFileName: ops.newFileName,
       newFileType: ops.newFileType, newFileInput: ops.newFileInput,
       moveDialogVisible: ops.moveDialogVisible, moveDestination: ops.moveDestination,
       moveDestInput: ops.moveDestInput,
-      toggleSelection: ops.toggleSelection, clearSelection,
-      showNewFileDialog, confirmNewFile,
+      toggleSelection: ops.toggleSelection, clearSelection: ops.clearSelection,
+      showNewFileDialog: ops.showNewFileDialog, confirmNewFile: ops.confirmNewFile,
       deleteSingleFile, deleteSelected,
-      openMoveDialog, confirmMove,
-      contextMenu: ops.contextMenu, showContextMenu, hideContextMenu,
-      ctxRename, ctxCopy, ctxMoveTo, ctxDelete, ctxDownload,
+      openMoveDialog: ops.openMoveDialog, confirmMove: ops.confirmMove,
+      contextMenu: ops.contextMenu, showContextMenu: ops.showContextMenu,
+      hideContextMenu: ops.hideContextMenu,
+      ctxRename: ops.ctxRename, ctxCopy: ops.ctxCopy, ctxMoveTo: ops.ctxMoveTo,
+      ctxDelete, ctxDownload: ops.ctxDownload,
       renameDialogVisible: ops.renameDialogVisible, renameNewName: ops.renameNewName,
-      renameInput: ops.renameInput, confirmRename,
+      renameInput: ops.renameInput, confirmRename: ops.confirmRename,
       dragState: ops.dragState, externalDropActive: ops.externalDropActive,
-      onDragStart, onDragOver, onDragLeave, onDrop,
-      onTreeDragOver, onTreeDragLeave, onTreeDrop,
-      loadRootDirectory: tree.loadRootDirectory, onTreeItemClick, openFileInTab,
-      switchToTab, closeFileTab, saveFile,
+      onDragStart: ops.onDragStart, onDragOver: ops.onDragOver,
+      onDragLeave: ops.onDragLeave, onDrop,
+      onTreeDragOver: ops.onTreeDragOver, onTreeDragLeave: ops.onTreeDragLeave, onTreeDrop,
+      loadRootDirectory: tree.loadRootDirectory, onTreeItemClick: tree.onTreeItemClick,
+      openFileInTab: tabs.openFileInTab,
+      switchToTab: tabs.switchToTab, closeFileTab: tabs.closeFileTab, saveFile: tabs.saveFile,
       openFolderPicker: fp.openFolderPicker, folderPickerNavigateUp: fp.folderPickerNavigateUp,
       folderPickerSelectItem: fp.folderPickerSelectItem, folderPickerEnter: fp.folderPickerEnter,
       confirmFolderPicker: fp.confirmFolderPicker,

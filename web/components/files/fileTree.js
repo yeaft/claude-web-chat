@@ -3,7 +3,7 @@
  * Manages directory tree state, loading, expanding/collapsing, item clicks.
  */
 
-export function createFileTree(store, { getEffectiveWorkDir, normalizePath }) {
+export function createFileTree(store, { getEffectiveWorkDir, normalizePath, selectedPaths, lastClickedIndex, openFileInTab, clearSelection }) {
   const treePath = Vue.ref('');
   const treeRootPath = Vue.ref('');
   const treeNodes = Vue.reactive({});
@@ -122,7 +122,7 @@ export function createFileTree(store, { getEffectiveWorkDir, normalizePath }) {
     }
   };
 
-  const onTreeItemClick = (entry, event, { selectedPaths, lastClickedIndex, openFileInTab, clearSelection }) => {
+  const onTreeItemClick = (entry, event) => {
     const tree = flattenedTree.value;
     const clickedIndex = tree.findIndex(e => e.path === entry.path);
 

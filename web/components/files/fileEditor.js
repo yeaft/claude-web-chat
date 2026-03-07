@@ -48,10 +48,20 @@ export function getModeForFile(filename) {
 
 export function createFileEditor(store, {
   activeFile, editorContainer, fontSize,
-  clearFindMarkers, openFindBar, openQuickOpen, openGoToLine, saveFile
+  clearFindMarkers, openFindBar, saveFile
 }) {
   const debugStatus = Vue.ref('');
   const undoHistoryMap = Vue.reactive({});
+
+  // Late-bound callbacks to avoid forward references.
+  // Set via setKeyBindings() after dependent composables are created.
+  let _openQuickOpen = () => {};
+  let _openGoToLine = () => {};
+
+  const setKeyBindings = ({ openQuickOpen, openGoToLine }) => {
+    _openQuickOpen = openQuickOpen;
+    _openGoToLine = openGoToLine;
+  };
 
   const createEditor = (fileObj, retryCount = 0) => {
     if (!editorContainer.value) {
@@ -96,10 +106,10 @@ export function createFileEditor(store, {
         extraKeys: {
           'Ctrl-S': () => saveFile(),
           'Cmd-S': () => saveFile(),
-          'Ctrl-P': () => openQuickOpen(),
-          'Cmd-P': () => openQuickOpen(),
-          'Ctrl-G': () => openGoToLine(),
-          'Cmd-G': () => openGoToLine(),
+          'Ctrl-P': () => _openQuickOpen(),
+          'Cmd-P': () => _openQuickOpen(),
+          'Ctrl-G': () => _openGoToLine(),
+          'Cmd-G': () => _openGoToLine(),
           'Ctrl-F': () => openFindBar(false),
           'Cmd-F': () => openFindBar(false),
           'Ctrl-R': () => openFindBar(true),
@@ -178,7 +188,7 @@ export function createFileEditor(store, {
 
   return {
     debugStatus, undoHistoryMap,
-    createEditor, destroyEditor,
+    createEditor, destroyEditor, setKeyBindings,
     saveCurrentUndoHistory, saveAllUndoHistory,
     cleanupUndoHistory, deleteConversationHistory
   };

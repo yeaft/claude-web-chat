@@ -2,7 +2,7 @@
  * quickOpen — Quick Open (Ctrl+P), Go to Line (Ctrl+G), and file search composable.
  */
 
-export function createQuickOpen(store, { getEffectiveWorkDir, treePath, openFileInTab, normalizePath }) {
+export function createQuickOpen(store, { getEffectiveWorkDir, treePath, openFileInTab, normalizePath, treeRootPath, treeNodes, loadTreeDirectory }) {
   // File search state
   const searchQuery = Vue.ref('');
   const searchResults = Vue.ref([]);
@@ -56,7 +56,7 @@ export function createQuickOpen(store, { getEffectiveWorkDir, treePath, openFile
     searchLoading.value = false;
   };
 
-  const onSearchResultClick = (r, { treeRootPath, treeNodes, loadTreeDirectory }) => {
+  const onSearchResultClick = (r) => {
     if (r.type === 'directory') {
       const nDir = normalizePath(r.fullPath);
       treeRootPath.value = nDir;
