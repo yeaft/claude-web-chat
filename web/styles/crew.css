@@ -3476,15 +3476,10 @@
   }
 
   /* --- Problem 6: Chat header overflow --- */
-  .chat-header .context-usage-hint {
-    display: none;
-  }
-
-  .chat-header h1 {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: calc(100vw - 140px);
+  .crew-header-nav {
+    position: static;
+    transform: none;
+    flex-shrink: 0;
   }
 
   /* --- Problem 7: Terminal touch targets --- */

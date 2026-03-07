@@ -897,7 +897,30 @@
   }
 
   .chat-header {
-    padding: 0 8px;
+    padding: 6px 10px;
+    justify-content: space-between;
+  }
+
+  .chat-title-group {
+    max-width: none;
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+  }
+
+  .chat-title-path {
+    display: none;
+  }
+
+  .context-usage-hint {
+    display: none;
+  }
+
+  .header-right {
+    position: static;
+    transform: none;
+    flex-shrink: 0;
+    gap: 4px;
   }
 
   .input-area {
