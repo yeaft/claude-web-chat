@@ -91,17 +91,35 @@ export function selectConversation(store, conversationId, agentId) {
     store.currentWorkDir = conv.workDir;
   }
 
-  const cachedMessages = store.messagesCache[conversationId];
-  if (cachedMessages && cachedMessages.length > 0) {
-    store.messages = cachedMessages;
-  } else {
+  if (conv?.type === 'crew') {
+    // Crew conversations use crewMessagesMap, not messages/messagesCache.
+    // Skip sync_messages (it's for normal chat only).
     store.messages = [];
-    // ★ Phase 6.1: 使用 turns 加载最近 5 个 turn
-    store.sendWsMessage({
-      type: 'sync_messages',
-      conversationId,
-      turns: 5
-    });
+    // If crew messages are empty, trigger resume to load them from server.
+    const hasCrewMessages = store.crewMessagesMap[conversationId]?.length > 0;
+    if (!hasCrewMessages) {
+      if (!store.crewMessagesMap[conversationId]) {
+        store.crewMessagesMap[conversationId] = [];
+      }
+      store.sendWsMessage({
+        type: 'resume_crew_session',
+        sessionId: conversationId,
+        agentId: conv.agentId || store.currentAgent
+      });
+    }
+  } else {
+    const cachedMessages = store.messagesCache[conversationId];
+    if (cachedMessages && cachedMessages.length > 0) {
+      store.messages = cachedMessages;
+    } else {
+      store.messages = [];
+      // ★ Phase 6.1: 使用 turns 加载最近 5 个 turn
+      store.sendWsMessage({
+        type: 'sync_messages',
+        conversationId,
+        turns: 5
+      });
+    }
   }
   // ★ Bug #4: 重置分页状态
   store.hasMoreMessages = false;

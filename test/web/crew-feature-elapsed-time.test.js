@@ -346,8 +346,6 @@ describe('structural integrity', () => {
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
     expect(opens).toBe(2096);
-    expect(opens).toBe(2096);
-    expect(opens).toBe(2096);
   });
 
   it('JS template has balanced div tags', () => {
