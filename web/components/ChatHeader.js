@@ -35,21 +35,11 @@ export default {
           </svg>
         </button>
       </div>
-      <div class="crew-header-nav" v-if="store.currentConversationIsCrew">
+      <div class="crew-header-left" v-if="store.currentConversationIsCrew">
         <button class="crew-header-nav-btn crew-sidebar-toggle"
                 @click="$emit('toggle-sidebar')">
           <svg viewBox="0 0 24 24" width="16" height="16">
             <path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
-          </svg>
-        </button>
-        <button class="crew-header-nav-btn"
-                :class="{ 'btn-loading': store.refreshingSession }"
-                @click="refreshSession"
-                :disabled="!canRefresh || store.refreshingSession"
-                :title="$t('chatHeader.refresh')"
-                v-if="canRefresh">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
           </svg>
         </button>
         <button class="crew-header-nav-btn"
@@ -63,6 +53,18 @@ export default {
                 @click="onCrewPanelToggle('features')">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zM7 12h2v5H7zm4-3h2v8h-2zm4-3h2v11h-2z"/></svg>
           <span v-if="store.crewInProgressCount > 0" class="nav-badge">{{ store.crewInProgressCount }}</span>
+        </button>
+      </div>
+      <div class="crew-header-right" v-if="store.currentConversationIsCrew">
+        <button class="crew-header-nav-btn"
+                :class="{ 'btn-loading': store.refreshingSession }"
+                @click="refreshSession"
+                :disabled="!canRefresh || store.refreshingSession"
+                :title="$t('chatHeader.refresh')"
+                v-if="canRefresh">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
         </button>
       </div>
     </header>

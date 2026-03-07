@@ -1557,15 +1557,23 @@
   display: none;
 }
 
-/* Header nav for Crew mode: visible on both desktop and mobile */
-.crew-header-nav {
+/* Header nav for Crew mode: two groups as siblings in .chat-header */
+.crew-header-left,
+.crew-header-right {
   display: flex;
   align-items: center;
   gap: 4px;
   position: absolute;
-  right: 12px;
   top: 50%;
   transform: translateY(-50%);
+}
+
+.crew-header-left {
+  right: 12px;
+}
+
+.crew-header-right {
+  right: 84px; /* 12px + (32px × 2 buttons + 4px × 2 gaps) = 84px */
 }
 
 .crew-header-nav-btn {
@@ -2341,11 +2349,16 @@
     max-width: calc(100vw - 32px);
   }
 
-  /* --- Problem 6: Chat header overflow --- */
-  .crew-header-nav {
+  /* --- Problem 6: Chat header — left/right button split on mobile --- */
+  .crew-header-left,
+  .crew-header-right {
     position: static;
     transform: none;
     flex-shrink: 0;
+  }
+
+  .crew-header-left {
+    order: -1;
   }
 
   /* --- Problem 7: Terminal touch targets --- */

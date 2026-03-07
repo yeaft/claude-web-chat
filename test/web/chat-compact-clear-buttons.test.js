@@ -104,10 +104,10 @@ describe('buttons visibility — Chat mode only', () => {
     expect(headerSource).toContain('!store.currentConversationIsCrew');
   });
 
-  it('buttons are inside header-right div, not in crew-header-nav', () => {
-    // Both header-action-btn buttons should appear before crew-header-nav
+  it('buttons are inside header-right div, not in crew-header-left', () => {
+    // Both header-action-btn buttons should appear before crew-header-left
     const actionBtnIdx = headerSource.indexOf('header-action-btn');
-    const crewNavIdx = headerSource.indexOf('crew-header-nav');
+    const crewNavIdx = headerSource.indexOf('crew-header-left');
     expect(actionBtnIdx).toBeGreaterThan(-1);
     expect(crewNavIdx).toBeGreaterThan(-1);
     expect(actionBtnIdx).toBeLessThan(crewNavIdx);
@@ -117,7 +117,7 @@ describe('buttons visibility — Chat mode only', () => {
     // Both @click="compactContext" and @click="clearMessages" should be
     // within the header-right div
     const headerRightStart = headerSource.indexOf('class="header-right"');
-    const crewNavStart = headerSource.indexOf('class="crew-header-nav"');
+    const crewNavStart = headerSource.indexOf('class="crew-header-left"');
     const compactIdx = headerSource.indexOf('@click="compactContext"');
     const clearIdx = headerSource.indexOf('@click="clearMessages"');
     expect(compactIdx).toBeGreaterThan(headerRightStart);
@@ -240,6 +240,6 @@ describe('structural integrity', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2092);
+    expect(opens).toBe(2095);
   });
 });

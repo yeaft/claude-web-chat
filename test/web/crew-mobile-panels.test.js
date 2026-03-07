@@ -74,12 +74,16 @@ describe('store: crewMobilePanel state', () => {
 });
 
 // =====================================================================
-// 2) ChatHeader: crew-header-nav buttons
+// 2) ChatHeader: crew-header-left / crew-header-right buttons
 // =====================================================================
 
-describe('ChatHeader: crew-header-nav', () => {
-  it('has crew-header-nav container', () => {
-    expect(headerSource).toContain('crew-header-nav');
+describe('ChatHeader: crew-header-left / crew-header-right', () => {
+  it('has crew-header-left container', () => {
+    expect(headerSource).toContain('crew-header-left');
+  });
+
+  it('has crew-header-right container', () => {
+    expect(headerSource).toContain('crew-header-right');
   });
 
   it('renders only for Crew conversations', () => {
@@ -216,8 +220,8 @@ describe('close button inside panels', () => {
 // =====================================================================
 
 describe('CSS — desktop: mobile elements hidden', () => {
-  it('crew-header-nav visible by default (display: flex)', () => {
-    expect(cssSource).toMatch(/\.crew-header-nav\s*\{[^}]*display:\s*flex/);
+  it('crew-header-left visible by default (display: flex)', () => {
+    expect(cssSource).toMatch(/\.crew-header-left[\s,][^}]*display:\s*flex/);
   });
 
   it('crew-mobile-overlay hidden by default (display: none)', () => {
@@ -285,13 +289,17 @@ describe('CSS — header nav button styles', () => {
 
 describe('CSS — mobile: header nav visible', () => {
   it('header nav display: flex in base styles (visible on all viewports)', () => {
-    expect(cssSource).toMatch(/\.crew-header-nav\s*\{[^}]*display:\s*flex/);
+    expect(cssSource).toMatch(/\.crew-header-left[\s,][^}]*display:\s*flex/);
   });
 
   it('header nav positioned absolute right in base styles', () => {
-    const navStart = cssSource.indexOf('.crew-header-nav {');
-    const navSection = cssSource.substring(navStart, navStart + 300);
-    expect(navSection).toContain('position: absolute');
+    // Shared rule: .crew-header-left, .crew-header-right { position: absolute; ... }
+    const sharedStart = cssSource.indexOf('.crew-header-left,');
+    const sharedSection = cssSource.substring(sharedStart, sharedStart + 300);
+    expect(sharedSection).toContain('position: absolute');
+    // Individual rule: .crew-header-left { right: 12px; }
+    const navStart = cssSource.indexOf('.crew-header-left {');
+    const navSection = cssSource.substring(navStart, navStart + 100);
     expect(navSection).toContain('right: 12px');
   });
 
@@ -546,6 +554,6 @@ describe('structural integrity', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2092);
+    expect(opens).toBe(2095);
   });
 });
