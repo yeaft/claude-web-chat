@@ -128,7 +128,7 @@ export default {
                     <div v-if="isExpandableRole(role.name)" class="crew-role-concurrency">
                       <template v-if="role.name === 'developer'">
                         <span class="crew-concurrency-label">{{ $t('crewConfig.concurrency') }}</span>
-                        <button v-for="n in 3" :key="n" class="crew-concurrency-btn" :class="{ active: (role.count || 1) === n }" @click="setDevCount(n)">{{ n }}</button>
+                        <input type="number" class="crew-concurrency-input" :value="role.count || 1" @input="setDevCount($event.target.value)" min="1" max="5" />
                       </template>
                       <template v-else>
                         <span class="crew-concurrency-follow">{{ $t('crewConfig.followDev', { count: devCount }) }}</span>
@@ -419,7 +419,8 @@ export default {
     isExpandableRole(name) {
       return ['developer', 'tester', 'reviewer'].includes(name);
     },
-    setDevCount(n) {
+    setDevCount(val) {
+      const n = Math.max(1, Math.min(5, parseInt(val, 10) || 1));
       const dev = this.roles.find(r => r.name === 'developer');
       if (dev) dev.count = n;
     },

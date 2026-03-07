@@ -305,28 +305,29 @@
   color: var(--text-muted);
 }
 
-.crew-concurrency-btn {
-  width: 24px;
+.crew-concurrency-input {
+  width: 48px;
   height: 24px;
   border: 1px solid var(--border-color);
   border-radius: 4px;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   font-size: 12px;
-  cursor: pointer;
-  padding: 0;
-  transition: all 0.15s;
+  text-align: center;
+  padding: 0 4px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+  -moz-appearance: textfield;
 }
 
-.crew-concurrency-btn:hover {
-  border-color: var(--accent-blue);
-  color: var(--accent-blue);
+.crew-concurrency-input::-webkit-inner-spin-button,
+.crew-concurrency-input::-webkit-outer-spin-button {
+  opacity: 1;
 }
 
-.crew-concurrency-btn.active {
-  background: var(--accent-blue);
+.crew-concurrency-input:focus {
   border-color: var(--accent-blue);
-  color: #fff;
 }
 
 .crew-concurrency-follow {
