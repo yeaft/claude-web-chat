@@ -21,6 +21,11 @@ let jsSource;
 beforeAll(() => {
   const jsPath = resolve(__dirname, '../../web/components/CrewChatView.js');
   jsSource = readFileSync(jsPath, 'utf-8');
+  // Sub-modules extracted from CrewChatView during refactor
+  const crewDir = resolve(__dirname, '../../web/components/crew');
+  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
+    jsSource += '\n' + readFileSync(resolve(crewDir, mod), 'utf-8');
+  }
 });
 
 /**
@@ -31,7 +36,9 @@ function extractMethodBody(methodName) {
   let startIdx = -1;
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
-    if (trimmed.startsWith(`${methodName}(`) && trimmed.endsWith('{')) {
+    if ((trimmed.startsWith(`${methodName}(`) ||
+         trimmed.startsWith(`function ${methodName}(`) ||
+         trimmed.startsWith(`export function ${methodName}(`)) && trimmed.endsWith('{')) {
       startIdx = jsSource.indexOf(lines[i]);
       break;
     }
@@ -52,13 +59,13 @@ function extractMethodBody(methodName) {
 // =====================================================================
 // 1. No segment repositioning (task-32 splice+push removed)
 // =====================================================================
-describe('_appendToSegments — fixed ordering (no segment move)', () => {
+describe('appendToSegments — fixed ordering (no segment move)', () => {
   let body;
   beforeAll(() => {
-    body = extractMethodBody('_appendToSegments');
+    body = extractMethodBody('appendToSegments');
   });
 
-  it('_appendToSegments method exists', () => {
+  it('appendToSegments method exists', () => {
     expect(body.length).toBeGreaterThan(0);
   });
 
@@ -92,7 +99,7 @@ describe('_appendToSegments — fixed ordering (no segment move)', () => {
 describe('feature segment merge without repositioning', () => {
   let body;
   beforeAll(() => {
-    body = extractMethodBody('_appendToSegments');
+    body = extractMethodBody('appendToSegments');
   });
 
   it('looks up existing segment via segIndex.has(taskId)', () => {
@@ -118,7 +125,7 @@ describe('feature segment merge without repositioning', () => {
 describe('new feature creation path preserved', () => {
   let body;
   beforeAll(() => {
-    body = extractMethodBody('_appendToSegments');
+    body = extractMethodBody('appendToSegments');
   });
 
   it('new feature segment pushed to end', () => {
@@ -140,7 +147,7 @@ describe('new feature creation path preserved', () => {
 describe('global segment handling unaffected', () => {
   let body;
   beforeAll(() => {
-    body = extractMethodBody('_appendToSegments');
+    body = extractMethodBody('appendToSegments');
   });
 
   it('global messages still merge into last global segment', () => {
@@ -303,9 +310,9 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
   });
 
-  it('_appendToSegments and _rebuildBlocksFromSegments both exist', () => {
-    const appendBody = extractMethodBody('_appendToSegments');
-    const rebuildBody = extractMethodBody('_rebuildBlocksFromSegments');
+  it('appendToSegments and rebuildBlocksFromSegments both exist', () => {
+    const appendBody = extractMethodBody('appendToSegments');
+    const rebuildBody = extractMethodBody('rebuildBlocksFromSegments');
     expect(appendBody.length).toBeGreaterThan(0);
     expect(rebuildBody.length).toBeGreaterThan(0);
   });

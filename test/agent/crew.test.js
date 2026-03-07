@@ -1949,6 +1949,11 @@ describe('Hints bar - source file verification', () => {
       join(__dirname, '../../web/components/CrewChatView.js'),
       'utf-8'
     );
+    // Sub-modules extracted from CrewChatView during refactor
+    const crewDir = join(__dirname, '../../web/components/crew');
+    for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
+      fileContent += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+    }
     expect(fileContent).toBeTruthy();
   });
 
@@ -1965,12 +1970,14 @@ describe('Hints bar - source file verification', () => {
 
   it('should have add-role button in left panel (moved from hints area)', () => {
     // v2: add-role button moved from hints area to left panel
+    // After sub-component extraction, button is in CrewRolePanel which emits 'show-add-role'
+    const panelStart = fileContent.indexOf('crew-panel-left');
     const leftPanel = fileContent.substring(
-      fileContent.indexOf('crew-panel-left'),
-      fileContent.indexOf('</aside>')
+      panelStart,
+      fileContent.indexOf('</aside>', panelStart)
     );
     expect(leftPanel).toContain('crew-add-role-btn');
-    expect(leftPanel).toContain('showAddRole = true');
+    expect(leftPanel).toContain("$emit('show-add-role')");
     expect(leftPanel).toContain('crew.addRole');
   });
 });
@@ -2417,6 +2424,11 @@ describe('Source file verification - shortName usage in template', () => {
       join(__dirname, '../../web/components/CrewChatView.js'),
       'utf-8'
     );
+    // Sub-modules extracted from CrewChatView during refactor
+    const crewDir = join(__dirname, '../../web/components/crew');
+    for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
+      fileContent += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+    }
     expect(fileContent).toBeTruthy();
   });
 
@@ -2845,6 +2857,11 @@ describe('Feature blocks - removed task panel and filter bar', () => {
       join(__dirname, '../../web/components/CrewChatView.js'),
       'utf-8'
     );
+    // Sub-modules extracted from CrewChatView during refactor
+    const crewDir = join(__dirname, '../../web/components/crew');
+    for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
+      fileContent += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+    }
     expect(fileContent).toBeTruthy();
   });
 
@@ -2881,8 +2898,8 @@ describe('Feature blocks - removed task panel and filter bar', () => {
     expect(fileContent).toContain('toggleFeature(taskId)');
   });
 
-  it('should use _buildTurns helper method', () => {
-    expect(fileContent).toContain('_buildTurns(');
+  it('should use buildTurns helper function', () => {
+    expect(fileContent).toContain('buildTurns(');
   });
 
   it('should use shouldShowTurnDivider with turns parameter', () => {
@@ -3277,6 +3294,11 @@ describe('Route inline rendering - template structure verification', () => {
       join(__dirname, '../../web/components/CrewChatView.js'),
       'utf-8'
     );
+    // Sub-modules extracted from CrewChatView during refactor
+    const crewDir = join(__dirname, '../../web/components/crew');
+    for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
+      fileContent += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+    }
     expect(fileContent).toBeTruthy();
   });
 
@@ -3326,10 +3348,11 @@ describe('Route inline rendering - template structure verification', () => {
   });
 
   it('should handle route messages in both global and feature block templates', () => {
-    // There should be two instances of crew-turn-route-item rendering (global + feature)
+    // After sub-component extraction, crew-turn-route-item is in CrewTurnRenderer (1 instance)
+    // which handles both global and feature block rendering via the shared component
     const matches = fileContent.match(/crew-turn-route-item/g);
     expect(matches).toBeTruthy();
-    expect(matches.length).toBeGreaterThanOrEqual(2);
+    expect(matches.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -4210,6 +4233,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
 
   beforeAll(async () => {
     viewSource = await fs.readFile(join(__dirname, '../../web/components/CrewChatView.js'), 'utf-8');
+    // Sub-modules extracted from CrewChatView during refactor
+    const crewDir = join(__dirname, '../../web/components/crew');
+    for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
+      viewSource += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+    }
     cssSource = loadAllCss();
   });
 
@@ -4266,7 +4294,9 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
 
     it('should trigger showAddRole on click', () => {
-      expect(viewSource).toContain('@click="showAddRole = true"');
+      // Sub-component emits 'show-add-role', parent handles with showAddRole = true
+      expect(viewSource).toContain("$emit('show-add-role')");
+      expect(viewSource).toContain('@show-add-role="showAddRole = true"');
     });
 
     it('should have label text using i18n key crew.addRole', () => {
@@ -4310,7 +4340,8 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
 
     it('should have expandable header with click and dblclick', () => {
       expect(viewSource).toContain('@click="toggleFeatureCard(feature.taskId)"');
-      expect(viewSource).toContain('@dblclick="scrollToFeature(feature.taskId)"');
+      // Sub-component emits event, parent handles scrollToFeature
+      expect(viewSource).toContain("@dblclick=\"$emit('scroll-to-feature', feature.taskId)\"");
     });
 
     it('should show feature title and done/total count', () => {
@@ -4356,9 +4387,9 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
 
     it('should show total done / total with percentage', () => {
-      expect(viewSource).toContain('kanbanProgress.done');
-      expect(viewSource).toContain('kanbanProgress.total');
-      expect(viewSource).toContain('Math.round(kanbanProgress.done / kanbanProgress.total * 100)');
+      expect(viewSource).toContain('kanbanProgressData.done');
+      expect(viewSource).toContain('kanbanProgressData.total');
+      expect(viewSource).toContain('Math.round(kanbanProgressData.done / kanbanProgressData.total * 100)');
     });
 
     it('should have total progress bar', () => {
@@ -4415,7 +4446,8 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
 
     it('kanbanProgress should sum from featureKanban', () => {
-      expect(viewSource).toContain('kanbanProgress()');
+      // Computed renamed to kanbanProgressData, delegates to kanbanProgress function
+      expect(viewSource).toContain('kanbanProgressData()');
       expect(viewSource).toContain('this.featureKanban');
     });
   });
@@ -4894,11 +4926,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
 
   describe('HTML and CSS structure balance', () => {
     // 176 = 171 + 5 (active messages area: container, header, msg, msg-header, content)
-    it('should have balanced div tags (148/148)', () => {
+    it('should have balanced div tags (106/106)', () => {
       const opens = (viewSource.match(/<div[\s>]/g) || []).length;
       const closes = (viewSource.match(/<\/div>/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(148);
+      expect(opens).toBe(106);
     });
 
     it('should have balanced template tags', () => {

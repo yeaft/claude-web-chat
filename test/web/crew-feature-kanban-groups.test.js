@@ -21,34 +21,42 @@ let cssSource;
 beforeAll(() => {
   const jsPath = resolve(__dirname, '../../web/components/CrewChatView.js');
   jsSource = readFileSync(jsPath, 'utf-8');
+  // Sub-modules extracted from CrewChatView during refactor
+  const crewDir = resolve(__dirname, '../../web/components/crew');
+  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
+    jsSource += '\n' + readFileSync(resolve(crewDir, mod), 'utf-8');
+  }
 
   cssSource = loadAllCss();
 });
 
 /**
- * Extract a method body from the JS source by finding the method definition line.
+ * Extract a method body from the JS source — finds the longest match
+ * to get the implementation, not a thin wrapper.
  */
 function extractMethod(methodName) {
   const lines = jsSource.split('\n');
-  let startIdx = -1;
+  let bestBody = '';
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
-    if (trimmed.startsWith(`${methodName}(`) && trimmed.endsWith('{')) {
-      startIdx = jsSource.indexOf(lines[i]);
-      break;
+    if ((trimmed.startsWith(`${methodName}(`) ||
+         trimmed.startsWith(`function ${methodName}(`) ||
+         trimmed.startsWith(`export function ${methodName}(`)) && trimmed.endsWith('{')) {
+      const startIdx = jsSource.indexOf(lines[i]);
+      const braceStart = jsSource.indexOf('{', startIdx);
+      if (braceStart === -1) continue;
+      let depth = 0;
+      let end = braceStart;
+      for (let j = braceStart; j < jsSource.length; j++) {
+        if (jsSource[j] === '{') depth++;
+        if (jsSource[j] === '}') depth--;
+        if (depth === 0) { end = j; break; }
+      }
+      const body = jsSource.substring(braceStart + 1, end).trim();
+      if (body.length > bestBody.length) bestBody = body;
     }
   }
-  if (startIdx === -1) return '';
-  const braceStart = jsSource.indexOf('{', startIdx);
-  if (braceStart === -1) return '';
-  let depth = 0;
-  let end = braceStart;
-  for (let i = braceStart; i < jsSource.length; i++) {
-    if (jsSource[i] === '{') depth++;
-    if (jsSource[i] === '}') depth--;
-    if (depth === 0) { end = i; break; }
-  }
-  return jsSource.substring(braceStart + 1, end).trim();
+  return bestBody;
 }
 
 /**
@@ -75,7 +83,7 @@ function extractCssBlock(selector) {
 describe('featureKanbanGrouped computed property', () => {
   let body;
   beforeAll(() => {
-    body = extractMethod('featureKanbanGrouped');
+    body = extractMethod('groupKanban');
   });
 
   it('should exist as a computed property', () => {
@@ -88,7 +96,7 @@ describe('featureKanbanGrouped computed property', () => {
   });
 
   it('should iterate over featureKanban', () => {
-    expect(body).toContain('this.featureKanban');
+    expect(body).toContain('featureKanban');
   });
 
   it('should check isCompleted to split groups', () => {
@@ -108,7 +116,7 @@ describe('featureKanbanGrouped computed property', () => {
 describe('featureKanban computed — time-based sorting', () => {
   let body;
   beforeAll(() => {
-    body = extractMethod('featureKanban');
+    body = extractMethod('buildFeatureKanban');
   });
 
   it('should include createdAt in feature objects', () => {
@@ -136,7 +144,7 @@ describe('featureKanban computed — time-based sorting', () => {
 describe('activeTasks computed — createdAt propagation', () => {
   let body;
   beforeAll(() => {
-    body = extractMethod('activeTasks');
+    body = extractMethod('collectActiveTasks');
   });
 
   it('should extract createdAt from persisted features', () => {
@@ -180,8 +188,10 @@ describe('template — in-progress features in prominent position', () => {
   });
 
   it('in-progress group appears after total progress bar', () => {
-    const totalProgressIdx = jsSource.indexOf('crew-kanban-total');
-    const inProgressIdx = jsSource.indexOf('featureKanbanGrouped.inProgress');
+    // Search within CrewFeaturePanel template where both patterns live
+    const panelStart = jsSource.indexOf("name: 'CrewFeaturePanel'");
+    const totalProgressIdx = jsSource.indexOf('crew-kanban-total', panelStart);
+    const inProgressIdx = jsSource.indexOf('featureKanbanGrouped.inProgress', panelStart);
     expect(totalProgressIdx).toBeLessThan(inProgressIdx);
   });
 
@@ -274,20 +284,21 @@ describe('template — completed features collapsed by default', () => {
 // 6. Double-click feature card still works (scrollToFeature preserved)
 // =====================================================================
 describe('double-click feature card — scrollToFeature integration', () => {
-  it('in-progress cards have @dblclick="scrollToFeature(feature.taskId)"', () => {
+  it('in-progress cards have @dblclick handler for scrollToFeature', () => {
     const inProgressBlock = jsSource.substring(
       jsSource.indexOf('v-for="feature in featureKanbanGrouped.inProgress"'),
       jsSource.indexOf('v-for="feature in featureKanbanGrouped.completed"')
     );
-    expect(inProgressBlock).toContain('@dblclick="scrollToFeature(feature.taskId)"');
+    // Sub-component emits event, parent handles scrollToFeature
+    expect(inProgressBlock).toContain("@dblclick=\"$emit('scroll-to-feature', feature.taskId)\"");
   });
 
-  it('completed cards have @dblclick="scrollToFeature(feature.taskId)"', () => {
+  it('completed cards have @dblclick handler for scrollToFeature', () => {
     const completedBlock = jsSource.substring(
       jsSource.indexOf('v-for="feature in featureKanbanGrouped.completed"'),
       jsSource.indexOf('<!-- Empty state -->')
     );
-    expect(completedBlock).toContain('@dblclick="scrollToFeature(feature.taskId)"');
+    expect(completedBlock).toContain("@dblclick=\"$emit('scroll-to-feature', feature.taskId)\"");
   });
 
   it('scrollToFeature method still exists', () => {
@@ -412,22 +423,22 @@ describe('structural integrity', () => {
 // =====================================================================
 describe('createdAt data flow through computed chain', () => {
   it('activeTasks passes createdAt from persistedFeatures', () => {
-    const body = extractMethod('activeTasks');
+    const body = extractMethod('collectActiveTasks');
     expect(body).toContain('createdAt: f.createdAt');
   });
 
   it('activeTasks uses msg.timestamp as fallback createdAt', () => {
-    const body = extractMethod('activeTasks');
+    const body = extractMethod('collectActiveTasks');
     expect(body).toContain('createdAt: msg.timestamp');
   });
 
   it('featureKanban sets createdAt from task.createdAt', () => {
-    const body = extractMethod('featureKanban');
+    const body = extractMethod('buildFeatureKanban');
     expect(body).toContain('createdAt: task.createdAt || 0');
   });
 
   it('fallback features get createdAt: 0', () => {
-    const body = extractMethod('featureKanban');
+    const body = extractMethod('buildFeatureKanban');
     // Features created from todosByFeature (not in activeTasks) get createdAt: 0
     expect(body).toContain('createdAt: 0');
   });

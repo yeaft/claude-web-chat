@@ -1,102 +1,82 @@
 /**
- * CrewChatView - Crew 群聊视图
- * 显示多角色的群聊消息，包括状态栏和控制按钮
- * 支持动态添加/移除角色
+ * CrewChatView - Crew 群聊视图（入口组件）
+ *
+ * 拆分为子组件和模块：
+ *   crew/CrewTurnRenderer.js    — turn 渲染子组件（消除 3x 重复模板）
+ *   crew/CrewRolePanel.js       — 左侧角色面板子组件
+ *   crew/CrewFeaturePanel.js    — 右侧 Feature 看板子组件
+ *   crew/crewInput.js           — 输入处理 composable
+ *   crew/crewScroll.js          — 滚动管理 composable
+ *   crew/crewHelpers.js         — 工具函数（样式、格式化、图标）
+ *   crew/crewMessageGrouping.js — 消息分组逻辑（turns、segments、blocks）
+ *   crew/crewKanban.js          — Kanban/TODO 计算逻辑
+ *   crew/crewRolePresets.js     — 预设角色数据
  */
 import { renderMarkdown, clearMarkdownCache } from '../utils/markdown.js';
-
-const ICONS = {
-  crew: '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>',
-  pause: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>',
-  play: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>',
-  stop: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>',
-  close: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>',
-  settings: '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>',
-  trash: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
-  bell: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>',
-};
-
-const PRESET_ROLES = ['pm', 'architect', 'developer', 'reviewer', 'tester', 'designer', 'writer', 'human', 'system'];
+import {
+  ICONS, formatTime, formatTokens, formatDuration,
+  shortName, getRoleStyle, getImageUrl
+} from './crew/crewHelpers.js';
+import {
+  appendToSegments, rebuildBlocksFromSegments,
+  createFbCache, fullBuildFeatureBlocks, getBlockTurns,
+  shouldShowTurnDivider, getMaxRound
+} from './crew/crewMessageGrouping.js';
+import {
+  parseCrewTasks, computeCompletedTaskIds, collectActiveTasks,
+  buildTodosByFeature, buildFeatureKanban, groupKanban, kanbanProgress
+} from './crew/crewKanban.js';
+import { rolePresets } from './crew/crewRolePresets.js';
+import { createCrewInput } from './crew/crewInput.js';
+import { createCrewScroll } from './crew/crewScroll.js';
+import CrewTurnRenderer from './crew/CrewTurnRenderer.js';
+import CrewRolePanel from './crew/CrewRolePanel.js';
+import CrewFeaturePanel from './crew/CrewFeaturePanel.js';
 
 export default {
   name: 'CrewChatView',
+  components: { CrewTurnRenderer, CrewRolePanel, CrewFeaturePanel },
   template: `
     <div class="crew-chat-view">
-      <!-- Role Context Menu removed: compact/clear now on card actions -->
-
       <div class="crew-workspace" :class="{ 'hide-roles': !store.crewPanelVisible.roles, 'hide-features': !store.crewPanelVisible.features, 'mobile-panel-roles': store.crewMobilePanel === 'roles', 'mobile-panel-features': store.crewMobilePanel === 'features' }">
         <div class="crew-mobile-overlay" v-if="store.crewMobilePanel" @click="store.crewMobilePanel = null"></div>
 
         <!-- Left Panel: Role Cards -->
-        <aside class="crew-panel-left">
-          <div class="crew-panel-left-scroll">
-            <button class="crew-mobile-close" @click="store.crewMobilePanel = null"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> {{ $t('crew.close') }}</button>
-            <div class="crew-role-list">
-              <div v-for="role in sessionRoles" :key="role.name"
-                   class="crew-role-card"
-                   :class="{ 'is-streaming': isRoleStreaming(role.name) }"
-                   :style="getRoleStyle(role.name)"
-                   @click="scrollToRoleLatest(role.name)">
-                <div class="crew-role-card-header">
-                  <span class="crew-role-card-icon">{{ role.icon }}</span>
-                  <span class="crew-role-card-name">{{ role.displayName }}</span>
-                  <span v-if="role.isDecisionMaker" class="crew-role-card-dm">\u2605</span>
-                  <span class="crew-role-card-header-actions" @click.stop>
-                    <button v-if="isRoleStreaming(role.name)" class="crew-role-action-btn crew-role-abort-btn" @click.stop="abortRole(role.name)" :title="$t('crew.abortTask')">⏹</button>
-                    <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" :title="$t('crew.clearChat')">🗑</button>
-                  </span>
-                </div>
-                <div v-if="getRoleCurrentTask(role.name)" class="crew-role-card-feature">
-                  {{ getRoleCurrentTask(role.name) }}
-                </div>
-                <div v-if="isRoleStreaming(role.name) && getRoleCurrentTool(role.name)"
-                     class="crew-role-card-tool">
-                  {{ getRoleCurrentTool(role.name) }}
-                </div>
-              </div>
-            </div>
-
-            <!-- 底部操作区 -->
-            <div class="crew-panel-left-actions">
-              <button class="crew-add-role-btn" @click="showAddRole = true">
-                <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-                <span>{{ $t('crew.addRole') }}</span>
-              </button>
-              <button class="crew-action-btn" @click="controlAction('clear')" :title="$t('crew.clearSession')">
-                <span v-html="icons.close"></span>
-              </button>
-              <button class="crew-action-btn danger" @click="controlAction('stop_all')" :title="$t('crew.stopRound')">
-                <span v-html="icons.stop"></span>
-              </button>
-            </div>
-          </div>
-        </aside>
+        <crew-role-panel
+          :store="store"
+          :session-roles="sessionRoles"
+          @scroll-to-role="scrollToRoleLatest"
+          @control-action="controlAction"
+          @clear-role="clearRole"
+          @abort-role="abortRole"
+          @show-add-role="showAddRole = true"
+        />
 
         <!-- Center Panel: Chat Flow -->
         <div class="crew-panel-center">
 
       <!-- Messages -->
-      <div class="crew-messages" ref="messagesRef" @scroll="onScroll">
+      <div class="crew-messages" ref="messagesRef" @scroll="scroll.onScroll()">
         <div v-if="store.currentCrewMessages.length === 0" class="crew-empty">
           <div class="crew-empty-icon" v-html="icons.crew.replace(/16/g, '48')"></div>
           <div class="crew-empty-text" v-if="store.currentCrewSession">{{ $t('crew.emptyWaiting') }}</div>
           <div class="crew-empty-text" v-else>{{ $t('crew.emptyWaitingSession') }}</div>
         </div>
 
-        <div v-if="isLoadingHistory" class="crew-load-more crew-load-more-loading">
+        <div v-if="scroll.isLoadingHistory.value" class="crew-load-more crew-load-more-loading">
           <span class="crew-typing-dot"></span>
           <span class="crew-typing-dot"></span>
           <span class="crew-typing-dot"></span>
           {{ $t('crew.loadingHistory') }}
         </div>
-        <div v-else-if="hiddenBlockCount > 0" class="crew-load-more" @click="loadMoreBlocks">
-          {{ $t('crew.loadOlder') }} <span class="crew-load-more-count">({{ hiddenBlockCount }})</span>
+        <div v-else-if="scroll.hiddenBlockCount.value > 0" class="crew-load-more" @click="scroll.loadMoreBlocks()">
+          {{ $t('crew.loadOlder') }} <span class="crew-load-more-count">({{ scroll.hiddenBlockCount.value }})</span>
         </div>
-        <div v-else-if="hasOlderMessages" class="crew-load-more" @click="loadHistory">
+        <div v-else-if="scroll.hasOlderMessages.value" class="crew-load-more" @click="loadHistory">
           {{ $t('crew.loadHistory') }}
         </div>
 
-        <template v-for="(block, bidx) in visibleBlocks" :key="block.id">
+        <template v-for="(block, bidx) in scroll.visibleBlocks.value" :key="block.id">
           <!-- Global block: messages without taskId, render inline -->
           <template v-if="block.type === 'global'">
             <template v-for="(turn, tidx) in block.turns" :key="turn.id">
@@ -106,76 +86,14 @@ export default {
                 <span class="crew-round-label">Round {{ getMaxRound(turn) }}</span>
                 <div class="crew-round-line"></div>
               </div>
-              <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': turn.message.role === 'human' && turn.message.type === 'text' }]" :data-role="turn.message.role" :style="getRoleStyle(turn.message.role)">
-                <div class="crew-msg-body">
-                  <div v-if="turn.message.role !== 'human' || turn.message.type !== 'text'" class="crew-msg-header">
-                    <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
-                    <span class="crew-msg-name" :class="{ 'is-human': turn.message.role === 'human', 'is-system': turn.message.role === 'system' }">{{ shortName(turn.message.roleName) }}</span>
-                    <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
-                  </div>
-                  <div v-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
-                  <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
-                    <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
-                  </div>
-                  <div v-else-if="turn.message.type === 'role_error'" class="crew-msg-role-error">
-                    <span class="crew-error-icon">{{ turn.message.recoverable ? '\ud83d\udd04' : '\u274c' }}</span>
-                    <span>{{ turn.message.content }}</span>
-                  </div>
-                  <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
-                  <div v-if="turn.message.attachments && turn.message.attachments.length > 0" class="user-attachments" style="margin-top: 6px;">
-                    <div v-for="(att, aidx) in turn.message.attachments" :key="aidx" class="user-attachment-item" :class="{ 'is-image': att.isImage }">
-                      <img v-if="att.isImage && att.preview" :src="att.preview" :alt="att.name" class="user-attachment-image" />
-                      <div v-else class="user-attachment-file"><span class="file-name">{{ att.name }}</span></div>
-                    </div>
-                  </div>
-                  <div v-if="turn.message._sendFailed" class="crew-msg-send-failed">{{ $t('crew.sendFailed') }}</div>
-                </div>
-              </div>
-              <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :data-role="turn.role" :style="getRoleStyle(turn.role)">
-                <div class="crew-msg-body">
-                  <div class="crew-msg-header">
-                    <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
-                    <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
-                    <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
-                  </div>
-                  <template v-if="turn.textMsg">
-                    <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
-                  </template>
-                  <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
-                    <!-- Expanded history (above latest, chronological order) -->
-                    <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
-                      <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
-                        <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
-                      </template>
-                    </div>
-                    <!-- Latest tool + expand button -->
-                    <div class="crew-turn-tool-latest">
-                      <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
-                      <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? $t('crew.collapse') : $t('crew.expandOps', { count: turn.toolMsgs.length - 1 })">
-                        <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-                        <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
-                        <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
-                      </button>
-                    </div>
-                  </div>
-                  <div v-if="turn.imageMsgs.length > 0" class="crew-msg-images">
-                    <div v-for="img in turn.imageMsgs" :key="img.id" class="crew-msg-image">
-                      <img v-if="img.fileId" :src="getImageUrl(img)" class="crew-screenshot" @error="handleImageError($event)" @click="openImagePreview(getImageUrl(img))" :alt="'Screenshot by ' + (img.roleName || img.role)" />
-                      <div v-else class="crew-screenshot-expired">{{ $t('crew.imageExpired') }}</div>
-                    </div>
-                  </div>
-                  <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
-                    <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
-                      <div class="crew-route-header">
-                        <span class="crew-route-from">{{ shortName(turn.roleName) }}</span>
-                        <span class="crew-route-arrow">→</span>
-                        <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
-                      </div>
-                      <div v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <crew-turn-renderer
+                :turn="turn"
+                :show-human-bubble="true"
+                :expanded-turns="expandedTurns"
+                :icons="icons"
+                :get-role-display-name="getRoleDisplayName"
+                @toggle-turn="toggleTurn"
+              />
             </template>
           </template>
 
@@ -196,7 +114,6 @@ export default {
               </span>
             </div>
             <div v-if="isFeatureExpanded(block)" class="crew-feature-body">
-              <!-- History toggle (only when there are older turns) -->
               <button v-if="getBlockTurns(block).length > 1"
                       class="crew-feature-history-toggle"
                       :class="{ 'is-expanded': expandedHistories[block.taskId] }"
@@ -205,7 +122,6 @@ export default {
                 {{ $t('crew.viewHistory', { count: getBlockTurns(block).length - 1 }) }}
               </button>
 
-              <!-- History messages (collapsed by default) -->
               <div v-if="expandedHistories[block.taskId] && getBlockTurns(block).length > 1" class="crew-feature-history">
                 <template v-for="(turn, tidx) in getBlockTurns(block).slice(0, -1)" :key="turn.id">
                   <div v-if="tidx > 0 && shouldShowTurnDivider(getBlockTurns(block), tidx)" class="crew-turn-divider"></div>
@@ -214,145 +130,33 @@ export default {
                     <span class="crew-round-label">Round {{ getMaxRound(turn) }}</span>
                     <div class="crew-round-line"></div>
                   </div>
-                  <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :data-role="turn.message.role" :style="getRoleStyle(turn.message.role)">
-                    <div class="crew-msg-body">
-                      <div class="crew-msg-header">
-                        <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
-                        <span class="crew-msg-name">{{ shortName(turn.message.roleName) }}</span>
-                        <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
-                      </div>
-                      <div v-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
-                      <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
-                        <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
-                      </div>
-                      <div v-else-if="turn.message.type === 'role_error'" class="crew-msg-role-error">
-                        <span class="crew-error-icon">{{ turn.message.recoverable ? '\ud83d\udd04' : '\u274c' }}</span>
-                        <span>{{ turn.message.content }}</span>
-                      </div>
-                      <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
-                    </div>
-                  </div>
-                  <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :data-role="turn.role" :style="getRoleStyle(turn.role)">
-                    <div class="crew-msg-body">
-                      <div class="crew-msg-header">
-                        <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
-                        <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
-                        <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
-                      </div>
-                      <template v-if="turn.textMsg">
-                        <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
-                      </template>
-                      <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
-                        <!-- Expanded history (above latest, chronological order) -->
-                        <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
-                          <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
-                            <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
-                          </template>
-                        </div>
-                        <!-- Latest tool + expand button -->
-                        <div class="crew-turn-tool-latest">
-                          <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
-                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? $t('crew.collapse') : $t('crew.expandOps', { count: turn.toolMsgs.length - 1 })">
-                            <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-                            <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
-                            <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
-                          </button>
-                        </div>
-                      </div>
-                      <div v-if="turn.imageMsgs.length > 0" class="crew-msg-images">
-                        <div v-for="img in turn.imageMsgs" :key="img.id" class="crew-msg-image">
-                          <img v-if="img.fileId" :src="getImageUrl(img)" class="crew-screenshot" @error="handleImageError($event)" @click="openImagePreview(getImageUrl(img))" :alt="'Screenshot by ' + (img.roleName || img.role)" />
-                          <div v-else class="crew-screenshot-expired">{{ $t('crew.imageExpired') }}</div>
-                        </div>
-                      </div>
-                      <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
-                        <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
-                          <div class="crew-route-header">
-                            <span class="crew-route-from">{{ shortName(turn.roleName) }}</span>
-                            <span class="crew-route-arrow">→</span>
-                            <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
-                          </div>
-                          <div v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  <crew-turn-renderer
+                    :turn="turn"
+                    :expanded-turns="expandedTurns"
+                    :icons="icons"
+                    :get-role-display-name="getRoleDisplayName"
+                    @toggle-turn="toggleTurn"
+                  />
                 </template>
               </div>
 
               <!-- Latest turn (always visible) -->
               <template v-if="getBlockTurns(block).length > 0">
                 <template v-for="turn in [getBlockTurns(block)[getBlockTurns(block).length - 1]]" :key="turn.id">
-                  <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role)]" :data-role="turn.message.role" :style="getRoleStyle(turn.message.role)">
-                    <div class="crew-msg-body">
-                      <div class="crew-msg-header">
-                        <span v-if="turn.message.roleIcon" class="crew-msg-header-icon">{{ turn.message.roleIcon }}</span>
-                        <span class="crew-msg-name">{{ shortName(turn.message.roleName) }}</span>
-                        <span class="crew-msg-time">{{ formatTime(turn.message.timestamp) }}</span>
-                      </div>
-                      <div v-if="turn.message.type === 'system'" class="crew-msg-system">{{ turn.message.content }}</div>
-                      <div v-else-if="turn.message.type === 'human_needed'" class="crew-msg-human-needed">
-                        <span class="crew-control-icon" v-html="icons.bell"></span> {{ turn.message.content }}
-                      </div>
-                      <div v-else-if="turn.message.type === 'role_error'" class="crew-msg-role-error">
-                        <span class="crew-error-icon">{{ turn.message.recoverable ? '\ud83d\udd04' : '\u274c' }}</span>
-                        <span>{{ turn.message.content }}</span>
-                      </div>
-                      <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
-                    </div>
-                  </div>
-                  <div v-else class="crew-message crew-turn-group" :class="'crew-role-' + turn.role" :data-role="turn.role" :style="getRoleStyle(turn.role)">
-                    <div class="crew-msg-body">
-                      <div class="crew-msg-header">
-                        <span v-if="turn.roleIcon" class="crew-msg-header-icon">{{ turn.roleIcon }}</span>
-                        <span class="crew-msg-name">{{ shortName(turn.roleName) }}</span>
-                        <span class="crew-msg-time">{{ formatTime(turn.messages[0].timestamp) }}</span>
-                      </div>
-                      <template v-if="turn.textMsg">
-                        <div class="crew-msg-content markdown-body" v-html="mdRender(turn.textMsg.content)"></div>
-                      </template>
-                      <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
-                        <!-- Expanded history (above latest, chronological order) -->
-                        <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
-                          <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
-                            <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
-                          </template>
-                        </div>
-                        <!-- Latest tool + expand button -->
-                        <div class="crew-turn-tool-latest">
-                          <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
-                          <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="toggleTurn(turn.id)" :title="expandedTurns[turn.id] ? $t('crew.collapse') : $t('crew.expandOps', { count: turn.toolMsgs.length - 1 })">
-                            <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-                            <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
-                            <span class="crew-turn-expand-count">{{ turn.toolMsgs.length }}</span>
-                          </button>
-                        </div>
-                      </div>
-                      <div v-if="turn.imageMsgs.length > 0" class="crew-msg-images">
-                        <div v-for="img in turn.imageMsgs" :key="img.id" class="crew-msg-image">
-                          <img v-if="img.fileId" :src="getImageUrl(img)" class="crew-screenshot" @error="handleImageError($event)" @click="openImagePreview(getImageUrl(img))" :alt="'Screenshot by ' + (img.roleName || img.role)" />
-                          <div v-else class="crew-screenshot-expired">{{ $t('crew.imageExpired') }}</div>
-                        </div>
-                      </div>
-                      <div v-if="turn.routeMsgs.length > 0" class="crew-turn-routes">
-                        <div v-for="rm in turn.routeMsgs" :key="rm.id" class="crew-turn-route-item">
-                          <div class="crew-route-header">
-                            <span class="crew-route-from">{{ shortName(turn.roleName) }}</span>
-                            <span class="crew-route-arrow">→</span>
-                            <span class="crew-route-target-name">{{ rm.routeToName || getRoleDisplayName(rm.routeTo) }}</span>
-                          </div>
-                          <div v-if="rm.routeSummary" class="crew-route-summary">{{ rm.routeSummary }}</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  <crew-turn-renderer
+                    :turn="turn"
+                    :expanded-turns="expandedTurns"
+                    :icons="icons"
+                    :get-role-display-name="getRoleDisplayName"
+                    @toggle-turn="toggleTurn"
+                  />
                 </template>
               </template>
             </div>
           </div>
         </template>
 
-        <!-- Active Messages: single latest text message (hidden when all tasks completed) -->
+        <!-- Active Messages -->
         <div v-if="activeMessages.length > 0 && (hasStreamingMessage || kanbanInProgressCount > 0)" class="crew-active-messages">
           <div class="crew-active-messages-label">{{ $t('crew.latestMessage') }}</div>
           <div v-for="am in activeMessages" :key="am.id" class="crew-message" :class="['crew-msg-' + am.type, 'crew-role-' + am.role, { 'crew-msg-human-bubble': am.role === 'human' && am.type === 'text' }]" :data-role="am.role" :style="getRoleStyle(am.role)">
@@ -368,14 +172,12 @@ export default {
           </div>
         </div>
 
-        <!-- 回到最新按钮 -->
         <div class="crew-scroll-bottom"
-             :class="{ 'is-hidden': isAtBottom }"
-             @click="scrollToBottomAndReset">
+             :class="{ 'is-hidden': scroll.isAtBottom.value }"
+             @click="scroll.scrollToBottomAndReset()">
           {{ $t('crew.scrollToLatest') }}
         </div>
 
-        <!-- 初始化进度 -->
         <div v-if="isInitializing" class="crew-init-progress">
           <span class="crew-typing-dot"></span>
           <span class="crew-typing-dot"></span>
@@ -400,12 +202,12 @@ export default {
           <span class="crew-ask-hint-text">{{ currentPendingAsk.roleName }} {{ $t('crew.askingYou') }}</span>
           <span class="crew-ask-hint-dismiss" :title="$t('crew.dismissAsk')">✕</span>
         </div>
-        <div class="attachments-preview" v-if="attachments.length > 0">
-          <div class="attachment-item" v-for="(file, index) in attachments" :key="index">
+        <div class="attachments-preview" v-if="input.attachments.value.length > 0">
+          <div class="attachment-item" v-for="(file, index) in input.attachments.value" :key="index">
             <img v-if="file.preview" :src="file.preview" class="attachment-thumb" />
             <span v-else class="attachment-icon">\u{1F4CE}</span>
             <span class="attachment-name">{{ file.name }}</span>
-            <button class="attachment-remove" @click="removeAttachment(index)">&times;</button>
+            <button class="attachment-remove" @click="input.removeAttachment(index)">&times;</button>
           </div>
         </div>
         <div class="input-wrapper">
@@ -413,7 +215,7 @@ export default {
             type="file"
             ref="fileInput"
             id="crew-file-input"
-            @change="handleFileSelect"
+            @change="input.handleFileSelect($event)"
             multiple
             accept="image/*,text/*,.pdf,.doc,.docx,.xls,.xlsx,.json,.md,.py,.js,.ts,.css,.html"
             class="file-input-hidden"
@@ -426,24 +228,24 @@ export default {
           <div class="textarea-wrapper">
             <textarea
               ref="inputRef"
-              v-model="inputText"
-              @input="handleInput"
-              @keydown="handleKeydown"
-              @paste="handlePaste"
+              v-model="input.inputText.value"
+              @input="input.handleInput()"
+              @keydown="input.handleKeydown($event, () => sendMessage())"
+              @paste="input.handlePaste($event)"
               :placeholder="$t('crew.inputPlaceholder')"
               rows="1"
             ></textarea>
-            <div class="crew-at-menu" v-if="atMenuVisible && filteredAtRoles.length > 0">
-              <div v-for="(role, idx) in filteredAtRoles" :key="role.name"
-                class="crew-at-menu-item" :class="{ active: idx === atMenuIndex }"
-                @mousedown.prevent="selectAtRole(role)">
+            <div class="crew-at-menu" v-if="input.atMenuVisible.value && input.filteredAtRoles.value.length > 0">
+              <div v-for="(role, idx) in input.filteredAtRoles.value" :key="role.name"
+                class="crew-at-menu-item" :class="{ active: idx === input.atMenuIndex.value }"
+                @mousedown.prevent="input.selectAtRole(role)">
                 <span v-if="role.icon" class="crew-at-menu-icon">{{ role.icon }}</span>
                 <span class="crew-at-menu-name">{{ role.displayName }}</span>
                 <span class="crew-at-menu-desc">{{ role.description }}</span>
               </div>
             </div>
           </div>
-          <button class="send-btn" @click="sendMessage" :disabled="!canSend" :title="$t('crew.send')">
+          <button class="send-btn" @click="sendMessage" :disabled="!input.canSend.value" :title="$t('crew.send')">
             <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
           </button>
         </div>
@@ -452,141 +254,15 @@ export default {
         </div><!-- /crew-panel-center -->
 
         <!-- Right Panel: Feature Kanban -->
-        <aside class="crew-panel-right">
-          <div class="crew-panel-right-scroll">
-            <button class="crew-mobile-close" @click="store.crewMobilePanel = null"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> {{ $t('crew.close') }}</button>
-
-            <!-- 总进度 (顶部概览) -->
-            <div class="crew-kanban-total" v-if="kanbanProgress.total > 0">
-              <div class="crew-kanban-total-header">
-                <span>{{ $t('crew.totalProgress') }}</span>
-                <span>{{ kanbanProgress.done }} / {{ kanbanProgress.total }}  {{ Math.round(kanbanProgress.done / kanbanProgress.total * 100) }}%</span>
-              </div>
-              <div class="crew-kanban-total-bar">
-                <div class="crew-kanban-total-fill"
-                     :style="{ width: (kanbanProgress.done / kanbanProgress.total * 100) + '%' }"></div>
-              </div>
-            </div>
-
-            <!-- In-Progress Features -->
-            <div v-if="featureKanbanGrouped.inProgress.length > 0" class="crew-kanban-group">
-              <div class="crew-kanban-group-header is-active">
-                <span class="crew-kanban-group-dot is-active"></span>
-                {{ $t('crew.statusInProgress') }} ({{ featureKanbanGrouped.inProgress.length }})
-              </div>
-              <div v-for="feature in featureKanbanGrouped.inProgress" :key="feature.taskId"
-                   class="crew-feature-card"
-                   :class="{
-                     'is-expanded': isFeatureCardExpanded(feature.taskId),
-                     'has-streaming': feature.hasStreaming
-                   }">
-                <div class="crew-feature-card-header"
-                     @click="toggleFeatureCard(feature.taskId)"
-                     @dblclick="scrollToFeature(feature.taskId)">
-                  <svg class="crew-feature-card-chevron" viewBox="0 0 24 24" width="12" height="12">
-                    <path fill="currentColor" d="M10 6l6 6-6 6z"/>
-                  </svg>
-                  <span class="crew-feature-card-title">{{ feature.taskTitle }}</span>
-                  <span class="crew-feature-card-count">
-                    {{ feature.doneCount }} / {{ feature.totalCount }}
-                  </span>
-                  <span v-if="feature.createdAt" class="crew-feature-card-elapsed">{{ $t('crew.elapsed', { duration: formatDuration(nowTick - feature.createdAt) }) }}</span>
-                </div>
-                <div class="crew-feature-card-bar">
-                  <div class="crew-feature-card-bar-fill"
-                       :style="{ width: (feature.totalCount > 0 ? (feature.doneCount / feature.totalCount * 100) : 0) + '%' }">
-                  </div>
-                </div>
-                <div v-if="feature.activeRoles.length > 0" class="crew-feature-card-roles">
-                  <span class="crew-feature-card-roles-icons">
-                    <span v-for="ar in feature.activeRoles" :key="ar.role">{{ ar.roleIcon }}</span>
-                  </span>
-                  <span class="crew-feature-card-roles-label">{{ $t('crew.working') }}</span>
-                </div>
-                <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length > 0"
-                     class="crew-feature-card-todos">
-                  <div v-for="todo in feature.todos" :key="todo.id"
-                       class="crew-feature-card-todo" :class="'is-' + todo.status">
-                    <span class="todo-status">
-                      <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24" width="12" height="12">
-                        <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-                      </svg>
-                    </span>
-                    <span class="todo-text">
-                      {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
-                    </span>
-                    <span v-if="todo.roleIcon" class="todo-role">{{ todo.roleIcon }}</span>
-                  </div>
-                </div>
-                <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length === 0"
-                     class="crew-feature-card-empty">
-                  {{ $t('crew.statusInProgress') }}
-</div>
-              </div>
-            </div>
-
-            <!-- Completed Features (collapsed by default) -->
-            <div v-if="featureKanbanGrouped.completed.length > 0" class="crew-kanban-group">
-              <div class="crew-kanban-group-header is-completed" @click="showCompletedFeatures = !showCompletedFeatures">
-                <svg class="crew-kanban-group-chevron" :class="{ 'is-expanded': showCompletedFeatures }" viewBox="0 0 24 24" width="12" height="12">
-                  <path fill="currentColor" d="M10 6l6 6-6 6z"/>
-                </svg>
-                <span class="crew-kanban-group-dot is-completed"></span>
-                {{ $t('crew.statusCompleted') }} ({{ featureKanbanGrouped.completed.length }})
-              </div>
-              <template v-if="showCompletedFeatures">
-                <div v-for="feature in featureKanbanGrouped.completed" :key="feature.taskId"
-                     class="crew-feature-card is-completed"
-                     :class="{
-                       'is-expanded': isFeatureCardExpanded(feature.taskId)
-                     }">
-                  <div class="crew-feature-card-header"
-                       @click="toggleFeatureCard(feature.taskId)"
-                       @dblclick="scrollToFeature(feature.taskId)">
-                    <svg class="crew-feature-card-chevron" viewBox="0 0 24 24" width="12" height="12">
-                      <path fill="currentColor" d="M10 6l6 6-6 6z"/>
-                    </svg>
-                    <span class="crew-feature-card-title">{{ feature.taskTitle }}</span>
-                    <span class="crew-feature-card-count">
-                      {{ feature.doneCount }} / {{ feature.totalCount }}
-                    </span>
-                    <span v-if="feature.createdAt && feature.lastActivityAt" class="crew-feature-card-elapsed">{{ $t('crew.elapsed', { duration: formatDuration(feature.lastActivityAt - feature.createdAt) }) }}</span>
-                  </div>
-                  <div class="crew-feature-card-bar">
-                    <div class="crew-feature-card-bar-fill"
-                         :style="{ width: (feature.totalCount > 0 ? (feature.doneCount / feature.totalCount * 100) : 0) + '%' }">
-                    </div>
-                  </div>
-                  <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length > 0"
-                       class="crew-feature-card-todos">
-                    <div v-for="todo in feature.todos" :key="todo.id"
-                         class="crew-feature-card-todo" :class="'is-' + todo.status">
-                      <span class="todo-status">
-                        <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24" width="12" height="12">
-                          <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-                        </svg>
-                      </span>
-                      <span class="todo-text">
-                        {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
-                      </span>
-                      <span v-if="todo.roleIcon" class="todo-role">{{ todo.roleIcon }}</span>
-                    </div>
-                  </div>
-                  <div v-if="isFeatureCardExpanded(feature.taskId) && feature.todos.length === 0"
-                       class="crew-feature-card-empty">
-                    {{ $t('crew.statusCompleted') }}
-                  </div>
-                </div>
-              </template>
-            </div>
-
-            <!-- Empty state -->
-            <div v-if="featureKanban.length === 0" class="crew-kanban-empty">
-              <div class="crew-kanban-empty-text">{{ $t('crew.noFeatures') }}</div>
-            </div>
-          </div>
-
-        </aside>
+        <crew-feature-panel
+          :store="store"
+          :feature-kanban="featureKanban"
+          :feature-kanban-grouped="featureKanbanGrouped"
+          :kanban-progress-data="kanbanProgressData"
+          :now-tick="nowTick"
+          :icons="icons"
+          @scroll-to-feature="scrollToFeature"
+        />
       </div><!-- /crew-workspace -->
 
       <!-- Add Role Modal -->
@@ -594,14 +270,12 @@ export default {
         <div class="crew-add-role-modal">
           <div class="crew-add-role-title">{{ $t('crew.addRoleTitle') }}</div>
 
-          <!-- 一键添加预设 -->
           <div class="crew-add-role-presets">
             <button v-for="preset in availablePresets" :key="preset.name" class="crew-preset-btn" @click="quickAddPreset(preset)">
               <span v-if="preset.icon">{{ preset.icon }} </span>{{ preset.displayName }}
             </button>
           </div>
 
-          <!-- 自定义角色（折叠） -->
           <details class="crew-add-custom-details">
             <summary class="crew-add-custom-summary">{{ $t('crew.customRole') }}</summary>
             <div class="crew-add-role-form">
@@ -631,288 +305,26 @@ export default {
   data() {
     return {
       icons: ICONS,
-      inputText: '',
-      controlOpen: false,
       showAddRole: false,
-      attachments: [],   // { file, name, preview?, uploading, fileId? }
-      uploading: false,
       expandedTurns: {},
-      expandedTodoGroups: {},
       expandedFeatures: {},
       expandedHistories: {},
-      expandedFeatureCards: {},
-      showCompletedFeatures: false,
       nowTick: Date.now(),
-      isAtBottom: true,
-      visibleBlockCount: 20,
-      isLoadingMore: false,
-      isLoadingHistory: false,
-      atMenuVisible: false,
-      atQuery: '',
-      atMenuIndex: 0,
       newRole: this.getEmptyRole(),
-      rolePresets: [
-        {
-          name: 'pm',
-          displayName: 'PM-乔布斯',
-          icon: '',
-          description: '项目管理，需求分析，任务拆分和进度跟踪',
-          model: 'sonnet',
-          isDecisionMaker: true,
-          claudeMd: `你是 Steve Jobs（史蒂夫·乔布斯），以他的思维方式和工作风格来管理这个项目。
-追求极致简洁，对产品品质零容忍，善于从用户视角思考，敢于砍掉不必要的功能。
-
-# 绝对禁令：工具使用限制
-你**绝对不能**使用以下工具修改任何文件：
-- Edit 工具 — 禁止
-- Write 工具 — 禁止
-- NotebookEdit 工具 — 禁止
-
-你**可以**使用的工具：
-- Read — 读取文件内容
-- Grep — 搜索代码
-- Glob — 查找文件
-- Bash — 仅限 git 命令（git status/add/commit/push/tag/log/diff）和只读命令
-
-如果你需要修改任何文件（无论多小的改动），必须 ROUTE 给 developer 执行。
-
-# 工作方式
-- 技术方案交给开发者自行设计和决策，不做微观管理
-- 只关注需求是否满足、进度是否正常、质量是否达标
-- 遇到跨角色协调问题时介入，其他时候让团队自主运转
-
-# 工作约束
-- 收到新任务后，先制定实施计划，然后 @human 请用户审核计划，审核通过后再分配执行。
-- 收到包含多个独立任务的消息时，必须用多个 ROUTE 块一次性并行分配给不同的 dev，不要逐个处理。
-- 分配任务时必须在 ROUTE 块中指定 task（唯一ID如 task-1）和 taskTitle（简短描述），用于消息按 feature 分组显示。
-- PM 拥有 commit + push + tag 的自主权。测试全通过即可自行 commit/push/tag。`
-        },
-        {
-          name: 'developer',
-          displayName: '开发者-托瓦兹',
-          icon: '',
-          description: '代码编写、架构设计和功能实现',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是一个全栈高级工程师，兼具架构设计能力和编码实现能力。
-技术方案自己设计，代码自己写。追求简洁高效，厌恶不必要的抽象，注重实用主义。
-遇到复杂任务时先分析现有代码，设计方案，再动手实现。不需要等别人给你设计文档。
-
-# 协作流程
-- 代码完成后，你必须同时发两个 ROUTE 块，分别交给审查者和测试者（缺一不可）：
-
----ROUTE---
-to: reviewer
-summary: 请审查代码变更...
----END_ROUTE---
-
----ROUTE---
-to: tester
-summary: 请测试以下变更...
----END_ROUTE---
-
-- 多实例模式下，你会被分配到一个开发组，系统会自动告诉你搭档的 reviewer 和 tester 是谁
-- 收到审查者的代码质量问题：修改后再次同时 ROUTE 给 reviewer + tester
-- 收到测试者的 Bug 报告：修复后再次同时 ROUTE 给 reviewer + tester
-- 两者都通过后，交给决策者汇总`
-        },
-        {
-          name: 'reviewer',
-          displayName: '审查者-马丁',
-          icon: '',
-          description: '代码审查和质量把控',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Robert C. Martin（Uncle Bob），以他的 Clean Code 标准来审查代码。
-像 Uncle Bob 一样：严格遵循整洁代码原则，关注命名、函数大小、单一职责，不放过任何代码坏味道，但给出建设性的改进建议。
-你负责代码审查，区分必须修复的问题和改进建议。
-
-# 协作流程
-- 审核通过后，你必须 ROUTE 给决策者报告审核结果
-- 发现问题则打回给开发者修改`
-        },
-        {
-          name: 'tester',
-          displayName: '测试-贝克',
-          icon: '',
-          description: '测试用例编写和质量验证',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 James Bach（詹姆斯·巴赫），以他的探索式测试理念来做质量保证。
-像 James Bach 一样：不机械地写用例，而是像侦探一样思考，主动探索边界条件和异常场景，质疑每一个假设，追求发现真正有价值的 bug。
-你负责测试策略、用例编写、自动化测试和测试报告。
-
-# 协作流程
-- 测试通过后，你必须 ROUTE 给决策者报告测试结果
-- 发现 Bug 则交给开发者修复`
-        },
-        {
-          name: 'designer',
-          displayName: '设计师-拉姆斯',
-          icon: '',
-          description: '用户交互设计和页面视觉设计',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Dieter Rams（迪特·拉姆斯），以他的设计十诫来指导设计工作。
-像 Rams 一样：好的设计是创新的、实用的、美观的、易懂的、谦逊的、诚实的、经久的、注重细节的、环保的、尽可能少的。
-你负责交互设计、视觉方案、用户体验优化。输出具体的设计方案（布局、颜色、间距、交互流程），而非抽象建议。`
-        },
-        {
-          name: 'writer',
-          displayName: '写作-Procida',
-          icon: '',
-          description: '技术文档和 API 文档编写',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Daniele Procida（Diátaxis 框架创始人），以他的文档哲学来写技术文档。
-像 Procida 一样：将文档分为教程、操作指南、参考和解释四种类型，每种有明确目的和写法，确保读者能快速找到需要的信息。
-你负责编写清晰、结构化、面向读者的技术文档。`
-        },
-        {
-          name: 'manager-musk',
-          displayName: '管理者-马斯克',
-          icon: '',
-          description: '第一性原理思维，激进创新推动',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Elon Musk（埃隆·马斯克），以第一性原理拆解问题，拒绝"行业惯例"的束缚。
-像马斯克一样：设定看似不可能的目标，然后倒推实现路径；压缩时间线，并行推进多条战线；用物理学思维而非类比思维做决策。
-你负责从根本上质疑假设，推动激进但可行的创新方案。`
-        },
-        {
-          name: 'manager-grove',
-          displayName: '管理者-格鲁夫',
-          icon: '',
-          description: '目标导向管理，危机应对决策',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Andy Grove（安迪·格鲁夫），以偏执狂生存哲学管理项目。
-像格鲁夫一样：只有偏执狂才能生存，识别战略转折点，用 OKR 驱动执行，在危机中果断决策。
-你负责识别关键风险、设定可衡量目标、确保团队在正确的事情上保持高度聚焦。`
-        },
-        {
-          name: 'developer-carmack',
-          displayName: '开发者-卡马克',
-          icon: '',
-          description: '极致性能优化和底层编程',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 John Carmack（约翰·卡马克），以极致性能优化和底层系统编程见长。
-像卡马克一样：每一个 CPU 周期都值得优化，深入理解硬件和底层原理，用最直接的方式解决问题，代码要快到不可思议。
-你负责编写高性能代码，优化瓶颈，追求极致的执行效率。`
-        },
-        {
-          name: 'developer-gosling',
-          displayName: '开发者-高斯林',
-          icon: '',
-          description: '工程化设计和跨平台架构',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 James Gosling（詹姆斯·高斯林，Java之父），以工程化思维设计可靠系统。
-像高斯林一样：Write Once Run Anywhere，重视类型安全和内存管理，设计简洁但严谨的 API，为大规模工程服务。
-你负责设计可靠、可移植、易维护的系统架构和代码实现。`
-        },
-        {
-          name: 'architect-knuth',
-          displayName: '架构师-高德纳',
-          icon: '',
-          description: '算法分析和计算机科学理论',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Donald Knuth（高德纳），以严谨的计算机科学理论和算法分析指导工程决策。
-像高德纳一样：过早优化是万恶之源，但成熟的算法选择是智慧之始；用数学证明正确性，用 Literate Programming 让代码自文档化。
-你负责算法设计、复杂度分析和计算理论层面的技术决策。`
-        },
-        {
-          name: 'designer-norman',
-          displayName: '设计师-诺曼',
-          icon: '',
-          description: '用户中心设计和认知心理学',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Don Norman（唐·诺曼），以认知心理学和用户中心设计理念指导产品设计。
-像诺曼一样：好的设计让人一看就懂，差的设计需要说明书；关注 affordance（功能可见性）、feedback（反馈）和 mapping（映射）三大原则。
-你负责从认知科学角度审视交互设计，确保产品符合用户心智模型。`
-        },
-        {
-          name: 'tester-beck',
-          displayName: '测试-肯特贝克',
-          icon: '',
-          description: '测试驱动开发和极限编程',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Kent Beck（肯特·贝克，TDD之父），以测试驱动开发和极限编程方法论指导质量保证。
-像贝克一样：红-绿-重构，先写失败的测试再写让它通过的代码；小步前进，频繁反馈，简单设计，勇敢重构。
-你负责设计测试策略，编写测试用例，用 TDD 循环驱动高质量代码。`
-        },
-        {
-          name: 'researcher-feynman',
-          displayName: '研究员-费曼',
-          icon: '',
-          description: '第一性原理分析和深入浅出解释',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Richard Feynman（理查德·费曼），以好奇心驱动的第一性原理思考来研究问题。
-像费曼一样：如果你不能用简单的语言解释它，说明你还没有真正理解它；拒绝权威崇拜，拆解到最基本的原理重新构建理解。
-你负责深度研究、分析复杂问题本质，并用通俗易懂的方式呈现结论。`
-        },
-        {
-          name: 'strategist-munger',
-          displayName: '策略师-芒格',
-          icon: '',
-          description: '多元思维模型和跨学科分析',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Charlie Munger（查理·芒格），以多元思维模型和逆向思考来做战略分析。
-像芒格一样：手里只有锤子的人看什么都是钉子，所以要掌握多个学科的核心模型；先想怎么会失败，再想怎么能成功。
-你负责跨学科视角分析问题，识别认知偏差，提供反直觉但深刻的战略建议。`
-        },
-        {
-          name: 'strategist-buffett',
-          displayName: '策略师-巴菲特',
-          icon: '',
-          description: '价值投资和长期主义',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Warren Buffett（沃伦·巴菲特），以护城河理论和安全边际原则来评估决策。
-像巴菲特一样：别人贪婪时恐惧，别人恐惧时贪婪；寻找有持久竞争优势的标的，用合理价格买入优质资产，耐心持有。
-你负责长期价值评估、风险收益分析和投资策略制定。`
-        },
-        {
-          name: 'analyst-simons',
-          displayName: '分析师-西蒙斯',
-          icon: '',
-          description: '量化模型和数据驱动决策',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 Jim Simons（吉姆·西蒙斯），以数学模型和统计套利方法来分析市场。
-像西蒙斯一样：用数据说话而非凭直觉，寻找隐藏在噪声中的信号，构建可回测的量化模型，纪律性地执行策略。
-你负责数据分析、量化建模、统计检验和数据驱动的决策支持。`
-        },
-        {
-          name: 'writer-orwell',
-          displayName: '写作-奥威尔',
-          icon: '',
-          description: '简洁有力的写作风格',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是 George Orwell（乔治·奥威尔），以简洁、清晰、有力的写作六规则来创作文本。
-像奥威尔一样：能用短词不用长词，能删的词一定删，能用主动语态不用被动语态，绝不用行话糊弄读者。
-你负责撰写简洁有力、直击要害的文案、报告和分析文本。`
-        },
-        {
-          name: 'strategist-sunzi',
-          displayName: '策略师-孙子',
-          icon: '',
-          description: '兵法策略和博弈思维',
-          model: 'sonnet',
-          isDecisionMaker: false,
-          claudeMd: `你是孙武（孙子），以孙子兵法的战略思维来分析竞争态势和制定策略。
-像孙子一样：知己知彼百战不殆，上兵伐谋其次伐交，不战而屈人之兵善之善者也。兵无常势水无常形，因敌变化而取胜。
-你负责竞争分析、博弈推演、战略规划和风险评估。`
-        }
-      ]
+      rolePresets
     };
+  },
+
+  created() {
+    this.input = createCrewInput(this.store, this.authStore, {
+      getInputRef: () => this.$refs.inputRef,
+      getFileInputRef: () => this.$refs.fileInput,
+      getCurrentPendingAsk: () => this.currentPendingAsk
+    });
+    this.scroll = createCrewScroll(this.store, {
+      getMessagesRef: () => this.$refs.messagesRef,
+      getFeatureBlocks: () => this.featureBlocks
+    });
   },
 
   computed: {
@@ -928,142 +340,32 @@ summary: 请测试以下变更...
     hasStreamingMessage() {
       return this.store.currentCrewMessages.some(m => m._streaming);
     },
-    activeToolHint() {
-      const tools = this.store.currentCrewStatus?.currentToolByRole;
-      if (!tools) return '';
-      const entries = Object.entries(tools);
-      if (entries.length === 0) return '';
-      const [role, tool] = entries[0];
-      return `${tool}...`;
-    },
     totalTokens() {
       const s = this.store.currentCrewStatus;
       if (!s) return 0;
       return (s.totalInputTokens || 0) + (s.totalOutputTokens || 0);
-    },
-    canSend() {
-      const hasContent = this.inputText.trim() || this.attachments.length > 0;
-      const notUploading = !this.uploading && this.attachments.every(a => a.fileId);
-      return hasContent && notUploading;
-    },
-    filteredAtRoles() {
-      if (!this.atMenuVisible) return [];
-      const roles = this.store.currentCrewSession?.roles || [];
-      const q = this.atQuery.toLowerCase();
-      if (!q) return roles;
-      return roles.filter(r =>
-        r.name.toLowerCase().includes(q) ||
-        r.displayName.toLowerCase().includes(q)
-      );
     },
     availablePresets() {
       const existing = this.store.currentCrewSession?.roles?.map(r => r.name) || [];
       return this.rolePresets.filter(p => !existing.includes(p.name));
     },
     crewTasks() {
-      const messages = this.store.currentCrewMessages;
-      let tasks = [];
-      // Scan messages in order; later TASKS blocks override earlier ones
-      for (const msg of messages) {
-        if (msg.type !== 'text' || !msg.content) continue;
-        const match = msg.content.match(/---TASKS---([\s\S]*?)---END_TASKS---/);
-        if (!match) continue;
-        const block = match[1].trim();
-        const parsed = [];
-        for (const line of block.split('\n')) {
-          const m = line.match(/^-\s*\[([ xX])\]\s*(.+)/);
-          if (!m) continue;
-          const done = m[1] !== ' ';
-          let text = m[2].trim();
-          let assignee = null;
-          let taskId = null;
-          const atMatch = text.match(/@(\w+)\s*$/);
-          if (atMatch) {
-            assignee = atMatch[1];
-            text = text.replace(/@\w+\s*$/, '').trim();
-          }
-          const idMatch = text.match(/#(\S+)/);
-          if (idMatch) {
-            taskId = idMatch[1];
-            text = text.replace(/#\S+/, '').trim();
-          }
-          parsed.push({ done, text, assignee, taskId });
-        }
-        if (parsed.length > 0) tasks = parsed;
-      }
-      return tasks;
+      return parseCrewTasks(this.store.currentCrewMessages);
     },
     completedTaskCount() {
       return this.crewTasks.filter(t => t.done).length;
     },
-    pendingTasks() {
-      return this.crewTasks.filter(t => !t.done);
-    },
     doneTasks() {
       return this.crewTasks.filter(t => t.done);
     },
-    completedTaskIds() {
-      // Match done crewTasks to activeTasks to get taskIds
-      // Priority: exact taskId match > text fuzzy match (fallback)
-      const ids = new Set();
-      const done = this.doneTasks;
-      if (done.length === 0) return ids;
-      const activeTaskIdSet = new Set(this.activeTasks.map(at => at.id));
-      for (const task of done) {
-        if (task.taskId && activeTaskIdSet.has(task.taskId)) {
-          ids.add(task.taskId);
-        } else {
-          const t = task.text.toLowerCase();
-          for (const at of this.activeTasks) {
-            const title = at.title.toLowerCase();
-            if (t.includes(title) || title.includes(t)) {
-              ids.add(at.id);
-            }
-          }
-        }
-      }
-      return ids;
-    },
-    taskProgress() {
-      if (this.crewTasks.length === 0) return 0;
-      return Math.round((this.completedTaskCount / this.crewTasks.length) * 100);
-    },
     activeTasks() {
-      // 优先使用后端持久化的 features 列表（包含历史完成的 feature）
-      const taskMap = new Map();
       const persistedFeatures = this.store.currentCrewStatus?.features || [];
-      for (const f of persistedFeatures) {
-        taskMap.set(f.taskId, { title: f.taskTitle, createdAt: f.createdAt || 0 });
-      }
-      // 补充从消息中收集的（兜底，确保实时性）
-      for (const msg of this.store.currentCrewMessages) {
-        if (msg.taskId && msg.taskTitle && !taskMap.has(msg.taskId)) {
-          taskMap.set(msg.taskId, { title: msg.taskTitle, createdAt: msg.timestamp || 0 });
-        }
-      }
-      return Array.from(taskMap, ([id, info]) => ({ id, title: info.title, createdAt: info.createdAt }));
+      return collectActiveTasks(persistedFeatures, this.store.currentCrewMessages);
     },
-    activeRolesTasks() {
-      // 找出当前活跃角色（正在 streaming 的）及其 task
-      const active = [];
-      const messages = this.store.currentCrewMessages;
-      const seen = new Set();
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i];
-        if (m._streaming && m.role && !seen.has(m.role)) {
-          seen.add(m.role);
-          active.push({
-            role: m.role,
-            roleName: m.roleName,
-            roleIcon: m.roleIcon,
-            taskTitle: m.taskTitle
-          });
-        }
-      }
-      return active;
+    completedTaskIds() {
+      return computeCompletedTaskIds(this.doneTasks, this.activeTasks);
     },
     activeMessages() {
-      // Return the single latest text message (regardless of role)
       const messages = this.store.currentCrewMessages;
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
@@ -1078,78 +380,36 @@ summary: 请测试以下变更...
       const completed = this.completedTaskIds;
       const len = allMessages.length;
 
-      // Initialize instance cache if needed
       if (!this._fbCache) {
-        this._fbCache = { segments: [], blocks: [], processedLen: 0, blockCounter: 0, turnsCache: new Map(), _lastArr: null, _segIndex: new Map() };
+        this._fbCache = createFbCache(null);
       }
       const cache = this._fbCache;
 
-      // Detect array reference change (e.g. crew_session_restored replaces the array)
       if (cache._lastArr !== allMessages) {
-        cache.segments = [];
-        cache.blocks = [];
-        cache.processedLen = 0;
-        cache.blockCounter = 0;
-        cache.turnsCache.clear();
-        cache._segIndex = new Map();
-        cache._lastArr = allMessages;
+        Object.assign(cache, createFbCache(allMessages));
         if (len === 0) return cache.blocks;
-        return this._fullBuildFeatureBlocks(allMessages, completed, cache);
+        return fullBuildFeatureBlocks(allMessages, completed, cache);
       }
 
-      // Empty messages — reset cache
       if (len === 0) {
-        cache.segments = [];
-        cache.blocks = [];
-        cache.processedLen = 0;
-        cache.blockCounter = 0;
-        cache.turnsCache.clear();
-        cache._segIndex = new Map();
+        Object.assign(cache, createFbCache(allMessages));
         return cache.blocks;
       }
 
-      // Step 1: Incremental segmentation — only process new messages
       const startIdx = cache.processedLen;
       if (startIdx > len) {
-        // Messages shrunk (e.g. clear) — full rebuild
-        cache.segments = [];
-        cache.blocks = [];
-        cache.processedLen = 0;
-        cache.blockCounter = 0;
-        cache.turnsCache.clear();
-        cache._segIndex = new Map();
-        return this._fullBuildFeatureBlocks(allMessages, completed, cache);
+        Object.assign(cache, createFbCache(allMessages));
+        return fullBuildFeatureBlocks(allMessages, completed, cache);
       }
 
       if (startIdx < len) {
-        // New messages to process — extend segments incrementally
-        this._appendToSegments(allMessages, startIdx, cache);
+        appendToSegments(allMessages, startIdx, cache);
       }
 
-      // Step 2: Rebuild blocks from segments (segments are stable, turns are cached)
-      this._rebuildBlocksFromSegments(cache, completed);
-
+      rebuildBlocksFromSegments(cache, completed);
       return cache.blocks;
     },
-
-    visibleBlocks() {
-      const all = this.featureBlocks;
-      if (all.length <= this.visibleBlockCount) return all;
-      return all.slice(all.length - this.visibleBlockCount);
-    },
-
-    hiddenBlockCount() {
-      return Math.max(0, this.featureBlocks.length - this.visibleBlockCount);
-    },
-
-    hasOlderMessages() {
-      const sid = this.store.currentConversation;
-      const older = this.store.crewOlderMessages[sid];
-      return older?.hasMore || false;
-    },
-
     pendingAsks() {
-      // FIFO queue of pending AskUserQuestion messages
       const asks = [];
       const messages = this.store.currentCrewMessages;
       for (const msg of messages) {
@@ -1164,172 +424,27 @@ summary: 请测试以下变更...
       }
       return asks;
     },
-
     currentPendingAsk() {
       return this.pendingAsks.length > 0 ? this.pendingAsks[0] : null;
     },
-
     todosByFeature() {
-      const messages = this.store.currentCrewMessages;
-      if (!messages) return [];
-
-      // Phase 1: 收集所有 TodoWrite 消息，按 (taskId, role) 分组
-      const historyMap = new Map();
-      const latestMap = new Map();
-
-      for (const m of messages) {
-        if (m.type !== 'tool' || m.toolName !== 'TodoWrite' || !m.toolInput?.todos) continue;
-        const key = `${m.taskId || 'global'}::${m.role}`;
-
-        if (!historyMap.has(key)) historyMap.set(key, []);
-        historyMap.get(key).push({ timestamp: m.timestamp, todos: m.toolInput.todos });
-
-        latestMap.set(key, {
-          taskId: m.taskId || null,
-          taskTitle: m.taskTitle || null,
-          role: m.role, roleIcon: m.roleIcon, roleName: m.roleName,
-          todos: m.toolInput.todos,
-          timestamp: m.timestamp,
-        });
-      }
-
-      // Phase 2: 为每个 in_progress todo 推算 startedAt
-      for (const [key, entry] of latestMap) {
-        const history = historyMap.get(key) || [];
-        entry.todos = entry.todos.map(todo => {
-          if (todo.status !== 'in_progress') return todo;
-          let startedAt = entry.timestamp;
-          for (const snapshot of history) {
-            const match = snapshot.todos.find(t => t.content === todo.content);
-            if (match && match.status === 'in_progress') {
-              startedAt = snapshot.timestamp;
-              break;
-            }
-          }
-          return { ...todo, startedAt };
-        });
-      }
-
-      // Phase 3: 转为数组，按 taskId 分组
-      const groups = new Map();
-      for (const entry of latestMap.values()) {
-        const tid = entry.taskId || '_global';
-        if (!groups.has(tid)) {
-          groups.set(tid, { taskId: entry.taskId, taskTitle: entry.taskTitle, entries: [] });
-        }
-        groups.get(tid).entries.push(entry);
-      }
-
-      return Array.from(groups.values());
+      return buildTodosByFeature(this.store.currentCrewMessages);
     },
-
-    todoTotalProgress() {
-      let total = 0, done = 0;
-      for (const group of this.todosByFeature) {
-        for (const entry of group.entries) {
-          total += entry.todos.length;
-          done += entry.todos.filter(t => t.status === 'completed').length;
-        }
-      }
-      return { total, done };
-    },
-
     sessionRoles() {
       return this.store.currentCrewSession?.roles || [];
     },
-
     featureKanban() {
-      // 1. 收集所有 feature
-      const features = new Map();
-
-      // 从 activeTasks 获取所有 feature（含 createdAt）
-      for (const task of this.activeTasks) {
-        features.set(task.id, {
-          taskId: task.id,
-          taskTitle: task.title,
-          todos: [],
-          doneCount: 0,
-          totalCount: 0,
-          activeRoles: [],
-          isCompleted: this.completedTaskIds.has(task.id),
-          hasStreaming: false,
-          createdAt: task.createdAt || 0,
-          lastActivityAt: 0,
-        });
-      }
-
-      // 2. 合并 todosByFeature 的 todo 数据
-      for (const group of this.todosByFeature) {
-        const tid = group.taskId || '_global';
-        let feature = features.get(tid);
-        if (!feature) {
-          feature = {
-            taskId: tid,
-            taskTitle: group.taskTitle || this.$t('crew.globalTask'),
-            todos: [],
-            doneCount: 0,
-            totalCount: 0,
-            activeRoles: [],
-            isCompleted: false,
-            hasStreaming: false,
-            createdAt: 0,
-            lastActivityAt: 0,
-          };
-          features.set(tid, feature);
-        }
-        for (const entry of group.entries) {
-          for (const todo of entry.todos) {
-            feature.todos.push({
-              ...todo,
-              roleIcon: entry.roleIcon,
-              roleName: entry.roleName,
-              id: `${tid}_${entry.role}_${feature.todos.length}`
-            });
-            feature.totalCount++;
-            if (todo.status === 'completed') feature.doneCount++;
-          }
-        }
-      }
-
-      // 3. 合并 featureBlocks 的活跃角色数据和最后活动时间
-      for (const block of this.featureBlocks) {
-        if (block.type !== 'feature') continue;
-        const feature = features.get(block.taskId);
-        if (feature) {
-          if (block.activeRoles) feature.activeRoles = block.activeRoles;
-          if (block.hasStreaming) feature.hasStreaming = true;
-          if (block.lastActivityAt > feature.lastActivityAt) {
-            feature.lastActivityAt = block.lastActivityAt;
-          }
-        }
-      }
-
-      // 4. 转为数组，按 createdAt 倒序（最新的在前）
-      return Array.from(features.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      return buildFeatureKanban(
+        this.activeTasks, this.todosByFeature, this.featureBlocks,
+        this.completedTaskIds, this.$t('crew.globalTask')
+      );
     },
-
     featureKanbanGrouped() {
-      const inProgress = [];
-      const completed = [];
-      for (const f of this.featureKanban) {
-        if (f.isCompleted) {
-          completed.push(f);
-        } else {
-          inProgress.push(f);
-        }
-      }
-      return { inProgress, completed };
+      return groupKanban(this.featureKanban);
     },
-
-    kanbanProgress() {
-      let total = 0, done = 0;
-      for (const f of this.featureKanban) {
-        total += f.totalCount;
-        done += f.doneCount;
-      }
-      return { total, done };
+    kanbanProgressData() {
+      return kanbanProgress(this.featureKanban);
     },
-
     kanbanInProgressCount() {
       return this.featureKanbanGrouped.inProgress.length;
     }
@@ -1343,28 +458,18 @@ summary: 请测试以下变更...
       this.store.crewInProgressCount = val;
     },
     'store.currentConversation'(newId, oldId) {
-      // Close mobile drawer on conversation switch
       this.store.crewMobilePanel = null;
-      // 保存旧会话草稿
-      if (oldId && this.inputText) {
-        this.store.inputDrafts[oldId] = this.inputText;
-      } else if (oldId) {
-        delete this.store.inputDrafts[oldId];
-      }
-      // 恢复新会话草稿
-      this.inputText = (newId && this.store.inputDrafts[newId]) || '';
+      if (oldId) this.input.saveDraft(oldId);
+      this.input.restoreDraft(newId);
       this._draftConvId = newId;
-
-      // Reset featureBlocks cache on conversation switch
       this._fbCache = null;
       clearMarkdownCache();
-
-      this.visibleBlockCount = 20;
+      this.scroll.visibleBlockCount.value = 20;
       this.$nextTick(() => {
-        setTimeout(() => this.scrollToMeaningfulContent(), 300);
+        setTimeout(() => this.scroll.scrollToMeaningfulContent(), 300);
       });
     },
-    inputText(val) {
+    'input.inputText.value'(val) {
       const convId = this.store.currentConversation;
       if (convId) {
         if (val) {
@@ -1376,85 +481,33 @@ summary: 请测试以下变更...
     },
     'store.currentCrewMessages': {
       handler() {
-        this.$nextTick(() => this.smartScrollToBottom());
+        this.$nextTick(() => this.scroll.smartScrollToBottom());
       },
       deep: true
     }
   },
 
   methods: {
+    formatTime,
+    formatTokens,
+    formatDuration,
+    shortName,
+    getRoleStyle,
+    getImageUrl,
+    shouldShowTurnDivider,
+    getMaxRound,
+    mdRender: renderMarkdown,
+
     getEmptyRole() {
       return { name: '', displayName: '', icon: '\u{1F916}', description: '', model: 'sonnet', claudeMd: '', isDecisionMaker: false };
     },
-
-    formatTime(ts) {
-      if (!ts) return '';
-      const d = new Date(ts);
-      return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    },
-
-    formatTokens(n) {
-      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-      if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
-      return String(n);
-    },
-
-    formatDuration(ms) {
-      if (!ms || ms < 0) return '';
-      const s = Math.floor(ms / 1000);
-      if (s < 60) return s + 's';
-      const m = Math.floor(s / 60);
-      if (m < 60) return m + 'm ' + (s % 60) + 's';
-      const h = Math.floor(m / 60);
-      return h + 'h ' + (m % 60) + 'm';
-    },
-
-    mdRender: renderMarkdown,
 
     toggleTurn(turnId) {
       this.expandedTurns[turnId] = !this.expandedTurns[turnId];
     },
 
-    getMaxRound(turn) {
-      if (!turn.routeMsgs || turn.routeMsgs.length === 0) return 0;
-      let max = 0;
-      for (const rm of turn.routeMsgs) {
-        if (rm.round > max) max = rm.round;
-      }
-      return max;
-    },
-
     toggleFeature(taskId) {
       this.expandedFeatures[taskId] = !this.expandedFeatures[taskId];
-    },
-
-    toggleTodoGroup(taskId) {
-      const key = taskId || '_global';
-      this.expandedTodoGroups[key] = !(key in this.expandedTodoGroups ? this.expandedTodoGroups[key] : true);
-    },
-
-    isTodoGroupExpanded(taskId) {
-      const key = taskId || '_global';
-      if (!(key in this.expandedTodoGroups)) {
-        return true;
-      }
-      return this.expandedTodoGroups[key];
-    },
-
-    groupDoneCount(group) {
-      let count = 0;
-      for (const entry of group.entries) {
-        count += entry.todos.filter(t => t.status === 'completed').length;
-      }
-      return count;
-    },
-
-    groupTotalCount(group) {
-      let count = 0;
-      for (const entry of group.entries) {
-        count += entry.todos.length;
-      }
-      return count;
     },
 
     toggleHistory(taskId) {
@@ -1462,270 +515,20 @@ summary: 请测试以下变更...
     },
 
     isFeatureExpanded(block) {
-      // If manually toggled, use that state
       if (block.taskId in this.expandedFeatures) {
         return this.expandedFeatures[block.taskId];
       }
-      // Has pending ask → force expand
       if (block.hasPendingAsk) return true;
-      // Streaming → expand
       if (block.hasStreaming) return true;
-      // Not completed → expand
       if (!block.isCompleted) return true;
-      // Completed: expand last 2 feature blocks, collapse earlier ones
       const featureOnly = this.featureBlocks.filter(b => b.type === 'feature');
       const idx = featureOnly.findIndex(b => b.id === block.id);
       const fromEnd = featureOnly.length - 1 - idx;
       return fromEnd < 2;
     },
 
-    shouldShowTurnDivider(turns, tidx) {
-      const prev = turns[tidx - 1];
-      const curr = turns[tidx];
-      const prevRole = prev.type === 'turn' ? prev.role : prev.message?.role;
-      const currRole = curr.type === 'turn' ? curr.role : curr.message?.role;
-      return prevRole && currRole && prevRole !== currRole;
-    },
-
-    _buildTurns(messages) {
-      const turns = [];
-      let currentTurn = null;
-      let turnCounter = 0;
-
-      const flushTurn = () => {
-        if (currentTurn) {
-          const textMsgs = currentTurn.messages.filter(m => m.type === 'text');
-          if (textMsgs.length > 1) {
-            currentTurn.textMsg = { ...textMsgs[0], content: textMsgs.map(m => m.content).join('') };
-          } else {
-            currentTurn.textMsg = textMsgs[0] || null;
-          }
-          currentTurn.toolMsgs = currentTurn.messages.filter(m => m.type === 'tool');
-          currentTurn.routeMsgs = currentTurn.messages.filter(m => m.type === 'route');
-          currentTurn.imageMsgs = currentTurn.messages.filter(m => m.type === 'image');
-          turns.push(currentTurn);
-          currentTurn = null;
-        }
-      };
-
-      for (const msg of messages) {
-        if (msg.type === 'system' || msg.type === 'human_needed' || msg.type === 'role_error') {
-          flushTurn();
-          turns.push({ type: msg.type, message: msg, id: 'standalone_' + (msg.id || turnCounter++) });
-          continue;
-        }
-        if (msg.type === 'route') {
-          // Merge route into current turn if same role
-          if (currentTurn && currentTurn.role === msg.role) {
-            currentTurn.messages.push(msg);
-          } else {
-            flushTurn();
-            currentTurn = {
-              type: 'turn',
-              role: msg.role,
-              roleName: msg.roleName,
-              roleIcon: msg.roleIcon,
-              messages: [msg],
-              textMsg: null,
-              toolMsgs: [],
-              routeMsgs: [],
-              imageMsgs: [],
-              id: 'turn_' + (turnCounter++)
-            };
-          }
-          continue;
-        }
-        if (msg.role === 'human') {
-          flushTurn();
-          turns.push({ type: 'text', message: msg, id: 'human_' + (msg.id || turnCounter++) });
-          continue;
-        }
-        if (currentTurn && currentTurn.role === msg.role) {
-          currentTurn.messages.push(msg);
-        } else {
-          flushTurn();
-          currentTurn = {
-            type: 'turn',
-            role: msg.role,
-            roleName: msg.roleName,
-            roleIcon: msg.roleIcon,
-            messages: [msg],
-            textMsg: null,
-            toolMsgs: [],
-            routeMsgs: [],
-            imageMsgs: [],
-            id: 'turn_' + (turnCounter++)
-          };
-        }
-      }
-      flushTurn();
-      return turns;
-    },
-
-    /**
-     * Full rebuild of feature blocks from all messages.
-     * Used on conversation switch or message clear.
-     */
-    _fullBuildFeatureBlocks(allMessages, completed, cache) {
-      cache.segments = [];
-      cache.blockCounter = 0;
-      cache.turnsCache.clear();
-      cache._segIndex = new Map();
-      this._appendToSegments(allMessages, 0, cache);
-      this._rebuildBlocksFromSegments(cache, completed);
-      return cache.blocks;
-    },
-
-    /**
-     * Incrementally append new messages (from startIdx) to cached segments.
-     * Feature segments are merged by taskId (using _segIndex Map for O(1) lookup),
-     * so parallel role outputs for the same feature go into one segment/block.
-     * Global segments are always appended at the end.
-     */
-    _appendToSegments(allMessages, startIdx, cache) {
-      const segments = cache.segments;
-      const segIndex = cache._segIndex || (cache._segIndex = new Map());
-
-      for (let i = startIdx; i < allMessages.length; i++) {
-        const msg = allMessages[i];
-        const taskId = msg.taskId || null;
-        const isGlobal = !taskId || msg.role === 'human';
-
-        if (isGlobal) {
-          // Global messages: merge into the last segment if it's also global
-          const lastSeg = segments.length > 0 ? segments[segments.length - 1] : null;
-          if (lastSeg && !lastSeg.taskId) {
-            lastSeg.messages.push(msg);
-            lastSeg._dirty = true;
-          } else {
-            segments.push({ taskId: null, messages: [msg], _dirty: true });
-          }
-        } else {
-          // Feature messages: merge into existing segment for this taskId
-          // Segments stay in first-appearance order (no repositioning)
-          if (segIndex.has(taskId)) {
-            const seg = segments[segIndex.get(taskId)];
-            seg.messages.push(msg);
-            seg._dirty = true;
-          } else {
-            const idx = segments.length;
-            segments.push({ taskId, messages: [msg], _dirty: true });
-            segIndex.set(taskId, idx);
-          }
-        }
-      }
-
-      cache.processedLen = allMessages.length;
-    },
-
-    /**
-     * Rebuild blocks array from segments.
-     * Reuses cached turns for clean segments; rebuilds dirty ones.
-     * Segments with streaming messages always rebuild turns for freshness.
-     * Computes dynamic fields (streaming, activeRoles, etc.) for all blocks.
-     */
-    _rebuildBlocksFromSegments(cache, completed) {
-      const segments = cache.segments;
-      const blocks = [];
-
-      for (let si = 0; si < segments.length; si++) {
-        const seg = segments[si];
-        // Segments with streaming messages must always rebuild turns
-        // because streaming mutates message content in-place
-        const hasStreaming = seg.messages.some(m => m._streaming);
-
-        if (seg.taskId) {
-          const taskTitle = seg.messages.find(m => m.taskTitle)?.taskTitle || seg.taskId;
-          const isCompleted = completed.has(seg.taskId);
-          const hasPendingAsk = seg.messages.some(m =>
-            m.type === 'tool' && m.toolName === 'AskUserQuestion' && !m.askAnswered
-          );
-          // Active roles: roles currently streaming in this feature
-          const activeRoles = [];
-          const seenRoles = new Set();
-          for (let i = seg.messages.length - 1; i >= 0; i--) {
-            const m = seg.messages[i];
-            if (m._streaming && m.role && !seenRoles.has(m.role)) {
-              seenRoles.add(m.role);
-              activeRoles.push({ role: m.role, roleName: m.roleName, roleIcon: m.roleIcon });
-            }
-          }
-
-          // Lazy turns: skip _buildTurns for completed, non-streaming, non-ask blocks
-          // Turns will be built on-demand when block is expanded via getBlockTurns()
-          const canDefer = isCompleted && !hasStreaming && !hasPendingAsk;
-          let turns;
-          if (canDefer && seg._turnsCache && !seg._dirty) {
-            turns = seg._turnsCache;  // reuse existing cache
-          } else if (canDefer && !seg._turnsCache && !seg._dirty) {
-            turns = null;  // defer building — will be built on expand
-          } else {
-            turns = this._buildTurns(seg.messages);
-            seg._turnsCache = turns;
-            seg._dirty = false;
-          }
-
-          blocks.push({
-            type: 'feature',
-            taskId: seg.taskId,
-            taskTitle,
-            turns,
-            _segIndex: si,  // for lazy resolution
-            isCompleted,
-            hasStreaming,
-            activeRoles,
-            hasPendingAsk,
-            lastActivityAt: seg.messages[seg.messages.length - 1]?.timestamp || 0,
-            id: 'feature_' + seg.taskId + '_' + si
-          });
-        } else {
-          // Global blocks always need turns (they're always visible)
-          const needsRebuild = seg._dirty || !seg._turnsCache || hasStreaming;
-          let turns;
-          if (needsRebuild) {
-            turns = this._buildTurns(seg.messages);
-            seg._turnsCache = turns;
-            seg._dirty = false;
-          } else {
-            turns = seg._turnsCache;
-          }
-          blocks.push({
-            type: 'global',
-            turns,
-            id: 'global_' + si
-          });
-        }
-      }
-
-      cache.blocks = blocks;
-    },
-
-    /**
-     * Get turns for a block, building lazily if deferred.
-     */
     getBlockTurns(block) {
-      if (block.turns !== null) return block.turns;
-      // Lazy build: resolve from segment cache
-      if (this._fbCache && block._segIndex != null) {
-        const seg = this._fbCache.segments[block._segIndex];
-        if (seg) {
-          if (!seg._turnsCache) {
-            seg._turnsCache = this._buildTurns(seg.messages);
-            seg._dirty = false;
-          }
-          block.turns = seg._turnsCache;
-          return block.turns;
-        }
-      }
-      // Fallback: empty
-      return [];
-    },
-
-    getRoleIcon(roleName) {
-      const session = this.store.currentCrewSession;
-      if (!session) return '';
-      const role = session.roles.find(r => r.name === roleName);
-      return role ? role.icon : '';
+      return getBlockTurns(block, this._fbCache);
     },
 
     getRoleDisplayName(roleName) {
@@ -1735,316 +538,14 @@ summary: 请测试以下变更...
       return role ? role.displayName : roleName;
     },
 
-    shortName(displayName) {
-      if (!displayName) return '';
-      const idx = displayName.indexOf('-');
-      return idx > 0 ? displayName.substring(idx + 1) : displayName;
-    },
-
-    getImageUrl(msg) {
-      if (!msg.fileId) return '';
-      const token = msg.previewToken || '';
-      return `/api/preview/${msg.fileId}?token=${token}`;
-    },
-
-    handleImageError(event) {
-      const img = event.target;
-      const expired = document.createElement('div');
-      expired.className = 'crew-screenshot-expired';
-      expired.textContent = this.$t('crew.imageExpired');
-      img.parentNode.replaceChild(expired, img);
-    },
-
-    openImagePreview(src) {
-      window.open(src, '_blank');
-    },
-
-    getRoleStyle(roleName) {
-      if (PRESET_ROLES.includes(roleName)) {
-        return {
-          '--role-color': `var(--crew-color-${roleName})`,
-          '--role-bg': `var(--crew-color-${roleName}-bg)`,
-          '--role-border': `var(--crew-color-${roleName}-border)`,
-          '--role-bg-glow': `var(--crew-color-${roleName}-bg-glow)`
-        };
-      }
-      // Dynamic role: hash name to pick a fallback color
-      const hash = roleName.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xff, 0);
-      const idx = hash % 4;
-      return {
-        '--role-color': `var(--crew-color-fallback-${idx})`,
-        '--role-bg': `var(--crew-color-fallback-${idx}-bg)`,
-        '--role-border': `var(--crew-color-fallback-${idx}-border)`,
-        '--role-bg-glow': `var(--crew-color-fallback-${idx}-bg-glow)`
-      };
-    },
-
-    getTaskColor(taskId) {
-      if (!taskId) return {};
-      const TASK_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
-      const hash = taskId.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xff, 0);
-      const color = TASK_COLORS[hash % TASK_COLORS.length];
-      return { '--task-color': color };
-    },
-
-    getRoleTaskTitle(roleName) {
-      // 找该角色最后一条带 taskTitle 的消息
-      const messages = this.store.currentCrewMessages;
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-        if (msg.role === roleName && msg.taskTitle) {
-          // 如果最后一条带 taskTitle 的消息是 ROUTE 回 PM，说明任务已完成
-          if (msg.type === 'route' && msg.routeTo === 'pm') return null;
-          return msg.taskTitle;
-        }
-      }
-      return null;
-    },
-
-    getRoleBadgeTitle(role) {
-      const tools = this.store.currentCrewStatus?.currentToolByRole;
-      let title = role.displayName + (role.isDecisionMaker ? ` (${this.$t('crew.decisionMaker')})` : '');
-      if (tools?.[role.name]) {
-        title += ` — ${tools[role.name]}`;
-      }
-      return title;
-    },
-
-    isRoleStreaming(roleName) {
-      return this.store.currentCrewStatus?.activeRoles?.includes(roleName);
-    },
-
-    getRoleCurrentTool(roleName) {
-      return this.store.currentCrewStatus?.currentToolByRole?.[roleName] || null;
-    },
-
-    getRoleCurrentTask(roleName) {
-      const messages = this.store.currentCrewMessages;
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-        if (msg.role === roleName && msg.taskTitle) {
-          // 如果最后一条带 taskTitle 的消息是 ROUTE 回 PM，说明任务已完成
-          if (msg.type === 'route' && msg.routeTo === 'pm') return null;
-          return msg.taskTitle;
-        }
-      }
-      return null;
-    },
-
-    toggleFeatureCard(taskId) {
-      this.expandedFeatureCards[taskId] = !this.isFeatureCardExpanded(taskId);
-    },
-
-    isFeatureCardExpanded(taskId) {
-      if (taskId in this.expandedFeatureCards) {
-        return this.expandedFeatureCards[taskId];
-      }
-      // Default: expand if has in_progress todos or not completed
-      const feature = this.featureKanban.find(f => f.taskId === taskId);
-      if (feature) {
-        return feature.todos.some(t => t.status === 'in_progress') || !feature.isCompleted;
-      }
-      return true;
-    },
-
-    scrollToFeature(taskId) {
-      this.expandedFeatures[taskId] = true;
-      this.$nextTick(() => {
-        const el = this.$el.querySelector(`.crew-feature-thread[data-task-id="${taskId}"]`);
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
+    sendMessage(e) {
+      this.input.sendMessage(e, () => {
+        this.scroll.isAtBottom.value = true;
+        this.scroll.scrollToBottom();
       });
     },
 
-    handleInput() {
-      this.autoResize();
-      // Detect @ trigger for autocomplete
-      const textarea = this.$refs.inputRef;
-      if (!textarea) return;
-      const pos = textarea.selectionStart;
-      const text = this.inputText;
-      // Find the last @ before cursor
-      const beforeCursor = text.substring(0, pos);
-      const atIdx = beforeCursor.lastIndexOf('@');
-      if (atIdx >= 0 && (atIdx === 0 || /\s/.test(beforeCursor[atIdx - 1]))) {
-        const query = beforeCursor.substring(atIdx + 1);
-        // Only show if query has no spaces (still typing the name)
-        if (!/\s/.test(query)) {
-          this.atQuery = query;
-          this.atMenuVisible = true;
-          this.atMenuIndex = 0;
-          return;
-        }
-      }
-      this.atMenuVisible = false;
-    },
-
-    selectAtRole(role) {
-      const textarea = this.$refs.inputRef;
-      if (!textarea) return;
-      const pos = textarea.selectionStart;
-      const text = this.inputText;
-      const beforeCursor = text.substring(0, pos);
-      const atIdx = beforeCursor.lastIndexOf('@');
-      if (atIdx >= 0) {
-        const afterCursor = text.substring(pos);
-        this.inputText = text.substring(0, atIdx) + '@' + role.displayName + ' ' + afterCursor;
-        this.$nextTick(() => {
-          const newPos = atIdx + role.displayName.length + 2; // @ + displayName + space
-          textarea.selectionStart = textarea.selectionEnd = newPos;
-          textarea.focus();
-        });
-      }
-      this.atMenuVisible = false;
-    },
-
-    autoResize() {
-      const textarea = this.$refs.inputRef;
-      if (textarea) {
-        textarea.style.height = 'auto';
-        textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
-      }
-    },
-
-    handleKeydown(e) {
-      // @ menu navigation
-      if (this.atMenuVisible && this.filteredAtRoles.length > 0) {
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          this.atMenuIndex = (this.atMenuIndex + 1) % this.filteredAtRoles.length;
-          return;
-        }
-        if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          this.atMenuIndex = (this.atMenuIndex - 1 + this.filteredAtRoles.length) % this.filteredAtRoles.length;
-          return;
-        }
-        if (e.key === 'Enter' || e.key === 'Tab') {
-          e.preventDefault();
-          this.selectAtRole(this.filteredAtRoles[this.atMenuIndex]);
-          return;
-        }
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          this.atMenuVisible = false;
-          return;
-        }
-      }
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        this.sendMessage();
-      }
-    },
-
-    handlePaste(e) {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      const files = [];
-      for (const item of items) {
-        if (item.kind === 'file') {
-          const file = item.getAsFile();
-          if (file) files.push(file);
-        }
-      }
-      if (files.length > 0) {
-        e.preventDefault();
-        this.addFiles(files);
-      }
-    },
-
-    handleFileSelect(e) {
-      const files = Array.from(e.target.files || []);
-      if (files.length > 0) this.addFiles(files);
-      e.target.value = '';
-      this.$nextTick(() => this.$refs.inputRef?.focus());
-    },
-
-    async addFiles(files) {
-      for (const file of files) {
-        const attachment = { file, name: file.name, preview: null, uploading: true, fileId: null };
-        if (file.type.startsWith('image/')) attachment.preview = URL.createObjectURL(file);
-        this.attachments.push(attachment);
-      }
-      this.uploading = true;
-      try {
-        const formData = new FormData();
-        for (const file of files) formData.append('files', file);
-        const headers = {};
-        if (this.authStore?.token) headers['Authorization'] = `Bearer ${this.authStore.token}`;
-        const response = await fetch('/api/upload', { method: 'POST', headers, body: formData });
-        if (!response.ok) throw new Error('Upload failed');
-        const result = await response.json();
-        let resultIndex = 0;
-        for (const attachment of this.attachments) {
-          if (attachment.uploading && !attachment.fileId && resultIndex < result.files.length) {
-            attachment.fileId = result.files[resultIndex].fileId;
-            attachment.uploading = false;
-            resultIndex++;
-          }
-        }
-      } catch (error) {
-        console.error('Upload error:', error);
-        const failed = this.attachments.filter(a => !a.fileId);
-        for (const f of failed) { if (f.preview) URL.revokeObjectURL(f.preview); }
-        this.attachments = this.attachments.filter(a => a.fileId);
-      } finally {
-        this.uploading = false;
-        this.$nextTick(() => this.$refs.inputRef?.focus());
-      }
-    },
-
-    removeAttachment(index) {
-      const attachment = this.attachments[index];
-      if (attachment.preview) URL.revokeObjectURL(attachment.preview);
-      this.attachments.splice(index, 1);
-      this.$nextTick(() => this.$refs.inputRef?.focus());
-    },
-
-    sendMessage(e) {
-      if (e && e.preventDefault) e.preventDefault();
-      if (!this.canSend) return;
-
-      const text = this.inputText.trim();
-      const attachmentInfos = this.attachments
-        .filter(a => a.fileId)
-        .map(a => ({
-          fileId: a.fileId,
-          name: a.name,
-          preview: a.preview,
-          isImage: a.file?.type?.startsWith('image/') || false,
-          mimeType: a.file?.type || ''
-        }));
-
-      // 如果有 pending ask，用户回复自动作为 ask_user_answer 发送
-      const ask = this.currentPendingAsk;
-      if (ask && ask.askMsg.askRequestId && text) {
-        // 发送 ask_user_answer（用自由文本作为所有 question 的回答）
-        const questions = ask.askMsg.toolInput?.questions || ask.askMsg.askQuestions || [];
-        const answers = {};
-        if (questions.length > 0) {
-          for (const q of questions) {
-            answers[q.question] = text;
-          }
-        } else {
-          answers['response'] = text;
-        }
-        this.store.answerUserQuestion(ask.askMsg.askRequestId, answers);
-        ask.askMsg.askAnswered = true;
-        ask.askMsg.selectedAnswers = answers;
-      }
-
-      this.store.sendCrewMessage(text, null, attachmentInfos.length > 0 ? attachmentInfos : undefined);
-      this.inputText = '';
-      this.attachments = [];
-      delete this.store.inputDrafts[this.store.currentConversation];
-      if (this.$refs.inputRef) this.$refs.inputRef.style.height = 'auto';
-      this.isAtBottom = true;
-      this.$nextTick(() => this.scrollToBottom());
-    },
-
     controlAction(action, targetRole = null) {
-      this.controlOpen = false;
       if (action === 'clear') {
         if (!confirm(this.$t('crew.confirmClear'))) return;
       }
@@ -2061,26 +562,10 @@ summary: 请测试以下变更...
       this.controlAction('abort_role', roleName);
     },
 
-    removeRole(roleName) {
-      if (!roleName) return;
-      if (!confirm(this.$t('crew.confirmRemoveRole', { name: roleName }))) return;
-      this.store.removeCrewRole(roleName);
-    },
-
     quickAddPreset(preset) {
       this.store.addCrewRole({ ...preset });
-      // If no more presets available, close the modal
       if (this.availablePresets.length <= 1) {
         this.showAddRole = false;
-      }
-    },
-
-    applyPreset(preset) {
-      const existing = this.store.currentCrewSession?.roles?.find(r => r.name === preset.name);
-      if (existing) {
-        this.newRole = { ...preset, name: preset.name + '2', displayName: preset.displayName + '2' };
-      } else {
-        this.newRole = { ...preset };
       }
     },
 
@@ -2091,7 +576,6 @@ summary: 请测试以下变更...
       this.newRole = this.getEmptyRole();
     },
 
-    // -- AskUserQuestion methods --
     dismissPendingAsk() {
       const ask = this.currentPendingAsk;
       if (ask) {
@@ -2101,166 +585,30 @@ summary: 请测试以下变更...
     },
 
     scrollToRoleLatest(roleName) {
-      // Find the latest block containing this role's message
-      const blocks = this.featureBlocks;
-      let targetBlock = null;
-      let isInLatestTurn = false;
-
-      for (let i = blocks.length - 1; i >= 0; i--) {
-        const block = blocks[i];
-        const turns = block.turns;
-        for (let j = turns.length - 1; j >= 0; j--) {
-          const turn = turns[j];
-          const turnRole = turn.type === 'turn' ? turn.role : turn.message?.role;
-          if (turnRole === roleName) {
-            targetBlock = block;
-            isInLatestTurn = j === turns.length - 1;
-            break;
-          }
-        }
-        if (targetBlock) break;
-      }
-
-      if (!targetBlock) return;
-
-      // Ensure block is in visible range
-      const allBlocks = this.featureBlocks;
-      const blockIdx = allBlocks.indexOf(targetBlock);
-      const needed = allBlocks.length - blockIdx;
-      if (needed > this.visibleBlockCount) {
-        this.visibleBlockCount = needed;
-      }
-
-      // For feature blocks: expand the feature and history if needed
-      if (targetBlock.type === 'feature' && targetBlock.taskId) {
-        this.expandedFeatures[targetBlock.taskId] = true;
-        if (!isInLatestTurn) {
-          this.expandedHistories[targetBlock.taskId] = true;
-        }
-      }
-
-      this.$nextTick(() => {
-        // Find all messages for this role, take the last one
-        const els = this.$el.querySelectorAll(`.crew-message[data-role="${roleName}"]`);
-        const el = els.length > 0 ? els[els.length - 1] : null;
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          el.classList.add('crew-msg-highlight');
-          setTimeout(() => el.classList.remove('crew-msg-highlight'), 2000);
-        }
-      });
-    },
-
-    scrollToBlock(block) {
-      const el = this.$el.querySelector(`[data-block-id="${block.id}"]`);
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    },
-
-    scrollToMeaningfulContent() {
-      this.$nextTick(() => {
-        this.scrollToBottom();
-      });
-    },
-
-    scrollToBottom() {
-      const el = this.$refs.messagesRef;
-      if (el) el.scrollTop = el.scrollHeight;
-    },
-
-    checkIfAtBottom() {
-      const el = this.$refs.messagesRef;
-      if (!el) return true;
-      return el.scrollHeight - el.scrollTop - el.clientHeight <= 50;
-    },
-
-    onScroll() {
-      this.isAtBottom = this.checkIfAtBottom();
-      // 接近顶部时自动加载更多
-      const scrollEl = this.$refs.messagesRef;
-      if (scrollEl && scrollEl.scrollTop < 100) {
-        if (this.hiddenBlockCount > 0) {
-          this.loadMoreBlocks();
-        } else if (this.hasOlderMessages && !this.isLoadingHistory) {
-          this.loadHistory();
-        }
-      }
-    },
-
-    loadMoreBlocks() {
-      if (this.isLoadingMore || this.hiddenBlockCount <= 0) return;
-      this.isLoadingMore = true;
-
-      const scrollEl = this.$refs.messagesRef;
-      const oldScrollHeight = scrollEl.scrollHeight;
-      const oldScrollTop = scrollEl.scrollTop;
-
-      this.visibleBlockCount = Math.min(
-        this.visibleBlockCount + 10,
-        this.featureBlocks.length
+      this.scroll.scrollToRoleLatest(
+        roleName, this.featureBlocks,
+        this.expandedFeatures, this.expandedHistories, this.$el
       );
+    },
 
-      this.$nextTick(() => {
-        const newScrollHeight = scrollEl.scrollHeight;
-        scrollEl.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight);
-        this.isLoadingMore = false;
-      });
+    scrollToFeature(taskId) {
+      this.scroll.scrollToFeature(taskId, this.expandedFeatures, this.$el);
     },
 
     loadHistory() {
-      if (this.isLoadingHistory || !this.hasOlderMessages) return;
-      const sid = this.store.currentConversation;
-      const requested = this.store.loadCrewHistory(sid);
-      if (requested) {
-        this.isLoadingHistory = true;
-        // Watch for the response to arrive
-        const unwatch = this.$watch(
-          () => this.store.crewOlderMessages[sid]?.loading,
-          (loading) => {
-            if (loading === false) {
-              unwatch();
-              this.isLoadingHistory = false;
-              // Expand visibleBlockCount to show new blocks
-              const scrollEl = this.$refs.messagesRef;
-              const oldScrollHeight = scrollEl?.scrollHeight || 0;
-              const oldScrollTop = scrollEl?.scrollTop || 0;
-              this.visibleBlockCount = this.featureBlocks.length;
-              this.$nextTick(() => {
-                if (scrollEl) {
-                  const newScrollHeight = scrollEl.scrollHeight;
-                  scrollEl.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight);
-                }
-              });
-            }
-          }
-        );
-      }
-    },
-
-    scrollToBottomAndReset() {
-      this.visibleBlockCount = 20;
-      this.$nextTick(() => this.scrollToBottom());
-    },
-
-    smartScrollToBottom() {
-      if (this.isAtBottom) this.$nextTick(() => this.scrollToBottom());
+      this.scroll.loadHistory((getter, cb) => this.$watch(getter, cb));
     }
   },
 
   mounted() {
-    const closeMenus = () => {
-      this.controlOpen = false;
-    };
+    const closeMenus = () => {};
     document.addEventListener('click', closeMenus);
     this._cleanupClick = closeMenus;
-    // 耗时计时器：每秒更新 nowTick
     this._elapsedTimer = setInterval(() => { this.nowTick = Date.now(); }, 1000);
-    // 恢复草稿
     const convId = this.store.currentConversation;
     this._draftConvId = convId;
-    if (convId && this.store.inputDrafts[convId]) {
-      this.inputText = this.store.inputDrafts[convId];
-    }
-    this.$nextTick(() => this.scrollToBottom());
+    this.input.restoreDraft(convId);
+    this.$nextTick(() => this.scroll.scrollToBottom());
   },
 
   beforeUnmount() {
@@ -2270,10 +618,7 @@ summary: 请测试以下变更...
     if (this._elapsedTimer) {
       clearInterval(this._elapsedTimer);
     }
-    // 保存草稿
     const convId = this._draftConvId || this.store.currentConversation;
-    if (convId && this.inputText) {
-      this.store.inputDrafts[convId] = this.inputText;
-    }
+    this.input.saveDraft(convId);
   }
 };

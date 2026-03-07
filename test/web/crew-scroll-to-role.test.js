@@ -22,6 +22,11 @@ let cssSource;
 beforeAll(() => {
   const jsPath = resolve(__dirname, '../../web/components/CrewChatView.js');
   jsSource = readFileSync(jsPath, 'utf-8');
+  // Sub-modules and sub-components extracted from CrewChatView during refactor
+  const crewDir = resolve(__dirname, '../../web/components/crew');
+  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
+    jsSource += '\n' + readFileSync(resolve(crewDir, mod), 'utf-8');
+  }
 
   cssSource = loadAllCss();
 });
@@ -40,7 +45,9 @@ describe('data-role attribute on crew-message elements', () => {
         !line.includes('crew-messages') &&
         !line.includes('class="crew-message-')
     );
-    expect(messageLines.length).toBeGreaterThanOrEqual(6);
+    // After sub-component extraction, CrewTurnRenderer.js has 2 crew-message divs
+    // plus 1 in active messages section = 3 total
+    expect(messageLines.length).toBeGreaterThanOrEqual(3);
 
     for (const line of messageLines) {
       expect(line).toContain(':data-role=');
@@ -54,7 +61,8 @@ describe('data-role attribute on crew-message elements', () => {
         line.includes('class="crew-message"') &&
         line.includes("turn.type !== 'turn'")
     );
-    expect(singleMsgLines.length).toBeGreaterThanOrEqual(3);
+    // After sub-component extraction, single message template is in CrewTurnRenderer (1 instance)
+    expect(singleMsgLines.length).toBeGreaterThanOrEqual(1);
     for (const line of singleMsgLines) {
       expect(line).toContain(':data-role="turn.message.role"');
     }
@@ -65,7 +73,8 @@ describe('data-role attribute on crew-message elements', () => {
     const turnGroupLines = jsSource.split('\n').filter(
       line => line.includes('crew-turn-group') && line.includes(':data-role=')
     );
-    expect(turnGroupLines.length).toBeGreaterThanOrEqual(3);
+    // After sub-component extraction, turn-group template is in CrewTurnRenderer (1 instance)
+    expect(turnGroupLines.length).toBeGreaterThanOrEqual(1);
     for (const line of turnGroupLines) {
       expect(line).toContain(':data-role="turn.role"');
     }
@@ -123,10 +132,10 @@ describe('scrollToRoleLatest method', () => {
     expect(jsSource).toContain('2000');
   });
 
-  it('uses $nextTick before DOM queries', () => {
-    // The DOM queries are wrapped in $nextTick to wait for Vue re-render
+  it('uses nextTick before DOM queries', () => {
+    // The DOM queries are wrapped in nextTick to wait for Vue re-render
     const methodBody = extractMethod('scrollToRoleLatest');
-    expect(methodBody).toContain('this.$nextTick');
+    expect(methodBody).toContain('nextTick');
   });
 });
 
@@ -134,8 +143,11 @@ describe('scrollToRoleLatest method', () => {
 // 3. Role card click calls scrollToRoleLatest directly
 // =====================================================================
 describe('role card click', () => {
-  it('role card @click calls scrollToRoleLatest', () => {
-    expect(jsSource).toContain('@click="scrollToRoleLatest(role.name)"');
+  it('role card @click triggers scroll-to-role event', () => {
+    // In CrewRolePanel sub-component, click emits scroll-to-role
+    expect(jsSource).toContain("$emit('scroll-to-role', role.name)");
+    // Parent CrewChatView binds the event to scrollToRoleLatest
+    expect(jsSource).toContain('@scroll-to-role="scrollToRoleLatest"');
   });
 
   it('insertAt method has been removed', () => {
@@ -189,13 +201,13 @@ describe('feature block expansion logic', () => {
     const methodBody = extractMethod('scrollToRoleLatest');
     expect(methodBody).toContain("targetBlock.type === 'feature'");
     expect(methodBody).toContain('targetBlock.taskId');
-    expect(methodBody).toContain('this.expandedFeatures[targetBlock.taskId] = true');
+    expect(methodBody).toContain('expandedFeatures[targetBlock.taskId] = true');
   });
 
   it('expands history when target is NOT in latest turn', () => {
     const methodBody = extractMethod('scrollToRoleLatest');
     expect(methodBody).toContain('if (!isInLatestTurn)');
-    expect(methodBody).toContain('this.expandedHistories[targetBlock.taskId] = true');
+    expect(methodBody).toContain('expandedHistories[targetBlock.taskId] = true');
   });
 
   it('does NOT expand history when target IS in latest turn', () => {
@@ -209,7 +221,7 @@ describe('feature block expansion logic', () => {
     expect(expandHistoryLine).toBeDefined();
     // Verify the guard exists before this line
     const guardIdx = methodBody.indexOf('if (!isInLatestTurn)');
-    const expandIdx = methodBody.indexOf('this.expandedHistories[targetBlock.taskId] = true');
+    const expandIdx = methodBody.indexOf('expandedHistories[targetBlock.taskId] = true');
     expect(guardIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeLessThan(expandIdx);
   });
@@ -221,23 +233,23 @@ describe('feature block expansion logic', () => {
 describe('visibleBlockCount expansion logic', () => {
   it('calculates needed blocks from target to end', () => {
     const methodBody = extractMethod('scrollToRoleLatest');
-    expect(methodBody).toContain('allBlocks.length - blockIdx');
+    expect(methodBody).toContain('blocks.length - blockIdx');
   });
 
   it('expands visibleBlockCount when needed > current', () => {
     const methodBody = extractMethod('scrollToRoleLatest');
-    expect(methodBody).toContain('if (needed > this.visibleBlockCount)');
-    expect(methodBody).toContain('this.visibleBlockCount = needed');
+    expect(methodBody).toContain('if (needed > visibleBlockCount.value)');
+    expect(methodBody).toContain('visibleBlockCount.value = needed');
   });
 
   it('does not reduce visibleBlockCount if already sufficient', () => {
     // The condition is > not >=, so equal means no change
     const methodBody = extractMethod('scrollToRoleLatest');
-    const condition = 'if (needed > this.visibleBlockCount)';
+    const condition = 'if (needed > visibleBlockCount.value)';
     expect(methodBody).toContain(condition);
     // Assignment only appears once and inside the if
     const lines = methodBody.split('\n');
-    const assignmentLines = lines.filter(l => l.includes('this.visibleBlockCount = needed'));
+    const assignmentLines = lines.filter(l => l.includes('visibleBlockCount.value = needed'));
     expect(assignmentLines.length).toBe(1);
   });
 });
@@ -300,31 +312,30 @@ describe('agent test — brace count synchronized', () => {
 // Helper: extract a JS method body between first { and matching }
 // =====================================================================
 function extractMethod(methodName) {
-  // Find the method definition (starts at beginning of line or after whitespace, with a paren)
-  // We need the actual definition, not a call site like "this.scrollToRoleLatest(roleName)"
-  // Method definitions look like: "    scrollToRoleLatest(roleName) {"
+  // Find the method/function definition with the longest body (implementation, not wrapper).
+  // Matches: "methodName(", "function methodName(", "export function methodName("
   const lines = jsSource.split('\n');
-  let startIdx = -1;
+  let bestBody = '';
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
-    if (trimmed.startsWith(`${methodName}(`) && trimmed.endsWith('{')) {
-      startIdx = jsSource.indexOf(lines[i]);
-      break;
+    if ((trimmed.startsWith(`${methodName}(`) ||
+         trimmed.startsWith(`function ${methodName}(`) ||
+         trimmed.startsWith(`export function ${methodName}(`)) && trimmed.endsWith('{')) {
+      const startIdx = jsSource.indexOf(lines[i]);
+      const braceStart = jsSource.indexOf('{', startIdx);
+      if (braceStart === -1) continue;
+      let depth = 0;
+      let end = braceStart;
+      for (let j = braceStart; j < jsSource.length; j++) {
+        if (jsSource[j] === '{') depth++;
+        if (jsSource[j] === '}') depth--;
+        if (depth === 0) { end = j; break; }
+      }
+      const body = jsSource.substring(braceStart + 1, end).trim();
+      if (body.length > bestBody.length) bestBody = body;
     }
   }
-  if (startIdx === -1) return '';
-
-  const braceStart = jsSource.indexOf('{', startIdx);
-  if (braceStart === -1) return '';
-
-  let depth = 0;
-  let end = braceStart;
-  for (let i = braceStart; i < jsSource.length; i++) {
-    if (jsSource[i] === '{') depth++;
-    if (jsSource[i] === '}') depth--;
-    if (depth === 0) { end = i; break; }
-  }
-  return jsSource.substring(braceStart + 1, end).trim();
+  return bestBody;
 }
 
 // =====================================================================

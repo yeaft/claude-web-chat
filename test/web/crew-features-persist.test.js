@@ -31,6 +31,11 @@ beforeAll(async () => {
     crewSource += await fs.readFile(join(base, 'agent/crew', mod), 'utf-8') + '\n';
   }
   viewSource = await fs.readFile(join(base, 'web/components/CrewChatView.js'), 'utf-8');
+  // Sub-modules extracted from CrewChatView during refactor
+  const crewDir = join(base, 'web/components/crew');
+  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
+    viewSource += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+  }
   const chatMain = await fs.readFile(join(base, 'web/stores/chat.js'), 'utf-8');
   const crewHelper = await fs.readFile(join(base, 'web/stores/helpers/crew.js'), 'utf-8');
   storeSource = chatMain + '\n' + crewHelper;
@@ -49,10 +54,9 @@ describe('todosByFeature: no completed-group filtering', () => {
   });
 
   it('should return Array.from(groups.values()) directly', () => {
-    // The todosByFeature computed should end with:
+    // The todosByFeature logic (now in buildTodosByFeature) should end with:
     // return Array.from(groups.values());
-    const todoSection = viewSource.split('todosByFeature')[1];
-    expect(todoSection).toContain('return Array.from(groups.values())');
+    expect(viewSource).toContain('return Array.from(groups.values())');
   });
 
   // Replicate the logic to verify behavior
@@ -114,8 +118,8 @@ describe('activeTasks: prioritize persisted features', () => {
   });
 
   it('messages should only supplement, not overwrite persisted features', () => {
-    const activeSection = viewSource.split('activeTasks()')[1]?.split('\n    },')[0] || '';
-    expect(activeSection).toContain('!taskMap.has(msg.taskId)');
+    // Logic now in collectActiveTasks (extracted from activeTasks computed)
+    expect(viewSource).toContain('!taskMap.has(msg.taskId)');
   });
 
   // Replicate logic to verify behavior
