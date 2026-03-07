@@ -335,6 +335,10 @@ async function clearSession(session) {
   session.waitingHumanContext = null;
   session.pendingRoutes = [];
 
+  // 清除 feature/task 数据，避免 UI 残留空 task 卡片
+  session.features.clear();
+  session._completedTaskIds = new Set();
+
   session.round = 0;
 
   const messagesPath = join(session.sharedDir, 'messages.json');
