@@ -1624,6 +1624,26 @@
   padding: 0 3px;
 }
 
+/* Crew nav button loading state: replace icon with spinner */
+.crew-header-nav-btn.btn-loading {
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.crew-header-nav-btn.btn-loading svg {
+  display: none;
+}
+
+.crew-header-nav-btn.btn-loading::after {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--text-tertiary, #666);
+  border-top-color: var(--accent-blue, #3b82f6);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
 /* <768px: Mobile — Drawer panels with header nav */
 @media (max-width: 767px) {
   .crew-panel-left,

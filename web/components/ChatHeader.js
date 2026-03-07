@@ -36,6 +36,16 @@ export default {
       </div>
       <div class="crew-header-nav" v-if="store.currentConversationIsCrew">
         <button class="crew-header-nav-btn"
+                :class="{ 'btn-loading': store.refreshingSession }"
+                @click="refreshSession"
+                :disabled="!canRefresh || store.refreshingSession"
+                :title="$t('chatHeader.refresh')"
+                v-if="canRefresh">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+        </button>
+        <button class="crew-header-nav-btn"
                 :class="{ active: isCrewPanelActive('roles') }"
                 @click="onCrewPanelToggle('roles')">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
