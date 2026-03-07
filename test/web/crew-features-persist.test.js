@@ -23,7 +23,13 @@ beforeAll(async () => {
   const { promises: fs } = await import('fs');
   const { join } = await import('path');
   const base = process.cwd();
-  crewSource = await fs.readFile(join(base, 'agent/crew.js'), 'utf-8');
+  crewSource = '';
+  const crewModules = ['session.js', 'persistence.js', 'ui-messages.js', 'control.js',
+    'routing.js', 'role-query.js', 'role-output.js', 'role-management.js',
+    'human-interaction.js', 'shared-dir.js', 'task-files.js', 'worktree.js'];
+  for (const mod of crewModules) {
+    crewSource += await fs.readFile(join(base, 'agent/crew', mod), 'utf-8') + '\n';
+  }
   viewSource = await fs.readFile(join(base, 'web/components/CrewChatView.js'), 'utf-8');
   const chatMain = await fs.readFile(join(base, 'web/stores/chat.js'), 'utf-8');
   const crewHelper = await fs.readFile(join(base, 'web/stores/helpers/crew.js'), 'utf-8');
@@ -170,8 +176,11 @@ describe('crew.js: session.features accumulation', () => {
     expect(featureSetLine).toContain('createdAt');
   });
 
-  it('saveSessionMeta should serialize features to array', () => {
-    const saveSection = crewSource.split('saveSessionMeta')[1]?.split('await fs.writeFile')[0] || '';
+  it('saveSessionMeta should serialize features to array', async () => {
+    const { promises: fsP } = await import('fs');
+    const { join: joinP } = await import('path');
+    const persistSource = await fsP.readFile(joinP(process.cwd(), 'agent/crew/persistence.js'), 'utf-8');
+    const saveSection = persistSource.split('saveSessionMeta')[1]?.split('await fs.writeFile')[0] || '';
     expect(saveSection).toContain('features: Array.from(session.features.values())');
   });
 

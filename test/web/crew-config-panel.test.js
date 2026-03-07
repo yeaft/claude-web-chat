@@ -357,7 +357,7 @@ describe('Verify actual source code consistency', () => {
     const { promises: fs } = await import('fs');
     const { join } = await import('path');
     const content = await fs.readFile(
-      join(process.cwd(), 'agent/crew.js'),
+      join(process.cwd(), 'agent/crew/session.js'),
       'utf-8'
     );
 

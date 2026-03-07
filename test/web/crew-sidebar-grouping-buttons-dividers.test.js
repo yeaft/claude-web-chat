@@ -32,7 +32,7 @@ beforeAll(async () => {
   const crewHelper = await fs.readFile(join(base, 'web/stores/helpers/crew.js'), 'utf-8');
   chatStoreContent = chatMain + '\n' + crewHelper;
   wsClientContent = await fs.readFile(join(base, 'server/handlers/client-crew.js'), 'utf-8');
-  crewJsContent = await fs.readFile(join(base, 'agent/crew.js'), 'utf-8');
+  crewJsContent = await fs.readFile(join(base, 'agent/crew/session.js'), 'utf-8');
   connectionJsContent = await fs.readFile(join(base, 'agent/connection.js'), 'utf-8');
 });
 
