@@ -72,6 +72,17 @@ db.exec(`
     FOREIGN KEY (used_by) REFERENCES users(id)
   );
 
+  -- 用户统计表
+  CREATE TABLE IF NOT EXISTS user_stats (
+    user_id TEXT PRIMARY KEY REFERENCES users(id),
+    message_count INTEGER DEFAULT 0,
+    session_count INTEGER DEFAULT 0,
+    request_count INTEGER DEFAULT 0,
+    bytes_sent INTEGER DEFAULT 0,
+    bytes_received INTEGER DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+  );
+
   -- 基本索引（不依赖迁移列）
   CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
@@ -313,6 +324,38 @@ export const stmts = {
 
   deleteMessagesBySession: db.prepare(`
     DELETE FROM messages WHERE session_id = ?
+  `),
+
+  // UserStats 操作
+  upsertUserStats: db.prepare(`
+    INSERT INTO user_stats (user_id, message_count, session_count, request_count, bytes_sent, bytes_received, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      message_count = message_count + excluded.message_count,
+      session_count = session_count + excluded.session_count,
+      request_count = request_count + excluded.request_count,
+      bytes_sent = bytes_sent + excluded.bytes_sent,
+      bytes_received = bytes_received + excluded.bytes_received,
+      updated_at = excluded.updated_at
+  `),
+
+  getUserStats: db.prepare(`
+    SELECT us.*, u.username, u.display_name, u.role, u.last_login_at
+    FROM user_stats us
+    JOIN users u ON us.user_id = u.id
+    ORDER BY us.message_count DESC
+  `),
+
+  getUserStatsById: db.prepare(`
+    SELECT * FROM user_stats WHERE user_id = ?
+  `),
+
+  // Dashboard 聚合
+  getDashboardTotals: db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM users) as total_users,
+      (SELECT COUNT(*) FROM sessions) as total_sessions,
+      (SELECT COUNT(*) FROM messages) as total_messages
   `)
 };
 

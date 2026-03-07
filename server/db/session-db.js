@@ -1,9 +1,11 @@
 import { stmts } from './connection.js';
+import { trackSession } from '../context.js';
 
 export const sessionDb = {
   create(id, agentId, agentName, workDir, claudeSessionId = null, title = null, userId = null) {
     const now = Date.now();
     stmts.insertSession.run(id, userId, agentId, agentName, claudeSessionId, workDir, title, now, now);
+    trackSession(userId);
     return { id, userId, agentId, agentName, workDir, claudeSessionId, title, createdAt: now, updatedAt: now };
   },
 

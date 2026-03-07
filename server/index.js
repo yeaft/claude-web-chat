@@ -5,8 +5,8 @@ import { WebSocketServer } from 'ws';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { CONFIG, isEmailConfigured, validateProductionConfig } from './config.js';
-import { agents, webClients, userFileTabs } from './context.js';
-import { invitationDb, closeDb } from './database.js';
+import { agents, webClients, userFileTabs, userStatsDeltas } from './context.js';
+import { invitationDb, userStatsDb, closeDb } from './database.js';
 import { registerApiRoutes } from './api.js';
 import { registerProxyRoutes, handleProxyWebSocketUpgrade } from './proxy.js';
 import { handleAgentConnection } from './ws-agent.js';
@@ -62,6 +62,18 @@ setInterval(() => {
 setInterval(() => {
   invitationDb.cleanup();
 }, 60 * 60 * 1000);
+
+// ★ Admin Dashboard: 每 60 秒批量持久化用户统计增量到 DB
+function flushUserStats() {
+  if (userStatsDeltas.size === 0) return;
+  try {
+    userStatsDb.flushDeltas(userStatsDeltas);
+    userStatsDeltas.clear();
+  } catch (e) {
+    console.error('[UserStats] Flush error:', e.message);
+  }
+}
+setInterval(flushUserStats, 60 * 1000);
 
 // Gzip 压缩中间件
 app.use(compression({
@@ -194,6 +206,8 @@ async function gracefulShutdown(signal) {
   // 4. 停止接受新连接
   server.close(() => {
     console.log('[Shutdown] HTTP server closed');
+    // Flush pending user stats before closing DB
+    flushUserStats();
     closeDb();
     process.exit(0);
   });

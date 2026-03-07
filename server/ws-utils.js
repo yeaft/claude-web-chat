@@ -2,7 +2,7 @@ import { WebSocket } from 'ws';
 import { CONFIG } from './config.js';
 import { encrypt, decrypt, isEncrypted, encodeKey } from './encryption.js';
 import { sessionDb } from './database.js';
-import { agents, webClients, directoryCache, DIR_CACHE_TTL, DIR_CACHE_MAX_SIZE } from './context.js';
+import { agents, webClients, directoryCache, DIR_CACHE_TTL, DIR_CACHE_MAX_SIZE, trackBytesSent } from './context.js';
 
 // Send message to web client (with mandatory encryption in production)
 export async function sendToWebClient(client, msg) {
@@ -10,7 +10,9 @@ export async function sendToWebClient(client, msg) {
 
   if (CONFIG.skipAuth) {
     // Development mode - plain text for debugging
-    client.ws.send(JSON.stringify(msg));
+    const payload = JSON.stringify(msg);
+    trackBytesSent(client.userId, payload.length);
+    client.ws.send(payload);
   } else {
     // Production mode - encryption required
     if (!client.sessionKey) {
@@ -21,6 +23,7 @@ export async function sendToWebClient(client, msg) {
     try {
       const encrypted = await encrypt(msg, client.sessionKey);
       const payload = JSON.stringify(encrypted);
+      trackBytesSent(client.userId, payload.length);
       if (msg.type === 'file_content') console.log(`[sendToWebClient] file_content encrypted, payload size=${payload.length}, compressed=${encrypted.z}`);
       client.ws.send(payload);
     } catch (e) {

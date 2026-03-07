@@ -4,7 +4,7 @@ import { CONFIG } from './config.js';
 import { verifyToken, generateSkipAuthSession } from './auth.js';
 import { encodeKey } from './encryption.js';
 import { userDb } from './database.js';
-import { agents, webClients } from './context.js';
+import { agents, webClients, trackRequest } from './context.js';
 import {
   parseMessage, sendToWebClient, sendToAgent,
   broadcastAgentList, verifyAgentOwnership
@@ -91,6 +91,8 @@ export function handleWebConnection(ws, url) {
 
   ws.on('message', async (data) => {
     const client = webClients.get(clientId);
+    // Stats tracking: count request + bytes received
+    trackRequest(client?.userId, data.length || 0);
     const msg = await parseMessage(data, client?.sessionKey);
     if (msg) {
       handleWebMessage(clientId, msg);

@@ -8,6 +8,7 @@ import { registerInvitationRoutes } from './routes/invitation-routes.js';
 import { registerUserRoutes } from './routes/user-routes.js';
 import { registerSessionRoutes } from './routes/session-routes.js';
 import { registerUploadRoutes } from './routes/upload-routes.js';
+import { registerAdminRoutes } from './routes/admin-routes.js';
 
 // 登录速率限制: IP -> { attempts, resetAt }
 const loginAttempts = new Map();
@@ -92,4 +93,5 @@ export function registerApiRoutes(app) {
   registerUserRoutes(app, shared);
   registerSessionRoutes(app, shared);
   registerUploadRoutes(app, shared);
+  registerAdminRoutes(app, shared);
 }
