@@ -9,6 +9,7 @@
  *   icons           — icon SVG strings
  */
 import { renderMarkdown } from '../../utils/markdown.js';
+import { openImagePreview } from '../../utils/imagePreview.js';
 import {
   formatTime, shortName, getRoleStyle, getImageUrl
 } from './crewHelpers.js';
@@ -42,7 +43,7 @@ export default {
         <div v-else-if="turn.message.type === 'text'" class="crew-msg-content markdown-body" v-html="mdRender(turn.message.content)"></div>
         <div v-if="showHumanBubble && turn.message.attachments && turn.message.attachments.length > 0" class="user-attachments" style="margin-top: 6px;">
           <div v-for="(att, aidx) in turn.message.attachments" :key="aidx" class="user-attachment-item" :class="{ 'is-image': att.isImage }">
-            <img v-if="att.isImage && att.preview" :src="att.preview" :alt="att.name" class="user-attachment-image" />
+            <img v-if="att.isImage && att.preview" :src="att.preview" :alt="att.name" class="user-attachment-image" @click="openImagePreview(att.preview)" />
             <div v-else class="user-attachment-file"><span class="file-name">{{ att.name }}</span></div>
           </div>
         </div>
@@ -100,16 +101,14 @@ export default {
     getImageUrl,
     mdRender: renderMarkdown,
 
+    openImagePreview,
+
     handleImageError(event) {
       const img = event.target;
       const expired = document.createElement('div');
       expired.className = 'crew-screenshot-expired';
       expired.textContent = this.$t('crew.imageExpired');
       img.parentNode.replaceChild(expired, img);
-    },
-
-    openImagePreview(src) {
-      window.open(src, '_blank');
     }
   }
 };
