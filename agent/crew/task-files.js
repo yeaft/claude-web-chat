@@ -1,7 +1,8 @@
 /**
  * Crew — Task 文件管理（系统自动管理）
  * ensureTaskFile, appendTaskRecord, readTaskFile, parseCompletedTasks,
- * updateFeatureIndex, appendChangelog
+ * updateFeatureIndex, appendChangelog, saveRoleWorkSummary,
+ * updateKanban, readKanban
  */
 import { promises as fs } from 'fs';
 import { join } from 'path';
@@ -193,4 +194,193 @@ export async function appendChangelog(session, taskId, taskTitle) {
   }
 
   console.log(`[Crew] Changelog appended: ${taskId} (${taskTitle})`);
+}
+
+/**
+ * Context 超限 clear 前，将角色当前输出摘要保存到 feature 文件
+ */
+export async function saveRoleWorkSummary(session, roleName, accumulatedText) {
+  const roleState = session.roleStates.get(roleName);
+  const taskId = roleState?.currentTask?.taskId;
+  if (!taskId || !accumulatedText) return;
+
+  // 截取最后 2000 字符作为工作摘要
+  const summary = accumulatedText.length > 2000
+    ? '...' + accumulatedText.slice(-2000)
+    : accumulatedText;
+
+  const m = getMessages(session.language || 'zh-CN');
+  await appendTaskRecord(session, taskId, roleName,
+    `[${m.kanbanAutoSave}] ${summary}`);
+}
+
+// 看板写入锁：防止并发写入
+let _kanbanWriteLock = Promise.resolve();
+
+/**
+ * 推断任务状态：根据路由目标角色类型
+ */
+function inferStatus(session, toRole, m) {
+  const roleConfig = session.roles.get(toRole);
+  if (!roleConfig) return m.kanbanStatusDev;
+  switch (roleConfig.roleType) {
+    case 'developer': return m.kanbanStatusDev;
+    case 'reviewer': return m.kanbanStatusReview;
+    case 'tester': return m.kanbanStatusTest;
+    default:
+      if (roleConfig.isDecisionMaker) return m.kanbanStatusDecision;
+      return m.kanbanStatusDev;
+  }
+}
+
+/**
+ * 更新工作看板 context/kanban.md
+ *
+ * @param {object} session
+ * @param {object} [opts]
+ * @param {string} [opts.taskId] - 要更新的任务 ID
+ * @param {string} [opts.assignee] - 负责人
+ * @param {string} [opts.status] - 当前状态
+ * @param {string} [opts.summary] - 最新进展摘要
+ * @param {boolean} [opts.completed] - 是否标记为已完成
+ */
+export async function updateKanban(session, opts = {}) {
+  const doUpdate = async () => {
+    const contextDir = join(session.sharedDir, 'context');
+    await fs.mkdir(contextDir, { recursive: true });
+    const kanbanPath = join(contextDir, 'kanban.md');
+    const m = getMessages(session.language || 'zh-CN');
+
+    // 加载现有看板数据
+    let entries = new Map(); // taskId → { taskId, taskTitle, assignee, status, summary }
+    let completedEntries = new Map();
+    try {
+      const existing = await fs.readFile(kanbanPath, 'utf-8');
+      // 解析表格行
+      const lines = existing.split('\n');
+      let section = null;
+      for (const line of lines) {
+        if (line.startsWith('## ') && line.includes('🔨')) section = 'active';
+        else if (line.startsWith('## ') && line.includes('✅')) section = 'completed';
+        else if (line.startsWith('|') && !line.startsWith('|--') && section) {
+          const cols = line.split('|').map(c => c.trim()).filter(Boolean);
+          if (cols.length >= 3 && cols[0] !== m.colTaskId && cols[0] !== 'task-id') {
+            const entry = {
+              taskId: cols[0],
+              taskTitle: cols[1],
+              assignee: cols[2] || '-',
+              status: cols[3] || '-',
+              summary: cols[4] || '-'
+            };
+            if (section === 'completed') {
+              completedEntries.set(entry.taskId, entry);
+            } else {
+              entries.set(entry.taskId, entry);
+            }
+          }
+        }
+      }
+    } catch { /* 文件不存在 */ }
+
+    // 从 session.features 补充缺失的任务
+    const completed = session._completedTaskIds || new Set();
+    for (const [taskId, feature] of session.features) {
+      if (completed.has(taskId)) {
+        if (!completedEntries.has(taskId)) {
+          completedEntries.set(taskId, {
+            taskId,
+            taskTitle: feature.taskTitle,
+            assignee: '-',
+            status: '✅',
+            summary: '-'
+          });
+        }
+        entries.delete(taskId);
+      } else if (!entries.has(taskId)) {
+        entries.set(taskId, {
+          taskId,
+          taskTitle: feature.taskTitle,
+          assignee: '-',
+          status: '-',
+          summary: '-'
+        });
+      }
+    }
+
+    // 应用更新
+    if (opts.taskId) {
+      if (opts.completed) {
+        const entry = entries.get(opts.taskId) || completedEntries.get(opts.taskId);
+        if (entry) {
+          entry.status = '✅';
+          if (opts.summary) entry.summary = opts.summary;
+          completedEntries.set(opts.taskId, entry);
+          entries.delete(opts.taskId);
+        }
+      } else {
+        let entry = entries.get(opts.taskId);
+        if (!entry) {
+          const feature = session.features.get(opts.taskId);
+          entry = {
+            taskId: opts.taskId,
+            taskTitle: opts.taskTitle || feature?.taskTitle || opts.taskId,
+            assignee: '-',
+            status: '-',
+            summary: '-'
+          };
+        }
+        if (opts.assignee) entry.assignee = opts.assignee;
+        if (opts.status) entry.status = opts.status;
+        if (opts.summary) {
+          // 截取摘要
+          entry.summary = opts.summary.length > 100
+            ? opts.summary.substring(0, 97) + '...'
+            : opts.summary;
+        }
+        entries.set(opts.taskId, entry);
+      }
+    }
+
+    // 生成看板文件
+    const locale = (session.language === 'en') ? 'en-US' : 'zh-CN';
+    const now = new Date().toLocaleString(locale, { timeZone: 'Asia/Shanghai' });
+    let content = `${m.kanbanTitle}\n> ${m.lastUpdated}: ${now}\n`;
+
+    const activeArr = Array.from(entries.values());
+    content += `\n## 🔨 ${m.kanbanActive} (${activeArr.length})\n`;
+    if (activeArr.length > 0) {
+      content += `| ${m.colTaskId} | ${m.colTitle} | ${m.kanbanColAssignee} | ${m.kanbanColStatus} | ${m.kanbanColSummary} |\n|---------|------|--------|------|----------|\n`;
+      for (const e of activeArr) {
+        content += `| ${e.taskId} | ${e.taskTitle} | ${e.assignee} | ${e.status} | ${e.summary} |\n`;
+      }
+    }
+
+    const doneArr = Array.from(completedEntries.values());
+    content += `\n## ✅ ${m.kanbanCompleted} (${doneArr.length})\n`;
+    if (doneArr.length > 0) {
+      content += `| ${m.colTaskId} | ${m.colTitle} | ${m.kanbanColAssignee} |\n|---------|------|--------|\n`;
+      for (const e of doneArr) {
+        content += `| ${e.taskId} | ${e.taskTitle} | ${e.assignee} |\n`;
+      }
+    }
+
+    await fs.writeFile(kanbanPath, content);
+    console.log(`[Crew] Kanban updated: ${activeArr.length} active, ${doneArr.length} completed`);
+  };
+
+  // 串行化写入
+  _kanbanWriteLock = _kanbanWriteLock.then(doUpdate, doUpdate);
+  return _kanbanWriteLock;
+}
+
+/**
+ * 读取看板文件内容
+ */
+export async function readKanban(session) {
+  const kanbanPath = join(session.sharedDir, 'context', 'kanban.md');
+  try {
+    return await fs.readFile(kanbanPath, 'utf-8');
+  } catch {
+    return null;
+  }
 }

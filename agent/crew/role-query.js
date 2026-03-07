@@ -136,13 +136,7 @@ export async function createRoleQuery(session, roleName) {
     lastDispatchContent: null,
     lastDispatchFrom: null,
     lastDispatchTaskId: null,
-    lastDispatchTaskTitle: null,
-    // compact 状态
-    _compacting: false,
-    _compactSummaryPending: false,
-    _pendingCompactRoutes: null,
-    _pendingDispatch: null,
-    _fromRole: null
+    lastDispatchTaskTitle: null
   };
 
   session.roleStates.set(roleName, roleState);
@@ -272,7 +266,10 @@ ${m.taskListNotes}`;
 
   // Feature 进度文件说明
   prompt += `\n\n${m.featureRecordTitle}
-${m.featureRecordContent}`;
+${m.featureRecordContent}
+
+${m.contextRestartTitle}
+${m.contextRestartContent}`;
 
   // 执行者角色的组绑定 prompt
   if (role.groupIndex > 0 && role.roleType === 'developer') {

@@ -4,7 +4,7 @@
  */
 import { join } from 'path';
 import { sendCrewMessage, sendCrewOutput, sendStatusUpdate } from './ui-messages.js';
-import { ensureTaskFile, appendTaskRecord, readTaskFile } from './task-files.js';
+import { ensureTaskFile, appendTaskRecord, readTaskFile, updateKanban, readKanban } from './task-files.js';
 import { createRoleQuery } from './role-query.js';
 
 /** Format role label */
@@ -63,6 +63,24 @@ export async function executeRoute(session, fromRole, route) {
     }
     appendTaskRecord(session, taskId, fromRole, summary)
       .catch(e => console.warn(`[Crew] Failed to append task record ${taskId}:`, e.message));
+
+    // 更新工作看板：推断状态
+    const { getMessages } = await import('../crew-i18n.js');
+    const m = getMessages(session.language || 'zh-CN');
+    const toRoleConfig = session.roles.get(to);
+    let status = m.kanbanStatusDev;
+    if (toRoleConfig) {
+      switch (toRoleConfig.roleType) {
+        case 'reviewer': status = m.kanbanStatusReview; break;
+        case 'tester': status = m.kanbanStatusTest; break;
+        default:
+          if (toRoleConfig.isDecisionMaker) status = m.kanbanStatusDecision;
+      }
+    }
+    updateKanban(session, {
+      taskId, taskTitle, assignee: to,
+      status, summary: summary.substring(0, 100)
+    }).catch(e => console.warn(`[Crew] Failed to update kanban:`, e.message));
   }
 
   // 发送路由消息（UI 显示）
@@ -139,6 +157,14 @@ export async function dispatchToRole(session, roleName, content, fromSource, tas
     const taskContent = await readTaskFile(session, effectiveTaskId);
     if (taskContent) {
       content = `${content}\n\n---\n<task-context file="context/features/${effectiveTaskId}.md">\n${taskContent}\n</task-context>`;
+    }
+  }
+
+  // 看板上下文注入（角色重启后知道全局状态）
+  if (typeof content === 'string') {
+    const kanbanContent = await readKanban(session);
+    if (kanbanContent) {
+      content = `${content}\n\n---\n<kanban file="context/kanban.md">\n${kanbanContent}\n</kanban>`;
     }
   }
 
