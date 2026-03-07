@@ -5,12 +5,11 @@
 import { sendCrewMessage, sendCrewOutput, sendStatusUpdate, endRoleStreaming } from './ui-messages.js';
 import { saveRoleSessionId, clearRoleSessionId, classifyRoleError, createRoleQuery } from './role-query.js';
 import { parseRoutes, executeRoute, dispatchToRole } from './routing.js';
-import { parseCompletedTasks, updateFeatureIndex, appendChangelog } from './task-files.js';
+import { parseCompletedTasks, updateFeatureIndex, appendChangelog, saveRoleWorkSummary, updateKanban } from './task-files.js';
 
 // Context 使用率阈值常量
 const MAX_CONTEXT = 128000;       // API max_prompt_tokens 限制
-const COMPACT_THRESHOLD = 0.85;   // 85% → 触发预防性 compact
-const CLEAR_THRESHOLD = 0.95;     // 95% → compact 后仍超限则 clear + rebuild
+const CLEAR_THRESHOLD = 0.85;     // 85% → 直接 clear + rebuild（不再走 compact）
 
 /**
  * 处理角色的流式输出
@@ -24,21 +23,6 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
       if (message.type === 'system' && message.subtype === 'init') {
         roleState.claudeSessionId = message.session_id;
         console.log(`[Crew] ${roleName} session: ${message.session_id}`);
-        continue;
-      }
-
-      // compact 消息过滤
-      if (roleState._compacting && message.type !== 'result') {
-        if (message.type === 'system') {
-          if (message.subtype === 'compact_boundary') {
-            roleState._compactSummaryPending = true;
-          }
-          continue;
-        }
-        if (message.type === 'user' && roleState._compactSummaryPending) {
-          roleState._compactSummaryPending = false;
-          continue;
-        }
         continue;
       }
 
@@ -90,84 +74,6 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
           roleState.lastOutputTokens = message.usage.output_tokens || 0;
         }
 
-        // compact turn 完成的处理
-        if (roleState._compacting) {
-          roleState._compacting = false;
-          const postCompactTokens = message.usage?.input_tokens || 0;
-          const postCompactPercentage = postCompactTokens / MAX_CONTEXT;
-          console.log(`[Crew] ${roleName} compact completed, context now at ${Math.round(postCompactPercentage * 100)}%`);
-
-          sendCrewMessage({
-            type: 'crew_role_compact',
-            sessionId: session.id,
-            role: roleName,
-            contextPercentage: Math.round(postCompactPercentage * 100),
-            status: 'completed'
-          });
-
-          // Layer 2: compact 后仍超 95% → clear + rebuild
-          if (postCompactPercentage >= CLEAR_THRESHOLD) {
-            console.warn(`[Crew] ${roleName} still at ${Math.round(postCompactPercentage * 100)}% after compact, escalating to clear`);
-
-            await clearRoleSessionId(session.sharedDir, roleName);
-            roleState.claudeSessionId = null;
-
-            if (roleState.abortController) roleState.abortController.abort();
-            roleState.query = null;
-            roleState.inputStream = null;
-
-            sendCrewMessage({
-              type: 'crew_role_compact',
-              sessionId: session.id,
-              role: roleName,
-              status: 'cleared'
-            });
-
-            if (roleState._pendingCompactRoutes) {
-              const routes = roleState._pendingCompactRoutes;
-              const fromRole = roleState._fromRole;
-              roleState._pendingCompactRoutes = null;
-              roleState._fromRole = null;
-              session.round++;
-              const results = await Promise.allSettled(routes.map(route =>
-                executeRoute(session, fromRole, route)
-              ));
-              for (const r of results) {
-                if (r.status === 'rejected') {
-                  console.warn(`[Crew] Route execution failed:`, r.reason);
-                }
-              }
-            } else if (roleState._pendingDispatch) {
-              const pd = roleState._pendingDispatch;
-              roleState._pendingDispatch = null;
-              await dispatchToRole(session, roleName, pd.content, pd.from, pd.taskId, pd.taskTitle);
-            }
-            return; // abort 后 query 已清空，退出
-          }
-
-          // 执行之前缓存的路由
-          if (roleState._pendingCompactRoutes) {
-            const routes = roleState._pendingCompactRoutes;
-            const fromRole = roleState._fromRole;
-            roleState._pendingCompactRoutes = null;
-            roleState._fromRole = null;
-            session.round++;
-            const results = await Promise.allSettled(routes.map(route =>
-              executeRoute(session, fromRole, route)
-            ));
-            for (const r of results) {
-              if (r.status === 'rejected') {
-                console.warn(`[Crew] Route execution failed:`, r.reason);
-              }
-            }
-          } else if (roleState._pendingDispatch) {
-            const pd = roleState._pendingDispatch;
-            roleState._pendingDispatch = null;
-            await dispatchToRole(session, roleName, pd.content, pd.from, pd.taskId, pd.taskTitle);
-          }
-          continue; // 不要重复处理这个 compact result
-        }
-
         // 持久化 sessionId
         if (roleState.claudeSessionId) {
           saveRoleSessionId(session.sharedDir, roleName, roleState.claudeSessionId)
@@ -188,7 +94,7 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
         }
 
         const contextPercentage = inputTokens / MAX_CONTEXT;
-        const needCompact = contextPercentage >= COMPACT_THRESHOLD;
+        const needClear = contextPercentage >= CLEAR_THRESHOLD;
 
         // 解析路由
         const routes = parseRoutes(roleState.accumulatedText);
@@ -213,11 +119,14 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
                 const feature = session.features.get(tid);
                 const title = feature?.taskTitle || tid;
                 appendChangelog(session, tid, title).catch(e => console.warn(`[Crew] Failed to append changelog for ${tid}:`, e.message));
+                updateKanban(session, { taskId: tid, completed: true }).catch(e => console.warn(`[Crew] Failed to update kanban for ${tid}:`, e.message));
               }
             }
           }
         }
 
+        // 保存 accumulatedText 供后续 saveRoleWorkSummary 使用（清空前）
+        const turnText = roleState.accumulatedText;
         roleState.accumulatedText = '';
         roleState.turnActive = false;
 
@@ -229,18 +138,34 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
 
         sendStatusUpdate(session);
 
-        // 需要 compact：缓存路由，先执行 compact
-        if (needCompact) {
-          console.log(`[Crew] ${roleName} context at ${Math.round(contextPercentage * 100)}%, compacting before next dispatch`);
+        // Context 超限：保存工作摘要后 clear + rebuild
+        if (needClear) {
+          console.log(`[Crew] ${roleName} context at ${Math.round(contextPercentage * 100)}%, clearing and rebuilding`);
 
-          roleState._pendingCompactRoutes = routes.length > 0 ? routes : null;
-          roleState._compacting = true;
-          roleState._compactSummaryPending = false;
-          roleState._fromRole = roleName;
+          // 保存工作摘要到 feature 文件
+          await saveRoleWorkSummary(session, roleName, turnText).catch(e =>
+            console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
 
+          // Clear 角色
+          await clearRoleSessionId(session.sharedDir, roleName);
+          roleState.claudeSessionId = null;
+
+          if (roleState.abortController) roleState.abortController.abort();
+          roleState.query = null;
+          roleState.inputStream = null;
+
+          sendCrewMessage({
+            type: 'crew_role_cleared',
+            sessionId: session.id,
+            role: roleName,
+            contextPercentage: Math.round(contextPercentage * 100),
+            reason: 'context_limit'
+          });
+
+          // 继承 task 到路由（如有）
           const currentTask = roleState.currentTask;
-          if (roleState._pendingCompactRoutes) {
-            for (const route of roleState._pendingCompactRoutes) {
+          if (routes.length > 0) {
+            for (const route of routes) {
               if (!route.taskId && currentTask) {
                 route.taskId = currentTask.taskId;
                 route.taskTitle = currentTask.taskTitle;
@@ -248,23 +173,22 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
             }
           }
 
-          roleState.inputStream.enqueue({
-            type: 'user',
-            message: { role: 'user', content: '/compact' }
-          });
-
-          sendCrewMessage({
-            type: 'crew_role_compact',
-            sessionId: session.id,
-            role: roleName,
-            contextPercentage: Math.round(contextPercentage * 100),
-            status: 'compacting'
-          });
-
-          continue;
+          // 执行路由
+          if (routes.length > 0) {
+            session.round++;
+            const results = await Promise.allSettled(routes.map(route =>
+              executeRoute(session, roleName, route)
+            ));
+            for (const r of results) {
+              if (r.status === 'rejected') {
+                console.warn(`[Crew] Route execution failed:`, r.reason);
+              }
+            }
+          }
+          return; // query 已清空，退出
         }
 
-        // 执行路由（无需 compact 时）
+        // 执行路由（无需 clear 时）
         if (routes.length > 0) {
           session.round++;
 
@@ -306,12 +230,11 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
 
       // Step 1: 清理 roleState
       endRoleStreaming(session, roleName);
+      const errorTurnText = roleState.accumulatedText;
       roleState.query = null;
       roleState.inputStream = null;
       roleState.turnActive = false;
       roleState.accumulatedText = '';
-      roleState._compacting = false;
-      roleState._compactSummaryPending = false;
 
       // Step 2: 错误分类
       const classification = classifyRoleError(error);
@@ -352,7 +275,7 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
         return;
       }
 
-      // Step 5: 可恢复 → 自动重建并重试
+      // Step 5: 可恢复 → 保存摘要后 clear + 重建重试
       console.log(`[Crew] ${roleName} attempting recovery (${classification.reason}), retry ${roleState.consecutiveErrors}/${MAX_RETRIES}`);
 
       sendCrewOutput(session, 'system', 'system', {
@@ -364,43 +287,23 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
       });
 
       if (roleState.lastDispatchContent) {
-        if (classification.reason === 'context_exceeded') {
-          await clearRoleSessionId(session.sharedDir, roleName);
-          const newState = await createRoleQuery(session, roleName);
+        // 保存工作摘要
+        await saveRoleWorkSummary(session, roleName, errorTurnText).catch(e =>
+          console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
 
-          newState._pendingDispatch = {
-            content: roleState.lastDispatchContent,
-            from: roleState.lastDispatchFrom || 'system',
-            taskId: roleState.lastDispatchTaskId,
-            taskTitle: roleState.lastDispatchTaskTitle
-          };
-          newState._compacting = true;
-          newState._compactSummaryPending = false;
-          newState.consecutiveErrors = roleState.consecutiveErrors;
-
-          newState.inputStream.enqueue({
-            type: 'user',
-            message: { role: 'user', content: '/compact' }
-          });
-
-          sendCrewMessage({
-            type: 'crew_role_compact',
-            sessionId: session.id,
-            role: roleName,
-            status: 'compacting'
-          });
-        } else {
-          if (classification.skipResume) {
-            await clearRoleSessionId(session.sharedDir, roleName);
-          }
-          await dispatchToRole(
-            session, roleName,
-            roleState.lastDispatchContent,
-            roleState.lastDispatchFrom || 'system',
-            roleState.lastDispatchTaskId,
-            roleState.lastDispatchTaskTitle
-          );
-        }
+        // 所有可恢复错误统一 clear + rebuild
+        await clearRoleSessionId(session.sharedDir, roleName);
+        const consecutiveErrors = roleState.consecutiveErrors;
+        await dispatchToRole(
+          session, roleName,
+          roleState.lastDispatchContent,
+          roleState.lastDispatchFrom || 'system',
+          roleState.lastDispatchTaskId,
+          roleState.lastDispatchTaskTitle
+        );
+        // 保持错误计数
+        const newState = session.roleStates.get(roleName);
+        if (newState) newState.consecutiveErrors = consecutiveErrors;
       } else {
         const msg = `角色 ${roleName} 已恢复（${classification.reason}），但无待重试消息。`;
         if (roleName !== session.decisionMaker) {

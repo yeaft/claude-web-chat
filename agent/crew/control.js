@@ -1,6 +1,6 @@
 /**
  * Crew — 控制操作
- * pause, resume, stop, clear, abort, interrupt, compact 等
+ * pause, resume, stop, clear, abort, interrupt 等
  */
 import { join } from 'path';
 import { promises as fs } from 'fs';
@@ -44,9 +44,6 @@ export async function handleCrewControl(msg) {
     case 'abort_role':
       if (targetRole) await abortRole(session, targetRole);
       break;
-    case 'compact_role':
-      if (targetRole) await compactRole(session, targetRole);
-      break;
     case 'clear_role':
       if (targetRole) await clearSingleRole(session, targetRole);
       break;
@@ -74,11 +71,6 @@ async function clearSingleRole(session, roleName) {
     roleState.query = null;
     roleState.inputStream = null;
     roleState.turnActive = false;
-    roleState._compacting = false;
-    roleState._compactSummaryPending = false;
-    roleState._pendingCompactRoutes = null;
-    roleState._pendingDispatch = null;
-    roleState._fromRole = null;
     roleState.claudeSessionId = null;
     roleState.consecutiveErrors = 0;
     roleState.accumulatedText = '';
@@ -91,10 +83,10 @@ async function clearSingleRole(session, roleName) {
   await clearRoleSessionId(session.sharedDir, roleName);
 
   sendCrewMessage({
-    type: 'crew_role_compact',
+    type: 'crew_role_cleared',
     sessionId: session.id,
     role: roleName,
-    status: 'cleared'
+    reason: 'manual'
   });
 
   sendCrewOutput(session, 'system', 'system', {
@@ -103,59 +95,6 @@ async function clearSingleRole(session, roleName) {
   });
   sendStatusUpdate(session);
   console.log(`[Crew] Role ${roleName} cleared`);
-}
-
-/**
- * 手动压缩指定角色的上下文
- */
-async function compactRole(session, roleName) {
-  const roleState = session.roleStates.get(roleName);
-
-  if (roleState?.turnActive) {
-    sendCrewMessage({
-      type: 'crew_role_compact',
-      sessionId: session.id,
-      role: roleName,
-      status: 'rejected',
-      reason: '角色正在工作中，请先停止该角色再压缩上下文'
-    });
-    return;
-  }
-
-  if (roleState?._compacting) {
-    sendCrewMessage({
-      type: 'crew_role_compact',
-      sessionId: session.id,
-      role: roleName,
-      status: 'rejected',
-      reason: '该角色正在压缩中，请等待完成'
-    });
-    return;
-  }
-
-  let state = roleState;
-  if (!state || !state.query || !state.inputStream) {
-    console.log(`[Crew] ${roleName} has no active query, rebuilding for compact`);
-    state = await createRoleQuery(session, roleName);
-  }
-
-  console.log(`[Crew] Manual compact requested for ${roleName}`);
-  state._compacting = true;
-  state._compactSummaryPending = false;
-  state._pendingCompactRoutes = null;
-  state._fromRole = null;
-
-  state.inputStream.enqueue({
-    type: 'user',
-    message: { role: 'user', content: '/compact' }
-  });
-
-  sendCrewMessage({
-    type: 'crew_role_compact',
-    sessionId: session.id,
-    role: roleName,
-    status: 'compacting'
-  });
 }
 
 /**
@@ -395,6 +334,10 @@ async function clearSession(session) {
   session.humanMessageQueue = [];
   session.waitingHumanContext = null;
   session.pendingRoutes = [];
+
+  // 清除 feature/task 数据，避免 UI 残留空 task 卡片
+  session.features.clear();
+  session._completedTaskIds = new Set();
 
   session.round = 0;
 

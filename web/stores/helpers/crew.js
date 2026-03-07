@@ -537,9 +537,13 @@ export function handleCrewOutput(store, msg) {
   }
 
   if (msg.type === 'crew_session_cleared') {
-    // 清空前端消息，保留 session 配置
+    // 清空前端消息和 feature/task 数据，保留 session 配置
     store.crewMessagesMap[sid] = [];
     delete store.crewOlderMessages[sid];
+    // 清除 features，避免残留空 task 卡片
+    if (store.crewStatuses[sid]) {
+      store.crewStatuses[sid].features = [];
+    }
     return;
   }
 

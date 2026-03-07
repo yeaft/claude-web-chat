@@ -43,7 +43,6 @@ export default {
                   <span v-if="role.isDecisionMaker" class="crew-role-card-dm">\u2605</span>
                   <span class="crew-role-card-header-actions" @click.stop>
                     <button v-if="isRoleStreaming(role.name)" class="crew-role-action-btn crew-role-abort-btn" @click.stop="abortRole(role.name)" :title="$t('crew.abortTask')">⏹</button>
-                    <button class="crew-role-action-btn" @click.stop="compactRole(role.name)" :title="$t('crew.compactContext')">🗜</button>
                     <button class="crew-role-action-btn" @click.stop="clearRole(role.name)" :title="$t('crew.clearChat')">🗑</button>
                   </span>
                 </div>
@@ -2050,11 +2049,6 @@ summary: 请测试以下变更...
         if (!confirm(this.$t('crew.confirmClear'))) return;
       }
       this.store.sendCrewControl(action, targetRole);
-    },
-
-    compactRole(roleName) {
-      if (!roleName) return;
-      this.controlAction('compact_role', roleName);
     },
 
     clearRole(roleName) {
