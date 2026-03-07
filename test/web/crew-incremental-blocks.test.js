@@ -23,6 +23,11 @@ beforeAll(async () => {
   const { join } = await import('path');
   const base = process.cwd();
   viewSource = await fs.readFile(join(base, 'web/components/CrewChatView.js'), 'utf-8');
+  // Sub-modules extracted from CrewChatView during refactor
+  const crewDir = join(base, 'web/components/crew');
+  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js']) {
+    viewSource += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+  }
   markdownSource = await fs.readFile(join(base, 'web/utils/markdown.js'), 'utf-8');
 });
 
@@ -33,7 +38,7 @@ beforeAll(async () => {
 describe('featureBlocks: array reference cache invalidation', () => {
 
   it('should store _lastArr in cache initialization', () => {
-    expect(viewSource).toContain('_lastArr: null');
+    expect(viewSource).toContain('_lastArr:');
   });
 
   it('should check cache._lastArr !== allMessages for reference change', () => {
@@ -41,16 +46,15 @@ describe('featureBlocks: array reference cache invalidation', () => {
   });
 
   it('should update _lastArr when array reference changes', () => {
-    expect(viewSource).toContain('cache._lastArr = allMessages');
+    // Now done via Object.assign(cache, createFbCache(allMessages))
+    expect(viewSource).toContain('createFbCache(allMessages)');
   });
 
   it('should trigger full rebuild when array reference changes', () => {
-    // When _lastArr !== allMessages, it should reset and rebuild
+    // When _lastArr !== allMessages, it should reset via createFbCache and rebuild
     const refChangeSection = viewSource.split('cache._lastArr !== allMessages')[1]
       ?.split('return')[0] || '';
-    expect(refChangeSection).toContain('cache.segments = []');
-    expect(refChangeSection).toContain('cache.processedLen = 0');
-    expect(refChangeSection).toContain('cache.turnsCache.clear()');
+    expect(refChangeSection).toContain('createFbCache(allMessages)');
   });
 
   // Behavioral test: simulate array ref change
@@ -75,8 +79,8 @@ describe('featureBlocks: array reference cache invalidation', () => {
 
 describe('_appendToSegments: incremental segmentation', () => {
 
-  it('should have _appendToSegments method defined', () => {
-    expect(viewSource).toContain('_appendToSegments(allMessages, startIdx, cache)');
+  it('should have appendToSegments function defined', () => {
+    expect(viewSource).toContain('appendToSegments(allMessages, startIdx, cache)');
   });
 
   // Behavioral test: simulate segmentation logic
@@ -234,9 +238,9 @@ describe('_rebuildBlocksFromSegments: streaming and lazy turns', () => {
   });
 
   it('should always rebuild turns when segment is dirty', () => {
-    // The else branch calls _buildTurns when canDefer is false OR when dirty
+    // The else branch calls buildTurns when canDefer is false OR when dirty
     const rebuildSection = viewSource.split('const canDefer =')[1]?.split('blocks.push')[0] || '';
-    expect(rebuildSection).toContain('this._buildTurns(seg.messages)');
+    expect(rebuildSection).toContain('buildTurns(seg.messages)');
   });
 
   // Behavioral test: lazy turns decision logic
@@ -288,23 +292,23 @@ describe('getBlockTurns: lazy turns resolution', () => {
 
   it('should use _segIndex to find the segment for lazy building', () => {
     expect(viewSource).toContain('block._segIndex');
-    expect(viewSource).toContain('this._fbCache.segments[block._segIndex]');
+    expect(viewSource).toContain('fbCache.segments[block._segIndex]');
   });
 
   it('should build turns from segment on lazy resolution', () => {
-    // Use method definition marker to locate getBlockTurns method body
-    const methodBody = viewSource.split('getBlockTurns(block) {')[1]?.split('\n    },')[0] || '';
-    expect(methodBody).toContain('this._buildTurns(seg.messages)');
+    // getBlockTurns is now a standalone exported function
+    const methodBody = viewSource.split('getBlockTurns(block, fbCache) {')[1]?.split('\n}')[0] || '';
+    expect(methodBody).toContain('buildTurns(seg.messages)');
   });
 
   it('should cache built turns on segment for reuse', () => {
-    const methodBody = viewSource.split('getBlockTurns(block) {')[1]?.split('\n    },')[0] || '';
-    expect(methodBody).toContain('seg._turnsCache = this._buildTurns');
+    const methodBody = viewSource.split('getBlockTurns(block, fbCache) {')[1]?.split('\n}')[0] || '';
+    expect(methodBody).toContain('seg._turnsCache = buildTurns');
     expect(methodBody).toContain('block.turns = seg._turnsCache');
   });
 
   it('should return empty array if no segment found (fallback)', () => {
-    const methodBody = viewSource.split('getBlockTurns(block) {')[1]?.split('\n    },')[0] || '';
+    const methodBody = viewSource.split('getBlockTurns(block, fbCache) {')[1]?.split('\n}')[0] || '';
     expect(methodBody).toContain('return []');
   });
 
@@ -453,9 +457,9 @@ describe('Integration: cache invalidation', () => {
 
   it('featureBlocks should handle processedLen > len (messages shrunk)', () => {
     expect(viewSource).toContain('if (startIdx > len)');
-    // Should trigger full rebuild
+    // Should trigger full rebuild via createFbCache
     const shrunkSection = viewSource.split('startIdx > len')[1]?.split('return')[0] || '';
-    expect(shrunkSection).toContain('cache.segments = []');
+    expect(shrunkSection).toContain('createFbCache(allMessages)');
   });
 
   it('should handle array ref change with len === 0 (empty messages)', () => {

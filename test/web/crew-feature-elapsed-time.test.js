@@ -22,6 +22,11 @@ let cssSource;
 beforeAll(() => {
   const jsPath = resolve(__dirname, '../../web/components/CrewChatView.js');
   jsSource = readFileSync(jsPath, 'utf-8');
+  // Sub-modules extracted from CrewChatView during refactor
+  const crewDir = resolve(__dirname, '../../web/components/crew');
+  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js']) {
+    jsSource += '\n' + readFileSync(resolve(crewDir, mod), 'utf-8');
+  }
 
   cssSource = loadAllCss();
 });
@@ -34,7 +39,9 @@ function extractMethod(methodName) {
   let startIdx = -1;
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
-    if (trimmed.startsWith(`${methodName}(`) && trimmed.endsWith('{')) {
+    if ((trimmed.startsWith(`${methodName}(`) ||
+         trimmed.startsWith(`function ${methodName}(`) ||
+         trimmed.startsWith(`export function ${methodName}(`)) && trimmed.endsWith('{')) {
       startIdx = jsSource.indexOf(lines[i]);
       break;
     }
@@ -264,7 +271,7 @@ describe('interval cleanup on component unmount', () => {
 describe('lastActivityAt data flow', () => {
   let kanbanBody;
   beforeAll(() => {
-    kanbanBody = extractMethod('featureKanban');
+    kanbanBody = extractMethod('buildFeatureKanban');
   });
 
   it('featureKanban initializes lastActivityAt: 0 for activeTasks features', () => {

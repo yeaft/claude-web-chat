@@ -1949,6 +1949,11 @@ describe('Hints bar - source file verification', () => {
       join(__dirname, '../../web/components/CrewChatView.js'),
       'utf-8'
     );
+    // Sub-modules extracted from CrewChatView during refactor
+    const crewDir = join(__dirname, '../../web/components/crew');
+    for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js']) {
+      fileContent += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+    }
     expect(fileContent).toBeTruthy();
   });
 
@@ -2417,6 +2422,11 @@ describe('Source file verification - shortName usage in template', () => {
       join(__dirname, '../../web/components/CrewChatView.js'),
       'utf-8'
     );
+    // Sub-modules extracted from CrewChatView during refactor
+    const crewDir = join(__dirname, '../../web/components/crew');
+    for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js']) {
+      fileContent += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+    }
     expect(fileContent).toBeTruthy();
   });
 
@@ -2845,6 +2855,11 @@ describe('Feature blocks - removed task panel and filter bar', () => {
       join(__dirname, '../../web/components/CrewChatView.js'),
       'utf-8'
     );
+    // Sub-modules extracted from CrewChatView during refactor
+    const crewDir = join(__dirname, '../../web/components/crew');
+    for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js']) {
+      fileContent += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+    }
     expect(fileContent).toBeTruthy();
   });
 
@@ -2881,8 +2896,8 @@ describe('Feature blocks - removed task panel and filter bar', () => {
     expect(fileContent).toContain('toggleFeature(taskId)');
   });
 
-  it('should use _buildTurns helper method', () => {
-    expect(fileContent).toContain('_buildTurns(');
+  it('should use buildTurns helper function', () => {
+    expect(fileContent).toContain('buildTurns(');
   });
 
   it('should use shouldShowTurnDivider with turns parameter', () => {
@@ -3277,6 +3292,11 @@ describe('Route inline rendering - template structure verification', () => {
       join(__dirname, '../../web/components/CrewChatView.js'),
       'utf-8'
     );
+    // Sub-modules extracted from CrewChatView during refactor
+    const crewDir = join(__dirname, '../../web/components/crew');
+    for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js']) {
+      fileContent += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+    }
     expect(fileContent).toBeTruthy();
   });
 
@@ -4210,6 +4230,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
 
   beforeAll(async () => {
     viewSource = await fs.readFile(join(__dirname, '../../web/components/CrewChatView.js'), 'utf-8');
+    // Sub-modules extracted from CrewChatView during refactor
+    const crewDir = join(__dirname, '../../web/components/crew');
+    for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js']) {
+      viewSource += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
+    }
     cssSource = loadAllCss();
   });
 
@@ -4356,9 +4381,9 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
 
     it('should show total done / total with percentage', () => {
-      expect(viewSource).toContain('kanbanProgress.done');
-      expect(viewSource).toContain('kanbanProgress.total');
-      expect(viewSource).toContain('Math.round(kanbanProgress.done / kanbanProgress.total * 100)');
+      expect(viewSource).toContain('kanbanProgressData.done');
+      expect(viewSource).toContain('kanbanProgressData.total');
+      expect(viewSource).toContain('Math.round(kanbanProgressData.done / kanbanProgressData.total * 100)');
     });
 
     it('should have total progress bar', () => {
@@ -4415,7 +4440,8 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
 
     it('kanbanProgress should sum from featureKanban', () => {
-      expect(viewSource).toContain('kanbanProgress()');
+      // Computed renamed to kanbanProgressData, delegates to kanbanProgress function
+      expect(viewSource).toContain('kanbanProgressData()');
       expect(viewSource).toContain('this.featureKanban');
     });
   });

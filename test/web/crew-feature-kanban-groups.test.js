@@ -21,6 +21,11 @@ let cssSource;
 beforeAll(() => {
   const jsPath = resolve(__dirname, '../../web/components/CrewChatView.js');
   jsSource = readFileSync(jsPath, 'utf-8');
+  // Sub-modules extracted from CrewChatView during refactor
+  const crewDir = resolve(__dirname, '../../web/components/crew');
+  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js']) {
+    jsSource += '\n' + readFileSync(resolve(crewDir, mod), 'utf-8');
+  }
 
   cssSource = loadAllCss();
 });
@@ -33,7 +38,9 @@ function extractMethod(methodName) {
   let startIdx = -1;
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
-    if (trimmed.startsWith(`${methodName}(`) && trimmed.endsWith('{')) {
+    if ((trimmed.startsWith(`${methodName}(`) ||
+         trimmed.startsWith(`function ${methodName}(`) ||
+         trimmed.startsWith(`export function ${methodName}(`)) && trimmed.endsWith('{')) {
       startIdx = jsSource.indexOf(lines[i]);
       break;
     }
@@ -75,7 +82,7 @@ function extractCssBlock(selector) {
 describe('featureKanbanGrouped computed property', () => {
   let body;
   beforeAll(() => {
-    body = extractMethod('featureKanbanGrouped');
+    body = extractMethod('groupKanban');
   });
 
   it('should exist as a computed property', () => {
@@ -88,7 +95,7 @@ describe('featureKanbanGrouped computed property', () => {
   });
 
   it('should iterate over featureKanban', () => {
-    expect(body).toContain('this.featureKanban');
+    expect(body).toContain('featureKanban');
   });
 
   it('should check isCompleted to split groups', () => {
@@ -108,7 +115,7 @@ describe('featureKanbanGrouped computed property', () => {
 describe('featureKanban computed — time-based sorting', () => {
   let body;
   beforeAll(() => {
-    body = extractMethod('featureKanban');
+    body = extractMethod('buildFeatureKanban');
   });
 
   it('should include createdAt in feature objects', () => {
@@ -136,7 +143,7 @@ describe('featureKanban computed — time-based sorting', () => {
 describe('activeTasks computed — createdAt propagation', () => {
   let body;
   beforeAll(() => {
-    body = extractMethod('activeTasks');
+    body = extractMethod('collectActiveTasks');
   });
 
   it('should extract createdAt from persisted features', () => {
@@ -412,22 +419,22 @@ describe('structural integrity', () => {
 // =====================================================================
 describe('createdAt data flow through computed chain', () => {
   it('activeTasks passes createdAt from persistedFeatures', () => {
-    const body = extractMethod('activeTasks');
+    const body = extractMethod('collectActiveTasks');
     expect(body).toContain('createdAt: f.createdAt');
   });
 
   it('activeTasks uses msg.timestamp as fallback createdAt', () => {
-    const body = extractMethod('activeTasks');
+    const body = extractMethod('collectActiveTasks');
     expect(body).toContain('createdAt: msg.timestamp');
   });
 
   it('featureKanban sets createdAt from task.createdAt', () => {
-    const body = extractMethod('featureKanban');
+    const body = extractMethod('buildFeatureKanban');
     expect(body).toContain('createdAt: task.createdAt || 0');
   });
 
   it('fallback features get createdAt: 0', () => {
-    const body = extractMethod('featureKanban');
+    const body = extractMethod('buildFeatureKanban');
     // Features created from todosByFeature (not in activeTasks) get createdAt: 0
     expect(body).toContain('createdAt: 0');
   });
