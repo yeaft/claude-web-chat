@@ -369,7 +369,7 @@ describe('structural integrity', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2092);
+    expect(opens).toBe(2095);
   });
 
   it('session-group-header CSS rule exists', () => {

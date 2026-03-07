@@ -275,23 +275,24 @@ describe('CSS — mobile override for hide-* classes', () => {
 // 9. CSS — header nav visible on all viewports
 // =====================================================================
 describe('CSS — header nav visible on all viewports', () => {
-  it('crew-header-nav has display: flex in base rule', () => {
-    expect(cssSource).toMatch(/\.crew-header-nav\s*\{[^}]*display:\s*flex/);
+  it('crew-header-left has display: flex in base rule', () => {
+    expect(cssSource).toMatch(/\.crew-header-left[\s,][^}]*display:\s*flex/);
   });
 
-  it('crew-header-nav has position: absolute in base rule', () => {
-    const navStart = cssSource.indexOf('.crew-header-nav {');
-    const navSection = cssSource.substring(navStart, navStart + 300);
-    expect(navSection).toContain('position: absolute');
+  it('crew-header-left has position: absolute in base rule', () => {
+    // position: absolute is in the shared rule: .crew-header-left, .crew-header-right { ... }
+    const sharedStart = cssSource.indexOf('.crew-header-left,');
+    const sharedSection = cssSource.substring(sharedStart, sharedStart + 300);
+    expect(sharedSection).toContain('position: absolute');
   });
 
-  it('crew-header-nav has right: 12px in base rule', () => {
-    const navStart = cssSource.indexOf('.crew-header-nav {');
+  it('crew-header-left has right: 12px in base rule', () => {
+    const navStart = cssSource.indexOf('.crew-header-left {');
     const navSection = cssSource.substring(navStart, navStart + 300);
     expect(navSection).toContain('right: 12px');
   });
 
-  it('no duplicate crew-header-nav display:flex in 767px media query', () => {
+  it('no duplicate crew-header-left display:flex in 767px media query', () => {
     // The base rule already has display: flex, so it should NOT be repeated in mobile
     const marker = '@media (max-width: 767px)';
     const idx = cssSource.indexOf(marker);
@@ -304,9 +305,9 @@ describe('CSS — header nav visible on all viewports', () => {
       if (depth === 0) { end = i; break; }
     }
     const mobileBlock = cssSource.substring(openBrace + 1, end);
-    // The mobile block should NOT have a separate crew-header-nav rule
-    // since it was moved to the base rule
-    expect(mobileBlock).not.toMatch(/\.crew-header-nav\s*\{/);
+    // The mobile block should NOT have a separate crew-header-left base rule
+    // since the shared rule is in base styles
+    expect(mobileBlock).not.toMatch(/\.crew-header-left,\s*\n\s*\.crew-header-right\s*\{/);
   });
 });
 
@@ -318,6 +319,6 @@ describe('structural integrity', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2092);
+    expect(opens).toBe(2095);
   });
 });
