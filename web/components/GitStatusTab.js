@@ -1,5 +1,8 @@
 import { getFileIconSvg, getFolderIconSvg } from '../utils/fileIcons.js';
 import { highlightCode } from '../utils/syntaxHighlight.js';
+import { parseDiff } from './git/diffParser.js';
+import { createGitOperations } from './git/gitOperations.js';
+import { createFolderPicker } from './git/folderPicker.js';
 
 export default {
   name: 'GitStatusTab',
@@ -261,52 +264,8 @@ export default {
     };
     const getFileIconHtml = (filePath) => getFileIconSvg(getFileName(filePath));
 
-    // Syntax highlighting for diff lines
-    const hlLine = (text) => {
-      if (text == null || text === '') return '';
-      return highlightCode(text, selectedGitFile.value || '');
-    };
-
     // Scroll container ref
     const diffScrollContainer = Vue.ref(null);
-
-    // Scrollbar markers — computed from diffLines
-    const scrollMarkers = Vue.computed(() => {
-      const lines = diffLines.value;
-      if (!lines || lines.length === 0) return [];
-      const total = lines.length;
-      const markers = [];
-      let i = 0;
-      while (i < total) {
-        const line = lines[i];
-        if (line.type === 'addition' || line.type === 'deletion' || line.type === 'modification') {
-          const startType = line.type === 'modification' ? 'modification' : line.type;
-          const start = i;
-          // Merge consecutive lines of same type
-          while (i < total && (lines[i].type === startType || (lines[i].type === 'modification' && startType !== 'modification'))) {
-            i++;
-          }
-          const count = i - start;
-          markers.push({
-            type: startType,
-            top: (start / total) * 100,
-            height: Math.max((count / total) * 100, 0.5) // min 0.5% for visibility
-          });
-        } else {
-          i++;
-        }
-      }
-      return markers;
-    });
-
-    // Click on scrollbar marker to jump to that position
-    const onMarkerClick = (event) => {
-      const container = diffScrollContainer.value;
-      if (!container) return;
-      const rect = event.currentTarget.getBoundingClientRect();
-      const clickPercent = (event.clientY - rect.top) / rect.height;
-      container.scrollTop = clickPercent * (container.scrollHeight - container.clientHeight);
-    };
 
     // --- Collapsible groups ---
     const collapsedGroups = Vue.reactive({ staged: false, modified: false, untracked: false });
@@ -322,10 +281,6 @@ export default {
     const defaultWorkDir = Vue.computed(() => store.currentWorkDir || store.currentAgentWorkDir || '');
     const gitWorkDir = Vue.ref('');
     const effectiveGitWorkDir = Vue.computed(() => gitWorkDir.value.trim() || defaultWorkDir.value);
-
-    const changeGitWorkDir = () => {
-      loadGitStatus();
-    };
 
     // --- Git Diff state ---
     const selectedGitFile = Vue.ref(null);
@@ -343,98 +298,11 @@ export default {
     const gitOpFeedback = Vue.ref(null);
     const gitAhead = Vue.ref(0);
     const gitBehind = Vue.ref(0);
-    let feedbackTimer = null;
 
-    // --- Folder picker state ---
-    const folderPickerOpen = Vue.ref(false);
-    const folderPickerPath = Vue.ref('');
-    const folderPickerEntries = Vue.ref([]);
-    const folderPickerLoading = Vue.ref(false);
-    const folderPickerSelected = Vue.ref('');
-
-    const getFolderIcon = (isOpen) => getFolderIconSvg(isOpen);
-
-    const openFolderPicker = () => {
-      folderPickerOpen.value = true;
-      folderPickerSelected.value = '';
-      folderPickerLoading.value = true;
-      const defaultDir = effectiveGitWorkDir.value || '';
-      folderPickerPath.value = defaultDir;
-      folderPickerEntries.value = [];
-      store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: '_git_folder_picker',
-        agentId: store.currentAgent,
-        dirPath: defaultDir,
-        workDir: effectiveGitWorkDir.value,
-        _clientId: store.clientId
-      });
-    };
-
-    const loadFolderPickerDir = (dirPath) => {
-      folderPickerLoading.value = true;
-      folderPickerSelected.value = '';
-      store.sendWsMessage({
-        type: 'list_directory',
-        conversationId: '_git_folder_picker',
-        agentId: store.currentAgent,
-        dirPath: dirPath,
-        workDir: effectiveGitWorkDir.value,
-        _clientId: store.clientId
-      });
-    };
-
-    const folderPickerNavigateUp = () => {
-      if (!folderPickerPath.value) return;
-      const isWin = folderPickerPath.value.includes('\\');
-      const sep = isWin ? '\\' : '/';
-      const parts = folderPickerPath.value.replace(/[/\\]$/, '').split(/[/\\]/);
-      parts.pop();
-      if (parts.length === 0) {
-        folderPickerPath.value = '';
-        loadFolderPickerDir('');
-      } else if (isWin && parts.length === 1 && /^[A-Za-z]:$/.test(parts[0])) {
-        folderPickerPath.value = parts[0] + '\\';
-        loadFolderPickerDir(parts[0] + '\\');
-      } else {
-        const parent = parts.join(sep);
-        folderPickerPath.value = parent;
-        loadFolderPickerDir(parent);
-      }
-    };
-
-    const folderPickerSelectItem = (entry) => {
-      folderPickerSelected.value = entry.name;
-    };
-
-    const folderPickerEnter = (entry) => {
-      const sep = folderPickerPath.value.includes('\\') || /^[A-Z]:/.test(entry.name) ? '\\' : '/';
-      let newPath;
-      if (!folderPickerPath.value) {
-        newPath = entry.name + (entry.name.endsWith('\\') ? '' : '\\');
-      } else {
-        newPath = folderPickerPath.value.replace(/[/\\]$/, '') + sep + entry.name;
-      }
-      folderPickerPath.value = newPath;
-      loadFolderPickerDir(newPath);
-    };
-
-    const confirmFolderPicker = () => {
-      let path = folderPickerPath.value;
-      if (!path) return;
-      if (folderPickerSelected.value) {
-        const sep = path.includes('\\') ? '\\' : '/';
-        path = path.replace(/[/\\]$/, '') + sep + folderPickerSelected.value;
-      }
-      gitWorkDir.value = path;
-      folderPickerOpen.value = false;
-      loadGitStatus();
-    };
-
-    const showFeedback = (ok, message) => {
-      if (feedbackTimer) clearTimeout(feedbackTimer);
-      gitOpFeedback.value = { ok, message };
-      feedbackTimer = setTimeout(() => { gitOpFeedback.value = null; }, 4000);
+    // Syntax highlighting for diff lines
+    const hlLine = (text) => {
+      if (text == null || text === '') return '';
+      return highlightCode(text, selectedGitFile.value || '');
     };
 
     // --- Font size zoom ---
@@ -450,6 +318,42 @@ export default {
       else if (e.deltaY > 0) zoomOut();
     };
 
+    // Scrollbar markers — computed from diffLines
+    const scrollMarkers = Vue.computed(() => {
+      const lines = diffLines.value;
+      if (!lines || lines.length === 0) return [];
+      const total = lines.length;
+      const markers = [];
+      let i = 0;
+      while (i < total) {
+        const line = lines[i];
+        if (line.type === 'addition' || line.type === 'deletion' || line.type === 'modification') {
+          const startType = line.type === 'modification' ? 'modification' : line.type;
+          const start = i;
+          while (i < total && (lines[i].type === startType || (lines[i].type === 'modification' && startType !== 'modification'))) {
+            i++;
+          }
+          const count = i - start;
+          markers.push({
+            type: startType,
+            top: (start / total) * 100,
+            height: Math.max((count / total) * 100, 0.5)
+          });
+        } else {
+          i++;
+        }
+      }
+      return markers;
+    });
+
+    const onMarkerClick = (event) => {
+      const container = diffScrollContainer.value;
+      if (!container) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const clickPercent = (event.clientY - rect.top) / rect.height;
+      container.scrollTop = clickPercent * (container.scrollHeight - container.clientHeight);
+    };
+
     // Computed: file groups
     const stagedFiles = Vue.computed(() =>
       gitFiles.value.filter(f => f.indexStatus !== ' ' && f.indexStatus !== '?')
@@ -461,20 +365,21 @@ export default {
       gitFiles.value.filter(f => f.indexStatus === '?' && f.workTreeStatus === '?')
     );
 
-    // --- Git operations ---
-    const loadGitStatus = () => {
-      if (!store.currentAgent) return;
-      gitLoading.value = true;
-      gitError.value = '';
-      store.sendWsMessage({
-        type: 'git_status',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        workDir: effectiveGitWorkDir.value,
-        _clientId: store.clientId
-      });
-    };
+    // --- Git operations (delegated) ---
+    const ops = createGitOperations(store, {
+      effectiveGitWorkDir, gitOperating, gitOpFeedback, commitMessage
+    });
 
+    const loadGitStatus = () => ops.loadGitStatus(gitLoading, gitError);
+
+    const changeGitWorkDir = () => { loadGitStatus(); };
+
+    // --- Folder picker (delegated) ---
+    const picker = createFolderPicker(store, effectiveGitWorkDir);
+    const getFolderIcon = (isOpen) => getFolderIconSvg(isOpen);
+    const confirmFolderPicker = () => picker.confirmFolderPicker(gitWorkDir, loadGitStatus);
+
+    // --- Diff operations ---
     const selectGitFile = (file, staged) => {
       selectedGitFile.value = file.path;
       selectedStaged.value = staged;
@@ -500,144 +405,12 @@ export default {
 
     const toggleDiffMode = () => {
       diffFullFile.value = !diffFullFile.value;
-      // Re-request diff with new mode
       if (selectedGitFile.value) {
         const file = gitFiles.value.find(f => f.path === selectedGitFile.value);
         if (file) {
           selectGitFile(file, selectedStaged.value);
         }
       }
-    };
-
-    // --- Git operation actions ---
-    const getWorkDir = () => effectiveGitWorkDir.value;
-
-    let gitOpTimer = null;
-
-    const gitOp = (type, extra = {}) => {
-      if (!store.currentAgent) return;
-      gitOperating.value = true;
-      if (gitOpTimer) clearTimeout(gitOpTimer);
-      gitOpTimer = setTimeout(() => {
-        if (gitOperating.value) {
-          gitOperating.value = false;
-          showFeedback(false, 'Operation timed out');
-        }
-      }, 15000);
-      store.sendWsMessage({
-        type,
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        workDir: getWorkDir(),
-        _clientId: store.clientId,
-        ...extra
-      });
-    };
-
-    const stageFile = (filePath) => gitOp('git_add', { filePath });
-    const unstageFile = (filePath) => gitOp('git_reset', { filePath });
-    const discardFile = (filePath) => {
-      if (!confirm('Discard changes to ' + filePath + '?')) return;
-      gitOp('git_restore', { filePath });
-    };
-    const stageAll = () => gitOp('git_add', { addAll: true });
-    const unstageAll = () => gitOp('git_reset', { resetAll: true });
-
-    const commitChanges = () => {
-      const msg = commitMessage.value.trim();
-      if (!msg) return;
-      gitOp('git_commit', { commitMessage: msg });
-    };
-
-    const pushChanges = () => gitOp('git_push');
-
-    // --- Unified diff parser (side-by-side) ---
-    const parseDiff = (diffText, newFileContent) => {
-      const result = [];
-      let additions = 0;
-      let deletions = 0;
-
-      if (newFileContent != null) {
-        const fileLines = newFileContent.split('\n');
-        for (let i = 0; i < fileLines.length; i++) {
-          result.push({ type: 'addition', oldNum: '', oldText: '', newNum: i + 1, newText: fileLines[i] });
-          additions++;
-        }
-        diffStats.value = { additions, deletions: 0 };
-        diffLines.value = result;
-        diffContent.value = newFileContent;
-        return;
-      }
-
-      if (!diffText || diffText.trim() === '') {
-        diffStats.value = { additions: 0, deletions: 0 };
-        diffLines.value = [{ type: 'context', oldNum: '', oldText: t('git.noDiff'), newNum: '', newText: t('git.noDiff') }];
-        diffContent.value = '';
-        return;
-      }
-
-      // Binary file detection
-      if (diffText.includes('Binary files') && diffText.includes('differ')) {
-        diffStats.value = { additions: 0, deletions: 0 };
-        diffLines.value = [{ type: 'context', oldNum: '', oldText: t('git.binaryFile'), newNum: '', newText: t('git.binaryFile') }];
-        diffContent.value = diffText;
-        return;
-      }
-
-      const rawLines = diffText.split('\n');
-      let oldLine = 0, newLine = 0, inHunk = false;
-      let delBuf = [], addBuf = [];
-
-      const flush = () => {
-        const max = Math.max(delBuf.length, addBuf.length);
-        for (let i = 0; i < max; i++) {
-          const d = delBuf[i], a = addBuf[i];
-          if (d && a) {
-            result.push({ type: 'modification', oldNum: d.num, oldText: d.text, newNum: a.num, newText: a.text });
-          } else if (d) {
-            result.push({ type: 'deletion', oldNum: d.num, oldText: d.text, newNum: '', newText: '' });
-          } else if (a) {
-            result.push({ type: 'addition', oldNum: '', oldText: '', newNum: a.num, newText: a.text });
-          }
-        }
-        delBuf = [];
-        addBuf = [];
-      };
-
-      for (const raw of rawLines) {
-        if (raw.startsWith('diff --git') || raw.startsWith('index ') ||
-            raw.startsWith('---') || raw.startsWith('+++') || raw.startsWith('\\')) continue;
-
-        const hunkMatch = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-        if (hunkMatch) {
-          flush();
-          oldLine = parseInt(hunkMatch[1]);
-          newLine = parseInt(hunkMatch[2]);
-          inHunk = true;
-          result.push({ type: 'hunk', oldNum: '···', oldText: raw, newNum: '···', newText: raw });
-          continue;
-        }
-
-        if (!inHunk) continue;
-
-        if (raw.startsWith('-')) {
-          if (addBuf.length > 0 && delBuf.length === 0) flush();
-          delBuf.push({ num: oldLine++, text: raw.substring(1) });
-          deletions++;
-        } else if (raw.startsWith('+')) {
-          addBuf.push({ num: newLine++, text: raw.substring(1) });
-          additions++;
-        } else {
-          flush();
-          const text = raw.startsWith(' ') ? raw.substring(1) : raw;
-          result.push({ type: 'context', oldNum: oldLine++, oldText: text, newNum: newLine++, newText: text });
-        }
-      }
-      flush();
-
-      diffStats.value = { additions, deletions };
-      diffLines.value = result;
-      diffContent.value = diffText;
     };
 
     // --- Handle messages from server ---
@@ -647,14 +420,7 @@ export default {
 
       switch (msg.type) {
         case 'directory_listing': {
-          if (msg.conversationId === '_git_folder_picker') {
-            folderPickerLoading.value = false;
-            folderPickerEntries.value = (msg.entries || [])
-              .filter(e => e.type === 'directory')
-              .sort((a, b) => a.name.localeCompare(b.name));
-            if (msg.dirPath != null) folderPickerPath.value = msg.dirPath;
-            return;
-          }
+          if (picker.handleDirectoryListing(msg)) return;
           break;
         }
         case 'git_status_result': {
@@ -670,11 +436,9 @@ export default {
           gitFiles.value = msg.files || [];
           gitAhead.value = msg.ahead || 0;
           gitBehind.value = msg.behind || 0;
-          // Keep selection if file still exists, update staged state
           if (selectedGitFile.value) {
             const file = gitFiles.value.find(f => f.path === selectedGitFile.value);
             if (file) {
-              // Update selectedStaged based on where the file is now
               const isStaged = file.indexStatus !== ' ' && file.indexStatus !== '?';
               selectedStaged.value = isStaged;
             } else {
@@ -693,22 +457,14 @@ export default {
             return;
           }
           diffError.value = '';
-          parseDiff(msg.diff, msg.newFileContent);
+          const parsed = parseDiff(msg.diff, msg.newFileContent, t);
+          diffStats.value = parsed.stats;
+          diffLines.value = parsed.lines;
+          diffContent.value = parsed.content;
           break;
         }
         case 'git_op_result': {
-          gitOperating.value = false;
-          if (gitOpTimer) { clearTimeout(gitOpTimer); gitOpTimer = null; }
-          if (msg.success) {
-            showFeedback(true, msg.message || (msg.operation + ' succeeded'));
-            if (msg.operation === 'commit') {
-              commitMessage.value = '';
-            }
-            // Refresh git status after successful operation
-            loadGitStatus();
-          } else {
-            showFeedback(false, msg.error || (msg.operation + ' failed'));
-          }
+          ops.handleGitOpResult(msg, loadGitStatus);
           break;
         }
       }
@@ -726,7 +482,7 @@ export default {
       }
     });
 
-    // Watch conversation changes — 重新加载 Git 状态（workDir 可能不同）
+    // Watch conversation changes
     Vue.watch(() => store.currentConversation, () => {
       if (store.currentAgent) {
         selectedGitFile.value = null;
@@ -747,8 +503,7 @@ export default {
 
     Vue.onUnmounted(() => {
       window.removeEventListener('workbench-message', handleWorkbenchMessage);
-      if (feedbackTimer) clearTimeout(feedbackTimer);
-      if (gitOpTimer) clearTimeout(gitOpTimer);
+      ops.cleanup();
     });
 
     return {
@@ -764,14 +519,18 @@ export default {
       scrollMarkers, diffScrollContainer, onMarkerClick,
       fontSize, zoomIn, zoomOut, onWheel,
       gitOperating, commitMessage, gitOpFeedback, gitAhead, gitBehind,
-      stageFile, unstageFile, discardFile, stageAll, unstageAll,
-      commitChanges, pushChanges,
+      stageFile: ops.stageFile, unstageFile: ops.unstageFile,
+      discardFile: ops.discardFile, stageAll: ops.stageAll, unstageAll: ops.unstageAll,
+      commitChanges: ops.commitChanges, pushChanges: ops.pushChanges,
       selectGitFile, refresh,
       // Folder picker
-      folderPickerOpen, folderPickerPath, folderPickerEntries,
-      folderPickerLoading, folderPickerSelected,
-      getFolderIcon, openFolderPicker, folderPickerNavigateUp,
-      folderPickerSelectItem, folderPickerEnter, confirmFolderPicker,
+      folderPickerOpen: picker.folderPickerOpen, folderPickerPath: picker.folderPickerPath,
+      folderPickerEntries: picker.folderPickerEntries,
+      folderPickerLoading: picker.folderPickerLoading, folderPickerSelected: picker.folderPickerSelected,
+      getFolderIcon, openFolderPicker: picker.openFolderPicker,
+      folderPickerNavigateUp: picker.folderPickerNavigateUp,
+      folderPickerSelectItem: picker.folderPickerSelectItem,
+      folderPickerEnter: picker.folderPickerEnter, confirmFolderPicker,
     };
   }
 };

@@ -1,4 +1,6 @@
 import { getFileIconSvg, getFolderIconSvg } from '../utils/fileIcons.js';
+import { createFindReplace } from './files/findReplace.js';
+import { createFileOperations } from './files/fileOperations.js';
 
 export default {
   name: 'FilesTab',
@@ -618,19 +620,8 @@ export default {
     // --- Debug status (visible fallback when console doesn't work) ---
     const debugStatus = Vue.ref('');
 
-    // --- Find/Replace state ---
-    const findBarVisible = Vue.ref(false);
-    const replaceBarVisible = Vue.ref(false);
-    const findQuery = Vue.ref('');
-    const replaceQuery = Vue.ref('');
-    const findCaseSensitive = Vue.ref(false);
-    const findUseRegex = Vue.ref(false);
-    const findMatchCount = Vue.ref(0);
-    const findMatchIndex = Vue.ref(-1);
-    const findInputRef = Vue.ref(null);
-    const replaceInputRef = Vue.ref(null);
-    let findMarkers = []; // CodeMirror TextMarker instances
-    let findMatches = []; // [{from: {line, ch}, to: {line, ch}}]
+    // --- Find/Replace (delegated) ---
+    const find = createFindReplace(activeFile);
 
     // --- Font size zoom ---
     const fontSize = Vue.ref(parseInt(localStorage.getItem('filesFontSize')) || 15);
@@ -678,31 +669,8 @@ export default {
     const goToLineValue = Vue.ref('');
     const goToLineInput = Vue.ref(null);
 
-    // --- File operations ---
-    const selectedPaths = Vue.reactive(new Set());
-    const lastClickedIndex = Vue.ref(-1);
-    const fileOperating = Vue.ref(false);
-    const fileOpFeedback = Vue.ref(null);
-    let fileOpFeedbackTimer = null;
-    let fileOpTimer = null;
-    const newFileDialogVisible = Vue.ref(false);
-    const newFileName = Vue.ref('');
-    const newFileType = Vue.ref('file');
-    const newFileInput = Vue.ref(null);
-    const moveDialogVisible = Vue.ref(false);
-    const moveDestination = Vue.ref('');
-    const moveDestInput = Vue.ref(null);
-
-    // --- 右键菜单 & 重命名 ---
-    const contextMenu = Vue.reactive({ visible: false, x: 0, y: 0, entry: null });
-    const renameDialogVisible = Vue.ref(false);
-    const renameNewName = Vue.ref('');
-    const renameInput = Vue.ref(null);
-    let pendingDownload = null;
-
-    // --- 拖拽 ---
-    const dragState = Vue.reactive({ dragging: null, dropTarget: null });
-    const externalDropActive = Vue.ref(false);
+    // --- File operations (delegated) ---
+    const ops = createFileOperations(store, { getEffectiveWorkDir, treePath });
 
     // ===========================
     // Flattened tree computed
@@ -916,219 +884,9 @@ export default {
     };
 
     // ===========================
-    // Find / Replace logic
+    // Find / Replace — delegated to composable
     // ===========================
-    const clearFindMarkers = () => {
-      for (const m of findMarkers) {
-        try { m.clear(); } catch (e) {}
-      }
-      findMarkers = [];
-      findMatches = [];
-      findMatchCount.value = 0;
-      findMatchIndex.value = -1;
-      clearScrollbarAnnotations();
-    };
-
-    // Scrollbar match annotations
-    const clearScrollbarAnnotations = () => {
-      const cm = activeFile.value?.cmInstance;
-      if (!cm) return;
-      const wrapper = cm.getWrapperElement();
-      const existing = wrapper.querySelector('.cm-find-scrollbar-annotations');
-      if (existing) existing.remove();
-    };
-
-    const updateScrollbarAnnotations = () => {
-      const cm = activeFile.value?.cmInstance;
-      if (!cm || findMatches.length === 0) return;
-      clearScrollbarAnnotations();
-
-      const wrapper = cm.getWrapperElement();
-      const scrollbar = wrapper.querySelector('.CodeMirror-vscrollbar');
-      if (!scrollbar) return;
-
-      const totalLines = cm.lineCount();
-      if (totalLines === 0) return;
-
-      const container = document.createElement('div');
-      container.className = 'cm-find-scrollbar-annotations';
-
-      for (const m of findMatches) {
-        const pct = (m.from.line / totalLines) * 100;
-        const tick = document.createElement('div');
-        tick.className = 'cm-find-scrollbar-tick';
-        tick.style.top = pct + '%';
-        container.appendChild(tick);
-      }
-
-      wrapper.appendChild(container);
-    };
-
-    const performFind = () => {
-      clearFindMarkers();
-      const cm = activeFile.value?.cmInstance;
-      if (!cm || !findQuery.value) return;
-
-      const query = findQuery.value;
-      // Require at least 3 characters to avoid excessive matches and lag
-      if (query.length < 3) return;
-
-      const text = cm.getValue();
-      const caseSensitive = findCaseSensitive.value;
-      const useRegex = findUseRegex.value;
-      const matches = [];
-
-      try {
-        if (useRegex) {
-          const flags = caseSensitive ? 'g' : 'gi';
-          const re = new RegExp(query, flags);
-          let m;
-          while ((m = re.exec(text)) !== null) {
-            if (m[0].length === 0) { re.lastIndex++; continue; }
-            const from = cm.posFromIndex(m.index);
-            const to = cm.posFromIndex(m.index + m[0].length);
-            matches.push({ from, to });
-            if (matches.length > 10000) break;
-          }
-        } else {
-          const searchText = caseSensitive ? query : query.toLowerCase();
-          const sourceText = caseSensitive ? text : text.toLowerCase();
-          let idx = 0;
-          while ((idx = sourceText.indexOf(searchText, idx)) !== -1) {
-            const from = cm.posFromIndex(idx);
-            const to = cm.posFromIndex(idx + query.length);
-            matches.push({ from, to });
-            idx += query.length;
-            if (matches.length > 10000) break;
-          }
-        }
-      } catch (e) {
-        // Invalid regex - ignore
-        return;
-      }
-
-      findMatches = matches;
-      findMatchCount.value = matches.length;
-
-      // Mark all matches
-      for (const m of matches) {
-        findMarkers.push(cm.markText(m.from, m.to, { className: 'cm-find-highlight' }));
-      }
-
-      // Jump to nearest match from cursor
-      if (matches.length > 0) {
-        const cursor = cm.getCursor();
-        let nearest = 0;
-        for (let i = 0; i < matches.length; i++) {
-          const cmp = CodeMirror.cmpPos(matches[i].from, cursor);
-          if (cmp >= 0) { nearest = i; break; }
-          if (i === matches.length - 1) nearest = 0;
-        }
-        findMatchIndex.value = nearest;
-        highlightCurrentMatch(nearest);
-      }
-
-      // Update scrollbar match annotations
-      updateScrollbarAnnotations();
-    };
-
-    const highlightCurrentMatch = (index) => {
-      const cm = activeFile.value?.cmInstance;
-      if (!cm || !findMatches[index]) return;
-      // Remove previous current-match highlight
-      for (let i = 0; i < findMarkers.length; i++) {
-        if (!findMarkers[i]) continue;
-        const pos = findMarkers[i].find();
-        if (pos) {
-          findMarkers[i].clear();
-          findMarkers[i] = cm.markText(pos.from, pos.to, { className: 'cm-find-highlight' });
-        }
-      }
-      // Highlight current match distinctly
-      const m = findMatches[index];
-      if (findMarkers[index]) {
-        const curPos = findMarkers[index].find();
-        if (curPos) {
-          findMarkers[index].clear();
-          findMarkers[index] = cm.markText(curPos.from, curPos.to, { className: 'cm-find-highlight cm-find-current' });
-        }
-      }
-      // Use setTimeout to ensure DOM is updated before scrolling
-      setTimeout(() => {
-        cm.scrollIntoView({ from: m.from, to: m.to }, 100);
-      }, 0);
-    };
-
-    const findNext = () => {
-      if (findMatches.length === 0) return;
-      const next = (findMatchIndex.value + 1) % findMatches.length;
-      findMatchIndex.value = next;
-      highlightCurrentMatch(next);
-    };
-
-    const findPrev = () => {
-      if (findMatches.length === 0) return;
-      const prev = (findMatchIndex.value - 1 + findMatches.length) % findMatches.length;
-      findMatchIndex.value = prev;
-      highlightCurrentMatch(prev);
-    };
-
-    const onFindInput = () => {
-      performFind();
-    };
-
-    const openFindBar = (showReplace = false) => {
-      findBarVisible.value = true;
-      replaceBarVisible.value = showReplace;
-      // Pre-fill with selection
-      const cm = activeFile.value?.cmInstance;
-      if (cm) {
-        const sel = cm.getSelection();
-        if (sel) findQuery.value = sel;
-      }
-      Vue.nextTick(() => {
-        findInputRef.value?.focus();
-        findInputRef.value?.select();
-        if (findQuery.value) performFind();
-      });
-    };
-
-    const closeFindBar = () => {
-      clearFindMarkers();
-      findBarVisible.value = false;
-      replaceBarVisible.value = false;
-      // Refocus editor
-      const cm = activeFile.value?.cmInstance;
-      if (cm) cm.focus();
-    };
-
-    const toggleReplaceBar = () => {
-      replaceBarVisible.value = !replaceBarVisible.value;
-      if (replaceBarVisible.value) {
-        Vue.nextTick(() => replaceInputRef.value?.focus());
-      }
-    };
-
-    const replaceOne = () => {
-      const cm = activeFile.value?.cmInstance;
-      if (!cm || findMatches.length === 0 || findMatchIndex.value < 0) return;
-      const m = findMatches[findMatchIndex.value];
-      cm.replaceRange(replaceQuery.value, m.from, m.to);
-      // Re-search after replace
-      performFind();
-    };
-
-    const replaceAll = () => {
-      const cm = activeFile.value?.cmInstance;
-      if (!cm || findMatches.length === 0) return;
-      // Replace from end to start to preserve positions
-      cm.operation(() => {
-        for (let i = findMatches.length - 1; i >= 0; i--) {
-          cm.replaceRange(replaceQuery.value, findMatches[i].from, findMatches[i].to);
-        }
-      });
-      performFind();
-    };
+    const { clearFindMarkers, performFind, openFindBar, closeFindBar } = find;
 
     // ===========================
     // CodeMirror editor
@@ -1386,7 +1144,7 @@ export default {
             mdPreviewMode.value = true;
           } else if (file.content != null && editorContainer.value) {
             createEditor(file);
-            if (findBarVisible.value && findQuery.value) {
+            if (find.findBarVisible.value && find.findQuery.value) {
               Vue.nextTick(() => performFind());
             }
           }
@@ -1688,425 +1446,33 @@ export default {
     };
 
     // ===========================
-    // File operations
+    // File operations — delegated to composable
     // ===========================
-    const showFileOpFeedback = (ok, message) => {
-      if (fileOpFeedbackTimer) clearTimeout(fileOpFeedbackTimer);
-      fileOpFeedback.value = { ok, message };
-      fileOpFeedbackTimer = setTimeout(() => { fileOpFeedback.value = null; }, 4000);
-    };
-
-    const toggleSelection = (path) => {
-      if (selectedPaths.has(path)) {
-        selectedPaths.delete(path);
-      } else {
-        selectedPaths.add(path);
-      }
-    };
-
-    const clearSelection = () => {
-      selectedPaths.clear();
-      lastClickedIndex.value = -1;
-    };
-
-    const showNewFileDialog = (type) => {
-      newFileType.value = type;
-      newFileName.value = '';
-      newFileDialogVisible.value = true;
-      Vue.nextTick(() => newFileInput.value?.focus());
-    };
-
-    const confirmNewFile = () => {
-      const name = newFileName.value.trim();
-      if (!name) return;
-      newFileDialogVisible.value = false;
-
-      const basePath = treePath.value || getEffectiveWorkDir();
-      if (!basePath) return;
-
-      const sep = basePath.includes('\\') ? '\\' : '/';
-      const filePath = basePath.replace(/[/\\]$/, '') + sep + name;
-
-      fileOperating.value = true;
-      if (fileOpTimer) clearTimeout(fileOpTimer);
-      fileOpTimer = setTimeout(() => {
-        if (fileOperating.value) {
-          fileOperating.value = false;
-          showFileOpFeedback(false, 'Operation timed out');
-        }
-      }, 15000);
-
-      store.sendWsMessage({
-        type: 'create_file',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        filePath,
-        isDirectory: newFileType.value === 'directory',
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    const deleteSingleFile = (entry) => {
-      const name = entry.path.split('/').pop();
-      if (!confirm(t('files.deleteConfirm', { name }) + (entry.type === 'directory' ? t('files.deleteDirHint') : ''))) return;
-
-      fileOperating.value = true;
-      if (fileOpTimer) clearTimeout(fileOpTimer);
-      fileOpTimer = setTimeout(() => {
-        if (fileOperating.value) {
-          fileOperating.value = false;
-          showFileOpFeedback(false, 'Operation timed out');
-        }
-      }, 15000);
-
-      store.sendWsMessage({
-        type: 'delete_files',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        paths: [entry.path],
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    const deleteSelected = () => {
-      const count = selectedPaths.size;
-      if (count === 0) return;
-      if (!confirm(t('files.deleteSelectedConfirm', { count }))) return;
-
-      fileOperating.value = true;
-      if (fileOpTimer) clearTimeout(fileOpTimer);
-      fileOpTimer = setTimeout(() => {
-        if (fileOperating.value) {
-          fileOperating.value = false;
-          showFileOpFeedback(false, 'Operation timed out');
-        }
-      }, 15000);
-
-      store.sendWsMessage({
-        type: 'delete_files',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        paths: [...selectedPaths],
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    const openMoveDialog = () => {
-      moveDestination.value = treePath.value || getEffectiveWorkDir() || '';
-      moveDialogVisible.value = true;
-      Vue.nextTick(() => moveDestInput.value?.focus());
-    };
-
-    const confirmMove = () => {
-      const dest = moveDestination.value.trim();
-      if (!dest || selectedPaths.size === 0) return;
-      moveDialogVisible.value = false;
-
-      fileOperating.value = true;
-      if (fileOpTimer) clearTimeout(fileOpTimer);
-      fileOpTimer = setTimeout(() => {
-        if (fileOperating.value) {
-          fileOperating.value = false;
-          showFileOpFeedback(false, 'Operation timed out');
-        }
-      }, 15000);
-
-      store.sendWsMessage({
-        type: 'move_files',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        paths: [...selectedPaths],
-        destination: dest,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    // ===========================
-    // Context menu
-    // ===========================
-    const showContextMenu = (event, entry) => {
-      const menuW = 180, menuH = 240;
-      let x = event.clientX, y = event.clientY;
-      if (x + menuW > window.innerWidth) x = window.innerWidth - menuW;
-      if (y + menuH > window.innerHeight) y = window.innerHeight - menuH;
-      contextMenu.entry = entry;
-      contextMenu.x = x;
-      contextMenu.y = y;
-      contextMenu.visible = true;
-    };
-
-    const hideContextMenu = () => { contextMenu.visible = false; };
-
-    const ctxRename = () => {
-      const entry = contextMenu.entry;
-      hideContextMenu();
-      if (!entry) return;
-      renameNewName.value = entry.name;
-      renameDialogVisible.value = true;
-      Vue.nextTick(() => {
-        const input = renameInput.value;
-        if (input) {
-          input.focus();
-          // Select name without extension for files
-          if (entry.type === 'file') {
-            const dotIdx = entry.name.lastIndexOf('.');
-            if (dotIdx > 0) {
-              input.setSelectionRange(0, dotIdx);
-            } else {
-              input.select();
-            }
-          } else {
-            input.select();
-          }
-        }
-      });
-    };
-
-    const confirmRename = () => {
-      const entry = contextMenu.entry;
-      const name = renameNewName.value.trim();
-      if (!name || !entry || name === entry.name) {
-        renameDialogVisible.value = false;
-        return;
-      }
-      renameDialogVisible.value = false;
-
-      // Get parent directory of the entry
-      const parts = entry.path.replace(/\/$/, '').split('/');
-      parts.pop();
-      const parentDir = parts.join('/') || '/';
-
-      fileOperating.value = true;
-      if (fileOpTimer) clearTimeout(fileOpTimer);
-      fileOpTimer = setTimeout(() => {
-        if (fileOperating.value) {
-          fileOperating.value = false;
-          showFileOpFeedback(false, 'Operation timed out');
-        }
-      }, 15000);
-
-      store.sendWsMessage({
-        type: 'move_files',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        paths: [entry.path],
-        destination: parentDir,
-        newName: name,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    const ctxCopy = () => {
-      const entry = contextMenu.entry;
-      hideContextMenu();
-      if (!entry) return;
-
-      const parts = entry.path.replace(/\/$/, '').split('/');
-      parts.pop();
-      const parentDir = parts.join('/') || '/';
-
-      fileOperating.value = true;
-      if (fileOpTimer) clearTimeout(fileOpTimer);
-      fileOpTimer = setTimeout(() => {
-        if (fileOperating.value) {
-          fileOperating.value = false;
-          showFileOpFeedback(false, 'Operation timed out');
-        }
-      }, 15000);
-
-      store.sendWsMessage({
-        type: 'copy_files',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        paths: [entry.path],
-        destination: parentDir,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    const ctxMoveTo = () => {
-      const entry = contextMenu.entry;
-      hideContextMenu();
-      if (!entry) return;
-      selectedPaths.clear();
-      selectedPaths.add(entry.path);
-      openMoveDialog();
-    };
-
-    const ctxDelete = () => {
-      const entry = contextMenu.entry;
-      hideContextMenu();
-      if (!entry) return;
-      deleteSingleFile(entry);
-    };
-
-    const ctxDownload = () => {
-      const entry = contextMenu.entry;
-      hideContextMenu();
-      if (!entry || entry.type !== 'file') return;
-      pendingDownload = entry.path;
-      store.sendWsMessage({
-        type: 'read_file',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        filePath: entry.path,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
-
-    // ===========================
-    // Drag & Drop (tree internal)
-    // ===========================
-    const onDragStart = (event, entry) => {
-      dragState.dragging = entry;
-      event.dataTransfer.setData('text/plain', entry.path);
-      event.dataTransfer.effectAllowed = 'move';
-    };
-
-    const onDragOver = (event, entry) => {
-      if (!dragState.dragging && event.dataTransfer.types.includes('Files')) {
-        // External file drag
-        if (entry.type === 'directory') {
-          event.dataTransfer.dropEffect = 'copy';
-          dragState.dropTarget = entry.path;
-        }
-        return;
-      }
-      if (!dragState.dragging || entry.type !== 'directory') return;
-      // Don't allow drop on self or child
-      if (entry.path === dragState.dragging.path) return;
-      if (entry.path.startsWith(dragState.dragging.path + '/')) return;
-      event.dataTransfer.dropEffect = 'move';
-      dragState.dropTarget = entry.path;
-    };
-
-    const onDragLeave = (event) => {
-      // Only clear if leaving to an element outside the current target
-      const related = event.relatedTarget;
-      if (related && event.currentTarget.contains(related)) return;
-      dragState.dropTarget = null;
-    };
-
-    const onDrop = (event, entry) => {
-      dragState.dropTarget = null;
-
-      // External file drop onto a directory
-      if (!dragState.dragging && event.dataTransfer.files.length > 0 && entry.type === 'directory') {
-        handleExternalFileDrop(event.dataTransfer.files, entry.path);
-        return;
-      }
-
-      if (!dragState.dragging || entry.type !== 'directory') {
-        dragState.dragging = null;
-        return;
-      }
-      if (entry.path === dragState.dragging.path) {
-        dragState.dragging = null;
-        return;
-      }
-
-      fileOperating.value = true;
-      if (fileOpTimer) clearTimeout(fileOpTimer);
-      fileOpTimer = setTimeout(() => {
-        if (fileOperating.value) {
-          fileOperating.value = false;
-          showFileOpFeedback(false, 'Operation timed out');
-        }
-      }, 15000);
-
-      store.sendWsMessage({
-        type: 'move_files',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        paths: [dragState.dragging.path],
-        destination: entry.path,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-
-      dragState.dragging = null;
-    };
-
-    // ===========================
-    // External file drop (upload)
-    // ===========================
-    const onTreeDragOver = (event) => {
-      // Only respond to external file drags
-      if (dragState.dragging) return;
-      if (event.dataTransfer.types.includes('Files')) {
-        event.dataTransfer.dropEffect = 'copy';
-        externalDropActive.value = true;
-      }
-    };
-
-    const onTreeDragLeave = (event) => {
-      const related = event.relatedTarget;
-      if (related && event.currentTarget.contains(related)) return;
-      externalDropActive.value = false;
-    };
-
-    const onTreeDrop = (event) => {
-      externalDropActive.value = false;
-      if (dragState.dragging) return; // Internal drag handled by tree items
-      if (event.dataTransfer.files.length > 0) {
-        // Drop on the tree root area — upload to treeRootPath
-        const targetDir = treePath.value || treeRootPath.value || getEffectiveWorkDir();
-        handleExternalFileDrop(event.dataTransfer.files, targetDir);
-      }
-    };
-
-    const handleExternalFileDrop = async (fileList, targetDir) => {
-      if (!targetDir) return;
-
-      const files = [];
-      const readPromises = [];
-
-      for (const file of fileList) {
-        readPromises.push(
-          new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const base64 = btoa(
-                new Uint8Array(reader.result).reduce((data, byte) => data + String.fromCharCode(byte), '')
-              );
-              files.push({ name: file.name, data: base64 });
-              resolve();
-            };
-            reader.onerror = () => resolve(); // Skip failed reads
-            reader.readAsArrayBuffer(file);
-          })
-        );
-      }
-
-      await Promise.all(readPromises);
-      if (files.length === 0) return;
-
-      fileOperating.value = true;
-      if (fileOpTimer) clearTimeout(fileOpTimer);
-      fileOpTimer = setTimeout(() => {
-        if (fileOperating.value) {
-          fileOperating.value = false;
-          showFileOpFeedback(false, 'Upload timed out');
-        }
-      }, 30000); // Longer timeout for uploads
-
-      store.sendWsMessage({
-        type: 'upload_to_dir',
-        conversationId: store.currentConversation || '_explorer',
-        agentId: store.currentAgent,
-        files,
-        dirPath: targetDir,
-        workDir: getEffectiveWorkDir(),
-        _clientId: store.clientId
-      });
-    };
+    const { selectedPaths, lastClickedIndex, fileOperating, fileOpFeedback } = ops;
+    const showFileOpFeedback = ops.showFileOpFeedback;
+    const toggleSelection = ops.toggleSelection;
+    const clearSelection = ops.clearSelection;
+    const showNewFileDialog = ops.showNewFileDialog;
+    const confirmNewFile = ops.confirmNewFile;
+    const deleteSingleFile = (entry) => ops.deleteSingleFile(entry, t);
+    const deleteSelected = () => ops.deleteSelected(t);
+    const openMoveDialog = ops.openMoveDialog;
+    const confirmMove = ops.confirmMove;
+    const showContextMenu = ops.showContextMenu;
+    const hideContextMenu = ops.hideContextMenu;
+    const ctxRename = ops.ctxRename;
+    const confirmRename = ops.confirmRename;
+    const ctxCopy = ops.ctxCopy;
+    const ctxMoveTo = ops.ctxMoveTo;
+    const ctxDelete = () => ops.ctxDelete(t);
+    const ctxDownload = ops.ctxDownload;
+    const onDragStart = ops.onDragStart;
+    const onDragOver = ops.onDragOver;
+    const onDragLeave = ops.onDragLeave;
+    const onDrop = (event, entry) => ops.onDrop(event, entry, ops.handleExternalFileDrop);
+    const onTreeDragOver = ops.onTreeDragOver;
+    const onTreeDragLeave = ops.onTreeDragLeave;
+    const onTreeDrop = (event) => ops.onTreeDrop(event, treeRootPath.value, ops.handleExternalFileDrop);
 
     // ===========================
     // Handle messages from server
@@ -2162,7 +1528,7 @@ export default {
           fileLoading.value = false;
           if (msg.error) {
             debugStatus.value = `Error: ${msg.error}`;
-            pendingDownload = null;
+            ops.clearPendingDownload();
             // Reset preview loading state for the file tab
             const errFilePath = normalizePath(msg.filePath);
             const errTab = openFiles.value.find(f => f.path === errFilePath);
@@ -2175,8 +1541,8 @@ export default {
           const nFilePath = normalizePath(msg.filePath);
 
           // Handle pending download
-          if (pendingDownload && normalizePath(pendingDownload) === nFilePath) {
-            pendingDownload = null;
+          if (ops.getPendingDownload() && normalizePath(ops.getPendingDownload()) === nFilePath) {
+            ops.clearPendingDownload();
             try {
               if (msg.binary) {
                 // Binary: download via preview endpoint
@@ -2300,18 +1666,7 @@ export default {
           break;
         }
         case 'file_op_result': {
-          fileOperating.value = false;
-          if (fileOpTimer) { clearTimeout(fileOpTimer); fileOpTimer = null; }
-          showFileOpFeedback(msg.success, msg.success ? msg.message : (msg.error || 'Operation failed'));
-          if (msg.success) {
-            // Refresh tree
-            if (treeRootPath.value) loadTreeDirectory(treeRootPath.value);
-            // Clear selection after successful delete/move
-            if (msg.operation === 'delete' || msg.operation === 'move') {
-              selectedPaths.clear();
-              lastClickedIndex.value = -1;
-            }
-          }
+          ops.handleFileOpResult(msg, loadTreeDirectory, treeRootPath.value);
           break;
         }
         case 'file_tabs_restored': {
@@ -2488,7 +1843,7 @@ export default {
     const handleGlobalKeydown = (e) => {
       // Only handle shortcuts when Files tab is visible
       const isVisible = rootEl.value && rootEl.value.offsetParent !== null;
-      if (!isVisible && !quickOpenVisible.value && !goToLineVisible.value && !findBarVisible.value) return;
+      if (!isVisible && !quickOpenVisible.value && !goToLineVisible.value && !find.findBarVisible.value) return;
 
       if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
         e.preventDefault();
@@ -2515,7 +1870,7 @@ export default {
           openFindBar(true);
         }
       } else if (e.key === 'Escape') {
-        if (findBarVisible.value) closeFindBar();
+        if (find.findBarVisible.value) closeFindBar();
         if (selectedPaths.size > 0) clearSelection();
         if (quickOpenVisible.value) closeQuickOpen();
         if (goToLineVisible.value) closeGoToLine();
@@ -2545,8 +1900,7 @@ export default {
       window.removeEventListener('keydown', handleGlobalKeydown);
       document.removeEventListener('click', handleDocumentClick);
       destroyEditor();
-      if (fileOpFeedbackTimer) clearTimeout(fileOpFeedbackTimer);
-      if (fileOpTimer) clearTimeout(fileOpTimer);
+      ops.cleanup();
     });
 
     return {
@@ -2567,24 +1921,31 @@ export default {
       quickOpenSelectNext, quickOpenSelectPrev, quickOpenConfirm, quickOpenOpenFile,
       goToLineVisible, goToLineValue, goToLineInput, openGoToLine, closeGoToLine, goToLineConfirm,
       // Find/Replace
-      findBarVisible, replaceBarVisible, findQuery, replaceQuery,
-      findCaseSensitive, findUseRegex, findMatchCount, findMatchIndex,
-      findInputRef, replaceInputRef,
-      onFindInput, findNext, findPrev, openFindBar, closeFindBar, toggleReplaceBar, replaceOne, replaceAll,
+      findBarVisible: find.findBarVisible, replaceBarVisible: find.replaceBarVisible,
+      findQuery: find.findQuery, replaceQuery: find.replaceQuery,
+      findCaseSensitive: find.findCaseSensitive, findUseRegex: find.findUseRegex,
+      findMatchCount: find.findMatchCount, findMatchIndex: find.findMatchIndex,
+      findInputRef: find.findInputRef, replaceInputRef: find.replaceInputRef,
+      onFindInput: find.onFindInput, findNext: find.findNext, findPrev: find.findPrev,
+      openFindBar, closeFindBar,
+      toggleReplaceBar: find.toggleReplaceBar, replaceOne: find.replaceOne, replaceAll: find.replaceAll,
       // File operations
       selectedPaths, fileOperating, fileOpFeedback,
-      newFileDialogVisible, newFileName, newFileType, newFileInput,
-      moveDialogVisible, moveDestination, moveDestInput,
+      newFileDialogVisible: ops.newFileDialogVisible, newFileName: ops.newFileName,
+      newFileType: ops.newFileType, newFileInput: ops.newFileInput,
+      moveDialogVisible: ops.moveDialogVisible, moveDestination: ops.moveDestination,
+      moveDestInput: ops.moveDestInput,
       toggleSelection, clearSelection,
       showNewFileDialog, confirmNewFile,
       deleteSingleFile, deleteSelected,
       openMoveDialog, confirmMove,
       // Context menu
-      contextMenu, showContextMenu, hideContextMenu,
+      contextMenu: ops.contextMenu, showContextMenu, hideContextMenu,
       ctxRename, ctxCopy, ctxMoveTo, ctxDelete, ctxDownload,
-      renameDialogVisible, renameNewName, renameInput, confirmRename,
+      renameDialogVisible: ops.renameDialogVisible, renameNewName: ops.renameNewName,
+      renameInput: ops.renameInput, confirmRename,
       // Drag & drop
-      dragState, externalDropActive,
+      dragState: ops.dragState, externalDropActive: ops.externalDropActive,
       onDragStart, onDragOver, onDragLeave, onDrop,
       onTreeDragOver, onTreeDragLeave, onTreeDrop,
       loadRootDirectory, onTreeItemClick, openFileInTab,
