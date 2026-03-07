@@ -67,9 +67,8 @@ setInterval(() => {
 function flushUserStats() {
   if (userStatsDeltas.size === 0) return;
   try {
-    const snapshot = new Map(userStatsDeltas);
+    userStatsDb.flushDeltas(userStatsDeltas);
     userStatsDeltas.clear();
-    userStatsDb.flushDeltas(snapshot);
   } catch (e) {
     console.error('[UserStats] Flush error:', e.message);
   }
