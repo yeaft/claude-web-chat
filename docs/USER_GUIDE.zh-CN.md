@@ -2,7 +2,7 @@
 
 > 基于 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 的 Web 交互界面，提供 Chat 模式（一对一 AI 对话）和 Crew 模式（多 Agent 团队协作）。
 
-**语言切换**: [English](./USER_GUIDE.md)
+**语言切换**: [English](/USER_GUIDE)
 
 ---
 

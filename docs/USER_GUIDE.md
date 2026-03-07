@@ -2,7 +2,7 @@
 
 > A web-based interface for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), providing Chat mode for one-on-one AI conversations and Crew mode for multi-agent team collaboration.
 
-**Language**: [中文版](./USER_GUIDE.zh-CN.md)
+**Language**: [中文版](/zh-CN/USER_GUIDE)
 
 ---
 

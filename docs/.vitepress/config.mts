@@ -5,6 +5,10 @@ export default defineConfig({
   description: 'A web interface for remotely accessing Claude Code CLI',
   base: '/claude-web-chat/',
 
+  rewrites: {
+    'USER_GUIDE.zh-CN.md': 'zh-CN/USER_GUIDE.md',
+  },
+
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/claude-web-chat/logo.svg' }],
   ],
