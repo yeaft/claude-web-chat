@@ -529,14 +529,14 @@ describe('structural integrity', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2091);
+    expect(opens).toBe(2090);
   });
 
-  it('all 3 header-action-btn buttons have btn-loading binding', () => {
+  it('all 4 buttons with btn-loading binding (3 chat + 1 crew refresh)', () => {
     // Count occurrences of btn-loading in template
     const template = headerSource.split('template:')[1]?.split('setup()')[0] || '';
     const matches = template.match(/btn-loading/g) || [];
-    // refresh, compact, clear — 3 buttons each with btn-loading
-    expect(matches.length).toBe(3);
+    // chat: refresh, compact, clear + crew: refresh — 4 buttons each with btn-loading
+    expect(matches.length).toBe(4);
   });
 });
