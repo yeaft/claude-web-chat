@@ -314,10 +314,10 @@ describe('CSS — header nav visible on all viewports', () => {
 // 10. Structural integrity
 // =====================================================================
 describe('structural integrity', () => {
-  it('CSS has balanced braces (2088/2088)', () => {
+  it('CSS has balanced braces (2091/2091)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2088);
+    expect(opens).toBe(2091);
   });
 });
