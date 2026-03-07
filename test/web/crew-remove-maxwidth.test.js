@@ -338,11 +338,11 @@ describe('normal chat — max-width preserved', () => {
 // 5. CSS structural integrity
 // =====================================================================
 describe('CSS structural integrity', () => {
-  it('CSS has balanced braces (2092/2092)', () => {
+  it('CSS has balanced braces (2140/2140)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2097);
+    expect(opens).toBe(2140);
   });
 
   it('no duplicate max-width declarations accidentally left in crew selectors', () => {
