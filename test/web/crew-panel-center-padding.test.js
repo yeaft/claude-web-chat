@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
  * Tests for task-48: Crew center panel padding when side panels hidden.
@@ -22,8 +23,7 @@ import { resolve } from 'path';
 let cssSource;
 
 beforeAll(() => {
-  const cssPath = resolve(__dirname, '../../web/style.css');
-  cssSource = readFileSync(cssPath, 'utf-8');
+  cssSource = loadAllCss();
 });
 
 /**

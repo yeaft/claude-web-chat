@@ -119,7 +119,8 @@ const highlightCss = readFileSync(join(vendorDir, 'highlight.min.css'), 'utf-8')
 const xtermCss = readFileSync(join(vendorDir, 'xterm.min.css'), 'utf-8');
 const codemirrorCss = readFileSync(join(vendorDir, 'codemirror.min.css'), 'utf-8');
 const codemirrorThemeCss = readFileSync(join(vendorDir, 'codemirror-material-darker.css'), 'utf-8');
-const appCss = readFileSync(join(__dirname, 'style.css'), 'utf-8');
+const appCssFiles = ['variables', 'login', 'sidebar', 'chat', 'workbench', 'files', 'terminal', 'git', 'settings', 'crew'];
+const appCss = appCssFiles.map(f => readFileSync(join(__dirname, 'styles', f + '.css'), 'utf-8')).join('\n');
 
 // Minify combined CSS with esbuild
 const cssResult = esbuild.transformSync(highlightCss + '\n' + xtermCss + '\n' + codemirrorCss + '\n' + codemirrorThemeCss + '\n' + appCss, {
@@ -174,14 +175,14 @@ const cssGzSize = statSync(join(distDir, 'style.bundle.css.gz')).size;
 
 // Original size calculation
 const originalFiles = [
-  'app.js', 'style.css',
+  'app.js',
   'components/ChatHeader.js', 'components/ChatInput.js', 'components/ChatPage.js',
   'components/LoginPage.js', 'components/MessageItem.js', 'components/MessageList.js',
   'components/ThemeToggle.js', 'stores/auth.js', 'stores/chat.js', 'utils/encryption.js'
 ];
 const originalCodeSize = originalFiles.reduce((sum, f) => sum + statSync(join(__dirname, f)).size, 0);
 const originalVendorSize = vendorJs.reduce((sum, f) => sum + statSync(join(vendorDir, f)).size, 0);
-const originalCssSize = statSync(join(__dirname, 'style.css')).size + statSync(join(vendorDir, 'highlight.min.css')).size + statSync(join(vendorDir, 'xterm.min.css')).size + statSync(join(vendorDir, 'codemirror.min.css')).size + statSync(join(vendorDir, 'codemirror-material-darker.css')).size;
+const originalCssSize = appCssFiles.reduce((sum, f) => sum + statSync(join(__dirname, 'styles', f + '.css')).size, 0) + statSync(join(vendorDir, 'highlight.min.css')).size + statSync(join(vendorDir, 'xterm.min.css')).size + statSync(join(vendorDir, 'codemirror.min.css')).size + statSync(join(vendorDir, 'codemirror-material-darker.css')).size;
 
 console.log('\n========================================');
 console.log('Build complete!');

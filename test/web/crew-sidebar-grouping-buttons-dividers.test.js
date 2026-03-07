@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
  * Tests for commit bf79ad0: feat: sidebar session grouping, crew restore/delete buttons, remove dividers
@@ -26,8 +27,10 @@ beforeAll(async () => {
   const base = process.cwd();
   chatPageContent = await fs.readFile(join(base, 'web/components/ChatPage.js'), 'utf-8');
   configContent = await fs.readFile(join(base, 'web/components/CrewConfigPanel.js'), 'utf-8');
-  styleContent = await fs.readFile(join(base, 'web/style.css'), 'utf-8');
-  chatStoreContent = await fs.readFile(join(base, 'web/stores/chat.js'), 'utf-8');
+  styleContent = loadAllCss();
+  const chatMain = await fs.readFile(join(base, 'web/stores/chat.js'), 'utf-8');
+  const crewHelper = await fs.readFile(join(base, 'web/stores/helpers/crew.js'), 'utf-8');
+  chatStoreContent = chatMain + '\n' + crewHelper;
   wsClientContent = await fs.readFile(join(base, 'server/handlers/client-crew.js'), 'utf-8');
   crewJsContent = await fs.readFile(join(base, 'agent/crew.js'), 'utf-8');
   connectionJsContent = await fs.readFile(join(base, 'agent/connection.js'), 'utf-8');

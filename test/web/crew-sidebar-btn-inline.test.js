@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
  * Tests for sidebar clickable group headers.
@@ -24,8 +25,7 @@ beforeAll(() => {
   const chatPagePath = resolve(__dirname, '../../web/components/ChatPage.js');
   chatPageSource = readFileSync(chatPagePath, 'utf-8');
 
-  const cssPath = resolve(__dirname, '../../web/style.css');
-  cssSource = readFileSync(cssPath, 'utf-8');
+  cssSource = loadAllCss();
 });
 
 /**

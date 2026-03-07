@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
  * Tests for crew persistence, sync, and session management.
@@ -2913,10 +2914,7 @@ describe('Feature blocks CSS verification', () => {
   let cssContent;
 
   it('should load style.css', async () => {
-    cssContent = await fs.readFile(
-      join(__dirname, '../../web/style.css'),
-      'utf-8'
-    );
+    cssContent = loadAllCss();
     expect(cssContent).toBeTruthy();
   });
 
@@ -3339,10 +3337,7 @@ describe('Route inline CSS verification', () => {
   let cssContent;
 
   it('should load style.css', async () => {
-    cssContent = await fs.readFile(
-      join(__dirname, '../../web/style.css'),
-      'utf-8'
-    );
+    cssContent = loadAllCss();
     expect(cssContent).toBeTruthy();
   });
 
@@ -3540,10 +3535,7 @@ describe('Streaming indicator - desktop base styles', () => {
   let cssContent;
 
   it('should load style.css', async () => {
-    cssContent = await fs.readFile(
-      join(__dirname, '../../web/style.css'),
-      'utf-8'
-    );
+    cssContent = loadAllCss();
     expect(cssContent).toBeTruthy();
   });
 
@@ -3587,10 +3579,7 @@ describe('Streaming indicator - typing dots', () => {
   let cssContent;
 
   it('should load style.css', async () => {
-    cssContent = await fs.readFile(
-      join(__dirname, '../../web/style.css'),
-      'utf-8'
-    );
+    cssContent = loadAllCss();
   });
 
   it('should define crew-typing-dot as 8px circles', () => {
@@ -3624,10 +3613,7 @@ describe('Streaming indicator - 768px breakpoint', () => {
   let cssContent;
 
   it('should load style.css', async () => {
-    cssContent = await fs.readFile(
-      join(__dirname, '../../web/style.css'),
-      'utf-8'
-    );
+    cssContent = loadAllCss();
   });
 
   it('should override padding in a 768px media query', () => {
@@ -3669,10 +3655,7 @@ describe('Streaming indicator - 480px breakpoint', () => {
   let cssContent;
 
   it('should load style.css', async () => {
-    cssContent = await fs.readFile(
-      join(__dirname, '../../web/style.css'),
-      'utf-8'
-    );
+    cssContent = loadAllCss();
   });
 
   it('should override padding in a 480px media query', () => {
@@ -4227,7 +4210,7 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
 
   beforeAll(async () => {
     viewSource = await fs.readFile(join(__dirname, '../../web/components/CrewChatView.js'), 'utf-8');
-    cssSource = await fs.readFile(join(__dirname, '../../web/style.css'), 'utf-8');
+    cssSource = loadAllCss();
   });
 
   // --- Left Panel: Role Cards v2 ---
@@ -4961,8 +4944,13 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
 
     beforeAll(async () => {
       wsAgentSource = await fs.readFile(join(__dirname, '../../server/handlers/agent-crew.js'), 'utf-8');
-      chatStoreSource = await fs.readFile(join(__dirname, '../../web/stores/chat.js'), 'utf-8');
-      messageHandlerSource = await fs.readFile(join(__dirname, '../../web/stores/helpers/messageHandler.js'), 'utf-8');
+      const chatMain = await fs.readFile(join(__dirname, '../../web/stores/chat.js'), 'utf-8');
+      const crewHelper = await fs.readFile(join(__dirname, '../../web/stores/helpers/crew.js'), 'utf-8');
+      chatStoreSource = chatMain + '\n' + crewHelper;
+      const handlerMain = await fs.readFile(join(__dirname, '../../web/stores/helpers/messageHandler.js'), 'utf-8');
+      const agentHandler = await fs.readFile(join(__dirname, '../../web/stores/helpers/handlers/agentHandler.js'), 'utf-8');
+      const convHandler = await fs.readFile(join(__dirname, '../../web/stores/helpers/handlers/conversationHandler.js'), 'utf-8');
+      messageHandlerSource = handlerMain + '\n' + agentHandler + '\n' + convHandler;
     });
 
     // --- 1. server/ws-agent.js: crew_status 时设置 processing = false ---
@@ -5010,7 +4998,7 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
         if (crewStatusMatch) {
           const block = crewStatusMatch[1];
           expect(block).toContain("msg.status === 'stopped'");
-          expect(block).toContain('delete this.processingConversations[sid]');
+          expect(block).toMatch(/delete (this|store)\.processingConversations\[sid\]/);
         }
       });
 
@@ -5037,8 +5025,12 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
         expect(crewStatusMatch).toBeTruthy();
         if (crewStatusMatch) {
           const block = crewStatusMatch[1];
-          const statusIdx = block.indexOf('this.crewStatuses[sid]');
-          const deleteIdx = block.indexOf('delete this.processingConversations[sid]');
+          const statusIdx = block.indexOf('store.crewStatuses[sid]') >= 0
+            ? block.indexOf('store.crewStatuses[sid]')
+            : block.indexOf('this.crewStatuses[sid]');
+          const deleteIdx = block.indexOf('delete store.processingConversations[sid]') >= 0
+            ? block.indexOf('delete store.processingConversations[sid]')
+            : block.indexOf('delete this.processingConversations[sid]');
           expect(statusIdx).toBeGreaterThan(-1);
           expect(deleteIdx).toBeGreaterThan(-1);
           expect(statusIdx).toBeLessThan(deleteIdx);

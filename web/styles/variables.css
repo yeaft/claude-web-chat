@@ -1,0 +1,275 @@
+@font-face {
+  font-family: 'Symbols Nerd Font Mono';
+  src: url('https://cdn.jsdelivr.net/gh/ryanoasis/nerd-fonts@latest/patched-fonts/NerdFontsSymbolsOnly/SymbolsNerdFontMono-Regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Global cursor/caret color fix */
+input, textarea, [contenteditable] {
+  caret-color: var(--text-primary);
+}
+
+/* ==============================
+   Unified Select/Dropdown Styles
+   ============================== */
+select {
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text-primary);
+  background: var(--bg-input, var(--bg-main));
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px 32px 8px 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+select:hover {
+  border-color: var(--text-muted);
+}
+
+select:focus {
+  outline: none;
+  border-color: var(--accent-blue, #4a9eff);
+  box-shadow: 0 0 0 2px rgba(74, 158, 255, 0.12);
+}
+
+select option {
+  background: var(--bg-main);
+  color: var(--text-primary);
+  padding: 8px 12px;
+}
+
+select option:checked {
+  background: var(--sidebar-hover);
+}
+
+/* Light Theme (default) - warm, eye-friendly tones */
+:root {
+  --bg-main: #fafaf8;
+  --bg-sidebar: #f3f3f0;
+  --bg-workbench: #f6f5f3;
+  --bg-user-msg: #eeeee9;
+  --bg-assistant-msg: transparent;
+  --bg-input: #fafaf8;
+  --bg-input-wrapper: #eeeee9;
+  --text-primary: #2c2c2c;
+  --text-secondary: #6b6b6b;
+  --text-muted: #9a9a9a;
+  --border-color: #e0ddd8;
+  --border-light: #eceae5;
+  --accent: #2c2c2c;
+  --accent-hover: #444444;
+  --accent-blue: #4a7cc9;
+  --accent-blue-hover: #3a6ab5;
+  --error: #d65d5d;
+  --success: #4a9e5c;
+  --code-bg: #1e1e1e;
+  --code-header-bg: #2d2d2d;
+  --code-text: #e5e5e5;
+  --tool-bg: transparent;
+  --tool-border: transparent;
+  --tool-result-bg: #f0fdf4;
+  --tool-result-border: #bbf7d0;
+  --sidebar-hover: #e8e6e1;
+  --session-active: #e2e0db;
+  --inline-code-bg: rgba(0, 0, 0, 0.05);
+  --crew-tool-bg: #f0efec;
+  --crew-tool-border: #e0ddd8;
+  /* Crew Role Colors — light theme: muted ink tones */
+  --crew-color-pm: #5a7394;
+  --crew-color-pm-bg: rgba(90, 115, 148, 0.06);
+  --crew-color-pm-border: rgba(90, 115, 148, 0.20);
+  --crew-color-architect: #7a6a9a;
+  --crew-color-architect-bg: rgba(122, 106, 154, 0.06);
+  --crew-color-architect-border: rgba(122, 106, 154, 0.20);
+  --crew-color-developer: #4a8a70;
+  --crew-color-developer-bg: rgba(74, 138, 112, 0.06);
+  --crew-color-developer-border: rgba(74, 138, 112, 0.20);
+  --crew-color-reviewer: #8a7550;
+  --crew-color-reviewer-bg: rgba(138, 117, 80, 0.06);
+  --crew-color-reviewer-border: rgba(138, 117, 80, 0.20);
+  --crew-color-tester: #4a7e82;
+  --crew-color-tester-bg: rgba(74, 126, 130, 0.06);
+  --crew-color-tester-border: rgba(74, 126, 130, 0.20);
+  --crew-color-designer: #9a5a5a;
+  --crew-color-designer-bg: rgba(154, 90, 90, 0.06);
+  --crew-color-designer-border: rgba(154, 90, 90, 0.20);
+  --crew-color-writer: #8a5a72;
+  --crew-color-writer-bg: rgba(138, 90, 114, 0.06);
+  --crew-color-writer-border: rgba(138, 90, 114, 0.20);
+  --crew-color-human: #8a6e40;
+  --crew-color-human-bg: rgba(138, 110, 64, 0.06);
+  --crew-color-human-border: rgba(138, 110, 64, 0.20);
+  --crew-color-system: #6b7280;
+  --crew-color-system-bg: rgba(107, 114, 128, 0.04);
+  --crew-color-system-border: rgba(107, 114, 128, 0.12);
+  --crew-color-fallback-0: #6060a0;
+  --crew-color-fallback-0-bg: rgba(96, 96, 160, 0.06);
+  --crew-color-fallback-0-border: rgba(96, 96, 160, 0.20);
+  --crew-color-fallback-1: #4a7e78;
+  --crew-color-fallback-1-bg: rgba(74, 126, 120, 0.06);
+  --crew-color-fallback-1-border: rgba(74, 126, 120, 0.20);
+  --crew-color-fallback-2: #9a5a5a;
+  --crew-color-fallback-2-bg: rgba(154, 90, 90, 0.06);
+  --crew-color-fallback-2-border: rgba(154, 90, 90, 0.20);
+  --crew-color-fallback-3: #5e8040;
+  --crew-color-fallback-3-bg: rgba(94, 128, 64, 0.06);
+  --crew-color-fallback-3-border: rgba(94, 128, 64, 0.20);
+  /* Crew Role Colors — breathing glow (light) */
+  --crew-color-pm-bg-glow: rgba(90, 115, 148, 0.14);
+  --crew-color-architect-bg-glow: rgba(122, 106, 154, 0.14);
+  --crew-color-developer-bg-glow: rgba(74, 138, 112, 0.14);
+  --crew-color-reviewer-bg-glow: rgba(138, 117, 80, 0.14);
+  --crew-color-tester-bg-glow: rgba(74, 126, 130, 0.14);
+  --crew-color-designer-bg-glow: rgba(154, 90, 90, 0.14);
+  --crew-color-writer-bg-glow: rgba(138, 90, 114, 0.14);
+  --crew-color-human-bg-glow: rgba(138, 110, 64, 0.14);
+  --crew-color-system-bg-glow: rgba(107, 114, 128, 0.10);
+  --crew-color-fallback-0-bg-glow: rgba(96, 96, 160, 0.14);
+  --crew-color-fallback-1-bg-glow: rgba(74, 126, 120, 0.14);
+  --crew-color-fallback-2-bg-glow: rgba(154, 90, 90, 0.14);
+  --crew-color-fallback-3-bg-glow: rgba(94, 128, 64, 0.14);
+
+  /* Diff colors */
+  --diff-add-bg: rgba(46, 140, 67, 0.08);
+  --diff-add-border: rgba(46, 140, 67, 0.35);
+  --diff-add-text: #2a7a3f;
+  --diff-del-bg: rgba(200, 70, 70, 0.08);
+  --diff-del-border: rgba(200, 70, 70, 0.35);
+  --diff-del-text: #b93535;
+  --diff-line-num: #7a7a7a;
+  --diff-header-bg: #f3f2ee;
+}
+
+/* Dark Theme - warm, eye-friendly tones */
+[data-theme="dark"] {
+  --bg-main: #1a1a1a;
+  --bg-sidebar: #141414;
+  --bg-workbench: #171716;
+  --bg-user-msg: #2a2a28;
+  --bg-assistant-msg: transparent;
+  --bg-input: #2a2a28;
+  --bg-input-wrapper: #2a2a28;
+  --text-primary: #d8d5d0;
+  --text-secondary: #a09d98;
+  --text-muted: #777572;
+  --border-color: #363330;
+  --border-light: #2a2826;
+  --accent: #d8d5d0;
+  --accent-hover: #b5b2ad;
+  --accent-blue: #b5b2ad;
+  --accent-blue-hover: #9a9792;
+  --error: #d09090;
+  --success: #7ab87e;
+  --code-bg: #141414;
+  --code-header-bg: #222220;
+  --code-text: #ccc9c4;
+  --tool-bg: transparent;
+  --tool-border: transparent;
+  --tool-result-bg: rgba(180, 180, 170, 0.05);
+  --tool-result-border: rgba(180, 180, 170, 0.12);
+  --sidebar-hover: #252523;
+  --session-active: #302e2c;
+  --inline-code-bg: rgba(255, 255, 255, 0.07);
+  --crew-tool-bg: #1e1e1e;
+  --crew-tool-border: #363330;
+  /* Diff colors - warm muted style */
+  --diff-add-bg: rgba(120, 170, 120, 0.10);
+  --diff-add-border: rgba(120, 170, 120, 0.28);
+  --diff-add-text: #9cc9a0;
+  --diff-del-bg: rgba(190, 120, 120, 0.10);
+  --diff-del-border: rgba(190, 120, 120, 0.28);
+  --diff-del-text: #d4a0a0;
+  --diff-line-num: #605e5a;
+  --diff-header-bg: #141414;
+
+  /* Crew Role Colors — dark theme: muted warm tones */
+  --crew-color-pm: #8aa4c8;
+  --crew-color-pm-bg: rgba(138, 164, 200, 0.10);
+  --crew-color-pm-border: rgba(138, 164, 200, 0.25);
+  --crew-color-architect: #a99bc4;
+  --crew-color-architect-bg: rgba(169, 155, 196, 0.10);
+  --crew-color-architect-border: rgba(169, 155, 196, 0.25);
+  --crew-color-developer: #7db8a0;
+  --crew-color-developer-bg: rgba(125, 184, 160, 0.10);
+  --crew-color-developer-border: rgba(125, 184, 160, 0.25);
+  --crew-color-reviewer: #c8aa78;
+  --crew-color-reviewer-bg: rgba(200, 170, 120, 0.10);
+  --crew-color-reviewer-border: rgba(200, 170, 120, 0.25);
+  --crew-color-tester: #82b5b8;
+  --crew-color-tester-bg: rgba(130, 181, 184, 0.10);
+  --crew-color-tester-border: rgba(130, 181, 184, 0.25);
+  --crew-color-designer: #c08888;
+  --crew-color-designer-bg: rgba(192, 136, 136, 0.10);
+  --crew-color-designer-border: rgba(192, 136, 136, 0.25);
+  --crew-color-writer: #b8899c;
+  --crew-color-writer-bg: rgba(184, 137, 156, 0.10);
+  --crew-color-writer-border: rgba(184, 137, 156, 0.25);
+  --crew-color-human: #c0a070;
+  --crew-color-human-bg: rgba(192, 160, 112, 0.10);
+  --crew-color-human-border: rgba(192, 160, 112, 0.25);
+  --crew-color-system-bg: rgba(107, 114, 128, 0.06);
+  --crew-color-system-border: rgba(107, 114, 128, 0.18);
+  --crew-color-fallback-0: #9494be;
+  --crew-color-fallback-0-bg: rgba(148, 148, 190, 0.10);
+  --crew-color-fallback-0-border: rgba(148, 148, 190, 0.25);
+  --crew-color-fallback-1: #80b0a8;
+  --crew-color-fallback-1-bg: rgba(128, 176, 168, 0.10);
+  --crew-color-fallback-1-border: rgba(128, 176, 168, 0.25);
+  --crew-color-fallback-2: #c08888;
+  --crew-color-fallback-2-bg: rgba(192, 136, 136, 0.10);
+  --crew-color-fallback-2-border: rgba(192, 136, 136, 0.25);
+  --crew-color-fallback-3: #9ab87e;
+  --crew-color-fallback-3-bg: rgba(154, 184, 126, 0.10);
+  --crew-color-fallback-3-border: rgba(154, 184, 126, 0.25);
+  /* Crew Role Colors — breathing glow (dark) */
+  --crew-color-pm-bg-glow: rgba(138, 164, 200, 0.18);
+  --crew-color-architect-bg-glow: rgba(169, 155, 196, 0.18);
+  --crew-color-developer-bg-glow: rgba(125, 184, 160, 0.18);
+  --crew-color-reviewer-bg-glow: rgba(180, 158, 100, 0.18);
+  --crew-color-tester-bg-glow: rgba(120, 175, 180, 0.18);
+  --crew-color-designer-bg-glow: rgba(200, 130, 130, 0.18);
+  --crew-color-writer-bg-glow: rgba(175, 130, 155, 0.18);
+  --crew-color-human-bg-glow: rgba(180, 150, 100, 0.18);
+  --crew-color-system-bg-glow: rgba(140, 150, 170, 0.14);
+  --crew-color-fallback-0-bg-glow: rgba(140, 140, 200, 0.18);
+  --crew-color-fallback-1-bg-glow: rgba(120, 175, 165, 0.18);
+  --crew-color-fallback-2-bg-glow: rgba(200, 130, 130, 0.18);
+  --crew-color-fallback-3-bg-glow: rgba(140, 175, 100, 0.18);
+}
+
+html {
+  height: 100%;
+  height: 100dvh;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+#app {
+  height: 100%;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+

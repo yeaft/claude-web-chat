@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
  * Tests for task-40: Desktop Crew panel toggle via header nav buttons.
@@ -26,7 +27,7 @@ beforeAll(() => {
   headerSource = readFileSync(resolve(base, 'components/ChatHeader.js'), 'utf-8');
   viewSource = readFileSync(resolve(base, 'components/CrewChatView.js'), 'utf-8');
   storeSource = readFileSync(resolve(base, 'stores/chat.js'), 'utf-8');
-  cssSource = readFileSync(resolve(base, 'style.css'), 'utf-8');
+  cssSource = loadAllCss();
 });
 
 // =====================================================================

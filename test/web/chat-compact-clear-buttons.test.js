@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
  * Tests for task-39: Chat header compact/clear buttons.
@@ -23,7 +24,7 @@ let enSource;
 beforeAll(() => {
   const base = resolve(__dirname, '../../web');
   headerSource = readFileSync(resolve(base, 'components/ChatHeader.js'), 'utf-8');
-  cssSource = readFileSync(resolve(base, 'style.css'), 'utf-8');
+  cssSource = loadAllCss();
   zhSource = readFileSync(resolve(base, 'i18n/zh-CN.js'), 'utf-8');
   enSource = readFileSync(resolve(base, 'i18n/en.js'), 'utf-8');
 });
