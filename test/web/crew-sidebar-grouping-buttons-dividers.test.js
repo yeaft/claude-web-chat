@@ -28,7 +28,7 @@ beforeAll(async () => {
   configContent = await fs.readFile(join(base, 'web/components/CrewConfigPanel.js'), 'utf-8');
   styleContent = await fs.readFile(join(base, 'web/style.css'), 'utf-8');
   chatStoreContent = await fs.readFile(join(base, 'web/stores/chat.js'), 'utf-8');
-  wsClientContent = await fs.readFile(join(base, 'server/ws-client.js'), 'utf-8');
+  wsClientContent = await fs.readFile(join(base, 'server/handlers/client-crew.js'), 'utf-8');
   crewJsContent = await fs.readFile(join(base, 'agent/crew.js'), 'utf-8');
   connectionJsContent = await fs.readFile(join(base, 'agent/connection.js'), 'utf-8');
 });

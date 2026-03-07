@@ -4960,7 +4960,7 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     let messageHandlerSource;
 
     beforeAll(async () => {
-      wsAgentSource = await fs.readFile(join(__dirname, '../../server/ws-agent.js'), 'utf-8');
+      wsAgentSource = await fs.readFile(join(__dirname, '../../server/handlers/agent-crew.js'), 'utf-8');
       chatStoreSource = await fs.readFile(join(__dirname, '../../web/stores/chat.js'), 'utf-8');
       messageHandlerSource = await fs.readFile(join(__dirname, '../../web/stores/helpers/messageHandler.js'), 'utf-8');
     });

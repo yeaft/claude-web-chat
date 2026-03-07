@@ -718,7 +718,7 @@ describe('CrewConfigPanel - backend message chain verification', () => {
     const { promises: fs } = await import('fs');
     const { join } = await import('path');
     wsClientContent = await fs.readFile(
-      join(process.cwd(), 'server/ws-client.js'),
+      join(process.cwd(), 'server/handlers/client-crew.js'),
       'utf-8'
     );
     messageHandlerContent = await fs.readFile(
