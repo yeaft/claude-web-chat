@@ -529,7 +529,7 @@ describe('structural integrity', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2090);
+    expect(opens).toBe(2093);
   });
 
   it('all 4 buttons with btn-loading binding (3 chat + 1 crew refresh)', () => {

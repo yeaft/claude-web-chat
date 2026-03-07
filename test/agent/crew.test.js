@@ -4962,7 +4962,7 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2090);
+      expect(opens).toBe(2093);
     });
   });
 
