@@ -365,11 +365,11 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
   });
 
-  it('CSS has balanced braces (2091/2091)', () => {
+  it('CSS has balanced braces (2092/2092)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2093);
+    expect(opens).toBe(2092);
   });
 
   it('session-group-header CSS rule exists', () => {

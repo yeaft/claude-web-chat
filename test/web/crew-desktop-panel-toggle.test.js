@@ -248,7 +248,7 @@ describe('CSS — mobile override for hide-* classes', () => {
     expect(mobileBlock).toContain('.crew-workspace.hide-roles .crew-panel-left');
     const idx = mobileBlock.indexOf('.crew-workspace.hide-roles .crew-panel-left');
     const block = mobileBlock.substring(idx, mobileBlock.indexOf('}', idx) + 1);
-    expect(block).toContain('width: min(280px, 80vw) !important');
+    expect(block).toContain('width: min(320px, 85vw) !important');
   });
 
   it('mobile hide-roles .crew-panel-left has min-width: auto', () => {
@@ -314,10 +314,10 @@ describe('CSS — header nav visible on all viewports', () => {
 // 10. Structural integrity
 // =====================================================================
 describe('structural integrity', () => {
-  it('CSS has balanced braces (2091/2091)', () => {
+  it('CSS has balanced braces (2092/2092)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2093);
+    expect(opens).toBe(2092);
   });
 });

@@ -1552,7 +1552,8 @@
 
 /* Mobile-only elements: hidden on desktop */
 .crew-mobile-overlay,
-.crew-mobile-close {
+.crew-mobile-close,
+.crew-sidebar-toggle {
   display: none;
 }
 
@@ -1652,21 +1653,11 @@
     position: fixed;
     top: 0;
     bottom: 0;
-    z-index: 200;
-    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.15);
-  }
-
-  .crew-panel-left {
-    left: 0;
-    width: min(280px, 80vw);
-    transform: translateX(-100%);
-  }
-
-  .crew-panel-right {
     right: 0;
+    z-index: 200;
     width: min(320px, 85vw);
     transform: translateX(100%);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     box-shadow: -2px 0 12px rgba(0, 0, 0, 0.15);
   }
 
@@ -1680,7 +1671,7 @@
 
   /* Mobile: hide-* classes should NOT affect drawer panels */
   .crew-workspace.hide-roles .crew-panel-left {
-    width: min(280px, 80vw) !important;
+    width: min(320px, 85vw) !important;
     min-width: auto;
     padding: unset;
     border: unset;
@@ -1706,7 +1697,7 @@
 
   /* Reset icon-only overrides from 1279px breakpoint for drawer mode */
   .crew-panel-left {
-    width: min(280px, 80vw);
+    width: min(320px, 85vw);
   }
 
   .crew-panel-left-scroll {
@@ -1765,6 +1756,11 @@
 
   .crew-mobile-close:hover {
     color: var(--text-primary, #fff);
+  }
+
+  /* Show sidebar toggle in Crew header on mobile */
+  .crew-sidebar-toggle {
+    display: flex;
   }
 }
 

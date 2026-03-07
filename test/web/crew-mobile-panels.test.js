@@ -313,9 +313,9 @@ describe('CSS — mobile: drawer panel mechanics', () => {
     expect(mediaBlock).toContain('position: fixed');
   });
 
-  it('left panel starts off-screen (translateX(-100%))', () => {
+  it('both panels start off-screen to the right (translateX(100%))', () => {
     const mediaBlock = get767Block();
-    expect(mediaBlock).toContain('transform: translateX(-100%)');
+    expect(mediaBlock).toContain('transform: translateX(100%)');
   });
 
   it('right panel starts off-screen (translateX(100%))', () => {
@@ -348,9 +348,9 @@ describe('CSS — mobile: drawer panel mechanics', () => {
     expect(mediaBlock).toContain('z-index: 200');
   });
 
-  it('left panel width is constrained (min(280px, 80vw))', () => {
+  it('both panels width is constrained (min(320px, 85vw))', () => {
     const mediaBlock = get767Block();
-    expect(mediaBlock).toContain('min(280px, 80vw)');
+    expect(mediaBlock).toContain('min(320px, 85vw)');
   });
 
   it('right panel width is constrained (min(320px, 85vw))', () => {
@@ -542,10 +542,10 @@ describe('structural integrity', () => {
     expect(opens).toBe(closes);
   });
 
-  it('CSS has balanced braces (2091/2091)', () => {
+  it('CSS has balanced braces (2092/2092)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2093);
+    expect(opens).toBe(2092);
   });
 });
