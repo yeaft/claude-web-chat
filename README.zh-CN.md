@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Node.js](https://img.shields.io/badge/node-%3E%3D18-green)
 
-[English](README.md) | [中文](README.zh-CN.md)
+[English](README.md) | [中文](README.zh-CN.md) | [文档站点](https://yeaft.github.io/claude-web-chat/zh-CN/)
 
 > 远程访问 Claude Code CLI 的 Web 界面 — 多机器管理、端到端加密、多角色协作
 

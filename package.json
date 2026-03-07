@@ -23,7 +23,10 @@
     "start:agent": "npm run start --workspace=agent",
     "dev:server": "npm run dev --workspace=server",
     "dev:agent": "npm run dev --workspace=agent",
-    "dev": "concurrently \"npm run dev:server\" \"npm run dev:agent\""
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:agent\"",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
@@ -31,6 +34,7 @@
     "cross-env": "^7.0.3",
     "esbuild": "^0.20.0",
     "supertest": "^7.2.2",
+    "vitepress": "^1.6.4",
     "vitest": "^4.0.18"
   },
   "repository": {
