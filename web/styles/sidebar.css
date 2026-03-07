@@ -791,6 +791,26 @@
   display: block;
 }
 
+/* Button loading state: replace icon with spinner */
+.header-action-btn.btn-loading {
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.header-action-btn.btn-loading svg {
+  display: none;
+}
+
+.header-action-btn.btn-loading::after {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--text-tertiary, #666);
+  border-top-color: var(--accent-blue, #3b82f6);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
 /* Compact Status Banner */
 .compact-status-banner {
   position: absolute;

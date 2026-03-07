@@ -131,6 +131,15 @@ export function handleTurnCompleted(store, msg) {
       if (msg.claudeSessionId) conv.claudeSessionId = msg.claudeSessionId;
       if (msg.workDir) conv.workDir = msg.workDir;
     }
+    // Detect /clear completion: if clearStatus is 'clearing' for this conversation
+    if (store.clearStatus?.conversationId === convId && store.clearStatus?.status === 'clearing') {
+      store.clearStatus = { conversationId: convId, status: 'completed' };
+      setTimeout(() => {
+        if (store.clearStatus?.conversationId === convId && store.clearStatus?.status === 'completed') {
+          store.clearStatus = null;
+        }
+      }, 3000);
+    }
     store.saveOpenSessions();
   }
 }
@@ -212,4 +221,5 @@ export function handleSyncMessagesResult(store, msg) {
     clearSessionLoading(store);
   }
   store.loadingMoreMessages = false;
+  store.refreshingSession = false;
 }

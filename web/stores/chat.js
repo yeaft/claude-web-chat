@@ -73,6 +73,10 @@ export const useChatStore = defineStore('chat', {
     sidebarCollapsed: false,
     // Context compact 状态: { conversationId, status: 'compacting'|'completed', message }
     compactStatus: null,
+    // Context clear 状态: { conversationId, status: 'clearing'|'completed' }
+    clearStatus: null,
+    // Refresh session loading 状态
+    refreshingSession: false,
     // 代理端口映射: agentId → [{port, label, enabled}]
     proxyPorts: {},
     // ★ Phase 6: 消息分页状态

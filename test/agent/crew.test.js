@@ -4926,11 +4926,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(opens).toBe(closes);
     });
 
-    it('should have balanced CSS braces (2109/2109)', () => {
+    it('should have balanced CSS braces (2088/2088)', () => {
       const opens = (cssSource.match(/\{/g) || []).length;
       const closes = (cssSource.match(/\}/g) || []).length;
       expect(opens).toBe(closes);
-      expect(opens).toBe(2085);
+      expect(opens).toBe(2088);
     });
   });
 

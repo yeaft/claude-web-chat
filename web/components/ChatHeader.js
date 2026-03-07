@@ -6,29 +6,29 @@ export default {
         <div class="chat-title">{{ headerTitle }}</div>
         <div v-if="folderPath" class="chat-title-path">{{ folderPath }}</div>
       </div>
-      <!-- Compact Status Banner -->
-      <div v-if="showCompactStatus" class="compact-status-banner" :class="compactStatusClass">
-        <span v-if="store.compactStatus?.status === 'compacting'" class="compact-spinner"></span>
+      <!-- Compact / Clear Status Banner -->
+      <div v-if="showStatusBanner" class="compact-status-banner" :class="statusBannerClass">
+        <span v-if="statusBannerSpinner" class="compact-spinner"></span>
         <svg v-else class="compact-icon" viewBox="0 0 24 24" width="16" height="16">
           <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
         </svg>
-        <span class="compact-message">{{ compactMessage }}</span>
+        <span class="compact-message">{{ statusBannerMessage }}</span>
       </div>
       <div class="header-right" v-if="store.currentConversation && !store.currentConversationIsCrew">
         <span class="context-usage-hint" v-if="contextUsage" :class="contextColorClass" :title="contextLabel">
           {{ contextUsage.percentage }}%
         </span>
-        <button class="header-action-btn" @click="resumeSession" :disabled="!canResume" :title="$t('chatHeader.resume')" v-if="canResume">
+        <button class="header-action-btn" :class="{ 'btn-loading': store.refreshingSession }" @click="refreshSession" :disabled="!canRefresh || store.refreshingSession" :title="$t('chatHeader.refresh')" v-if="canRefresh">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
           </svg>
         </button>
-        <button class="header-action-btn" @click="compactContext" :disabled="isCompacting" :title="$t('chatHeader.compact')">
+        <button class="header-action-btn" :class="{ 'btn-loading': isCompacting }" @click="compactContext" :disabled="isCompacting" :title="$t('chatHeader.compact')">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>
+            <polyline points="8 4 12 8 16 4"/><line x1="4" y1="12" x2="20" y2="12"/><polyline points="8 20 12 16 16 20"/>
           </svg>
         </button>
-        <button class="header-action-btn" @click="clearMessages" :title="$t('chatHeader.clear')">
+        <button class="header-action-btn" :class="{ 'btn-loading': isClearing }" @click="clearMessages" :disabled="isClearing" :title="$t('chatHeader.clear')">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
           </svg>
@@ -77,17 +77,36 @@ export default {
       return t('chatHeader.newConv');
     });
 
-    const showCompactStatus = Vue.computed(() => {
+    // Unified status banner: shows compact or clear status
+    const showStatusBanner = Vue.computed(() => {
+      if (store.clearStatus?.conversationId === store.currentConversation) return true;
       if (!store.compactStatus) return false;
       return store.compactStatus.conversationId === store.currentConversation;
     });
 
-    const compactStatusClass = Vue.computed(() => {
+    const statusBannerClass = Vue.computed(() => {
+      // Clear status takes priority when active
+      if (store.clearStatus?.conversationId === store.currentConversation) {
+        return store.clearStatus.status === 'clearing' ? 'compacting' : 'completed';
+      }
       if (!store.compactStatus) return '';
       return store.compactStatus.status === 'compacting' ? 'compacting' : 'completed';
     });
 
-    const compactMessage = Vue.computed(() => {
+    const statusBannerSpinner = Vue.computed(() => {
+      if (store.clearStatus?.conversationId === store.currentConversation) {
+        return store.clearStatus.status === 'clearing';
+      }
+      return store.compactStatus?.status === 'compacting';
+    });
+
+    const statusBannerMessage = Vue.computed(() => {
+      if (store.clearStatus?.conversationId === store.currentConversation) {
+        if (store.clearStatus.status === 'clearing') {
+          return t('chatHeader.clearing');
+        }
+        return t('chatHeader.clearDone');
+      }
       if (!store.compactStatus) return '';
       if (store.compactStatus.status === 'compacting') {
         return store.compactStatus.message || t('chatHeader.compacting');
@@ -128,16 +147,26 @@ export default {
         && store.compactStatus?.conversationId === store.currentConversation;
     });
 
-    const canResume = Vue.computed(() => {
-      if (!store.currentConversation) return false;
-      const conv = store.conversations.find(c => c.id === store.currentConversation);
-      return conv?.claudeSessionId && !store.processingConversations[store.currentConversation];
+    const isClearing = Vue.computed(() => {
+      return store.clearStatus?.status === 'clearing'
+        && store.clearStatus?.conversationId === store.currentConversation;
     });
 
-    const resumeSession = () => {
-      if (!canResume.value) return;
-      const conv = store.conversations.find(c => c.id === store.currentConversation);
-      store.resumeConversation(conv.claudeSessionId, store.currentWorkDir);
+    const canRefresh = Vue.computed(() => {
+      if (!store.currentConversation) return false;
+      return !store.processingConversations[store.currentConversation]
+        && !store.refreshingSession;
+    });
+
+    const refreshSession = () => {
+      if (!canRefresh.value) return;
+      store.refreshingSession = true;
+      store.messages = [];
+      store.sendWsMessage({
+        type: 'sync_messages',
+        conversationId: store.currentConversation,
+        turns: 5
+      });
     };
 
     const compactContext = () => {
@@ -146,7 +175,12 @@ export default {
     };
 
     const clearMessages = () => {
+      if (isClearing.value) return;
       if (!confirm(t('chatHeader.confirmClear'))) return;
+      store.clearStatus = {
+        conversationId: store.currentConversation,
+        status: 'clearing'
+      };
       store.sendMessage('/clear');
     };
 
@@ -165,6 +199,6 @@ export default {
       return store.crewPanelVisible[panel];
     };
 
-    return { store, headerTitle, folderPath, showCompactStatus, compactStatusClass, compactMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, canResume, resumeSession, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive };
+    return { store, headerTitle, folderPath, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, isClearing, canRefresh, refreshSession, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive };
   }
 };
