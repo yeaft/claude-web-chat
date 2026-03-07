@@ -233,7 +233,10 @@ export default {
   'chatHeader.compactDone': 'Context compression complete',
   'chatHeader.compact': 'Compact context',
   'chatHeader.resume': 'Resume session',
+  'chatHeader.refresh': 'Refresh messages',
   'chatHeader.clear': 'Clear messages',
+  'chatHeader.clearing': 'Clearing context...',
+  'chatHeader.clearDone': 'Context cleared',
   'chatHeader.confirmClear': 'Are you sure you want to clear all messages in this conversation?',
 
   // ============ Settings ============

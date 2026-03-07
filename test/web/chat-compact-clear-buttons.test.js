@@ -79,8 +79,10 @@ describe('clear button', () => {
 
   it('clearMessages sends /clear via sendMessage', () => {
     const setupSection = headerSource.split('setup()')[1] || '';
-    const fnSection = setupSection.split('clearMessages')[1]?.split('};')[0] || '';
-    expect(fnSection).toContain("sendMessage('/clear')");
+    // Find the full clearMessages function body (may contain nested objects with };)
+    const clearStart = setupSection.indexOf('clearMessages');
+    const clearBody = setupSection.substring(clearStart, clearStart + 500);
+    expect(clearBody).toContain("sendMessage('/clear')");
   });
 
   it('confirm dialog uses chatHeader.confirmClear i18n key', () => {
@@ -234,10 +236,10 @@ describe('CSS — header-action-btn styling', () => {
 // 7. Structural integrity
 // =====================================================================
 describe('structural integrity', () => {
-  it('CSS has balanced braces (2085/2085)', () => {
+  it('CSS has balanced braces (2088/2088)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2085);
+    expect(opens).toBe(2088);
   });
 });

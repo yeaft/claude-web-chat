@@ -235,11 +235,11 @@ describe('side panel collapse rules still intact', () => {
 // 8. Structural integrity
 // =====================================================================
 describe('structural integrity', () => {
-  it('CSS has balanced braces (2085/2085)', () => {
+  it('CSS has balanced braces (2088/2088)', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2085);
+    expect(opens).toBe(2088);
   });
 
   it('padding values are consistent (both 48px)', () => {
