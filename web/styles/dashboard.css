@@ -10,9 +10,14 @@
   flex: 1;
   min-width: 0;
   padding: 16px;
-  background: var(--bg-user-msg);
+  background: var(--bg-sidebar);
   border: 1px solid var(--border-color);
   border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="dark"] .db-stat-card {
+  background: var(--bg-user-msg);
 }
 
 .db-stat-value {
@@ -37,9 +42,14 @@
 .db-section {
   margin-bottom: 24px;
   padding: 16px;
-  background: var(--bg-user-msg);
+  background: var(--bg-sidebar);
   border: 1px solid var(--border-color);
   border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="dark"] .db-section {
+  background: var(--bg-user-msg);
 }
 
 .db-section-header {
@@ -214,8 +224,12 @@
     font-size: 20px;
   }
 
+  .db-section {
+    padding: 12px;
+  }
+
   .db-table-wrap { display: none; }
-  .db-card-list { display: flex; flex-direction: column; gap: 2px; }
+  .db-card-list { display: flex; flex-direction: column; gap: 0; }
 
   .db-user-card,
   .db-agent-card,
