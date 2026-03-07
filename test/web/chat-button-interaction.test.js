@@ -102,11 +102,12 @@ describe('refresh button — replaces resume', () => {
     expect(fnBody).toContain('conversationId: store.currentConversation');
   });
 
-  it('refreshSession checks canRefresh before executing', () => {
+  it('refreshSession guards against double-refresh and missing conversation', () => {
     const setupSection = headerSource.split('setup()')[1] || '';
     const fnStart = setupSection.indexOf('refreshSession');
     const fnBody = setupSection.substring(fnStart, fnStart + 300);
-    expect(fnBody).toContain('canRefresh');
+    expect(fnBody).toContain('refreshingSession');
+    expect(fnBody).toContain('currentConversation');
   });
 });
 
