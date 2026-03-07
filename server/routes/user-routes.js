@@ -46,7 +46,7 @@ export function registerUserRoutes(app, { requireAuth, requireAdmin }) {
         username: user.username,
         displayName: user.display_name,
         email: user.email,
-        role: user.role || 'user',
+        role: user.role === 'admin' ? 'admin' : 'pro',
         createdAt: user.created_at
       });
     } catch (err) {

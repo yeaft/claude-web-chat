@@ -52,7 +52,7 @@ export default {
                   <div class="sp-row-left">
                     <span class="sp-label">{{ $t('settings.account.role') }}</span>
                   </div>
-                  <span class="sp-badge" :class="'sp-role-' + (profile?.role || 'user')">{{ roleLabel }}</span>
+                  <span class="sp-badge" :class="'sp-role-' + (profile?.role || 'pro')">{{ roleLabel }}</span>
                 </div>
                 <div class="sp-row">
                   <div class="sp-row-left">
@@ -291,7 +291,7 @@ export default {
       confirmPassword: '',
       changingPassword: false,
       invitations: [],
-      inviteRole: 'user',
+      inviteRole: 'pro',
       creatingInvite: false,
       message: '',
       isError: false,
@@ -308,8 +308,8 @@ export default {
       return Pinia.useChatStore();
     },
     roleLabel() {
-      const roles = { admin: this.$t('settings.account.roleAdmin'), pro: this.$t('settings.account.rolePro'), user: this.$t('settings.account.roleUser') };
-      return roles[this.profile?.role] || this.$t('settings.account.roleUser');
+      const roles = { admin: this.$t('settings.account.roleAdmin'), pro: this.$t('settings.account.rolePro') };
+      return roles[this.profile?.role] || this.$t('settings.account.rolePro');
     },
     visibleTabs() {
       const tabs = [
@@ -349,7 +349,6 @@ export default {
     },
     roleOptions() {
       return [
-        { value: 'user', label: this.$t('settings.invite.normalUser') },
         { value: 'pro', label: this.$t('settings.invite.proUser') }
       ];
     },

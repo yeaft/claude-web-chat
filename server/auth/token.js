@@ -29,7 +29,7 @@ export function verifyToken(token) {
       valid: true,
       username: decoded.username,
       sessionKey: session.sessionKey,
-      role: user?.role || 'user'
+      role: user?.role === 'admin' ? 'admin' : 'pro'
     };
   } catch (err) {
     return { valid: false };

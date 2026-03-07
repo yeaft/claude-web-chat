@@ -256,7 +256,6 @@ export default {
   'settings.account.logout': '退出登录',
   'settings.account.roleAdmin': '管理员',
   'settings.account.rolePro': 'Pro',
-  'settings.account.roleUser': '普通用户',
 
   // Settings - Security
   'settings.security.agentKey': 'Agent 密钥',

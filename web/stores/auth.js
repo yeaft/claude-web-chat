@@ -17,7 +17,7 @@ export const useAuthStore = defineStore('auth', {
     isAuthenticated: false,
     token: null,
     sessionKey: null, // Uint8Array for encryption
-    role: null, // 'admin' | 'pro' | 'user'
+    role: null, // 'admin' | 'pro'
 
     // Login flow state
     // 'credentials' | 'totp' | 'totp-setup' | 'verification' | 'register' | 'authenticated'
@@ -106,7 +106,7 @@ export const useAuthStore = defineStore('auth', {
         // No verification needed - login complete
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
-        this.role = data.role || 'user';
+        this.role = data.role || 'pro';
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
 
@@ -155,7 +155,7 @@ export const useAuthStore = defineStore('auth', {
         // Login complete
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
-        this.role = data.role || 'user';
+        this.role = data.role || 'pro';
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
         this.tempToken = null;
@@ -208,7 +208,7 @@ export const useAuthStore = defineStore('auth', {
         // Login complete
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
-        this.role = data.role || 'user';
+        this.role = data.role || 'pro';
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
 
@@ -246,7 +246,7 @@ export const useAuthStore = defineStore('auth', {
 
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
-        this.role = data.role || 'user';
+        this.role = data.role || 'pro';
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
         this.tempToken = null;

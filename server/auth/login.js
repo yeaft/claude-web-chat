@@ -17,7 +17,7 @@ export function completeLogin(username, sessionKey, role) {
     success: true,
     token,
     sessionKey: encodeKey(sessionKey),
-    role: role || 'user',
+    role: role === 'admin' ? 'admin' : 'pro',
     needTotpCode: false,
     needTotpSetup: false,
     needEmailCode: false
@@ -41,7 +41,7 @@ export async function loginStep1(username, password) {
   }
 
   const sessionKey = generateSessionKey();
-  const role = user.role || 'user';
+  const role = user.role === 'admin' ? 'admin' : 'pro';
 
   // Check if TOTP is enabled for this user
   if (user.totpEnabled && user.totpSecret) {

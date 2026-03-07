@@ -192,13 +192,13 @@ describe('User Profile API', () => {
       username: found.username,
       displayName: found.display_name,
       email: found.email,
-      role: found.role || 'user',
+      role: found.role === 'admin' ? 'admin' : 'pro',
       createdAt: found.created_at
     };
 
     expect(response.username).toBe('profile_user');
     expect(response.email).toBe('profile@test.com');
-    expect(response.role).toBe('user');
+    expect(response.role).toBe('pro');
   });
 
   it('should require current password for profile update', async () => {
