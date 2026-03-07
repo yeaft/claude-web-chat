@@ -66,7 +66,7 @@ export default {
         <button class="crew-header-nav-btn"
                 :class="{ 'btn-loading': store.refreshingSession }"
                 @click="refreshSession"
-                :disabled="!canRefresh || store.refreshingSession"
+                :disabled="store.refreshingSession"
                 :title="$t('chatHeader.refresh')">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
@@ -184,7 +184,7 @@ export default {
     });
 
     const refreshSession = () => {
-      if (!canRefresh.value) return;
+      if (store.refreshingSession || !store.currentConversation) return;
       store.refreshingSession = true;
       store.messages = [];
       store.sendWsMessage({
