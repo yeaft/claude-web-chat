@@ -1,0 +1,163 @@
+import { messageDb } from '../database.js';
+import { broadcastAgentList, forwardToClients } from '../ws-utils.js';
+
+/**
+ * Handle Claude output and interaction messages from agent.
+ * Types: claude_output, context_usage, execution_cancelled,
+ *        background_task_started, background_task_output,
+ *        slash_commands_update, compact_status, ask_user_question, error
+ */
+export async function handleAgentOutput(agentId, agent, msg) {
+  switch (msg.type) {
+    case 'claude_output':
+      // 保存消息到数据库
+      try {
+        const data = msg.data;
+        if (data && msg.conversationId) {
+          if (data.type === 'user' && data.message?.content) {
+            const rawContent = data.message.content;
+            const content = typeof rawContent === 'string'
+              ? rawContent
+              : (Array.isArray(rawContent) ? rawContent.map(b => b.text || '').join('') : JSON.stringify(rawContent));
+            const dbId = messageDb.add(msg.conversationId, 'user', content, 'user');
+            msg.data.dbMessageId = dbId;
+          }
+          if (data.type === 'assistant' && data.message?.content) {
+            let content;
+            if (typeof data.message.content === 'string') {
+              content = data.message.content;
+            } else if (Array.isArray(data.message.content)) {
+              content = data.message.content
+                .filter(block => block.type === 'text' && block.text)
+                .map(block => block.text)
+                .join('');
+            } else {
+              content = JSON.stringify(data.message.content);
+            }
+            if (content) {
+              const dbId = messageDb.add(msg.conversationId, 'assistant', content, 'assistant');
+              msg.data.dbMessageId = dbId;
+            }
+          }
+          if (data.type === 'assistant' && data.message?.content) {
+            const contents = Array.isArray(data.message.content)
+              ? data.message.content
+              : [data.message.content];
+            for (const item of contents) {
+              if (item.type === 'tool_use') {
+                messageDb.add(
+                  msg.conversationId,
+                  'assistant',
+                  JSON.stringify(item.input || {}),
+                  'tool_use',
+                  item.name,
+                  JSON.stringify(item.input || {})
+                );
+              }
+            }
+          }
+          if (data.type === 'result') {
+            const resultContent = typeof data.result === 'string'
+              ? data.result
+              : JSON.stringify(data.result);
+            const truncated = resultContent.length > 10000
+              ? resultContent.slice(0, 10000) + '...[truncated]'
+              : resultContent;
+            messageDb.add(msg.conversationId, 'tool', truncated, 'tool_result');
+          }
+        }
+      } catch (e) {
+        // 静默处理保存错误，不影响正常流程
+      }
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'claude_output',
+        conversationId: msg.conversationId,
+        data: msg.data
+      });
+      break;
+
+    case 'context_usage':
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'context_usage',
+        conversationId: msg.conversationId,
+        inputTokens: msg.inputTokens,
+        maxTokens: msg.maxTokens,
+        percentage: msg.percentage
+      });
+      break;
+
+    case 'execution_cancelled': {
+      const cancelledConv = agent.conversations.get(msg.conversationId);
+      if (cancelledConv) {
+        cancelledConv.processing = false;
+      }
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'execution_cancelled',
+        conversationId: msg.conversationId
+      });
+      await broadcastAgentList();
+      break;
+    }
+
+    case 'background_task_started':
+      console.log(`[Background] Task started: ${msg.task?.id} in conversation ${msg.conversationId}`);
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'background_task_started',
+        conversationId: msg.conversationId,
+        task: msg.task
+      });
+      break;
+
+    case 'background_task_output':
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'background_task_output',
+        conversationId: msg.conversationId,
+        taskId: msg.taskId,
+        task: msg.task,
+        newOutput: msg.newOutput
+      });
+      break;
+
+    case 'slash_commands_update':
+      // 缓存到 agent 对象上，供 web 端选择 agent 时立即获取
+      agent.slashCommands = msg.slashCommands || [];
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'slash_commands_update',
+        conversationId: msg.conversationId,
+        slashCommands: msg.slashCommands
+      });
+      break;
+
+    case 'compact_status':
+      console.log(`[Compact] Status: ${msg.status} for conversation ${msg.conversationId}`);
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'compact_status',
+        conversationId: msg.conversationId,
+        status: msg.status,
+        message: msg.message
+      });
+      break;
+
+    case 'ask_user_question':
+      console.log(`[AskUser] Question for conversation ${msg.conversationId}, requestId: ${msg.requestId}`);
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'ask_user_question',
+        conversationId: msg.conversationId,
+        requestId: msg.requestId,
+        questions: msg.questions
+      });
+      break;
+
+    case 'error':
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'error',
+        conversationId: msg.conversationId,
+        message: msg.message
+      });
+      break;
+
+    default:
+      return false; // Not handled
+  }
+  return true; // Handled
+}

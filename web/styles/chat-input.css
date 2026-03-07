@@ -1,0 +1,295 @@
+/* Input Area */
+.input-area {
+  padding: 16px 24px 24px;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  background: var(--bg-main);
+  flex-shrink: 0;
+}
+
+/* Context Usage Hint (in header) */
+.context-usage-hint {
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.6;
+  cursor: default;
+}
+
+.context-usage-hint.context-ok {
+  color: var(--success);
+}
+
+.context-usage-hint.context-warn {
+  color: #eab308;
+}
+
+.context-usage-hint.context-danger {
+  color: #ef4444;
+  opacity: 0.8;
+}
+
+/* Attachments Preview */
+.attachments-preview {
+  max-width: min(90%, 960px);
+  margin: 0 auto 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-input-wrapper);
+  border-radius: 8px;
+  font-size: 13px;
+  max-width: 200px;
+}
+
+.attachment-thumb {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.attachment-icon {
+  font-size: 16px;
+}
+
+.attachment-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.attachment-remove {
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: var(--text-secondary);
+  color: var(--bg-main);
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.attachment-remove:hover {
+  background: var(--error);
+}
+
+.input-hints {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  max-width: min(90%, 960px);
+  margin: 0 auto 4px;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.input-hints-spacer {
+  flex: 1;
+}
+
+.input-wrapper {
+  position: relative;
+  max-width: min(90%, 960px);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-input-wrapper);
+  border-radius: 24px;
+  padding: 12px 12px 12px 20px;
+  min-height: 48px;
+  transition: box-shadow 0.2s;
+}
+
+.input-wrapper:focus-within {
+  box-shadow: 0 0 0 2px var(--text-secondary);
+}
+
+.input-wrapper textarea,
+.textarea-wrapper textarea {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  caret-color: var(--text-primary);
+  font-size: 16px;
+  resize: none;
+  max-height: 120px;
+  line-height: 1.5;
+  font-family: inherit;
+  /* 移动端浏览器兼容性修复 */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  -webkit-user-select: text;
+  user-select: text;
+  touch-action: manipulation;
+  pointer-events: auto;
+  opacity: 1;
+  /* 确保可编辑 */
+  -webkit-text-fill-color: var(--text-primary);
+}
+
+.input-wrapper textarea::placeholder,
+.textarea-wrapper textarea::placeholder {
+  color: var(--text-secondary);
+  -webkit-text-fill-color: var(--text-secondary);
+}
+
+.input-wrapper textarea:focus,
+.textarea-wrapper textarea:focus {
+  outline: none;
+}
+
+/* Textarea wrapper for autocomplete positioning */
+.textarea-wrapper {
+  flex: 1;
+  position: relative;
+}
+
+.textarea-wrapper textarea {
+  width: 100%;
+}
+
+/* Slash command autocomplete dropdown */
+.slash-autocomplete {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+}
+
+.slash-autocomplete-item {
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  color: var(--text-primary);
+  transition: background 0.1s;
+}
+
+.slash-autocomplete-item:hover,
+.slash-autocomplete-item.active {
+  background: var(--sidebar-hover);
+}
+
+/* 确保输入区域在移动端不被禁用 */
+.input-area,
+.input-wrapper,
+.input-wrapper textarea,
+.textarea-wrapper textarea {
+  -webkit-transform: none;
+  transform: none;
+}
+
+/* Hidden file input (accessible to label association) */
+.file-input-hidden {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Attach Button */
+.attach-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.attach-btn:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.attach-btn svg {
+  fill: currentColor;
+}
+
+.send-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.send-btn:hover:not(:disabled) {
+  opacity: 0.8;
+}
+
+.send-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.send-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: var(--bg-main);
+}
+
+/* Stop Button */
+.send-btn.stop-btn {
+  background: #c45c5c;
+  position: relative;
+}
+
+.send-btn.stop-btn:hover {
+  background: #d44a4a;
+}
+
+[data-theme="dark"] .send-btn.stop-btn {
+  background: #8c5555;
+}
+
+[data-theme="dark"] .send-btn.stop-btn:hover {
+  background: #a05050;
+}
+
+.send-btn.stop-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+

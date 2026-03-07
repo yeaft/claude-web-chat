@@ -1,0 +1,58 @@
+{
+  "name": "@yeaft/webchat",
+  "version": "1.0.0",
+  "description": "Web interface for remotely accessing Claude Code CLI across multiple worker machines",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "server",
+    "agent"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test --config e2e/playwright.config.js",
+    "test:e2e:ui": "playwright test --config e2e/playwright.config.js --ui",
+    "test:e2e:smoke": "playwright test --config e2e/playwright.config.js --project=smoke",
+    "test:all": "npm run test && npm run test:e2e",
+    "install:all": "npm install --workspaces",
+    "build": "node web/build.js",
+    "start:server": "npm run start --workspace=server",
+    "start:server:prod": "cross-env SERVE_DIST=true npm run start --workspace=server",
+    "start:agent": "npm run start --workspace=agent",
+    "dev:server": "npm run dev --workspace=server",
+    "dev:agent": "npm run dev --workspace=agent",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:agent\"",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "esbuild": "^0.20.0",
+    "supertest": "^7.2.2",
+    "vitepress": "^1.6.4",
+    "vitest": "^4.0.18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yeaft/claude-web-chat.git"
+  },
+  "homepage": "https://github.com/yeaft/claude-web-chat",
+  "bugs": {
+    "url": "https://github.com/yeaft/claude-web-chat/issues"
+  },
+  "keywords": [
+    "claude",
+    "cli",
+    "websocket",
+    "remote",
+    "yeaft",
+    "webchat"
+  ],
+  "license": "MIT",
+  "author": "Yeaft"
+}

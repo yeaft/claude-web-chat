@@ -1,0 +1,514 @@
+/* ========================================
+   Session Loading Overlay
+   ======================================== */
+
+/* Make chat-container position relative for overlay positioning */
+.chat-container {
+  position: relative;
+}
+
+.session-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-main);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  animation: fadeIn 0.15s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.session-loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.session-loading-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--text-secondary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.session-loading-text {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+/* ========================================
+   Workbench Panel
+   ======================================== */
+
+/* Main Content - no margin adjustments needed with flex layout */
+
+/* Workbench Panel Container */
+.workbench-panel {
+  width: 0;
+  min-width: 0;
+  background: var(--bg-workbench);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.3s ease;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.workbench-panel.expanded {
+  /* Default: take ~75% of remaining space after sidebar */
+  width: calc(75% - 260px);
+  min-width: 300px;
+  flex-shrink: 1;
+}
+
+/* When workbench is maximized, fill all remaining space */
+.workbench-panel.expanded.maximized {
+  flex: 1;
+  width: auto;
+  max-width: none;
+}
+
+@media (max-width: 1024px) {
+  .workbench-panel.expanded {
+    max-width: 340px;
+  }
+  .main-content.workbench-active {
+    min-width: 0;
+  }
+  .main-content.workbench-active .messages {
+    max-width: none;
+    padding: 0 16px;
+  }
+  .main-content.workbench-active .input-wrapper,
+  .main-content.workbench-active .attachments-preview {
+    max-width: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .workbench-panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100% !important;
+    z-index: 60;
+    border-right: none;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+  }
+  .workbench-panel.expanded {
+    transform: translateX(0);
+    width: 100% !important;
+    max-width: none;
+  }
+  .main-content.workbench-active {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+/* Resize Handle */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+  transition: background 0.15s;
+  touch-action: none;
+}
+
+.resize-handle:hover,
+.resize-handle:active {
+  background: var(--accent-blue);
+  opacity: 0.5;
+}
+
+@media (pointer: coarse) {
+  .resize-handle {
+    width: 20px;
+    right: -10px;
+  }
+}
+
+/* Workbench Content */
+.workbench-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Workbench Tab Bar */
+.workbench-tabs {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  flex-shrink: 0;
+  height: 48px;
+  gap: 2px;
+}
+
+.wb-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  border-radius: 6px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.wb-tab:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.wb-tab.active {
+  background: var(--session-active);
+  color: var(--text-primary);
+}
+
+.wb-tab svg {
+  flex-shrink: 0;
+}
+
+.tab-badge {
+  min-width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  background: var(--text-muted);
+  color: var(--bg-main);
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 8px;
+}
+
+.wb-tab.active .tab-badge {
+  background: var(--text-secondary);
+}
+
+.wb-tab-spacer {
+  flex: 1;
+}
+
+.wb-tab-action {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--text-muted);
+  transition: all 0.15s;
+}
+
+.wb-tab-action:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+/* Workbench Tab Content */
+.workbench-tab-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+
+/* ========================================
+   Mobile Modal Fullscreen
+   ======================================== */
+
+@media (max-width: 640px) {
+  .modal-overlay {
+    align-items: stretch;
+  }
+
+  .resume-modal,
+  .modal-modern {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+  }
+
+  /* Mobile input - simple approach without fixed positioning */
+  .input-wrapper {
+    gap: 8px;
+    padding: 8px 8px 8px 12px;
+    min-height: 44px;
+  }
+
+  .attach-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .send-btn {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+/* ========================================
+   Terminal Tab (xterm.js)
+   ======================================== */
+
+.terminal-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.terminal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+  background: var(--bg-workbench);
+}
+
+.terminal-toolbar button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.terminal-toolbar button:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.terminal-toolbar button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.terminal-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.terminal-placeholder button {
+  padding: 8px 16px;
+  border: none;
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.terminal-placeholder button:hover {
+  background: var(--sidebar-hover);
+}
+
+/* File Tree - VS Code Explorer style */
+.file-tree-panel {
+  width: 200px;
+  border-right: 1px solid var(--border-color);
+  overflow-y: auto;
+  flex-shrink: 0;
+  background: var(--bg-workbench);
+}
+
+.file-tree-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+}
+
+.file-tree-header .tree-path-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  outline: none;
+}
+
+.file-tree-header .tree-path-input:focus {
+  border-color: var(--accent-blue);
+}
+
+/* VS Code 风格 header */
+.file-tree-header.vscode-header {
+  padding: 0;
+  flex-direction: column;
+  gap: 0;
+}
+
+.vscode-folder-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 4px 8px;
+  cursor: pointer;
+  gap: 4px;
+  min-height: 28px;
+  user-select: none;
+}
+
+.vscode-folder-row:hover {
+  background: var(--sidebar-hover);
+}
+
+.vscode-folder-row .root-arrow {
+  flex-shrink: 0;
+  width: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vscode-folder-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vscode-folder-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.vscode-action-btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  color: var(--text-muted);
+  padding: 0;
+}
+
+.vscode-action-btn:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.tree-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition: background 0.05s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  height: 24px;
+  min-height: 24px;
+  max-height: 24px;
+  flex-shrink: 0;
+  position: relative;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.tree-item:hover {
+  background: var(--sidebar-hover);
+}
+
+.tree-item .tree-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.tree-item .tree-icon svg {
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+}
+
+.tree-item .tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+.tree-item .tree-size {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+

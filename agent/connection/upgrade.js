@@ -1,0 +1,294 @@
+import { execFile, spawn } from 'child_process';
+import { writeFileSync, mkdirSync, existsSync, cpSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { platform } from 'os';
+import ctx from '../context.js';
+import { getConfigDir } from '../service.js';
+import { sendToServer } from './buffer.js';
+import { stopAgentHeartbeat } from './heartbeat.js';
+
+// Shared cleanup logic for restart/upgrade
+function cleanupAndExit(exitCode) {
+  setTimeout(() => {
+    for (const [, term] of ctx.terminals) {
+      if (term.pty) { try { term.pty.kill(); } catch {} }
+      if (term.timer) clearTimeout(term.timer);
+    }
+    ctx.terminals.clear();
+    for (const [, state] of ctx.conversations) {
+      if (state.abortController) state.abortController.abort();
+      if (state.inputStream) state.inputStream.done();
+    }
+    ctx.conversations.clear();
+    stopAgentHeartbeat();
+    if (ctx.ws) {
+      ctx.ws.removeAllListeners('close');
+      ctx.ws.close();
+    }
+    clearTimeout(ctx.reconnectTimer);
+    console.log(`[Agent] Cleanup done, exiting with code ${exitCode}...`);
+    process.exit(exitCode);
+  }, 500);
+}
+
+export function handleRestartAgent() {
+  console.log('[Agent] Restart requested, shutting down for PM2/systemd restart...');
+  sendToServer({ type: 'restart_agent_ack' });
+  cleanupAndExit(1);
+}
+
+export async function handleUpgradeAgent() {
+  console.log('[Agent] Upgrade requested, checking for updates...');
+  try {
+    const pkgName = ctx.pkgName || '@yeaft/webchat-agent';
+    // Check latest version (async to avoid blocking heartbeat)
+    const latestVersion = await new Promise((resolve, reject) => {
+      execFile('npm', ['view', pkgName, 'version'], { stdio: 'pipe', shell: true }, (err, stdout) => {
+        if (err) reject(err); else resolve(stdout.toString().trim());
+      });
+    });
+    if (latestVersion === ctx.agentVersion) {
+      console.log(`[Agent] Already at latest version (${ctx.agentVersion}), skipping upgrade.`);
+      sendToServer({ type: 'upgrade_agent_ack', success: true, alreadyLatest: true, version: ctx.agentVersion });
+      return;
+    }
+    console.log(`[Agent] Upgrading from ${ctx.agentVersion} to latest (${latestVersion})...`);
+
+    // 检测安装方式：npm install 的路径包含 node_modules，源码运行则不包含
+    const scriptPath = (process.argv[1] || '').replace(/\\/g, '/');
+    const nmIndex = scriptPath.lastIndexOf('/node_modules/');
+    const isNpmInstall = nmIndex !== -1;
+
+    if (!isNpmInstall) {
+      // 源码运行不支持远程升级（代码在 git repo 中，需要手动 git pull）
+      console.log('[Agent] Source-based install detected, remote upgrade not supported.');
+      sendToServer({ type: 'upgrade_agent_ack', success: false, error: 'Source-based install: please use git pull to upgrade' });
+      return;
+    }
+
+    // 提取 node_modules 的父目录
+    const installDir = scriptPath.substring(0, nmIndex);
+
+    // 判断全局安装 vs 局部安装
+    const isGlobalInstall = await new Promise((resolve) => {
+      execFile('npm', ['prefix', '-g'], { shell: true }, (err, stdout) => {
+        if (err) { resolve(false); return; }
+        const globalPrefix = stdout.toString().trim().replace(/\\/g, '/');
+        resolve(installDir === globalPrefix || installDir === globalPrefix + '/lib');
+      });
+    });
+
+    const isWindows = platform() === 'win32';
+
+    if (isWindows) {
+      spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion);
+    } else {
+      spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion);
+    }
+
+    // 清理并退出，让升级脚本接管
+    cleanupAndExit(0);
+  } catch (e) {
+    console.error('[Agent] Upgrade failed:', e.message);
+    sendToServer({ type: 'upgrade_agent_ack', success: false, error: e.message });
+  }
+}
+
+function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion) {
+  const pid = process.pid;
+  const configDir = getConfigDir();
+  mkdirSync(configDir, { recursive: true });
+  const logDir = join(configDir, 'logs');
+  mkdirSync(logDir, { recursive: true });
+  const batPath = join(configDir, 'upgrade.bat');
+  const logPath = join(logDir, 'upgrade.log');
+  const isPm2 = !!process.env.pm_id;
+  const installDirWin = installDir.replace(/\//g, '\\');
+
+  // Copy upgrade-worker-template.js to config dir (runs as CJS there, away from ESM context)
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const workerSrc = join(thisDir, 'upgrade-worker-template.js');
+  const workerDst = join(configDir, 'upgrade-worker.js');
+  cpSync(workerSrc, workerDst);
+
+  // Determine the target package directory inside node_modules
+  const pkgDir = join(installDir, 'node_modules', ...pkgName.split('/')).replace(/\//g, '\\');
+
+  const batLines = [
+    '@echo off',
+    'setlocal',
+    `set PID=${pid}`,
+    `set PKG=${pkgName}@latest`,
+    `set INSTALL_DIR=${installDirWin}`,
+    `set PKG_DIR=${pkgDir}`,
+    `set LOGFILE=${logPath}`,
+    `set WORKER=${workerDst}`,
+    `set MAX_WAIT=30`,
+    `set COUNT=0`,
+    '',
+    ':: Change to temp dir to avoid EBUSY on cwd',
+    'cd /d "%TEMP%"',
+    '',
+    ':: Redirect all output to log file',
+    'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
+  ];
+
+  batLines.push(
+    ':WAIT_LOOP',
+    'tasklist /FI "PID eq %PID%" 2>NUL | find /I "%PID%" >NUL',
+    'if errorlevel 1 goto PID_EXITED',
+    'set /A COUNT+=1',
+    'if %COUNT% GEQ %MAX_WAIT% (',
+    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after 60s >> "%LOGFILE%"',
+    '  goto PID_EXITED',
+    ')',
+    'ping -n 3 127.0.0.1 >NUL',
+    'goto WAIT_LOOP',
+    ':PID_EXITED',
+  );
+
+  if (isPm2) {
+    batLines.push(
+      'echo [Upgrade] Stopping pm2 to prevent autorestart... >> "%LOGFILE%"',
+      'call pm2 stop yeaft-agent >> "%LOGFILE%" 2>&1',
+      ':: Wait for pm2 to fully terminate the process and release file locks',
+      'ping -n 6 127.0.0.1 >NUL',
+    );
+  }
+
+  // Use Node.js worker for file-level upgrade (avoids EBUSY on directory rename)
+  batLines.push(
+    'echo [Upgrade] Running upgrade worker... >> "%LOGFILE%"',
+    'node "%WORKER%" "%PKG%" "%PKG_DIR%" "%LOGFILE%"',
+    'if not "%errorlevel%"=="0" (',
+    '  echo [Upgrade] Worker failed with exit code %errorlevel% >> "%LOGFILE%"',
+    '  goto CLEANUP',
+    ')',
+    'echo [Upgrade] Worker completed successfully >> "%LOGFILE%"',
+  );
+
+  batLines.push(':CLEANUP');
+
+  if (isPm2) {
+    batLines.push(
+      'echo [Upgrade] Starting agent via pm2... >> "%LOGFILE%"',
+      'call pm2 start yeaft-agent >> "%LOGFILE%" 2>&1',
+    );
+  }
+
+  // Clean up worker and bat script
+  batLines.push(
+    `del /F /Q "${workerDst}" 2>NUL`,
+    `del /F /Q "${batPath}"`,
+  );
+
+  writeFileSync(batPath, batLines.join('\r\n'));
+  const child = spawn('cmd.exe', ['/c', batPath], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true
+  });
+  child.unref();
+  console.log(`[Agent] Spawned upgrade script (PID wait for ${pid}, pm2=${isPm2}, dir=${installDir}): ${batPath}`);
+  sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
+}
+
+function spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion) {
+  const pid = process.pid;
+  const configDir = getConfigDir();
+  mkdirSync(configDir, { recursive: true });
+  const shPath = join(configDir, 'upgrade.sh');
+  const isSystemd = existsSync(join(process.env.HOME || '', '.config', 'systemd', 'user', 'yeaft-agent.service'));
+  const isLaunchd = platform() === 'darwin' && existsSync(join(process.env.HOME || '', 'Library', 'LaunchAgents', 'com.yeaft.agent.plist'));
+  const cwd = isGlobalInstall ? undefined : installDir;
+
+  const shLines = [
+    '#!/bin/bash',
+    `PID=${pid}`,
+    `PKG="${pkgName}@latest"`,
+    `LOGFILE="${join(configDir, 'logs', 'upgrade.log')}"`,
+    `export PATH="${process.env.PATH}"`,
+    '',
+    '# Redirect all output to log file',
+    'exec > "$LOGFILE" 2>&1',
+    'echo "[Upgrade] Started at $(date)"',
+    '',
+    ...(cwd ? [`INSTALL_DIR="${cwd}"`] : []),
+    '',
+    '# Wait for current process to exit',
+    'COUNT=0',
+    'while kill -0 $PID 2>/dev/null; do',
+    '  COUNT=$((COUNT+1))',
+    '  if [ $COUNT -ge 30 ]; then',
+    '    echo "[Upgrade] Timeout waiting for PID $PID to exit"',
+    '    break',
+    '  fi',
+    '  sleep 2',
+    'done',
+    '',
+  ];
+
+  // 停止服务管理器的自动重启
+  if (isSystemd) {
+    shLines.push(
+      '# Stop systemd service to prevent restart loop',
+      'systemctl --user stop yeaft-agent 2>/dev/null',
+      'sleep 1',
+      '',
+    );
+  } else if (isLaunchd) {
+    const plistPath = join(process.env.HOME || '', 'Library', 'LaunchAgents', 'com.yeaft.agent.plist');
+    shLines.push(
+      '# Unload launchd service to prevent restart loop',
+      `launchctl unload "${plistPath}" 2>/dev/null`,
+      'sleep 1',
+      '',
+    );
+  }
+
+  // npm install
+  const npmCmd = isGlobalInstall
+    ? `npm install -g "$PKG"`
+    : `cd "$INSTALL_DIR" && npm install "$PKG"`;
+
+  shLines.push(
+    'echo "[Upgrade] Installing $PKG..."',
+    npmCmd,
+    'EXIT_CODE=$?',
+    'if [ $EXIT_CODE -ne 0 ]; then',
+    '  echo "[Upgrade] npm install failed with exit code $EXIT_CODE"',
+    'else',
+    '  echo "[Upgrade] Successfully installed $PKG"',
+    'fi',
+    '',
+  );
+
+  // 重新启动服务
+  if (isSystemd) {
+    shLines.push(
+      '# Restart systemd service',
+      'systemctl --user start yeaft-agent',
+      'echo "[Upgrade] Service restarted via systemd"',
+    );
+  } else if (isLaunchd) {
+    const plistPath = join(process.env.HOME || '', 'Library', 'LaunchAgents', 'com.yeaft.agent.plist');
+    shLines.push(
+      '# Reload launchd service',
+      `launchctl load "${plistPath}"`,
+      'echo "[Upgrade] Service restarted via launchd"',
+    );
+  }
+
+  // 清理脚本自身
+  shLines.push('', `rm -f "${shPath}"`);
+
+  writeFileSync(shPath, shLines.join('\n'), { mode: 0o755 });
+  const child = spawn('bash', [shPath], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  console.log(`[Agent] Spawned upgrade script: ${shPath}`);
+  sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
+}

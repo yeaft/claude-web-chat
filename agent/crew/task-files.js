@@ -1,0 +1,370 @@
+/**
+ * Crew — Task 文件管理（系统自动管理）
+ * ensureTaskFile, appendTaskRecord, readTaskFile, parseCompletedTasks,
+ * updateFeatureIndex, appendChangelog, saveRoleWorkSummary,
+ * updateKanban, readKanban
+ */
+import { promises as fs } from 'fs';
+import { join } from 'path';
+import { getMessages } from '../crew-i18n.js';
+
+/** Format role label */
+function roleLabel(r) {
+  return r.icon ? `${r.icon} ${r.displayName}` : r.displayName;
+}
+
+/**
+ * 自动创建 task 进度文件
+ */
+export async function ensureTaskFile(session, taskId, taskTitle, assignee, summary) {
+  const featuresDir = join(session.sharedDir, 'context', 'features');
+  const filePath = join(featuresDir, `${taskId}.md`);
+
+  try {
+    await fs.access(filePath);
+    // 文件已存在，不覆盖
+    return;
+  } catch {
+    // 文件不存在，创建
+  }
+
+  await fs.mkdir(featuresDir, { recursive: true });
+
+  const m = getMessages(session.language || 'zh-CN');
+  const now = new Date().toISOString();
+  const content = `# ${m.featureLabel}: ${taskTitle}
+- task-id: ${taskId}
+- ${m.statusPending}
+- ${m.assigneeLabel}: ${assignee}
+- ${m.createdAtLabel}: ${now}
+
+${m.requirementDesc}
+${summary}
+
+${m.workRecord}
+`;
+
+  await fs.writeFile(filePath, content);
+
+  // 同步到 session.features
+  if (!session.features.has(taskId)) {
+    session.features.set(taskId, { taskId, taskTitle, createdAt: Date.now() });
+  }
+
+  console.log(`[Crew] Task file created: ${taskId} (${taskTitle})`);
+
+  // 更新 feature 索引
+  updateFeatureIndex(session).catch(e => console.warn('[Crew] Failed to update feature index:', e.message));
+}
+
+/**
+ * 追加工作记录到 task 文件
+ */
+export async function appendTaskRecord(session, taskId, roleName, summary) {
+  const filePath = join(session.sharedDir, 'context', 'features', `${taskId}.md`);
+
+  try {
+    await fs.access(filePath);
+  } catch {
+    // 文件不存在，跳过
+    return;
+  }
+
+  const role = session.roles.get(roleName);
+  const label = role ? roleLabel(role) : roleName;
+  const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  const record = `\n### ${label} - ${now}\n${summary}\n`;
+
+  await fs.appendFile(filePath, record);
+  console.log(`[Crew] Task record appended: ${taskId} by ${roleName}`);
+}
+
+/**
+ * 读取 task 文件内容（用于注入上下文）
+ */
+export async function readTaskFile(session, taskId) {
+  const filePath = join(session.sharedDir, 'context', 'features', `${taskId}.md`);
+  try {
+    return await fs.readFile(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 从 TASKS block 文本中提取已完成任务的 taskId 集合
+ */
+export function parseCompletedTasks(text) {
+  const ids = new Set();
+  const match = text.match(/---TASKS---([\s\S]*?)---END_TASKS---/);
+  if (!match) return ids;
+  for (const line of match[1].split('\n')) {
+    const m = line.match(/^-\s*\[[xX]\]\s*.+#(\S+)/);
+    if (m) ids.add(m[1]);
+  }
+  return ids;
+}
+
+/**
+ * 更新 feature 索引文件 context/features/index.md
+ */
+export async function updateFeatureIndex(session) {
+  const featuresDir = join(session.sharedDir, 'context', 'features');
+  await fs.mkdir(featuresDir, { recursive: true });
+
+  const m = getMessages(session.language || 'zh-CN');
+  const completed = session._completedTaskIds || new Set();
+  const allFeatures = Array.from(session.features.values());
+
+  allFeatures.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+  const inProgress = allFeatures.filter(f => !completed.has(f.taskId));
+  const done = allFeatures.filter(f => completed.has(f.taskId));
+
+  const locale = (session.language === 'en') ? 'en-US' : 'zh-CN';
+  const now = new Date().toLocaleString(locale, { timeZone: 'Asia/Shanghai' });
+  let content = `${m.featureIndex}\n> ${m.lastUpdated}: ${now}\n`;
+
+  content += `\n${m.inProgressGroup(inProgress.length)}\n`;
+  if (inProgress.length > 0) {
+    content += `| ${m.colTaskId} | ${m.colTitle} | ${m.colCreatedAt} |\n|---------|------|----------|\n`;
+    for (const f of inProgress) {
+      const date = f.createdAt ? new Date(f.createdAt).toLocaleDateString(locale) : '-';
+      content += `| ${f.taskId} | ${f.taskTitle} | ${date} |\n`;
+    }
+  }
+
+  content += `\n${m.completedGroup(done.length)}\n`;
+  if (done.length > 0) {
+    content += `| ${m.colTaskId} | ${m.colTitle} | ${m.colCreatedAt} |\n|---------|------|----------|\n`;
+    for (const f of done) {
+      const date = f.createdAt ? new Date(f.createdAt).toLocaleDateString(locale) : '-';
+      content += `| ${f.taskId} | ${f.taskTitle} | ${date} |\n`;
+    }
+  }
+
+  await fs.writeFile(join(featuresDir, 'index.md'), content);
+  console.log(`[Crew] Feature index updated: ${inProgress.length} in progress, ${done.length} completed`);
+}
+
+/**
+ * 追加完成汇总到 context/changelog.md
+ */
+export async function appendChangelog(session, taskId, taskTitle) {
+  const contextDir = join(session.sharedDir, 'context');
+  await fs.mkdir(contextDir, { recursive: true });
+  const changelogPath = join(contextDir, 'changelog.md');
+
+  const m = getMessages(session.language || 'zh-CN');
+
+  // 读取 feature 文件提取最后一条工作记录作为摘要
+  const taskContent = await readTaskFile(session, taskId);
+  let summaryText = '';
+  if (taskContent) {
+    const records = taskContent.split(/\n### /);
+    if (records.length > 1) {
+      const lastRecord = records[records.length - 1];
+      const lines = lastRecord.split('\n');
+      summaryText = lines.slice(1).join('\n').trim();
+    }
+  }
+  if (!summaryText) {
+    summaryText = m.noSummary;
+  }
+
+  // 限制摘要长度
+  if (summaryText.length > 500) {
+    summaryText = summaryText.substring(0, 497) + '...';
+  }
+
+  const locale = (session.language === 'en') ? 'en-US' : 'zh-CN';
+  const now = new Date().toLocaleString(locale, { timeZone: 'Asia/Shanghai' });
+  const entry = `\n## ${taskId}: ${taskTitle}\n- ${m.completedAt}: ${now}\n- ${m.summaryLabel}: ${summaryText}\n`;
+
+  let exists = false;
+  try {
+    await fs.access(changelogPath);
+    exists = true;
+  } catch {}
+
+  if (!exists) {
+    await fs.writeFile(changelogPath, `${m.changelogTitle}\n${entry}`);
+  } else {
+    await fs.appendFile(changelogPath, entry);
+  }
+
+  console.log(`[Crew] Changelog appended: ${taskId} (${taskTitle})`);
+}
+
+/**
+ * Context 超限 clear 前，将角色当前输出摘要保存到 feature 文件
+ */
+export async function saveRoleWorkSummary(session, roleName, accumulatedText) {
+  const roleState = session.roleStates.get(roleName);
+  const taskId = roleState?.currentTask?.taskId;
+  if (!taskId || !accumulatedText) return;
+
+  // 截取最后 2000 字符作为工作摘要
+  const summary = accumulatedText.length > 2000
+    ? '...' + accumulatedText.slice(-2000)
+    : accumulatedText;
+
+  const m = getMessages(session.language || 'zh-CN');
+  await appendTaskRecord(session, taskId, roleName,
+    `[${m.kanbanAutoSave}] ${summary}`);
+}
+
+// 看板写入锁：防止并发写入
+let _kanbanWriteLock = Promise.resolve();
+
+/**
+ * 更新工作看板 context/kanban.md
+ *
+ * @param {object} session
+ * @param {object} [opts]
+ * @param {string} [opts.taskId] - 要更新的任务 ID
+ * @param {string} [opts.assignee] - 负责人
+ * @param {string} [opts.status] - 当前状态
+ * @param {string} [opts.summary] - 最新进展摘要
+ * @param {boolean} [opts.completed] - 是否标记为已完成
+ */
+export async function updateKanban(session, opts = {}) {
+  const doUpdate = async () => {
+    const contextDir = join(session.sharedDir, 'context');
+    await fs.mkdir(contextDir, { recursive: true });
+    const kanbanPath = join(contextDir, 'kanban.md');
+    const m = getMessages(session.language || 'zh-CN');
+
+    // 加载现有看板数据
+    let entries = new Map(); // taskId → { taskId, taskTitle, assignee, status, summary }
+    let completedEntries = new Map();
+    try {
+      const existing = await fs.readFile(kanbanPath, 'utf-8');
+      // 解析表格行
+      const lines = existing.split('\n');
+      let section = null;
+      for (const line of lines) {
+        if (line.startsWith('## ') && line.includes('🔨')) section = 'active';
+        else if (line.startsWith('## ') && line.includes('✅')) section = 'completed';
+        else if (line.startsWith('|') && !line.startsWith('|--') && section) {
+          const cols = line.split('|').map(c => c.trim()).filter(Boolean);
+          if (cols.length >= 3 && cols[0] !== m.colTaskId && cols[0] !== 'task-id') {
+            const entry = {
+              taskId: cols[0],
+              taskTitle: cols[1],
+              assignee: cols[2] || '-',
+              status: cols[3] || '-',
+              summary: cols[4] || '-'
+            };
+            if (section === 'completed') {
+              completedEntries.set(entry.taskId, entry);
+            } else {
+              entries.set(entry.taskId, entry);
+            }
+          }
+        }
+      }
+    } catch { /* 文件不存在 */ }
+
+    // 从 session.features 补充缺失的任务
+    const completed = session._completedTaskIds || new Set();
+    for (const [taskId, feature] of session.features) {
+      if (completed.has(taskId)) {
+        if (!completedEntries.has(taskId)) {
+          completedEntries.set(taskId, {
+            taskId,
+            taskTitle: feature.taskTitle,
+            assignee: '-',
+            status: '✅',
+            summary: '-'
+          });
+        }
+        entries.delete(taskId);
+      } else if (!entries.has(taskId)) {
+        entries.set(taskId, {
+          taskId,
+          taskTitle: feature.taskTitle,
+          assignee: '-',
+          status: '-',
+          summary: '-'
+        });
+      }
+    }
+
+    // 应用更新
+    if (opts.taskId) {
+      if (opts.completed) {
+        const entry = entries.get(opts.taskId) || completedEntries.get(opts.taskId);
+        if (entry) {
+          entry.status = '✅';
+          if (opts.summary) entry.summary = opts.summary;
+          completedEntries.set(opts.taskId, entry);
+          entries.delete(opts.taskId);
+        }
+      } else {
+        let entry = entries.get(opts.taskId);
+        if (!entry) {
+          const feature = session.features.get(opts.taskId);
+          entry = {
+            taskId: opts.taskId,
+            taskTitle: opts.taskTitle || feature?.taskTitle || opts.taskId,
+            assignee: '-',
+            status: '-',
+            summary: '-'
+          };
+        }
+        if (opts.assignee) entry.assignee = opts.assignee;
+        if (opts.status) entry.status = opts.status;
+        if (opts.summary) {
+          // 截取摘要
+          entry.summary = opts.summary.length > 100
+            ? opts.summary.substring(0, 97) + '...'
+            : opts.summary;
+        }
+        entries.set(opts.taskId, entry);
+      }
+    }
+
+    // 生成看板文件
+    const locale = (session.language === 'en') ? 'en-US' : 'zh-CN';
+    const now = new Date().toLocaleString(locale, { timeZone: 'Asia/Shanghai' });
+    let content = `${m.kanbanTitle}\n> ${m.lastUpdated}: ${now}\n`;
+
+    const activeArr = Array.from(entries.values());
+    content += `\n## 🔨 ${m.kanbanActive} (${activeArr.length})\n`;
+    if (activeArr.length > 0) {
+      content += `| ${m.colTaskId} | ${m.colTitle} | ${m.kanbanColAssignee} | ${m.kanbanColStatus} | ${m.kanbanColSummary} |\n|---------|------|--------|------|----------|\n`;
+      for (const e of activeArr) {
+        content += `| ${e.taskId} | ${e.taskTitle} | ${e.assignee} | ${e.status} | ${e.summary} |\n`;
+      }
+    }
+
+    const doneArr = Array.from(completedEntries.values());
+    content += `\n## ✅ ${m.kanbanCompleted} (${doneArr.length})\n`;
+    if (doneArr.length > 0) {
+      content += `| ${m.colTaskId} | ${m.colTitle} | ${m.kanbanColAssignee} |\n|---------|------|--------|\n`;
+      for (const e of doneArr) {
+        content += `| ${e.taskId} | ${e.taskTitle} | ${e.assignee} |\n`;
+      }
+    }
+
+    await fs.writeFile(kanbanPath, content);
+    console.log(`[Crew] Kanban updated: ${activeArr.length} active, ${doneArr.length} completed`);
+  };
+
+  // 串行化写入
+  _kanbanWriteLock = _kanbanWriteLock.then(doUpdate, doUpdate);
+  return _kanbanWriteLock;
+}
+
+/**
+ * 读取看板文件内容
+ */
+export async function readKanban(session) {
+  const kanbanPath = join(session.sharedDir, 'context', 'kanban.md');
+  try {
+    return await fs.readFile(kanbanPath, 'utf-8');
+  } catch {
+    return null;
+  }
+}

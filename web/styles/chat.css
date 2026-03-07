@@ -1,0 +1,4 @@
+/* Chat styles — split into modules for maintainability */
+@import url('./chat-messages.css');
+@import url('./chat-input.css');
+@import url('./chat-modals.css');

@@ -1,0 +1,115 @@
+/**
+ * Crew — 人工交互
+ * handleCrewHumanInput, processHumanQueue
+ */
+import { dispatchToRole } from './routing.js';
+import { sendStatusUpdate } from './ui-messages.js';
+
+/**
+ * 处理人的输入
+ */
+export async function handleCrewHumanInput(msg) {
+  // Lazy import to avoid circular dependency
+  const { crewSessions } = await import('./session.js');
+
+  const { sessionId, content, targetRole, files } = msg;
+  const session = crewSessions.get(sessionId);
+  if (!session) {
+    console.warn(`[Crew] Session not found: ${sessionId}`);
+    return;
+  }
+
+  // Build dispatch content (supports image attachments)
+  function buildHumanContent(prefix, text) {
+    if (files && files.length > 0) {
+      const blocks = [];
+      for (const file of files) {
+        if (file.isImage || file.mimeType?.startsWith('image/')) {
+          blocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: file.mimeType, data: file.data }
+          });
+        }
+      }
+      blocks.push({ type: 'text', text: `${prefix}\n${text}` });
+      return blocks;
+    }
+    return `${prefix}\n${text}`;
+  }
+
+  // 记录到 uiMessages 用于恢复时重放
+  session.uiMessages.push({
+    role: 'human', roleIcon: '', roleName: '你',
+    type: 'text', content,
+    timestamp: Date.now()
+  });
+
+  // 如果在等待人工介入
+  if (session.status === 'waiting_human') {
+    const waitingContext = session.waitingHumanContext;
+    session.status = 'running';
+    session.waitingHumanContext = null;
+    sendStatusUpdate(session);
+
+    const target = targetRole || waitingContext?.fromRole || session.decisionMaker;
+    await dispatchToRole(session, target, buildHumanContent('人工回复:', content), 'human');
+    return;
+  }
+
+  // 解析 @role 指令
+  const atMatch = content.match(/^@(\S+)\s*([\s\S]*)/);
+  if (atMatch) {
+    const atTarget = atMatch[1];
+    const message = atMatch[2].trim() || content;
+
+    let target = null;
+    for (const [name, role] of session.roles) {
+      if (name === atTarget.toLowerCase()) {
+        target = name;
+        break;
+      }
+      if (role.displayName === atTarget) {
+        target = name;
+        break;
+      }
+    }
+
+    if (target) {
+      await dispatchToRole(session, target, buildHumanContent('人工消息:', message), 'human');
+      return;
+    }
+  }
+
+  // 默认发给决策者
+  const target = targetRole || session.decisionMaker;
+  await dispatchToRole(session, target, buildHumanContent('人工消息:', content), 'human');
+}
+
+/**
+ * 处理排队的人的消息
+ */
+export async function processHumanQueue(session) {
+  if (session.humanMessageQueue.length === 0) return;
+  if (session._processingHumanQueue) return;
+  session._processingHumanQueue = true;
+  try {
+    const msgs = session.humanMessageQueue.splice(0);
+    if (msgs.length === 1) {
+      const humanPrompt = `人工消息:\n${msgs[0].content}`;
+      await dispatchToRole(session, msgs[0].target, humanPrompt, 'human');
+    } else {
+      const byTarget = new Map();
+      for (const m of msgs) {
+        if (!byTarget.has(m.target)) byTarget.set(m.target, []);
+        byTarget.get(m.target).push(m.content);
+      }
+      for (const [target, contents] of byTarget) {
+        const combined = contents.join('\n\n---\n\n');
+        const humanPrompt = `人工消息:\n你有 ${contents.length} 条待处理消息，请一并分析并用多个 ROUTE 块并行分配：\n\n${combined}`;
+        await dispatchToRole(session, target, humanPrompt, 'human');
+      }
+    }
+  } finally {
+    session._processingHumanQueue = false;
+  }
+}

@@ -1,0 +1,29 @@
+# Development files
+.claude-agent.json
+.claude-agent-*.json
+.env
+.env.*
+nodemon.json
+
+# Test files
+test/
+tests/
+*.test.js
+*.spec.js
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PM2 ecosystem (dev-specific)
+ecosystem.config.cjs
+
+# Windows scripts (not needed for npm install)
+*.ps1
+*.bat
