@@ -18,6 +18,7 @@ RUN npm install
 COPY web/*.js web/*.css web/*.html ./
 COPY web/components ./components/
 COPY web/stores ./stores/
+COPY web/styles ./styles/
 COPY web/utils ./utils/
 COPY web/i18n ./i18n/
 COPY web/crew-templates ./crew-templates/
@@ -46,6 +47,10 @@ RUN npm ci --workspace=server --omit=dev
 
 # Copy server source
 COPY server/*.js ./server/
+COPY server/handlers ./server/handlers/
+COPY server/routes ./server/routes/
+COPY server/db ./server/db/
+COPY server/auth ./server/auth/
 
 # Copy built frontend from builder stage (only dist folder needed)
 COPY --from=builder /app/web/dist ./web/dist/
