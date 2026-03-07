@@ -3,24 +3,22 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
 /**
- * Tests for task-admin-dashboard-ui-fix: Dashboard dark theme visual contrast fix.
+ * Tests for Dashboard dual-theme visual contrast (updated for PR #115).
  *
- * PR #113 fixes Dashboard being nearly invisible in dark theme because:
- * - --bg-sidebar (#141414) was too close to --bg-main (#1a1a1a)
- * - --border-light (#2a2826) had insufficient contrast
- *
- * Fix: Replace with --bg-user-msg (#2a2a28) and --border-color (#363330)
- * for proper visual contrast in dark theme.
+ * PR #113 originally replaced --bg-sidebar with --bg-user-msg for dark theme contrast.
+ * PR #115 further improved by using separate backgrounds per theme:
+ * - Light theme default: --bg-sidebar (#f3f3f0)
+ * - Dark theme override: --bg-user-msg (#2a2a28) via [data-theme="dark"]
  *
  * Verifies:
- * 1) No use of low-contrast variables (--bg-sidebar, --border-light)
- * 2) Stat cards use high-contrast background and border
+ * 1) --bg-sidebar is used as default (light theme) — NOT a low-contrast problem in light
+ * 2) Dark theme overrides switch to --bg-user-msg for contrast
  * 3) Section containers have visible card styling (background, border, border-radius)
  * 4) Section headers have bottom separator line
  * 5) Table rows use visible border separators
  * 6) Mobile card borders use high-contrast variable
- * 7) Light theme is unaffected (same variables work in both themes)
- * 8) CSS variable contrast verification against theme definitions
+ * 7) CSS variable contrast verification against theme definitions
+ * 8) Consistent dual-theme pattern
  */
 
 let dashboardCss;
@@ -53,15 +51,19 @@ beforeAll(() => {
 });
 
 // =====================================================================
-// 1. No low-contrast variables in dashboard.css
+// 1. No low-contrast variables: --border-light banned, --bg-sidebar OK for light theme
 // =====================================================================
 describe('no low-contrast variables', () => {
-  it('does NOT use --bg-sidebar (too close to --bg-main in dark theme)', () => {
-    expect(dashboardCss).not.toContain('var(--bg-sidebar)');
-  });
-
   it('does NOT use --border-light (insufficient contrast in dark theme)', () => {
     expect(dashboardCss).not.toContain('var(--border-light)');
+  });
+
+  it('uses --bg-sidebar as default (light theme) with dark override', () => {
+    // --bg-sidebar is the default for light theme
+    const baseCard = dashboardCss.split('.db-stat-card')[1]?.split('}')[0] || '';
+    expect(baseCard).toContain('var(--bg-sidebar)');
+    // Dark theme overrides to --bg-user-msg
+    expect(dashboardCss).toContain('[data-theme="dark"] .db-stat-card');
   });
 });
 
@@ -69,9 +71,14 @@ describe('no low-contrast variables', () => {
 // 2. Stat cards use high-contrast variables
 // =====================================================================
 describe('stat card contrast', () => {
-  it('stat card uses --bg-user-msg for background', () => {
+  it('stat card default uses --bg-sidebar for light theme', () => {
     const cardSection = dashboardCss.split('.db-stat-card')[1]?.split('}')[0] || '';
-    expect(cardSection).toContain('var(--bg-user-msg)');
+    expect(cardSection).toContain('var(--bg-sidebar)');
+  });
+
+  it('stat card dark override uses --bg-user-msg', () => {
+    const darkCardBlock = dashboardCss.split('[data-theme="dark"] .db-stat-card')[1]?.split('}')[0] || '';
+    expect(darkCardBlock).toContain('var(--bg-user-msg)');
   });
 
   it('stat card uses --border-color for border', () => {
@@ -94,9 +101,12 @@ describe('section container card styling', () => {
     expect(sectionBlock).toContain('padding');
   });
 
-  it('section has background color using --bg-user-msg', () => {
+  it('section has background color using --bg-sidebar (light) with dark override', () => {
     const sectionBlock = dashboardCss.split('.db-section {')[1]?.split('}')[0] || '';
-    expect(sectionBlock).toContain('background: var(--bg-user-msg)');
+    expect(sectionBlock).toContain('background: var(--bg-sidebar)');
+    // Dark theme override
+    const darkSectionBlock = dashboardCss.split('[data-theme="dark"] .db-section')[1]?.split('}')[0] || '';
+    expect(darkSectionBlock).toContain('background: var(--bg-user-msg)');
   });
 
   it('section has border using --border-color', () => {
@@ -231,14 +241,12 @@ describe('consistent border variable usage', () => {
     });
   });
 
-  it('card/section backgrounds use --bg-user-msg, not --bg-sidebar', () => {
-    // Extract background declarations from card and section rules
+  it('card/section backgrounds use dual-theme pattern', () => {
+    // Base rules use --bg-sidebar (light theme)
     const bgMatches = dashboardCss.match(/background:\s*var\(--[^)]+\)/g) || [];
-    // None should use --bg-sidebar
-    bgMatches.forEach(match => {
-      expect(match).not.toContain('var(--bg-sidebar)');
-    });
-    // At least 2 rules should use --bg-user-msg (stat-card + section)
+    const sidebarCount = bgMatches.filter(m => m.includes('var(--bg-sidebar)')).length;
+    expect(sidebarCount).toBeGreaterThanOrEqual(2);
+    // Dark overrides use --bg-user-msg
     const userMsgCount = bgMatches.filter(m => m.includes('var(--bg-user-msg)')).length;
     expect(userMsgCount).toBeGreaterThanOrEqual(2);
   });
@@ -248,9 +256,9 @@ describe('consistent border variable usage', () => {
 // 9. Brace count unchanged (no structural CSS changes)
 // =====================================================================
 describe('brace count unchanged', () => {
-  it('dashboard.css brace count is still 43 (no new/removed rules)', () => {
+  it('dashboard.css brace count is 46 (43 original + 3 new dark/mobile rules)', () => {
     const opens = (dashboardCss.match(/\{/g) || []).length;
-    expect(opens).toBe(43);
+    expect(opens).toBe(46);
   });
 
   it('dashboard.css braces are balanced', () => {
