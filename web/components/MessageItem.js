@@ -1,3 +1,5 @@
+import { openImagePreview } from '../utils/imagePreview.js';
+
 export default {
   name: 'MessageItem',
   props: {
@@ -89,10 +91,6 @@ export default {
       if (mimeType.includes('zip') || mimeType.includes('compressed') || mimeType.includes('archive')) return '📦';
       if (mimeType.includes('text') || mimeType.includes('json') || mimeType.includes('xml')) return '📃';
       return '📄';
-    };
-
-    const openImagePreview = (src) => {
-      window.open(src, '_blank');
     };
 
     return {
