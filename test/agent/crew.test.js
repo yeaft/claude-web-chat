@@ -5820,10 +5820,10 @@ describe('BUFFERABLE_TYPES - new compact/context types', () => {
     }
   });
 
-  it('should verify connection.js source includes new types', () => {
-    // Source-level verification: read the actual connection.js file
+  it('should verify connection source includes new types', () => {
+    // Source-level verification: read the buffer module where BUFFERABLE_TYPES is defined
     const connectionSource = require('fs').readFileSync(
-      require('path').join(__dirname, '../../agent/connection.js'), 'utf-8'
+      require('path').join(__dirname, '../../agent/connection/buffer.js'), 'utf-8'
     );
     expect(connectionSource).toContain("'crew_role_compact'");
     expect(connectionSource).toContain("'crew_context_usage'");
