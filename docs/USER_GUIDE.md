@@ -47,6 +47,10 @@
   - [Service Management](#service-management)
   - [Connection Configuration](#connection-configuration)
   - [Troubleshooting](#troubleshooting)
+- [Login & Registration](#login--registration)
+  - [Login](#login)
+  - [Registration](#registration)
+- [Keyboard Shortcuts](#keyboard-shortcuts)
 
 ---
 
