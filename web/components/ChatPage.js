@@ -239,6 +239,7 @@ export default {
           <MessageList
             @new-conversation="openConversationModal"
             @resume-conversation="openConversationModalResume"
+            @open-settings="showSettingsPanel = true"
           />
           <ChatInput />
         </template>

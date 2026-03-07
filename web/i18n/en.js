@@ -158,6 +158,7 @@ export default {
   'welcome.noAgentsHint': 'Please start an Agent and connect it to the server',
   'welcome.noAgent': 'No Agents Online',
   'welcome.noAgentHint': 'Please start an Agent and connect it to the server',
+  'welcome.setupAgent': 'Set Up Agent',
   'welcome.newConv': 'Conversation',
   'welcome.resumeHistory': 'Resume History',
 

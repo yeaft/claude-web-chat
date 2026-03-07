@@ -158,6 +158,7 @@ export default {
   'welcome.noAgentsHint': '请先启动 Agent 程序连接到服务器',
   'welcome.noAgent': '暂无在线 Agent',
   'welcome.noAgentHint': '请先启动 Agent 程序连接到服务器',
+  'welcome.setupAgent': '设置 Agent',
   'welcome.newConv': '会话',
   'welcome.resumeHistory': '恢复历史',
 

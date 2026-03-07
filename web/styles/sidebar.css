@@ -1176,6 +1176,10 @@
   color: var(--text-muted);
 }
 
+.welcome-empty .setup-agent-btn {
+  margin-top: 16px;
+}
+
 .welcome-actions {
   display: flex;
   gap: 12px;
