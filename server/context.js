@@ -36,3 +36,56 @@ export const userFileTabs = new Map();
 // Preview file cache for binary file preview (Office/PDF/Image)
 // fileId → { buffer, mimeType, filename, createdAt, token }
 export const previewFiles = new Map();
+
+// ★ Admin Dashboard: in-memory stats deltas (flushed to DB periodically)
+// userId → { requests, bytesSent, bytesReceived, messages, sessions }
+export const userStatsDeltas = new Map();
+
+/**
+ * Get or initialize a stats delta entry for a user.
+ */
+function getOrCreateDelta(userId) {
+  let delta = userStatsDeltas.get(userId);
+  if (!delta) {
+    delta = { requests: 0, bytesSent: 0, bytesReceived: 0, messages: 0, sessions: 0 };
+    userStatsDeltas.set(userId, delta);
+  }
+  return delta;
+}
+
+/**
+ * Record a WS request received from a user.
+ */
+export function trackRequest(userId, bytesReceived) {
+  if (!userId) return;
+  const delta = getOrCreateDelta(userId);
+  delta.requests++;
+  delta.bytesReceived += bytesReceived;
+}
+
+/**
+ * Record bytes sent to a user via WS.
+ */
+export function trackBytesSent(userId, bytesSent) {
+  if (!userId) return;
+  const delta = getOrCreateDelta(userId);
+  delta.bytesSent += bytesSent;
+}
+
+/**
+ * Record a user message (role='user') saved to DB.
+ */
+export function trackMessage(userId) {
+  if (!userId) return;
+  const delta = getOrCreateDelta(userId);
+  delta.messages++;
+}
+
+/**
+ * Record a new session created by a user.
+ */
+export function trackSession(userId) {
+  if (!userId) return;
+  const delta = getOrCreateDelta(userId);
+  delta.sessions++;
+}

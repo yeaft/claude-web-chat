@@ -1,5 +1,6 @@
 import { messageDb } from '../database.js';
 import { broadcastAgentList, forwardToClients } from '../ws-utils.js';
+import { trackMessage } from '../context.js';
 
 /**
  * Handle Claude output and interaction messages from agent.
@@ -21,6 +22,9 @@ export async function handleAgentOutput(agentId, agent, msg) {
               : (Array.isArray(rawContent) ? rawContent.map(b => b.text || '').join('') : JSON.stringify(rawContent));
             const dbId = messageDb.add(msg.conversationId, 'user', content, 'user');
             msg.data.dbMessageId = dbId;
+            // Track user message count for stats
+            const conv = agent.conversations.get(msg.conversationId);
+            trackMessage(conv?.userId || agent?.ownerId);
           }
           if (data.type === 'assistant' && data.message?.content) {
             let content;
