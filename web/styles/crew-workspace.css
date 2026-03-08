@@ -1553,7 +1553,7 @@
 /* Mobile-only elements: hidden on desktop */
 .crew-mobile-overlay,
 .crew-mobile-close,
-.crew-sidebar-toggle {
+.crew-header-nav-btn.crew-sidebar-toggle {
   display: none;
 }
 
@@ -1767,7 +1767,7 @@
   }
 
   /* Show sidebar toggle in Crew header on mobile */
-  .crew-sidebar-toggle {
+  .crew-header-nav-btn.crew-sidebar-toggle {
     display: flex;
   }
 }
