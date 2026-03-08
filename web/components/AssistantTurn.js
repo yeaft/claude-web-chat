@@ -134,7 +134,7 @@ export default {
       if (tools.length === 0) return false;
       if (store.currentConversationIsCrew) return true;
       // In chat mode, only show if there's at least one running (incomplete) tool
-      return tools.some(t => !t.hasResult);
+      return tools.some(tool => !tool.hasResult);
     });
 
     const latestTool = Vue.computed(() => {
