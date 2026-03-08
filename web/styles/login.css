@@ -6,6 +6,27 @@
   align-items: center;
   background: var(--bg-main);
   min-height: 100vh;
+  position: relative;
+}
+
+.login-lang-toggle {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  padding: 6px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-sidebar);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.login-lang-toggle:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
 }
 
 .login-container {
