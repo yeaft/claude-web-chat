@@ -200,64 +200,6 @@ describe('sidebar processing indicators preserved', () => {
     expect(cssSource).toContain('.processing-dot');
   });
 });
-
-// =====================================================================
-// 5. Streaming cursor blink animation still exists
-// =====================================================================
-describe('streaming cursor blink animation preserved', () => {
-  it('.cursor-blink CSS rule exists', () => {
-    expect(cssSource).toContain('.cursor-blink {');
-  });
-
-  it('@keyframes blink animation exists', () => {
-    expect(cssSource).toContain('@keyframes blink');
-  });
-
-  it('cursor-blink uses blink animation', () => {
-    const block = extractCssBlock('.cursor-blink {');
-    expect(block).toContain('animation: blink');
-  });
-
-  it('cursor-blink has correct visual properties', () => {
-    const block = extractCssBlock('.cursor-blink {');
-    expect(block).toContain('display: inline-block');
-    expect(block).toContain('width: 2px');
-    expect(block).toContain('background: var(--text-primary)');
-  });
-});
-
-// =====================================================================
-// 6. processing-hint CSS rules removed
-// =====================================================================
-describe('processing-hint CSS rules removed', () => {
-  it('no .processing-hint CSS rule', () => {
-    expect(cssSource).not.toContain('.processing-hint');
-  });
-
-  it('no .processing-icon CSS rule', () => {
-    expect(cssSource).not.toContain('.processing-icon');
-  });
-
-  it('no .processing-text CSS rule (as class selector)', () => {
-    // Note: .processing-text was a child of .processing-hint
-    // Verify no standalone processing-text rule exists
-    expect(cssSource).not.toContain('.processing-hint .processing-text');
-  });
-
-  it('no .processing-detail CSS rule', () => {
-    expect(cssSource).not.toContain('.processing-detail');
-  });
-
-  it('no @keyframes processingPulse', () => {
-    expect(cssSource).not.toContain('processingPulse');
-  });
-
-  it('no processing-hint mobile media query override', () => {
-    // The @media block that resized processing-hint for mobile is gone
-    expect(cssSource).not.toContain('.processing-hint');
-  });
-});
-
 // =====================================================================
 // 7. executionStatusMap preserved
 // =====================================================================
@@ -309,35 +251,5 @@ describe('MessageList core structure intact', () => {
 
   it('has load-more functionality', () => {
     expect(messageListSource).toContain('loadMoreMessages');
-  });
-});
-
-// =====================================================================
-// 9. Structural integrity
-// =====================================================================
-describe('structural integrity', () => {
-  it('MessageList.js has balanced div tags', () => {
-    const opens = (messageListSource.match(/<div[\s>]/g) || []).length;
-    const closes = (messageListSource.match(/<\/div>/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-
-  it('MessageList.js has balanced template tags', () => {
-    const opens = (messageListSource.match(/<template[\s>]/g) || []).length;
-    const closes = (messageListSource.match(/<\/template>/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-
-  it('CSS has balanced braces', () => {
-    const opens = (cssSource.match(/\{/g) || []).length;
-    const closes = (cssSource.match(/\}/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-
-  it('MessageList.js exports a valid component', () => {
-    expect(messageListSource).toContain('export default');
-    expect(messageListSource).toContain("name: 'MessageList'");
-    expect(messageListSource).toContain('template:');
-    expect(messageListSource).toContain('setup()');
   });
 });

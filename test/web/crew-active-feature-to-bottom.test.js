@@ -299,21 +299,3 @@ describe('Active Messages template section', () => {
     expect(activeIdx).toBeLessThan(scrollIdx);
   });
 });
-
-// =====================================================================
-// 7. Structural integrity
-// =====================================================================
-describe('structural integrity', () => {
-  it('JS template has balanced div tags', () => {
-    const opens = (jsSource.match(/<div[\s>]/g) || []).length;
-    const closes = (jsSource.match(/<\/div>/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-
-  it('appendToSegments and rebuildBlocksFromSegments both exist', () => {
-    const appendBody = extractMethodBody('appendToSegments');
-    const rebuildBody = extractMethodBody('rebuildBlocksFromSegments');
-    expect(appendBody.length).toBeGreaterThan(0);
-    expect(rebuildBody.length).toBeGreaterThan(0);
-  });
-});

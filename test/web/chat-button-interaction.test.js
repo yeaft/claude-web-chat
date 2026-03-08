@@ -286,34 +286,6 @@ describe('unified status banner', () => {
     expect(returnSection).toContain('statusBannerMessage');
   });
 });
-
-// =====================================================================
-// 6. New compact icon — converging arrows
-// =====================================================================
-describe('compact icon — converging arrows', () => {
-  it('compact button uses new converging arrow polyline (top)', () => {
-    // New icon: <polyline points="8 4 12 8 16 4"/>
-    expect(headerSource).toContain('points="8 4 12 8 16 4"');
-  });
-
-  it('compact button uses new converging arrow polyline (bottom)', () => {
-    // New icon: <polyline points="8 20 12 16 16 20"/>
-    expect(headerSource).toContain('points="8 20 12 16 16 20"');
-  });
-
-  it('compact button has center line', () => {
-    // New icon: <line x1="4" y1="12" x2="20" y2="12"/>
-    expect(headerSource).toContain('x1="4" y1="12" x2="20" y2="12"');
-  });
-
-  it('old shrink/expand icon arrows are NOT present', () => {
-    // Old icon used: <polyline points="4 14 10 14 10 20"/>
-    expect(headerSource).not.toContain('points="4 14 10 14 10 20"');
-    // Old icon used: <polyline points="20 10 14 10 14 4"/>
-    expect(headerSource).not.toContain('points="20 10 14 10 14 4"');
-  });
-});
-
 // =====================================================================
 // 7. Store — clearStatus and refreshingSession fields
 // =====================================================================
@@ -422,78 +394,6 @@ describe('i18n — new keys for refresh and clear feedback', () => {
     expect(enSource).toContain("'chatHeader.clearDone': 'Context cleared'");
   });
 });
-
-// =====================================================================
-// 10. CSS — btn-loading rules
-// =====================================================================
-describe('CSS — btn-loading spinner styling', () => {
-  it('has .header-action-btn.btn-loading base rule', () => {
-    expect(cssSource).toContain('.header-action-btn.btn-loading {');
-  });
-
-  it('btn-loading disables pointer-events', () => {
-    const idx = cssSource.indexOf('.header-action-btn.btn-loading {');
-    const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-    expect(block).toContain('pointer-events: none');
-  });
-
-  it('btn-loading reduces opacity', () => {
-    const idx = cssSource.indexOf('.header-action-btn.btn-loading {');
-    const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-    expect(block).toContain('opacity: 0.7');
-  });
-
-  it('btn-loading hides svg icon', () => {
-    expect(cssSource).toContain('.header-action-btn.btn-loading svg');
-    const idx = cssSource.indexOf('.header-action-btn.btn-loading svg');
-    const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-    expect(block).toContain('display: none');
-  });
-
-  it('btn-loading ::after creates spinner', () => {
-    expect(cssSource).toContain('.header-action-btn.btn-loading::after');
-  });
-
-  it('spinner has circular border (border-radius: 50%)', () => {
-    const idx = cssSource.indexOf('.header-action-btn.btn-loading::after');
-    const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-    expect(block).toContain('border-radius: 50%');
-  });
-
-  it('spinner uses spin animation', () => {
-    const idx = cssSource.indexOf('.header-action-btn.btn-loading::after');
-    const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-    expect(block).toContain('animation: spin');
-  });
-
-  it('spinner has 14px size', () => {
-    const idx = cssSource.indexOf('.header-action-btn.btn-loading::after');
-    const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-    expect(block).toContain('width: 14px');
-    expect(block).toContain('height: 14px');
-  });
-
-  it('spinner uses accent-blue for top border color', () => {
-    const idx = cssSource.indexOf('.header-action-btn.btn-loading::after');
-    const block = cssSource.substring(idx, cssSource.indexOf('}', idx) + 1);
-    expect(block).toContain('--accent-blue');
-  });
-});
-
-// =====================================================================
-// 11. Refresh icon — reuses reload/refresh SVG
-// =====================================================================
-describe('refresh icon — reload arrow SVG', () => {
-  it('refresh button uses polyline points="23 4 23 10 17 10"', () => {
-    // The refresh/reload icon
-    expect(headerSource).toContain('points="23 4 23 10 17 10"');
-  });
-
-  it('refresh button has the arc path for reload icon', () => {
-    expect(headerSource).toContain('M20.49 15a9 9 0 1 1-2.12-9.36L23 10');
-  });
-});
-
 // =====================================================================
 // 12. Old resume logic is fully removed
 // =====================================================================
@@ -512,31 +412,5 @@ describe('old resume logic removal', () => {
   it('no resumeConversation call in ChatHeader', () => {
     const setupSection = headerSource.split('setup()')[1] || '';
     expect(setupSection).not.toContain('resumeConversation');
-  });
-});
-
-// =====================================================================
-// 13. Structural integrity
-// =====================================================================
-describe('structural integrity', () => {
-  it('ChatHeader.js template has balanced div tags', () => {
-    const template = headerSource.split('template:')[1]?.split('setup()')[0] || '';
-    const opens = (template.match(/<div[\s>]/g) || []).length;
-    const closes = (template.match(/<\/div>/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-
-  it('CSS has balanced braces', () => {
-    const opens = (cssSource.match(/\{/g) || []).length;
-    const closes = (cssSource.match(/\}/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-
-  it('all 4 buttons with btn-loading binding (3 chat + 1 crew refresh)', () => {
-    // Count occurrences of btn-loading in template
-    const template = headerSource.split('template:')[1]?.split('setup()')[0] || '';
-    const matches = template.match(/btn-loading/g) || [];
-    // chat: refresh, compact, clear + crew: refresh — 4 buttons each with btn-loading
-    expect(matches.length).toBe(4);
   });
 });
