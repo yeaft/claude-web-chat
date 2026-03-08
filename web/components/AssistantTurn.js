@@ -39,8 +39,8 @@ export default {
         </div>
       </div>
 
-      <!-- 3. Tool actions -->
-      <div v-if="turn.toolMsgs.length > 0" class="turn-actions">
+      <!-- 3. Tool actions (hidden in chat mode when all tools completed) -->
+      <div v-if="showToolActions" class="turn-actions">
         <div v-if="expanded" class="turn-actions-history">
           <template v-for="(tool, i) in historyTools" :key="i">
             <ToolLine :tool-name="tool.toolName" :tool-input="tool.toolInput"
@@ -119,6 +119,7 @@ export default {
     </div>
   `,
   setup(props) {
+    const store = Pinia.useChatStore();
     const copied = Vue.ref(false);
     const expanded = Vue.ref(false);
     const t = Vue.inject('t');
@@ -126,6 +127,15 @@ export default {
     // AskUserQuestion state
     const selectedOptions = Vue.reactive({});
     const customAnswers = Vue.reactive({});
+
+    // In chat mode (non-crew), hide tool actions when all tools are completed
+    const showToolActions = Vue.computed(() => {
+      const tools = props.turn.toolMsgs;
+      if (tools.length === 0) return false;
+      if (store.currentConversationIsCrew) return true;
+      // In chat mode, only show if there's at least one running (incomplete) tool
+      return tools.some(tool => !tool.hasResult);
+    });
 
     const latestTool = Vue.computed(() => {
       const tools = props.turn.toolMsgs;
@@ -288,7 +298,6 @@ export default {
 
     const submitToolAnswers = () => {
       if (isAskAnswered.value || !hasAnyToolSelection.value) return;
-      const store = Pinia.useChatStore();
       const questions = effectiveQuestions.value;
       const answers = {};
       for (const q of questions) {
@@ -358,6 +367,7 @@ export default {
     return {
       copied,
       expanded,
+      showToolActions,
       latestTool,
       historyTools,
       toggleExpand,
