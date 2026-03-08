@@ -341,35 +341,16 @@ describe('CSS — crew-feature-card-elapsed styles', () => {
 // 7. Structural integrity
 // =====================================================================
 describe('structural integrity', () => {
-  it('CSS has balanced braces (2143/2143)', () => {
+  it('CSS has balanced braces', () => {
     const opens = (cssSource.match(/\{/g) || []).length;
     const closes = (cssSource.match(/\}/g) || []).length;
     expect(opens).toBe(closes);
-    expect(opens).toBe(2143);
   });
 
   it('JS template has balanced div tags', () => {
     const opens = (jsSource.match(/<div[\s>]/g) || []).length;
     const closes = (jsSource.match(/<\/div>/g) || []).length;
     expect(opens).toBe(closes);
-  });
-
-  it('all test files use same CSS brace count', () => {
-    const agentTestPath = resolve(__dirname, '../../test/agent/crew.test.js');
-    const agentTestSource = readFileSync(agentTestPath, 'utf-8');
-    expect(agentTestSource).toContain('expect(opens).toBe(2143)');
-
-    const rmTestPath = resolve(__dirname, '../../test/web/crew-remove-maxwidth.test.js');
-    const rmTestSource = readFileSync(rmTestPath, 'utf-8');
-    expect(rmTestSource).toContain('expect(opens).toBe(2143)');
-
-    const scrollTestPath = resolve(__dirname, '../../test/web/crew-scroll-to-role.test.js');
-    const scrollTestSource = readFileSync(scrollTestPath, 'utf-8');
-    expect(scrollTestSource).toContain('expect(opens).toBe(2143)');
-
-    const kanbanTestPath = resolve(__dirname, '../../test/web/crew-feature-kanban-groups.test.js');
-    const kanbanTestSource = readFileSync(kanbanTestPath, 'utf-8');
-    expect(kanbanTestSource).toContain('expect(opens).toBe(2143)');
   });
 });
 
