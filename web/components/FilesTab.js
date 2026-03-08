@@ -492,30 +492,39 @@ export default {
       document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
     };
 
-    // --- Initialize composables (dependency order: find → editor → preview → tabs → ops → tree → qo → fp → ws) ---
+    // --- Initialize composables ---
+    // Pre-declare variables used across composables to avoid TDZ issues.
+    // Some composables have circular dependencies (e.g. find needs tabs.activeFile,
+    // tabs needs find.clearFindMarkers), resolved via getter functions that defer access.
+    let tabs, tree;
 
-    // 1. Find/Replace (no deps on others)
-    const find = createFindReplace(Vue.computed(() => tabs.activeFile.value));
+    // Shared computed refs: created before composables, passed to those that need them.
+    // These use getter functions to safely defer access to `tabs` (assigned later).
+    const activeFileRef = Vue.computed(() => tabs ? tabs.activeFile.value : null);
+    const treePathRef = Vue.computed(() => tree ? tree.treePath.value : '');
 
-    // 2. File editor (depends on find)
+    // 1. Find/Replace
+    const find = createFindReplace(activeFileRef);
+
+    // 2. File editor
     const editor = createFileEditor(store, {
-      activeFile: Vue.computed(() => tabs.activeFile.value),
+      activeFile: activeFileRef,
       editorContainer, fontSize,
       clearFindMarkers: find.clearFindMarkers,
       openFindBar: find.openFindBar,
       saveFile: () => tabs.saveFile()
     });
 
-    // 3. File preview (depends on editor)
-    const preview = createFilePreview(Vue.computed(() => tabs.activeFile.value), {
+    // 3. File preview
+    const preview = createFilePreview(activeFileRef, {
       editorContainer, createEditor: editor.createEditor, t
     });
 
-    // 4. File operations (no deps on tabs/tree)
-    const ops = createFileOperations(store, { getEffectiveWorkDir, treePath: Vue.computed(() => tree.treePath.value) });
+    // 4. File operations
+    const ops = createFileOperations(store, { getEffectiveWorkDir, treePath: treePathRef });
 
     // 5. File tabs (depends on editor, find, preview)
-    const tabs = createFileTabs(store, {
+    tabs = createFileTabs(store, {
       normalizePath, getEffectiveWorkDir,
       editorContainer,
       createEditor: editor.createEditor,
@@ -535,7 +544,7 @@ export default {
     });
 
     // 6. File tree (depends on ops, tabs)
-    const tree = createFileTree(store, {
+    tree = createFileTree(store, {
       getEffectiveWorkDir, normalizePath,
       selectedPaths: ops.selectedPaths,
       lastClickedIndex: ops.lastClickedIndex,
