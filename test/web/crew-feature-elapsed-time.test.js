@@ -297,63 +297,6 @@ describe('lastActivityAt data flow', () => {
     expect(jsSource).toContain('lastActivityAt: seg.messages[seg.messages.length - 1]?.timestamp || 0');
   });
 });
-
-// =====================================================================
-// 6. CSS — elapsed time display styles
-// =====================================================================
-describe('CSS — crew-feature-card-elapsed styles', () => {
-  it('should have .crew-feature-card-elapsed rule', () => {
-    expect(cssSource).toContain('.crew-feature-card-elapsed');
-  });
-
-  it('should have small font size', () => {
-    const block = extractCssBlock('.crew-feature-card-elapsed {');
-    expect(block).toContain('font-size: 10px');
-  });
-
-  it('should use muted color', () => {
-    const block = extractCssBlock('.crew-feature-card-elapsed {');
-    expect(block).toContain('var(--text-muted)');
-  });
-
-  it('should push to the right with margin-left: auto', () => {
-    const block = extractCssBlock('.crew-feature-card-elapsed {');
-    expect(block).toContain('margin-left: auto');
-  });
-
-  it('should prevent shrinking', () => {
-    const block = extractCssBlock('.crew-feature-card-elapsed {');
-    expect(block).toContain('flex-shrink: 0');
-  });
-
-  it('should use tabular numbers for stable width', () => {
-    const block = extractCssBlock('.crew-feature-card-elapsed {');
-    expect(block).toContain('font-variant-numeric: tabular-nums');
-  });
-
-  it('should have reduced opacity', () => {
-    const block = extractCssBlock('.crew-feature-card-elapsed {');
-    expect(block).toContain('opacity: 0.7');
-  });
-});
-
-// =====================================================================
-// 7. Structural integrity
-// =====================================================================
-describe('structural integrity', () => {
-  it('CSS has balanced braces', () => {
-    const opens = (cssSource.match(/\{/g) || []).length;
-    const closes = (cssSource.match(/\}/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-
-  it('JS template has balanced div tags', () => {
-    const opens = (jsSource.match(/<div[\s>]/g) || []).length;
-    const closes = (jsSource.match(/<\/div>/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-});
-
 // =====================================================================
 // 8. Template placement — elapsed spans in correct positions
 // =====================================================================

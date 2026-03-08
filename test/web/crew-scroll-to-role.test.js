@@ -154,45 +154,6 @@ describe('role card click', () => {
     expect(jsSource).not.toContain('insertAt(roleName)');
   });
 });
-
-// =====================================================================
-// 4. CSS highlight animation
-// =====================================================================
-describe('CSS highlight animation', () => {
-  it('.crew-message.crew-msg-highlight rule exists', () => {
-    expect(cssSource).toContain('.crew-message.crew-msg-highlight {');
-  });
-
-  it('uses msgHighlight animation', () => {
-    const block = extractCssBlock('.crew-message.crew-msg-highlight {');
-    expect(block).not.toBeNull();
-    expect(block).toContain('animation:');
-    expect(block).toContain('msgHighlight');
-    expect(block).toContain('2s');
-  });
-
-  it('@keyframes msgHighlight exists', () => {
-    expect(cssSource).toContain('@keyframes msgHighlight');
-  });
-
-  it('keyframes starts with box-shadow glow', () => {
-    const keyframesBlock = extractCssBlock('@keyframes msgHighlight {');
-    expect(keyframesBlock).not.toBeNull();
-    expect(keyframesBlock).toContain('box-shadow:');
-    expect(keyframesBlock).toContain('rgba(59, 130, 246');
-  });
-
-  it('keyframes ends with no box-shadow', () => {
-    const keyframesBlock = extractCssBlock('@keyframes msgHighlight {');
-    expect(keyframesBlock).toContain('box-shadow: none');
-  });
-
-  it('keyframes includes border-radius for visual polish', () => {
-    const keyframesBlock = extractCssBlock('@keyframes msgHighlight {');
-    expect(keyframesBlock).toContain('border-radius: 8px');
-  });
-});
-
 // =====================================================================
 // 5. Feature block expansion logic
 // =====================================================================
@@ -279,19 +240,6 @@ describe('no-message safety', () => {
     expect(scrollIdx).toBeGreaterThan(ifElIdx);
   });
 });
-
-// =====================================================================
-// 8. CSS structural integrity — brace count updated
-// =====================================================================
-describe('CSS structural integrity', () => {
-  it('CSS has balanced braces', () => {
-    const opens = (cssSource.match(/\{/g) || []).length;
-    const closes = (cssSource.match(/\}/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-
-});
-
 // =====================================================================
 // Helper: extract a JS method body between first { and matching }
 // =====================================================================

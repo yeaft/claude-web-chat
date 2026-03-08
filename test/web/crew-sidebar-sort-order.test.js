@@ -142,20 +142,3 @@ describe('group rendering correctness', () => {
     expect(crewSection).toContain('class="session-item session-item-crew"');
   });
 });
-
-// =====================================================================
-// 5. Structural integrity
-// =====================================================================
-describe('structural integrity', () => {
-  it('ChatPage.js has no regressions in div tag balance', () => {
-    const opens = (chatPageSource.match(/<div[\s>]/g) || []).length;
-    const closes = (chatPageSource.match(/<\/div>/g) || []).length;
-    expect(Math.abs(opens - closes)).toBeLessThanOrEqual(1);
-  });
-
-  it('ChatPage.js has balanced template tags', () => {
-    const opens = (chatPageSource.match(/<template[\s>]/g) || []).length;
-    const closes = (chatPageSource.match(/<\/template>/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-});

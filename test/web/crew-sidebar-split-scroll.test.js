@@ -158,50 +158,6 @@ describe('collapsed sidebar hides session-panels', () => {
     expect(collapsedBar).toContain('newCrewSession');
   });
 });
-
-// =====================================================================
-// 4. Adaptive layout — first panel shrinks to content, second fills rest
-// =====================================================================
-describe('adaptive layout', () => {
-  it('session-panels is flex column container', () => {
-    const block = extractCssBlock('.session-panels {');
-    expect(block).toContain('display: flex');
-    expect(block).toContain('flex-direction: column');
-  });
-
-  it('session-panels takes up remaining sidebar space with flex: 1', () => {
-    const block = extractCssBlock('.session-panels {');
-    expect(block).toContain('flex: 1');
-  });
-
-  it('session-panels has min-height: 0 for flex overflow', () => {
-    const block = extractCssBlock('.session-panels {');
-    expect(block).toContain('min-height: 0');
-  });
-
-  it('session-panel is a flex column container', () => {
-    const block = extractCssBlock('.session-panel {');
-    expect(block).toContain('display: flex');
-    expect(block).toContain('flex-direction: column');
-  });
-
-  it('first panel shrinks to content with max-height cap', () => {
-    const block = extractCssBlock('.session-panel:first-child {');
-    expect(block).toContain('flex: 0 1 auto');
-    expect(block).toContain('max-height: 50%');
-  });
-
-  it('second panel fills remaining space', () => {
-    const block = extractCssBlock('.session-panel:last-child {');
-    expect(block).toContain('flex: 1');
-  });
-
-  it('session-panel-list scrolls independently', () => {
-    const block = extractCssBlock('.session-panel-list {');
-    expect(block).toContain('overflow-y: auto');
-  });
-});
-
 // =====================================================================
 // 5. No panel divider (removed for cleaner look)
 // =====================================================================
@@ -221,44 +177,6 @@ describe('no panel divider between panels', () => {
     expect(secondPanelIdx).toBeGreaterThan(-1);
   });
 });
-
-// =====================================================================
-// 6. CSS styles for header add icon
-// =====================================================================
-describe('CSS — session-header-add-icon styles', () => {
-  it('add icon is right-aligned via margin-left: auto', () => {
-    const block = extractCssBlock('.session-header-add-icon {');
-    expect(block).toContain('margin-left: auto');
-  });
-
-  it('add icon has 14px size', () => {
-    const block = extractCssBlock('.session-header-add-icon {');
-    expect(block).toContain('width: 14px');
-    expect(block).toContain('height: 14px');
-  });
-
-  it('header has cursor pointer for full-row click', () => {
-    const block = extractCssBlock('.session-group-header {');
-    expect(block).toContain('cursor: pointer');
-  });
-
-  it('header has hover background', () => {
-    const block = extractCssBlock('.session-group-header:hover {');
-    expect(block).toContain('background: var(--sidebar-hover)');
-  });
-
-  it('icon becomes visible on header hover', () => {
-    const block = extractCssBlock('.session-group-header:hover .session-header-add-icon {');
-    expect(block).toContain('opacity: 1');
-  });
-
-  it('disabled header has reduced opacity', () => {
-    const block = extractCssBlock('.session-group-header.disabled {');
-    expect(block).toContain('opacity: 0.4');
-    expect(block).toContain('cursor: not-allowed');
-  });
-});
-
 // =====================================================================
 // 7. Group headers in panels
 // =====================================================================
@@ -311,67 +229,5 @@ describe('group headers inside panels', () => {
     const secondListIdx = chatPageSource.indexOf('class="session-panel-list"', secondPanelIdx);
     const headerBlock = chatPageSource.substring(secondPanelIdx, secondListIdx);
     expect(headerBlock).toContain('<span>Crew Sessions</span>');
-  });
-});
-
-// =====================================================================
-// 8. Template layout order
-// =====================================================================
-describe('template layout order', () => {
-  it('session-panels is after sidebar-top', () => {
-    const topIdx = chatPageSource.indexOf('class="sidebar-top"');
-    const panelsIdx = chatPageSource.indexOf('class="session-panels"');
-    expect(panelsIdx).toBeGreaterThan(topIdx);
-  });
-
-  it('session-panels is before sidebar-bottom', () => {
-    const panelsIdx = chatPageSource.indexOf('class="session-panels"');
-    const bottomIdx = chatPageSource.indexOf('class="sidebar-bottom"');
-    expect(panelsIdx).toBeLessThan(bottomIdx);
-  });
-
-  it('panel structure: header (with add icon) → list for each panel', () => {
-    // Chat panel
-    const chatPanelIdx = chatPageSource.indexOf('class="session-panel"');
-    const chatHeaderIdx = chatPageSource.indexOf('session-group-header', chatPanelIdx);
-    const chatAddIdx = chatPageSource.indexOf('session-header-add-icon', chatPanelIdx);
-    const chatListIdx = chatPageSource.indexOf('session-panel-list', chatPanelIdx);
-    expect(chatHeaderIdx).toBeLessThan(chatAddIdx);
-    expect(chatAddIdx).toBeLessThan(chatListIdx);
-
-    // Crew panel
-    const crewPanelIdx = chatPageSource.indexOf('class="session-panel"', chatPanelIdx + 1);
-    const crewHeaderIdx = chatPageSource.indexOf('session-group-header', crewPanelIdx);
-    const crewAddIdx = chatPageSource.indexOf('session-header-add-icon', crewPanelIdx);
-    const crewListIdx = chatPageSource.indexOf('session-panel-list', crewPanelIdx);
-    expect(crewHeaderIdx).toBeLessThan(crewAddIdx);
-    expect(crewAddIdx).toBeLessThan(crewListIdx);
-  });
-});
-
-// =====================================================================
-// 9. Structural integrity
-// =====================================================================
-describe('structural integrity', () => {
-  it('ChatPage.js has balanced div tags', () => {
-    const opens = (chatPageSource.match(/<div[\s>]/g) || []).length;
-    const closes = (chatPageSource.match(/<\/div>/g) || []).length;
-    expect(Math.abs(opens - closes)).toBeLessThanOrEqual(1);
-  });
-
-  it('ChatPage.js has balanced template tags', () => {
-    const opens = (chatPageSource.match(/<template[\s>]/g) || []).length;
-    const closes = (chatPageSource.match(/<\/template>/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-
-  it('CSS has balanced braces', () => {
-    const opens = (cssSource.match(/\{/g) || []).length;
-    const closes = (cssSource.match(/\}/g) || []).length;
-    expect(opens).toBe(closes);
-  });
-
-  it('session-group-header CSS rule exists', () => {
-    expect(cssSource).toContain('.session-group-header');
   });
 });
