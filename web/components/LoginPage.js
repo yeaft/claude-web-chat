@@ -1,9 +1,13 @@
 import { useAuthStore } from '../stores/auth.js';
+import { setLocale } from '../utils/i18n.js';
 
 export default {
   name: 'LoginPage',
   template: `
     <div class="login-page">
+      <button class="login-lang-toggle" @click="toggleLang">
+        {{ currentLocale === 'zh-CN' ? 'EN' : '中文' }}
+      </button>
       <div class="login-container">
         <h1>Claude Web Chat</h1>
         <p class="login-subtitle">{{ $t('login.subtitle') }}</p>
@@ -167,6 +171,7 @@ export default {
   setup() {
     const authStore = useAuthStore();
     const t = Vue.inject('t');
+    const currentLocale = Vue.inject('locale');
     const username = Vue.ref('');
     const password = Vue.ref('');
     const verificationCode = Vue.ref('');
@@ -320,8 +325,14 @@ export default {
       });
     });
 
+    const toggleLang = () => {
+      setLocale(currentLocale.value === 'zh-CN' ? 'en' : 'zh-CN');
+    };
+
     return {
       authStore,
+      currentLocale,
+      toggleLang,
       username,
       password,
       verificationCode,
