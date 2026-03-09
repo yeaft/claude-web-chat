@@ -239,6 +239,8 @@ export default {
   'chatHeader.clearing': '正在清空上下文...',
   'chatHeader.clearDone': '上下文已清空',
   'chatHeader.confirmClear': '确定要清空当前会话的所有消息吗？',
+  'chatHeader.mcpConfig': 'MCP 服务器配置',
+  'chatHeader.mcpNeedRestart': '更改将在重启会话后生效。',
 
   // ============ Settings ============
   'settings.close': '关闭设置',
@@ -312,11 +314,11 @@ export default {
   'settings.msg.inviteDeleted': '邀请码已删除',
   'settings.msg.deleteFailed': '删除失败',
 
-  // Settings - Tools
+  // Settings - Tools（默认配置）
   'settings.tabs.tools': '工具',
   'settings.tools.noAgent': '请先选择一个 Agent',
   'settings.tools.noServers': '未检测到 MCP 服务器配置',
-  'settings.tools.hint': '更改在新会话生效，已有会话需重启。',
+  'settings.tools.hint': '新会话的默认 MCP 配置。在聊天标题栏的扳手图标中可配置当前会话的 MCP 服务器。',
 
   // Settings - Dashboard (admin only)
   'settings.tabs.dashboard': '仪表板',

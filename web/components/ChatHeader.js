@@ -26,6 +26,42 @@ export default {
         <span class="context-usage-hint" v-if="contextUsage" :class="contextColorClass" :title="contextLabel">
           {{ contextUsage.percentage }}%
         </span>
+        <!-- MCP Config Button -->
+        <div class="mcp-config-wrapper" v-if="store.currentMcpServers.length > 0">
+          <button class="header-action-btn" :class="{ active: store.mcpPanelOpen }" @click="toggleMcpPanel" :title="$t('chatHeader.mcpConfig')">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+            </svg>
+            <span class="mcp-count-badge" v-if="mcpEnabledCount > 0">{{ mcpEnabledCount }}</span>
+          </button>
+          <!-- MCP Dropdown Panel -->
+          <div class="mcp-dropdown" v-if="store.mcpPanelOpen" @click.stop>
+            <div class="mcp-dropdown-header">
+              <span class="mcp-dropdown-title">MCP Servers</span>
+              <button class="mcp-dropdown-close" @click="store.mcpPanelOpen = false">
+                <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+              </button>
+            </div>
+            <div class="mcp-dropdown-body">
+              <div class="mcp-server-item" v-for="server in store.currentMcpServers" :key="server.name">
+                <span class="mcp-server-name">{{ server.name }}</span>
+                <span class="mcp-server-badge" :class="server.source === 'Built-in' ? 'mcp-badge-builtin' : 'mcp-badge-mcp'">{{ server.source }}</span>
+                <button
+                  class="mcp-toggle"
+                  :class="{ active: server.enabled }"
+                  @click="toggleMcpServer(server.name, !server.enabled)"
+                  role="switch"
+                  :aria-checked="server.enabled"
+                >
+                  <span class="mcp-toggle-knob"></span>
+                </button>
+              </div>
+            </div>
+            <div class="mcp-dropdown-footer" v-if="currentConvNeedRestart">
+              <span class="mcp-restart-hint">{{ $t('chatHeader.mcpNeedRestart') }}</span>
+            </div>
+          </div>
+        </div>
         <button class="header-action-btn" :class="{ 'btn-loading': store.refreshingSession }" @click="refreshSession" :disabled="!canRefresh || store.refreshingSession" :title="$t('chatHeader.refresh')" v-if="canRefresh">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
@@ -224,6 +260,38 @@ export default {
       return store.crewPanelVisible[panel];
     };
 
-    return { store, headerTitle, folderPath, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, isClearing, canRefresh, refreshSession, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive };
+    // MCP panel
+    const mcpEnabledCount = Vue.computed(() => {
+      return store.currentMcpServers.filter(s => s.enabled).length;
+    });
+
+    const currentConvNeedRestart = Vue.computed(() => {
+      const conv = store.conversations.find(c => c.id === store.currentConversation);
+      return !!conv?.needRestart;
+    });
+
+    const toggleMcpPanel = () => {
+      store.mcpPanelOpen = !store.mcpPanelOpen;
+    };
+
+    const toggleMcpServer = (serverName, enabled) => {
+      store.toggleConversationMcp(serverName, enabled);
+    };
+
+    // Close MCP panel on click outside
+    const closeMcpOnOutsideClick = (e) => {
+      if (store.mcpPanelOpen && !e.target.closest('.mcp-config-wrapper')) {
+        store.mcpPanelOpen = false;
+      }
+    };
+
+    Vue.onMounted(() => {
+      document.addEventListener('click', closeMcpOnOutsideClick);
+    });
+    Vue.onUnmounted(() => {
+      document.removeEventListener('click', closeMcpOnOutsideClick);
+    });
+
+    return { store, headerTitle, folderPath, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, isClearing, canRefresh, refreshSession, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive, mcpEnabledCount, currentConvNeedRestart, toggleMcpPanel, toggleMcpServer };
   }
 };
