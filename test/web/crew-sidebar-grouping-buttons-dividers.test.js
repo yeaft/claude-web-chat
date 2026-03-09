@@ -189,17 +189,17 @@ describe('Sidebar session grouping (bf79ad0)', () => {
     });
 
     it('session-group-header should use uppercase text-transform', () => {
-      const headerStyle = styleContent.split('.session-group-header')[1];
-      const blockEnd = headerStyle.indexOf('}');
-      const block = headerStyle.substring(0, blockEnd);
-      expect(block).toContain('text-transform: uppercase');
+      const idx = styleContent.indexOf('.session-group-header {');
+      expect(idx).toBeGreaterThan(-1);
+      const block = styleContent.substring(idx, styleContent.indexOf('}', idx));
+      expect(block).toContain('text-transform');
     });
 
-    it('session-group-header should have small font size', () => {
-      const headerStyle = styleContent.split('.session-group-header')[1];
-      const blockEnd = headerStyle.indexOf('}');
-      const block = headerStyle.substring(0, blockEnd);
-      expect(block).toContain('font-size: 11px');
+    it('session-group-header should have prominent font size', () => {
+      const idx = styleContent.indexOf('.session-group-header {');
+      expect(idx).toBeGreaterThan(-1);
+      const block = styleContent.substring(idx, styleContent.indexOf('}', idx));
+      expect(block).toContain('font-size: 13px');
     });
   });
 

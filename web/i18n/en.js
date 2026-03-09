@@ -100,6 +100,7 @@ export default {
   'chat.sidebar.portProxy': 'Port Proxy',
   'chat.sidebar.workbench': 'Workbench',
   'chat.sidebar.newConv': 'Conversation',
+  'chat.sidebar.newCrew': 'New Crew Session',
   'chat.sidebar.recentChats': 'Recent Chats',
   'chat.sidebar.resumeConv': 'Resume Conversation',
   'chat.sidebar.lightMode': 'Light Mode',
