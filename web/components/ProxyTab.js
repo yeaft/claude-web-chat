@@ -18,6 +18,13 @@ export default {
             </select>
             <svg class="select-arrow" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
           </div>
+          <div class="proxy-select-wrapper proxy-scheme-inline">
+            <select v-model="newScheme" class="proxy-select">
+              <option value="http">http</option>
+              <option value="https">https</option>
+            </select>
+            <svg class="select-arrow" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+          </div>
           <input
             type="text"
             class="proxy-input proxy-input-host"
@@ -64,7 +71,7 @@ export default {
             </label>
             <span class="proxy-port-num">{{ p.port }}</span>
             <span class="proxy-port-label" v-if="p.label">{{ p.label }}</span>
-            <span class="proxy-port-host">{{ p.host || 'localhost' }}</span>
+            <span class="proxy-port-host">{{ p.scheme === 'https' ? 'https' : 'http' }}://{{ p.host || 'localhost' }}</span>
             <div class="proxy-port-actions">
               <button
                 class="proxy-action-btn"
@@ -104,6 +111,7 @@ export default {
     const newPort = Vue.ref(null);
     const newLabel = Vue.ref('');
     const newHost = Vue.ref('localhost');
+    const newScheme = Vue.ref('http');
     const portInput = Vue.ref(null);
 
     // 默认选中当前 agent
@@ -159,6 +167,7 @@ export default {
         port: newPort.value,
         label: newLabel.value || '',
         host: newHost.value || 'localhost',
+        scheme: newScheme.value || 'http',
         enabled: false
       });
       syncPorts(currentPorts);
@@ -194,6 +203,7 @@ export default {
       newPort,
       newLabel,
       newHost,
+      newScheme,
       portInput,
       selectedAgent,
       onlineAgents,

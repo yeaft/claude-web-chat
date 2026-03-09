@@ -19,9 +19,9 @@ test.describe('端口代理', () => {
   test('添加端口到代理列表', async ({ chatPage, mockAgent }) => {
     await openProxyPanel(chatPage);
 
-    const agentSelect = chatPage.locator('.proxy-tab .proxy-select');
+    const agentSelect = chatPage.locator('.proxy-tab .proxy-agent-inline .proxy-select');
     await chatPage.waitForFunction(() => {
-      const select = document.querySelector('.proxy-tab .proxy-select');
+      const select = document.querySelector('.proxy-tab .proxy-agent-inline .proxy-select');
       return select && select.options.length > 1;
     }, { timeout: 5000 });
     await agentSelect.selectOption({ index: 1 });
@@ -39,9 +39,9 @@ test.describe('端口代理', () => {
   test('启用/禁用端口切换', async ({ chatPage, mockAgent }) => {
     await openProxyPanel(chatPage);
 
-    const agentSelect = chatPage.locator('.proxy-tab .proxy-select');
+    const agentSelect = chatPage.locator('.proxy-tab .proxy-agent-inline .proxy-select');
     await chatPage.waitForFunction(() => {
-      const select = document.querySelector('.proxy-tab .proxy-select');
+      const select = document.querySelector('.proxy-tab .proxy-agent-inline .proxy-select');
       return select && select.options.length > 1;
     }, { timeout: 5000 });
     await agentSelect.selectOption({ index: 1 });
@@ -63,9 +63,9 @@ test.describe('端口代理', () => {
   test('agent 上报端口后列表自动更新', async ({ chatPage, mockAgent }) => {
     await openProxyPanel(chatPage);
 
-    const agentSelect = chatPage.locator('.proxy-tab .proxy-select');
+    const agentSelect = chatPage.locator('.proxy-tab .proxy-agent-inline .proxy-select');
     await chatPage.waitForFunction(() => {
-      const select = document.querySelector('.proxy-tab .proxy-select');
+      const select = document.querySelector('.proxy-tab .proxy-agent-inline .proxy-select');
       return select && select.options.length > 1;
     }, { timeout: 5000 });
     await agentSelect.selectOption({ index: 1 });
