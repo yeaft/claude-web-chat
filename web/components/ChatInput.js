@@ -1,8 +1,21 @@
+// System skills with descriptions (fixed list)
+const SYSTEM_SKILLS = {
+  '/compact': 'Compact context',
+  '/context': 'Show context usage',
+  '/cost': 'Show token costs',
+  '/init': 'Reinitialize session',
+  '/doctor': 'Check health status',
+  '/memory': 'View/edit memory',
+  '/model': 'View/switch model',
+  '/review': 'Code review',
+  '/mcp': 'MCP server status',
+  '/skills': 'List available skills'
+};
+
+const SYSTEM_SKILL_NAMES = new Set(Object.keys(SYSTEM_SKILLS));
+
 // 默认的 slash commands 列表（在 Claude SDK 返回动态列表前使用）
-const DEFAULT_SLASH_COMMANDS = [
-  '/compact', '/context', '/cost', '/init', '/doctor',
-  '/memory', '/model', '/review', '/mcp', '/skills'
-];
+const DEFAULT_SLASH_COMMANDS = Object.keys(SYSTEM_SKILLS);
 
 export default {
   name: 'ChatInput',
@@ -32,15 +45,22 @@ export default {
           </svg>
         </label>
         <div class="textarea-wrapper">
-          <div class="slash-autocomplete" v-if="showAutocomplete && filteredCommands.length > 0" ref="autocompleteRef">
-            <div
-              class="slash-autocomplete-item"
-              v-for="(cmd, index) in filteredCommands"
-              :key="cmd"
-              :class="{ active: index === selectedIndex }"
-              @mousedown.prevent="selectCommand(cmd)"
-              @mouseenter="selectedIndex = index"
-            >{{ cmd }}</div>
+          <div class="slash-autocomplete" v-if="showAutocomplete && flatItems.length > 0" ref="autocompleteRef">
+            <template v-for="group in groupedCommands" :key="group.label">
+              <div class="slash-group-label">{{ group.label }}</div>
+              <div
+                v-for="item in group.items"
+                :key="item.cmd"
+                class="slash-autocomplete-item"
+                :class="{ active: item.flatIndex === selectedIndex }"
+                @mousedown.prevent="selectCommand(item.cmd)"
+                @mouseenter="selectedIndex = item.flatIndex"
+              >
+                <span class="slash-cmd-name">{{ item.cmd }}</span>
+                <span class="slash-cmd-desc">{{ item.desc }}</span>
+              </div>
+              <div v-if="!group.isLast" class="slash-group-separator"></div>
+            </template>
           </div>
           <textarea
             ref="inputRef"
@@ -119,15 +139,47 @@ export default {
       return commands.map(cmd => cmd.startsWith('/') ? cmd : '/' + cmd);
     });
 
-    // 根据输入过滤命令
-    const filteredCommands = Vue.computed(() => {
+    // Flat list of filtered items: { cmd, desc }[]
+    const flatItems = Vue.computed(() => {
       const text = inputText.value.trim();
       if (!text.startsWith('/')) return [];
       const prefix = text.toLowerCase();
-      return availableCommands.value.filter(cmd =>
-        cmd.toLowerCase().startsWith(prefix) && cmd.toLowerCase() !== prefix
-      );
+      return availableCommands.value
+        .filter(cmd => cmd.toLowerCase().startsWith(prefix) && cmd.toLowerCase() !== prefix)
+        .map(cmd => ({
+          cmd,
+          desc: SYSTEM_SKILLS[cmd] || cmd.slice(1)
+        }));
     });
+
+    // Grouped commands for rendering: [{ label, items: [{ cmd, desc, flatIndex }], isLast }]
+    const groupedCommands = Vue.computed(() => {
+      const items = flatItems.value;
+      if (items.length === 0) return [];
+
+      const system = [];
+      const project = [];
+      items.forEach((item, i) => {
+        const entry = { ...item, flatIndex: i };
+        if (SYSTEM_SKILL_NAMES.has(item.cmd)) {
+          system.push(entry);
+        } else {
+          project.push(entry);
+        }
+      });
+
+      const groups = [];
+      if (system.length > 0) {
+        groups.push({ label: 'System', items: system, isLast: project.length === 0 });
+      }
+      if (project.length > 0) {
+        groups.push({ label: 'Project', items: project, isLast: true });
+      }
+      return groups;
+    });
+
+    // Keep filteredCommands as flat string array for keyboard nav compatibility
+    const filteredCommands = Vue.computed(() => flatItems.value.map(item => item.cmd));
 
     const isCompacting = Vue.computed(() => {
       return store.compactStatus?.status === 'compacting'
@@ -355,6 +407,8 @@ export default {
       showAutocomplete,
       selectedIndex,
       filteredCommands,
+      flatItems,
+      groupedCommands,
       autocompleteRef,
       autoResize,
       handleInput,
