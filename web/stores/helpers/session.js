@@ -82,13 +82,30 @@ export function autoRestoreConversation(store, conversationId) {
     store.messagesCache[store.currentConversation] = store.messages;
   }
 
+  // For crew conversations, initialize crewMessagesMap BEFORE setting currentConversation
+  if (conv.type === 'crew') {
+    if (!store.crewMessagesMap[conversationId]) {
+      store.crewMessagesMap[conversationId] = [];
+    }
+    store.messages = [];
+  }
+
   store.currentConversation = conversationId;
   store.currentWorkDir = conv.workDir;
 
-  const cached = store.messagesCache[conversationId];
-  if (cached && cached.length > 0) {
-    store.messages = cached;
-    console.log('[AutoRestore] Restored from cache:', cached.length, 'messages');
+  if (conv.type === 'crew') {
+    // Crew conversations: resume crew session to load messages
+    const hasCrewMessages = store.crewMessagesMap[conversationId].length > 0;
+    if (!hasCrewMessages) {
+      store.sendWsMessage({
+        type: 'resume_crew_session',
+        sessionId: conversationId,
+        agentId: conv.agentId || store.currentAgent
+      });
+    }
+  } else if (store.messagesCache[conversationId]?.length > 0) {
+    store.messages = store.messagesCache[conversationId];
+    console.log('[AutoRestore] Restored from cache:', store.messages.length, 'messages');
   } else if (conv.claudeSessionId) {
     store.messages = [];
     setSessionLoading(store, true, t('chat.session.loadingHistory'));
