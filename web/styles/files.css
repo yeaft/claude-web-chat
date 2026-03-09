@@ -1409,3 +1409,103 @@
   overflow: hidden;
 }
 
+/* ========================================
+   Mobile: Files Tab single-screen mode
+   ======================================== */
+@media (max-width: 768px) {
+  .file-two-col {
+    flex-direction: column !important;
+  }
+
+  .file-col-tree {
+    flex: 1 !important;
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .file-tree-splitter {
+    display: none !important;
+  }
+
+  .file-col-content {
+    display: none;
+  }
+
+  .file-col-placeholder {
+    display: none !important;
+  }
+
+  /* Editor view active: hide tree, show editor */
+  .files-tab.mobile-editor-view .file-col-tree {
+    display: none;
+  }
+
+  .files-tab.mobile-editor-view .file-col-content {
+    display: flex;
+    flex: 1;
+  }
+
+  /* Hide desktop tab bar on mobile */
+  .files-tab .file-tabs-bar {
+    display: none;
+  }
+
+  /* Mobile back navigation bar */
+  .mobile-file-back-bar {
+    display: flex;
+    align-items: center;
+    height: 44px;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-workbench);
+    flex-shrink: 0;
+    gap: 8px;
+  }
+
+  .mobile-back-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border: none;
+    background: transparent;
+    color: var(--accent-blue);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 8px 4px;
+    flex-shrink: 0;
+  }
+
+  .mobile-back-btn:active {
+    opacity: 0.7;
+  }
+
+  .mobile-file-name {
+    flex: 1;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  /* File action buttons always visible on mobile (no hover) */
+  .tree-file-actions {
+    display: flex !important;
+  }
+
+  /* Disable drag visual cue on mobile */
+  .tree-item[draggable] {
+    -webkit-user-drag: none;
+  }
+}
+
+/* Desktop: hide mobile-only elements */
+@media (min-width: 769px) {
+  .mobile-file-back-bar {
+    display: none !important;
+  }
+}
+

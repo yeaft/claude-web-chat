@@ -12,7 +12,7 @@ import { createWsHandler } from './files/wsHandler.js';
 export default {
   name: 'FilesTab',
   template: `
-    <div class="files-tab file-two-col" ref="rootEl">
+    <div class="files-tab file-two-col" :class="{ 'mobile-editor-view': isMobile && mobileView === 'editor' }" ref="rootEl">
       <!-- 左栏: 层级目录树 -->
       <div class="file-col-tree" :class="{ 'drop-active': externalDropActive }" :style="{ flex: '0 0 ' + treePanelWidth + 'px', transition: isTreeResizing ? 'none' : undefined, fontSize: fontSize + 'px' }" @wheel.ctrl.prevent="onWheel"
         @dragover.prevent="onTreeDragOver($event)"
@@ -117,7 +117,7 @@ export default {
                 :style="{ paddingLeft: (8 + entry.depth * 16) + 'px' }"
                 @click="onTreeItemClick(entry, $event)"
                 @contextmenu.prevent="showContextMenu($event, entry)"
-                draggable="true"
+                :draggable="!isMobile"
                 @dragstart="onDragStart($event, entry)"
                 @dragover.prevent="onDragOver($event, entry)"
                 @dragleave="onDragLeave($event)"
@@ -150,6 +150,19 @@ export default {
 
       <!-- 右栏: 文件编辑器（带标签页） -->
       <div class="file-col-content" v-if="openFiles.length > 0 || fileLoading" @wheel.ctrl.prevent="onWheel">
+        <!-- Mobile back navigation bar -->
+        <div class="mobile-file-back-bar" v-if="isMobile">
+          <button class="mobile-back-btn" @click="mobileGoBack">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+            {{ $t('common.back') }}
+          </button>
+          <span class="mobile-file-name">
+            <span v-if="activeFile?.isDirty">● </span>{{ activeFile?.name }}
+          </span>
+          <button class="file-action-btn" :class="{ active: activeFile?.isDirty }" @click="saveFile" :disabled="!activeFile?.isDirty || fileSaving">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M17 3H5c-1.11 0-2 .89-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
+          </button>
+        </div>
         <div class="file-tabs-bar" v-if="openFiles.length > 0">
           <div
             v-for="(file, index) in openFiles" :key="file.path"
@@ -446,6 +459,11 @@ export default {
     const rootEl = Vue.ref(null);
     const editorContainer = Vue.ref(null);
 
+    // --- Mobile responsive state ---
+    const isMobile = Vue.ref(window.innerWidth <= 768);
+    const mobileView = Vue.ref('tree'); // 'tree' | 'editor'
+    const mobileGoBack = () => { mobileView.value = 'tree'; };
+
     // --- Font size zoom ---
     const fontSize = Vue.ref(parseInt(localStorage.getItem('filesFontSize')) || 15);
     const setFontSize = (size) => {
@@ -685,6 +703,21 @@ export default {
 
     const handleDocumentClick = () => { ops.hideContextMenu(); };
 
+    // --- Mobile view: auto-switch on file open / close ---
+    const onResize = () => { isMobile.value = window.innerWidth <= 768; };
+
+    Vue.watch(() => tabs.activeFileIndex.value, (newIdx, oldIdx) => {
+      if (isMobile.value && newIdx >= 0 && newIdx !== oldIdx) {
+        mobileView.value = 'editor';
+      }
+    });
+
+    Vue.watch(() => tabs.openFiles.value.length, (len) => {
+      if (isMobile.value && len === 0) {
+        mobileView.value = 'tree';
+      }
+    });
+
     // --- Lifecycle ---
     Vue.onMounted(() => {
       window.addEventListener('workbench-message', ws.handleWorkbenchMessage);
@@ -692,6 +725,7 @@ export default {
       window.addEventListener('conversation-deleted', tabs.handleConversationDeleted);
       window.addEventListener('keydown', handleGlobalKeydown);
       document.addEventListener('click', handleDocumentClick);
+      window.addEventListener('resize', onResize);
       preview.initMermaid();
       if (store.currentAgent) {
         tree.initFileBrowser();
@@ -705,12 +739,14 @@ export default {
       window.removeEventListener('conversation-deleted', tabs.handleConversationDeleted);
       window.removeEventListener('keydown', handleGlobalKeydown);
       document.removeEventListener('click', handleDocumentClick);
+      window.removeEventListener('resize', onResize);
       editor.destroyEditor();
       ops.cleanup();
     });
 
     return {
       store, debugStatus: editor.debugStatus, rootEl,
+      isMobile, mobileView, mobileGoBack,
       fontSize, zoomIn, zoomOut, onWheel,
       treePath: tree.treePath, treeRootPath: tree.treeRootPath,
       treeNodes: tree.treeNodes, flattenedTree: tree.flattenedTree,
