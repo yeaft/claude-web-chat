@@ -152,23 +152,24 @@ describe('File Operations Logic', () => {
       expect(entries[3].name).toBe('readme.md');
     });
 
-    it('should skip hidden files and node_modules', () => {
+    it('should skip large internal directories but show dotfiles', () => {
+      const SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.next', '.nuxt', '.cache']);
       const entries = [
-        { name: '.git' },
-        { name: '.env' },
-        { name: 'node_modules' },
-        { name: 'src' },
-        { name: 'package.json' }
+        { name: '.git', isDirectory: () => true },
+        { name: '.env', isDirectory: () => false },
+        { name: '.gitignore', isDirectory: () => false },
+        { name: 'node_modules', isDirectory: () => true },
+        { name: 'src', isDirectory: () => true },
+        { name: 'package.json', isDirectory: () => false }
       ];
 
       const filtered = entries.filter(e => {
-        if (e.name.startsWith('.') && e.name !== '..') return false;
-        if (e.name === 'node_modules') return false;
+        if (e.isDirectory() && SKIP_DIRS.has(e.name)) return false;
         return true;
       });
 
-      expect(filtered.length).toBe(2);
-      expect(filtered.map(e => e.name)).toEqual(['src', 'package.json']);
+      expect(filtered.length).toBe(4);
+      expect(filtered.map(e => e.name)).toEqual(['.env', '.gitignore', 'src', 'package.json']);
     });
   });
 

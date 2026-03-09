@@ -129,8 +129,9 @@ export async function handleListDirectory(msg) {
       } else {
         // Unix: 列出根目录
         const entries = await readdir('/', { withFileTypes: true });
+        const SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.next', '.nuxt', '.cache']);
         const result = entries
-          .filter(e => !e.name.startsWith('.'))
+          .filter(e => !(e.isDirectory() && SKIP_DIRS.has(e.name)))
           .map(e => ({ name: e.name, type: e.isDirectory() ? 'directory' : 'file', size: 0 }))
           .sort((a, b) => a.name.localeCompare(b.name));
         ctx.sendToServer({
@@ -161,10 +162,11 @@ export async function handleListDirectory(msg) {
     const entries = await readdir(resolved, { withFileTypes: true });
     const result = [];
 
+    const SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.next', '.nuxt', '.cache']);
+
     for (const entry of entries) {
-      // 跳过隐藏文件和 node_modules
-      if (entry.name.startsWith('.') && entry.name !== '..') continue;
-      if (entry.name === 'node_modules') continue;
+      // 跳过大型/内部目录（.git, node_modules 等），但显示 dotfiles（.env, .gitignore 等）
+      if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue;
 
       try {
         const fullPath = join(resolved, entry.name);
