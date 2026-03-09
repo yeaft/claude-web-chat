@@ -254,6 +254,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         console.log(`Claude session ID: ${state.claudeSessionId}`);
         console.log(`Model: ${state.model}`);
         console.log(`Available tools: ${state.tools.length}`);
+        console.log(`Tools: ${state.tools.join(', ')}`);
         console.log(`Available slash commands: ${state.slashCommands.join(', ')}`);
 
         // 通知服务器更新 claudeSessionId（用于历史会话恢复）
