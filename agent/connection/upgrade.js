@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'child_process';
+import { execFile, execFileSync, spawn } from 'child_process';
 import { writeFileSync, mkdirSync, existsSync, cpSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -7,6 +7,8 @@ import ctx from '../context.js';
 import { getConfigDir } from '../service.js';
 import { sendToServer } from './buffer.js';
 import { stopAgentHeartbeat } from './heartbeat.js';
+
+const PM2_APP_NAME = 'yeaft-agent';
 
 // Shared cleanup logic for restart/upgrade
 function cleanupAndExit(exitCode) {
@@ -87,6 +89,18 @@ export async function handleUpgradeAgent() {
       spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, latestVersion);
     }
 
+    // On PM2: delete the app BEFORE exiting so PM2 won't auto-restart the old version.
+    // The upgrade script will re-register it with `pm2 start <ecosystem>` after replacing files.
+    const isPm2 = !!process.env.pm_id;
+    if (isPm2) {
+      try {
+        execFileSync('pm2', ['delete', PM2_APP_NAME], { shell: true, stdio: 'pipe' });
+        console.log(`[Agent] PM2 app deleted to prevent auto-restart during upgrade`);
+      } catch {
+        console.log(`[Agent] PM2 delete skipped (app may not be registered)`);
+      }
+    }
+
     // 清理并退出，让升级脚本接管
     cleanupAndExit(0);
   } catch (e) {
@@ -105,6 +119,7 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
   const logPath = join(logDir, 'upgrade.log');
   const isPm2 = !!process.env.pm_id;
   const installDirWin = installDir.replace(/\//g, '\\');
+  const ecoPath = join(configDir, 'ecosystem.config.cjs').replace(/\//g, '\\');
 
   // Copy upgrade-worker-template.js to config dir (runs as CJS there, away from ESM context)
   const thisDir = dirname(fileURLToPath(import.meta.url));
@@ -134,9 +149,10 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
     'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
   ];
 
+  // Wait for old process to exit (PM2 already deleted before exit, so no auto-restart race)
   batLines.push(
     ':WAIT_LOOP',
-    'tasklist /FI "PID eq %PID%" 2>NUL | find /I "%PID%" >NUL',
+    'tasklist /FI "PID eq %PID%" 2>NUL | findstr /I "%PID%" >NUL',
     'if errorlevel 1 goto PID_EXITED',
     'set /A COUNT+=1',
     'if %COUNT% GEQ %MAX_WAIT% (',
@@ -148,14 +164,12 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
     ':PID_EXITED',
   );
 
-  if (isPm2) {
-    batLines.push(
-      'echo [Upgrade] Stopping pm2 to prevent autorestart... >> "%LOGFILE%"',
-      'call pm2 stop yeaft-agent >> "%LOGFILE%" 2>&1',
-      ':: Wait for pm2 to fully terminate the process and release file locks',
-      'ping -n 6 127.0.0.1 >NUL',
-    );
-  }
+  // No need to pm2 stop — PM2 app was already deleted before process exit.
+  // Wait a moment for file locks to release.
+  batLines.push(
+    'echo [Upgrade] Process exited, waiting for file locks... >> "%LOGFILE%"',
+    'ping -n 3 127.0.0.1 >NUL',
+  );
 
   // Use Node.js worker for file-level upgrade (avoids EBUSY on directory rename)
   batLines.push(
@@ -171,9 +185,11 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
   batLines.push(':CLEANUP');
 
   if (isPm2) {
+    // Re-register and start via ecosystem config (PM2 app was deleted pre-exit)
     batLines.push(
-      'echo [Upgrade] Starting agent via pm2... >> "%LOGFILE%"',
-      'call pm2 start yeaft-agent >> "%LOGFILE%" 2>&1',
+      'echo [Upgrade] Re-registering agent via pm2... >> "%LOGFILE%"',
+      `call pm2 start "${ecoPath}" >> "%LOGFILE%" 2>&1`,
+      'call pm2 save >> "%LOGFILE%" 2>&1',
     );
   }
 
