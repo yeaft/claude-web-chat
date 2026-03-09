@@ -151,6 +151,12 @@
   flex-shrink: 0;
 }
 
+/* Proxy scheme selector — inline in add row */
+.proxy-scheme-inline {
+  width: 68px;
+  flex-shrink: 0;
+}
+
 .proxy-select-wrapper {
   position: relative;
   display: flex;

@@ -54,6 +54,7 @@ async function handleProxyRequest(req, res) {
       requestId,
       port: portNum,
       host: portConfig.host || 'localhost',
+      scheme: portConfig.scheme || 'http',
       method: req.method,
       path: proxyPath + queryString,
       headers: fwdHeaders,
@@ -236,6 +237,7 @@ export async function handleProxyWebSocketUpgrade(req, socket, head, match) {
       proxyWsId,
       port,
       host: portConfig.host || 'localhost',
+      scheme: portConfig.scheme || 'http',
       path,
       headers: fwdHeaders
     });

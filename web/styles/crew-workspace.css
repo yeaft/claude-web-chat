@@ -2260,6 +2260,11 @@
     flex: none;
   }
 
+  .proxy-select-wrapper.proxy-scheme-inline {
+    width: auto;
+    flex-shrink: 0;
+  }
+
   .proxy-input-host {
     flex: 1;
     min-width: 60px;
