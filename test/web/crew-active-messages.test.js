@@ -96,15 +96,9 @@ describe('activeMessages computed — single latest message', () => {
     expect(body).toContain("m.role === 'system'");
   });
 
-  it('skips human role (user messages filtered out)', () => {
+  it('does not skip human role (user messages shown)', () => {
     const body = extractComputedBody('activeMessages');
-    expect(body).toContain("m.role === 'human'");
-  });
-
-  it('skips both system and human in the same condition', () => {
-    const body = extractComputedBody('activeMessages');
-    // Both roles are checked in a single continue statement
-    expect(body).toMatch(/m\.role === 'system' \|\| m\.role === 'human'/);
+    expect(body).not.toContain("m.role === 'human'");
   });
 
   it('returns array with single message via return [m]', () => {
@@ -287,7 +281,7 @@ describe('CSS — visual distinction for Dynamic Message area', () => {
 });
 
 // =====================================================================
-// 8. Behavioral logic — human messages excluded from activeMessages
+// 8. Behavioral logic — human messages included in activeMessages
 // =====================================================================
 describe('activeMessages filtering — behavioral verification', () => {
   // Re-implement the activeMessages logic to verify behavior
@@ -295,7 +289,7 @@ describe('activeMessages filtering — behavioral verification', () => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.type !== 'text' || !m.role) continue;
-      if (m.role === 'system' || m.role === 'human') continue;
+      if (m.role === 'system') continue;
       return [m];
     }
     return [];
@@ -312,7 +306,7 @@ describe('activeMessages filtering — behavioral verification', () => {
     expect(result[0].content).toBe('AI reply');
   });
 
-  it('skips user message at end and finds previous AI message', () => {
+  it('returns human message when it is the latest text message', () => {
     const messages = [
       { type: 'text', role: 'dev-1', content: 'first AI reply' },
       { type: 'text', role: 'pm', content: 'PM reply' },
@@ -320,16 +314,17 @@ describe('activeMessages filtering — behavioral verification', () => {
     ];
     const result = activeMessages(messages);
     expect(result).toHaveLength(1);
-    expect(result[0].role).toBe('pm');
+    expect(result[0].role).toBe('human');
   });
 
-  it('returns empty when only human messages exist', () => {
+  it('returns human message when only human messages exist', () => {
     const messages = [
       { type: 'text', role: 'human', content: 'question 1' },
       { type: 'text', role: 'human', content: 'question 2' }
     ];
     const result = activeMessages(messages);
-    expect(result).toHaveLength(0);
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toBe('question 2');
   });
 
   it('returns empty when only system messages exist', () => {
@@ -349,7 +344,7 @@ describe('activeMessages filtering — behavioral verification', () => {
     ];
     const result = activeMessages(messages);
     expect(result).toHaveLength(1);
-    expect(result[0].content).toBe('AI reply');
+    expect(result[0].content).toBe('user input');
   });
 
   it('returns empty for empty messages array', () => {
