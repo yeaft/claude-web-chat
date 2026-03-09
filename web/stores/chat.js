@@ -13,6 +13,10 @@ import * as crewHelpers from './helpers/crew.js';
 
 const { defineStore } = Pinia;
 
+// Stable empty array for getters — avoids creating new [] on every call,
+// which prevents Vue computed from treating each call as a new value.
+const EMPTY_ARRAY = Object.freeze([]);
+
 export const useChatStore = defineStore('chat', {
   state: () => ({
     ws: null,
@@ -175,8 +179,8 @@ export const useChatStore = defineStore('chat', {
     },
     // 当前 Crew 消息列表
     currentCrewMessages: (state) => {
-      if (!state.currentConversation) return [];
-      return state.crewMessagesMap[state.currentConversation] || [];
+      if (!state.currentConversation) return EMPTY_ARRAY;
+      return state.crewMessagesMap[state.currentConversation] || EMPTY_ARRAY;
     }
   },
 

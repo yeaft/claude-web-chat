@@ -86,21 +86,25 @@ export function selectConversation(store, conversationId, agentId) {
     conversationId
   });
 
+  if (conv?.type === 'crew') {
+    // Crew conversations use crewMessagesMap, not messages/messagesCache.
+    // Initialize crewMessagesMap entry BEFORE setting currentConversation,
+    // so that currentCrewMessages getter tracks the correct reactive property.
+    if (!store.crewMessagesMap[conversationId]) {
+      store.crewMessagesMap[conversationId] = [];
+    }
+    store.messages = [];
+  }
+
   store.currentConversation = conversationId;
   if (conv) {
     store.currentWorkDir = conv.workDir;
   }
 
   if (conv?.type === 'crew') {
-    // Crew conversations use crewMessagesMap, not messages/messagesCache.
-    // Skip sync_messages (it's for normal chat only).
-    store.messages = [];
     // If crew messages are empty, trigger resume to load them from server.
-    const hasCrewMessages = store.crewMessagesMap[conversationId]?.length > 0;
+    const hasCrewMessages = store.crewMessagesMap[conversationId].length > 0;
     if (!hasCrewMessages) {
-      if (!store.crewMessagesMap[conversationId]) {
-        store.crewMessagesMap[conversationId] = [];
-      }
       store.sendWsMessage({
         type: 'resume_crew_session',
         sessionId: conversationId,

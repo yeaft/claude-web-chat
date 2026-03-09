@@ -26,6 +26,10 @@ export function restoreLastViewedConversation(store, agentSetup) {
   }
 
   // 设置 conversation 状态
+  // For crew conversations, initialize crewMessagesMap BEFORE setting currentConversation
+  if (conv.type === 'crew' && !store.crewMessagesMap[lastViewed]) {
+    store.crewMessagesMap[lastViewed] = [];
+  }
   store.currentConversation = lastViewed;
   store.currentWorkDir = conv.workDir;
   store.messages = [];
