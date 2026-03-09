@@ -887,34 +887,6 @@
 
 /* ============ Workbench Mobile Responsive ============ */
 @media (max-width: 768px) {
-  /* Files tab: stack vertically on mobile */
-  .file-two-col {
-    flex-direction: column !important;
-  }
-  .file-col-tree {
-    flex: 0 0 auto !important;
-    max-height: 35vh;
-    border-right: none !important;
-    border-bottom: 1px solid var(--border-color);
-  }
-  .file-col-content {
-    flex: 1;
-    width: 100%;
-    min-height: 0;
-  }
-
-  /* File tab bar mobile */
-  .file-tabs-bar {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-  .file-tab-item {
-    min-width: auto;
-    white-space: nowrap;
-    font-size: 11px;
-    padding: 4px 8px;
-  }
-
   /* Markdown preview mobile */
   .md-preview-container {
     padding: 12px 16px;
