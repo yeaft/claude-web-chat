@@ -280,19 +280,20 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         }
 
         // 从 tools 列表提取 MCP servers，发送 per-conversation MCP 列表
-        const mcpServers = extractMcpServers(state.tools);
+        const { serverNames: mcpServers, serverTools: mcpServerTools } = extractMcpServers(state.tools);
         if (mcpServers.length > 0) {
           // 根据当前 disallowed 设置计算每个 server 的 enabled 状态
           const effectiveDisallowed = state.disallowedTools ?? ctx.CONFIG.disallowedTools ?? [];
           const serversWithState = mcpServers.map(name => ({
             name,
-            enabled: !effectiveDisallowed.some(d => d === `mcp__${name}`),
+            enabled: !effectiveDisallowed.some(d => d === `mcp__${name}` || d.startsWith(`mcp__${name}__`)),
             source: name === 'playwright' ? 'Built-in' : 'MCP'
           }));
           ctx.sendToServer({
             type: 'conversation_mcp_update',
             conversationId,
-            servers: serversWithState
+            servers: serversWithState,
+            serverTools: mcpServerTools
           });
         }
       }
@@ -478,19 +479,26 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 }
 
 /**
- * 从 tools 列表中提取 MCP server 名称。
+ * 从 tools 列表中提取 MCP server 名称和 per-server tools 映射。
  * MCP 工具名称格式: mcp__<serverName>__<toolName>
  * @param {string[]} tools
- * @returns {string[]} 去重后的 server 名称列表
+ * @returns {{ serverNames: string[], serverTools: Object<string, string[]> }}
  */
 function extractMcpServers(tools) {
-  const serverNames = new Set();
+  const serverToolsMap = {};
   for (const tool of tools) {
     const parts = tool.split('__');
     if (parts.length >= 3 && parts[0] === 'mcp') {
-      serverNames.add(parts[1]);
+      const serverName = parts[1];
+      if (!serverToolsMap[serverName]) {
+        serverToolsMap[serverName] = [];
+      }
+      serverToolsMap[serverName].push(tool);
     }
   }
-  return [...serverNames];
+  return {
+    serverNames: Object.keys(serverToolsMap),
+    serverTools: serverToolsMap
+  };
 }
 

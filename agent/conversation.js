@@ -151,7 +151,7 @@ export async function createConversation(msg) {
     const effectiveDisallowed = disallowedTools || ctx.CONFIG.disallowedTools || [];
     const serversWithState = ctx.mcpServers.map(s => ({
       name: s.name,
-      enabled: !effectiveDisallowed.some(d => d === `mcp__${s.name}`),
+      enabled: !effectiveDisallowed.some(d => d === `mcp__${s.name}` || d.startsWith(`mcp__${s.name}__`)),
       source: s.source
     }));
     ctx.sendToServer({
@@ -230,7 +230,7 @@ export async function resumeConversation(msg) {
     const effectiveDisallowed = disallowedTools || ctx.CONFIG.disallowedTools || [];
     const serversWithState = ctx.mcpServers.map(s => ({
       name: s.name,
-      enabled: !effectiveDisallowed.some(d => d === `mcp__${s.name}`),
+      enabled: !effectiveDisallowed.some(d => d === `mcp__${s.name}` || d.startsWith(`mcp__${s.name}__`)),
       source: s.source
     }));
     ctx.sendToServer({

@@ -157,7 +157,8 @@ export async function handleAgentOutput(agentId, agent, msg) {
       await forwardToClients(agentId, msg.conversationId, {
         type: 'conversation_mcp_update',
         conversationId: msg.conversationId,
-        servers: msg.servers
+        servers: msg.servers,
+        serverTools: msg.serverTools
       });
       break;
 
