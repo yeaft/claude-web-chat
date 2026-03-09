@@ -34,7 +34,9 @@ export default {
             </svg>
             <span class="mcp-count-badge" v-if="mcpEnabledCount > 0">{{ mcpEnabledCount }}</span>
           </button>
-          <!-- MCP Dropdown Panel -->
+        </div>
+        <!-- MCP Dropdown Panel — Teleported to body to escape transform containing block -->
+        <Teleport to="body">
           <div class="mcp-dropdown" v-if="store.mcpPanelOpen" :style="mcpDropdownStyle" @click.stop>
             <div class="mcp-dropdown-header">
               <span class="mcp-dropdown-title">MCP Servers</span>
@@ -61,7 +63,7 @@ export default {
               <span class="mcp-restart-hint">{{ $t('chatHeader.mcpNeedRestart') }}</span>
             </div>
           </div>
-        </div>
+        </Teleport>
         <button class="header-action-btn" :class="{ 'btn-loading': store.refreshingSession }" @click="refreshSession" :disabled="!canRefresh || store.refreshingSession" :title="$t('chatHeader.refresh')" v-if="canRefresh">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
@@ -287,9 +289,9 @@ export default {
       store.toggleConversationMcp(serverName, enabled);
     };
 
-    // Close MCP panel on click outside
+    // Close MCP panel on click outside (dropdown is teleported to body)
     const closeMcpOnOutsideClick = (e) => {
-      if (store.mcpPanelOpen && !e.target.closest('.mcp-config-wrapper')) {
+      if (store.mcpPanelOpen && !e.target.closest('.mcp-dropdown') && !e.target.closest('.mcp-config-wrapper')) {
         store.mcpPanelOpen = false;
       }
     };
