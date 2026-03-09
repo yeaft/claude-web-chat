@@ -144,6 +144,23 @@ export async function createConversation(msg) {
     disallowedTools: disallowedTools || null
   });
 
+  // 立即发送 agent 级别的 MCP servers 列表（从 ~/.claude.json 读取的）
+  // 让前端在 Claude CLI init 之前就能显示 MCP 配置入口
+  // Claude CLI init 后会用实际 tools 列表覆盖更新
+  if (ctx.mcpServers.length > 0) {
+    const effectiveDisallowed = disallowedTools || ctx.CONFIG.disallowedTools || [];
+    const serversWithState = ctx.mcpServers.map(s => ({
+      name: s.name,
+      enabled: !effectiveDisallowed.some(d => d === `mcp__${s.name}`),
+      source: s.source
+    }));
+    ctx.sendToServer({
+      type: 'conversation_mcp_update',
+      conversationId,
+      servers: serversWithState
+    });
+  }
+
   sendConversationList();
 }
 
@@ -207,6 +224,21 @@ export async function resumeConversation(msg) {
     userId,
     username
   });
+
+  // 立即发送 agent 级别的 MCP servers 列表
+  if (ctx.mcpServers.length > 0) {
+    const effectiveDisallowed = disallowedTools || ctx.CONFIG.disallowedTools || [];
+    const serversWithState = ctx.mcpServers.map(s => ({
+      name: s.name,
+      enabled: !effectiveDisallowed.some(d => d === `mcp__${s.name}`),
+      source: s.source
+    }));
+    ctx.sendToServer({
+      type: 'conversation_mcp_update',
+      conversationId,
+      servers: serversWithState
+    });
+  }
 
   sendConversationList();
 }

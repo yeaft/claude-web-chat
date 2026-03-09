@@ -12,6 +12,7 @@
   font-weight: 500;
   opacity: 0.6;
   cursor: default;
+  margin-right: 2px;
 }
 
 .context-usage-hint.context-ok {
