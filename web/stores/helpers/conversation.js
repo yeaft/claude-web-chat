@@ -197,6 +197,12 @@ export function sendMessage(store, text, attachments = []) {
     store.conversationTitles[store.currentConversation] = title;
   }
 
+  // Update lastMessageAt for sidebar sorting (only user-sent messages should trigger reorder)
+  const conv = store.conversations.find(c => c.id === store.currentConversation);
+  if (conv) {
+    conv.lastMessageAt = Date.now();
+  }
+
   if (!store.processingConversations[store.currentConversation]) {
     store.processingConversations[store.currentConversation] = true;
     if (store._closedAt?.[store.currentConversation]) {

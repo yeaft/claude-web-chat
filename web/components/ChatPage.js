@@ -511,9 +511,9 @@ export default {
         // Current active session always first in its group
         if (a.id === currentId) return -1;
         if (b.id === currentId) return 1;
-        // Sort by lastActivity (from executionStatusMap) or createdAt, descending
-        const aTime = this.store.executionStatusMap[a.id]?.lastActivity || a.createdAt || 0;
-        const bTime = this.store.executionStatusMap[b.id]?.lastActivity || b.createdAt || 0;
+        // Sort by lastMessageAt (set when user sends a message), descending
+        const aTime = a.lastMessageAt || 0;
+        const bTime = b.lastMessageAt || 0;
         return bTime - aTime;
       });
     },
