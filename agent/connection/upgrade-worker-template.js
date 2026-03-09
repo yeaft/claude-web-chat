@@ -15,6 +15,22 @@ function log(msg) {
   try { fs.appendFileSync(LOGFILE, line + '\n'); } catch {}
 }
 
+// Retry a file operation with exponential backoff (Windows file lock workaround)
+function retryOp(fn, label, maxRetries = 5) {
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return fn();
+    } catch (err) {
+      const isLockErr = err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES';
+      if (!isLockErr || i === maxRetries) throw err;
+      const delay = Math.min(1000 * Math.pow(2, i), 10000);
+      log(`${label}: ${err.code}, retrying in ${delay}ms (${i + 1}/${maxRetries})...`);
+      const end = Date.now() + delay;
+      while (Date.now() < end) { /* busy-wait in sync context */ }
+    }
+  }
+}
+
 function parseTar(buf) {
   const files = [];
   let offset = 0;
@@ -46,9 +62,9 @@ function rmDirContents(dir, keep) {
     const stat = fs.statSync(full, { throwIfNoEntry: false });
     if (!stat) continue;
     if (stat.isDirectory()) {
-      fs.rmSync(full, { recursive: true, force: true });
+      retryOp(() => fs.rmSync(full, { recursive: true, force: true }), 'rmdir ' + entry);
     } else {
-      fs.unlinkSync(full);
+      retryOp(() => fs.unlinkSync(full), 'unlink ' + entry);
     }
   }
 }
@@ -77,7 +93,7 @@ try {
   for (const f of files) {
     const dest = path.join(TARGET, f.path);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, f.data);
+    retryOp(() => fs.writeFileSync(dest, f.data), 'write ' + f.path);
   }
   log('Copied ' + files.length + ' files to target');
 

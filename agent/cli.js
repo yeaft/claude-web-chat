@@ -3,10 +3,11 @@
  * CLI entry point for @yeaft/webchat-agent
  * Parses command-line arguments and starts the agent or runs subcommands
  */
-import { execSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { execSync, spawn } from 'child_process';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { platform, homedir } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf-8'));
@@ -136,16 +137,86 @@ function upgrade() {
   console.log('Checking for updates...');
 
   try {
-    const res = execSync(`npm view ${pkg.name} version`, { encoding: 'utf-8' }).trim();
-    if (res === pkg.version) {
+    const latest = execSync(`npm view ${pkg.name} version`, { encoding: 'utf-8' }).trim();
+    if (latest === pkg.version) {
       console.log('Already up to date.');
       return;
     }
-    console.log(`Upgrading to ${res}...`);
-    execSync(`npm install -g ${pkg.name}@latest`, { stdio: 'inherit' });
-    console.log(`Successfully upgraded to ${res}`);
+    console.log(`Upgrading to ${latest}...`);
+
+    if (platform() === 'win32') {
+      // On Windows, the current process locks its own files. npm cannot overwrite
+      // them while this process is running. Spawn a detached bat script that waits
+      // for us to exit, then runs npm install, then optionally restarts the service.
+      upgradeWindows(latest);
+    } else {
+      execSync(`npm install -g ${pkg.name}@latest`, { stdio: 'inherit' });
+      console.log(`Successfully upgraded to ${latest}`);
+    }
   } catch (e) {
     console.error('Upgrade failed:', e.message);
     process.exit(1);
   }
+}
+
+function upgradeWindows(latestVersion) {
+  const configDir = join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'yeaft-agent');
+  mkdirSync(configDir, { recursive: true });
+  const logDir = join(configDir, 'logs');
+  mkdirSync(logDir, { recursive: true });
+  const batPath = join(configDir, 'upgrade-cli.bat');
+  const logPath = join(logDir, 'upgrade.log');
+  const pid = process.pid;
+  const pkgSpec = `${pkg.name}@latest`;
+
+  const batLines = [
+    '@echo off',
+    'setlocal',
+    `set PID=${pid}`,
+    `set PKG=${pkgSpec}`,
+    `set LOGFILE=${logPath}`,
+    `set MAX_WAIT=30`,
+    `set COUNT=0`,
+    '',
+    ':: Change to temp dir to avoid EBUSY on cwd',
+    'cd /d "%TEMP%"',
+    '',
+    'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
+    'echo [Upgrade] Waiting for CLI process (PID %PID%) to exit... >> "%LOGFILE%"',
+    '',
+    ':WAIT_LOOP',
+    'tasklist /FI "PID eq %PID%" 2>NUL | find /I "%PID%" >NUL',
+    'if errorlevel 1 goto PID_EXITED',
+    'set /A COUNT+=1',
+    'if %COUNT% GEQ %MAX_WAIT% (',
+    '  echo [Upgrade] Timeout waiting for PID %PID% to exit >> "%LOGFILE%"',
+    '  goto PID_EXITED',
+    ')',
+    'ping -n 3 127.0.0.1 >NUL',
+    'goto WAIT_LOOP',
+    ':PID_EXITED',
+    '',
+    'echo [Upgrade] Process exited, running npm install -g %PKG%... >> "%LOGFILE%"',
+    'call npm install -g %PKG% >> "%LOGFILE%" 2>&1',
+    'if not "%errorlevel%"=="0" (',
+    '  echo [Upgrade] npm install failed with exit code %errorlevel% >> "%LOGFILE%"',
+    '  goto END',
+    ')',
+    'echo [Upgrade] Successfully upgraded. >> "%LOGFILE%"',
+    '',
+    ':END',
+    `del /F /Q "${batPath}" 2>NUL`,
+  ];
+
+  writeFileSync(batPath, batLines.join('\r\n'));
+  const child = spawn('cmd.exe', ['/c', batPath], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
+  console.log(`Upgrade script spawned. This process will exit now.`);
+  console.log(`The upgrade will proceed after this process exits.`);
+  console.log(`Check upgrade log: ${logPath}`);
+  process.exit(0);
 }
