@@ -167,7 +167,7 @@ function upgradeWindows(latestVersion) {
   const batPath = join(configDir, 'upgrade-cli.bat');
   const logPath = join(logDir, 'upgrade.log');
   const pid = process.pid;
-  const pkgSpec = `${pkg.name}@latest`;
+  const pkgSpec = `${pkg.name}@${latestVersion}`;
 
   const batLines = [
     '@echo off',
