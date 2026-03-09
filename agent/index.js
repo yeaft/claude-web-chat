@@ -9,6 +9,7 @@ import ctx from './context.js';
 import { getConfigPath, loadServiceConfig } from './service.js';
 import { loadNodePty } from './terminal.js';
 import { connect } from './connection.js';
+import { loadMcpServers } from './mcp.js';
 
 const execAsync = promisify(exec);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -62,57 +63,26 @@ const CONFIG = {
   workDir: process.env.WORK_DIR || fileConfig.workDir || process.cwd(),
   reconnectInterval: fileConfig.reconnectInterval,
   agentSecret: process.env.AGENT_SECRET || fileConfig.agentSecret,
-  // MCP 白名单：只允许这些 MCP 服务器的工具，其余自动禁用
-  // 通过 ALLOWED_MCP_SERVERS 环境变量（逗号分隔）或配置文件 allowedMcpServers 指定
-  // 默认只允许 playwright
-  disallowedTools: (() => {
-    // 解析显式禁用列表
+  // 显式禁用的工具（非 MCP 相关）
+  explicitDisallowedTools: (() => {
     const raw = process.env.DISALLOWED_TOOLS || fileConfig.disallowedTools || '';
-    const explicit = raw === 'none' ? [] : raw.split(',').map(s => s.trim()).filter(Boolean);
-
-    // 解析 MCP 白名单
-    const allowedRaw = process.env.ALLOWED_MCP_SERVERS || fileConfig.allowedMcpServers || 'playwright';
-    const allowedMcpServers = allowedRaw.split(',').map(s => s.trim()).filter(Boolean);
-
-    // 读取 ~/.claude.json 中所有配置的 MCP 服务器名
-    const claudeConfigPath = join(homedir(), '.claude.json');
-    const mcpDisallowed = [];
-    try {
-      if (existsSync(claudeConfigPath)) {
-        const claudeConfig = JSON.parse(readFileSync(claudeConfigPath, 'utf-8'));
-        const allMcpNames = new Set();
-        // 收集所有项目中配置的 MCP 服务器名
-        for (const [, projCfg] of Object.entries(claudeConfig.projects || {})) {
-          for (const name of Object.keys(projCfg.mcpServers || {})) {
-            allMcpNames.add(name);
-          }
-        }
-        // 顶层 mcpServers
-        for (const name of Object.keys(claudeConfig.mcpServers || {})) {
-          allMcpNames.add(name);
-        }
-        // 不在白名单中的 MCP 服务器 → 禁用
-        for (const name of allMcpNames) {
-          if (!allowedMcpServers.includes(name)) {
-            mcpDisallowed.push(`mcp__${name}`);
-          }
-        }
-        if (mcpDisallowed.length > 0) {
-          console.log(`[MCP] Allowed: ${allowedMcpServers.join(', ')}`);
-          console.log(`[MCP] Disallowed: ${mcpDisallowed.join(', ')}`);
-        }
-      }
-    } catch (e) {
-      console.warn('[MCP] Failed to read ~/.claude.json:', e.message);
-    }
-
-    return [...explicit, ...mcpDisallowed];
-  })()
+    return raw === 'none' ? [] : raw.split(',').map(s => s.trim()).filter(Boolean);
+  })(),
+  // MCP 白名单初始值（环境变量或配置文件指定）
+  allowedMcpServers: (() => {
+    const raw = process.env.ALLOWED_MCP_SERVERS || fileConfig.allowedMcpServers || 'playwright';
+    return raw.split(',').map(s => s.trim()).filter(Boolean);
+  })(),
+  // disallowedTools 会在 loadMcpServers() 中计算
+  disallowedTools: []
 };
 
 // 初始化共享上下文
 ctx.CONFIG = CONFIG;
 ctx.saveConfig = saveConfig;
+
+// 初始加载 MCP servers（必须在 ctx.CONFIG 赋值之后）
+loadMcpServers();
 
 // Agent capabilities（启动时自动检测）
 async function detectCapabilities() {

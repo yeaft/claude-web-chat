@@ -28,6 +28,7 @@ export default {
             <svg v-else-if="tab.key === 'proxy'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
             <svg v-else-if="tab.key === 'invitations'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
             <svg v-else-if="tab.key === 'dashboard'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+            <svg v-else-if="tab.key === 'tools'" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/></svg>
             <span>{{ tab.label }}</span>
           </button>
         </div>
@@ -257,6 +258,39 @@ export default {
               <ProxyTab />
             </div>
 
+            <!-- Tools -->
+            <div v-show="activeTab === 'tools'" class="settings-pane">
+              <div class="sp-group">
+                <div class="sp-group-title">MCP Servers</div>
+                <div v-if="!chatStore.currentAgent" class="sp-desc">
+                  {{ $t('settings.tools.noAgent') }}
+                </div>
+                <div v-else-if="mcpServersList.length === 0" class="sp-desc">
+                  {{ $t('settings.tools.noServers') }}
+                </div>
+                <div v-else>
+                  <div class="sp-mcp-item" v-for="server in mcpServersList" :key="server.name">
+                    <label class="sp-toggle-row">
+                      <span class="sp-toggle-info">
+                        <span class="sp-toggle-name">{{ server.name }}</span>
+                        <span class="sp-toggle-badge" :class="server.source === 'Built-in' ? 'sp-badge-builtin' : 'sp-badge-mcp'">{{ server.source }}</span>
+                      </span>
+                      <button
+                        class="sp-toggle"
+                        :class="{ active: server.enabled }"
+                        @click="toggleMcpServer(server.name, !server.enabled)"
+                        role="switch"
+                        :aria-checked="server.enabled"
+                      >
+                        <span class="sp-toggle-knob"></span>
+                      </button>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <p class="sp-desc sp-tools-hint">{{ $t('settings.tools.hint') }}</p>
+            </div>
+
             <!-- Dashboard (admin only) -->
             <div v-show="activeTab === 'dashboard'" class="settings-pane" v-if="authStore.role === 'admin'">
               <DashboardTab />
@@ -326,6 +360,7 @@ export default {
       ];
       if (this.authStore.role === 'admin' || this.authStore.role === 'pro') {
         tabs.push({ key: 'proxy', label: this.$t('settings.tabs.proxy') });
+        tabs.push({ key: 'tools', label: this.$t('settings.tabs.tools') });
       }
       if (this.authStore.role === 'admin') {
         tabs.push({ key: 'invitations', label: this.$t('settings.tabs.invitations') });
@@ -363,12 +398,25 @@ export default {
     serverWsUrl() {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       return `${protocol}//${location.host}`;
+    },
+    mcpServersList() {
+      const agentId = this.chatStore.currentAgent;
+      if (!agentId) return [];
+      return this.chatStore.mcpServers[agentId] || [];
     }
   },
   watch: {
     visible(val) {
       if (val) {
         this.loadData();
+      }
+    },
+    activeTab(val) {
+      if (val === 'tools' && this.chatStore.currentAgent) {
+        this.chatStore.sendWsMessage({
+          type: 'get_mcp_servers',
+          agentId: this.chatStore.currentAgent
+        });
       }
     }
   },
@@ -605,6 +653,23 @@ export default {
       this.message = msg;
       this.isError = error;
       setTimeout(() => { this.message = ''; }, 3000);
+    },
+
+    toggleMcpServer(serverName, enabled) {
+      const agentId = this.chatStore.currentAgent;
+      if (!agentId) return;
+      // Optimistic update
+      const servers = this.chatStore.mcpServers[agentId];
+      if (servers) {
+        const server = servers.find(s => s.name === serverName);
+        if (server) server.enabled = enabled;
+      }
+      // Send to server
+      this.chatStore.sendWsMessage({
+        type: 'update_mcp_config',
+        agentId,
+        config: { [serverName]: enabled }
+      });
     }
   }
 };

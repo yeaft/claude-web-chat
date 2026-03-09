@@ -117,6 +117,43 @@ export async function handleAgentSync(agentId, agent, msg) {
       handleProxyWsAgentMessage(msg);
       break;
 
+    // MCP servers list from agent — store on agent and broadcast to owner clients
+    case 'mcp_servers_list': {
+      agent.mcpServers = msg.servers || [];
+      console.log(`[MCP] Agent ${agent.name} reported ${agent.mcpServers.length} MCP servers`);
+      for (const [, client] of webClients) {
+        if (client.authenticated && (CONFIG.skipAuth ||
+          (agent.ownerId && client.userId === agent.ownerId) ||
+          (!agent.ownerId && client.role === 'admin')
+        )) {
+          await sendToWebClient(client, {
+            type: 'mcp_servers_list',
+            agentId,
+            servers: agent.mcpServers
+          });
+        }
+      }
+      break;
+    }
+
+    // MCP config updated acknowledgement from agent
+    case 'mcp_config_updated': {
+      agent.mcpServers = msg.servers || [];
+      for (const [, client] of webClients) {
+        if (client.authenticated && (CONFIG.skipAuth ||
+          (agent.ownerId && client.userId === agent.ownerId) ||
+          (!agent.ownerId && client.role === 'admin')
+        )) {
+          await sendToWebClient(client, {
+            type: 'mcp_config_updated',
+            agentId,
+            servers: agent.mcpServers
+          });
+        }
+      }
+      break;
+    }
+
     default:
       return false; // Not handled
   }

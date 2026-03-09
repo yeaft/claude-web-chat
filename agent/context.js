@@ -14,6 +14,8 @@ export default {
   agentCapabilities: [],
   // Agent 级别的 slash commands 缓存（所有 conversation 共用）
   slashCommands: [],
+  // MCP servers 列表 (从 ~/.claude.json 读取): [{ name, enabled, source }]
+  mcpServers: [],
   // 连接相关
   reconnectTimer: null,
   pendingAuthTempId: null,

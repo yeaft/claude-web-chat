@@ -312,6 +312,12 @@ export default {
   'settings.msg.inviteDeleted': '邀请码已删除',
   'settings.msg.deleteFailed': '删除失败',
 
+  // Settings - Tools
+  'settings.tabs.tools': '工具',
+  'settings.tools.noAgent': '请先选择一个 Agent',
+  'settings.tools.noServers': '未检测到 MCP 服务器配置',
+  'settings.tools.hint': '更改在新会话生效，已有会话需重启。',
+
   // Settings - Dashboard (admin only)
   'settings.tabs.dashboard': '仪表板',
   'settings.dashboard.totalUsers': '总用户数',

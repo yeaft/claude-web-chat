@@ -71,6 +71,36 @@ export async function handleClientMisc(clientId, client, msg, checkAgentAccess) 
       break;
     }
 
+    // MCP configuration
+    case 'get_mcp_servers': {
+      const mcpAgentId = msg.agentId || client.currentAgent;
+      if (!mcpAgentId) break;
+      if (!await checkAgentAccess(mcpAgentId)) break;
+      // If server already has cached list, return immediately
+      const mcpAgent = agents.get(mcpAgentId);
+      if (mcpAgent?.mcpServers?.length > 0) {
+        await sendToWebClient(client, {
+          type: 'mcp_servers_list',
+          agentId: mcpAgentId,
+          servers: mcpAgent.mcpServers
+        });
+      } else {
+        await forwardToAgent(mcpAgentId, { type: 'get_mcp_servers' });
+      }
+      break;
+    }
+
+    case 'update_mcp_config': {
+      const configAgentId = msg.agentId || client.currentAgent;
+      if (!configAgentId) break;
+      if (!await checkAgentAccess(configAgentId)) break;
+      await forwardToAgent(configAgentId, {
+        type: 'update_mcp_config',
+        config: msg.config || {}
+      });
+      break;
+    }
+
     default:
       return false; // Not handled
   }

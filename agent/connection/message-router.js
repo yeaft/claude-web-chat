@@ -22,6 +22,7 @@ import {
 } from '../crew.js';
 import { sendToServer, flushMessageBuffer } from './buffer.js';
 import { handleRestartAgent, handleUpgradeAgent } from './upgrade.js';
+import { loadMcpServers, updateMcpConfig } from '../mcp.js';
 
 export async function handleMessage(msg) {
   switch (msg.type) {
@@ -54,6 +55,11 @@ export async function handleMessage(msg) {
 
       // ★ Phase 1: 通知 server 同步完成
       sendToServer({ type: 'agent_sync_complete' });
+
+      // ★ 发送 MCP servers 列表给 server（供前端 Settings > Tools tab 使用）
+      if (ctx.mcpServers.length > 0) {
+        sendToServer({ type: 'mcp_servers_list', servers: ctx.mcpServers });
+      }
       break;
 
     case 'create_conversation':
@@ -267,5 +273,16 @@ export async function handleMessage(msg) {
     case 'upgrade_agent':
       await handleUpgradeAgent();
       break;
+
+    // MCP configuration
+    case 'get_mcp_servers':
+      sendToServer({ type: 'mcp_servers_list', servers: ctx.mcpServers });
+      break;
+
+    case 'update_mcp_config': {
+      const updated = updateMcpConfig(msg.config || {});
+      sendToServer({ type: 'mcp_config_updated', servers: updated });
+      break;
+    }
   }
 }

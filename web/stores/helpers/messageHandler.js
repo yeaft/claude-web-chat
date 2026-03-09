@@ -311,6 +311,14 @@ export function handleMessage(store, msg) {
       };
       break;
 
+    // MCP servers configuration
+    case 'mcp_servers_list':
+    case 'mcp_config_updated':
+      if (msg.agentId && msg.servers) {
+        store.mcpServers[msg.agentId] = msg.servers;
+      }
+      break;
+
     // Crew (multi-agent) messages
     case 'crew_session_created':
     case 'crew_session_restored':
