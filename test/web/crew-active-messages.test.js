@@ -96,6 +96,17 @@ describe('activeMessages computed — single latest message', () => {
     expect(body).toContain("m.role === 'system'");
   });
 
+  it('skips human role (user messages filtered out)', () => {
+    const body = extractComputedBody('activeMessages');
+    expect(body).toContain("m.role === 'human'");
+  });
+
+  it('skips both system and human in the same condition', () => {
+    const body = extractComputedBody('activeMessages');
+    // Both roles are checked in a single continue statement
+    expect(body).toMatch(/m\.role === 'system' \|\| m\.role === 'human'/);
+  });
+
   it('returns array with single message via return [m]', () => {
     const body = extractComputedBody('activeMessages');
     expect(body).toContain('return [m]');
@@ -224,5 +235,124 @@ describe('hidden when all tasks completed', () => {
   it('v-if includes hasStreamingMessage or kanbanInProgressCount > 0', () => {
     const vifMatch = jsSource.match(/v-if="activeMessages\.length > 0 && \(hasStreamingMessage \|\| kanbanInProgressCount > 0\)"/);
     expect(vifMatch).not.toBeNull();
+  });
+});
+
+// =====================================================================
+// 7. CSS — visual distinction (background, border-radius, margin, label)
+// =====================================================================
+describe('CSS — visual distinction for Dynamic Message area', () => {
+  it('.crew-active-messages has sidebar background color', () => {
+    const block = extractCssBlock('.crew-active-messages {');
+    expect(block).toContain('var(--bg-sidebar)');
+  });
+
+  it('.crew-active-messages has 8px border-radius', () => {
+    const block = extractCssBlock('.crew-active-messages {');
+    expect(block).toMatch(/border-radius:\s*8px/);
+  });
+
+  it('.crew-active-messages has increased top margin for spacing', () => {
+    const block = extractCssBlock('.crew-active-messages {');
+    // margin: 16px 8px 8px — top margin increased from 8px to 16px
+    expect(block).toMatch(/margin:\s*16px\s+8px\s+8px/);
+  });
+
+  it('.crew-active-messages has horizontal inset (8px left/right) for visible border', () => {
+    const block = extractCssBlock('.crew-active-messages {');
+    // margin: 16px 8px 8px — the 8px left/right margins create visible container edge
+    expect(block).toMatch(/margin:\s*16px\s+8px/);
+  });
+
+  it('.crew-active-messages-label uses muted color', () => {
+    const block = extractCssBlock('.crew-active-messages-label {');
+    expect(block).toContain('var(--text-muted)');
+  });
+
+  it('.crew-active-messages-label does NOT use secondary color', () => {
+    const block = extractCssBlock('.crew-active-messages-label {');
+    expect(block).not.toContain('var(--text-secondary)');
+  });
+
+  it('.crew-active-messages does NOT use box-shadow', () => {
+    const block = extractCssBlock('.crew-active-messages {');
+    expect(block).not.toContain('box-shadow');
+  });
+
+  it('.crew-active-messages does NOT use border or divider', () => {
+    const block = extractCssBlock('.crew-active-messages {');
+    expect(block).not.toContain('border-top');
+    expect(block).not.toContain('border-bottom');
+  });
+});
+
+// =====================================================================
+// 8. Behavioral logic — human messages excluded from activeMessages
+// =====================================================================
+describe('activeMessages filtering — behavioral verification', () => {
+  // Re-implement the activeMessages logic to verify behavior
+  function activeMessages(messages) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.type !== 'text' || !m.role) continue;
+      if (m.role === 'system' || m.role === 'human') continue;
+      return [m];
+    }
+    return [];
+  }
+
+  it('returns AI message when latest message is from AI role', () => {
+    const messages = [
+      { type: 'text', role: 'human', content: 'user input' },
+      { type: 'text', role: 'dev-1', content: 'AI reply' }
+    ];
+    const result = activeMessages(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe('dev-1');
+    expect(result[0].content).toBe('AI reply');
+  });
+
+  it('skips user message at end and finds previous AI message', () => {
+    const messages = [
+      { type: 'text', role: 'dev-1', content: 'first AI reply' },
+      { type: 'text', role: 'pm', content: 'PM reply' },
+      { type: 'text', role: 'human', content: 'user just typed this' }
+    ];
+    const result = activeMessages(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe('pm');
+  });
+
+  it('returns empty when only human messages exist', () => {
+    const messages = [
+      { type: 'text', role: 'human', content: 'question 1' },
+      { type: 'text', role: 'human', content: 'question 2' }
+    ];
+    const result = activeMessages(messages);
+    expect(result).toHaveLength(0);
+  });
+
+  it('returns empty when only system messages exist', () => {
+    const messages = [
+      { type: 'text', role: 'system', content: 'system notice' }
+    ];
+    const result = activeMessages(messages);
+    expect(result).toHaveLength(0);
+  });
+
+  it('skips non-text messages (tool, route)', () => {
+    const messages = [
+      { type: 'text', role: 'dev-1', content: 'AI reply' },
+      { type: 'tool', role: 'dev-1', content: 'tool call' },
+      { type: 'route', role: 'dev-1', content: 'routing' },
+      { type: 'text', role: 'human', content: 'user input' }
+    ];
+    const result = activeMessages(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toBe('AI reply');
+  });
+
+  it('returns empty for empty messages array', () => {
+    expect(activeMessages([])).toHaveLength(0);
   });
 });
