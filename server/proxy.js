@@ -30,7 +30,19 @@ async function handleProxyRequest(req, res) {
     return res.status(403).send('Port not enabled for proxy');
   }
 
+  // Handle CORS preflight — respond immediately without forwarding to agent
+  if (req.method === 'OPTIONS') {
+    const origin = req.headers.origin || '*';
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    return res.status(204).end();
+  }
+
   const requestId = randomUUID();
+  const requestOrigin = req.headers.origin || null;
 
   // Collect raw body
   const bodyChunks = [];
@@ -67,12 +79,20 @@ async function handleProxyRequest(req, res) {
       if (!res.headersSent) res.status(504).send('Proxy timeout');
     }, 60000);
 
-    pendingProxyRequests.set(requestId, { res, timeout, streaming: false });
+    pendingProxyRequests.set(requestId, { res, timeout, streaming: false, origin: requestOrigin });
   });
 
   req.on('error', () => {
     pendingProxyRequests.delete(requestId);
   });
+}
+
+// Overwrite CORS headers so browser accepts proxied responses
+function applyCorsHeaders(headers, origin) {
+  if (origin) {
+    headers['access-control-allow-origin'] = origin;
+    headers['access-control-allow-credentials'] = 'true';
+  }
 }
 
 // Handle proxy response messages from agent
@@ -85,6 +105,7 @@ export function handleProxyResponse(msg) {
   const headers = msg.headers || {};
   delete headers['transfer-encoding'];
   delete headers['connection'];
+  applyCorsHeaders(headers, pending.origin);
 
   try {
     pending.res.status(msg.statusCode || 500);
@@ -119,6 +140,7 @@ export function handleProxyResponseChunk(msg) {
       const headers = msg.headers || {};
       delete headers['transfer-encoding'];
       delete headers['connection'];
+      applyCorsHeaders(headers, pending.origin);
       for (const [k, v] of Object.entries(headers)) {
         try { pending.res.setHeader(k, v); } catch(e) {}
       }
