@@ -231,7 +231,9 @@ export function handleAgentSelected(store, msg) {
   };
 
   if (msg.slashCommands && msg.slashCommands.length > 0) {
-    store.slashCommands = msg.slashCommands;
+    // Store as agent-level default, used as fallback when a conversation
+    // hasn't reported its own slashCommands yet
+    store.slashCommandsMap[`agent:${msg.agentId}`] = msg.slashCommands;
   }
 
   const serverConvs = msg.conversations || [];

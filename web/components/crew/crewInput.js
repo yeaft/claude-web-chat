@@ -34,8 +34,14 @@ export function createCrewInput(store, authStore, { getInputRef, getFileInputRef
   });
 
   // Slash command autocomplete computed properties (mirrors ChatInput.js logic)
+  // Crew mode: use current conversation (crew session id) for per-session commands,
+  // fallback to agent-level, then defaults
   const availableCommands = Vue.computed(() => {
-    const dynamic = store.slashCommands || [];
+    const convId = store.currentConversation;
+    const agentId = store.currentAgent;
+    const dynamic = (convId && store.slashCommandsMap[convId])
+      || (agentId && store.slashCommandsMap[`agent:${agentId}`])
+      || [];
     const commands = dynamic.length > 0 ? dynamic : DEFAULT_SLASH_COMMANDS;
     return commands.map(cmd => cmd.startsWith('/') ? cmd : '/' + cmd);
   });

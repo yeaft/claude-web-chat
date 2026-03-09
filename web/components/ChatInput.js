@@ -116,8 +116,13 @@ export default {
     const selectedIndex = Vue.ref(0);
 
     // 获取可用的 slash commands（确保都有 / 前缀）
+    // 优先读取当前 conversation 的 commands，fallback 到 agent 级别，再 fallback 到默认列表
     const availableCommands = Vue.computed(() => {
-      const dynamic = store.slashCommands || [];
+      const convId = store.currentConversation;
+      const agentId = store.currentAgent;
+      const dynamic = (convId && store.slashCommandsMap[convId])
+        || (agentId && store.slashCommandsMap[`agent:${agentId}`])
+        || [];
       const commands = dynamic.length > 0 ? dynamic : DEFAULT_SLASH_COMMANDS;
       return commands.map(cmd => cmd.startsWith('/') ? cmd : '/' + cmd);
     });

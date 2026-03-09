@@ -86,8 +86,8 @@ export const useChatStore = defineStore('chat', {
     // ★ Phase 6: 消息分页状态
     hasMoreMessages: false,
     loadingMoreMessages: false,
-    // 可用的 slash commands 列表（从 Claude SDK init 消息获取）
-    slashCommands: [],
+    // 可用的 slash commands 列表（按 conversationId 隔离，从 Claude SDK init 消息获取）
+    slashCommandsMap: {},  // { [conversationId]: string[] }
     // 输入框草稿（按 conversationId 保存，切换时不丢失）
     inputDrafts: {},
 
