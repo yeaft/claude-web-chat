@@ -28,14 +28,14 @@ export default {
         </span>
         <!-- MCP Config Button -->
         <div class="mcp-config-wrapper" v-if="store.currentMcpServers.length > 0">
-          <button class="header-action-btn" :class="{ active: store.mcpPanelOpen }" @click="toggleMcpPanel" :title="$t('chatHeader.mcpConfig')">
+          <button ref="mcpBtnRef" class="header-action-btn" :class="{ active: store.mcpPanelOpen }" @click="toggleMcpPanel" :title="$t('chatHeader.mcpConfig')">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
             </svg>
             <span class="mcp-count-badge" v-if="mcpEnabledCount > 0">{{ mcpEnabledCount }}</span>
           </button>
           <!-- MCP Dropdown Panel -->
-          <div class="mcp-dropdown" v-if="store.mcpPanelOpen" @click.stop>
+          <div class="mcp-dropdown" v-if="store.mcpPanelOpen" :style="mcpDropdownStyle" @click.stop>
             <div class="mcp-dropdown-header">
               <span class="mcp-dropdown-title">MCP Servers</span>
               <button class="mcp-dropdown-close" @click="store.mcpPanelOpen = false">
@@ -261,6 +261,15 @@ export default {
     };
 
     // MCP panel
+    const mcpBtnRef = Vue.ref(null);
+
+    const mcpDropdownStyle = Vue.computed(() => {
+      if (!store.mcpPanelOpen || !mcpBtnRef.value) return null;
+      const rect = mcpBtnRef.value.getBoundingClientRect();
+      const style = { top: `${rect.bottom + 6}px`, right: `${window.innerWidth - rect.right}px` };
+      return style;
+    });
+
     const mcpEnabledCount = Vue.computed(() => {
       return store.currentMcpServers.filter(s => s.enabled).length;
     });
@@ -292,6 +301,6 @@ export default {
       document.removeEventListener('click', closeMcpOnOutsideClick);
     });
 
-    return { store, headerTitle, folderPath, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, isClearing, canRefresh, refreshSession, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive, mcpEnabledCount, currentConvNeedRestart, toggleMcpPanel, toggleMcpServer };
+    return { store, headerTitle, folderPath, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, isClearing, canRefresh, refreshSession, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive, mcpBtnRef, mcpDropdownStyle, mcpEnabledCount, currentConvNeedRestart, toggleMcpPanel, toggleMcpServer };
   }
 };

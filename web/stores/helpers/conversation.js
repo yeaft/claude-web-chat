@@ -145,6 +145,7 @@ export function updateConversationSettings(store, conversationId, settings) {
 /**
  * Toggle MCP server for the current conversation.
  * Optimistically updates conversationMcpServers, then sends update_conversation_settings.
+ * Uses serverTools mapping to expand to full tool names for disallowedTools.
  */
 export function toggleConversationMcp(store, serverName, enabled) {
   const convId = store.currentConversation;
@@ -157,11 +158,21 @@ export function toggleConversationMcp(store, serverName, enabled) {
     if (server) server.enabled = enabled;
   }
 
-  // Compute new disallowedTools from current MCP state
+  // Compute new disallowedTools using full tool names from serverTools mapping
   const currentServers = store.conversationMcpServers[convId] || [];
-  const mcpDisallowed = currentServers
-    .filter(s => !s.enabled)
-    .map(s => `mcp__${s.name}`);
+  const serverToolsMap = store.conversationMcpServerTools[convId] || {};
+  const mcpDisallowed = [];
+  for (const s of currentServers) {
+    if (!s.enabled) {
+      const tools = serverToolsMap[s.name];
+      if (tools && tools.length > 0) {
+        mcpDisallowed.push(...tools);
+      } else {
+        // Fallback: use prefix pattern if no tools mapping available
+        mcpDisallowed.push(`mcp__${s.name}`);
+      }
+    }
+  }
 
   // Merge with non-MCP disallowed tools from existing conversation settings
   const conv = store.conversations.find(c => c.id === convId);

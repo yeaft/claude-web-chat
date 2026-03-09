@@ -95,8 +95,17 @@ export function handleMessage(store, msg) {
       // 同步 conversationMcpServers 中的 enabled 状态
       const convMcpList = store.conversationMcpServers[msg.conversationId];
       if (convMcpList && msg.disallowedTools) {
+        const disallowedSet = new Set(msg.disallowedTools);
+        const serverToolsMap = store.conversationMcpServerTools[msg.conversationId] || {};
         for (const server of convMcpList) {
-          server.enabled = !msg.disallowedTools.some(d => d === `mcp__${server.name}`);
+          const tools = serverToolsMap[server.name];
+          if (tools && tools.length > 0) {
+            // Server is disabled if any of its tools is in disallowedTools
+            server.enabled = !tools.some(t => disallowedSet.has(t));
+          } else {
+            // Fallback: check prefix pattern
+            server.enabled = !disallowedSet.has(`mcp__${server.name}`);
+          }
         }
       }
       // 标记需要重启
@@ -334,6 +343,9 @@ export function handleMessage(store, msg) {
     case 'conversation_mcp_update':
       if (msg.conversationId && msg.servers) {
         store.conversationMcpServers[msg.conversationId] = msg.servers;
+      }
+      if (msg.conversationId && msg.serverTools) {
+        store.conversationMcpServerTools[msg.conversationId] = msg.serverTools;
       }
       break;
 

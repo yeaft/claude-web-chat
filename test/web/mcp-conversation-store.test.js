@@ -4,8 +4,8 @@ import { describe, it, expect } from 'vitest';
  * Tests for Store-level conversation MCP management.
  *
  * Verifies:
- * 1. conversation_mcp_update handler stores servers per conversationId
- * 2. toggleConversationMcp correctly computes disallowedTools
+ * 1. conversation_mcp_update handler stores servers and serverTools per conversationId
+ * 2. toggleConversationMcp correctly computes disallowedTools using full tool names
  * 3. conversation_settings_updated syncs MCP enabled state from disallowedTools
  * 4. needRestart flag is correctly set on conversation
  *
@@ -16,16 +16,19 @@ import { describe, it, expect } from 'vitest';
  */
 
 // =====================================================================
-// Replicate message handler: conversation_mcp_update (messageHandler.js:334-338)
+// Replicate message handler: conversation_mcp_update (messageHandler.js)
 // =====================================================================
 
 function handleConversationMcpUpdate(store, msg) {
   if (msg.conversationId && msg.servers) {
     store.conversationMcpServers[msg.conversationId] = msg.servers;
   }
+  if (msg.conversationId && msg.serverTools) {
+    store.conversationMcpServerTools[msg.conversationId] = msg.serverTools;
+  }
 }
 
-// Replicate message handler: conversation_settings_updated (messageHandler.js:90-105)
+// Replicate message handler: conversation_settings_updated (messageHandler.js)
 function handleConversationSettingsUpdated(store, msg) {
   const settingsConv = store.conversations.find(c => c.id === msg.conversationId);
   if (settingsConv && msg.disallowedTools !== undefined) {
@@ -34,8 +37,15 @@ function handleConversationSettingsUpdated(store, msg) {
   // Sync conversationMcpServers enabled state
   const convMcpList = store.conversationMcpServers[msg.conversationId];
   if (convMcpList && msg.disallowedTools) {
+    const disallowedSet = new Set(msg.disallowedTools);
+    const serverToolsMap = store.conversationMcpServerTools[msg.conversationId] || {};
     for (const server of convMcpList) {
-      server.enabled = !msg.disallowedTools.some(d => d === `mcp__${server.name}`);
+      const tools = serverToolsMap[server.name];
+      if (tools && tools.length > 0) {
+        server.enabled = !tools.some(t => disallowedSet.has(t));
+      } else {
+        server.enabled = !disallowedSet.has(`mcp__${server.name}`);
+      }
     }
   }
   // Mark needRestart
@@ -44,7 +54,7 @@ function handleConversationSettingsUpdated(store, msg) {
   }
 }
 
-// Replicate toggleConversationMcp (conversation.js:149-172)
+// Replicate toggleConversationMcp (conversation.js)
 function toggleConversationMcp(store, serverName, enabled) {
   const convId = store.currentConversation;
   if (!convId) return;
@@ -56,11 +66,20 @@ function toggleConversationMcp(store, serverName, enabled) {
     if (server) server.enabled = enabled;
   }
 
-  // Compute new disallowedTools
+  // Compute new disallowedTools using full tool names from serverTools mapping
   const currentServers = store.conversationMcpServers[convId] || [];
-  const mcpDisallowed = currentServers
-    .filter(s => !s.enabled)
-    .map(s => `mcp__${s.name}`);
+  const serverToolsMap = store.conversationMcpServerTools[convId] || {};
+  const mcpDisallowed = [];
+  for (const s of currentServers) {
+    if (!s.enabled) {
+      const tools = serverToolsMap[s.name];
+      if (tools && tools.length > 0) {
+        mcpDisallowed.push(...tools);
+      } else {
+        mcpDisallowed.push(`mcp__${s.name}`);
+      }
+    }
+  }
 
   // Merge with non-MCP disallowed tools
   const conv = store.conversations.find(c => c.id === convId);
@@ -72,7 +91,7 @@ function toggleConversationMcp(store, serverName, enabled) {
   return newDisallowed;
 }
 
-// Replicate currentMcpServers getter (chat.js:179-181)
+// Replicate currentMcpServers getter (chat.js)
 function getCurrentMcpServers(store) {
   if (!store.currentConversation) return [];
   return store.conversationMcpServers[store.currentConversation] || [];
@@ -83,6 +102,7 @@ function createMockStore(overrides = {}) {
   return {
     currentConversation: 'currentConversation' in overrides ? overrides.currentConversation : 'conv_001',
     conversationMcpServers: overrides.conversationMcpServers || {},
+    conversationMcpServerTools: overrides.conversationMcpServerTools || {},
     conversations: overrides.conversations || [
       { id: 'conv_001', disallowedTools: [] }
     ],
@@ -111,6 +131,26 @@ describe('Store — conversation_mcp_update handler', () => {
     expect(store.conversationMcpServers['conv_001']).toHaveLength(2);
     expect(store.conversationMcpServers['conv_001'][0].name).toBe('playwright');
     expect(store.conversationMcpServers['conv_001'][1].name).toBe('filesystem');
+  });
+
+  it('should store serverTools mapping', () => {
+    const store = createMockStore();
+    const msg = {
+      conversationId: 'conv_001',
+      servers: [
+        { name: 'playwright', enabled: true, source: 'Built-in' },
+        { name: 'filesystem', enabled: true, source: 'MCP' }
+      ],
+      serverTools: {
+        playwright: ['mcp__playwright__browser_navigate', 'mcp__playwright__browser_click'],
+        filesystem: ['mcp__filesystem__read_file', 'mcp__filesystem__write_file']
+      }
+    };
+
+    handleConversationMcpUpdate(store, msg);
+
+    expect(store.conversationMcpServerTools['conv_001'].playwright).toHaveLength(2);
+    expect(store.conversationMcpServerTools['conv_001'].filesystem).toHaveLength(2);
   });
 
   it('should overwrite existing servers on re-init', () => {
@@ -200,7 +240,7 @@ describe('Store — toggleConversationMcp', () => {
     expect(fs.enabled).toBe(false);
   });
 
-  it('should compute disallowedTools for disabled servers', () => {
+  it('should compute disallowedTools with full tool names when serverTools available', () => {
     const store = createMockStore({
       currentConversation: 'conv_001',
       conversationMcpServers: {
@@ -209,13 +249,38 @@ describe('Store — toggleConversationMcp', () => {
           { name: 'filesystem', enabled: true, source: 'MCP' },
           { name: 'github', enabled: true, source: 'MCP' }
         ]
+      },
+      conversationMcpServerTools: {
+        'conv_001': {
+          playwright: ['mcp__playwright__browser_navigate', 'mcp__playwright__browser_click'],
+          filesystem: ['mcp__filesystem__read_file', 'mcp__filesystem__write_file'],
+          github: ['mcp__github__create_pr']
+        }
       }
     });
 
     const disallowed = toggleConversationMcp(store, 'filesystem', false);
+    expect(disallowed).toContain('mcp__filesystem__read_file');
+    expect(disallowed).toContain('mcp__filesystem__write_file');
+    expect(disallowed).not.toContain('mcp__filesystem'); // No prefix-only entry
+    expect(disallowed).not.toContain('mcp__playwright__browser_navigate');
+    expect(disallowed).not.toContain('mcp__github__create_pr');
+  });
+
+  it('should fallback to prefix when no serverTools available', () => {
+    const store = createMockStore({
+      currentConversation: 'conv_001',
+      conversationMcpServers: {
+        'conv_001': [
+          { name: 'playwright', enabled: true, source: 'Built-in' },
+          { name: 'filesystem', enabled: true, source: 'MCP' }
+        ]
+      }
+      // No conversationMcpServerTools
+    });
+
+    const disallowed = toggleConversationMcp(store, 'filesystem', false);
     expect(disallowed).toContain('mcp__filesystem');
-    expect(disallowed).not.toContain('mcp__playwright');
-    expect(disallowed).not.toContain('mcp__github');
   });
 
   it('should preserve non-MCP disallowed tools', () => {
@@ -227,32 +292,43 @@ describe('Store — toggleConversationMcp', () => {
           { name: 'playwright', enabled: true, source: 'Built-in' },
           { name: 'filesystem', enabled: true, source: 'MCP' }
         ]
+      },
+      conversationMcpServerTools: {
+        'conv_001': {
+          filesystem: ['mcp__filesystem__read_file']
+        }
       }
     });
 
     const disallowed = toggleConversationMcp(store, 'filesystem', false);
     expect(disallowed).toContain('some_other_tool');
-    expect(disallowed).toContain('mcp__filesystem');
+    expect(disallowed).toContain('mcp__filesystem__read_file');
   });
 
   it('should replace existing MCP disallowed entries (not duplicate)', () => {
     const store = createMockStore({
       currentConversation: 'conv_001',
-      conversations: [{ id: 'conv_001', disallowedTools: ['mcp__filesystem', 'non_mcp_tool'] }],
+      conversations: [{ id: 'conv_001', disallowedTools: ['mcp__filesystem__read_file', 'non_mcp_tool'] }],
       conversationMcpServers: {
         'conv_001': [
           { name: 'playwright', enabled: false, source: 'Built-in' },
           { name: 'filesystem', enabled: true, source: 'MCP' }
         ]
+      },
+      conversationMcpServerTools: {
+        'conv_001': {
+          playwright: ['mcp__playwright__browser_navigate'],
+          filesystem: ['mcp__filesystem__read_file']
+        }
       }
     });
 
-    // Disable playwright → should have mcp__playwright but filesystem was re-enabled
+    // Disable playwright → should have playwright tools but filesystem was re-enabled
     const disallowed = toggleConversationMcp(store, 'playwright', false);
     expect(disallowed).toContain('non_mcp_tool');
-    expect(disallowed).toContain('mcp__playwright');
-    // Old mcp__filesystem should be removed (since filesystem is now enabled)
-    expect(disallowed).not.toContain('mcp__filesystem');
+    expect(disallowed).toContain('mcp__playwright__browser_navigate');
+    // Old mcp__filesystem entries should be removed (since filesystem is now enabled)
+    expect(disallowed).not.toContain('mcp__filesystem__read_file');
   });
 
   it('should early return when no current conversation', () => {
@@ -264,15 +340,21 @@ describe('Store — toggleConversationMcp', () => {
   it('should enable a previously disabled server', () => {
     const store = createMockStore({
       currentConversation: 'conv_001',
-      conversations: [{ id: 'conv_001', disallowedTools: ['mcp__filesystem'] }],
+      conversations: [{ id: 'conv_001', disallowedTools: ['mcp__filesystem__read_file'] }],
       conversationMcpServers: {
         'conv_001': [
           { name: 'filesystem', enabled: false, source: 'MCP' }
         ]
+      },
+      conversationMcpServerTools: {
+        'conv_001': {
+          filesystem: ['mcp__filesystem__read_file']
+        }
       }
     });
 
     const disallowed = toggleConversationMcp(store, 'filesystem', true);
+    expect(disallowed).not.toContain('mcp__filesystem__read_file');
     expect(disallowed).not.toContain('mcp__filesystem');
     // Server should be optimistically enabled
     expect(store.conversationMcpServers['conv_001'][0].enabled).toBe(true);
@@ -287,14 +369,40 @@ describe('Store — conversation_settings_updated handler', () => {
 
     handleConversationSettingsUpdated(store, {
       conversationId: 'conv_001',
-      disallowedTools: ['mcp__filesystem']
+      disallowedTools: ['mcp__filesystem__read_file']
     });
 
     const conv = store.conversations.find(c => c.id === 'conv_001');
-    expect(conv.disallowedTools).toEqual(['mcp__filesystem']);
+    expect(conv.disallowedTools).toEqual(['mcp__filesystem__read_file']);
   });
 
-  it('should sync MCP server enabled state from disallowedTools', () => {
+  it('should sync MCP server enabled state from full tool name disallowedTools', () => {
+    const store = createMockStore({
+      conversationMcpServers: {
+        'conv_001': [
+          { name: 'playwright', enabled: true, source: 'Built-in' },
+          { name: 'filesystem', enabled: true, source: 'MCP' }
+        ]
+      },
+      conversationMcpServerTools: {
+        'conv_001': {
+          playwright: ['mcp__playwright__browser_navigate'],
+          filesystem: ['mcp__filesystem__read_file', 'mcp__filesystem__write_file']
+        }
+      }
+    });
+
+    handleConversationSettingsUpdated(store, {
+      conversationId: 'conv_001',
+      disallowedTools: ['mcp__filesystem__read_file', 'mcp__filesystem__write_file']
+    });
+
+    const servers = store.conversationMcpServers['conv_001'];
+    expect(servers.find(s => s.name === 'playwright').enabled).toBe(true);
+    expect(servers.find(s => s.name === 'filesystem').enabled).toBe(false);
+  });
+
+  it('should sync MCP server enabled state from prefix disallowedTools (fallback)', () => {
     const store = createMockStore({
       conversationMcpServers: {
         'conv_001': [
@@ -302,6 +410,7 @@ describe('Store — conversation_settings_updated handler', () => {
           { name: 'filesystem', enabled: true, source: 'MCP' }
         ]
       }
+      // No serverTools — use prefix fallback
     });
 
     handleConversationSettingsUpdated(store, {
@@ -321,7 +430,7 @@ describe('Store — conversation_settings_updated handler', () => {
 
     handleConversationSettingsUpdated(store, {
       conversationId: 'conv_001',
-      disallowedTools: ['mcp__filesystem'],
+      disallowedTools: ['mcp__filesystem__read_file'],
       needRestart: true
     });
 
@@ -336,7 +445,7 @@ describe('Store — conversation_settings_updated handler', () => {
 
     handleConversationSettingsUpdated(store, {
       conversationId: 'conv_001',
-      disallowedTools: ['mcp__filesystem']
+      disallowedTools: ['mcp__filesystem__read_file']
     });
 
     const conv = store.conversations.find(c => c.id === 'conv_001');
@@ -348,7 +457,7 @@ describe('Store — conversation_settings_updated handler', () => {
     // Should not throw
     handleConversationSettingsUpdated(store, {
       conversationId: 'conv_999',
-      disallowedTools: ['mcp__filesystem'],
+      disallowedTools: ['mcp__filesystem__read_file'],
       needRestart: true
     });
   });
@@ -361,11 +470,11 @@ describe('Store — conversation_settings_updated handler', () => {
     // No conversationMcpServers entry — should not throw
     handleConversationSettingsUpdated(store, {
       conversationId: 'conv_001',
-      disallowedTools: ['mcp__filesystem']
+      disallowedTools: ['mcp__filesystem__read_file']
     });
 
     const conv = store.conversations.find(c => c.id === 'conv_001');
-    expect(conv.disallowedTools).toEqual(['mcp__filesystem']);
+    expect(conv.disallowedTools).toEqual(['mcp__filesystem__read_file']);
   });
 
   it('should re-enable servers when removed from disallowedTools', () => {
@@ -375,12 +484,18 @@ describe('Store — conversation_settings_updated handler', () => {
           { name: 'filesystem', enabled: false, source: 'MCP' },
           { name: 'github', enabled: false, source: 'MCP' }
         ]
+      },
+      conversationMcpServerTools: {
+        'conv_001': {
+          filesystem: ['mcp__filesystem__read_file'],
+          github: ['mcp__github__create_pr']
+        }
       }
     });
 
     handleConversationSettingsUpdated(store, {
       conversationId: 'conv_001',
-      disallowedTools: ['mcp__github']  // filesystem removed from disallowed
+      disallowedTools: ['mcp__github__create_pr']  // filesystem removed from disallowed
     });
 
     const servers = store.conversationMcpServers['conv_001'];

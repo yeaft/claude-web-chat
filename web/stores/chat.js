@@ -96,6 +96,8 @@ export const useChatStore = defineStore('chat', {
 
     // Per-conversation MCP servers: conversationId -> [{ name, enabled, source }]
     conversationMcpServers: {},
+    // Per-conversation MCP server tools: conversationId -> { serverName: [toolName, ...] }
+    conversationMcpServerTools: {},
     // MCP 面板是否展开
     mcpPanelOpen: false,
 
