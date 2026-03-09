@@ -92,6 +92,17 @@ export function handleMessage(store, msg) {
       if (settingsConv && msg.disallowedTools !== undefined) {
         settingsConv.disallowedTools = msg.disallowedTools;
       }
+      // 同步 conversationMcpServers 中的 enabled 状态
+      const convMcpList = store.conversationMcpServers[msg.conversationId];
+      if (convMcpList && msg.disallowedTools) {
+        for (const server of convMcpList) {
+          server.enabled = !msg.disallowedTools.some(d => d === `mcp__${server.name}`);
+        }
+      }
+      // 标记需要重启
+      if (msg.needRestart && settingsConv) {
+        settingsConv.needRestart = true;
+      }
       break;
     }
 
@@ -311,11 +322,18 @@ export function handleMessage(store, msg) {
       };
       break;
 
-    // MCP servers configuration
+    // MCP servers configuration (agent-level, for Settings > Tools tab)
     case 'mcp_servers_list':
     case 'mcp_config_updated':
       if (msg.agentId && msg.servers) {
         store.mcpServers[msg.agentId] = msg.servers;
+      }
+      break;
+
+    // Per-conversation MCP servers (from Claude CLI init)
+    case 'conversation_mcp_update':
+      if (msg.conversationId && msg.servers) {
+        store.conversationMcpServers[msg.conversationId] = msg.servers;
       }
       break;
 

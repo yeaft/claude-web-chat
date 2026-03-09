@@ -142,6 +142,36 @@ export function updateConversationSettings(store, conversationId, settings) {
   });
 }
 
+/**
+ * Toggle MCP server for the current conversation.
+ * Optimistically updates conversationMcpServers, then sends update_conversation_settings.
+ */
+export function toggleConversationMcp(store, serverName, enabled) {
+  const convId = store.currentConversation;
+  if (!convId) return;
+
+  // Optimistic update
+  const servers = store.conversationMcpServers[convId];
+  if (servers) {
+    const server = servers.find(s => s.name === serverName);
+    if (server) server.enabled = enabled;
+  }
+
+  // Compute new disallowedTools from current MCP state
+  const currentServers = store.conversationMcpServers[convId] || [];
+  const mcpDisallowed = currentServers
+    .filter(s => !s.enabled)
+    .map(s => `mcp__${s.name}`);
+
+  // Merge with non-MCP disallowed tools from existing conversation settings
+  const conv = store.conversations.find(c => c.id === convId);
+  const existing = conv?.disallowedTools || [];
+  const nonMcpDisallowed = existing.filter(t => !t.startsWith('mcp__'));
+  const newDisallowed = [...nonMcpDisallowed, ...mcpDisallowed];
+
+  updateConversationSettings(store, convId, { disallowedTools: newDisallowed });
+}
+
 export function deleteConversation(store, conversationId, agentId) {
   // 清理 crew 数据（不管 server 是否响应）
   const conv = store.conversations.find(c => c.id === conversationId);

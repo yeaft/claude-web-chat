@@ -6,7 +6,8 @@ import { trackMessage } from '../context.js';
  * Handle Claude output and interaction messages from agent.
  * Types: claude_output, context_usage, execution_cancelled,
  *        background_task_started, background_task_output,
- *        slash_commands_update, compact_status, ask_user_question, error
+ *        slash_commands_update, compact_status, ask_user_question,
+ *        conversation_mcp_update, error
  */
 export async function handleAgentOutput(agentId, agent, msg) {
   switch (msg.type) {
@@ -149,6 +150,14 @@ export async function handleAgentOutput(agentId, agent, msg) {
         conversationId: msg.conversationId,
         requestId: msg.requestId,
         questions: msg.questions
+      });
+      break;
+
+    case 'conversation_mcp_update':
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'conversation_mcp_update',
+        conversationId: msg.conversationId,
+        servers: msg.servers
       });
       break;
 

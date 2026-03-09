@@ -94,6 +94,11 @@ export const useChatStore = defineStore('chat', {
     // MCP servers 配置: agentId -> [{ name, enabled, source }]
     mcpServers: {},
 
+    // Per-conversation MCP servers: conversationId -> [{ name, enabled, source }]
+    conversationMcpServers: {},
+    // MCP 面板是否展开
+    mcpPanelOpen: false,
+
     // =====================
     // Crew (multi-agent) 状态 — 按 sessionId 存储，融入 conversation 体系
     // =====================
@@ -170,6 +175,11 @@ export const useChatStore = defineStore('chat', {
       const conv = state.conversations.find(c => c.id === state.currentConversation);
       return conv?.type === 'crew';
     },
+    // 当前 conversation 的 MCP servers 列表
+    currentMcpServers: (state) => {
+      if (!state.currentConversation) return EMPTY_ARRAY;
+      return state.conversationMcpServers[state.currentConversation] || EMPTY_ARRAY;
+    },
     // 当前 Crew session 信息
     currentCrewSession: (state) => {
       if (!state.currentConversation) return null;
@@ -241,6 +251,7 @@ export const useChatStore = defineStore('chat', {
     resumeConversation(claudeSessionId, workDir, agentId = null, disallowedTools = null) { convHelpers.resumeConversation(this, claudeSessionId, workDir, agentId, disallowedTools); },
     selectConversation(conversationId, agentId) { convHelpers.selectConversation(this, conversationId, agentId); },
     updateConversationSettings(conversationId, settings) { convHelpers.updateConversationSettings(this, conversationId, settings); },
+    toggleConversationMcp(serverName, enabled) { convHelpers.toggleConversationMcp(this, serverName, enabled); },
     deleteConversation(conversationId, agentId) { convHelpers.deleteConversation(this, conversationId, agentId); },
     sendMessage(text, attachments = []) { convHelpers.sendMessage(this, text, attachments); },
     cancelExecution() { convHelpers.cancelExecution(this); },

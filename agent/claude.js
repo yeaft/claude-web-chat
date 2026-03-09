@@ -277,6 +277,23 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
             });
           }
         }
+
+        // 从 tools 列表提取 MCP servers，发送 per-conversation MCP 列表
+        const mcpServers = extractMcpServers(state.tools);
+        if (mcpServers.length > 0) {
+          // 根据当前 disallowed 设置计算每个 server 的 enabled 状态
+          const effectiveDisallowed = state.disallowedTools ?? ctx.CONFIG.disallowedTools ?? [];
+          const serversWithState = mcpServers.map(name => ({
+            name,
+            enabled: !effectiveDisallowed.some(d => d === `mcp__${name}`),
+            source: name === 'playwright' ? 'Built-in' : 'MCP'
+          }));
+          ctx.sendToServer({
+            type: 'conversation_mcp_update',
+            conversationId,
+            servers: serversWithState
+          });
+        }
       }
 
       // 捕获 compact 相关的 system 消息
@@ -457,5 +474,22 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
     sendConversationList();
   }
+}
+
+/**
+ * 从 tools 列表中提取 MCP server 名称。
+ * MCP 工具名称格式: mcp__<serverName>__<toolName>
+ * @param {string[]} tools
+ * @returns {string[]} 去重后的 server 名称列表
+ */
+function extractMcpServers(tools) {
+  const serverNames = new Set();
+  for (const tool of tools) {
+    const match = tool.match(/^mcp__([^_]+)__/);
+    if (match) {
+      serverNames.add(match[1]);
+    }
+  }
+  return [...serverNames];
 }
 

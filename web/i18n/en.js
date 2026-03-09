@@ -239,6 +239,8 @@ export default {
   'chatHeader.clearing': 'Clearing context...',
   'chatHeader.clearDone': 'Context cleared',
   'chatHeader.confirmClear': 'Are you sure you want to clear all messages in this conversation?',
+  'chatHeader.mcpConfig': 'MCP Servers',
+  'chatHeader.mcpNeedRestart': 'Changes will take effect after restarting the session.',
 
   // ============ Settings ============
   'settings.close': 'Close settings',
@@ -312,11 +314,11 @@ export default {
   'settings.msg.inviteDeleted': 'Invite code deleted',
   'settings.msg.deleteFailed': 'Delete failed',
 
-  // Settings - Tools
+  // Settings - Tools (Default config)
   'settings.tabs.tools': 'Tools',
   'settings.tools.noAgent': 'Please select an Agent first',
   'settings.tools.noServers': 'No MCP servers configured',
-  'settings.tools.hint': 'Changes take effect on new sessions. Active sessions need restart.',
+  'settings.tools.hint': 'Default MCP configuration for new sessions. Use the wrench icon in the chat header to configure per-session MCP servers.',
 
   // Settings - Dashboard (admin only)
   'settings.tabs.dashboard': 'Dashboard',
