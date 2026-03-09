@@ -110,7 +110,6 @@ export async function createRoleQuery(session, roleName) {
 
   const queryOptions = {
     cwd: roleCwd,
-    projectDir: session.projectDir,
     permissionMode: 'bypassPermissions',
     abort: abortController.signal,
     model: role.model || undefined,

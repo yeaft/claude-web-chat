@@ -272,7 +272,6 @@ export function query(config) {
       appendSystemPrompt,
       customSystemPrompt,
       cwd,
-      projectDir,
       disallowedTools = [],
       maxTurns,
       permissionMode = 'default',
@@ -302,7 +301,6 @@ export function query(config) {
   if (allowedTools.length > 0) args.push('--allowedTools', ...allowedTools);
   if (disallowedTools.length > 0) args.push('--disallowedTools', ...disallowedTools);
   if (permissionMode) args.push('--permission-mode', permissionMode);
-  if (projectDir) args.push('--project', projectDir);
 
   // Handle prompt input
   if (typeof prompt === 'string') {
