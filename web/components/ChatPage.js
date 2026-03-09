@@ -498,13 +498,25 @@ export default {
       return count;
     },
     crewConversations() {
-      return this.store.conversations.filter(c => c.type === 'crew');
+      return this.sortByActivity(this.store.conversations.filter(c => c.type === 'crew'));
     },
     normalConversations() {
-      return this.store.conversations.filter(c => c.type !== 'crew');
+      return this.sortByActivity(this.store.conversations.filter(c => c.type !== 'crew'));
     }
   },
   methods: {
+    sortByActivity(conversations) {
+      const currentId = this.store.currentConversation;
+      return [...conversations].sort((a, b) => {
+        // Current active session always first in its group
+        if (a.id === currentId) return -1;
+        if (b.id === currentId) return 1;
+        // Sort by lastActivity (from executionStatusMap) or createdAt, descending
+        const aTime = this.store.executionStatusMap[a.id]?.lastActivity || a.createdAt || 0;
+        const bTime = this.store.executionStatusMap[b.id]?.lastActivity || b.createdAt || 0;
+        return bTime - aTime;
+      });
+    },
     // Crew mode methods
     newCrewSession() {
       this.store.enterCrewMode();
