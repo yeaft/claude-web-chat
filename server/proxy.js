@@ -55,6 +55,7 @@ async function handleProxyRequest(req, res) {
       port: portNum,
       host: portConfig.host || 'localhost',
       scheme: portConfig.scheme || 'http',
+      basePath: `/agent/${agentName}/${portNum}`,
       method: req.method,
       path: proxyPath + queryString,
       headers: fwdHeaders,
