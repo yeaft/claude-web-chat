@@ -8,6 +8,7 @@ import { sendCrewMessage, sendCrewOutput, sendStatusUpdate, endRoleStreaming } f
 import { saveRoleSessionId, clearRoleSessionId, createRoleQuery } from './role-query.js';
 import { saveSessionMeta, cleanupMessageShards } from './persistence.js';
 import { executeRoute, dispatchToRole } from './routing.js';
+import { saveRoleWorkSummary } from './task-files.js';
 import { cleanupWorktrees } from './worktree.js';
 import { upsertCrewIndex } from './persistence.js';
 import { processHumanQueue } from './human-interaction.js';
@@ -65,6 +66,12 @@ async function clearSingleRole(session, roleName) {
   const roleState = session.roleStates.get(roleName);
 
   if (roleState) {
+    // 保存工作摘要到 task file（与 context_exceeded clear 一致）
+    if (roleState.accumulatedText) {
+      await saveRoleWorkSummary(session, roleName, roleState.accumulatedText).catch(e =>
+        console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
+    }
+
     if (roleState.abortController) {
       roleState.abortController.abort();
     }

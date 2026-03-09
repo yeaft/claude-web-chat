@@ -168,6 +168,18 @@ export async function dispatchToRole(session, roleName, content, fromSource, tas
     }
   }
 
+  // 最近路由消息注入（帮助 clear 后的角色恢复上下文）
+  if (typeof content === 'string' && session.messageHistory.length > 0) {
+    const recentRoutes = session.messageHistory
+      .filter(m => m.from !== 'system')
+      .slice(-5)
+      .map(m => `[${m.from} → ${m.to}${m.taskId ? ` (${m.taskId})` : ''}] ${m.content}`)
+      .join('\n');
+    if (recentRoutes) {
+      content = `${content}\n\n---\n<recent-routes>\n${recentRoutes}\n</recent-routes>`;
+    }
+  }
+
   // 记录消息历史
   session.messageHistory.push({
     from: fromSource,
