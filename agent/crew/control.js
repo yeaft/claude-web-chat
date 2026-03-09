@@ -102,6 +102,18 @@ async function clearSingleRole(session, roleName) {
   });
   sendStatusUpdate(session);
   console.log(`[Crew] Role ${roleName} cleared`);
+
+  // 从 messageHistory 提取该角色最近 5 条相关消息，构造记忆恢复 prompt
+  const roleMessages = session.messageHistory
+    .filter(m => m.from === roleName || m.to === roleName)
+    .slice(-5);
+  if (roleMessages.length > 0) {
+    const summary = roleMessages
+      .map(m => `[${m.from} → ${m.to}${m.taskId ? ` (${m.taskId})` : ''}] ${m.content}`)
+      .join('\n');
+    const restorePrompt = `你的对话上下文刚被清空（clear）。下面是你之前的一些对话记录，请恢复记忆并继续工作。如果有正在进行的任务，请继续完成。\n\n${summary}`;
+    await dispatchToRole(session, roleName, restorePrompt, 'system');
+  }
 }
 
 /**
