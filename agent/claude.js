@@ -485,9 +485,9 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 function extractMcpServers(tools) {
   const serverNames = new Set();
   for (const tool of tools) {
-    const match = tool.match(/^mcp__([^_]+)__/);
-    if (match) {
-      serverNames.add(match[1]);
+    const parts = tool.split('__');
+    if (parts.length >= 3 && parts[0] === 'mcp') {
+      serverNames.add(parts[1]);
     }
   }
   return [...serverNames];
