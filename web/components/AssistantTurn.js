@@ -39,12 +39,12 @@ export default {
         </div>
       </div>
 
-      <!-- 3. Tool actions (hidden in chat mode when all tools completed) -->
+      <!-- 3. Tool actions -->
       <div v-if="showToolActions" class="turn-actions">
         <div v-if="expanded" class="turn-actions-history">
           <template v-for="(tool, i) in historyTools" :key="i">
             <ToolLine :tool-name="tool.toolName" :tool-input="tool.toolInput"
-                      :tool-result="tool.toolResult" :has-result="!!tool.hasResult" />
+                      :tool-result="tool.toolResult" :has-result="!!tool.hasResult" :start-time="tool.startTime" />
           </template>
         </div>
         <div class="turn-actions-latest">
@@ -56,7 +56,7 @@ export default {
             <span>{{ turn.toolMsgs.length - 1 }} more</span>
           </button>
           <ToolLine :tool-name="latestTool.toolName" :tool-input="latestTool.toolInput"
-                    :tool-result="latestTool.toolResult" :has-result="!!latestTool.hasResult" />
+                    :tool-result="latestTool.toolResult" :has-result="!!latestTool.hasResult" :start-time="latestTool.startTime" />
         </div>
       </div>
 
@@ -128,13 +128,8 @@ export default {
     const selectedOptions = Vue.reactive({});
     const customAnswers = Vue.reactive({});
 
-    // In chat mode (non-crew), hide tool actions when all tools are completed
     const showToolActions = Vue.computed(() => {
-      const tools = props.turn.toolMsgs;
-      if (tools.length === 0) return false;
-      if (store.currentConversationIsCrew) return true;
-      // In chat mode, only show if there's at least one running (incomplete) tool
-      return tools.some(tool => !tool.hasResult);
+      return props.turn.toolMsgs.length > 0;
     });
 
     const latestTool = Vue.computed(() => {

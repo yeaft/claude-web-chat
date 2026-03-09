@@ -81,7 +81,8 @@ export function handleClaudeOutput(store, conversationId, data) {
         store.addMessageToConversation(conversationId, {
           type: 'tool-use',
           toolName: block.name,
-          toolInput: block.input
+          toolInput: block.input,
+          startTime: Date.now()
         });
       }
     }

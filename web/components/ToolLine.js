@@ -8,6 +8,7 @@
  *   toolResult — Any, tool result content (optional)
  *   hasResult  — Boolean, whether result has arrived
  *   compact    — Boolean, compact mode for crew view
+ *   startTime  — Number, timestamp when tool execution started (optional)
  */
 export default {
   name: 'ToolLine',
@@ -16,7 +17,8 @@ export default {
     toolInput: { type: Object, default: null },
     toolResult: { default: null },
     hasResult: { type: Boolean, default: false },
-    compact: { type: Boolean, default: false }
+    compact: { type: Boolean, default: false },
+    startTime: { type: Number, default: 0 }
   },
   template: `
     <div class="crew-msg-tool">
@@ -25,6 +27,7 @@ export default {
         <span class="tool-line-text">{{ getToolOneLine(toolName, toolInput) }}</span>
         <span class="tool-line-status completed" v-if="hasResult">\u2713</span>
         <span class="tool-line-status running" v-else><span class="tool-dots"><span></span><span></span><span></span></span></span>
+        <span class="tool-line-time" v-if="formattedTime">{{ formattedTime }}</span>
         <span class="tool-line-toggle" v-if="hasExpandableContent" @click.stop="toggle">
           <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
         </span>
@@ -49,6 +52,15 @@ export default {
   `,
   setup(props) {
     const isExpanded = Vue.ref(props.toolName === 'Edit');
+
+    const formattedTime = Vue.computed(() => {
+      if (!props.startTime) return '';
+      const d = new Date(props.startTime);
+      const h = d.getHours().toString().padStart(2, '0');
+      const m = d.getMinutes().toString().padStart(2, '0');
+      const s = d.getSeconds().toString().padStart(2, '0');
+      return `${h}:${m}:${s}`;
+    });
 
     const isEditTool = Vue.computed(() => props.toolName === 'Edit');
     const hasDiff = Vue.computed(() => {
@@ -155,7 +167,7 @@ export default {
     };
 
     return {
-      isExpanded, isEditTool, hasDiff, hasExpandableContent, bashOutput,
+      isExpanded, isEditTool, hasDiff, hasExpandableContent, bashOutput, formattedTime,
       toggle, getToolIcon, getToolOneLine, renderDiff, formatInput
     };
   }
