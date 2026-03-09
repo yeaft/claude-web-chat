@@ -26,7 +26,6 @@ export async function handleFileSearch(msg) {
         const entries = await readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
           if (results.length >= MAX_RESULTS) return;
-          if (entry.name.startsWith('.') && depth > 0) continue;
           if (skipDirs.has(entry.name) && entry.isDirectory()) continue;
 
           const fullPath = join(dir, entry.name);
