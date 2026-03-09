@@ -557,7 +557,8 @@
 
 /* AskUserQuestion 问题卡片 */
 .message.user-question,
-.message.tool-use:has(.ask-card) {
+.message.tool-use:has(.ask-card),
+.message.tool-use:has(.ask-summary) {
   align-self: stretch;
   max-width: 100%;
   padding: 0;
@@ -578,9 +579,33 @@
   border-left-color: #f59e0b;
 }
 
-.ask-card.ask-answered {
-  border-left-color: #22c55e;
-  opacity: 0.85;
+/* Collapsed summary for answered questions */
+.ask-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-left: 3px solid #22c55e;
+  font-size: 13px;
+  color: var(--text-secondary);
+  max-width: 560px;
+}
+
+.ask-summary-icon {
+  color: #22c55e;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.ask-summary-text {
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ask-icon-row {
@@ -600,16 +625,6 @@
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-}
-
-.ask-answered-tag {
-  margin-left: auto;
-  font-size: 11px;
-  font-weight: 600;
-  color: #22c55e;
-  background: rgba(34, 197, 94, 0.1);
-  padding: 2px 8px;
-  border-radius: 10px;
 }
 
 .ask-question {
@@ -764,23 +779,6 @@
 .ask-submit:disabled {
   opacity: 0.4;
   cursor: default;
-}
-
-.ask-answer-display {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  background: rgba(34, 197, 94, 0.06);
-  border: 1px solid rgba(34, 197, 94, 0.2);
-  border-radius: 6px;
-  margin-top: 4px;
-}
-
-.ask-answer-value {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
 }
 
 .ask-waiting-hint {
