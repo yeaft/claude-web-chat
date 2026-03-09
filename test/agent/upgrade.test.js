@@ -46,7 +46,7 @@ function generateBatLines({ pid, pkgSpec, logPath, batPath }) {
     'echo [Upgrade] Waiting for CLI process (PID %PID%) to exit... >> "%LOGFILE%"',
     '',
     ':WAIT_LOOP',
-    'tasklist /FI "PID eq %PID%" 2>NUL | find /I "%PID%" >NUL',
+    'tasklist /FI "PID eq %PID%" 2>NUL | findstr /I "%PID%" >NUL',
     'if errorlevel 1 goto PID_EXITED',
     'set /A COUNT+=1',
     'if %COUNT% GEQ %MAX_WAIT% (',
@@ -211,6 +211,11 @@ describe('upgradeWindows — bat script generation', () => {
     expect(batContent).toContain(':PID_EXITED');
   });
 
+  it('should use findstr instead of find for PID check (find without pipe hangs on Windows)', () => {
+    expect(batContent).toContain('findstr /I "%PID%"');
+    expect(batContent).not.toContain('| find /I');
+  });
+
   it('should have a max wait timeout', () => {
     expect(batContent).toContain('set MAX_WAIT=30');
     expect(batContent).toContain('if %COUNT% GEQ %MAX_WAIT%');
@@ -372,5 +377,51 @@ describe('retryOp — exponential backoff delay calculation', () => {
     const delay7 = Math.min(1000 * Math.pow(2, 6), 10000);
     expect(delay6).toBe(10000);
     expect(delay7).toBe(10000);
+  });
+});
+
+// =========================================================================
+// Test: Remote upgrade (upgrade.js) — PM2 race condition fix
+// =========================================================================
+describe('remote upgrade (upgrade.js) — PM2 race condition fix', () => {
+  let upgradeSource;
+
+  beforeEach(() => {
+    upgradeSource = fs.readFileSync(
+      path.join(process.cwd(), 'agent/connection/upgrade.js'),
+      'utf-8'
+    );
+  });
+
+  it('should delete PM2 app before process exit to prevent auto-restart', () => {
+    // The fix: pm2 delete must happen BEFORE cleanupAndExit, not in the bat script
+    const deleteIndex = upgradeSource.indexOf("pm2', ['delete'");
+    const exitIndex = upgradeSource.indexOf('cleanupAndExit(0)');
+    expect(deleteIndex).toBeGreaterThan(-1);
+    expect(exitIndex).toBeGreaterThan(-1);
+    expect(deleteIndex).toBeLessThan(exitIndex);
+  });
+
+  it('should use execFileSync for pm2 delete (synchronous before exit)', () => {
+    expect(upgradeSource).toContain("execFileSync('pm2', ['delete'");
+  });
+
+  it('should not have pm2 stop in the bat script (replaced by pre-exit pm2 delete)', () => {
+    // The old code had 'pm2 stop yeaft-agent' in the bat script which raced with PM2 restart
+    expect(upgradeSource).not.toContain("pm2 stop yeaft-agent");
+  });
+
+  it('should use findstr instead of find in bat script (find without pipe hangs on Windows)', () => {
+    expect(upgradeSource).toContain('findstr /I');
+    expect(upgradeSource).not.toContain("| find /I");
+  });
+
+  it('should re-register PM2 via ecosystem config after upgrade', () => {
+    expect(upgradeSource).toContain('pm2 start');
+    expect(upgradeSource).toContain('ecosystem.config.cjs');
+  });
+
+  it('should save PM2 process list after re-registering', () => {
+    expect(upgradeSource).toContain('pm2 save');
   });
 });

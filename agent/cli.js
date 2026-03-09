@@ -185,7 +185,7 @@ function upgradeWindows(latestVersion) {
     'echo [Upgrade] Waiting for CLI process (PID %PID%) to exit... >> "%LOGFILE%"',
     '',
     ':WAIT_LOOP',
-    'tasklist /FI "PID eq %PID%" 2>NUL | find /I "%PID%" >NUL',
+    'tasklist /FI "PID eq %PID%" 2>NUL | findstr /I "%PID%" >NUL',
     'if errorlevel 1 goto PID_EXITED',
     'set /A COUNT+=1',
     'if %COUNT% GEQ %MAX_WAIT% (',
