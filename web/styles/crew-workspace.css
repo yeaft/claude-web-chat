@@ -1806,13 +1806,15 @@
 
 /* Active Messages — single latest message */
 .crew-active-messages {
-  margin: 8px 0;
+  margin: 16px 8px 8px;
+  background: var(--bg-sidebar);
+  border-radius: 8px;
 }
 
 .crew-active-messages-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 4px 12px;

@@ -388,7 +388,7 @@ export default {
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
         if (m.type !== 'text' || !m.role) continue;
-        if (m.role === 'system') continue;
+        if (m.role === 'system' || m.role === 'human') continue;
         return [m];
       }
       return [];
