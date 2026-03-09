@@ -95,6 +95,11 @@ export function sendCrewMessage(store, content, targetRole, attachments) {
     attachments,
     timestamp: Date.now()
   });
+  // Update lastMessageAt for sidebar sorting
+  const conv = store.conversations.find(c => c.id === sessionId);
+  if (conv) {
+    conv.lastMessageAt = Date.now();
+  }
   // 发送到 server
   const msg = {
     type: 'crew_human_input',
