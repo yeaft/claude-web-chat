@@ -6,6 +6,7 @@ import { query, Stream } from '../sdk/index.js';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { getMessages } from '../crew-i18n.js';
+import ctx from '../context.js';
 
 /** Format role label */
 function roleLabel(r) {
@@ -104,12 +105,16 @@ export async function createRoleQuery(session, roleName) {
   // cwd 设为角色目录
   const roleCwd = join(session.sharedDir, 'roles', roleName);
 
+  // 继承全局 MCP disallowedTools，避免不必要的 tool schema token 消耗
+  const globalDisallowed = ctx.CONFIG?.disallowedTools || [];
+
   const queryOptions = {
     cwd: roleCwd,
     permissionMode: 'bypassPermissions',
     abort: abortController.signal,
     model: role.model || undefined,
-    appendSystemPrompt: systemPrompt
+    appendSystemPrompt: systemPrompt,
+    ...(globalDisallowed.length > 0 && { disallowedTools: globalDisallowed })
   };
 
   if (savedSessionId) {

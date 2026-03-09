@@ -5626,3 +5626,33 @@ describe('task-31: abort_role backend', () => {
     expect(fn).toContain('!roleState.turnActive');
   });
 });
+
+// =====================================================================
+// MCP disallowedTools inheritance in Crew mode
+// =====================================================================
+
+describe('Crew MCP disallowedTools inheritance', () => {
+  let roleQuerySource;
+
+  beforeAll(async () => {
+    const roleQueryPath = join(__dirname, '../../agent/crew/role-query.js');
+    roleQuerySource = await fs.readFile(roleQueryPath, 'utf-8');
+  });
+
+  it('should import ctx from context.js', () => {
+    expect(roleQuerySource).toContain("import ctx from '../context.js'");
+  });
+
+  it('should read global disallowedTools from ctx.CONFIG', () => {
+    expect(roleQuerySource).toContain('ctx.CONFIG?.disallowedTools');
+  });
+
+  it('should pass disallowedTools to queryOptions when global list is non-empty', () => {
+    // The spread pattern conditionally adds disallowedTools
+    expect(roleQuerySource).toContain('disallowedTools: globalDisallowed');
+  });
+
+  it('should default to empty array when ctx.CONFIG.disallowedTools is undefined', () => {
+    expect(roleQuerySource).toContain("ctx.CONFIG?.disallowedTools || []");
+  });
+});
