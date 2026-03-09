@@ -312,6 +312,12 @@ export default {
   'settings.msg.inviteDeleted': 'Invite code deleted',
   'settings.msg.deleteFailed': 'Delete failed',
 
+  // Settings - Tools
+  'settings.tabs.tools': 'Tools',
+  'settings.tools.noAgent': 'Please select an Agent first',
+  'settings.tools.noServers': 'No MCP servers configured',
+  'settings.tools.hint': 'Changes take effect on new sessions. Active sessions need restart.',
+
   // Settings - Dashboard (admin only)
   'settings.tabs.dashboard': 'Dashboard',
   'settings.dashboard.totalUsers': 'Total Users',

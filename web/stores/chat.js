@@ -91,6 +91,9 @@ export const useChatStore = defineStore('chat', {
     // 输入框草稿（按 conversationId 保存，切换时不丢失）
     inputDrafts: {},
 
+    // MCP servers 配置: agentId -> [{ name, enabled, source }]
+    mcpServers: {},
+
     // =====================
     // Crew (multi-agent) 状态 — 按 sessionId 存储，融入 conversation 体系
     // =====================
