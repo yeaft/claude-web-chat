@@ -62,55 +62,55 @@ export default {
 
       <!-- 4. AskUserQuestion interactive card -->
       <div v-if="turn.askMsg" class="turn-ask">
-        <div class="ask-card" :class="{ 'ask-answered': isAskAnswered, 'ask-waiting': !isAskAnswered && !!turn.askMsg.askRequestId }">
+        <!-- Collapsed summary for answered questions -->
+        <div v-if="isAskAnswered" class="ask-summary">
+          <span class="ask-summary-icon">✓</span>
+          <span class="ask-summary-text">{{ askSummaryText }}</span>
+        </div>
+        <!-- Full interactive card for unanswered questions -->
+        <div v-else class="ask-card" :class="{ 'ask-waiting': !!turn.askMsg.askRequestId }">
           <div class="ask-icon-row">
             <span class="ask-icon">❓</span>
             <span class="ask-label">{{ $t('message.askInput') }}</span>
-            <span class="ask-answered-tag" v-if="isAskAnswered">✓ {{ $t('message.askAnswered') }}</span>
           </div>
           <div v-for="(q, qIdx) in effectiveQuestions" :key="qIdx" class="ask-question">
             <div class="ask-q-text">
               <span class="ask-q-chip" v-if="q.header">{{ q.header }}</span>
               {{ q.question }}
             </div>
-            <template v-if="!isAskAnswered">
-              <div class="ask-options">
-                <button
-                  v-for="opt in q.options"
-                  :key="opt.label"
-                  class="ask-opt"
-                  :class="{ selected: isOptionSelected(q.question, opt.label) }"
-                  :disabled="!turn.askMsg.askRequestId"
-                  @click="selectOption(q, opt)"
-                >
-                  <span class="ask-opt-radio" :class="{ checked: isOptionSelected(q.question, opt.label) }"></span>
-                  <span class="ask-opt-body">
-                    <span class="ask-opt-label">{{ opt.label }}</span>
-                    <span class="ask-opt-desc" v-if="opt.description">{{ opt.description }}</span>
-                  </span>
-                </button>
-              </div>
-              <div class="ask-custom" v-if="turn.askMsg.askRequestId">
-                <input
-                  type="text"
-                  :placeholder="$t('message.askCustomPlaceholder')"
-                  :value="customAnswers[q.question] || ''"
-                  @input="setCustomAnswer(q.question, $event.target.value)"
-                  @keyup.enter="submitToolAnswers"
-                />
-              </div>
-            </template>
-            <div v-else class="ask-answer-display">
-              <span class="ask-answer-value">{{ getAnswerForQuestion(q.question) }}</span>
+            <div class="ask-options">
+              <button
+                v-for="opt in q.options"
+                :key="opt.label"
+                class="ask-opt"
+                :class="{ selected: isOptionSelected(q.question, opt.label) }"
+                :disabled="!turn.askMsg.askRequestId"
+                @click="selectOption(q, opt)"
+              >
+                <span class="ask-opt-radio" :class="{ checked: isOptionSelected(q.question, opt.label) }"></span>
+                <span class="ask-opt-body">
+                  <span class="ask-opt-label">{{ opt.label }}</span>
+                  <span class="ask-opt-desc" v-if="opt.description">{{ opt.description }}</span>
+                </span>
+              </button>
+            </div>
+            <div class="ask-custom" v-if="turn.askMsg.askRequestId">
+              <input
+                type="text"
+                :placeholder="$t('message.askCustomPlaceholder')"
+                :value="customAnswers[q.question] || ''"
+                @input="setCustomAnswer(q.question, $event.target.value)"
+                @keyup.enter="submitToolAnswers"
+              />
             </div>
           </div>
-          <div class="ask-actions" v-if="!isAskAnswered && turn.askMsg.askRequestId">
+          <div class="ask-actions" v-if="needsSubmitButton && turn.askMsg.askRequestId">
             <button class="ask-submit" @click="submitToolAnswers" :disabled="!hasAnyToolSelection">
               <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
               {{ $t('message.askSubmit') }}
             </button>
           </div>
-          <div class="ask-waiting-hint" v-if="!isAskAnswered && !turn.askMsg.askRequestId">
+          <div class="ask-waiting-hint" v-if="!turn.askMsg.askRequestId">
             <span class="ask-waiting-spinner"></span>
             {{ $t('message.askWaiting') }}
           </div>
@@ -271,6 +271,11 @@ export default {
         selectedOptions[q.question] = newArr;
       } else {
         selectedOptions[q.question] = opt.label;
+        // Auto-submit for single-select: if all questions are single-select
+        // and all have a selection, submit immediately
+        if (!needsSubmitButton.value) {
+          Vue.nextTick(() => submitToolAnswers());
+        }
       }
     };
 
@@ -320,6 +325,21 @@ export default {
       if (!answers) return '-';
       return answers[questionText] || '-';
     };
+
+    // Whether the Submit button is needed (multiSelect or custom input scenarios)
+    const needsSubmitButton = Vue.computed(() => {
+      const questions = effectiveQuestions.value;
+      if (!questions || questions.length === 0) return false;
+      return questions.some(q => q.multiSelect);
+    });
+
+    // Summary text for collapsed answered card
+    const askSummaryText = Vue.computed(() => {
+      const answers = props.turn.askMsg?.selectedAnswers;
+      if (!answers) return '';
+      const values = Object.values(answers).filter(v => v && v !== '-');
+      return values.join(', ');
+    });
 
     // Syntax highlighting
     Vue.onMounted(() => {
@@ -376,7 +396,9 @@ export default {
       customAnswers,
       hasAnyToolSelection,
       submitToolAnswers,
-      getAnswerForQuestion
+      getAnswerForQuestion,
+      needsSubmitButton,
+      askSummaryText
     };
   }
 };
