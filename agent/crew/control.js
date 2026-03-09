@@ -9,6 +9,7 @@ import { saveRoleSessionId, clearRoleSessionId, createRoleQuery } from './role-q
 import { saveSessionMeta, cleanupMessageShards } from './persistence.js';
 import { executeRoute, dispatchToRole } from './routing.js';
 import { saveRoleWorkSummary } from './task-files.js';
+import { getMessages } from '../crew-i18n.js';
 import { cleanupWorktrees } from './worktree.js';
 import { upsertCrewIndex } from './persistence.js';
 import { processHumanQueue } from './human-interaction.js';
@@ -102,6 +103,19 @@ async function clearSingleRole(session, roleName) {
   });
   sendStatusUpdate(session);
   console.log(`[Crew] Role ${roleName} cleared`);
+
+  // 从 messageHistory 提取该角色最近 5 条相关消息，构造记忆恢复 prompt
+  const roleMessages = session.messageHistory
+    .filter(m => m.from === roleName || m.to === roleName)
+    .slice(-5);
+  if (roleMessages.length > 0) {
+    const m = getMessages(session.language || 'zh-CN');
+    const summary = roleMessages
+      .map(msg => `[${msg.from} → ${msg.to}${msg.taskId ? ` (${msg.taskId})` : ''}] ${msg.content}`)
+      .join('\n');
+    const restorePrompt = `${m.memoryRestorePrompt}\n\n${summary}`;
+    await dispatchToRole(session, roleName, restorePrompt, 'system');
+  }
 }
 
 /**
