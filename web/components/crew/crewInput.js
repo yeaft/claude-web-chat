@@ -1,6 +1,23 @@
 /**
- * crewInput — Composable factory for input handling, @-mention, file upload, message sending.
+ * crewInput — Composable factory for input handling, @-mention, slash-command autocomplete, file upload, message sending.
  */
+
+// System skills with descriptions (shared with ChatInput.js)
+const SYSTEM_SKILLS = {
+  '/compact': 'Compact context',
+  '/context': 'Show context usage',
+  '/cost': 'Show token costs',
+  '/init': 'Reinitialize session',
+  '/doctor': 'Check health status',
+  '/memory': 'View/edit memory',
+  '/model': 'View/switch model',
+  '/review': 'Code review',
+  '/mcp': 'MCP server status',
+  '/skills': 'List available skills'
+};
+const SYSTEM_SKILL_NAMES = new Set(Object.keys(SYSTEM_SKILLS));
+const DEFAULT_SLASH_COMMANDS = Object.keys(SYSTEM_SKILLS);
+
 export function createCrewInput(store, authStore, { getInputRef, getFileInputRef, getCurrentPendingAsk }) {
   const inputText = Vue.ref('');
   const attachments = Vue.ref([]);
@@ -8,6 +25,10 @@ export function createCrewInput(store, authStore, { getInputRef, getFileInputRef
   const atMenuVisible = Vue.ref(false);
   const atQuery = Vue.ref('');
   const atMenuIndex = Vue.ref(0);
+
+  // Slash command autocomplete state
+  const slashMenuVisible = Vue.ref(false);
+  const slashMenuIndex = Vue.ref(0);
 
   const canSend = Vue.computed(() => {
     const hasContent = inputText.value.trim() || attachments.value.length > 0;
@@ -26,6 +47,52 @@ export function createCrewInput(store, authStore, { getInputRef, getFileInputRef
     );
   });
 
+  // Slash command autocomplete computed properties (mirrors ChatInput.js logic)
+  const availableCommands = Vue.computed(() => {
+    const dynamic = store.slashCommands || [];
+    const commands = dynamic.length > 0 ? dynamic : DEFAULT_SLASH_COMMANDS;
+    return commands.map(cmd => cmd.startsWith('/') ? cmd : '/' + cmd);
+  });
+
+  const slashFlatItems = Vue.computed(() => {
+    const text = inputText.value.trim();
+    if (!text.startsWith('/')) return [];
+    const prefix = text.toLowerCase();
+    return availableCommands.value
+      .filter(cmd => cmd.toLowerCase().startsWith(prefix) && cmd.toLowerCase() !== prefix)
+      .map(cmd => ({
+        cmd,
+        desc: SYSTEM_SKILLS[cmd] || cmd.slice(1)
+      }));
+  });
+
+  const slashGroupedCommands = Vue.computed(() => {
+    const items = slashFlatItems.value;
+    if (items.length === 0) return [];
+
+    const system = [];
+    const project = [];
+    items.forEach((item, i) => {
+      const entry = { ...item, flatIndex: i };
+      if (SYSTEM_SKILL_NAMES.has(item.cmd)) {
+        system.push(entry);
+      } else {
+        project.push(entry);
+      }
+    });
+
+    const groups = [];
+    if (system.length > 0) {
+      groups.push({ label: 'System', items: system, isLast: project.length === 0 });
+    }
+    if (project.length > 0) {
+      groups.push({ label: 'Project', items: project, isLast: true });
+    }
+    return groups;
+  });
+
+  const slashFilteredCommands = Vue.computed(() => slashFlatItems.value.map(item => item.cmd));
+
   function autoResize() {
     const textarea = getInputRef();
     if (textarea) {
@@ -38,8 +105,20 @@ export function createCrewInput(store, authStore, { getInputRef, getFileInputRef
     autoResize();
     const textarea = getInputRef();
     if (!textarea) return;
-    const pos = textarea.selectionStart;
     const text = inputText.value;
+
+    // Check slash command autocomplete first (only when input starts with / and has no spaces)
+    const trimmed = text.trim();
+    if (trimmed.startsWith('/') && !trimmed.includes(' ')) {
+      slashMenuVisible.value = true;
+      slashMenuIndex.value = 0;
+      atMenuVisible.value = false;
+      return;
+    }
+    slashMenuVisible.value = false;
+
+    // Check @-mention
+    const pos = textarea.selectionStart;
     const beforeCursor = text.substring(0, pos);
     const atIdx = beforeCursor.lastIndexOf('@');
     if (atIdx >= 0 && (atIdx === 0 || /\s/.test(beforeCursor[atIdx - 1]))) {
@@ -52,6 +131,14 @@ export function createCrewInput(store, authStore, { getInputRef, getFileInputRef
       }
     }
     atMenuVisible.value = false;
+  }
+
+  function selectSlashCommand(cmd) {
+    inputText.value = cmd + ' ';
+    slashMenuVisible.value = false;
+    Vue.nextTick(() => {
+      getInputRef()?.focus();
+    });
   }
 
   function selectAtRole(role) {
@@ -74,6 +161,31 @@ export function createCrewInput(store, authStore, { getInputRef, getFileInputRef
   }
 
   function handleKeydown(e, sendMessage) {
+    // Slash command autocomplete keyboard navigation
+    if (slashMenuVisible.value && slashFilteredCommands.value.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        slashMenuIndex.value = (slashMenuIndex.value + 1) % slashFilteredCommands.value.length;
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        slashMenuIndex.value = (slashMenuIndex.value - 1 + slashFilteredCommands.value.length) % slashFilteredCommands.value.length;
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault();
+        selectSlashCommand(slashFilteredCommands.value[slashMenuIndex.value]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        slashMenuVisible.value = false;
+        return;
+      }
+    }
+
+    // @-mention keyboard navigation
     if (atMenuVisible.value && filteredAtRoles.value.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -100,6 +212,12 @@ export function createCrewInput(store, authStore, { getInputRef, getFileInputRef
       e.preventDefault();
       sendMessage();
     }
+  }
+
+  function onBlur() {
+    setTimeout(() => {
+      slashMenuVisible.value = false;
+    }, 150);
   }
 
   function handlePaste(e) {
@@ -170,6 +288,8 @@ export function createCrewInput(store, authStore, { getInputRef, getFileInputRef
     if (e && e.preventDefault) e.preventDefault();
     if (!canSend.value) return;
 
+    slashMenuVisible.value = false;
+
     const text = inputText.value.trim();
     const attachmentInfos = attachments.value
       .filter(a => a.fileId)
@@ -227,6 +347,15 @@ export function createCrewInput(store, authStore, { getInputRef, getFileInputRef
     atMenuIndex,
     canSend,
     filteredAtRoles,
+    // Slash command autocomplete
+    slashMenuVisible,
+    slashMenuIndex,
+    slashFlatItems,
+    slashGroupedCommands,
+    slashFilteredCommands,
+    selectSlashCommand,
+    onBlur,
+    // Methods
     handleInput,
     selectAtRole,
     handleKeydown,
