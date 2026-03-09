@@ -4,7 +4,7 @@ import https from 'https';
 import ctx from './context.js';
 
 export function handleProxyHttpRequest(msg) {
-  const { requestId, port, method, path, headers, body, scheme, host } = msg;
+  const { requestId, port, method, path, headers, body, scheme, host, basePath } = msg;
   const effectiveHost = host || 'localhost';
   const effectiveScheme = scheme || 'http';
   const httpModule = effectiveScheme === 'https' ? https : http;
@@ -60,12 +60,25 @@ export function handleProxyHttpRequest(msg) {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => {
-        const responseBody = Buffer.concat(chunks);
+        let responseBody = Buffer.concat(chunks);
+        const responseHeaders = { ...res.headers };
+
+        // Rewrite absolute paths in HTML responses
+        if (basePath && contentType.includes('text/html')) {
+          let html = responseBody.toString('utf-8');
+          html = html
+            .replace(/((?:src|href|action)\s*=\s*["'])\//gi, `$1${basePath}/`)
+            .replace(/(url\s*\(\s*["']?)\//gi, `$1${basePath}/`);
+          responseBody = Buffer.from(html, 'utf-8');
+          // Update content-length since rewritten paths are longer
+          delete responseHeaders['content-length'];
+        }
+
         ctx.sendToServer({
           type: 'proxy_response',
           requestId,
           statusCode: res.statusCode,
-          headers: res.headers,
+          headers: responseHeaders,
           body: responseBody.toString('base64')
         });
       });
