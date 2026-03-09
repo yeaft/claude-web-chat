@@ -152,7 +152,8 @@ export function formatDbMessage(dbMsg) {
         catch { return {}; }
       })(),
       hasResult: true,
-      isHistory: true
+      isHistory: true,
+      startTime: dbMsg.created_at || 0
     };
   }
 

@@ -1402,6 +1402,14 @@
   align-items: center;
 }
 
+.tool-line-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Bouncing dots instead of spinner */
 .tool-dots {
   display: inline-flex;
