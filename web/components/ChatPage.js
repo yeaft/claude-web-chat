@@ -506,11 +506,7 @@ export default {
   },
   methods: {
     sortByActivity(conversations) {
-      const currentId = this.store.currentConversation;
       return [...conversations].sort((a, b) => {
-        // Current active session always first in its group
-        if (a.id === currentId) return -1;
-        if (b.id === currentId) return 1;
         // Sort by lastMessageAt (set when user sends a message), descending
         const aTime = a.lastMessageAt || 0;
         const bTime = b.lastMessageAt || 0;
