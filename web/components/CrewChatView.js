@@ -226,12 +226,30 @@ export default {
             </svg>
           </label>
           <div class="textarea-wrapper">
+            <div class="slash-autocomplete" v-if="input.slashMenuVisible.value && input.slashFlatItems.value.length > 0">
+              <template v-for="group in input.slashGroupedCommands.value" :key="group.label">
+                <div class="slash-group-label">{{ group.label }}</div>
+                <div
+                  v-for="item in group.items"
+                  :key="item.cmd"
+                  class="slash-autocomplete-item"
+                  :class="{ active: item.flatIndex === input.slashMenuIndex.value }"
+                  @mousedown.prevent="input.selectSlashCommand(item.cmd)"
+                  @mouseenter="input.slashMenuIndex.value = item.flatIndex"
+                >
+                  <span class="slash-cmd-name">{{ item.cmd }}</span>
+                  <span class="slash-cmd-desc">{{ item.desc }}</span>
+                </div>
+                <div v-if="!group.isLast" class="slash-group-separator"></div>
+              </template>
+            </div>
             <textarea
               ref="inputRef"
               v-model="input.inputText.value"
               @input="input.handleInput()"
               @keydown="input.handleKeydown($event, () => sendMessage())"
               @paste="input.handlePaste($event)"
+              @blur="input.onBlur()"
               :placeholder="$t('crew.inputPlaceholder')"
               rows="1"
             ></textarea>

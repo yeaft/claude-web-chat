@@ -23,6 +23,17 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
       if (message.type === 'system' && message.subtype === 'init') {
         roleState.claudeSessionId = message.session_id;
         console.log(`[Crew] ${roleName} session: ${message.session_id}`);
+
+        // Decision maker 的 system init 中捕获 slash_commands，发给前端用于 autocomplete
+        const roleConfig = session.roles.get(roleName);
+        if (roleConfig?.isDecisionMaker && message.slash_commands?.length > 0) {
+          console.log(`[Crew] ${roleName} slash commands: ${message.slash_commands.join(', ')}`);
+          sendCrewMessage({
+            type: 'slash_commands_update',
+            conversationId: session.id,
+            slashCommands: message.slash_commands
+          });
+        }
         continue;
       }
 

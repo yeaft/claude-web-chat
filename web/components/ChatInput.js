@@ -1,21 +1,4 @@
-// System skills with descriptions (fixed list)
-const SYSTEM_SKILLS = {
-  '/compact': 'Compact context',
-  '/context': 'Show context usage',
-  '/cost': 'Show token costs',
-  '/init': 'Reinitialize session',
-  '/doctor': 'Check health status',
-  '/memory': 'View/edit memory',
-  '/model': 'View/switch model',
-  '/review': 'Code review',
-  '/mcp': 'MCP server status',
-  '/skills': 'List available skills'
-};
-
-const SYSTEM_SKILL_NAMES = new Set(Object.keys(SYSTEM_SKILLS));
-
-// 默认的 slash commands 列表（在 Claude SDK 返回动态列表前使用）
-const DEFAULT_SLASH_COMMANDS = Object.keys(SYSTEM_SKILLS);
+import { SYSTEM_SKILLS, SYSTEM_SKILL_NAMES, DEFAULT_SLASH_COMMANDS } from '../utils/slash-commands.js';
 
 export default {
   name: 'ChatInput',
