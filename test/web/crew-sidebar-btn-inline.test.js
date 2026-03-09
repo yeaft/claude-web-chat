@@ -4,18 +4,18 @@ import { resolve } from 'path';
 import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
- * Tests for sidebar clickable group headers.
+ * Tests for sidebar collapsible group headers with separated add buttons.
  *
- * The session-group-header rows are fully clickable to create new
- * conversations. A "+" icon (session-header-add-icon) is right-aligned
- * as a visual hint.
+ * The session-group-header rows contain:
+ * 1) A title area (session-group-title-area) with collapse arrow + icon + text
+ *    — clicking toggles group collapse
+ * 2) A separate add button (session-header-add-btn) for creating new sessions
  *
  * Verifies:
- * 1) Both add icons are inside their respective session-group-header
- * 2) Click handlers are on the header div, not on a separate button
- * 3) CSS styles for header add icon
- * 4) Old layout patterns removed
- * 5) Structural integrity
+ * 1) Both add buttons are inside their respective session-group-header
+ * 2) Title area has collapse toggle, add button triggers creation
+ * 3) CSS styles for collapse arrow and add button
+ * 4) Collapse state data properties exist
  */
 
 let chatPageSource;
@@ -28,89 +28,112 @@ beforeAll(() => {
   cssSource = loadAllCss();
 });
 
-/**
- * Extract a CSS rule block by selector.
- */
-function extractCssBlock(selector) {
-  const idx = cssSource.indexOf(selector);
-  if (idx === -1) return '';
-  const braceStart = cssSource.indexOf('{', idx);
-  if (braceStart === -1) return '';
-  let depth = 0;
-  let end = braceStart;
-  for (let i = braceStart; i < cssSource.length; i++) {
-    if (cssSource[i] === '{') depth++;
-    if (cssSource[i] === '}') depth--;
-    if (depth === 0) { end = i; break; }
-  }
-  return cssSource.substring(braceStart + 1, end).trim();
-}
-
 // =====================================================================
-// 1. Add icons are INSIDE session-group-header
+// 1. Add buttons are INSIDE session-group-header
 // =====================================================================
-describe('add icons inside session-group-header', () => {
-  it('chat add icon is inside session-group-header (before session-panel-list)', () => {
+describe('add buttons inside session-group-header', () => {
+  it('chat add button is inside session-group-header (before session-panel-list)', () => {
     const chatHeaderIdx = chatPageSource.indexOf('class="session-group-header"');
     const chatListIdx = chatPageSource.indexOf('class="session-panel-list"');
-    const chatAddIdx = chatPageSource.indexOf('session-header-add-icon', chatHeaderIdx);
+    const chatAddIdx = chatPageSource.indexOf('session-header-add-btn', chatHeaderIdx);
     expect(chatAddIdx).toBeGreaterThan(chatHeaderIdx);
     expect(chatAddIdx).toBeLessThan(chatListIdx);
   });
 
-  it('crew add icon is inside crew session-group-header', () => {
+  it('crew add button is inside crew session-group-header', () => {
     const crewSessionsIdx = chatPageSource.indexOf('Crew Sessions');
     const crewHeaderIdx = chatPageSource.lastIndexOf('class="session-group-header"', crewSessionsIdx);
     const crewListIdx = chatPageSource.indexOf('class="session-panel-list"', crewHeaderIdx);
-    const crewAddIdx = chatPageSource.indexOf('session-header-add-icon', crewHeaderIdx);
+    const crewAddIdx = chatPageSource.indexOf('session-header-add-btn', crewHeaderIdx);
     expect(crewAddIdx).toBeGreaterThan(crewHeaderIdx);
     expect(crewAddIdx).toBeLessThan(crewListIdx);
-  });
-
-  it('add icons are in headers, not in list v-for content', () => {
-    const firstIcon = chatPageSource.indexOf('session-header-add-icon');
-    const firstListStart = chatPageSource.indexOf('class="session-panel-list"');
-    expect(firstIcon).toBeLessThan(firstListStart);
-
-    const secondIcon = chatPageSource.indexOf('session-header-add-icon', firstIcon + 1);
-    const secondListStart = chatPageSource.indexOf('class="session-panel-list"', firstListStart + 1);
-    expect(secondIcon).toBeLessThan(secondListStart);
   });
 });
 
 // =====================================================================
-// 2. Click handlers on header row (not separate button)
+// 2. Separated click handlers: title area for collapse, button for create
 // =====================================================================
-describe('clickable header rows', () => {
-  it('chat header triggers openConversationModal on click', () => {
-    const chatHeaderIdx = chatPageSource.indexOf('class="session-group-header"');
-    const headerLine = chatPageSource.substring(chatHeaderIdx - 200, chatHeaderIdx + 200);
-    expect(headerLine).toContain('openConversationModal');
+describe('separated click handlers', () => {
+  it('chat title area toggles chatGroupCollapsed', () => {
+    const chatTitleAreaIdx = chatPageSource.indexOf('session-group-title-area');
+    const areaContext = chatPageSource.substring(chatTitleAreaIdx - 100, chatTitleAreaIdx + 200);
+    expect(areaContext).toContain('chatGroupCollapsed');
   });
 
-  it('crew header triggers newCrewSession on click', () => {
-    const crewSpanIdx = chatPageSource.indexOf('<span>Crew Sessions</span>');
-    const divStart = chatPageSource.lastIndexOf('<div', crewSpanIdx);
-    const headerLine = chatPageSource.substring(divStart, crewSpanIdx);
-    expect(headerLine).toContain('@click="newCrewSession"');
+  it('crew title area toggles crewGroupCollapsed', () => {
+    const crewIdx = chatPageSource.indexOf('<span>Crew Sessions</span>');
+    const crewTitleAreaIdx = chatPageSource.lastIndexOf('session-group-title-area', crewIdx);
+    const areaContext = chatPageSource.substring(crewTitleAreaIdx, crewIdx + 50);
+    expect(areaContext).toContain('crewGroupCollapsed');
   });
 
-  it('both headers have plus icon SVG', () => {
-    const firstIcon = chatPageSource.indexOf('session-header-add-icon');
-    const firstBlock = chatPageSource.substring(firstIcon, firstIcon + 200);
-    expect(firstBlock).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
-
-    const secondIcon = chatPageSource.indexOf('session-header-add-icon', firstIcon + 1);
-    const secondBlock = chatPageSource.substring(secondIcon, secondIcon + 200);
-    expect(secondBlock).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
+  it('chat add button triggers openConversationModal', () => {
+    const chatAddIdx = chatPageSource.indexOf('session-header-add-btn');
+    const btnContext = chatPageSource.substring(chatAddIdx, chatAddIdx + 300);
+    expect(btnContext).toContain('openConversationModal');
   });
 
-  it('exactly 2 session-header-add-icon in template', () => {
-    const matches = chatPageSource.match(/session-header-add-icon/g) || [];
+  it('crew add button triggers newCrewSession', () => {
+    const firstAddIdx = chatPageSource.indexOf('session-header-add-btn');
+    const crewAddIdx = chatPageSource.indexOf('session-header-add-btn', firstAddIdx + 1);
+    const btnContext = chatPageSource.substring(crewAddIdx, crewAddIdx + 300);
+    expect(btnContext).toContain('newCrewSession');
+  });
+
+  it('exactly 2 session-header-add-btn in template', () => {
+    const matches = chatPageSource.match(/session-header-add-btn/g) || [];
     expect(matches.length).toBe(2);
   });
 
-  it('no separate add button elements (click is on header)', () => {
-    expect(chatPageSource).not.toContain('session-header-add-btn');
+  it('both add buttons have plus icon SVG', () => {
+    const firstBtn = chatPageSource.indexOf('session-header-add-btn');
+    const firstBlock = chatPageSource.substring(firstBtn, firstBtn + 300);
+    expect(firstBlock).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
+
+    const secondBtn = chatPageSource.indexOf('session-header-add-btn', firstBtn + 1);
+    const secondBlock = chatPageSource.substring(secondBtn, secondBtn + 300);
+    expect(secondBlock).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
+  });
+});
+
+// =====================================================================
+// 3. Collapse arrow and state
+// =====================================================================
+describe('collapse functionality', () => {
+  it('collapse arrow SVGs exist in both headers', () => {
+    const matches = chatPageSource.match(/session-collapse-arrow/g) || [];
+    expect(matches.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('data properties for collapse state exist', () => {
+    expect(chatPageSource).toContain('chatGroupCollapsed');
+    expect(chatPageSource).toContain('crewGroupCollapsed');
+  });
+
+  it('session-panel-list uses v-show for collapse', () => {
+    expect(chatPageSource).toContain('v-show="!chatGroupCollapsed"');
+    expect(chatPageSource).toContain('v-show="!crewGroupCollapsed"');
+  });
+});
+
+// =====================================================================
+// 4. CSS styles
+// =====================================================================
+describe('CSS styles', () => {
+  it('session-header-add-btn has CSS rules', () => {
+    expect(cssSource).toContain('.session-header-add-btn');
+  });
+
+  it('session-collapse-arrow has CSS rules with transition', () => {
+    expect(cssSource).toContain('.session-collapse-arrow');
+  });
+
+  it('session-group-title-area has CSS rules', () => {
+    expect(cssSource).toContain('.session-group-title-area');
+  });
+
+  it('collapsed state rotates arrow', () => {
+    expect(cssSource).toContain('.session-collapse-arrow.collapsed');
+    expect(cssSource).toContain('rotate(-90deg)');
   });
 });

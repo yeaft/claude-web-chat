@@ -102,20 +102,20 @@ describe('header inline add icons', () => {
     expect(chatHeader).toContain('openConversationModal');
   });
 
-  it('crew panel header triggers newCrewSession on click', () => {
+  it('crew panel header has newCrewSession add button', () => {
     const crewHeaderIdx = chatPageSource.indexOf('Crew Sessions');
     const crewListIdx = chatPageSource.indexOf('class="session-panel-list"', crewHeaderIdx);
     const crewHeader = chatPageSource.substring(crewHeaderIdx - 200, crewListIdx);
-    expect(crewHeader).toContain('@click="newCrewSession"');
+    expect(crewHeader).toContain('newCrewSession');
   });
 
-  it('both headers have plus icon SVG', () => {
-    const firstIcon = chatPageSource.indexOf('session-header-add-icon');
-    const firstBlock = chatPageSource.substring(firstIcon, firstIcon + 200);
+  it('both headers have plus icon SVG in add buttons', () => {
+    const firstIcon = chatPageSource.indexOf('session-header-add-btn');
+    const firstBlock = chatPageSource.substring(firstIcon, firstIcon + 300);
     expect(firstBlock).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
 
-    const secondIcon = chatPageSource.indexOf('session-header-add-icon', firstIcon + 1);
-    const secondBlock = chatPageSource.substring(secondIcon, secondIcon + 200);
+    const secondIcon = chatPageSource.indexOf('session-header-add-btn', firstIcon + 1);
+    const secondBlock = chatPageSource.substring(secondIcon, secondIcon + 300);
     expect(secondBlock).toContain('M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z');
   });
 });
