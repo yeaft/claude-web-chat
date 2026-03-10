@@ -572,10 +572,10 @@ export default {
       return this.sortByActivity(this.store.conversations.filter(c => c.type === 'crew'));
     },
     rolePlayConversations() {
-      return this.sortByActivity(this.store.conversations.filter(c => c.type === 'rolePlay'));
+      return this.sortByActivity(this.store.conversations.filter(c => c.type === 'rolePlay' || c.type === 'virtualCrew'));
     },
     normalConversations() {
-      return this.sortByActivity(this.store.conversations.filter(c => c.type !== 'crew' && c.type !== 'rolePlay'));
+      return this.sortByActivity(this.store.conversations.filter(c => c.type !== 'crew' && c.type !== 'rolePlay' && c.type !== 'virtualCrew'));
     }
   },
   methods: {

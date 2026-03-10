@@ -97,7 +97,7 @@ export function selectConversation(store, conversationId, agentId) {
   }
 
   // ★ Role Play: restore session info from conversation data if missing
-  if (conv?.type === 'rolePlay' && !store.rolePlaySessions[conversationId] && conv.rolePlayRoles) {
+  if ((conv?.type === 'rolePlay' || conv?.type === 'virtualCrew') && !store.rolePlaySessions[conversationId] && conv.rolePlayRoles) {
     store.rolePlaySessions[conversationId] = {
       roles: conv.rolePlayRoles,
       teamType: conv.teamType || 'dev',

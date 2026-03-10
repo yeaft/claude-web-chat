@@ -186,7 +186,7 @@ export const useChatStore = defineStore('chat', {
     currentConversationIsRolePlay: (state) => {
       if (!state.currentConversation) return false;
       const conv = state.conversations.find(c => c.id === state.currentConversation);
-      return conv?.type === 'rolePlay';
+      return conv?.type === 'rolePlay' || conv?.type === 'virtualCrew';
     },
     // 当前 Role Play session 信息
     currentRolePlaySession: (state) => {

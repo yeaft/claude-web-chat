@@ -201,7 +201,7 @@ describe('computed properties integrate sortByActivity', () => {
 
   it('normalConversations computed calls sortByActivity', () => {
     expect(chatPageSource).toContain(
-      'this.sortByActivity(this.store.conversations.filter(c => c.type !== \'crew\' && c.type !== \'rolePlay\'))'
+      'this.sortByActivity(this.store.conversations.filter(c => c.type !== \'crew\' && c.type !== \'rolePlay\' && c.type !== \'virtualCrew\'))'
     );
   });
 

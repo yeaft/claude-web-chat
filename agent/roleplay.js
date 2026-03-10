@@ -7,9 +7,11 @@
 
 import { join } from 'path';
 import { homedir } from 'os';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync } from 'fs';
 
 const ROLEPLAY_INDEX_PATH = join(homedir(), '.claude', 'roleplay-sessions.json');
+// ★ backward compat: old filename before rename
+const LEGACY_INDEX_PATH = join(homedir(), '.claude', 'vcrew-sessions.json');
 
 // In-memory map: conversationId -> { roles, teamType, language, projectDir, createdAt, userId, username }
 export const rolePlaySessions = new Map();
@@ -31,9 +33,23 @@ export function saveRolePlayIndex() {
 }
 
 export function loadRolePlayIndex() {
-  if (!existsSync(ROLEPLAY_INDEX_PATH)) return;
+  let indexPath = ROLEPLAY_INDEX_PATH;
+
+  // ★ backward compat: migrate old vcrew-sessions.json → roleplay-sessions.json
+  if (!existsSync(indexPath) && existsSync(LEGACY_INDEX_PATH)) {
+    try {
+      renameSync(LEGACY_INDEX_PATH, indexPath);
+      console.log('[roleplay] Migrated vcrew-sessions.json → roleplay-sessions.json');
+    } catch (e) {
+      // rename failed (e.g. permissions), fall back to reading old file directly
+      console.warn('[roleplay] Could not rename legacy index, reading in-place:', e.message);
+      indexPath = LEGACY_INDEX_PATH;
+    }
+  }
+
+  if (!existsSync(indexPath)) return;
   try {
-    const data = JSON.parse(readFileSync(ROLEPLAY_INDEX_PATH, 'utf-8'));
+    const data = JSON.parse(readFileSync(indexPath, 'utf-8'));
     for (const entry of data) {
       const { id, ...session } = entry;
       rolePlaySessions.set(id, session);
