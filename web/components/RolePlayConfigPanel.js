@@ -9,8 +9,9 @@
  *   - Language follows user settings (store.locale)
  *   - "Start" button → store.createRolePlaySession
  *
- * NOT needed (vs CrewConfigPanel):
- *   - devCount, .crew directory detection, worktree config, per-role model selection
+ * Extras (vs CrewConfigPanel):
+ *   - Auto-detects .crew directory via check_crew_context WS message
+ *   - Imports roles/teamType from .crew/session.json when found
  */
 
 import { getRolePlayTemplate } from '../crew-templates/index.js';
@@ -49,6 +50,14 @@ export default {
               <button class="workdir-browse-btn" @click="$emit('browse')" :title="$t('modal.newConv.browse')">
                 <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
               </button>
+            </div>
+          </div>
+
+          <!-- Crew Context Detected -->
+          <div class="crew-config-section crew-import-hint" v-if="crewDetected">
+            <div class="crew-import-banner">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+              <span>{{ $t('roleplay.crewDetected') }}</span>
             </div>
           </div>
 
@@ -120,6 +129,8 @@ export default {
       projectDir: '',
       currentTemplate: 'dev',
       roles: [],
+      crewDetected: false,
+      _crewCheckRequestId: null,
     };
   },
 
@@ -146,6 +157,11 @@ export default {
         this.projectDir = this.selectedAgentWorkDir;
       }
     },
+    projectDir(newVal) {
+      // Debounce to avoid spamming WS on every keystroke
+      clearTimeout(this._crewCheckTimer);
+      this._crewCheckTimer = setTimeout(() => this.checkCrewContext(newVal), 400);
+    },
     language() {
       // Reload template with new language
       if (this.currentTemplate !== 'custom') {
@@ -167,6 +183,17 @@ export default {
     if (!this.selectedAgent && this.onlineAgents.length > 0) {
       this.selectedAgent = this.onlineAgents[0].id;
     }
+
+    // Listen for crew context result
+    this._onCrewContextResult = (e) => this.handleCrewContextResult(e.detail);
+    window.addEventListener('crew-context-result', this._onCrewContextResult);
+  },
+
+  beforeUnmount() {
+    if (this._onCrewContextResult) {
+      window.removeEventListener('crew-context-result', this._onCrewContextResult);
+    }
+    clearTimeout(this._crewCheckTimer);
   },
 
   methods: {
@@ -214,6 +241,43 @@ export default {
         teamType: this.currentTemplate === 'custom' ? 'custom' : this.currentTemplate,
         language: this.language,
       });
+    },
+
+    checkCrewContext(dir) {
+      this.crewDetected = false;
+      if (!dir || !dir.trim() || !this.selectedAgent) return;
+      const requestId = 'crew_' + Date.now().toString(36);
+      this._crewCheckRequestId = requestId;
+      this.store.sendWsMessage({
+        type: 'check_crew_context',
+        agentId: this.selectedAgent,
+        projectDir: dir.trim(),
+        requestId,
+      });
+    },
+
+    handleCrewContextResult(msg) {
+      if (msg.requestId !== this._crewCheckRequestId) return;
+      if (!msg.found) {
+        this.crewDetected = false;
+        return;
+      }
+      this.crewDetected = true;
+
+      // Map teamType to template
+      const templateMap = { dev: 'dev', writing: 'custom', trading: 'custom', video: 'custom', custom: 'custom' };
+      this.currentTemplate = templateMap[msg.teamType] || 'dev';
+
+      // Import roles from .crew context
+      if (msg.roles && msg.roles.length > 0) {
+        this.roles = msg.roles.map(r => ({
+          name: r.name,
+          displayName: r.displayName,
+          icon: r.icon || '',
+          description: r.description || '',
+          claudeMd: '',  // claudeMd is loaded server-side, not sent to frontend for size
+        }));
+      }
     },
   },
 };

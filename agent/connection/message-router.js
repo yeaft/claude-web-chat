@@ -12,7 +12,7 @@ import {
   createConversation, resumeConversation, deleteConversation,
   handleRefreshConversation, handleCancelExecution,
   handleUserInput, handleUpdateConversationSettings, handleAskUserAnswer,
-  sendConversationList
+  sendConversationList, handleCheckCrewContext
 } from '../conversation.js';
 import {
   createCrewSession, handleCrewHumanInput, handleCrewControl,
@@ -64,6 +64,10 @@ export async function handleMessage(msg) {
 
     case 'create_conversation':
       await createConversation(msg);
+      break;
+
+    case 'check_crew_context':
+      handleCheckCrewContext(msg);
       break;
 
     case 'resume_conversation':

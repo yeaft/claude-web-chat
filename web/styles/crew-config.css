@@ -598,6 +598,28 @@
   color: var(--accent-blue);
 }
 
+/* Crew import hint (RolePlayConfigPanel) */
+.crew-import-hint {
+  padding-top: 0 !important;
+}
+
+.crew-import-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-color) 30%, transparent);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: var(--accent-color);
+}
+
+.crew-import-banner svg {
+  flex-shrink: 0;
+  color: var(--accent-color);
+}
+
 /* Crew Config Footer — uses .modern-btn */
 .crew-config-footer {
   display: flex;
