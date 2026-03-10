@@ -478,7 +478,7 @@ describe('CrewConfigPanel - developer team model with reviewer/tester', () => {
   });
 
   it('developer claudeMd should describe handoff to tester', () => {
-    expect(configContent).toContain('交给审查者 review、测试者测试');
+    expect(configContent).toContain('分别交给审查者和测试者');
   });
 
   it('developer should be named 开发者-托瓦兹 in dev template', () => {
