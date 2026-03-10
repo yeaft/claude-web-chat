@@ -22,7 +22,7 @@ export default {
         </svg>
         <span class="compact-message">{{ statusBannerMessage }}</span>
       </div>
-      <div class="header-right" v-if="store.currentConversation && !store.currentConversationIsCrew">
+      <div class="header-right" v-if="store.currentConversation && !store.currentConversationIsCrew && !store.currentConversationIsVCrew">
         <span class="context-usage-hint" v-if="contextUsage" :class="contextColorClass" :title="contextLabel">
           {{ contextUsage.percentage }}%
         </span>
@@ -125,6 +125,12 @@ export default {
       // Crew conversation
       if (store.currentConversationIsCrew) {
         return 'Crew Session';
+      }
+
+      // Virtual Crew conversation
+      if (store.currentConversationIsVCrew) {
+        const title = store.getConversationTitle(store.currentConversation);
+        return title || 'Virtual Crew';
       }
 
       const title = store.getConversationTitle(store.currentConversation);

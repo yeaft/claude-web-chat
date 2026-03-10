@@ -232,6 +232,15 @@ export default {
         <div v-if="roleSegments.length === 0 && !store.isProcessing" class="vcrew-empty">
           <div class="vcrew-empty-icon">🎭</div>
           <div class="vcrew-empty-text">{{ $t('vcrew.emptyHint') }}</div>
+          <div class="vcrew-empty-roles" v-if="vcrewSession && vcrewSession.roles && vcrewSession.roles.length > 0">
+            <div v-for="role in vcrewSession.roles" :key="role.name" class="vcrew-empty-role-card">
+              <div class="vcrew-empty-role-icon">{{ role.icon || '🤖' }}</div>
+              <div class="vcrew-empty-role-info">
+                <div class="vcrew-empty-role-name">{{ role.displayName || role.name }}</div>
+                <div class="vcrew-empty-role-desc" v-if="role.description">{{ role.description }}</div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <template v-for="(seg, idx) in roleSegments" :key="seg.id || idx">
