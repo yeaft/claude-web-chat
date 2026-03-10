@@ -307,9 +307,12 @@ export function answerUserQuestion(store, requestId, answers) {
     requestId,
     answers
   });
-  const msg = store.messages.find(m => m.type === 'user-question' && m.requestId === requestId);
+  // Find the AskUserQuestion tool-use message by askRequestId and mark it answered
+  const msg = store.messages.find(m =>
+    m.type === 'tool-use' && m.toolName === 'AskUserQuestion' && m.askRequestId === requestId
+  );
   if (msg) {
-    msg.answered = true;
+    msg.askAnswered = true;
     msg.selectedAnswers = answers;
   }
   // 立刻进入 processing 状态，显示"思考中"指示器
