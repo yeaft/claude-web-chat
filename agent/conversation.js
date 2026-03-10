@@ -2,7 +2,7 @@ import ctx from './context.js';
 import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
 import { crewSessions, loadCrewIndex } from './crew.js';
-import { rolePlaySessions, saveRolePlayIndex, removeRolePlaySession, loadRolePlayIndex, validateRolePlayConfig } from './roleplay.js';
+import { rolePlaySessions, saveRolePlayIndex, removeRolePlaySession, loadRolePlayIndex, validateRolePlayConfig, initRolePlayRouteState } from './roleplay.js';
 
 // Restore persisted roleplay sessions on module load (agent startup)
 loadRolePlayIndex();
@@ -54,7 +54,17 @@ export async function sendConversationList() {
     // roleplay conversations are stored in ctx.conversations but also tracked in rolePlaySessions
     if (rolePlaySessions.has(id)) {
       entry.type = 'rolePlay';
-      entry.rolePlayRoles = rolePlaySessions.get(id).roles;
+      const rpSession = rolePlaySessions.get(id);
+      entry.rolePlayRoles = rpSession.roles;
+      // Include route state if initialized
+      if (rpSession._routeInitialized) {
+        entry.rolePlayState = {
+          currentRole: rpSession.currentRole,
+          round: rpSession.round,
+          features: rpSession.features ? Array.from(rpSession.features.values()) : [],
+          waitingHuman: rpSession.waitingHuman || false
+        };
+      }
     }
     list.push(entry);
   }
@@ -161,7 +171,7 @@ export async function createConversation(msg) {
 
   // Register in rolePlaySessions for type inference in sendConversationList
   if (rolePlayConfig) {
-    rolePlaySessions.set(conversationId, {
+    const rpSession = {
       roles: rolePlayConfig.roles,
       teamType: rolePlayConfig.teamType,
       language: rolePlayConfig.language,
@@ -169,7 +179,10 @@ export async function createConversation(msg) {
       createdAt: Date.now(),
       userId,
       username,
-    });
+    };
+    rolePlaySessions.set(conversationId, rpSession);
+    // Initialize route state eagerly so it's ready when Claude starts
+    initRolePlayRouteState(rpSession, ctx.conversations.get(conversationId));
     saveRolePlayIndex();
   }
 
@@ -467,9 +480,29 @@ export async function handleUserInput(msg) {
 
   // 发送用户消息到输入流
   // Claude stream-json 模式支持在回复过程中接收新消息（写入 stdin）
+  let effectivePrompt = prompt;
+
+  // ★ RolePlay: if session was waiting for human input, clear the flag and
+  // wrap the user message with context about which role was asking
+  const rpSession = rolePlaySessions.get(conversationId);
+  if (rpSession && rpSession.waitingHuman && rpSession.waitingHumanContext) {
+    const { fromRole, message: requestMessage } = rpSession.waitingHumanContext;
+    const fromRoleConfig = rpSession.roles.find?.(r => r.name === fromRole) ||
+                           (Array.isArray(rpSession.roles) ? rpSession.roles.find(r => r.name === fromRole) : null);
+    const fromLabel = fromRoleConfig
+      ? (fromRoleConfig.icon ? `${fromRoleConfig.icon} ${fromRoleConfig.displayName}` : fromRoleConfig.displayName)
+      : fromRole;
+
+    effectivePrompt = `人工回复（回应 ${fromLabel} 的请求: "${requestMessage}"）:\n\n${prompt}`;
+
+    rpSession.waitingHuman = false;
+    rpSession.waitingHumanContext = null;
+    console.log(`[RolePlay] Human responded, resuming from ${fromRole}'s request`);
+  }
+
   const userMessage = {
     type: 'user',
-    message: { role: 'user', content: prompt }
+    message: { role: 'user', content: effectivePrompt }
   };
 
   console.log(`[${conversationId}] Sending: ${prompt.substring(0, 100)}...`);
