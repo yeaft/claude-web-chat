@@ -72,7 +72,7 @@ to: designer
 task: task-1
 taskTitle: 登录页面设计
 summary: 请设计登录页面的交互方案和视觉设计
----END_ROUTE---
+---END_ROUTE---`
   },
   {
     name: 'developer', displayName: '开发者-托瓦兹', icon: '',
