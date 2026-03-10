@@ -590,4 +590,5 @@ export default {
   'roleplay.rolePreview': '角色配置',
   'roleplay.noAgents': '没有在线的 Agent',
   'roleplay.inputPlaceholder': '输入消息… 使用 @ 提及角色',
+  'roleplay.crewDetected': '检测到 .crew 配置，已自动导入角色和上下文',
 };

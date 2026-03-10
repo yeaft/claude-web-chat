@@ -200,6 +200,11 @@ export function handleMessage(store, msg) {
       }
       break;
 
+    case 'crew_context_result':
+      // Dispatch to any listener (RolePlayConfigPanel uses window event)
+      window.dispatchEvent(new CustomEvent('crew-context-result', { detail: msg }));
+      break;
+
     case 'crew_sessions_list':
       break;
 

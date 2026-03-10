@@ -9,7 +9,7 @@
 
 import { join } from 'path';
 import { homedir } from 'os';
-import { readFileSync, writeFileSync, existsSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, readdirSync } from 'fs';
 import { parseRoutes } from './crew/routing.js';
 
 const ROLEPLAY_INDEX_PATH = join(homedir(), '.claude', 'roleplay-sessions.json');
@@ -68,6 +68,147 @@ export function loadRolePlayIndex() {
 export function removeRolePlaySession(conversationId) {
   rolePlaySessions.delete(conversationId);
   saveRolePlayIndex();
+}
+
+// ---------------------------------------------------------------------------
+// .crew context import
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a file if it exists, otherwise return null.
+ * @param {string} filePath
+ * @returns {string|null}
+ */
+function readFileOrNull(filePath) {
+  try {
+    if (!existsSync(filePath)) return null;
+    return readFileSync(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Load .crew context from a project directory.
+ * Returns null if .crew/ doesn't exist.
+ *
+ * @param {string} projectDir - absolute path to project root
+ * @returns {{ sharedClaudeMd: string, roles: Array, kanban: string, features: Array, teamType: string, language: string } | null}
+ */
+export function loadCrewContext(projectDir) {
+  const crewDir = join(projectDir, '.crew');
+  if (!existsSync(crewDir)) return null;
+
+  // 1. Shared CLAUDE.md
+  const sharedClaudeMd = readFileOrNull(join(crewDir, 'CLAUDE.md')) || '';
+
+  // 2. session.json → roles, teamType, language, features
+  let sessionRoles = [];
+  let teamType = 'dev';
+  let language = 'zh-CN';
+  let sessionFeatures = [];
+  const sessionPath = join(crewDir, 'session.json');
+  const sessionJson = readFileOrNull(sessionPath);
+  if (sessionJson) {
+    try {
+      const session = JSON.parse(sessionJson);
+      if (Array.isArray(session.roles)) {
+        sessionRoles = session.roles;
+      }
+      if (session.teamType) teamType = session.teamType;
+      if (session.language) language = session.language;
+      if (Array.isArray(session.features)) {
+        sessionFeatures = session.features;
+      }
+    } catch {
+      // Invalid JSON — ignore
+    }
+  }
+
+  // 3. Per-role CLAUDE.md from .crew/roles/*/CLAUDE.md
+  const roleClaudes = {};
+  const rolesDir = join(crewDir, 'roles');
+  if (existsSync(rolesDir)) {
+    try {
+      const roleDirs = readdirSync(rolesDir, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name);
+      for (const dirName of roleDirs) {
+        const md = readFileOrNull(join(rolesDir, dirName, 'CLAUDE.md'));
+        if (md) roleClaudes[dirName] = md;
+      }
+    } catch {
+      // Permission error or similar — ignore
+    }
+  }
+
+  // 4. Merge roles: deduplicate by roleType, attach claudeMd
+  const roles = deduplicateRoles(sessionRoles, roleClaudes);
+
+  // 5. Kanban
+  const kanban = readFileOrNull(join(crewDir, 'context', 'kanban.md')) || '';
+
+  // 6. Feature files from context/features/*.md
+  const features = [];
+  const featuresDir = join(crewDir, 'context', 'features');
+  if (existsSync(featuresDir)) {
+    try {
+      const files = readdirSync(featuresDir)
+        .filter(f => f.endsWith('.md') && f !== 'index.md')
+        .sort();
+      for (const f of files) {
+        const content = readFileOrNull(join(featuresDir, f));
+        if (content) {
+          features.push({ name: f.replace('.md', ''), content });
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return { sharedClaudeMd, roles, kanban, features, teamType, language, sessionFeatures };
+}
+
+/**
+ * Deduplicate Crew roles by roleType.
+ * Crew may have dev-1, dev-2, dev-3 — collapse to a single "dev" for RolePlay.
+ * Attaches per-role CLAUDE.md content.
+ */
+function deduplicateRoles(sessionRoles, roleClaudes) {
+  const byType = new Map(); // roleType -> first role seen
+  const merged = [];
+
+  for (const r of sessionRoles) {
+    const type = r.roleType || r.name;
+    const claudeMd = roleClaudes[r.name] || '';
+
+    if (byType.has(type)) {
+      // Already have this roleType — skip duplicate instance
+      continue;
+    }
+
+    byType.set(type, true);
+
+    // Use roleType as the RolePlay name (e.g. "developer" instead of "dev-1")
+    // But keep "pm" and "designer" as-is since they're typically single-instance
+    const name = type;
+    // Strip instance suffix from displayName (e.g. "开发者-托瓦兹-1" → "开发者-托瓦兹")
+    let displayName = r.displayName || name;
+    displayName = displayName.replace(/-\d+$/, '');
+
+    merged.push({
+      name,
+      displayName,
+      icon: r.icon || '',
+      description: r.description || '',
+      claudeMd: claudeMd.substring(0, MAX_CLAUDE_MD_LEN),
+      roleType: type,
+      isDecisionMaker: !!r.isDecisionMaker,
+    });
+  }
+
+  return merged;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,11 +306,11 @@ export function validateRolePlayConfig(config) {
  * Build the appendSystemPrompt that tells Claude about the role play roles
  * and how to switch between them.
  *
- * @param {{ roles: Array, teamType: string, language: string }} config
+ * @param {{ roles: Array, teamType: string, language: string, crewContext?: object }} config
  * @returns {string}
  */
 export function buildRolePlaySystemPrompt(config) {
-  const { roles, teamType, language } = config;
+  const { roles, teamType, language, crewContext } = config;
   const isZh = language === 'zh-CN';
 
   // Build role list
@@ -185,6 +326,14 @@ export function buildRolePlaySystemPrompt(config) {
   const prompt = isZh
     ? buildZhPrompt(roleList, workflow)
     : buildEnPrompt(roleList, workflow);
+
+  // Append .crew context if available
+  if (crewContext) {
+    const contextBlock = buildCrewContextBlock(crewContext, isZh);
+    if (contextBlock) {
+      return (prompt + '\n\n' + contextBlock).trim();
+    }
+  }
 
   return prompt.trim();
 }
@@ -530,4 +679,40 @@ export function getRolePlayRouteState(conversationId) {
     waitingHuman: session.waitingHuman || false,
     waitingHumanContext: session.waitingHumanContext || null
   };
+}
+
+// ---------------------------------------------------------------------------
+// .crew context block for system prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the .crew context block to append to the system prompt.
+ * Includes shared instructions, kanban, and feature history.
+ */
+function buildCrewContextBlock(crewContext, isZh) {
+  const sections = [];
+
+  if (crewContext.sharedClaudeMd) {
+    const header = isZh ? '## 项目共享指令（来自 .crew）' : '## Shared Project Instructions (from .crew)';
+    sections.push(`${header}\n\n${crewContext.sharedClaudeMd}`);
+  }
+
+  if (crewContext.kanban) {
+    const header = isZh ? '## 当前任务看板' : '## Current Task Board';
+    sections.push(`${header}\n\n${crewContext.kanban}`);
+  }
+
+  if (crewContext.features && crewContext.features.length > 0) {
+    const header = isZh ? '## 历史工作记录' : '## Work History';
+    // Only include the last few features to avoid blowing up context
+    const recentFeatures = crewContext.features.slice(-5);
+    const featureTexts = recentFeatures.map(f => {
+      // Truncate each feature to keep total size reasonable
+      const content = f.content.length > 2000 ? f.content.substring(0, 2000) + '\n...(truncated)' : f.content;
+      return `### ${f.name}\n${content}`;
+    }).join('\n\n');
+    sections.push(`${header}\n\n${featureTexts}`);
+  }
+
+  return sections.join('\n\n');
 }

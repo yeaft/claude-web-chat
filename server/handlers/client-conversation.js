@@ -298,6 +298,19 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       break;
     }
 
+    case 'check_crew_context': {
+      const crewCtxAgentId = msg.agentId || client.currentAgent;
+      if (!crewCtxAgentId) return;
+      if (!await checkAgentAccess(crewCtxAgentId)) return;
+      await forwardToAgent(crewCtxAgentId, {
+        type: 'check_crew_context',
+        projectDir: msg.projectDir,
+        requestId: msg.requestId,
+        _requestClientId: clientId
+      });
+      break;
+    }
+
     case 'cancel_execution': {
       if (!client.currentAgent) return;
       if (!await checkAgentAccess(client.currentAgent)) return;

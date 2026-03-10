@@ -590,4 +590,5 @@ export default {
   'roleplay.rolePreview': 'Role Configuration',
   'roleplay.noAgents': 'No online agents available',
   'roleplay.inputPlaceholder': 'Type a message… Use @ to mention a role',
+  'roleplay.crewDetected': '.crew config detected — roles and context auto-imported',
 };

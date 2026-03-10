@@ -2,7 +2,7 @@ import ctx from './context.js';
 import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
 import { crewSessions, loadCrewIndex } from './crew.js';
-import { rolePlaySessions, saveRolePlayIndex, removeRolePlaySession, loadRolePlayIndex, validateRolePlayConfig, initRolePlayRouteState } from './roleplay.js';
+import { rolePlaySessions, saveRolePlayIndex, removeRolePlaySession, loadRolePlayIndex, validateRolePlayConfig, initRolePlayRouteState, loadCrewContext } from './roleplay.js';
 
 // Restore persisted roleplay sessions on module load (agent startup)
 loadRolePlayIndex();
@@ -138,6 +138,15 @@ export async function createConversation(msg) {
       return;
     }
     rolePlayConfig = result.config;
+  }
+
+  // Load .crew context if rolePlay and projectDir contains .crew directory
+  if (rolePlayConfig) {
+    const crewContext = loadCrewContext(effectiveWorkDir);
+    if (crewContext) {
+      rolePlayConfig.crewContext = crewContext;
+      console.log(`  RolePlay: loaded .crew context (${crewContext.roles.length} roles, ${crewContext.features.length} features)`);
+    }
   }
 
   console.log(`Creating conversation: ${conversationId} in ${effectiveWorkDir} (lazy start)`);
@@ -588,4 +597,39 @@ export function handleAskUserAnswer(msg) {
   } else {
     console.log(`[AskUser] No pending question for requestId: ${msg.requestId}`);
   }
+}
+
+/**
+ * Handle check_crew_context request — check if a directory has .crew context
+ * and return role/context info for RolePlay auto-import.
+ */
+export function handleCheckCrewContext(msg) {
+  const { projectDir, requestId } = msg;
+  if (!projectDir) {
+    ctx.sendToServer({ type: 'crew_context_result', requestId, found: false });
+    return;
+  }
+  const crewContext = loadCrewContext(projectDir);
+  if (!crewContext) {
+    ctx.sendToServer({ type: 'crew_context_result', requestId, found: false });
+    return;
+  }
+  // Return a safe subset for the frontend (no full claudeMd content, just metadata)
+  ctx.sendToServer({
+    type: 'crew_context_result',
+    requestId,
+    found: true,
+    roles: crewContext.roles.map(r => ({
+      name: r.name,
+      displayName: r.displayName,
+      icon: r.icon,
+      description: r.description,
+      roleType: r.roleType,
+      isDecisionMaker: r.isDecisionMaker,
+      hasClaudeMd: !!(r.claudeMd && r.claudeMd.length > 0),
+    })),
+    teamType: crewContext.teamType,
+    language: crewContext.language,
+    featureCount: crewContext.features.length,
+  });
 }
