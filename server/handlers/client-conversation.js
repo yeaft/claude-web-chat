@@ -96,7 +96,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         workDir: msg.workDir,
         userId: client.userId,
         username: client.username,
-        disallowedTools: msg.disallowedTools
+        disallowedTools: msg.disallowedTools,
+        vcrewConfig: msg.vcrewConfig || null
       });
       break;
     }

@@ -2,6 +2,7 @@ import ctx from './context.js';
 import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
 import { crewSessions, loadCrewIndex } from './crew.js';
+import { vcrewSessions, saveVCrewIndex, removeVCrewSession } from './vcrew.js';
 
 // 不支持的斜杠命令（真正需要交互式 CLI 的命令）
 const UNSUPPORTED_SLASH_COMMANDS = ['/help', '/bug', '/login', '/logout', '/terminal-setup', '/vim', '/config'];
@@ -34,11 +35,11 @@ export function parseSlashCommand(message) {
   return { type: null, message };
 }
 
-// 发送 conversation 列表（含活跃 crew sessions + 索引中已停止的 crew sessions）
+// 发送 conversation 列表（含活跃 crew sessions + 索引中已停止的 crew sessions + vcrew sessions）
 export async function sendConversationList() {
   const list = [];
   for (const [id, state] of ctx.conversations) {
-    list.push({
+    const entry = {
       id,
       workDir: state.workDir,
       claudeSessionId: state.claudeSessionId,
@@ -46,7 +47,13 @@ export async function sendConversationList() {
       processing: !!state.turnActive,
       userId: state.userId,
       username: state.username
-    });
+    };
+    // vcrew conversations are stored in ctx.conversations but also tracked in vcrewSessions
+    if (vcrewSessions.has(id)) {
+      entry.type = 'virtualCrew';
+      entry.vcrewRoles = vcrewSessions.get(id).roles;
+    }
+    list.push(entry);
   }
   // 追加活跃 crew sessions
   const activeCrewIds = new Set();
@@ -105,11 +112,12 @@ export function sendError(conversationId, message) {
 
 // 创建新的 conversation (延迟启动 Claude，等待用户发送第一条消息)
 export async function createConversation(msg) {
-  const { conversationId, workDir, userId, username, disallowedTools } = msg;
+  const { conversationId, workDir, userId, username, disallowedTools, vcrewConfig } = msg;
   const effectiveWorkDir = workDir || ctx.CONFIG.workDir;
 
   console.log(`Creating conversation: ${conversationId} in ${effectiveWorkDir} (lazy start)`);
   if (username) console.log(`  User: ${username} (${userId})`);
+  if (vcrewConfig) console.log(`  VCrew: teamType=${vcrewConfig.teamType}, roles=${vcrewConfig.roles?.length}`);
 
   // 只创建 conversation 状态，不启动 Claude 进程
   // Claude 进程会在用户发送第一条消息时启动 (见 handleUserInput)
@@ -126,6 +134,7 @@ export async function createConversation(msg) {
     userId,
     username,
     disallowedTools: disallowedTools || null,  // null = 使用全局默认
+    vcrewConfig: vcrewConfig || null,
     usage: {
       inputTokens: 0,
       outputTokens: 0,
@@ -135,13 +144,28 @@ export async function createConversation(msg) {
     }
   });
 
+  // Register in vcrewSessions for type inference in sendConversationList
+  if (vcrewConfig) {
+    vcrewSessions.set(conversationId, {
+      roles: vcrewConfig.roles,
+      teamType: vcrewConfig.teamType,
+      language: vcrewConfig.language,
+      projectDir: effectiveWorkDir,
+      createdAt: Date.now(),
+      userId,
+      username,
+    });
+    saveVCrewIndex();
+  }
+
   ctx.sendToServer({
     type: 'conversation_created',
     conversationId,
     workDir: effectiveWorkDir,
     userId,
     username,
-    disallowedTools: disallowedTools || null
+    disallowedTools: disallowedTools || null,
+    vcrewConfig: vcrewConfig || null
   });
 
   // 立即发送 agent 级别的 MCP servers 列表（从 ~/.claude.json 读取的）
@@ -193,6 +217,12 @@ export async function resumeConversation(msg) {
 
   // 只创建 conversation 状态并保存 claudeSessionId，不启动 Claude 进程
   // Claude 进程会在用户发送第一条消息时启动 (见 handleUserInput)
+  // Restore vcrewConfig from persisted vcrewSessions if available
+  const vcrewEntry = vcrewSessions.get(conversationId);
+  const vcrewConfig = vcrewEntry
+    ? { roles: vcrewEntry.roles, teamType: vcrewEntry.teamType, language: vcrewEntry.language }
+    : null;
+
   ctx.conversations.set(conversationId, {
     query: null,
     inputStream: null,
@@ -206,6 +236,7 @@ export async function resumeConversation(msg) {
     userId,
     username,
     disallowedTools: disallowedTools || null,  // null = 使用全局默认
+    vcrewConfig,
     usage: {
       inputTokens: 0,
       outputTokens: 0,
@@ -269,6 +300,11 @@ export function deleteConversation(msg) {
       conv.inputStream.done();
     }
     ctx.conversations.delete(conversationId);
+  }
+
+  // Clean up vcrew session if applicable
+  if (vcrewSessions.has(conversationId)) {
+    removeVCrewSession(conversationId);
   }
 
   ctx.sendToServer({
