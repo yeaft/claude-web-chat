@@ -2,7 +2,10 @@ import ctx from './context.js';
 import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
 import { crewSessions, loadCrewIndex } from './crew.js';
-import { vcrewSessions, saveVCrewIndex, removeVCrewSession } from './vcrew.js';
+import { vcrewSessions, saveVCrewIndex, removeVCrewSession, loadVCrewIndex, validateVCrewConfig } from './vcrew.js';
+
+// Restore persisted vcrew sessions on module load (agent startup)
+loadVCrewIndex();
 
 // 不支持的斜杠命令（真正需要交互式 CLI 的命令）
 const UNSUPPORTED_SLASH_COMMANDS = ['/help', '/bug', '/login', '/logout', '/terminal-setup', '/vim', '/config'];
@@ -112,8 +115,20 @@ export function sendError(conversationId, message) {
 
 // 创建新的 conversation (延迟启动 Claude，等待用户发送第一条消息)
 export async function createConversation(msg) {
-  const { conversationId, workDir, userId, username, disallowedTools, vcrewConfig } = msg;
+  const { conversationId, workDir, userId, username, disallowedTools } = msg;
   const effectiveWorkDir = workDir || ctx.CONFIG.workDir;
+
+  // Validate and sanitize vcrewConfig if provided
+  let vcrewConfig = null;
+  if (msg.vcrewConfig) {
+    const result = validateVCrewConfig(msg.vcrewConfig);
+    if (!result.valid) {
+      console.warn(`[createConversation] Invalid vcrewConfig: ${result.error}`);
+      sendError(conversationId, `Invalid vcrewConfig: ${result.error}`);
+      return;
+    }
+    vcrewConfig = result.config;
+  }
 
   console.log(`Creating conversation: ${conversationId} in ${effectiveWorkDir} (lazy start)`);
   if (username) console.log(`  User: ${username} (${userId})`);

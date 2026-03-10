@@ -49,6 +49,93 @@ export function removeVCrewSession(conversationId) {
 }
 
 // ---------------------------------------------------------------------------
+// Input validation
+// ---------------------------------------------------------------------------
+
+const ALLOWED_TEAM_TYPES = ['dev', 'writing', 'trading', 'video', 'custom'];
+const MAX_ROLE_NAME_LEN = 64;
+const MAX_DISPLAY_NAME_LEN = 128;
+const MAX_CLAUDE_MD_LEN = 4096;
+const MAX_ROLES = 10;
+
+/**
+ * Validate and sanitize vcrewConfig from the client.
+ * Returns { valid: true, config: sanitizedConfig } or { valid: false, error: string }.
+ *
+ * @param {*} config - raw vcrewConfig from client message
+ * @returns {{ valid: boolean, config?: object, error?: string }}
+ */
+export function validateVCrewConfig(config) {
+  if (!config || typeof config !== 'object') {
+    return { valid: false, error: 'vcrewConfig must be an object' };
+  }
+
+  // teamType
+  const teamType = config.teamType;
+  if (typeof teamType !== 'string' || !ALLOWED_TEAM_TYPES.includes(teamType)) {
+    return { valid: false, error: `teamType must be one of: ${ALLOWED_TEAM_TYPES.join(', ')}` };
+  }
+
+  // language
+  const language = config.language;
+  if (language !== 'zh-CN' && language !== 'en') {
+    return { valid: false, error: 'language must be "zh-CN" or "en"' };
+  }
+
+  // roles
+  if (!Array.isArray(config.roles) || config.roles.length === 0) {
+    return { valid: false, error: 'roles must be a non-empty array' };
+  }
+  if (config.roles.length > MAX_ROLES) {
+    return { valid: false, error: `roles must have at most ${MAX_ROLES} entries` };
+  }
+
+  const sanitizedRoles = [];
+  const seenNames = new Set();
+
+  for (let i = 0; i < config.roles.length; i++) {
+    const r = config.roles[i];
+    if (!r || typeof r !== 'object') {
+      return { valid: false, error: `roles[${i}] must be an object` };
+    }
+
+    // name: required string, alphanumeric + hyphens/underscores
+    if (typeof r.name !== 'string' || r.name.length === 0 || r.name.length > MAX_ROLE_NAME_LEN) {
+      return { valid: false, error: `roles[${i}].name must be a non-empty string (max ${MAX_ROLE_NAME_LEN} chars)` };
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(r.name)) {
+      return { valid: false, error: `roles[${i}].name must contain only alphanumeric, hyphens, or underscores` };
+    }
+    if (seenNames.has(r.name)) {
+      return { valid: false, error: `roles[${i}].name "${r.name}" is duplicated` };
+    }
+    seenNames.add(r.name);
+
+    // displayName: required string
+    if (typeof r.displayName !== 'string' || r.displayName.length === 0 || r.displayName.length > MAX_DISPLAY_NAME_LEN) {
+      return { valid: false, error: `roles[${i}].displayName must be a non-empty string (max ${MAX_DISPLAY_NAME_LEN} chars)` };
+    }
+
+    sanitizedRoles.push({
+      name: r.name,
+      displayName: r.displayName.substring(0, MAX_DISPLAY_NAME_LEN),
+      icon: typeof r.icon === 'string' ? r.icon.substring(0, 8) : '',
+      description: typeof r.description === 'string' ? r.description.substring(0, 500) : '',
+      claudeMd: typeof r.claudeMd === 'string' ? r.claudeMd.substring(0, MAX_CLAUDE_MD_LEN) : '',
+    });
+  }
+
+  return {
+    valid: true,
+    config: {
+      roles: sanitizedRoles,
+      teamType,
+      language,
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
 // System prompt construction
 // ---------------------------------------------------------------------------
 
