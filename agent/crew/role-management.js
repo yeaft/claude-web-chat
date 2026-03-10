@@ -26,6 +26,7 @@ export async function addRoleToSession(msg) {
   }
 
   const rolesToAdd = expandRoles([role]);
+  const addedRoles = [];
 
   for (const r of rolesToAdd) {
     if (session.roles.has(r.name)) {
@@ -34,6 +35,7 @@ export async function addRoleToSession(msg) {
     }
 
     session.roles.set(r.name, r);
+    addedRoles.push(r);
 
     if (r.isDecisionMaker) {
       session.decisionMaker = r.name;
@@ -42,7 +44,7 @@ export async function addRoleToSession(msg) {
       session.decisionMaker = r.name;
     }
 
-    await initRoleDir(session.sharedDir, r, session.language || 'zh-CN');
+    await initRoleDir(session.sharedDir, r, session.language || 'zh-CN', Array.from(session.roles.values()));
 
     console.log(`[Crew] Role added: ${r.name} (${r.displayName}) to session ${sessionId}`);
 
@@ -69,6 +71,28 @@ export async function addRoleToSession(msg) {
   }
 
   await updateSharedClaudeMd(session);
+
+  // Notify the decision maker about the new role(s) so it can ROUTE to them.
+  // We inject a system message into the DM's next turn via dispatchToRole
+  // (only if the DM is idle — otherwise the DM will see the updated team list
+  // through its CLAUDE.md or recent-routes context on next turn).
+  if (session.decisionMaker && addedRoles.length > 0) {
+    const dmState = session.roleStates.get(session.decisionMaker);
+    const dmIdle = !dmState || !dmState.turnActive;
+
+    if (dmIdle) {
+      const isZh = (session.language || 'zh-CN').startsWith('zh');
+      const addedNames = addedRoles.map(r => `${roleLabel(r)}(${r.name})`).join(', ');
+      const notice = isZh
+        ? `[系统通知] 新角色已加入团队: ${addedNames}。请在后续任务分配中考虑这些新成员。`
+        : `[System Notice] New role(s) joined the team: ${addedNames}. Consider them in future task assignments.`;
+
+      // Lazy import to avoid circular dependency
+      const { dispatchToRole } = await import('./routing.js');
+      await dispatchToRole(session, session.decisionMaker, notice, 'system');
+    }
+  }
+
   sendStatusUpdate(session);
 }
 

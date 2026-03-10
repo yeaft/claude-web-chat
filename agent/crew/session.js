@@ -216,7 +216,7 @@ export async function createCrewSession(msg) {
     for (const role of roles) {
       if (role.groupIndex > 0 && worktreeMap.has(role.groupIndex)) {
         role.workDir = worktreeMap.get(role.groupIndex);
-        await writeRoleClaudeMd(sharedDir, role, language);
+        await writeRoleClaudeMd(sharedDir, role, language, roles);
       }
     }
 
