@@ -582,4 +582,11 @@ export default {
   'vcrew.addRole': 'Add Role',
   'vcrew.start': 'Start Virtual Crew',
   'vcrew.sidebarTitle': 'Virtual Crew',
+  'vcrew.configTitle': 'Virtual Crew',
+  'vcrew.newSession': 'New Virtual Crew',
+  'vcrew.emptyHint': 'Send a message to start multi-role collaboration',
+  'vcrew.askingYou': 'is asking you',
+  'vcrew.language': 'Language',
+  'vcrew.rolePreview': 'Role Configuration',
+  'vcrew.noAgents': 'No online agents available',
 };

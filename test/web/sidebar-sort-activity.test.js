@@ -201,7 +201,7 @@ describe('computed properties integrate sortByActivity', () => {
 
   it('normalConversations computed calls sortByActivity', () => {
     expect(chatPageSource).toContain(
-      'this.sortByActivity(this.store.conversations.filter(c => c.type !== \'crew\'))'
+      'this.sortByActivity(this.store.conversations.filter(c => c.type !== \'crew\' && c.type !== \'virtualCrew\'))'
     );
   });
 
@@ -222,11 +222,11 @@ describe('panel structure unchanged', () => {
     expect(normalIdx).toBeLessThan(crewIdx);
   });
 
-  it('dual session-panel structure is preserved', () => {
+  it('session-panel structure is preserved (chat + crew + vcrew)', () => {
     const panelsStart = chatPageSource.indexOf('class="session-panels"');
     expect(panelsStart).toBeGreaterThan(-1);
     const matches = chatPageSource.match(/class="session-panel"/g) || [];
-    expect(matches.length).toBe(2);
+    expect(matches.length).toBe(3);
   });
 
   it('group headers remain — Chat uses i18n recentChats, Crew shows "Crew Sessions"', () => {

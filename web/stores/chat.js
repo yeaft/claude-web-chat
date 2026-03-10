@@ -371,6 +371,22 @@ export const useChatStore = defineStore('chat', {
     removeCrewRole(roleName) { crewHelpers.removeCrewRole(this, roleName); },
     handleCrewOutput(msg) { crewHelpers.handleCrewOutput(this, msg); },
 
+    // Virtual Crew actions
+    createVCrewSession(config) {
+      const targetAgent = config.agentId || this.currentAgent;
+      if (!targetAgent) return;
+      this.sendWsMessage({
+        type: 'create_conversation',
+        agentId: targetAgent,
+        workDir: config.projectDir,
+        vcrewConfig: {
+          roles: config.roles,
+          teamType: config.teamType,
+          language: config.language,
+        },
+      });
+    },
+
     openFileInExplorer(filePath) {
       if (!this.currentConversation) return;
       this.workbenchExpanded = true;

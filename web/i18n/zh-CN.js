@@ -582,4 +582,11 @@ export default {
   'vcrew.addRole': '添加角色',
   'vcrew.start': '启动 Virtual Crew',
   'vcrew.sidebarTitle': 'Virtual Crew',
+  'vcrew.configTitle': 'Virtual Crew',
+  'vcrew.newSession': '新建 Virtual Crew',
+  'vcrew.emptyHint': '发送消息开始多角色协作',
+  'vcrew.askingYou': '正在提问',
+  'vcrew.language': '语言',
+  'vcrew.rolePreview': '角色配置',
+  'vcrew.noAgents': '没有在线的 Agent',
 };
