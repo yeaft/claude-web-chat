@@ -565,4 +565,21 @@ export default {
   'crewConfig.applyChanges': 'Apply Changes',
   'crewConfig.start': 'Start',
   'crewConfig.confirmDeleteCrew': 'Are you sure you want to delete the .crew directory? All Crew configuration will be cleared.',
+
+  // ============ Virtual Crew ============
+  'vcrew.creating': 'Creating Virtual Crew session...',
+  'vcrew.working': 'Working',
+  'vcrew.selectTeam': 'Select team template',
+  'vcrew.teamDev': 'Software Dev',
+  'vcrew.teamCustom': 'Custom',
+  'vcrew.editRoles': 'Edit Roles',
+  'vcrew.roleName': 'Role ID',
+  'vcrew.roleDisplayName': 'Display Name',
+  'vcrew.roleIcon': 'Icon',
+  'vcrew.roleDesc': 'Role Description',
+  'vcrew.rolePrompt': 'Role Prompt',
+  'vcrew.removeRole': 'Remove Role',
+  'vcrew.addRole': 'Add Role',
+  'vcrew.start': 'Start Virtual Crew',
+  'vcrew.sidebarTitle': 'Virtual Crew',
 };

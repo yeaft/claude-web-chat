@@ -96,6 +96,15 @@ export function selectConversation(store, conversationId, agentId) {
     store.messages = [];
   }
 
+  // ★ Virtual Crew: restore session info from conversation data if missing
+  if (conv?.type === 'virtualCrew' && !store.vcrewSessions[conversationId] && conv.vcrewRoles) {
+    store.vcrewSessions[conversationId] = {
+      roles: conv.vcrewRoles,
+      teamType: conv.teamType || 'dev',
+      language: conv.language || 'zh-CN',
+    };
+  }
+
   store.currentConversation = conversationId;
   if (conv) {
     store.currentWorkDir = conv.workDir;
@@ -198,6 +207,8 @@ export function deleteConversation(store, conversationId, agentId) {
       agentId: agentId || store.currentAgent
     });
   }
+  // ★ 清理 vcrew 数据
+  delete store.vcrewSessions[conversationId];
 
   // 立即从本地列表移除（不等 server 同步）
   store.conversations = store.conversations.filter(c => c.id !== conversationId);

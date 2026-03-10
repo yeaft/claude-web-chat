@@ -114,6 +114,11 @@ export const useChatStore = defineStore('chat', {
     crewMobilePanel: null,       // null | 'roles' | 'features' — 移动端 Drawer 状态
     crewPanelVisible: { roles: true, features: true }, // 桌面端面板可见性
     crewInProgressCount: 0,      // 进行中 Feature 数量（由 CrewChatView 同步）
+
+    // =====================
+    // Virtual Crew (single-conversation multi-role) 状态
+    // =====================
+    vcrewSessions: {},            // { [convId]: { roles, teamType, language } }
   }),
 
   getters: {
@@ -176,6 +181,16 @@ export const useChatStore = defineStore('chat', {
       if (!state.currentConversation) return false;
       const conv = state.conversations.find(c => c.id === state.currentConversation);
       return conv?.type === 'crew';
+    },
+    // 当前 conversation 是否是 Virtual Crew
+    currentConversationIsVCrew: (state) => {
+      if (!state.currentConversation) return false;
+      const conv = state.conversations.find(c => c.id === state.currentConversation);
+      return conv?.type === 'virtualCrew';
+    },
+    // 当前 Virtual Crew session 信息
+    currentVCrewSession: (state) => {
+      return state.vcrewSessions[state.currentConversation] || null;
     },
     // 当前 conversation 的 MCP servers 列表
     currentMcpServers: (state) => {
