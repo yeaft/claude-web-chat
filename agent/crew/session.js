@@ -335,14 +335,19 @@ export async function handleCheckCrewExists(msg) {
 }
 
 /**
- * 删除工作目录下的 .crew 目录
+ * 删除工作目录下的 .crew 目录（保留 context/ 历史记录）
  */
 export async function handleDeleteCrewDir(msg) {
   const { projectDir } = msg;
   if (!isValidProjectDir(projectDir)) return;
   const crewDir = join(projectDir, '.crew');
   try {
-    await fs.rm(crewDir, { recursive: true, force: true });
+    const entries = await fs.readdir(crewDir);
+    await Promise.all(
+      entries
+        .filter(name => name !== 'context')
+        .map(name => fs.rm(join(crewDir, name), { recursive: true, force: true }))
+    );
   } catch {}
 }
 
