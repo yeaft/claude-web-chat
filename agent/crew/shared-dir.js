@@ -22,7 +22,7 @@ export async function initSharedDir(sharedDir, roles, projectDir, language = 'zh
 
   // 初始化每个角色的目录
   for (const role of roles) {
-    await initRoleDir(sharedDir, role, language);
+    await initRoleDir(sharedDir, role, language, roles);
   }
 
   // 生成 .crew/CLAUDE.md（共享级）
@@ -32,7 +32,7 @@ export async function initSharedDir(sharedDir, roles, projectDir, language = 'zh
 /**
  * 初始化角色目录: .crew/roles/{roleName}/CLAUDE.md
  */
-export async function initRoleDir(sharedDir, role, language = 'zh-CN') {
+export async function initRoleDir(sharedDir, role, language = 'zh-CN', allRoles = []) {
   const roleDir = join(sharedDir, 'roles', role.name);
   await fs.mkdir(roleDir, { recursive: true });
 
@@ -42,7 +42,7 @@ export async function initRoleDir(sharedDir, role, language = 'zh-CN') {
     await fs.access(claudeMdPath);
     // 已存在，不覆盖（保留角色自己写入的记忆）
   } catch {
-    await writeRoleClaudeMd(sharedDir, role, language);
+    await writeRoleClaudeMd(sharedDir, role, language, allRoles);
   }
 }
 
@@ -80,14 +80,60 @@ ${m.sharedMemoryDefault}
 }
 
 /**
- * 写入 .crew/roles/{roleName}/CLAUDE.md — 角色级
+ * Replace generic role names in ROUTE examples with actual instance names.
+ *
+ * Given a role with groupIndex=2 and the full role list containing
+ * dev-1, dev-2, rev-1, rev-2, test-1, test-2, the function rewrites:
+ *   "to: reviewer"  → "to: rev-2"
+ *   "to: developer" → "to: dev-2"
+ *   "to: tester"    → "to: test-2"
+ *
+ * For roles without a groupIndex (pm, designer, etc.), or when no matching
+ * instance exists, the generic name is left untouched.
+ *
+ * @param {string} text - claudeMd content with generic ROUTE targets
+ * @param {object} role - the role being written (must have roleType, groupIndex)
+ * @param {Array}  allRoles - full expanded role list
+ * @returns {string} text with generic names replaced by instance names
  */
-export async function writeRoleClaudeMd(sharedDir, role, language = 'zh-CN') {
+export function resolveRouteTargets(text, role, allRoles) {
+  if (!allRoles || allRoles.length === 0 || !role.groupIndex) return text;
+
+  // Build a lookup: generic roleType → instance name at this groupIndex
+  // e.g. { developer: 'dev-2', reviewer: 'rev-2', tester: 'test-2' }
+  const instanceMap = {};
+  for (const r of allRoles) {
+    if (r.groupIndex === role.groupIndex && r.roleType && r.name !== r.roleType) {
+      instanceMap[r.roleType] = r.name;
+    }
+  }
+
+  if (Object.keys(instanceMap).length === 0) return text;
+
+  // Replace "to: <genericName>" inside ROUTE blocks
+  // Use a careful regex that only touches the `to:` field value
+  return text.replace(/(to:\s*)(developer|reviewer|tester)\b/gi, (match, prefix, genericName) => {
+    const resolved = instanceMap[genericName.toLowerCase()];
+    return resolved ? `${prefix}${resolved}` : match;
+  });
+}
+
+/**
+ * 写入 .crew/roles/{roleName}/CLAUDE.md — 角色级
+ * @param {string} sharedDir
+ * @param {object} role
+ * @param {string} language
+ * @param {Array}  [allRoles] - full expanded role list for ROUTE target resolution
+ */
+export async function writeRoleClaudeMd(sharedDir, role, language = 'zh-CN', allRoles = []) {
   const roleDir = join(sharedDir, 'roles', role.name);
   const m = getMessages(language);
 
+  // Resolve generic ROUTE targets to actual instance names
+  const resolvedClaudeMd = resolveRouteTargets(role.claudeMd || role.description, role, allRoles);
+
   let claudeMd = `${m.roleTitle(roleLabel(role))}
-${role.claudeMd || role.description}
+${resolvedClaudeMd}
 `;
 
   // 有独立 worktree 的角色，覆盖代码工作目录
