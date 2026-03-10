@@ -3,10 +3,10 @@
  *
  * Simplified version of CrewConfigPanel:
  *   - Agent selection (any online agent, no crew capability required)
- *   - Work directory selection
+ *   - Work directory selection (with folder picker browse button)
  *   - Team template selection (dev / custom)
  *   - Role preview & editing (add/remove/edit claudeMd)
- *   - Language selection
+ *   - Language follows user settings (store.locale)
  *   - "Start" button → store.createVCrewSession
  *
  * NOT needed (vs CrewConfigPanel):
@@ -46,18 +46,9 @@ export default {
             <div class="crew-workdir-group">
               <input class="crew-config-input" v-model="projectDir"
                      :placeholder="selectedAgentWorkDir || '/home/user/projects/app'" />
-            </div>
-          </div>
-
-          <!-- Language -->
-          <div class="crew-config-section" v-if="selectedAgent">
-            <label class="crew-config-label">{{ $t('vcrew.language') }}</label>
-            <div class="crew-select-wrapper">
-              <select class="crew-config-select" v-model="language">
-                <option value="zh-CN">中文</option>
-                <option value="en">English</option>
-              </select>
-              <svg class="select-arrow" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+              <button class="workdir-browse-btn" @click="$emit('browse')" :title="$t('modal.newConv.browse')">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+              </button>
             </div>
           </div>
 
@@ -116,7 +107,7 @@ export default {
     </div>
   `,
 
-  emits: ['close', 'start'],
+  emits: ['close', 'start', 'browse'],
 
   setup() {
     const store = Pinia.useChatStore();
@@ -127,7 +118,6 @@ export default {
     return {
       selectedAgent: '',
       projectDir: '',
-      language: this.store?.locale || 'zh-CN',
       currentTemplate: 'dev',
       roles: [],
     };
@@ -141,6 +131,9 @@ export default {
       if (!this.selectedAgent) return '';
       const agent = this.store.agents.find(a => a.id === this.selectedAgent);
       return agent?.workDir || '';
+    },
+    language() {
+      return this.store.locale || 'zh-CN';
     },
     canStart() {
       return this.selectedAgent && this.projectDir.trim() && this.roles.length > 0;

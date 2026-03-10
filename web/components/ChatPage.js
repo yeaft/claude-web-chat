@@ -319,8 +319,10 @@ export default {
       <!-- Virtual Crew Config Panel -->
       <VCrewConfigPanel
         v-if="vcrewConfigOpen"
+        ref="vcrewPanel"
         @close="vcrewConfigOpen = false"
         @start="startVCrewSession"
+        @browse="openVCrewFolderPicker"
       />
 
       <!-- Unified Conversation Modal (New + Resume) -->
@@ -636,6 +638,36 @@ export default {
         }
       }, 5000);
     },
+    openVCrewFolderPicker() {
+      const vcrewPanel = this.$refs.vcrewPanel;
+      const agentId = vcrewPanel?.selectedAgent;
+      if (!agentId) return;
+      this.folderPickerTarget = 'vcrew';
+      this.folderPickerOpen = true;
+      this.folderPickerSelected = '';
+      this.folderPickerLoading = true;
+      const agent = this.store.agents.find(a => a.id === agentId);
+      const defaultDir = vcrewPanel?.projectDir || agent?.workDir || '';
+      this.folderPickerPath = defaultDir;
+      this.folderPickerEntries = [];
+      const sendRequest = () => {
+        this.store.sendWsMessage({
+          type: 'list_directory',
+          conversationId: '_workdir_picker',
+          agentId: agentId,
+          dirPath: defaultDir,
+          workDir: agent?.workDir || ''
+        });
+      };
+      sendRequest();
+      if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
+      this._folderPickerTimer = setTimeout(() => {
+        if (this.folderPickerLoading && this.folderPickerOpen) {
+          console.log('[FolderPicker] Retrying vcrew directory request for:', defaultDir);
+          sendRequest();
+        }
+      }, 5000);
+    },
 
     openConversationModal() {
       this.showConversationModal = true;
@@ -919,6 +951,8 @@ export default {
       let agentId = this.convModalAgent;
       if (this.folderPickerTarget === 'crew') {
         agentId = this.$refs.crewPanel?.selectedAgent;
+      } else if (this.folderPickerTarget === 'vcrew') {
+        agentId = this.$refs.vcrewPanel?.selectedAgent;
       }
       if (!agentId) return;
       this.folderPickerLoading = true;
@@ -994,6 +1028,14 @@ export default {
         if (crewPanel) {
           crewPanel.projectDir = path;
           crewPanel.onWorkDirChange();
+        }
+        this.folderPickerOpen = false;
+        return;
+      }
+      if (this.folderPickerTarget === 'vcrew') {
+        const vcrewPanel = this.$refs.vcrewPanel;
+        if (vcrewPanel) {
+          vcrewPanel.projectDir = path;
         }
         this.folderPickerOpen = false;
         return;
