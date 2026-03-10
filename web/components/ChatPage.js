@@ -6,11 +6,13 @@ import ProxyTab from './ProxyTab.js';
 import SettingsPanel from './SettingsPanel.js';
 import CrewConfigPanel from './CrewConfigPanel.js';
 import CrewChatView from './CrewChatView.js';
+import VCrewChatView from './VCrewChatView.js';
+import VCrewConfigPanel from './VCrewConfigPanel.js';
 import { useAuthStore } from '../stores/auth.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView, VCrewChatView, VCrewConfigPanel },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': showMobileSidebar }">
 
@@ -213,9 +215,46 @@ export default {
               </div>
             </div>
           </div>
-        </div>
 
-        <!-- User/Settings at Bottom -->
+          <!-- Virtual Crew Sessions Panel -->
+          <div class="session-panel" :class="{ collapsed: vcrewGroupCollapsed }" v-if="vcrewConversations.length > 0 || !vcrewGroupCollapsed">
+            <div class="session-group-header">
+              <div class="session-group-title-area" @click="vcrewGroupCollapsed = !vcrewGroupCollapsed">
+                <svg class="session-collapse-arrow" :class="{ collapsed: vcrewGroupCollapsed }" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+                <span class="session-group-icon">🎭</span>
+                <span>Virtual Crew</span>
+              </div>
+              <button class="session-header-add-btn" @click.stop="newVCrewSession" :title="$t('vcrew.newSession')">
+                <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              </button>
+            </div>
+            <div class="session-panel-list" v-show="!vcrewGroupCollapsed">
+              <div
+                v-for="conv in vcrewConversations"
+                :key="conv.id"
+                class="session-item session-item-vcrew"
+                :class="{ active: conv.id === store.currentConversation, processing: store.isConversationProcessing(conv.id) }"
+                @click="selectConversation(conv.id, conv.agentId)"
+              >
+                <div class="session-item-header">
+                  <div class="title" :title="getVCrewTitle(conv)">
+                    <span v-if="store.isConversationProcessing(conv.id)" class="processing-dot"></span>
+                    <span class="vcrew-conv-icon">🎭</span>
+                    {{ getVCrewTitle(conv) }}
+                  </div>
+                  <span class="session-time">{{ getConversationTime(conv) }}</span>
+                  <button class="session-delete-btn" @click.stop="deleteConversation(conv.id, conv.agentId)" :title="$t('chat.sidebar.closeConv')">
+                    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                  </button>
+                </div>
+                <div class="session-info">
+                  <span class="session-path">{{ shortenPath(conv.workDir) }}</span>
+                  <span class="session-agent" v-if="conv.agentName">{{ conv.agentName }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="sidebar-bottom">
           <button class="sidebar-nav-item" @click="store.toggleTheme()">
             <svg v-if="store.theme === 'dark'" viewBox="0 0 24 24" width="20" height="20"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z" fill="currentColor"/></svg>
@@ -243,6 +282,12 @@ export default {
           <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
           <CrewChatView />
         </template>
+        <!-- Virtual Crew Conversation -->
+        <template v-else-if="isCurrentVCrewConversation">
+          <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
+          <VCrewChatView />
+          <ChatInput />
+        </template>
         <!-- Normal Chat Mode -->
         <template v-else>
           <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
@@ -269,6 +314,13 @@ export default {
         @close="store.crewConfigOpen = false"
         @start="startCrewSession"
         @browse="openCrewFolderPicker"
+      />
+
+      <!-- Virtual Crew Config Panel -->
+      <VCrewConfigPanel
+        v-if="vcrewConfigOpen"
+        @close="vcrewConfigOpen = false"
+        @start="startVCrewSession"
       />
 
       <!-- Unified Conversation Modal (New + Resume) -->
@@ -468,7 +520,9 @@ export default {
       folderPickerTarget: '', // 'convModal'
       serverVersion: '',
       chatGroupCollapsed: false,
-      crewGroupCollapsed: false
+      crewGroupCollapsed: false,
+      vcrewGroupCollapsed: false,
+      vcrewConfigOpen: false
     };
   },
   computed: {
@@ -493,6 +547,9 @@ export default {
     isCurrentCrewConversation() {
       return this.store.currentConversationIsCrew;
     },
+    isCurrentVCrewConversation() {
+      return this.store.currentConversationIsVCrew;
+    },
     currentAgentLatency() {
       if (!this.store.currentAgent) return null;
       const agent = this.store.agents.find(a => a.id === this.store.currentAgent);
@@ -512,8 +569,11 @@ export default {
     crewConversations() {
       return this.sortByActivity(this.store.conversations.filter(c => c.type === 'crew'));
     },
+    vcrewConversations() {
+      return this.sortByActivity(this.store.conversations.filter(c => c.type === 'virtualCrew'));
+    },
     normalConversations() {
-      return this.sortByActivity(this.store.conversations.filter(c => c.type !== 'crew'));
+      return this.sortByActivity(this.store.conversations.filter(c => c.type !== 'crew' && c.type !== 'virtualCrew'));
     }
   },
   methods: {
@@ -531,6 +591,20 @@ export default {
     },
     startCrewSession(config) {
       this.store.createCrewSession(config);
+    },
+    // Virtual Crew methods
+    newVCrewSession() {
+      this.vcrewConfigOpen = true;
+    },
+    startVCrewSession(config) {
+      this.vcrewConfigOpen = false;
+      this.store.createVCrewSession(config);
+    },
+    getVCrewTitle(conv) {
+      // Use conversation title (from first user message) or fallback
+      const title = this.store.conversationTitles[conv.id];
+      if (title) return title.length > 25 ? title.substring(0, 25) + '...' : title;
+      return 'Virtual Crew';
     },
     openCrewFolderPicker() {
       const crewPanel = this.$refs.crewPanel;

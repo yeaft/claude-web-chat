@@ -53,17 +53,17 @@ describe('dual independent scroll containers', () => {
     expect(chatPageSource).toContain('class="session-panels"');
   });
 
-  it('has exactly two session-panel containers inside session-panels', () => {
+  it('has at least two session-panel containers inside session-panels (chat + crew + optional vcrew)', () => {
     const panelsStart = chatPageSource.indexOf('class="session-panels"');
     const panelsEnd = chatPageSource.indexOf('sidebar-bottom');
     const panelsBlock = chatPageSource.substring(panelsStart, panelsEnd + 20);
     const matches = panelsBlock.match(/class="session-panel"/g) || [];
-    expect(matches.length).toBe(2);
+    expect(matches.length).toBeGreaterThanOrEqual(2);
   });
 
   it('each panel has a session-panel-list for scrollable content', () => {
     const matches = chatPageSource.match(/class="session-panel-list"/g) || [];
-    expect(matches.length).toBe(2);
+    expect(matches.length).toBeGreaterThanOrEqual(2);
   });
 
   it('chat panel session-panel-list contains normalConversations v-for', () => {

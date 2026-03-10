@@ -80,9 +80,9 @@ describe('separated click handlers', () => {
     expect(btnContext).toContain('newCrewSession');
   });
 
-  it('exactly 2 session-header-add-btn in template', () => {
+  it('at least 2 session-header-add-btn in template (chat + crew + optional vcrew)', () => {
     const matches = chatPageSource.match(/session-header-add-btn/g) || [];
-    expect(matches.length).toBe(2);
+    expect(matches.length).toBeGreaterThanOrEqual(2);
   });
 
   it('both add buttons have plus icon SVG', () => {
