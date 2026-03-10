@@ -269,6 +269,26 @@ ${m.taskExample}
 ${m.taskListNotes}`;
   }
 
+  // 非 dev 团队的非决策者也需要知道协作模式
+  if (!role.isDecisionMaker && session.teamType !== 'dev') {
+    prompt += `\n\n${m.collabMode}
+${m.collabModeContent}`;
+  }
+
+  // 非 DM 角色的团队特定协作建议
+  if (!role.isDecisionMaker && m.teamCollabFlow) {
+    // roleType 在多个团队中出现时用 roleType_teamType 消歧
+    const flowFn = m.teamCollabFlow[role.roleType + '_' + session.teamType]
+      || m.teamCollabFlow[role.roleType];
+    if (flowFn) {
+      const flowText = flowFn(session.decisionMaker);
+      if (flowText) {
+        prompt += `\n\n${m.teamCollabFlowTitle}
+${flowText}`;
+      }
+    }
+  }
+
   // Feature 进度文件说明
   prompt += `\n\n${m.featureRecordTitle}
 ${m.featureRecordContent}
