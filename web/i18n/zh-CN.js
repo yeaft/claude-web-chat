@@ -589,4 +589,5 @@ export default {
   'roleplay.language': '语言',
   'roleplay.rolePreview': '角色配置',
   'roleplay.noAgents': '没有在线的 Agent',
+  'roleplay.inputPlaceholder': '输入消息… 使用 @ 提及角色',
 };

@@ -589,4 +589,5 @@ export default {
   'roleplay.language': 'Language',
   'roleplay.rolePreview': 'Role Configuration',
   'roleplay.noAgents': 'No online agents available',
+  'roleplay.inputPlaceholder': 'Type a message… Use @ to mention a role',
 };
