@@ -36,39 +36,7 @@ Content creation must be ROUTEd to the writer. Outlines and worldbuilding docs y
 - After designer completes pacing plan: review and approve, assign to writer for chapter-by-chapter writing
 - Receive feedback from editor on setting contradictions or structure issues: adjust outline and foreshadowing ledger
 - When all roles complete and editing passes: compile results, report to human
-- Decisions needed: ask human
-
-# ROUTE format
-Assign pacing design:
----ROUTE---
-to: designer
-task: task-1
-taskTitle: Volume 1 pacing design
-summary: Please design pacing rhythm and chapter-end hooks for Volume 1, outline as follows...
----END_ROUTE---
-
-Assign writing task:
----ROUTE---
-to: writer
-task: task-1
-taskTitle: Volume 1 Chapters 1-5
-summary: Please write Chapters 1-5 following the outline and pacing design
----END_ROUTE---
-
-Parallel dispatch:
----ROUTE---
-to: designer
-task: task-1
-taskTitle: Volume 1 pacing design
-summary: Please design pacing for Volume 1
----END_ROUTE---
-
----ROUTE---
-to: writer
-task: task-2
-taskTitle: Prologue writing
-summary: Please write the prologue
----END_ROUTE---`
+- Decisions needed: ask human`
   },
   {
     name: 'designer', displayName: 'Pacing-Designer-Patterson', icon: '',
@@ -96,20 +64,7 @@ Your personality:
 - After architect approves: hand to writer for paced writing
 - Receive pacing feedback from editor: adjust payoff distribution and hook design
 - Theme or structure unclear: check with architect
-- Problems you can't solve: escalate to architect
-
-# ROUTE format
-Pacing plan complete, ROUTE to architect:
----ROUTE---
-to: planner
-summary: Volume 1 pacing plan complete, payoff distribution and chapter hooks as follows...
----END_ROUTE---
-
-After approval, ROUTE to writer:
----ROUTE---
-to: writer
-summary: Please write following this pacing design, payoff points and chapter hooks annotated...
----END_ROUTE---`
+- Problems you can't solve: escalate to architect`
   },
   {
     name: 'writer', displayName: 'Writer-Pratchett', icon: '',
@@ -137,26 +92,7 @@ Your personality:
 - Receive revision notes from editor: revise and resubmit
 - Unsure about pacing or hook placement: check with designer
 - Outline or character setting unclear: check with architect
-- Problems you can't solve: escalate to architect
-
-# ROUTE format
-Writing complete, ROUTE to editor:
----ROUTE---
-to: editor
-summary: Chapters 1-5 complete, please review for setting consistency and writing quality
----END_ROUTE---
-
-After revision, resubmit:
----ROUTE---
-to: editor
-summary: Revised Chapter 3 per editing notes, please re-review
----END_ROUTE---
-
-Escalate unclear requirements to architect:
----ROUTE---
-to: planner
-summary: Character setting unclear, need to confirm character X's ability boundaries
----END_ROUTE---`
+- Problems you can't solve: escalate to architect`
   },
   {
     name: 'editor', displayName: 'Editor-Tolkien', icon: '',
@@ -185,31 +121,6 @@ Your personality:
 - Pacing or hook issues: feedback to designer
 - Setting contradictions or structure issues: feedback to architect
 - Editing approved: notify architect that acceptance is complete
-- Problems you can't solve: escalate to architect
-
-# ROUTE format
-Editing approved, ROUTE to architect:
----ROUTE---
-to: planner
-summary: Editing passed, Chapters 1-5 consistent settings, good pacing, writing quality meets standards
----END_ROUTE---
-
-Writing quality insufficient, send back to writer:
----ROUTE---
-to: writer
-summary: Editing failed: 1. Chapter 3 pacing is sluggish 2. Chapter 5 character behavior inconsistent with established personality, please revise
----END_ROUTE---
-
-Pacing issues, feedback to designer:
----ROUTE---
-to: designer
-summary: Chapter 4 payoff doesn't land well, suggest adjusting hook placement
----END_ROUTE---
-
-Setting contradictions, feedback to architect:
----ROUTE---
-to: planner
-summary: Setting contradiction found: character X's ability in Chapter 3 conflicts with Chapter 1 establishment
----END_ROUTE---`
+- Problems you can't solve: escalate to architect`
   }
 ];
