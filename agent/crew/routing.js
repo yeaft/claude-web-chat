@@ -84,7 +84,11 @@ export async function executeRoute(session, fromRole, route) {
   }
 
   // 发送路由消息（UI 显示）
-  sendCrewOutput(session, fromRole, 'route', null, { routeTo: to, routeSummary: summary });
+  sendCrewOutput(session, fromRole, 'route', null, {
+    routeTo: to, routeSummary: summary,
+    taskId: taskId || undefined,
+    taskTitle: taskTitle || undefined
+  });
 
   // 路由到 human
   if (to === 'human') {

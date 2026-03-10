@@ -49,10 +49,13 @@ export function sendCrewOutput(session, roleName, outputType, rawMessage, extra 
   const roleIcon = role?.icon || '';
   const displayName = role?.displayName || roleName;
 
-  // 从 roleState 获取当前 task 信息
+  // 从 extra 或 roleState 获取当前 task 信息（extra 优先）
   const roleState = session.roleStates.get(roleName);
-  const taskId = roleState?.currentTask?.taskId || null;
-  const taskTitle = roleState?.currentTask?.taskTitle || null;
+  const taskId = extra.taskId || roleState?.currentTask?.taskId || null;
+  const taskTitle = extra.taskTitle || roleState?.currentTask?.taskTitle || null;
+
+  // 清除 extra 中的 taskId/taskTitle 避免重复展开到 WebSocket 消息
+  const { taskId: _tid, taskTitle: _tt, ...extraRest } = extra;
 
   sendCrewMessage({
     type: 'crew_output',
@@ -64,7 +67,7 @@ export function sendCrewOutput(session, roleName, outputType, rawMessage, extra 
     data: rawMessage,
     taskId,
     taskTitle,
-    ...extra
+    ...extraRest
   });
 
   // ★ 累积 feature 到持久化列表
