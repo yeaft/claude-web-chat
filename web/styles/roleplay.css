@@ -1,6 +1,6 @@
-/* Virtual Crew styles */
+/* Role Play styles */
 
-.vcrew-chat {
+.roleplay-chat {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -10,7 +10,7 @@
 }
 
 /* Role indicator bar */
-.vcrew-role-indicator {
+.roleplay-role-indicator {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -21,21 +21,21 @@
   flex-shrink: 0;
 }
 
-.vcrew-role-ind-icon {
+.roleplay-role-ind-icon {
   font-size: 1.1rem;
 }
 
-.vcrew-role-ind-name {
+.roleplay-role-ind-name {
   font-weight: 600;
   color: var(--text-primary);
 }
 
-.vcrew-role-ind-status {
+.roleplay-role-ind-status {
   color: var(--text-secondary);
   font-size: 0.8rem;
 }
 
-.vcrew-role-ind-status::before {
+.roleplay-role-ind-status::before {
   content: '';
   display: inline-block;
   width: 6px;
@@ -43,16 +43,16 @@
   border-radius: 50%;
   background: var(--accent-color);
   margin-right: 4px;
-  animation: vcrew-pulse 1.5s infinite;
+  animation: roleplay-pulse 1.5s infinite;
 }
 
-@keyframes vcrew-pulse {
+@keyframes roleplay-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
 
 /* Messages container */
-.vcrew-messages {
+.roleplay-messages {
   flex: 1;
   overflow-y: auto;
   padding: 16px;
@@ -62,7 +62,7 @@
 }
 
 /* Empty state */
-.vcrew-empty {
+.roleplay-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -72,17 +72,17 @@
   color: var(--text-secondary);
 }
 
-.vcrew-empty-icon {
+.roleplay-empty-icon {
   font-size: 3rem;
   opacity: 0.5;
 }
 
-.vcrew-empty-text {
+.roleplay-empty-text {
   font-size: 0.9rem;
 }
 
 /* Empty state — role cards */
-.vcrew-empty-roles {
+.roleplay-empty-roles {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
@@ -91,7 +91,7 @@
   max-width: 640px;
 }
 
-.vcrew-empty-role-card {
+.roleplay-empty-role-card {
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -104,26 +104,26 @@
   flex: 1 1 180px;
 }
 
-.vcrew-empty-role-icon {
+.roleplay-empty-role-icon {
   font-size: 1.4rem;
   flex-shrink: 0;
   line-height: 1;
 }
 
-.vcrew-empty-role-info {
+.roleplay-empty-role-info {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
 }
 
-.vcrew-empty-role-name {
+.roleplay-empty-role-name {
   font-weight: 600;
   font-size: 0.85rem;
   color: var(--text-primary);
 }
 
-.vcrew-empty-role-desc {
+.roleplay-empty-role-desc {
   font-size: 0.78rem;
   color: var(--text-secondary);
   line-height: 1.4;
@@ -135,12 +135,12 @@
 }
 
 /* Message base */
-.vcrew-msg {
+.roleplay-msg {
   max-width: 100%;
 }
 
 /* User messages */
-.vcrew-msg-user {
+.roleplay-msg-user {
   background: var(--user-msg-bg, var(--accent-color));
   color: var(--user-msg-text, #fff);
   padding: 10px 14px;
@@ -150,35 +150,35 @@
   word-break: break-word;
 }
 
-.vcrew-msg-user .markdown-body {
+.roleplay-msg-user .markdown-body {
   color: inherit;
 }
 
-.vcrew-msg-user .markdown-body p {
+.roleplay-msg-user .markdown-body p {
   margin: 0;
 }
 
 /* System messages */
-.vcrew-msg-system {
+.roleplay-msg-system {
   text-align: center;
   color: var(--text-secondary);
   font-size: 0.8rem;
   padding: 4px 8px;
 }
 
-.vcrew-msg-error {
+.roleplay-msg-error {
   color: var(--error-color, #f56c6c);
 }
 
 /* Role text segments */
-.vcrew-msg-role {
+.roleplay-msg-role {
   padding: 0 0 0 12px;
   border-left: 3px solid var(--role-border, var(--accent-color));
   margin: 2px 0;
 }
 
 /* Role divider (shown on role change) */
-.vcrew-role-divider {
+.roleplay-role-divider {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -188,7 +188,7 @@
   color: var(--role-color, var(--text-secondary));
 }
 
-.vcrew-role-divider::after {
+.roleplay-role-divider::after {
   content: '';
   flex: 1;
   height: 1px;
@@ -196,30 +196,30 @@
   opacity: 0.3;
 }
 
-.vcrew-role-div-icon {
+.roleplay-role-div-icon {
   font-size: 1rem;
 }
 
-.vcrew-role-div-name {
+.roleplay-role-div-name {
   font-weight: 600;
 }
 
 /* Role content */
-.vcrew-role-content {
+.roleplay-role-content {
   font-size: 0.92rem;
   line-height: 1.6;
 }
 
-.vcrew-role-content p:first-child {
+.roleplay-role-content p:first-child {
   margin-top: 0;
 }
 
-.vcrew-role-content p:last-child {
+.roleplay-role-content p:last-child {
   margin-bottom: 0;
 }
 
 /* Tool messages */
-.vcrew-msg-tool {
+.roleplay-msg-tool {
   margin: 2px 0 2px 12px;
   border-left: 3px solid var(--role-color, var(--border-color));
   padding-left: 12px;
@@ -227,14 +227,14 @@
 }
 
 /* Todo progress */
-.vcrew-msg-todo {
+.roleplay-msg-todo {
   margin: 4px 0 4px 12px;
   padding: 8px 12px;
   background: var(--bg-secondary);
   border-radius: 8px;
 }
 
-.vcrew-todo-item {
+.roleplay-todo-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -242,16 +242,16 @@
   font-size: 0.85rem;
 }
 
-.vcrew-todo-item.completed {
+.roleplay-todo-item.completed {
   color: var(--text-secondary);
 }
 
-.vcrew-todo-item.completed .vcrew-todo-text {
+.roleplay-todo-item.completed .roleplay-todo-text {
   text-decoration: line-through;
   opacity: 0.7;
 }
 
-.vcrew-todo-checkbox {
+.roleplay-todo-checkbox {
   width: 18px;
   height: 18px;
   display: flex;
@@ -263,17 +263,17 @@
   flex-shrink: 0;
 }
 
-.vcrew-todo-item.completed .vcrew-todo-checkbox {
+.roleplay-todo-item.completed .roleplay-todo-checkbox {
   background: var(--accent-color);
   border-color: var(--accent-color);
   color: #fff;
 }
 
-.vcrew-todo-item.in_progress .vcrew-todo-checkbox {
+.roleplay-todo-item.in_progress .roleplay-todo-checkbox {
   border-color: var(--accent-color);
 }
 
-.vcrew-todo-spinner {
+.roleplay-todo-spinner {
   width: 10px;
   height: 10px;
   border: 2px solid var(--accent-color);
@@ -287,7 +287,7 @@
 }
 
 /* User question */
-.vcrew-msg-question {
+.roleplay-msg-question {
   background: var(--bg-secondary);
   border: 1px solid var(--accent-color);
   border-radius: 8px;
@@ -295,7 +295,7 @@
   margin: 4px 0;
 }
 
-.vcrew-question-header {
+.roleplay-question-header {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -304,28 +304,28 @@
 }
 
 /* Attachments */
-.vcrew-attachments {
+.roleplay-attachments {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 6px;
 }
 
-.vcrew-attachment-badge {
+.roleplay-attachment-badge {
   font-size: 0.75rem;
   background: rgba(255,255,255,0.15);
   padding: 2px 6px;
   border-radius: 4px;
 }
 
-/* Sidebar vcrew items */
-.session-item-vcrew .vcrew-conv-icon {
+/* Sidebar roleplay items */
+.session-item-roleplay .roleplay-conv-icon {
   font-size: 0.9rem;
   margin-right: 2px;
 }
 
 /* Cursor blink for streaming */
-.vcrew-msg-role .cursor-blink {
+.roleplay-msg-role .cursor-blink {
   display: inline-block;
   width: 2px;
   height: 1em;

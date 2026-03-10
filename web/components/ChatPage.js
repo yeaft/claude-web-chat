@@ -6,13 +6,13 @@ import ProxyTab from './ProxyTab.js';
 import SettingsPanel from './SettingsPanel.js';
 import CrewConfigPanel from './CrewConfigPanel.js';
 import CrewChatView from './CrewChatView.js';
-import VCrewChatView from './VCrewChatView.js';
-import VCrewConfigPanel from './VCrewConfigPanel.js';
+import RolePlayChatView from './RolePlayChatView.js';
+import RolePlayConfigPanel from './RolePlayConfigPanel.js';
 import { useAuthStore } from '../stores/auth.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView, VCrewChatView, VCrewConfigPanel },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView, RolePlayChatView, RolePlayConfigPanel },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': showMobileSidebar }">
 
@@ -216,31 +216,31 @@ export default {
             </div>
           </div>
 
-          <!-- Virtual Crew Sessions Panel -->
-          <div class="session-panel" :class="{ collapsed: vcrewGroupCollapsed }" v-if="vcrewConversations.length > 0 || !vcrewGroupCollapsed">
+          <!-- Role Play Sessions Panel -->
+          <div class="session-panel" :class="{ collapsed: rolePlayGroupCollapsed }" v-if="rolePlayConversations.length > 0 || !rolePlayGroupCollapsed">
             <div class="session-group-header">
-              <div class="session-group-title-area" @click="vcrewGroupCollapsed = !vcrewGroupCollapsed">
-                <svg class="session-collapse-arrow" :class="{ collapsed: vcrewGroupCollapsed }" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+              <div class="session-group-title-area" @click="rolePlayGroupCollapsed = !rolePlayGroupCollapsed">
+                <svg class="session-collapse-arrow" :class="{ collapsed: rolePlayGroupCollapsed }" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
                 <span class="session-group-icon">🎭</span>
-                <span>Virtual Crew</span>
+                <span>Role Play</span>
               </div>
-              <button class="session-header-add-btn" @click.stop="newVCrewSession" :title="$t('vcrew.newSession')">
+              <button class="session-header-add-btn" @click.stop="newRolePlaySession" :title="$t('roleplay.newSession')">
                 <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
               </button>
             </div>
-            <div class="session-panel-list" v-show="!vcrewGroupCollapsed">
+            <div class="session-panel-list" v-show="!rolePlayGroupCollapsed">
               <div
-                v-for="conv in vcrewConversations"
+                v-for="conv in rolePlayConversations"
                 :key="conv.id"
-                class="session-item session-item-vcrew"
+                class="session-item session-item-roleplay"
                 :class="{ active: conv.id === store.currentConversation, processing: store.isConversationProcessing(conv.id) }"
                 @click="selectConversation(conv.id, conv.agentId)"
               >
                 <div class="session-item-header">
-                  <div class="title" :title="getVCrewTitle(conv)">
+                  <div class="title" :title="getRolePlayTitle(conv)">
                     <span v-if="store.isConversationProcessing(conv.id)" class="processing-dot"></span>
-                    <span class="vcrew-conv-icon">🎭</span>
-                    {{ getVCrewTitle(conv) }}
+                    <span class="roleplay-conv-icon">🎭</span>
+                    {{ getRolePlayTitle(conv) }}
                   </div>
                   <span class="session-time">{{ getConversationTime(conv) }}</span>
                   <button class="session-delete-btn" @click.stop="deleteConversation(conv.id, conv.agentId)" :title="$t('chat.sidebar.closeConv')">
@@ -282,10 +282,10 @@ export default {
           <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
           <CrewChatView />
         </template>
-        <!-- Virtual Crew Conversation -->
-        <template v-else-if="isCurrentVCrewConversation">
+        <!-- Role Play Conversation -->
+        <template v-else-if="isCurrentRolePlayConversation">
           <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
-          <VCrewChatView />
+          <RolePlayChatView />
           <ChatInput />
         </template>
         <!-- Normal Chat Mode -->
@@ -316,13 +316,13 @@ export default {
         @browse="openCrewFolderPicker"
       />
 
-      <!-- Virtual Crew Config Panel -->
-      <VCrewConfigPanel
-        v-if="vcrewConfigOpen"
-        ref="vcrewPanel"
-        @close="vcrewConfigOpen = false"
-        @start="startVCrewSession"
-        @browse="openVCrewFolderPicker"
+      <!-- Role Play Config Panel -->
+      <RolePlayConfigPanel
+        v-if="rolePlayConfigOpen"
+        ref="rolePlayPanel"
+        @close="rolePlayConfigOpen = false"
+        @start="startRolePlaySession"
+        @browse="openRolePlayFolderPicker"
       />
 
       <!-- Unified Conversation Modal (New + Resume) -->
@@ -523,8 +523,8 @@ export default {
       serverVersion: '',
       chatGroupCollapsed: false,
       crewGroupCollapsed: false,
-      vcrewGroupCollapsed: false,
-      vcrewConfigOpen: false
+      rolePlayGroupCollapsed: false,
+      rolePlayConfigOpen: false
     };
   },
   computed: {
@@ -549,8 +549,8 @@ export default {
     isCurrentCrewConversation() {
       return this.store.currentConversationIsCrew;
     },
-    isCurrentVCrewConversation() {
-      return this.store.currentConversationIsVCrew;
+    isCurrentRolePlayConversation() {
+      return this.store.currentConversationIsRolePlay;
     },
     currentAgentLatency() {
       if (!this.store.currentAgent) return null;
@@ -571,11 +571,11 @@ export default {
     crewConversations() {
       return this.sortByActivity(this.store.conversations.filter(c => c.type === 'crew'));
     },
-    vcrewConversations() {
-      return this.sortByActivity(this.store.conversations.filter(c => c.type === 'virtualCrew'));
+    rolePlayConversations() {
+      return this.sortByActivity(this.store.conversations.filter(c => c.type === 'rolePlay'));
     },
     normalConversations() {
-      return this.sortByActivity(this.store.conversations.filter(c => c.type !== 'crew' && c.type !== 'virtualCrew'));
+      return this.sortByActivity(this.store.conversations.filter(c => c.type !== 'crew' && c.type !== 'rolePlay'));
     }
   },
   methods: {
@@ -594,19 +594,19 @@ export default {
     startCrewSession(config) {
       this.store.createCrewSession(config);
     },
-    // Virtual Crew methods
-    newVCrewSession() {
-      this.vcrewConfigOpen = true;
+    // Role Play methods
+    newRolePlaySession() {
+      this.rolePlayConfigOpen = true;
     },
-    startVCrewSession(config) {
-      this.vcrewConfigOpen = false;
-      this.store.createVCrewSession(config);
+    startRolePlaySession(config) {
+      this.rolePlayConfigOpen = false;
+      this.store.createRolePlaySession(config);
     },
-    getVCrewTitle(conv) {
+    getRolePlayTitle(conv) {
       // Use conversation title (from first user message) or fallback
       const title = this.store.conversationTitles[conv.id];
       if (title) return title.length > 25 ? title.substring(0, 25) + '...' : title;
-      return 'Virtual Crew';
+      return 'Role Play';
     },
     openCrewFolderPicker() {
       const crewPanel = this.$refs.crewPanel;
@@ -638,16 +638,16 @@ export default {
         }
       }, 5000);
     },
-    openVCrewFolderPicker() {
-      const vcrewPanel = this.$refs.vcrewPanel;
-      const agentId = vcrewPanel?.selectedAgent;
+    openRolePlayFolderPicker() {
+      const rolePlayPanel = this.$refs.rolePlayPanel;
+      const agentId = rolePlayPanel?.selectedAgent;
       if (!agentId) return;
-      this.folderPickerTarget = 'vcrew';
+      this.folderPickerTarget = 'roleplay';
       this.folderPickerOpen = true;
       this.folderPickerSelected = '';
       this.folderPickerLoading = true;
       const agent = this.store.agents.find(a => a.id === agentId);
-      const defaultDir = vcrewPanel?.projectDir || agent?.workDir || '';
+      const defaultDir = rolePlayPanel?.projectDir || agent?.workDir || '';
       this.folderPickerPath = defaultDir;
       this.folderPickerEntries = [];
       const sendRequest = () => {
@@ -663,7 +663,7 @@ export default {
       if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
       this._folderPickerTimer = setTimeout(() => {
         if (this.folderPickerLoading && this.folderPickerOpen) {
-          console.log('[FolderPicker] Retrying vcrew directory request for:', defaultDir);
+          console.log('[FolderPicker] Retrying roleplay directory request for:', defaultDir);
           sendRequest();
         }
       }, 5000);
@@ -951,8 +951,8 @@ export default {
       let agentId = this.convModalAgent;
       if (this.folderPickerTarget === 'crew') {
         agentId = this.$refs.crewPanel?.selectedAgent;
-      } else if (this.folderPickerTarget === 'vcrew') {
-        agentId = this.$refs.vcrewPanel?.selectedAgent;
+      } else if (this.folderPickerTarget === 'roleplay') {
+        agentId = this.$refs.rolePlayPanel?.selectedAgent;
       }
       if (!agentId) return;
       this.folderPickerLoading = true;
@@ -1032,10 +1032,10 @@ export default {
         this.folderPickerOpen = false;
         return;
       }
-      if (this.folderPickerTarget === 'vcrew') {
-        const vcrewPanel = this.$refs.vcrewPanel;
-        if (vcrewPanel) {
-          vcrewPanel.projectDir = path;
+      if (this.folderPickerTarget === 'roleplay') {
+        const rolePlayPanel = this.$refs.rolePlayPanel;
+        if (rolePlayPanel) {
+          rolePlayPanel.projectDir = path;
         }
         this.folderPickerOpen = false;
         return;

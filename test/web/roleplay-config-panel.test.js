@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
- * Tests for VCrewConfigPanel component logic.
+ * Tests for RolePlayConfigPanel component logic.
  *
  * Covers:
  * 1. Folder picker: browse button emits 'browse' event (instead of plain input)
@@ -12,10 +12,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * 6. Role management (add/remove)
  */
 
-import { getVCrewTemplate } from '../../web/crew-templates/index.js';
+import { getRolePlayTemplate } from '../../web/crew-templates/index.js';
 
 // ---------------------------------------------------------------------------
-// Replicate the VCrewConfigPanel's computed/methods logic for unit testing
+// Replicate the RolePlayConfigPanel's computed/methods logic for unit testing
 // without requiring a DOM / Vue mount.
 // ---------------------------------------------------------------------------
 
@@ -67,7 +67,7 @@ function createPanelState(storeOverrides = {}) {
         this.roles = [];
         return;
       }
-      const template = getVCrewTemplate(type, this.language);
+      const template = getRolePlayTemplate(type, this.language);
       if (template) {
         this.roles = template.map(r => ({ ...r }));
       }
@@ -141,7 +141,7 @@ function createPanelState(storeOverrides = {}) {
 // Tests
 // ===========================================================================
 
-describe('VCrewConfigPanel', () => {
+describe('RolePlayConfigPanel', () => {
 
   // ---------------------------------------------------------------
   // 1. Language follows store.locale (no separate dropdown)
@@ -438,22 +438,22 @@ describe('VCrewConfigPanel', () => {
   });
 
   // ---------------------------------------------------------------
-  // 6. ChatPage folder picker integration (vcrew target)
+  // 6. ChatPage folder picker integration (roleplay target)
   // ---------------------------------------------------------------
 
   describe('ChatPage folder picker integration', () => {
     /**
-     * Simulates ChatPage.confirmFolderPicker for vcrew target.
-     * This verifies the ChatPage correctly writes back to vcrewPanel.projectDir.
+     * Simulates ChatPage.confirmFolderPicker for roleplay target.
+     * This verifies the ChatPage correctly writes back to rolePlayPanel.projectDir.
      */
-    function simulateConfirmFolderPicker(vcrewPanel, selectedPath) {
-      // This is what ChatPage.confirmFolderPicker does for 'vcrew' target:
-      if (vcrewPanel) {
-        vcrewPanel.projectDir = selectedPath;
+    function simulateConfirmFolderPicker(rolePlayPanel, selectedPath) {
+      // This is what ChatPage.confirmFolderPicker does for 'roleplay' target:
+      if (rolePlayPanel) {
+        rolePlayPanel.projectDir = selectedPath;
       }
     }
 
-    it('should update VCrewConfigPanel projectDir when folder picker confirms', () => {
+    it('should update RolePlayConfigPanel projectDir when folder picker confirms', () => {
       const panel = createPanelState();
       panel.created();
 

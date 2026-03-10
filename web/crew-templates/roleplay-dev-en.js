@@ -1,5 +1,5 @@
 /**
- * Virtual Crew — English dev team template
+ * Role Play — English dev team template
  * 4 roles: PM / Dev / Reviewer / Tester
  * Simplified from the full Crew template: no count / model / isDecisionMaker / designer
  */

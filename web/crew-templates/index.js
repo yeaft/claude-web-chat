@@ -6,8 +6,8 @@ import tradingZh from './trading-zh.js';
 import tradingEn from './trading-en.js';
 import videoZh from './video-zh.js';
 import videoEn from './video-en.js';
-import vcrewDevZh from './vcrew-dev-zh.js';
-import vcrewDevEn from './vcrew-dev-en.js';
+import roleplayDevZh from './roleplay-dev-zh.js';
+import roleplayDevEn from './roleplay-dev-en.js';
 
 const templates = {
   dev: { 'zh-CN': devZh, en: devEn },
@@ -27,18 +27,18 @@ export function getTemplate(type, locale) {
 }
 
 // =====================
-// Virtual Crew templates (single-conversation multi-role)
+// Role Play templates (single-conversation multi-role)
 // =====================
-const vcrewTemplates = {
-  dev: { 'zh-CN': vcrewDevZh, en: vcrewDevEn },
+const rolePlayTemplates = {
+  dev: { 'zh-CN': roleplayDevZh, en: roleplayDevEn },
 };
 
 /**
- * Get Virtual Crew template roles for the given type and locale.
+ * Get Role Play template roles for the given type and locale.
  * Falls back to zh-CN if the locale is not available.
  */
-export function getVCrewTemplate(type, locale) {
-  const tmpl = vcrewTemplates[type];
+export function getRolePlayTemplate(type, locale) {
+  const tmpl = rolePlayTemplates[type];
   if (!tmpl) return null;
   return tmpl[locale] || tmpl['zh-CN'] || null;
 }

@@ -80,7 +80,7 @@ describe('separated click handlers', () => {
     expect(btnContext).toContain('newCrewSession');
   });
 
-  it('at least 2 session-header-add-btn in template (chat + crew + optional vcrew)', () => {
+  it('at least 2 session-header-add-btn in template (chat + crew + optional roleplay)', () => {
     const matches = chatPageSource.match(/session-header-add-btn/g) || [];
     expect(matches.length).toBeGreaterThanOrEqual(2);
   });

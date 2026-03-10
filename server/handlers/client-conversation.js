@@ -97,7 +97,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         userId: client.userId,
         username: client.username,
         disallowedTools: msg.disallowedTools,
-        vcrewConfig: msg.vcrewConfig || null
+        rolePlayConfig: msg.rolePlayConfig || null
       });
       break;
     }

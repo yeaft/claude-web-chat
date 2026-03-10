@@ -106,10 +106,10 @@ export function handleAgentList(store, msg) {
       } else {
         store.conversations.push(serverConv);
       }
-      // ★ Restore vcrew session info from server conversation data
-      if (serverConv.type === 'virtualCrew' && serverConv.vcrewRoles && !store.vcrewSessions[serverConv.id]) {
-        store.vcrewSessions[serverConv.id] = {
-          roles: serverConv.vcrewRoles,
+      // ★ Restore roleplay session info from server conversation data
+      if (serverConv.type === 'rolePlay' && serverConv.rolePlayRoles && !store.rolePlaySessions[serverConv.id]) {
+        store.rolePlaySessions[serverConv.id] = {
+          roles: serverConv.rolePlayRoles,
           teamType: serverConv.teamType || 'dev',
           language: serverConv.language || 'zh-CN',
         };

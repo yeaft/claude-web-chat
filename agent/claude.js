@@ -1,7 +1,7 @@
 import { query, Stream } from './sdk/index.js';
 import ctx from './context.js';
 import { sendConversationList, sendOutput, sendError, handleAskUserQuestion } from './conversation.js';
-import { buildVCrewSystemPrompt } from './vcrew.js';
+import { buildRolePlaySystemPrompt } from './roleplay.js';
 
 /**
  * Start a Claude SDK query for a conversation
@@ -10,13 +10,13 @@ import { buildVCrewSystemPrompt } from './vcrew.js';
 export async function startClaudeQuery(conversationId, workDir, resumeSessionId) {
   // 如果已存在，先保存 per-session 设置，再关闭
   let savedDisallowedTools = null;
-  let savedVcrewConfig = null;
+  let savedRolePlayConfig = null;
   let savedUserId = undefined;
   let savedUsername = undefined;
   if (ctx.conversations.has(conversationId)) {
     const existing = ctx.conversations.get(conversationId);
     savedDisallowedTools = existing.disallowedTools ?? null;
-    savedVcrewConfig = existing.vcrewConfig ?? null;
+    savedRolePlayConfig = existing.rolePlayConfig ?? null;
     savedUserId = existing.userId;
     savedUsername = existing.username;
     if (existing.abortController) {
@@ -54,8 +54,8 @@ export async function startClaudeQuery(conversationId, workDir, resumeSessionId)
     backgroundTasks: new Map(),
     // Per-session 工具禁用设置
     disallowedTools: savedDisallowedTools,
-    // Virtual Crew config (for appendSystemPrompt injection)
-    vcrewConfig: savedVcrewConfig,
+    // Role Play config (for appendSystemPrompt injection)
+    rolePlayConfig: savedRolePlayConfig,
     // 保留用户信息（从旧 state 恢复）
     userId: savedUserId,
     username: savedUsername,
@@ -85,10 +85,10 @@ export async function startClaudeQuery(conversationId, workDir, resumeSessionId)
     console.log(`[SDK] Disallowed tools: ${effectiveDisallowedTools.join(', ')}`);
   }
 
-  // Virtual Crew: inject appendSystemPrompt with role descriptions and workflow
-  if (savedVcrewConfig) {
-    options.appendSystemPrompt = buildVCrewSystemPrompt(savedVcrewConfig);
-    console.log(`[SDK] VCrew appendSystemPrompt injected (teamType: ${savedVcrewConfig.teamType})`);
+  // Role Play: inject appendSystemPrompt with role descriptions and workflow
+  if (savedRolePlayConfig) {
+    options.appendSystemPrompt = buildRolePlaySystemPrompt(savedRolePlayConfig);
+    console.log(`[SDK] RolePlay appendSystemPrompt injected (teamType: ${savedRolePlayConfig.teamType})`);
   }
 
   // Validate session ID is a valid UUID before using it
