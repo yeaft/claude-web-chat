@@ -565,4 +565,21 @@ export default {
   'crewConfig.applyChanges': '应用变更',
   'crewConfig.start': '启动',
   'crewConfig.confirmDeleteCrew': '确定要删除 .crew 目录？所有 Crew 配置将被清除。',
+
+  // ============ Virtual Crew ============
+  'vcrew.creating': '正在创建 Virtual Crew 会话...',
+  'vcrew.working': '工作中',
+  'vcrew.selectTeam': '选择团队模板',
+  'vcrew.teamDev': '软件开发',
+  'vcrew.teamCustom': '自定义',
+  'vcrew.editRoles': '编辑角色',
+  'vcrew.roleName': '角色标识',
+  'vcrew.roleDisplayName': '显示名称',
+  'vcrew.roleIcon': '图标',
+  'vcrew.roleDesc': '角色描述',
+  'vcrew.rolePrompt': '角色 Prompt',
+  'vcrew.removeRole': '移除角色',
+  'vcrew.addRole': '添加角色',
+  'vcrew.start': '启动 Virtual Crew',
+  'vcrew.sidebarTitle': 'Virtual Crew',
 };

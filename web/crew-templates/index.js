@@ -6,6 +6,8 @@ import tradingZh from './trading-zh.js';
 import tradingEn from './trading-en.js';
 import videoZh from './video-zh.js';
 import videoEn from './video-en.js';
+import vcrewDevZh from './vcrew-dev-zh.js';
+import vcrewDevEn from './vcrew-dev-en.js';
 
 const templates = {
   dev: { 'zh-CN': devZh, en: devEn },
@@ -20,6 +22,23 @@ const templates = {
  */
 export function getTemplate(type, locale) {
   const tmpl = templates[type];
+  if (!tmpl) return null;
+  return tmpl[locale] || tmpl['zh-CN'] || null;
+}
+
+// =====================
+// Virtual Crew templates (single-conversation multi-role)
+// =====================
+const vcrewTemplates = {
+  dev: { 'zh-CN': vcrewDevZh, en: vcrewDevEn },
+};
+
+/**
+ * Get Virtual Crew template roles for the given type and locale.
+ * Falls back to zh-CN if the locale is not available.
+ */
+export function getVCrewTemplate(type, locale) {
+  const tmpl = vcrewTemplates[type];
   if (!tmpl) return null;
   return tmpl[locale] || tmpl['zh-CN'] || null;
 }
