@@ -430,7 +430,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
         // ★ RolePlay ROUTE detection: check accumulated text for ROUTE blocks
         const rpSession = state.rolePlayConfig ? rolePlaySessions.get(conversationId) : null;
-        let roleplayAutoContine = false;
+        let roleplayAutoContinue = false;
         let roleplayContinueRoles = [];
 
         if (rpSession && rpSession._routeInitialized && state._roleplayAccumulated) {
@@ -467,7 +467,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
               });
             } else if (continueRoles.length > 0) {
               // Auto-continue: pick the first route target and send the prompt
-              roleplayAutoContine = true;
+              roleplayAutoContinue = true;
               roleplayContinueRoles = continueRoles;
             }
           }
@@ -485,7 +485,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         await sendOutput(conversationId, message);
 
         // ★ RolePlay auto-continue: inject next role's prompt into the same conversation
-        if (roleplayAutoContine && rpSession && state.inputStream) {
+        if (roleplayAutoContinue && rpSession && state.inputStream) {
           // Reset accumulated text for next turn
           state._roleplayAccumulated = '';
 
@@ -509,8 +509,8 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
             sendOutput(conversationId, userMessage);
             state.inputStream.enqueue(userMessage);
 
-            // Only process the first continueRole per turn
-            // (subsequent ones will be handled after this new turn completes)
+            // RolePlay uses a single conversation — only one target can be active
+            // at a time. Additional route targets are ignored.
             break;
           }
 
