@@ -127,6 +127,8 @@ export default {
     // AskUserQuestion state
     const selectedOptions = Vue.reactive({});
     const customAnswers = Vue.reactive({});
+    const localAskAnswered = Vue.ref(false);
+    const localSelectedAnswers = Vue.ref(null);
 
     const showToolActions = Vue.computed(() => {
       return props.turn.toolMsgs.length > 0;
@@ -244,6 +246,7 @@ export default {
 
     // AskUserQuestion logic
     const isAskAnswered = Vue.computed(() => {
+      if (localAskAnswered.value) return true;
       const ask = props.turn.askMsg;
       return ask && (!!ask.askAnswered || !!ask.selectedAnswers);
     });
@@ -311,8 +314,9 @@ export default {
       const requestId = props.turn.askMsg.askRequestId;
       if (!requestId) return;
       store.answerUserQuestion(requestId, answers);
-      props.turn.askMsg.askAnswered = true;
-      props.turn.askMsg.selectedAnswers = answers;
+      // Set local reactive state for immediate UI collapse
+      localAskAnswered.value = true;
+      localSelectedAnswers.value = answers;
     };
 
     const getAnswerForQuestion = (questionText) => {
@@ -323,7 +327,7 @@ export default {
 
     // Summary text for collapsed answered card
     const askSummaryText = Vue.computed(() => {
-      const answers = props.turn.askMsg?.selectedAnswers;
+      const answers = localSelectedAnswers.value || props.turn.askMsg?.selectedAnswers;
       if (!answers) return '';
       const values = Object.values(answers).filter(v => v && v !== '-');
       return values.join(', ');
