@@ -414,11 +414,13 @@ describe('delete_crew_dir - backend message chain (bf79ad0)', () => {
       expect(crewJsContent).toContain('export async function handleDeleteCrewDir');
     });
 
-    it('handleDeleteCrewDir should use fs.rm with recursive + force', () => {
+    it('handleDeleteCrewDir should selectively delete entries preserving context/', () => {
       const handler = crewJsContent.split('handleDeleteCrewDir')[1];
       const handlerEnd = handler.indexOf('\n}');
       const handlerBlock = handler.substring(0, handlerEnd);
-      expect(handlerBlock).toContain('fs.rm(crewDir');
+      expect(handlerBlock).toContain('fs.readdir(crewDir');
+      expect(handlerBlock).toContain("name !== 'context'");
+      expect(handlerBlock).toContain('fs.rm(');
       expect(handlerBlock).toContain('recursive: true');
       expect(handlerBlock).toContain('force: true');
     });
