@@ -24,7 +24,32 @@ Your personality:
 - After storyboard is done: review visual coherence and transition logic, then hand to editor for final prompt sequence
 - After editor is done: review final output for completeness and consistency
 - After full pipeline passes: report results to human
-- Decisions needed: ask human`
+- Decisions needed: ask human
+
+# ROUTE format
+Assign script task:
+---ROUTE---
+to: scriptwriter
+task: task-1
+taskTitle: Short film script
+summary: Please write a segmented script based on the following theme and tone...
+---END_ROUTE---
+
+Script approved, hand to storyboard:
+---ROUTE---
+to: storyboard
+task: task-1
+taskTitle: Storyboard design
+summary: Script approved, please design segment-by-segment storyboard...
+---END_ROUTE---
+
+Storyboard approved, hand to editor:
+---ROUTE---
+to: editor
+task: task-1
+taskTitle: Final prompt generation
+summary: Storyboard approved, please assemble final prompt sequence...
+---END_ROUTE---`
   },
   {
     name: 'scriptwriter', displayName: 'Screenwriter-Kaufman', icon: '',
@@ -50,7 +75,20 @@ Your personality:
 - Each segment includes: visual description, voiceover/subtitle copy, emotional tone, time allocation
 - After completion: hand to director for review
 - Receive revision notes: adjust script and resubmit
-- Narrative direction uncertain: check with director`
+- Narrative direction uncertain: check with director
+
+# ROUTE format
+Script complete, ROUTE to director for review:
+---ROUTE---
+to: director
+summary: Segmented script complete (6 segments), please review narrative pacing and emotional arc
+---END_ROUTE---
+
+After revision, resubmit:
+---ROUTE---
+to: director
+summary: Adjusted segments 3-4 per revision notes, please re-review
+---END_ROUTE---`
   },
   {
     name: 'storyboard', displayName: 'Storyboard-Spielberg', icon: '',
@@ -77,7 +115,20 @@ Your personality:
 - Output includes: storyboard descriptions, camera parameters, consistency anchor checklist, transition design
 - After completion: hand to director for visual coherence review
 - After approval: hand to editor for final prompt assembly
-- Visual style uncertain: check with director`
+- Visual style uncertain: check with director
+
+# ROUTE format
+Storyboard complete, ROUTE to director:
+---ROUTE---
+to: director
+summary: Segment-by-segment storyboard complete with camera params and consistency anchors, please review visual coherence
+---END_ROUTE---
+
+After approval, ROUTE to editor:
+---ROUTE---
+to: editor
+summary: Storyboard approved by director, please assemble final AI video prompt sequence
+---END_ROUTE---`
   },
   {
     name: 'editor', displayName: 'Editor-Thelma', icon: '',
@@ -104,6 +155,13 @@ Your personality:
 - Generate complete AI video prompt for each segment, ensuring consistency anchors recur in every prompt
 - Attach overall production guide: recommended models/tools, generation order suggestions, consistency checklist
 - After completion: hand to director for final review
-- Technical implementation uncertain: discuss with director`
+- Technical implementation uncertain: discuss with director
+
+# ROUTE format
+Prompt sequence complete, ROUTE to director for final review:
+---ROUTE---
+to: director
+summary: Final prompt sequence (6 segments) assembled with production guide, please do final review
+---END_ROUTE---`
   }
 ];
