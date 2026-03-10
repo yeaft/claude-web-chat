@@ -63,6 +63,11 @@ export function handleClaudeOutput(store, conversationId, data) {
       if (block.type === 'text') {
         store.appendToAssistantMessageForConversation(conversationId, block.text);
       } else if (block.type === 'tool_use') {
+        // Finish any in-progress streaming so typing dots reappear during tool execution.
+        // Without this, isStreaming stays true on the assistant message, which suppresses
+        // the typing indicator (showTypingDots = isProcessing && !hasStreamingMessage).
+        store.finishStreamingForConversation(conversationId);
+
         execStatus.currentTool = {
           name: block.name,
           input: block.input,
