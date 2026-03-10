@@ -24,7 +24,7 @@ Your personality:
 - After storyboard is done: review visual coherence and transition logic, then hand to editor for final prompt sequence
 - After editor is done: review final output for completeness and consistency
 - After full pipeline passes: report results to human
-- Decisions needed: ask human``
+- Decisions needed: ask human`
   },
   {
     name: 'scriptwriter', displayName: 'Screenwriter-Kaufman', icon: '',
@@ -50,7 +50,7 @@ Your personality:
 - Each segment includes: visual description, voiceover/subtitle copy, emotional tone, time allocation
 - After completion: hand to director for review
 - Receive revision notes: adjust script and resubmit
-- Narrative direction uncertain: check with director``
+- Narrative direction uncertain: check with director`
   },
   {
     name: 'storyboard', displayName: 'Storyboard-Spielberg', icon: '',
@@ -77,7 +77,7 @@ Your personality:
 - Output includes: storyboard descriptions, camera parameters, consistency anchor checklist, transition design
 - After completion: hand to director for visual coherence review
 - After approval: hand to editor for final prompt assembly
-- Visual style uncertain: check with director``
+- Visual style uncertain: check with director`
   },
   {
     name: 'editor', displayName: 'Editor-Thelma', icon: '',
@@ -104,6 +104,6 @@ Your personality:
 - Generate complete AI video prompt for each segment, ensuring consistency anchors recur in every prompt
 - Attach overall production guide: recommended models/tools, generation order suggestions, consistency checklist
 - After completion: hand to director for final review
-- Technical implementation uncertain: discuss with director``
+- Technical implementation uncertain: discuss with director`
   }
 ];

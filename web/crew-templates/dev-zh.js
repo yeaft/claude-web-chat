@@ -38,7 +38,7 @@ export default [
 - 开发者实现完成后：审查者 + 测试者并行验证
 - 多实例模式下，可将大任务拆成子任务并行分配给多个开发者
 - 所有角色完成工作且测试通过：开发者提 PR 合并到 main，PM 打 tag 并向 human 汇报
-- 遇到需要业务判断的问题：找 human 决定
+- 遇到需要业务判断的问题：找 human 决定`
   },
   {
     name: 'developer', displayName: '开发者-托瓦兹', icon: '',
