@@ -282,11 +282,10 @@ export default {
           <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
           <CrewChatView />
         </template>
-        <!-- Role Play Conversation -->
+        <!-- Role Play Conversation (uses Crew-style layout with built-in input) -->
         <template v-else-if="isCurrentRolePlayConversation">
           <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
           <RolePlayChatView />
-          <ChatInput />
         </template>
         <!-- Normal Chat Mode -->
         <template v-else>
