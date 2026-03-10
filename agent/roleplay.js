@@ -1,13 +1,16 @@
 /**
  * Role Play — lightweight multi-role collaboration within a single conversation.
  *
- * Manages rolePlaySessions (in-memory + persisted to disk) and builds the
- * appendSystemPrompt that instructs Claude to role-play multiple characters.
+ * Manages rolePlaySessions (in-memory + persisted to disk), builds the
+ * appendSystemPrompt that instructs Claude to role-play multiple characters,
+ * and handles ROUTE protocol for Crew-style role switching within a single
+ * Claude conversation.
  */
 
 import { join } from 'path';
 import { homedir } from 'os';
 import { readFileSync, writeFileSync, existsSync, renameSync } from 'fs';
+import { parseRoutes } from './crew/routing.js';
 
 const ROLEPLAY_INDEX_PATH = join(homedir(), '.claude', 'roleplay-sessions.json');
 // ★ backward compat: old filename before rename
@@ -23,7 +26,9 @@ export const rolePlaySessions = new Map();
 export function saveRolePlayIndex() {
   const data = [];
   for (const [id, session] of rolePlaySessions) {
-    data.push({ id, ...session });
+    // Only persist core fields, skip runtime route state
+    const { _routeInitialized, currentRole, features, round, roleStates, waitingHuman, waitingHumanContext, ...core } = session;
+    data.push({ id, ...core });
   }
   try {
     writeFileSync(ROLEPLAY_INDEX_PATH, JSON.stringify(data, null, 2));
@@ -196,17 +201,37 @@ ${roleList}
 
 ## 角色切换规则
 
-切换角色时，输出以下信号（必须独占一行，前后不能有其他内容）：
+### 方式一：ROUTE 协议（推荐）
+
+当一个角色完成工作需要交给另一个角色时，使用 ROUTE 块：
+
+\`\`\`
+---ROUTE---
+to: {目标角色name}
+summary: {交接内容摘要}
+task: {任务ID，如 task-1}（可选）
+taskTitle: {任务标题}（可选）
+---END_ROUTE---
+\`\`\`
+
+ROUTE 规则：
+- 一次可以输出多个 ROUTE 块（例如同时发给 reviewer 和 tester）
+- \`to\` 必须是有效的角色 name，或 \`human\` 表示需要用户输入
+- \`summary\` 是交给目标角色的具体任务和上下文
+- \`task\` / \`taskTitle\` 用于追踪 feature/任务（PM 分配任务时应填写）
+- ROUTE 块必须在角色输出的末尾
+
+### 方式二：ROLE 信号（简单切换）
 
 ---ROLE: {角色name}---
 
-切换后，你必须完全以该角色的视角和人格思考、说话和行动。不要混用其他角色的口吻。
+直接切换到目标角色继续工作，适用于简单的角色轮转。
 
-**重要**：
+### 通用规则
+
+- 切换后，你必须完全以该角色的视角和人格思考、说话和行动
 - 第一条输出必须先切换到起始角色（通常是 PM）
-- 每次切换时先用 1-2 句话说明为什么要切换（作为上一个角色的收尾）
-- 切换后立即以新角色身份开始工作
-- 信号格式必须严格匹配：三个短横线 + ROLE: + 空格 + 角色name + 三个短横线
+- 每次切换前留下交接信息（完成了什么、对下一角色的要求）
 
 ## 工作流程
 
@@ -243,17 +268,37 @@ ${roleList}
 
 ## Role Switching Rules
 
-When switching roles, output the following signal (must be on its own line, nothing else before or after):
+### Method 1: ROUTE Protocol (Recommended)
+
+When a role finishes work and needs to hand off to another role, use a ROUTE block:
+
+\`\`\`
+---ROUTE---
+to: {target_role_name}
+summary: {handoff content summary}
+task: {task ID, e.g. task-1} (optional)
+taskTitle: {task title} (optional)
+---END_ROUTE---
+\`\`\`
+
+ROUTE rules:
+- You can output multiple ROUTE blocks at once (e.g., send to both reviewer and tester)
+- \`to\` must be a valid role name, or \`human\` to request user input
+- \`summary\` is the specific task and context for the target role
+- \`task\` / \`taskTitle\` are for tracking features/tasks (PM should fill these when assigning)
+- ROUTE blocks must be at the end of the role's output
+
+### Method 2: ROLE Signal (Simple Switch)
 
 ---ROLE: {role_name}---
 
-After switching, you must fully think, speak, and act from that role's perspective and personality. Do not mix tones from other roles.
+Directly switch to the target role to continue working. Suitable for simple role rotation.
 
-**Important**:
+### General Rules
+
+- After switching, you must fully think, speak, and act from that role's perspective
 - Your first output must switch to the starting role (usually PM)
-- Before each switch, briefly explain why you're switching (as closure for the current role)
-- After switching, immediately begin working as the new role
-- Signal format must strictly match: three hyphens + ROLE: + space + role_name + three hyphens
+- Before each switch, leave handoff information (what was done, requirements for next role)
 
 ## Workflow
 
@@ -319,4 +364,170 @@ function buildDevWorkflow(roleNames, isZh) {
   }
 
   return steps.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// RolePlay ROUTE protocol support
+// ---------------------------------------------------------------------------
+
+// Re-export parseRoutes for use by claude.js and tests
+export { parseRoutes } from './crew/routing.js';
+
+/**
+ * Initialize RolePlay route state on a session.
+ * Called when a roleplay conversation is first created or resumed.
+ *
+ * @param {object} session - rolePlaySessions entry
+ * @param {object} convState - ctx.conversations entry
+ */
+export function initRolePlayRouteState(session, convState) {
+  if (!session._routeInitialized) {
+    session.currentRole = null;
+    session.features = new Map();
+    session.round = 0;
+    session.roleStates = {};
+    session.waitingHuman = false;
+    session.waitingHumanContext = null;
+
+    // Initialize per-role states
+    for (const role of session.roles) {
+      session.roleStates[role.name] = {
+        currentTask: null,
+        status: 'idle'
+      };
+    }
+    session._routeInitialized = true;
+  }
+
+  // Also store accumulated text on convState for ROUTE detection during streaming
+  if (!convState._roleplayAccumulated) {
+    convState._roleplayAccumulated = '';
+  }
+}
+
+/**
+ * Detect a ROLE signal in text: ---ROLE: xxx---
+ * Returns the role name if found at the end of accumulated text, null otherwise.
+ */
+export function detectRoleSignal(text) {
+  const match = text.match(/---ROLE:\s*([a-zA-Z0-9_-]+)\s*---/);
+  return match ? match[1].toLowerCase() : null;
+}
+
+/**
+ * Process ROUTE blocks detected in a completed turn's output.
+ * Called from claude.js when a result message is received.
+ *
+ * Returns { routes, hasHumanRoute, continueRoles } for the caller to act on.
+ *
+ * @param {string} accumulatedText - full text output from the current turn
+ * @param {object} session - rolePlaySessions entry
+ * @returns {{ routes: Array, hasHumanRoute: boolean, continueRoles: Array<{to, prompt}> }}
+ */
+export function processRolePlayRoutes(accumulatedText, session) {
+  const routes = parseRoutes(accumulatedText);
+  if (routes.length === 0) {
+    return { routes: [], hasHumanRoute: false, continueRoles: [] };
+  }
+
+  const roleNames = new Set(session.roles.map(r => r.name));
+  let hasHumanRoute = false;
+  const continueRoles = [];
+
+  for (const route of routes) {
+    const { to, summary, taskId, taskTitle } = route;
+
+    // Track features
+    if (taskId && taskTitle && !session.features.has(taskId)) {
+      session.features.set(taskId, { taskId, taskTitle, createdAt: Date.now() });
+    }
+
+    // Update source role state
+    if (session.currentRole && session.roleStates[session.currentRole]) {
+      session.roleStates[session.currentRole].status = 'idle';
+    }
+
+    if (to === 'human') {
+      hasHumanRoute = true;
+      session.waitingHuman = true;
+      session.waitingHumanContext = {
+        fromRole: session.currentRole,
+        reason: 'requested',
+        message: summary
+      };
+    } else if (roleNames.has(to)) {
+      // Update target role state
+      if (session.roleStates[to]) {
+        session.roleStates[to].status = 'active';
+        if (taskId) {
+          session.roleStates[to].currentTask = { taskId, taskTitle };
+        }
+      }
+
+      // Build prompt for the target role
+      const fromRole = session.currentRole || 'unknown';
+      const fromRoleConfig = session.roles.find(r => r.name === fromRole);
+      const fromLabel = fromRoleConfig
+        ? (fromRoleConfig.icon ? `${fromRoleConfig.icon} ${fromRoleConfig.displayName}` : fromRoleConfig.displayName)
+        : fromRole;
+
+      const targetRoleConfig = session.roles.find(r => r.name === to);
+      const targetClaudeMd = targetRoleConfig?.claudeMd || '';
+
+      let prompt = `来自 ${fromLabel} 的消息:\n${summary}\n\n`;
+      if (targetClaudeMd) {
+        prompt += `---\n<role-context>\n${targetClaudeMd}\n</role-context>\n\n`;
+      }
+      prompt += `你现在是 ${targetRoleConfig?.displayName || to}。请开始你的工作。完成后通过 ROUTE 块传递给下一个角色。`;
+
+      continueRoles.push({ to, prompt, taskId, taskTitle });
+    } else {
+      console.warn(`[RolePlay] Unknown route target: ${to}`);
+    }
+  }
+
+  // Increment round
+  session.round++;
+
+  return { routes, hasHumanRoute, continueRoles };
+}
+
+/**
+ * Build the route event message to send to the frontend via WebSocket.
+ *
+ * @param {string} conversationId
+ * @param {string} fromRole
+ * @param {{ to, summary, taskId, taskTitle }} route
+ * @returns {object} WebSocket message
+ */
+export function buildRouteEventMessage(conversationId, fromRole, route) {
+  return {
+    type: 'roleplay_route',
+    conversationId,
+    from: fromRole,
+    to: route.to,
+    taskId: route.taskId || null,
+    taskTitle: route.taskTitle || null,
+    summary: route.summary || ''
+  };
+}
+
+/**
+ * Get the current RolePlay route state summary for frontend status updates.
+ *
+ * @param {string} conversationId
+ * @returns {object|null} Route state summary or null if not a roleplay session
+ */
+export function getRolePlayRouteState(conversationId) {
+  const session = rolePlaySessions.get(conversationId);
+  if (!session || !session._routeInitialized) return null;
+
+  return {
+    currentRole: session.currentRole,
+    round: session.round,
+    features: session.features ? Array.from(session.features.values()) : [],
+    roleStates: session.roleStates || {},
+    waitingHuman: session.waitingHuman || false,
+    waitingHumanContext: session.waitingHumanContext || null
+  };
 }
