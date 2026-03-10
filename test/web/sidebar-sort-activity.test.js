@@ -201,7 +201,7 @@ describe('computed properties integrate sortByActivity', () => {
 
   it('normalConversations computed calls sortByActivity', () => {
     expect(chatPageSource).toContain(
-      'this.sortByActivity(this.store.conversations.filter(c => c.type !== \'crew\' && c.type !== \'virtualCrew\'))'
+      'this.sortByActivity(this.store.conversations.filter(c => c.type !== \'crew\' && c.type !== \'rolePlay\' && c.type !== \'virtualCrew\'))'
     );
   });
 
@@ -222,7 +222,7 @@ describe('panel structure unchanged', () => {
     expect(normalIdx).toBeLessThan(crewIdx);
   });
 
-  it('session-panel structure is preserved (chat + crew + vcrew)', () => {
+  it('session-panel structure is preserved (chat + crew + roleplay)', () => {
     const panelsStart = chatPageSource.indexOf('class="session-panels"');
     expect(panelsStart).toBeGreaterThan(-1);
     const matches = chatPageSource.match(/class="session-panel"/g) || [];

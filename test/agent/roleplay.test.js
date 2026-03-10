@@ -4,17 +4,17 @@ import { tmpdir } from 'os';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, rmSync } from 'fs';
 
 /**
- * Tests for agent/vcrew.js — Virtual Crew session persistence and system prompt building.
+ * Tests for agent/roleplay.js — Role Play session persistence and system prompt building.
  *
  * To avoid importing the real module (which drags in context.js / SDK side effects),
- * we replicate the core logic under test exactly as it appears in vcrew.js.
+ * we replicate the core logic under test exactly as it appears in roleplay.js.
  */
 
 // =====================================================================
-// Replicated helpers (mirrors agent/vcrew.js implementation)
+// Replicated helpers (mirrors agent/roleplay.js implementation)
 // =====================================================================
 
-function buildVCrewSystemPrompt(config) {
+function buildRolePlaySystemPrompt(config) {
   const { roles, teamType, language } = config;
   const isZh = language === 'zh-CN';
 
@@ -177,7 +177,7 @@ function createPersistenceManager(indexPath) {
     try {
       writeFileSync(indexPath, JSON.stringify(data, null, 2));
     } catch (e) {
-      console.warn('[vcrew-test] Failed to save index:', e.message);
+      console.warn('[roleplay-test] Failed to save index:', e.message);
     }
   }
 
@@ -190,7 +190,7 @@ function createPersistenceManager(indexPath) {
         sessions.set(id, session);
       }
     } catch (e) {
-      console.warn('[vcrew-test] Failed to load index:', e.message);
+      console.warn('[roleplay-test] Failed to load index:', e.message);
     }
   }
 
@@ -236,15 +236,15 @@ function makeDesignerTeamRoles() {
 // Tests
 // =====================================================================
 
-describe('agent/vcrew.js — Virtual Crew', () => {
+describe('agent/roleplay.js — Role Play', () => {
 
   // ---------------------------------------------------------------
-  // buildVCrewSystemPrompt
+  // buildRolePlaySystemPrompt
   // ---------------------------------------------------------------
 
-  describe('buildVCrewSystemPrompt', () => {
+  describe('buildRolePlaySystemPrompt', () => {
     it('should produce Chinese prompt when language is zh-CN', () => {
-      const prompt = buildVCrewSystemPrompt({
+      const prompt = buildRolePlaySystemPrompt({
         roles: makeDevTeamRoles(),
         teamType: 'dev',
         language: 'zh-CN',
@@ -257,7 +257,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
     });
 
     it('should produce English prompt when language is en', () => {
-      const prompt = buildVCrewSystemPrompt({
+      const prompt = buildRolePlaySystemPrompt({
         roles: makeDevTeamRoles(),
         teamType: 'dev',
         language: 'en',
@@ -271,7 +271,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
 
     it('should include all role names and display names in the role list', () => {
       const roles = makeDevTeamRoles();
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'en' });
 
       for (const r of roles) {
         expect(prompt).toContain(`(${r.name})`);
@@ -281,7 +281,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
 
     it('should include role descriptions in the role list', () => {
       const roles = makeDevTeamRoles();
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'en' });
 
       for (const r of roles) {
         expect(prompt).toContain(r.description);
@@ -290,7 +290,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
 
     it('should include role icons when present', () => {
       const roles = makeDevTeamRoles();
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'en' });
 
       expect(prompt).toContain('📋 PM乔布斯');
       expect(prompt).toContain('💻 开发者托瓦兹');
@@ -300,7 +300,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
 
     it('should not add extra icon space when icon is empty string', () => {
       const roles = makeMinimalRoles();
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'en' });
 
       // Should NOT have a leading space before the displayName in the heading
       expect(prompt).toContain('### PM (pm)');
@@ -311,7 +311,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       const roles = [
         { name: 'pm', displayName: 'PM', icon: '', description: 'short desc', claudeMd: '# Full PM instructions\nDetailed markdown.' },
       ];
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'en' });
 
       expect(prompt).toContain('# Full PM instructions');
       expect(prompt).toContain('Detailed markdown.');
@@ -323,7 +323,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       const roles = [
         { name: 'dev', displayName: 'Dev', icon: '', description: 'writes code' },
       ];
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'en' });
 
       expect(prompt).toContain('writes code');
     });
@@ -332,14 +332,14 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       const roles = [
         { name: 'pm', displayName: 'PM', icon: '' },
       ];
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'en' });
 
       // Should not crash, just produce an empty description area
       expect(prompt).toContain('### PM (pm)');
     });
 
     it('should always return a trimmed string (no leading/trailing whitespace)', () => {
-      const prompt = buildVCrewSystemPrompt({
+      const prompt = buildRolePlaySystemPrompt({
         roles: makeDevTeamRoles(),
         teamType: 'dev',
         language: 'en',
@@ -355,7 +355,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
   describe('getWorkflow — dev team type', () => {
     it('should generate numbered steps for a full dev team (Chinese)', () => {
       const roles = makeDevTeamRoles();
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'zh-CN' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'zh-CN' });
 
       expect(prompt).toContain('1. **PM** 分析需求');
       expect(prompt).toContain('2. **开发者** 实现代码');
@@ -366,7 +366,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
 
     it('should generate numbered steps for a full dev team (English)', () => {
       const roles = makeDevTeamRoles();
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'en' });
 
       expect(prompt).toContain('1. **PM** analyzes requirements');
       expect(prompt).toContain('2. **Dev** implements code');
@@ -377,7 +377,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
 
     it('should include designer step when designer role is present', () => {
       const roles = makeDesignerTeamRoles();
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'zh-CN' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'zh-CN' });
 
       expect(prompt).toContain('**设计师** 确认交互方案');
       // Designer step should be between PM and Dev
@@ -391,7 +391,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
         { name: 'dev', displayName: '开发者', icon: '', description: '' },
         { name: 'reviewer', displayName: '审查者', icon: '', description: '' },
       ];
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'zh-CN' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'zh-CN' });
 
       expect(prompt).toContain('**开发者** 实现代码');
       expect(prompt).toContain('**审查者** Code Review');
@@ -404,7 +404,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
         { name: 'dev', displayName: 'Dev', icon: '', description: '' },
         { name: 'tester', displayName: 'Tester', icon: '', description: '' },
       ];
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'en' });
 
       expect(prompt).toContain('1. **Dev**');
       expect(prompt).toContain('2. **Tester**');
@@ -420,14 +420,14 @@ describe('agent/vcrew.js — Virtual Crew', () => {
   describe('getWorkflow — non-dev team type', () => {
     it('should produce generic fallback for unknown teamType (Chinese)', () => {
       const roles = [{ name: 'pm', displayName: 'PM', icon: '', description: '' }];
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'writing', language: 'zh-CN' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'writing', language: 'zh-CN' });
 
       expect(prompt).toContain('按角色顺序依次完成任务');
     });
 
     it('should produce generic fallback for unknown teamType (English)', () => {
       const roles = [{ name: 'pm', displayName: 'PM', icon: '', description: '' }];
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'marketing', language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'marketing', language: 'en' });
 
       expect(prompt).toContain('Complete tasks by following the role sequence');
     });
@@ -437,13 +437,13 @@ describe('agent/vcrew.js — Virtual Crew', () => {
   // Persistence (save / load / remove)
   // ---------------------------------------------------------------
 
-  describe('vcrewSessions persistence', () => {
+  describe('rolePlaySessions persistence', () => {
     let tmpDir;
     let indexPath;
 
     beforeEach(() => {
-      tmpDir = mkdtempSync(join(tmpdir(), 'vcrew-test-'));
-      indexPath = join(tmpDir, 'vcrew-sessions.json');
+      tmpDir = mkdtempSync(join(tmpdir(), 'roleplay-test-'));
+      indexPath = join(tmpDir, 'roleplay-sessions.json');
     });
 
     afterEach(() => {
@@ -584,15 +584,15 @@ describe('agent/vcrew.js — Virtual Crew', () => {
   // Conversation integration (replicated logic from conversation.js)
   // ---------------------------------------------------------------
 
-  describe('conversation.js vcrew integration (replicated logic)', () => {
+  describe('conversation.js roleplay integration (replicated logic)', () => {
 
     // Minimal ctx mock
     let ctx;
-    let vcrewSessions;
+    let rolePlaySessions;
     let sentMessages;
 
     beforeEach(() => {
-      vcrewSessions = new Map();
+      rolePlaySessions = new Map();
       sentMessages = [];
       ctx = {
         CONFIG: { workDir: '/default' },
@@ -602,9 +602,9 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       };
     });
 
-    // Replicate createConversation logic (vcrew-relevant parts)
+    // Replicate createConversation logic (roleplay-relevant parts)
     function createConversation(msg) {
-      const { conversationId, workDir, userId, username, disallowedTools, vcrewConfig } = msg;
+      const { conversationId, workDir, userId, username, disallowedTools, rolePlayConfig } = msg;
       const effectiveWorkDir = workDir || ctx.CONFIG.workDir;
 
       ctx.conversations.set(conversationId, {
@@ -620,15 +620,15 @@ describe('agent/vcrew.js — Virtual Crew', () => {
         userId,
         username,
         disallowedTools: disallowedTools || null,
-        vcrewConfig: vcrewConfig || null,
+        rolePlayConfig: rolePlayConfig || null,
         usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, totalCostUsd: 0 }
       });
 
-      if (vcrewConfig) {
-        vcrewSessions.set(conversationId, {
-          roles: vcrewConfig.roles,
-          teamType: vcrewConfig.teamType,
-          language: vcrewConfig.language,
+      if (rolePlayConfig) {
+        rolePlaySessions.set(conversationId, {
+          roles: rolePlayConfig.roles,
+          teamType: rolePlayConfig.teamType,
+          language: rolePlayConfig.language,
           projectDir: effectiveWorkDir,
           createdAt: Date.now(),
           userId,
@@ -643,11 +643,11 @@ describe('agent/vcrew.js — Virtual Crew', () => {
         userId,
         username,
         disallowedTools: disallowedTools || null,
-        vcrewConfig: vcrewConfig || null,
+        rolePlayConfig: rolePlayConfig || null,
       });
     }
 
-    // Replicate sendConversationList logic (vcrew-relevant parts)
+    // Replicate sendConversationList logic (roleplay-relevant parts)
     function sendConversationList() {
       const list = [];
       for (const [id, state] of ctx.conversations) {
@@ -660,34 +660,34 @@ describe('agent/vcrew.js — Virtual Crew', () => {
           userId: state.userId,
           username: state.username,
         };
-        if (vcrewSessions.has(id)) {
-          entry.type = 'virtualCrew';
-          entry.vcrewRoles = vcrewSessions.get(id).roles;
+        if (rolePlaySessions.has(id)) {
+          entry.type = 'rolePlay';
+          entry.rolePlayRoles = rolePlaySessions.get(id).roles;
         }
         list.push(entry);
       }
       sentMessages.push({ type: 'conversation_list', conversations: list });
     }
 
-    // Replicate deleteConversation vcrew cleanup
+    // Replicate deleteConversation roleplay cleanup
     function deleteConversation(conversationId) {
       const conv = ctx.conversations.get(conversationId);
       if (conv) {
         ctx.conversations.delete(conversationId);
       }
-      if (vcrewSessions.has(conversationId)) {
-        vcrewSessions.delete(conversationId);
+      if (rolePlaySessions.has(conversationId)) {
+        rolePlaySessions.delete(conversationId);
       }
       sentMessages.push({ type: 'conversation_deleted', conversationId });
     }
 
-    // Replicate resumeConversation vcrew restoration
+    // Replicate resumeConversation roleplay restoration
     function resumeConversation(conversationId, claudeSessionId, workDir, userId, username) {
       const effectiveWorkDir = workDir || ctx.CONFIG.workDir;
 
-      const vcrewEntry = vcrewSessions.get(conversationId);
-      const vcrewConfig = vcrewEntry
-        ? { roles: vcrewEntry.roles, teamType: vcrewEntry.teamType, language: vcrewEntry.language }
+      const rolePlayEntry = rolePlaySessions.get(conversationId);
+      const rolePlayConfig = rolePlayEntry
+        ? { roles: rolePlayEntry.roles, teamType: rolePlayEntry.teamType, language: rolePlayEntry.language }
         : null;
 
       ctx.conversations.set(conversationId, {
@@ -703,26 +703,26 @@ describe('agent/vcrew.js — Virtual Crew', () => {
         userId,
         username,
         disallowedTools: null,
-        vcrewConfig,
+        rolePlayConfig,
         usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, totalCostUsd: 0 }
       });
     }
 
-    it('should store vcrewConfig in conversation state when provided', () => {
-      const vcrewConfig = { roles: makeMinimalRoles(), teamType: 'dev', language: 'en' };
+    it('should store rolePlayConfig in conversation state when provided', () => {
+      const rolePlayConfig = { roles: makeMinimalRoles(), teamType: 'dev', language: 'en' };
       createConversation({
         conversationId: 'c1',
         workDir: '/p',
         userId: 'u1',
         username: 'alice',
-        vcrewConfig,
+        rolePlayConfig,
       });
 
       const state = ctx.conversations.get('c1');
-      expect(state.vcrewConfig).toEqual(vcrewConfig);
+      expect(state.rolePlayConfig).toEqual(rolePlayConfig);
     });
 
-    it('should set vcrewConfig to null when not provided', () => {
+    it('should set rolePlayConfig to null when not provided', () => {
       createConversation({
         conversationId: 'c2',
         workDir: '/p',
@@ -731,28 +731,28 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       });
 
       const state = ctx.conversations.get('c2');
-      expect(state.vcrewConfig).toBeNull();
+      expect(state.rolePlayConfig).toBeNull();
     });
 
-    it('should register in vcrewSessions when vcrewConfig is provided', () => {
+    it('should register in rolePlaySessions when rolePlayConfig is provided', () => {
       const roles = makeDevTeamRoles();
       createConversation({
         conversationId: 'c3',
         workDir: '/project',
         userId: 'u1',
         username: 'carol',
-        vcrewConfig: { roles, teamType: 'dev', language: 'zh-CN' },
+        rolePlayConfig: { roles, teamType: 'dev', language: 'zh-CN' },
       });
 
-      expect(vcrewSessions.has('c3')).toBe(true);
-      const entry = vcrewSessions.get('c3');
+      expect(rolePlaySessions.has('c3')).toBe(true);
+      const entry = rolePlaySessions.get('c3');
       expect(entry.teamType).toBe('dev');
       expect(entry.language).toBe('zh-CN');
       expect(entry.roles).toBe(roles);
       expect(entry.projectDir).toBe('/project');
     });
 
-    it('should NOT register in vcrewSessions when vcrewConfig is absent', () => {
+    it('should NOT register in rolePlaySessions when rolePlayConfig is absent', () => {
       createConversation({
         conversationId: 'c4',
         workDir: '/p',
@@ -760,24 +760,24 @@ describe('agent/vcrew.js — Virtual Crew', () => {
         username: 'dave',
       });
 
-      expect(vcrewSessions.has('c4')).toBe(false);
+      expect(rolePlaySessions.has('c4')).toBe(false);
     });
 
-    it('should include vcrewConfig in conversation_created message', () => {
-      const vcrewConfig = { roles: makeMinimalRoles(), teamType: 'dev', language: 'en' };
+    it('should include rolePlayConfig in conversation_created message', () => {
+      const rolePlayConfig = { roles: makeMinimalRoles(), teamType: 'dev', language: 'en' };
       createConversation({
         conversationId: 'c5',
         workDir: '/p',
         userId: 'u1',
         username: 'eve',
-        vcrewConfig,
+        rolePlayConfig,
       });
 
       const created = sentMessages.find(m => m.type === 'conversation_created');
-      expect(created.vcrewConfig).toEqual(vcrewConfig);
+      expect(created.rolePlayConfig).toEqual(rolePlayConfig);
     });
 
-    it('should set vcrewConfig to null in conversation_created when not provided', () => {
+    it('should set rolePlayConfig to null in conversation_created when not provided', () => {
       createConversation({
         conversationId: 'c6',
         workDir: '/p',
@@ -786,17 +786,17 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       });
 
       const created = sentMessages.find(m => m.type === 'conversation_created');
-      expect(created.vcrewConfig).toBeNull();
+      expect(created.rolePlayConfig).toBeNull();
     });
 
-    it('should mark vcrew conversations with type=virtualCrew in conversation list', () => {
+    it('should mark roleplay conversations with type=rolePlay in conversation list', () => {
       const roles = makeMinimalRoles();
       createConversation({
-        conversationId: 'vcrew-1',
+        conversationId: 'roleplay-1',
         workDir: '/p',
         userId: 'u1',
         username: 'grace',
-        vcrewConfig: { roles, teamType: 'dev', language: 'en' },
+        rolePlayConfig: { roles, teamType: 'dev', language: 'en' },
       });
       createConversation({
         conversationId: 'normal-1',
@@ -811,32 +811,32 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       const listMsg = sentMessages.find(m => m.type === 'conversation_list');
       expect(listMsg).toBeDefined();
 
-      const vcrewEntry = listMsg.conversations.find(c => c.id === 'vcrew-1');
-      expect(vcrewEntry.type).toBe('virtualCrew');
-      expect(vcrewEntry.vcrewRoles).toEqual(roles);
+      const rolePlayEntry = listMsg.conversations.find(c => c.id === 'roleplay-1');
+      expect(rolePlayEntry.type).toBe('rolePlay');
+      expect(rolePlayEntry.rolePlayRoles).toEqual(roles);
 
       const normalEntry = listMsg.conversations.find(c => c.id === 'normal-1');
       expect(normalEntry.type).toBeUndefined();
-      expect(normalEntry.vcrewRoles).toBeUndefined();
+      expect(normalEntry.rolePlayRoles).toBeUndefined();
     });
 
-    it('should clean up vcrewSessions on deleteConversation', () => {
+    it('should clean up rolePlaySessions on deleteConversation', () => {
       createConversation({
         conversationId: 'del-1',
         workDir: '/p',
         userId: 'u1',
         username: 'ivan',
-        vcrewConfig: { roles: makeMinimalRoles(), teamType: 'dev', language: 'en' },
+        rolePlayConfig: { roles: makeMinimalRoles(), teamType: 'dev', language: 'en' },
       });
-      expect(vcrewSessions.has('del-1')).toBe(true);
+      expect(rolePlaySessions.has('del-1')).toBe(true);
 
       deleteConversation('del-1');
 
-      expect(vcrewSessions.has('del-1')).toBe(false);
+      expect(rolePlaySessions.has('del-1')).toBe(false);
       expect(ctx.conversations.has('del-1')).toBe(false);
     });
 
-    it('should not error when deleting a non-vcrew conversation', () => {
+    it('should not error when deleting a non-roleplay conversation', () => {
       createConversation({
         conversationId: 'del-2',
         workDir: '/p',
@@ -848,10 +848,10 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       expect(ctx.conversations.has('del-2')).toBe(false);
     });
 
-    it('should restore vcrewConfig from vcrewSessions on resumeConversation', () => {
+    it('should restore rolePlayConfig from rolePlaySessions on resumeConversation', () => {
       const roles = makeDevTeamRoles();
-      // Simulate a previously created vcrew session persisted in vcrewSessions
-      vcrewSessions.set('resume-1', {
+      // Simulate a previously created roleplay session persisted in rolePlaySessions
+      rolePlaySessions.set('resume-1', {
         roles,
         teamType: 'dev',
         language: 'zh-CN',
@@ -864,17 +864,17 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       resumeConversation('resume-1', 'session-uuid', '/project', 'u1', 'karl');
 
       const state = ctx.conversations.get('resume-1');
-      expect(state.vcrewConfig).not.toBeNull();
-      expect(state.vcrewConfig.teamType).toBe('dev');
-      expect(state.vcrewConfig.language).toBe('zh-CN');
-      expect(state.vcrewConfig.roles).toBe(roles);
+      expect(state.rolePlayConfig).not.toBeNull();
+      expect(state.rolePlayConfig.teamType).toBe('dev');
+      expect(state.rolePlayConfig.language).toBe('zh-CN');
+      expect(state.rolePlayConfig.roles).toBe(roles);
     });
 
-    it('should set vcrewConfig to null on resumeConversation when not in vcrewSessions', () => {
+    it('should set rolePlayConfig to null on resumeConversation when not in rolePlaySessions', () => {
       resumeConversation('resume-2', 'session-uuid', '/project', 'u1', 'larry');
 
       const state = ctx.conversations.get('resume-2');
-      expect(state.vcrewConfig).toBeNull();
+      expect(state.rolePlayConfig).toBeNull();
     });
   });
 
@@ -882,15 +882,15 @@ describe('agent/vcrew.js — Virtual Crew', () => {
   // claude.js integration (replicated logic)
   // ---------------------------------------------------------------
 
-  describe('claude.js vcrew integration (replicated logic)', () => {
-    it('should save and restore vcrewConfig across startClaudeQuery restarts', () => {
+  describe('claude.js roleplay integration (replicated logic)', () => {
+    it('should save and restore rolePlayConfig across startClaudeQuery restarts', () => {
       // Simulate the save/restore pattern in startClaudeQuery
       const conversations = new Map();
-      const vcrewConfig = { roles: makeMinimalRoles(), teamType: 'dev', language: 'en' };
+      const rolePlayConfig = { roles: makeMinimalRoles(), teamType: 'dev', language: 'en' };
 
       // Initial state
       conversations.set('cq-1', {
-        vcrewConfig,
+        rolePlayConfig,
         disallowedTools: ['mcp__foo'],
         userId: 'u1',
         username: 'mike',
@@ -899,14 +899,14 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       // Step 1: Save settings from existing state (as startClaudeQuery does)
       const existing = conversations.get('cq-1');
       const savedDisallowedTools = existing.disallowedTools ?? null;
-      const savedVcrewConfig = existing.vcrewConfig ?? null;
+      const savedRolePlayConfig = existing.rolePlayConfig ?? null;
       const savedUserId = existing.userId;
       const savedUsername = existing.username;
 
       // Step 2: Delete old entry and create fresh state (simulating restart)
       conversations.delete('cq-1');
       conversations.set('cq-1', {
-        vcrewConfig: savedVcrewConfig,
+        rolePlayConfig: savedRolePlayConfig,
         disallowedTools: savedDisallowedTools,
         userId: savedUserId,
         username: savedUsername,
@@ -914,38 +914,38 @@ describe('agent/vcrew.js — Virtual Crew', () => {
 
       // Verify restoration
       const restored = conversations.get('cq-1');
-      expect(restored.vcrewConfig).toEqual(vcrewConfig);
+      expect(restored.rolePlayConfig).toEqual(rolePlayConfig);
       expect(restored.disallowedTools).toEqual(['mcp__foo']);
     });
 
-    it('should set vcrewConfig to null when original state had no vcrewConfig', () => {
+    it('should set rolePlayConfig to null when original state had no rolePlayConfig', () => {
       const conversations = new Map();
 
       conversations.set('cq-2', {
         disallowedTools: null,
         userId: 'u1',
         username: 'nancy',
-        // no vcrewConfig property
+        // no rolePlayConfig property
       });
 
       const existing = conversations.get('cq-2');
-      const savedVcrewConfig = existing.vcrewConfig ?? null;
+      const savedRolePlayConfig = existing.rolePlayConfig ?? null;
 
       conversations.delete('cq-2');
       conversations.set('cq-2', {
-        vcrewConfig: savedVcrewConfig,
+        rolePlayConfig: savedRolePlayConfig,
       });
 
-      expect(conversations.get('cq-2').vcrewConfig).toBeNull();
+      expect(conversations.get('cq-2').rolePlayConfig).toBeNull();
     });
 
-    it('should inject appendSystemPrompt when vcrewConfig is present', () => {
-      const vcrewConfig = { roles: makeDevTeamRoles(), teamType: 'dev', language: 'en' };
+    it('should inject appendSystemPrompt when rolePlayConfig is present', () => {
+      const rolePlayConfig = { roles: makeDevTeamRoles(), teamType: 'dev', language: 'en' };
       const options = {};
 
       // Replicate the injection logic from claude.js
-      if (vcrewConfig) {
-        options.appendSystemPrompt = buildVCrewSystemPrompt(vcrewConfig);
+      if (rolePlayConfig) {
+        options.appendSystemPrompt = buildRolePlaySystemPrompt(rolePlayConfig);
       }
 
       expect(options.appendSystemPrompt).toBeDefined();
@@ -953,12 +953,12 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       expect(options.appendSystemPrompt).toContain('PM乔布斯');
     });
 
-    it('should NOT inject appendSystemPrompt when vcrewConfig is null', () => {
-      const savedVcrewConfig = null;
+    it('should NOT inject appendSystemPrompt when rolePlayConfig is null', () => {
+      const savedRolePlayConfig = null;
       const options = {};
 
-      if (savedVcrewConfig) {
-        options.appendSystemPrompt = buildVCrewSystemPrompt(savedVcrewConfig);
+      if (savedRolePlayConfig) {
+        options.appendSystemPrompt = buildRolePlaySystemPrompt(savedRolePlayConfig);
       }
 
       expect(options.appendSystemPrompt).toBeUndefined();
@@ -969,14 +969,14 @@ describe('agent/vcrew.js — Virtual Crew', () => {
   // client-conversation.js transparent pass-through
   // ---------------------------------------------------------------
 
-  describe('client-conversation.js vcrewConfig passthrough', () => {
-    it('should pass vcrewConfig to agent when present in client message', () => {
+  describe('client-conversation.js rolePlayConfig passthrough', () => {
+    it('should pass rolePlayConfig to agent when present in client message', () => {
       const clientMsg = {
         type: 'create_conversation',
         conversationId: 'cc-1',
         workDir: '/p',
         disallowedTools: null,
-        vcrewConfig: { roles: makeMinimalRoles(), teamType: 'dev', language: 'en' },
+        rolePlayConfig: { roles: makeMinimalRoles(), teamType: 'dev', language: 'en' },
       };
 
       // Replicate the handler logic
@@ -987,13 +987,13 @@ describe('agent/vcrew.js — Virtual Crew', () => {
         userId: 'u1',
         username: 'test',
         disallowedTools: clientMsg.disallowedTools,
-        vcrewConfig: clientMsg.vcrewConfig || null,
+        rolePlayConfig: clientMsg.rolePlayConfig || null,
       };
 
-      expect(agentMsg.vcrewConfig).toEqual(clientMsg.vcrewConfig);
+      expect(agentMsg.rolePlayConfig).toEqual(clientMsg.rolePlayConfig);
     });
 
-    it('should default vcrewConfig to null when not in client message', () => {
+    it('should default rolePlayConfig to null when not in client message', () => {
       const clientMsg = {
         type: 'create_conversation',
         conversationId: 'cc-2',
@@ -1007,10 +1007,10 @@ describe('agent/vcrew.js — Virtual Crew', () => {
         userId: 'u1',
         username: 'test',
         disallowedTools: clientMsg.disallowedTools,
-        vcrewConfig: clientMsg.vcrewConfig || null,
+        rolePlayConfig: clientMsg.rolePlayConfig || null,
       };
 
-      expect(agentMsg.vcrewConfig).toBeNull();
+      expect(agentMsg.rolePlayConfig).toBeNull();
     });
   });
 
@@ -1021,7 +1021,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
   describe('edge cases', () => {
     it('should handle single-role config without crashing', () => {
       const roles = [{ name: 'pm', displayName: 'PM', icon: '📋', description: '唯一角色' }];
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'zh-CN' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'zh-CN' });
 
       expect(prompt).toContain('PM (pm)');
       expect(prompt).toContain('唯一角色');
@@ -1031,13 +1031,13 @@ describe('agent/vcrew.js — Virtual Crew', () => {
       const roles = [
         { name: 'pm', displayName: 'PM-乔布斯💡', icon: '📋', description: '产品经理' },
       ];
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: 'dev', language: 'zh-CN' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: 'dev', language: 'zh-CN' });
 
       expect(prompt).toContain('PM-乔布斯💡');
     });
 
     it('should handle empty roles array gracefully', () => {
-      const prompt = buildVCrewSystemPrompt({ roles: [], teamType: 'dev', language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles: [], teamType: 'dev', language: 'en' });
 
       // Should still produce a valid prompt structure, just no roles listed
       expect(prompt).toContain('## Available Roles');
@@ -1046,7 +1046,7 @@ describe('agent/vcrew.js — Virtual Crew', () => {
 
     it('should handle undefined teamType with generic workflow', () => {
       const roles = [{ name: 'pm', displayName: 'PM', icon: '', description: '' }];
-      const prompt = buildVCrewSystemPrompt({ roles, teamType: undefined, language: 'en' });
+      const prompt = buildRolePlaySystemPrompt({ roles, teamType: undefined, language: 'en' });
 
       expect(prompt).toContain('Complete tasks by following the role sequence');
     });

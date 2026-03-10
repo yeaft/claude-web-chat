@@ -1,5 +1,5 @@
 /**
- * Virtual Crew — 中文开发团队模板
+ * Role Play — 中文开发团队模板
  * 4 角色：PM / Dev / Reviewer / Tester
  * 相比 Crew 模板精简：无 count / model / isDecisionMaker / designer
  */

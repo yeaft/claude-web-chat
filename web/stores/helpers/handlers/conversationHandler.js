@@ -21,15 +21,15 @@ export function handleConversationCreated(store, msg) {
     claudeSessionId: null,
     createdAt: Date.now(),
     processing: false,
-    type: msg.vcrewConfig ? 'virtualCrew' : 'chat',
+    type: msg.rolePlayConfig ? 'rolePlay' : 'chat',
     disallowedTools: msg.disallowedTools ?? null
   });
-  // ★ Virtual Crew: save vcrewConfig to store
-  if (msg.vcrewConfig) {
-    store.vcrewSessions[msg.conversationId] = {
-      roles: msg.vcrewConfig.roles,
-      teamType: msg.vcrewConfig.teamType,
-      language: msg.vcrewConfig.language,
+  // ★ Role Play: save rolePlayConfig to store
+  if (msg.rolePlayConfig) {
+    store.rolePlaySessions[msg.conversationId] = {
+      roles: msg.rolePlayConfig.roles,
+      teamType: msg.rolePlayConfig.teamType,
+      language: msg.rolePlayConfig.language,
     };
   }
   store.currentAgent = msg.agentId;
@@ -110,8 +110,8 @@ export function handleConversationDeleted(store, msg) {
   delete store.crewMessagesMap?.[msg.conversationId];
   delete store.crewOlderMessages?.[msg.conversationId];
   delete store.crewStatuses?.[msg.conversationId];
-  // 清理 vcrew 数据
-  delete store.vcrewSessions[msg.conversationId];
+  // 清理 roleplay 数据
+  delete store.rolePlaySessions[msg.conversationId];
   window.dispatchEvent(new CustomEvent('conversation-deleted', { detail: { conversationId: msg.conversationId } }));
   if (store.currentConversation === msg.conversationId) {
     store.currentConversation = null;

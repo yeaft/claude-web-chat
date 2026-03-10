@@ -1,5 +1,5 @@
 /**
- * VCrewChatView — Virtual Crew chat view component.
+ * RolePlayChatView — Role Play chat view component.
  *
  * Renders a single-conversation multi-role collaboration session.
  * Assistant messages are split by ---ROLE: xxx--- signals into
@@ -216,28 +216,28 @@ function getRoleColor(roleName) {
 // ── Component ──────────────────────────────────────────────────────
 
 export default {
-  name: 'VCrewChatView',
+  name: 'RolePlayChatView',
   components: { ToolLine },
   template: `
-    <div class="vcrew-chat">
+    <div class="roleplay-chat">
       <!-- Top: active role indicator -->
-      <div class="vcrew-role-indicator" v-if="activeRole && store.isProcessing">
-        <span class="vcrew-role-ind-icon">{{ getRoleInfo(activeRole)?.icon || '🤖' }}</span>
-        <span class="vcrew-role-ind-name">{{ getRoleInfo(activeRole)?.displayName || activeRole }}</span>
-        <span class="vcrew-role-ind-status">{{ $t('vcrew.working') }}</span>
+      <div class="roleplay-role-indicator" v-if="activeRole && store.isProcessing">
+        <span class="roleplay-role-ind-icon">{{ getRoleInfo(activeRole)?.icon || '🤖' }}</span>
+        <span class="roleplay-role-ind-name">{{ getRoleInfo(activeRole)?.displayName || activeRole }}</span>
+        <span class="roleplay-role-ind-status">{{ $t('roleplay.working') }}</span>
       </div>
 
       <!-- Messages -->
-      <div class="vcrew-messages" ref="messagesRef">
-        <div v-if="roleSegments.length === 0 && !store.isProcessing" class="vcrew-empty">
-          <div class="vcrew-empty-icon">🎭</div>
-          <div class="vcrew-empty-text">{{ $t('vcrew.emptyHint') }}</div>
-          <div class="vcrew-empty-roles" v-if="vcrewSession && vcrewSession.roles && vcrewSession.roles.length > 0">
-            <div v-for="role in vcrewSession.roles" :key="role.name" class="vcrew-empty-role-card">
-              <div class="vcrew-empty-role-icon">{{ role.icon || '🤖' }}</div>
-              <div class="vcrew-empty-role-info">
-                <div class="vcrew-empty-role-name">{{ role.displayName || role.name }}</div>
-                <div class="vcrew-empty-role-desc" v-if="role.description">{{ role.description }}</div>
+      <div class="roleplay-messages" ref="messagesRef">
+        <div v-if="roleSegments.length === 0 && !store.isProcessing" class="roleplay-empty">
+          <div class="roleplay-empty-icon">🎭</div>
+          <div class="roleplay-empty-text">{{ $t('roleplay.emptyHint') }}</div>
+          <div class="roleplay-empty-roles" v-if="rolePlaySession && rolePlaySession.roles && rolePlaySession.roles.length > 0">
+            <div v-for="role in rolePlaySession.roles" :key="role.name" class="roleplay-empty-role-card">
+              <div class="roleplay-empty-role-icon">{{ role.icon || '🤖' }}</div>
+              <div class="roleplay-empty-role-info">
+                <div class="roleplay-empty-role-name">{{ role.displayName || role.name }}</div>
+                <div class="roleplay-empty-role-desc" v-if="role.description">{{ role.description }}</div>
               </div>
             </div>
           </div>
@@ -245,34 +245,34 @@ export default {
 
         <template v-for="(seg, idx) in roleSegments" :key="seg.id || idx">
           <!-- User message -->
-          <div v-if="seg.type === 'user'" class="vcrew-msg vcrew-msg-user">
-            <div class="vcrew-msg-content markdown-body" v-html="mdRender(seg.content)"></div>
-            <div v-if="seg.attachments && seg.attachments.length > 0" class="vcrew-attachments">
-              <span v-for="(a, ai) in seg.attachments" :key="ai" class="vcrew-attachment-badge">📎 {{ a.name || a.fileName }}</span>
+          <div v-if="seg.type === 'user'" class="roleplay-msg roleplay-msg-user">
+            <div class="roleplay-msg-content markdown-body" v-html="mdRender(seg.content)"></div>
+            <div v-if="seg.attachments && seg.attachments.length > 0" class="roleplay-attachments">
+              <span v-for="(a, ai) in seg.attachments" :key="ai" class="roleplay-attachment-badge">📎 {{ a.name || a.fileName }}</span>
             </div>
           </div>
 
           <!-- System / error -->
-          <div v-else-if="seg.type === 'system' || seg.type === 'error'" class="vcrew-msg vcrew-msg-system" :class="{ 'vcrew-msg-error': seg.type === 'error' }">
+          <div v-else-if="seg.type === 'system' || seg.type === 'error'" class="roleplay-msg roleplay-msg-system" :class="{ 'roleplay-msg-error': seg.type === 'error' }">
             {{ seg.content }}
           </div>
 
           <!-- Role text segment -->
           <div v-else-if="seg.type === 'role-text'"
-               class="vcrew-msg vcrew-msg-role"
+               class="roleplay-msg roleplay-msg-role"
                :style="{ '--role-color': getRoleColor(seg.role).color, '--role-border': getRoleColor(seg.role).border }">
             <!-- Role divider (shown on role change) -->
-            <div class="vcrew-role-divider" v-if="isRoleChange(idx)">
-              <span class="vcrew-role-div-icon">{{ getRoleInfo(seg.role)?.icon || '🤖' }}</span>
-              <span class="vcrew-role-div-name">{{ getRoleInfo(seg.role)?.displayName || seg.role }}</span>
+            <div class="roleplay-role-divider" v-if="isRoleChange(idx)">
+              <span class="roleplay-role-div-icon">{{ getRoleInfo(seg.role)?.icon || '🤖' }}</span>
+              <span class="roleplay-role-div-name">{{ getRoleInfo(seg.role)?.displayName || seg.role }}</span>
             </div>
-            <div class="vcrew-role-content markdown-body" v-html="mdRender(seg.content)"></div>
+            <div class="roleplay-role-content markdown-body" v-html="mdRender(seg.content)"></div>
             <span v-if="seg.isStreaming" class="cursor-blink"></span>
           </div>
 
           <!-- Tool call -->
           <div v-else-if="seg.type === 'tool'"
-               class="vcrew-msg vcrew-msg-tool"
+               class="roleplay-msg roleplay-msg-tool"
                :style="{ '--role-color': getRoleColor(seg.role).color }">
             <ToolLine
               :tool-name="seg.toolName"
@@ -284,22 +284,22 @@ export default {
           </div>
 
           <!-- Todo progress -->
-          <div v-else-if="seg.type === 'todo'" class="vcrew-msg vcrew-msg-todo">
+          <div v-else-if="seg.type === 'todo'" class="roleplay-msg roleplay-msg-todo">
             <div v-for="todo in seg.todos" :key="todo.content"
-                 class="vcrew-todo-item" :class="todo.status">
-              <span class="vcrew-todo-checkbox">
+                 class="roleplay-todo-item" :class="todo.status">
+              <span class="roleplay-todo-checkbox">
                 <span v-if="todo.status === 'completed'">✓</span>
-                <span v-else-if="todo.status === 'in_progress'" class="vcrew-todo-spinner"></span>
+                <span v-else-if="todo.status === 'in_progress'" class="roleplay-todo-spinner"></span>
               </span>
-              <span class="vcrew-todo-text">{{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}</span>
+              <span class="roleplay-todo-text">{{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}</span>
             </div>
           </div>
 
           <!-- User question (AskUserQuestion) -->
-          <div v-else-if="seg.type === 'user-question'" class="vcrew-msg vcrew-msg-question">
-            <div class="vcrew-question-header">
-              <span class="vcrew-question-icon">❓</span>
-              <span>{{ getRoleInfo(seg.role)?.displayName || seg.role }} {{ $t('vcrew.askingYou') }}</span>
+          <div v-else-if="seg.type === 'user-question'" class="roleplay-msg roleplay-msg-question">
+            <div class="roleplay-question-header">
+              <span class="roleplay-question-icon">❓</span>
+              <span>{{ getRoleInfo(seg.role)?.displayName || seg.role }} {{ $t('roleplay.askingYou') }}</span>
             </div>
           </div>
         </template>
@@ -334,9 +334,9 @@ export default {
       return null;
     },
 
-    /** VCrew session info for current conversation */
-    vcrewSession() {
-      return this.store.vcrewSessions?.[this.store.currentConversation] || null;
+    /** RolePlay session info for current conversation */
+    rolePlaySession() {
+      return this.store.rolePlaySessions?.[this.store.currentConversation] || null;
     },
 
     /** Whether any segment is currently streaming */
@@ -350,10 +350,10 @@ export default {
 
     getRoleColor,
 
-    /** Get role info (icon, displayName) from vcrew session */
+    /** Get role info (icon, displayName) from roleplay session */
     getRoleInfo(roleName) {
-      if (!this.vcrewSession || !roleName) return null;
-      const roles = this.vcrewSession.roles || [];
+      if (!this.rolePlaySession || !roleName) return null;
+      const roles = this.rolePlaySession.roles || [];
       return roles.find(r => r.name === roleName) || null;
     },
 

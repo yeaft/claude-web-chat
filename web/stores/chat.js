@@ -116,9 +116,9 @@ export const useChatStore = defineStore('chat', {
     crewInProgressCount: 0,      // 进行中 Feature 数量（由 CrewChatView 同步）
 
     // =====================
-    // Virtual Crew (single-conversation multi-role) 状态
+    // Role Play (single-conversation multi-role) 状态
     // =====================
-    vcrewSessions: {},            // { [convId]: { roles, teamType, language } }
+    rolePlaySessions: {},            // { [convId]: { roles, teamType, language } }
   }),
 
   getters: {
@@ -182,15 +182,15 @@ export const useChatStore = defineStore('chat', {
       const conv = state.conversations.find(c => c.id === state.currentConversation);
       return conv?.type === 'crew';
     },
-    // 当前 conversation 是否是 Virtual Crew
-    currentConversationIsVCrew: (state) => {
+    // 当前 conversation 是否是 Role Play
+    currentConversationIsRolePlay: (state) => {
       if (!state.currentConversation) return false;
       const conv = state.conversations.find(c => c.id === state.currentConversation);
-      return conv?.type === 'virtualCrew';
+      return conv?.type === 'rolePlay' || conv?.type === 'virtualCrew';
     },
-    // 当前 Virtual Crew session 信息
-    currentVCrewSession: (state) => {
-      return state.vcrewSessions[state.currentConversation] || null;
+    // 当前 Role Play session 信息
+    currentRolePlaySession: (state) => {
+      return state.rolePlaySessions[state.currentConversation] || null;
     },
     // 当前 conversation 的 MCP servers 列表
     currentMcpServers: (state) => {
@@ -371,15 +371,15 @@ export const useChatStore = defineStore('chat', {
     removeCrewRole(roleName) { crewHelpers.removeCrewRole(this, roleName); },
     handleCrewOutput(msg) { crewHelpers.handleCrewOutput(this, msg); },
 
-    // Virtual Crew actions
-    createVCrewSession(config) {
+    // Role Play actions
+    createRolePlaySession(config) {
       const targetAgent = config.agentId || this.currentAgent;
       if (!targetAgent) return;
       this.sendWsMessage({
         type: 'create_conversation',
         agentId: targetAgent,
         workDir: config.projectDir,
-        vcrewConfig: {
+        rolePlayConfig: {
           roles: config.roles,
           teamType: config.teamType,
           language: config.language,

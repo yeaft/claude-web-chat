@@ -2,10 +2,10 @@ import ctx from './context.js';
 import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
 import { crewSessions, loadCrewIndex } from './crew.js';
-import { vcrewSessions, saveVCrewIndex, removeVCrewSession, loadVCrewIndex, validateVCrewConfig } from './vcrew.js';
+import { rolePlaySessions, saveRolePlayIndex, removeRolePlaySession, loadRolePlayIndex, validateRolePlayConfig } from './roleplay.js';
 
-// Restore persisted vcrew sessions on module load (agent startup)
-loadVCrewIndex();
+// Restore persisted roleplay sessions on module load (agent startup)
+loadRolePlayIndex();
 
 // 不支持的斜杠命令（真正需要交互式 CLI 的命令）
 const UNSUPPORTED_SLASH_COMMANDS = ['/help', '/bug', '/login', '/logout', '/terminal-setup', '/vim', '/config'];
@@ -38,7 +38,7 @@ export function parseSlashCommand(message) {
   return { type: null, message };
 }
 
-// 发送 conversation 列表（含活跃 crew sessions + 索引中已停止的 crew sessions + vcrew sessions）
+// 发送 conversation 列表（含活跃 crew sessions + 索引中已停止的 crew sessions + roleplay sessions）
 export async function sendConversationList() {
   const list = [];
   for (const [id, state] of ctx.conversations) {
@@ -51,10 +51,10 @@ export async function sendConversationList() {
       userId: state.userId,
       username: state.username
     };
-    // vcrew conversations are stored in ctx.conversations but also tracked in vcrewSessions
-    if (vcrewSessions.has(id)) {
-      entry.type = 'virtualCrew';
-      entry.vcrewRoles = vcrewSessions.get(id).roles;
+    // roleplay conversations are stored in ctx.conversations but also tracked in rolePlaySessions
+    if (rolePlaySessions.has(id)) {
+      entry.type = 'rolePlay';
+      entry.rolePlayRoles = rolePlaySessions.get(id).roles;
     }
     list.push(entry);
   }
@@ -118,21 +118,21 @@ export async function createConversation(msg) {
   const { conversationId, workDir, userId, username, disallowedTools } = msg;
   const effectiveWorkDir = workDir || ctx.CONFIG.workDir;
 
-  // Validate and sanitize vcrewConfig if provided
-  let vcrewConfig = null;
-  if (msg.vcrewConfig) {
-    const result = validateVCrewConfig(msg.vcrewConfig);
+  // Validate and sanitize rolePlayConfig if provided
+  let rolePlayConfig = null;
+  if (msg.rolePlayConfig) {
+    const result = validateRolePlayConfig(msg.rolePlayConfig);
     if (!result.valid) {
-      console.warn(`[createConversation] Invalid vcrewConfig: ${result.error}`);
-      sendError(conversationId, `Invalid vcrewConfig: ${result.error}`);
+      console.warn(`[createConversation] Invalid rolePlayConfig: ${result.error}`);
+      sendError(conversationId, `Invalid rolePlayConfig: ${result.error}`);
       return;
     }
-    vcrewConfig = result.config;
+    rolePlayConfig = result.config;
   }
 
   console.log(`Creating conversation: ${conversationId} in ${effectiveWorkDir} (lazy start)`);
   if (username) console.log(`  User: ${username} (${userId})`);
-  if (vcrewConfig) console.log(`  VCrew: teamType=${vcrewConfig.teamType}, roles=${vcrewConfig.roles?.length}`);
+  if (rolePlayConfig) console.log(`  RolePlay: teamType=${rolePlayConfig.teamType}, roles=${rolePlayConfig.roles?.length}`);
 
   // 只创建 conversation 状态，不启动 Claude 进程
   // Claude 进程会在用户发送第一条消息时启动 (见 handleUserInput)
@@ -149,7 +149,7 @@ export async function createConversation(msg) {
     userId,
     username,
     disallowedTools: disallowedTools || null,  // null = 使用全局默认
-    vcrewConfig: vcrewConfig || null,
+    rolePlayConfig: rolePlayConfig || null,
     usage: {
       inputTokens: 0,
       outputTokens: 0,
@@ -159,18 +159,18 @@ export async function createConversation(msg) {
     }
   });
 
-  // Register in vcrewSessions for type inference in sendConversationList
-  if (vcrewConfig) {
-    vcrewSessions.set(conversationId, {
-      roles: vcrewConfig.roles,
-      teamType: vcrewConfig.teamType,
-      language: vcrewConfig.language,
+  // Register in rolePlaySessions for type inference in sendConversationList
+  if (rolePlayConfig) {
+    rolePlaySessions.set(conversationId, {
+      roles: rolePlayConfig.roles,
+      teamType: rolePlayConfig.teamType,
+      language: rolePlayConfig.language,
       projectDir: effectiveWorkDir,
       createdAt: Date.now(),
       userId,
       username,
     });
-    saveVCrewIndex();
+    saveRolePlayIndex();
   }
 
   ctx.sendToServer({
@@ -180,7 +180,7 @@ export async function createConversation(msg) {
     userId,
     username,
     disallowedTools: disallowedTools || null,
-    vcrewConfig: vcrewConfig || null
+    rolePlayConfig: rolePlayConfig || null
   });
 
   // 立即发送 agent 级别的 MCP servers 列表（从 ~/.claude.json 读取的）
@@ -232,10 +232,10 @@ export async function resumeConversation(msg) {
 
   // 只创建 conversation 状态并保存 claudeSessionId，不启动 Claude 进程
   // Claude 进程会在用户发送第一条消息时启动 (见 handleUserInput)
-  // Restore vcrewConfig from persisted vcrewSessions if available
-  const vcrewEntry = vcrewSessions.get(conversationId);
-  const vcrewConfig = vcrewEntry
-    ? { roles: vcrewEntry.roles, teamType: vcrewEntry.teamType, language: vcrewEntry.language }
+  // Restore rolePlayConfig from persisted rolePlaySessions if available
+  const rolePlayEntry = rolePlaySessions.get(conversationId);
+  const rolePlayConfig = rolePlayEntry
+    ? { roles: rolePlayEntry.roles, teamType: rolePlayEntry.teamType, language: rolePlayEntry.language }
     : null;
 
   ctx.conversations.set(conversationId, {
@@ -251,7 +251,7 @@ export async function resumeConversation(msg) {
     userId,
     username,
     disallowedTools: disallowedTools || null,  // null = 使用全局默认
-    vcrewConfig,
+    rolePlayConfig,
     usage: {
       inputTokens: 0,
       outputTokens: 0,
@@ -317,9 +317,9 @@ export function deleteConversation(msg) {
     ctx.conversations.delete(conversationId);
   }
 
-  // Clean up vcrew session if applicable
-  if (vcrewSessions.has(conversationId)) {
-    removeVCrewSession(conversationId);
+  // Clean up roleplay session if applicable
+  if (rolePlaySessions.has(conversationId)) {
+    removeRolePlaySession(conversationId);
   }
 
   ctx.sendToServer({

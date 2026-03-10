@@ -1,5 +1,5 @@
 /**
- * VCrewConfigPanel — Virtual Crew creation panel.
+ * RolePlayConfigPanel — Role Play creation panel.
  *
  * Simplified version of CrewConfigPanel:
  *   - Agent selection (any online agent, no crew capability required)
@@ -7,21 +7,21 @@
  *   - Team template selection (dev / custom)
  *   - Role preview & editing (add/remove/edit claudeMd)
  *   - Language follows user settings (store.locale)
- *   - "Start" button → store.createVCrewSession
+ *   - "Start" button → store.createRolePlaySession
  *
  * NOT needed (vs CrewConfigPanel):
  *   - devCount, .crew directory detection, worktree config, per-role model selection
  */
 
-import { getVCrewTemplate } from '../crew-templates/index.js';
+import { getRolePlayTemplate } from '../crew-templates/index.js';
 
 export default {
-  name: 'VCrewConfigPanel',
+  name: 'RolePlayConfigPanel',
   template: `
     <div class="crew-config-overlay" @click.self="$emit('close')">
       <div class="crew-config-panel">
         <div class="crew-config-header">
-          <h2>{{ $t('vcrew.configTitle') }}</h2>
+          <h2>{{ $t('roleplay.configTitle') }}</h2>
           <button class="crew-config-close" @click="$emit('close')">&times;</button>
         </div>
 
@@ -63,7 +63,7 @@ export default {
 
           <!-- Role Configuration -->
           <div class="crew-config-section" v-if="selectedAgent && roles.length > 0">
-            <label class="crew-config-label">{{ $t('vcrew.rolePreview') }}</label>
+            <label class="crew-config-label">{{ $t('roleplay.rolePreview') }}</label>
             <div class="crew-roles-list">
               <div v-for="(role, idx) in roles" :key="idx" class="crew-role-item">
                 <div class="crew-role-header">
@@ -91,7 +91,7 @@ export default {
             <div class="crew-empty-icon">
               <svg viewBox="0 0 24 24" width="40" height="40"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
             </div>
-            <div class="crew-empty-text" v-if="onlineAgents.length === 0">{{ $t('vcrew.noAgents') }}</div>
+            <div class="crew-empty-text" v-if="onlineAgents.length === 0">{{ $t('roleplay.noAgents') }}</div>
             <div class="crew-empty-text" v-else>{{ $t('crewConfig.selectAgentHint') }}</div>
           </div>
         </div>
@@ -100,7 +100,7 @@ export default {
           <button class="modern-btn" @click="$emit('close')">{{ $t('common.cancel') }}</button>
           <button class="modern-btn" @click="startSession" :disabled="!canStart">
             <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-            {{ $t('vcrew.start') }}
+            {{ $t('roleplay.start') }}
           </button>
         </div>
       </div>
@@ -176,7 +176,7 @@ export default {
         this.roles = [];
         return;
       }
-      const template = getVCrewTemplate(type, this.language);
+      const template = getRolePlayTemplate(type, this.language);
       if (template) {
         this.roles = template.map(r => ({ ...r }));
       }

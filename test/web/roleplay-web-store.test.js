@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
 /**
- * Tests for Virtual Crew web store support, templates, and i18n.
+ * Tests for Role Play web store support, templates, and i18n.
  *
  * Covers:
- * 1. chat.js store state & getters (vcrewSessions, currentConversationIsVCrew, currentVCrewSession)
- * 2. createVCrewSession WS message construction (web/stores/helpers/vcrew.js)
- * 3. conversationHandler: conversation_created with vcrewConfig
- * 4. agentHandler: agent_list restoring virtualCrew sessions
- * 5. conversation.js: selectConversation / deleteConversation vcrew cleanup
- * 6. crew-templates/index.js: getVCrewTemplate
+ * 1. chat.js store state & getters (rolePlaySessions, currentConversationIsRolePlay, currentRolePlaySession)
+ * 2. createRolePlaySession WS message construction (web/stores/helpers/roleplay.js)
+ * 3. conversationHandler: conversation_created with rolePlayConfig
+ * 4. agentHandler: agent_list restoring rolePlay sessions
+ * 5. conversation.js: selectConversation / deleteConversation roleplay cleanup
+ * 6. crew-templates/index.js: getRolePlayTemplate
  * 7. i18n keys existence
  *
  * Logic is replicated to avoid importing modules with DOM / Pinia side effects.
@@ -46,29 +46,29 @@ function createMockStore(overrides = {}) {
     currentConversation: overrides.currentConversation ?? null,
     currentAgent: 'currentAgent' in overrides ? overrides.currentAgent : 'agent-1',
     conversations: overrides.conversations || [],
-    vcrewSessions: overrides.vcrewSessions || {},
+    rolePlaySessions: overrides.rolePlaySessions || {},
     messages: [],
     sentWsMessages: [],
     addMessage(msg) { store.messages.push(msg); },
     sendWsMessage(msg) { store.sentWsMessages.push(msg); },
     // Replicated getters
-    get currentConversationIsVCrew() {
+    get currentConversationIsRolePlay() {
       if (!store.currentConversation) return false;
       const conv = store.conversations.find(c => c.id === store.currentConversation);
-      return conv?.type === 'virtualCrew';
+      return conv?.type === 'rolePlay';
     },
-    get currentVCrewSession() {
-      return store.vcrewSessions[store.currentConversation] || null;
+    get currentRolePlaySession() {
+      return store.rolePlaySessions[store.currentConversation] || null;
     },
   };
   return store;
 }
 
 // =====================================================================
-// Replicated createVCrewSession (from web/stores/helpers/vcrew.js)
+// Replicated createRolePlaySession (from web/stores/helpers/roleplay.js)
 // =====================================================================
 
-function createVCrewSession(store, config) {
+function createRolePlaySession(store, config) {
   const targetAgent = config.agentId || store.currentAgent;
   if (!targetAgent) {
     store.addMessage({ type: 'error', content: 'Please select an agent first' });
@@ -79,7 +79,7 @@ function createVCrewSession(store, config) {
     type: 'create_conversation',
     agentId: targetAgent,
     workDir: config.projectDir,
-    vcrewConfig: {
+    rolePlayConfig: {
       roles: config.roles,
       teamType: config.teamType,
       language: config.language,
@@ -88,7 +88,7 @@ function createVCrewSession(store, config) {
 }
 
 // =====================================================================
-// Replicated handleConversationCreated (vcrew parts from conversationHandler.js)
+// Replicated handleConversationCreated (roleplay parts from conversationHandler.js)
 // =====================================================================
 
 function handleConversationCreated(store, msg) {
@@ -99,41 +99,41 @@ function handleConversationCreated(store, msg) {
     claudeSessionId: null,
     createdAt: Date.now(),
     processing: false,
-    type: msg.vcrewConfig ? 'virtualCrew' : 'chat',
+    type: msg.rolePlayConfig ? 'rolePlay' : 'chat',
     disallowedTools: msg.disallowedTools ?? null,
   };
   store.conversations.push(newConv);
 
-  if (msg.vcrewConfig) {
-    store.vcrewSessions[msg.conversationId] = {
-      roles: msg.vcrewConfig.roles,
-      teamType: msg.vcrewConfig.teamType,
-      language: msg.vcrewConfig.language,
+  if (msg.rolePlayConfig) {
+    store.rolePlaySessions[msg.conversationId] = {
+      roles: msg.rolePlayConfig.roles,
+      teamType: msg.rolePlayConfig.teamType,
+      language: msg.rolePlayConfig.language,
     };
   }
   store.currentConversation = msg.conversationId;
 }
 
 // =====================================================================
-// Replicated handleConversationDeleted (vcrew parts from conversationHandler.js)
+// Replicated handleConversationDeleted (roleplay parts from conversationHandler.js)
 // =====================================================================
 
 function handleConversationDeleted(store, msg) {
   store.conversations = store.conversations.filter(c => c.id !== msg.conversationId);
-  delete store.vcrewSessions[msg.conversationId];
+  delete store.rolePlaySessions[msg.conversationId];
   if (store.currentConversation === msg.conversationId) {
     store.currentConversation = null;
   }
 }
 
 // =====================================================================
-// Replicated handleAgentList (vcrew parts from agentHandler.js)
+// Replicated handleAgentList (roleplay parts from agentHandler.js)
 // =====================================================================
 
-function handleAgentListVCrewRestore(store, serverConv) {
-  if (serverConv.type === 'virtualCrew' && serverConv.vcrewRoles && !store.vcrewSessions[serverConv.id]) {
-    store.vcrewSessions[serverConv.id] = {
-      roles: serverConv.vcrewRoles,
+function handleAgentListRolePlayRestore(store, serverConv) {
+  if (serverConv.type === 'rolePlay' && serverConv.rolePlayRoles && !store.rolePlaySessions[serverConv.id]) {
+    store.rolePlaySessions[serverConv.id] = {
+      roles: serverConv.rolePlayRoles,
       teamType: serverConv.teamType || 'dev',
       language: serverConv.language || 'zh-CN',
     };
@@ -141,14 +141,14 @@ function handleAgentListVCrewRestore(store, serverConv) {
 }
 
 // =====================================================================
-// Replicated selectConversation vcrew logic
+// Replicated selectConversation roleplay logic
 // =====================================================================
 
-function selectConversationVCrewRestore(store, conversationId) {
+function selectConversationRolePlayRestore(store, conversationId) {
   const conv = store.conversations.find(c => c.id === conversationId);
-  if (conv?.type === 'virtualCrew' && !store.vcrewSessions[conversationId] && conv.vcrewRoles) {
-    store.vcrewSessions[conversationId] = {
-      roles: conv.vcrewRoles,
+  if (conv?.type === 'rolePlay' && !store.rolePlaySessions[conversationId] && conv.rolePlayRoles) {
+    store.rolePlaySessions[conversationId] = {
+      roles: conv.rolePlayRoles,
       teamType: conv.teamType || 'dev',
       language: conv.language || 'zh-CN',
     };
@@ -157,19 +157,19 @@ function selectConversationVCrewRestore(store, conversationId) {
 }
 
 // =====================================================================
-// Replicated deleteConversation vcrew cleanup
+// Replicated deleteConversation roleplay cleanup
 // =====================================================================
 
-function deleteConversationVCrewCleanup(store, conversationId) {
-  delete store.vcrewSessions[conversationId];
+function deleteConversationRolePlayCleanup(store, conversationId) {
+  delete store.rolePlaySessions[conversationId];
   store.conversations = store.conversations.filter(c => c.id !== conversationId);
 }
 
 // =====================================================================
-// Replicated getVCrewTemplate (from crew-templates/index.js)
+// Replicated getRolePlayTemplate (from crew-templates/index.js)
 // =====================================================================
 
-function getVCrewTemplate(type, locale, templates) {
+function getRolePlayTemplate(type, locale, templates) {
   const tmpl = templates[type];
   if (!tmpl) return null;
   return tmpl[locale] || tmpl['zh-CN'] || null;
@@ -179,67 +179,67 @@ function getVCrewTemplate(type, locale, templates) {
 // Tests
 // =====================================================================
 
-describe('Virtual Crew Web Store & Templates', () => {
+describe('Role Play Web Store & Templates', () => {
 
   // ---------------------------------------------------------------
   // Store state & getters
   // ---------------------------------------------------------------
 
-  describe('chat.js store — vcrewSessions state & getters', () => {
-    it('should initialize vcrewSessions as empty object', () => {
+  describe('chat.js store — rolePlaySessions state & getters', () => {
+    it('should initialize rolePlaySessions as empty object', () => {
       const store = createMockStore();
-      expect(store.vcrewSessions).toEqual({});
+      expect(store.rolePlaySessions).toEqual({});
     });
 
-    it('currentConversationIsVCrew returns false when no conversation selected', () => {
+    it('currentConversationIsRolePlay returns false when no conversation selected', () => {
       const store = createMockStore({ currentConversation: null });
-      expect(store.currentConversationIsVCrew).toBe(false);
+      expect(store.currentConversationIsRolePlay).toBe(false);
     });
 
-    it('currentConversationIsVCrew returns false for regular chat conversation', () => {
+    it('currentConversationIsRolePlay returns false for regular chat conversation', () => {
       const store = createMockStore({
         currentConversation: 'c1',
         conversations: [{ id: 'c1', type: 'chat' }]
       });
-      expect(store.currentConversationIsVCrew).toBe(false);
+      expect(store.currentConversationIsRolePlay).toBe(false);
     });
 
-    it('currentConversationIsVCrew returns true for virtualCrew conversation', () => {
+    it('currentConversationIsRolePlay returns true for rolePlay conversation', () => {
       const store = createMockStore({
         currentConversation: 'vc1',
-        conversations: [{ id: 'vc1', type: 'virtualCrew' }]
+        conversations: [{ id: 'vc1', type: 'rolePlay' }]
       });
-      expect(store.currentConversationIsVCrew).toBe(true);
+      expect(store.currentConversationIsRolePlay).toBe(true);
     });
 
-    it('currentConversationIsVCrew returns false for crew conversation', () => {
+    it('currentConversationIsRolePlay returns false for crew conversation', () => {
       const store = createMockStore({
         currentConversation: 'cr1',
         conversations: [{ id: 'cr1', type: 'crew' }]
       });
-      expect(store.currentConversationIsVCrew).toBe(false);
+      expect(store.currentConversationIsRolePlay).toBe(false);
     });
 
-    it('currentVCrewSession returns null when no conversation selected', () => {
+    it('currentRolePlaySession returns null when no conversation selected', () => {
       const store = createMockStore({ currentConversation: null });
-      expect(store.currentVCrewSession).toBeNull();
+      expect(store.currentRolePlaySession).toBeNull();
     });
 
-    it('currentVCrewSession returns null for non-vcrew conversation', () => {
+    it('currentRolePlaySession returns null for non-roleplay conversation', () => {
       const store = createMockStore({
         currentConversation: 'c1',
-        vcrewSessions: { 'other': { roles: [], teamType: 'dev', language: 'en' } }
+        rolePlaySessions: { 'other': { roles: [], teamType: 'dev', language: 'en' } }
       });
-      expect(store.currentVCrewSession).toBeNull();
+      expect(store.currentRolePlaySession).toBeNull();
     });
 
-    it('currentVCrewSession returns session data for vcrew conversation', () => {
+    it('currentRolePlaySession returns session data for roleplay conversation', () => {
       const roles = makeDevRoles();
       const store = createMockStore({
         currentConversation: 'vc1',
-        vcrewSessions: { 'vc1': { roles, teamType: 'dev', language: 'zh-CN' } }
+        rolePlaySessions: { 'vc1': { roles, teamType: 'dev', language: 'zh-CN' } }
       });
-      const session = store.currentVCrewSession;
+      const session = store.currentRolePlaySession;
       expect(session).not.toBeNull();
       expect(session.teamType).toBe('dev');
       expect(session.roles).toBe(roles);
@@ -247,15 +247,15 @@ describe('Virtual Crew Web Store & Templates', () => {
   });
 
   // ---------------------------------------------------------------
-  // createVCrewSession WS message
+  // createRolePlaySession WS message
   // ---------------------------------------------------------------
 
-  describe('createVCrewSession — WS message construction', () => {
-    it('should send create_conversation with vcrewConfig', () => {
+  describe('createRolePlaySession — WS message construction', () => {
+    it('should send create_conversation with rolePlayConfig', () => {
       const store = createMockStore({ currentAgent: 'agent-1' });
       const roles = makeDevRoles();
 
-      createVCrewSession(store, {
+      createRolePlaySession(store, {
         projectDir: '/home/user/project',
         roles,
         teamType: 'dev',
@@ -267,16 +267,16 @@ describe('Virtual Crew Web Store & Templates', () => {
       expect(msg.type).toBe('create_conversation');
       expect(msg.agentId).toBe('agent-1');
       expect(msg.workDir).toBe('/home/user/project');
-      expect(msg.vcrewConfig).toBeDefined();
-      expect(msg.vcrewConfig.roles).toBe(roles);
-      expect(msg.vcrewConfig.teamType).toBe('dev');
-      expect(msg.vcrewConfig.language).toBe('zh-CN');
+      expect(msg.rolePlayConfig).toBeDefined();
+      expect(msg.rolePlayConfig.roles).toBe(roles);
+      expect(msg.rolePlayConfig.teamType).toBe('dev');
+      expect(msg.rolePlayConfig.language).toBe('zh-CN');
     });
 
     it('should use config.agentId over store.currentAgent when provided', () => {
       const store = createMockStore({ currentAgent: 'agent-default' });
 
-      createVCrewSession(store, {
+      createRolePlaySession(store, {
         agentId: 'agent-custom',
         projectDir: '/p',
         roles: [],
@@ -290,7 +290,7 @@ describe('Virtual Crew Web Store & Templates', () => {
     it('should add error message when no agent is available', () => {
       const store = createMockStore({ currentAgent: null });
 
-      createVCrewSession(store, {
+      createRolePlaySession(store, {
         projectDir: '/p',
         roles: [],
         teamType: 'dev',
@@ -304,25 +304,25 @@ describe('Virtual Crew Web Store & Templates', () => {
   });
 
   // ---------------------------------------------------------------
-  // conversationHandler — conversation_created with vcrewConfig
+  // conversationHandler — conversation_created with rolePlayConfig
   // ---------------------------------------------------------------
 
   describe('conversationHandler — conversation_created', () => {
-    it('should set type=virtualCrew when vcrewConfig is present', () => {
+    it('should set type=rolePlay when rolePlayConfig is present', () => {
       const store = createMockStore();
 
       handleConversationCreated(store, {
         conversationId: 'vc1',
         agentId: 'agent-1',
         workDir: '/p',
-        vcrewConfig: { roles: makeDevRoles(), teamType: 'dev', language: 'zh-CN' },
+        rolePlayConfig: { roles: makeDevRoles(), teamType: 'dev', language: 'zh-CN' },
       });
 
       const conv = store.conversations.find(c => c.id === 'vc1');
-      expect(conv.type).toBe('virtualCrew');
+      expect(conv.type).toBe('rolePlay');
     });
 
-    it('should set type=chat when vcrewConfig is absent', () => {
+    it('should set type=chat when rolePlayConfig is absent', () => {
       const store = createMockStore();
 
       handleConversationCreated(store, {
@@ -335,7 +335,7 @@ describe('Virtual Crew Web Store & Templates', () => {
       expect(conv.type).toBe('chat');
     });
 
-    it('should save vcrewConfig to store.vcrewSessions', () => {
+    it('should save rolePlayConfig to store.rolePlaySessions', () => {
       const store = createMockStore();
       const roles = makeDevRoles();
 
@@ -343,16 +343,16 @@ describe('Virtual Crew Web Store & Templates', () => {
         conversationId: 'vc2',
         agentId: 'agent-1',
         workDir: '/p',
-        vcrewConfig: { roles, teamType: 'dev', language: 'zh-CN' },
+        rolePlayConfig: { roles, teamType: 'dev', language: 'zh-CN' },
       });
 
-      expect(store.vcrewSessions['vc2']).toBeDefined();
-      expect(store.vcrewSessions['vc2'].roles).toBe(roles);
-      expect(store.vcrewSessions['vc2'].teamType).toBe('dev');
-      expect(store.vcrewSessions['vc2'].language).toBe('zh-CN');
+      expect(store.rolePlaySessions['vc2']).toBeDefined();
+      expect(store.rolePlaySessions['vc2'].roles).toBe(roles);
+      expect(store.rolePlaySessions['vc2'].teamType).toBe('dev');
+      expect(store.rolePlaySessions['vc2'].language).toBe('zh-CN');
     });
 
-    it('should NOT save to vcrewSessions when vcrewConfig is absent', () => {
+    it('should NOT save to rolePlaySessions when rolePlayConfig is absent', () => {
       const store = createMockStore();
 
       handleConversationCreated(store, {
@@ -361,7 +361,7 @@ describe('Virtual Crew Web Store & Templates', () => {
         workDir: '/p',
       });
 
-      expect(store.vcrewSessions['c2']).toBeUndefined();
+      expect(store.rolePlaySessions['c2']).toBeUndefined();
     });
 
     it('should set currentConversation to the new conversation', () => {
@@ -371,7 +371,7 @@ describe('Virtual Crew Web Store & Templates', () => {
         conversationId: 'vc3',
         agentId: 'agent-1',
         workDir: '/p',
-        vcrewConfig: { roles: [], teamType: 'dev', language: 'en' },
+        rolePlayConfig: { roles: [], teamType: 'dev', language: 'en' },
       });
 
       expect(store.currentConversation).toBe('vc3');
@@ -383,20 +383,20 @@ describe('Virtual Crew Web Store & Templates', () => {
   // ---------------------------------------------------------------
 
   describe('conversationHandler — conversation_deleted', () => {
-    it('should clean up vcrewSessions on delete', () => {
+    it('should clean up rolePlaySessions on delete', () => {
       const store = createMockStore({
         currentConversation: 'vc1',
-        conversations: [{ id: 'vc1', type: 'virtualCrew' }],
-        vcrewSessions: { 'vc1': { roles: [], teamType: 'dev', language: 'en' } },
+        conversations: [{ id: 'vc1', type: 'rolePlay' }],
+        rolePlaySessions: { 'vc1': { roles: [], teamType: 'dev', language: 'en' } },
       });
 
       handleConversationDeleted(store, { conversationId: 'vc1' });
 
-      expect(store.vcrewSessions['vc1']).toBeUndefined();
+      expect(store.rolePlaySessions['vc1']).toBeUndefined();
       expect(store.conversations.find(c => c.id === 'vc1')).toBeUndefined();
     });
 
-    it('should not error when deleting non-vcrew conversation', () => {
+    it('should not error when deleting non-roleplay conversation', () => {
       const store = createMockStore({
         currentConversation: 'c1',
         conversations: [{ id: 'c1', type: 'chat' }],
@@ -409,21 +409,21 @@ describe('Virtual Crew Web Store & Templates', () => {
     it('should reset currentConversation when deleted conversation is active', () => {
       const store = createMockStore({
         currentConversation: 'vc1',
-        conversations: [{ id: 'vc1', type: 'virtualCrew' }],
-        vcrewSessions: { 'vc1': { roles: [], teamType: 'dev', language: 'en' } },
+        conversations: [{ id: 'vc1', type: 'rolePlay' }],
+        rolePlaySessions: { 'vc1': { roles: [], teamType: 'dev', language: 'en' } },
       });
 
       handleConversationDeleted(store, { conversationId: 'vc1' });
       expect(store.currentConversation).toBeNull();
     });
 
-    it('should preserve other vcrewSessions when deleting one', () => {
+    it('should preserve other rolePlaySessions when deleting one', () => {
       const store = createMockStore({
         conversations: [
-          { id: 'vc1', type: 'virtualCrew' },
-          { id: 'vc2', type: 'virtualCrew' },
+          { id: 'vc1', type: 'rolePlay' },
+          { id: 'vc2', type: 'rolePlay' },
         ],
-        vcrewSessions: {
+        rolePlaySessions: {
           'vc1': { roles: [], teamType: 'dev', language: 'en' },
           'vc2': { roles: [], teamType: 'dev', language: 'zh-CN' },
         },
@@ -431,217 +431,217 @@ describe('Virtual Crew Web Store & Templates', () => {
 
       handleConversationDeleted(store, { conversationId: 'vc1' });
 
-      expect(store.vcrewSessions['vc1']).toBeUndefined();
-      expect(store.vcrewSessions['vc2']).toBeDefined();
+      expect(store.rolePlaySessions['vc1']).toBeUndefined();
+      expect(store.rolePlaySessions['vc2']).toBeDefined();
     });
   });
 
   // ---------------------------------------------------------------
-  // agentHandler — agent_list vcrew restoration
+  // agentHandler — agent_list roleplay restoration
   // ---------------------------------------------------------------
 
-  describe('agentHandler — agent_list vcrew restoration', () => {
-    it('should restore vcrew session info from server conversation data', () => {
+  describe('agentHandler — agent_list roleplay restoration', () => {
+    it('should restore roleplay session info from server conversation data', () => {
       const store = createMockStore();
       const roles = makeDevRoles();
 
-      handleAgentListVCrewRestore(store, {
+      handleAgentListRolePlayRestore(store, {
         id: 'vc1',
-        type: 'virtualCrew',
-        vcrewRoles: roles,
+        type: 'rolePlay',
+        rolePlayRoles: roles,
         teamType: 'dev',
         language: 'zh-CN',
       });
 
-      expect(store.vcrewSessions['vc1']).toBeDefined();
-      expect(store.vcrewSessions['vc1'].roles).toBe(roles);
-      expect(store.vcrewSessions['vc1'].teamType).toBe('dev');
-      expect(store.vcrewSessions['vc1'].language).toBe('zh-CN');
+      expect(store.rolePlaySessions['vc1']).toBeDefined();
+      expect(store.rolePlaySessions['vc1'].roles).toBe(roles);
+      expect(store.rolePlaySessions['vc1'].teamType).toBe('dev');
+      expect(store.rolePlaySessions['vc1'].language).toBe('zh-CN');
     });
 
     it('should default teamType to dev when not provided by server', () => {
       const store = createMockStore();
 
-      handleAgentListVCrewRestore(store, {
+      handleAgentListRolePlayRestore(store, {
         id: 'vc2',
-        type: 'virtualCrew',
-        vcrewRoles: [],
+        type: 'rolePlay',
+        rolePlayRoles: [],
       });
 
-      expect(store.vcrewSessions['vc2'].teamType).toBe('dev');
+      expect(store.rolePlaySessions['vc2'].teamType).toBe('dev');
     });
 
     it('should default language to zh-CN when not provided by server', () => {
       const store = createMockStore();
 
-      handleAgentListVCrewRestore(store, {
+      handleAgentListRolePlayRestore(store, {
         id: 'vc3',
-        type: 'virtualCrew',
-        vcrewRoles: [],
+        type: 'rolePlay',
+        rolePlayRoles: [],
       });
 
-      expect(store.vcrewSessions['vc3'].language).toBe('zh-CN');
+      expect(store.rolePlaySessions['vc3'].language).toBe('zh-CN');
     });
 
-    it('should NOT restore when type is not virtualCrew', () => {
+    it('should NOT restore when type is not rolePlay', () => {
       const store = createMockStore();
 
-      handleAgentListVCrewRestore(store, {
+      handleAgentListRolePlayRestore(store, {
         id: 'c1',
         type: 'chat',
-        vcrewRoles: makeDevRoles(),
+        rolePlayRoles: makeDevRoles(),
       });
 
-      expect(store.vcrewSessions['c1']).toBeUndefined();
+      expect(store.rolePlaySessions['c1']).toBeUndefined();
     });
 
-    it('should NOT restore when vcrewRoles is missing', () => {
+    it('should NOT restore when rolePlayRoles is missing', () => {
       const store = createMockStore();
 
-      handleAgentListVCrewRestore(store, {
+      handleAgentListRolePlayRestore(store, {
         id: 'vc4',
-        type: 'virtualCrew',
-        // no vcrewRoles
+        type: 'rolePlay',
+        // no rolePlayRoles
       });
 
-      expect(store.vcrewSessions['vc4']).toBeUndefined();
+      expect(store.rolePlaySessions['vc4']).toBeUndefined();
     });
 
-    it('should NOT overwrite existing vcrewSessions entry', () => {
+    it('should NOT overwrite existing rolePlaySessions entry', () => {
       const existingRoles = [{ name: 'pm', displayName: 'PM', icon: '', description: '' }];
       const store = createMockStore({
-        vcrewSessions: { 'vc5': { roles: existingRoles, teamType: 'dev', language: 'en' } }
+        rolePlaySessions: { 'vc5': { roles: existingRoles, teamType: 'dev', language: 'en' } }
       });
 
-      handleAgentListVCrewRestore(store, {
+      handleAgentListRolePlayRestore(store, {
         id: 'vc5',
-        type: 'virtualCrew',
-        vcrewRoles: makeDevRoles(), // different roles
+        type: 'rolePlay',
+        rolePlayRoles: makeDevRoles(), // different roles
         teamType: 'dev',
         language: 'zh-CN',
       });
 
       // Should keep the existing entry, not overwrite
-      expect(store.vcrewSessions['vc5'].roles).toBe(existingRoles);
-      expect(store.vcrewSessions['vc5'].language).toBe('en');
+      expect(store.rolePlaySessions['vc5'].roles).toBe(existingRoles);
+      expect(store.rolePlaySessions['vc5'].language).toBe('en');
     });
   });
 
   // ---------------------------------------------------------------
-  // selectConversation vcrew restoration
+  // selectConversation roleplay restoration
   // ---------------------------------------------------------------
 
-  describe('conversation.js — selectConversation vcrew restore', () => {
-    it('should restore vcrew session from conv data when missing from store', () => {
+  describe('conversation.js — selectConversation roleplay restore', () => {
+    it('should restore roleplay session from conv data when missing from store', () => {
       const roles = makeDevRoles();
       const store = createMockStore({
         conversations: [{
-          id: 'vc1', type: 'virtualCrew', vcrewRoles: roles, teamType: 'dev', language: 'zh-CN'
+          id: 'vc1', type: 'rolePlay', rolePlayRoles: roles, teamType: 'dev', language: 'zh-CN'
         }],
       });
 
-      selectConversationVCrewRestore(store, 'vc1');
+      selectConversationRolePlayRestore(store, 'vc1');
 
-      expect(store.vcrewSessions['vc1']).toBeDefined();
-      expect(store.vcrewSessions['vc1'].roles).toBe(roles);
+      expect(store.rolePlaySessions['vc1']).toBeDefined();
+      expect(store.rolePlaySessions['vc1'].roles).toBe(roles);
     });
 
-    it('should NOT restore when already in vcrewSessions', () => {
+    it('should NOT restore when already in rolePlaySessions', () => {
       const existingRoles = [{ name: 'pm', displayName: 'PM', icon: '', description: '' }];
       const store = createMockStore({
         conversations: [{
-          id: 'vc2', type: 'virtualCrew', vcrewRoles: makeDevRoles()
+          id: 'vc2', type: 'rolePlay', rolePlayRoles: makeDevRoles()
         }],
-        vcrewSessions: { 'vc2': { roles: existingRoles, teamType: 'dev', language: 'en' } }
+        rolePlaySessions: { 'vc2': { roles: existingRoles, teamType: 'dev', language: 'en' } }
       });
 
-      selectConversationVCrewRestore(store, 'vc2');
+      selectConversationRolePlayRestore(store, 'vc2');
 
       // Should keep existing entry
-      expect(store.vcrewSessions['vc2'].roles).toBe(existingRoles);
+      expect(store.rolePlaySessions['vc2'].roles).toBe(existingRoles);
     });
 
-    it('should NOT restore when conversation type is not virtualCrew', () => {
+    it('should NOT restore when conversation type is not rolePlay', () => {
       const store = createMockStore({
-        conversations: [{ id: 'c1', type: 'chat', vcrewRoles: makeDevRoles() }],
+        conversations: [{ id: 'c1', type: 'chat', rolePlayRoles: makeDevRoles() }],
       });
 
-      selectConversationVCrewRestore(store, 'c1');
+      selectConversationRolePlayRestore(store, 'c1');
 
-      expect(store.vcrewSessions['c1']).toBeUndefined();
+      expect(store.rolePlaySessions['c1']).toBeUndefined();
     });
 
-    it('should NOT restore when conversation has no vcrewRoles', () => {
+    it('should NOT restore when conversation has no rolePlayRoles', () => {
       const store = createMockStore({
-        conversations: [{ id: 'vc3', type: 'virtualCrew' }],
+        conversations: [{ id: 'vc3', type: 'rolePlay' }],
       });
 
-      selectConversationVCrewRestore(store, 'vc3');
+      selectConversationRolePlayRestore(store, 'vc3');
 
-      expect(store.vcrewSessions['vc3']).toBeUndefined();
+      expect(store.rolePlaySessions['vc3']).toBeUndefined();
     });
 
     it('should set currentConversation', () => {
       const store = createMockStore({
-        conversations: [{ id: 'vc4', type: 'virtualCrew', vcrewRoles: [] }],
+        conversations: [{ id: 'vc4', type: 'rolePlay', rolePlayRoles: [] }],
       });
 
-      selectConversationVCrewRestore(store, 'vc4');
+      selectConversationRolePlayRestore(store, 'vc4');
       expect(store.currentConversation).toBe('vc4');
     });
 
     it('should use default teamType and language when conv data is incomplete', () => {
       const store = createMockStore({
-        conversations: [{ id: 'vc5', type: 'virtualCrew', vcrewRoles: makeDevRoles() }],
+        conversations: [{ id: 'vc5', type: 'rolePlay', rolePlayRoles: makeDevRoles() }],
       });
 
-      selectConversationVCrewRestore(store, 'vc5');
+      selectConversationRolePlayRestore(store, 'vc5');
 
-      expect(store.vcrewSessions['vc5'].teamType).toBe('dev');
-      expect(store.vcrewSessions['vc5'].language).toBe('zh-CN');
+      expect(store.rolePlaySessions['vc5'].teamType).toBe('dev');
+      expect(store.rolePlaySessions['vc5'].language).toBe('zh-CN');
     });
   });
 
   // ---------------------------------------------------------------
-  // deleteConversation vcrew cleanup
+  // deleteConversation roleplay cleanup
   // ---------------------------------------------------------------
 
-  describe('conversation.js — deleteConversation vcrew cleanup', () => {
-    it('should delete vcrewSessions entry', () => {
+  describe('conversation.js — deleteConversation roleplay cleanup', () => {
+    it('should delete rolePlaySessions entry', () => {
       const store = createMockStore({
-        conversations: [{ id: 'vc1', type: 'virtualCrew' }],
-        vcrewSessions: { 'vc1': { roles: [], teamType: 'dev', language: 'en' } },
+        conversations: [{ id: 'vc1', type: 'rolePlay' }],
+        rolePlaySessions: { 'vc1': { roles: [], teamType: 'dev', language: 'en' } },
       });
 
-      deleteConversationVCrewCleanup(store, 'vc1');
+      deleteConversationRolePlayCleanup(store, 'vc1');
 
-      expect(store.vcrewSessions['vc1']).toBeUndefined();
+      expect(store.rolePlaySessions['vc1']).toBeUndefined();
       expect(store.conversations.find(c => c.id === 'vc1')).toBeUndefined();
     });
 
-    it('should not error when conversation is not vcrew', () => {
+    it('should not error when conversation is not roleplay', () => {
       const store = createMockStore({
         conversations: [{ id: 'c1', type: 'chat' }],
       });
 
-      expect(() => deleteConversationVCrewCleanup(store, 'c1')).not.toThrow();
+      expect(() => deleteConversationRolePlayCleanup(store, 'c1')).not.toThrow();
     });
 
-    it('should not error when conversationId does not exist in vcrewSessions', () => {
+    it('should not error when conversationId does not exist in rolePlaySessions', () => {
       const store = createMockStore({
         conversations: [],
-        vcrewSessions: {},
+        rolePlaySessions: {},
       });
 
-      expect(() => deleteConversationVCrewCleanup(store, 'nonexistent')).not.toThrow();
+      expect(() => deleteConversationRolePlayCleanup(store, 'nonexistent')).not.toThrow();
     });
   });
 
   // ---------------------------------------------------------------
-  // getVCrewTemplate
+  // getRolePlayTemplate
   // ---------------------------------------------------------------
 
-  describe('crew-templates/index.js — getVCrewTemplate', () => {
+  describe('crew-templates/index.js — getRolePlayTemplate', () => {
     const mockTemplates = {
       dev: {
         'zh-CN': makeDevRoles(),
@@ -650,37 +650,37 @@ describe('Virtual Crew Web Store & Templates', () => {
     };
 
     it('should return zh-CN template for dev type', () => {
-      const tmpl = getVCrewTemplate('dev', 'zh-CN', mockTemplates);
+      const tmpl = getRolePlayTemplate('dev', 'zh-CN', mockTemplates);
       expect(tmpl).toHaveLength(4);
       expect(tmpl[0].name).toBe('pm');
       expect(tmpl[0].displayName).toBe('PM-乔布斯');
     });
 
     it('should return en template for dev type', () => {
-      const tmpl = getVCrewTemplate('dev', 'en', mockTemplates);
+      const tmpl = getRolePlayTemplate('dev', 'en', mockTemplates);
       expect(tmpl).toHaveLength(4);
       expect(tmpl[0].name).toBe('pm');
       expect(tmpl[0].displayName).toBe('PM-Jobs');
     });
 
     it('should fall back to zh-CN when locale is not available', () => {
-      const tmpl = getVCrewTemplate('dev', 'ja', mockTemplates);
+      const tmpl = getRolePlayTemplate('dev', 'ja', mockTemplates);
       expect(tmpl).not.toBeNull();
       expect(tmpl[0].displayName).toBe('PM-乔布斯');
     });
 
     it('should return null for unknown template type', () => {
-      const tmpl = getVCrewTemplate('writing', 'zh-CN', mockTemplates);
+      const tmpl = getRolePlayTemplate('writing', 'zh-CN', mockTemplates);
       expect(tmpl).toBeNull();
     });
 
     it('should return null for completely unknown type', () => {
-      const tmpl = getVCrewTemplate('nonexistent', 'en', mockTemplates);
+      const tmpl = getRolePlayTemplate('nonexistent', 'en', mockTemplates);
       expect(tmpl).toBeNull();
     });
 
     it('template should have required fields for each role', () => {
-      const tmpl = getVCrewTemplate('dev', 'zh-CN', mockTemplates);
+      const tmpl = getRolePlayTemplate('dev', 'zh-CN', mockTemplates);
       for (const role of tmpl) {
         expect(role).toHaveProperty('name');
         expect(role).toHaveProperty('displayName');
@@ -692,7 +692,7 @@ describe('Virtual Crew Web Store & Templates', () => {
     });
 
     it('dev template should have pm, dev, reviewer, tester roles', () => {
-      const tmpl = getVCrewTemplate('dev', 'zh-CN', mockTemplates);
+      const tmpl = getRolePlayTemplate('dev', 'zh-CN', mockTemplates);
       const names = tmpl.map(r => r.name);
       expect(names).toEqual(['pm', 'dev', 'reviewer', 'tester']);
     });
@@ -702,15 +702,15 @@ describe('Virtual Crew Web Store & Templates', () => {
   // Actual template file verification
   // ---------------------------------------------------------------
 
-  describe('vcrew template files — structural verification', () => {
+  describe('roleplay template files — structural verification', () => {
     let zhTemplate, enTemplate;
 
     beforeEach(async () => {
       try {
-        zhTemplate = (await import('../../web/crew-templates/vcrew-dev-zh.js')).default;
+        zhTemplate = (await import('../../web/crew-templates/roleplay-dev-zh.js')).default;
       } catch { zhTemplate = null; }
       try {
-        enTemplate = (await import('../../web/crew-templates/vcrew-dev-en.js')).default;
+        enTemplate = (await import('../../web/crew-templates/roleplay-dev-en.js')).default;
       } catch { enTemplate = null; }
     });
 
@@ -755,7 +755,7 @@ describe('Virtual Crew Web Store & Templates', () => {
   // i18n key verification
   // ---------------------------------------------------------------
 
-  describe('i18n — vcrew translation keys', () => {
+  describe('i18n — roleplay translation keys', () => {
     let zhMessages, enMessages;
 
     beforeEach(async () => {
@@ -768,24 +768,24 @@ describe('Virtual Crew Web Store & Templates', () => {
     });
 
     const expectedKeys = [
-      'vcrew.creating',
-      'vcrew.working',
-      'vcrew.selectTeam',
-      'vcrew.teamDev',
-      'vcrew.teamCustom',
-      'vcrew.editRoles',
-      'vcrew.roleName',
-      'vcrew.roleDisplayName',
-      'vcrew.roleIcon',
-      'vcrew.roleDesc',
-      'vcrew.rolePrompt',
-      'vcrew.removeRole',
-      'vcrew.addRole',
-      'vcrew.start',
-      'vcrew.sidebarTitle',
+      'roleplay.creating',
+      'roleplay.working',
+      'roleplay.selectTeam',
+      'roleplay.teamDev',
+      'roleplay.teamCustom',
+      'roleplay.editRoles',
+      'roleplay.roleName',
+      'roleplay.roleDisplayName',
+      'roleplay.roleIcon',
+      'roleplay.roleDesc',
+      'roleplay.rolePrompt',
+      'roleplay.removeRole',
+      'roleplay.addRole',
+      'roleplay.start',
+      'roleplay.sidebarTitle',
     ];
 
-    it('zh-CN should have all vcrew.* keys', () => {
+    it('zh-CN should have all roleplay.* keys', () => {
       if (!zhMessages) return;
       for (const key of expectedKeys) {
         expect(zhMessages[key], `Missing zh-CN key: ${key}`).toBeDefined();
@@ -794,7 +794,7 @@ describe('Virtual Crew Web Store & Templates', () => {
       }
     });
 
-    it('en should have all vcrew.* keys', () => {
+    it('en should have all roleplay.* keys', () => {
       if (!enMessages) return;
       for (const key of expectedKeys) {
         expect(enMessages[key], `Missing en key: ${key}`).toBeDefined();
@@ -803,10 +803,10 @@ describe('Virtual Crew Web Store & Templates', () => {
       }
     });
 
-    it('zh-CN and en should have the same vcrew.* keys', () => {
+    it('zh-CN and en should have the same roleplay.* keys', () => {
       if (!zhMessages || !enMessages) return;
-      const zhKeys = Object.keys(zhMessages).filter(k => k.startsWith('vcrew.'));
-      const enKeys = Object.keys(enMessages).filter(k => k.startsWith('vcrew.'));
+      const zhKeys = Object.keys(zhMessages).filter(k => k.startsWith('roleplay.'));
+      const enKeys = Object.keys(enMessages).filter(k => k.startsWith('roleplay.'));
       expect(zhKeys.sort()).toEqual(enKeys.sort());
     });
   });
@@ -815,14 +815,14 @@ describe('Virtual Crew Web Store & Templates', () => {
   // Integration scenario: full lifecycle
   // ---------------------------------------------------------------
 
-  describe('integration — full vcrew lifecycle', () => {
+  describe('integration — full roleplay lifecycle', () => {
     it('should handle create → use → delete lifecycle correctly', () => {
       const store = createMockStore();
       const roles = makeDevRoles();
-      const vcrewConfig = { roles, teamType: 'dev', language: 'zh-CN' };
+      const rolePlayConfig = { roles, teamType: 'dev', language: 'zh-CN' };
 
       // Step 1: create via WS
-      createVCrewSession(store, { projectDir: '/p', ...vcrewConfig });
+      createRolePlaySession(store, { projectDir: '/p', ...rolePlayConfig });
       expect(store.sentWsMessages).toHaveLength(1);
 
       // Step 2: server responds with conversation_created
@@ -830,40 +830,40 @@ describe('Virtual Crew Web Store & Templates', () => {
         conversationId: 'lifecycle-1',
         agentId: 'agent-1',
         workDir: '/p',
-        vcrewConfig,
+        rolePlayConfig,
       });
 
       expect(store.currentConversation).toBe('lifecycle-1');
-      expect(store.currentConversationIsVCrew).toBe(true);
-      expect(store.currentVCrewSession).toBeDefined();
-      expect(store.currentVCrewSession.teamType).toBe('dev');
+      expect(store.currentConversationIsRolePlay).toBe(true);
+      expect(store.currentRolePlaySession).toBeDefined();
+      expect(store.currentRolePlaySession.teamType).toBe('dev');
 
       // Step 3: delete
       handleConversationDeleted(store, { conversationId: 'lifecycle-1' });
 
       expect(store.currentConversation).toBeNull();
-      expect(store.currentConversationIsVCrew).toBe(false);
-      expect(store.currentVCrewSession).toBeNull();
-      expect(store.vcrewSessions['lifecycle-1']).toBeUndefined();
+      expect(store.currentConversationIsRolePlay).toBe(false);
+      expect(store.currentRolePlaySession).toBeNull();
+      expect(store.rolePlaySessions['lifecycle-1']).toBeUndefined();
     });
 
     it('should handle reconnect scenario (agent_list restore)', () => {
       const store = createMockStore();
       const roles = makeDevRoles();
 
-      // Simulate: server sends agent_list with vcrew conversation after reconnect
+      // Simulate: server sends agent_list with roleplay conversation after reconnect
       store.conversations.push({
-        id: 'recon-1', type: 'virtualCrew', vcrewRoles: roles, teamType: 'dev', language: 'zh-CN'
+        id: 'recon-1', type: 'rolePlay', rolePlayRoles: roles, teamType: 'dev', language: 'zh-CN'
       });
-      handleAgentListVCrewRestore(store, store.conversations[0]);
+      handleAgentListRolePlayRestore(store, store.conversations[0]);
 
-      expect(store.vcrewSessions['recon-1']).toBeDefined();
+      expect(store.rolePlaySessions['recon-1']).toBeDefined();
 
       // Select the conversation
-      selectConversationVCrewRestore(store, 'recon-1');
+      selectConversationRolePlayRestore(store, 'recon-1');
 
       expect(store.currentConversation).toBe('recon-1');
-      expect(store.currentConversationIsVCrew).toBe(true);
+      expect(store.currentConversationIsRolePlay).toBe(true);
     });
   });
 });

@@ -53,7 +53,7 @@ describe('dual independent scroll containers', () => {
     expect(chatPageSource).toContain('class="session-panels"');
   });
 
-  it('has at least two session-panel containers inside session-panels (chat + crew + optional vcrew)', () => {
+  it('has at least two session-panel containers inside session-panels (chat + crew + optional roleplay)', () => {
     const panelsStart = chatPageSource.indexOf('class="session-panels"');
     const panelsEnd = chatPageSource.indexOf('sidebar-bottom');
     const panelsBlock = chatPageSource.substring(panelsStart, panelsEnd + 20);

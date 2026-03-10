@@ -260,7 +260,7 @@ describe('input field onWorkDirChange binding', () => {
 describe('non-crew folderPickerTarget behavior', () => {
 
   it('convModal path should set convModalWorkDir (not call onWorkDirChange)', () => {
-    // The confirmFolderPicker method: after the crew/vcrew returns, convModalWorkDir is set
+    // The confirmFolderPicker method: after the crew/roleplay returns, convModalWorkDir is set
     const method = chatPageContent.substring(
       chatPageContent.indexOf('confirmFolderPicker()'),
       chatPageContent.indexOf('confirmFolderPicker()') + 1200
