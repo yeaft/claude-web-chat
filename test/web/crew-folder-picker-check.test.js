@@ -260,10 +260,10 @@ describe('input field onWorkDirChange binding', () => {
 describe('non-crew folderPickerTarget behavior', () => {
 
   it('convModal path should set convModalWorkDir (not call onWorkDirChange)', () => {
-    // The confirmFolderPicker method: after the crew return, convModalWorkDir is set
+    // The confirmFolderPicker method: after the crew/vcrew returns, convModalWorkDir is set
     const method = chatPageContent.substring(
       chatPageContent.indexOf('confirmFolderPicker()'),
-      chatPageContent.indexOf('confirmFolderPicker()') + 800
+      chatPageContent.indexOf('confirmFolderPicker()') + 1200
     );
     expect(method).toContain('this.convModalWorkDir = path');
   });
@@ -272,7 +272,7 @@ describe('non-crew folderPickerTarget behavior', () => {
     // In the confirmFolderPicker method, the crew block ends with return;
     const method = chatPageContent.substring(
       chatPageContent.indexOf('confirmFolderPicker()'),
-      chatPageContent.indexOf('confirmFolderPicker()') + 800
+      chatPageContent.indexOf('confirmFolderPicker()') + 1200
     );
     // crew block has: this.folderPickerOpen = false; return;
     // then convModalWorkDir comes after
