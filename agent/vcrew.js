@@ -6,9 +6,10 @@
  */
 
 import { join } from 'path';
+import { homedir } from 'os';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 
-const VCREW_INDEX_PATH = join(process.env.HOME, '.claude', 'vcrew-sessions.json');
+const VCREW_INDEX_PATH = join(homedir(), '.claude', 'vcrew-sessions.json');
 
 // In-memory map: conversationId -> { roles, teamType, language, projectDir, createdAt, userId, username }
 export const vcrewSessions = new Map();
