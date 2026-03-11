@@ -515,6 +515,34 @@ export async function handleUserInput(msg) {
   };
 
   console.log(`[${conversationId}] Sending: ${prompt.substring(0, 100)}...`);
+
+  // ★ Pre-send compact check: estimate total tokens and compact before sending if needed
+  const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
+  const lastInputTokens = state.lastResultInputTokens || 0;
+  const estimatedNewTokens = Math.ceil(effectivePrompt.length / 3); // conservative: ~3 chars per token
+  const estimatedTotal = lastInputTokens + estimatedNewTokens;
+
+  if (estimatedTotal > autoCompactThreshold && state.inputStream) {
+    console.log(`[${conversationId}] Pre-send compact: estimated ${estimatedTotal} tokens (last: ${lastInputTokens} + new: ~${estimatedNewTokens}) exceeds threshold ${autoCompactThreshold}`);
+    ctx.sendToServer({
+      type: 'compact_status',
+      conversationId,
+      status: 'compacting',
+      message: `Auto-compacting before send: estimated ${estimatedTotal} tokens (threshold: ${autoCompactThreshold})`
+    });
+    // Send /compact first, then the user message will be sent after compact completes
+    // by storing it as a pending message
+    state._pendingUserMessage = userMessage;
+    state.turnActive = true;
+    state.turnResultReceived = false;
+    sendConversationList();
+    state.inputStream.enqueue({
+      type: 'user',
+      message: { role: 'user', content: '/compact' }
+    });
+    return;
+  }
+
   state.turnActive = true;
   state.turnResultReceived = false; // 重置 per-turn 去重标志
   sendConversationList(); // 在 turnActive=true 后通知 server，确保 processing 状态正确

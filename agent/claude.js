@@ -408,7 +408,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
         // 计算上下文使用百分比
         const inputTokens = message.usage?.input_tokens || 0;
-        const maxContextTokens = 128000; // API max_prompt_tokens 限制
+        const maxContextTokens = ctx.CONFIG?.maxContextTokens || 128000;
         if (inputTokens > 0) {
           ctx.sendToServer({
             type: 'context_usage',
@@ -497,6 +497,35 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
             console.log(`[RolePlay] Auto-continuing to role: ${to}`);
 
+            // ★ Pre-send compact check for RolePlay auto-continue
+            const rpAutoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
+            const rpEstimatedNewTokens = Math.ceil(prompt.length / 3);
+            const rpEstimatedTotal = inputTokens + rpEstimatedNewTokens;
+
+            if (rpEstimatedTotal > rpAutoCompactThreshold) {
+              console.log(`[RolePlay] Pre-send compact: estimated ${rpEstimatedTotal} tokens (last: ${inputTokens} + new: ~${rpEstimatedNewTokens}) exceeds threshold ${rpAutoCompactThreshold}`);
+              ctx.sendToServer({
+                type: 'compact_status',
+                conversationId,
+                status: 'compacting',
+                message: `Auto-compacting before RolePlay continue: estimated ${rpEstimatedTotal} tokens (threshold: ${rpAutoCompactThreshold})`
+              });
+              // Store pending message and compact first
+              const userMessage = {
+                type: 'user',
+                message: { role: 'user', content: prompt }
+              };
+              state._pendingUserMessage = userMessage;
+              state.turnActive = true;
+              state.turnResultReceived = false;
+              state.inputStream.enqueue({
+                type: 'user',
+                message: { role: 'user', content: '/compact' }
+              });
+              sendConversationList();
+              break;
+            }
+
             // Re-activate the turn
             state.turnActive = true;
             state.turnResultReceived = false;
@@ -531,6 +560,18 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
           workDir: state.workDir
         });
         sendConversationList();
+
+        // ★ Send pending user message after compact completes
+        if (state._pendingUserMessage && state.inputStream) {
+          const pendingMsg = state._pendingUserMessage;
+          state._pendingUserMessage = null;
+          console.log(`[${conversationId}] Sending pending message after compact`);
+          state.turnActive = true;
+          state.turnResultReceived = false;
+          sendOutput(conversationId, pendingMsg);
+          state.inputStream.enqueue(pendingMsg);
+          sendConversationList();
+        }
         continue;
       }
 

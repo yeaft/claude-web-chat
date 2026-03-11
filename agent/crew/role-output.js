@@ -6,10 +6,10 @@ import { sendCrewMessage, sendCrewOutput, sendStatusUpdate, endRoleStreaming } f
 import { saveRoleSessionId, clearRoleSessionId, classifyRoleError, createRoleQuery } from './role-query.js';
 import { parseRoutes, executeRoute, dispatchToRole } from './routing.js';
 import { parseCompletedTasks, updateFeatureIndex, appendChangelog, saveRoleWorkSummary, updateKanban } from './task-files.js';
+import ctx from '../context.js';
 
-// Context 使用率阈值常量
-const MAX_CONTEXT = 128000;       // API max_prompt_tokens 限制
-const CLEAR_THRESHOLD = 0.85;     // 85% → 直接 clear + rebuild（不再走 compact）
+// Context 使用率常量（运行时从 ctx.CONFIG 读取）
+const getMaxContext = () => ctx.CONFIG?.maxContextTokens || 128000;
 
 /**
  * 处理角色的流式输出
@@ -99,13 +99,10 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
             sessionId: session.id,
             role: roleName,
             inputTokens,
-            maxTokens: MAX_CONTEXT,
-            percentage: Math.min(100, Math.round((inputTokens / MAX_CONTEXT) * 100))
+            maxTokens: getMaxContext(),
+            percentage: Math.min(100, Math.round((inputTokens / getMaxContext()) * 100))
           });
         }
-
-        const contextPercentage = inputTokens / MAX_CONTEXT;
-        const needClear = contextPercentage >= CLEAR_THRESHOLD;
 
         // 解析路由
         const routes = parseRoutes(roleState.accumulatedText);
@@ -136,8 +133,8 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
           }
         }
 
-        // 保存 accumulatedText 供后续 saveRoleWorkSummary 使用（清空前）
-        const turnText = roleState.accumulatedText;
+        // 保存本 turn 文本（供 routing.js 预检时 saveRoleWorkSummary 使用）
+        roleState.lastTurnText = roleState.accumulatedText;
         roleState.accumulatedText = '';
         roleState.turnActive = false;
 
@@ -149,57 +146,7 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
 
         sendStatusUpdate(session);
 
-        // Context 超限：保存工作摘要后 clear + rebuild
-        if (needClear) {
-          console.log(`[Crew] ${roleName} context at ${Math.round(contextPercentage * 100)}%, clearing and rebuilding`);
-
-          // 保存工作摘要到 feature 文件
-          await saveRoleWorkSummary(session, roleName, turnText).catch(e =>
-            console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
-
-          // Clear 角色
-          await clearRoleSessionId(session.sharedDir, roleName);
-          roleState.claudeSessionId = null;
-
-          if (roleState.abortController) roleState.abortController.abort();
-          roleState.query = null;
-          roleState.inputStream = null;
-
-          sendCrewMessage({
-            type: 'crew_role_cleared',
-            sessionId: session.id,
-            role: roleName,
-            contextPercentage: Math.round(contextPercentage * 100),
-            reason: 'context_limit'
-          });
-
-          // 继承 task 到路由（如有）
-          const currentTask = roleState.currentTask;
-          if (routes.length > 0) {
-            for (const route of routes) {
-              if (!route.taskId && currentTask) {
-                route.taskId = currentTask.taskId;
-                route.taskTitle = currentTask.taskTitle;
-              }
-            }
-          }
-
-          // 执行路由
-          if (routes.length > 0) {
-            session.round++;
-            const results = await Promise.allSettled(routes.map(route =>
-              executeRoute(session, roleName, route)
-            ));
-            for (const r of results) {
-              if (r.status === 'rejected') {
-                console.warn(`[Crew] Route execution failed:`, r.reason);
-              }
-            }
-          }
-          return; // query 已清空，退出
-        }
-
-        // 执行路由（无需 clear 时）
+        // 执行路由
         if (routes.length > 0) {
           session.round++;
 
