@@ -3,6 +3,8 @@ import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
 import { crewSessions, loadCrewIndex } from './crew.js';
 import { rolePlaySessions, saveRolePlayIndex, removeRolePlaySession, loadRolePlayIndex, validateRolePlayConfig, initRolePlayRouteState, loadCrewContext, refreshCrewContext, initCrewContextMtimes } from './roleplay.js';
+import { initRolePlayDir, writeSessionClaudeMd, generateSessionName, getDefaultRoles, getSessionDir } from './roleplay-dir.js';
+import { addRolePlaySession, findRolePlaySessionByConversationId, setActiveRolePlaySession } from './roleplay-session.js';
 
 // Restore persisted roleplay sessions on module load (agent startup)
 loadRolePlayIndex();
@@ -149,16 +151,71 @@ export async function createConversation(msg) {
     }
   }
 
-  console.log(`Creating conversation: ${conversationId} in ${effectiveWorkDir} (lazy start)`);
+  // ★ RolePlay: initialize .roleplay/ directory, generate session, set cwd
+  let rpSessionName = null;
+  let rpSessionWorkDir = effectiveWorkDir; // default: project root
+  if (rolePlayConfig) {
+    try {
+      const language = rolePlayConfig.language || 'zh-CN';
+
+      // 1. Ensure .roleplay/ directory structure exists
+      await initRolePlayDir(effectiveWorkDir, language);
+
+      // 2. Generate unique session name
+      rpSessionName = generateSessionName(
+        effectiveWorkDir,
+        rolePlayConfig.teamType,
+        msg.rolePlayConfig?.sessionName || null
+      );
+
+      // 3. Write session CLAUDE.md (role list, ROUTE protocol, workflow)
+      await writeSessionClaudeMd(effectiveWorkDir, rpSessionName, {
+        teamType: rolePlayConfig.teamType,
+        language,
+        roles: rolePlayConfig.roles,
+      });
+
+      // 4. Set cwd to session directory so Claude Code auto-reads its CLAUDE.md
+      rpSessionWorkDir = getSessionDir(effectiveWorkDir, rpSessionName);
+
+      // 5. Build roles snapshot for session.json
+      const rolesSnapshot = (rolePlayConfig.roles && rolePlayConfig.roles.length > 0)
+        ? rolePlayConfig.roles.map(r => ({
+            name: r.name,
+            displayName: r.displayName || r.name,
+            icon: r.icon || '',
+          }))
+        : getDefaultRoles(rolePlayConfig.teamType, language);
+
+      // 6. Persist to .roleplay/session.json
+      await addRolePlaySession(effectiveWorkDir, {
+        name: rpSessionName,
+        teamType: rolePlayConfig.teamType,
+        language,
+        projectDir: effectiveWorkDir,
+        conversationId,
+        roles: rolesSnapshot,
+        createdAt: Date.now(),
+      });
+
+      console.log(`  RolePlay: initialized .roleplay/${rpSessionName}, cwd=${rpSessionWorkDir}`);
+    } catch (e) {
+      console.error('[createConversation] Failed to init .roleplay/ dir:', e);
+      // Non-fatal: fall back to project root as cwd
+      rpSessionWorkDir = effectiveWorkDir;
+    }
+  }
+
+  console.log(`Creating conversation: ${conversationId} in ${rpSessionWorkDir} (lazy start)`);
   if (username) console.log(`  User: ${username} (${userId})`);
-  if (rolePlayConfig) console.log(`  RolePlay: teamType=${rolePlayConfig.teamType}, roles=${rolePlayConfig.roles?.length}`);
+  if (rolePlayConfig) console.log(`  RolePlay: teamType=${rolePlayConfig.teamType}, roles=${rolePlayConfig.roles?.length}, session=${rpSessionName}`);
 
   // 只创建 conversation 状态，不启动 Claude 进程
   // Claude 进程会在用户发送第一条消息时启动 (见 handleUserInput)
   ctx.conversations.set(conversationId, {
     query: null,
     inputStream: null,
-    workDir: effectiveWorkDir,
+    workDir: rpSessionWorkDir,
     claudeSessionId: null,
     createdAt: Date.now(),
     abortController: null,
@@ -169,6 +226,9 @@ export async function createConversation(msg) {
     username,
     disallowedTools: disallowedTools || null,  // null = 使用全局默认
     rolePlayConfig: rolePlayConfig || null,
+    // Track the original project dir and session name for .roleplay/ operations
+    _rpProjectDir: rolePlayConfig ? effectiveWorkDir : null,
+    _rpSessionName: rpSessionName,
     usage: {
       inputTokens: 0,
       outputTokens: 0,
@@ -198,7 +258,7 @@ export async function createConversation(msg) {
   ctx.sendToServer({
     type: 'conversation_created',
     conversationId,
-    workDir: effectiveWorkDir,
+    workDir: rpSessionWorkDir,
     userId,
     username,
     disallowedTools: disallowedTools || null,
@@ -260,6 +320,21 @@ export async function resumeConversation(msg) {
     ? { roles: rolePlayEntry.roles, teamType: rolePlayEntry.teamType, language: rolePlayEntry.language }
     : null;
 
+  // ★ RolePlay resume: look up session in .roleplay/session.json to restore cwd
+  let rpResumeWorkDir = effectiveWorkDir;
+  if (rolePlayConfig && rolePlayEntry) {
+    const rpProjectDir = rolePlayEntry.projectDir || effectiveWorkDir;
+    const rpDiskSession = findRolePlaySessionByConversationId(rpProjectDir, conversationId);
+    if (rpDiskSession && rpDiskSession.name) {
+      rpResumeWorkDir = getSessionDir(rpProjectDir, rpDiskSession.name);
+      // Re-activate the session
+      setActiveRolePlaySession(rpProjectDir, rpDiskSession.name).catch(e => {
+        console.warn('[Resume] Failed to update activeSession:', e.message);
+      });
+      console.log(`[Resume] RolePlay: restored session cwd=${rpResumeWorkDir}`);
+    }
+  }
+
   // ★ RolePlay resume: refresh .crew context to get latest kanban/features
   if (rolePlayConfig && rolePlayEntry) {
     const crewContext = loadCrewContext(effectiveWorkDir);
@@ -274,7 +349,7 @@ export async function resumeConversation(msg) {
   ctx.conversations.set(conversationId, {
     query: null,
     inputStream: null,
-    workDir: effectiveWorkDir,
+    workDir: rpResumeWorkDir,
     claudeSessionId: claudeSessionId,  // 保存要恢复的 session ID
     createdAt: Date.now(),
     abortController: null,
