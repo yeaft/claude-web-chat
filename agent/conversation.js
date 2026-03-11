@@ -2,7 +2,7 @@ import ctx from './context.js';
 import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
 import { crewSessions, loadCrewIndex } from './crew.js';
-import { rolePlaySessions, saveRolePlayIndex, removeRolePlaySession, loadRolePlayIndex, validateRolePlayConfig, initRolePlayRouteState, loadCrewContext } from './roleplay.js';
+import { rolePlaySessions, saveRolePlayIndex, removeRolePlaySession, loadRolePlayIndex, validateRolePlayConfig, initRolePlayRouteState, loadCrewContext, refreshCrewContext, initCrewContextMtimes } from './roleplay.js';
 
 // Restore persisted roleplay sessions on module load (agent startup)
 loadRolePlayIndex();
@@ -256,9 +256,20 @@ export async function resumeConversation(msg) {
   // Claude 进程会在用户发送第一条消息时启动 (见 handleUserInput)
   // Restore rolePlayConfig from persisted rolePlaySessions if available
   const rolePlayEntry = rolePlaySessions.get(conversationId);
-  const rolePlayConfig = rolePlayEntry
+  let rolePlayConfig = rolePlayEntry
     ? { roles: rolePlayEntry.roles, teamType: rolePlayEntry.teamType, language: rolePlayEntry.language }
     : null;
+
+  // ★ RolePlay resume: refresh .crew context to get latest kanban/features
+  if (rolePlayConfig && rolePlayEntry) {
+    const crewContext = loadCrewContext(effectiveWorkDir);
+    if (crewContext) {
+      rolePlayConfig.crewContext = crewContext;
+      // Initialize mtime snapshot (without re-loading) so subsequent refreshes can detect changes
+      initCrewContextMtimes(effectiveWorkDir, rolePlayEntry);
+      console.log(`[Resume] RolePlay: refreshed .crew context (${crewContext.features.length} features)`);
+    }
+  }
 
   ctx.conversations.set(conversationId, {
     query: null,
@@ -482,6 +493,18 @@ export async function handleUserInput(msg) {
   if (!state || !state.query || !state.inputStream) {
     const resumeSessionId = claudeSessionId || state?.claudeSessionId || null;
     const effectiveWorkDir = workDir || state?.workDir || ctx.CONFIG.workDir;
+
+    // ★ RolePlay: refresh .crew context before starting a new query
+    // so the appendSystemPrompt has the latest kanban/features
+    if (state?.rolePlayConfig) {
+      const rpSession = rolePlaySessions.get(conversationId);
+      if (rpSession) {
+        const refreshed = refreshCrewContext(effectiveWorkDir, rpSession, state);
+        if (refreshed) {
+          console.log(`[SDK] RolePlay: .crew context refreshed before query start`);
+        }
+      }
+    }
 
     console.log(`[SDK] Starting Claude for ${conversationId}, resume: ${resumeSessionId || 'none'}`);
     state = await startClaudeQuery(conversationId, effectiveWorkDir, resumeSessionId);
