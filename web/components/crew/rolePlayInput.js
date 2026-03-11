@@ -264,8 +264,30 @@ export function createRolePlayInput(store, authStore, { getInputRef, getFileInpu
       ask.askMsg.selectedAnswers = answers;
     }
 
+    // Parse @mention to extract targetRole for role routing
+    let targetRole = null;
+    const session = store.rolePlaySessions[store.currentConversation];
+    if (session?.roles) {
+      // Match @displayName against session roles (first match wins)
+      const mentionRe = /@(\S+)/g;
+      let match;
+      while ((match = mentionRe.exec(text)) !== null) {
+        const mentioned = match[1];
+        const role = session.roles.find(r =>
+          r.displayName === mentioned ||
+          r.name === mentioned ||
+          r.displayName.toLowerCase() === mentioned.toLowerCase() ||
+          r.name.toLowerCase() === mentioned.toLowerCase()
+        );
+        if (role) {
+          targetRole = role.name;
+          break;
+        }
+      }
+    }
+
     // Use standard sendMessage (normal conversation flow)
-    store.sendMessage(text, attachmentInfos.length > 0 ? attachmentInfos : []);
+    store.sendMessage(text, attachmentInfos.length > 0 ? attachmentInfos : [], { targetRole });
 
     inputText.value = '';
     attachments.value = [];

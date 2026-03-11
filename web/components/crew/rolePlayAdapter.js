@@ -131,9 +131,10 @@ function resolveRole(roleName, rolesMap) {
  *
  * @param {Array} messages     - store.messages for the RolePlay conversation
  * @param {Array} sessionRoles - rolePlaySession.roles array [{name, displayName, icon, ...}]
+ * @param {string|null} fallbackRole - current role from rolePlayStatuses, used when no ---ROLE--- signal detected
  * @returns {Array} Crew-format messages ready for buildTurns / appendToSegments
  */
-export function adaptRolePlayMessages(messages, sessionRoles) {
+export function adaptRolePlayMessages(messages, sessionRoles, fallbackRole = null) {
   const rolesMap = new Map();
   if (sessionRoles) {
     for (const r of sessionRoles) {
@@ -179,11 +180,12 @@ export function adaptRolePlayMessages(messages, sessionRoles) {
 
     // Tool-use → type: 'tool', attributed to current role
     if (msg.type === 'tool-use') {
-      const rInfo = resolveRole(currentRole, rolesMap);
+      const effectiveRole = currentRole || fallbackRole;
+      const rInfo = resolveRole(effectiveRole, rolesMap);
       result.push({
         id: msg.id || msgCounter++,
         type: 'tool',
-        role: currentRole || 'assistant',
+        role: effectiveRole || 'assistant',
         roleName: rInfo.roleName,
         roleIcon: rInfo.roleIcon,
         toolName: msg.toolName,
@@ -200,11 +202,12 @@ export function adaptRolePlayMessages(messages, sessionRoles) {
 
     // User question (AskUserQuestion) → type: 'human_needed'
     if (msg.type === 'user-question') {
-      const rInfo = resolveRole(currentRole, rolesMap);
+      const effectiveRole = currentRole || fallbackRole;
+      const rInfo = resolveRole(effectiveRole, rolesMap);
       result.push({
         id: msg.id || msgCounter++,
         type: 'human_needed',
-        role: currentRole || 'assistant',
+        role: effectiveRole || 'assistant',
         roleName: rInfo.roleName,
         roleIcon: rInfo.roleIcon,
         content: `${rInfo.roleName} is asking you a question`,
@@ -230,7 +233,9 @@ export function adaptRolePlayMessages(messages, sessionRoles) {
         const part = parts[j];
         if (part.role) currentRole = part.role;
 
-        const rInfo = resolveRole(currentRole, rolesMap);
+        // Fallback: when no ---ROLE--- signal detected, use the server-tracked currentRole
+        const effectiveRole = currentRole || fallbackRole;
+        const rInfo = resolveRole(effectiveRole, rolesMap);
         const { cleanContent, routes } = extractRouteBlocks(part.content);
 
         // Emit text message (if there's non-route content)
@@ -238,7 +243,7 @@ export function adaptRolePlayMessages(messages, sessionRoles) {
           result.push({
             id: `${msg.id || msgCounter++}_p${j}`,
             type: 'text',
-            role: currentRole || 'assistant',
+            role: effectiveRole || 'assistant',
             roleName: rInfo.roleName,
             roleIcon: rInfo.roleIcon,
             content: cleanContent,
@@ -254,7 +259,7 @@ export function adaptRolePlayMessages(messages, sessionRoles) {
           result.push({
             id: `${msg.id || msgCounter++}_r${j}_${k}`,
             type: 'route',
-            role: currentRole || 'assistant',
+            role: effectiveRole || 'assistant',
             roleName: rInfo.roleName,
             roleIcon: rInfo.roleIcon,
             routeTo: r.routeTo,

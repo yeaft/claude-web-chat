@@ -359,7 +359,8 @@ export default {
 
     /** Adapted messages: convert store.messages → Crew format via adapter */
     adaptedMessages() {
-      return adaptRolePlayMessages(this.store.messages, this.sessionRoles);
+      const fallbackRole = this.rolePlayStatus?.currentRole || null;
+      return adaptRolePlayMessages(this.store.messages, this.sessionRoles, fallbackRole);
     },
 
     /** Whether any adapted message is streaming */

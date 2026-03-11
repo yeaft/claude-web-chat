@@ -253,7 +253,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           files: resolvedFiles,
           prompt: msg.prompt,
           workDir: msg.workDir || convInfo?.workDir,
-          claudeSessionId: convInfo?.claudeSessionId
+          claudeSessionId: convInfo?.claudeSessionId,
+          targetRole: msg.targetRole || null
         });
       } else {
         await forwardToAgent(client.currentAgent, {
@@ -261,7 +262,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           conversationId: convId,
           prompt: msg.prompt,
           workDir: msg.workDir || convInfo?.workDir,
-          claudeSessionId: convInfo?.claudeSessionId
+          claudeSessionId: convInfo?.claudeSessionId,
+          targetRole: msg.targetRole || null
         });
       }
       break;

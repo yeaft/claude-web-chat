@@ -236,7 +236,7 @@ export function deleteConversation(store, conversationId, agentId) {
   }
 }
 
-export function sendMessage(store, text, attachments = []) {
+export function sendMessage(store, text, attachments = [], options = {}) {
   if ((!text.trim() && attachments.length === 0) || !store.currentAgent || !store.currentConversation) return;
 
   store.addMessage({
@@ -268,12 +268,17 @@ export function sendMessage(store, text, attachments = []) {
   }
 
   const fileIds = attachments.map(a => a.fileId);
-  store.sendWsMessage({
+  const wsMsg = {
     type: 'chat',
     prompt: text,
     fileIds,
     workDir: store.currentWorkDir
-  });
+  };
+  // Pass targetRole for RolePlay @mention routing
+  if (options.targetRole) {
+    wsMsg.targetRole = options.targetRole;
+  }
+  store.sendWsMessage(wsMsg);
 }
 
 export function cancelExecution(store) {
