@@ -675,11 +675,13 @@ export async function handleUserInput(msg) {
   // ★ Pre-send compact check: estimate total tokens and compact before sending if needed
   const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
   const lastInputTokens = state.lastResultInputTokens || 0;
+  const lastOutputTokens = state.lastResultOutputTokens || 0;
   const estimatedNewTokens = Math.ceil(effectivePrompt.length / 3); // conservative: ~3 chars per token
-  const estimatedTotal = lastInputTokens + estimatedNewTokens;
+  // Include output_tokens: the assistant's last output becomes part of context for the next turn
+  const estimatedTotal = lastInputTokens + lastOutputTokens + estimatedNewTokens;
 
   if (estimatedTotal > autoCompactThreshold && state.inputStream) {
-    console.log(`[${conversationId}] Pre-send compact: estimated ${estimatedTotal} tokens (last: ${lastInputTokens} + new: ~${estimatedNewTokens}) exceeds threshold ${autoCompactThreshold}`);
+    console.log(`[${conversationId}] Pre-send compact: estimated ${estimatedTotal} tokens (input: ${lastInputTokens} + output: ${lastOutputTokens} + new: ~${estimatedNewTokens}) exceeds threshold ${autoCompactThreshold}`);
     ctx.sendToServer({
       type: 'compact_status',
       conversationId,
@@ -702,6 +704,7 @@ export async function handleUserInput(msg) {
 
   state.turnActive = true;
   state.turnResultReceived = false; // 重置 per-turn 去重标志
+  state._lastUserMessage = userMessage; // Save for prompt-overflow retry
   sendConversationList(); // 在 turnActive=true 后通知 server，确保 processing 状态正确
   sendOutput(conversationId, displayMessage);
   state.inputStream.enqueue(userMessage);
