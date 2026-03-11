@@ -24,9 +24,9 @@ import { getRolePlayMessages } from './roleplay-i18n.js';
 // Each entry is a list of role names (keys into roleTemplates in i18n).
 const TEAM_ROLES = {
   dev:     ['pm', 'dev', 'reviewer', 'tester'],
-  writing: ['planner', 'writer', 'editor'],
-  trading: ['strategist', 'analyst', 'macro', 'risk', 'trader'],
-  video:   ['director', 'scriptwriter', 'storyboard'],
+  writing: ['editor', 'writer', 'proofreader'],
+  trading: ['analyst', 'strategist', 'risk-manager'],
+  video:   ['director', 'writer', 'producer'],
   custom:  ['pm', 'dev', 'reviewer', 'tester'], // default same as dev
 };
 
@@ -282,7 +282,7 @@ export function getDefaultRoles(teamType, language = 'zh-CN') {
     if (!tmpl) return { name, displayName: name, icon: '' };
 
     // Extract icon and displayName from heading: "## 📋 PM-乔布斯 (pm)"
-    const headingMatch = tmpl.heading.match(/^##\s*(\S+)\s+(.+?)\s*\((\w+)\)\s*$/);
+    const headingMatch = tmpl.heading.match(/^##\s*(\S+)\s+(.+?)\s*\(([\w-]+)\)\s*$/);
     if (headingMatch) {
       return {
         name: headingMatch[3],
