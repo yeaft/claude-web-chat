@@ -66,6 +66,11 @@ export async function handleCrewControl(msg) {
 async function clearSingleRole(session, roleName) {
   const roleState = session.roleStates.get(roleName);
 
+  // P0-1: 清除该角色在 humanMessageQueue 中的待处理消息，防止幽灵 ROUTE 执行
+  if (session.humanMessageQueue.length > 0) {
+    session.humanMessageQueue = session.humanMessageQueue.filter(m => m.target !== roleName);
+  }
+
   if (roleState) {
     // 保存工作摘要到 task file（与 context_exceeded clear 一致）
     if (roleState.accumulatedText) {
@@ -73,9 +78,21 @@ async function clearSingleRole(session, roleName) {
         console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
     }
 
+    // P1-3: abort 并等待 query iterator 退出，避免 abort+dispatch 竞态
     if (roleState.abortController) {
       roleState.abortController.abort();
     }
+    // 等待 query 完成（iterator 会因 AbortError 退出）
+    if (roleState.query) {
+      try {
+        // Drain the iterator — it will throw AbortError and exit
+        // eslint-disable-next-line no-empty
+        for await (const _ of roleState.query) {}
+      } catch {
+        // Expected: AbortError or other cleanup errors
+      }
+    }
+
     roleState.query = null;
     roleState.inputStream = null;
     roleState.turnActive = false;
@@ -86,6 +103,10 @@ async function clearSingleRole(session, roleName) {
     roleState.lastDispatchFrom = null;
     roleState.lastDispatchTaskId = null;
     roleState.lastDispatchTaskTitle = null;
+    // P0-3: 重置 UI 相关状态，防止显示过时信息
+    roleState.currentTask = null;
+    roleState.currentTool = null;
+    roleState.lastTurnText = '';
   }
 
   await clearRoleSessionId(session.sharedDir, roleName);
@@ -168,12 +189,12 @@ async function resumeSession(session) {
     const pending = session.pendingRoutes.slice();
     session.pendingRoutes = [];
     console.log(`[Crew] Replaying ${pending.length} pending route(s)`);
-    const results = await Promise.allSettled(pending.map(({ fromRole, route }) =>
-      executeRoute(session, fromRole, route)
-    ));
-    for (const r of results) {
-      if (r.status === 'rejected') {
-        console.warn(`[Crew] Pending route replay failed:`, r.reason);
+    // P1-5: 串行执行 pending routes，防止多个 route 指向同一角色时并发 dispatch
+    for (const { fromRole, route } of pending) {
+      try {
+        await executeRoute(session, fromRole, route);
+      } catch (err) {
+        console.warn(`[Crew] Pending route replay failed:`, err);
       }
     }
     return;
@@ -338,6 +359,9 @@ async function stopAll(session) {
  * 清空 session
  */
 async function clearSession(session) {
+  // P1-2: 先重置 _processingHumanQueue，防止后续消息处理被阻塞
+  session._processingHumanQueue = false;
+
   for (const [roleName, roleState] of session.roleStates) {
     if (roleState.abortController) {
       roleState.abortController.abort();
@@ -350,6 +374,7 @@ async function clearSession(session) {
     await clearRoleSessionId(session.sharedDir, roleName);
   }
 
+  // P1-1: humanMessageQueue 在这里清空，确保不会有幽灵消息在 clear 后被处理
   session.messageHistory = [];
   session.uiMessages = [];
   session.humanMessageQueue = [];

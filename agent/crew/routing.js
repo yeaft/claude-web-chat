@@ -227,17 +227,48 @@ export async function dispatchToRole(session, roleName, content, fromSource, tas
     roleState = await createRoleQuery(session, roleName);
   }
 
-  // 发送
+  // P1-4: 守卫 stream.enqueue — stream 可能已被 abort 关闭
   roleState.lastDispatchContent = content;
   roleState.lastDispatchFrom = fromSource;
   roleState.lastDispatchTaskId = taskId || null;
   roleState.lastDispatchTaskTitle = taskTitle || null;
   roleState.turnActive = true;
   roleState.accumulatedText = '';
-  roleState.inputStream.enqueue({
-    type: 'user',
-    message: { role: 'user', content }
-  });
+  try {
+    if (roleState.inputStream && !roleState.inputStream.isDone) {
+      roleState.inputStream.enqueue({
+        type: 'user',
+        message: { role: 'user', content }
+      });
+    } else {
+      console.warn(`[Crew] Cannot enqueue to ${roleName}: stream closed or missing, recreating`);
+      roleState = await createRoleQuery(session, roleName);
+      roleState.lastDispatchContent = content;
+      roleState.lastDispatchFrom = fromSource;
+      roleState.lastDispatchTaskId = taskId || null;
+      roleState.lastDispatchTaskTitle = taskTitle || null;
+      roleState.turnActive = true;
+      roleState.accumulatedText = '';
+      roleState.inputStream.enqueue({
+        type: 'user',
+        message: { role: 'user', content }
+      });
+    }
+  } catch (enqueueErr) {
+    console.error(`[Crew] Failed to enqueue to ${roleName}:`, enqueueErr.message);
+    // Recreate query and retry once
+    roleState = await createRoleQuery(session, roleName);
+    roleState.lastDispatchContent = content;
+    roleState.lastDispatchFrom = fromSource;
+    roleState.lastDispatchTaskId = taskId || null;
+    roleState.lastDispatchTaskTitle = taskTitle || null;
+    roleState.turnActive = true;
+    roleState.accumulatedText = '';
+    roleState.inputStream.enqueue({
+      type: 'user',
+      message: { role: 'user', content }
+    });
+  }
 
   sendStatusUpdate(session);
   console.log(`[Crew] Dispatched to ${roleName} from ${fromSource}${taskId ? ` (task: ${taskId})` : ''}`);
