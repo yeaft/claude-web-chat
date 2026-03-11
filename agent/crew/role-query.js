@@ -84,10 +84,48 @@ export function classifyRoleError(error) {
 // Role Query Management
 // =====================================================================
 
+// P1-6: Per-role mutex to prevent concurrent createRoleQuery calls creating orphan processes
+const _roleQueryLocks = new Map();
+
 /**
  * 为角色创建持久 query 实例
  */
 export async function createRoleQuery(session, roleName) {
+  const lockKey = `${session.id}:${roleName}`;
+
+  // P1-6: 如果该角色已有 pending 的 createRoleQuery，等待它完成
+  if (_roleQueryLocks.has(lockKey)) {
+    console.log(`[Crew] Waiting for existing createRoleQuery lock on ${roleName}`);
+    try {
+      await _roleQueryLocks.get(lockKey);
+    } catch {
+      // Previous attempt failed, proceed with new creation
+    }
+    // 锁释放后，检查是否已经有可用的 query
+    const existing = session.roleStates.get(roleName);
+    if (existing?.query && existing?.inputStream && !existing.inputStream.isDone) {
+      console.log(`[Crew] Reusing existing query for ${roleName} after lock release`);
+      return existing;
+    }
+  }
+
+  const promise = _createRoleQueryInner(session, roleName);
+  _roleQueryLocks.set(lockKey, promise);
+  try {
+    const result = await promise;
+    return result;
+  } finally {
+    // 只删除自己的 lock（如果后续调用覆盖了，不误删）
+    if (_roleQueryLocks.get(lockKey) === promise) {
+      _roleQueryLocks.delete(lockKey);
+    }
+  }
+}
+
+/**
+ * createRoleQuery 内部实现
+ */
+async function _createRoleQueryInner(session, roleName) {
   const role = session.roles.get(roleName);
   if (!role) throw new Error(`Role not found: ${roleName}`);
 

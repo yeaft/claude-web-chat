@@ -86,10 +86,31 @@ export async function handleCrewHumanInput(msg) {
           const { createRoleQuery } = await import('./role-query.js');
           roleState = await createRoleQuery(session, target);
         }
-        roleState.inputStream.enqueue({
-          type: 'user',
-          message: { role: 'user', content: message }
-        });
+        // P1-4: 守卫 stream.enqueue
+        try {
+          if (roleState.inputStream && !roleState.inputStream.isDone) {
+            roleState.inputStream.enqueue({
+              type: 'user',
+              message: { role: 'user', content: message }
+            });
+          } else {
+            console.warn(`[Crew] Skill dispatch: stream closed for ${target}, recreating`);
+            const { createRoleQuery } = await import('./role-query.js');
+            roleState = await createRoleQuery(session, target);
+            roleState.inputStream.enqueue({
+              type: 'user',
+              message: { role: 'user', content: message }
+            });
+          }
+        } catch (enqueueErr) {
+          console.error(`[Crew] Skill dispatch enqueue failed for ${target}:`, enqueueErr.message);
+          const { createRoleQuery } = await import('./role-query.js');
+          roleState = await createRoleQuery(session, target);
+          roleState.inputStream.enqueue({
+            type: 'user',
+            message: { role: 'user', content: message }
+          });
+        }
         sendStatusUpdate(session);
         console.log(`[Crew] Skill command dispatched to ${target}: ${message}`);
         return;
