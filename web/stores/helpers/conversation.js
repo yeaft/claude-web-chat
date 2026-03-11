@@ -209,6 +209,7 @@ export function deleteConversation(store, conversationId, agentId) {
   }
   // ★ 清理 roleplay 数据
   delete store.rolePlaySessions[conversationId];
+  delete store.rolePlayStatuses[conversationId];
 
   // 立即从本地列表移除（不等 server 同步）
   store.conversations = store.conversations.filter(c => c.id !== conversationId);

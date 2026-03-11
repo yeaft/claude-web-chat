@@ -367,5 +367,18 @@ export function handleMessage(store, msg) {
     case 'crew_role_removed':
       store.handleCrewOutput(msg);
       break;
+
+    // RolePlay route state updates
+    case 'roleplay_status':
+      if (msg.conversationId) {
+        store.rolePlayStatuses[msg.conversationId] = {
+          round: msg.round || 0,
+          currentRole: msg.currentRole || null,
+          features: msg.features || [],
+          roleStates: msg.roleStates || {},
+          waitingHuman: msg.waitingHuman || false,
+        };
+      }
+      break;
   }
 }

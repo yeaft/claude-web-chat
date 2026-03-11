@@ -7,7 +7,7 @@
 
 import { SYSTEM_SKILLS, SYSTEM_SKILL_NAMES, DEFAULT_SLASH_COMMANDS } from '../../utils/slash-commands.js';
 
-export function createRolePlayInput(store, authStore, { getInputRef, getFileInputRef }) {
+export function createRolePlayInput(store, authStore, { getInputRef, getFileInputRef, getCurrentPendingAsk }) {
   const inputText = Vue.ref('');
   const attachments = Vue.ref([]);
   const uploading = Vue.ref(false);
@@ -246,6 +246,23 @@ export function createRolePlayInput(store, authStore, { getInputRef, getFileInpu
         isImage: a.file?.type?.startsWith('image/') || false,
         mimeType: a.file?.type || ''
       }));
+
+    // If there's a pending AskUserQuestion, answer it before sending the message
+    const ask = getCurrentPendingAsk?.();
+    if (ask && ask.askMsg.askRequestId && text) {
+      const questions = ask.askMsg.toolInput?.questions || ask.askMsg.askQuestions || [];
+      const answers = {};
+      if (questions.length > 0) {
+        for (const q of questions) {
+          answers[q.question] = text;
+        }
+      } else {
+        answers['response'] = text;
+      }
+      store.answerUserQuestion(ask.askMsg.askRequestId, answers);
+      ask.askMsg.askAnswered = true;
+      ask.askMsg.selectedAnswers = answers;
+    }
 
     // Use standard sendMessage (normal conversation flow)
     store.sendMessage(text, attachmentInfos.length > 0 ? attachmentInfos : []);

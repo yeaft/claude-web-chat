@@ -74,9 +74,18 @@ export default {
               </div>
             </div>
 
-            <!-- Load more / history -->
-            <div v-if="scroll.hiddenBlockCount.value > 0" class="crew-load-more" @click="scroll.loadMoreBlocks()">
+            <!-- Load more / history (3-tier: loading → hidden blocks → disk history) -->
+            <div v-if="scroll.isLoadingHistory.value" class="crew-load-more crew-load-more-loading">
+              <span class="crew-typing-dot"></span>
+              <span class="crew-typing-dot"></span>
+              <span class="crew-typing-dot"></span>
+              {{ $t('crew.loadingHistory') }}
+            </div>
+            <div v-else-if="scroll.hiddenBlockCount.value > 0" class="crew-load-more" @click="scroll.loadMoreBlocks()">
               {{ $t('crew.loadOlder') }} <span class="crew-load-more-count">({{ scroll.hiddenBlockCount.value }})</span>
+            </div>
+            <div v-else-if="scroll.hasOlderMessages.value" class="crew-load-more" @click="loadHistory">
+              {{ $t('crew.loadHistory') }}
             </div>
 
             <!-- Blocks (global and feature) -->
@@ -108,6 +117,7 @@ export default {
                   <span class="crew-feature-title">{{ block.taskTitle }}</span>
                   <span v-if="block.activeRoles && block.activeRoles.length > 0" class="crew-feature-actives">
                     <span v-for="ar in block.activeRoles.slice(0, 3)" :key="ar.role" class="crew-feature-active-icon" :title="ar.roleName">{{ ar.roleIcon }}</span>
+                    <span v-if="block.activeRoles.length > 3" class="crew-feature-active-more">+{{ block.activeRoles.length - 3 }}</span>
                   </span>
                   <span v-if="block.isCompleted" class="crew-feature-status completed">
                     <span class="crew-feature-status-dot"></span> {{ $t('crew.statusCompleted') }}
@@ -127,6 +137,11 @@ export default {
                   <div v-if="expandedHistories[block.taskId] && getBlockTurns(block).length > 1" class="crew-feature-history">
                     <template v-for="(turn, tidx) in getBlockTurns(block).slice(0, -1)" :key="turn.id">
                       <div v-if="tidx > 0 && shouldShowTurnDivider(getBlockTurns(block), tidx)" class="crew-turn-divider"></div>
+                      <div v-if="turn.type === 'turn' && getMaxRound(turn) > 0" class="crew-round-divider">
+                        <div class="crew-round-line"></div>
+                        <span class="crew-round-label">Round {{ getMaxRound(turn) }}</span>
+                        <div class="crew-round-line"></div>
+                      </div>
                       <crew-turn-renderer
                         :turn="turn"
                         :expanded-turns="expandedTurns"
@@ -166,6 +181,18 @@ export default {
 
           <!-- Input Area -->
           <div class="input-area crew-input-area">
+            <div class="crew-input-hints" v-if="rolePlaySession && rolePlayStatus">
+              <span class="crew-hint-meta">R{{ rolePlayStatus.round || 0 }}</span>
+              <template v-if="totalTokens > 0">
+                <span class="crew-hint-sep">&middot;</span>
+                <span class="crew-hint-meta">{{ formatTokens(totalTokens) }}</span>
+              </template>
+            </div>
+            <div v-if="currentPendingAsk" class="crew-ask-hint" @click="dismissPendingAsk">
+              <span class="crew-ask-hint-icon">{{ currentPendingAsk.roleIcon }}</span>
+              <span class="crew-ask-hint-text">{{ currentPendingAsk.roleName }} {{ $t('crew.askingYou') }}</span>
+              <span class="crew-ask-hint-dismiss" :title="$t('crew.dismissAsk')">✕</span>
+            </div>
             <div class="attachments-preview" v-if="input.attachments.value.length > 0">
               <div class="attachment-item" v-for="(file, index) in input.attachments.value" :key="index">
                 <img v-if="file.preview" :src="file.preview" class="attachment-thumb" />
@@ -270,6 +297,7 @@ export default {
     this.input = createRolePlayInput(this.store, this.authStore, {
       getInputRef: () => this.$refs.inputRef,
       getFileInputRef: () => this.$refs.fileInput,
+      getCurrentPendingAsk: () => this.currentPendingAsk,
     });
     this.scroll = createCrewScroll(this.store, {
       getMessagesRef: () => this.$refs.messagesRef,
@@ -278,6 +306,47 @@ export default {
   },
 
   computed: {
+    /** RolePlay route state from server */
+    rolePlayStatus() {
+      return this.store.rolePlayStatuses?.[this.store.currentConversation] || null;
+    },
+
+    /** Total tokens from context usage */
+    totalTokens() {
+      const u = this.store.contextUsage;
+      if (!u || u.conversationId !== this.store.currentConversation) return 0;
+      return u.inputTokens || 0;
+    },
+
+    /** Pending AskUserQuestion messages (unanswered) */
+    pendingAsks() {
+      const asks = [];
+      for (const msg of this.adaptedMessages) {
+        if (msg.type === 'tool' && msg.toolName === 'AskUserQuestion' && !msg.askAnswered && msg.askRequestId) {
+          asks.push({
+            taskId: msg.taskId || null,
+            roleIcon: msg.roleIcon,
+            roleName: msg.roleName,
+            askMsg: msg,
+          });
+        }
+        if (msg.type === 'human_needed' && !msg.askAnswered && msg.askRequestId) {
+          asks.push({
+            taskId: null,
+            roleIcon: msg.roleIcon,
+            roleName: msg.roleName,
+            askMsg: msg,
+          });
+        }
+      }
+      return asks;
+    },
+
+    /** First pending ask (for the hint bar) */
+    currentPendingAsk() {
+      return this.pendingAsks.length > 0 ? this.pendingAsks[0] : null;
+    },
+
     /** RolePlay session for current conversation */
     rolePlaySession() {
       return this.store.rolePlaySessions?.[this.store.currentConversation] || null;
@@ -453,6 +522,7 @@ export default {
 
     isFeatureExpanded(block) {
       if (block.taskId in this.expandedFeatures) return this.expandedFeatures[block.taskId];
+      if (block.hasPendingAsk) return true;
       if (block.hasStreaming) return true;
       if (!block.isCompleted) return true;
       const featureOnly = this.featureBlocks.filter(b => b.type === 'feature');
@@ -480,6 +550,18 @@ export default {
 
     controlAction(action) {
       // RolePlay doesn't have crew control actions — no-op
+    },
+
+    dismissPendingAsk() {
+      const ask = this.currentPendingAsk;
+      if (ask) {
+        ask.askMsg.askAnswered = true;
+        ask.askMsg.selectedAnswers = { _dismissed: true };
+      }
+    },
+
+    loadHistory() {
+      this.scroll.loadHistory((getter, cb) => this.$watch(getter, cb));
     },
 
     scrollToRoleLatest(roleName) {

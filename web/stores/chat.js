@@ -119,6 +119,7 @@ export const useChatStore = defineStore('chat', {
     // Role Play (single-conversation multi-role) 状态
     // =====================
     rolePlaySessions: {},            // { [convId]: { roles, teamType, language } }
+    rolePlayStatuses: {},            // { [convId]: { round, currentRole, features, roleStates, waitingHuman } }
   }),
 
   getters: {
