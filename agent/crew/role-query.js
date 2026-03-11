@@ -127,6 +127,11 @@ export async function createRoleQuery(session, roleName) {
     options: queryOptions
   });
 
+  // resume 场景：保留已有 roleState 的 baseline，避免双重计算
+  // 只有 fresh query（无 savedSessionId）才用 0 初始化
+  const existingState = session.roleStates.get(roleName);
+  const isResume = !!savedSessionId;
+
   const roleState = {
     query: roleQuery,
     inputStream,
@@ -134,9 +139,10 @@ export async function createRoleQuery(session, roleName) {
     accumulatedText: '',
     turnActive: false,
     claudeSessionId: savedSessionId,
-    lastCostUsd: 0,
-    lastInputTokens: 0,
-    lastOutputTokens: 0,
+    lastCostUsd: (isResume && existingState?.lastCostUsd) || 0,
+    lastInputTokens: (isResume && existingState?.lastInputTokens) || 0,
+    lastOutputTokens: (isResume && existingState?.lastOutputTokens) || 0,
+    lastSeenUsage: null,
     consecutiveErrors: 0,
     lastDispatchContent: null,
     lastDispatchFrom: null,
