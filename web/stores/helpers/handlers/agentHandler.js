@@ -318,6 +318,15 @@ export function handleAgentSelected(store, msg) {
       type: 'select_conversation',
       conversationId: store.currentConversation
     });
+    // ★ Crew session needs resume to restore roles after server restart
+    if (currentConv?.type === 'crew') {
+      console.log('[Reconnect] Crew conversation detected in agent_selected, resuming:', store.currentConversation);
+      store.sendWsMessage({
+        type: 'resume_crew_session',
+        sessionId: store.currentConversation,
+        agentId: msg.agentId
+      });
+    }
   } else {
     store.currentConversation = null;
     store.currentWorkDir = msg.workDir;
