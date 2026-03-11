@@ -64,16 +64,10 @@ class AuthTestServer {
   }
 
   createUser(username, password) {
-    try {
-      execSync(
-        `node server/create-user.js "${username}" "${password}"`,
-        { cwd: PROJECT_ROOT, env: this.env, stdio: 'pipe', timeout: 10000 }
-      );
-    } catch (e) {
-      // create-user.js doesn't call process.exit() so it times out,
-      // but the user is still created successfully
-      if (!e.message.includes('ETIMEDOUT')) throw e;
-    }
+    execSync(
+      `node server/create-user.js "${username}" "${password}"`,
+      { cwd: PROJECT_ROOT, env: this.env, stdio: 'pipe', timeout: 10000 }
+    );
   }
 
   async stop() {

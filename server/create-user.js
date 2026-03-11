@@ -49,10 +49,11 @@ async function main() {
       console.log(`  Agent Secret: ${result.agent_secret}`);
     }
     console.log('\nTOTP will be set up on first login if TOTP_ENABLED=true.');
+    process.exit(0);
   } else {
     console.error('Failed to create user.');
     process.exit(1);
   }
 }
 
-main().catch(console.error);
+main().catch((e) => { console.error(e); process.exit(1); });
