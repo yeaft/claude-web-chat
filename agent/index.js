@@ -74,7 +74,11 @@ const CONFIG = {
     return raw.split(',').map(s => s.trim()).filter(Boolean);
   })(),
   // disallowedTools 会在 loadMcpServers() 中计算
-  disallowedTools: []
+  disallowedTools: [],
+  // 最大上下文 tokens（用于百分比计算的分母）
+  maxContextTokens: parseInt(process.env.MAX_CONTEXT_TOKENS || fileConfig.maxContextTokens, 10) || 128000,
+  // Auto-compact 阈值（tokens）：context 超过此值时自动触发 compact
+  autoCompactThreshold: parseInt(process.env.AUTO_COMPACT_THRESHOLD || fileConfig.autoCompactThreshold, 10) || 110000
 };
 
 // 初始化共享上下文

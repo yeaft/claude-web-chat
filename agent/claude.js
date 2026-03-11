@@ -341,6 +341,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         if (message.subtype === 'compact_boundary') {
           state._compacting = false;
           state._compactSummaryPending = true;
+          state._autoCompactRequested = false; // Allow future auto-compact
           console.log(`[${conversationId}] Compact completed (boundary)`);
           ctx.sendToServer({
             type: 'compact_status',
@@ -363,6 +364,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         if (message.subtype === 'compact_complete' || message.subtype === 'compact_end') {
           state._compacting = false;
           state._compactSummaryPending = true;
+          state._autoCompactRequested = false; // Allow future auto-compact
           console.log(`[${conversationId}] Compact completed`);
           ctx.sendToServer({
             type: 'compact_status',
@@ -408,7 +410,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
         // 计算上下文使用百分比
         const inputTokens = message.usage?.input_tokens || 0;
-        const maxContextTokens = 128000; // API max_prompt_tokens 限制
+        const maxContextTokens = ctx.CONFIG?.maxContextTokens || 128000;
         if (inputTokens > 0) {
           ctx.sendToServer({
             type: 'context_usage',
@@ -531,6 +533,39 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
           workDir: state.workDir
         });
         sendConversationList();
+
+        // ★ Auto-compact: when context exceeds threshold, trigger /compact
+        const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
+        if (inputTokens >= autoCompactThreshold
+            && !state._autoCompactRequested && state.inputStream) {
+          state._autoCompactRequested = true;
+          console.log(`[SDK] Auto-compact triggered: context at ${inputTokens}/${maxContextTokens} tokens (threshold: ${autoCompactThreshold}) for ${conversationId}`);
+          ctx.sendToServer({
+            type: 'compact_status',
+            conversationId,
+            status: 'compacting',
+            message: `Auto-compacting: context at ${inputTokens} tokens (threshold: ${autoCompactThreshold})`
+          });
+          state.turnActive = true;
+          state.turnResultReceived = false;
+          state.inputStream.enqueue({
+            type: 'user',
+            message: { role: 'user', content: '/compact' }
+          });
+          sendConversationList();
+        }
+
+        // ★ Send pending user message after compact completes
+        if (state._pendingUserMessage && state.inputStream && !state._autoCompactRequested) {
+          const pendingMsg = state._pendingUserMessage;
+          state._pendingUserMessage = null;
+          console.log(`[${conversationId}] Sending pending message after compact`);
+          state.turnActive = true;
+          state.turnResultReceived = false;
+          sendOutput(conversationId, pendingMsg);
+          state.inputStream.enqueue(pendingMsg);
+          sendConversationList();
+        }
         continue;
       }
 

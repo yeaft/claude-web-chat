@@ -6,10 +6,10 @@ import { sendCrewMessage, sendCrewOutput, sendStatusUpdate, endRoleStreaming } f
 import { saveRoleSessionId, clearRoleSessionId, classifyRoleError, createRoleQuery } from './role-query.js';
 import { parseRoutes, executeRoute, dispatchToRole } from './routing.js';
 import { parseCompletedTasks, updateFeatureIndex, appendChangelog, saveRoleWorkSummary, updateKanban } from './task-files.js';
+import ctx from '../context.js';
 
-// Context 使用率阈值常量
-const MAX_CONTEXT = 128000;       // API max_prompt_tokens 限制
-const CLEAR_THRESHOLD = 0.85;     // 85% → 直接 clear + rebuild（不再走 compact）
+// Context 使用率常量（运行时从 ctx.CONFIG 读取）
+const getMaxContext = () => ctx.CONFIG?.maxContextTokens || 128000;
 
 /**
  * 处理角色的流式输出
@@ -99,13 +99,13 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
             sessionId: session.id,
             role: roleName,
             inputTokens,
-            maxTokens: MAX_CONTEXT,
-            percentage: Math.min(100, Math.round((inputTokens / MAX_CONTEXT) * 100))
+            maxTokens: getMaxContext(),
+            percentage: Math.min(100, Math.round((inputTokens / getMaxContext()) * 100))
           });
         }
 
-        const contextPercentage = inputTokens / MAX_CONTEXT;
-        const needClear = contextPercentage >= CLEAR_THRESHOLD;
+        const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
+        const needClear = inputTokens >= autoCompactThreshold;
 
         // 解析路由
         const routes = parseRoutes(roleState.accumulatedText);
@@ -151,7 +151,7 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
 
         // Context 超限：保存工作摘要后 clear + rebuild
         if (needClear) {
-          console.log(`[Crew] ${roleName} context at ${Math.round(contextPercentage * 100)}%, clearing and rebuilding`);
+          console.log(`[Crew] ${roleName} context at ${inputTokens}/${getMaxContext()} tokens (threshold: ${autoCompactThreshold}), clearing and rebuilding`);
 
           // 保存工作摘要到 feature 文件
           await saveRoleWorkSummary(session, roleName, turnText).catch(e =>
@@ -169,7 +169,7 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
             type: 'crew_role_cleared',
             sessionId: session.id,
             role: roleName,
-            contextPercentage: Math.round(contextPercentage * 100),
+            contextPercentage: Math.round((inputTokens / getMaxContext()) * 100),
             reason: 'context_limit'
           });
 
