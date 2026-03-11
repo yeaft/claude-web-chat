@@ -88,7 +88,18 @@ function isValidProjectDir(dir) {
 // =====================================================================
 
 /**
+ * 生成角色配置的规范化签名（sorted role name list）
+ * 用于比较新旧 session 的角色配置是否一致
+ */
+export function getRolesSignature(roles) {
+  if (!roles || roles.length === 0) return '';
+  const names = roles.map(r => r.name).sort();
+  return names.join(',');
+}
+
+/**
  * 查找指定 projectDir 的已有 crew session
+ * 返回 { sessionId, source, roles } 或 null
  */
 async function findExistingSessionByProjectDir(projectDir) {
   const normalizedDir = projectDir.replace(/\/+$/, '');
@@ -96,7 +107,11 @@ async function findExistingSessionByProjectDir(projectDir) {
   for (const [, session] of crewSessions) {
     if (session.projectDir.replace(/\/+$/, '') === normalizedDir
         && session.status !== 'completed') {
-      return { sessionId: session.id, source: 'active' };
+      return {
+        sessionId: session.id,
+        source: 'active',
+        roles: Array.from(session.roles.values())
+      };
     }
   }
 
@@ -110,7 +125,7 @@ async function findExistingSessionByProjectDir(projectDir) {
 
   if (match) {
     const meta = await loadSessionMeta(match.sharedDir);
-    if (meta) return { sessionId: match.sessionId, source: 'index' };
+    if (meta) return { sessionId: match.sessionId, source: 'index', roles: meta.roles || [] };
     await removeFromCrewIndex(match.sessionId);
   }
 
@@ -133,12 +148,26 @@ export async function createCrewSession(msg) {
     username
   } = msg;
 
-  // 同目录检查
+  // 同目录检查：如果已有同目录的 session，比较角色配置
   const existingSession = await findExistingSessionByProjectDir(projectDir);
   if (existingSession) {
-    console.log(`[Crew] Found existing session for ${projectDir}: ${existingSession.sessionId}, auto-resuming`);
-    await resumeCrewSession({ sessionId: existingSession.sessionId, userId, username });
-    return;
+    const newRoles = expandRoles(rawRoles);
+    const newSig = getRolesSignature(newRoles);
+    const oldSig = getRolesSignature(existingSession.roles);
+
+    if (newSig === oldSig) {
+      // 角色配置相同，安全 auto-resume
+      console.log(`[Crew] Found existing session for ${projectDir}: ${existingSession.sessionId}, roles match, auto-resuming`);
+      await resumeCrewSession({ sessionId: existingSession.sessionId, userId, username });
+      return;
+    }
+
+    // 角色配置不同 → 清理旧 session，用新配置走正常创建流程
+    console.log(`[Crew] Roles changed for ${projectDir}: old=[${oldSig}] new=[${newSig}], discarding old session ${existingSession.sessionId}`);
+    if (existingSession.source === 'active') {
+      crewSessions.delete(existingSession.sessionId);
+    }
+    await removeFromCrewIndex(existingSession.sessionId);
   }
 
   const roles = expandRoles(rawRoles);
