@@ -1,17 +1,19 @@
 /**
- * RolePlayConfigPanel — Role Play creation panel.
+ * RolePlayConfigPanel — Role Play creation + restore panel.
  *
  * Simplified version of CrewConfigPanel:
  *   - Agent selection (any online agent, no crew capability required)
  *   - Work directory selection (with folder picker browse button)
+ *   - Existing session restore (checks .roleplay/session.json first)
  *   - Team template selection (dev / writing / trading / video / custom)
  *   - Role preview & editing (add/remove/edit claudeMd)
  *   - Language follows user settings (store.locale)
  *   - "Start" button → store.createRolePlaySession
  *
- * Extras (vs CrewConfigPanel):
- *   - Auto-detects .crew directory via check_crew_context WS message
- *   - Imports roles/teamType from .crew/session.json when found
+ * Session detection order:
+ *   1. check_roleplay_sessions → if found, show restore list (skip .crew check)
+ *   2. check_crew_context → if found, auto-import roles from .crew
+ *   3. Neither → show normal create flow
  */
 
 import { getRolePlayTemplate } from '../crew-templates/index.js';
@@ -53,16 +55,41 @@ export default {
             </div>
           </div>
 
-          <!-- Crew Context Detected -->
-          <div class="crew-config-section crew-import-hint" v-if="crewDetected">
+          <!-- Existing Sessions (restore) -->
+          <div class="crew-config-section" v-if="existingSessions.length > 0">
+            <label class="crew-config-label">{{ $t('roleplay.existingSessions') }}</label>
+            <div class="crew-roles-list">
+              <div v-for="session in existingSessions" :key="session.name" class="crew-role-item roleplay-session-card" @click="restoreSession(session)">
+                <div class="crew-role-header">
+                  <span class="roleplay-session-name">{{ session.name }}</span>
+                  <button class="modern-btn roleplay-restore-btn" @click.stop="restoreSession(session)">
+                    {{ $t('roleplay.restore') }}
+                  </button>
+                </div>
+                <div class="roleplay-session-meta">
+                  <span>{{ session.teamType }}</span>
+                  <span v-if="session.roles && session.roles.length">{{ session.roles.map(r => r.displayName).join(', ') }}</span>
+                  <span>{{ formatDate(session.createdAt) }}</span>
+                </div>
+              </div>
+            </div>
+            <div style="margin-top: 8px; text-align: center;">
+              <button class="crew-add-role-btn" @click="showCreateNew = true" v-if="!showCreateNew">
+                {{ $t('roleplay.createNew') }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Crew Context Detected (only when no .roleplay sessions and .crew found) -->
+          <div class="crew-config-section crew-import-hint" v-if="crewDetected && existingSessions.length === 0">
             <div class="crew-import-banner">
               <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
               <span>{{ $t('roleplay.crewDetected') }}</span>
             </div>
           </div>
 
-          <!-- Team Template -->
-          <div class="crew-config-section" v-if="selectedAgent">
+          <!-- Team Template (show when no existing sessions OR user clicked "create new") -->
+          <div class="crew-config-section" v-if="selectedAgent && showCreateSection">
             <label class="crew-config-label">{{ $t('crewConfig.teamTemplate') }}</label>
             <div class="crew-template-btns">
               <button class="crew-template-btn" @click="loadTemplate('dev')" :class="{ active: currentTemplate === 'dev' }">{{ $t('crewConfig.tplDev') }}</button>
@@ -74,7 +101,7 @@ export default {
           </div>
 
           <!-- Role Configuration -->
-          <div class="crew-config-section" v-if="selectedAgent && roles.length > 0">
+          <div class="crew-config-section" v-if="selectedAgent && roles.length > 0 && showCreateSection">
             <label class="crew-config-label">{{ $t('roleplay.rolePreview') }}</label>
             <div class="crew-roles-list">
               <div v-for="(role, idx) in roles" :key="idx" class="crew-role-item">
@@ -108,7 +135,7 @@ export default {
           </div>
         </div>
 
-        <div class="crew-config-footer" v-if="selectedAgent">
+        <div class="crew-config-footer" v-if="selectedAgent && showCreateSection">
           <button class="modern-btn" @click="$emit('close')">{{ $t('common.cancel') }}</button>
           <button class="modern-btn" @click="startSession" :disabled="!canStart">
             <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
@@ -119,7 +146,7 @@ export default {
     </div>
   `,
 
-  emits: ['close', 'start', 'browse'],
+  emits: ['close', 'start', 'restore', 'browse'],
 
   setup() {
     const store = Pinia.useChatStore();
@@ -133,7 +160,10 @@ export default {
       currentTemplate: 'dev',
       roles: [],
       crewDetected: false,
+      existingSessions: [],
+      showCreateNew: false,
       _crewCheckRequestId: null,
+      _rpCheckRequestId: null,
     };
   },
 
@@ -152,6 +182,10 @@ export default {
     canStart() {
       return this.selectedAgent && this.projectDir.trim() && this.roles.length > 0;
     },
+    showCreateSection() {
+      // Show create UI when no existing sessions or user explicitly chose "create new"
+      return this.existingSessions.length === 0 || this.showCreateNew;
+    },
   },
 
   watch: {
@@ -162,8 +196,8 @@ export default {
     },
     projectDir(newVal) {
       // Debounce to avoid spamming WS on every keystroke
-      clearTimeout(this._crewCheckTimer);
-      this._crewCheckTimer = setTimeout(() => this.checkCrewContext(newVal), 400);
+      clearTimeout(this._dirCheckTimer);
+      this._dirCheckTimer = setTimeout(() => this.checkDirectory(newVal), 400);
     },
     language() {
       // Reload template with new language
@@ -187,16 +221,21 @@ export default {
       this.selectedAgent = this.onlineAgents[0].id;
     }
 
-    // Listen for crew context result
+    // Listen for responses
     this._onCrewContextResult = (e) => this.handleCrewContextResult(e.detail);
+    this._onRolePlaySessionsResult = (e) => this.handleRolePlaySessionsResult(e.detail);
     window.addEventListener('crew-context-result', this._onCrewContextResult);
+    window.addEventListener('roleplay-sessions-result', this._onRolePlaySessionsResult);
   },
 
   beforeUnmount() {
     if (this._onCrewContextResult) {
       window.removeEventListener('crew-context-result', this._onCrewContextResult);
     }
-    clearTimeout(this._crewCheckTimer);
+    if (this._onRolePlaySessionsResult) {
+      window.removeEventListener('roleplay-sessions-result', this._onRolePlaySessionsResult);
+    }
+    clearTimeout(this._dirCheckTimer);
   },
 
   methods: {
@@ -222,7 +261,7 @@ export default {
       this.roles.push({
         name: 'role' + idx,
         displayName: 'Role ' + idx,
-        icon: '🤖',
+        icon: '',
         description: '',
         claudeMd: '',
       });
@@ -244,6 +283,46 @@ export default {
         teamType: this.currentTemplate === 'custom' ? 'custom' : this.currentTemplate,
         language: this.language,
       });
+    },
+
+    restoreSession(session) {
+      this.$emit('restore', {
+        agentId: this.selectedAgent,
+        projectDir: this.projectDir.trim(),
+        session,
+      });
+    },
+
+    /**
+     * Check directory: first for .roleplay sessions, then for .crew context.
+     * If .roleplay sessions exist, skip .crew check entirely.
+     */
+    checkDirectory(dir) {
+      this.crewDetected = false;
+      this.existingSessions = [];
+      this.showCreateNew = false;
+      if (!dir || !dir.trim() || !this.selectedAgent) return;
+
+      const requestId = 'rp_' + Date.now().toString(36);
+      this._rpCheckRequestId = requestId;
+      this.store.sendWsMessage({
+        type: 'check_roleplay_sessions',
+        agentId: this.selectedAgent,
+        projectDir: dir.trim(),
+        requestId,
+      });
+    },
+
+    handleRolePlaySessionsResult(msg) {
+      if (msg.requestId !== this._rpCheckRequestId) return;
+      if (msg.found && msg.sessions && msg.sessions.length > 0) {
+        this.existingSessions = msg.sessions;
+        // Don't check .crew when .roleplay sessions exist
+        return;
+      }
+      // No .roleplay sessions — fall through to check .crew context
+      this.existingSessions = [];
+      this.checkCrewContext(this.projectDir);
     },
 
     checkCrewContext(dir) {
@@ -281,6 +360,13 @@ export default {
           claudeMd: '',  // claudeMd is loaded server-side, not sent to frontend for size
         }));
       }
+    },
+
+    formatDate(ts) {
+      if (!ts) return '';
+      const d = new Date(typeof ts === 'number' ? ts : ts);
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     },
   },
 };

@@ -205,6 +205,11 @@ export function handleMessage(store, msg) {
       window.dispatchEvent(new CustomEvent('crew-context-result', { detail: msg }));
       break;
 
+    case 'roleplay_sessions_result':
+      // Dispatch to RolePlayConfigPanel for session restore UI
+      window.dispatchEvent(new CustomEvent('roleplay-sessions-result', { detail: msg }));
+      break;
+
     case 'crew_sessions_list':
       break;
 

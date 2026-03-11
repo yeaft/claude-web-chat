@@ -591,4 +591,8 @@ export default {
   'roleplay.noAgents': '没有在线的 Agent',
   'roleplay.inputPlaceholder': '输入消息… 使用 @ 提及角色',
   'roleplay.crewDetected': '检测到 .crew 配置，已自动导入角色和上下文',
+  'roleplay.existingSessions': '已有团队',
+  'roleplay.restore': '恢复',
+  'roleplay.restoring': '正在恢复 角色扮演 会话...',
+  'roleplay.createNew': '创建新团队',
 };

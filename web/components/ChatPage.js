@@ -321,6 +321,7 @@ export default {
         ref="rolePlayPanel"
         @close="rolePlayConfigOpen = false"
         @start="startRolePlaySession"
+        @restore="restoreRolePlaySession"
         @browse="openRolePlayFolderPicker"
       />
 
@@ -600,6 +601,10 @@ export default {
     startRolePlaySession(config) {
       this.rolePlayConfigOpen = false;
       this.store.createRolePlaySession(config);
+    },
+    restoreRolePlaySession(config) {
+      this.rolePlayConfigOpen = false;
+      this.store.restoreRolePlaySession(config);
     },
     getRolePlayTitle(conv) {
       // Use conversation title (from first user message) or fallback

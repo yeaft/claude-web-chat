@@ -591,4 +591,8 @@ export default {
   'roleplay.noAgents': 'No online agents available',
   'roleplay.inputPlaceholder': 'Type a message… Use @ to mention a role',
   'roleplay.crewDetected': '.crew config detected — roles and context auto-imported',
+  'roleplay.existingSessions': 'Existing Teams',
+  'roleplay.restore': 'Restore',
+  'roleplay.restoring': 'Restoring Role Play session...',
+  'roleplay.createNew': 'Create New Team',
 };

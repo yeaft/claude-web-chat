@@ -3,6 +3,7 @@ import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
 import { crewSessions, loadCrewIndex } from './crew.js';
 import { rolePlaySessions, saveRolePlayIndex, removeRolePlaySession, loadRolePlayIndex, validateRolePlayConfig, initRolePlayRouteState, loadCrewContext, refreshCrewContext, initCrewContextMtimes } from './roleplay.js';
+import { loadRolePlaySessionIndex } from './roleplay-session.js';
 import { initRolePlayDir, writeSessionClaudeMd, generateSessionName, getDefaultRoles, getSessionDir } from './roleplay-dir.js';
 import { addRolePlaySession, findRolePlaySessionByConversationId, setActiveRolePlaySession } from './roleplay-session.js';
 
@@ -815,5 +816,42 @@ export function handleCheckCrewContext(msg) {
     teamType: crewContext.teamType,
     language: crewContext.language,
     featureCount: crewContext.features.length,
+  });
+}
+
+/**
+ * Handle check_roleplay_sessions request — check if a directory has .roleplay/session.json
+ * and return the list of existing sessions for restore.
+ */
+export function handleCheckRolePlaySessions(msg) {
+  const { projectDir, requestId } = msg;
+  if (!projectDir) {
+    ctx.sendToServer({ type: 'roleplay_sessions_result', requestId, found: false, sessions: [] });
+    return;
+  }
+  const index = loadRolePlaySessionIndex(projectDir);
+  const activeSessions = index.sessions.filter(s => s.status === 'active');
+  if (activeSessions.length === 0) {
+    ctx.sendToServer({ type: 'roleplay_sessions_result', requestId, found: false, sessions: [] });
+    return;
+  }
+  ctx.sendToServer({
+    type: 'roleplay_sessions_result',
+    requestId,
+    found: true,
+    sessions: activeSessions.map(s => ({
+      name: s.name,
+      teamType: s.teamType,
+      language: s.language,
+      conversationId: s.conversationId,
+      roles: (s.roles || []).map(r => ({
+        name: r.name,
+        displayName: r.displayName,
+        icon: r.icon || '',
+        description: r.description || '',
+      })),
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+    })),
   });
 }
