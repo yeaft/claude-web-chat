@@ -358,6 +358,7 @@ export async function handleCheckCrewExists(msg) {
  *
  * 删除: CLAUDE.md（共享模板）、roles/（角色模板）
  * 清空: sessions/ 下的文件（旧角色的 Claude Code session IDs，已失效）
+ * 清除: crew-index 中的旧 entry（防止 createCrewSession 走 resume 而非 create）
  * 保留: context/、session.json、messages*.json 及任何其他生成文件（截图、设计文档等）
  */
 export async function handleDeleteCrewDir(msg) {
@@ -374,9 +375,18 @@ export async function handleDeleteCrewDir(msg) {
     try {
       const sessionFiles = await fs.readdir(sessionsDir);
       await Promise.all(
-        sessionFiles.map(f => fs.rm(join(sessionsDir, f), { force: true }).catch(() => {}))
+        sessionFiles.map(f => fs.rm(join(sessionsDir, f), { recursive: true, force: true }).catch(() => {}))
       );
     } catch { /* sessions/ may not exist */ }
+
+    // 清除 crew-index 中的旧 entry（不删文件），确保新建时走 create → loadSessionMeta 合并统计
+    const normalizedDir = projectDir.replace(/\/+$/, '');
+    const index = await loadCrewIndex();
+    const match = index.find(e => e.projectDir.replace(/\/+$/, '') === normalizedDir);
+    if (match) {
+      await removeFromCrewIndex(match.sessionId);
+      console.log(`[Crew] Cleared index entry for ${projectDir} (sessionId: ${match.sessionId})`);
+    }
   } catch {}
 }
 
