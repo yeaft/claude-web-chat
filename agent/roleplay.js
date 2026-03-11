@@ -396,6 +396,7 @@ ${workflow}
 
 ## 输出格式
 
+- 不要在回复开头添加角色名称或"XX视角"等标题，对话界面已经显示了角色信息，直接以角色身份开始回复内容
 - 代码修改使用工具（Read, Edit, Write 等），不要在聊天中贴大段代码
 - 每个角色专注做自己的事，不要代替其他角色
 - Review 和 Test 角色如果发现问题，必须切回 Dev 修复后再继续
@@ -463,6 +464,7 @@ Each role switch must include clear handoff information from the previous role:
 
 ## Output Format
 
+- Do not add role names or titles like "XX's perspective" at the beginning of responses; the chat UI already displays role information — start directly with the role's content
 - Use tools (Read, Edit, Write, etc.) for code changes, don't paste large code blocks in chat
 - Each role focuses on its own responsibility, don't do other roles' jobs
 - If Review or Test finds issues, must switch back to Dev to fix before continuing
