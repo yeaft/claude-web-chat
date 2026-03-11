@@ -572,11 +572,13 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         // ★ Send pending user message after compact completes
         if (state._pendingUserMessage && state.inputStream) {
           const pendingMsg = state._pendingUserMessage;
+          const pendingDisplayMsg = state._pendingDisplayMessage || pendingMsg;
           state._pendingUserMessage = null;
+          state._pendingDisplayMessage = null;
           console.log(`[${conversationId}] Sending pending message after compact`);
           state.turnActive = true;
           state.turnResultReceived = false;
-          sendOutput(conversationId, pendingMsg);
+          sendOutput(conversationId, pendingDisplayMsg);
           state.inputStream.enqueue(pendingMsg);
           sendConversationList();
         }

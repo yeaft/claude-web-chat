@@ -607,6 +607,9 @@ export async function handleUserInput(msg) {
     console.log(`[RolePlay] Human responded, resuming from ${fromRole}'s request`);
   }
 
+  // ★ Save displayPrompt before rolePrefix injection (preserves waitingHuman prefix but excludes ROLE signal)
+  const displayPrompt = effectivePrompt;
+
   // ★ RolePlay: handle @mention targetRole routing
   const targetRole = msg.targetRole;
   if (targetRole && rpSession && rpSession._routeInitialized) {
@@ -654,9 +657,16 @@ export async function handleUserInput(msg) {
     }
   }
 
+  // ★ Separate display message (shown to user) from Claude message (sent to model)
+  // displayPrompt: user's original text + waitingHuman prefix (no ROLE signal)
+  // effectivePrompt: may include ROLE signal prefix for @mention routing
   const userMessage = {
     type: 'user',
     message: { role: 'user', content: effectivePrompt }
+  };
+  const displayMessage = {
+    type: 'user',
+    message: { role: 'user', content: displayPrompt }
   };
 
   console.log(`[${conversationId}] Sending: ${prompt.substring(0, 100)}...`);
@@ -678,6 +688,7 @@ export async function handleUserInput(msg) {
     // Send /compact first, then the user message will be sent after compact completes
     // by storing it as a pending message
     state._pendingUserMessage = userMessage;
+    state._pendingDisplayMessage = displayMessage;
     state.turnActive = true;
     state.turnResultReceived = false;
     sendConversationList();
@@ -691,7 +702,7 @@ export async function handleUserInput(msg) {
   state.turnActive = true;
   state.turnResultReceived = false; // 重置 per-turn 去重标志
   sendConversationList(); // 在 turnActive=true 后通知 server，确保 processing 状态正确
-  sendOutput(conversationId, userMessage);
+  sendOutput(conversationId, displayMessage);
   state.inputStream.enqueue(userMessage);
 }
 
