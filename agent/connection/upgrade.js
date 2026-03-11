@@ -46,7 +46,7 @@ export async function handleUpgradeAgent() {
     const pkgName = ctx.pkgName || '@yeaft/webchat-agent';
     // Check latest version (async to avoid blocking heartbeat)
     const latestVersion = await new Promise((resolve, reject) => {
-      execFile('npm', ['view', pkgName, 'version'], { stdio: 'pipe', shell: true }, (err, stdout) => {
+      execFile('npm', ['view', pkgName, 'version'], { stdio: 'pipe', shell: process.platform === 'win32' }, (err, stdout) => {
         if (err) reject(err); else resolve(stdout.toString().trim());
       });
     });
@@ -74,7 +74,7 @@ export async function handleUpgradeAgent() {
 
     // 判断全局安装 vs 局部安装
     const isGlobalInstall = await new Promise((resolve) => {
-      execFile('npm', ['prefix', '-g'], { shell: true }, (err, stdout) => {
+      execFile('npm', ['prefix', '-g'], { shell: process.platform === 'win32' }, (err, stdout) => {
         if (err) { resolve(false); return; }
         const globalPrefix = stdout.toString().trim().replace(/\\/g, '/');
         resolve(installDir === globalPrefix || installDir === globalPrefix + '/lib');
@@ -94,7 +94,7 @@ export async function handleUpgradeAgent() {
     const isPm2 = !!process.env.pm_id;
     if (isPm2) {
       try {
-        execFileSync('pm2', ['delete', PM2_APP_NAME], { shell: true, stdio: 'pipe' });
+        execFileSync('pm2', ['delete', PM2_APP_NAME], { shell: process.platform === 'win32', stdio: 'pipe' });
         console.log(`[Agent] PM2 app deleted to prevent auto-restart during upgrade`);
       } catch {
         console.log(`[Agent] PM2 delete skipped (app may not be registered)`);
@@ -201,8 +201,9 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
 
   writeFileSync(batPath, batLines.join('\r\n'));
   const child = spawn('cmd.exe', ['/c', batPath], {
+    detached: true,
     stdio: 'ignore',
-    windowsHide: true
+    windowsHide: true,
   });
   child.unref();
   console.log(`[Agent] Spawned upgrade script (PID wait for ${pid}, pm2=${isPm2}, dir=${installDir}): ${batPath}`);

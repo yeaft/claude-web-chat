@@ -46,7 +46,7 @@ function generateBatLines({ pid, pkgSpec, logPath, batPath }) {
     'echo [Upgrade] Waiting for CLI process (PID %PID%) to exit... >> "%LOGFILE%"',
     '',
     ':WAIT_LOOP',
-    'tasklist /FI "PID eq %PID%" 2>NUL | findstr /I "%PID%" >NUL',
+    'tasklist /FI "PID eq %PID%" /NH 2>NUL | findstr /C:"%PID%" >NUL',
     'if errorlevel 1 goto PID_EXITED',
     'set /A COUNT+=1',
     'if %COUNT% GEQ %MAX_WAIT% (',
@@ -212,7 +212,7 @@ describe('upgradeWindows — bat script generation', () => {
   });
 
   it('should use findstr instead of find for PID check (find without pipe hangs on Windows)', () => {
-    expect(batContent).toContain('findstr /I "%PID%"');
+    expect(batContent).toContain('findstr /C:"%PID%"');
     expect(batContent).not.toContain('| find /I');
   });
 
@@ -290,8 +290,8 @@ describe('upgrade() — platform branching logic', () => {
       path.join(process.cwd(), 'agent/cli.js'),
       'utf-8'
     );
-    // detached was removed to prevent cmd windows from popping up (task-19)
-    expect(cliSource).not.toContain("detached: true");
+    // detached: true is required so the bat child survives parent process.exit(0)
+    expect(cliSource).toContain("detached: true");
     expect(cliSource).toContain("child.unref()");
     expect(cliSource).toContain("process.exit(0)");
   });
