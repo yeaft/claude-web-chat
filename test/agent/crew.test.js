@@ -5301,7 +5301,7 @@ describe('writeSharedClaudeMd - Feature 工作记录章节 (auto-managed)', () =
 
   it('should mention automatic management of task files', () => {
     expect(crewContent).toContain('系统自动管理');
-    expect(crewContent).toContain('context/features/{task-id}.md');
+    expect(crewContent).toContain('.crew/context/features/{task-id}.md');
   });
 
   it('should describe 3 automatic behaviors', () => {
@@ -5379,7 +5379,7 @@ ${routeTargets.map(r => `- ${r.name}: ${roleLabel(r)} — ${r.description}`).joi
 
     // Feature 工作记录说明（所有角色统一注入）
     prompt += `\n\n# Feature 工作记录
-系统会自动管理 \`context/features/{task-id}.md\` 工作记录文件：
+系统会自动管理 \`.crew/context/features/{task-id}.md\` 工作记录文件：
 - PM 分配任务时自动创建文件（包含 task-id、标题、需求描述）
 - 每次 ROUTE 传递时自动追加工作记录（角色名、时间、summary）
 - 你收到的消息中会包含 <task-context> 标签，里面是该任务的完整工作记录
@@ -5512,12 +5512,12 @@ ${routeTargets.map(r => `- ${r.name}: ${roleLabel(r)} — ${r.description}`).joi
     expect(prompt).toContain('<task-context>');
   });
 
-  it('should mention context/features/{task-id}.md path', () => {
+  it('should mention .crew/context/features/{task-id}.md path', () => {
     const session = createMultiRoleSession();
     const pmRole = session.roles.get('pm');
     const prompt = buildRoleSystemPrompt(pmRole, session);
 
-    expect(prompt).toContain('context/features/{task-id}.md');
+    expect(prompt).toContain('.crew/context/features/{task-id}.md');
   });
 
   // --- No old per-role sections ---

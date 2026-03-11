@@ -106,7 +106,7 @@ export function parseCompletedTasks(text) {
 }
 
 /**
- * 更新 feature 索引文件 context/features/index.md
+ * 更新 feature 索引文件 .crew/context/features/index.md
  */
 export async function updateFeatureIndex(session) {
   const featuresDir = join(session.sharedDir, 'context', 'features');
@@ -148,7 +148,7 @@ export async function updateFeatureIndex(session) {
 }
 
 /**
- * 追加完成汇总到 context/changelog.md
+ * 追加完成汇总到 .crew/context/changelog.md
  */
 export async function appendChangelog(session, taskId, taskTitle) {
   const contextDir = join(session.sharedDir, 'context');
@@ -218,7 +218,7 @@ export async function saveRoleWorkSummary(session, roleName, accumulatedText) {
 let _kanbanWriteLock = Promise.resolve();
 
 /**
- * 更新工作看板 context/kanban.md
+ * 更新工作看板 .crew/context/kanban.md
  *
  * @param {object} session
  * @param {object} [opts]
