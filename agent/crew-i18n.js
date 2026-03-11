@@ -498,3 +498,23 @@ Roles don't need to manually create or update these files.`,
 export function getMessages(language) {
   return messages[language] || messages['zh-CN'];
 }
+
+/**
+ * Get all memory-related titles and defaults across all locales.
+ * Used to detect and extract user-written memory content regardless of language.
+ * @returns {{ sharedTitles: string[], sharedDefaults: string[], personalTitles: string[], personalDefaults: string[] }}
+ */
+export function getAllMemoryTitles() {
+  const sharedTitles = [];
+  const sharedDefaults = [];
+  const personalTitles = [];
+  const personalDefaults = [];
+  for (const lang of Object.keys(messages)) {
+    const m = messages[lang];
+    if (m.sharedMemoryTitle) sharedTitles.push(m.sharedMemoryTitle);
+    if (m.sharedMemoryDefault) sharedDefaults.push(m.sharedMemoryDefault);
+    if (m.personalMemory) personalTitles.push(m.personalMemory);
+    if (m.personalMemoryDefault) personalDefaults.push(m.personalMemoryDefault);
+  }
+  return { sharedTitles, sharedDefaults, personalTitles, personalDefaults };
+}
