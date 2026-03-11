@@ -29,6 +29,7 @@ export async function handleClientCrew(clientId, client, msg, checkAgentAccess) 
         name: msg.name || '',
         roles: msg.roles,
         teamType: msg.teamType || 'dev',
+        language: msg.language || 'zh-CN',
         userId: client.userId,
         username: client.username
       });
