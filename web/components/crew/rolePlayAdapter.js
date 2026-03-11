@@ -120,10 +120,10 @@ function extractRouteBlocks(text) {
  * Resolve role info (icon, displayName) from the rolePlay session.
  */
 function resolveRole(roleName, rolesMap) {
-  if (!roleName) return { roleName: 'Assistant', roleIcon: '🤖' };
+  if (!roleName) return { roleName: 'Assistant', roleIcon: '' };
   const info = rolesMap.get(roleName);
-  if (info) return { roleName: info.displayName || roleName, roleIcon: info.icon || '🤖' };
-  return { roleName, roleIcon: '🤖' };
+  if (info) return { roleName: info.displayName || roleName, roleIcon: info.icon || '' };
+  return { roleName, roleIcon: '' };
 }
 
 /**

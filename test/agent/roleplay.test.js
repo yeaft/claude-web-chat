@@ -70,6 +70,7 @@ ${workflow}
 
 ## 输出格式
 
+- 不要在回复开头添加角色名称或"XX视角"等标题，对话界面已经显示了角色信息，直接以角色身份开始回复内容
 - 代码修改使用工具（Read, Edit, Write 等），不要在聊天中贴大段代码
 - 每个角色专注做自己的事，不要代替其他角色
 - Review 和 Test 角色如果发现问题，必须切回 Dev 修复后再继续
@@ -117,6 +118,7 @@ Each role switch must include clear handoff information from the previous role:
 
 ## Output Format
 
+- Do not add role names or titles like "XX's perspective" at the beginning of responses; the chat UI already displays role information — start directly with the role's content
 - Use tools (Read, Edit, Write, etc.) for code changes, don't paste large code blocks in chat
 - Each role focuses on its own responsibility, don't do other roles' jobs
 - If Review or Test finds issues, must switch back to Dev to fix before continuing
@@ -1011,6 +1013,50 @@ describe('agent/roleplay.js — Role Play', () => {
       };
 
       expect(agentMsg.rolePlayConfig).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Output format instructions (task-40: no role title in response)
+  // ---------------------------------------------------------------
+
+  describe('output format — no role title instruction', () => {
+    it('Chinese prompt should forbid role title at start of response', () => {
+      const prompt = buildRolePlaySystemPrompt({
+        roles: makeDevTeamRoles(),
+        teamType: 'dev',
+        language: 'zh-CN',
+      });
+      expect(prompt).toContain('不要在回复开头添加角色名称');
+      expect(prompt).toContain('直接以角色身份开始回复内容');
+    });
+
+    it('English prompt should forbid role title at start of response', () => {
+      const prompt = buildRolePlaySystemPrompt({
+        roles: makeDevTeamRoles(),
+        teamType: 'dev',
+        language: 'en',
+      });
+      expect(prompt).toContain('Do not add role names or titles');
+      expect(prompt).toContain('start directly with the role\'s content');
+    });
+
+    it('Chinese prompt should mention UI already displays role info', () => {
+      const prompt = buildRolePlaySystemPrompt({
+        roles: makeMinimalRoles(),
+        teamType: 'dev',
+        language: 'zh-CN',
+      });
+      expect(prompt).toContain('对话界面已经显示了角色信息');
+    });
+
+    it('English prompt should mention UI already displays role info', () => {
+      const prompt = buildRolePlaySystemPrompt({
+        roles: makeMinimalRoles(),
+        teamType: 'dev',
+        language: 'en',
+      });
+      expect(prompt).toContain('chat UI already displays role information');
     });
   });
 

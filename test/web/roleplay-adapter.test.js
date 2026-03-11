@@ -237,7 +237,7 @@ describe('rolePlayAdapter — adaptRolePlayMessages', () => {
     expect(result).toHaveLength(1);
     expect(result[0].role).toBe('unknown_role');
     expect(result[0].roleName).toBe('unknown_role');
-    expect(result[0].roleIcon).toBe('🤖');
+    expect(result[0].roleIcon).toBe('');
   });
 
   it('handles empty messages array', () => {
@@ -250,6 +250,71 @@ describe('rolePlayAdapter — adaptRolePlayMessages', () => {
     const result = adaptRolePlayMessages(messages, roles);
     expect(result).toHaveLength(1);
     expect(result[0].type).toBe('system');
+  });
+
+  // ── icon fallback tests (task-40) ─────────────────────────────────
+
+  it('returns empty roleIcon for roles with empty string icon', () => {
+    const rolesNoIcon = [
+      { name: 'pm', displayName: 'PM-Jobs', icon: '' },
+      { name: 'dev', displayName: 'Dev-Linus', icon: '' },
+    ];
+    const messages = [{
+      type: 'assistant',
+      content: '---ROLE: pm---\nHello\n---ROLE: dev---\nCoding\n',
+      id: 10,
+      timestamp: 7000
+    }];
+    const result = adaptRolePlayMessages(messages, rolesNoIcon);
+    expect(result).toHaveLength(2);
+    expect(result[0].roleIcon).toBe('');
+    expect(result[1].roleIcon).toBe('');
+  });
+
+  it('returns empty roleIcon for unknown role (not robot emoji)', () => {
+    const messages = [{
+      type: 'assistant',
+      content: '---ROLE: mystery---\nSomething\n',
+      id: 11,
+      timestamp: 8000
+    }];
+    const result = adaptRolePlayMessages(messages, roles);
+    expect(result[0].roleIcon).toBe('');
+  });
+
+  it('returns empty roleIcon when no roleName is set (fallback path)', () => {
+    const messages = [{
+      type: 'assistant',
+      content: 'No role signal here\n',
+      id: 12,
+      timestamp: 9000
+    }];
+    const result = adaptRolePlayMessages(messages, roles, null);
+    expect(result[0].roleIcon).toBe('');
+  });
+
+  it('preserves non-empty icon when role has one', () => {
+    const messages = [{
+      type: 'assistant',
+      content: '---ROLE: pm---\nPM here\n',
+      id: 13,
+      timestamp: 10000
+    }];
+    const result = adaptRolePlayMessages(messages, roles);
+    expect(result[0].roleIcon).toBe('📋');
+  });
+
+  it('tool-use inherits empty roleIcon from role with empty icon', () => {
+    const rolesNoIcon = [
+      { name: 'dev', displayName: 'Dev', icon: '' },
+    ];
+    const messages = [
+      { type: 'assistant', content: '---ROLE: dev---\nWorking\n', id: 14 },
+      { type: 'tool-use', toolName: 'Read', toolInput: {}, id: 15, timestamp: 11000 },
+    ];
+    const result = adaptRolePlayMessages(messages, rolesNoIcon);
+    const toolMsg = result.find(m => m.type === 'tool');
+    expect(toolMsg.roleIcon).toBe('');
   });
 });
 
