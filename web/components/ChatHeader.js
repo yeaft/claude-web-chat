@@ -230,12 +230,21 @@ export default {
     const refreshSession = () => {
       if (store.refreshingSession || !store.currentConversation) return;
       store.refreshingSession = true;
-      store.messages = [];
-      store.sendWsMessage({
-        type: 'sync_messages',
-        conversationId: store.currentConversation,
-        turns: 5
-      });
+      if (store.currentConversationIsCrew) {
+        // Crew: resume session to reload roles + messages
+        store.sendWsMessage({
+          type: 'resume_crew_session',
+          sessionId: store.currentConversation,
+          agentId: store.currentAgent
+        });
+      } else {
+        store.messages = [];
+        store.sendWsMessage({
+          type: 'sync_messages',
+          conversationId: store.currentConversation,
+          turns: 5
+        });
+      }
     };
 
     const compactContext = () => {

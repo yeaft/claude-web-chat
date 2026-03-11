@@ -280,6 +280,8 @@ export function handleCrewOutput(store, msg) {
       conv.name = msg.name || '';
     }
     store.saveOpenSessions();
+    // ★ Reset refreshingSession flag — crew_session_restored completes a refresh cycle
+    store.refreshingSession = false;
     return;
   }
 
