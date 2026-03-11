@@ -6,7 +6,7 @@ import { join, isAbsolute } from 'path';
 import ctx from '../context.js';
 import { getMessages } from '../crew-i18n.js';
 import { initWorktrees } from './worktree.js';
-import { initSharedDir, writeRoleClaudeMd, updateSharedClaudeMd } from './shared-dir.js';
+import { initSharedDir, writeRoleClaudeMd, updateSharedClaudeMd, backupMemoryContent } from './shared-dir.js';
 import {
   loadCrewIndex, upsertCrewIndex, removeFromCrewIndex,
   loadSessionMeta, saveSessionMeta, loadSessionMessages, getMaxShardIndex
@@ -366,6 +366,9 @@ export async function handleDeleteCrewDir(msg) {
   if (!isValidProjectDir(projectDir)) return;
   const crewDir = join(projectDir, '.crew');
   try {
+    // 提取并备份记忆内容（删除前）
+    await backupMemoryContent(crewDir);
+
     // 删除 Crew 模板定义
     await fs.rm(join(crewDir, 'CLAUDE.md'), { force: true }).catch(() => {});
     await fs.rm(join(crewDir, 'roles'), { recursive: true, force: true }).catch(() => {});

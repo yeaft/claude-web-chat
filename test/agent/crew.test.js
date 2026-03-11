@@ -5284,14 +5284,14 @@ describe('writeSharedClaudeMd - Feature 工作记录章节 (auto-managed)', () =
     expect(crewContent).toContain('# Feature 工作记录');
   });
 
-  it('should place Feature section after Worktree rules and before sharedMemoryDefault', async () => {
-    // In writeSharedClaudeMd template, verify the order is: worktreeRules → featureRecordShared → sharedMemoryDefault
+  it('should place Feature section after Worktree rules and before sharedMemoryTitle', async () => {
+    // In writeSharedClaudeMd template, verify the order is: worktreeRules → featureRecordShared → sharedMemoryTitle
     const crewJs = await (await import('fs')).promises.readFile(join(process.cwd(), 'agent/crew/shared-dir.js'), 'utf-8');
     // Find the template string section in writeSharedClaudeMd
     const tmplStart = crewJs.indexOf('const claudeMd = `', crewJs.indexOf('writeSharedClaudeMd'));
     const worktreeIdx = crewJs.indexOf('m.worktreeRules', tmplStart);
     const featureIdx = crewJs.indexOf('m.featureRecordShared', tmplStart);
-    const memoryIdx = crewJs.indexOf('sharedMemoryDefault}', tmplStart);
+    const memoryIdx = crewJs.indexOf('m.sharedMemoryTitle}', tmplStart);
     expect(worktreeIdx).toBeGreaterThan(0);
     expect(worktreeIdx).toBeLessThan(featureIdx);
     expect(featureIdx).toBeLessThan(memoryIdx);

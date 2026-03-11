@@ -4,11 +4,96 @@
  */
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import { getMessages } from '../crew-i18n.js';
+import { getMessages, getAllMemoryTitles } from '../crew-i18n.js';
 
 /** Format role label: "icon displayName" or just "displayName" if no icon */
 function roleLabel(r) {
   return r.icon ? `${r.icon} ${r.displayName}` : r.displayName;
+}
+
+const MEMORY_BACKUP_FILE = '.memory-backup.json';
+
+/**
+ * Extract user-written content after a memory section title.
+ * Searches for any known locale's title (e.g. "# 共享记忆" or "# Shared Memory"),
+ * returns the trimmed content after the title line until EOF or next top-level heading.
+ * Returns null if section not found or content is only the default placeholder.
+ */
+function extractMemorySection(fileContent, titles, defaults) {
+  for (const title of titles) {
+    const idx = fileContent.indexOf(title);
+    if (idx === -1) continue;
+    // Content starts after the title line
+    const afterTitle = fileContent.slice(idx + title.length);
+    // Find next top-level heading (# at start of line) — that's where memory ends
+    const nextHeading = afterTitle.search(/\n#\s/);
+    const raw = nextHeading === -1 ? afterTitle : afterTitle.slice(0, nextHeading);
+    const trimmed = raw.trim();
+    // Skip if empty or is just the default placeholder
+    if (!trimmed) return null;
+    for (const d of defaults) {
+      if (trimmed === d.trim()) return null;
+    }
+    return trimmed;
+  }
+  return null;
+}
+
+/**
+ * Backup memory content from .crew/CLAUDE.md and .crew/roles/*/CLAUDE.md
+ * before deletion. Writes .crew/.memory-backup.json.
+ */
+export async function backupMemoryContent(crewDir) {
+  const { sharedTitles, sharedDefaults, personalTitles, personalDefaults } = getAllMemoryTitles();
+  const backup = { shared: null, roles: {} };
+
+  // Extract shared memory from .crew/CLAUDE.md
+  try {
+    const sharedContent = await fs.readFile(join(crewDir, 'CLAUDE.md'), 'utf-8');
+    backup.shared = extractMemorySection(sharedContent, sharedTitles, sharedDefaults);
+  } catch { /* CLAUDE.md doesn't exist — skip */ }
+
+  // Extract personal memory from each role's CLAUDE.md
+  try {
+    const rolesDir = join(crewDir, 'roles');
+    const roleDirs = await fs.readdir(rolesDir);
+    for (const roleName of roleDirs) {
+      try {
+        const roleClaudeMd = await fs.readFile(join(rolesDir, roleName, 'CLAUDE.md'), 'utf-8');
+        const memory = extractMemorySection(roleClaudeMd, personalTitles, personalDefaults);
+        if (memory) {
+          backup.roles[roleName] = memory;
+        }
+      } catch { /* Role dir or file missing — skip */ }
+    }
+  } catch { /* roles/ doesn't exist — skip */ }
+
+  // Only write backup if there's something to preserve
+  if (backup.shared || Object.keys(backup.roles).length > 0) {
+    await fs.writeFile(join(crewDir, MEMORY_BACKUP_FILE), JSON.stringify(backup, null, 2));
+    console.log(`[Crew] Memory backup saved: shared=${!!backup.shared}, roles=${Object.keys(backup.roles).join(',') || 'none'}`);
+  }
+}
+
+/**
+ * Load memory backup from .crew/.memory-backup.json, returns null if not found.
+ */
+async function loadMemoryBackup(sharedDir) {
+  try {
+    const data = await fs.readFile(join(sharedDir, MEMORY_BACKUP_FILE), 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Delete memory backup file after successful restore.
+ */
+async function cleanupMemoryBackup(sharedDir) {
+  try {
+    await fs.rm(join(sharedDir, MEMORY_BACKUP_FILE), { force: true });
+  } catch { /* ignore */ }
 }
 
 /**
@@ -27,6 +112,9 @@ export async function initSharedDir(sharedDir, roles, projectDir, language = 'zh
 
   // 生成 .crew/CLAUDE.md（共享级）
   await writeSharedClaudeMd(sharedDir, roles, projectDir, language);
+
+  // 清理记忆备份文件（已在 write 阶段恢复）
+  await cleanupMemoryBackup(sharedDir);
 }
 
 /**
@@ -52,6 +140,10 @@ export async function initRoleDir(sharedDir, role, language = 'zh-CN', allRoles 
 export async function writeSharedClaudeMd(sharedDir, roles, projectDir, language = 'zh-CN') {
   const m = getMessages(language);
 
+  // Check for memory backup to restore
+  const backup = await loadMemoryBackup(sharedDir);
+  const sharedMemoryContent = (backup && backup.shared) ? backup.shared : m.sharedMemoryDefault;
+
   const claudeMd = `${m.projectGoal}
 
 ${m.projectCodePath}
@@ -73,7 +165,7 @@ ${m.worktreeRulesContent}
 ${m.featureRecordShared}
 
 ${m.sharedMemoryTitle}
-${m.sharedMemoryDefault}
+${sharedMemoryContent}
 `;
 
   await fs.writeFile(join(sharedDir, 'CLAUDE.md'), claudeMd);
@@ -129,6 +221,12 @@ export async function writeRoleClaudeMd(sharedDir, role, language = 'zh-CN', all
   const roleDir = join(sharedDir, 'roles', role.name);
   const m = getMessages(language);
 
+  // Check for memory backup to restore
+  const backup = await loadMemoryBackup(sharedDir);
+  const personalMemoryContent = (backup && backup.roles && backup.roles[role.name])
+    ? backup.roles[role.name]
+    : m.personalMemoryDefault;
+
   // Resolve generic ROUTE targets to actual instance names
   const resolvedClaudeMd = resolveRouteTargets(role.claudeMd || role.description, role, allRoles);
 
@@ -147,7 +245,7 @@ ${m.codeWorkDirNote}
 
   claudeMd += `
 ${m.personalMemory}
-${m.personalMemoryDefault}
+${personalMemoryContent}
 `;
 
   await fs.writeFile(join(roleDir, 'CLAUDE.md'), claudeMd);
