@@ -152,11 +152,11 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
   // Wait for old process to exit (PM2 already deleted before exit, so no auto-restart race)
   batLines.push(
     ':WAIT_LOOP',
-    'tasklist /FI "PID eq %PID%" 2>NUL | findstr /I "%PID%" >NUL',
+    'tasklist /FI "PID eq %PID%" /NH 2>NUL | findstr /C:"%PID%" >NUL',
     'if errorlevel 1 goto PID_EXITED',
     'set /A COUNT+=1',
     'if %COUNT% GEQ %MAX_WAIT% (',
-    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after 60s >> "%LOGFILE%"',
+    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after %MAX_WAIT% iterations >> "%LOGFILE%"',
     '  goto PID_EXITED',
     ')',
     'ping -n 3 127.0.0.1 >NUL',
@@ -201,7 +201,6 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
 
   writeFileSync(batPath, batLines.join('\r\n'));
   const child = spawn('cmd.exe', ['/c', batPath], {
-    detached: true,
     stdio: 'ignore',
     windowsHide: true
   });

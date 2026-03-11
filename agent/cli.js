@@ -152,6 +152,19 @@ function upgrade() {
     } else {
       execSync(`npm install -g ${pkg.name}@latest`, { stdio: 'inherit' });
       console.log(`Successfully upgraded to ${latest}`);
+
+      // If PM2 is managing yeaft-agent, restart it so the new version takes effect
+      try {
+        const pm2List = execSync('pm2 jlist', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        const apps = JSON.parse(pm2List);
+        if (Array.isArray(apps) && apps.some(app => app.name === 'yeaft-agent')) {
+          console.log('Restarting yeaft-agent via PM2...');
+          execSync('pm2 restart yeaft-agent', { stdio: 'inherit' });
+          console.log('PM2 service restarted.');
+        }
+      } catch {
+        // PM2 not installed or not managing yeaft-agent — nothing to do
+      }
     }
   } catch (e) {
     console.error('Upgrade failed:', e.message);
@@ -185,11 +198,11 @@ function upgradeWindows(latestVersion) {
     'echo [Upgrade] Waiting for CLI process (PID %PID%) to exit... >> "%LOGFILE%"',
     '',
     ':WAIT_LOOP',
-    'tasklist /FI "PID eq %PID%" 2>NUL | findstr /I "%PID%" >NUL',
+    'tasklist /FI "PID eq %PID%" /NH 2>NUL | findstr /C:"%PID%" >NUL',
     'if errorlevel 1 goto PID_EXITED',
     'set /A COUNT+=1',
     'if %COUNT% GEQ %MAX_WAIT% (',
-    '  echo [Upgrade] Timeout waiting for PID %PID% to exit >> "%LOGFILE%"',
+    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after %MAX_WAIT% iterations >> "%LOGFILE%"',
     '  goto PID_EXITED',
     ')',
     'ping -n 3 127.0.0.1 >NUL',
@@ -210,7 +223,6 @@ function upgradeWindows(latestVersion) {
 
   writeFileSync(batPath, batLines.join('\r\n'));
   const child = spawn('cmd.exe', ['/c', batPath], {
-    detached: true,
     stdio: 'ignore',
     windowsHide: true,
   });
