@@ -70,28 +70,29 @@ export function createCrewScroll(store, { getMessagesRef, getFeatureBlocks }) {
     if (isLoadingHistory.value || !hasOlderMessages.value) return;
     const sid = store.currentConversation;
     const requested = store.loadCrewHistory(sid);
-    if (requested && watchFn) {
-      isLoadingHistory.value = true;
-      const unwatch = watchFn(
-        () => store.crewOlderMessages[sid]?.loading,
-        (loading) => {
-          if (loading === false) {
-            unwatch();
-            isLoadingHistory.value = false;
-            const scrollEl = getMessagesRef();
-            const oldScrollHeight = scrollEl?.scrollHeight || 0;
-            const oldScrollTop = scrollEl?.scrollTop || 0;
-            visibleBlockCount.value = getFeatureBlocks().length;
-            Vue.nextTick(() => {
-              if (scrollEl) {
-                const newScrollHeight = scrollEl.scrollHeight;
-                scrollEl.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight);
-              }
-            });
-          }
+    if (!requested) return;
+    // Use provided watchFn or fall back to Vue.watch (works in Options API created() scope)
+    const doWatch = watchFn || ((getter, cb) => Vue.watch(getter, cb));
+    isLoadingHistory.value = true;
+    const unwatch = doWatch(
+      () => store.crewOlderMessages[sid]?.loading,
+      (loading) => {
+        if (loading === false) {
+          unwatch();
+          isLoadingHistory.value = false;
+          const scrollEl = getMessagesRef();
+          const oldScrollHeight = scrollEl?.scrollHeight || 0;
+          const oldScrollTop = scrollEl?.scrollTop || 0;
+          visibleBlockCount.value = getFeatureBlocks().length;
+          Vue.nextTick(() => {
+            if (scrollEl) {
+              const newScrollHeight = scrollEl.scrollHeight;
+              scrollEl.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight);
+            }
+          });
         }
-      );
-    }
+      }
+    );
   }
 
   function scrollToMeaningfulContent() {
