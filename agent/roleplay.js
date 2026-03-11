@@ -483,8 +483,17 @@ function getWorkflow(teamType, roles, isZh) {
   if (teamType === 'dev') {
     return buildDevWorkflow(roleNames, isZh);
   }
+  if (teamType === 'writing') {
+    return buildWritingWorkflow(roleNames, isZh);
+  }
+  if (teamType === 'trading') {
+    return buildTradingWorkflow(roleNames, isZh);
+  }
+  if (teamType === 'video') {
+    return buildVideoWorkflow(roleNames, isZh);
+  }
 
-  // Generic fallback for other team types
+  // Generic fallback for custom / unknown team types
   return isZh ? '按角色顺序依次完成任务。' : 'Complete tasks by following the role sequence.';
 }
 
@@ -516,9 +525,71 @@ function buildDevWorkflow(roleNames, isZh) {
   return steps.join('\n');
 }
 
-// ---------------------------------------------------------------------------
-// RolePlay ROUTE protocol support
-// ---------------------------------------------------------------------------
+function buildWritingWorkflow(roleNames, isZh) {
+  const hasEditor = roleNames.includes('editor');
+  const hasWriter = roleNames.includes('writer');
+  const hasProofreader = roleNames.includes('proofreader');
+
+  const steps = [];
+
+  if (isZh) {
+    if (hasEditor) steps.push(`${steps.length + 1}. **编辑** 分析需求，确定内容方向和框架`);
+    if (hasWriter) steps.push(`${steps.length + 1}. **作者** 根据大纲撰写内容`);
+    if (hasProofreader) steps.push(`${steps.length + 1}. **审校** 检查逻辑一致性、事实准确性和文字质量（不通过 → 返回作者修改）`);
+    if (hasEditor) steps.push(`${steps.length + 1}. **编辑** 验收最终成果`);
+  } else {
+    if (hasEditor) steps.push(`${steps.length + 1}. **Editor** analyzes requirements, determines content direction and framework`);
+    if (hasWriter) steps.push(`${steps.length + 1}. **Writer** writes content based on outline`);
+    if (hasProofreader) steps.push(`${steps.length + 1}. **Proofreader** checks logical consistency, factual accuracy, and writing quality (if fails → back to Writer)`);
+    if (hasEditor) steps.push(`${steps.length + 1}. **Editor** final acceptance of deliverables`);
+  }
+
+  return steps.join('\n');
+}
+
+function buildTradingWorkflow(roleNames, isZh) {
+  const hasAnalyst = roleNames.includes('analyst');
+  const hasStrategist = roleNames.includes('strategist');
+  const hasRiskManager = roleNames.includes('risk-manager');
+
+  const steps = [];
+
+  if (isZh) {
+    if (hasAnalyst) steps.push(`${steps.length + 1}. **分析师** 研究市场，输出技术分析和关键价位`);
+    if (hasStrategist) steps.push(`${steps.length + 1}. **策略师** 综合分析，制定投资策略和仓位方案`);
+    if (hasRiskManager) steps.push(`${steps.length + 1}. **风控官** 压力测试策略，评估尾部风险（不通过 → 返回策略师调整）`);
+    if (hasStrategist) steps.push(`${steps.length + 1}. **策略师** 确认最终方案并总结`);
+  } else {
+    if (hasAnalyst) steps.push(`${steps.length + 1}. **Analyst** researches market, outputs technical analysis and key levels`);
+    if (hasStrategist) steps.push(`${steps.length + 1}. **Strategist** synthesizes analysis, formulates investment strategy and position plan`);
+    if (hasRiskManager) steps.push(`${steps.length + 1}. **Risk Manager** stress-tests strategy, assesses tail risks (if fails → back to Strategist)`);
+    if (hasStrategist) steps.push(`${steps.length + 1}. **Strategist** confirms final plan and summarizes`);
+  }
+
+  return steps.join('\n');
+}
+
+function buildVideoWorkflow(roleNames, isZh) {
+  const hasDirector = roleNames.includes('director');
+  const hasWriter = roleNames.includes('writer');
+  const hasProducer = roleNames.includes('producer');
+
+  const steps = [];
+
+  if (isZh) {
+    if (hasDirector) steps.push(`${steps.length + 1}. **导演** 确定主题、情绪基调和视觉风格`);
+    if (hasWriter) steps.push(`${steps.length + 1}. **编剧** 构思故事线，撰写分段脚本`);
+    if (hasProducer) steps.push(`${steps.length + 1}. **制片** 审核可行性，生成最终 prompt 序列（不通过 → 返回编剧调整）`);
+    if (hasDirector) steps.push(`${steps.length + 1}. **导演** 最终审核并验收`);
+  } else {
+    if (hasDirector) steps.push(`${steps.length + 1}. **Director** establishes theme, emotional tone, and visual style`);
+    if (hasWriter) steps.push(`${steps.length + 1}. **Screenwriter** conceives storyline, writes segmented script`);
+    if (hasProducer) steps.push(`${steps.length + 1}. **Producer** reviews feasibility, generates final prompt sequence (if fails → back to Screenwriter)`);
+    if (hasDirector) steps.push(`${steps.length + 1}. **Director** final review and acceptance`);
+  }
+
+  return steps.join('\n');
+}
 
 // Re-export parseRoutes for use by claude.js and tests
 export { parseRoutes } from './crew/routing.js';

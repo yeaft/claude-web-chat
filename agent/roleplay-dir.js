@@ -193,9 +193,13 @@ export async function writeSessionClaudeMd(projectDir, sessionName, config) {
   const roleSection = buildRoleSection(teamType, language, customRoles);
 
   // Build workflow section
-  const workflow = (teamType === 'dev')
-    ? m.devWorkflow
-    : m.genericWorkflow;
+  const workflowMap = {
+    dev: m.devWorkflow,
+    writing: m.writingWorkflow,
+    trading: m.tradingWorkflow,
+    video: m.videoWorkflow,
+  };
+  const workflow = workflowMap[teamType] || m.genericWorkflow;
 
   const content = `${m.sessionTitle(sessionName)}
 
