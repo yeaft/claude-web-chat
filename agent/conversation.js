@@ -607,6 +607,53 @@ export async function handleUserInput(msg) {
     console.log(`[RolePlay] Human responded, resuming from ${fromRole}'s request`);
   }
 
+  // ★ RolePlay: handle @mention targetRole routing
+  const targetRole = msg.targetRole;
+  if (targetRole && rpSession && rpSession._routeInitialized) {
+    const roleNames = new Set(rpSession.roles.map(r => r.name));
+    if (roleNames.has(targetRole)) {
+      const targetRoleConfig = rpSession.roles.find(r => r.name === targetRole);
+      const targetLabel = targetRoleConfig
+        ? (targetRoleConfig.icon ? `${targetRoleConfig.icon} ${targetRoleConfig.displayName}` : targetRoleConfig.displayName)
+        : targetRole;
+      const targetClaudeMd = targetRoleConfig?.claudeMd || '';
+
+      // Prepend ROLE signal so Claude responds as the target role
+      let rolePrefix = `---ROLE: ${targetRole}---\n\n`;
+      rolePrefix += `用户指定由 ${targetLabel} 来回复。\n`;
+      if (targetClaudeMd) {
+        rolePrefix += `<role-context>\n${targetClaudeMd}\n</role-context>\n\n`;
+      }
+      rolePrefix += `请以 ${targetLabel} 的身份回复以下消息：\n\n`;
+      effectivePrompt = rolePrefix + effectivePrompt;
+
+      // Update rpSession state
+      const prevRole = rpSession.currentRole;
+      rpSession.currentRole = targetRole;
+      if (rpSession.roleStates[targetRole]) {
+        rpSession.roleStates[targetRole].status = 'active';
+      }
+      if (prevRole && prevRole !== targetRole && rpSession.roleStates[prevRole]) {
+        rpSession.roleStates[prevRole].status = 'idle';
+      }
+
+      // Send roleplay_status update to frontend
+      ctx.sendToServer({
+        type: 'roleplay_status',
+        conversationId,
+        currentRole: rpSession.currentRole,
+        round: rpSession.round,
+        features: rpSession.features ? Array.from(rpSession.features.values()) : [],
+        roleStates: rpSession.roleStates || {},
+        waitingHuman: false
+      });
+
+      console.log(`[RolePlay] @mention routing: ${prevRole || 'none'} -> ${targetRole}`);
+    } else {
+      console.warn(`[RolePlay] @mention target role not found: ${targetRole}`);
+    }
+  }
+
   const userMessage = {
     type: 'user',
     message: { role: 'user', content: effectivePrompt }
