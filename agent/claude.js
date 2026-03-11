@@ -148,6 +148,16 @@ export async function startClaudeQuery(conversationId, workDir, resumeSessionId)
 }
 
 /**
+ * Detect if an error message indicates prompt token count exceeded the model limit.
+ * Matches API errors like "prompt token count of 138392 exceeds the limit of 128000".
+ */
+export function isPromptTokenOverflow(errorMessage) {
+  if (!errorMessage) return false;
+  const msg = errorMessage.toLowerCase();
+  return msg.includes('prompt') && msg.includes('token') && (msg.includes('exceed') || msg.includes('limit'));
+}
+
+/**
  * 检测并追踪后台任务（仅 Bash 和 Agent 任务）
  * 普通工具调用（Read、Edit、Grep、Glob 等）不跟踪
  */
@@ -508,10 +518,12 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
             // ★ Pre-send compact check for RolePlay auto-continue
             const rpAutoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
             const rpEstimatedNewTokens = Math.ceil(prompt.length / 3);
-            const rpEstimatedTotal = inputTokens + rpEstimatedNewTokens;
+            // Include output_tokens: the assistant's output becomes part of context for the next turn
+            const rpOutputTokens = message.usage?.output_tokens || 0;
+            const rpEstimatedTotal = inputTokens + rpOutputTokens + rpEstimatedNewTokens;
 
             if (rpEstimatedTotal > rpAutoCompactThreshold) {
-              console.log(`[RolePlay] Pre-send compact: estimated ${rpEstimatedTotal} tokens (last: ${inputTokens} + new: ~${rpEstimatedNewTokens}) exceeds threshold ${rpAutoCompactThreshold}`);
+              console.log(`[RolePlay] Pre-send compact: estimated ${rpEstimatedTotal} tokens (input: ${inputTokens} + output: ${rpOutputTokens} + new: ~${rpEstimatedNewTokens}) exceeds threshold ${rpAutoCompactThreshold}`);
               ctx.sendToServer({
                 type: 'compact_status',
                 conversationId,
@@ -543,6 +555,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
               type: 'user',
               message: { role: 'user', content: prompt }
             };
+            state._lastUserMessage = userMessage; // Save for prompt-overflow retry
             sendOutput(conversationId, userMessage);
             state.inputStream.enqueue(userMessage);
 
@@ -648,6 +661,39 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
     } else if (resultHandled) {
       // Turn 已正常完成，进程退出产生的 error 不发送给用户
       console.warn(`[SDK] Ignoring post-result error for ${conversationId}: ${error.message}`);
+    } else if (isPromptTokenOverflow(error.message) && state.claudeSessionId && !state._compactRetried) {
+      // ★ 兜底：prompt token 溢出 → 自动 compact + 重试（而非暴露 raw API error 给用户）
+      console.warn(`[SDK] Prompt token overflow for ${conversationId}, auto-compact + retry`);
+      const savedSessionId = state.claudeSessionId;
+      const savedLastMsg = state._lastUserMessage;
+
+      ctx.sendToServer({
+        type: 'compact_status',
+        conversationId,
+        status: 'compacting',
+        message: 'Context too long, auto-compacting and retrying...'
+      });
+
+      // 重启 SDK（startClaudeQuery 会先 abort 当前 state，使 finally 中 isStale=true）
+      try {
+        const newState = await startClaudeQuery(conversationId, state.workDir, savedSessionId);
+        newState._compactRetried = true; // 防止无限重试
+        newState.turnActive = true;
+        newState.turnResultReceived = false;
+
+        // 先 compact，再重试原始消息（如果有的话）
+        if (savedLastMsg) {
+          newState._pendingUserMessage = savedLastMsg;
+        }
+        newState.inputStream.enqueue({
+          type: 'user',
+          message: { role: 'user', content: '/compact' }
+        });
+        sendConversationList();
+      } catch (retryError) {
+        console.error(`[SDK] Compact-retry failed for ${conversationId}:`, retryError.message);
+        sendError(conversationId, `Context too long. Auto-compact failed: ${retryError.message}`);
+      }
     } else {
       console.error(`[SDK] Error for ${conversationId}:`, error.message);
       sendError(conversationId, error.message);
