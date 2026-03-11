@@ -76,7 +76,7 @@ try {
   log('Temp dir: ' + tmpDir);
 
   const packOutput = execFileSync('npm', ['pack', PKG, '--pack-destination', tmpDir], {
-    shell: true, encoding: 'utf8', cwd: tmpDir, timeout: 120000
+    shell: process.platform === 'win32', encoding: 'utf8', cwd: tmpDir, timeout: 120000
   }).trim();
   const tgzName = packOutput.split('\n').pop().trim();
   const tgzPath = path.join(tmpDir, tgzName);
@@ -100,7 +100,7 @@ try {
   log('Installing dependencies...');
   try {
     execFileSync('npm', ['install', '--omit=dev'], {
-      shell: true, cwd: TARGET, encoding: 'utf8', timeout: 120000
+      shell: process.platform === 'win32', cwd: TARGET, encoding: 'utf8', timeout: 120000
     });
     log('Dependencies installed');
   } catch (depErr) {

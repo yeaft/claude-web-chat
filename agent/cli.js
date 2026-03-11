@@ -223,6 +223,7 @@ function upgradeWindows(latestVersion) {
 
   writeFileSync(batPath, batLines.join('\r\n'));
   const child = spawn('cmd.exe', ['/c', batPath], {
+    detached: true,
     stdio: 'ignore',
     windowsHide: true,
   });
