@@ -290,7 +290,8 @@ describe('upgrade() — platform branching logic', () => {
       path.join(process.cwd(), 'agent/cli.js'),
       'utf-8'
     );
-    expect(cliSource).toContain("detached: true");
+    // detached was removed to prevent cmd windows from popping up (task-19)
+    expect(cliSource).not.toContain("detached: true");
     expect(cliSource).toContain("child.unref()");
     expect(cliSource).toContain("process.exit(0)");
   });
@@ -412,7 +413,8 @@ describe('remote upgrade (upgrade.js) — PM2 race condition fix', () => {
   });
 
   it('should use findstr instead of find in bat script (find without pipe hangs on Windows)', () => {
-    expect(upgradeSource).toContain('findstr /I');
+    // findstr /I was replaced with /C: for exact literal matching (task-19)
+    expect(upgradeSource).toContain('findstr /C:');
     expect(upgradeSource).not.toContain("| find /I");
   });
 
