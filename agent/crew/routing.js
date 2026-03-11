@@ -4,8 +4,9 @@
  */
 import { join } from 'path';
 import { sendCrewMessage, sendCrewOutput, sendStatusUpdate } from './ui-messages.js';
-import { ensureTaskFile, appendTaskRecord, readTaskFile, updateKanban, readKanban } from './task-files.js';
-import { createRoleQuery } from './role-query.js';
+import { ensureTaskFile, appendTaskRecord, readTaskFile, updateKanban, readKanban, saveRoleWorkSummary } from './task-files.js';
+import { createRoleQuery, clearRoleSessionId } from './role-query.js';
+import ctx from '../context.js';
 
 /** Format role label */
 function roleLabel(r) {
@@ -192,6 +193,39 @@ export async function dispatchToRole(session, roleName, content, fromSource, tas
     taskId: taskId || roleState.currentTask?.taskId || null,
     timestamp: Date.now()
   });
+
+  // ★ Pre-send compact check: estimate total tokens and clear+rebuild if needed
+  const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
+  const lastInputTokens = roleState.lastInputTokens || 0;
+  const estimatedNewTokens = Math.ceil((typeof content === 'string' ? content.length : 0) / 3);
+  const estimatedTotal = lastInputTokens + estimatedNewTokens;
+
+  if (lastInputTokens > 0 && estimatedTotal > autoCompactThreshold) {
+    console.log(`[Crew] Pre-send compact for ${roleName}: estimated ${estimatedTotal} tokens (last: ${lastInputTokens} + new: ~${estimatedNewTokens}) exceeds threshold ${autoCompactThreshold}`);
+
+    // Save work summary before clearing
+    await saveRoleWorkSummary(session, roleName, roleState.accumulatedText || '').catch(e =>
+      console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
+
+    // Clear role session and rebuild
+    await clearRoleSessionId(session.sharedDir, roleName);
+    roleState.claudeSessionId = null;
+
+    if (roleState.abortController) roleState.abortController.abort();
+    roleState.query = null;
+    roleState.inputStream = null;
+
+    sendCrewMessage({
+      type: 'crew_role_cleared',
+      sessionId: session.id,
+      role: roleName,
+      contextPercentage: Math.round((lastInputTokens / (ctx.CONFIG?.maxContextTokens || 128000)) * 100),
+      reason: 'pre_send_compact'
+    });
+
+    // Recreate the query (fresh Claude process)
+    roleState = await createRoleQuery(session, roleName);
+  }
 
   // 发送
   roleState.lastDispatchContent = content;

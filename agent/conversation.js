@@ -522,8 +522,7 @@ export async function handleUserInput(msg) {
   const estimatedNewTokens = Math.ceil(effectivePrompt.length / 3); // conservative: ~3 chars per token
   const estimatedTotal = lastInputTokens + estimatedNewTokens;
 
-  if (estimatedTotal > autoCompactThreshold && !state._autoCompactRequested && state.inputStream) {
-    state._autoCompactRequested = true;
+  if (estimatedTotal > autoCompactThreshold && state.inputStream) {
     console.log(`[${conversationId}] Pre-send compact: estimated ${estimatedTotal} tokens (last: ${lastInputTokens} + new: ~${estimatedNewTokens}) exceeds threshold ${autoCompactThreshold}`);
     ctx.sendToServer({
       type: 'compact_status',

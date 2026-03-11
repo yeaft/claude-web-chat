@@ -341,7 +341,6 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         if (message.subtype === 'compact_boundary') {
           state._compacting = false;
           state._compactSummaryPending = true;
-          state._autoCompactRequested = false; // Allow future auto-compact
           console.log(`[${conversationId}] Compact completed (boundary)`);
           ctx.sendToServer({
             type: 'compact_status',
@@ -364,7 +363,6 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         if (message.subtype === 'compact_complete' || message.subtype === 'compact_end') {
           state._compacting = false;
           state._compactSummaryPending = true;
-          state._autoCompactRequested = false; // Allow future auto-compact
           console.log(`[${conversationId}] Compact completed`);
           ctx.sendToServer({
             type: 'compact_status',
@@ -499,6 +497,35 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
             console.log(`[RolePlay] Auto-continuing to role: ${to}`);
 
+            // ★ Pre-send compact check for RolePlay auto-continue
+            const rpAutoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
+            const rpEstimatedNewTokens = Math.ceil(prompt.length / 3);
+            const rpEstimatedTotal = inputTokens + rpEstimatedNewTokens;
+
+            if (rpEstimatedTotal > rpAutoCompactThreshold) {
+              console.log(`[RolePlay] Pre-send compact: estimated ${rpEstimatedTotal} tokens (last: ${inputTokens} + new: ~${rpEstimatedNewTokens}) exceeds threshold ${rpAutoCompactThreshold}`);
+              ctx.sendToServer({
+                type: 'compact_status',
+                conversationId,
+                status: 'compacting',
+                message: `Auto-compacting before RolePlay continue: estimated ${rpEstimatedTotal} tokens (threshold: ${rpAutoCompactThreshold})`
+              });
+              // Store pending message and compact first
+              const userMessage = {
+                type: 'user',
+                message: { role: 'user', content: prompt }
+              };
+              state._pendingUserMessage = userMessage;
+              state.turnActive = true;
+              state.turnResultReceived = false;
+              state.inputStream.enqueue({
+                type: 'user',
+                message: { role: 'user', content: '/compact' }
+              });
+              sendConversationList();
+              break;
+            }
+
             // Re-activate the turn
             state.turnActive = true;
             state.turnResultReceived = false;
@@ -534,29 +561,8 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         });
         sendConversationList();
 
-        // ★ Auto-compact: when context exceeds threshold, trigger /compact
-        const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
-        if (inputTokens >= autoCompactThreshold
-            && !state._autoCompactRequested && state.inputStream) {
-          state._autoCompactRequested = true;
-          console.log(`[SDK] Auto-compact triggered: context at ${inputTokens}/${maxContextTokens} tokens (threshold: ${autoCompactThreshold}) for ${conversationId}`);
-          ctx.sendToServer({
-            type: 'compact_status',
-            conversationId,
-            status: 'compacting',
-            message: `Auto-compacting: context at ${inputTokens} tokens (threshold: ${autoCompactThreshold})`
-          });
-          state.turnActive = true;
-          state.turnResultReceived = false;
-          state.inputStream.enqueue({
-            type: 'user',
-            message: { role: 'user', content: '/compact' }
-          });
-          sendConversationList();
-        }
-
         // ★ Send pending user message after compact completes
-        if (state._pendingUserMessage && state.inputStream && !state._autoCompactRequested) {
+        if (state._pendingUserMessage && state.inputStream) {
           const pendingMsg = state._pendingUserMessage;
           state._pendingUserMessage = null;
           console.log(`[${conversationId}] Sending pending message after compact`);

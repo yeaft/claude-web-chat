@@ -104,9 +104,6 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
           });
         }
 
-        const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
-        const needClear = inputTokens >= autoCompactThreshold;
-
         // 解析路由
         const routes = parseRoutes(roleState.accumulatedText);
 
@@ -136,8 +133,7 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
           }
         }
 
-        // 保存 accumulatedText 供后续 saveRoleWorkSummary 使用（清空前）
-        const turnText = roleState.accumulatedText;
+        // 清空 accumulatedText
         roleState.accumulatedText = '';
         roleState.turnActive = false;
 
@@ -149,57 +145,7 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
 
         sendStatusUpdate(session);
 
-        // Context 超限：保存工作摘要后 clear + rebuild
-        if (needClear) {
-          console.log(`[Crew] ${roleName} context at ${inputTokens}/${getMaxContext()} tokens (threshold: ${autoCompactThreshold}), clearing and rebuilding`);
-
-          // 保存工作摘要到 feature 文件
-          await saveRoleWorkSummary(session, roleName, turnText).catch(e =>
-            console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
-
-          // Clear 角色
-          await clearRoleSessionId(session.sharedDir, roleName);
-          roleState.claudeSessionId = null;
-
-          if (roleState.abortController) roleState.abortController.abort();
-          roleState.query = null;
-          roleState.inputStream = null;
-
-          sendCrewMessage({
-            type: 'crew_role_cleared',
-            sessionId: session.id,
-            role: roleName,
-            contextPercentage: Math.round((inputTokens / getMaxContext()) * 100),
-            reason: 'context_limit'
-          });
-
-          // 继承 task 到路由（如有）
-          const currentTask = roleState.currentTask;
-          if (routes.length > 0) {
-            for (const route of routes) {
-              if (!route.taskId && currentTask) {
-                route.taskId = currentTask.taskId;
-                route.taskTitle = currentTask.taskTitle;
-              }
-            }
-          }
-
-          // 执行路由
-          if (routes.length > 0) {
-            session.round++;
-            const results = await Promise.allSettled(routes.map(route =>
-              executeRoute(session, roleName, route)
-            ));
-            for (const r of results) {
-              if (r.status === 'rejected') {
-                console.warn(`[Crew] Route execution failed:`, r.reason);
-              }
-            }
-          }
-          return; // query 已清空，退出
-        }
-
-        // 执行路由（无需 clear 时）
+        // 执行路由
         if (routes.length > 0) {
           session.round++;
 
