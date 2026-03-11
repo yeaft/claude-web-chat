@@ -15,10 +15,39 @@ const getMaxContext = () => ctx.CONFIG?.maxContextTokens || 128000;
  * 处理角色的流式输出
  */
 export async function processRoleOutput(session, roleName, roleQuery, roleState) {
+  // 辅助函数：将 lastSeenUsage 结算到 session（用于 abort/error 场景，避免丢失 token）
+  function settleLastSeenUsage() {
+    if (!roleState.lastSeenUsage) return;
+    const { totalCostUsd, inputTokens, outputTokens } = roleState.lastSeenUsage;
+    if (totalCostUsd != null) {
+      const costDelta = totalCostUsd - roleState.lastCostUsd;
+      if (costDelta > 0) session.costUsd += costDelta;
+      roleState.lastCostUsd = totalCostUsd;
+    }
+    if (inputTokens != null || outputTokens != null) {
+      const inputDelta = (inputTokens || 0) - (roleState.lastInputTokens || 0);
+      const outputDelta = (outputTokens || 0) - (roleState.lastOutputTokens || 0);
+      if (inputDelta > 0) session.totalInputTokens += inputDelta;
+      if (outputDelta > 0) session.totalOutputTokens += outputDelta;
+      roleState.lastInputTokens = inputTokens || 0;
+      roleState.lastOutputTokens = outputTokens || 0;
+    }
+    roleState.lastSeenUsage = null;
+  }
+
   try {
     for await (const message of roleQuery) {
       // 检查 session 是否已停止或暂停
       if (session.status === 'stopped' || session.status === 'paused') break;
+
+      // 每次收到带 usage/cost 的消息，暂存到 lastSeenUsage（供 abort/error 结算）
+      if (message.total_cost_usd != null || message.usage) {
+        roleState.lastSeenUsage = {
+          totalCostUsd: message.total_cost_usd,
+          inputTokens: message.usage?.input_tokens,
+          outputTokens: message.usage?.output_tokens
+        };
+      }
 
       if (message.type === 'system' && message.subtype === 'init') {
         roleState.claudeSessionId = message.session_id;
@@ -70,20 +99,8 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
 
         endRoleStreaming(session, roleName);
 
-        // 更新费用（差值计算）
-        if (message.total_cost_usd != null) {
-          const costDelta = message.total_cost_usd - roleState.lastCostUsd;
-          if (costDelta > 0) session.costUsd += costDelta;
-          roleState.lastCostUsd = message.total_cost_usd;
-        }
-        if (message.usage) {
-          const inputDelta = (message.usage.input_tokens || 0) - (roleState.lastInputTokens || 0);
-          const outputDelta = (message.usage.output_tokens || 0) - (roleState.lastOutputTokens || 0);
-          if (inputDelta > 0) session.totalInputTokens += inputDelta;
-          if (outputDelta > 0) session.totalOutputTokens += outputDelta;
-          roleState.lastInputTokens = message.usage.input_tokens || 0;
-          roleState.lastOutputTokens = message.usage.output_tokens || 0;
-        }
+        // 更新费用（通过 settleLastSeenUsage 统一处理，避免重复逻辑）
+        settleLastSeenUsage();
 
         // 持久化 sessionId
         if (roleState.claudeSessionId) {
@@ -175,6 +192,8 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
   } catch (error) {
     if (error.name === 'AbortError') {
       console.log(`[Crew] ${roleName} aborted`);
+      // 结算 abort 前累积的 usage，避免丢失 token
+      settleLastSeenUsage();
       if (session.status === 'paused' && roleState.accumulatedText) {
         const routes = parseRoutes(roleState.accumulatedText);
         if (routes.length > 0 && session.pendingRoutes.length === 0) {
@@ -185,6 +204,9 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
       }
     } else {
       console.error(`[Crew] ${roleName} error:`, error.message);
+
+      // 结算 error 前累积的 usage，避免丢失 token
+      settleLastSeenUsage();
 
       // Step 1: 清理 roleState
       endRoleStreaming(session, roleName);

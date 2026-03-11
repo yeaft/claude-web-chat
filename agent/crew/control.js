@@ -362,6 +362,11 @@ async function clearSession(session) {
 
   session.round = 0;
 
+  // 重置计费统计（clearSession 清除了所有 claudeSessionId，后续 query 全新，费用从零开始）
+  session.costUsd = 0;
+  session.totalInputTokens = 0;
+  session.totalOutputTokens = 0;
+
   const messagesPath = join(session.sharedDir, 'messages.json');
   await fs.writeFile(messagesPath, '[]').catch(() => {});
   await cleanupMessageShards(session.sharedDir);
