@@ -35,3 +35,66 @@ export function createRolePlaySession(store, config) {
     }
   });
 }
+
+/**
+ * Restore an existing Role Play session from .roleplay/session.json.
+ *
+ * If the original conversationId still exists on the server, we select it.
+ * Otherwise we create a new conversation and attach the same rolePlayConfig
+ * so the agent re-initializes the session state.
+ *
+ * @param {Object} store  - Pinia chat store instance
+ * @param {Object} config - { agentId, projectDir, session }
+ *   session: { name, teamType, language, conversationId, roles, createdAt }
+ */
+export function restoreRolePlaySession(store, config) {
+  const targetAgent = config.agentId || store.currentAgent;
+  if (!targetAgent) {
+    store.addMessage({ type: 'error', content: t('chat.agent.selectFirst') });
+    return;
+  }
+  const { session, projectDir } = config;
+
+  // Populate frontend rolePlaySessions state immediately
+  // so that when conversation_selected fires, the UI renders RolePlayChatView
+  const roles = (session.roles || []).map(r => ({
+    name: r.name,
+    displayName: r.displayName,
+    icon: r.icon || '',
+    description: r.description || '',
+  }));
+
+  // Check if the conversation still exists on the agent
+  // We do this by looking at the agent's conversation list
+  const agent = store.agents.find(a => a.id === targetAgent);
+  const convExists = agent?.conversations?.some(c => c.id === session.conversationId);
+
+  if (convExists && session.conversationId) {
+    // Conversation still alive — just select it
+    store.rolePlaySessions[session.conversationId] = {
+      roles,
+      teamType: session.teamType,
+      language: session.language || store.locale || 'zh-CN',
+    };
+    store.sendWsMessage({
+      type: 'select_conversation',
+      conversationId: session.conversationId,
+    });
+    store.currentConversation = session.conversationId;
+  } else {
+    // Conversation lost (server restart etc.) — create a new one with the same config
+    // The agent will detect .roleplay/session.json and update the conversationId
+    setSessionLoading(store, true, t('roleplay.restoring'));
+    store.sendWsMessage({
+      type: 'create_conversation',
+      agentId: targetAgent,
+      workDir: projectDir,
+      rolePlayConfig: {
+        roles,
+        teamType: session.teamType,
+        language: session.language || store.locale || 'zh-CN',
+        restoreSessionName: session.name,  // Tell agent this is a restore
+      },
+    });
+  }
+}

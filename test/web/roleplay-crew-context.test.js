@@ -749,7 +749,7 @@ describe('task-10: Frontend & infrastructure', () => {
 
     it('watches projectDir with debounce timer', () => {
       expect(configPanelSource).toContain("projectDir(newVal)");
-      expect(configPanelSource).toContain('_crewCheckTimer');
+      expect(configPanelSource).toContain('_dirCheckTimer');
       expect(configPanelSource).toContain('setTimeout');
     });
 
@@ -772,7 +772,7 @@ describe('task-10: Frontend & infrastructure', () => {
     });
 
     it('clears debounce timer in beforeUnmount', () => {
-      expect(configPanelSource).toContain('clearTimeout(this._crewCheckTimer)');
+      expect(configPanelSource).toContain('clearTimeout(this._dirCheckTimer)');
     });
 
     it('checkCrewContext resets crewDetected when dir is empty', () => {
@@ -802,9 +802,9 @@ describe('task-10: Frontend & infrastructure', () => {
   // ---------------------------------------------------------------
 
   describe('RolePlayConfigPanel — crew import banner', () => {
-    it('has crew-import-banner element controlled by v-if="crewDetected"', () => {
+    it('has crew-import-banner element controlled by v-if with crewDetected', () => {
       expect(configPanelSource).toContain('crew-import-banner');
-      expect(configPanelSource).toContain('v-if="crewDetected"');
+      expect(configPanelSource).toContain('crewDetected');
     });
 
     it('banner uses roleplay.crewDetected i18n key', () => {

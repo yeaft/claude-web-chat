@@ -1075,3 +1075,44 @@
   cursor: not-allowed;
 }
 
+/* ── RolePlay Session Restore Cards ── */
+
+.roleplay-session-card {
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.roleplay-session-card:hover {
+  border-color: var(--accent-blue);
+  background: var(--bg-secondary);
+}
+
+.roleplay-session-name {
+  font-weight: 600;
+  font-size: 13px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roleplay-session-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-wrap: wrap;
+}
+
+.roleplay-session-meta span:not(:last-child)::after {
+  content: '\00b7';
+  margin-left: 8px;
+}
+
+.roleplay-restore-btn {
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+

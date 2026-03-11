@@ -313,6 +313,19 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       break;
     }
 
+    case 'check_roleplay_sessions': {
+      const rpAgentId = msg.agentId || client.currentAgent;
+      if (!rpAgentId) return;
+      if (!await checkAgentAccess(rpAgentId)) return;
+      await forwardToAgent(rpAgentId, {
+        type: 'check_roleplay_sessions',
+        projectDir: msg.projectDir,
+        requestId: msg.requestId,
+        _requestClientId: clientId
+      });
+      break;
+    }
+
     case 'cancel_execution': {
       if (!client.currentAgent) return;
       if (!await checkAgentAccess(client.currentAgent)) return;
