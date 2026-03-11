@@ -203,8 +203,8 @@ export async function dispatchToRole(session, roleName, content, fromSource, tas
   if (lastInputTokens > 0 && estimatedTotal > autoCompactThreshold) {
     console.log(`[Crew] Pre-send compact for ${roleName}: estimated ${estimatedTotal} tokens (last: ${lastInputTokens} + new: ~${estimatedNewTokens}) exceeds threshold ${autoCompactThreshold}`);
 
-    // Save work summary before clearing
-    await saveRoleWorkSummary(session, roleName, roleState.accumulatedText || '').catch(e =>
+    // Save work summary before clearing (use lastTurnText since accumulatedText is cleared after result)
+    await saveRoleWorkSummary(session, roleName, roleState.lastTurnText || roleState.accumulatedText || '').catch(e =>
       console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
 
     // Clear role session and rebuild

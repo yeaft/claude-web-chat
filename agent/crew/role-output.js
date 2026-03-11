@@ -133,7 +133,8 @@ export async function processRoleOutput(session, roleName, roleQuery, roleState)
           }
         }
 
-        // 清空 accumulatedText
+        // 保存本 turn 文本（供 routing.js 预检时 saveRoleWorkSummary 使用）
+        roleState.lastTurnText = roleState.accumulatedText;
         roleState.accumulatedText = '';
         roleState.turnActive = false;
 
