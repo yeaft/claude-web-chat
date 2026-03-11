@@ -217,7 +217,7 @@ export default {
           </div>
 
           <!-- Role Play Sessions Panel -->
-          <div class="session-panel" :class="{ collapsed: rolePlayGroupCollapsed }" v-if="rolePlayConversations.length > 0 || !rolePlayGroupCollapsed">
+          <div class="session-panel" :class="{ collapsed: rolePlayGroupCollapsed }">
             <div class="session-group-header">
               <div class="session-group-title-area" @click="rolePlayGroupCollapsed = !rolePlayGroupCollapsed">
                 <svg class="session-collapse-arrow" :class="{ collapsed: rolePlayGroupCollapsed }" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
