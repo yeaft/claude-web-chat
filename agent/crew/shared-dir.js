@@ -40,7 +40,7 @@ function extractMemorySection(fileContent, titles, defaults) {
 }
 
 /**
- * Backup memory content from .crew/CLAUDE.md and .crew/roles/*/CLAUDE.md
+ * Backup memory content from .crew/CLAUDE.md and .crew/roles/<role>/CLAUDE.md
  * before deletion. Writes .crew/.memory-backup.json.
  */
 export async function backupMemoryContent(crewDir) {
