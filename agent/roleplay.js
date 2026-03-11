@@ -9,7 +9,8 @@
 
 import { join } from 'path';
 import { homedir } from 'os';
-import { readFileSync, writeFileSync, existsSync, renameSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, readdirSync, statSync, mkdirSync } from 'fs';
+import { promises as fsp } from 'fs';
 import { parseRoutes } from './crew/routing.js';
 
 const ROLEPLAY_INDEX_PATH = join(homedir(), '.claude', 'roleplay-sessions.json');
@@ -218,7 +219,7 @@ function deduplicateRoles(sessionRoles, roleClaudes) {
 const ALLOWED_TEAM_TYPES = ['dev', 'writing', 'trading', 'video', 'custom'];
 const MAX_ROLE_NAME_LEN = 64;
 const MAX_DISPLAY_NAME_LEN = 128;
-const MAX_CLAUDE_MD_LEN = 4096;
+const MAX_CLAUDE_MD_LEN = 8192;
 const MAX_ROLES = 10;
 
 /**
@@ -715,4 +716,197 @@ function buildCrewContextBlock(crewContext, isZh) {
   }
 
   return sections.join('\n\n');
+}
+
+// ---------------------------------------------------------------------------
+// .crew context refresh (mtime-based change detection)
+// ---------------------------------------------------------------------------
+
+/**
+ * Get mtime of a file, or 0 if it doesn't exist.
+ * @param {string} filePath
+ * @returns {number} mtime in ms
+ */
+function getMtimeMs(filePath) {
+  try {
+    return statSync(filePath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Collect mtimes for all .crew context files that matter for RolePlay.
+ * Returns a map of { relativePath → mtimeMs }.
+ *
+ * @param {string} projectDir
+ * @returns {Map<string, number>}
+ */
+function collectCrewContextMtimes(projectDir) {
+  const crewDir = join(projectDir, '.crew');
+  const mtimes = new Map();
+
+  // Shared CLAUDE.md
+  mtimes.set('CLAUDE.md', getMtimeMs(join(crewDir, 'CLAUDE.md')));
+
+  // context/kanban.md
+  mtimes.set('context/kanban.md', getMtimeMs(join(crewDir, 'context', 'kanban.md')));
+
+  // context/features/*.md
+  const featuresDir = join(crewDir, 'context', 'features');
+  if (existsSync(featuresDir)) {
+    try {
+      const files = readdirSync(featuresDir).filter(f => f.endsWith('.md') && f !== 'index.md');
+      for (const f of files) {
+        mtimes.set(`context/features/${f}`, getMtimeMs(join(featuresDir, f)));
+      }
+    } catch { /* ignore */ }
+  }
+
+  // session.json (roles may change)
+  mtimes.set('session.json', getMtimeMs(join(crewDir, 'session.json')));
+
+  return mtimes;
+}
+
+/**
+ * Check if .crew context has changed since last snapshot.
+ *
+ * @param {Map<string, number>} oldMtimes - previous mtime snapshot
+ * @param {Map<string, number>} newMtimes - current mtime snapshot
+ * @returns {boolean} true if any file has been added, removed, or modified
+ */
+function hasCrewContextChanged(oldMtimes, newMtimes) {
+  if (!oldMtimes) return true; // first check → always refresh
+
+  // Check for new or modified files
+  for (const [path, mtime] of newMtimes) {
+    if (!oldMtimes.has(path) || oldMtimes.get(path) !== mtime) return true;
+  }
+
+  // Check for deleted files
+  for (const path of oldMtimes.keys()) {
+    if (!newMtimes.has(path)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Refresh .crew context for a RolePlay session if files have changed.
+ * Updates the session's crewContext and returns true if refreshed.
+ *
+ * Call this before building the system prompt (on resume, or before each turn).
+ *
+ * @param {string} projectDir - absolute path to project root
+ * @param {object} rpSession - rolePlaySessions entry
+ * @param {object} convState - ctx.conversations entry (has rolePlayConfig)
+ * @returns {boolean} true if context was refreshed
+ */
+export function refreshCrewContext(projectDir, rpSession, convState) {
+  if (!projectDir || !existsSync(join(projectDir, '.crew'))) return false;
+
+  const newMtimes = collectCrewContextMtimes(projectDir);
+
+  // Compare with stored snapshot
+  if (!hasCrewContextChanged(rpSession._crewContextMtimes, newMtimes)) {
+    return false; // no change
+  }
+
+  // Reload
+  const crewContext = loadCrewContext(projectDir);
+  if (!crewContext) return false;
+
+  // Update session and convState
+  rpSession._crewContextMtimes = newMtimes;
+
+  if (convState && convState.rolePlayConfig) {
+    convState.rolePlayConfig.crewContext = crewContext;
+  }
+
+  console.log(`[RolePlay] Crew context refreshed from ${projectDir} (${crewContext.features.length} features, kanban: ${crewContext.kanban ? 'yes' : 'no'})`);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// .crew context write-back (RolePlay → .crew/context)
+// ---------------------------------------------------------------------------
+
+// Write lock for atomic write-back
+let _writeBackLock = Promise.resolve();
+
+/**
+ * Atomic write: write to temp file then rename.
+ * @param {string} filePath
+ * @param {string} content
+ */
+async function atomicWrite(filePath, content) {
+  const tmpPath = filePath + '.tmp.' + Date.now();
+  try {
+    await fsp.writeFile(tmpPath, content);
+    await fsp.rename(tmpPath, filePath);
+  } catch (e) {
+    // Clean up temp file on failure
+    try { await fsp.unlink(tmpPath); } catch { /* ignore */ }
+    throw e;
+  }
+}
+
+/**
+ * Write back RolePlay route output to .crew/context files.
+ * Called after processRolePlayRoutes detects ROUTE blocks with task info.
+ *
+ * - Creates/updates context/features/{taskId}.md with route summary
+ * - Serialized via write lock to prevent concurrent corruption
+ *
+ * @param {string} projectDir - absolute path to project root
+ * @param {Array<{to: string, summary: string, taskId?: string, taskTitle?: string}>} routes
+ * @param {string} fromRole - name of the role that produced the output
+ * @param {object} rpSession - rolePlaySessions entry
+ */
+export function writeBackRouteContext(projectDir, routes, fromRole, rpSession) {
+  if (!projectDir || !routes || routes.length === 0) return;
+
+  const crewDir = join(projectDir, '.crew');
+  if (!existsSync(crewDir)) return;
+
+  const doWriteBack = async () => {
+    const featuresDir = join(crewDir, 'context', 'features');
+
+    for (const route of routes) {
+      const { taskId, taskTitle, summary, to } = route;
+      if (!taskId || !summary) continue;
+
+      try {
+        await fsp.mkdir(featuresDir, { recursive: true });
+        const filePath = join(featuresDir, `${taskId}.md`);
+
+        let content;
+        try {
+          content = await fsp.readFile(filePath, 'utf-8');
+        } catch {
+          // File doesn't exist — create it
+          const isZh = rpSession.language === 'zh-CN';
+          content = `# ${isZh ? 'Feature' : 'Feature'}: ${taskTitle || taskId}\n- task-id: ${taskId}\n\n## ${isZh ? '工作记录' : 'Work Record'}\n`;
+        }
+
+        // Append the route record
+        const fromRoleConfig = rpSession.roles?.find(r => r.name === fromRole);
+        const fromLabel = fromRoleConfig
+          ? (fromRoleConfig.icon ? `${fromRoleConfig.icon} ${fromRoleConfig.displayName}` : fromRoleConfig.displayName)
+          : fromRole;
+        const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        const record = `\n### ${fromLabel} → ${to} - ${now}\n${summary}\n`;
+
+        await atomicWrite(filePath, content + record);
+        console.log(`[RolePlay] Write-back: task ${taskId} updated (${fromRole} → ${to})`);
+      } catch (e) {
+        console.warn(`[RolePlay] Write-back failed for ${taskId}:`, e.message);
+      }
+    }
+  };
+
+  // Serialize write-backs
+  _writeBackLock = _writeBackLock.then(doWriteBack, doWriteBack);
+  return _writeBackLock;
 }

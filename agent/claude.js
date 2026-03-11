@@ -8,7 +8,9 @@ import {
   detectRoleSignal,
   processRolePlayRoutes,
   buildRouteEventMessage,
-  getRolePlayRouteState
+  getRolePlayRouteState,
+  refreshCrewContext,
+  writeBackRouteContext
 } from './roleplay.js';
 
 /**
@@ -445,6 +447,12 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
                 conversationId, rpSession.currentRole || 'unknown', route
               );
               ctx.sendToServer(routeEvent);
+            }
+
+            // ★ Write-back: persist route task info to .crew/context/features
+            const taskRoutes = routes.filter(r => r.taskId && r.summary);
+            if (taskRoutes.length > 0 && state.workDir) {
+              writeBackRouteContext(state.workDir, taskRoutes, rpSession.currentRole || 'unknown', rpSession);
             }
 
             // Send route state update
