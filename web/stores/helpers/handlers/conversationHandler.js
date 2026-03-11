@@ -112,6 +112,7 @@ export function handleConversationDeleted(store, msg) {
   delete store.crewStatuses?.[msg.conversationId];
   // 清理 roleplay 数据
   delete store.rolePlaySessions[msg.conversationId];
+  delete store.rolePlayStatuses?.[msg.conversationId];
   window.dispatchEvent(new CustomEvent('conversation-deleted', { detail: { conversationId: msg.conversationId } }));
   if (store.currentConversation === msg.conversationId) {
     store.currentConversation = null;

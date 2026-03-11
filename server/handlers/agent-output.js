@@ -170,6 +170,13 @@ export async function handleAgentOutput(agentId, agent, msg) {
       });
       break;
 
+    // RolePlay route state updates — forward as-is to clients
+    case 'roleplay_status':
+    case 'roleplay_route':
+    case 'roleplay_waiting_human':
+      await forwardToClients(agentId, msg.conversationId, msg);
+      break;
+
     default:
       return false; // Not handled
   }
