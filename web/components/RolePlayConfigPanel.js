@@ -4,7 +4,7 @@
  * Simplified version of CrewConfigPanel:
  *   - Agent selection (any online agent, no crew capability required)
  *   - Work directory selection (with folder picker browse button)
- *   - Team template selection (dev / custom)
+ *   - Team template selection (dev / writing / trading / video / custom)
  *   - Role preview & editing (add/remove/edit claudeMd)
  *   - Language follows user settings (store.locale)
  *   - "Start" button → store.createRolePlaySession
@@ -66,6 +66,9 @@ export default {
             <label class="crew-config-label">{{ $t('crewConfig.teamTemplate') }}</label>
             <div class="crew-template-btns">
               <button class="crew-template-btn" @click="loadTemplate('dev')" :class="{ active: currentTemplate === 'dev' }">{{ $t('crewConfig.tplDev') }}</button>
+              <button class="crew-template-btn" @click="loadTemplate('writing')" :class="{ active: currentTemplate === 'writing' }">{{ $t('crewConfig.tplWriting') }}</button>
+              <button class="crew-template-btn" @click="loadTemplate('trading')" :class="{ active: currentTemplate === 'trading' }">{{ $t('crewConfig.tplTrading') }}</button>
+              <button class="crew-template-btn" @click="loadTemplate('video')" :class="{ active: currentTemplate === 'video' }">{{ $t('crewConfig.tplVideo') }}</button>
               <button class="crew-template-btn" @click="loadTemplate('custom')" :class="{ active: currentTemplate === 'custom' }">{{ $t('crewConfig.tplCustom') }}</button>
             </div>
           </div>
@@ -264,9 +267,9 @@ export default {
       }
       this.crewDetected = true;
 
-      // Map teamType to template
-      const templateMap = { dev: 'dev', writing: 'custom', trading: 'custom', video: 'custom', custom: 'custom' };
-      this.currentTemplate = templateMap[msg.teamType] || 'dev';
+      // Map teamType to template — use matching RolePlay template when available
+      const templateMap = { dev: 'dev', writing: 'writing', trading: 'trading', video: 'video', custom: 'custom' };
+      this.currentTemplate = templateMap[msg.teamType] || 'custom';
 
       // Import roles from .crew context
       if (msg.roles && msg.roles.length > 0) {

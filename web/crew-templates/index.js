@@ -8,6 +8,12 @@ import videoZh from './video-zh.js';
 import videoEn from './video-en.js';
 import roleplayDevZh from './roleplay-dev-zh.js';
 import roleplayDevEn from './roleplay-dev-en.js';
+import roleplayWritingZh from './roleplay-writing-zh.js';
+import roleplayWritingEn from './roleplay-writing-en.js';
+import roleplayTradingZh from './roleplay-trading-zh.js';
+import roleplayTradingEn from './roleplay-trading-en.js';
+import roleplayVideoZh from './roleplay-video-zh.js';
+import roleplayVideoEn from './roleplay-video-en.js';
 
 const templates = {
   dev: { 'zh-CN': devZh, en: devEn },
@@ -31,6 +37,9 @@ export function getTemplate(type, locale) {
 // =====================
 const rolePlayTemplates = {
   dev: { 'zh-CN': roleplayDevZh, en: roleplayDevEn },
+  writing: { 'zh-CN': roleplayWritingZh, en: roleplayWritingEn },
+  trading: { 'zh-CN': roleplayTradingZh, en: roleplayTradingEn },
+  video: { 'zh-CN': roleplayVideoZh, en: roleplayVideoEn },
 };
 
 /**
