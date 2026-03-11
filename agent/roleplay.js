@@ -9,7 +9,7 @@
 
 import { join } from 'path';
 import { homedir } from 'os';
-import { readFileSync, writeFileSync, existsSync, renameSync, readdirSync, statSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, readdirSync, statSync } from 'fs';
 import { promises as fsp } from 'fs';
 import { parseRoutes } from './crew/routing.js';
 
@@ -27,8 +27,8 @@ export const rolePlaySessions = new Map();
 export function saveRolePlayIndex() {
   const data = [];
   for (const [id, session] of rolePlaySessions) {
-    // Only persist core fields, skip runtime route state
-    const { _routeInitialized, currentRole, features, round, roleStates, waitingHuman, waitingHumanContext, ...core } = session;
+    // Only persist core fields, skip runtime route state and mtime snapshots
+    const { _routeInitialized, _crewContextMtimes, currentRole, features, round, roleStates, waitingHuman, waitingHumanContext, ...core } = session;
     data.push({ id, ...core });
   }
   try {
@@ -779,6 +779,10 @@ function collectCrewContextMtimes(projectDir) {
 function hasCrewContextChanged(oldMtimes, newMtimes) {
   if (!oldMtimes) return true; // first check → always refresh
 
+  // Defensive: if oldMtimes was deserialized from JSON (plain object, not Map),
+  // treat as stale and force refresh
+  if (!(oldMtimes instanceof Map)) return true;
+
   // Check for new or modified files
   for (const [path, mtime] of newMtimes) {
     if (!oldMtimes.has(path) || oldMtimes.get(path) !== mtime) return true;
@@ -790,6 +794,19 @@ function hasCrewContextChanged(oldMtimes, newMtimes) {
   }
 
   return false;
+}
+
+/**
+ * Initialize the mtime snapshot for a RolePlay session without reloading context.
+ * Use this when the caller has already loaded crewContext (e.g. resume path)
+ * to avoid a redundant disk read.
+ *
+ * @param {string} projectDir - absolute path to project root
+ * @param {object} rpSession - rolePlaySessions entry
+ */
+export function initCrewContextMtimes(projectDir, rpSession) {
+  if (!projectDir || !existsSync(join(projectDir, '.crew'))) return;
+  rpSession._crewContextMtimes = collectCrewContextMtimes(projectDir);
 }
 
 /**
@@ -859,6 +876,13 @@ async function atomicWrite(filePath, content) {
  * - Creates/updates context/features/{taskId}.md with route summary
  * - Serialized via write lock to prevent concurrent corruption
  *
+ * NOTE: The atomic write (tmp→rename) prevents partial writes within this
+ * process, and the serial lock prevents intra-process races. However, if a
+ * Crew session in a separate process writes the same file concurrently,
+ * a TOCTOU race is possible (read-then-write is not locked across processes).
+ * In practice this is acceptable: Crew and RolePlay rarely write the same
+ * task file simultaneously, and the worst case is a lost append (not corruption).
+ *
  * @param {string} projectDir - absolute path to project root
  * @param {Array<{to: string, summary: string, taskId?: string, taskTitle?: string}>} routes
  * @param {string} fromRole - name of the role that produced the output
@@ -876,6 +900,13 @@ export function writeBackRouteContext(projectDir, routes, fromRole, rpSession) {
     for (const route of routes) {
       const { taskId, taskTitle, summary, to } = route;
       if (!taskId || !summary) continue;
+
+      // ★ Sanitize taskId: only allow alphanumeric, hyphens, underscores
+      // Prevents path traversal (e.g. "../" in taskId from Claude output)
+      if (!/^[a-zA-Z0-9_-]+$/.test(taskId)) {
+        console.warn(`[RolePlay] Write-back rejected: invalid taskId "${taskId}"`);
+        continue;
+      }
 
       try {
         await fsp.mkdir(featuresDir, { recursive: true });

@@ -2,7 +2,7 @@ import ctx from './context.js';
 import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
 import { crewSessions, loadCrewIndex } from './crew.js';
-import { rolePlaySessions, saveRolePlayIndex, removeRolePlaySession, loadRolePlayIndex, validateRolePlayConfig, initRolePlayRouteState, loadCrewContext, refreshCrewContext } from './roleplay.js';
+import { rolePlaySessions, saveRolePlayIndex, removeRolePlaySession, loadRolePlayIndex, validateRolePlayConfig, initRolePlayRouteState, loadCrewContext, refreshCrewContext, initCrewContextMtimes } from './roleplay.js';
 
 // Restore persisted roleplay sessions on module load (agent startup)
 loadRolePlayIndex();
@@ -265,8 +265,8 @@ export async function resumeConversation(msg) {
     const crewContext = loadCrewContext(effectiveWorkDir);
     if (crewContext) {
       rolePlayConfig.crewContext = crewContext;
-      // Initialize mtime snapshot so subsequent refreshes can detect changes
-      refreshCrewContext(effectiveWorkDir, rolePlayEntry, null);
+      // Initialize mtime snapshot (without re-loading) so subsequent refreshes can detect changes
+      initCrewContextMtimes(effectiveWorkDir, rolePlayEntry);
       console.log(`[Resume] RolePlay: refreshed .crew context (${crewContext.features.length} features)`);
     }
   }
