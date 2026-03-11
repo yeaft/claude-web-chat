@@ -161,7 +161,7 @@ export async function dispatchToRole(session, roleName, content, fromSource, tas
   if (effectiveTaskId && typeof content === 'string') {
     const taskContent = await readTaskFile(session, effectiveTaskId);
     if (taskContent) {
-      content = `${content}\n\n---\n<task-context file="context/features/${effectiveTaskId}.md">\n${taskContent}\n</task-context>`;
+      content = `${content}\n\n---\n<task-context file=".crew/context/features/${effectiveTaskId}.md">\n${taskContent}\n</task-context>`;
     }
   }
 
@@ -169,7 +169,7 @@ export async function dispatchToRole(session, roleName, content, fromSource, tas
   if (typeof content === 'string') {
     const kanbanContent = await readKanban(session);
     if (kanbanContent) {
-      content = `${content}\n\n---\n<kanban file="context/kanban.md">\n${kanbanContent}\n</kanban>`;
+      content = `${content}\n\n---\n<kanban file=".crew/context/kanban.md">\n${kanbanContent}\n</kanban>`;
     }
   }
 
