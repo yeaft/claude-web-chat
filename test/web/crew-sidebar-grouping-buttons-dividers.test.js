@@ -414,15 +414,18 @@ describe('delete_crew_dir - backend message chain (bf79ad0)', () => {
       expect(crewJsContent).toContain('export async function handleDeleteCrewDir');
     });
 
-    it('handleDeleteCrewDir should selectively delete entries preserving context/', () => {
+    it('handleDeleteCrewDir should delete templates and clear sessions, preserving user data', () => {
       const handler = crewJsContent.split('handleDeleteCrewDir')[1];
       const handlerEnd = handler.indexOf('\n}');
       const handlerBlock = handler.substring(0, handlerEnd);
-      expect(handlerBlock).toContain('fs.readdir(crewDir');
-      expect(handlerBlock).toContain("name !== 'context'");
+      // 删除 CLAUDE.md 模板和 roles/ 目录
+      expect(handlerBlock).toContain("'CLAUDE.md'");
+      expect(handlerBlock).toContain("'roles'");
       expect(handlerBlock).toContain('fs.rm(');
       expect(handlerBlock).toContain('recursive: true');
       expect(handlerBlock).toContain('force: true');
+      // 清空 sessions/ 内容
+      expect(handlerBlock).toContain('fs.readdir(sessionsDir');
     });
 
     it('handleDeleteCrewDir should construct .crew path from projectDir', () => {

@@ -159,8 +159,9 @@ describe('activeTasks: prioritize persisted features', () => {
 
 describe('crew.js: session.features accumulation', () => {
 
-  it('createCrewSession should initialize features as empty Map', () => {
-    expect(crewSource).toContain('features: new Map()');
+  it('createCrewSession should initialize features from oldMeta or empty', () => {
+    // features can be initialized from oldMeta (recreate) or as empty array fallback
+    expect(crewSource).toContain('features: new Map((oldMeta?.features || []).map(f => [f.taskId, f]))');
   });
 
   it('sendCrewOutput should accumulate features on new taskId', () => {

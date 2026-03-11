@@ -171,15 +171,23 @@ export function handleCrewOutput(store, msg) {
       roles: msg.roles,
       decisionMaker: msg.decisionMaker
     };
-    ensureMessages(sid).push({
-      id: Date.now(),
-      role: 'system',
-      roleIcon: 'S',
-      roleName: '系统',
-      type: 'system',
-      content: `Crew Session 已创建`,
-      timestamp: Date.now()
-    });
+    // 恢复旧消息历史（recreate 场景）或初始化新消息
+    if (msg.uiMessages && msg.uiMessages.length > 0) {
+      ensureMessages(sid).push(...msg.uiMessages);
+      if (msg.hasOlderMessages) {
+        store.crewOlderMessages[sid] = { hasMore: true, nextShard: 1, loading: false };
+      }
+    } else {
+      ensureMessages(sid).push({
+        id: Date.now(),
+        role: 'system',
+        roleIcon: 'S',
+        roleName: '系统',
+        type: 'system',
+        content: `Crew Session 已创建`,
+        timestamp: Date.now()
+      });
+    }
     // 创建或更新 conversation
     let conv = store.conversations.find(c => c.id === sid);
     if (!conv) {

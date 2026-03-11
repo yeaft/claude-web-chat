@@ -147,6 +147,9 @@ export async function createCrewSession(msg) {
     : join(projectDir, sharedDirRel || '.crew');
   const decisionMaker = roles.find(r => r.isDecisionMaker)?.name || roles[0]?.name || null;
 
+  // 尝试读取旧 session.json，合并统计数据（deleteCrewDir 保留了该文件）
+  const oldMeta = await loadSessionMeta(sharedDir);
+
   const session = {
     id: sessionId,
     projectDir,
@@ -156,27 +159,40 @@ export async function createCrewSession(msg) {
     roleStates: new Map(),
     decisionMaker,
     status: 'initializing',
-    round: 0,
-    costUsd: 0,
-    totalInputTokens: 0,
-    totalOutputTokens: 0,
+    round: oldMeta?.round || 0,
+    costUsd: oldMeta?.costUsd || 0,
+    totalInputTokens: oldMeta?.totalInputTokens || 0,
+    totalOutputTokens: oldMeta?.totalOutputTokens || 0,
     messageHistory: [],
     uiMessages: [],
     humanMessageQueue: [],
     waitingHumanContext: null,
     pendingRoutes: [],
-    features: new Map(),
-    _completedTaskIds: new Set(),
+    features: new Map((oldMeta?.features || []).map(f => [f.taskId, f])),
+    _completedTaskIds: new Set(oldMeta?._completedTaskIds || []),
     initProgress: null,
     userId,
     username,
     agentId: ctx.CONFIG?.agentName || null,
     teamType,
     language,
-    createdAt: Date.now()
+    createdAt: oldMeta?.createdAt || Date.now()
   };
 
+  if (oldMeta) {
+    console.log(`[Crew] Merged stats from previous session: round=${session.round}, cost=$${session.costUsd.toFixed(4)}, inputTokens=${session.totalInputTokens}, outputTokens=${session.totalOutputTokens}`);
+    // 恢复旧消息历史（deleteCrewDir 保留了 messages*.json）
+    const loaded = await loadSessionMessages(sharedDir);
+    if (loaded.messages.length > 0) {
+      session.uiMessages = loaded.messages;
+      console.log(`[Crew] Restored ${loaded.messages.length} messages from previous session`);
+    }
+  }
+
   crewSessions.set(sessionId, session);
+
+  // 如果有旧消息，检查是否有更早的分片
+  const hasOlderMessages = oldMeta ? await getMaxShardIndex(sharedDir) > 0 : false;
 
   sendCrewMessage({
     type: 'crew_session_created',
@@ -196,7 +212,10 @@ export async function createCrewSession(msg) {
     })),
     decisionMaker,
     userId,
-    username
+    username,
+    // 旧消息（recreate 时保留的历史）
+    uiMessages: session.uiMessages.length > 0 ? session.uiMessages : undefined,
+    hasOlderMessages: hasOlderMessages || undefined
   });
 
   sendStatusUpdate(session);
@@ -335,19 +354,29 @@ export async function handleCheckCrewExists(msg) {
 }
 
 /**
- * 删除工作目录下的 .crew 目录（保留 context/ 历史记录）
+ * 删除 Crew 定义文件（模板/角色配置），保留所有用户数据和工作产出
+ *
+ * 删除: CLAUDE.md（共享模板）、roles/（角色模板）
+ * 清空: sessions/ 下的文件（旧角色的 Claude Code session IDs，已失效）
+ * 保留: context/、session.json、messages*.json 及任何其他生成文件（截图、设计文档等）
  */
 export async function handleDeleteCrewDir(msg) {
   const { projectDir } = msg;
   if (!isValidProjectDir(projectDir)) return;
   const crewDir = join(projectDir, '.crew');
   try {
-    const entries = await fs.readdir(crewDir);
-    await Promise.all(
-      entries
-        .filter(name => name !== 'context')
-        .map(name => fs.rm(join(crewDir, name), { recursive: true, force: true }))
-    );
+    // 删除 Crew 模板定义
+    await fs.rm(join(crewDir, 'CLAUDE.md'), { force: true }).catch(() => {});
+    await fs.rm(join(crewDir, 'roles'), { recursive: true, force: true }).catch(() => {});
+
+    // 清空 sessions/ 内容（旧角色的 session IDs 已失效），保留目录本身
+    const sessionsDir = join(crewDir, 'sessions');
+    try {
+      const sessionFiles = await fs.readdir(sessionsDir);
+      await Promise.all(
+        sessionFiles.map(f => fs.rm(join(sessionsDir, f), { force: true }).catch(() => {}))
+      );
+    } catch { /* sessions/ may not exist */ }
   } catch {}
 }
 

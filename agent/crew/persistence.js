@@ -62,7 +62,6 @@ export async function removeFromCrewIndex(sessionId) {
   const { crewSessions } = await import('./session.js');
 
   const index = await loadCrewIndex();
-  const entry = index.find(e => e.sessionId === sessionId);
   const filtered = index.filter(e => e.sessionId !== sessionId);
   if (filtered.length !== index.length) {
     await saveCrewIndex(filtered);
@@ -73,20 +72,8 @@ export async function removeFromCrewIndex(sessionId) {
     crewSessions.delete(sessionId);
     console.log(`[Crew] Removed session ${sessionId} from active sessions`);
   }
-  // 删除磁盘上的 session 数据文件
-  const sharedDir = entry?.sharedDir;
-  if (sharedDir) {
-    try {
-      for (const file of ['session.json', 'messages.json']) {
-        await fs.unlink(join(sharedDir, file)).catch(() => {});
-      }
-      // Clean up message shard files
-      await cleanupMessageShards(sharedDir);
-      console.log(`[Crew] Cleaned session files in ${sharedDir}`);
-    } catch (e) {
-      console.warn(`[Crew] Failed to clean session files:`, e.message);
-    }
-  }
+  // 注意：不再删除磁盘上的 session.json、messages.json 等文件
+  // 这些文件在 recreate 时会被复用（合并统计数据 + 恢复消息历史）
 }
 
 // =====================================================================
