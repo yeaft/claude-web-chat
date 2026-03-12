@@ -25,7 +25,7 @@ import { getRolePlayMessages } from './roleplay-i18n.js';
 const TEAM_ROLES = {
   dev:     ['pm', 'dev', 'reviewer', 'tester'],
   writing: ['editor', 'writer', 'proofreader'],
-  trading: ['analyst', 'strategist', 'risk-manager'],
+  trading: ['quant', 'strategist', 'risk', 'macro'],
   video:   ['director', 'writer', 'producer'],
   custom:  ['pm', 'dev', 'reviewer', 'tester'], // default same as dev
 };
