@@ -1594,23 +1594,15 @@
   display: none;
 }
 
-/* Header nav for Crew mode: two groups as siblings in .chat-header */
-.crew-header-left,
-.crew-header-right {
+/* Header nav for Crew/RolePlay mode: single container, all buttons right-aligned */
+.crew-header-actions {
   display: flex;
   align-items: center;
   gap: 4px;
   position: absolute;
   top: 50%;
-  transform: translateY(-50%);
-}
-
-.crew-header-left {
   right: 12px;
-}
-
-.crew-header-right {
-  right: 84px; /* 12px + (32px × 2 buttons + 4px × 2 gaps) = 84px */
+  transform: translateY(-50%);
 }
 
 .crew-header-nav-btn {
@@ -2393,15 +2385,11 @@
     max-width: calc(100vw - 32px);
   }
 
-  /* --- Problem 6: Chat header — left/right button split on mobile --- */
-  .crew-header-left,
-  .crew-header-right {
+  /* --- Problem 6: Chat header — button container on mobile --- */
+  .crew-header-actions {
     position: static;
     transform: none;
     flex-shrink: 0;
-  }
-
-  .crew-header-left {
     order: -1;
   }
 
