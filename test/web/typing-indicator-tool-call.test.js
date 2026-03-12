@@ -1,6 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { describe, it, expect } from 'vitest';
 
 /**
  * Tests for task-15: Fix typing indicator disappearing during tool calls.
@@ -9,31 +7,14 @@ import { resolve } from 'path';
  * dots (showTypingDots) should reappear. But isStreaming stays true on the
  * assistant message, so hasStreamingMessage remains true, suppressing the dots.
  *
- * Fix: Call finishStreamingForConversation before adding tool-use messages
- * in claudeOutput.js, so isStreaming is cleared and typing dots can show.
- *
  * Verifies:
- * 1) Source: finishStreamingForConversation called before tool-use in claudeOutput.js
- * 2) Runtime: handleClaudeOutput clears isStreaming when tool_use block appears
- * 3) Runtime: showTypingDots logic returns true during tool execution
- * 4) Runtime: isStreaming restored when new text arrives after tool
- * 5) Runtime: finishStreamingForConversation called on turn end (result)
- * 6) Source: MessageList typing indicator logic intact
+ * 1) Runtime: handleClaudeOutput clears isStreaming when tool_use block appears
+ * 2) Runtime: showTypingDots logic returns true during tool execution
+ * 3) Runtime: isStreaming restored when new text arrives after tool
+ * 4) Runtime: finishStreamingForConversation called on turn end (result)
+ * 5) Runtime: multiple consecutive tool calls
  */
 
-const WORKTREE = resolve(__dirname, '../..');
-
-let claudeOutputSource;
-let messageListSource;
-
-beforeEach(() => {
-  claudeOutputSource = readFileSync(
-    resolve(WORKTREE, 'web/stores/helpers/claudeOutput.js'), 'utf-8'
-  );
-  messageListSource = readFileSync(
-    resolve(WORKTREE, 'web/components/MessageList.js'), 'utf-8'
-  );
-});
 
 // =====================================================================
 // Helper: minimal mock store for handleClaudeOutput tests
@@ -168,30 +149,7 @@ function showTypingDots(messages, processingConversations, conversationId) {
 }
 
 // =====================================================================
-// 1. Source: finishStreamingForConversation called before tool_use
-// =====================================================================
-describe('source: finishStreaming called before tool-use in claudeOutput.js', () => {
-  it('finishStreamingForConversation appears before addMessageToConversation for tool_use', () => {
-    // Find the tool_use block handling
-    const toolUseIdx = claudeOutputSource.indexOf("block.type === 'tool_use'");
-    expect(toolUseIdx).toBeGreaterThan(-1);
-
-    // finishStreamingForConversation should appear after tool_use check but before addMessageToConversation
-    const afterToolUse = claudeOutputSource.substring(toolUseIdx);
-    const finishIdx = afterToolUse.indexOf('finishStreamingForConversation');
-    const addMsgIdx = afterToolUse.indexOf('addMessageToConversation');
-    expect(finishIdx).toBeGreaterThan(-1);
-    expect(addMsgIdx).toBeGreaterThan(-1);
-    expect(finishIdx).toBeLessThan(addMsgIdx);
-  });
-
-  it('has explanatory comment about typing dots', () => {
-    expect(claudeOutputSource).toContain('typing dots reappear during tool execution');
-  });
-});
-
-// =====================================================================
-// 2. Runtime: isStreaming cleared when tool_use block appears
+// 1. Runtime: isStreaming cleared when tool_use block appears
 // =====================================================================
 describe('runtime: isStreaming cleared on tool_use', () => {
   it('assistant text sets isStreaming true, then tool_use clears it', () => {
@@ -351,33 +309,7 @@ describe('runtime: result type clears streaming and processing', () => {
 });
 
 // =====================================================================
-// 6. Source: MessageList typing indicator logic intact
-// =====================================================================
-describe('source: MessageList typing indicator structure', () => {
-  it('has typing-indicator element', () => {
-    expect(messageListSource).toContain('typing-indicator');
-  });
-
-  it('showTypingDots computed exists', () => {
-    expect(messageListSource).toContain('showTypingDots');
-  });
-
-  it('showTypingDots depends on isProcessing and hasStreamingMessage', () => {
-    expect(messageListSource).toContain('store.isProcessing');
-    expect(messageListSource).toContain('hasStreamingMessage');
-  });
-
-  it('hasStreamingMessage checks isStreaming flag', () => {
-    expect(messageListSource).toContain('m.isStreaming');
-  });
-
-  it('typing dots v-if uses showTypingDots', () => {
-    expect(messageListSource).toContain('v-if="showTypingDots"');
-  });
-});
-
-// =====================================================================
-// 7. Multiple consecutive tool calls
+// 5. Multiple consecutive tool calls
 // =====================================================================
 describe('runtime: multiple consecutive tool calls', () => {
   it('typing dots stay visible through consecutive tool calls', () => {

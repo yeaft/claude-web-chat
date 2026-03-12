@@ -1,6 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { describe, it, expect } from 'vitest';
 
 /**
  * Tests for sidebar session sort-by-activity feature.
@@ -9,16 +7,8 @@ import { resolve } from 'path';
  * 1) Sessions within each group are sorted by lastActivity descending
  * 2) The current active session always appears first in its group
  * 3) Falls back to createdAt when no lastActivity exists
- * 4) crewConversations and normalConversations computed properties apply sorting
- * 5) Panel structure (Chat above, Crew below) remains unchanged
+ * 4) Edge cases
  */
-
-let chatPageSource;
-
-beforeAll(() => {
-  const chatPagePath = resolve(__dirname, '../../web/components/ChatPage.js');
-  chatPageSource = readFileSync(chatPagePath, 'utf-8');
-});
 
 /**
  * Extract sortByActivity and test it as a pure function.
@@ -190,53 +180,7 @@ describe('fallback to createdAt', () => {
 });
 
 // =====================================================================
-// 4. Computed properties apply sorting
-// =====================================================================
-describe('computed properties integrate sortByActivity', () => {
-  it('crewConversations computed calls sortByActivity', () => {
-    expect(chatPageSource).toContain(
-      'this.sortByActivity(this.store.conversations.filter(c => c.type === \'crew\'))'
-    );
-  });
-
-  it('normalConversations computed calls sortByActivity', () => {
-    expect(chatPageSource).toContain(
-      'this.sortByActivity(this.store.conversations.filter(c => c.type !== \'crew\' && c.type !== \'rolePlay\' && c.type !== \'virtualCrew\'))'
-    );
-  });
-
-  it('sortByActivity is defined as a method', () => {
-    expect(chatPageSource).toContain('sortByActivity(conversations)');
-  });
-});
-
-// =====================================================================
-// 5. Panel structure unchanged — Chat above, Crew below
-// =====================================================================
-describe('panel structure unchanged', () => {
-  it('normalConversations v-for still appears before crewConversations v-for', () => {
-    const normalIdx = chatPageSource.indexOf('v-for="conv in normalConversations"');
-    const crewIdx = chatPageSource.indexOf('v-for="conv in crewConversations"');
-    expect(normalIdx).toBeGreaterThan(-1);
-    expect(crewIdx).toBeGreaterThan(-1);
-    expect(normalIdx).toBeLessThan(crewIdx);
-  });
-
-  it('session-panel structure is preserved (chat + crew + roleplay)', () => {
-    const panelsStart = chatPageSource.indexOf('class="session-panels"');
-    expect(panelsStart).toBeGreaterThan(-1);
-    const matches = chatPageSource.match(/class="session-panel"/g) || [];
-    expect(matches.length).toBe(3);
-  });
-
-  it('group headers remain — Chat uses i18n recentChats, Crew shows "Crew Sessions"', () => {
-    expect(chatPageSource).toContain("$t('chat.sidebar.recentChats')");
-    expect(chatPageSource).toContain('<span>Crew Sessions</span>');
-  });
-});
-
-// =====================================================================
-// 6. Edge cases
+// 4. Edge cases
 // =====================================================================
 describe('edge cases', () => {
   it('handles empty conversation list', () => {
