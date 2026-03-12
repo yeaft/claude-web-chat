@@ -80,7 +80,7 @@ export default {
           </svg>
         </button>
       </div>
-      <div class="crew-header-left" v-if="isCrewOrRolePlay">
+      <div class="crew-header-actions" v-if="isCrewOrRolePlay">
         <button class="crew-header-nav-btn crew-sidebar-toggle"
                 @click="$emit('toggle-sidebar')">
           <svg viewBox="0 0 24 24" width="16" height="16">
@@ -99,8 +99,6 @@ export default {
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zM7 12h2v5H7zm4-3h2v8h-2zm4-3h2v11h-2z"/></svg>
           <span v-if="store.crewInProgressCount > 0" class="nav-badge">{{ store.crewInProgressCount }}</span>
         </button>
-      </div>
-      <div class="crew-header-right" v-if="isCrewOrRolePlay">
         <button class="crew-header-nav-btn"
                 :class="{ 'btn-loading': store.refreshingSession }"
                 @click="refreshSession"
