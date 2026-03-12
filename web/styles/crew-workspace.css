@@ -293,6 +293,11 @@
   opacity: 0.4;
 }
 
+/* Typing indicator left-align with message content in Crew/RolePlay views */
+.crew-center-panel .typing-indicator {
+  padding-left: 24px;
+}
+
 .crew-message:hover {
   background: var(--sidebar-hover);
 }
