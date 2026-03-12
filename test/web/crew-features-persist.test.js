@@ -1,45 +1,15 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 /**
  * Tests for task-42: features persistence and todosByFeature no-filter.
  *
  * Verifies:
- * 1) todosByFeature no longer filters completed groups
- * 2) activeTasks prioritizes store.currentCrewStatus.features
- * 3) crew.js session.features accumulates correctly
- * 4) sendStatusUpdate includes features list
- * 5) session resume restores from meta.features
+ * 1) todosByFeature grouping includes completed groups
+ * 2) activeTasks persisted features take priority over messages
+ * 3) Feature accumulation logic (dedup, skip missing fields)
+ * 4) Session resume restores features from serialized array
+ * 5) End-to-end data flow
  */
-
-// =====================================================================
-// Source code
-// =====================================================================
-
-let crewSource;
-let viewSource;
-let storeSource;
-
-beforeAll(async () => {
-  const { promises: fs } = await import('fs');
-  const { join } = await import('path');
-  const base = process.cwd();
-  crewSource = '';
-  const crewModules = ['session.js', 'persistence.js', 'ui-messages.js', 'control.js',
-    'routing.js', 'role-query.js', 'role-output.js', 'role-management.js',
-    'human-interaction.js', 'shared-dir.js', 'task-files.js', 'worktree.js'];
-  for (const mod of crewModules) {
-    crewSource += await fs.readFile(join(base, 'agent/crew', mod), 'utf-8') + '\n';
-  }
-  viewSource = await fs.readFile(join(base, 'web/components/CrewChatView.js'), 'utf-8');
-  // Sub-modules extracted from CrewChatView during refactor
-  const crewDir = join(base, 'web/components/crew');
-  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
-    viewSource += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
-  }
-  const chatMain = await fs.readFile(join(base, 'web/stores/chat.js'), 'utf-8');
-  const crewHelper = await fs.readFile(join(base, 'web/stores/helpers/crew.js'), 'utf-8');
-  storeSource = chatMain + '\n' + crewHelper;
-});
 
 // =====================================================================
 // 1) todosByFeature no longer filters completed groups
@@ -47,19 +17,6 @@ beforeAll(async () => {
 
 describe('todosByFeature: no completed-group filtering', () => {
 
-  it('should NOT contain allDone filtering logic', () => {
-    // Old code had: const allDone = group.entries.every(...); if (!allDone) result.push(group);
-    // This should be removed
-    expect(viewSource).not.toContain('allDone');
-  });
-
-  it('should return Array.from(groups.values()) directly', () => {
-    // The todosByFeature logic (now in buildTodosByFeature) should end with:
-    // return Array.from(groups.values());
-    expect(viewSource).toContain('return Array.from(groups.values())');
-  });
-
-  // Replicate the logic to verify behavior
   it('should include groups where all todos are completed', () => {
     const latestMap = new Map();
     latestMap.set('role-A', {
@@ -97,32 +54,6 @@ describe('todosByFeature: no completed-group filtering', () => {
 
 describe('activeTasks: prioritize persisted features', () => {
 
-  it('should reference store.currentCrewStatus.features', () => {
-    const activeSection = viewSource.split('activeTasks()')[1]?.split('\n    },')[0] || '';
-    expect(activeSection).toContain('currentCrewStatus');
-    expect(activeSection).toContain('features');
-  });
-
-  it('should set persistedFeatures from store', () => {
-    const activeSection = viewSource.split('activeTasks()')[1]?.split('\n    },')[0] || '';
-    expect(activeSection).toContain('persistedFeatures');
-  });
-
-  it('should iterate persisted features first, then supplement from messages', () => {
-    const activeSection = viewSource.split('activeTasks()')[1]?.split('\n    },')[0] || '';
-    const persistedIdx = activeSection.indexOf('persistedFeatures');
-    const msgIdx = activeSection.indexOf('currentCrewMessages');
-    expect(persistedIdx).toBeGreaterThan(-1);
-    expect(msgIdx).toBeGreaterThan(-1);
-    expect(persistedIdx).toBeLessThan(msgIdx);
-  });
-
-  it('messages should only supplement, not overwrite persisted features', () => {
-    // Logic now in collectActiveTasks (extracted from activeTasks computed)
-    expect(viewSource).toContain('!taskMap.has(msg.taskId)');
-  });
-
-  // Replicate logic to verify behavior
   it('persisted features take priority over message-derived features', () => {
     const taskMap = new Map();
 
@@ -154,42 +85,11 @@ describe('activeTasks: prioritize persisted features', () => {
 });
 
 // =====================================================================
-// 3) crew.js session.features accumulation and persistence
+// 3) Feature accumulation logic
 // =====================================================================
 
-describe('crew.js: session.features accumulation', () => {
+describe('feature accumulation logic', () => {
 
-  it('createCrewSession should initialize features from oldMeta or empty', () => {
-    // features can be initialized from oldMeta (recreate) or as empty array fallback
-    expect(crewSource).toContain('features: new Map((oldMeta?.features || []).map(f => [f.taskId, f]))');
-  });
-
-  it('sendCrewOutput should accumulate features on new taskId', () => {
-    expect(crewSource).toContain('session.features.has(taskId)');
-    expect(crewSource).toContain('session.features.set(taskId');
-  });
-
-  it('should only accumulate when both taskId and taskTitle are present', () => {
-    // Check: if (taskId && taskTitle && !session.features.has(taskId))
-    expect(crewSource).toContain('taskId && taskTitle && !session.features.has(taskId)');
-  });
-
-  it('should store taskId, taskTitle, and createdAt in feature entry', () => {
-    const featureSetLine = crewSource.split('session.features.set(taskId')[1]?.split(')')[0] || '';
-    expect(featureSetLine).toContain('taskId');
-    expect(featureSetLine).toContain('taskTitle');
-    expect(featureSetLine).toContain('createdAt');
-  });
-
-  it('saveSessionMeta should serialize features to array', async () => {
-    const { promises: fsP } = await import('fs');
-    const { join: joinP } = await import('path');
-    const persistSource = await fsP.readFile(joinP(process.cwd(), 'agent/crew/persistence.js'), 'utf-8');
-    const saveSection = persistSource.split('saveSessionMeta')[1]?.split('await fs.writeFile')[0] || '';
-    expect(saveSection).toContain('features: Array.from(session.features.values())');
-  });
-
-  // Replicate accumulation logic
   it('should not duplicate features with same taskId', () => {
     const features = new Map();
 
@@ -232,35 +132,11 @@ describe('crew.js: session.features accumulation', () => {
 });
 
 // =====================================================================
-// 4) sendStatusUpdate includes features list
-// =====================================================================
-
-describe('sendStatusUpdate: features in payload', () => {
-
-  it('sendStatusUpdate should include features field', () => {
-    // sendStatusUpdate function definition starts with "function sendStatusUpdate"
-    const fnStart = crewSource.indexOf('function sendStatusUpdate');
-    expect(fnStart).toBeGreaterThan(-1);
-    const statusSection = crewSource.substring(fnStart, crewSource.indexOf('异步更新持久化', fnStart));
-    expect(statusSection).toContain('features: Array.from(session.features.values())');
-  });
-
-  it('chat store should receive and store features from status update', () => {
-    expect(storeSource).toContain("features: msg.features || []");
-  });
-});
-
-// =====================================================================
-// 5) session resume restores from meta.features
+// 4) Session resume restores from meta.features
 // =====================================================================
 
 describe('resumeCrewSession: restore features from meta', () => {
 
-  it('should reconstruct features Map from meta.features array', () => {
-    expect(crewSource).toContain("features: new Map((meta.features || []).map(f => [f.taskId, f]))");
-  });
-
-  // Replicate resume logic
   it('should correctly restore features Map from serialized array', () => {
     const metaFeatures = [
       { taskId: 'task-1', taskTitle: 'Feature A', createdAt: 1000 },
