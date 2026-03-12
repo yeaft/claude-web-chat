@@ -174,7 +174,8 @@ UI/交互方案不确定时找设计师确认。需求不明确时找决策者 "
     workConventions: '# 工作约定',
     workConventionsContent: `- 文档产出写入 .crew/context/ 目录
 - 重要决策记录在 .crew/context/decisions.md
-- 代码修改使用项目代码路径的绝对路径`,
+- 代码修改使用项目代码路径的绝对路径
+- **Plan mode 自动退出**：可以进入 plan mode 梳理思路和写计划，但计划写完后必须立即调用 ExitPlanMode 自动退出并直接开始执行，不要等待用户审批。只有在方案有重大歧义、需要用户做选择时才停下来确认`,
     stuckRules: '# 卡住上报规则',
     stuckRulesContent: `当你遇到以下情况时，不要自己空转或反复重试，立即 ROUTE 给 PM（pm）请求协调：
 1. 缺少前置依赖（如需要的文件、目录、代码不存在）

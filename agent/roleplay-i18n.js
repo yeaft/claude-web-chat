@@ -22,7 +22,8 @@ const messages = {
     workConventions: '# 工作约定',
     workConventionsContent: `- 文档产出写入 .roleplay/context/ 目录
 - 代码修改使用项目路径的绝对路径
-- 每个角色专注自己的职责，不越界`,
+- 每个角色专注自己的职责，不越界
+- **Plan mode 自动退出**：可以进入 plan mode 梳理思路和写计划，但计划写完后必须立即调用 ExitPlanMode 自动退出并直接开始执行，不要等待用户审批。只有在方案有重大歧义、需要用户做选择时才停下来确认`,
     crewRelation: '# 与 .crew 的关系',
     crewRelationContent: `- .roleplay/context/ 可以读取 .crew/context/ 的内容
 - .crew 的共享记忆和看板对 RolePlay 可见
