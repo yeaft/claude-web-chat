@@ -516,7 +516,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
             console.log(`[RolePlay] Auto-continuing to role: ${to}`);
 
             // ★ Pre-send compact check for RolePlay auto-continue
-            const rpAutoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
+            const rpAutoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 100000;
             const rpEstimatedNewTokens = Math.ceil(prompt.length / 3);
             // Include output_tokens: the assistant's output becomes part of context for the next turn
             const rpOutputTokens = message.usage?.output_tokens || 0;

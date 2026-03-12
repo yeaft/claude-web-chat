@@ -195,7 +195,7 @@ export async function dispatchToRole(session, roleName, content, fromSource, tas
   });
 
   // ★ Pre-send compact check: estimate total tokens and clear+rebuild if needed
-  const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
+  const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 100000;
   const lastInputTokens = roleState.lastInputTokens || 0;
   const estimatedNewTokens = Math.ceil((typeof content === 'string' ? content.length : 0) / 3);
   const estimatedTotal = lastInputTokens + estimatedNewTokens;

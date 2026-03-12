@@ -673,7 +673,7 @@ export async function handleUserInput(msg) {
   console.log(`[${conversationId}] Sending: ${prompt.substring(0, 100)}...`);
 
   // ★ Pre-send compact check: estimate total tokens and compact before sending if needed
-  const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 110000;
+  const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 100000;
   const lastInputTokens = state.lastResultInputTokens || 0;
   const lastOutputTokens = state.lastResultOutputTokens || 0;
   const estimatedNewTokens = Math.ceil(effectivePrompt.length / 3); // conservative: ~3 chars per token
