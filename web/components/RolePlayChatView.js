@@ -60,15 +60,6 @@ export default {
             <div v-if="adaptedMessages.length === 0 && !store.isProcessing" class="crew-empty">
               <div class="crew-empty-icon">🎭</div>
               <div class="crew-empty-text">{{ $t('roleplay.emptyHint') }}</div>
-              <div v-if="sessionRoles.length > 0" class="roleplay-empty-roles">
-                <div v-for="role in sessionRoles" :key="role.name" class="roleplay-empty-role-card">
-                  <div class="roleplay-empty-role-icon">{{ role.icon || '🤖' }}</div>
-                  <div class="roleplay-empty-role-info">
-                    <div class="roleplay-empty-role-name">{{ role.displayName || role.name }}</div>
-                    <div class="roleplay-empty-role-desc" v-if="role.description">{{ role.description }}</div>
-                  </div>
-                </div>
-              </div>
             </div>
 
             <!-- Load more / history (3-tier: loading → hidden blocks → disk history) -->
