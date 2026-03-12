@@ -1250,6 +1250,11 @@
   padding-right: 48px;
 }
 
+/* RolePlay: no roles panel ever, so always pad left */
+.roleplay-crew-view .crew-panel-center {
+  padding-left: 48px;
+}
+
 /* Feature Kanban Card */
 .crew-feature-card {
   background: var(--bg-main);
@@ -1728,7 +1733,8 @@
 
   /* Mobile: hide-* should NOT add padding to center (panels are drawers) */
   .crew-workspace.hide-roles .crew-panel-center,
-  .crew-workspace.hide-features .crew-panel-center {
+  .crew-workspace.hide-features .crew-panel-center,
+  .roleplay-crew-view .crew-panel-center {
     padding-left: 0;
     padding-right: 0;
   }
