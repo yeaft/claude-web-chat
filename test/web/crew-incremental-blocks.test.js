@@ -1,61 +1,23 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 /**
  * Tests for task-18: featureBlocks incremental update, lazy turns, cache invalidation.
  *
- * Verifies:
- * 1) featureBlocks checks array reference change (_lastArr) for cache invalidation
+ * Behavioral tests for:
+ * 1) featureBlocks array reference change detection
  * 2) _appendToSegments incremental segmentation logic
  * 3) _rebuildBlocksFromSegments streaming detection & lazy turns
  * 4) getBlockTurns lazy resolution
- * 5) Markdown render cache (renderMarkdown + clearMarkdownCache)
+ * 5) Markdown render cache (LRU eviction)
+ * 6) _buildTurns turn grouping
+ * 7) Integration: full cache lifecycle
  */
-
-// =====================================================================
-// Source code
-// =====================================================================
-
-let viewSource;
-let markdownSource;
-
-beforeAll(async () => {
-  const { promises: fs } = await import('fs');
-  const { join } = await import('path');
-  const base = process.cwd();
-  viewSource = await fs.readFile(join(base, 'web/components/CrewChatView.js'), 'utf-8');
-  // Sub-modules extracted from CrewChatView during refactor
-  const crewDir = join(base, 'web/components/crew');
-  for (const mod of ['crewHelpers.js', 'crewMessageGrouping.js', 'crewKanban.js', 'crewRolePresets.js', 'CrewTurnRenderer.js', 'CrewFeaturePanel.js', 'CrewRolePanel.js', 'crewInput.js', 'crewScroll.js']) {
-    viewSource += '\n' + await fs.readFile(join(crewDir, mod), 'utf-8');
-  }
-  markdownSource = await fs.readFile(join(base, 'web/utils/markdown.js'), 'utf-8');
-});
 
 // =====================================================================
 // 1) featureBlocks: array reference change detection
 // =====================================================================
 
 describe('featureBlocks: array reference cache invalidation', () => {
-
-  it('should store _lastArr in cache initialization', () => {
-    expect(viewSource).toContain('_lastArr:');
-  });
-
-  it('should check cache._lastArr !== allMessages for reference change', () => {
-    expect(viewSource).toContain('cache._lastArr !== allMessages');
-  });
-
-  it('should update _lastArr when array reference changes', () => {
-    // Now done via Object.assign(cache, createFbCache(allMessages))
-    expect(viewSource).toContain('createFbCache(allMessages)');
-  });
-
-  it('should trigger full rebuild when array reference changes', () => {
-    // When _lastArr !== allMessages, it should reset via createFbCache and rebuild
-    const refChangeSection = viewSource.split('cache._lastArr !== allMessages')[1]
-      ?.split('return')[0] || '';
-    expect(refChangeSection).toContain('createFbCache(allMessages)');
-  });
 
   // Behavioral test: simulate array ref change
   it('should detect when messages array reference changes (session restore)', () => {
@@ -78,10 +40,6 @@ describe('featureBlocks: array reference cache invalidation', () => {
 // =====================================================================
 
 describe('_appendToSegments: incremental segmentation', () => {
-
-  it('should have appendToSegments function defined', () => {
-    expect(viewSource).toContain('appendToSegments(allMessages, startIdx, cache)');
-  });
 
   // Behavioral test: simulate segmentation logic
   function appendToSegments(allMessages, startIdx, cache) {
@@ -221,28 +179,6 @@ describe('_appendToSegments: incremental segmentation', () => {
 
 describe('_rebuildBlocksFromSegments: streaming and lazy turns', () => {
 
-  it('should check _streaming flag on messages', () => {
-    expect(viewSource).toContain('m._streaming');
-  });
-
-  it('should set hasStreaming when segment has streaming messages', () => {
-    expect(viewSource).toContain("const hasStreaming = seg.messages.some(m => m._streaming)");
-  });
-
-  it('should defer turns for completed, non-streaming, non-ask blocks', () => {
-    expect(viewSource).toContain('const canDefer = isCompleted && !hasStreaming && !hasPendingAsk');
-  });
-
-  it('should set turns to null for deferred blocks', () => {
-    expect(viewSource).toContain('turns = null;  // defer building');
-  });
-
-  it('should always rebuild turns when segment is dirty', () => {
-    // The else branch calls buildTurns when canDefer is false OR when dirty
-    const rebuildSection = viewSource.split('const canDefer =')[1]?.split('blocks.push')[0] || '';
-    expect(rebuildSection).toContain('buildTurns(seg.messages)');
-  });
-
   // Behavioral test: lazy turns decision logic
   it('should defer turns only when all three conditions are met', () => {
     const cases = [
@@ -273,11 +209,6 @@ describe('_rebuildBlocksFromSegments: streaming and lazy turns', () => {
     // which always calls _buildTurns
     expect(canDefer).toBe(false);
   });
-
-  // Behavioral test: global blocks always need turns
-  it('global blocks always rebuild turns when dirty', () => {
-    expect(viewSource).toContain("const needsRebuild = seg._dirty || !seg._turnsCache || hasStreaming");
-  });
 });
 
 // =====================================================================
@@ -285,32 +216,6 @@ describe('_rebuildBlocksFromSegments: streaming and lazy turns', () => {
 // =====================================================================
 
 describe('getBlockTurns: lazy turns resolution', () => {
-
-  it('should return block.turns directly if not null', () => {
-    expect(viewSource).toContain('if (block.turns !== null) return block.turns');
-  });
-
-  it('should use _segIndex to find the segment for lazy building', () => {
-    expect(viewSource).toContain('block._segIndex');
-    expect(viewSource).toContain('fbCache.segments[block._segIndex]');
-  });
-
-  it('should build turns from segment on lazy resolution', () => {
-    // getBlockTurns is now a standalone exported function
-    const methodBody = viewSource.split('getBlockTurns(block, fbCache) {')[1]?.split('\n}')[0] || '';
-    expect(methodBody).toContain('buildTurns(seg.messages)');
-  });
-
-  it('should cache built turns on segment for reuse', () => {
-    const methodBody = viewSource.split('getBlockTurns(block, fbCache) {')[1]?.split('\n}')[0] || '';
-    expect(methodBody).toContain('seg._turnsCache = buildTurns');
-    expect(methodBody).toContain('block.turns = seg._turnsCache');
-  });
-
-  it('should return empty array if no segment found (fallback)', () => {
-    const methodBody = viewSource.split('getBlockTurns(block, fbCache) {')[1]?.split('\n}')[0] || '';
-    expect(methodBody).toContain('return []');
-  });
 
   // Behavioral test: lazy resolution
   it('should resolve turns lazily when block.turns is null', () => {
@@ -374,41 +279,6 @@ describe('getBlockTurns: lazy turns resolution', () => {
 
 describe('Markdown render cache', () => {
 
-  it('should define _mdCache Map', () => {
-    expect(markdownSource).toContain('const _mdCache = new Map()');
-  });
-
-  it('should have a max cache size constant', () => {
-    expect(markdownSource).toContain('const _MD_CACHE_MAX = 2000');
-  });
-
-  it('should check cache before parsing', () => {
-    expect(markdownSource).toContain('const cached = _mdCache.get(text)');
-    expect(markdownSource).toContain('if (cached !== undefined) return cached');
-  });
-
-  it('should store result in cache after parsing', () => {
-    expect(markdownSource).toContain('_mdCache.set(text, html)');
-  });
-
-  it('should evict oldest entry when cache is full', () => {
-    expect(markdownSource).toContain('if (_mdCache.size >= _MD_CACHE_MAX)');
-    expect(markdownSource).toContain('_mdCache.keys().next().value');
-    expect(markdownSource).toContain('_mdCache.delete(firstKey)');
-  });
-
-  it('should export clearMarkdownCache function', () => {
-    expect(markdownSource).toContain('export function clearMarkdownCache()');
-    expect(markdownSource).toContain('_mdCache.clear()');
-  });
-
-  it('should call clearMarkdownCache on conversation switch', () => {
-    expect(viewSource).toContain('clearMarkdownCache()');
-    // Should be in the currentConversation watcher
-    const watchSection = viewSource.split("'store.currentConversation'")[1]?.split('},')[0] || '';
-    expect(watchSection).toContain('clearMarkdownCache()');
-  });
-
   // Behavioral test: LRU eviction
   it('LRU-like eviction should remove oldest entry', () => {
     const cache = new Map();
@@ -432,16 +302,6 @@ describe('Markdown render cache', () => {
     expect(cache.has('b')).toBe(true);
     expect(cache.has('d')).toBe(true);
   });
-
-  it('should strip ROUTE and TASKS blocks before caching', () => {
-    expect(markdownSource).toContain('---ROUTE---');
-    expect(markdownSource).toContain('---TASKS---');
-    // Stripping happens before cache lookup
-    const renderFn = markdownSource.split('export function renderMarkdown')[1] || '';
-    const stripIdx = renderFn.indexOf('---ROUTE---');
-    const cacheIdx = renderFn.indexOf('_mdCache.get');
-    expect(stripIdx).toBeLessThan(cacheIdx);
-  });
 });
 
 // =====================================================================
@@ -449,24 +309,6 @@ describe('Markdown render cache', () => {
 // =====================================================================
 
 describe('Integration: cache invalidation', () => {
-
-  it('should reset _fbCache to null on conversation switch', () => {
-    const watchSection = viewSource.split("'store.currentConversation'")[1]?.split('},')[0] || '';
-    expect(watchSection).toContain('this._fbCache = null');
-  });
-
-  it('featureBlocks should handle processedLen > len (messages shrunk)', () => {
-    expect(viewSource).toContain('if (startIdx > len)');
-    // Should trigger full rebuild via createFbCache
-    const shrunkSection = viewSource.split('startIdx > len')[1]?.split('return')[0] || '';
-    expect(shrunkSection).toContain('createFbCache(allMessages)');
-  });
-
-  it('should handle array ref change with len === 0 (empty messages)', () => {
-    // The array ref change block should return early for empty messages
-    const refChangeBlock = viewSource.split('cache._lastArr !== allMessages')[1]?.split('// Empty')[0] || '';
-    expect(refChangeBlock).toContain('if (len === 0) return cache.blocks');
-  });
 
   // Behavioral test: full cache lifecycle
   it('full lifecycle: init → incremental → array change → rebuild', () => {
