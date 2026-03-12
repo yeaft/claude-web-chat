@@ -86,8 +86,8 @@ describe('ChatHeader: crew-header-left / crew-header-right', () => {
     expect(headerSource).toContain('crew-header-right');
   });
 
-  it('renders only for Crew conversations', () => {
-    expect(headerSource).toContain('v-if="store.currentConversationIsCrew"');
+  it('renders for Crew and RolePlay conversations', () => {
+    expect(headerSource).toContain('v-if="isCrewOrRolePlay"');
   });
 
   it('has roles button with toggle action', () => {

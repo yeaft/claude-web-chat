@@ -276,8 +276,6 @@ export default {
       expandedFeatures: {},
       expandedHistories: {},
       nowTick: Date.now(),
-      panelVisible: { roles: true, features: true },
-      mobilePanel: null,
     };
   },
 
@@ -294,6 +292,15 @@ export default {
   },
 
   computed: {
+    /** Delegate panel visibility to store so ChatHeader can toggle it */
+    panelVisible() {
+      return this.store.crewPanelVisible;
+    },
+    mobilePanel: {
+      get() { return this.store.crewMobilePanel; },
+      set(v) { this.store.crewMobilePanel = v; },
+    },
+
     /** RolePlay route state from server */
     rolePlayStatus() {
       return this.store.rolePlayStatuses?.[this.store.currentConversation] || null;
