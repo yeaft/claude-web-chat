@@ -325,8 +325,8 @@ export function buildRolePlaySystemPrompt(config) {
   const workflow = getWorkflow(teamType, roles, isZh);
 
   const prompt = isZh
-    ? buildZhPrompt(roleList, workflow)
-    : buildEnPrompt(roleList, workflow);
+    ? buildZhPrompt(roleList, workflow, teamType)
+    : buildEnPrompt(roleList, workflow, teamType);
 
   // Append .crew context if available
   if (crewContext) {
@@ -339,7 +339,16 @@ export function buildRolePlaySystemPrompt(config) {
   return prompt.trim();
 }
 
-function buildZhPrompt(roleList, workflow) {
+function buildZhPrompt(roleList, workflow, teamType) {
+  const isDevTeam = teamType === 'dev' || teamType === 'custom';
+  const outputRules = isDevTeam
+    ? `- 不要在回复开头添加角色名称或"XX视角"等标题，对话界面已经显示了角色信息，直接以角色身份开始回复内容
+- 代码修改使用工具（Read, Edit, Write 等），不要在聊天中贴大段代码
+- 每个角色专注做自己的事，不要代替其他角色
+- Review 和 Test 角色如果发现问题，必须切回 Dev 修复后再继续`
+    : `- 不要在回复开头添加角色名称或"XX视角"等标题，对话界面已经显示了角色信息，直接以角色身份开始回复内容
+- 每个角色专注做自己的事，不要代替其他角色`;
+
   return `
 # 多角色协作模式
 
@@ -396,10 +405,7 @@ ${workflow}
 
 ## 输出格式
 
-- 不要在回复开头添加角色名称或"XX视角"等标题，对话界面已经显示了角色信息，直接以角色身份开始回复内容
-- 代码修改使用工具（Read, Edit, Write 等），不要在聊天中贴大段代码
-- 每个角色专注做自己的事，不要代替其他角色
-- Review 和 Test 角色如果发现问题，必须切回 Dev 修复后再继续
+${outputRules}
 
 ## 语言
 
@@ -407,7 +413,16 @@ ${workflow}
 `;
 }
 
-function buildEnPrompt(roleList, workflow) {
+function buildEnPrompt(roleList, workflow, teamType) {
+  const isDevTeam = teamType === 'dev' || teamType === 'custom';
+  const outputRules = isDevTeam
+    ? `- Do not add role names or titles like "XX's perspective" at the beginning of responses; the chat UI already displays role information — start directly with the role's content
+- Use tools (Read, Edit, Write, etc.) for code changes, don't paste large code blocks in chat
+- Each role focuses on its own responsibility, don't do other roles' jobs
+- If Review or Test finds issues, must switch back to Dev to fix before continuing`
+    : `- Do not add role names or titles like "XX's perspective" at the beginning of responses; the chat UI already displays role information — start directly with the role's content
+- Each role focuses on its own responsibility, don't do other roles' jobs`;
+
   return `
 # Multi-Role Collaboration Mode
 
@@ -464,10 +479,7 @@ Each role switch must include clear handoff information from the previous role:
 
 ## Output Format
 
-- Do not add role names or titles like "XX's perspective" at the beginning of responses; the chat UI already displays role information — start directly with the role's content
-- Use tools (Read, Edit, Write, etc.) for code changes, don't paste large code blocks in chat
-- Each role focuses on its own responsibility, don't do other roles' jobs
-- If Review or Test finds issues, must switch back to Dev to fix before continuing
+${outputRules}
 
 ## Language
 
@@ -550,22 +562,29 @@ function buildWritingWorkflow(roleNames, isZh) {
 }
 
 function buildTradingWorkflow(roleNames, isZh) {
-  const hasAnalyst = roleNames.includes('analyst');
+  const hasQuant = roleNames.includes('quant');
   const hasStrategist = roleNames.includes('strategist');
-  const hasRiskManager = roleNames.includes('risk-manager');
+  const hasRisk = roleNames.includes('risk');
+  const hasMacro = roleNames.includes('macro');
 
   const steps = [];
 
   if (isZh) {
-    if (hasAnalyst) steps.push(`${steps.length + 1}. **分析师** 研究市场，输出技术分析和关键价位`);
-    if (hasStrategist) steps.push(`${steps.length + 1}. **策略师** 综合分析，制定投资策略和仓位方案`);
-    if (hasRiskManager) steps.push(`${steps.length + 1}. **风控官** 压力测试策略，评估尾部风险（不通过 → 返回策略师调整）`);
-    if (hasStrategist) steps.push(`${steps.length + 1}. **策略师** 确认最终方案并总结`);
+    if (hasQuant) steps.push(`${steps.length + 1}. **量化分析师** 采集数据，输出量化信号和技术指标`);
+    if (hasMacro) steps.push(`${steps.length + 1}. **宏观研究员** 分析宏观经济环境和周期定位`);
+    if (hasStrategist) steps.push(`${steps.length + 1}. **策略师** 综合量化信号和宏观分析，设计交易策略`);
+    if (hasRisk) steps.push(`${steps.length + 1}. **风控官** 压力测试策略，评估尾部风险（不通过 → 返回策略师调整）`);
+    if (hasStrategist && (hasQuant || hasMacro)) {
+      steps.push(`${steps.length + 1}. 迭代：策略师可要求量化分析师补充数据、宏观研究员更新分析，循环直到方案通过风控`);
+    }
   } else {
-    if (hasAnalyst) steps.push(`${steps.length + 1}. **Analyst** researches market, outputs technical analysis and key levels`);
-    if (hasStrategist) steps.push(`${steps.length + 1}. **Strategist** synthesizes analysis, formulates investment strategy and position plan`);
-    if (hasRiskManager) steps.push(`${steps.length + 1}. **Risk Manager** stress-tests strategy, assesses tail risks (if fails → back to Strategist)`);
-    if (hasStrategist) steps.push(`${steps.length + 1}. **Strategist** confirms final plan and summarizes`);
+    if (hasQuant) steps.push(`${steps.length + 1}. **Quant** collects data, outputs quantitative signals and technical indicators`);
+    if (hasMacro) steps.push(`${steps.length + 1}. **Macro Researcher** analyzes macroeconomic environment and cycle positioning`);
+    if (hasStrategist) steps.push(`${steps.length + 1}. **Strategist** synthesizes quant signals and macro analysis, designs trading strategy`);
+    if (hasRisk) steps.push(`${steps.length + 1}. **Risk Officer** stress-tests strategy, assesses tail risks (if fails → back to Strategist)`);
+    if (hasStrategist && (hasQuant || hasMacro)) {
+      steps.push(`${steps.length + 1}. Iterate: Strategist can request Quant for additional data, Macro Researcher for updated analysis, loop until strategy passes risk review`);
+    }
   }
 
   return steps.join('\n');
