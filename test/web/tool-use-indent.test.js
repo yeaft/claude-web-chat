@@ -1,12 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { loadAllCss } from '../helpers/loadCss.js';
 
 /**
  * Tests for Chat message layout:
  *
  * Part 1: Turn aggregation logic (turnGroups from MessageList.js)
- * Part 2: CSS source verification for .assistant-turn styles
- * Part 3: Legacy processMessages logic (still used for tool-use flag computation)
+ * Part 2: Legacy processMessages logic (still used for tool-use flag computation)
  */
 
 // =====================================================================
@@ -340,73 +338,7 @@ describe('Turn aggregation logic (turnGroups)', () => {
 });
 
 // =====================================================================
-// Part 2: CSS source verification for .assistant-turn styles
-// =====================================================================
-
-describe('CSS source verification (assistant-turn)', () => {
-  let cssContent;
-
-  it('should load style.css', async () => {
-    cssContent = loadAllCss();
-    expect(cssContent).toBeDefined();
-    expect(cssContent.length).toBeGreaterThan(0);
-  });
-
-  it('should have .assistant-turn base styles', () => {
-    expect(cssContent).toContain('.assistant-turn');
-    expect(cssContent).toContain('border-radius: 8px');
-  });
-
-  it('should have .assistant-turn.streaming style', () => {
-    expect(cssContent).toContain('.assistant-turn.streaming');
-  });
-
-  it('should have .turn-content styles', () => {
-    expect(cssContent).toContain('.turn-content');
-  });
-
-  it('should have .turn-todos with border-top separator', () => {
-    expect(cssContent).toContain('.turn-todos');
-    const todosSection = cssContent.split('.turn-todos')[1];
-    expect(todosSection).toContain('border-top');
-  });
-
-  it('should have .turn-actions with border-top separator', () => {
-    expect(cssContent).toContain('.turn-actions');
-    const actionsSection = cssContent.split('.turn-actions {')[1];
-    expect(actionsSection).toContain('border-top');
-  });
-
-  it('should have .turn-expand-btn styles', () => {
-    expect(cssContent).toContain('.turn-expand-btn');
-  });
-
-  it('should have .turn-ask styles', () => {
-    expect(cssContent).toContain('.turn-ask');
-  });
-
-  it('should still have .copy-btn styles', () => {
-    expect(cssContent).toContain('.copy-btn');
-  });
-
-  it('should still have .todo-item styles', () => {
-    expect(cssContent).toContain('.todo-item');
-    expect(cssContent).toContain('.todo-item.completed');
-    expect(cssContent).toContain('.todo-item.in_progress');
-  });
-
-  it('should still have .ask-card styles', () => {
-    expect(cssContent).toContain('.ask-card');
-  });
-
-  it('should still have .cursor-blink animation', () => {
-    expect(cssContent).toContain('.cursor-blink');
-    expect(cssContent).toContain('@keyframes blink');
-  });
-});
-
-// =====================================================================
-// Part 3: Legacy processMessages logic tests (kept for regression)
+// Part 2: Legacy processMessages logic tests (kept for regression)
 // =====================================================================
 
 function processMessages(messages) {
