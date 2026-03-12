@@ -34,24 +34,15 @@ import { createRolePlayInput } from './crew/rolePlayInput.js';
 import { createCrewScroll } from './crew/crewScroll.js';
 import { adaptRolePlayMessages } from './crew/rolePlayAdapter.js';
 import CrewTurnRenderer from './crew/CrewTurnRenderer.js';
-import CrewRolePanel from './crew/CrewRolePanel.js';
 import CrewFeaturePanel from './crew/CrewFeaturePanel.js';
 
 export default {
   name: 'RolePlayChatView',
-  components: { CrewTurnRenderer, CrewRolePanel, CrewFeaturePanel },
+  components: { CrewTurnRenderer, CrewFeaturePanel },
   template: `
     <div class="crew-chat-view roleplay-crew-view">
-      <div class="crew-workspace" :class="{ 'hide-roles': !panelVisible.roles, 'hide-features': !panelVisible.features, 'mobile-panel-roles': mobilePanel === 'roles', 'mobile-panel-features': mobilePanel === 'features' }">
+      <div class="crew-workspace" :class="{ 'hide-features': !panelVisible.features, 'mobile-panel-features': mobilePanel === 'features' }">
         <div class="crew-mobile-overlay" v-if="mobilePanel" @click="mobilePanel = null"></div>
-
-        <!-- Left Panel: Role Cards -->
-        <crew-role-panel
-          mode="roleplay"
-          :store="roleProxyStore"
-          :session-roles="sessionRoles"
-          @scroll-to-role="scrollToRoleLatest"
-        />
 
         <!-- Center Panel: Chat Flow -->
         <div class="crew-panel-center">
@@ -554,13 +545,6 @@ export default {
 
     loadHistory() {
       this.scroll.loadHistory((getter, cb) => this.$watch(getter, cb));
-    },
-
-    scrollToRoleLatest(roleName) {
-      this.scroll.scrollToRoleLatest(
-        roleName, this.featureBlocks,
-        this.expandedFeatures, this.expandedHistories, this.$el
-      );
     },
 
     scrollToFeature(taskId) {

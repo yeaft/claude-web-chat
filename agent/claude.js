@@ -515,6 +515,17 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
             console.log(`[RolePlay] Auto-continuing to role: ${to}`);
 
+            // ★ Send roleplay_status with updated currentRole so frontend knows which role is active
+            ctx.sendToServer({
+              type: 'roleplay_status',
+              conversationId,
+              currentRole: rpSession.currentRole,
+              round: rpSession.round,
+              features: rpSession.features ? Array.from(rpSession.features.values()) : [],
+              roleStates: rpSession.roleStates || {},
+              waitingHuman: false
+            });
+
             // ★ Pre-send compact check for RolePlay auto-continue
             const rpAutoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 100000;
             const rpEstimatedNewTokens = Math.ceil(prompt.length / 3);
@@ -627,6 +638,17 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
                 rpSession.roleStates[prevRole].status = 'idle';
               }
               console.log(`[RolePlay] Role switched: ${prevRole || 'none'} -> ${detectedRole}`);
+
+              // ★ Send roleplay_status so frontend fallbackRole stays in sync
+              ctx.sendToServer({
+                type: 'roleplay_status',
+                conversationId,
+                currentRole: rpSession.currentRole,
+                round: rpSession.round,
+                features: rpSession.features ? Array.from(rpSession.features.values()) : [],
+                roleStates: rpSession.roleStates || {},
+                waitingHuman: rpSession.waitingHuman || false
+              });
             }
           }
         }
