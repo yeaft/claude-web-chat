@@ -1132,6 +1132,43 @@
   margin-top: 0;
 }
 
+/* --- RolePlay compact mode --- */
+.crew-panel-left.roleplay-mode {
+  width: 160px;
+}
+
+.crew-panel-left.roleplay-mode .crew-panel-left-scroll {
+  padding: 8px;
+  gap: 2px;
+}
+
+.crew-panel-left.roleplay-mode .crew-role-list {
+  gap: 2px;
+}
+
+.crew-panel-left.roleplay-mode .crew-role-card {
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+
+.crew-panel-left.roleplay-mode .crew-role-card-icon {
+  font-size: 13px;
+}
+
+.crew-panel-left.roleplay-mode .crew-role-card-name {
+  font-size: 11px;
+}
+
+.crew-panel-left.roleplay-mode .crew-role-card-feature {
+  font-size: 10px;
+  padding-left: 19px;
+}
+
+.crew-panel-left.roleplay-mode .crew-role-card-tool {
+  font-size: 10px;
+  padding-left: 19px;
+}
+
 .crew-action-btn {
   background: none;
   border: none;

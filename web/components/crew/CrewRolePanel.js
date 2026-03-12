@@ -7,11 +7,12 @@ export default {
   name: 'CrewRolePanel',
   props: {
     store: { type: Object, required: true },
-    sessionRoles: { type: Array, required: true }
+    sessionRoles: { type: Array, required: true },
+    mode: { type: String, default: 'crew', validator: v => ['crew', 'roleplay'].includes(v) }
   },
   emits: ['scroll-to-role', 'control-action', 'clear-role', 'abort-role', 'show-add-role'],
   template: `
-    <aside class="crew-panel-left">
+    <aside class="crew-panel-left" :class="{ 'roleplay-mode': isRolePlay }">
       <div class="crew-panel-left-scroll">
         <button class="crew-mobile-close" @click="store.crewMobilePanel = null"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> {{ $t('crew.close') }}</button>
         <div class="crew-role-list">
@@ -24,7 +25,7 @@ export default {
               <span class="crew-role-card-icon">{{ role.icon }}</span>
               <span class="crew-role-card-name">{{ role.displayName }}</span>
               <span v-if="role.isDecisionMaker" class="crew-role-card-dm">\u2605</span>
-              <span class="crew-role-card-header-actions" @click.stop>
+              <span v-if="!isRolePlay" class="crew-role-card-header-actions" @click.stop>
                 <button v-if="isRoleStreaming(role.name)" class="crew-role-action-btn crew-role-abort-btn" @click.stop="$emit('abort-role', role.name)" :title="$t('crew.abortTask')">⏹</button>
                 <button class="crew-role-action-btn" @click.stop="$emit('clear-role', role.name)" :title="$t('crew.clearChat')">🗑</button>
               </span>
@@ -39,7 +40,7 @@ export default {
           </div>
         </div>
 
-        <div class="crew-panel-left-actions">
+        <div v-if="!isRolePlay" class="crew-panel-left-actions">
           <button class="crew-add-role-btn" @click="$emit('show-add-role')">
             <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
             <span>{{ $t('crew.addRole') }}</span>
@@ -55,7 +56,8 @@ export default {
     </aside>
   `,
   computed: {
-    icons() { return ICONS; }
+    icons() { return ICONS; },
+    isRolePlay() { return this.mode === 'roleplay'; }
   },
   methods: {
     getRoleStyle,

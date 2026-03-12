@@ -47,13 +47,10 @@ export default {
 
         <!-- Left Panel: Role Cards -->
         <crew-role-panel
+          mode="roleplay"
           :store="roleProxyStore"
           :session-roles="sessionRoles"
           @scroll-to-role="scrollToRoleLatest"
-          @control-action="controlAction"
-          @clear-role="() => {}"
-          @abort-role="() => {}"
-          @show-add-role="() => {}"
         />
 
         <!-- Center Panel: Chat Flow -->
@@ -547,10 +544,6 @@ export default {
         this.scroll.isAtBottom.value = true;
         this.scroll.scrollToBottom();
       });
-    },
-
-    controlAction(action) {
-      // RolePlay doesn't have crew control actions — no-op
     },
 
     dismissPendingAsk() {
