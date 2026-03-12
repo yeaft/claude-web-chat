@@ -371,21 +371,11 @@
 }
 
 .session-panel {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-}
-
-/* First panel: shrink to content, capped at 50% */
-.session-panel:first-child {
-  flex: 0 1 auto;
-  max-height: 50%;
-}
-
-/* Second panel: fill remaining space */
-.session-panel:last-child {
-  flex: 1;
 }
 
 .session-panel-list {
@@ -719,17 +709,20 @@
   line-height: 1;
 }
 
-/* Sidebar Bottom */
+/* Sidebar Bottom — single row: settings left, version right */
 .sidebar-bottom {
   padding: 4px 12px 8px;
 }
 
+.sidebar-bottom .sidebar-nav-item {
+  justify-content: flex-start;
+}
+
 .sidebar-version {
-  text-align: center;
   font-size: 11px;
   color: var(--text-secondary);
   opacity: 0.5;
-  padding: 2px 0 0;
+  margin-left: auto;
 }
 
 .sidebar-menu-btn {
