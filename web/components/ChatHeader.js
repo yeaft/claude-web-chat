@@ -4,7 +4,7 @@ export default {
   template: `
     <header class="chat-header">
       <!-- Mobile sidebar toggle (Chat mode) — hidden on desktop -->
-      <button class="header-sidebar-toggle" v-if="!store.currentConversationIsCrew"
+      <button class="header-sidebar-toggle" v-if="!store.currentConversationIsCrew && !store.currentConversationIsRolePlay"
               @click="$emit('toggle-sidebar')">
         <svg viewBox="0 0 24 24" width="16" height="16">
           <path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
@@ -80,7 +80,7 @@ export default {
           </svg>
         </button>
       </div>
-      <div class="crew-header-left" v-if="store.currentConversationIsCrew">
+      <div class="crew-header-left" v-if="isCrewOrRolePlay">
         <button class="crew-header-nav-btn crew-sidebar-toggle"
                 @click="$emit('toggle-sidebar')">
           <svg viewBox="0 0 24 24" width="16" height="16">
@@ -100,7 +100,7 @@ export default {
           <span v-if="store.crewInProgressCount > 0" class="nav-badge">{{ store.crewInProgressCount }}</span>
         </button>
       </div>
-      <div class="crew-header-right" v-if="store.currentConversationIsCrew">
+      <div class="crew-header-right" v-if="isCrewOrRolePlay">
         <button class="crew-header-nav-btn"
                 :class="{ 'btn-loading': store.refreshingSession }"
                 @click="refreshSession"
@@ -108,6 +108,24 @@ export default {
                 :title="$t('chatHeader.refresh')">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+        </button>
+        <button class="crew-header-nav-btn"
+                :class="{ 'btn-loading': isCompacting }"
+                @click="compactContext"
+                :disabled="isCompacting"
+                :title="$t('chatHeader.compact')">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="8 4 12 8 16 4"/><line x1="4" y1="12" x2="20" y2="12"/><polyline points="8 20 12 16 16 20"/>
+          </svg>
+        </button>
+        <button class="crew-header-nav-btn"
+                :class="{ 'btn-loading': isClearing }"
+                @click="clearMessages"
+                :disabled="isClearing"
+                :title="$t('chatHeader.clear')">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
           </svg>
         </button>
       </div>
@@ -206,9 +224,14 @@ export default {
       return `Context: ${used}k / ${total}k`;
     });
 
+    // Crew-header-left: roles streaming dot — gracefully handles RolePlay (no activeRoles)
     const hasStreamingRoles = Vue.computed(() => {
       const activeRoles = store.currentCrewStatus?.activeRoles;
       return activeRoles && activeRoles.length > 0;
+    });
+
+    const isCrewOrRolePlay = Vue.computed(() => {
+      return store.currentConversationIsCrew || store.currentConversationIsRolePlay;
     });
 
     const isCompacting = Vue.computed(() => {
@@ -318,6 +341,6 @@ export default {
       document.removeEventListener('click', closeMcpOnOutsideClick);
     });
 
-    return { store, headerTitle, folderPath, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, isClearing, canRefresh, refreshSession, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive, mcpBtnRef, mcpDropdownStyle, mcpEnabledCount, currentConvNeedRestart, toggleMcpPanel, toggleMcpServer };
+    return { store, headerTitle, folderPath, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCrewOrRolePlay, isCompacting, isClearing, canRefresh, refreshSession, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive, mcpBtnRef, mcpDropdownStyle, mcpEnabledCount, currentConvNeedRestart, toggleMcpPanel, toggleMcpServer };
   }
 };
