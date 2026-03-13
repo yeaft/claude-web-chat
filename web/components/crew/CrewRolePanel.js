@@ -71,11 +71,13 @@ export default {
     },
 
     getRoleCurrentTask(roleName) {
+      // Only show feature subtitle while the role is actively streaming
+      if (!this.isRoleStreaming(roleName)) return null;
+
       const messages = this.store.currentCrewMessages;
       for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
         if (msg.role === roleName && msg.taskTitle) {
-          if (msg.type === 'route' && msg.routeTo === 'pm') return null;
           return msg.taskTitle;
         }
       }
