@@ -85,11 +85,11 @@ export async function sendConversationList() {
       type: 'crew',
     });
   }
-  // 追加索引中已停止的 crew sessions（不重复）
+  // 追加索引中已停止的 crew sessions（不重复，跳过 hidden）
   try {
     const index = await loadCrewIndex();
     for (const entry of index) {
-      if (!activeCrewIds.has(entry.sessionId)) {
+      if (!activeCrewIds.has(entry.sessionId) && !entry.hidden) {
         list.push({
           id: entry.sessionId,
           workDir: entry.projectDir,

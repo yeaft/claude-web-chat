@@ -200,7 +200,10 @@ export function deleteConversation(store, conversationId, agentId) {
     delete store.crewMessagesMap?.[conversationId];
     delete store.crewOlderMessages?.[conversationId];
     delete store.crewStatuses?.[conversationId];
-    // 从 agent 的 crew index 中移除，防止 sendConversationList 重新加载
+    // 记录已删除的 crew session，防止 conversation_list 同步时重新加入
+    if (!store._deletedCrewSessionIds) store._deletedCrewSessionIds = new Set();
+    store._deletedCrewSessionIds.add(conversationId);
+    // 从 agent 的 crew index 中隐藏（不是真删），防止 sendConversationList 重新加载
     store.sendWsMessage({
       type: 'delete_crew_session',
       sessionId: conversationId,
@@ -215,6 +218,9 @@ export function deleteConversation(store, conversationId, agentId) {
   store.conversations = store.conversations.filter(c => c.id !== conversationId);
   if (store.currentConversation === conversationId) {
     store.currentConversation = null;
+    // 清除 lastViewedConversation，防止页面刷新时 autoRestore 恢复已删除的对话
+    localStorage.removeItem('lastViewedConversation');
+    store.lastViewedConversation = null;
   }
 
   // 如果目标 conversation 在其他 agent 上，需要先通知 server 切换 agent
