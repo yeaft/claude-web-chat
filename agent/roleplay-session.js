@@ -88,11 +88,12 @@ export async function addRolePlaySession(projectDir, session) {
   const existing = index.sessions.find(s => s.name === session.name);
   if (existing) {
     // Update existing entry instead of creating duplicate
-    Object.assign(existing, {
-      ...session,
-      updatedAt: Date.now(),
-      status: 'active',
-    });
+    // Preserve createdAt if not explicitly provided (restore scenario)
+    const mergeData = { ...session, updatedAt: Date.now(), status: 'active' };
+    if (mergeData.createdAt === undefined) {
+      delete mergeData.createdAt; // keep existing createdAt
+    }
+    Object.assign(existing, mergeData);
     index.activeSession = session.name;
     await saveRolePlaySessionIndex(projectDir, index);
     return existing;
