@@ -53,7 +53,7 @@ jobs:
           cd agent && npm version $VERSION --no-git-tag-version
 
       - name: Publish to npm
-        run: cd agent && npm publish --access public --tag dev
+        run: cd agent && npm publish --access public --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
