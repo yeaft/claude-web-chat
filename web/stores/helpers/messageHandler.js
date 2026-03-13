@@ -370,7 +370,16 @@ export function handleMessage(store, msg) {
     case 'crew_image':
     case 'crew_role_added':
     case 'crew_role_removed':
+    case 'crew_session_cleared':
+    case 'crew_role_error':
+    case 'crew_history_loaded':
       store.handleCrewOutput(msg);
+      break;
+
+    // Crew session restore failed — reset refreshingSession flag
+    case 'crew_session_restore_failed':
+      console.warn('[Crew] Session restore failed:', msg.message);
+      store.refreshingSession = false;
       break;
 
     // RolePlay route state updates

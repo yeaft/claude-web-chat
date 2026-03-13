@@ -221,12 +221,21 @@ export function handleCrewOutput(store, msg) {
 
   if (msg.type === 'crew_session_restored') {
     // 恢复时只重建 session 数据，不添加系统消息，不强制切换
+    // ★ 防御空 roles：如果 agent 返回空 roles，保留前端已有的 roles（fallback）
+    const incomingRoles = msg.roles;
+    const existingRoles = store.crewSessions[sid]?.roles;
+    const effectiveRoles = (incomingRoles && incomingRoles.length > 0)
+      ? incomingRoles
+      : (existingRoles && existingRoles.length > 0 ? existingRoles : []);
+    if (!incomingRoles || incomingRoles.length === 0) {
+      console.warn(`[Crew] crew_session_restored for ${sid} has empty roles, using fallback:`, effectiveRoles.length);
+    }
     store.crewSessions[sid] = {
       id: sid,
       projectDir: msg.projectDir,
       sharedDir: msg.sharedDir,
       name: msg.name || '',
-      roles: msg.roles,
+      roles: effectiveRoles,
       decisionMaker: msg.decisionMaker
     };
     // 恢复 UI 消息历史
@@ -467,7 +476,7 @@ export function handleCrewOutput(store, msg) {
       features: msg.features || [],
       initProgress: msg.initProgress || null
     };
-    if (msg.roles && store.crewSessions[sid]) {
+    if (msg.roles && msg.roles.length > 0 && store.crewSessions[sid]) {
       store.crewSessions[sid].roles = msg.roles;
     }
     // 根据 activeRoles 同步 _streaming 标记

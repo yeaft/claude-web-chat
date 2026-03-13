@@ -465,17 +465,22 @@ export async function resumeCrewSession(msg) {
   const index = await loadCrewIndex();
   const indexEntry = index.find(e => e.sessionId === sessionId);
   if (!indexEntry) {
-    sendCrewMessage({ type: 'error', sessionId, message: 'Crew session not found in index' });
+    console.warn(`[Crew] resumeCrewSession: session ${sessionId} not found in index`);
+    sendCrewMessage({ type: 'crew_session_restore_failed', sessionId, message: 'Crew session not found in index' });
     return;
   }
 
   const meta = await loadSessionMeta(indexEntry.sharedDir);
   if (!meta) {
-    sendCrewMessage({ type: 'error', sessionId, message: 'Crew session metadata not found' });
+    console.warn(`[Crew] resumeCrewSession: session.json not found at ${indexEntry.sharedDir}`);
+    sendCrewMessage({ type: 'crew_session_restore_failed', sessionId, message: 'Crew session metadata not found' });
     return;
   }
 
   const roles = meta.roles || [];
+  if (roles.length === 0) {
+    console.warn(`[Crew] resumeCrewSession: session ${sessionId} has empty roles in session.json`);
+  }
   const decisionMaker = meta.decisionMaker || roles[0]?.name || null;
   const session = {
     id: sessionId,
