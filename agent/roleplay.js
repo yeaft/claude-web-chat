@@ -289,7 +289,8 @@ export function validateRolePlayConfig(config) {
     });
   }
 
-  return {
+  // Preserve restoreSessionName for session restore flow
+  const result = {
     valid: true,
     config: {
       roles: sanitizedRoles,
@@ -297,6 +298,10 @@ export function validateRolePlayConfig(config) {
       language,
     }
   };
+  if (typeof config.restoreSessionName === 'string' && config.restoreSessionName.length > 0) {
+    result.config.restoreSessionName = config.restoreSessionName;
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------

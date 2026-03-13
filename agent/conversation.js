@@ -1,3 +1,5 @@
+import { join } from 'path';
+import { existsSync } from 'fs';
 import ctx from './context.js';
 import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
@@ -155,6 +157,7 @@ export async function createConversation(msg) {
   // ★ RolePlay: initialize .roleplay/ directory, generate session, set cwd
   let rpSessionName = null;
   let rpSessionWorkDir = effectiveWorkDir; // default: project root
+  const isRestore = !!(rolePlayConfig && rolePlayConfig.restoreSessionName);
   if (rolePlayConfig) {
     try {
       const language = rolePlayConfig.language || 'zh-CN';
@@ -162,19 +165,37 @@ export async function createConversation(msg) {
       // 1. Ensure .roleplay/ directory structure exists
       await initRolePlayDir(effectiveWorkDir, language);
 
-      // 2. Generate unique session name
-      rpSessionName = generateSessionName(
-        effectiveWorkDir,
-        rolePlayConfig.teamType,
-        msg.rolePlayConfig?.sessionName || null
-      );
+      if (isRestore) {
+        // ★ Restore path: reuse existing session directory instead of creating new one
+        rpSessionName = rolePlayConfig.restoreSessionName;
+        const existingSessionDir = getSessionDir(effectiveWorkDir, rpSessionName);
 
-      // 3. Write session CLAUDE.md (role list, ROUTE protocol, workflow)
-      await writeSessionClaudeMd(effectiveWorkDir, rpSessionName, {
-        teamType: rolePlayConfig.teamType,
-        language,
-        roles: rolePlayConfig.roles,
-      });
+        // Only write CLAUDE.md if the session dir or file doesn't exist
+        // (preserves any user edits to existing CLAUDE.md)
+        const claudeMdPath = join(existingSessionDir, 'CLAUDE.md');
+        if (!existsSync(claudeMdPath)) {
+          await writeSessionClaudeMd(effectiveWorkDir, rpSessionName, {
+            teamType: rolePlayConfig.teamType,
+            language,
+            roles: rolePlayConfig.roles,
+          });
+        }
+        console.log(`  RolePlay: restoring existing session "${rpSessionName}"`);
+      } else {
+        // ★ New session path: generate unique session name
+        rpSessionName = generateSessionName(
+          effectiveWorkDir,
+          rolePlayConfig.teamType,
+          msg.rolePlayConfig?.sessionName || null
+        );
+
+        // Write session CLAUDE.md (role list, ROUTE protocol, workflow)
+        await writeSessionClaudeMd(effectiveWorkDir, rpSessionName, {
+          teamType: rolePlayConfig.teamType,
+          language,
+          roles: rolePlayConfig.roles,
+        });
+      }
 
       // 4. Set cwd to session directory so Claude Code auto-reads its CLAUDE.md
       rpSessionWorkDir = getSessionDir(effectiveWorkDir, rpSessionName);
@@ -189,6 +210,8 @@ export async function createConversation(msg) {
         : getDefaultRoles(rolePlayConfig.teamType, language);
 
       // 6. Persist to .roleplay/session.json
+      // For restore: addRolePlaySession's duplicate-name detection will update
+      // the existing entry (including the new conversationId) rather than creating a new one
       await addRolePlaySession(effectiveWorkDir, {
         name: rpSessionName,
         teamType: rolePlayConfig.teamType,
@@ -196,7 +219,7 @@ export async function createConversation(msg) {
         projectDir: effectiveWorkDir,
         conversationId,
         roles: rolesSnapshot,
-        createdAt: Date.now(),
+        createdAt: isRestore ? undefined : Date.now(),
       });
 
       console.log(`  RolePlay: initialized .roleplay/${rpSessionName}, cwd=${rpSessionWorkDir}`);
