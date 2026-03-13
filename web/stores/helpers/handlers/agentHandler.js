@@ -13,6 +13,9 @@ export function restoreLastViewedConversation(store, agentSetup) {
   const lastViewed = store.lastViewedConversation || localStorage.getItem('lastViewedConversation');
   if (!lastViewed) return false;
 
+  // 跳过已删除的 crew session
+  if (store._deletedCrewSessionIds?.has(lastViewed)) return false;
+
   const conv = store.conversations.find(c => c.id === lastViewed);
   if (!conv) return false;
 
@@ -96,6 +99,8 @@ export function handleAgentList(store, msg) {
     }
 
     for (const serverConv of allServerConvs) {
+      // 跳过已删除的 crew session，防止 conversation_list 同步恢复
+      if (store._deletedCrewSessionIds?.has(serverConv.id)) continue;
       const existing = store.conversations.find(c => c.id === serverConv.id);
       if (existing) {
         existing.claudeSessionId = serverConv.claudeSessionId || existing.claudeSessionId;
