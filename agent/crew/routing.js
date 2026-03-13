@@ -27,12 +27,18 @@ export function parseRoutes(text) {
     const toMatch = block.match(/to:\s*(.+)/i);
     if (!toMatch) continue;
 
-    const summaryMatch = block.match(/summary:\s*([\s\S]+)/i);
+    // ★ Clean `to` value: take only the first word (strip parenthetical notes, extra text)
+    // e.g. "pm (决策者)" → "pm", "dev-1 // main dev" → "dev-1"
+    const toRaw = toMatch[1].trim().toLowerCase();
+    const toClean = toRaw.split(/[\s(]/)[0];
+
+    // ★ summary: match until next known field (task:/taskTitle:) or end of block
+    const summaryMatch = block.match(/summary:\s*([\s\S]+?)(?=\n\s*(?:task|taskTitle)\s*:|$)/i);
     const taskMatch = block.match(/^task:\s*(.+)/im);
     const taskTitleMatch = block.match(/^taskTitle:\s*(.+)/im);
 
     routes.push({
-      to: toMatch[1].trim().toLowerCase(),
+      to: toClean,
       summary: summaryMatch ? summaryMatch[1].trim() : '',
       taskId: taskMatch ? taskMatch[1].trim() : null,
       taskTitle: taskTitleMatch ? taskTitleMatch[1].trim() : null
@@ -40,6 +46,59 @@ export function parseRoutes(text) {
   }
 
   return routes;
+}
+
+/**
+ * Resolve a ROUTE `to` value to an actual role name in the session.
+ *
+ * Resolution order:
+ * 1. Exact match: `to` matches a role name directly (e.g. "dev-1")
+ * 2. roleType match: `to` matches a role's roleType (e.g. "developer" → "dev-1")
+ * 3. Short prefix match: `to` matches the SHORT_PREFIX of a roleType (e.g. "dev" → "dev-1")
+ * 4. Same-group dispatch: if sender is in a multi-instance group (e.g. dev-1),
+ *    and `to` matches the roleType/prefix of another group (e.g. "reviewer"),
+ *    route to the instance with matching groupIndex (e.g. rev-1)
+ *
+ * For multi-instance matches (2/3), prefer the instance with the same groupIndex
+ * as the sender. Falls back to the first instance if no groupIndex match.
+ *
+ * @param {string} to - raw route target from ROUTE block
+ * @param {object} session - crew session
+ * @param {string} [fromRole] - sending role name (for groupIndex matching)
+ * @returns {string|null} resolved role name, or null if unresolvable
+ */
+export function resolveRoleName(to, session, fromRole) {
+  // 1. Exact match
+  if (session.roles.has(to)) return to;
+
+  // Build candidate list by roleType and short prefix
+  const fromRoleConfig = fromRole ? session.roles.get(fromRole) : null;
+  const fromGroupIndex = fromRoleConfig?.groupIndex || 0;
+
+  let candidates = [];
+
+  for (const [name, config] of session.roles) {
+    // 2. roleType match (e.g. "developer" → dev-1, dev-2, dev-3)
+    if (config.roleType === to) {
+      candidates.push({ name, groupIndex: config.groupIndex || 0 });
+    }
+    // 3. Short prefix match (e.g. "dev" → developer roleType → dev-1)
+    //    Match if the role name starts with `to-` (e.g. "dev" matches "dev-1", "dev-2")
+    else if (name.startsWith(to + '-') && /^\d+$/.test(name.slice(to.length + 1))) {
+      candidates.push({ name, groupIndex: config.groupIndex || 0 });
+    }
+  }
+
+  if (candidates.length === 0) return null;
+
+  // 4. Prefer same groupIndex as sender
+  if (fromGroupIndex > 0) {
+    const sameGroup = candidates.find(c => c.groupIndex === fromGroupIndex);
+    if (sameGroup) return sameGroup.name;
+  }
+
+  // Fall back to first candidate
+  return candidates[0].name;
 }
 
 /**
@@ -68,7 +127,9 @@ export async function executeRoute(session, fromRole, route) {
     // 更新工作看板：推断状态
     const { getMessages } = await import('../crew-i18n.js');
     const m = getMessages(session.language || 'zh-CN');
-    const toRoleConfig = session.roles.get(to);
+    // ★ Use resolveRoleName for kanban status lookup too
+    const resolvedKanbanTo = resolveRoleName(to, session, fromRole);
+    const toRoleConfig = session.roles.get(resolvedKanbanTo || to);
     let status = m.kanbanStatusDev;
     if (toRoleConfig) {
       switch (toRoleConfig.roleType) {
@@ -111,13 +172,14 @@ export async function executeRoute(session, fromRole, route) {
   }
 
   // 路由到指定角色
-  if (session.roles.has(to)) {
+  const resolvedTo = resolveRoleName(to, session, fromRole);
+  if (resolvedTo) {
     if (session.humanMessageQueue.length > 0) {
       const { processHumanQueue } = await import('./human-interaction.js');
       await processHumanQueue(session);
     } else {
       const taskPrompt = buildRoutePrompt(fromRole, summary, session);
-      await dispatchToRole(session, to, taskPrompt, fromRole, taskId, taskTitle);
+      await dispatchToRole(session, resolvedTo, taskPrompt, fromRole, taskId, taskTitle);
     }
   } else {
     console.warn(`[Crew] Unknown route target: ${to}`);
