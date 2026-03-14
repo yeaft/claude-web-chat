@@ -202,21 +202,21 @@ describe('getModelContextConfig', () => {
     expect(getModelContextConfig('some-unknown-model')).toEqual({ maxContext: 128000, compactThreshold: 110000 });
   });
 
-  it('returns 200k config for Claude Sonnet 4 models', () => {
+  it('returns 128k defaults for Claude Sonnet 4 models (Copilot API reports 200k but actual is 128k)', () => {
     const config = getModelContextConfig('claude-sonnet-4-20250514');
-    expect(config.maxContext).toBe(200000);
-    expect(config.compactThreshold).toBe(160000);
+    expect(config.maxContext).toBe(128000);
+    expect(config.compactThreshold).toBe(110000);
   });
 
-  it('returns 200k config for Claude Opus 4 models', () => {
+  it('returns 128k defaults for Claude Opus 4 models', () => {
     const config = getModelContextConfig('claude-opus-4-20250514');
-    expect(config.maxContext).toBe(200000);
-    expect(config.compactThreshold).toBe(160000);
+    expect(config.maxContext).toBe(128000);
+    expect(config.compactThreshold).toBe(110000);
   });
 
-  it('returns 200k config for Claude 3.5 models', () => {
-    expect(getModelContextConfig('claude-3-5-sonnet-20241022').maxContext).toBe(200000);
-    expect(getModelContextConfig('claude-3.5-haiku-20241022').maxContext).toBe(200000);
+  it('returns 128k defaults for Claude 3.5 models', () => {
+    expect(getModelContextConfig('claude-3-5-sonnet-20241022').maxContext).toBe(128000);
+    expect(getModelContextConfig('claude-3.5-haiku-20241022').maxContext).toBe(128000);
   });
 
   it('returns 1M config for explicit 1M models', () => {
@@ -232,12 +232,12 @@ describe('getModelContextConfig', () => {
   });
 
   it('is case-insensitive', () => {
-    expect(getModelContextConfig('Claude-Sonnet-4-20250514').maxContext).toBe(200000);
+    expect(getModelContextConfig('Claude-Sonnet-4-20250514').maxContext).toBe(128000);
     expect(getModelContextConfig('CLAUDE-OPUS-4-1M').maxContext).toBe(1000000);
   });
 
-  it('1M takes priority over 200k when both match', () => {
-    // A model name like "claude-sonnet-4-1m" matches both 200k and 1M rules
+  it('1M takes priority over default when both could match', () => {
+    // A model name like "claude-sonnet-4-1m" matches 1M rule first
     const config = getModelContextConfig('claude-sonnet-4-1m');
     expect(config.maxContext).toBe(1000000);
     expect(config.compactThreshold).toBe(256000);

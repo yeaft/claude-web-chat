@@ -24,13 +24,8 @@ export function getModelContextConfig(modelName) {
   if (name.includes('1m') || name.includes('1000k')) {
     return { maxContext: 1000000, compactThreshold: 256000 };
   }
-  // 200k context models: Claude 3.5, Claude Sonnet 4, Claude Opus 4, etc.
-  if (name.includes('claude-sonnet-4') || name.includes('claude-opus-4') ||
-      name.includes('claude-3-5') || name.includes('claude-3.5') ||
-      name.includes('200k')) {
-    return { maxContext: 200000, compactThreshold: 160000 };
-  }
-  // Default: 128k (Claude 3 Haiku, older models, unknown)
+  // Default: 128k — Copilot API models (Sonnet 4, Opus 4, Claude 3.5 etc.)
+  // report 200k context but actual usable window is 128k
   return { maxContext: 128000, compactThreshold: 110000 };
 }
 
