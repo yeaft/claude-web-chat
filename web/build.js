@@ -119,8 +119,23 @@ const highlightCss = readFileSync(join(vendorDir, 'highlight.min.css'), 'utf-8')
 const xtermCss = readFileSync(join(vendorDir, 'xterm.min.css'), 'utf-8');
 const codemirrorCss = readFileSync(join(vendorDir, 'codemirror.min.css'), 'utf-8');
 const codemirrorThemeCss = readFileSync(join(vendorDir, 'codemirror-material-darker.css'), 'utf-8');
-const appCssFiles = ['variables', 'login', 'sidebar', 'chat-messages', 'chat-input', 'chat-modals', 'workbench', 'files', 'terminal', 'git', 'settings', 'crew-base', 'crew-workspace', 'crew-config'];
-const appCss = appCssFiles.map(f => readFileSync(join(__dirname, 'styles', f + '.css'), 'utf-8')).join('\n');
+// Parse CSS file list from index.css @import directives (single source of truth)
+const appCssCollected = [];
+function readCssRecursive(filePath) {
+  const content = readFileSync(filePath, 'utf-8');
+  const importRegex = /@import\s+(?:url\()?['"]\.\/(.+?)['"]\)?;/g;
+  let match;
+  let hasImports = false;
+  while ((match = importRegex.exec(content)) !== null) {
+    hasImports = true;
+    readCssRecursive(join(filePath, '..', match[1]));
+  }
+  if (!hasImports) {
+    appCssCollected.push(filePath);
+  }
+}
+readCssRecursive(join(__dirname, 'styles', 'index.css'));
+const appCss = appCssCollected.map(f => readFileSync(f, 'utf-8')).join('\n');
 
 // Minify combined CSS with esbuild
 const cssResult = esbuild.transformSync(highlightCss + '\n' + xtermCss + '\n' + codemirrorCss + '\n' + codemirrorThemeCss + '\n' + appCss, {
@@ -182,7 +197,7 @@ const originalFiles = [
 ];
 const originalCodeSize = originalFiles.reduce((sum, f) => sum + statSync(join(__dirname, f)).size, 0);
 const originalVendorSize = vendorJs.reduce((sum, f) => sum + statSync(join(vendorDir, f)).size, 0);
-const originalCssSize = appCssFiles.reduce((sum, f) => sum + statSync(join(__dirname, 'styles', f + '.css')).size, 0) + statSync(join(vendorDir, 'highlight.min.css')).size + statSync(join(vendorDir, 'xterm.min.css')).size + statSync(join(vendorDir, 'codemirror.min.css')).size + statSync(join(vendorDir, 'codemirror-material-darker.css')).size;
+const originalCssSize = appCssCollected.reduce((sum, f) => sum + statSync(f).size, 0) + statSync(join(vendorDir, 'highlight.min.css')).size + statSync(join(vendorDir, 'xterm.min.css')).size + statSync(join(vendorDir, 'codemirror.min.css')).size + statSync(join(vendorDir, 'codemirror-material-darker.css')).size;
 
 console.log('\n========================================');
 console.log('Build complete!');
