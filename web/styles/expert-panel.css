@@ -1,0 +1,505 @@
+/* ==================================
+   Expert Panel (帮帮团) Styles
+   ================================== */
+
+/* ---- Chat body layout when panel is open ---- */
+.chat-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-body-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ---- Expert Panel (right side panel) ---- */
+.expert-panel {
+  width: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--border-color);
+  background: var(--bg-sidebar);
+  display: flex;
+  flex-direction: column;
+  transition: width 0.2s ease;
+  flex-shrink: 0;
+}
+
+.expert-panel.open {
+  width: 320px;
+}
+
+.expert-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.expert-panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.expert-panel-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.expert-panel-close:hover {
+  color: var(--text-primary);
+  background: var(--sidebar-hover);
+}
+
+/* ---- Search ---- */
+.expert-panel-search {
+  padding: 8px 12px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.expert-search-input {
+  width: 100%;
+  padding: 6px 28px 6px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+}
+
+.expert-search-input:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(74, 158, 255, 0.1);
+}
+
+.expert-search-icon {
+  position: absolute;
+  right: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.expert-search-clear {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 2px;
+  display: flex;
+}
+
+.expert-search-clear:hover {
+  color: var(--text-primary);
+}
+
+/* ---- Team Tabs ---- */
+.expert-team-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 12px 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.expert-team-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  transition: all 0.15s;
+  font-family: inherit;
+}
+
+.expert-team-tab.active {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  background: rgba(74, 124, 201, 0.08);
+}
+
+.expert-team-tab.disabled {
+  opacity: 0.5;
+}
+
+.expert-team-tab:hover:not(.active) {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+.team-tab-icon {
+  font-size: 12px;
+}
+
+.team-tab-name {
+  font-size: 12px;
+}
+
+/* ---- Role List ---- */
+.expert-role-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 12px 12px;
+}
+
+.expert-empty-state {
+  text-align: center;
+  padding: 24px 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* ---- Team Group ---- */
+.expert-team-group {
+  margin-bottom: 12px;
+}
+
+.expert-team-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.team-header-icon {
+  font-size: 12px;
+}
+
+/* ---- Role Card ---- */
+.expert-role-card {
+  padding: 8px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  background: var(--bg-main);
+  transition: border-color 0.15s;
+}
+
+.expert-role-card.has-selection {
+  border-color: var(--accent-blue);
+  background: rgba(74, 124, 201, 0.04);
+}
+
+.role-card-header {
+  margin-bottom: 6px;
+}
+
+.role-card-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.role-card-name:hover {
+  background: var(--sidebar-hover);
+}
+
+.role-card-name.selected {
+  background: var(--accent-blue);
+  color: #fff;
+}
+
+.role-card-name.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.role-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.role-action-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.role-action-btn:hover:not(.disabled):not(.selected) {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.role-action-btn.selected {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+
+.role-action-btn.disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* ---- Search Results ---- */
+.expert-search-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.expert-search-result:hover {
+  background: var(--sidebar-hover);
+}
+
+.expert-search-result.selected {
+  background: rgba(74, 124, 201, 0.1);
+}
+
+.expert-search-result.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.search-result-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.search-result-title {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.search-result-check {
+  color: var(--accent-blue);
+  flex-shrink: 0;
+}
+
+/* ---- Panel Footer (selected chips summary) ---- */
+.expert-panel-footer {
+  border-top: 1px solid var(--border-color);
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.expert-selected-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+}
+
+.expert-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: var(--accent-blue);
+  color: #fff;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.expert-chip .chip-remove {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  padding: 0 0 0 2px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.expert-chip .chip-remove:hover {
+  color: #fff;
+}
+
+.expert-clear-all {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+
+.expert-clear-all:hover {
+  color: var(--error);
+  background: var(--sidebar-hover);
+}
+
+/* ---- Expert Chips in ChatInput ---- */
+.expert-chips-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 12px 2px;
+}
+
+.expert-input-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: var(--accent-blue);
+  color: #fff;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.expert-input-chip .chip-remove {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  padding: 0 0 0 2px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.expert-input-chip .chip-remove:hover {
+  color: #fff;
+}
+
+/* ---- Expert Labels in Messages ---- */
+.message-expert-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.expert-label {
+  display: inline-block;
+  padding: 1px 8px;
+  background: rgba(74, 124, 201, 0.12);
+  color: var(--accent-blue);
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ---- @ Expert Autocomplete ---- */
+.expert-autocomplete {
+  max-height: 260px;
+}
+
+/* ==================================
+   Dark Theme Overrides
+   ================================== */
+[data-theme="dark"] .expert-panel,
+.dark .expert-panel {
+  background: var(--bg-sidebar);
+  border-left-color: var(--border-color);
+}
+
+[data-theme="dark"] .expert-role-card,
+.dark .expert-role-card {
+  background: var(--bg-main);
+  border-color: var(--border-light);
+}
+
+[data-theme="dark"] .expert-role-card.has-selection,
+.dark .expert-role-card.has-selection {
+  border-color: var(--accent-blue);
+  background: rgba(74, 124, 201, 0.08);
+}
+
+[data-theme="dark"] .expert-label,
+.dark .expert-label {
+  background: rgba(74, 124, 201, 0.18);
+}
+
+/* ==================================
+   Mobile Responsive
+   ================================== */
+@media (max-width: 768px) {
+  .expert-panel.open {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    height: 70vh;
+    border-left: none;
+    border-top: 1px solid var(--border-color);
+    border-radius: 16px 16px 0 0;
+    z-index: 100;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
+  }
+
+  .expert-panel-header {
+    padding: 8px 16px;
+  }
+
+  /* Mobile drag handle */
+  .expert-panel-header::before {
+    content: '';
+    position: absolute;
+    top: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 36px;
+    height: 4px;
+    background: var(--border-color);
+    border-radius: 2px;
+  }
+}
+
+/* Large screens: allow wider panel */
+@media (min-width: 1400px) {
+  .expert-panel.open {
+    width: 360px;
+  }
+}

@@ -120,6 +120,12 @@ export const useChatStore = defineStore('chat', {
     // =====================
     rolePlaySessions: {},            // { [convId]: { roles, teamType, language } }
     rolePlayStatuses: {},            // { [convId]: { round, currentRole, features, roleStates, waitingHuman } }
+
+    // =====================
+    // Expert Panel (帮帮团) 状态
+    // =====================
+    expertPanelOpen: false,           // 帮帮团面板是否打开
+    expertSelections: [],             // 当前已选的角色/Action: [{ role: string, action: string|null }]
   }),
 
   getters: {

@@ -1,9 +1,21 @@
 import { SYSTEM_SKILLS, SYSTEM_SKILL_NAMES, DEFAULT_SLASH_COMMANDS } from '../utils/slash-commands.js';
+import { buildAutocompleteItems as buildExpertAutocomplete, getSelectionLabel, EXPERT_ROLES, MAX_SELECTIONS } from '../utils/expert-roles.js';
 
 export default {
   name: 'ChatInput',
   template: `
     <footer class="input-area" ref="inputAreaRef">
+      <!-- Expert chips bar (above attachments) -->
+      <div class="expert-chips-bar" v-if="expertSelections.length > 0">
+        <span
+          v-for="(sel, index) in expertSelections"
+          :key="sel.role + (sel.action || '')"
+          class="expert-input-chip"
+        >
+          {{ getExpertLabel(sel) }}
+          <button class="chip-remove" @click="removeExpertSelection(index)">&times;</button>
+        </span>
+      </div>
       <div class="attachments-preview" v-if="attachments.length > 0">
         <div class="attachment-item" v-for="(file, index) in attachments" :key="index">
           <img v-if="file.preview" :src="file.preview" class="attachment-thumb" />
@@ -28,6 +40,7 @@ export default {
           </svg>
         </label>
         <div class="textarea-wrapper">
+          <!-- Slash command autocomplete -->
           <div class="slash-autocomplete" v-if="showAutocomplete && flatItems.length > 0" ref="autocompleteRef">
             <template v-for="group in groupedCommands" :key="group.label">
               <div class="slash-group-label">{{ group.label }}</div>
@@ -44,6 +57,21 @@ export default {
               </div>
               <div v-if="!group.isLast" class="slash-group-separator"></div>
             </template>
+          </div>
+          <!-- @ Expert autocomplete -->
+          <div class="slash-autocomplete expert-autocomplete" v-if="showExpertAutocomplete && expertAutocompleteFiltered.length > 0" ref="expertAutocompleteRef">
+            <div class="slash-group-label">Experts</div>
+            <div
+              v-for="(item, idx) in expertAutocompleteFiltered"
+              :key="item.roleId + (item.actionId || '')"
+              class="slash-autocomplete-item"
+              :class="{ active: idx === expertSelectedIndex }"
+              @mousedown.prevent="selectExpertItem(item)"
+              @mouseenter="expertSelectedIndex = idx"
+            >
+              <span class="slash-cmd-name">{{ item.displayText }}</span>
+              <span class="slash-cmd-desc">{{ item.roleTitle }}</span>
+            </div>
           </div>
           <textarea
             ref="inputRef"
@@ -86,6 +114,57 @@ export default {
     const uploading = Vue.ref(false);
     const inputAreaRef = Vue.ref(null);
     const autocompleteRef = Vue.ref(null);
+    const expertAutocompleteRef = Vue.ref(null);
+
+    // Expert panel selections: synced with store
+    const expertSelections = Vue.computed({
+      get: () => store.expertSelections || [],
+      set: (val) => { store.expertSelections = val; }
+    });
+
+    // @ expert autocomplete state
+    const showExpertAutocomplete = Vue.ref(false);
+    const expertSelectedIndex = Vue.ref(0);
+    const allExpertItems = buildExpertAutocomplete();
+
+    const expertAutocompleteFiltered = Vue.computed(() => {
+      const text = inputText.value;
+      const atIdx = text.lastIndexOf('@');
+      if (atIdx === -1 || !showExpertAutocomplete.value) return [];
+      const query = text.slice(atIdx + 1).toLowerCase();
+      return allExpertItems
+        .filter(item => {
+          if (!query) return true;
+          return item.searchText.includes(query);
+        })
+        .filter(item => {
+          // Exclude already-selected roles
+          return !expertSelections.value.some(s => s.role === item.roleId);
+        })
+        .slice(0, 12); // limit results
+    });
+
+    const selectExpertItem = (item) => {
+      if (expertSelections.value.length >= MAX_SELECTIONS) return;
+      const newSelection = { role: item.roleId, action: item.actionId };
+      store.expertSelections = [...expertSelections.value, newSelection];
+      // Remove @query from input text
+      const text = inputText.value;
+      const atIdx = text.lastIndexOf('@');
+      if (atIdx !== -1) {
+        inputText.value = text.slice(0, atIdx).trimEnd();
+      }
+      showExpertAutocomplete.value = false;
+      Vue.nextTick(() => inputRef.value?.focus());
+    };
+
+    const removeExpertSelection = (index) => {
+      const arr = [...expertSelections.value];
+      arr.splice(index, 1);
+      store.expertSelections = arr;
+    };
+
+    const getExpertLabel = (sel) => getSelectionLabel(sel);
 
     // 恢复当前会话的草稿
     if (store.currentConversation && store.inputDrafts[store.currentConversation]) {
@@ -176,7 +255,12 @@ export default {
 
     const canSend = Vue.computed(() => {
       if (isCompacting.value) return false;
-      const hasContent = inputText.value.trim() || attachments.value.length > 0;
+      const hasText = !!inputText.value.trim();
+      const hasAttachments = attachments.value.length > 0;
+      const hasExperts = expertSelections.value.length > 0;
+      // Can send if: (text OR attachments OR (experts with action — pure role needs text))
+      const hasActionExpert = expertSelections.value.some(s => s.action);
+      const hasContent = hasText || hasAttachments || (hasExperts && (hasText || hasActionExpert));
       const notUploading = !uploading.value && attachments.value.every(a => a.fileId);
       return hasContent && store.currentAgent && store.currentConversation && notUploading;
     });
@@ -191,13 +275,29 @@ export default {
 
     const handleInput = () => {
       autoResize();
-      // 检查是否应显示自动补全
       const text = inputText.value.trim();
+      // Slash command autocomplete
       if (text.startsWith('/') && !text.includes(' ')) {
         showAutocomplete.value = true;
         selectedIndex.value = 0;
+        showExpertAutocomplete.value = false;
       } else {
         showAutocomplete.value = false;
+      }
+      // @ Expert autocomplete: check if there's an @ in current input
+      const rawText = inputText.value;
+      const atIdx = rawText.lastIndexOf('@');
+      if (atIdx !== -1 && !showAutocomplete.value) {
+        // Only trigger if @ is at start or preceded by whitespace
+        const charBefore = atIdx > 0 ? rawText[atIdx - 1] : ' ';
+        if (charBefore === ' ' || charBefore === '\n' || atIdx === 0) {
+          showExpertAutocomplete.value = true;
+          expertSelectedIndex.value = 0;
+        } else {
+          showExpertAutocomplete.value = false;
+        }
+      } else if (atIdx === -1) {
+        showExpertAutocomplete.value = false;
       }
     };
 
@@ -213,6 +313,7 @@ export default {
       // 延迟关闭以允许 mousedown 事件触发
       setTimeout(() => {
         showAutocomplete.value = false;
+        showExpertAutocomplete.value = false;
       }, 150);
     };
 
@@ -325,6 +426,7 @@ export default {
       if (!canSend.value) return;
 
       showAutocomplete.value = false;
+      showExpertAutocomplete.value = false;
 
       const attachmentInfos = attachments.value
         .filter(a => a.fileId)
@@ -336,10 +438,12 @@ export default {
           mimeType: a.file?.type || ''
         }));
 
-      store.sendMessage(inputText.value, attachmentInfos);
+      const currentExpertSelections = [...expertSelections.value];
+      store.sendMessage(inputText.value, attachmentInfos, { expertSelections: currentExpertSelections });
 
       attachments.value = [];
       inputText.value = '';
+      store.expertSelections = [];
       delete store.inputDrafts[store.currentConversation];
 
       if (inputRef.value) {
@@ -348,7 +452,30 @@ export default {
     };
 
     const handleKeydown = (e) => {
-      // 自动补全激活时的键盘导航
+      // @ Expert autocomplete keyboard nav
+      if (showExpertAutocomplete.value && expertAutocompleteFiltered.value.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          expertSelectedIndex.value = (expertSelectedIndex.value + 1) % expertAutocompleteFiltered.value.length;
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          expertSelectedIndex.value = (expertSelectedIndex.value - 1 + expertAutocompleteFiltered.value.length) % expertAutocompleteFiltered.value.length;
+          return;
+        }
+        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+          e.preventDefault();
+          selectExpertItem(expertAutocompleteFiltered.value[expertSelectedIndex.value]);
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          showExpertAutocomplete.value = false;
+          return;
+        }
+      }
+      // Slash command autocomplete keyboard nav
       if (showAutocomplete.value && filteredCommands.value.length > 0) {
         if (e.key === 'ArrowDown') {
           e.preventDefault();
@@ -398,6 +525,16 @@ export default {
       flatItems,
       groupedCommands,
       autocompleteRef,
+      // Expert panel
+      expertSelections,
+      showExpertAutocomplete,
+      expertSelectedIndex,
+      expertAutocompleteFiltered,
+      expertAutocompleteRef,
+      selectExpertItem,
+      removeExpertSelection,
+      getExpertLabel,
+      // Methods
       autoResize,
       handleInput,
       selectCommand,

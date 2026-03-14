@@ -243,17 +243,24 @@ export function deleteConversation(store, conversationId, agentId) {
 }
 
 export function sendMessage(store, text, attachments = [], options = {}) {
-  if ((!text.trim() && attachments.length === 0) || !store.currentAgent || !store.currentConversation) return;
+  const hasExpertSelections = options.expertSelections && options.expertSelections.length > 0;
+  if ((!text.trim() && attachments.length === 0 && !hasExpertSelections) || !store.currentAgent || !store.currentConversation) return;
 
   store.addMessage({
     type: 'user',
     content: text,
-    attachments: attachments.length > 0 ? attachments : undefined
+    attachments: attachments.length > 0 ? attachments : undefined,
+    expertSelections: hasExpertSelections ? options.expertSelections : undefined
   });
 
   if (text.trim()) {
     const title = text.trim().substring(0, 100);
     store.conversationTitles[store.currentConversation] = title;
+  } else if (hasExpertSelections) {
+    // When sending expert-only (no text), use first selection as title hint
+    const sel = options.expertSelections[0];
+    const label = `@${sel.role}${sel.action ? '\u00B7' + sel.action : ''}`;
+    store.conversationTitles[store.currentConversation] = label;
   }
 
   // Update lastMessageAt for sidebar sorting (only user-sent messages should trigger reorder)
@@ -283,6 +290,10 @@ export function sendMessage(store, text, attachments = [], options = {}) {
   // Pass targetRole for RolePlay @mention routing
   if (options.targetRole) {
     wsMsg.targetRole = options.targetRole;
+  }
+  // Pass expertSelections for 帮帮团
+  if (hasExpertSelections) {
+    wsMsg.expertSelections = options.expertSelections;
   }
   store.sendWsMessage(wsMsg);
 }

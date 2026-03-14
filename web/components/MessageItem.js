@@ -1,4 +1,5 @@
 import { openImagePreview } from '../utils/imagePreview.js';
+import { getSelectionLabel } from '../utils/expert-roles.js';
 
 export default {
   name: 'MessageItem',
@@ -12,11 +13,19 @@ export default {
     <div :class="messageClass">
       <!-- User message -->
       <template v-if="message.type === 'user'">
+        <!-- Expert selections labels -->
+        <div class="message-expert-labels" v-if="message.expertSelections && message.expertSelections.length > 0">
+          <span
+            v-for="sel in message.expertSelections"
+            :key="sel.role + (sel.action || '')"
+            class="expert-label"
+          >{{ formatExpertLabel(sel) }}</span>
+        </div>
         <div class="message-content" v-if="message.content">{{ message.content }}</div>
         <!-- Attachments indicator -->
         <div class="user-attachments-indicator" v-if="message.attachments && message.attachments.length > 0">
           <span class="attachments-badge" @click="toggleAttachments">
-            <span class="badge-icon">📎</span>
+            <span class="badge-icon">\u{1F4CE}</span>
             <span class="badge-text">{{ getAttachmentsText(message.attachments) }}</span>
             <span class="badge-toggle" :class="{ expanded: showAttachments }">
               <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
@@ -69,6 +78,10 @@ export default {
       showAttachments.value = !showAttachments.value;
     };
 
+    const formatExpertLabel = (sel) => {
+      return getSelectionLabel(sel);
+    };
+
     const getAttachmentsText = (attachments) => {
       if (!attachments || attachments.length === 0) return '';
       const imageCount = attachments.filter(a => a.isImage).length;
@@ -80,23 +93,24 @@ export default {
     };
 
     const getFileIcon = (mimeType) => {
-      if (!mimeType) return '📄';
-      if (mimeType.startsWith('image/')) return '🖼️';
-      if (mimeType.startsWith('video/')) return '🎬';
-      if (mimeType.startsWith('audio/')) return '🎵';
-      if (mimeType.includes('pdf')) return '📕';
-      if (mimeType.includes('word') || mimeType.includes('document')) return '📝';
-      if (mimeType.includes('sheet') || mimeType.includes('excel')) return '📊';
-      if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return '📽️';
-      if (mimeType.includes('zip') || mimeType.includes('compressed') || mimeType.includes('archive')) return '📦';
-      if (mimeType.includes('text') || mimeType.includes('json') || mimeType.includes('xml')) return '📃';
-      return '📄';
+      if (!mimeType) return '\u{1F4C4}';
+      if (mimeType.startsWith('image/')) return '\u{1F5BC}\uFE0F';
+      if (mimeType.startsWith('video/')) return '\u{1F3AC}';
+      if (mimeType.startsWith('audio/')) return '\u{1F3B5}';
+      if (mimeType.includes('pdf')) return '\u{1F4D5}';
+      if (mimeType.includes('word') || mimeType.includes('document')) return '\u{1F4DD}';
+      if (mimeType.includes('sheet') || mimeType.includes('excel')) return '\u{1F4CA}';
+      if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return '\u{1F4FD}\uFE0F';
+      if (mimeType.includes('zip') || mimeType.includes('compressed') || mimeType.includes('archive')) return '\u{1F4E6}';
+      if (mimeType.includes('text') || mimeType.includes('json') || mimeType.includes('xml')) return '\u{1F4C3}';
+      return '\u{1F4C4}';
     };
 
     return {
       messageClass,
       showAttachments,
       toggleAttachments,
+      formatExpertLabel,
       getAttachmentsText,
       getFileIcon,
       openImagePreview

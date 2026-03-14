@@ -8,11 +8,12 @@ import CrewConfigPanel from './CrewConfigPanel.js';
 import CrewChatView from './CrewChatView.js';
 import RolePlayChatView from './RolePlayChatView.js';
 import RolePlayConfigPanel from './RolePlayConfigPanel.js';
+import ExpertPanel from './ExpertPanel.js';
 import { useAuthStore } from '../stores/auth.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView, RolePlayChatView, RolePlayConfigPanel },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView, RolePlayChatView, RolePlayConfigPanel, ExpertPanel },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': showMobileSidebar }">
 
@@ -285,12 +286,22 @@ export default {
         <!-- Normal Chat Mode -->
         <template v-else>
           <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
-          <MessageList
-            @new-conversation="openConversationModal"
-            @resume-conversation="openConversationModalResume"
-            @open-settings="showSettingsPanel = true"
-          />
-          <ChatInput />
+          <div class="chat-body" :class="{ 'expert-panel-open': store.expertPanelOpen }">
+            <div class="chat-body-main">
+              <MessageList
+                @new-conversation="openConversationModal"
+                @resume-conversation="openConversationModalResume"
+                @open-settings="showSettingsPanel = true"
+              />
+              <ChatInput />
+            </div>
+            <ExpertPanel
+              :visible="store.expertPanelOpen"
+              :modelValue="store.expertSelections"
+              @update:modelValue="store.expertSelections = $event"
+              @close="store.expertPanelOpen = false"
+            />
+          </div>
         </template>
       </main>
 
