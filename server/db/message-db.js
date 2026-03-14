@@ -2,9 +2,9 @@ import db from './connection.js';
 import { stmts } from './connection.js';
 
 export const messageDb = {
-  add(sessionId, role, content, messageType = null, toolName = null, toolInput = null) {
+  add(sessionId, role, content, messageType = null, toolName = null, toolInput = null, metadata = null) {
     const now = Date.now();
-    const result = stmts.insertMessage.run(sessionId, role, content, messageType, toolName, toolInput, now);
+    const result = stmts.insertMessage.run(sessionId, role, content, messageType, toolName, toolInput, now, metadata);
     // 更新会话的 updated_at
     stmts.updateSession.run(null, null, now, sessionId);
     return result.lastInsertRowid;
@@ -116,7 +116,7 @@ export const messageDb = {
         if (msg.type === 'user') {
           const text = extractUserText(msg);
           if (text) {
-            stmts.insertMessage.run(sessionId, 'user', text, 'user', null, null, ts);
+            stmts.insertMessage.run(sessionId, 'user', text, 'user', null, null, ts, null);
             count++;
           }
         } else if (msg.type === 'assistant') {
@@ -124,12 +124,12 @@ export const messageDb = {
           if (!content || !Array.isArray(content)) continue;
           for (const block of content) {
             if (block.type === 'text' && block.text) {
-              stmts.insertMessage.run(sessionId, 'assistant', block.text, 'assistant', null, null, ts);
+              stmts.insertMessage.run(sessionId, 'assistant', block.text, 'assistant', null, null, ts, null);
               count++;
             } else if (block.type === 'tool_use') {
               stmts.insertMessage.run(
                 sessionId, 'assistant', JSON.stringify(block.input || {}),
-                'tool_use', block.name, JSON.stringify(block.input || {}), ts
+                'tool_use', block.name, JSON.stringify(block.input || {}), ts, null
               );
               count++;
             }

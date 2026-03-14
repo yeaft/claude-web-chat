@@ -239,6 +239,11 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
 
       if (convInfo) convInfo.processing = true;
 
+      // 暂存 expertSelections 供 agent-output 保存 user 消息时使用
+      if (msg.expertSelections?.length > 0 && convInfo) {
+        convInfo._pendingExperts = msg.expertSelections;
+      }
+
       // 用用户输入的 prompt 更新会话标题
       if (msg.prompt && msg.prompt.trim()) {
         const title = msg.prompt.trim().substring(0, 100);
@@ -254,7 +259,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           prompt: msg.prompt,
           workDir: msg.workDir || convInfo?.workDir,
           claudeSessionId: convInfo?.claudeSessionId,
-          targetRole: msg.targetRole || null
+          targetRole: msg.targetRole || null,
+          expertSelections: msg.expertSelections || null
         });
       } else {
         await forwardToAgent(client.currentAgent, {
@@ -263,7 +269,8 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           prompt: msg.prompt,
           workDir: msg.workDir || convInfo?.workDir,
           claudeSessionId: convInfo?.claudeSessionId,
-          targetRole: msg.targetRole || null
+          targetRole: msg.targetRole || null,
+          expertSelections: msg.expertSelections || null
         });
       }
       break;
