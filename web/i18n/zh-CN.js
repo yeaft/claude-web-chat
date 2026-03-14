@@ -242,6 +242,7 @@ export default {
   'chatHeader.confirmClear': '确定要清空当前会话的所有消息吗？',
   'chatHeader.mcpConfig': 'MCP 服务器配置',
   'chatHeader.mcpNeedRestart': '更改将在重启会话后生效。',
+  'chatHeader.expertPanel': '帮帮团',
 
   // ============ Settings ============
   'settings.close': '关闭设置',
@@ -595,4 +596,10 @@ export default {
   'roleplay.restore': '恢复',
   'roleplay.restoring': '正在恢复 角色扮演 会话...',
   'roleplay.createNew': '创建新团队',
+
+  // ============ 帮帮团 (Expert Panel) ============
+  'expertPanel.title': '帮帮团',
+  'expertPanel.search': '搜索角色或 Action...',
+  'expertPanel.noResults': '没有匹配结果',
+  'expertPanel.clearAll': '清空',
 };

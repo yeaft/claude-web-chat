@@ -26,7 +26,7 @@ export default {
         <span class="context-usage-hint" v-if="contextUsage" :class="contextColorClass" :title="contextLabel">
           {{ contextUsage.percentage }}%
         </span>
-        <button class="header-action-btn" :class="{ active: store.expertPanelOpen }" @click="toggleExpertPanel" :title="$t('chatHeader.expertPanel') || '\u5E2E\u5E2E\u56E2'" v-if="!store.currentConversationIsCrew && !store.currentConversationIsRolePlay">
+        <button class="header-action-btn" :class="{ active: store.expertPanelOpen }" @click="toggleExpertPanel" :title="$t('chatHeader.expertPanel')" v-if="!store.currentConversationIsCrew && !store.currentConversationIsRolePlay">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
           </svg>

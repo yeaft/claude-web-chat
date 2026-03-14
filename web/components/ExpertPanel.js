@@ -9,7 +9,7 @@ export default {
   template: `
     <div class="expert-panel" :class="{ open: visible }">
       <div class="expert-panel-header">
-        <span class="expert-panel-title">{{ $t('expertPanel.title') || '\u5E2E\u5E2E\u56E2' }}</span>
+        <span class="expert-panel-title">{{ $t('expertPanel.title') }}</span>
         <button class="expert-panel-close" @click="$emit('close')">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
@@ -21,7 +21,7 @@ export default {
           ref="searchInput"
           v-model="searchQuery"
           type="text"
-          :placeholder="$t('expertPanel.search') || '\u641C\u7D22\u89D2\u8272\u6216 Action...'"
+          :placeholder="$t('expertPanel.search')"
           class="expert-search-input"
           @input="onSearchInput"
         />
@@ -51,7 +51,7 @@ export default {
         <template v-if="searchQuery">
           <!-- Search results mode -->
           <div v-if="searchResults.length === 0" class="expert-empty-state">
-            {{ $t('expertPanel.noResults') || '\u6CA1\u6709\u5339\u914D\u7ED3\u679C' }}
+            {{ $t('expertPanel.noResults') }}
           </div>
           <div
             v-for="item in searchResults"
@@ -114,7 +114,7 @@ export default {
           </span>
         </div>
         <button class="expert-clear-all" @click="clearAll">
-          {{ $t('expertPanel.clearAll') || '\u6E05\u7A7A' }}
+          {{ $t('expertPanel.clearAll') }}
         </button>
       </div>
     </div>

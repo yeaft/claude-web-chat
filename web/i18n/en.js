@@ -242,6 +242,7 @@ export default {
   'chatHeader.confirmClear': 'Are you sure you want to clear all messages in this conversation?',
   'chatHeader.mcpConfig': 'MCP Servers',
   'chatHeader.mcpNeedRestart': 'Changes will take effect after restarting the session.',
+  'chatHeader.expertPanel': 'Expert Panel',
 
   // ============ Settings ============
   'settings.close': 'Close settings',
@@ -595,4 +596,10 @@ export default {
   'roleplay.restore': 'Restore',
   'roleplay.restoring': 'Restoring Role Play session...',
   'roleplay.createNew': 'Create New Team',
+
+  // ============ Expert Panel ============
+  'expertPanel.title': 'Expert Panel',
+  'expertPanel.search': 'Search roles or actions...',
+  'expertPanel.noResults': 'No results',
+  'expertPanel.clearAll': 'Clear',
 };

@@ -295,6 +295,8 @@ export default {
               />
               <ChatInput />
             </div>
+            <!-- Expert Panel overlay (mobile only) -->
+            <div class="expert-panel-overlay" v-if="store.expertPanelOpen" @click="store.expertPanelOpen = false"></div>
             <ExpertPanel
               :visible="store.expertPanelOpen"
               :modelValue="store.expertSelections"
