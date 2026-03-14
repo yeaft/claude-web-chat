@@ -169,6 +169,8 @@
   overflow-y: auto;
   padding: 4px 12px 12px;
   min-height: 0;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .expert-empty-state {
@@ -490,6 +492,7 @@
     right: 0;
     width: 100%;
     height: 70vh;
+    overflow-y: auto;
     border-left: none;
     border-top: 1px solid var(--border-color);
     border-radius: 16px 16px 0 0;
@@ -499,6 +502,7 @@
 
   .expert-panel-header {
     padding: 8px 16px;
+    position: relative;
   }
 
   /* Mobile drag handle */
