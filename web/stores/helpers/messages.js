@@ -182,7 +182,16 @@ export function formatDbMessage(dbMsg) {
     };
   } else if (dbMsg.role === 'assistant') {
     const text = extractTextContent(dbMsg.content);
-    if (!text) return null;
+    // Check if content has tool_use blocks (assistant msg with only tool_use and no text)
+    const hasToolUse = (() => {
+      if (!dbMsg.content || typeof dbMsg.content !== 'string' || !dbMsg.content.startsWith('[')) return false;
+      try {
+        const parsed = JSON.parse(dbMsg.content);
+        return Array.isArray(parsed) && parsed.some(b => b.type === 'tool_use');
+      } catch { return false; }
+    })();
+    // Keep assistant message if it has text OR has tool_use blocks (needed for turn grouping)
+    if (!text && !hasToolUse) return null;
     return {
       ...base,
       type: 'assistant',
