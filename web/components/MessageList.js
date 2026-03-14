@@ -98,7 +98,10 @@ export default {
 
       const finishTurn = () => {
         if (currentTurn) {
-          result.push(currentTurn);
+          // Skip empty turns (no text, no tools, no todo, no ask)
+          if (currentTurn.textContent || currentTurn.toolMsgs.length > 0 || currentTurn.todoMsg || currentTurn.askMsg) {
+            result.push(currentTurn);
+          }
           currentTurn = null;
         }
       };
