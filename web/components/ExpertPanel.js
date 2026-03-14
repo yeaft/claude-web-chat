@@ -161,23 +161,20 @@ export default {
 
     // Team management
     const toggleTeam = (teamId) => {
-      const s = new Set(enabledTeams.value);
-      if (s.has(teamId)) {
-        if (s.size > 1) {
-          s.delete(teamId);
-          // Remove any selections from this team
-          const newSelections = selections.value.filter(sel => {
-            const role = EXPERT_ROLES[sel.role];
-            return role && role.group !== teamId;
-          });
-          if (newSelections.length !== selections.value.length) {
-            emit('update:modelValue', newSelections);
-          }
-        }
-      } else {
-        s.add(teamId);
+      // Already the only selected team — no-op
+      if (enabledTeams.value.size === 1 && enabledTeams.value.has(teamId)) return;
+
+      // Exclusive single-select: only keep the clicked team
+      enabledTeams.value = new Set([teamId]);
+
+      // Clear selections that don't belong to this team
+      const newSelections = selections.value.filter(sel => {
+        const role = EXPERT_ROLES[sel.role];
+        return role && role.group === teamId;
+      });
+      if (newSelections.length !== selections.value.length) {
+        emit('update:modelValue', newSelections);
       }
-      enabledTeams.value = s;
     };
 
     // Selection logic
