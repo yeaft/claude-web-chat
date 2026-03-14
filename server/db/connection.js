@@ -98,7 +98,8 @@ const migrations = [
   `ALTER TABLE users ADD COLUMN password_hash TEXT`,
   `ALTER TABLE users ADD COLUMN email TEXT`,
   `ALTER TABLE users ADD COLUMN agent_secret TEXT`,
-  `ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`
+  `ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`,
+  `ALTER TABLE messages ADD COLUMN metadata TEXT`
 ];
 
 for (const migration of migrations) {
@@ -267,8 +268,8 @@ export const stmts = {
 
   // Message 操作
   insertMessage: db.prepare(`
-    INSERT INTO messages (session_id, role, content, message_type, tool_name, tool_input, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (session_id, role, content, message_type, tool_name, tool_input, created_at, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `),
 
   getRecentUserMessageIds: db.prepare(`

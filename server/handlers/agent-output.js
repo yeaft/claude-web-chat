@@ -21,10 +21,16 @@ export async function handleAgentOutput(agentId, agent, msg) {
             const content = typeof rawContent === 'string'
               ? rawContent
               : (Array.isArray(rawContent) ? rawContent.map(b => b.text || '').join('') : JSON.stringify(rawContent));
-            const dbId = messageDb.add(msg.conversationId, 'user', content, 'user');
+            // 检查 convInfo 上暂存的 expertSelections，保存为 metadata
+            const conv = agent.conversations.get(msg.conversationId);
+            let metadata = null;
+            if (conv?._pendingExperts) {
+              metadata = JSON.stringify({ experts: conv._pendingExperts });
+              delete conv._pendingExperts;
+            }
+            const dbId = messageDb.add(msg.conversationId, 'user', content, 'user', null, null, metadata);
             msg.data.dbMessageId = dbId;
             // Track user message count for stats
-            const conv = agent.conversations.get(msg.conversationId);
             trackMessage(conv?.userId || agent?.ownerId);
           }
           if (data.type === 'assistant' && data.message?.content) {
