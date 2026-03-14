@@ -44,3 +44,6 @@ export {
   addRoleToSession,
   removeRoleFromSession
 } from './crew/role-management.js';
+
+// Crew 上下文检测
+export { handleCheckCrewContext } from './crew/context-loader.js';

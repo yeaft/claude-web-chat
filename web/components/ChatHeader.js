@@ -22,11 +22,11 @@ export default {
         </svg>
         <span class="compact-message">{{ statusBannerMessage }}</span>
       </div>
-      <div class="header-right" v-if="store.currentConversation && !store.currentConversationIsCrew && !store.currentConversationIsRolePlay">
+      <div class="header-right" v-if="store.currentConversation && !store.currentConversationIsCrew">
         <span class="context-usage-hint" v-if="contextUsage" :class="contextColorClass" :title="contextLabel">
           {{ contextUsage.percentage }}%
         </span>
-        <button class="header-action-btn" :class="{ active: store.expertPanelOpen }" @click="toggleExpertPanel" :title="$t('chatHeader.expertPanel')" v-if="!store.currentConversationIsCrew && !store.currentConversationIsRolePlay">
+        <button class="header-action-btn" :class="{ active: store.expertPanelOpen }" @click="toggleExpertPanel" :title="$t('chatHeader.expertPanel')" v-if="!store.currentConversationIsCrew">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
           </svg>
@@ -86,7 +86,7 @@ export default {
           </svg>
         </button>
       </div>
-      <div class="crew-header-actions" v-if="isCrewOrRolePlay">
+      <div class="crew-header-actions" v-if="store.currentConversationIsCrew">
         <button v-if="store.currentConversationIsCrew" class="crew-header-nav-btn"
                 :class="{ active: isCrewPanelActive('roles') }"
                 @click="onCrewPanelToggle('roles')">
@@ -141,12 +141,6 @@ export default {
       // Crew conversation
       if (store.currentConversationIsCrew) {
         return 'Crew Session';
-      }
-
-      // Role Play conversation
-      if (store.currentConversationIsRolePlay) {
-        const title = store.getConversationTitle(store.currentConversation);
-        return title || 'Role Play';
       }
 
       const title = store.getConversationTitle(store.currentConversation);
@@ -222,14 +216,10 @@ export default {
       return `Context: ${used}k / ${total}k`;
     });
 
-    // Crew-header-left: roles streaming dot — gracefully handles RolePlay (no activeRoles)
+    // Crew header: roles streaming dot
     const hasStreamingRoles = Vue.computed(() => {
       const activeRoles = store.currentCrewStatus?.activeRoles;
       return activeRoles && activeRoles.length > 0;
-    });
-
-    const isCrewOrRolePlay = Vue.computed(() => {
-      return store.currentConversationIsCrew || store.currentConversationIsRolePlay;
     });
 
     const isCompacting = Vue.computed(() => {
@@ -343,6 +333,6 @@ export default {
       document.removeEventListener('click', closeMcpOnOutsideClick);
     });
 
-    return { store, headerTitle, folderPath, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCrewOrRolePlay, isCompacting, isClearing, canRefresh, refreshSession, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive, mcpBtnRef, mcpDropdownStyle, mcpEnabledCount, currentConvNeedRestart, toggleMcpPanel, toggleMcpServer, toggleExpertPanel };
+    return { store, headerTitle, folderPath, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, isClearing, canRefresh, refreshSession, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive, mcpBtnRef, mcpDropdownStyle, mcpEnabledCount, currentConvNeedRestart, toggleMcpPanel, toggleMcpServer, toggleExpertPanel };
   }
 };

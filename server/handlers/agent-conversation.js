@@ -215,7 +215,6 @@ export async function handleAgentConversation(agentId, agent, msg) {
     case 'history_sessions_list':
     case 'folders_list':
     case 'crew_context_result':
-    case 'roleplay_sessions_result':
       console.log(`[${msg.type}] Received from agent ${agentId}, forwarding to clients...`);
       console.log(`[${msg.type}] folders count: ${msg.folders?.length || 0}`);
       await notifyConversationUpdate(agentId, msg);

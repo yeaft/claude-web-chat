@@ -12,13 +12,13 @@ import {
   createConversation, resumeConversation, deleteConversation,
   handleRefreshConversation, handleCancelExecution,
   handleUserInput, handleUpdateConversationSettings, handleAskUserAnswer,
-  sendConversationList, handleCheckCrewContext, handleCheckRolePlaySessions
+  sendConversationList
 } from '../conversation.js';
 import {
   createCrewSession, handleCrewHumanInput, handleCrewControl,
   addRoleToSession, removeRoleFromSession,
   handleListCrewSessions, handleCheckCrewExists, handleDeleteCrewDir, resumeCrewSession, removeFromCrewIndex, hideCrewSession,
-  handleLoadCrewHistory
+  handleLoadCrewHistory, handleCheckCrewContext
 } from '../crew.js';
 import { sendToServer, flushMessageBuffer } from './buffer.js';
 import { handleRestartAgent, handleUpgradeAgent } from './upgrade.js';
@@ -68,10 +68,6 @@ export async function handleMessage(msg) {
 
     case 'check_crew_context':
       handleCheckCrewContext(msg);
-      break;
-
-    case 'check_roleplay_sessions':
-      handleCheckRolePlaySessions(msg);
       break;
 
     case 'resume_conversation':

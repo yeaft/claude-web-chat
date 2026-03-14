@@ -87,8 +87,7 @@ export function handleAgentList(store, msg) {
         allServerConvIds.add(serverConv.id);
         allServerConvs.push({
           ...serverConv,
-          // ★ backward compat: old conversations stored as 'virtualCrew'
-          type: serverConv.type === 'virtualCrew' ? 'rolePlay' : serverConv.type,
+          type: serverConv.type,
           agentId: agent.id,
           agentName: agent.name
         });
@@ -112,14 +111,6 @@ export function handleAgentList(store, msg) {
         if (serverConv.type) existing.type = serverConv.type;
       } else {
         store.conversations.push(serverConv);
-      }
-      // ★ Restore roleplay session info from server conversation data
-      if ((serverConv.type === 'rolePlay' || serverConv.type === 'virtualCrew') && serverConv.rolePlayRoles && !store.rolePlaySessions[serverConv.id]) {
-        store.rolePlaySessions[serverConv.id] = {
-          roles: serverConv.rolePlayRoles,
-          teamType: serverConv.teamType || 'dev',
-          language: serverConv.language || 'zh-CN',
-        };
       }
     }
     store.conversations = store.conversations.filter(c => allServerConvIds.has(c.id));
@@ -259,8 +250,6 @@ export function handleAgentSelected(store, msg) {
     return true;
   }).map(c => ({
     ...c,
-    // ★ backward compat: old conversations stored as 'virtualCrew'
-    type: c.type === 'virtualCrew' ? 'rolePlay' : c.type,
     agentId: msg.agentId,
     agentName: msg.agentName
   }));

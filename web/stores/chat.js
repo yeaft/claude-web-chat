@@ -116,12 +116,6 @@ export const useChatStore = defineStore('chat', {
     crewInProgressCount: 0,      // 进行中 Feature 数量（由 CrewChatView 同步）
 
     // =====================
-    // Role Play (single-conversation multi-role) 状态
-    // =====================
-    rolePlaySessions: {},            // { [convId]: { roles, teamType, language } }
-    rolePlayStatuses: {},            // { [convId]: { round, currentRole, features, roleStates, waitingHuman } }
-
-    // =====================
     // Expert Panel (帮帮团) 状态
     // =====================
     expertPanelOpen: false,           // 帮帮团面板是否打开
@@ -188,16 +182,6 @@ export const useChatStore = defineStore('chat', {
       if (!state.currentConversation) return false;
       const conv = state.conversations.find(c => c.id === state.currentConversation);
       return conv?.type === 'crew';
-    },
-    // 当前 conversation 是否是 Role Play
-    currentConversationIsRolePlay: (state) => {
-      if (!state.currentConversation) return false;
-      const conv = state.conversations.find(c => c.id === state.currentConversation);
-      return conv?.type === 'rolePlay' || conv?.type === 'virtualCrew';
-    },
-    // 当前 Role Play session 信息
-    currentRolePlaySession: (state) => {
-      return state.rolePlaySessions[state.currentConversation] || null;
     },
     // 当前 conversation 的 MCP servers 列表
     currentMcpServers: (state) => {
@@ -377,65 +361,6 @@ export const useChatStore = defineStore('chat', {
     addCrewRole(role) { crewHelpers.addCrewRole(this, role); },
     removeCrewRole(roleName) { crewHelpers.removeCrewRole(this, roleName); },
     handleCrewOutput(msg) { crewHelpers.handleCrewOutput(this, msg); },
-
-    // Role Play actions
-    createRolePlaySession(config) {
-      const targetAgent = config.agentId || this.currentAgent;
-      if (!targetAgent) return;
-      this.sendWsMessage({
-        type: 'create_conversation',
-        agentId: targetAgent,
-        workDir: config.projectDir,
-        rolePlayConfig: {
-          roles: config.roles,
-          teamType: config.teamType,
-          language: config.language,
-        },
-      });
-    },
-
-    restoreRolePlaySession(config) {
-      const targetAgent = config.agentId || this.currentAgent;
-      if (!targetAgent) return;
-      const { session, projectDir } = config;
-      const roles = (session.roles || []).map(r => ({
-        name: r.name,
-        displayName: r.displayName,
-        icon: r.icon || '',
-        description: r.description || '',
-      }));
-
-      // Check if the conversation still exists on the agent
-      const agent = this.agents.find(a => a.id === targetAgent);
-      const convExists = agent?.conversations?.some(c => c.id === session.conversationId);
-
-      if (convExists && session.conversationId) {
-        // Conversation still alive — populate roleplay state and select it
-        this.rolePlaySessions[session.conversationId] = {
-          roles,
-          teamType: session.teamType,
-          language: session.language || this.locale || 'zh-CN',
-        };
-        this.sendWsMessage({
-          type: 'select_conversation',
-          conversationId: session.conversationId,
-        });
-        this.currentConversation = session.conversationId;
-      } else {
-        // Conversation lost (server restart) — create new with same rolePlayConfig
-        this.sendWsMessage({
-          type: 'create_conversation',
-          agentId: targetAgent,
-          workDir: projectDir,
-          rolePlayConfig: {
-            roles,
-            teamType: session.teamType,
-            language: session.language || this.locale || 'zh-CN',
-            restoreSessionName: session.name,
-          },
-        });
-      }
-    },
 
     openFileInExplorer(filePath) {
       if (!this.currentConversation) return;

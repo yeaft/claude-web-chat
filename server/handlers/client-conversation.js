@@ -96,8 +96,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         workDir: msg.workDir,
         userId: client.userId,
         username: client.username,
-        disallowedTools: msg.disallowedTools,
-        rolePlayConfig: msg.rolePlayConfig || null
+        disallowedTools: msg.disallowedTools
       });
       break;
     }
@@ -313,19 +312,6 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       if (!await checkAgentAccess(crewCtxAgentId)) return;
       await forwardToAgent(crewCtxAgentId, {
         type: 'check_crew_context',
-        projectDir: msg.projectDir,
-        requestId: msg.requestId,
-        _requestClientId: clientId
-      });
-      break;
-    }
-
-    case 'check_roleplay_sessions': {
-      const rpAgentId = msg.agentId || client.currentAgent;
-      if (!rpAgentId) return;
-      if (!await checkAgentAccess(rpAgentId)) return;
-      await forwardToAgent(rpAgentId, {
-        type: 'check_roleplay_sessions',
         projectDir: msg.projectDir,
         requestId: msg.requestId,
         _requestClientId: clientId

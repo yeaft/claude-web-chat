@@ -201,13 +201,7 @@ export function handleMessage(store, msg) {
       break;
 
     case 'crew_context_result':
-      // Dispatch to any listener (RolePlayConfigPanel uses window event)
       window.dispatchEvent(new CustomEvent('crew-context-result', { detail: msg }));
-      break;
-
-    case 'roleplay_sessions_result':
-      // Dispatch to RolePlayConfigPanel for session restore UI
-      window.dispatchEvent(new CustomEvent('roleplay-sessions-result', { detail: msg }));
       break;
 
     case 'crew_sessions_list':
@@ -382,17 +376,5 @@ export function handleMessage(store, msg) {
       store.refreshingSession = false;
       break;
 
-    // RolePlay route state updates
-    case 'roleplay_status':
-      if (msg.conversationId) {
-        store.rolePlayStatuses[msg.conversationId] = {
-          round: msg.round || 0,
-          currentRole: msg.currentRole || null,
-          features: msg.features || [],
-          roleStates: msg.roleStates || {},
-          waitingHuman: msg.waitingHuman || false,
-        };
-      }
-      break;
   }
 }
