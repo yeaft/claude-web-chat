@@ -6,14 +6,12 @@ import ProxyTab from './ProxyTab.js';
 import SettingsPanel from './SettingsPanel.js';
 import CrewConfigPanel from './CrewConfigPanel.js';
 import CrewChatView from './CrewChatView.js';
-import RolePlayChatView from './RolePlayChatView.js';
-import RolePlayConfigPanel from './RolePlayConfigPanel.js';
 import ExpertPanel from './ExpertPanel.js';
 import { useAuthStore } from '../stores/auth.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView, RolePlayChatView, RolePlayConfigPanel, ExpertPanel },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView, ExpertPanel },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': showMobileSidebar }">
 
@@ -216,45 +214,6 @@ export default {
               </div>
             </div>
           </div>
-
-          <!-- Role Play Sessions Panel -->
-          <div class="session-panel" :class="{ collapsed: rolePlayGroupCollapsed }">
-            <div class="session-group-header">
-              <div class="session-group-title-area" @click="rolePlayGroupCollapsed = !rolePlayGroupCollapsed">
-                <svg class="session-collapse-arrow" :class="{ collapsed: rolePlayGroupCollapsed }" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-                <span class="session-group-icon">🎭</span>
-                <span>Role Play</span>
-              </div>
-              <button class="session-header-add-btn" @click.stop="newRolePlaySession" :title="$t('roleplay.newSession')">
-                <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-              </button>
-            </div>
-            <div class="session-panel-list" v-show="!rolePlayGroupCollapsed">
-              <div
-                v-for="conv in rolePlayConversations"
-                :key="conv.id"
-                class="session-item session-item-roleplay"
-                :class="{ active: conv.id === store.currentConversation, processing: store.isConversationProcessing(conv.id) }"
-                @click="selectConversation(conv.id, conv.agentId)"
-              >
-                <div class="session-item-header">
-                  <div class="title" :title="getRolePlayTitle(conv)">
-                    <span v-if="store.isConversationProcessing(conv.id)" class="processing-dot"></span>
-                    <span class="roleplay-conv-icon">🎭</span>
-                    {{ getRolePlayTitle(conv) }}
-                  </div>
-                  <span class="session-time">{{ getConversationTime(conv) }}</span>
-                  <button class="session-delete-btn" @click.stop="deleteConversation(conv.id, conv.agentId)" :title="$t('chat.sidebar.closeConv')">
-                    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-                  </button>
-                </div>
-                <div class="session-info">
-                  <span class="session-path">{{ shortenPath(conv.workDir) }}</span>
-                  <span class="session-agent" v-if="conv.agentName">{{ conv.agentName }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
         </div>
         <div class="sidebar-bottom">
           <button class="sidebar-nav-item" @click="showSettingsPanel = true">
@@ -277,11 +236,6 @@ export default {
         <template v-if="isCurrentCrewConversation">
           <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
           <CrewChatView />
-        </template>
-        <!-- Role Play Conversation (uses Crew-style layout with built-in input) -->
-        <template v-else-if="isCurrentRolePlayConversation">
-          <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
-          <RolePlayChatView />
         </template>
         <!-- Normal Chat Mode -->
         <template v-else>
@@ -321,16 +275,6 @@ export default {
         @close="store.crewConfigOpen = false"
         @start="startCrewSession"
         @browse="openCrewFolderPicker"
-      />
-
-      <!-- Role Play Config Panel -->
-      <RolePlayConfigPanel
-        v-if="rolePlayConfigOpen"
-        ref="rolePlayPanel"
-        @close="rolePlayConfigOpen = false"
-        @start="startRolePlaySession"
-        @restore="restoreRolePlaySession"
-        @browse="openRolePlayFolderPicker"
       />
 
       <!-- Unified Conversation Modal (New + Resume) -->
@@ -530,9 +474,7 @@ export default {
       folderPickerTarget: '', // 'convModal'
       serverVersion: '',
       chatGroupCollapsed: false,
-      crewGroupCollapsed: false,
-      rolePlayGroupCollapsed: false,
-      rolePlayConfigOpen: false
+      crewGroupCollapsed: false
     };
   },
   computed: {
@@ -557,9 +499,6 @@ export default {
     isCurrentCrewConversation() {
       return this.store.currentConversationIsCrew;
     },
-    isCurrentRolePlayConversation() {
-      return this.store.currentConversationIsRolePlay;
-    },
     currentAgentLatency() {
       if (!this.store.currentAgent) return null;
       const agent = this.store.agents.find(a => a.id === this.store.currentAgent);
@@ -579,11 +518,8 @@ export default {
     crewConversations() {
       return this.sortByActivity(this.store.conversations.filter(c => c.type === 'crew'));
     },
-    rolePlayConversations() {
-      return this.sortByActivity(this.store.conversations.filter(c => c.type === 'rolePlay' || c.type === 'virtualCrew'));
-    },
     normalConversations() {
-      return this.sortByActivity(this.store.conversations.filter(c => c.type !== 'crew' && c.type !== 'rolePlay' && c.type !== 'virtualCrew'));
+      return this.sortByActivity(this.store.conversations.filter(c => c.type !== 'crew'));
     }
   },
   methods: {
@@ -601,24 +537,6 @@ export default {
     },
     startCrewSession(config) {
       this.store.createCrewSession(config);
-    },
-    // Role Play methods
-    newRolePlaySession() {
-      this.rolePlayConfigOpen = true;
-    },
-    startRolePlaySession(config) {
-      this.rolePlayConfigOpen = false;
-      this.store.createRolePlaySession(config);
-    },
-    restoreRolePlaySession(config) {
-      this.rolePlayConfigOpen = false;
-      this.store.restoreRolePlaySession(config);
-    },
-    getRolePlayTitle(conv) {
-      // Use conversation title (from first user message) or fallback
-      const title = this.store.conversationTitles[conv.id];
-      if (title) return title.length > 25 ? title.substring(0, 25) + '...' : title;
-      return 'Role Play';
     },
     openCrewFolderPicker() {
       const crewPanel = this.$refs.crewPanel;
@@ -646,36 +564,6 @@ export default {
       this._folderPickerTimer = setTimeout(() => {
         if (this.folderPickerLoading && this.folderPickerOpen) {
           console.log('[FolderPicker] Retrying crew directory request for:', defaultDir);
-          sendRequest();
-        }
-      }, 5000);
-    },
-    openRolePlayFolderPicker() {
-      const rolePlayPanel = this.$refs.rolePlayPanel;
-      const agentId = rolePlayPanel?.selectedAgent;
-      if (!agentId) return;
-      this.folderPickerTarget = 'roleplay';
-      this.folderPickerOpen = true;
-      this.folderPickerSelected = '';
-      this.folderPickerLoading = true;
-      const agent = this.store.agents.find(a => a.id === agentId);
-      const defaultDir = rolePlayPanel?.projectDir || agent?.workDir || '';
-      this.folderPickerPath = defaultDir;
-      this.folderPickerEntries = [];
-      const sendRequest = () => {
-        this.store.sendWsMessage({
-          type: 'list_directory',
-          conversationId: '_workdir_picker',
-          agentId: agentId,
-          dirPath: defaultDir,
-          workDir: agent?.workDir || ''
-        });
-      };
-      sendRequest();
-      if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
-      this._folderPickerTimer = setTimeout(() => {
-        if (this.folderPickerLoading && this.folderPickerOpen) {
-          console.log('[FolderPicker] Retrying roleplay directory request for:', defaultDir);
           sendRequest();
         }
       }, 5000);
@@ -963,8 +851,6 @@ export default {
       let agentId = this.convModalAgent;
       if (this.folderPickerTarget === 'crew') {
         agentId = this.$refs.crewPanel?.selectedAgent;
-      } else if (this.folderPickerTarget === 'roleplay') {
-        agentId = this.$refs.rolePlayPanel?.selectedAgent;
       }
       if (!agentId) return;
       this.folderPickerLoading = true;
@@ -1040,14 +926,6 @@ export default {
         if (crewPanel) {
           crewPanel.projectDir = path;
           crewPanel.onWorkDirChange();
-        }
-        this.folderPickerOpen = false;
-        return;
-      }
-      if (this.folderPickerTarget === 'roleplay') {
-        const rolePlayPanel = this.$refs.rolePlayPanel;
-        if (rolePlayPanel) {
-          rolePlayPanel.projectDir = path;
         }
         this.folderPickerOpen = false;
         return;

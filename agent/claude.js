@@ -1,17 +1,6 @@
 import { query, Stream } from './sdk/index.js';
 import ctx from './context.js';
 import { sendConversationList, sendOutput, sendError, handleAskUserQuestion } from './conversation.js';
-import {
-  buildRolePlaySystemPrompt,
-  rolePlaySessions,
-  initRolePlayRouteState,
-  detectRoleSignal,
-  processRolePlayRoutes,
-  buildRouteEventMessage,
-  getRolePlayRouteState,
-  refreshCrewContext,
-  writeBackRouteContext
-} from './roleplay.js';
 
 /**
  * Determine maxContextTokens and autoCompactThreshold from model name.
@@ -36,13 +25,11 @@ export function getModelContextConfig(modelName) {
 export async function startClaudeQuery(conversationId, workDir, resumeSessionId) {
   // 如果已存在，先保存 per-session 设置，再关闭
   let savedDisallowedTools = null;
-  let savedRolePlayConfig = null;
   let savedUserId = undefined;
   let savedUsername = undefined;
   if (ctx.conversations.has(conversationId)) {
     const existing = ctx.conversations.get(conversationId);
     savedDisallowedTools = existing.disallowedTools ?? null;
-    savedRolePlayConfig = existing.rolePlayConfig ?? null;
     savedUserId = existing.userId;
     savedUsername = existing.username;
     if (existing.abortController) {
@@ -80,8 +67,6 @@ export async function startClaudeQuery(conversationId, workDir, resumeSessionId)
     backgroundTasks: new Map(),
     // Per-session 工具禁用设置
     disallowedTools: savedDisallowedTools,
-    // Role Play config (for appendSystemPrompt injection)
-    rolePlayConfig: savedRolePlayConfig,
     // 保留用户信息（从旧 state 恢复）
     userId: savedUserId,
     username: savedUsername,
@@ -109,18 +94,6 @@ export async function startClaudeQuery(conversationId, workDir, resumeSessionId)
   if (effectiveDisallowedTools.length > 0) {
     options.disallowedTools = effectiveDisallowedTools;
     console.log(`[SDK] Disallowed tools: ${effectiveDisallowedTools.join(', ')}`);
-  }
-
-  // Role Play: inject appendSystemPrompt with role descriptions and workflow
-  if (savedRolePlayConfig) {
-    options.appendSystemPrompt = buildRolePlaySystemPrompt(savedRolePlayConfig);
-    console.log(`[SDK] RolePlay appendSystemPrompt injected (teamType: ${savedRolePlayConfig.teamType})`);
-
-    // Initialize RolePlay route state if session exists
-    const rpSession = rolePlaySessions.get(conversationId);
-    if (rpSession) {
-      initRolePlayRouteState(rpSession, state);
-    }
   }
 
   // Validate session ID is a valid UUID before using it
@@ -461,57 +434,6 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
           continue;
         }
 
-        // ★ RolePlay ROUTE detection: check accumulated text for ROUTE blocks
-        const rpSession = state.rolePlayConfig ? rolePlaySessions.get(conversationId) : null;
-        let roleplayAutoContinue = false;
-        let roleplayContinueRoles = [];
-
-        if (rpSession && rpSession._routeInitialized && state._roleplayAccumulated) {
-          const { routes, hasHumanRoute, continueRoles } = processRolePlayRoutes(
-            state._roleplayAccumulated, rpSession
-          );
-
-          if (routes.length > 0) {
-            // Send route events to frontend
-            for (const route of routes) {
-              const routeEvent = buildRouteEventMessage(
-                conversationId, rpSession.currentRole || 'unknown', route
-              );
-              ctx.sendToServer(routeEvent);
-            }
-
-            // ★ Write-back: persist route task info to .crew/context/features
-            const taskRoutes = routes.filter(r => r.taskId && r.summary);
-            if (taskRoutes.length > 0 && state.workDir) {
-              writeBackRouteContext(state.workDir, taskRoutes, rpSession.currentRole || 'unknown', rpSession);
-            }
-
-            // Send route state update
-            const routeState = getRolePlayRouteState(conversationId);
-            if (routeState) {
-              ctx.sendToServer({
-                type: 'roleplay_status',
-                conversationId,
-                ...routeState
-              });
-            }
-
-            if (hasHumanRoute) {
-              // Stop auto-continue, wait for user input
-              ctx.sendToServer({
-                type: 'roleplay_waiting_human',
-                conversationId,
-                fromRole: rpSession.currentRole,
-                message: rpSession.waitingHumanContext?.message || ''
-              });
-            } else if (continueRoles.length > 0) {
-              // Auto-continue: pick the first route target and send the prompt
-              roleplayAutoContinue = true;
-              roleplayContinueRoles = continueRoles;
-            }
-          }
-        }
-
         // ★ Turn 完成：发送 turn_completed，进程继续运行等待下一条消息
         // stream-json 模式下 Claude 进程是持久运行的，for-await 在 result 后继续等待
         // 不清空 state.query 和 state.inputStream，下次用户消息直接通过同一个 inputStream 发送
@@ -522,89 +444,6 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         // ★ await 确保 result 和 turn_completed 消息确实发送成功
         // 不 await 会导致 encrypt 失败时消息静默丢失，前端卡在"思考中"
         await sendOutput(conversationId, message);
-
-        // ★ RolePlay auto-continue: inject next role's prompt into the same conversation
-        if (roleplayAutoContinue && rpSession && state.inputStream) {
-          // Reset accumulated text for next turn
-          state._roleplayAccumulated = '';
-
-          for (const { to, prompt, taskId, taskTitle } of roleplayContinueRoles) {
-            rpSession.currentRole = to;
-            if (rpSession.roleStates[to]) {
-              rpSession.roleStates[to].status = 'active';
-            }
-
-            console.log(`[RolePlay] Auto-continuing to role: ${to}`);
-
-            // ★ Send roleplay_status with updated currentRole so frontend knows which role is active
-            ctx.sendToServer({
-              type: 'roleplay_status',
-              conversationId,
-              currentRole: rpSession.currentRole,
-              round: rpSession.round,
-              features: rpSession.features ? Array.from(rpSession.features.values()) : [],
-              roleStates: rpSession.roleStates || {},
-              waitingHuman: false
-            });
-
-            // ★ Pre-send compact check for RolePlay auto-continue
-            const rpAutoCompactThreshold = state.autoCompactThreshold || ctx.CONFIG?.autoCompactThreshold || 110000;
-            const rpEstimatedNewTokens = Math.ceil(prompt.length / 3);
-            // Include output_tokens: the assistant's output becomes part of context for the next turn
-            const rpOutputTokens = message.usage?.output_tokens || 0;
-            const rpEstimatedTotal = inputTokens + rpOutputTokens + rpEstimatedNewTokens;
-
-            if (rpEstimatedTotal > rpAutoCompactThreshold) {
-              console.log(`[RolePlay] Pre-send compact: estimated ${rpEstimatedTotal} tokens (input: ${inputTokens} + output: ${rpOutputTokens} + new: ~${rpEstimatedNewTokens}) exceeds threshold ${rpAutoCompactThreshold}`);
-              ctx.sendToServer({
-                type: 'compact_status',
-                conversationId,
-                status: 'compacting',
-                message: `Auto-compacting before RolePlay continue: estimated ${rpEstimatedTotal} tokens (threshold: ${rpAutoCompactThreshold})`
-              });
-              // Store pending message and compact first
-              const userMessage = {
-                type: 'user',
-                message: { role: 'user', content: prompt }
-              };
-              state._pendingUserMessage = userMessage;
-              state.turnActive = true;
-              state.turnResultReceived = false;
-              state.inputStream.enqueue({
-                type: 'user',
-                message: { role: 'user', content: '/compact' }
-              });
-              sendConversationList();
-              break;
-            }
-
-            // Re-activate the turn
-            state.turnActive = true;
-            state.turnResultReceived = false;
-
-            // Send the continuation prompt through the same input stream
-            const userMessage = {
-              type: 'user',
-              message: { role: 'user', content: prompt }
-            };
-            state._lastUserMessage = userMessage; // Save for prompt-overflow retry
-            sendOutput(conversationId, userMessage);
-            state.inputStream.enqueue(userMessage);
-
-            // RolePlay uses a single conversation — only one target can be active
-            // at a time. Additional route targets are ignored.
-            break;
-          }
-
-          // Send status update (don't send turn_completed yet since we're continuing)
-          sendConversationList();
-          continue;
-        }
-
-        // Reset accumulated text
-        if (state._roleplayAccumulated !== undefined) {
-          state._roleplayAccumulated = '';
-        }
 
         await ctx.sendToServer({
           type: 'turn_completed',
@@ -630,71 +469,8 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         continue;
       }
 
-      // ★ RolePlay: accumulate assistant text and detect ROLE signals
-      if (state.rolePlayConfig && message.type === 'assistant' && message.message?.content) {
-        const content = message.message.content;
-        let textChunk = '';
-        if (typeof content === 'string') {
-          textChunk = content;
-        } else if (Array.isArray(content)) {
-          textChunk = content.filter(b => b.type === 'text').map(b => b.text).join('');
-        }
-        if (textChunk) {
-          if (state._roleplayAccumulated === undefined) {
-            state._roleplayAccumulated = '';
-          }
-          state._roleplayAccumulated += textChunk;
-
-          // Detect ROLE signal for current role tracking
-          const rpSession = rolePlaySessions.get(conversationId);
-          if (rpSession && rpSession._routeInitialized) {
-            const detectedRole = detectRoleSignal(textChunk);
-            if (detectedRole) {
-              const prevRole = rpSession.currentRole;
-              rpSession.currentRole = detectedRole;
-              if (rpSession.roleStates[detectedRole]) {
-                rpSession.roleStates[detectedRole].status = 'active';
-              }
-              if (prevRole && prevRole !== detectedRole && rpSession.roleStates[prevRole]) {
-                rpSession.roleStates[prevRole].status = 'idle';
-              }
-              console.log(`[RolePlay] Role switched: ${prevRole || 'none'} -> ${detectedRole}`);
-
-              // ★ Send roleplay_status so frontend fallbackRole stays in sync
-              ctx.sendToServer({
-                type: 'roleplay_status',
-                conversationId,
-                currentRole: rpSession.currentRole,
-                round: rpSession.round,
-                features: rpSession.features ? Array.from(rpSession.features.values()) : [],
-                roleStates: rpSession.roleStates || {},
-                waitingHuman: rpSession.waitingHuman || false
-              });
-            }
-          }
-        }
-      }
-
       // 检测后台任务
       detectAndTrackBackgroundTask(conversationId, state, message);
-
-      // ★ RolePlay: attach role metadata to messages sent to frontend
-      if (state.rolePlayConfig) {
-        const rpSession = rolePlaySessions.get(conversationId);
-        if (rpSession && rpSession._routeInitialized) {
-          // Attach current role info to the message as metadata
-          const enrichedMessage = {
-            ...message,
-            _roleplay: {
-              role: rpSession.currentRole,
-              features: rpSession.features ? Array.from(rpSession.features.values()) : [],
-              round: rpSession.round
-            }
-          };
-          sendOutput(conversationId, enrichedMessage);
-          continue;
-        }
-      }
 
       sendOutput(conversationId, message);
     }

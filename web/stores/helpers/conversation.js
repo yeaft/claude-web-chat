@@ -96,15 +96,6 @@ export function selectConversation(store, conversationId, agentId) {
     store.messages = [];
   }
 
-  // ★ Role Play: restore session info from conversation data if missing
-  if ((conv?.type === 'rolePlay' || conv?.type === 'virtualCrew') && !store.rolePlaySessions[conversationId] && conv.rolePlayRoles) {
-    store.rolePlaySessions[conversationId] = {
-      roles: conv.rolePlayRoles,
-      teamType: conv.teamType || 'dev',
-      language: conv.language || 'zh-CN',
-    };
-  }
-
   store.currentConversation = conversationId;
   if (conv) {
     store.currentWorkDir = conv.workDir;
@@ -210,9 +201,6 @@ export function deleteConversation(store, conversationId, agentId) {
       agentId: agentId || store.currentAgent
     });
   }
-  // ★ 清理 roleplay 数据
-  delete store.rolePlaySessions[conversationId];
-  delete store.rolePlayStatuses[conversationId];
 
   // 立即从本地列表移除（不等 server 同步）
   store.conversations = store.conversations.filter(c => c.id !== conversationId);
@@ -287,7 +275,7 @@ export function sendMessage(store, text, attachments = [], options = {}) {
     fileIds,
     workDir: store.currentWorkDir
   };
-  // Pass targetRole for RolePlay @mention routing
+  // Pass targetRole for @mention routing
   if (options.targetRole) {
     wsMsg.targetRole = options.targetRole;
   }

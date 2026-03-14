@@ -166,16 +166,6 @@ describe('_lastUserMessage tracking', () => {
     expect(state._lastUserMessage.message.content).toBe('Build feature X');
   });
 
-  it('saves RolePlay continuation prompt for retry', () => {
-    const state = {};
-    const prompt = '来自 PM-乔布斯 的消息:\n请开发 feature X\n\n你现在是 开发者-托瓦兹。请开始你的工作。';
-    const userMessage = { type: 'user', message: { role: 'user', content: prompt } };
-
-    state._lastUserMessage = userMessage;
-
-    expect(state._lastUserMessage.message.content).toContain('PM-乔布斯');
-  });
-
   it('overwrites previous message on new send', () => {
     const state = {};
     const msg1 = { type: 'user', message: { role: 'user', content: 'first' } };
