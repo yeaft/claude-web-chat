@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isPromptTokenOverflow } from '../../agent/claude.js';
+import { isPromptTokenOverflow, getModelContextConfig } from '../../agent/claude.js';
 
 // =====================================================================
 // isPromptTokenOverflow — detect API 400 prompt token exceeded errors
@@ -185,5 +185,69 @@ describe('_lastUserMessage tracking', () => {
     state._lastUserMessage = msg2;
 
     expect(state._lastUserMessage.message.content).toBe('second');
+  });
+});
+
+// =====================================================================
+// getModelContextConfig — dynamic compact threshold per model
+// =====================================================================
+
+describe('getModelContextConfig', () => {
+  it('returns 128k defaults for null/undefined model', () => {
+    expect(getModelContextConfig(null)).toEqual({ maxContext: 128000, compactThreshold: 110000 });
+    expect(getModelContextConfig(undefined)).toEqual({ maxContext: 128000, compactThreshold: 110000 });
+  });
+
+  it('returns 128k defaults for unknown model', () => {
+    expect(getModelContextConfig('some-unknown-model')).toEqual({ maxContext: 128000, compactThreshold: 110000 });
+  });
+
+  it('returns 200k config for Claude Sonnet 4 models', () => {
+    const config = getModelContextConfig('claude-sonnet-4-20250514');
+    expect(config.maxContext).toBe(200000);
+    expect(config.compactThreshold).toBe(160000);
+  });
+
+  it('returns 200k config for Claude Opus 4 models', () => {
+    const config = getModelContextConfig('claude-opus-4-20250514');
+    expect(config.maxContext).toBe(200000);
+    expect(config.compactThreshold).toBe(160000);
+  });
+
+  it('returns 200k config for Claude 3.5 models', () => {
+    expect(getModelContextConfig('claude-3-5-sonnet-20241022').maxContext).toBe(200000);
+    expect(getModelContextConfig('claude-3.5-haiku-20241022').maxContext).toBe(200000);
+  });
+
+  it('returns 1M config for explicit 1M models', () => {
+    const config = getModelContextConfig('claude-sonnet-4-1m-20250514');
+    expect(config.maxContext).toBe(1000000);
+    expect(config.compactThreshold).toBe(256000);
+  });
+
+  it('returns 1M config for 1000k indicator', () => {
+    const config = getModelContextConfig('claude-opus-4-1000k');
+    expect(config.maxContext).toBe(1000000);
+    expect(config.compactThreshold).toBe(256000);
+  });
+
+  it('is case-insensitive', () => {
+    expect(getModelContextConfig('Claude-Sonnet-4-20250514').maxContext).toBe(200000);
+    expect(getModelContextConfig('CLAUDE-OPUS-4-1M').maxContext).toBe(1000000);
+  });
+
+  it('1M takes priority over 200k when both match', () => {
+    // A model name like "claude-sonnet-4-1m" matches both 200k and 1M rules
+    const config = getModelContextConfig('claude-sonnet-4-1m');
+    expect(config.maxContext).toBe(1000000);
+    expect(config.compactThreshold).toBe(256000);
+  });
+
+  it('compact threshold is always less than maxContext', () => {
+    const models = [null, 'claude-3-haiku', 'claude-sonnet-4-20250514', 'claude-opus-4-1m'];
+    for (const model of models) {
+      const config = getModelContextConfig(model);
+      expect(config.compactThreshold).toBeLessThan(config.maxContext);
+    }
   });
 });

@@ -14,6 +14,27 @@ import {
 } from './roleplay.js';
 
 /**
+ * Determine maxContextTokens and autoCompactThreshold from model name.
+ * Returns defaults suitable for the model's context window size.
+ */
+export function getModelContextConfig(modelName) {
+  if (!modelName) return { maxContext: 128000, compactThreshold: 110000 };
+  const name = modelName.toLowerCase();
+  // Explicit 1M context indicators
+  if (name.includes('1m') || name.includes('1000k')) {
+    return { maxContext: 1000000, compactThreshold: 256000 };
+  }
+  // 200k context models: Claude 3.5, Claude Sonnet 4, Claude Opus 4, etc.
+  if (name.includes('claude-sonnet-4') || name.includes('claude-opus-4') ||
+      name.includes('claude-3-5') || name.includes('claude-3.5') ||
+      name.includes('200k')) {
+    return { maxContext: 200000, compactThreshold: 160000 };
+  }
+  // Default: 128k (Claude 3 Haiku, older models, unknown)
+  return { maxContext: 128000, compactThreshold: 110000 };
+}
+
+/**
  * Start a Claude SDK query for a conversation
  * Uses the SDK with AsyncIterable input stream for bidirectional communication
  */
@@ -288,8 +309,13 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         state.tools = message.tools || [];
         state.slashCommands = message.slash_commands || [];
         state.model = message.model || null;
+        // Set per-conversation context config based on model
+        const modelConfig = getModelContextConfig(state.model);
+        state.maxContextTokens = modelConfig.maxContext;
+        state.autoCompactThreshold = modelConfig.compactThreshold;
         console.log(`Claude session ID: ${state.claudeSessionId}`);
         console.log(`Model: ${state.model}`);
+        console.log(`Model context: ${state.maxContextTokens} tokens, compact threshold: ${state.autoCompactThreshold}`);
         console.log(`Available tools: ${state.tools.length}`);
         console.log(`Tools: ${state.tools.join(', ')}`);
         console.log(`Available slash commands: ${state.slashCommands.join(', ')}`);
@@ -420,7 +446,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
         // 计算上下文使用百分比
         const inputTokens = message.usage?.input_tokens || 0;
-        const maxContextTokens = ctx.CONFIG?.maxContextTokens || 128000;
+        const maxContextTokens = state.maxContextTokens || ctx.CONFIG?.maxContextTokens || 128000;
         if (inputTokens > 0) {
           ctx.sendToServer({
             type: 'context_usage',
@@ -527,7 +553,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
             });
 
             // ★ Pre-send compact check for RolePlay auto-continue
-            const rpAutoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 100000;
+            const rpAutoCompactThreshold = state.autoCompactThreshold || ctx.CONFIG?.autoCompactThreshold || 110000;
             const rpEstimatedNewTokens = Math.ceil(prompt.length / 3);
             // Include output_tokens: the assistant's output becomes part of context for the next turn
             const rpOutputTokens = message.usage?.output_tokens || 0;
