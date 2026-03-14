@@ -1599,8 +1599,7 @@
 
 /* Mobile-only elements: hidden on desktop */
 .crew-mobile-overlay,
-.crew-mobile-close,
-.crew-header-nav-btn.crew-sidebar-toggle {
+.crew-mobile-close {
   display: none;
 }
 
@@ -1804,11 +1803,6 @@
 
   .crew-mobile-close:hover {
     color: var(--text-primary, #fff);
-  }
-
-  /* Show sidebar toggle in Crew header on mobile */
-  .crew-header-nav-btn.crew-sidebar-toggle {
-    display: flex;
   }
 }
 
@@ -2401,7 +2395,6 @@
     position: static;
     transform: none;
     flex-shrink: 0;
-    order: -1;
   }
 
   /* --- Problem 7: Terminal touch targets --- */

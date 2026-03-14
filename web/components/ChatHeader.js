@@ -3,8 +3,8 @@ export default {
   emits: ['toggle-sidebar'],
   template: `
     <header class="chat-header">
-      <!-- Mobile sidebar toggle (Chat mode) — hidden on desktop -->
-      <button class="header-sidebar-toggle" v-if="!store.currentConversationIsCrew && !store.currentConversationIsRolePlay"
+      <!-- Mobile sidebar toggle — hidden on desktop, shown for all modes -->
+      <button class="header-sidebar-toggle"
               @click="$emit('toggle-sidebar')">
         <svg viewBox="0 0 24 24" width="16" height="16">
           <path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
@@ -87,12 +87,6 @@ export default {
         </button>
       </div>
       <div class="crew-header-actions" v-if="isCrewOrRolePlay">
-        <button class="crew-header-nav-btn crew-sidebar-toggle"
-                @click="$emit('toggle-sidebar')">
-          <svg viewBox="0 0 24 24" width="16" height="16">
-            <path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
-          </svg>
-        </button>
         <button v-if="store.currentConversationIsCrew" class="crew-header-nav-btn"
                 :class="{ active: isCrewPanelActive('roles') }"
                 @click="onCrewPanelToggle('roles')">
