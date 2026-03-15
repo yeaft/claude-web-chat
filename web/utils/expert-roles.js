@@ -259,56 +259,56 @@ export const EXPERT_ROLES = {
   // ============================================================
   // ✍️ 写作团队 (4 roles)
   // ============================================================
-  sanderson: {
-    id: 'sanderson',
-    name: 'Sanderson',
-    fullName: 'Brandon Sanderson',
-    title: '小说架构师',
-    titleEn: 'Story Architect',
+  jinyong: {
+    id: 'jinyong',
+    name: '金庸',
+    fullName: '金庸（Louis Cha）',
+    title: '武侠大师',
+    titleEn: 'Wuxia Master',
     group: 'writing',
     actions: [
-      { id: 'story-structure', name: '故事结构', nameEn: 'Story Structure' },
-      { id: 'world-building', name: '世界观', nameEn: 'World Building' },
-      { id: 'outline', name: '大纲设计', nameEn: 'Outline' }
+      { id: 'world-building', name: '武侠世界观', nameEn: 'Wuxia World Building' },
+      { id: 'character-design', name: '人物塑造', nameEn: 'Character Design' },
+      { id: 'plot-design', name: '情节编排', nameEn: 'Plot Design' }
     ]
   },
-  patterson: {
-    id: 'patterson',
-    name: 'Patterson',
-    fullName: 'James Patterson',
-    title: '节奏设计师',
-    titleEn: 'Pacing Designer',
+  zhouzi: {
+    id: 'zhouzi',
+    name: '肘子',
+    fullName: '会说话的肘子',
+    title: '网文天王',
+    titleEn: 'Web Novel King',
     group: 'writing',
     actions: [
-      { id: 'pacing', name: '节奏分析', nameEn: 'Pacing' },
-      { id: 'chapter-hooks', name: '章节钩子', nameEn: 'Chapter Hooks' },
-      { id: 'tension-curve', name: '张力曲线', nameEn: 'Tension Curve' }
+      { id: 'cool-factor', name: '爽感设计', nameEn: 'Cool Factor Design' },
+      { id: 'pacing', name: '节奏把控', nameEn: 'Pacing Control' },
+      { id: 'cheat-design', name: '金手指设计', nameEn: 'Cheat System Design' }
     ]
   },
-  pratchett: {
-    id: 'pratchett',
-    name: 'Pratchett',
-    fullName: 'Terry Pratchett',
-    title: '幽默写手',
-    titleEn: 'Humor Writer',
+  qiongyao: {
+    id: 'qiongyao',
+    name: '琼瑶',
+    fullName: '琼瑶（Chiung Yao）',
+    title: '言情宗师',
+    titleEn: 'Romance Master',
     group: 'writing',
     actions: [
-      { id: 'dialogue', name: '对话优化', nameEn: 'Dialogue' },
-      { id: 'humor', name: '幽默元素', nameEn: 'Humor' },
-      { id: 'voice-check', name: '叙事声音', nameEn: 'Voice Check' }
+      { id: 'emotion-writing', name: '情感描写', nameEn: 'Emotion Writing' },
+      { id: 'dialogue-design', name: '对话设计', nameEn: 'Dialogue Design' },
+      { id: 'romance-arc', name: '虐恋架构', nameEn: 'Romance Arc' }
     ]
   },
-  tolkien: {
-    id: 'tolkien',
-    name: 'Tolkien',
-    fullName: 'J.R.R. Tolkien',
-    title: '编辑 / 设定审校',
-    titleEn: 'Editor / Continuity',
+  luxun: {
+    id: 'luxun',
+    name: '鲁迅',
+    fullName: '鲁迅（Lu Xun）',
+    title: '文学巨匠',
+    titleEn: 'Literary Giant',
     group: 'writing',
     actions: [
-      { id: 'continuity-check', name: '一致性检查', nameEn: 'Continuity Check' },
-      { id: 'prose-polish', name: '文笔润色', nameEn: 'Prose Polish' },
-      { id: 'logic-review', name: '逻辑审查', nameEn: 'Logic Review' }
+      { id: 'satire', name: '讽刺写作', nameEn: 'Satirical Writing' },
+      { id: 'character-sketch', name: '人物刻画', nameEn: 'Character Sketch' },
+      { id: 'prose-craft', name: '文笔锤炼', nameEn: 'Prose Craft' }
     ]
   },
 
