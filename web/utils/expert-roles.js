@@ -7,9 +7,9 @@
 
 export const EXPERT_TEAMS = {
   dev: { id: 'dev', name: '软件开发', nameEn: 'Software Dev', icon: '🖥️', order: 0 },
-  trading: { id: 'trading', name: '交易', nameEn: 'Trading', icon: '📈', order: 1 },
-  writing: { id: 'writing', name: '写作', nameEn: 'Writing', icon: '✍️', order: 2 },
-  video: { id: 'video', name: '视频', nameEn: 'Video', icon: '🎬', order: 3 }
+  trading: { id: 'trading', name: '交易', nameEn: 'Trading', icon: '📈', order: 1, adminOnly: true },
+  writing: { id: 'writing', name: '写作', nameEn: 'Writing', icon: '✍️', order: 2, adminOnly: true },
+  video: { id: 'video', name: '视频', nameEn: 'Video', icon: '🎬', order: 3, adminOnly: true }
 };
 
 export const EXPERT_ROLES = {
@@ -439,3 +439,15 @@ export const DEFAULT_TEAM = 'dev';
  * Maximum number of expert selections allowed
  */
 export const MAX_SELECTIONS = 3;
+
+/**
+ * Get teams visible to the current user.
+ * Non-admin users only see teams without adminOnly flag.
+ * @param {boolean} isAdmin
+ * @returns {object[]} sorted team list
+ */
+export function getVisibleTeams(isAdmin) {
+  return Object.values(EXPERT_TEAMS)
+    .filter(team => isAdmin || !team.adminOnly)
+    .sort((a, b) => a.order - b.order);
+}
