@@ -1,6 +1,7 @@
 import {
   EXPERT_ROLES, EXPERT_TEAMS, getRolesByTeam,
-  buildAutocompleteItems, getSelectionLabel, MAX_SELECTIONS, DEFAULT_TEAM
+  buildAutocompleteItems, getSelectionLabel, MAX_SELECTIONS, DEFAULT_TEAM,
+  getVisibleTeams
 } from '../utils/expert-roles.js';
 
 export default {
@@ -126,9 +127,13 @@ export default {
   emits: ['close', 'update:modelValue'],
   setup(props, { emit }) {
     const store = Pinia.useChatStore();
+    const authStore = Pinia.useAuthStore();
     const searchQuery = Vue.ref('');
     const searchInput = Vue.ref(null);
     const roleListRef = Vue.ref(null);
+
+    // Whether current user is admin
+    const isAdmin = Vue.computed(() => authStore.role === 'admin');
 
     // Teams the user has enabled (loaded)
     const enabledTeams = Vue.ref(new Set([DEFAULT_TEAM]));
@@ -136,14 +141,21 @@ export default {
     // Expert selections: reactive copy from v-model
     const selections = Vue.computed(() => props.modelValue);
 
-    // Available teams for the tab bar
+    // Available teams for the tab bar (filtered by admin visibility)
     const availableTeams = Vue.computed(() => {
-      return Object.values(EXPERT_TEAMS).sort((a, b) => a.order - b.order);
+      return getVisibleTeams(isAdmin.value);
     });
 
-    // Filtered groups based on enabled teams
+    // Set of visible team IDs for quick lookup
+    const visibleTeamIds = Vue.computed(() => {
+      return new Set(availableTeams.value.map(t => t.id));
+    });
+
+    // Filtered groups based on enabled teams (only from visible teams)
     const filteredGroups = Vue.computed(() => {
-      return getRolesByTeam().filter(g => enabledTeams.value.has(g.teamId));
+      return getRolesByTeam().filter(g =>
+        visibleTeamIds.value.has(g.teamId) && enabledTeams.value.has(g.teamId)
+      );
     });
 
     // Search
@@ -152,7 +164,9 @@ export default {
     const searchResults = Vue.computed(() => {
       if (!searchQuery.value) return [];
       const q = searchQuery.value.toLowerCase();
-      return allAutocompleteItems.filter(item => item.searchText.includes(q));
+      return allAutocompleteItems.filter(item =>
+        item.searchText.includes(q) && visibleTeamIds.value.has(item.group)
+      );
     });
 
     const onSearchInput = () => {
