@@ -530,115 +530,115 @@ const EXPERT_ROLES = {
   // ============================================================
   // ✍️ 写作团队 (4 roles)
   // ============================================================
-  sanderson: {
-    name: 'Sanderson',
-    messagePrefix: '请以 Brandon Sanderson（小说架构师 / 史诗奇幻大师）的视角回答：\n\n',
-    messagePrefixEn: 'Please answer from Brandon Sanderson\'s (Story Architect / epic fantasy master) perspective:\n\n',
+  jinyong: {
+    name: '金庸',
+    messagePrefix: '请以金庸（武侠大师）的视角回答：\n\n',
+    messagePrefixEn: 'Please answer from Jin Yong\'s (Wuxia Master) perspective:\n\n',
     actions: {
-      'story-structure': {
-        name: '故事结构', nameEn: 'Story Structure',
-        messageTemplate: '请以 Brandon Sanderson（小说架构师）的标准审查故事结构。关注三幕式节奏、承诺/进展/回报、高潮设置。\n\n',
-        messageTemplateEn: 'Please review story structure from Brandon Sanderson\'s (Story Architect) standards. Focus on three-act pacing, promise/progress/payoff, climax setup.\n\n',
-        defaultMessage: '请以 Brandon Sanderson（小说架构师）的标准，审查当前对话中讨论的故事结构。\n方法：用"承诺→进展→回报"框架分析。关注：开头的钩子够不够强？中段有没有下垂？高潮是否兑现了前面的伏笔？\n给出：结构优化建议 + 关键转折点调整方案。',
-        defaultMessageEn: 'Please review the story structure discussed from Brandon Sanderson\'s standards.\nMethod: Analyze with "Promise → Progress → Payoff" framework. Focus: Is the opening hook strong enough? Any mid-section sag? Does the climax deliver on earlier foreshadowing?\nOutput: Structure optimization suggestions + key turning point adjustments.'
-      },
       'world-building': {
-        name: '世界观', nameEn: 'World Building',
-        messageTemplate: '请以 Brandon Sanderson（小说架构师）的标准审查世界观设定。关注内在一致性、魔法/规则体系、冰山原则。\n\n',
-        messageTemplateEn: 'Please review world-building from Brandon Sanderson\'s (Story Architect) standards. Focus on internal consistency, magic/rule systems, iceberg principle.\n\n',
-        defaultMessage: '请以 Brandon Sanderson（小说架构师）的标准，审查当前对话中的世界观设定。\n关注：设定是否内在自洽？规则体系是否有限制（没有限制的力量不有趣）？展示了多少vs隐藏了多少？\n原则：最好的世界观让读者觉得"作者知道答案，但不需要全告诉我"。',
-        defaultMessageEn: 'Please review the world-building discussed from Brandon Sanderson\'s standards.\nFocus: Is the setting internally consistent? Does the rule system have limitations (unlimited power isn\'t interesting)? How much is shown vs hidden?\nPrinciple: The best world-building makes readers feel "the author knows the answer but doesn\'t need to tell me everything."'
+        name: '武侠世界观', nameEn: 'Wuxia World Building',
+        messageTemplate: '请以金庸（武侠大师）的标准构建武侠世界观。关注门派体系、武功层次、江湖规矩、历史背景融合。\n\n',
+        messageTemplateEn: 'Please build a wuxia world from Jin Yong\'s (Wuxia Master) standards. Focus on sect systems, martial arts hierarchy, jianghu rules, historical integration.\n\n',
+        defaultMessage: '请以金庸（武侠大师）的标准，审查当前对话中的故事世界观设定。\n关注：门派体系是否层次分明？武功设定是否有合理的强弱梯度？江湖规矩是否自洽？有没有把虚构武侠与真实历史巧妙融合？\n原则：最好的武侠世界，让读者觉得"这个江湖真的存在过"。',
+        defaultMessageEn: 'Please review the world-building discussed from Jin Yong\'s (Wuxia Master) standards.\nFocus: Is the sect system well-layered? Does the martial arts hierarchy have logical power gradients? Are the jianghu rules consistent? Is fictional wuxia skillfully woven with real history?\nPrinciple: The best wuxia world makes readers feel "this jianghu actually existed."'
       },
-      'outline': {
-        name: '大纲设计', nameEn: 'Outline',
-        messageTemplate: '请以 Brandon Sanderson（小说架构师）的方法论设计故事大纲。从结局倒推，确保每条线索都有回收。\n\n',
-        messageTemplateEn: 'Please design a story outline from Brandon Sanderson\'s (Story Architect) methodology. Work backward from the ending, ensure every thread is resolved.\n\n',
-        defaultMessage: '请以 Brandon Sanderson（小说架构师）的方法论，为当前对话中讨论的故事设计大纲。\n方法：先确定结局和高潮 → 倒推需要什么伏笔 → 设计人物弧线 → 安排章节节奏。\n输出：章节级大纲 + 主线/副线标注 + 每章的核心冲突。',
-        defaultMessageEn: 'Please design a story outline from Brandon Sanderson\'s methodology.\nMethod: Determine ending and climax → Work backward for needed foreshadowing → Design character arcs → Arrange chapter pacing.\nOutput: Chapter-level outline + main/subplot annotations + core conflict per chapter.'
+      'character-design': {
+        name: '人物塑造', nameEn: 'Character Design',
+        messageTemplate: '请以金庸（武侠大师）的标准塑造人物。关注性格复杂度、成长弧线、侠义精神、人物关系网。\n\n',
+        messageTemplateEn: 'Please design characters from Jin Yong\'s (Wuxia Master) standards. Focus on personality complexity, growth arcs, chivalric spirit, relationship networks.\n\n',
+        defaultMessage: '请以金庸（武侠大师）的标准，审查当前对话中的人物设计。\n关注：角色是否有内在矛盾（如乔峰的身份困境）？成长弧线是否自然？侠义精神如何体现？人物关系网是否丰富且合理？\n原则：好角色不是完美的，而是让读者又爱又恨、念念不忘的。',
+        defaultMessageEn: 'Please review the character design discussed from Jin Yong\'s standards.\nFocus: Does the character have internal conflicts (like Qiao Feng\'s identity crisis)? Is the growth arc natural? How is chivalric spirit expressed? Is the relationship network rich and logical?\nPrinciple: Good characters aren\'t perfect — they\'re the ones readers love, hate, and can\'t forget.'
+      },
+      'plot-design': {
+        name: '情节编排', nameEn: 'Plot Design',
+        messageTemplate: '请以金庸（武侠大师）的标准编排情节。关注伏笔回收、多线交织、高潮迭起、结局升华。\n\n',
+        messageTemplateEn: 'Please design plot from Jin Yong\'s (Wuxia Master) standards. Focus on foreshadowing payoff, multi-thread weaving, rising climaxes, ending sublimation.\n\n',
+        defaultMessage: '请以金庸（武侠大师）的标准，审查当前对话中的情节设计。\n关注：伏笔是否在关键时刻漂亮回收？多条故事线是否交织紧密？高潮是否层层递进而非一蹴而就？结局是否超越了简单的善恶对决？\n方法：像金庸那样——用"草蛇灰线"的手法埋线，在最意想不到的地方揭开。',
+        defaultMessageEn: 'Please review the plot design discussed from Jin Yong\'s standards.\nFocus: Is foreshadowing paid off beautifully at key moments? Are multiple storylines tightly woven? Do climaxes build progressively? Does the ending transcend simple good-vs-evil?\nMethod: Like Jin Yong — plant subtle seeds early, reveal them where least expected.'
       }
     }
   },
-  patterson: {
-    name: 'Patterson',
-    messagePrefix: '请以 James Patterson（节奏设计师 / 畅销书之王）的视角回答：\n\n',
-    messagePrefixEn: 'Please answer from James Patterson\'s (Pacing Designer / bestseller king) perspective:\n\n',
+  zhouzi: {
+    name: '肘子',
+    messagePrefix: '请以会说话的肘子（网文天王）的视角回答：\n\n',
+    messagePrefixEn: 'Please answer from Zhouzi\'s (Web Novel King) perspective:\n\n',
     actions: {
+      'cool-factor': {
+        name: '爽感设计', nameEn: 'Cool Factor Design',
+        messageTemplate: '请以会说话的肘子（网文天王）的标准设计爽感。关注打脸节奏、装逼打脸循环、读者情绪高点、爽点密度。\n\n',
+        messageTemplateEn: 'Please design cool factor from Zhouzi\'s (Web Novel King) standards. Focus on face-slapping rhythm, show-off cycles, reader emotional highs, cool point density.\n\n',
+        defaultMessage: '请以会说话的肘子（网文天王）的标准，分析当前对话中的故事爽感设计。\n关注：主角有没有稳定的爽点输出？打脸节奏是否合理（铺垫→压制→反转→爽）？读者情绪曲线是否持续走高？有没有"闷段"让读者想弃书？\n原则：网文的核心是让读者追更停不下来。每一章都要有至少一个让人拍大腿的爽点。',
+        defaultMessageEn: 'Please analyze the cool factor design discussed from Zhouzi\'s standards.\nFocus: Does the MC have steady cool-point output? Is the face-slapping rhythm right (setup → suppression → reversal → satisfaction)? Does the reader\'s emotional curve keep rising? Any dull stretches that make readers want to drop?\nPrinciple: Web novels must keep readers chasing updates. Every chapter needs at least one fist-pumping moment.'
+      },
       'pacing': {
-        name: '节奏分析', nameEn: 'Pacing',
-        messageTemplate: '请以 James Patterson（节奏设计师）的标准分析节奏。关注章节长度、悬念设置、翻页动力。\n\n',
-        messageTemplateEn: 'Please analyze pacing from James Patterson\'s (Pacing Designer) standards. Focus on chapter length, suspense setup, page-turning momentum.\n\n',
-        defaultMessage: '请以 James Patterson（节奏设计师）的标准，分析当前对话中文本的节奏问题。\n关注：章节是否太长导致拖沓？每章结尾有没有钩子？信息密度是否均匀？读者在哪里会想放下书？\n原则：短章节、快节奏、每页都有让人继续读下去的理由。',
-        defaultMessageEn: 'Please analyze pacing issues in the text discussed from James Patterson\'s standards.\nFocus: Are chapters too long causing drag? Does each chapter end with a hook? Is information density even? Where would readers want to put the book down?\nPrinciple: Short chapters, fast pace, every page has a reason to keep reading.'
+        name: '节奏把控', nameEn: 'Pacing Control',
+        messageTemplate: '请以会说话的肘子（网文天王）的标准把控节奏。关注章末钩子、水字数的艺术、日更节奏、追更体验。\n\n',
+        messageTemplateEn: 'Please control pacing from Zhouzi\'s (Web Novel King) standards. Focus on chapter-end hooks, padding art, daily update rhythm, reading-chase experience.\n\n',
+        defaultMessage: '请以会说话的肘子（网文天王）的标准，分析当前对话中的写作节奏。\n关注：每章结尾是否有让读者忍不住点"下一章"的钩子？信息释放节奏是否合理？有没有拖沓灌水的段落？伏笔释放是否及时？\n原则：日更网文的命脉是留人。每章 3000-4000 字，节奏紧凑，章末必有悬念。像肘子那样——用幽默消解套路感，用反转制造惊喜。',
+        defaultMessageEn: 'Please analyze writing pacing from Zhouzi\'s standards.\nFocus: Does each chapter end with a hook that makes readers click "next chapter"? Is information release pacing reasonable? Any padding or drag? Is foreshadowing revealed timely?\nPrinciple: Daily web novel survival depends on retention. 3000-4000 words per chapter, tight pacing, every chapter ends with suspense. Like Zhouzi — use humor to defuse formula fatigue, use reversals for surprises.'
       },
-      'chapter-hooks': {
-        name: '章节钩子', nameEn: 'Chapter Hooks',
-        messageTemplate: '请以 James Patterson（节奏设计师）的标准设计章节结尾钩子。每章结束时读者必须想翻下一页。\n\n',
-        messageTemplateEn: 'Please design chapter-ending hooks from James Patterson\'s (Pacing Designer) standards. Readers must want to turn the page at every chapter end.\n\n',
-        defaultMessage: '请以 James Patterson（节奏设计师）的标准，为当前对话中的章节设计结尾钩子。\n类型：悬念型（发生了什么？）、反转型（这不是我想的那样）、引子型（接下来会更精彩）。\n每章结尾给出 2 个备选钩子方案，并说明哪个更有效。',
-        defaultMessageEn: 'Please design chapter-ending hooks from James Patterson\'s standards.\nTypes: Suspense (what happened?), Reversal (not what I expected), Teaser (it gets better next).\nProvide 2 alternative hook options per chapter end, explain which is more effective.'
-      },
-      'tension-curve': {
-        name: '张力曲线', nameEn: 'Tension Curve',
-        messageTemplate: '请以 James Patterson（节奏设计师）的标准分析张力曲线。关注张力的起伏节奏，避免平铺直叙。\n\n',
-        messageTemplateEn: 'Please analyze tension curve from James Patterson\'s (Pacing Designer) standards. Focus on tension rhythm, avoid flat narration.\n\n',
-        defaultMessage: '请以 James Patterson（节奏设计师）的标准，分析当前对话中故事的张力曲线。\n画出：章节vs张力的变化趋势。标注：张力高峰在哪里？低谷持续太久的段落？缺少缓冲导致疲劳的地方？\n给出：张力曲线优化方案。',
-        defaultMessageEn: 'Please analyze the tension curve of the story discussed from James Patterson\'s standards.\nMap: Chapter vs tension trend. Annotate: Where are tension peaks? Segments where troughs last too long? Places where lack of buffer causes fatigue?\nOutput: Tension curve optimization plan.'
+      'cheat-design': {
+        name: '金手指设计', nameEn: 'Cheat System Design',
+        messageTemplate: '请以会说话的肘子（网文天王）的标准设计金手指/升级体系。关注能力限制、升级节奏、战力体系、读者期待管理。\n\n',
+        messageTemplateEn: 'Please design cheat/power system from Zhouzi\'s (Web Novel King) standards. Focus on ability limits, upgrade pacing, power system, reader expectation management.\n\n',
+        defaultMessage: '请以会说话的肘子（网文天王）的标准，设计或审查当前对话中的金手指/升级体系。\n关注：金手指是否有明确的限制条件（无限制=无趣）？升级节奏是否让人期待（不能太快也不能太慢）？战力体系是否清晰不崩？有没有留出后期爆发的空间？\n原则：最好的金手指是"有限制但巧妙利用限制"。让读者觉得主角不是靠挂，而是靠脑子。',
+        defaultMessageEn: 'Please design or review the cheat/power system discussed from Zhouzi\'s standards.\nFocus: Does the cheat have clear limitations (unlimited = boring)? Is the upgrade pace exciting (not too fast, not too slow)? Is the power system clear and consistent? Is there room for late-game power spikes?\nPrinciple: The best cheat system is "limited but cleverly exploited." Make readers feel the MC wins with brains, not hacks.'
       }
     }
   },
-  pratchett: {
-    name: 'Pratchett',
-    messagePrefix: '请以 Terry Pratchett（幽默写手 / 讽刺文学大师）的风格回答：\n\n',
-    messagePrefixEn: 'Please answer in Terry Pratchett\'s (Humor Writer / satirical literature master) style:\n\n',
+  qiongyao: {
+    name: '琼瑶',
+    messagePrefix: '请以琼瑶（言情宗师）的视角回答：\n\n',
+    messagePrefixEn: 'Please answer from Chiung Yao\'s (Romance Master) perspective:\n\n',
     actions: {
-      'dialogue': {
-        name: '对话优化', nameEn: 'Dialogue',
-        messageTemplate: '请以 Terry Pratchett（幽默写手）的标准优化对话。关注角色声音区分度、潜台词、幽默感。\n\n',
-        messageTemplateEn: 'Please optimize dialogue from Terry Pratchett\'s (Humor Writer) standards. Focus on character voice distinction, subtext, humor.\n\n',
-        defaultMessage: '请以 Terry Pratchett（幽默写手）的标准，优化当前对话中的角色对话。\n关注：每个角色说话有没有自己的声音？对话是否推动了情节？有没有潜台词？幽默是否自然（不是硬塞的笑话）？\n原则：好的对话遮住名字也能猜出是谁说的。',
-        defaultMessageEn: 'Please optimize the character dialogue discussed from Terry Pratchett\'s standards.\nFocus: Does each character have a distinct voice? Does dialogue drive plot? Is there subtext? Is humor natural (not forced jokes)?\nPrinciple: Good dialogue — cover the names and you can still guess who\'s speaking.'
+      'emotion-writing': {
+        name: '情感描写', nameEn: 'Emotion Writing',
+        messageTemplate: '请以琼瑶（言情宗师）的标准描写情感。关注情感层次、内心独白、氛围渲染、感官细节。\n\n',
+        messageTemplateEn: 'Please write emotions from Chiung Yao\'s (Romance Master) standards. Focus on emotional layers, inner monologue, atmosphere rendering, sensory details.\n\n',
+        defaultMessage: '请以琼瑶（言情宗师）的标准，审查或优化当前对话中的情感描写。\n关注：情感表达是否有层次（不是直接说"我很难过"）？内心独白是否真实细腻？场景氛围是否烘托了情绪？有没有用感官细节（雨声、花香、微风）来传递情感？\n原则：最好的情感描写让读者不知不觉红了眼眶，而不是被作者喊着"你该哭了"。',
+        defaultMessageEn: 'Please review or optimize the emotional writing discussed from Chiung Yao\'s standards.\nFocus: Are emotions expressed with layers (not just "I\'m sad")? Is the inner monologue authentic and delicate? Does the scene atmosphere enhance the mood? Are sensory details (rain, fragrance, breeze) used to convey feelings?\nPrinciple: The best emotional writing makes readers tear up without realizing — not because the author tells them to cry.'
       },
-      'humor': {
-        name: '幽默元素', nameEn: 'Humor',
-        messageTemplate: '请以 Terry Pratchett（幽默写手）的标准加入幽默元素。幽默要服务于故事，不是打断故事。\n\n',
-        messageTemplateEn: 'Please add humor from Terry Pratchett\'s (Humor Writer) standards. Humor should serve the story, not interrupt it.\n\n',
-        defaultMessage: '请以 Terry Pratchett（幽默写手）的标准，为当前对话中的文本添加幽默元素。\n方法：观察荒谬的日常（而不是编笑话）、用脚注补充讽刺、让幽默来自角色性格的碰撞。\n原则：最好的幽默是让人笑完之后停下来想一想的那种。',
-        defaultMessageEn: 'Please add humor elements to the text discussed from Terry Pratchett\'s standards.\nMethod: Observe absurdity in the mundane (don\'t write jokes), use footnotes for satire, let humor come from character personality clashes.\nPrinciple: The best humor is the kind that makes you laugh, then stop and think.'
+      'dialogue-design': {
+        name: '对话设计', nameEn: 'Dialogue Design',
+        messageTemplate: '请以琼瑶（言情宗师）的标准设计对话。关注情感张力、潜台词、语言美感、角色声音区分。\n\n',
+        messageTemplateEn: 'Please design dialogue from Chiung Yao\'s (Romance Master) standards. Focus on emotional tension, subtext, linguistic beauty, character voice distinction.\n\n',
+        defaultMessage: '请以琼瑶（言情宗师）的标准，优化当前对话中的角色对话。\n关注：对话中是否有情感张力（说的和想说的不一样）？语言是否优美且符合角色身份？每个角色的说话方式是否有区分度？关键对白是否让人过目不忘？\n原则：好的言情对话，表面是在说事，实际是在传情。一句"你走吧"，背后可能是千言万语。',
+        defaultMessageEn: 'Please optimize the character dialogue discussed from Chiung Yao\'s standards.\nFocus: Is there emotional tension in dialogue (what\'s said vs. what\'s meant)? Is language beautiful and fitting to character identity? Are speaking styles distinct per character? Are key lines memorable?\nPrinciple: Good romance dialogue talks about things on the surface while conveying feelings underneath. A simple "just go" may carry a thousand unspoken words.'
       },
-      'voice-check': {
-        name: '叙事声音', nameEn: 'Voice Check',
-        messageTemplate: '请以 Terry Pratchett（幽默写手）的标准检查叙事声音。关注叙述者的个性、语调一致性、风格辨识度。\n\n',
-        messageTemplateEn: 'Please check narrative voice from Terry Pratchett\'s (Humor Writer) standards. Focus on narrator personality, tone consistency, style distinctiveness.\n\n',
-        defaultMessage: '请以 Terry Pratchett（幽默写手）的标准，检查当前对话中文本的叙事声音。\n关注：叙述者有没有自己的个性？语调在全文中是否一致？读者能不能在三段之内认出这是谁写的？\n指出声音断裂或风格不统一的段落，给出调整建议。',
-        defaultMessageEn: 'Please check the narrative voice of the text discussed from Terry Pratchett\'s standards.\nFocus: Does the narrator have personality? Is the tone consistent throughout? Can readers recognize the author within three paragraphs?\nIdentify voice breaks or style inconsistencies, provide adjustment suggestions.'
+      'romance-arc': {
+        name: '虐恋架构', nameEn: 'Romance Arc',
+        messageTemplate: '请以琼瑶（言情宗师）的标准设计感情线。关注情感递进、误会与和解、虐心节奏、HE/BE 设计。\n\n',
+        messageTemplateEn: 'Please design romance arc from Chiung Yao\'s (Romance Master) standards. Focus on emotional progression, misunderstandings & reconciliation, angst pacing, happy/bittersweet ending design.\n\n',
+        defaultMessage: '请以琼瑶（言情宗师）的标准，设计或审查当前对话中的感情线架构。\n关注：感情递进是否自然（相遇→心动→试探→热恋→考验→结局）？虐点是否有价值（不是为虐而虐）？误会冲突是否合理？和解是否让人满足？结局是否呼应了故事主题？\n原则：好的虐恋不是把主角往死里整，而是让读者在心疼中看到爱情的力量。',
+        defaultMessageEn: 'Please design or review the romance arc discussed from Chiung Yao\'s standards.\nFocus: Is emotional progression natural (meeting → attraction → testing → passion → trials → resolution)? Are angst points meaningful (not suffering for suffering\'s sake)? Are misunderstandings reasonable? Is reconciliation satisfying? Does the ending echo the story\'s theme?\nPrinciple: Good angst romance doesn\'t torture characters pointlessly — it shows readers the power of love through heartache.'
       }
     }
   },
-  tolkien: {
-    name: 'Tolkien',
-    messagePrefix: '请以 J.R.R. Tolkien（编辑 / 设定审校大师）的标准回答：\n\n',
-    messagePrefixEn: 'Please answer from J.R.R. Tolkien\'s (Editor / Continuity master) standards:\n\n',
+  luxun: {
+    name: '鲁迅',
+    messagePrefix: '请以鲁迅（文学巨匠）的视角回答：\n\n',
+    messagePrefixEn: 'Please answer from Lu Xun\'s (Literary Giant) perspective:\n\n',
     actions: {
-      'continuity-check': {
-        name: '一致性检查', nameEn: 'Continuity Check',
-        messageTemplate: '请以 Tolkien（设定审校）的标准检查设定一致性。关注时间线、地理逻辑、角色特征、规则体系。\n\n',
-        messageTemplateEn: 'Please check setting consistency from Tolkien\'s (Continuity Editor) standards. Focus on timeline, geographic logic, character traits, rule systems.\n\n',
-        defaultMessage: '请以 Tolkien（设定审校）的标准，检查当前对话中文本的设定一致性。\n关注：时间线有没有矛盾？地理/距离描述是否合理？角色特征是否前后一致？魔法/科技体系有没有违反自己的规则？\n列出所有发现的不一致点，按严重程度排序。',
-        defaultMessageEn: 'Please check setting consistency in the text discussed from Tolkien\'s standards.\nFocus: Any timeline contradictions? Are geographic/distance descriptions reasonable? Are character traits consistent? Does the magic/tech system violate its own rules?\nList all inconsistencies found, ranked by severity.'
+      'satire': {
+        name: '讽刺写作', nameEn: 'Satirical Writing',
+        messageTemplate: '请以鲁迅（文学巨匠）的讽刺功力分析。关注反讽手法、社会批判深度、黑色幽默、以小见大。\n\n',
+        messageTemplateEn: 'Please analyze with Lu Xun\'s (Literary Giant) satirical mastery. Focus on irony techniques, social critique depth, dark humor, revealing the big through the small.\n\n',
+        defaultMessage: '请以鲁迅（文学巨匠）的讽刺功力，审查或优化当前对话中的文本。\n关注：讽刺是否精准（一针见血而非泛泛而谈）？反讽手法是否巧妙（让读者自己领悟，不是直接点破）？有没有"以小见大"——通过一个小细节揭示一个大问题？\n原则：最犀利的讽刺不是骂人，而是让被讽刺的人自己照镜子。像鲁迅那样——"哀其不幸，怒其不争"。',
+        defaultMessageEn: 'Please review or optimize the text discussed with Lu Xun\'s satirical mastery.\nFocus: Is the satire precise (sharp and specific, not vague)? Is irony skillful (let readers realize it themselves)? Does it "reveal the big through the small" — exposing a major issue through one small detail?\nPrinciple: The sharpest satire isn\'t cursing — it\'s making the target look in the mirror. Like Lu Xun: "Pity their misfortune, anger at their resignation."'
       },
-      'prose-polish': {
-        name: '文笔润色', nameEn: 'Prose Polish',
-        messageTemplate: '请以 Tolkien（编辑）的文笔标准润色。关注词汇精确性、句式节奏、意象层次。\n\n',
-        messageTemplateEn: 'Please polish prose from Tolkien\'s (Editor) writing standards. Focus on word precision, sentence rhythm, imagery layers.\n\n',
-        defaultMessage: '请以 Tolkien（编辑）的文笔标准，润色当前对话中的文本段落。\n关注：有没有更精确的词？句式是否有变化（避免都是主谓宾）？意象是否有层次（视觉→听觉→感觉）？\n输出润色后的版本，并标注关键改动及原因。',
-        defaultMessageEn: 'Please polish the text passages discussed from Tolkien\'s writing standards.\nFocus: Are there more precise words? Do sentence structures vary (avoid all subject-verb-object)? Do images have layers (visual → auditory → sensory)?\nOutput: Polished version with key changes and reasons annotated.'
+      'character-sketch': {
+        name: '人物刻画', nameEn: 'Character Sketch',
+        messageTemplate: '请以鲁迅（文学巨匠）的标准刻画人物。关注典型性、一两笔白描传神、人物与时代的关系。\n\n',
+        messageTemplateEn: 'Please sketch characters from Lu Xun\'s (Literary Giant) standards. Focus on typicality, vivid depiction with minimal strokes, character-era relationship.\n\n',
+        defaultMessage: '请以鲁迅（文学巨匠）的标准，审查或优化当前对话中的人物刻画。\n关注：人物是否具有典型性（代表一类人，而非只是一个人）？是否做到了"白描传神"——用最少的笔墨勾勒出最鲜明的形象？人物的命运是否折射了时代或环境的问题？\n方法：像鲁迅写阿Q、孔乙己那样——几笔就让一个人物活过来，而且活在每个读者身边。',
+        defaultMessageEn: 'Please review or optimize character depiction from Lu Xun\'s standards.\nFocus: Is the character typical (representing a type of person, not just an individual)? Does it achieve "vivid depiction with minimal strokes" — creating the most vivid image with the fewest words? Does the character\'s fate reflect issues of the era or environment?\nMethod: Like Lu Xun wrote Ah Q and Kong Yiji — a few strokes bring a character to life, living beside every reader.'
       },
-      'logic-review': {
-        name: '逻辑审查', nameEn: 'Logic Review',
-        messageTemplate: '请以 Tolkien（编辑）的逻辑严谨标准审查。关注情节逻辑、角色动机合理性、漏洞。\n\n',
-        messageTemplateEn: 'Please review logic from Tolkien\'s (Editor) rigorous standards. Focus on plot logic, character motivation plausibility, plot holes.\n\n',
-        defaultMessage: '请以 Tolkien（编辑）的逻辑严谨标准，审查当前对话中的故事逻辑。\n关注：角色的行为动机是否合理？情节的因果链是否成立？有没有"为了剧情需要"而出现的不合理行为？\n列出逻辑问题，每个问题给出修复建议。',
-        defaultMessageEn: 'Please review the story logic discussed from Tolkien\'s rigorous standards.\nFocus: Are character motivations reasonable? Does the plot causal chain hold? Any implausible actions done "because the plot needs it"?\nList logic issues, provide fix suggestions for each.'
+      'prose-craft': {
+        name: '文笔锤炼', nameEn: 'Prose Craft',
+        messageTemplate: '请以鲁迅（文学巨匠）的标准锤炼文笔。关注用词精准、句式力度、意象选择、删繁就简。\n\n',
+        messageTemplateEn: 'Please refine prose from Lu Xun\'s (Literary Giant) standards. Focus on word precision, sentence power, imagery choice, cutting the unnecessary.\n\n',
+        defaultMessage: '请以鲁迅（文学巨匠）的标准，锤炼当前对话中的文本段落。\n关注：每个词是否都是最精准的那个（换掉任何一个字都会变差）？句式是否有力度（短句如匕首，长句如重锤）？意象是否鲜明而非滥俗？有没有多余的字可以删掉？\n原则：好文章是改出来的。每一句都要经得起推敲。像鲁迅那样——"写完后至少看两遍，竭力将可有可无的字、句、段删去"。',
+        defaultMessageEn: 'Please refine the text discussed from Lu Xun\'s prose standards.\nFocus: Is every word the most precise choice (replacing any would make it worse)? Do sentences have force (short ones like daggers, long ones like hammers)? Are images vivid and not clichéd? Are there unnecessary words to cut?\nPrinciple: Good writing is rewriting. Every sentence must withstand scrutiny. Like Lu Xun: "After writing, read at least twice and cut every dispensable word, sentence, and paragraph."'
       }
     }
   },
