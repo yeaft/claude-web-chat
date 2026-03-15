@@ -419,8 +419,16 @@ export async function handleUserInput(msg) {
   // Claude stream-json 模式支持在回复过程中接收新消息（写入 stdin）
   let effectivePrompt = prompt;
 
+  // ★ Expert Panel: construct expert message if selections provided
+  const expertSelections = msg.expertSelections;
+  if (expertSelections?.length > 0) {
+    const { buildExpertMessage } = await import('./expert-roles.js');
+    const expertResult = buildExpertMessage(expertSelections, effectivePrompt, msg.language || 'zh-CN');
+    effectivePrompt = expertResult.effectivePrompt;
+  }
+
   // ★ Save displayPrompt before any modification (preserves original user input)
-  const displayPrompt = effectivePrompt;
+  const displayPrompt = prompt;
 
   // ★ Separate display message (shown to user) from Claude message (sent to model)
   // displayPrompt: user's original text (no modifications)
