@@ -61,6 +61,10 @@ async function handleProxyRequest(req, res) {
     fwdHeaders['host'] = `${proxyHost}:${portNum}`;
     delete fwdHeaders['connection'];
 
+    // Build publicOrigin so agent can rewrite localhost URLs in responses
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const publicOrigin = `${protocol}://${req.headers.host}`;
+
     await sendToAgent(found.agent, {
       type: 'proxy_request',
       requestId,
@@ -68,6 +72,7 @@ async function handleProxyRequest(req, res) {
       host: portConfig.host || 'localhost',
       scheme: portConfig.scheme || 'http',
       basePath: `/agent/${agentName}/${portNum}`,
+      publicOrigin,
       method: req.method,
       path: proxyPath + queryString,
       headers: fwdHeaders,

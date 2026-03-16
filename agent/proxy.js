@@ -4,9 +4,19 @@ import https from 'https';
 import ctx from './context.js';
 
 export function handleProxyHttpRequest(msg) {
-  const { requestId, port, method, path, headers, body, scheme, host, basePath } = msg;
+  const { requestId, port, method, path, headers, body, scheme, host, basePath, publicOrigin } = msg;
   const effectiveHost = host || 'localhost';
   const effectiveScheme = scheme || 'http';
+
+  // Build list of local origins to rewrite in response bodies and headers
+  const localOrigins = [
+    `https://${effectiveHost}:${port}`,
+    `http://${effectiveHost}:${port}`,
+  ];
+  if (effectiveHost !== 'localhost') {
+    localOrigins.push(`https://localhost:${port}`, `http://localhost:${port}`);
+  }
+  const publicBase = publicOrigin ? `${publicOrigin}${basePath}` : basePath;
   const httpModule = effectiveScheme === 'https' ? https : http;
 
   const options = {
@@ -63,15 +73,44 @@ export function handleProxyHttpRequest(msg) {
         let responseBody = Buffer.concat(chunks);
         const responseHeaders = { ...res.headers };
 
-        // Rewrite absolute paths in HTML responses
+        // Determine if this is a text response that may contain localhost URLs
+        const isTextContent = (
+          contentType.includes('text/html') ||
+          contentType.includes('application/javascript') ||
+          contentType.includes('text/javascript') ||
+          contentType.includes('text/css') ||
+          contentType.includes('application/json')
+        );
+
+        // Rewrite localhost URLs in text response bodies
+        if (publicBase && isTextContent) {
+          let text = responseBody.toString('utf-8');
+          for (const origin of localOrigins) {
+            text = text.split(origin).join(publicBase);
+          }
+          responseBody = Buffer.from(text, 'utf-8');
+          delete responseHeaders['content-length'];
+        }
+
+        // Rewrite absolute paths in HTML responses (relative path → basePath)
         if (basePath && contentType.includes('text/html')) {
           let html = responseBody.toString('utf-8');
           html = html
             .replace(/((?:src|href|action)\s*=\s*["'])\//gi, `$1${basePath}/`)
             .replace(/(url\s*\(\s*["']?)\//gi, `$1${basePath}/`);
           responseBody = Buffer.from(html, 'utf-8');
-          // Update content-length since rewritten paths are longer
           delete responseHeaders['content-length'];
+        }
+
+        // Rewrite localhost URLs in Location/Content-Location headers
+        if (publicBase) {
+          for (const hdr of ['location', 'content-location']) {
+            if (responseHeaders[hdr]) {
+              for (const origin of localOrigins) {
+                responseHeaders[hdr] = responseHeaders[hdr].split(origin).join(publicBase);
+              }
+            }
+          }
         }
 
         ctx.sendToServer({
