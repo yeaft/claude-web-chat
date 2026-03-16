@@ -178,9 +178,25 @@ function upgradeWindows(latestVersion) {
   const logDir = join(configDir, 'logs');
   mkdirSync(logDir, { recursive: true });
   const batPath = join(configDir, 'upgrade-cli.bat');
+  const vbsPath = join(configDir, 'upgrade-cli.vbs');
   const logPath = join(logDir, 'upgrade.log');
   const pid = process.pid;
   const pkgSpec = `${pkg.name}@${latestVersion}`;
+
+  // --- PM2 handling: delete app before exit to prevent auto-restart ---
+  let isPm2 = false;
+  const ecoPath = join(configDir, 'ecosystem.config.cjs');
+  try {
+    const pm2List = execSync('pm2 jlist', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const apps = JSON.parse(pm2List);
+    isPm2 = Array.isArray(apps) && apps.some(app => app.name === 'yeaft-agent');
+    if (isPm2) {
+      execSync('pm2 delete yeaft-agent', { stdio: 'pipe' });
+      console.log('PM2 app deleted to prevent auto-restart during upgrade.');
+    }
+  } catch {
+    // PM2 not installed or not managing yeaft-agent — continue
+  }
 
   const batLines = [
     '@echo off',
@@ -195,6 +211,8 @@ function upgradeWindows(latestVersion) {
     'cd /d "%TEMP%"',
     '',
     'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
+    `echo [Upgrade] Version: ${pkg.version} -> ${latestVersion} >> "%LOGFILE%"`,
+    `echo [Upgrade] PM2 managed: ${isPm2 ? 'yes (deleted pre-exit)' : 'no'} >> "%LOGFILE%"`,
     'echo [Upgrade] Waiting for CLI process (PID %PID%) to exit... >> "%LOGFILE%"',
     '',
     ':WAIT_LOOP',
@@ -202,34 +220,71 @@ function upgradeWindows(latestVersion) {
     'if errorlevel 1 goto PID_EXITED',
     'set /A COUNT+=1',
     'if %COUNT% GEQ %MAX_WAIT% (',
-    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after %MAX_WAIT% iterations >> "%LOGFILE%"',
+    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after %MAX_WAIT%s >> "%LOGFILE%"',
     '  goto PID_EXITED',
     ')',
     'ping -n 3 127.0.0.1 >NUL',
     'goto WAIT_LOOP',
     ':PID_EXITED',
     '',
-    'echo [Upgrade] Process exited, running npm install -g %PKG%... >> "%LOGFILE%"',
+    ':: Extra wait for file locks to release',
+    'echo [Upgrade] Process exited at %time%, waiting for file locks... >> "%LOGFILE%"',
+    'ping -n 5 127.0.0.1 >NUL',
+    '',
+    'echo [Upgrade] Running npm install -g %PKG%... >> "%LOGFILE%"',
     'call npm install -g %PKG% >> "%LOGFILE%" 2>&1',
     'if not "%errorlevel%"=="0" (',
-    '  echo [Upgrade] npm install failed with exit code %errorlevel% >> "%LOGFILE%"',
-    '  goto END',
+    '  echo [Upgrade] npm install failed with exit code %errorlevel% at %time% >> "%LOGFILE%"',
+    '  goto PM2_RESTART',
     ')',
-    'echo [Upgrade] Successfully upgraded. >> "%LOGFILE%"',
-    '',
-    ':END',
-    `del /F /Q "${batPath}" 2>NUL`,
+    'echo [Upgrade] npm install succeeded at %time% >> "%LOGFILE%"',
   ];
 
+  // PM2 re-registration after successful upgrade
+  batLines.push(
+    '',
+    ':PM2_RESTART',
+  );
+  if (isPm2) {
+    batLines.push(
+      'echo [Upgrade] Re-registering agent via PM2... >> "%LOGFILE%"',
+      `if exist "${ecoPath}" (`,
+      `  call pm2 start "${ecoPath}" >> "%LOGFILE%" 2>&1`,
+      '  call pm2 save >> "%LOGFILE%" 2>&1',
+      '  echo [Upgrade] PM2 app re-registered at %time% >> "%LOGFILE%"',
+      ') else (',
+      '  echo [Upgrade] WARNING: ecosystem.config.cjs not found, PM2 not restarted >> "%LOGFILE%"',
+      ')',
+    );
+  }
+
+  batLines.push(
+    '',
+    'echo [Upgrade] Finished at %time% >> "%LOGFILE%"',
+    ':CLEANUP',
+    `del /F /Q "${vbsPath}" 2>NUL`,
+    `del /F /Q "${batPath}" 2>NUL`,
+  );
+
   writeFileSync(batPath, batLines.join('\r\n'));
-  const child = spawn('cmd.exe', ['/c', batPath], {
+
+  // Use VBScript wrapper to fully detach the bat process from the parent.
+  // WshShell.Run with 0 (hidden window) and False (don't wait) ensures the bat
+  // runs completely independently — survives parent exit, no console window flash.
+  const vbsLines = [
+    'Set WshShell = CreateObject("WScript.Shell")',
+    `WshShell.Run """${batPath}""", 0, False`,
+  ];
+  writeFileSync(vbsPath, vbsLines.join('\r\n'));
+
+  spawn('wscript.exe', [vbsPath], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
-  });
-  child.unref();
-  console.log(`Upgrade script spawned. This process will exit now.`);
-  console.log(`The upgrade will proceed after this process exits.`);
+  }).unref();
+
+  console.log(`Upgrade script spawned via VBScript wrapper.`);
+  console.log(`This process will exit now. The upgrade will proceed after exit.`);
   console.log(`Check upgrade log: ${logPath}`);
   process.exit(0);
 }

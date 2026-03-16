@@ -116,6 +116,7 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
   const logDir = join(configDir, 'logs');
   mkdirSync(logDir, { recursive: true });
   const batPath = join(configDir, 'upgrade.bat');
+  const vbsPath = join(configDir, 'upgrade.vbs');
   const logPath = join(logDir, 'upgrade.log');
   const isPm2 = !!process.env.pm_id;
   const installDirWin = installDir.replace(/\//g, '\\');
@@ -145,18 +146,21 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
     ':: Change to temp dir to avoid EBUSY on cwd',
     'cd /d "%TEMP%"',
     '',
-    ':: Redirect all output to log file',
     'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
+    `echo [Upgrade] Version: ${ctx.agentVersion} -> ${latestVersion} >> "%LOGFILE%"`,
+    `echo [Upgrade] PM2 managed: ${isPm2 ? 'yes (deleted pre-exit)' : 'no'} >> "%LOGFILE%"`,
+    `echo [Upgrade] Install dir: ${installDirWin} >> "%LOGFILE%"`,
   ];
 
   // Wait for old process to exit (PM2 already deleted before exit, so no auto-restart race)
   batLines.push(
+    'echo [Upgrade] Waiting for PID %PID% to exit... >> "%LOGFILE%"',
     ':WAIT_LOOP',
     'tasklist /FI "PID eq %PID%" /NH 2>NUL | findstr /C:"%PID%" >NUL',
     'if errorlevel 1 goto PID_EXITED',
     'set /A COUNT+=1',
     'if %COUNT% GEQ %MAX_WAIT% (',
-    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after %MAX_WAIT% iterations >> "%LOGFILE%"',
+    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after %MAX_WAIT%s >> "%LOGFILE%"',
     '  goto PID_EXITED',
     ')',
     'ping -n 3 127.0.0.1 >NUL',
@@ -165,21 +169,21 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
   );
 
   // No need to pm2 stop — PM2 app was already deleted before process exit.
-  // Wait a moment for file locks to release.
+  // Wait extra time for file locks to fully release.
   batLines.push(
-    'echo [Upgrade] Process exited, waiting for file locks... >> "%LOGFILE%"',
-    'ping -n 3 127.0.0.1 >NUL',
+    'echo [Upgrade] Process exited at %time%, waiting for file locks... >> "%LOGFILE%"',
+    'ping -n 5 127.0.0.1 >NUL',
   );
 
   // Use Node.js worker for file-level upgrade (avoids EBUSY on directory rename)
   batLines.push(
-    'echo [Upgrade] Running upgrade worker... >> "%LOGFILE%"',
+    'echo [Upgrade] Running upgrade worker at %time%... >> "%LOGFILE%"',
     'node "%WORKER%" "%PKG%" "%PKG_DIR%" "%LOGFILE%"',
     'if not "%errorlevel%"=="0" (',
-    '  echo [Upgrade] Worker failed with exit code %errorlevel% >> "%LOGFILE%"',
+    '  echo [Upgrade] Worker failed with exit code %errorlevel% at %time% >> "%LOGFILE%"',
     '  goto CLEANUP',
     ')',
-    'echo [Upgrade] Worker completed successfully >> "%LOGFILE%"',
+    'echo [Upgrade] Worker completed successfully at %time% >> "%LOGFILE%"',
   );
 
   batLines.push(':CLEANUP');
@@ -187,26 +191,44 @@ function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, latestV
   if (isPm2) {
     // Re-register and start via ecosystem config (PM2 app was deleted pre-exit)
     batLines.push(
-      'echo [Upgrade] Re-registering agent via pm2... >> "%LOGFILE%"',
-      `call pm2 start "${ecoPath}" >> "%LOGFILE%" 2>&1`,
-      'call pm2 save >> "%LOGFILE%" 2>&1',
+      'echo [Upgrade] Re-registering agent via PM2... >> "%LOGFILE%"',
+      `if exist "${ecoPath}" (`,
+      `  call pm2 start "${ecoPath}" >> "%LOGFILE%" 2>&1`,
+      '  call pm2 save >> "%LOGFILE%" 2>&1',
+      '  echo [Upgrade] PM2 app re-registered at %time% >> "%LOGFILE%"',
+      ') else (',
+      '  echo [Upgrade] WARNING: ecosystem.config.cjs not found, PM2 not restarted >> "%LOGFILE%"',
+      ')',
     );
   }
 
-  // Clean up worker and bat script
+  // Clean up worker, vbs launcher, and bat script
   batLines.push(
+    '',
+    'echo [Upgrade] Finished at %time% >> "%LOGFILE%"',
     `del /F /Q "${workerDst}" 2>NUL`,
+    `del /F /Q "${vbsPath}" 2>NUL`,
     `del /F /Q "${batPath}"`,
   );
 
   writeFileSync(batPath, batLines.join('\r\n'));
-  const child = spawn('cmd.exe', ['/c', batPath], {
+
+  // Use VBScript wrapper to fully detach the bat process from the parent.
+  // WshShell.Run with 0 (hidden window) and False (don't wait) ensures the bat
+  // runs completely independently — survives parent exit, no console window flash.
+  const vbsLines = [
+    'Set WshShell = CreateObject("WScript.Shell")',
+    `WshShell.Run """${batPath}""", 0, False`,
+  ];
+  writeFileSync(vbsPath, vbsLines.join('\r\n'));
+
+  spawn('wscript.exe', [vbsPath], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
-  });
-  child.unref();
-  console.log(`[Agent] Spawned upgrade script (PID wait for ${pid}, pm2=${isPm2}, dir=${installDir}): ${batPath}`);
+  }).unref();
+
+  console.log(`[Agent] Spawned upgrade via VBScript (PID wait for ${pid}, pm2=${isPm2}, dir=${installDir}): ${batPath}`);
   sendToServer({ type: 'upgrade_agent_ack', success: true, version: latestVersion, pendingRestart: true });
 }
 

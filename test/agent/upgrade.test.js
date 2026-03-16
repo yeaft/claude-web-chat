@@ -290,19 +290,19 @@ describe('upgrade() — platform branching logic', () => {
       path.join(process.cwd(), 'agent/cli.js'),
       'utf-8'
     );
-    // detached: true is required so the bat child survives parent process.exit(0)
+    // detached: true is required so the vbs/bat child survives parent process.exit(0)
     expect(cliSource).toContain("detached: true");
-    expect(cliSource).toContain("child.unref()");
+    expect(cliSource).toContain(".unref()");
     expect(cliSource).toContain("process.exit(0)");
   });
 
-  it('should spawn cmd.exe with windowsHide: true', () => {
+  it('should spawn wscript.exe to launch bat via VBScript wrapper', () => {
     const cliSource = fs.readFileSync(
       path.join(process.cwd(), 'agent/cli.js'),
       'utf-8'
     );
     expect(cliSource).toContain("windowsHide: true");
-    expect(cliSource).toContain("spawn('cmd.exe'");
+    expect(cliSource).toContain("spawn('wscript.exe'");
   });
 });
 
