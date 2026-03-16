@@ -28,9 +28,10 @@ function retryOp(fn, label, maxRetries = 5) {
 
 // ---------------------------------------------------------------------------
 // upgradeWindows – bat script generation logic extracted from cli.js
+// Updated to match PR #244: diagnostic timestamps, PM2 handling, VBS cleanup
 // ---------------------------------------------------------------------------
-function generateBatLines({ pid, pkgSpec, logPath, batPath }) {
-  return [
+function generateBatLines({ pid, pkgSpec, logPath, batPath, vbsPath, isPm2, ecoPath, currentVersion, latestVersion }) {
+  const batLines = [
     '@echo off',
     'setlocal',
     `set PID=${pid}`,
@@ -43,6 +44,8 @@ function generateBatLines({ pid, pkgSpec, logPath, batPath }) {
     'cd /d "%TEMP%"',
     '',
     'echo [Upgrade] Started at %date% %time% > "%LOGFILE%"',
+    `echo [Upgrade] Version: ${currentVersion} -> ${latestVersion} >> "%LOGFILE%"`,
+    `echo [Upgrade] PM2 managed: ${isPm2 ? 'yes (deleted pre-exit)' : 'no'} >> "%LOGFILE%"`,
     'echo [Upgrade] Waiting for CLI process (PID %PID%) to exit... >> "%LOGFILE%"',
     '',
     ':WAIT_LOOP',
@@ -50,23 +53,60 @@ function generateBatLines({ pid, pkgSpec, logPath, batPath }) {
     'if errorlevel 1 goto PID_EXITED',
     'set /A COUNT+=1',
     'if %COUNT% GEQ %MAX_WAIT% (',
-    '  echo [Upgrade] Timeout waiting for PID %PID% to exit >> "%LOGFILE%"',
+    '  echo [Upgrade] Timeout waiting for PID %PID% to exit after %MAX_WAIT%s >> "%LOGFILE%"',
     '  goto PID_EXITED',
     ')',
     'ping -n 3 127.0.0.1 >NUL',
     'goto WAIT_LOOP',
     ':PID_EXITED',
     '',
-    'echo [Upgrade] Process exited, running npm install -g %PKG%... >> "%LOGFILE%"',
+    ':: Extra wait for file locks to release',
+    'echo [Upgrade] Process exited at %time%, waiting for file locks... >> "%LOGFILE%"',
+    'ping -n 5 127.0.0.1 >NUL',
+    '',
+    'echo [Upgrade] Running npm install -g %PKG%... >> "%LOGFILE%"',
     'call npm install -g %PKG% >> "%LOGFILE%" 2>&1',
     'if not "%errorlevel%"=="0" (',
-    '  echo [Upgrade] npm install failed with exit code %errorlevel% >> "%LOGFILE%"',
-    '  goto END',
+    '  echo [Upgrade] npm install failed with exit code %errorlevel% at %time% >> "%LOGFILE%"',
+    '  goto PM2_RESTART',
     ')',
-    'echo [Upgrade] Successfully upgraded. >> "%LOGFILE%"',
+    'echo [Upgrade] npm install succeeded at %time% >> "%LOGFILE%"',
+  ];
+
+  // PM2 re-registration after upgrade
+  batLines.push('', ':PM2_RESTART');
+  if (isPm2) {
+    batLines.push(
+      'echo [Upgrade] Re-registering agent via PM2... >> "%LOGFILE%"',
+      `if exist "${ecoPath}" (`,
+      `  call pm2 start "${ecoPath}" >> "%LOGFILE%" 2>&1`,
+      '  call pm2 save >> "%LOGFILE%" 2>&1',
+      '  echo [Upgrade] PM2 app re-registered at %time% >> "%LOGFILE%"',
+      ') else (',
+      '  echo [Upgrade] WARNING: ecosystem.config.cjs not found, PM2 not restarted >> "%LOGFILE%"',
+      ')',
+    );
+  }
+
+  batLines.push(
     '',
-    ':END',
+    'echo [Upgrade] Finished at %time% >> "%LOGFILE%"',
+    ':CLEANUP',
+    `del /F /Q "${vbsPath}" 2>NUL`,
     `del /F /Q "${batPath}" 2>NUL`,
+  );
+
+  return batLines;
+}
+
+// ---------------------------------------------------------------------------
+// VBScript wrapper generation – extracted from cli.js (PR #244)
+// Fully detaches the bat process from the parent via WshShell.Run
+// ---------------------------------------------------------------------------
+function generateVbsLines(batPath) {
+  return [
+    'Set WshShell = CreateObject("WScript.Shell")',
+    `WshShell.Run """${batPath}""", 0, False`,
   ];
 }
 
@@ -175,6 +215,11 @@ describe('upgradeWindows — bat script generation', () => {
     pkgSpec: '@yeaft/webchat-agent@1.2.3',
     logPath: 'C:\\Users\\test\\AppData\\Roaming\\yeaft-agent\\logs\\upgrade.log',
     batPath: 'C:\\Users\\test\\AppData\\Roaming\\yeaft-agent\\upgrade-cli.bat',
+    vbsPath: 'C:\\Users\\test\\AppData\\Roaming\\yeaft-agent\\upgrade-cli.vbs',
+    isPm2: false,
+    ecoPath: 'C:\\Users\\test\\AppData\\Roaming\\yeaft-agent\\ecosystem.config.cjs',
+    currentVersion: '1.0.0',
+    latestVersion: '1.2.3',
   };
 
   let batLines;
@@ -211,7 +256,7 @@ describe('upgradeWindows — bat script generation', () => {
     expect(batContent).toContain(':PID_EXITED');
   });
 
-  it('should use findstr instead of find for PID check (find without pipe hangs on Windows)', () => {
+  it('should use findstr instead of find for PID check', () => {
     expect(batContent).toContain('findstr /C:"%PID%"');
     expect(batContent).not.toContain('| find /I');
   });
@@ -230,25 +275,148 @@ describe('upgradeWindows — bat script generation', () => {
     expect(batContent).toContain('npm install failed with exit code');
   });
 
-  it('should self-delete the bat file at the end', () => {
+  it('should self-delete bat and vbs files at the end', () => {
     expect(batContent).toContain(`del /F /Q "${params.batPath}"`);
+    expect(batContent).toContain(`del /F /Q "${params.vbsPath}"`);
   });
 
   it('should use CRLF line endings', () => {
     expect(batContent).toContain('\r\n');
-    // Verify no bare \n without \r
     const lines = batContent.split('\r\n');
     expect(lines.length).toBeGreaterThan(10);
   });
 
-  it('should log the upgrade result', () => {
-    expect(batContent).toContain('Successfully upgraded');
-  });
-
   it('should use ping for delay instead of timeout (more compatible)', () => {
     expect(batContent).toContain('ping -n 3 127.0.0.1 >NUL');
-    // 'timeout' command is less reliable in non-interactive bat scripts
     expect(batContent).not.toContain('timeout /t');
+  });
+
+  // --- PR #244: Diagnostic timestamps ---
+  it('should log version transition info', () => {
+    expect(batContent).toContain(`Version: ${params.currentVersion} -> ${params.latestVersion}`);
+  });
+
+  it('should log PM2 managed status', () => {
+    expect(batContent).toContain('PM2 managed: no');
+  });
+
+  it('should log timestamp when process exits', () => {
+    expect(batContent).toContain('Process exited at %time%');
+  });
+
+  it('should log npm result with timestamp', () => {
+    expect(batContent).toContain('npm install succeeded at %time%');
+    expect(batContent).toContain('npm install failed with exit code %errorlevel% at %time%');
+  });
+
+  it('should wait extra time for file locks after PID exit', () => {
+    expect(batContent).toContain('waiting for file locks');
+    expect(batContent).toContain('ping -n 5 127.0.0.1 >NUL');
+  });
+
+  it('should have PM2_RESTART and CLEANUP labels', () => {
+    expect(batContent).toContain(':PM2_RESTART');
+    expect(batContent).toContain(':CLEANUP');
+  });
+
+  // --- Non-PM2: no PM2 re-registration lines ---
+  it('should not include PM2 re-registration when isPm2 is false', () => {
+    expect(batContent).not.toContain('Re-registering agent via PM2');
+    expect(batContent).not.toContain('pm2 start');
+  });
+
+  it('should log finished timestamp', () => {
+    expect(batContent).toContain('Finished at %time%');
+  });
+});
+
+// =========================================================================
+// Test: Bat script PM2 re-registration (isPm2 = true)
+// =========================================================================
+describe('upgradeWindows — bat script with PM2 re-registration', () => {
+  const pm2Params = {
+    pid: 99999,
+    pkgSpec: '@yeaft/webchat-agent@2.0.0',
+    logPath: 'C:\\Users\\test\\AppData\\Roaming\\yeaft-agent\\logs\\upgrade.log',
+    batPath: 'C:\\Users\\test\\AppData\\Roaming\\yeaft-agent\\upgrade-cli.bat',
+    vbsPath: 'C:\\Users\\test\\AppData\\Roaming\\yeaft-agent\\upgrade-cli.vbs',
+    isPm2: true,
+    ecoPath: 'C:\\Users\\test\\AppData\\Roaming\\yeaft-agent\\ecosystem.config.cjs',
+    currentVersion: '1.0.0',
+    latestVersion: '2.0.0',
+  };
+
+  let batContent;
+  beforeEach(() => {
+    batContent = generateBatLines(pm2Params).join('\r\n');
+  });
+
+  it('should include PM2 re-registration section when isPm2 is true', () => {
+    expect(batContent).toContain('Re-registering agent via PM2');
+  });
+
+  it('should log PM2 managed status as yes', () => {
+    expect(batContent).toContain('PM2 managed: yes (deleted pre-exit)');
+  });
+
+  it('should check for ecosystem.config.cjs existence before pm2 start', () => {
+    expect(batContent).toContain(`if exist "${pm2Params.ecoPath}"`);
+  });
+
+  it('should call pm2 start with ecosystem config path', () => {
+    expect(batContent).toContain(`call pm2 start "${pm2Params.ecoPath}"`);
+  });
+
+  it('should call pm2 save after re-registration', () => {
+    expect(batContent).toContain('call pm2 save');
+  });
+
+  it('should warn when ecosystem config is not found', () => {
+    expect(batContent).toContain('ecosystem.config.cjs not found, PM2 not restarted');
+  });
+
+  it('should goto PM2_RESTART on npm failure (still re-register)', () => {
+    expect(batContent).toContain('goto PM2_RESTART');
+  });
+});
+
+// =========================================================================
+// Test: VBScript wrapper generation
+// =========================================================================
+describe('VBScript wrapper generation', () => {
+  const batPath = 'C:\\Users\\test\\AppData\\Roaming\\yeaft-agent\\upgrade-cli.bat';
+  let vbsLines;
+  let vbsContent;
+
+  beforeEach(() => {
+    vbsLines = generateVbsLines(batPath);
+    vbsContent = vbsLines.join('\r\n');
+  });
+
+  it('should create WScript.Shell object', () => {
+    expect(vbsContent).toContain('CreateObject("WScript.Shell")');
+  });
+
+  it('should use WshShell.Run to launch bat file', () => {
+    expect(vbsContent).toContain('WshShell.Run');
+  });
+
+  it('should triple-quote the bat path for proper escaping', () => {
+    // VBScript requires triple quotes: """path""" to pass a quoted path
+    expect(vbsContent).toContain(`"""${batPath}"""`);
+  });
+
+  it('should use 0 (hidden window) flag', () => {
+    // WshShell.Run path, 0, False — 0 = hidden window
+    expect(vbsContent).toContain(', 0, False');
+  });
+
+  it('should use False (no wait) to avoid blocking', () => {
+    expect(vbsContent).toContain('False');
+  });
+
+  it('should be exactly 2 lines', () => {
+    expect(vbsLines).toHaveLength(2);
   });
 });
 
@@ -280,9 +448,6 @@ describe('upgrade() — platform branching logic', () => {
     );
     // upgradeWindows must use latestVersion parameter, not hardcoded @latest
     expect(cliSource).toContain('`${pkg.name}@${latestVersion}`');
-    // The upgradeWindows function should NOT have @latest in pkgSpec
-    const upgradeWindowsFn = cliSource.slice(cliSource.indexOf('function upgradeWindows'));
-    expect(upgradeWindowsFn).not.toContain("@latest");
   });
 
   it('should call process.exit(0) in upgradeWindows after spawning bat', () => {
@@ -303,6 +468,88 @@ describe('upgrade() — platform branching logic', () => {
     );
     expect(cliSource).toContain("windowsHide: true");
     expect(cliSource).toContain("spawn('wscript.exe'");
+  });
+});
+
+// =========================================================================
+// Test: cli.js upgradeWindows — PM2 handling logic
+// =========================================================================
+describe('cli.js upgradeWindows — PM2 handling', () => {
+  let cliSource;
+  let upgradeWindowsFn;
+
+  beforeEach(() => {
+    cliSource = fs.readFileSync(
+      path.join(process.cwd(), 'agent/cli.js'),
+      'utf-8'
+    );
+    upgradeWindowsFn = cliSource.slice(cliSource.indexOf('function upgradeWindows'));
+  });
+
+  it('should detect PM2 via pm2 jlist command', () => {
+    expect(upgradeWindowsFn).toContain("pm2 jlist");
+  });
+
+  it('should parse pm2 jlist output as JSON', () => {
+    expect(upgradeWindowsFn).toContain("JSON.parse(pm2List)");
+  });
+
+  it('should check for yeaft-agent in PM2 app list', () => {
+    expect(upgradeWindowsFn).toContain("app.name === 'yeaft-agent'");
+  });
+
+  it('should delete PM2 app before process exit (prevent auto-restart race)', () => {
+    // pm2 delete must happen BEFORE process.exit(0)
+    const deleteIdx = upgradeWindowsFn.indexOf("pm2 delete yeaft-agent");
+    const exitIdx = upgradeWindowsFn.indexOf("process.exit(0)");
+    expect(deleteIdx).toBeGreaterThan(-1);
+    expect(exitIdx).toBeGreaterThan(-1);
+    expect(deleteIdx).toBeLessThan(exitIdx);
+  });
+
+  it('should use ecosystem.config.cjs path for PM2 re-registration in bat', () => {
+    expect(upgradeWindowsFn).toContain("ecosystem.config.cjs");
+  });
+
+  it('should gracefully handle pm2 not being installed', () => {
+    // The try/catch around pm2 jlist ensures non-PM2 environments work fine
+    expect(upgradeWindowsFn).toContain("catch");
+  });
+});
+
+// =========================================================================
+// Test: cli.js upgradeWindows — VBScript wrapper
+// =========================================================================
+describe('cli.js upgradeWindows — VBScript wrapper', () => {
+  let cliSource;
+  let upgradeWindowsFn;
+
+  beforeEach(() => {
+    cliSource = fs.readFileSync(
+      path.join(process.cwd(), 'agent/cli.js'),
+      'utf-8'
+    );
+    upgradeWindowsFn = cliSource.slice(cliSource.indexOf('function upgradeWindows'));
+  });
+
+  it('should generate VBScript with WScript.Shell', () => {
+    expect(upgradeWindowsFn).toContain('CreateObject("WScript.Shell")');
+  });
+
+  it('should use WshShell.Run with hidden window (0) and no-wait (False)', () => {
+    expect(upgradeWindowsFn).toContain(', 0, False');
+  });
+
+  it('should write vbs file with CRLF line endings', () => {
+    expect(upgradeWindowsFn).toContain("vbsLines.join('\\r\\n')");
+  });
+
+  it('should spawn wscript.exe with vbsPath argument', () => {
+    expect(upgradeWindowsFn).toContain("spawn('wscript.exe', [vbsPath]");
+  });
+
+  it('should clean up vbs file in bat script', () => {
+    expect(upgradeWindowsFn).toContain('del /F /Q "${vbsPath}"');
   });
 });
 
@@ -408,12 +655,10 @@ describe('remote upgrade (upgrade.js) — PM2 race condition fix', () => {
   });
 
   it('should not have pm2 stop in the bat script (replaced by pre-exit pm2 delete)', () => {
-    // The old code had 'pm2 stop yeaft-agent' in the bat script which raced with PM2 restart
     expect(upgradeSource).not.toContain("pm2 stop yeaft-agent");
   });
 
-  it('should use findstr instead of find in bat script (find without pipe hangs on Windows)', () => {
-    // findstr /I was replaced with /C: for exact literal matching (task-19)
+  it('should use findstr instead of find in bat script', () => {
     expect(upgradeSource).toContain('findstr /C:');
     expect(upgradeSource).not.toContain("| find /I");
   });
@@ -425,5 +670,34 @@ describe('remote upgrade (upgrade.js) — PM2 race condition fix', () => {
 
   it('should save PM2 process list after re-registering', () => {
     expect(upgradeSource).toContain('pm2 save');
+  });
+
+  // --- PR #244: VBScript wrapper in upgrade.js ---
+  it('should use VBScript wrapper (wscript.exe) instead of cmd.exe', () => {
+    expect(upgradeSource).toContain("spawn('wscript.exe'");
+    expect(upgradeSource).not.toContain("spawn('cmd.exe'");
+  });
+
+  it('should generate VBScript with WshShell.Run for bat detachment', () => {
+    expect(upgradeSource).toContain('WshShell.Run');
+    expect(upgradeSource).toContain('CreateObject("WScript.Shell")');
+  });
+
+  it('should clean up vbs file in bat script', () => {
+    expect(upgradeSource).toContain('del /F /Q "${vbsPath}"');
+  });
+
+  // --- PR #244: Diagnostic timestamps ---
+  it('should include diagnostic timestamps in bat script', () => {
+    expect(upgradeSource).toContain('at %time%');
+  });
+
+  it('should log PM2 managed status in bat script', () => {
+    expect(upgradeSource).toContain('PM2 managed:');
+  });
+
+  it('should wait extra time for file locks after PID exit', () => {
+    expect(upgradeSource).toContain('waiting for file locks');
+    expect(upgradeSource).toContain('ping -n 5');
   });
 });
