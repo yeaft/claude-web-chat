@@ -386,7 +386,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  padding: 6px 12px 2px;
+  padding: 6px 20px 2px;
 }
 
 .expert-input-chip {
