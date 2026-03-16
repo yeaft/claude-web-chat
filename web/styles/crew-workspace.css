@@ -2391,6 +2391,23 @@
     padding: 6px 12px;
     font-size: 11px;
   }
+
+  /* --- Problem 10: Tool-line truncation on mobile --- */
+  /* Text was squeezing out status, time, and expand button */
+  .crew-turn-tools .tool-line-text {
+    max-width: calc(100vw - 160px);
+  }
+
+  .crew-turn-tools .tool-line-status,
+  .crew-turn-tools .tool-line-time {
+    flex-shrink: 0;
+  }
+
+  .crew-turn-expand-btn {
+    min-width: 44px;
+    min-height: 44px;
+    flex-shrink: 0;
+  }
 }
 
 /* Small phone — 480px breakpoint */
