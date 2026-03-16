@@ -341,27 +341,39 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
-  background: var(--accent-blue);
-  color: #fff;
-  border-radius: 10px;
-  font-size: 11px;
+  padding: 3px 6px 3px 10px;
+  color: var(--text-primary);
+  background: var(--bg-input-wrapper);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
+  line-height: 1.4;
+  cursor: default;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.expert-chip:hover {
+  border-color: var(--text-muted);
 }
 
 .expert-chip .chip-remove {
   background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--text-muted);
   cursor: pointer;
   padding: 0 0 0 2px;
   font-size: 14px;
   line-height: 1;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
 }
 
 .expert-chip .chip-remove:hover {
-  color: #fff;
+  color: var(--text-primary);
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .expert-clear-all {
@@ -385,35 +397,49 @@
 .expert-chips-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  padding: 6px 20px 2px;
+  gap: 6px;
+  padding: 6px 20px 4px;
+  max-width: min(90%, 960px);
+  margin: 0 auto;
 }
 
 .expert-input-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
-  background: var(--accent-blue);
-  color: #fff;
-  border-radius: 10px;
-  font-size: 11px;
+  padding: 3px 6px 3px 10px;
+  color: var(--text-primary);
+  background: var(--bg-input-wrapper);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
+  line-height: 1.4;
+  cursor: default;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.expert-input-chip:hover {
+  border-color: var(--text-muted);
 }
 
 .expert-input-chip .chip-remove {
   background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--text-muted);
   cursor: pointer;
   padding: 0 0 0 2px;
   font-size: 14px;
   line-height: 1;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
 }
 
 .expert-input-chip .chip-remove:hover {
-  color: #fff;
+  color: var(--text-primary);
+  background: rgba(0, 0, 0, 0.06);
 }
 
 /* ---- Expert Labels in Messages ---- */
@@ -462,6 +488,52 @@
 [data-theme="dark"] .expert-label,
 .dark .expert-label {
   background: rgba(74, 124, 201, 0.18);
+}
+
+[data-theme="dark"] .expert-input-chip,
+.dark .expert-input-chip {
+  color: var(--text-primary);
+  background: var(--bg-input-wrapper);
+  border-color: var(--border-color);
+}
+
+[data-theme="dark"] .expert-input-chip:hover,
+.dark .expert-input-chip:hover {
+  border-color: var(--text-muted);
+}
+
+[data-theme="dark"] .expert-input-chip .chip-remove,
+.dark .expert-input-chip .chip-remove {
+  color: var(--text-muted);
+}
+
+[data-theme="dark"] .expert-input-chip .chip-remove:hover,
+.dark .expert-input-chip .chip-remove:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .expert-chip,
+.dark .expert-chip {
+  color: var(--text-primary);
+  background: var(--bg-input-wrapper);
+  border-color: var(--border-color);
+}
+
+[data-theme="dark"] .expert-chip:hover,
+.dark .expert-chip:hover {
+  border-color: var(--text-muted);
+}
+
+[data-theme="dark"] .expert-chip .chip-remove,
+.dark .expert-chip .chip-remove {
+  color: var(--text-muted);
+}
+
+[data-theme="dark"] .expert-chip .chip-remove:hover,
+.dark .expert-chip .chip-remove:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 /* ---- Expert Panel Overlay (mobile backdrop) ---- */
