@@ -23,7 +23,7 @@
 .expert-panel {
   width: 0;
   overflow: hidden;
-  border-left: 1px solid var(--border-color);
+  border-left: none;
   background: var(--bg-sidebar);
   display: flex;
   flex-direction: column;
@@ -38,9 +38,8 @@
 .expert-panel-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
 }
 
@@ -48,6 +47,7 @@
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
+  flex-shrink: 0;
 }
 
 .expert-panel-close {
@@ -66,11 +66,11 @@
   background: var(--sidebar-hover);
 }
 
-/* ---- Search ---- */
+/* ---- Search (inline in header) ---- */
 .expert-panel-search {
-  padding: 8px 12px;
+  flex: 1;
   position: relative;
-  flex-shrink: 0;
+  min-width: 0;
 }
 
 .expert-search-input {
@@ -92,7 +92,7 @@
 
 .expert-search-icon {
   position: absolute;
-  right: 22px;
+  right: 10px;
   top: 50%;
   transform: translateY(-50%);
   color: var(--text-muted);
@@ -101,7 +101,7 @@
 
 .expert-search-clear {
   position: absolute;
-  right: 18px;
+  right: 6px;
   top: 50%;
   transform: translateY(-50%);
   background: none;
@@ -445,7 +445,6 @@
 [data-theme="dark"] .expert-panel,
 .dark .expert-panel {
   background: var(--bg-sidebar);
-  border-left-color: var(--border-color);
 }
 
 [data-theme="dark"] .expert-role-card,
