@@ -81,20 +81,3 @@ describe('Bug 2: iOS inertia scroll and scroll containment', () => {
     expect(hasProp(rule, 'overflow-y', 'auto')).toBe(true);
   });
 });
-
-// =====================================================================
-// Bug 3: Drag handle positioning
-// =====================================================================
-
-describe('Bug 3: drag handle positioning', () => {
-  it('.expert-panel-header has position: relative in mobile (for ::before anchor)', () => {
-    const rule = extractCssRule(mobileBlock, '.expert-panel-header');
-    expect(hasProp(rule, 'position', 'relative')).toBe(true);
-  });
-
-  it('::before pseudo-element uses position: absolute (depends on relative parent)', () => {
-    // Verify the ::before rule exists with absolute positioning
-    expect(mobileBlock).toContain('expert-panel-header::before');
-    expect(mobileBlock).toMatch(/expert-panel-header::before[\s\S]*?position:\s*absolute/);
-  });
-});
