@@ -61,6 +61,9 @@ export function createCrewSession(store, config) {
 export function resumeCrewSession(store, sessionId, agentId) {
   // 初始化 crew 消息存储
   if (!store.crewMessagesMap[sessionId]) store.crewMessagesMap[sessionId] = [];
+  // 标记用户主动恢复 — crew_session_restored 收到后据此切换 currentConversation
+  // 页面刷新按钮直接发 WS 消息，不经此函数，不会设置标记
+  store._pendingCrewRestore = sessionId;
   store.sendWsMessage({
     type: 'resume_crew_session',
     sessionId,
@@ -287,6 +290,17 @@ export function handleCrewOutput(store, msg) {
     } else {
       conv.type = 'crew';
       conv.name = msg.name || '';
+    }
+    // 用户主动恢复（从 CrewConfigPanel 点击恢复按钮）→ 切换到恢复的 session
+    // 页面刷新时不设置 _pendingCrewRestore，不切换（保持当前行为）
+    if (store._pendingCrewRestore === sid) {
+      if (store.currentConversation && store.messages.length > 0) {
+        store.messagesCache[store.currentConversation] = store.messages;
+      }
+      store.currentConversation = sid;
+      store.currentWorkDir = msg.projectDir;
+      store.messages = [];
+      delete store._pendingCrewRestore;
     }
     store.saveOpenSessions();
     // ★ Reset refreshingSession flag — crew_session_restored completes a refresh cycle
