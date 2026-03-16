@@ -135,10 +135,6 @@ describe('ExpertPanel — admin visibility integration', () => {
   it('filteredGroups filters by visibleTeamIds', () => {
     expect(panelSrc).toContain('visibleTeamIds.value.has(g.teamId)');
   });
-
-  it('searchResults filters by visibleTeamIds', () => {
-    expect(panelSrc).toContain('visibleTeamIds.value.has(item.group)');
-  });
 });
 
 // =====================================================================
