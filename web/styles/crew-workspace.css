@@ -1283,9 +1283,10 @@
   align-items: center;
   gap: 8px;
   padding: 12px 0;
+  padding-top: 24px; /* 12px own + 12px to cover parent scroll padding */
   margin-bottom: 8px;
   position: sticky;
-  top: 0;
+  top: -12px; /* pull up into parent's 12px top padding to block content bleed */
   z-index: 10;
   background: var(--bg-main);
 }
