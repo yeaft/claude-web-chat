@@ -2428,14 +2428,6 @@ describe('featureBlocks - message segmentation by taskId', () => {
     return blocks;
   }
 
-  // Replicate isFeatureExpanded
-  function isFeatureExpanded(block, expandedFeatures = {}) {
-    if (block.taskId in expandedFeatures) {
-      return expandedFeatures[block.taskId];
-    }
-    return !block.isCompleted || block.hasStreaming;
-  }
-
   it('should group messages without taskId into global blocks', () => {
     const messages = [
       { role: 'pm', type: 'text', content: 'PM 说' },
@@ -2607,59 +2599,6 @@ describe('featureBlocks - message segmentation by taskId', () => {
   });
 });
 
-describe('isFeatureExpanded - auto-collapse completed features', () => {
-  function isFeatureExpanded(block, expandedFeatures = {}) {
-    if (block.taskId in expandedFeatures) {
-      return expandedFeatures[block.taskId];
-    }
-    return !block.isCompleted || block.hasStreaming;
-  }
-
-  it('should expand non-completed features by default', () => {
-    const block = { taskId: 'task_1', isCompleted: false, hasStreaming: false };
-    expect(isFeatureExpanded(block)).toBe(true);
-  });
-
-  it('should collapse completed features by default', () => {
-    const block = { taskId: 'task_1', isCompleted: true, hasStreaming: false };
-    expect(isFeatureExpanded(block)).toBe(false);
-  });
-
-  it('should expand completed feature if still streaming', () => {
-    const block = { taskId: 'task_1', isCompleted: true, hasStreaming: true };
-    expect(isFeatureExpanded(block)).toBe(true);
-  });
-
-  it('should respect manual toggle: expand collapsed', () => {
-    const block = { taskId: 'task_1', isCompleted: true, hasStreaming: false };
-    const expandedFeatures = { task_1: true };
-    expect(isFeatureExpanded(block, expandedFeatures)).toBe(true);
-  });
-
-  it('should respect manual toggle: collapse expanded', () => {
-    const block = { taskId: 'task_1', isCompleted: false, hasStreaming: false };
-    const expandedFeatures = { task_1: false };
-    expect(isFeatureExpanded(block, expandedFeatures)).toBe(false);
-  });
-
-  it('should not affect other features when toggling one', () => {
-    const blockA = { taskId: 'task_a', isCompleted: false, hasStreaming: false };
-    const blockB = { taskId: 'task_b', isCompleted: true, hasStreaming: false };
-    const expandedFeatures = { task_b: true };
-    expect(isFeatureExpanded(blockA, expandedFeatures)).toBe(true); // default
-    expect(isFeatureExpanded(blockB, expandedFeatures)).toBe(true); // manually expanded
-  });
-
-  it('should expand streaming features regardless of manual toggle', () => {
-    // If manually collapsed but streaming, the logic still uses manual state
-    // (manual state takes precedence)
-    const block = { taskId: 'task_1', isCompleted: false, hasStreaming: true };
-    const expandedFeatures = { task_1: false };
-    // Manual toggle wins
-    expect(isFeatureExpanded(block, expandedFeatures)).toBe(false);
-  });
-});
-
 describe('shouldShowTurnDivider - accepts turns array parameter', () => {
   // Replicate the updated shouldShowTurnDivider (now takes turns as param)
   function shouldShowTurnDivider(turns, tidx) {
@@ -2739,46 +2678,17 @@ describe('Feature blocks - removed task panel and filter bar', () => {
     expect(fileContent).not.toMatch(/\bgroupedMessages\s*\(\)/);
   });
 
-  it('should have crew-feature-thread in template', () => {
-    expect(fileContent).toContain('crew-feature-thread');
-    expect(fileContent).toContain('crew-feature-header');
-    expect(fileContent).toContain('crew-feature-body');
-  });
-
-  it('should have isFeatureExpanded method', () => {
-    expect(fileContent).toContain('isFeatureExpanded(block)');
-  });
-
-  it('should have toggleFeature method', () => {
-    expect(fileContent).toContain('toggleFeature(taskId)');
-  });
-
-  it('should use buildTurns helper function', () => {
-    expect(fileContent).toContain('buildTurns(');
+  it('should NOT render feature thread in center panel template (feature content only in right panel)', () => {
+    // Extract just the template from CrewChatView.js (before setup())
+    const templateMatch = fileContent.match(/template:\s*`([\s\S]*?)`\s*,\s*\n\s*setup/);
+    const template = templateMatch ? templateMatch[1] : '';
+    expect(template).not.toContain('crew-feature-thread');
+    expect(template).not.toContain('crew-feature-header');
+    expect(template).not.toContain('crew-feature-body');
   });
 
   it('should use shouldShowTurnDivider with turns parameter', () => {
     expect(fileContent).toContain('shouldShowTurnDivider(block.turns, tidx)');
-  });
-
-  it('should show completed badge for completed features', () => {
-    expect(fileContent).toContain("block.isCompleted");
-    expect(fileContent).toContain('crew.statusCompleted');
-  });
-
-  it('should show active badge for streaming features', () => {
-    expect(fileContent).toContain("block.hasStreaming");
-    expect(fileContent).toContain('crew.statusInProgress');
-  });
-
-  it('should display message count in feature header', () => {
-    expect(fileContent).toContain('getBlockTurns(block).length');
-    expect(fileContent).toContain('条');
-  });
-
-  it('should show active roles in feature header using emoji icons', () => {
-    expect(fileContent).toContain('block.activeRoles');
-    expect(fileContent).toContain('ar.roleIcon');
   });
 });
 // =====================================================================
@@ -3943,11 +3853,14 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
   });
 
-  // --- Feature thread data-task-id attribute ---
+  // --- Feature thread removed from center panel ---
 
-  describe('feature thread data-task-id for scroll targeting', () => {
-    it('should have data-task-id on crew-feature-thread', () => {
-      expect(viewSource).toContain(':data-task-id="block.taskId"');
+  describe('feature thread removed from center panel', () => {
+    it('should NOT have data-task-id on crew-feature-thread (feature content only in right panel)', () => {
+      // Extract just the template from CrewChatView.js (before setup())
+      const templateMatch = viewSource.match(/template:\s*`([\s\S]*?)`\s*,\s*\n\s*setup/);
+      const template = templateMatch ? templateMatch[1] : '';
+      expect(template).not.toContain('crew-feature-thread');
     });
   });
 
