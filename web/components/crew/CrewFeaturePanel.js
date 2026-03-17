@@ -9,7 +9,7 @@
  *      followed by full message thread using CrewTurnRenderer.
  */
 import {
-  formatDuration, formatTime
+  formatDuration, formatTime, getRoleStyle
 } from './crewHelpers.js';
 import {
   shouldShowTurnDivider, getMaxRound
@@ -130,6 +130,7 @@ export default {
               {{ $t('crew.statusInProgress') }} ({{ featureKanbanGrouped.inProgress.length }})
             </div>
             <div v-for="feature in featureKanbanGrouped.inProgress" :key="feature.taskId"
+                 v-show="hasFeatureMessages(feature.taskId)"
                  class="crew-feature-card"
                  :class="{ 'has-streaming': feature.hasStreaming }"
                  @click="$emit('expand-feature', feature.taskId)">
@@ -148,10 +149,14 @@ export default {
               <div v-if="getSummary(feature.taskId)" class="crew-feature-card-summary">
                 <div class="crew-feature-summary-meta">
                   <span v-if="getSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getSummary(feature.taskId).icon }}</span>
-                  <span class="crew-feature-summary-role">{{ getSummary(feature.taskId).roleName }}</span>
+                  <span class="crew-feature-summary-role" :style="getRoleStyle(getSummary(feature.taskId).role)">{{ getSummary(feature.taskId).roleName }}</span>
                   <span class="crew-feature-summary-time">{{ getSummary(feature.taskId).time }}</span>
                 </div>
                 <div class="crew-feature-summary-text">{{ getSummary(feature.taskId).text }}</div>
+                <div v-if="getSummary(feature.taskId).actions.length > 0" class="crew-feature-summary-actions">
+                  <span class="crew-feature-summary-actions-count">{{ getSummary(feature.taskId).actions.length }} actions</span>
+                  <span class="crew-feature-summary-actions-list">{{ getSummary(feature.taskId).actions.join(', ') }}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -166,6 +171,7 @@ export default {
             </div>
             <template v-if="showCompletedFeatures">
               <div v-for="feature in featureKanbanGrouped.completed" :key="feature.taskId"
+                   v-show="hasFeatureMessages(feature.taskId)"
                    class="crew-feature-card is-completed"
                    @click="$emit('expand-feature', feature.taskId)">
                 <div class="crew-feature-card-header">
@@ -183,10 +189,14 @@ export default {
                 <div v-if="getSummary(feature.taskId)" class="crew-feature-card-summary">
                   <div class="crew-feature-summary-meta">
                     <span v-if="getSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getSummary(feature.taskId).icon }}</span>
-                    <span class="crew-feature-summary-role">{{ getSummary(feature.taskId).roleName }}</span>
+                    <span class="crew-feature-summary-role" :style="getRoleStyle(getSummary(feature.taskId).role)">{{ getSummary(feature.taskId).roleName }}</span>
                     <span class="crew-feature-summary-time">{{ getSummary(feature.taskId).time }}</span>
                   </div>
                   <div class="crew-feature-summary-text">{{ getSummary(feature.taskId).text }}</div>
+                  <div v-if="getSummary(feature.taskId).actions.length > 0" class="crew-feature-summary-actions">
+                    <span class="crew-feature-summary-actions-count">{{ getSummary(feature.taskId).actions.length }} actions</span>
+                    <span class="crew-feature-summary-actions-list">{{ getSummary(feature.taskId).actions.join(', ') }}</span>
+                  </div>
                 </div>
               </div>
             </template>
@@ -203,8 +213,21 @@ export default {
   methods: {
     formatDuration,
     formatTime,
+    getRoleStyle,
     shouldShowTurnDivider,
     getMaxRound,
+
+    /**
+     * Check if a feature has any messages (used to hide empty features).
+     */
+    hasFeatureMessages(taskId) {
+      const block = this.featureBlocks.find(
+        b => b.type === 'feature' && b.taskId === taskId
+      );
+      if (!block) return false;
+      const turns = this.getBlockTurns(block);
+      return turns && turns.length > 0;
+    },
 
     /**
      * Cached accessor for getLatestMessageSummary — avoids calling it 4x per card in template.
@@ -223,7 +246,7 @@ export default {
 
     /**
      * Get latest message summary for a feature card (list mode).
-     * Returns { icon, roleName, text, time } or null if no text message exists.
+     * Returns { icon, roleName, role, text, time, actions } or null if no text message exists.
      */
     getLatestMessageSummary(taskId) {
       const block = this.featureBlocks.find(
@@ -238,19 +261,26 @@ export default {
         const turn = turns[i];
         if (turn.type === 'turn' && turn.textMsg) {
           const timestamp = turn.messages?.[0]?.timestamp || turn.textMsg.timestamp;
+          const rawRole = turn.role || turn.roleName || '';
+          const actions = (turn.toolMsgs || []).map(t => t.toolName).filter(Boolean);
           return {
             icon: turn.roleIcon || '',
-            roleName: this.getRoleDisplayName(turn.role || turn.roleName || ''),
+            roleName: this.getRoleDisplayName(rawRole),
+            role: rawRole,
             text: this.truncateText(turn.textMsg.content, 80),
-            time: timestamp ? formatTime(timestamp) : ''
+            time: timestamp ? formatTime(timestamp) : '',
+            actions
           };
         }
         if (turn.type !== 'turn' && turn.message?.type === 'text') {
+          const rawRole = turn.message.role || turn.message.roleName || '';
           return {
             icon: turn.message.roleIcon || '',
-            roleName: this.getRoleDisplayName(turn.message.role || turn.message.roleName || ''),
+            roleName: this.getRoleDisplayName(rawRole),
+            role: rawRole,
             text: this.truncateText(turn.message.content, 80),
-            time: turn.message.timestamp ? formatTime(turn.message.timestamp) : ''
+            time: turn.message.timestamp ? formatTime(turn.message.timestamp) : '',
+            actions: []
           };
         }
       }
