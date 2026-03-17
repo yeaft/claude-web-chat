@@ -38,6 +38,16 @@ export default {
       showCompletedFeatures: false
     };
   },
+  watch: {
+    expandedFeatureTaskId(newVal) {
+      if (newVal) {
+        this.$nextTick(() => {
+          const scrollEl = this.$el?.querySelector('.crew-panel-right-scroll');
+          if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+        });
+      }
+    }
+  },
   computed: {
     expandedBlock() {
       if (!this.expandedFeatureTaskId) return null;
