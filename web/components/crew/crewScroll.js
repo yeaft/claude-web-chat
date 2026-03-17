@@ -7,14 +7,20 @@ export function createCrewScroll(store, { getMessagesRef, getFeatureBlocks }) {
   const isLoadingMore = Vue.ref(false);
   const isLoadingHistory = Vue.ref(false);
 
+  // Center panel only renders global blocks, so visibility window must count
+  // globals — not all blocks. Otherwise feature blocks push PM messages out.
+  const globalBlocks = Vue.computed(() => {
+    return getFeatureBlocks().filter(b => b.type === 'global');
+  });
+
   const visibleBlocks = Vue.computed(() => {
-    const all = getFeatureBlocks();
+    const all = globalBlocks.value;
     if (all.length <= visibleBlockCount.value) return all;
     return all.slice(all.length - visibleBlockCount.value);
   });
 
   const hiddenBlockCount = Vue.computed(() => {
-    return Math.max(0, getFeatureBlocks().length - visibleBlockCount.value);
+    return Math.max(0, globalBlocks.value.length - visibleBlockCount.value);
   });
 
   const hasOlderMessages = Vue.computed(() => {
@@ -56,7 +62,7 @@ export function createCrewScroll(store, { getMessagesRef, getFeatureBlocks }) {
 
     visibleBlockCount.value = Math.min(
       visibleBlockCount.value + 10,
-      getFeatureBlocks().length
+      globalBlocks.value.length
     );
 
     Vue.nextTick(() => {
@@ -83,7 +89,7 @@ export function createCrewScroll(store, { getMessagesRef, getFeatureBlocks }) {
           const scrollEl = getMessagesRef();
           const oldScrollHeight = scrollEl?.scrollHeight || 0;
           const oldScrollTop = scrollEl?.scrollTop || 0;
-          visibleBlockCount.value = getFeatureBlocks().length;
+          visibleBlockCount.value = globalBlocks.value.length;
           Vue.nextTick(() => {
             if (scrollEl) {
               const newScrollHeight = scrollEl.scrollHeight;
@@ -131,10 +137,14 @@ export function createCrewScroll(store, { getMessagesRef, getFeatureBlocks }) {
 
     if (!targetBlock) return;
 
-    const blockIdx = blocks.indexOf(targetBlock);
-    const needed = blocks.length - blockIdx;
-    if (needed > visibleBlockCount.value) {
-      visibleBlockCount.value = needed;
+    // visibleBlockCount gates global blocks only; compute needed count accordingly
+    if (targetBlock.type === 'global') {
+      const globals = blocks.filter(b => b.type === 'global');
+      const gIdx = globals.indexOf(targetBlock);
+      const needed = globals.length - gIdx;
+      if (needed > visibleBlockCount.value) {
+        visibleBlockCount.value = needed;
+      }
     }
 
     if (targetBlock.type === 'feature' && targetBlock.taskId) {

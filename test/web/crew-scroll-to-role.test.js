@@ -121,9 +121,9 @@ describe('feature block expansion logic', () => {
 // 4. visibleBlockCount expansion logic
 // =====================================================================
 describe('visibleBlockCount expansion logic', () => {
-  it('calculates needed blocks from target to end', () => {
+  it('calculates needed global blocks from target to end', () => {
     const methodBody = extractMethod('scrollToRoleLatest');
-    expect(methodBody).toContain('blocks.length - blockIdx');
+    expect(methodBody).toContain('globals.length - gIdx');
   });
 
   it('expands visibleBlockCount when needed > current', () => {
