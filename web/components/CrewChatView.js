@@ -12,14 +12,13 @@
  *   crew/crewKanban.js          — Kanban/TODO 计算逻辑
  *   crew/crewRolePresets.js     — 预设角色数据
  */
-import { renderMarkdown, clearMarkdownCache } from '../utils/markdown.js';
+import { clearMarkdownCache } from '../utils/markdown.js';
 import {
-  ICONS, formatTime, formatTokens, formatDuration,
-  shortName, getRoleStyle, getImageUrl
+  ICONS, formatTokens
 } from './crew/crewHelpers.js';
 import {
   appendToSegments, rebuildBlocksFromSegments,
-  createFbCache, fullBuildFeatureBlocks, getBlockTurns,
+  createFbCache, fullBuildFeatureBlocks,
   shouldShowTurnDivider, getMaxRound
 } from './crew/crewMessageGrouping.js';
 import {
@@ -77,7 +76,7 @@ export default {
         </div>
 
         <template v-for="(block, bidx) in scroll.visibleBlocks.value" :key="block.id">
-          <!-- Global block: messages without taskId, render inline -->
+          <!-- Only render global blocks (PM/human messages); feature content is in the right panel -->
           <template v-if="block.type === 'global'">
             <template v-for="(turn, tidx) in block.turns" :key="turn.id">
               <div v-if="tidx > 0 && shouldShowTurnDivider(block.turns, tidx)" class="crew-turn-divider"></div>
@@ -96,81 +95,7 @@ export default {
               />
             </template>
           </template>
-
-          <!-- Feature block: messages with taskId, render as collapsible thread -->
-          <div v-else class="crew-feature-thread" :data-block-id="block.id" :data-task-id="block.taskId" :class="{ 'is-completed': block.isCompleted, 'is-expanded': isFeatureExpanded(block) }">
-            <div class="crew-feature-header" @click="toggleFeature(block.taskId)">
-              <svg class="crew-feature-chevron" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 6l6 6-6 6z"/></svg>
-              <span class="crew-feature-title">{{ block.taskTitle }}</span>
-              <span v-if="block.activeRoles && block.activeRoles.length > 0" class="crew-feature-actives">
-                <span v-for="ar in block.activeRoles.slice(0, 3)" :key="ar.role" class="crew-feature-active-icon" :title="ar.roleName">{{ ar.roleIcon }}</span>
-                <span v-if="block.activeRoles.length > 3" class="crew-feature-active-more">+{{ block.activeRoles.length - 3 }}</span>
-              </span>
-              <span v-if="block.isCompleted" class="crew-feature-status completed">
-                <span class="crew-feature-status-dot"></span> {{ $t('crew.statusCompleted') }}
-              </span>
-              <span v-else-if="block.hasStreaming" class="crew-feature-status active">
-                <span class="crew-feature-status-dot"></span> {{ $t('crew.statusInProgress') }}
-              </span>
-            </div>
-            <div v-if="isFeatureExpanded(block)" class="crew-feature-body">
-              <button v-if="getBlockTurns(block).length > 1"
-                      class="crew-feature-history-toggle"
-                      :class="{ 'is-expanded': expandedHistories[block.taskId] }"
-                      @click.stop="toggleHistory(block.taskId)">
-                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 6l6 6-6 6z"/></svg>
-                {{ $t('crew.viewHistory', { count: getBlockTurns(block).length - 1 }) }}
-              </button>
-
-              <div v-if="expandedHistories[block.taskId] && getBlockTurns(block).length > 1" class="crew-feature-history">
-                <template v-for="(turn, tidx) in getBlockTurns(block).slice(0, -1)" :key="turn.id">
-                  <div v-if="tidx > 0 && shouldShowTurnDivider(getBlockTurns(block), tidx)" class="crew-turn-divider"></div>
-                  <div v-if="turn.type === 'turn' && getMaxRound(turn) > 0" class="crew-round-divider">
-                    <div class="crew-round-line"></div>
-                    <span class="crew-round-label">Round {{ getMaxRound(turn) }}</span>
-                    <div class="crew-round-line"></div>
-                  </div>
-                  <crew-turn-renderer
-                    :turn="turn"
-                    :expanded-turns="expandedTurns"
-                    :icons="icons"
-                    :get-role-display-name="getRoleDisplayName"
-                    @toggle-turn="toggleTurn"
-                  />
-                </template>
-              </div>
-
-              <!-- Latest turn (always visible) -->
-              <template v-if="getBlockTurns(block).length > 0">
-                <template v-for="turn in [getBlockTurns(block)[getBlockTurns(block).length - 1]]" :key="turn.id">
-                  <crew-turn-renderer
-                    :turn="turn"
-                    :expanded-turns="expandedTurns"
-                    :icons="icons"
-                    :get-role-display-name="getRoleDisplayName"
-                    @toggle-turn="toggleTurn"
-                  />
-                </template>
-              </template>
-            </div>
-          </div>
         </template>
-
-        <!-- Active Messages -->
-        <div v-if="activeMessages.length > 0 && (hasStreamingMessage || kanbanInProgressCount > 0)" class="crew-active-messages">
-          <div class="crew-active-messages-label">{{ $t('crew.latestMessage') }}</div>
-          <div v-for="am in activeMessages" :key="am.id" class="crew-message" :class="['crew-msg-' + am.type, 'crew-role-' + am.role, { 'crew-msg-human-bubble': am.role === 'human' && am.type === 'text' }]" :data-role="am.role" :style="getRoleStyle(am.role)">
-            <div class="crew-msg-body">
-              <div v-if="am.role !== 'human' || am.type !== 'text'" class="crew-msg-header">
-                <span v-if="am.roleIcon" class="crew-msg-header-icon">{{ am.roleIcon }}</span>
-                <span class="crew-msg-name" :class="{ 'is-human': am.role === 'human', 'is-system': am.role === 'system' }">{{ shortName(am.roleName) }}</span>
-                <span v-if="am.taskTitle" class="crew-msg-task">{{ am.taskTitle }}</span>
-                <span class="crew-msg-time">{{ formatTime(am.timestamp) }}</span>
-              </div>
-              <div class="crew-msg-content markdown-body" v-html="mdRender(am.content)"></div>
-            </div>
-          </div>
-        </div>
 
         <div class="crew-scroll-bottom"
              :class="{ 'is-hidden': scroll.isAtBottom.value }"
@@ -355,9 +280,6 @@ export default {
       if (p === 'worktrees') return this.$t('crew.initWorktrees');
       return this.$t('crew.initPreparing');
     },
-    hasStreamingMessage() {
-      return this.store.currentCrewMessages.some(m => m._streaming);
-    },
     totalTokens() {
       const s = this.store.currentCrewStatus;
       if (!s) return 0;
@@ -382,31 +304,6 @@ export default {
     },
     completedTaskIds() {
       return computeCompletedTaskIds(this.doneTasks, this.activeTasks);
-    },
-    activeMessages() {
-      const messages = this.store.currentCrewMessages;
-      const inProgressIds = new Set(
-        this.featureKanbanGrouped.inProgress.map(f => f.taskId)
-      );
-
-      // Collect last text message per taskId (for active features) + global (no taskId)
-      const lastByTask = new Map(); // taskId|'_global' -> message
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i];
-        if (m.type !== 'text' || !m.role) continue;
-        if (m.role === 'system' || m.role === 'human') continue;
-        const key = m.taskId || '_global';
-        if (lastByTask.has(key)) continue;
-        // Only include if streaming or belongs to an in-progress feature
-        if (m._streaming || key === '_global' || inProgressIds.has(key)) {
-          lastByTask.set(key, m);
-        }
-      }
-
-      // Sort by timestamp descending, limit to 5
-      return Array.from(lastByTask.values())
-        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-        .slice(0, 5);
     },
     featureBlocks() {
       const allMessages = this.store.currentCrewMessages;
@@ -521,15 +418,9 @@ export default {
   },
 
   methods: {
-    formatTime,
     formatTokens,
-    formatDuration,
-    shortName,
-    getRoleStyle,
-    getImageUrl,
     shouldShowTurnDivider,
     getMaxRound,
-    mdRender: renderMarkdown,
 
     getEmptyRole() {
       return { name: '', displayName: '', icon: '\u{1F916}', description: '', model: 'sonnet', claudeMd: '', isDecisionMaker: false };
@@ -537,31 +428,6 @@ export default {
 
     toggleTurn(turnId) {
       this.expandedTurns[turnId] = !this.expandedTurns[turnId];
-    },
-
-    toggleFeature(taskId) {
-      this.expandedFeatures[taskId] = !this.expandedFeatures[taskId];
-    },
-
-    toggleHistory(taskId) {
-      this.expandedHistories[taskId] = !this.expandedHistories[taskId];
-    },
-
-    isFeatureExpanded(block) {
-      if (block.taskId in this.expandedFeatures) {
-        return this.expandedFeatures[block.taskId];
-      }
-      if (block.hasPendingAsk) return true;
-      if (block.hasStreaming) return true;
-      if (!block.isCompleted) return true;
-      const featureOnly = this.featureBlocks.filter(b => b.type === 'feature');
-      const idx = featureOnly.findIndex(b => b.id === block.id);
-      const fromEnd = featureOnly.length - 1 - idx;
-      return fromEnd < 2;
-    },
-
-    getBlockTurns(block) {
-      return getBlockTurns(block, this._fbCache);
     },
 
     getRoleDisplayName(roleName) {

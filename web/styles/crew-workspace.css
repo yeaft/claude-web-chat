@@ -646,187 +646,6 @@
   white-space: nowrap;
 }
 
-/* Crew Feature Thread — Linear/Notion-inspired minimal design */
-.crew-feature-thread {
-  padding: 0 24px;
-  margin: 8px 0;
-  width: 100%;
-  box-sizing: border-box;
-}
-
-/* Header: transparent, text-only */
-.crew-feature-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  cursor: pointer;
-  border-radius: 6px;
-  background: transparent;
-  border: none;
-  transition: background 0.15s;
-  user-select: none;
-}
-
-.crew-feature-header:hover {
-  background: var(--sidebar-hover);
-}
-
-/* Chevron: rotates on expand */
-.crew-feature-chevron {
-  flex-shrink: 0;
-  width: 16px;
-  height: 16px;
-  color: var(--text-muted);
-  transition: transform 0.15s ease;
-}
-
-.crew-feature-thread.is-expanded .crew-feature-chevron {
-  transform: rotate(90deg);
-}
-
-/* Title */
-.crew-feature-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.crew-feature-thread.is-completed .crew-feature-title {
-  color: var(--text-muted);
-}
-
-/* Status indicator: dot + text */
-.crew-feature-status {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.crew-feature-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.crew-feature-status.active .crew-feature-status-dot {
-  background: var(--accent-blue);
-}
-
-.crew-feature-status.active {
-  color: var(--accent-blue);
-}
-
-.crew-feature-status.completed .crew-feature-status-dot {
-  background: var(--success);
-}
-
-.crew-feature-status.completed {
-  color: var(--text-muted);
-}
-
-/* Active roles: emoji icon stack */
-.crew-feature-actives {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.crew-feature-active-icon {
-  font-size: 14px;
-  line-height: 1;
-  margin-left: -4px;
-  cursor: default;
-}
-
-.crew-feature-active-icon:first-child {
-  margin-left: 0;
-}
-
-.crew-feature-active-more {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-left: 2px;
-}
-
-/* Feature body: no border, no background */
-.crew-feature-body {
-  border: none;
-  margin-left: 0;
-  padding-left: 0;
-}
-
-.crew-feature-body .crew-message {
-  border-left: none;
-}
-
-/* History toggle button */
-.crew-feature-history-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  margin: 0 0 2px 0;
-  font-size: 12px;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: 4px;
-  background: transparent;
-  border: none;
-  font-style: italic;
-  transition: background 0.15s, color 0.15s;
-  font-family: inherit;
-}
-
-.crew-feature-history-toggle:hover {
-  background: var(--sidebar-hover);
-  color: var(--text-secondary);
-}
-
-.crew-feature-history-toggle svg {
-  flex-shrink: 0;
-  width: 12px;
-  height: 12px;
-  transition: transform 0.15s ease;
-}
-
-.crew-feature-history-toggle.is-expanded svg {
-  transform: rotate(90deg);
-}
-
-/* History messages area */
-.crew-feature-history {
-  position: relative;
-  margin-bottom: 4px;
-}
-
-.crew-feature-history::before {
-  content: '';
-  display: block;
-  height: 1px;
-  margin: 4px 8px;
-}
-
-.crew-feature-history::after {
-  content: '';
-  display: block;
-  height: 1px;
-  margin: 4px 8px;
-}
-
-.crew-feature-history .crew-message {
-  opacity: 0.75;
-}
-
 /* Crew Round Divider */
 .crew-round-divider {
   display: flex;
@@ -1795,38 +1614,6 @@
   font-weight: 500;
 }
 
-/* Active Messages — latest message per active feature */
-.crew-active-messages {
-  margin: 16px 8px 8px;
-  background: var(--bg-sidebar);
-  border-radius: 8px;
-  max-height: 40vh;
-  overflow-y: auto;
-}
-
-.crew-active-messages-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 4px 12px;
-}
-
-.crew-active-messages .crew-message {
-  border-left: none;
-}
-
-.crew-active-messages .crew-message + .crew-message {
-  border-top: 1px solid var(--border-color, rgba(128, 128, 128, 0.15));
-}
-
-.crew-msg-task {
-  color: var(--text-secondary);
-  font-size: 11px;
-  opacity: 0.8;
-}
-
 /* Crew Scroll-to-bottom floating button */
 .crew-scroll-bottom {
   position: sticky;
@@ -2299,22 +2086,6 @@
     max-width: 100%;
   }
 
-  .crew-feature-thread {
-    padding: 0 12px;
-  }
-
-  .crew-feature-header {
-    padding: 8px 8px;
-  }
-
-  .crew-feature-title {
-    max-width: 55vw;
-  }
-
-  .crew-feature-body {
-    padding-left: 0;
-  }
-
   .crew-input-area .crew-input-hints {
     padding: 0 12px;
     gap: 4px;
@@ -2433,11 +2204,6 @@
   .crew-input-area {
     padding: 8px;
     padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
-  }
-
-  .crew-feature-thread {
-    padding: 0 8px;
-    margin: 4px auto;
   }
 
   .crew-streaming-indicator {
