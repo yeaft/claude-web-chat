@@ -3700,9 +3700,9 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(viewSource).not.toContain('class="crew-kanban-title"');
     });
 
-    it('should iterate over featureKanbanGrouped (inProgress and completed)', () => {
-      expect(viewSource).toContain('v-for="feature in featureKanbanGrouped.inProgress"');
-      expect(viewSource).toContain('v-for="feature in featureKanbanGrouped.completed"');
+    it('should iterate over filtered features (inProgress and completed)', () => {
+      expect(viewSource).toContain('v-for="feature in filteredInProgress"');
+      expect(viewSource).toContain('v-for="feature in filteredCompleted"');
     });
 
     it('should use crew-feature-card class', () => {
@@ -3764,9 +3764,9 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
 
     it('should show total done / total with percentage', () => {
-      expect(viewSource).toContain('kanbanProgressData.done');
-      expect(viewSource).toContain('kanbanProgressData.total');
-      expect(viewSource).toContain('Math.round(kanbanProgressData.done / kanbanProgressData.total * 100)');
+      expect(viewSource).toContain('filteredProgressData.done');
+      expect(viewSource).toContain('filteredProgressData.total');
+      expect(viewSource).toContain('Math.round(filteredProgressData.done / filteredProgressData.total * 100)');
     });
 
     it('should have total progress bar', () => {

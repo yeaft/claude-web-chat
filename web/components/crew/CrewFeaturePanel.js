@@ -57,6 +57,25 @@ export default {
       if (!this.expandedFeatureTaskId) return [];
       const feature = this.featureKanban.find(f => f.taskId === this.expandedFeatureTaskId);
       return feature ? feature.todos : [];
+    },
+    // Filter out empty features at data level so counts and progress are accurate
+    filteredInProgress() {
+      return this.featureKanbanGrouped.inProgress.filter(
+        f => this.hasFeatureMessages(f.taskId)
+      );
+    },
+    filteredCompleted() {
+      return this.featureKanbanGrouped.completed.filter(
+        f => this.hasFeatureMessages(f.taskId)
+      );
+    },
+    filteredProgressData() {
+      let total = 0, done = 0;
+      for (const f of [...this.filteredInProgress, ...this.filteredCompleted]) {
+        total += f.totalCount;
+        done += f.doneCount;
+      }
+      return { total, done };
     }
   },
   template: `
@@ -113,24 +132,23 @@ export default {
 
         <!-- ===== LIST MODE: Feature cards (compact, non-expandable) ===== -->
         <template v-else>
-          <div class="crew-kanban-total" v-if="kanbanProgressData.total > 0">
+          <div class="crew-kanban-total" v-if="filteredProgressData.total > 0">
             <div class="crew-kanban-total-header">
               <span>{{ $t('crew.totalProgress') }}</span>
-              <span>{{ kanbanProgressData.done }} / {{ kanbanProgressData.total }}  {{ Math.round(kanbanProgressData.done / kanbanProgressData.total * 100) }}%</span>
+              <span>{{ filteredProgressData.done }} / {{ filteredProgressData.total }}  {{ Math.round(filteredProgressData.done / filteredProgressData.total * 100) }}%</span>
             </div>
             <div class="crew-kanban-total-bar">
               <div class="crew-kanban-total-fill"
-                   :style="{ width: (kanbanProgressData.done / kanbanProgressData.total * 100) + '%' }"></div>
+                   :style="{ width: (filteredProgressData.done / filteredProgressData.total * 100) + '%' }"></div>
             </div>
           </div>
 
-          <div v-if="featureKanbanGrouped.inProgress.length > 0" class="crew-kanban-group">
+          <div v-if="filteredInProgress.length > 0" class="crew-kanban-group">
             <div class="crew-kanban-group-header is-active">
               <span class="crew-kanban-group-dot is-active"></span>
-              {{ $t('crew.statusInProgress') }} ({{ featureKanbanGrouped.inProgress.length }})
+              {{ $t('crew.statusInProgress') }} ({{ filteredInProgress.length }})
             </div>
-            <div v-for="feature in featureKanbanGrouped.inProgress" :key="feature.taskId"
-                 v-show="hasFeatureMessages(feature.taskId)"
+            <div v-for="feature in filteredInProgress" :key="feature.taskId"
                  class="crew-feature-card"
                  :class="{ 'has-streaming': feature.hasStreaming }"
                  @click="$emit('expand-feature', feature.taskId)">
@@ -161,17 +179,16 @@ export default {
             </div>
           </div>
 
-          <div v-if="featureKanbanGrouped.completed.length > 0" class="crew-kanban-group">
+          <div v-if="filteredCompleted.length > 0" class="crew-kanban-group">
             <div class="crew-kanban-group-header is-completed" @click="showCompletedFeatures = !showCompletedFeatures">
               <svg class="crew-kanban-group-chevron" :class="{ 'is-expanded': showCompletedFeatures }" viewBox="0 0 24 24" width="12" height="12">
                 <path fill="currentColor" d="M10 6l6 6-6 6z"/>
               </svg>
               <span class="crew-kanban-group-dot is-completed"></span>
-              {{ $t('crew.statusCompleted') }} ({{ featureKanbanGrouped.completed.length }})
+              {{ $t('crew.statusCompleted') }} ({{ filteredCompleted.length }})
             </div>
             <template v-if="showCompletedFeatures">
-              <div v-for="feature in featureKanbanGrouped.completed" :key="feature.taskId"
-                   v-show="hasFeatureMessages(feature.taskId)"
+              <div v-for="feature in filteredCompleted" :key="feature.taskId"
                    class="crew-feature-card is-completed"
                    @click="$emit('expand-feature', feature.taskId)">
                 <div class="crew-feature-card-header">

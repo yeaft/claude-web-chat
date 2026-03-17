@@ -384,7 +384,15 @@ export default {
       return kanbanProgress(this.featureKanban);
     },
     kanbanInProgressCount() {
-      return this.featureKanbanGrouped.inProgress.length;
+      // Filter out features with no messages (same logic as CrewFeaturePanel)
+      return this.featureKanbanGrouped.inProgress.filter(f => {
+        const block = this.featureBlocks.find(
+          b => b.type === 'feature' && b.taskId === f.taskId
+        );
+        if (!block) return false;
+        const turns = getBlockTurns(block, this._fbCache);
+        return turns && turns.length > 0;
+      }).length;
     }
   },
 
