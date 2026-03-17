@@ -19,7 +19,7 @@ import {
 import {
   appendToSegments, rebuildBlocksFromSegments,
   createFbCache, fullBuildFeatureBlocks,
-  shouldShowTurnDivider, getMaxRound
+  shouldShowTurnDivider, getMaxRound, getBlockTurns
 } from './crew/crewMessageGrouping.js';
 import {
   parseCrewTasks, computeCompletedTaskIds, collectActiveTasks,
@@ -37,7 +37,7 @@ export default {
   components: { CrewTurnRenderer, CrewRolePanel, CrewFeaturePanel },
   template: `
     <div class="crew-chat-view">
-      <div class="crew-workspace" :class="{ 'hide-roles': !store.crewPanelVisible.roles, 'hide-features': !store.crewPanelVisible.features, 'mobile-panel-roles': store.crewMobilePanel === 'roles', 'mobile-panel-features': store.crewMobilePanel === 'features' }">
+      <div class="crew-workspace" :class="{ 'hide-roles': !store.crewPanelVisible.roles, 'hide-features': !store.crewPanelVisible.features, 'feature-expanded': !!expandedFeatureTaskId, 'mobile-panel-roles': store.crewMobilePanel === 'roles', 'mobile-panel-features': store.crewMobilePanel === 'features' }">
         <div class="crew-mobile-overlay" v-if="store.crewMobilePanel" @click="store.crewMobilePanel = null"></div>
 
         <!-- Left Panel: Role Cards -->
@@ -202,9 +202,17 @@ export default {
           :feature-kanban="featureKanban"
           :feature-kanban-grouped="featureKanbanGrouped"
           :kanban-progress-data="kanbanProgressData"
+          :feature-blocks="featureBlocks"
+          :get-block-turns="resolveBlockTurns"
+          :expanded-turns="expandedTurns"
+          :expanded-feature-task-id="expandedFeatureTaskId"
           :now-tick="nowTick"
           :icons="icons"
+          :get-role-display-name="getRoleDisplayName"
           @scroll-to-feature="scrollToFeature"
+          @toggle-turn="toggleTurn"
+          @expand-feature="expandFeature"
+          @close-feature="closeFeature"
         />
       </div><!-- /crew-workspace -->
 
@@ -252,6 +260,7 @@ export default {
       expandedTurns: {},
       expandedFeatures: {},
       expandedHistories: {},
+      expandedFeatureTaskId: null,
       nowTick: Date.now(),
       newRole: this.getEmptyRole(),
       rolePresets
@@ -492,6 +501,18 @@ export default {
 
     scrollToFeature(taskId) {
       this.scroll.scrollToFeature(taskId, this.expandedFeatures, this.$el);
+    },
+
+    resolveBlockTurns(block) {
+      return getBlockTurns(block, this._fbCache);
+    },
+
+    expandFeature(taskId) {
+      this.expandedFeatureTaskId = this.expandedFeatureTaskId === taskId ? null : taskId;
+    },
+
+    closeFeature() {
+      this.expandedFeatureTaskId = null;
     },
 
     loadHistory() {
