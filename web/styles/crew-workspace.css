@@ -1795,11 +1795,13 @@
   font-weight: 500;
 }
 
-/* Active Messages — single latest message */
+/* Active Messages — latest message per active feature */
 .crew-active-messages {
   margin: 16px 8px 8px;
   background: var(--bg-sidebar);
   border-radius: 8px;
+  max-height: 40vh;
+  overflow-y: auto;
 }
 
 .crew-active-messages-label {
@@ -1813,6 +1815,10 @@
 
 .crew-active-messages .crew-message {
   border-left: none;
+}
+
+.crew-active-messages .crew-message + .crew-message {
+  border-top: 1px solid var(--border-color, rgba(128, 128, 128, 0.15));
 }
 
 .crew-msg-task {
