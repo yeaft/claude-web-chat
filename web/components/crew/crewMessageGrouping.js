@@ -107,6 +107,18 @@ export function appendToSegments(allMessages, startIdx, cache) {
       } else {
         segments.push({ taskId: null, messages: [msg], _dirty: true });
       }
+      // Decision maker messages with taskId also go into their feature segment
+      if (msg.isDecisionMaker && taskId) {
+        if (segIndex.has(taskId)) {
+          const seg = segments[segIndex.get(taskId)];
+          seg.messages.push(msg);
+          seg._dirty = true;
+        } else {
+          const idx = segments.length;
+          segments.push({ taskId, messages: [msg], _dirty: true });
+          segIndex.set(taskId, idx);
+        }
+      }
     } else {
       if (segIndex.has(taskId)) {
         const seg = segments[segIndex.get(taskId)];
