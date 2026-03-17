@@ -48,6 +48,7 @@ export function sendCrewOutput(session, roleName, outputType, rawMessage, extra 
   const role = session.roles.get(roleName);
   const roleIcon = role?.icon || '';
   const displayName = role?.displayName || roleName;
+  const isDecisionMaker = !!(role && role.isDecisionMaker);
 
   // 从 extra 或 roleState 获取当前 task 信息（extra 优先）
   const roleState = session.roleStates.get(roleName);
@@ -99,7 +100,7 @@ export function sendCrewOutput(session, roleName, outputType, rawMessage, extra 
       session.uiMessages.push({
         role: roleName, roleIcon, roleName: displayName,
         type: 'text', content: text, _streaming: true,
-        taskId, taskTitle,
+        taskId, taskTitle, isDecisionMaker,
         timestamp: Date.now()
       });
     }
@@ -111,7 +112,7 @@ export function sendCrewOutput(session, roleName, outputType, rawMessage, extra 
       type: 'route', routeTo: extra.routeTo,
       routeSummary: extra.routeSummary || '',
       content: `→ @${extra.routeTo} ${extra.routeSummary || ''}`,
-      taskId, taskTitle,
+      taskId, taskTitle, isDecisionMaker,
       timestamp: Date.now()
     });
   } else if (outputType === 'system') {
@@ -159,7 +160,7 @@ export function sendCrewOutput(session, roleName, outputType, rawMessage, extra 
             toolInput: savedInput,
             content: `${block.name} ${block.input?.file_path || block.input?.command?.substring(0, 60) || ''}`,
             hasResult: false,
-            taskId, taskTitle,
+            taskId, taskTitle, isDecisionMaker,
             timestamp: Date.now()
           });
         }
@@ -196,7 +197,7 @@ export function sendCrewOutput(session, roleName, outputType, rawMessage, extra 
             role: roleName, roleIcon, roleName: displayName,
             type: 'image', toolId: toolId || '',
             mimeType: item.source.media_type,
-            taskId, taskTitle,
+            taskId, taskTitle, isDecisionMaker,
             timestamp: Date.now()
           });
         }
