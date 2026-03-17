@@ -59,12 +59,15 @@ export default {
       return feature ? feature.todos : [];
     },
     // Filter out empty features at data level so counts and progress are accurate
+    // Note: depend on this.featureBlocks explicitly to trigger recomputation when blocks change
     filteredInProgress() {
+      const _blocks = this.featureBlocks; // explicit dependency for Vue reactivity
       return this.featureKanbanGrouped.inProgress.filter(
         f => this.hasFeatureMessages(f.taskId)
       );
     },
     filteredCompleted() {
+      const _blocks = this.featureBlocks; // explicit dependency for Vue reactivity
       return this.featureKanbanGrouped.completed.filter(
         f => this.hasFeatureMessages(f.taskId)
       );

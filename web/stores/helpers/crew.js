@@ -243,25 +243,30 @@ export function handleCrewOutput(store, msg) {
     };
     // 恢复 UI 消息历史
     if (msg.uiMessages && msg.uiMessages.length > 0) {
-      store.crewMessagesMap[sid] = msg.uiMessages.map(m => ({
-        id: m.timestamp || Date.now() + Math.random(),
-        role: m.role,
-        roleIcon: m.roleIcon,
-        roleName: m.roleName,
-        type: m.type,
-        content: m.content,
-        routeTo: m.routeTo,
-        routeSummary: m.routeSummary || '',
-        toolName: m.toolName || null,
-        toolId: m.toolId || null,
-        toolInput: m.toolInput || null,
-        toolResult: null,
-        hasResult: m.hasResult || false,
-        taskId: m.taskId || null,
-        taskTitle: m.taskTitle || null,
-        timestamp: m.timestamp || Date.now()
-        // 显式不包含 _streaming — 恢复的消息不应有 streaming 状态
-      }));
+      store.crewMessagesMap[sid] = msg.uiMessages.map(m => {
+        // Dynamically compute isDecisionMaker from session roles (same as real-time crew_output)
+        const senderRole = effectiveRoles.find(r => r.name === m.role);
+        return {
+          id: m.timestamp || Date.now() + Math.random(),
+          role: m.role,
+          roleIcon: m.roleIcon,
+          roleName: m.roleName,
+          type: m.type,
+          content: m.content,
+          routeTo: m.routeTo,
+          routeSummary: m.routeSummary || '',
+          toolName: m.toolName || null,
+          toolId: m.toolId || null,
+          toolInput: m.toolInput || null,
+          toolResult: null,
+          hasResult: m.hasResult || false,
+          taskId: m.taskId || null,
+          taskTitle: m.taskTitle || null,
+          isDecisionMaker: !!(senderRole && senderRole.isDecisionMaker),
+          timestamp: m.timestamp || Date.now()
+          // 显式不包含 _streaming — 恢复的消息不应有 streaming 状态
+        };
+      });
     } else {
       ensureMessages(sid);
     }
@@ -598,24 +603,29 @@ export function handleCrewOutput(store, msg) {
     older.loading = false;
     // Prepend historical messages to the front of the array
     if (msg.messages && msg.messages.length > 0) {
-      const mapped = msg.messages.map(m => ({
-        id: m.timestamp || Date.now() + Math.random(),
-        role: m.role,
-        roleIcon: m.roleIcon,
-        roleName: m.roleName,
-        type: m.type,
-        content: m.content,
-        routeTo: m.routeTo,
-        routeSummary: m.routeSummary || '',
-        toolName: m.toolName || null,
-        toolId: m.toolId || null,
-        toolInput: m.toolInput || null,
-        toolResult: null,
-        hasResult: m.hasResult || false,
-        taskId: m.taskId || null,
-        taskTitle: m.taskTitle || null,
-        timestamp: m.timestamp || Date.now()
-      }));
+      const sessionRoles = store.crewSessions[sid]?.roles || [];
+      const mapped = msg.messages.map(m => {
+        const senderRole = sessionRoles.find(r => r.name === m.role);
+        return {
+          id: m.timestamp || Date.now() + Math.random(),
+          role: m.role,
+          roleIcon: m.roleIcon,
+          roleName: m.roleName,
+          type: m.type,
+          content: m.content,
+          routeTo: m.routeTo,
+          routeSummary: m.routeSummary || '',
+          toolName: m.toolName || null,
+          toolId: m.toolId || null,
+          toolInput: m.toolInput || null,
+          toolResult: null,
+          hasResult: m.hasResult || false,
+          taskId: m.taskId || null,
+          taskTitle: m.taskTitle || null,
+          isDecisionMaker: !!(senderRole && senderRole.isDecisionMaker),
+          timestamp: m.timestamp || Date.now()
+        };
+      });
       const existing = store.crewMessagesMap[sid] || [];
       // Replace the array ref to trigger featureBlocks cache invalidation
       store.crewMessagesMap[sid] = [...mapped, ...existing];
