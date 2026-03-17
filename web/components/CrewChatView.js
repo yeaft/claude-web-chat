@@ -383,9 +383,9 @@ export default {
     kanbanProgressData() {
       return kanbanProgress(this.featureKanban);
     },
-    kanbanInProgressCount() {
-      // Filter out features with no messages (same logic as CrewFeaturePanel)
-      return this.featureKanbanGrouped.inProgress.filter(f => {
+    kanbanFeatureCount() {
+      // Count all features with messages (flat list, no grouping)
+      return this.featureKanban.filter(f => {
         const block = this.featureBlocks.find(
           b => b.type === 'feature' && b.taskId === f.taskId
         );
@@ -400,7 +400,7 @@ export default {
     '$route'() {
       this.store.crewMobilePanel = null;
     },
-    kanbanInProgressCount(val) {
+    kanbanFeatureCount(val) {
       this.store.crewInProgressCount = val;
     },
     'store.currentConversation'(newId, oldId) {

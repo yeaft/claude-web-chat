@@ -34,9 +34,7 @@ export default {
   },
   emits: ['toggle-turn', 'expand-feature', 'close-feature'],
   data() {
-    return {
-      showCompletedFeatures: false
-    };
+    return {};
   },
   computed: {
     expandedBlock() {
@@ -58,19 +56,12 @@ export default {
       const feature = this.featureKanban.find(f => f.taskId === this.expandedFeatureTaskId);
       return feature ? feature.todos : [];
     },
-    // Filter out empty features at data level so counts and progress are accurate
-    // Note: depend on this.featureBlocks explicitly to trigger recomputation when blocks change
-    filteredInProgress() {
+    // All features with messages, sorted by last activity (most recent first)
+    filteredFeatures() {
       const _blocks = this.featureBlocks; // explicit dependency for Vue reactivity
-      return this.featureKanbanGrouped.inProgress.filter(
-        f => this.hasFeatureMessages(f.taskId)
-      );
-    },
-    filteredCompleted() {
-      const _blocks = this.featureBlocks; // explicit dependency for Vue reactivity
-      return this.featureKanbanGrouped.completed.filter(
-        f => this.hasFeatureMessages(f.taskId)
-      );
+      return this.featureKanban
+        .filter(f => this.hasFeatureMessages(f.taskId))
+        .sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0));
     }
   },
   template: `
@@ -125,14 +116,14 @@ export default {
           </div>
         </template>
 
-        <!-- ===== LIST MODE: Feature cards (compact, non-expandable) ===== -->
+        <!-- ===== LIST MODE: Feature cards (flat, sorted by activity) ===== -->
         <template v-else>
-          <div v-if="filteredInProgress.length > 0" class="crew-kanban-group">
+          <div v-if="filteredFeatures.length > 0" class="crew-kanban-group">
             <div class="crew-kanban-group-header is-active">
               <span class="crew-kanban-group-dot is-active"></span>
-              {{ $t('crew.statusInProgress') }} ({{ filteredInProgress.length }})
+              Features ({{ filteredFeatures.length }})
             </div>
-            <div v-for="feature in filteredInProgress" :key="feature.taskId"
+            <div v-for="feature in filteredFeatures" :key="feature.taskId"
                  class="crew-feature-card"
                  :class="{ 'has-streaming': feature.hasStreaming }"
                  @click="$emit('expand-feature', feature.taskId)">
@@ -161,46 +152,6 @@ export default {
                 </div>
               </div>
             </div>
-          </div>
-
-          <div v-if="filteredCompleted.length > 0" class="crew-kanban-group">
-            <div class="crew-kanban-group-header is-completed" @click="showCompletedFeatures = !showCompletedFeatures">
-              <svg class="crew-kanban-group-chevron" :class="{ 'is-expanded': showCompletedFeatures }" viewBox="0 0 24 24" width="12" height="12">
-                <path fill="currentColor" d="M10 6l6 6-6 6z"/>
-              </svg>
-              <span class="crew-kanban-group-dot is-completed"></span>
-              {{ $t('crew.statusCompleted') }} ({{ filteredCompleted.length }})
-            </div>
-            <template v-if="showCompletedFeatures">
-              <div v-for="feature in filteredCompleted" :key="feature.taskId"
-                   class="crew-feature-card is-completed"
-                   @click="$emit('expand-feature', feature.taskId)">
-                <div class="crew-feature-card-header">
-                  <span class="crew-feature-card-title">{{ feature.taskTitle }}</span>
-                  <span class="crew-feature-card-count">
-                    {{ feature.doneCount }} / {{ feature.totalCount }}
-                  </span>
-                  <span v-if="feature.createdAt && feature.lastActivityAt" class="crew-feature-card-elapsed">{{ $t('crew.elapsed', { duration: formatDuration(feature.lastActivityAt - feature.createdAt) }) }}</span>
-                </div>
-                <div class="crew-feature-card-bar">
-                  <div class="crew-feature-card-bar-fill"
-                       :style="{ width: (feature.totalCount > 0 ? (feature.doneCount / feature.totalCount * 100) : 0) + '%' }">
-                  </div>
-                </div>
-                <div v-if="getSummary(feature.taskId)" class="crew-feature-card-summary">
-                  <div class="crew-feature-summary-meta">
-                    <span v-if="getSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getSummary(feature.taskId).icon }}</span>
-                    <span class="crew-feature-summary-role" :style="getRoleStyle(getSummary(feature.taskId).role)">{{ getSummary(feature.taskId).roleName }}</span>
-                    <span class="crew-feature-summary-time">{{ getSummary(feature.taskId).time }}</span>
-                  </div>
-                  <div class="crew-feature-summary-text">{{ getSummary(feature.taskId).text }}</div>
-                  <div v-if="getSummary(feature.taskId).actions.length > 0" class="crew-feature-summary-actions">
-                    <span class="crew-feature-summary-actions-count">{{ getSummary(feature.taskId).actions.length }} actions</span>
-                    <span class="crew-feature-summary-actions-list">{{ getSummary(feature.taskId).actions.join(', ') }}</span>
-                  </div>
-                </div>
-              </div>
-            </template>
           </div>
 
           <!-- Empty state -->

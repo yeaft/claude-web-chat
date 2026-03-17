@@ -7,10 +7,10 @@ import { resolve } from 'path';
  *
  * Verification points:
  * 1) Sticky header blocks content bleed — top:-12px + padding-top:24px
- * 2) Empty features filtered out of inProgress/completed lists
- * 3) Group header counts use filtered data (filteredInProgress.length)
+ * 2) Features filtered at data level — flat list sorted by activity
+ * 3) Header count uses filteredFeatures.length
  * 4) (Removed — total progress bar deleted)
- * 5) ChatHeader badge (kanbanInProgressCount) excludes empty features
+ * 5) ChatHeader badge (kanbanFeatureCount) excludes empty features
  */
 
 let cssSource;
@@ -66,59 +66,32 @@ describe('sticky header content bleed fix', () => {
 });
 
 // =====================================================================
-// 2. Empty features filtered at data level (not just v-show)
+// 2. Features filtered at data level — flat list sorted by activity
 // =====================================================================
-describe('empty feature filtering at data level', () => {
-  it('filteredInProgress computed filters via hasFeatureMessages', () => {
-    expect(featurePanelSource).toContain('filteredInProgress()');
-    expect(featurePanelSource).toContain(
-      'this.featureKanbanGrouped.inProgress.filter'
-    );
+describe('feature filtering at data level', () => {
+  it('filteredFeatures computed filters via hasFeatureMessages', () => {
+    expect(featurePanelSource).toContain('filteredFeatures()');
     expect(featurePanelSource).toContain('this.hasFeatureMessages(f.taskId)');
   });
 
-  it('filteredCompleted computed filters via hasFeatureMessages', () => {
-    expect(featurePanelSource).toContain('filteredCompleted()');
-    expect(featurePanelSource).toContain(
-      'this.featureKanbanGrouped.completed.filter'
-    );
-  });
-
   it('v-show removed from feature card iteration', () => {
-    // Old pattern: v-show="hasFeatureMessages(feature.taskId)" in v-for loops
-    // Should no longer exist since we filter at computed level
     expect(featurePanelSource).not.toContain('v-show="hasFeatureMessages');
   });
 
-  it('v-for uses filteredInProgress instead of featureKanbanGrouped.inProgress', () => {
-    expect(featurePanelSource).toContain('v-for="feature in filteredInProgress"');
-    // The old unfiltered iteration should not be in v-for
-    expect(featurePanelSource).not.toContain(
-      'v-for="feature in featureKanbanGrouped.inProgress"'
-    );
-  });
-
-  it('v-for uses filteredCompleted instead of featureKanbanGrouped.completed', () => {
-    expect(featurePanelSource).toContain('v-for="feature in filteredCompleted"');
-    expect(featurePanelSource).not.toContain(
-      'v-for="feature in featureKanbanGrouped.completed"'
-    );
+  it('v-for uses filteredFeatures (flat list)', () => {
+    expect(featurePanelSource).toContain('v-for="feature in filteredFeatures"');
+    // No separate inProgress/completed groups
+    expect(featurePanelSource).not.toContain('v-for="feature in filteredInProgress"');
+    expect(featurePanelSource).not.toContain('v-for="feature in filteredCompleted"');
   });
 });
 
 // =====================================================================
-// 3. Group header counts use filtered data
+// 3. Header count uses filteredFeatures
 // =====================================================================
-describe('group header counts use filtered arrays', () => {
-  it('inProgress group header shows filteredInProgress.length', () => {
-    expect(featurePanelSource).toContain('filteredInProgress.length');
-    // Group header condition also uses filtered
-    expect(featurePanelSource).toContain('v-if="filteredInProgress.length > 0"');
-  });
-
-  it('completed group header shows filteredCompleted.length', () => {
-    expect(featurePanelSource).toContain('filteredCompleted.length');
-    expect(featurePanelSource).toContain('v-if="filteredCompleted.length > 0"');
+describe('header count uses flat filtered list', () => {
+  it('shows filteredFeatures.length in header', () => {
+    expect(featurePanelSource).toContain('filteredFeatures.length');
   });
 });
 
@@ -127,29 +100,25 @@ describe('group header counts use filtered arrays', () => {
 // =====================================================================
 
 // =====================================================================
-// 5. ChatHeader badge (kanbanInProgressCount) excludes empty features
+// 5. ChatHeader badge (kanbanFeatureCount) excludes empty features
 // =====================================================================
 describe('ChatHeader badge excludes empty features', () => {
-  it('kanbanInProgressCount filters features with no messages', () => {
-    expect(chatViewSource).toContain('kanbanInProgressCount()');
-    // It filters featureKanbanGrouped.inProgress
-    expect(chatViewSource).toContain(
-      'this.featureKanbanGrouped.inProgress.filter(f =>'
-    );
+  it('kanbanFeatureCount filters features with no messages', () => {
+    expect(chatViewSource).toContain('kanbanFeatureCount()');
+    expect(chatViewSource).toContain('this.featureKanban.filter(f =>');
   });
 
-  it('kanbanInProgressCount checks featureBlocks for matching block', () => {
-    // Finds the feature block by taskId
+  it('kanbanFeatureCount checks featureBlocks for matching block', () => {
     expect(chatViewSource).toContain(
       "b.type === 'feature' && b.taskId === f.taskId"
     );
   });
 
-  it('kanbanInProgressCount returns false for features with no block', () => {
+  it('kanbanFeatureCount returns false for features with no block', () => {
     expect(chatViewSource).toContain('if (!block) return false');
   });
 
-  it('kanbanInProgressCount checks turns length > 0', () => {
+  it('kanbanFeatureCount checks turns length > 0', () => {
     expect(chatViewSource).toContain('turns && turns.length > 0');
   });
 });

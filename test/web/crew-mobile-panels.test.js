@@ -68,11 +68,8 @@ describe('behavioral: badge computed properties', () => {
     expect(!!(activeRoles && activeRoles.length > 0)).toBe(true);
   });
 
-  it('kanbanInProgressCount uses featureKanbanGrouped.inProgress', () => {
-    const featureKanbanGrouped = {
-      inProgress: [{ taskId: 'task-1' }, { taskId: 'task-2' }],
-      completed: [{ taskId: 'task-3' }],
-    };
-    expect(featureKanbanGrouped.inProgress.length).toBe(2);
+  it('kanbanFeatureCount counts all features with messages', () => {
+    const featureKanban = [{ taskId: 'task-1' }, { taskId: 'task-2' }, { taskId: 'task-3' }];
+    expect(featureKanban.length).toBe(3);
   });
 });
