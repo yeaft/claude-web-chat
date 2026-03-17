@@ -97,7 +97,7 @@ export function appendToSegments(allMessages, startIdx, cache) {
   for (let i = startIdx; i < allMessages.length; i++) {
     const msg = allMessages[i];
     const taskId = msg.taskId || null;
-    const isGlobal = !taskId || msg.role === 'human';
+    const isGlobal = !taskId || msg.role === 'human' || msg.isDecisionMaker;
 
     if (isGlobal) {
       const lastSeg = segments.length > 0 ? segments[segments.length - 1] : null;
