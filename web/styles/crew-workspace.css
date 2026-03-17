@@ -1116,14 +1116,12 @@
   background: var(--accent-blue);
 }
 
-/* Todo Items inside Feature Card */
+/* Todo Items inside Feature Card (shown in expanded mode) */
 .crew-feature-card-todos {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border-light);
+  margin-bottom: 16px;
 }
 
 .crew-feature-card-todo {
@@ -1229,7 +1227,7 @@
 
 .crew-feature-summary-role {
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--role-color, var(--text-primary));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1244,6 +1242,26 @@
 }
 
 .crew-feature-summary-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-feature-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+}
+
+.crew-feature-summary-actions-count {
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.crew-feature-summary-actions-list {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1264,9 +1282,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-light);
-  margin-bottom: 12px;
+  padding: 12px 0;
+  margin-bottom: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-main);
 }
 
 .crew-feature-expanded-back {
@@ -1306,6 +1327,22 @@
   border-radius: 8px;
   padding: 8px;
   border: 1px solid color-mix(in srgb, var(--accent-blue) 10%, transparent);
+  min-width: 0;
+}
+
+/* Ensure tool-line text truncates properly in the narrow expanded panel */
+.crew-feature-expanded-messages .tool-line {
+  min-width: 0;
+}
+
+.crew-feature-expanded-messages .tool-line-text {
+  min-width: 0;
+  max-width: none;
+}
+
+.crew-feature-expanded-messages .tool-line-status,
+.crew-feature-expanded-messages .tool-line-time {
+  flex-shrink: 0;
 }
 
 /* 总进度 — 右栏顶部 */
