@@ -8,7 +8,7 @@
  *      for a selected feature using CrewTurnRenderer.
  */
 import {
-  formatDuration
+  formatDuration, formatTime
 } from './crewHelpers.js';
 import {
   shouldShowTurnDivider, getMaxRound
@@ -115,10 +115,9 @@ export default {
                  :class="{
                    'is-expanded': isFeatureCardExpanded(feature.taskId),
                    'has-streaming': feature.hasStreaming
-                 }">
-              <div class="crew-feature-card-header"
-                   @click="toggleFeatureCard(feature.taskId)"
-                   @dblclick="$emit('expand-feature', feature.taskId)">
+                 }"
+                 @click="$emit('expand-feature', feature.taskId)">
+              <div class="crew-feature-card-header">
                 <svg class="crew-feature-card-chevron" viewBox="0 0 24 24" width="12" height="12">
                   <path fill="currentColor" d="M10 6l6 6-6 6z"/>
                 </svg>
@@ -154,15 +153,15 @@ export default {
                     <span v-if="todo.roleIcon" class="todo-role">{{ todo.roleIcon }}</span>
                   </div>
                 </div>
-                <div v-if="getLatestMessageSummary(feature.taskId)" class="crew-feature-card-summary"
-                     @click.stop="$emit('expand-feature', feature.taskId)">
-                  <span v-if="getLatestMessageSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getLatestMessageSummary(feature.taskId).icon }}</span>
-                  <span class="crew-feature-summary-text">{{ getLatestMessageSummary(feature.taskId).text }}</span>
-                  <svg class="crew-feature-summary-expand" viewBox="0 0 24 24" width="12" height="12">
-                    <path fill="currentColor" d="M10 6l6 6-6 6z"/>
-                  </svg>
+                <div v-if="getSummary(feature.taskId)" class="crew-feature-card-summary">
+                  <div class="crew-feature-summary-meta">
+                    <span v-if="getSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getSummary(feature.taskId).icon }}</span>
+                    <span class="crew-feature-summary-role">{{ getSummary(feature.taskId).roleName }}</span>
+                    <span class="crew-feature-summary-time">{{ getSummary(feature.taskId).time }}</span>
+                  </div>
+                  <div class="crew-feature-summary-text">{{ getSummary(feature.taskId).text }}</div>
                 </div>
-                <div v-if="feature.todos.length === 0 && !getLatestMessageSummary(feature.taskId)"
+                <div v-if="feature.todos.length === 0 && !getSummary(feature.taskId)"
                      class="crew-feature-card-empty">
                   {{ $t('crew.statusInProgress') }}
                 </div>
@@ -183,10 +182,9 @@ export default {
                    class="crew-feature-card is-completed"
                    :class="{
                      'is-expanded': isFeatureCardExpanded(feature.taskId)
-                   }">
-                <div class="crew-feature-card-header"
-                     @click="toggleFeatureCard(feature.taskId)"
-                     @dblclick="$emit('expand-feature', feature.taskId)">
+                   }"
+                   @click="$emit('expand-feature', feature.taskId)">
+                <div class="crew-feature-card-header">
                   <svg class="crew-feature-card-chevron" viewBox="0 0 24 24" width="12" height="12">
                     <path fill="currentColor" d="M10 6l6 6-6 6z"/>
                   </svg>
@@ -216,15 +214,15 @@ export default {
                       <span v-if="todo.roleIcon" class="todo-role">{{ todo.roleIcon }}</span>
                     </div>
                   </div>
-                  <div v-if="getLatestMessageSummary(feature.taskId)" class="crew-feature-card-summary"
-                       @click.stop="$emit('expand-feature', feature.taskId)">
-                    <span v-if="getLatestMessageSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getLatestMessageSummary(feature.taskId).icon }}</span>
-                    <span class="crew-feature-summary-text">{{ getLatestMessageSummary(feature.taskId).text }}</span>
-                    <svg class="crew-feature-summary-expand" viewBox="0 0 24 24" width="12" height="12">
-                      <path fill="currentColor" d="M10 6l6 6-6 6z"/>
-                    </svg>
+                  <div v-if="getSummary(feature.taskId)" class="crew-feature-card-summary">
+                    <div class="crew-feature-summary-meta">
+                      <span v-if="getSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getSummary(feature.taskId).icon }}</span>
+                      <span class="crew-feature-summary-role">{{ getSummary(feature.taskId).roleName }}</span>
+                      <span class="crew-feature-summary-time">{{ getSummary(feature.taskId).time }}</span>
+                    </div>
+                    <div class="crew-feature-summary-text">{{ getSummary(feature.taskId).text }}</div>
                   </div>
-                  <div v-if="feature.todos.length === 0 && !getLatestMessageSummary(feature.taskId)"
+                  <div v-if="feature.todos.length === 0 && !getSummary(feature.taskId)"
                        class="crew-feature-card-empty">
                     {{ $t('crew.statusCompleted') }}
                   </div>
@@ -243,6 +241,7 @@ export default {
   `,
   methods: {
     formatDuration,
+    formatTime,
     shouldShowTurnDivider,
     getMaxRound,
 
@@ -262,8 +261,23 @@ export default {
     },
 
     /**
+     * Cached accessor for getLatestMessageSummary — avoids calling it 4x per card in template.
+     * Cache invalidated via featureBlocks reference identity.
+     */
+    getSummary(taskId) {
+      if (!this._summaryCache || this._summaryCacheRef !== this.featureBlocks) {
+        this._summaryCache = {};
+        this._summaryCacheRef = this.featureBlocks;
+      }
+      if (taskId in this._summaryCache) return this._summaryCache[taskId];
+      const result = this.getLatestMessageSummary(taskId);
+      this._summaryCache[taskId] = result;
+      return result;
+    },
+
+    /**
      * Get latest message summary for a feature card (list mode).
-     * Returns { icon, text } or null if no text message exists.
+     * Returns { icon, roleName, text, time } or null if no text message exists.
      */
     getLatestMessageSummary(taskId) {
       const block = this.featureBlocks.find(
@@ -277,15 +291,20 @@ export default {
       for (let i = turns.length - 1; i >= 0; i--) {
         const turn = turns[i];
         if (turn.type === 'turn' && turn.textMsg) {
+          const timestamp = turn.messages?.[0]?.timestamp || turn.textMsg.timestamp;
           return {
             icon: turn.roleIcon || '',
-            text: this.truncateText(turn.textMsg.content, 80)
+            roleName: this.getRoleDisplayName(turn.role || turn.roleName || ''),
+            text: this.truncateText(turn.textMsg.content, 80),
+            time: timestamp ? formatTime(timestamp) : ''
           };
         }
         if (turn.type !== 'turn' && turn.message?.type === 'text') {
           return {
             icon: turn.message.roleIcon || '',
-            text: this.truncateText(turn.message.content, 80)
+            roleName: this.getRoleDisplayName(turn.message.role || turn.message.roleName || ''),
+            text: this.truncateText(turn.message.content, 80),
+            time: turn.message.timestamp ? formatTime(turn.message.timestamp) : ''
           };
         }
       }
@@ -298,7 +317,7 @@ export default {
       const clean = text.replace(/[#*_`~\[\]]/g, '').trim();
       const firstLine = clean.split('\n')[0];
       if (firstLine.length <= maxLen) return firstLine;
-      return firstLine.substring(0, maxLen) + '…';
+      return firstLine.substring(0, maxLen) + '\u2026';
     }
   }
 };

@@ -3714,10 +3714,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(viewSource).toContain('crew-feature-card is-completed');
     });
 
-    it('should have expandable header with click and dblclick', () => {
-      expect(viewSource).toContain('@click="toggleFeatureCard(feature.taskId)"');
-      // Sub-component emits event, parent handles expand-feature
-      expect(viewSource).toContain("@dblclick=\"$emit('expand-feature', feature.taskId)\"");
+    it('should have click on card to expand feature', () => {
+      // Whole card is clickable — single click to expand
+      expect(viewSource).toContain("@click=\"$emit('expand-feature', feature.taskId)\"");
+      // No more dblclick — replaced with single click
+      expect(viewSource).not.toContain('@dblclick');
     });
 
     it('should show feature title and done/total count', () => {

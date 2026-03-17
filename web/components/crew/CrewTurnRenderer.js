@@ -63,11 +63,11 @@ export default {
         <div v-if="turn.toolMsgs.length > 0" class="crew-turn-tools">
           <div v-if="expandedTurns[turn.id]" class="crew-turn-tools-expanded">
             <template v-for="(toolMsg, ti) in turn.toolMsgs.slice(0, -1)" :key="toolMsg.id">
-              <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :compact="true" />
+              <tool-line :tool-name="toolMsg.toolName" :tool-input="toolMsg.toolInput" :tool-result="toolMsg.toolResult" :has-result="!!toolMsg.hasResult" :start-time="toolMsg.timestamp" :compact="true" />
             </template>
           </div>
           <div class="crew-turn-tool-latest">
-            <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :compact="true" />
+            <tool-line :tool-name="turn.toolMsgs[turn.toolMsgs.length - 1].toolName" :tool-input="turn.toolMsgs[turn.toolMsgs.length - 1].toolInput" :tool-result="turn.toolMsgs[turn.toolMsgs.length - 1].toolResult" :has-result="!!turn.toolMsgs[turn.toolMsgs.length - 1].hasResult" :start-time="turn.toolMsgs[turn.toolMsgs.length - 1].timestamp" :compact="true" />
             <button v-if="turn.toolMsgs.length > 1" class="crew-turn-expand-btn" @click.stop="$emit('toggle-turn', turn.id)" :title="expandedTurns[turn.id] ? $t('crew.collapse') : $t('crew.expandOps', { count: turn.toolMsgs.length - 1 })">
               <svg v-if="!expandedTurns[turn.id]" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
               <svg v-else viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7 14l5-5 5 5z"/></svg>
