@@ -34,7 +34,9 @@ export default {
   },
   emits: ['toggle-turn', 'expand-feature', 'close-feature'],
   data() {
-    return {};
+    return {
+      showCompletedFeatures: false
+    };
   },
   computed: {
     expandedBlock() {
@@ -56,12 +58,18 @@ export default {
       const feature = this.featureKanban.find(f => f.taskId === this.expandedFeatureTaskId);
       return feature ? feature.todos : [];
     },
-    // All features with messages, sorted by last activity (most recent first)
+    // All features with messages, split into active vs completed
     filteredFeatures() {
       const _blocks = this.featureBlocks; // explicit dependency for Vue reactivity
       return this.featureKanban
         .filter(f => this.hasFeatureMessages(f.taskId))
         .sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0));
+    },
+    filteredInProgress() {
+      return this.filteredFeatures.filter(f => !this.isFeatureCompleted(f));
+    },
+    filteredCompleted() {
+      return this.filteredFeatures.filter(f => this.isFeatureCompleted(f));
     }
   },
   template: `
@@ -116,14 +124,14 @@ export default {
           </div>
         </template>
 
-        <!-- ===== LIST MODE: Feature cards (flat, sorted by activity) ===== -->
+        <!-- ===== LIST MODE: Feature cards with active/completed groups ===== -->
         <template v-else>
-          <div v-if="filteredFeatures.length > 0" class="crew-kanban-group">
+          <div v-if="filteredInProgress.length > 0" class="crew-kanban-group">
             <div class="crew-kanban-group-header is-active">
               <span class="crew-kanban-group-dot is-active"></span>
-              Features ({{ filteredFeatures.length }})
+              {{ $t('crew.statusInProgress') }} ({{ filteredInProgress.length }})
             </div>
-            <div v-for="feature in filteredFeatures" :key="feature.taskId"
+            <div v-for="feature in filteredInProgress" :key="feature.taskId"
                  class="crew-feature-card"
                  :class="{ 'has-streaming': feature.hasStreaming }"
                  @click="$emit('expand-feature', feature.taskId)">
@@ -154,6 +162,46 @@ export default {
             </div>
           </div>
 
+          <div v-if="filteredCompleted.length > 0" class="crew-kanban-group">
+            <div class="crew-kanban-group-header is-completed" @click="showCompletedFeatures = !showCompletedFeatures">
+              <svg class="crew-kanban-group-chevron" :class="{ 'is-expanded': showCompletedFeatures }" viewBox="0 0 24 24" width="12" height="12">
+                <path fill="currentColor" d="M10 6l6 6-6 6z"/>
+              </svg>
+              <span class="crew-kanban-group-dot is-completed"></span>
+              {{ $t('crew.statusCompleted') }} ({{ filteredCompleted.length }})
+            </div>
+            <template v-if="showCompletedFeatures">
+              <div v-for="feature in filteredCompleted" :key="feature.taskId"
+                   class="crew-feature-card is-completed"
+                   @click="$emit('expand-feature', feature.taskId)">
+                <div class="crew-feature-card-header">
+                  <span class="crew-feature-card-title">{{ feature.taskTitle }}</span>
+                  <span class="crew-feature-card-count">
+                    {{ feature.doneCount }} / {{ feature.totalCount }}
+                  </span>
+                  <span v-if="feature.createdAt && feature.lastActivityAt" class="crew-feature-card-elapsed">{{ $t('crew.elapsed', { duration: formatDuration(feature.lastActivityAt - feature.createdAt) }) }}</span>
+                </div>
+                <div class="crew-feature-card-bar">
+                  <div class="crew-feature-card-bar-fill"
+                       :style="{ width: (feature.totalCount > 0 ? (feature.doneCount / feature.totalCount * 100) : 0) + '%' }">
+                  </div>
+                </div>
+                <div v-if="getSummary(feature.taskId)" class="crew-feature-card-summary">
+                  <div class="crew-feature-summary-meta">
+                    <span v-if="getSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getSummary(feature.taskId).icon }}</span>
+                    <span class="crew-feature-summary-role" :style="getRoleStyle(getSummary(feature.taskId).role)">{{ getSummary(feature.taskId).roleName }}</span>
+                    <span class="crew-feature-summary-time">{{ getSummary(feature.taskId).time }}</span>
+                  </div>
+                  <div class="crew-feature-summary-text">{{ getSummary(feature.taskId).text }}</div>
+                  <div v-if="getSummary(feature.taskId).actions.length > 0" class="crew-feature-summary-actions">
+                    <span class="crew-feature-summary-actions-count">{{ getSummary(feature.taskId).actions.length }} actions</span>
+                    <span class="crew-feature-summary-actions-list">{{ getSummary(feature.taskId).actions.join(', ') }}</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+
           <!-- Empty state -->
           <div v-if="featureKanban.length === 0" class="crew-kanban-empty">
             <div class="crew-kanban-empty-text">{{ $t('crew.noFeatures') }}</div>
@@ -179,6 +227,32 @@ export default {
       if (!block) return false;
       const turns = this.getBlockTurns(block);
       return turns && turns.length > 0;
+    },
+
+    /**
+     * Detect if a feature is completed by scanning its messages for merge/tag keywords.
+     * A feature is "completed" when its latest PM message mentions merging or tagging.
+     */
+    isFeatureCompleted(feature) {
+      // If actively streaming, definitely not completed
+      if (feature.hasStreaming) return false;
+
+      const block = this.featureBlocks.find(
+        b => b.type === 'feature' && b.taskId === feature.taskId
+      );
+      if (!block) return false;
+      const turns = this.getBlockTurns(block);
+      if (!turns || turns.length === 0) return false;
+
+      // Check last few turns for merge/completion keywords from decision maker
+      const MERGE_PATTERN = /(?:已\s*(?:合并|merge)|squash\s*merge|PR\s*#\d+\s*已|tag\s+v[\d.]+\s*已|已\s*push|merged\s+to\s+main|已\s*完成)/i;
+      for (let i = turns.length - 1; i >= Math.max(0, turns.length - 3); i--) {
+        const turn = turns[i];
+        const msg = turn.textMsg || turn.message;
+        if (!msg || !msg.content) continue;
+        if (msg.isDecisionMaker && MERGE_PATTERN.test(msg.content)) return true;
+      }
+      return false;
     },
 
     /**

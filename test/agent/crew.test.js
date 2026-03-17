@@ -3700,16 +3700,18 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(viewSource).not.toContain('class="crew-kanban-title"');
     });
 
-    it('should iterate over filtered features (flat list)', () => {
-      expect(viewSource).toContain('v-for="feature in filteredFeatures"');
+    it('should iterate over filtered features (inProgress and completed groups)', () => {
+      expect(viewSource).toContain('v-for="feature in filteredInProgress"');
+      expect(viewSource).toContain('v-for="feature in filteredCompleted"');
     });
 
     it('should use crew-feature-card class', () => {
       expect(viewSource).toContain('class="crew-feature-card"');
     });
 
-    it('should have has-streaming class on feature card', () => {
+    it('should have has-streaming class on active cards and is-completed on completed cards', () => {
       expect(viewSource).toContain("'has-streaming': feature.hasStreaming");
+      expect(viewSource).toContain('crew-feature-card is-completed');
     });
 
     it('should have click on card to expand feature', () => {

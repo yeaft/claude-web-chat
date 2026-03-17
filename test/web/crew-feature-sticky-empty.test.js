@@ -3,13 +3,13 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
 /**
- * Tests for PR #261 — sticky header content bleed fix + empty feature cleanup.
+ * Tests for Feature panel — sticky header fix + feature filtering + completion detection.
  *
  * Verification points:
  * 1) Sticky header blocks content bleed — top:-12px + padding-top:24px
- * 2) Features filtered at data level — flat list sorted by activity
- * 3) Header count uses filteredFeatures.length
- * 4) (Removed — total progress bar deleted)
+ * 2) Features filtered at data level via hasFeatureMessages
+ * 3) Two groups: filteredInProgress + filteredCompleted (collapsed by default)
+ * 4) isFeatureCompleted detects merge/tag keywords in decision maker messages
  * 5) ChatHeader badge (kanbanFeatureCount) excludes empty features
  */
 
@@ -31,7 +31,6 @@ beforeAll(() => {
 // =====================================================================
 describe('sticky header content bleed fix', () => {
   it('header uses negative top offset to cover parent scroll padding', () => {
-    // .crew-feature-expanded-header should have top: -12px
     const headerBlock = cssSource.substring(
       cssSource.indexOf('.crew-feature-expanded-header {'),
       cssSource.indexOf('}', cssSource.indexOf('.crew-feature-expanded-header {')) + 1
@@ -66,41 +65,58 @@ describe('sticky header content bleed fix', () => {
 });
 
 // =====================================================================
-// 2. Features filtered at data level — flat list sorted by activity
+// 2. Features filtered and split into inProgress/completed groups
 // =====================================================================
-describe('feature filtering at data level', () => {
+describe('feature filtering and grouping', () => {
   it('filteredFeatures computed filters via hasFeatureMessages', () => {
     expect(featurePanelSource).toContain('filteredFeatures()');
     expect(featurePanelSource).toContain('this.hasFeatureMessages(f.taskId)');
   });
 
-  it('v-show removed from feature card iteration', () => {
-    expect(featurePanelSource).not.toContain('v-show="hasFeatureMessages');
+  it('filteredInProgress filters out completed features', () => {
+    expect(featurePanelSource).toContain('filteredInProgress()');
+    expect(featurePanelSource).toContain('!this.isFeatureCompleted(f)');
   });
 
-  it('v-for uses filteredFeatures (flat list)', () => {
-    expect(featurePanelSource).toContain('v-for="feature in filteredFeatures"');
-    // No separate inProgress/completed groups
-    expect(featurePanelSource).not.toContain('v-for="feature in filteredInProgress"');
-    expect(featurePanelSource).not.toContain('v-for="feature in filteredCompleted"');
+  it('filteredCompleted keeps only completed features', () => {
+    expect(featurePanelSource).toContain('filteredCompleted()');
+    expect(featurePanelSource).toContain('this.isFeatureCompleted(f)');
+  });
+
+  it('v-for uses filteredInProgress for active group', () => {
+    expect(featurePanelSource).toContain('v-for="feature in filteredInProgress"');
+  });
+
+  it('v-for uses filteredCompleted for completed group', () => {
+    expect(featurePanelSource).toContain('v-for="feature in filteredCompleted"');
+  });
+
+  it('completed group is collapsible (showCompletedFeatures toggle)', () => {
+    expect(featurePanelSource).toContain('showCompletedFeatures');
+    expect(featurePanelSource).toContain('v-if="showCompletedFeatures"');
   });
 });
 
 // =====================================================================
-// 3. Header count uses filteredFeatures
+// 3. isFeatureCompleted method detects merge keywords
 // =====================================================================
-describe('header count uses flat filtered list', () => {
-  it('shows filteredFeatures.length in header', () => {
-    expect(featurePanelSource).toContain('filteredFeatures.length');
+describe('isFeatureCompleted detection', () => {
+  it('method exists in CrewFeaturePanel', () => {
+    expect(featurePanelSource).toContain('isFeatureCompleted(feature)');
+  });
+
+  it('returns false for streaming features', () => {
+    expect(featurePanelSource).toContain('feature.hasStreaming');
+  });
+
+  it('uses merge/tag pattern to detect completion', () => {
+    expect(featurePanelSource).toContain('MERGE_PATTERN');
+    expect(featurePanelSource).toContain('isDecisionMaker');
   });
 });
 
 // =====================================================================
-// 4. (Removed — total progress bar deleted per user request)
-// =====================================================================
-
-// =====================================================================
-// 5. ChatHeader badge (kanbanFeatureCount) excludes empty features
+// 4. ChatHeader badge (kanbanFeatureCount) excludes empty features
 // =====================================================================
 describe('ChatHeader badge excludes empty features', () => {
   it('kanbanFeatureCount filters features with no messages', () => {
@@ -124,7 +140,7 @@ describe('ChatHeader badge excludes empty features', () => {
 });
 
 // =====================================================================
-// 6. hasFeatureMessages method still exists (used by computed)
+// 5. hasFeatureMessages method still exists (used by computed)
 // =====================================================================
 describe('hasFeatureMessages method preserved', () => {
   it('method exists in CrewFeaturePanel', () => {
