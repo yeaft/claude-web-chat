@@ -3,15 +3,16 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
 /**
- * Tests for PR #257 + PR #258 — CrewFeaturePanel dual-mode message view + UI fixes.
+ * Tests for PR #257 + PR #258 + PR #259 — CrewFeaturePanel dual-mode message view + UI fixes.
  *
  * Tests business logic ONLY:
  * 1. truncateText: markdown stripping, first-line extraction, length capping
- * 2. getLatestMessageSummary: backward walk, returns { icon, roleName, text, time }
+ * 2. getLatestMessageSummary: backward walk, returns { icon, roleName, role, text, time, actions }
  * 3. getSummary: caching wrapper with reference-identity invalidation
  * 4. Computed properties: expandedBlock, expandedTurnsList, expandedFeatureTitle, expandedFeatureTodos
  * 5. CrewChatView: expandFeature toggle, closeFeature reset
- * 6. Template: compact list cards (no expand/collapse), expanded mode todo list, tool-line start-time
+ * 6. Template: compact list cards, expanded mode todo list, tool-line start-time
+ * 7. PR #259: hasFeatureMessages, getRoleStyle, v-show, sticky header, actions row, CSS fixes
  */
 
 const base = resolve(__dirname, '../..');
@@ -121,20 +122,22 @@ describe('getLatestMessageSummary — finds latest text message with metadata', 
     expect(getSummary('task-1')).toBeNull();
   });
 
-  it('returns icon, roleName, text, and time from the last turn with textMsg', () => {
+  it('returns icon, roleName, role, text, time, and actions from the last turn with textMsg', () => {
     const blocks = [{ type: 'feature', taskId: 'task-1' }];
     const ts = new Date('2026-03-17T10:30:00Z').getTime();
     const turns = [
       { type: 'turn', textMsg: { content: 'First message' }, roleIcon: '🐧', role: 'dev-1', messages: [{ timestamp: ts - 1000 }] },
-      { type: 'turn', textMsg: { content: 'Latest message' }, roleIcon: '🤖', role: 'dev-2', messages: [{ timestamp: ts }] }
+      { type: 'turn', textMsg: { content: 'Latest message' }, roleIcon: '🤖', role: 'dev-2', messages: [{ timestamp: ts }], toolMsgs: [{ toolName: 'Read' }, { toolName: 'Edit' }] }
     ];
     const getSummary = createGetLatestMessageSummary(blocks, () => turns);
     const result = getSummary('task-1');
     expect(result).not.toBeNull();
     expect(result.icon).toBe('🤖');
     expect(result.roleName).toBe('dev-2');
+    expect(result.role).toBe('dev-2');
     expect(result.text).toBe('Latest message');
-    expect(result.time).toBeTruthy(); // formatted timestamp
+    expect(result.time).toBeTruthy();
+    expect(result.actions).toEqual(['Read', 'Edit']);
   });
 
   it('walks backward and skips turns without textMsg', () => {
@@ -189,6 +192,40 @@ describe('getLatestMessageSummary — finds latest text message with metadata', 
     const getSummary = createGetLatestMessageSummary(blocks, () => turns);
     const result = getSummary('task-1');
     expect(result.time).toBe('');
+  });
+
+  it('returns empty actions array when turn has no toolMsgs', () => {
+    const blocks = [{ type: 'feature', taskId: 'task-1' }];
+    const turns = [{ type: 'turn', textMsg: { content: 'No tools' }, roleIcon: '🤖', role: 'dev' }];
+    const getSummary = createGetLatestMessageSummary(blocks, () => turns);
+    const result = getSummary('task-1');
+    expect(result.actions).toEqual([]);
+  });
+
+  it('filters out falsy toolName values from actions', () => {
+    const blocks = [{ type: 'feature', taskId: 'task-1' }];
+    const turns = [{ type: 'turn', textMsg: { content: 'Mixed tools' }, roleIcon: '🤖', role: 'dev', toolMsgs: [{ toolName: 'Read' }, { toolName: '' }, { toolName: null }, { toolName: 'Write' }] }];
+    const getSummary = createGetLatestMessageSummary(blocks, () => turns);
+    const result = getSummary('task-1');
+    expect(result.actions).toEqual(['Read', 'Write']);
+  });
+
+  it('non-turn type returns empty actions array', () => {
+    const blocks = [{ type: 'feature', taskId: 'task-1' }];
+    const turns = [{ type: 'human', message: { type: 'text', content: 'Test', role: 'human', timestamp: Date.now() } }];
+    const getSummary = createGetLatestMessageSummary(blocks, () => turns);
+    const result = getSummary('task-1');
+    expect(result.actions).toEqual([]);
+  });
+
+  it('returns raw role name in role field (not display name)', () => {
+    const blocks = [{ type: 'feature', taskId: 'task-1' }];
+    const turns = [{ type: 'turn', textMsg: { content: 'Test' }, roleIcon: '🐧', role: 'dev-1' }];
+    const displayNameFn = (name) => name === 'dev-1' ? '开发者-托瓦兹-1' : name;
+    const getSummary = createGetLatestMessageSummary(blocks, () => turns, displayNameFn);
+    const result = getSummary('task-1');
+    expect(result.role).toBe('dev-1'); // raw name for getRoleStyle
+    expect(result.roleName).toBe('开发者-托瓦兹-1'); // display name for UI
   });
 });
 
@@ -407,9 +444,9 @@ describe('CrewTurnRenderer — tool-line start-time prop', () => {
 });
 
 // =====================================================================
-// 8. CSS — background differentiation + cleanup
+// 8. CSS — background differentiation + cleanup + PR #259 fixes
 // =====================================================================
-describe('CSS — expanded messages background + chevron cleanup', () => {
+describe('CSS — expanded messages background + chevron cleanup + sticky header', () => {
   const cssSrc = read('web/styles/crew-workspace.css');
 
   it('crew-feature-expanded-messages has color-mix background', () => {
@@ -431,6 +468,51 @@ describe('CSS — expanded messages background + chevron cleanup', () => {
 
   it('active roles CSS has been removed (no longer in list cards)', () => {
     expect(cssSrc).not.toContain('.crew-feature-card-roles');
+  });
+
+  it('expanded header is sticky with z-index', () => {
+    const headerCSS = cssSrc.match(/\.crew-feature-expanded-header\s*\{([^}]+)\}/);
+    expect(headerCSS).toBeTruthy();
+    expect(headerCSS[1]).toContain('position: sticky');
+    expect(headerCSS[1]).toContain('top: 0');
+    expect(headerCSS[1]).toContain('z-index: 10');
+    expect(headerCSS[1]).toContain('background: var(--bg-main)');
+  });
+
+  it('expanded header has no border-bottom', () => {
+    const headerCSS = cssSrc.match(/\.crew-feature-expanded-header\s*\{([^}]+)\}/);
+    expect(headerCSS[1]).not.toContain('border-bottom');
+  });
+
+  it('todos section has margin-bottom for spacing (no border-top)', () => {
+    const todosCSS = cssSrc.match(/\.crew-feature-card-todos\s*\{([^}]+)\}/);
+    expect(todosCSS).toBeTruthy();
+    expect(todosCSS[1]).toContain('margin-bottom: 16px');
+    expect(todosCSS[1]).not.toContain('border-top');
+  });
+
+  it('tool-line in expanded messages has min-width:0 for proper truncation', () => {
+    expect(cssSrc).toContain('.crew-feature-expanded-messages .tool-line');
+    const toolLineCSS = cssSrc.match(/\.crew-feature-expanded-messages\s+\.tool-line\s*\{([^}]+)\}/);
+    expect(toolLineCSS).toBeTruthy();
+    expect(toolLineCSS[1]).toContain('min-width: 0');
+  });
+
+  it('tool-line status and time in expanded messages have flex-shrink:0', () => {
+    expect(cssSrc).toMatch(/\.crew-feature-expanded-messages\s+\.tool-line-status[\s\S]*?flex-shrink:\s*0/);
+    expect(cssSrc).toMatch(/\.crew-feature-expanded-messages\s+\.tool-line-time[\s\S]*?flex-shrink:\s*0/);
+  });
+
+  it('summary role uses --role-color CSS variable', () => {
+    const roleCSS = cssSrc.match(/\.crew-feature-summary-role\s*\{([^}]+)\}/);
+    expect(roleCSS).toBeTruthy();
+    expect(roleCSS[1]).toContain('var(--role-color');
+  });
+
+  it('summary actions section exists with proper layout', () => {
+    expect(cssSrc).toContain('.crew-feature-summary-actions');
+    expect(cssSrc).toContain('.crew-feature-summary-actions-count');
+    expect(cssSrc).toContain('.crew-feature-summary-actions-list');
   });
 });
 
@@ -470,5 +552,94 @@ describe('formatTime — time formatting', () => {
     const result = formatTime(ts);
     // Should contain hour:minute:second pattern
     expect(result).toMatch(/\d{2}:\d{2}:\d{2}/);
+  });
+});
+
+// =====================================================================
+// 11. PR #259: hasFeatureMessages, getRoleStyle, v-show, actions row
+// =====================================================================
+describe('PR #259 — hasFeatureMessages, getRoleStyle integration, actions row', () => {
+  const panelSrc = read('web/components/crew/CrewFeaturePanel.js');
+
+  it('imports getRoleStyle from crewHelpers', () => {
+    expect(panelSrc).toMatch(/import\s*\{[^}]*getRoleStyle[^}]*\}\s*from\s*'\.\/crewHelpers\.js'/);
+  });
+
+  it('exposes getRoleStyle in methods', () => {
+    expect(panelSrc).toMatch(/methods:\s*\{[\s\S]*?getRoleStyle/);
+  });
+
+  it('hasFeatureMessages method checks for block existence and turns length', () => {
+    const fnMatch = panelSrc.match(/hasFeatureMessages\(taskId\)\s*\{([\s\S]*?)\n    \}/);
+    expect(fnMatch).toBeTruthy();
+    expect(fnMatch[1]).toContain("b.type === 'feature'");
+    expect(fnMatch[1]).toContain('b.taskId === taskId');
+    expect(fnMatch[1]).toContain('if (!block) return false');
+    expect(fnMatch[1]).toContain('turns && turns.length > 0');
+  });
+
+  it('list mode cards use v-show="hasFeatureMessages" to hide empty features', () => {
+    const templateMatch = panelSrc.match(/template:\s*`([\s\S]*?)`\s*,/);
+    const template = templateMatch[1];
+    expect(template).toContain('v-show="hasFeatureMessages(feature.taskId)"');
+  });
+
+  it('both inProgress and completed cards use v-show', () => {
+    const templateMatch = panelSrc.match(/template:\s*`([\s\S]*?)`\s*,/);
+    const listSection = templateMatch[1].split('v-else>')[1];
+    const vShowMatches = listSection.match(/v-show="hasFeatureMessages\(feature\.taskId\)"/g);
+    expect(vShowMatches).toHaveLength(2);
+  });
+
+  it('role name in summary uses getRoleStyle for color binding', () => {
+    expect(panelSrc).toContain(':style="getRoleStyle(getSummary(feature.taskId).role)"');
+  });
+
+  it('getLatestMessageSummary returns role and actions fields', () => {
+    const fnMatch = panelSrc.match(/getLatestMessageSummary\(taskId\)\s*\{([\s\S]*?)\n    \},/);
+    expect(fnMatch).toBeTruthy();
+    // Returns rawRole and actions for turn type
+    expect(fnMatch[1]).toContain('role: rawRole');
+    expect(fnMatch[1]).toContain("(turn.toolMsgs || []).map(t => t.toolName).filter(Boolean)");
+    // Non-turn type returns empty actions
+    expect(fnMatch[1]).toContain('actions: []');
+  });
+
+  it('template shows actions row when summary has actions', () => {
+    expect(panelSrc).toContain('crew-feature-summary-actions');
+    expect(panelSrc).toContain('getSummary(feature.taskId).actions.length > 0');
+    expect(panelSrc).toContain('crew-feature-summary-actions-count');
+    expect(panelSrc).toContain('crew-feature-summary-actions-list');
+  });
+});
+
+// =====================================================================
+// 12. hasFeatureMessages — functional test
+// =====================================================================
+describe('hasFeatureMessages — functional test', () => {
+  function hasFeatureMessages(featureBlocks, getBlockTurns, taskId) {
+    const block = featureBlocks.find(b => b.type === 'feature' && b.taskId === taskId);
+    if (!block) return false;
+    const turns = getBlockTurns(block);
+    return turns && turns.length > 0;
+  }
+
+  it('returns false when no block matches', () => {
+    expect(hasFeatureMessages([], () => [], 'task-1')).toBe(false);
+  });
+
+  it('returns false when block exists but has no turns', () => {
+    const blocks = [{ type: 'feature', taskId: 'task-1' }];
+    expect(hasFeatureMessages(blocks, () => [], 'task-1')).toBe(false);
+  });
+
+  it('returns true when block exists and has turns', () => {
+    const blocks = [{ type: 'feature', taskId: 'task-1' }];
+    expect(hasFeatureMessages(blocks, () => [{ type: 'turn' }], 'task-1')).toBe(true);
+  });
+
+  it('returns falsy for null turns', () => {
+    const blocks = [{ type: 'feature', taskId: 'task-1' }];
+    expect(hasFeatureMessages(blocks, () => null, 'task-1')).toBeFalsy();
   });
 });
