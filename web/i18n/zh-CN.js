@@ -506,7 +506,6 @@ export default {
   'crew.uploadFile': '上传文件',
   'crew.inputPlaceholder': '输入消息... (@角色名 发送给指定角色，Shift+Enter 换行)',
   'crew.send': '发送',
-  'crew.totalProgress': '总进度',
   'crew.working': '工作中',
   'crew.noFeatures': '暂无 Feature',
   'crew.addRoleTitle': '添加角色',

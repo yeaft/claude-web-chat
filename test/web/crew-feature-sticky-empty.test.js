@@ -9,7 +9,7 @@ import { resolve } from 'path';
  * 1) Sticky header blocks content bleed — top:-12px + padding-top:24px
  * 2) Empty features filtered out of inProgress/completed lists
  * 3) Group header counts use filtered data (filteredInProgress.length)
- * 4) Total progress bar uses filteredProgressData (excludes empty features)
+ * 4) (Removed — total progress bar deleted)
  * 5) ChatHeader badge (kanbanInProgressCount) excludes empty features
  */
 
@@ -123,39 +123,8 @@ describe('group header counts use filtered arrays', () => {
 });
 
 // =====================================================================
-// 4. Total progress bar uses filteredProgressData
+// 4. (Removed — total progress bar deleted per user request)
 // =====================================================================
-describe('total progress bar uses filteredProgressData', () => {
-  it('filteredProgressData computed aggregates from filtered arrays', () => {
-    expect(featurePanelSource).toContain('filteredProgressData()');
-    // Aggregates totalCount and doneCount from both filtered arrays
-    expect(featurePanelSource).toContain('this.filteredInProgress');
-    expect(featurePanelSource).toContain('this.filteredCompleted');
-    expect(featurePanelSource).toContain('f.totalCount');
-    expect(featurePanelSource).toContain('f.doneCount');
-  });
-
-  it('progress bar condition uses filteredProgressData.total', () => {
-    expect(featurePanelSource).toContain('filteredProgressData.total > 0');
-  });
-
-  it('progress bar display uses filteredProgressData done/total', () => {
-    expect(featurePanelSource).toContain('filteredProgressData.done');
-    expect(featurePanelSource).toContain('filteredProgressData.total');
-  });
-
-  it('percentage calculation uses filteredProgressData', () => {
-    expect(featurePanelSource).toContain(
-      'Math.round(filteredProgressData.done / filteredProgressData.total * 100)'
-    );
-  });
-
-  it('progress bar width uses filteredProgressData', () => {
-    expect(featurePanelSource).toContain(
-      'filteredProgressData.done / filteredProgressData.total * 100'
-    );
-  });
-});
 
 // =====================================================================
 // 5. ChatHeader badge (kanbanInProgressCount) excludes empty features

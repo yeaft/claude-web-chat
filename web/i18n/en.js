@@ -506,7 +506,6 @@ export default {
   'crew.uploadFile': 'Upload file',
   'crew.inputPlaceholder': 'Type a message... (@role to send to a specific role, Shift+Enter for newline)',
   'crew.send': 'Send',
-  'crew.totalProgress': 'Total Progress',
   'crew.working': 'Working',
   'crew.noFeatures': 'No Features',
   'crew.addRoleTitle': 'Add Role',

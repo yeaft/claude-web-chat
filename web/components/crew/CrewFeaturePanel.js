@@ -71,14 +71,6 @@ export default {
       return this.featureKanbanGrouped.completed.filter(
         f => this.hasFeatureMessages(f.taskId)
       );
-    },
-    filteredProgressData() {
-      let total = 0, done = 0;
-      for (const f of [...this.filteredInProgress, ...this.filteredCompleted]) {
-        total += f.totalCount;
-        done += f.doneCount;
-      }
-      return { total, done };
     }
   },
   template: `
@@ -135,17 +127,6 @@ export default {
 
         <!-- ===== LIST MODE: Feature cards (compact, non-expandable) ===== -->
         <template v-else>
-          <div class="crew-kanban-total" v-if="filteredProgressData.total > 0">
-            <div class="crew-kanban-total-header">
-              <span>{{ $t('crew.totalProgress') }}</span>
-              <span>{{ filteredProgressData.done }} / {{ filteredProgressData.total }}  {{ Math.round(filteredProgressData.done / filteredProgressData.total * 100) }}%</span>
-            </div>
-            <div class="crew-kanban-total-bar">
-              <div class="crew-kanban-total-fill"
-                   :style="{ width: (filteredProgressData.done / filteredProgressData.total * 100) + '%' }"></div>
-            </div>
-          </div>
-
           <div v-if="filteredInProgress.length > 0" class="crew-kanban-group">
             <div class="crew-kanban-group-header is-active">
               <span class="crew-kanban-group-dot is-active"></span>

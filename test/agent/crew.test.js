@@ -3756,25 +3756,6 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
   });
 
-  // --- Total Progress (bottom fixed) ---
-
-  describe('total progress in right panel', () => {
-    it('should have crew-kanban-total section', () => {
-      expect(viewSource).toContain('class="crew-kanban-total"');
-    });
-
-    it('should show total done / total with percentage', () => {
-      expect(viewSource).toContain('filteredProgressData.done');
-      expect(viewSource).toContain('filteredProgressData.total');
-      expect(viewSource).toContain('Math.round(filteredProgressData.done / filteredProgressData.total * 100)');
-    });
-
-    it('should have total progress bar', () => {
-      expect(viewSource).toContain('class="crew-kanban-total-bar"');
-      expect(viewSource).toContain('class="crew-kanban-total-fill"');
-    });
-  });
-
   // --- Data Properties ---
 
   describe('updated data properties', () => {
