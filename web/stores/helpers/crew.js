@@ -310,6 +310,9 @@ export function handleCrewOutput(store, msg) {
 
   if (msg.type === 'crew_output') {
     const messages = ensureMessages(sid);
+    // Check if message sender is a decision maker from crew session roles
+    const sessionRoles = store.crewSessions[sid]?.roles || [];
+    const senderRole = sessionRoles.find(r => r.name === msg.role);
     const crewMsg = {
       id: Date.now() + Math.random(),
       role: msg.role,
@@ -318,6 +321,7 @@ export function handleCrewOutput(store, msg) {
       type: msg.outputType,
       taskId: msg.taskId || null,
       taskTitle: msg.taskTitle || null,
+      isDecisionMaker: !!(senderRole && senderRole.isDecisionMaker),
       timestamp: Date.now()
     };
 
@@ -460,6 +464,8 @@ export function handleCrewOutput(store, msg) {
 
   if (msg.type === 'crew_image') {
     const messages = ensureMessages(sid);
+    const imgRoles = store.crewSessions[sid]?.roles || [];
+    const imgSender = imgRoles.find(r => r.name === msg.role);
     messages.push({
       id: Date.now() + Math.random(),
       role: msg.role,
@@ -472,6 +478,7 @@ export function handleCrewOutput(store, msg) {
       toolId: msg.toolId,
       taskId: msg.taskId || null,
       taskTitle: msg.taskTitle || null,
+      isDecisionMaker: !!(imgSender && imgSender.isDecisionMaker),
       timestamp: Date.now()
     });
     return;
