@@ -3714,10 +3714,11 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(viewSource).toContain('crew-feature-card is-completed');
     });
 
-    it('should have expandable header with click and dblclick', () => {
-      expect(viewSource).toContain('@click="toggleFeatureCard(feature.taskId)"');
-      // Sub-component emits event, parent handles expand-feature
-      expect(viewSource).toContain("@dblclick=\"$emit('expand-feature', feature.taskId)\"");
+    it('should have click on card to expand feature', () => {
+      // Whole card is clickable — single click to expand
+      expect(viewSource).toContain("@click=\"$emit('expand-feature', feature.taskId)\"");
+      // No more dblclick — replaced with single click
+      expect(viewSource).not.toContain('@dblclick');
     });
 
     it('should show feature title and done/total count', () => {
@@ -3731,14 +3732,15 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(viewSource).toContain('class="crew-feature-card-bar-fill"');
     });
 
-    it('should show active roles with icons', () => {
-      expect(viewSource).toContain('class="crew-feature-card-roles"');
-      expect(viewSource).toContain('feature.activeRoles');
-      expect(viewSource).toContain('ar.roleIcon');
-      expect(viewSource).toContain('crew.working');
+    it('should NOT show active roles in list mode cards (removed for compact layout)', () => {
+      const templateMatch = viewSource.match(/template:\s*`([\s\S]*?)`\s*,/);
+      const template = templateMatch ? templateMatch[1] : '';
+      // List mode section (after v-else) should not have roles
+      const listSection = template.split('v-else>')[1] || '';
+      expect(listSection).not.toContain('crew-feature-card-roles');
     });
 
-    it('should show todo items when expanded', () => {
+    it('should show todo items in expanded mode (not list mode)', () => {
       expect(viewSource).toContain('class="crew-feature-card-todos"');
       expect(viewSource).toContain('class="crew-feature-card-todo"');
       expect(viewSource).toContain('todo.roleIcon');
@@ -3746,8 +3748,7 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
 
     it('should show empty state when no todos', () => {
       expect(viewSource).toContain('class="crew-feature-card-empty"');
-      expect(viewSource).toContain('crew.statusInProgress');
-      expect(viewSource).toContain('crew.statusCompleted');
+      expect(viewSource).toContain('crew.noFeatures');
     });
 
     it('should show empty state using i18n key crew.noFeatures', () => {
@@ -3777,9 +3778,8 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- Data Properties ---
 
   describe('updated data properties', () => {
-    it('should have expandedFeatureCards instead of expandedKanbanFeatures', () => {
-      expect(viewSource).toContain('expandedFeatureCards: {}');
-      expect(viewSource).not.toContain('expandedKanbanFeatures');
+    it('should NOT have expandedFeatureCards (removed — cards are non-expandable)', () => {
+      expect(viewSource).not.toContain('expandedFeatureCards');
     });
 
     it('should NOT have kanbanCompletedExpanded (removed)', () => {
@@ -3831,14 +3831,9 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
   // --- Methods ---
 
   describe('feature card methods', () => {
-    it('should have toggleFeatureCard (not toggleKanbanFeature)', () => {
-      expect(viewSource).toContain('toggleFeatureCard(taskId)');
-      expect(viewSource).not.toContain('toggleKanbanFeature(');
-    });
-
-    it('should have isFeatureCardExpanded (not isKanbanFeatureExpanded)', () => {
-      expect(viewSource).toContain('isFeatureCardExpanded(taskId)');
-      expect(viewSource).not.toContain('isKanbanFeatureExpanded(');
+    it('should NOT have toggleFeatureCard or isFeatureCardExpanded (cards are non-expandable)', () => {
+      expect(viewSource).not.toContain('toggleFeatureCard');
+      expect(viewSource).not.toContain('isFeatureCardExpanded');
     });
 
     it('should have scrollToFeature method', () => {
@@ -3847,9 +3842,9 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
       expect(viewSource).toContain('scrollIntoView');
     });
 
-    it('should default expand if has in_progress todos or not completed', () => {
-      expect(viewSource).toContain("t.status === 'in_progress'");
-      expect(viewSource).toContain('!feature.isCompleted');
+    it('should have expandedFeatureTodos computed that reads from featureKanban', () => {
+      expect(viewSource).toContain('expandedFeatureTodos()');
+      expect(viewSource).toContain('feature.todos');
     });
   });
 
@@ -4062,42 +4057,27 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
     });
   });
 
-  // --- Functional Logic: isFeatureCardExpanded ---
+  // --- Functional Logic: expandedFeatureTodos ---
 
-  describe('isFeatureCardExpanded logic', () => {
-    function isFeatureCardExpanded(taskId, expandedMap, featureKanban) {
-      if (taskId in expandedMap) {
-        return expandedMap[taskId];
-      }
-      const feature = featureKanban.find(f => f.taskId === taskId);
-      if (feature) {
-        return feature.todos.some(t => t.status === 'in_progress') || !feature.isCompleted;
-      }
-      return true;
+  describe('expandedFeatureTodos logic', () => {
+    function expandedFeatureTodos(expandedFeatureTaskId, featureKanban) {
+      if (!expandedFeatureTaskId) return [];
+      const feature = featureKanban.find(f => f.taskId === expandedFeatureTaskId);
+      return feature ? feature.todos : [];
     }
 
-    it('should use explicit value from map', () => {
-      expect(isFeatureCardExpanded('t1', { t1: false }, [])).toBe(false);
-      expect(isFeatureCardExpanded('t1', { t1: true }, [])).toBe(true);
+    it('should return empty array when no feature is expanded', () => {
+      expect(expandedFeatureTodos(null, [])).toEqual([]);
     });
 
-    it('should default expand if not completed', () => {
-      const features = [{ taskId: 't1', todos: [], isCompleted: false }];
-      expect(isFeatureCardExpanded('t1', {}, features)).toBe(true);
+    it('should return todos for the expanded feature', () => {
+      const todos = [{ id: '1', status: 'completed' }, { id: '2', status: 'in_progress' }];
+      const features = [{ taskId: 't1', todos }];
+      expect(expandedFeatureTodos('t1', features)).toBe(todos);
     });
 
-    it('should default expand if has in_progress todos', () => {
-      const features = [{ taskId: 't1', todos: [{ status: 'in_progress' }], isCompleted: false }];
-      expect(isFeatureCardExpanded('t1', {}, features)).toBe(true);
-    });
-
-    it('should default collapse if completed and no in_progress', () => {
-      const features = [{ taskId: 't1', todos: [{ status: 'completed' }], isCompleted: true }];
-      expect(isFeatureCardExpanded('t1', {}, features)).toBe(false);
-    });
-
-    it('should return true for unknown feature', () => {
-      expect(isFeatureCardExpanded('unknown', {}, [])).toBe(true);
+    it('should return empty array when feature not found', () => {
+      expect(expandedFeatureTodos('t99', [{ taskId: 't1', todos: [] }])).toEqual([]);
     });
   });
 

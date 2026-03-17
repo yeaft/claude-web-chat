@@ -209,7 +209,6 @@ export default {
           :now-tick="nowTick"
           :icons="icons"
           :get-role-display-name="getRoleDisplayName"
-          @scroll-to-feature="scrollToFeature"
           @toggle-turn="toggleTurn"
           @expand-feature="expandFeature"
           @close-feature="closeFeature"
