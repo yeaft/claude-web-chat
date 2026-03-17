@@ -3716,8 +3716,8 @@ describe('task-22: Three-Column v2 — Feature Kanban', () => {
 
     it('should have expandable header with click and dblclick', () => {
       expect(viewSource).toContain('@click="toggleFeatureCard(feature.taskId)"');
-      // Sub-component emits event, parent handles scrollToFeature
-      expect(viewSource).toContain("@dblclick=\"$emit('scroll-to-feature', feature.taskId)\"");
+      // Sub-component emits event, parent handles expand-feature
+      expect(viewSource).toContain("@dblclick=\"$emit('expand-feature', feature.taskId)\"");
     });
 
     it('should show feature title and done/total count', () => {

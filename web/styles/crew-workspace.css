@@ -1233,6 +1233,102 @@
   border-top: 1px solid var(--border-light);
 }
 
+/* Feature Card — Latest Message Summary (list mode) */
+.crew-feature-card-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-light);
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+}
+
+.crew-feature-card-summary:hover {
+  color: var(--text-primary);
+}
+
+.crew-feature-summary-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+.crew-feature-summary-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-feature-summary-expand {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.crew-feature-card-summary:hover .crew-feature-summary-expand {
+  opacity: 1;
+}
+
+/* Feature Expanded Mode — 50/50 layout */
+.crew-workspace.feature-expanded .crew-panel-center {
+  flex: 1;
+}
+
+.crew-workspace.feature-expanded .crew-panel-right {
+  width: 50%;
+  flex-shrink: 0;
+}
+
+/* Expanded Feature Header */
+.crew-feature-expanded-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-light);
+  margin-bottom: 12px;
+}
+
+.crew-feature-expanded-back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.crew-feature-expanded-back:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.crew-feature-expanded-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Expanded Feature Messages Area */
+.crew-feature-expanded-messages {
+  display: flex;
+  flex-direction: column;
+}
+
 /* 总进度 — 右栏顶部 */
 .crew-kanban-total {
   padding: 10px 12px;
@@ -1489,6 +1585,15 @@
   }
 
   .crew-workspace.mobile-panel-features .crew-panel-right {
+    transform: translateX(0);
+  }
+
+  /* Mobile: feature-expanded uses full-screen overlay instead of 50/50 */
+  .crew-workspace.feature-expanded .crew-panel-right {
+    width: 100vw !important;
+  }
+
+  .crew-workspace.feature-expanded.mobile-panel-features .crew-panel-right {
     transform: translateX(0);
   }
 
