@@ -15,7 +15,7 @@
 .crew-conv-icon {
   flex-shrink: 0;
   color: var(--accent-blue);
-  opacity: 0.7;
+  opacity: 0.85;
 }
 
 .session-item-crew.active .crew-conv-icon {
