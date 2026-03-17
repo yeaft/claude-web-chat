@@ -1064,18 +1064,6 @@
   user-select: none;
 }
 
-.crew-feature-card-chevron {
-  width: 12px;
-  height: 12px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-  transition: transform 0.15s;
-}
-
-.crew-feature-card.is-expanded .crew-feature-card-chevron {
-  transform: rotate(90deg);
-}
-
 .crew-feature-card-title {
   font-size: 12px;
   font-weight: 600;
@@ -1126,26 +1114,6 @@
 
 .crew-feature-card.has-streaming .crew-feature-card-bar-fill {
   background: var(--accent-blue);
-}
-
-/* Active Roles in Feature */
-.crew-feature-card-roles {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  font-size: 10px;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
-
-.crew-feature-card-roles-icons {
-  display: inline-flex;
-  gap: 1px;
-  font-size: 12px;
-}
-
-.crew-feature-card-roles-label {
-  margin-left: 4px;
 }
 
 /* Todo Items inside Feature Card */
@@ -1243,9 +1211,6 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border-light);
   font-size: 12px;
   color: var(--text-secondary);
   overflow: hidden;

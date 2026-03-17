@@ -2,10 +2,11 @@
  * CrewFeaturePanel — Right sidebar: Feature Kanban board + message view.
  *
  * Two modes:
- *   1. List mode (default): narrow panel showing feature cards with progress,
- *      todos, and latest message summary.
- *   2. Expanded mode: panel widens to 50% width, shows full message thread
- *      for a selected feature using CrewTurnRenderer.
+ *   1. List mode (default): narrow panel showing compact feature cards.
+ *      Each card has a fixed two-line layout (title + progress + elapsed,
+ *      then latest message summary). Click any card to enter expanded mode.
+ *   2. Expanded mode: panel widens to 50% width. Shows todo list at top,
+ *      followed by full message thread using CrewTurnRenderer.
  */
 import {
   formatDuration, formatTime
@@ -31,10 +32,9 @@ export default {
     icons: { type: Object, required: true },
     getRoleDisplayName: { type: Function, default: (name) => name }
   },
-  emits: ['scroll-to-feature', 'toggle-turn', 'expand-feature', 'close-feature'],
+  emits: ['toggle-turn', 'expand-feature', 'close-feature'],
   data() {
     return {
-      expandedFeatureCards: {},
       showCompletedFeatures: false
     };
   },
@@ -52,6 +52,11 @@ export default {
     expandedFeatureTitle() {
       if (!this.expandedBlock) return '';
       return this.expandedBlock.taskTitle || this.expandedFeatureTaskId;
+    },
+    expandedFeatureTodos() {
+      if (!this.expandedFeatureTaskId) return [];
+      const feature = this.featureKanban.find(f => f.taskId === this.expandedFeatureTaskId);
+      return feature ? feature.todos : [];
     }
   },
   template: `
@@ -66,6 +71,20 @@ export default {
               <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
             <span class="crew-feature-expanded-title">{{ expandedFeatureTitle }}</span>
+          </div>
+          <div v-if="expandedFeatureTodos.length > 0" class="crew-feature-card-todos">
+            <div v-for="todo in expandedFeatureTodos" :key="todo.id"
+                 class="crew-feature-card-todo" :class="'is-' + todo.status">
+              <span class="todo-status">
+                <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24" width="12" height="12">
+                  <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                </svg>
+              </span>
+              <span class="todo-text">
+                {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
+              </span>
+              <span v-if="todo.roleIcon" class="todo-role">{{ todo.roleIcon }}</span>
+            </div>
           </div>
           <div class="crew-feature-expanded-messages">
             <template v-if="expandedTurnsList.length > 0">
@@ -92,7 +111,7 @@ export default {
           </div>
         </template>
 
-        <!-- ===== LIST MODE: Feature cards ===== -->
+        <!-- ===== LIST MODE: Feature cards (compact, non-expandable) ===== -->
         <template v-else>
           <div class="crew-kanban-total" v-if="kanbanProgressData.total > 0">
             <div class="crew-kanban-total-header">
@@ -112,15 +131,9 @@ export default {
             </div>
             <div v-for="feature in featureKanbanGrouped.inProgress" :key="feature.taskId"
                  class="crew-feature-card"
-                 :class="{
-                   'is-expanded': isFeatureCardExpanded(feature.taskId),
-                   'has-streaming': feature.hasStreaming
-                 }"
+                 :class="{ 'has-streaming': feature.hasStreaming }"
                  @click="$emit('expand-feature', feature.taskId)">
               <div class="crew-feature-card-header">
-                <svg class="crew-feature-card-chevron" viewBox="0 0 24 24" width="12" height="12">
-                  <path fill="currentColor" d="M10 6l6 6-6 6z"/>
-                </svg>
                 <span class="crew-feature-card-title">{{ feature.taskTitle }}</span>
                 <span class="crew-feature-card-count">
                   {{ feature.doneCount }} / {{ feature.totalCount }}
@@ -132,40 +145,14 @@ export default {
                      :style="{ width: (feature.totalCount > 0 ? (feature.doneCount / feature.totalCount * 100) : 0) + '%' }">
                 </div>
               </div>
-              <div v-if="feature.activeRoles.length > 0" class="crew-feature-card-roles">
-                <span class="crew-feature-card-roles-icons">
-                  <span v-for="ar in feature.activeRoles" :key="ar.role">{{ ar.roleIcon }}</span>
-                </span>
-                <span class="crew-feature-card-roles-label">{{ $t('crew.working') }}</span>
+              <div v-if="getSummary(feature.taskId)" class="crew-feature-card-summary">
+                <div class="crew-feature-summary-meta">
+                  <span v-if="getSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getSummary(feature.taskId).icon }}</span>
+                  <span class="crew-feature-summary-role">{{ getSummary(feature.taskId).roleName }}</span>
+                  <span class="crew-feature-summary-time">{{ getSummary(feature.taskId).time }}</span>
+                </div>
+                <div class="crew-feature-summary-text">{{ getSummary(feature.taskId).text }}</div>
               </div>
-              <template v-if="isFeatureCardExpanded(feature.taskId)">
-                <div v-if="feature.todos.length > 0" class="crew-feature-card-todos">
-                  <div v-for="todo in feature.todos" :key="todo.id"
-                       class="crew-feature-card-todo" :class="'is-' + todo.status">
-                    <span class="todo-status">
-                      <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24" width="12" height="12">
-                        <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-                      </svg>
-                    </span>
-                    <span class="todo-text">
-                      {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
-                    </span>
-                    <span v-if="todo.roleIcon" class="todo-role">{{ todo.roleIcon }}</span>
-                  </div>
-                </div>
-                <div v-if="getSummary(feature.taskId)" class="crew-feature-card-summary">
-                  <div class="crew-feature-summary-meta">
-                    <span v-if="getSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getSummary(feature.taskId).icon }}</span>
-                    <span class="crew-feature-summary-role">{{ getSummary(feature.taskId).roleName }}</span>
-                    <span class="crew-feature-summary-time">{{ getSummary(feature.taskId).time }}</span>
-                  </div>
-                  <div class="crew-feature-summary-text">{{ getSummary(feature.taskId).text }}</div>
-                </div>
-                <div v-if="feature.todos.length === 0 && !getSummary(feature.taskId)"
-                     class="crew-feature-card-empty">
-                  {{ $t('crew.statusInProgress') }}
-                </div>
-              </template>
             </div>
           </div>
 
@@ -180,14 +167,8 @@ export default {
             <template v-if="showCompletedFeatures">
               <div v-for="feature in featureKanbanGrouped.completed" :key="feature.taskId"
                    class="crew-feature-card is-completed"
-                   :class="{
-                     'is-expanded': isFeatureCardExpanded(feature.taskId)
-                   }"
                    @click="$emit('expand-feature', feature.taskId)">
                 <div class="crew-feature-card-header">
-                  <svg class="crew-feature-card-chevron" viewBox="0 0 24 24" width="12" height="12">
-                    <path fill="currentColor" d="M10 6l6 6-6 6z"/>
-                  </svg>
                   <span class="crew-feature-card-title">{{ feature.taskTitle }}</span>
                   <span class="crew-feature-card-count">
                     {{ feature.doneCount }} / {{ feature.totalCount }}
@@ -199,34 +180,14 @@ export default {
                        :style="{ width: (feature.totalCount > 0 ? (feature.doneCount / feature.totalCount * 100) : 0) + '%' }">
                   </div>
                 </div>
-                <template v-if="isFeatureCardExpanded(feature.taskId)">
-                  <div v-if="feature.todos.length > 0" class="crew-feature-card-todos">
-                    <div v-for="todo in feature.todos" :key="todo.id"
-                         class="crew-feature-card-todo" :class="'is-' + todo.status">
-                      <span class="todo-status">
-                        <svg v-if="todo.status === 'completed'" viewBox="0 0 24 24" width="12" height="12">
-                          <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-                        </svg>
-                      </span>
-                      <span class="todo-text">
-                        {{ todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content }}
-                      </span>
-                      <span v-if="todo.roleIcon" class="todo-role">{{ todo.roleIcon }}</span>
-                    </div>
+                <div v-if="getSummary(feature.taskId)" class="crew-feature-card-summary">
+                  <div class="crew-feature-summary-meta">
+                    <span v-if="getSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getSummary(feature.taskId).icon }}</span>
+                    <span class="crew-feature-summary-role">{{ getSummary(feature.taskId).roleName }}</span>
+                    <span class="crew-feature-summary-time">{{ getSummary(feature.taskId).time }}</span>
                   </div>
-                  <div v-if="getSummary(feature.taskId)" class="crew-feature-card-summary">
-                    <div class="crew-feature-summary-meta">
-                      <span v-if="getSummary(feature.taskId).icon" class="crew-feature-summary-icon">{{ getSummary(feature.taskId).icon }}</span>
-                      <span class="crew-feature-summary-role">{{ getSummary(feature.taskId).roleName }}</span>
-                      <span class="crew-feature-summary-time">{{ getSummary(feature.taskId).time }}</span>
-                    </div>
-                    <div class="crew-feature-summary-text">{{ getSummary(feature.taskId).text }}</div>
-                  </div>
-                  <div v-if="feature.todos.length === 0 && !getSummary(feature.taskId)"
-                       class="crew-feature-card-empty">
-                    {{ $t('crew.statusCompleted') }}
-                  </div>
-                </template>
+                  <div class="crew-feature-summary-text">{{ getSummary(feature.taskId).text }}</div>
+                </div>
               </div>
             </template>
           </div>
@@ -244,21 +205,6 @@ export default {
     formatTime,
     shouldShowTurnDivider,
     getMaxRound,
-
-    toggleFeatureCard(taskId) {
-      this.expandedFeatureCards[taskId] = !this.isFeatureCardExpanded(taskId);
-    },
-
-    isFeatureCardExpanded(taskId) {
-      if (taskId in this.expandedFeatureCards) {
-        return this.expandedFeatureCards[taskId];
-      }
-      const feature = this.featureKanban.find(f => f.taskId === taskId);
-      if (feature) {
-        return feature.todos.some(t => t.status === 'in_progress') || !feature.isCompleted;
-      }
-      return true;
-    },
 
     /**
      * Cached accessor for getLatestMessageSummary — avoids calling it 4x per card in template.
