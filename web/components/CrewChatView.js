@@ -385,13 +385,28 @@ export default {
     },
     activeMessages() {
       const messages = this.store.currentCrewMessages;
+      const inProgressIds = new Set(
+        this.featureKanbanGrouped.inProgress.map(f => f.taskId)
+      );
+
+      // Collect last text message per taskId (for active features) + global (no taskId)
+      const lastByTask = new Map(); // taskId|'_global' -> message
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
         if (m.type !== 'text' || !m.role) continue;
-        if (m.role === 'system') continue;
-        return [m];
+        if (m.role === 'system' || m.role === 'human') continue;
+        const key = m.taskId || '_global';
+        if (lastByTask.has(key)) continue;
+        // Only include if streaming or belongs to an in-progress feature
+        if (m._streaming || key === '_global' || inProgressIds.has(key)) {
+          lastByTask.set(key, m);
+        }
       }
-      return [];
+
+      // Sort by timestamp descending, limit to 5
+      return Array.from(lastByTask.values())
+        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+        .slice(0, 5);
     },
     featureBlocks() {
       const allMessages = this.store.currentCrewMessages;
