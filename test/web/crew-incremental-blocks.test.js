@@ -41,28 +41,44 @@ describe('featureBlocks: array reference cache invalidation', () => {
 
 describe('_appendToSegments: incremental segmentation', () => {
 
-  // Behavioral test: simulate segmentation logic
+  // Behavioral test: simulate segmentation logic (mirrors actual appendToSegments)
   function appendToSegments(allMessages, startIdx, cache) {
     const segments = cache.segments;
+    const segIndex = cache._segIndex || (cache._segIndex = new Map());
     for (let i = startIdx; i < allMessages.length; i++) {
       const msg = allMessages[i];
       const taskId = msg.taskId || null;
-      const isGlobal = !taskId || msg.role === 'human';
-      const lastSeg = segments.length > 0 ? segments[segments.length - 1] : null;
+      const isGlobal = !taskId || msg.role === 'human' || msg.isDecisionMaker;
 
       if (isGlobal) {
+        const lastSeg = segments.length > 0 ? segments[segments.length - 1] : null;
         if (lastSeg && !lastSeg.taskId) {
           lastSeg.messages.push(msg);
           lastSeg._dirty = true;
         } else {
           segments.push({ taskId: null, messages: [msg], _dirty: true });
         }
+        // Decision maker messages with taskId also go into their feature segment
+        if (msg.isDecisionMaker && taskId) {
+          if (segIndex.has(taskId)) {
+            const seg = segments[segIndex.get(taskId)];
+            seg.messages.push(msg);
+            seg._dirty = true;
+          } else {
+            const idx = segments.length;
+            segments.push({ taskId, messages: [msg], _dirty: true });
+            segIndex.set(taskId, idx);
+          }
+        }
       } else {
-        if (lastSeg && lastSeg.taskId === taskId) {
-          lastSeg.messages.push(msg);
-          lastSeg._dirty = true;
+        if (segIndex.has(taskId)) {
+          const seg = segments[segIndex.get(taskId)];
+          seg.messages.push(msg);
+          seg._dirty = true;
         } else {
+          const idx = segments.length;
           segments.push({ taskId, messages: [msg], _dirty: true });
+          segIndex.set(taskId, idx);
         }
       }
     }
@@ -84,7 +100,7 @@ describe('_appendToSegments: incremental segmentation', () => {
     expect(cache.processedLen).toBe(3);
   });
 
-  it('should split segments when taskId changes', () => {
+  it('should merge messages with same taskId into one segment (even non-consecutive)', () => {
     const cache = { segments: [], processedLen: 0 };
     const messages = [
       { id: 1, taskId: 'task-1', role: 'dev', type: 'text' },
@@ -93,10 +109,12 @@ describe('_appendToSegments: incremental segmentation', () => {
     ];
     appendToSegments(messages, 0, cache);
 
-    expect(cache.segments).toHaveLength(3);
+    // segIndex merges task-1 messages into one segment
+    expect(cache.segments).toHaveLength(2);
     expect(cache.segments[0].taskId).toBe('task-1');
+    expect(cache.segments[0].messages).toHaveLength(2);
     expect(cache.segments[1].taskId).toBe('task-2');
-    expect(cache.segments[2].taskId).toBe('task-1');
+    expect(cache.segments[1].messages).toHaveLength(1);
   });
 
   it('should treat human messages as global (no taskId)', () => {
@@ -170,6 +188,64 @@ describe('_appendToSegments: incremental segmentation', () => {
     messages.push({ id: 2, taskId: 'task-1', role: 'dev', type: 'text' });
     appendToSegments(messages, cache.processedLen, cache);
     expect(cache.segments[0]._dirty).toBe(true);
+  });
+
+  it('should place decision maker message with taskId in both global and feature segments', () => {
+    const cache = { segments: [], processedLen: 0 };
+    const messages = [
+      { id: 1, taskId: 'task-1', role: 'pm', type: 'text', isDecisionMaker: true },
+    ];
+    appendToSegments(messages, 0, cache);
+
+    // Should have 2 segments: one global, one feature
+    expect(cache.segments).toHaveLength(2);
+    expect(cache.segments[0].taskId).toBeNull();
+    expect(cache.segments[0].messages).toHaveLength(1);
+    expect(cache.segments[0].messages[0].id).toBe(1);
+    expect(cache.segments[1].taskId).toBe('task-1');
+    expect(cache.segments[1].messages).toHaveLength(1);
+    expect(cache.segments[1].messages[0].id).toBe(1);
+  });
+
+  it('should append decision maker message to existing feature segment', () => {
+    const cache = { segments: [], processedLen: 0 };
+    const messages = [
+      { id: 1, taskId: 'task-1', role: 'dev', type: 'text' },
+      { id: 2, taskId: 'task-1', role: 'pm', type: 'text', isDecisionMaker: true },
+    ];
+    appendToSegments(messages, 0, cache);
+
+    // Segment 0: task-1 feature (dev msg + pm msg)
+    // Segment 1: global (pm msg)
+    const featureSeg = cache.segments.find(s => s.taskId === 'task-1');
+    const globalSeg = cache.segments.find(s => !s.taskId);
+    expect(featureSeg).toBeDefined();
+    expect(globalSeg).toBeDefined();
+    expect(featureSeg.messages.some(m => m.id === 2)).toBe(true);
+    expect(globalSeg.messages.some(m => m.id === 2)).toBe(true);
+  });
+
+  it('should not duplicate decision maker message without taskId', () => {
+    const cache = { segments: [], processedLen: 0 };
+    const messages = [
+      { id: 1, role: 'pm', type: 'text', isDecisionMaker: true },  // no taskId
+    ];
+    appendToSegments(messages, 0, cache);
+
+    // Only global, no feature segment created
+    expect(cache.segments).toHaveLength(1);
+    expect(cache.segments[0].taskId).toBeNull();
+  });
+
+  it('should treat non-decision-maker messages with isDecisionMaker as global only', () => {
+    const cache = { segments: [], processedLen: 0 };
+    const messages = [
+      { id: 1, role: 'human', taskId: 'task-1', type: 'text' },  // human is always global
+    ];
+    appendToSegments(messages, 0, cache);
+
+    expect(cache.segments).toHaveLength(1);
+    expect(cache.segments[0].taskId).toBeNull();
   });
 });
 
