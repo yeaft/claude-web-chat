@@ -46,7 +46,9 @@ Multi-role AI team collaboration with PM, Developer, Reviewer, and Tester roles 
 - Parallel multi-agent execution across multiple worktrees
 - Feature completion detection with auto-reactivation on new activity
 
-![Crew](docs/images/crew.png)
+![Crew Features](docs/images/crew-features.jpg)
+
+![Crew Feature Detail](docs/images/crew-feature-detail.jpg)
 
 ### Admin Dashboard
 

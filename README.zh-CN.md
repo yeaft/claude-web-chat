@@ -46,7 +46,9 @@ AI 专家团队辅助对话 — 选择一个团队（如写作、交易），在
 - 多 Agent 跨 worktree 并行执行
 - Feature 完成检测，有新活动时自动重新激活
 
-![Crew](docs/images/crew.png)
+![Crew Features](docs/images/crew-features.jpg)
+
+![Crew Feature Detail](docs/images/crew-feature-detail.jpg)
 
 ### 仪表板（Admin Dashboard）
 
