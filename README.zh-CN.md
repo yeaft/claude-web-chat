@@ -10,7 +10,7 @@
 
 > 远程访问 Claude Code CLI 的 Web 界面 — 多机器管理、端到端加密、多角色协作
 
-![Screenshot](docs/images/hero.jpg)
+![Screenshot](docs/images/zh-CN/hero.jpg)
 
 ## 功能特性
 
@@ -25,7 +25,7 @@ ChatGPT 风格对话界面，实时工具追踪，会话管理和文件上传。
 - 拖放上传文件和图片
 - 移动端响应式布局
 
-![Chat](docs/images/chat.jpg)
+![Chat](docs/images/zh-CN/chat.jpg)
 
 ### 帮帮团（Expert Panel）
 
@@ -46,9 +46,9 @@ AI 专家团队辅助对话 — 选择一个团队（如写作、交易），在
 - 多 Agent 跨 worktree 并行执行
 - Feature 完成检测，有新活动时自动重新激活
 
-![Crew Features](docs/images/crew-features.jpg)
+![Crew Features](docs/images/zh-CN/crew-features.jpg)
 
-![Crew Feature Detail](docs/images/crew-feature-detail.jpg)
+![Crew Feature Detail](docs/images/zh-CN/crew-feature-detail.jpg)
 
 ### 仪表板（Admin Dashboard）
 
@@ -59,7 +59,7 @@ AI 专家团队辅助对话 — 选择一个团队（如写作、交易），在
 - Agent 连接状态与延迟监控
 - 移动端响应式卡片布局
 
-![Dashboard](docs/images/dashboard.jpg)
+![Dashboard](docs/images/zh-CN/dashboard.jpg)
 
 ### Workbench（工作台）
 
@@ -70,7 +70,7 @@ AI 专家团队辅助对话 — 选择一个团队（如写作、交易），在
 - 文件浏览器 + CodeMirror 代码编辑器
 - 端口代理：将 Agent 本地端口转发到浏览器
 
-![Workbench](docs/images/workbench.jpg)
+![Workbench](docs/images/zh-CN/workbench.jpg)
 
 ## 前置要求
 
@@ -269,11 +269,11 @@ node cli.js uninstall
 
 Agent Secret 可在 Web 界面的 **设置 > 安全** 中找到：
 
-![设置 Agent](docs/images/setup-agent.jpg)
+![设置 Agent](docs/images/zh-CN/setup-agent.jpg)
 
 当没有 Agent 连接时，首页会引导你前往设置页面：
 
-![无 Agent](docs/images/no-agent.jpg)
+![无 Agent](docs/images/zh-CN/no-agent.jpg)
 
 ### Agent CLI 命令
 
