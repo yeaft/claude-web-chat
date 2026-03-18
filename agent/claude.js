@@ -5,17 +5,22 @@ import { sendConversationList, sendOutput, sendError, handleAskUserQuestion } fr
 /**
  * Determine maxContextTokens and autoCompactThreshold from model name.
  * Returns defaults suitable for the model's context window size.
+ *
+ * NOTE (2026-03): Opus 4.6 / Sonnet 4 have 200k context windows.
+ * Claude Code handles its own compaction internally, so we set the
+ * default threshold to 200k (effectively never triggers our custom compact).
+ * The thresholds are kept as parameters in case we need to re-enable later.
  */
 export function getModelContextConfig(modelName) {
-  if (!modelName) return { maxContext: 128000, compactThreshold: 110000 };
+  if (!modelName) return { maxContext: 200000, compactThreshold: 200000 };
   const name = modelName.toLowerCase();
   // Explicit 1M context indicators
   if (name.includes('1m') || name.includes('1000k')) {
     return { maxContext: 1000000, compactThreshold: 256000 };
   }
-  // Default: 128k — Copilot API models (Sonnet 4, Opus 4, Claude 3.5 etc.)
-  // report 200k context but actual usable window is 128k
-  return { maxContext: 128000, compactThreshold: 110000 };
+  // Default: 200k — Opus 4.6 / Sonnet 4 context window.
+  // Claude Code manages its own compaction; we no longer need custom compact logic.
+  return { maxContext: 200000, compactThreshold: 200000 };
 }
 
 /**
@@ -484,39 +489,41 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
     } else if (resultHandled) {
       // Turn 已正常完成，进程退出产生的 error 不发送给用户
       console.warn(`[SDK] Ignoring post-result error for ${conversationId}: ${error.message}`);
-    } else if (isPromptTokenOverflow(error.message) && state.claudeSessionId && !state._compactRetried) {
-      // ★ 兜底：prompt token 溢出 → 自动 compact + 重试（而非暴露 raw API error 给用户）
-      console.warn(`[SDK] Prompt token overflow for ${conversationId}, auto-compact + retry`);
-      const savedSessionId = state.claudeSessionId;
-      const savedLastMsg = state._lastUserMessage;
-
-      ctx.sendToServer({
-        type: 'compact_status',
-        conversationId,
-        status: 'compacting',
-        message: 'Context too long, auto-compacting and retrying...'
-      });
-
-      // 重启 SDK（startClaudeQuery 会先 abort 当前 state，使 finally 中 isStale=true）
-      try {
-        const newState = await startClaudeQuery(conversationId, state.workDir, savedSessionId);
-        newState._compactRetried = true; // 防止无限重试
-        newState.turnActive = true;
-        newState.turnResultReceived = false;
-
-        // 先 compact，再重试原始消息（如果有的话）
-        if (savedLastMsg) {
-          newState._pendingUserMessage = savedLastMsg;
-        }
-        newState.inputStream.enqueue({
-          type: 'user',
-          message: { role: 'user', content: '/compact' }
-        });
-        sendConversationList();
-      } catch (retryError) {
-        console.error(`[SDK] Compact-retry failed for ${conversationId}:`, retryError.message);
-        sendError(conversationId, `Context too long. Auto-compact failed: ${retryError.message}`);
-      }
+    // DISABLED (2026-03): Opus 4.6 has 200k context. Claude Code handles its own compaction.
+    // Keeping code for reference; re-enable if we ever need custom overflow recovery.
+    // } else if (isPromptTokenOverflow(error.message) && state.claudeSessionId && !state._compactRetried) {
+    //   // ★ 兜底：prompt token 溢出 → 自动 compact + 重试（而非暴露 raw API error 给用户）
+    //   console.warn(`[SDK] Prompt token overflow for ${conversationId}, auto-compact + retry`);
+    //   const savedSessionId = state.claudeSessionId;
+    //   const savedLastMsg = state._lastUserMessage;
+    //
+    //   ctx.sendToServer({
+    //     type: 'compact_status',
+    //     conversationId,
+    //     status: 'compacting',
+    //     message: 'Context too long, auto-compacting and retrying...'
+    //   });
+    //
+    //   // 重启 SDK（startClaudeQuery 会先 abort 当前 state，使 finally 中 isStale=true）
+    //   try {
+    //     const newState = await startClaudeQuery(conversationId, state.workDir, savedSessionId);
+    //     newState._compactRetried = true; // 防止无限重试
+    //     newState.turnActive = true;
+    //     newState.turnResultReceived = false;
+    //
+    //     // 先 compact，再重试原始消息（如果有的话）
+    //     if (savedLastMsg) {
+    //       newState._pendingUserMessage = savedLastMsg;
+    //     }
+    //     newState.inputStream.enqueue({
+    //       type: 'user',
+    //       message: { role: 'user', content: '/compact' }
+    //     });
+    //     sendConversationList();
+    //   } catch (retryError) {
+    //     console.error(`[SDK] Compact-retry failed for ${conversationId}:`, retryError.message);
+    //     sendError(conversationId, `Context too long. Auto-compact failed: ${retryError.message}`);
+    //   }
     } else {
       console.error(`[SDK] Error for ${conversationId}:`, error.message);
       sendError(conversationId, error.message);

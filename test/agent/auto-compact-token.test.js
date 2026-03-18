@@ -183,30 +183,30 @@ describe('_lastUserMessage tracking', () => {
 // =====================================================================
 
 describe('getModelContextConfig', () => {
-  it('returns 128k defaults for null/undefined model', () => {
-    expect(getModelContextConfig(null)).toEqual({ maxContext: 128000, compactThreshold: 110000 });
-    expect(getModelContextConfig(undefined)).toEqual({ maxContext: 128000, compactThreshold: 110000 });
+  it('returns 200k defaults for null/undefined model (Opus 4.6 context)', () => {
+    expect(getModelContextConfig(null)).toEqual({ maxContext: 200000, compactThreshold: 200000 });
+    expect(getModelContextConfig(undefined)).toEqual({ maxContext: 200000, compactThreshold: 200000 });
   });
 
-  it('returns 128k defaults for unknown model', () => {
-    expect(getModelContextConfig('some-unknown-model')).toEqual({ maxContext: 128000, compactThreshold: 110000 });
+  it('returns 200k defaults for unknown model', () => {
+    expect(getModelContextConfig('some-unknown-model')).toEqual({ maxContext: 200000, compactThreshold: 200000 });
   });
 
-  it('returns 128k defaults for Claude Sonnet 4 models (Copilot API reports 200k but actual is 128k)', () => {
+  it('returns 200k defaults for Claude Sonnet 4 models', () => {
     const config = getModelContextConfig('claude-sonnet-4-20250514');
-    expect(config.maxContext).toBe(128000);
-    expect(config.compactThreshold).toBe(110000);
+    expect(config.maxContext).toBe(200000);
+    expect(config.compactThreshold).toBe(200000);
   });
 
-  it('returns 128k defaults for Claude Opus 4 models', () => {
+  it('returns 200k defaults for Claude Opus 4 models', () => {
     const config = getModelContextConfig('claude-opus-4-20250514');
-    expect(config.maxContext).toBe(128000);
-    expect(config.compactThreshold).toBe(110000);
+    expect(config.maxContext).toBe(200000);
+    expect(config.compactThreshold).toBe(200000);
   });
 
-  it('returns 128k defaults for Claude 3.5 models', () => {
-    expect(getModelContextConfig('claude-3-5-sonnet-20241022').maxContext).toBe(128000);
-    expect(getModelContextConfig('claude-3.5-haiku-20241022').maxContext).toBe(128000);
+  it('returns 200k defaults for Claude 3.5 models', () => {
+    expect(getModelContextConfig('claude-3-5-sonnet-20241022').maxContext).toBe(200000);
+    expect(getModelContextConfig('claude-3.5-haiku-20241022').maxContext).toBe(200000);
   });
 
   it('returns 1M config for explicit 1M models', () => {
@@ -222,7 +222,7 @@ describe('getModelContextConfig', () => {
   });
 
   it('is case-insensitive', () => {
-    expect(getModelContextConfig('Claude-Sonnet-4-20250514').maxContext).toBe(128000);
+    expect(getModelContextConfig('Claude-Sonnet-4-20250514').maxContext).toBe(200000);
     expect(getModelContextConfig('CLAUDE-OPUS-4-1M').maxContext).toBe(1000000);
   });
 
@@ -233,11 +233,11 @@ describe('getModelContextConfig', () => {
     expect(config.compactThreshold).toBe(256000);
   });
 
-  it('compact threshold is always less than maxContext', () => {
+  it('compact threshold <= maxContext (200k effectively disables custom compact)', () => {
     const models = [null, 'claude-3-haiku', 'claude-sonnet-4-20250514', 'claude-opus-4-1m'];
     for (const model of models) {
       const config = getModelContextConfig(model);
-      expect(config.compactThreshold).toBeLessThan(config.maxContext);
+      expect(config.compactThreshold).toBeLessThanOrEqual(config.maxContext);
     }
   });
 });
