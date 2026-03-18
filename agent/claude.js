@@ -396,6 +396,10 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
 
       // 捕获 result 消息中的 usage 信息
       if (message.type === 'result') {
+        // Log result message keys for debugging slash command output
+        console.log(`[SDK] Result message keys: ${Object.keys(message).join(', ')}`);
+        if (message.result_text) console.log(`[SDK] result_text: ${message.result_text.substring(0, 200)}`);
+        if (message.result) console.log(`[SDK] result: ${String(message.result).substring(0, 200)}`);
         // 差值计算：usage 中的值是 query 实例级累计值
         if (message.usage) {
           const inputDelta = (message.usage.input_tokens || 0) - (state.lastResultInputTokens || 0);

@@ -108,6 +108,8 @@ export function handleClaudeOutput(store, conversationId, data) {
         store.finishStreamingForConversation(conversationId);
         return;
       }
+      // If local-command-stdout tag exists but regex didn't match, log for debugging
+      console.warn('[claudeOutput] local-command-stdout detected but regex failed, content length:', userContent.length);
     }
 
     let toolResults = [];
@@ -174,6 +176,12 @@ export function handleClaudeOutput(store, conversationId, data) {
       if (msg.type === 'tool-use' && !msg.hasResult) {
         msg.hasResult = true;
       }
+    }
+    // ★ Display result text if present (e.g., /skills, /context, etc.)
+    // Some slash commands return their output only in the result message
+    const resultText = data.result_text || data.result || '';
+    if (typeof resultText === 'string' && resultText.trim()) {
+      store.appendToAssistantMessageForConversation(conversationId, resultText.trim());
     }
     store.finishStreamingForConversation(conversationId);
   }
