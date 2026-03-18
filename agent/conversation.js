@@ -7,6 +7,20 @@ import { crewSessions, loadCrewIndex } from './crew.js';
 const UNSUPPORTED_SLASH_COMMANDS = ['/help', '/bug', '/login', '/logout', '/terminal-setup', '/vim', '/config'];
 
 /**
+ * Prestart Claude CLI process in background (fire-and-forget).
+ * When the query starts, processClaudeOutput will receive the system init message
+ * containing skills/tools/model and push them to the frontend immediately.
+ * This eliminates the delay where users had to send a message first.
+ *
+ * Errors are silently caught — failure just degrades to lazy-start behavior.
+ */
+function prestartClaude(conversationId, workDir, resumeSessionId) {
+  startClaudeQuery(conversationId, workDir, resumeSessionId).catch(err => {
+    console.warn(`[Prestart] Failed for ${conversationId}: ${err.message}`);
+  });
+}
+
+/**
  * 解析斜杠命令
  * @param {string} message - 用户消息
  * @returns {{type: string|null, command?: string, message: string, passthrough?: boolean}}
@@ -163,6 +177,10 @@ export async function createConversation(msg) {
   }
 
   sendConversationList();
+
+  // ★ Prestart Claude CLI in background to eagerly fetch skills/tools/model
+  // Fire-and-forget: failure just degrades to lazy-start behavior
+  prestartClaude(conversationId, effectiveWorkDir, null);
 }
 
 // Resume 历史 conversation (延迟启动 Claude，等待用户发送第一条消息)
@@ -242,6 +260,13 @@ export async function resumeConversation(msg) {
   }
 
   sendConversationList();
+
+  // ★ Prestart Claude CLI in background to eagerly fetch skills/tools/model
+  // Skip if conversation already has an active query (shouldn't happen, but safety check)
+  const resumeState = ctx.conversations.get(conversationId);
+  if (!resumeState?.query) {
+    prestartClaude(conversationId, effectiveWorkDir, claudeSessionId);
+  }
 }
 
 // 删除 conversation
