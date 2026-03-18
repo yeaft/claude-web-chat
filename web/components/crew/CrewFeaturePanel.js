@@ -254,15 +254,28 @@ export default {
       const turns = this.getBlockTurns(block);
       if (!turns || turns.length === 0) return false;
 
-      // Check last few turns for merge/completion keywords from decision maker
+      // Find the LAST merge/completion message from decision maker.
+      // Then check if any text messages came after it — if so, feature was reactivated.
       const MERGE_PATTERN = /(?:已\s*(?:合并|merge)|squash\s*merge|PR\s*#\d+\s*已|tag\s+v[\d.]+\s*已|已\s*push|merged\s+to\s+main|已\s*完成)/i;
-      for (let i = turns.length - 1; i >= Math.max(0, turns.length - 3); i--) {
+      let lastMergeIdx = -1;
+      for (let i = turns.length - 1; i >= 0; i--) {
         const turn = turns[i];
         const msg = turn.textMsg || turn.message;
         if (!msg || !msg.content) continue;
-        if (msg.isDecisionMaker && MERGE_PATTERN.test(msg.content)) return true;
+        if (msg.isDecisionMaker && MERGE_PATTERN.test(msg.content)) {
+          lastMergeIdx = i;
+          break;
+        }
       }
-      return false;
+      if (lastMergeIdx === -1) return false;
+
+      // Check if any text messages exist after the merge message — reactivation
+      for (let i = lastMergeIdx + 1; i < turns.length; i++) {
+        const turn = turns[i];
+        const msg = turn.textMsg || turn.message;
+        if (msg && msg.content) return false; // reactivated
+      }
+      return true;
     },
 
     /**
