@@ -8,8 +8,7 @@ export const SYSTEM_SKILLS = {
   '/memory': 'View/edit memory',
   '/model': 'View/switch model',
   '/review': 'Code review',
-  '/mcp': 'MCP server status',
-  '/skills': 'List available skills'
+  '/mcp': 'MCP server status'
 };
 
 export const SYSTEM_SKILL_NAMES = new Set(Object.keys(SYSTEM_SKILLS));

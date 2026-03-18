@@ -101,6 +101,15 @@ export function handleClaudeOutput(store, conversationId, data) {
       return;
     }
 
+    // 过滤 Claude CLI 内部消息（不应显示在 UI 中）
+    // - <local-command-caveat> — CLI 内部 caveat 标记
+    // - <command-name>/<command-message>/<command-args> — slash command 元数据
+    if (typeof userContent === 'string') {
+      if (userContent.includes('<local-command-caveat>') || userContent.includes('<command-name>')) {
+        return;
+      }
+    }
+
     if (typeof userContent === 'string' && userContent.includes('<local-command-stdout>')) {
       const match = userContent.match(/<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/);
       if (match) {
