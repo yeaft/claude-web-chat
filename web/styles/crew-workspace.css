@@ -226,7 +226,7 @@
 .crew-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 0;
+  padding: 12px 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1049,6 +1049,12 @@
 
 .crew-feature-card.has-streaming {
   border-color: var(--accent-blue);
+  animation: feature-pulse 2s ease-in-out infinite;
+}
+
+@keyframes feature-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
 .crew-feature-card.is-completed {
