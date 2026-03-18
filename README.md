@@ -10,7 +10,7 @@
 
 > A web interface for remotely accessing Claude Code CLI — multi-machine management, end-to-end encryption, multi-role collaboration
 
-![Screenshot](docs/images/hero.png)
+![Screenshot](docs/images/hero.jpg)
 
 ## Features
 
@@ -25,7 +25,7 @@ ChatGPT-style conversational interface with real-time tool tracking, session man
 - Drag-and-drop file/image attachments
 - Mobile-responsive layout
 
-![Chat](docs/images/chat.png)
+![Chat](docs/images/chat.jpg)
 
 ### Expert Panel
 
@@ -57,6 +57,8 @@ Usage statistics and system monitoring for administrators.
 - Connected agent status and latency monitoring
 - Mobile-responsive card layout
 
+![Dashboard](docs/images/dashboard.jpg)
+
 ### Workbench
 
 Integrated development environment with terminal, Git operations, file browser, and port proxy.
@@ -66,7 +68,7 @@ Integrated development environment with terminal, Git operations, file browser, 
 - File browser with CodeMirror editor
 - Port proxy: forward agent local ports to your browser
 
-![Workbench](docs/images/workbench.png)
+![Workbench](docs/images/workbench.jpg)
 
 ## Prerequisites
 
@@ -213,11 +215,11 @@ node cli.js uninstall
 
 You can find the Agent secret in **Settings > Security** within the web interface:
 
-![Setup Agent](docs/images/setup-agent.png)
+![Setup Agent](docs/images/setup-agent.jpg)
 
 When no Agent is connected, the welcome page guides you to Settings:
 
-![No Agent](docs/images/no-agent.png)
+![No Agent](docs/images/no-agent.jpg)
 
 ### Agent CLI
 
