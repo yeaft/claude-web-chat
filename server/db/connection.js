@@ -83,11 +83,24 @@ db.exec(`
     updated_at INTEGER NOT NULL DEFAULT 0
   );
 
+  -- 每日统计表（按天聚合用户用量）
+  CREATE TABLE IF NOT EXISTS daily_stats (
+    user_id TEXT NOT NULL REFERENCES users(id),
+    date TEXT NOT NULL,
+    message_count INTEGER DEFAULT 0,
+    session_count INTEGER DEFAULT 0,
+    request_count INTEGER DEFAULT 0,
+    bytes_sent INTEGER DEFAULT 0,
+    bytes_received INTEGER DEFAULT 0,
+    PRIMARY KEY (user_id, date)
+  );
+
   -- 基本索引（不依赖迁移列）
   CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
   CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
   CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
+  CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date);
 `);
 
 // 数据库迁移 - 添加缺失的列
@@ -338,6 +351,38 @@ export const stmts = {
       bytes_sent = bytes_sent + excluded.bytes_sent,
       bytes_received = bytes_received + excluded.bytes_received,
       updated_at = excluded.updated_at
+  `),
+
+  // DailyStats 操作
+  upsertDailyStats: db.prepare(`
+    INSERT INTO daily_stats (user_id, date, message_count, session_count, request_count, bytes_sent, bytes_received)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, date) DO UPDATE SET
+      message_count = message_count + excluded.message_count,
+      session_count = session_count + excluded.session_count,
+      request_count = request_count + excluded.request_count,
+      bytes_sent = bytes_sent + excluded.bytes_sent,
+      bytes_received = bytes_received + excluded.bytes_received
+  `),
+
+  getDailyStatsAll: db.prepare(`
+    SELECT ds.user_id, u.username, u.display_name, u.role, u.last_login_at,
+      SUM(ds.message_count) as message_count, SUM(ds.session_count) as session_count,
+      SUM(ds.request_count) as request_count, SUM(ds.bytes_sent) as bytes_sent,
+      SUM(ds.bytes_received) as bytes_received
+    FROM daily_stats ds
+    JOIN users u ON ds.user_id = u.id
+    WHERE ds.date >= ?
+    GROUP BY ds.user_id
+    ORDER BY message_count DESC
+  `),
+
+  getTodayActiveUsers: db.prepare(`
+    SELECT COUNT(DISTINCT user_id) as count FROM daily_stats WHERE date = ?
+  `),
+
+  getTodayMessages: db.prepare(`
+    SELECT COALESCE(SUM(message_count), 0) as count FROM daily_stats WHERE date = ?
   `),
 
   getUserStats: db.prepare(`

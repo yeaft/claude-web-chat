@@ -26,7 +26,9 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
         totalSessions: totals.total_sessions,
         totalMessages: totals.total_messages,
         onlineUsers: onlineUsers.size,
-        onlineAgents
+        onlineAgents,
+        todayActiveUsers: userStatsDb.getTodayActiveUsers(),
+        todayMessages: userStatsDb.getTodayMessages()
       });
     } catch (e) {
       console.error('[Admin] Dashboard error:', e.message);
@@ -34,10 +36,12 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
     }
   });
 
-  // GET /api/admin/user-stats — per-user stats list
+  // GET /api/admin/user-stats — per-user stats list (supports ?period=today|week|month|all)
   app.get('/api/admin/user-stats', requireAuth, requireAdmin, (req, res) => {
     try {
-      const stats = userStatsDb.getAll();
+      const period = req.query.period || 'all';
+      const validPeriods = ['today', 'week', 'month', 'all'];
+      const stats = userStatsDb.getByPeriod(validPeriods.includes(period) ? period : 'all');
       res.json(stats.map(s => ({
         userId: s.user_id,
         username: s.username,

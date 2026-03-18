@@ -19,16 +19,16 @@ export default {
             <div class="db-stat-label">{{ $t('settings.dashboard.totalUsers') }}</div>
           </div>
           <div class="db-stat-card">
-            <div class="db-stat-value" :class="{ 'is-active': overview.onlineUsers > 0 }">{{ overview.onlineUsers }}</div>
-            <div class="db-stat-label">{{ $t('settings.dashboard.onlineUsers') }}</div>
+            <div class="db-stat-value" :class="{ 'is-active': overview.todayActiveUsers > 0 }">{{ overview.todayActiveUsers }}</div>
+            <div class="db-stat-label">{{ $t('settings.dashboard.todayActive') }}</div>
           </div>
           <div class="db-stat-card">
             <div class="db-stat-value" :class="{ 'is-active': overview.onlineAgents > 0 }">{{ overview.onlineAgents }}</div>
             <div class="db-stat-label">{{ $t('settings.dashboard.onlineAgents') }}</div>
           </div>
           <div class="db-stat-card">
-            <div class="db-stat-value">{{ overview.totalSessions }}</div>
-            <div class="db-stat-label">{{ $t('settings.dashboard.totalSessions') }}</div>
+            <div class="db-stat-value">{{ formatNumber(overview.todayMessages) }}</div>
+            <div class="db-stat-label">{{ $t('settings.dashboard.todayMessages') }}</div>
           </div>
         </div>
 
@@ -38,6 +38,15 @@ export default {
             <div class="db-section-title">{{ $t('settings.dashboard.userUsage') }}</div>
             <button class="db-refresh-btn" :class="{ 'is-loading': loading }" @click="refreshAll" :disabled="loading" :title="$t('settings.dashboard.refresh')">
               <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+            </button>
+          </div>
+
+          <!-- Period tabs -->
+          <div class="db-period-tabs">
+            <button v-for="p in periods" :key="p.value"
+                    class="db-period-tab" :class="{ 'is-active': statsPeriod === p.value }"
+                    @click="switchPeriod(p.value)">
+              {{ p.label }}
             </button>
           </div>
 
@@ -193,7 +202,8 @@ export default {
       loading: false,
       loaded: false,
       error: false,
-      overview: { totalUsers: 0, onlineUsers: 0, onlineAgents: 0, totalSessions: 0 },
+      overview: { totalUsers: 0, todayActiveUsers: 0, onlineAgents: 0, todayMessages: 0 },
+      statsPeriod: 'all',
       userStats: [],
       agents: [],
       onlineUsers: []
@@ -201,6 +211,16 @@ export default {
   },
   mounted() {
     this.fetchAll();
+  },
+  computed: {
+    periods() {
+      return [
+        { value: 'today', label: this.$t('settings.dashboard.today') },
+        { value: 'week', label: this.$t('settings.dashboard.thisWeek') },
+        { value: 'month', label: this.$t('settings.dashboard.thisMonth') },
+        { value: 'all', label: this.$t('settings.dashboard.all') }
+      ];
+    }
   },
   methods: {
     getHeaders() {
@@ -219,7 +239,7 @@ export default {
         const headers = this.getHeaders();
         const [dashboardRes, userStatsRes, agentsRes, onlineUsersRes] = await Promise.all([
           fetch('/api/admin/dashboard', { headers }),
-          fetch('/api/admin/user-stats', { headers }),
+          fetch(`/api/admin/user-stats?period=${this.statsPeriod}`, { headers }),
           fetch('/api/admin/agents', { headers }),
           fetch('/api/admin/online-users', { headers })
         ]);
@@ -238,13 +258,13 @@ export default {
 
         this.overview = {
           totalUsers: dashboard.totalUsers ?? 0,
-          onlineUsers: dashboard.onlineUsers ?? 0,
+          todayActiveUsers: dashboard.todayActiveUsers ?? 0,
           onlineAgents: dashboard.onlineAgents ?? 0,
-          totalSessions: dashboard.totalSessions ?? 0
+          todayMessages: dashboard.todayMessages ?? 0
         };
-        this.userStats = userStats.users ?? [];
-        this.agents = agents.agents ?? [];
-        this.onlineUsers = onlineUsers.users ?? [];
+        this.userStats = Array.isArray(userStats) ? userStats : [];
+        this.agents = Array.isArray(agents) ? agents : [];
+        this.onlineUsers = Array.isArray(onlineUsers) ? onlineUsers : [];
         this.loaded = true;
       } catch {
         this.error = true;
@@ -255,6 +275,24 @@ export default {
 
     async refreshAll() {
       await this.fetchAll();
+    },
+
+    async switchPeriod(period) {
+      if (period === this.statsPeriod) return;
+      this.statsPeriod = period;
+      await this.fetchUserStats();
+    },
+
+    async fetchUserStats() {
+      try {
+        const headers = this.getHeaders();
+        const res = await fetch(`/api/admin/user-stats?period=${this.statsPeriod}`, { headers });
+        if (!res.ok) return;
+        const data = await res.json();
+        this.userStats = Array.isArray(data) ? data : [];
+      } catch {
+        // Silently fail — user can retry via refresh
+      }
     },
 
     latencyClass(latency) {
