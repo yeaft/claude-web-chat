@@ -256,38 +256,40 @@ export async function dispatchToRole(session, roleName, content, fromSource, tas
     timestamp: Date.now()
   });
 
+  // DISABLED (2026-03): Opus 4.6 has 200k context. Claude Code handles its own compaction.
+  // Keeping code for reference; re-enable if we ever need custom crew pre-send compact.
   // ★ Pre-send compact check: estimate total tokens and clear+rebuild if needed
-  const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 100000;
-  const lastInputTokens = roleState.lastInputTokens || 0;
-  const estimatedNewTokens = Math.ceil((typeof content === 'string' ? content.length : 0) / 3);
-  const estimatedTotal = lastInputTokens + estimatedNewTokens;
-
-  if (lastInputTokens > 0 && estimatedTotal > autoCompactThreshold) {
-    console.log(`[Crew] Pre-send compact for ${roleName}: estimated ${estimatedTotal} tokens (last: ${lastInputTokens} + new: ~${estimatedNewTokens}) exceeds threshold ${autoCompactThreshold}`);
-
-    // Save work summary before clearing (use lastTurnText since accumulatedText is cleared after result)
-    await saveRoleWorkSummary(session, roleName, roleState.lastTurnText || roleState.accumulatedText || '').catch(e =>
-      console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
-
-    // Clear role session and rebuild
-    await clearRoleSessionId(session.sharedDir, roleName);
-    roleState.claudeSessionId = null;
-
-    if (roleState.abortController) roleState.abortController.abort();
-    roleState.query = null;
-    roleState.inputStream = null;
-
-    sendCrewMessage({
-      type: 'crew_role_cleared',
-      sessionId: session.id,
-      role: roleName,
-      contextPercentage: Math.round((lastInputTokens / (ctx.CONFIG?.maxContextTokens || 128000)) * 100),
-      reason: 'pre_send_compact'
-    });
-
-    // Recreate the query (fresh Claude process)
-    roleState = await createRoleQuery(session, roleName);
-  }
+  // const autoCompactThreshold = ctx.CONFIG?.autoCompactThreshold || 100000;
+  // const lastInputTokens = roleState.lastInputTokens || 0;
+  // const estimatedNewTokens = Math.ceil((typeof content === 'string' ? content.length : 0) / 3);
+  // const estimatedTotal = lastInputTokens + estimatedNewTokens;
+  //
+  // if (lastInputTokens > 0 && estimatedTotal > autoCompactThreshold) {
+  //   console.log(`[Crew] Pre-send compact for ${roleName}: estimated ${estimatedTotal} tokens (last: ${lastInputTokens} + new: ~${estimatedNewTokens}) exceeds threshold ${autoCompactThreshold}`);
+  //
+  //   // Save work summary before clearing (use lastTurnText since accumulatedText is cleared after result)
+  //   await saveRoleWorkSummary(session, roleName, roleState.lastTurnText || roleState.accumulatedText || '').catch(e =>
+  //     console.warn(`[Crew] Failed to save work summary for ${roleName}:`, e.message));
+  //
+  //   // Clear role session and rebuild
+  //   await clearRoleSessionId(session.sharedDir, roleName);
+  //   roleState.claudeSessionId = null;
+  //
+  //   if (roleState.abortController) roleState.abortController.abort();
+  //   roleState.query = null;
+  //   roleState.inputStream = null;
+  //
+  //   sendCrewMessage({
+  //     type: 'crew_role_cleared',
+  //     sessionId: session.id,
+  //     role: roleName,
+  //     contextPercentage: Math.round((lastInputTokens / (ctx.CONFIG?.maxContextTokens || 128000)) * 100),
+  //     reason: 'pre_send_compact'
+  //   });
+  //
+  //   // Recreate the query (fresh Claude process)
+  //   roleState = await createRoleQuery(session, roleName);
+  // }
 
   // P1-4: 守卫 stream.enqueue — stream 可能已被 abort 关闭
   roleState.lastDispatchContent = content;
