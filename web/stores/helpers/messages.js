@@ -182,16 +182,47 @@ export function formatDbMessage(dbMsg) {
     };
   } else if (dbMsg.role === 'assistant') {
     const text = extractTextContent(dbMsg.content);
-    // Check if content has tool_use blocks (assistant msg with only tool_use and no text)
-    const hasToolUse = (() => {
-      if (!dbMsg.content || typeof dbMsg.content !== 'string' || !dbMsg.content.startsWith('[')) return false;
+
+    // ★ Extract embedded tool_use blocks from assistant content JSON array.
+    // Normally agent-output.js stores text and tool_use as separate DB records,
+    // but in edge cases (SDK format changes, bulkAddHistory quirks) the content
+    // may be a JSON array containing both text and tool_use blocks.
+    // We extract tool_use blocks as separate tool-use messages so turnGroups
+    // can aggregate them correctly with the assistant text.
+    const embeddedToolUse = (() => {
+      if (!dbMsg.content || typeof dbMsg.content !== 'string' || !dbMsg.content.startsWith('[')) return [];
       try {
         const parsed = JSON.parse(dbMsg.content);
-        return Array.isArray(parsed) && parsed.some(b => b.type === 'tool_use');
-      } catch { return false; }
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter(b => b.type === 'tool_use' && b.name);
+      } catch { return []; }
     })();
-    // Keep assistant message if it has text OR has tool_use blocks (needed for turn grouping)
-    if (!text && !hasToolUse) return null;
+
+    if (!text && embeddedToolUse.length === 0) return null;
+
+    // If there are embedded tool_use blocks, return an array: [assistant, ...tool-use msgs]
+    if (embeddedToolUse.length > 0) {
+      const results = [];
+      if (text) {
+        results.push({ ...base, type: 'assistant', content: text });
+      }
+      for (let i = 0; i < embeddedToolUse.length; i++) {
+        const block = embeddedToolUse[i];
+        results.push({
+          id: dbMsg.id + '_tool_' + i,
+          dbMessageId: dbMsg.id,
+          timestamp: dbMsg.created_at,
+          type: 'tool-use',
+          toolName: block.name,
+          toolInput: block.input || {},
+          hasResult: true,
+          isHistory: true,
+          startTime: dbMsg.created_at || 0
+        });
+      }
+      return results;
+    }
+
     return {
       ...base,
       type: 'assistant',
