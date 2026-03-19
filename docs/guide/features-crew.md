@@ -8,7 +8,8 @@ Multi-role AI team collaboration with PM, Developer, Reviewer, and Tester roles 
 
 ## Features
 
-- **Automated task routing** — Messages are automatically routed between roles based on workflow rules
-- **Feature progress tracking** — Kanban board view showing feature status across all roles
-- **Role-based message grouping** — Messages grouped by role with status indicators
-- **Parallel multi-agent execution** — Multiple agents can work simultaneously on different roles
+- **Automated task routing** — Messages are automatically routed between roles via ROUTE protocol
+- **Feature progress tracking** — Real-time status panel with streaming pulse animation
+- **Role-based message grouping** — Decision-maker messages in main stream, grouped by role
+- **Parallel multi-agent execution** — Multiple agents work simultaneously across worktrees
+- **Smart completion detection** — Feature completion detection with auto-reactivation on new activity

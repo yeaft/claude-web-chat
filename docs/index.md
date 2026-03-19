@@ -21,10 +21,18 @@ features:
     title: Chat
     details: ChatGPT-style conversational interface with real-time tool tracking, session management, and file uploads.
     link: /guide/features-chat
+  - icon: 🧠
+    title: Expert Panel
+    details: AI expert teams assist your conversations — select a team and get multi-perspective advice in a side panel.
+    link: /guide/features-expert-panel
   - icon: 👥
     title: Crew
     details: Multi-role AI team collaboration with PM, Developer, Reviewer, and Tester roles working together on features.
     link: /guide/features-crew
+  - icon: 📊
+    title: Dashboard
+    details: Admin usage statistics and system monitoring with per-user breakdown and agent status tracking.
+    link: /guide/features-dashboard
   - icon: 🛠️
     title: Workbench
     details: Integrated development environment with terminal, Git operations, file browser, and port proxy.

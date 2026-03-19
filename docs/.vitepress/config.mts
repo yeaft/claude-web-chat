@@ -42,7 +42,9 @@ export default defineConfig({
             text: 'Features',
             items: [
               { text: 'Chat', link: '/guide/features-chat' },
+              { text: 'Expert Panel', link: '/guide/features-expert-panel' },
               { text: 'Crew', link: '/guide/features-crew' },
+              { text: 'Dashboard', link: '/guide/features-dashboard' },
               { text: 'Workbench', link: '/guide/features-workbench' },
               { text: 'User Guide', link: '/USER_GUIDE' },
             ],
@@ -87,7 +89,9 @@ export default defineConfig({
             text: '功能',
             items: [
               { text: 'Chat 聊天', link: '/zh-CN/guide/features-chat' },
+              { text: '帮帮团', link: '/zh-CN/guide/features-expert-panel' },
               { text: 'Crew 多角色协作', link: '/zh-CN/guide/features-crew' },
+              { text: '仪表板', link: '/zh-CN/guide/features-dashboard' },
               { text: 'Workbench 工作台', link: '/zh-CN/guide/features-workbench' },
               { text: '用户手册', link: '/zh-CN/USER_GUIDE' },
             ],

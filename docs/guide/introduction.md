@@ -12,20 +12,31 @@ ChatGPT-style conversational interface with real-time tool tracking, session man
 
 - Real-time streaming of Claude responses
 - Visual display of Read, Edit, Bash, and other tool executions
+- Slash commands (`/model`, `/memory`, `/skills`, etc.) with autocomplete
 - Session persistence with SQLite-backed history
 - Drag-and-drop file/image attachments
 - Mobile-responsive layout
 
 ![Chat](/images/chat.jpg)
 
+### Expert Panel
+
+AI expert teams that assist your conversations — select a team (e.g. Writing, Trading) and get multi-perspective advice in a side panel.
+
+- Multiple pre-built expert teams with specialized roles
+- Expert responses appear in a collapsible side panel
+- Team selection via chip-style tabs
+- Works alongside normal chat without interrupting the flow
+
 ### Crew (Multi-Agent Collaboration)
 
 Multi-role AI team collaboration with PM, Developer, Reviewer, and Tester roles working together on features.
 
-- Automated task routing between roles
-- Feature progress tracking with Kanban board
-- Role-based message grouping and status indicators
-- Parallel multi-agent execution
+- Automated task routing between roles via ROUTE protocol
+- Feature progress tracking panel with real-time status (streaming pulse animation)
+- Role-based message grouping with decision-maker messages in main stream
+- Parallel multi-agent execution across multiple worktrees
+- Feature completion detection with auto-reactivation on new activity
 
 ![Crew Features](/images/crew-features.jpg)
 
@@ -41,6 +52,17 @@ Integrated development environment with terminal, Git operations, file browser, 
 - Port proxy: forward agent local ports to your browser
 
 ![Workbench](/images/workbench.jpg)
+
+### Admin Dashboard
+
+Usage statistics and system monitoring for administrators.
+
+- User activity metrics with time-based filtering (today/week/month)
+- Per-user usage breakdown (messages, sessions, requests, traffic)
+- Connected agent status and latency monitoring
+- Mobile-responsive card layout
+
+![Dashboard](/images/dashboard.jpg)
 
 ## Prerequisites
 

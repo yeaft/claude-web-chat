@@ -21,10 +21,18 @@ features:
     title: Chat 聊天
     details: ChatGPT 风格对话界面，实时工具追踪，会话管理和文件上传。
     link: /zh-CN/guide/features-chat
+  - icon: 🧠
+    title: 帮帮团
+    details: AI 专家团队辅助对话 — 选择一个团队，在侧边面板获取多视角建议。
+    link: /zh-CN/guide/features-expert-panel
   - icon: 👥
     title: Crew 多角色协作
     details: 多角色 AI 团队协作，PM、开发者、审查者、测试者等角色协同完成 Feature 开发。
     link: /zh-CN/guide/features-crew
+  - icon: 📊
+    title: 仪表板
+    details: 管理员使用统计与系统监控，按用户维度使用量明细和 Agent 状态追踪。
+    link: /zh-CN/guide/features-dashboard
   - icon: 🛠️
     title: Workbench 工作台
     details: 集成开发环境：终端、Git 操作、文件浏览器和端口代理。
