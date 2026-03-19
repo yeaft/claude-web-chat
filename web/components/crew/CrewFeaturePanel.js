@@ -325,21 +325,36 @@ export default {
       const turns = this.getBlockTurns(block);
       if (!turns || turns.length === 0) return null;
 
-      // Walk backward through turns to find the latest text content
+      // Walk backward through turns to find the latest visible content (text or route)
       for (let i = turns.length - 1; i >= 0; i--) {
         const turn = turns[i];
-        if (turn.type === 'turn' && turn.textMsg) {
-          const timestamp = turn.messages?.[0]?.timestamp || turn.textMsg.timestamp;
-          const rawRole = turn.role || turn.roleName || '';
-          const actions = (turn.toolMsgs || []).map(t => t.toolName).filter(Boolean);
-          return {
-            icon: turn.roleIcon || '',
-            roleName: this.getRoleDisplayName(rawRole),
-            role: rawRole,
-            text: this.truncateText(turn.textMsg.content, 80),
-            time: timestamp ? formatTime(timestamp) : '',
-            actions
-          };
+        if (turn.type === 'turn') {
+          if (turn.textMsg) {
+            const timestamp = turn.messages?.[0]?.timestamp || turn.textMsg.timestamp;
+            const rawRole = turn.role || turn.roleName || '';
+            const actions = (turn.toolMsgs || []).map(t => t.toolName).filter(Boolean);
+            return {
+              icon: turn.roleIcon || '',
+              roleName: this.getRoleDisplayName(rawRole),
+              role: rawRole,
+              text: this.truncateText(turn.textMsg.content, 80),
+              time: timestamp ? formatTime(timestamp) : '',
+              actions
+            };
+          }
+          // Route-only turn — show the route summary as card text
+          if (turn.routeMsgs && turn.routeMsgs.length > 0) {
+            const rm = turn.routeMsgs[turn.routeMsgs.length - 1];
+            const rawRole = turn.role || turn.roleName || '';
+            return {
+              icon: turn.roleIcon || '',
+              roleName: this.getRoleDisplayName(rawRole),
+              role: rawRole,
+              text: `→ ${this.getRoleDisplayName(rm.routeTo)}: ${this.truncateText(rm.routeSummary, 60)}`,
+              time: rm.timestamp ? formatTime(rm.timestamp) : '',
+              actions: []
+            };
+          }
         }
         if (turn.type !== 'turn' && turn.message?.type === 'text') {
           const rawRole = turn.message.role || turn.message.roleName || '';

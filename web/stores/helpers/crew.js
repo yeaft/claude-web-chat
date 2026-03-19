@@ -255,6 +255,7 @@ export function handleCrewOutput(store, msg) {
           content: m.content,
           routeTo: m.routeTo,
           routeSummary: m.routeSummary || '',
+          round: m.round || 0,
           toolName: m.toolName || null,
           toolId: m.toolId || null,
           toolInput: m.toolInput || null,
@@ -439,6 +440,13 @@ export function handleCrewOutput(store, msg) {
     }
 
     if (msg.outputType === 'route') {
+      // End streaming on this role's last text (route = turn finished, same as tool_use)
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === msg.role && messages[i].type === 'text' && messages[i]._streaming) {
+          messages[i]._streaming = false;
+          break;
+        }
+      }
       messages.push({
         ...crewMsg,
         type: 'route',
@@ -615,6 +623,7 @@ export function handleCrewOutput(store, msg) {
           content: m.content,
           routeTo: m.routeTo,
           routeSummary: m.routeSummary || '',
+          round: m.round || 0,
           toolName: m.toolName || null,
           toolId: m.toolId || null,
           toolInput: m.toolInput || null,
