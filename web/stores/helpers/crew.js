@@ -155,6 +155,23 @@ export function removeCrewRole(store, roleName) {
   });
 }
 
+export function renameCrewSession(store, sessionId, name) {
+  // Optimistic update: immediately reflect in sidebar
+  const conv = store.conversations.find(c => c.id === sessionId);
+  if (conv) conv.name = name;
+  // Also update crewSessions metadata if present
+  if (store.crewSessions[sessionId]) {
+    store.crewSessions[sessionId].name = name;
+  }
+  // Persist via agent
+  store.sendWsMessage({
+    type: 'update_crew_session',
+    sessionId,
+    name,
+    agentId: store.currentAgent
+  });
+}
+
 export function handleCrewOutput(store, msg) {
   if (!msg) return;
   const sid = msg.sessionId;

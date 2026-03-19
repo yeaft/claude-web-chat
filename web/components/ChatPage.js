@@ -190,13 +190,27 @@ export default {
                 :key="conv.id"
                 class="session-item session-item-crew"
                 :class="{ active: conv.id === store.currentConversation, processing: store.isConversationProcessing(conv.id) }"
-                @click="selectConversation(conv.id, conv.agentId)"
+                @click="editingCrewId !== conv.id && selectConversation(conv.id, conv.agentId)"
               >
                 <div class="session-item-header">
                   <div class="title" :title="getConversationFullTitle(conv)">
                     <span v-if="store.isConversationProcessing(conv.id)" class="processing-dot"></span>
                     <svg class="crew-conv-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
-                    {{ getCrewTitle(conv) }}
+                    <input
+                      v-if="editingCrewId === conv.id"
+                      ref="crewRenameInput"
+                      class="crew-rename-input"
+                      v-model="editingCrewName"
+                      @keydown.enter="commitCrewRename"
+                      @keydown.escape="cancelCrewRename"
+                      @blur="commitCrewRename"
+                      @click.stop
+                    />
+                    <span
+                      v-else
+                      class="crew-title-text"
+                      @dblclick.stop="startCrewRename(conv)"
+                    >{{ getCrewTitle(conv) }}</span>
                   </div>
                   <span class="session-time">{{ getConversationTime(conv) }}</span>
                   <button class="session-delete-btn" @click.stop="deleteConversation(conv.id, conv.agentId)" :title="$t('chat.sidebar.closeConv')">
@@ -474,7 +488,10 @@ export default {
       folderPickerTarget: '', // 'convModal'
       serverVersion: '',
       chatGroupCollapsed: false,
-      crewGroupCollapsed: false
+      crewGroupCollapsed: false,
+      // Inline rename state
+      editingCrewId: null,
+      editingCrewName: ''
     };
   },
   computed: {
@@ -744,6 +761,35 @@ export default {
     },
     getCrewTitle(conv) {
       return conv.name || 'Crew Session';
+    },
+    startCrewRename(conv) {
+      this.editingCrewId = conv.id;
+      this.editingCrewName = conv.name || '';
+      this.$nextTick(() => {
+        const input = this.$refs.crewRenameInput;
+        if (input) {
+          const el = Array.isArray(input) ? input[0] : input;
+          el.focus();
+          el.select();
+        }
+      });
+    },
+    commitCrewRename() {
+      if (!this.editingCrewId) return;
+      const sessionId = this.editingCrewId;
+      const name = this.editingCrewName.trim() || 'Crew Session';
+      this.editingCrewId = null;
+      this.editingCrewName = '';
+      // Find current name to avoid unnecessary WS call
+      const conv = this.store.conversations.find(c => c.id === sessionId);
+      const currentName = conv?.name || '';
+      if (name !== currentName) {
+        this.store.renameCrewSession(sessionId, name === 'Crew Session' ? '' : name);
+      }
+    },
+    cancelCrewRename() {
+      this.editingCrewId = null;
+      this.editingCrewName = '';
     },
     getConversationTime(conv) {
       // 优先显示最后活动时间，其次创建时间
