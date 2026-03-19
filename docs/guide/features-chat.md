@@ -2,7 +2,7 @@
 
 ChatGPT-style conversational interface with real-time tool tracking, session management, and file uploads.
 
-![Chat](/images/chat.png)
+![Chat](/images/chat.jpg)
 
 ## Features
 

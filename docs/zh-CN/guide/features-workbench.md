@@ -2,7 +2,7 @@
 
 集成开发环境：终端、Git 操作、文件浏览器和端口代理。
 
-![Workbench](/images/workbench.png)
+![Workbench](/images/zh-CN/workbench.jpg)
 
 ## 功能
 

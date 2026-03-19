@@ -6,7 +6,7 @@ hero:
   text: 远程访问 Claude Code CLI
   tagline: 多机器管理、端到端加密、多角色协作
   image:
-    src: /images/hero.png
+    src: /images/zh-CN/hero.jpg
     alt: Claude Web Chat
   actions:
     - theme: brand

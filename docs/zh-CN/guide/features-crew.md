@@ -2,7 +2,9 @@
 
 多角色 AI 团队协作，PM、开发者、审查者、测试者等角色协同完成 Feature 开发。
 
-![Crew](/images/crew.png)
+![Crew Features](/images/zh-CN/crew-features.jpg)
+
+![Crew Feature Detail](/images/zh-CN/crew-feature-detail.jpg)
 
 ## 功能
 

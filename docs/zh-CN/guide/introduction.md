@@ -2,7 +2,7 @@
 
 Claude Web Chat 是一个用于远程访问 [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) 的 Web 界面 — 提供多机器管理、端到端加密和多角色协作。
 
-![Screenshot](/images/hero.png)
+![Screenshot](/images/zh-CN/hero.jpg)
 
 ## 核心功能
 
@@ -16,7 +16,7 @@ ChatGPT 风格对话界面，实时工具追踪，会话管理和文件上传。
 - 拖放上传文件和图片
 - 移动端响应式布局
 
-![Chat](/images/chat.png)
+![Chat](/images/zh-CN/chat.jpg)
 
 ### Crew（多角色协作）
 
@@ -27,7 +27,9 @@ ChatGPT 风格对话界面，实时工具追踪，会话管理和文件上传。
 - 按角色分组的消息展示与状态指示
 - 多 Agent 并行执行
 
-![Crew](/images/crew.png)
+![Crew Features](/images/zh-CN/crew-features.jpg)
+
+![Crew Feature Detail](/images/zh-CN/crew-feature-detail.jpg)
 
 ### Workbench（工作台）
 
@@ -38,7 +40,7 @@ ChatGPT 风格对话界面，实时工具追踪，会话管理和文件上传。
 - 文件浏览器 + CodeMirror 代码编辑器
 - 端口代理：将 Agent 本地端口转发到浏览器
 
-![Workbench](/images/workbench.png)
+![Workbench](/images/zh-CN/workbench.jpg)
 
 ## 前置要求
 
