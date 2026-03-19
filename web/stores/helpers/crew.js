@@ -3,6 +3,24 @@
  * Extracted from chat.js to keep the main store file focused.
  */
 
+// Timeout guard for refreshingSession — auto-reset after 15s if response never arrives
+let _refreshTimer = null;
+
+export function startRefreshTimeout(store) {
+  clearRefreshTimeout();
+  _refreshTimer = setTimeout(() => {
+    store.refreshingSession = false;
+    _refreshTimer = null;
+  }, 15000);
+}
+
+export function clearRefreshTimeout() {
+  if (_refreshTimer) {
+    clearTimeout(_refreshTimer);
+    _refreshTimer = null;
+  }
+}
+
 export function enterCrewMode(store) {
   store.crewConfigMode = 'create';
   store.crewConfigOpen = true;
@@ -328,6 +346,7 @@ export function handleCrewOutput(store, msg) {
     store.saveOpenSessions();
     // ★ Reset refreshingSession flag — crew_session_restored completes a refresh cycle
     store.refreshingSession = false;
+    clearRefreshTimeout();
     return;
   }
 

@@ -8,6 +8,7 @@ import { decodeKey } from '../../utils/encryption.js';
 import { t } from '../../utils/i18n.js';
 import { stopProcessingWatchdog } from './watchdog.js';
 import { clearSessionLoading } from './session.js';
+import { clearRefreshTimeout } from './crew.js';
 import { handleAgentList, handleAgentSelected } from './handlers/agentHandler.js';
 import {
   handleConversationCreated,
@@ -374,6 +375,7 @@ export function handleMessage(store, msg) {
     case 'crew_session_restore_failed':
       console.warn('[Crew] Session restore failed:', msg.message);
       store.refreshingSession = false;
+      clearRefreshTimeout();
       break;
 
   }

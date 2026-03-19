@@ -362,6 +362,7 @@ export const useChatStore = defineStore('chat', {
     removeCrewRole(roleName) { crewHelpers.removeCrewRole(this, roleName); },
     renameCrewSession(sessionId, name) { crewHelpers.renameCrewSession(this, sessionId, name); },
     handleCrewOutput(msg) { crewHelpers.handleCrewOutput(this, msg); },
+    startRefreshTimeout() { crewHelpers.startRefreshTimeout(this); },
 
     openFileInExplorer(filePath) {
       if (!this.currentConversation) return;
