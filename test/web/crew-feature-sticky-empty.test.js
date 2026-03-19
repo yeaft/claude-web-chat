@@ -7,10 +7,10 @@ import { resolve } from 'path';
  *
  * Verification points:
  * 1) Sticky header blocks content bleed — top:-12px + padding-top:24px
- * 2) Features shown from kanban, sorted with hasFeatureMessages for ordering
+ * 2) Features filtered: keep those with messages/todos/streaming/activity, drop empty shells
  * 3) Two groups: filteredInProgress + filteredCompleted (collapsed by default)
  * 4) isFeatureCompleted detects merge/tag keywords in decision maker messages
- * 5) ChatHeader badge (kanbanFeatureCount) counts all features
+ * 5) ChatHeader badge (kanbanFeatureCount) counts filtered features
  */
 
 let cssSource;
@@ -65,17 +65,38 @@ describe('sticky header content bleed fix', () => {
 });
 
 // =====================================================================
-// 2. Features shown from kanban and split into inProgress/completed groups
+// 2. Features filtered and split into inProgress/completed groups
 // =====================================================================
 describe('feature filtering and grouping', () => {
-  it('filteredFeatures uses hasFeatureMessages for sorting priority', () => {
+  it('filteredFeatures filters empty shells before sorting', () => {
     expect(featurePanelSource).toContain('filteredFeatures()');
-    expect(featurePanelSource).toContain('this.hasFeatureMessages(a.taskId)');
+    expect(featurePanelSource).toContain('.filter(f =>');
+    expect(featurePanelSource).toContain('.sort((a, b) =>');
   });
 
-  it('filteredFeatures shows all kanban features (no filter)', () => {
-    // Should spread featureKanban without .filter() — all features visible
-    expect(featurePanelSource).toContain('[...this.featureKanban].sort');
+  it('filter keeps features with messages', () => {
+    expect(featurePanelSource).toContain('this.hasFeatureMessages(f.taskId)) return true');
+  });
+
+  it('filter keeps features with todo progress', () => {
+    expect(featurePanelSource).toContain('f.totalCount > 0) return true');
+  });
+
+  it('filter keeps features that are streaming', () => {
+    expect(featurePanelSource).toContain('f.hasStreaming) return true');
+  });
+
+  it('filter keeps features with activity', () => {
+    expect(featurePanelSource).toContain('f.lastActivityAt > 0) return true');
+  });
+
+  it('filter drops empty shells (returns false)', () => {
+    // After all checks, return false for empty shells
+    expect(featurePanelSource).toContain('return false;');
+  });
+
+  it('sort prioritizes features with messages first', () => {
+    expect(featurePanelSource).toContain('this.hasFeatureMessages(a.taskId)');
   });
 
   it('filteredInProgress filters out completed features', () => {
@@ -121,12 +142,24 @@ describe('isFeatureCompleted detection', () => {
 });
 
 // =====================================================================
-// 4. ChatHeader badge (kanbanFeatureCount) counts all features
+// 4. ChatHeader badge (kanbanFeatureCount) counts filtered features
 // =====================================================================
-describe('ChatHeader badge counts all features', () => {
-  it('kanbanFeatureCount returns featureKanban.length', () => {
+describe('ChatHeader badge counts filtered features', () => {
+  it('kanbanFeatureCount filters by signals before counting', () => {
     expect(chatViewSource).toContain('kanbanFeatureCount()');
-    expect(chatViewSource).toContain('this.featureKanban.length');
+    expect(chatViewSource).toContain('this.featureKanban.filter(f =>');
+  });
+
+  it('kanbanFeatureCount keeps features with todo progress', () => {
+    expect(chatViewSource).toContain('f.totalCount > 0');
+  });
+
+  it('kanbanFeatureCount keeps features with streaming', () => {
+    expect(chatViewSource).toContain('f.hasStreaming');
+  });
+
+  it('kanbanFeatureCount keeps features with activity', () => {
+    expect(chatViewSource).toContain('f.lastActivityAt > 0');
   });
 });
 
