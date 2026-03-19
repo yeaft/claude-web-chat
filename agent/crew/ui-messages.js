@@ -111,6 +111,7 @@ export function sendCrewOutput(session, roleName, outputType, rawMessage, extra 
       role: roleName, roleIcon, roleName: displayName,
       type: 'route', routeTo: extra.routeTo,
       routeSummary: extra.routeSummary || '',
+      round: session.round || 0,
       content: `→ @${extra.routeTo} ${extra.routeSummary || ''}`,
       taskId, taskTitle, isDecisionMaker,
       timestamp: Date.now()
