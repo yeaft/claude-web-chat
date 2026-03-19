@@ -1061,6 +1061,11 @@
   opacity: 0.7;
 }
 
+.crew-feature-card.is-empty {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
 /* Card Header */
 .crew-feature-card-header {
   display: flex;

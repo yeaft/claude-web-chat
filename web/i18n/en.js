@@ -514,6 +514,7 @@ export default {
   'crew.send': 'Send',
   'crew.working': 'Working',
   'crew.noFeatures': 'No Features',
+  'crew.noMessages': 'No messages yet',
   'crew.addRoleTitle': 'Add Role',
   'crew.customRole': 'Custom Role',
   'crew.namePlaceholder': 'Identifier (e.g. analyst)',
