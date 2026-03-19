@@ -236,6 +236,7 @@ export default {
   'chatHeader.compact': '压缩上下文',
   'chatHeader.resume': '恢复会话',
   'chatHeader.refresh': '刷新消息',
+  'chatHeader.editCrew': '编辑 Crew 配置',
   'chatHeader.clear': '清空消息',
   'chatHeader.clearing': '正在清空上下文...',
   'chatHeader.clearDone': '上下文已清空',

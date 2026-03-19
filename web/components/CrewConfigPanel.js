@@ -187,6 +187,15 @@ export default {
                     <button class="crew-role-remove" @click="removeRole(idx)">&times;</button>
                   </div>
                   <input class="crew-role-desc-input" v-model="role.description" :placeholder="$t('crewConfig.roleDesc')" :disabled="!role._isNew" />
+                  <div v-if="isFirstExpandableOfType(role, idx)" class="crew-role-concurrency">
+                    <template v-if="(role.roleType || role.name) === 'developer'">
+                      <span class="crew-concurrency-label">{{ $t('crewConfig.concurrency') }}</span>
+                      <input type="number" class="crew-concurrency-input" :value="editDevCount" @input="setEditDevCount($event.target.value)" min="1" max="5" />
+                    </template>
+                    <template v-else>
+                      <span class="crew-concurrency-follow">{{ $t('crewConfig.followDev', { count: editDevCount }) }}</span>
+                    </template>
+                  </div>
                   <details class="crew-role-advanced">
                     <summary>{{ $t('crewConfig.advancedSettings') }}</summary>
                     <textarea class="crew-config-textarea" v-model="role.claudeMd" :placeholder="$t('crewConfig.customPrompt')" rows="3" :disabled="!role._isNew"></textarea>
@@ -270,6 +279,8 @@ export default {
       crewExistsSessionInfo: null,
       // 添加角色面板
       showBuiltinRolePicker: false,
+      // 编辑模式下的并发数
+      _editDevCount: 0,
       // 防抖定时器
       _checkDebounceTimer: null
     };
@@ -296,6 +307,9 @@ export default {
     devCount() {
       const dev = this.roles.find(r => r.name === 'developer');
       return dev?.count > 1 ? dev.count : 1;
+    },
+    editDevCount() {
+      return this._editDevCount || 1;
     },
     // 可选的内置角色（排除已添加的）
     availableBuiltinRoles() {
@@ -335,6 +349,9 @@ export default {
       this.name = this.session.name || '';
       this.projectDir = this.session.projectDir || '';
       this.roles = (this.session.roles || []).map(r => ({ ...r }));
+      // Compute current dev count from expanded roles (dev-1, dev-2, ...)
+      const devRoles = this.roles.filter(r => r.roleType === 'developer' || r.name === 'developer');
+      this._editDevCount = devRoles.length || 1;
     } else {
       this.loadTemplate('dev');
       if (this.store.currentAgent) {
@@ -419,10 +436,19 @@ export default {
     isExpandableRole(name) {
       return ['developer', 'tester', 'reviewer'].includes(name);
     },
+    isFirstExpandableOfType(role, idx) {
+      const type = role.roleType || role.name;
+      if (!this.isExpandableRole(type)) return false;
+      // Show concurrency UI only on the first role of this type
+      return idx === this.roles.findIndex(r => (r.roleType || r.name) === type);
+    },
     setDevCount(val) {
       const n = Math.max(1, Math.min(5, parseInt(val, 10) || 1));
       const dev = this.roles.find(r => r.name === 'developer');
       if (dev) dev.count = n;
+    },
+    setEditDevCount(val) {
+      this._editDevCount = Math.max(1, Math.min(5, parseInt(val, 10) || 1));
     },
     loadTemplate(type) {
       this.currentTemplate = type;
@@ -524,10 +550,32 @@ export default {
       }
       const sid = this.store.currentConversation;
       const trimmedName = this.name.trim();
+
+      // Build roles config with updated concurrency count
+      // De-duplicate expanded roles back to base roles for the update message
+      const roleTypeMap = new Map();
+      for (const r of this.roles) {
+        const type = r.roleType || r.name;
+        if (!roleTypeMap.has(type)) {
+          roleTypeMap.set(type, {
+            name: type,
+            displayName: r.displayName.replace(/-\d+$/, ''),
+            icon: r.icon,
+            description: r.description,
+            claudeMd: r.claudeMd || '',
+            model: r.model,
+            isDecisionMaker: r.isDecisionMaker || false,
+            count: this.isExpandableRole(type) ? this._editDevCount : 1
+          });
+        }
+      }
+      const rolesConfig = Array.from(roleTypeMap.values());
+
       this.store.sendWsMessage({
         type: 'update_crew_session',
         sessionId: sid,
-        name: trimmedName
+        name: trimmedName,
+        roles: rolesConfig
       });
       // Update local state so sidebar title refreshes immediately
       const conv = this.store.conversations.find(c => c.id === sid);
@@ -539,6 +587,14 @@ export default {
       this.pendingRemovals = [];
       this.roles.forEach(r => { delete r._isNew; });
       this.$emit('close');
+
+      // Trigger session reload to pick up role changes
+      this.store.refreshingSession = true;
+      this.store.sendWsMessage({
+        type: 'resume_crew_session',
+        sessionId: sid,
+        agentId: this.store.currentAgent
+      });
     }
   }
 };

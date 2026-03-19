@@ -117,21 +117,11 @@ export default {
           </svg>
         </button>
         <button class="crew-header-nav-btn"
-                :class="{ 'btn-loading': isCompacting }"
-                @click="compactContext"
-                :disabled="isCompacting"
-                :title="$t('chatHeader.compact')">
+                @click="openCrewEdit"
+                :title="$t('chatHeader.editCrew')">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="8 4 12 8 16 4"/><line x1="4" y1="12" x2="20" y2="12"/><polyline points="8 20 12 16 16 20"/>
-          </svg>
-        </button>
-        <button class="crew-header-nav-btn"
-                :class="{ 'btn-loading': isClearing }"
-                @click="clearMessages"
-                :disabled="isClearing"
-                :title="$t('chatHeader.clear')">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
           </svg>
         </button>
       </div>
@@ -285,6 +275,10 @@ export default {
       store.sendMessage('/clear');
     };
 
+    const openCrewEdit = () => {
+      store.openCrewConfig();
+    };
+
     const onCrewPanelToggle = (panel) => {
       if (window.innerWidth < 768) {
         store.toggleCrewMobilePanel(panel);
@@ -345,6 +339,6 @@ export default {
       document.removeEventListener('click', closeMcpOnOutsideClick);
     });
 
-    return { store, headerTitle, folderPath, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, isClearing, canRefresh, refreshSession, reloadPage, compactContext, clearMessages, onCrewPanelToggle, isCrewPanelActive, mcpBtnRef, mcpDropdownStyle, mcpEnabledCount, currentConvNeedRestart, toggleMcpPanel, toggleMcpServer, toggleExpertPanel };
+    return { store, headerTitle, folderPath, showStatusBanner, statusBannerClass, statusBannerSpinner, statusBannerMessage, contextUsage, contextColorClass, contextLabel, hasStreamingRoles, isCompacting, isClearing, canRefresh, refreshSession, reloadPage, compactContext, clearMessages, openCrewEdit, onCrewPanelToggle, isCrewPanelActive, mcpBtnRef, mcpDropdownStyle, mcpEnabledCount, currentConvNeedRestart, toggleMcpPanel, toggleMcpServer, toggleExpertPanel };
   }
 };
