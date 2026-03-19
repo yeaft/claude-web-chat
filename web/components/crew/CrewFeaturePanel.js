@@ -71,16 +71,29 @@ export default {
       const feature = this.featureKanban.find(f => f.taskId === this.expandedFeatureTaskId);
       return feature ? feature.todos : [];
     },
-    // All features from kanban — always shown regardless of message state.
-    // Features with messages sort by lastActivityAt; empty ones go to end.
+    // Show features that have signals (messages, todos, streaming, activity).
+    // Filter out empty shells (0/0, no messages, no activity) from old history.
     filteredFeatures() {
       const _blocks = this.featureBlocks; // explicit dependency for Vue reactivity
-      return [...this.featureKanban].sort((a, b) => {
-        const aHas = this.hasFeatureMessages(a.taskId) ? 1 : 0;
-        const bHas = this.hasFeatureMessages(b.taskId) ? 1 : 0;
-        if (aHas !== bHas) return bHas - aHas; // features with messages first
-        return (b.lastActivityAt || 0) - (a.lastActivityAt || 0);
-      });
+      return [...this.featureKanban]
+        .filter(f => {
+          // Has messages — always show (core fix from v0.1.179)
+          if (this.hasFeatureMessages(f.taskId)) return true;
+          // Has todo progress — keep
+          if (f.totalCount > 0) return true;
+          // Currently streaming — keep
+          if (f.hasStreaming) return true;
+          // Has activity record — keep
+          if (f.lastActivityAt > 0) return true;
+          // Empty shell — filter out
+          return false;
+        })
+        .sort((a, b) => {
+          const aHas = this.hasFeatureMessages(a.taskId) ? 1 : 0;
+          const bHas = this.hasFeatureMessages(b.taskId) ? 1 : 0;
+          if (aHas !== bHas) return bHas - aHas;
+          return (b.lastActivityAt || 0) - (a.lastActivityAt || 0);
+        });
     },
     filteredInProgress() {
       return this.filteredFeatures.filter(f => !this.isFeatureCompleted(f));
