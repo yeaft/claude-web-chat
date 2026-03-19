@@ -41,7 +41,9 @@ export default {
         <!-- Registration -->
         <template v-else-if="authStore.loginStep === 'register'">
           <p class="totp-title">{{ $t('login.register.title') }}</p>
+          <!-- TODO: restore invitation code input — currently hidden for open registration -->
           <input
+            v-if="false"
             type="text"
             v-model="regInvitationCode"
             :placeholder="$t('login.register.inviteCode')"
@@ -253,10 +255,11 @@ export default {
       localError.value = '';
       registerSuccess.value = false;
 
-      if (!regInvitationCode.value) {
-        localError.value = t('login.error.enterInviteCode');
-        return;
-      }
+      // TODO: restore invitation code validation — currently disabled for open registration
+      // if (!regInvitationCode.value) {
+      //   localError.value = t('login.error.enterInviteCode');
+      //   return;
+      // }
       if (!regUsername.value || regUsername.value.length < 2) {
         localError.value = t('login.error.usernameMinLen');
         return;

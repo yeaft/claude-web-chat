@@ -28,7 +28,7 @@ export default {
   'login.enterUsername': 'Please enter your username',
   'login.enterPassword': 'Please enter your password',
   'login.noAccount': "Don't have an account?",
-  'login.registerWithCode': 'Register with invite code',
+  'login.registerWithCode': 'Register',
 
   // Login - Errors (used in JS validation)
   'login.error.enterUsername': 'Please enter your username',

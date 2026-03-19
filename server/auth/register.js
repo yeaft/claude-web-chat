@@ -45,19 +45,19 @@ export async function register(username, password, email, invitationCode) {
   if (!password || password.length < 6) {
     return { success: false, error: 'Password must be at least 6 characters' };
   }
-  if (!invitationCode) {
-    return { success: false, error: 'Invitation code is required' };
-  }
-
-  const invitation = invitationDb.get(invitationCode);
-  if (!invitation) {
-    return { success: false, error: 'Invalid invitation code' };
-  }
-  if (invitation.used_by) {
-    return { success: false, error: 'Invitation code already used' };
-  }
-  if (invitation.expires_at < Date.now()) {
-    return { success: false, error: 'Invitation code has expired' };
+  // TODO: restore invitation code requirement — currently disabled for open registration
+  let invitation = null;
+  if (invitationCode) {
+    invitation = invitationDb.get(invitationCode);
+    if (!invitation) {
+      return { success: false, error: 'Invalid invitation code' };
+    }
+    if (invitation.used_by) {
+      return { success: false, error: 'Invitation code already used' };
+    }
+    if (invitation.expires_at < Date.now()) {
+      return { success: false, error: 'Invitation code has expired' };
+    }
   }
 
   const existing = userDb.getByUsername(username);
@@ -66,7 +66,8 @@ export async function register(username, password, email, invitationCode) {
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  const role = invitation.role === 'admin' ? 'admin' : 'pro';
+  // TODO: restore invitation-based role assignment — currently defaults to 'pro'
+  const role = invitation ? (invitation.role === 'admin' ? 'admin' : 'pro') : 'pro';
 
   let user;
   if (existing && !existing.password_hash) {
@@ -81,7 +82,10 @@ export async function register(username, password, email, invitationCode) {
     user = userDb.createFull(username, passwordHash, email || null, role);
   }
 
-  invitationDb.use(invitationCode, user.id);
+  // TODO: restore invitation code consumption — only consume if code was provided
+  if (invitationCode && invitation) {
+    invitationDb.use(invitationCode, user.id);
+  }
 
   return { success: true, message: 'Registration successful' };
 }
