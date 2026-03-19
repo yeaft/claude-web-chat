@@ -384,15 +384,8 @@ export default {
       return kanbanProgress(this.featureKanban);
     },
     kanbanFeatureCount() {
-      // Count all features with messages (flat list, no grouping)
-      return this.featureKanban.filter(f => {
-        const block = this.featureBlocks.find(
-          b => b.type === 'feature' && b.taskId === f.taskId
-        );
-        if (!block) return false;
-        const turns = getBlockTurns(block, this._fbCache);
-        return turns && turns.length > 0;
-      }).length;
+      // Count all known features (including those without loaded messages)
+      return this.featureKanban.length;
     }
   },
 

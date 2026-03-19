@@ -60,20 +60,27 @@ export default {
       return this.getBlockTurns(this.expandedBlock);
     },
     expandedFeatureTitle() {
-      if (!this.expandedBlock) return '';
-      return this.expandedBlock.taskTitle || this.expandedFeatureTaskId;
+      if (!this.expandedFeatureTaskId) return '';
+      if (this.expandedBlock) return this.expandedBlock.taskTitle || this.expandedFeatureTaskId;
+      // No message block — fall back to kanban feature title
+      const feature = this.featureKanban.find(f => f.taskId === this.expandedFeatureTaskId);
+      return feature?.taskTitle || this.expandedFeatureTaskId;
     },
     expandedFeatureTodos() {
       if (!this.expandedFeatureTaskId) return [];
       const feature = this.featureKanban.find(f => f.taskId === this.expandedFeatureTaskId);
       return feature ? feature.todos : [];
     },
-    // All features with messages, split into active vs completed
+    // All features from kanban — always shown regardless of message state.
+    // Features with messages sort by lastActivityAt; empty ones go to end.
     filteredFeatures() {
       const _blocks = this.featureBlocks; // explicit dependency for Vue reactivity
-      return this.featureKanban
-        .filter(f => this.hasFeatureMessages(f.taskId))
-        .sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0));
+      return [...this.featureKanban].sort((a, b) => {
+        const aHas = this.hasFeatureMessages(a.taskId) ? 1 : 0;
+        const bHas = this.hasFeatureMessages(b.taskId) ? 1 : 0;
+        if (aHas !== bHas) return bHas - aHas; // features with messages first
+        return (b.lastActivityAt || 0) - (a.lastActivityAt || 0);
+      });
     },
     filteredInProgress() {
       return this.filteredFeatures.filter(f => !this.isFeatureCompleted(f));
@@ -129,7 +136,7 @@ export default {
               </template>
             </template>
             <div v-else class="crew-feature-card-empty">
-              {{ $t('crew.noFeatures') }}
+              {{ $t('crew.noMessages') }}
             </div>
           </div>
         </template>
@@ -143,7 +150,7 @@ export default {
             </div>
             <div v-for="feature in filteredInProgress" :key="feature.taskId"
                  class="crew-feature-card"
-                 :class="{ 'has-streaming': feature.hasStreaming }"
+                 :class="{ 'has-streaming': feature.hasStreaming, 'is-empty': !hasFeatureMessages(feature.taskId) }"
                  @click="$emit('expand-feature', feature.taskId)">
               <div class="crew-feature-card-header">
                 <span class="crew-feature-card-title">{{ feature.taskTitle }}</span>

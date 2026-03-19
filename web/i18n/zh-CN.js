@@ -514,6 +514,7 @@ export default {
   'crew.send': '发送',
   'crew.working': '工作中',
   'crew.noFeatures': '暂无 Feature',
+  'crew.noMessages': '暂无消息',
   'crew.addRoleTitle': '添加角色',
   'crew.customRole': '自定义角色',
   'crew.namePlaceholder': '英文标识 (如 analyst)',

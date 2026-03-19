@@ -7,10 +7,10 @@ import { resolve } from 'path';
  *
  * Verification points:
  * 1) Sticky header blocks content bleed — top:-12px + padding-top:24px
- * 2) Features filtered at data level via hasFeatureMessages
+ * 2) Features shown from kanban, sorted with hasFeatureMessages for ordering
  * 3) Two groups: filteredInProgress + filteredCompleted (collapsed by default)
  * 4) isFeatureCompleted detects merge/tag keywords in decision maker messages
- * 5) ChatHeader badge (kanbanFeatureCount) excludes empty features
+ * 5) ChatHeader badge (kanbanFeatureCount) counts all features
  */
 
 let cssSource;
@@ -65,12 +65,17 @@ describe('sticky header content bleed fix', () => {
 });
 
 // =====================================================================
-// 2. Features filtered and split into inProgress/completed groups
+// 2. Features shown from kanban and split into inProgress/completed groups
 // =====================================================================
 describe('feature filtering and grouping', () => {
-  it('filteredFeatures computed filters via hasFeatureMessages', () => {
+  it('filteredFeatures uses hasFeatureMessages for sorting priority', () => {
     expect(featurePanelSource).toContain('filteredFeatures()');
-    expect(featurePanelSource).toContain('this.hasFeatureMessages(f.taskId)');
+    expect(featurePanelSource).toContain('this.hasFeatureMessages(a.taskId)');
+  });
+
+  it('filteredFeatures shows all kanban features (no filter)', () => {
+    // Should spread featureKanban without .filter() — all features visible
+    expect(featurePanelSource).toContain('[...this.featureKanban].sort');
   });
 
   it('filteredInProgress filters out completed features', () => {
@@ -116,34 +121,44 @@ describe('isFeatureCompleted detection', () => {
 });
 
 // =====================================================================
-// 4. ChatHeader badge (kanbanFeatureCount) excludes empty features
+// 4. ChatHeader badge (kanbanFeatureCount) counts all features
 // =====================================================================
-describe('ChatHeader badge excludes empty features', () => {
-  it('kanbanFeatureCount filters features with no messages', () => {
+describe('ChatHeader badge counts all features', () => {
+  it('kanbanFeatureCount returns featureKanban.length', () => {
     expect(chatViewSource).toContain('kanbanFeatureCount()');
-    expect(chatViewSource).toContain('this.featureKanban.filter(f =>');
-  });
-
-  it('kanbanFeatureCount checks featureBlocks for matching block', () => {
-    expect(chatViewSource).toContain(
-      "b.type === 'feature' && b.taskId === f.taskId"
-    );
-  });
-
-  it('kanbanFeatureCount returns false for features with no block', () => {
-    expect(chatViewSource).toContain('if (!block) return false');
-  });
-
-  it('kanbanFeatureCount checks turns length > 0', () => {
-    expect(chatViewSource).toContain('turns && turns.length > 0');
+    expect(chatViewSource).toContain('this.featureKanban.length');
   });
 });
 
 // =====================================================================
-// 5. hasFeatureMessages method still exists (used by computed)
+// 5. hasFeatureMessages method still exists (used by sorting and styling)
 // =====================================================================
 describe('hasFeatureMessages method preserved', () => {
   it('method exists in CrewFeaturePanel', () => {
     expect(featurePanelSource).toContain('hasFeatureMessages(taskId)');
+  });
+});
+
+// =====================================================================
+// 6. Empty features get visual distinction
+// =====================================================================
+describe('empty feature visual distinction', () => {
+  it('feature card applies is-empty class for features without messages', () => {
+    expect(featurePanelSource).toContain("'is-empty': !hasFeatureMessages(feature.taskId)");
+  });
+
+  it('CSS defines dashed border for empty feature cards', () => {
+    expect(cssSource).toContain('.crew-feature-card.is-empty');
+    expect(cssSource).toContain('border-style: dashed');
+  });
+});
+
+// =====================================================================
+// 7. Expanded mode title falls back to kanban feature
+// =====================================================================
+describe('expanded mode title fallback', () => {
+  it('expandedFeatureTitle falls back to kanban feature title when no block', () => {
+    expect(featurePanelSource).toContain('featureKanban.find(f => f.taskId === this.expandedFeatureTaskId)');
+    expect(featurePanelSource).toContain('feature?.taskTitle');
   });
 });
