@@ -26,6 +26,8 @@ export function appendToAssistantMessageForConversation(store, conversationId, t
   if (conversationId === store.currentConversation) {
     const lastMsg = store.messages[store.messages.length - 1];
     if (lastMsg && lastMsg.type === 'assistant' && lastMsg.isStreaming) {
+      // Dedup guard: skip if the message already ends with this exact text
+      if (lastMsg.content.endsWith(text)) return;
       lastMsg.content += text;
     } else {
       addMessageToConversation(store, conversationId, {
@@ -41,6 +43,8 @@ export function appendToAssistantMessageForConversation(store, conversationId, t
     const cached = store.messagesCache[conversationId];
     const lastMsg = cached[cached.length - 1];
     if (lastMsg && lastMsg.type === 'assistant' && lastMsg.isStreaming) {
+      // Dedup guard: skip if the message already ends with this exact text
+      if (lastMsg.content.endsWith(text)) return;
       lastMsg.content += text;
     } else {
       cached.push({
