@@ -668,6 +668,15 @@ export function handleCrewOutput(store, msg) {
   if (msg.type === 'crew_role_added') {
     if (store.crewSessions[sid]) {
       store.crewSessions[sid].roles = [...(store.crewSessions[sid].roles || []), msg.role];
+      // Sort roles by type priority, then by groupIndex within same type
+      const ROLE_TYPE_ORDER = { pm: 0, developer: 1, reviewer: 2, tester: 3, designer: 4, architect: 5, ops: 6, researcher: 7, writer: 8 };
+      const getRoleType = (r) => r.roleType || r.name.replace(/-\d+$/, '');
+      const getOrder = (r) => ROLE_TYPE_ORDER[getRoleType(r)] ?? 99;
+      store.crewSessions[sid].roles.sort((a, b) => {
+        const orderDiff = getOrder(a) - getOrder(b);
+        if (orderDiff !== 0) return orderDiff;
+        return (a.groupIndex || 0) - (b.groupIndex || 0);
+      });
       if (msg.decisionMaker) {
         store.crewSessions[sid].decisionMaker = msg.decisionMaker;
       }
