@@ -384,8 +384,21 @@ export default {
       return kanbanProgress(this.featureKanban);
     },
     kanbanFeatureCount() {
-      // Count all known features (including those without loaded messages)
-      return this.featureKanban.length;
+      // Count features with signals (messages, todos, streaming, activity).
+      // Mirrors filteredFeatures filter in CrewFeaturePanel.
+      return this.featureKanban.filter(f => {
+        const block = this.featureBlocks.find(
+          b => b.type === 'feature' && b.taskId === f.taskId
+        );
+        if (block) {
+          const turns = getBlockTurns(block, this._fbCache);
+          if (turns && turns.length > 0) return true;
+        }
+        if (f.totalCount > 0) return true;
+        if (f.hasStreaming) return true;
+        if (f.lastActivityAt > 0) return true;
+        return false;
+      }).length;
     }
   },
 
