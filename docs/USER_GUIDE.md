@@ -605,9 +605,8 @@ Priority order: Environment variables > CLI flags > Config file
 
 ### Registration
 
-1. Click **"Register with invitation code"** on the login page
+1. Click **"Register"** on the login page
 2. Enter:
-   - **Invitation code** (obtained from an admin)
    - **Username** (minimum 2 characters)
    - **Password** (minimum 6 characters)
    - **Confirm password**

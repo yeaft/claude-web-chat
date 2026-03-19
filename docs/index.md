@@ -10,6 +10,9 @@ hero:
     alt: Claude Web Chat
   actions:
     - theme: brand
+      text: Try it Online
+      link: https://cc.yeaft.com
+    - theme: brand
       text: Get Started
       link: /guide/getting-started
     - theme: alt

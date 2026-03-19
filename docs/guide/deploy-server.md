@@ -37,7 +37,7 @@ docker compose up -d --build webchat
 docker compose exec webchat node server/create-user.js admin your-password admin@example.com
 ```
 
-Additional users can register via invitation codes (admin creates them in Settings).
+Additional users can register directly from the login page (open registration, no invite code required).
 
 ![Login](/images/login.png)
 

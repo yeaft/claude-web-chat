@@ -10,6 +10,9 @@ hero:
     alt: Claude Web Chat
   actions:
     - theme: brand
+      text: 在线体验
+      link: https://cc.yeaft.com
+    - theme: brand
       text: 快速开始
       link: /zh-CN/guide/getting-started
     - theme: alt

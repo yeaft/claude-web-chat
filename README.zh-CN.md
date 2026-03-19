@@ -10,6 +10,8 @@
 
 > 远程访问 Claude Code CLI 的 Web 界面 — 多机器管理、端到端加密、多角色协作
 
+**🌐 在线体验：[cc.yeaft.com](https://cc.yeaft.com)** — 开放注册，无需邀请码。
+
 ![Screenshot](docs/images/zh-CN/hero.jpg)
 
 ## 功能特性
@@ -192,7 +194,7 @@ docker compose up -d --build webchat
 docker compose exec webchat node server/create-user.js admin your-password admin@example.com
 ```
 
-后续用户可通过邀请码注册（admin 在设置页面创建邀请码）。
+后续用户可直接在登录页注册（开放注册，无需邀请码）。
 
 ![登录页面](docs/images/login.png)
 

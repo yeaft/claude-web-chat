@@ -10,6 +10,8 @@
 
 > A web interface for remotely accessing Claude Code CLI — multi-machine management, end-to-end encryption, multi-role collaboration
 
+**🌐 Try it now: [cc.yeaft.com](https://cc.yeaft.com)** — open registration, no invite code required.
+
 ![Screenshot](docs/images/hero.jpg)
 
 ## Features
@@ -172,7 +174,7 @@ docker compose up -d --build webchat
 docker compose exec webchat node server/create-user.js admin your-password admin@example.com
 ```
 
-Additional users can register via invitation codes (admin creates them in Settings).
+Additional users can register directly from the login page (open registration, no invite code required).
 
 ![Login](docs/images/login.png)
 
