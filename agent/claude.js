@@ -481,6 +481,16 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
       // 检测后台任务
       detectAndTrackBackgroundTask(conversationId, state, message);
 
+      // Debug: log assistant messages to help diagnose duplicate output issues
+      if (message.type === 'assistant') {
+        const text = typeof message.message?.content === 'string'
+          ? message.message.content.substring(0, 80)
+          : Array.isArray(message.message?.content)
+            ? message.message.content.map(b => b.type).join(',')
+            : '';
+        console.log(`[SDK] assistant msg for ${conversationId}: ${text}`);
+      }
+
       sendOutput(conversationId, message);
     }
   } catch (error) {
