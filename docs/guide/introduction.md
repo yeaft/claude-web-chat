@@ -2,7 +2,7 @@
 
 Claude Web Chat is a web interface for remotely accessing [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — providing multi-machine management, end-to-end encryption, and multi-role collaboration.
 
-![Screenshot](/images/hero.png)
+![Screenshot](/images/hero.jpg)
 
 ## Key Features
 
@@ -16,7 +16,7 @@ ChatGPT-style conversational interface with real-time tool tracking, session man
 - Drag-and-drop file/image attachments
 - Mobile-responsive layout
 
-![Chat](/images/chat.png)
+![Chat](/images/chat.jpg)
 
 ### Crew (Multi-Agent Collaboration)
 
@@ -27,7 +27,9 @@ Multi-role AI team collaboration with PM, Developer, Reviewer, and Tester roles 
 - Role-based message grouping and status indicators
 - Parallel multi-agent execution
 
-![Crew](/images/crew.png)
+![Crew Features](/images/crew-features.jpg)
+
+![Crew Feature Detail](/images/crew-feature-detail.jpg)
 
 ### Workbench
 
@@ -38,7 +40,7 @@ Integrated development environment with terminal, Git operations, file browser, 
 - File browser with CodeMirror editor
 - Port proxy: forward agent local ports to your browser
 
-![Workbench](/images/workbench.png)
+![Workbench](/images/workbench.jpg)
 
 ## Prerequisites
 

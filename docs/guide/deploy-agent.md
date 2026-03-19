@@ -43,8 +43,8 @@ node cli.js uninstall
 
 You can find the Agent secret in **Settings > Security** within the web interface:
 
-![Setup Agent](/images/setup-agent.png)
+![Setup Agent](/images/setup-agent.jpg)
 
 When no Agent is connected, the welcome page guides you to Settings:
 
-![No Agent](/images/no-agent.png)
+![No Agent](/images/no-agent.jpg)

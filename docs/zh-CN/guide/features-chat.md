@@ -2,7 +2,7 @@
 
 ChatGPT 风格对话界面，实时工具追踪，会话管理和文件上传。
 
-![Chat](/images/chat.png)
+![Chat](/images/zh-CN/chat.jpg)
 
 ## 功能
 

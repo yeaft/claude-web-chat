@@ -2,7 +2,9 @@
 
 Multi-role AI team collaboration with PM, Developer, Reviewer, and Tester roles working together on features.
 
-![Crew](/images/crew.png)
+![Crew Features](/images/crew-features.jpg)
+
+![Crew Feature Detail](/images/crew-feature-detail.jpg)
 
 ## Features
 

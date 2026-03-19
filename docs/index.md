@@ -6,7 +6,7 @@ hero:
   text: Remote Access to Claude Code CLI
   tagline: Multi-machine management, end-to-end encryption, multi-role collaboration
   image:
-    src: /images/hero.png
+    src: /images/hero.jpg
     alt: Claude Web Chat
   actions:
     - theme: brand

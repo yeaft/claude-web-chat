@@ -43,8 +43,8 @@ node cli.js uninstall
 
 Agent Secret 可在 Web 界面的 **设置 > 安全** 中找到：
 
-![设置 Agent](/images/setup-agent.png)
+![设置 Agent](/images/zh-CN/setup-agent.jpg)
 
 当没有 Agent 连接时，首页会引导你前往设置页面：
 
-![无 Agent](/images/no-agent.png)
+![无 Agent](/images/zh-CN/no-agent.jpg)

@@ -2,7 +2,7 @@
 
 Integrated development environment with terminal, Git operations, file browser, and port proxy.
 
-![Workbench](/images/workbench.png)
+![Workbench](/images/workbench.jpg)
 
 ## Features
 
