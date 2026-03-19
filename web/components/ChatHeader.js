@@ -136,9 +136,10 @@ export default {
         return 'Claude Web Chat';
       }
 
-      // Crew conversation
+      // Crew conversation — use renamed session name if available
       if (store.currentConversationIsCrew) {
-        return 'Crew Session';
+        const conv = store.conversations.find(c => c.id === store.currentConversation);
+        return conv?.name || 'Crew Session';
       }
 
       const title = store.getConversationTitle(store.currentConversation);
