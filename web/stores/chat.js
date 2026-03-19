@@ -360,6 +360,7 @@ export const useChatStore = defineStore('chat', {
     sendCrewControl(action, targetRole = null) { crewHelpers.sendCrewControl(this, action, targetRole); },
     addCrewRole(role) { crewHelpers.addCrewRole(this, role); },
     removeCrewRole(roleName) { crewHelpers.removeCrewRole(this, roleName); },
+    renameCrewSession(sessionId, name) { crewHelpers.renameCrewSession(this, sessionId, name); },
     handleCrewOutput(msg) { crewHelpers.handleCrewOutput(this, msg); },
 
     openFileInExplorer(filePath) {
