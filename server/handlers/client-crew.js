@@ -158,11 +158,13 @@ export async function handleClientCrew(clientId, client, msg, checkAgentAccess) 
       const updateCrewAgentId = msg.agentId || client.currentAgent;
       if (!updateCrewAgentId) break;
       if (!await checkAgentAccess(updateCrewAgentId)) break;
-      await forwardToAgent(updateCrewAgentId, {
+      const updatePayload = {
         type: 'update_crew_session',
         sessionId: msg.sessionId,
         name: msg.name
-      });
+      };
+      if (msg.roles) updatePayload.roles = msg.roles;
+      await forwardToAgent(updateCrewAgentId, updatePayload);
       break;
     }
 

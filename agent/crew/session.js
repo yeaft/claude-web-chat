@@ -544,16 +544,82 @@ export async function resumeCrewSession(msg) {
 }
 
 /**
- * 更新 crew session 的 name
+ * 更新 crew session 的 name 和/或 roles 配置
+ * roles 变更时：重新展开角色、初始化新 worktrees、更新 CLAUDE.md、通知前端
  */
 export async function handleUpdateCrewSession(msg) {
-  const { sessionId, name } = msg;
+  const { sessionId, name, roles: newRolesConfig } = msg;
   const session = crewSessions.get(sessionId);
   if (!session) {
     console.warn(`[Crew] Session not found for update: ${sessionId}`);
     return;
   }
   if (name !== undefined) session.name = name;
+
+  // Handle roles update (count changes, etc.)
+  if (newRolesConfig && Array.isArray(newRolesConfig) && newRolesConfig.length > 0) {
+    const newExpanded = expandRoles(newRolesConfig);
+    const oldRoleNames = new Set(session.roles.keys());
+    const newRoleNames = new Set(newExpanded.map(r => r.name));
+
+    // Stop and clean up removed roles
+    for (const oldName of oldRoleNames) {
+      if (!newRoleNames.has(oldName)) {
+        const roleState = session.roleStates.get(oldName);
+        if (roleState) {
+          if (roleState.abortController) {
+            roleState.abortController.abort();
+          }
+          session.roleStates.delete(oldName);
+        }
+        session.roles.delete(oldName);
+        console.log(`[Crew] Role removed during update: ${oldName}`);
+      }
+    }
+
+    // Add new roles and update existing ones
+    for (const r of newExpanded) {
+      if (!oldRoleNames.has(r.name)) {
+        // Brand new role — add it
+        session.roles.set(r.name, r);
+        console.log(`[Crew] Role added during update: ${r.name} (${r.displayName})`);
+      } else {
+        // Existing role — update metadata (displayName, icon, etc.) but preserve roleState
+        const existing = session.roles.get(r.name);
+        existing.displayName = r.displayName;
+        existing.icon = r.icon;
+        existing.description = r.description;
+        existing.isDecisionMaker = r.isDecisionMaker;
+        existing.roleType = r.roleType;
+        existing.groupIndex = r.groupIndex;
+      }
+    }
+
+    // Update decision maker
+    const dm = newExpanded.find(r => r.isDecisionMaker);
+    if (dm) session.decisionMaker = dm.name;
+
+    // Initialize worktrees for any new dev groups
+    const allRoles = Array.from(session.roles.values());
+    const worktreeMap = await initWorktrees(session.projectDir, allRoles);
+    for (const role of allRoles) {
+      if (role.groupIndex > 0 && worktreeMap.has(role.groupIndex) && !role.workDir) {
+        role.workDir = worktreeMap.get(role.groupIndex);
+      }
+    }
+
+    // Regenerate shared CLAUDE.md and role-specific CLAUDE.md files
+    await updateSharedClaudeMd(session);
+    for (const role of allRoles) {
+      if (role.groupIndex > 0 && role.workDir) {
+        await writeRoleClaudeMd(session.sharedDir, role, session.language || 'zh-CN', allRoles);
+      }
+    }
+
+    // Notify frontend about role changes
+    sendStatusUpdate(session);
+  }
+
   await saveSessionMeta(session);
   await upsertCrewIndex(session);
 }
