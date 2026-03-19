@@ -187,10 +187,17 @@ export function handleClaudeOutput(store, conversationId, data) {
       }
     }
     // ★ Display result text if present (e.g., /skills, /context, etc.)
-    // Some slash commands return their output only in the result message
+    // Some slash commands return their output only in the result message.
+    // Normal turns already have text via streaming 'assistant' messages —
+    // only append result_text when there's no existing streaming assistant message.
     const resultText = data.result_text || data.result || '';
     if (typeof resultText === 'string' && resultText.trim()) {
-      store.appendToAssistantMessageForConversation(conversationId, resultText.trim());
+      const hasStreamingAssistant = msgs.length > 0 &&
+        msgs[msgs.length - 1].type === 'assistant' &&
+        msgs[msgs.length - 1].isStreaming;
+      if (!hasStreamingAssistant) {
+        store.appendToAssistantMessageForConversation(conversationId, resultText.trim());
+      }
     }
     store.finishStreamingForConversation(conversationId);
   }
