@@ -240,6 +240,7 @@ export default {
     const refreshSession = () => {
       if (store.refreshingSession || !store.currentConversation) return;
       store.refreshingSession = true;
+      store.startRefreshTimeout();
       if (store.currentConversationIsCrew) {
         // Crew: resume session to reload roles + messages
         store.sendWsMessage({
