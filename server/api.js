@@ -12,8 +12,8 @@ import { registerAdminRoutes } from './routes/admin-routes.js';
 
 // 登录速率限制: IP -> { attempts, resetAt }
 const loginAttempts = new Map();
-const LOGIN_MAX_ATTEMPTS = 10;
-const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 15 分钟窗口
+const LOGIN_MAX_ATTEMPTS = 30;
+const LOGIN_WINDOW_MS = 5 * 60 * 1000; // 5 分钟窗口
 
 function checkRateLimit(ip) {
   const now = Date.now();
