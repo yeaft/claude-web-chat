@@ -15,9 +15,15 @@ const loginAttempts = new Map();
 const LOGIN_MAX_ATTEMPTS = 10;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 15 分钟窗口
 
-function checkRateLimit(/* ip */) {
-  // TODO: re-enable after fixing trust proxy (all users share one IP behind reverse proxy)
-  return true;
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const record = loginAttempts.get(ip);
+  if (!record || now > record.resetAt) {
+    loginAttempts.set(ip, { attempts: 1, resetAt: now + LOGIN_WINDOW_MS });
+    return true;
+  }
+  record.attempts++;
+  return record.attempts <= LOGIN_MAX_ATTEMPTS;
 }
 
 // 定期清理过期的速率限制记录
