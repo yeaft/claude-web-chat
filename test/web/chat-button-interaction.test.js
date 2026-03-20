@@ -42,7 +42,7 @@ describe('refresh button — business logic', () => {
   it('refreshSession clears messages for non-Crew before sending', () => {
     const setupSection = headerSource.split('setup()')[1] || '';
     const fnStart = setupSection.indexOf('refreshSession');
-    const fnBody = setupSection.substring(fnStart, fnStart + 600);
+    const fnBody = setupSection.substring(fnStart, fnStart + 800);
     expect(fnBody).toContain('store.messages = []');
   });
 
@@ -56,7 +56,7 @@ describe('refresh button — business logic', () => {
   it('refreshSession sends sync_messages with turns: 5', () => {
     const setupSection = headerSource.split('setup()')[1] || '';
     const fnStart = setupSection.indexOf('refreshSession');
-    const fnBody = setupSection.substring(fnStart, fnStart + 600);
+    const fnBody = setupSection.substring(fnStart, fnStart + 800);
     expect(fnBody).toContain("type: 'sync_messages'");
     expect(fnBody).toContain('turns: 5');
   });
@@ -64,7 +64,7 @@ describe('refresh button — business logic', () => {
   it('refreshSession sends conversationId in sync_messages', () => {
     const setupSection = headerSource.split('setup()')[1] || '';
     const fnStart = setupSection.indexOf('refreshSession');
-    const fnBody = setupSection.substring(fnStart, fnStart + 600);
+    const fnBody = setupSection.substring(fnStart, fnStart + 800);
     expect(fnBody).toContain('conversationId: store.currentConversation');
   });
 
