@@ -13,55 +13,44 @@ import { handleAgentCrew } from './handlers/agent-crew.js';
 import { handleAgentFileTerminal } from './handlers/agent-file-terminal.js';
 import { handleAgentSync } from './handlers/agent-sync.js';
 
+/**
+ * Build the internal Map key for an agent.
+ * Uses `${ownerId}:${agentName}` to prevent different users' same-named
+ * agents from colliding. Global (AGENT_SECRET) connections use `global:`.
+ */
+function buildAgentMapKey(ownerId, agentName) {
+  const prefix = ownerId || 'global';
+  return `${prefix}:${agentName}`;
+}
+
 export function handleAgentConnection(ws, url) {
-  const agentId = url.searchParams.get('id') || randomUUID();
-  const agentName = url.searchParams.get('name') || `Agent-${agentId.slice(0, 8)}`;
+  const clientAgentId = url.searchParams.get('id') || randomUUID();
+  const agentName = url.searchParams.get('name') || `Agent-${clientAgentId.slice(0, 8)}`;
   const workDir = url.searchParams.get('workDir') || '';
 
-  // Helper function to set up message handler for authenticated agents
-  const setupAuthenticatedMessageHandler = (agentIdToUse) => {
+  // In development mode (SKIP_AUTH), register immediately
+  if (CONFIG.skipAuth) {
+    // Dev mode: no owner isolation, use clientAgentId as-is for backward compat
+    const capabilities = (url.searchParams.get('capabilities') || '').split(',').filter(Boolean);
+    completeAgentRegistration(ws, clientAgentId, agentName, workDir, null, capabilities);
+
     ws.on('message', async (data) => {
-      const agent = agents.get(agentIdToUse);
+      const agent = agents.get(clientAgentId);
       if (!agent) {
-        console.error(`[Agent] No agent found for id: ${agentIdToUse}`);
+        console.error(`[Agent] No agent found for id: ${clientAgentId}`);
         return;
       }
       const msg = await parseMessage(data, agent.sessionKey);
       if (msg) {
-        console.log(`[Agent] Received message from ${agentIdToUse}: ${msg.type}`);
-        handleAgentMessage(agentIdToUse, msg);
+        console.log(`[Agent] Received message from ${clientAgentId}: ${msg.type}`);
+        handleAgentMessage(clientAgentId, msg);
       } else {
-        console.error(`[Agent] Failed to parse message from ${agentIdToUse}`);
+        console.error(`[Agent] Failed to parse message from ${clientAgentId}`);
       }
     });
-  };
-
-  // In development mode (SKIP_AUTH), register immediately
-  if (CONFIG.skipAuth) {
-    const capabilities = (url.searchParams.get('capabilities') || '').split(',').filter(Boolean);
-    completeAgentRegistration(ws, agentId, agentName, workDir, null, capabilities);
-
-    setupAuthenticatedMessageHandler(agentId);
 
     ws.on('close', () => {
-      const agent = agents.get(agentId);
-      // Agent 断开时禁用所有端口（保留列表）
-      if (agent?.proxyPorts?.length > 0) {
-        agent.proxyPorts = agent.proxyPorts.map(p => ({ ...p, enabled: false }));
-      }
-      // Bug #8: Agent 断连时设置所有 conversation 的 processing=false
-      if (agent?.conversations) {
-        for (const [, conv] of agent.conversations) {
-          conv.processing = false;
-        }
-      }
-      clearAgentDirCache(agentId);
-      if (agent?._syncTimeout) {
-        clearTimeout(agent._syncTimeout);
-        delete agent._syncTimeout;
-      }
-      console.log(`Agent disconnected: ${agentName}`);
-      broadcastAgentList();
+      handleAgentDisconnect(clientAgentId, agentName);
     });
 
     ws.on('error', (err) => {
@@ -72,6 +61,9 @@ export function handleAgentConnection(ws, url) {
 
   // In production mode, wait for auth message with secret
   const tempId = randomUUID();
+  // Mutable: will be updated to the owner-scoped key after auth succeeds
+  let resolvedAgentId = null;
+
   const authTimeout = setTimeout(() => {
     console.log(`Agent auth timeout: ${agentName}`);
     pendingAgentConnections.delete(tempId);
@@ -80,7 +72,7 @@ export function handleAgentConnection(ws, url) {
 
   pendingAgentConnections.set(tempId, {
     ws,
-    agentId,
+    agentId: clientAgentId,
     agentName,
     workDir,
     timeout: authTimeout
@@ -111,24 +103,27 @@ export function handleAgentConnection(ws, url) {
 
           const capabilities = msg.capabilities || [];
           const agentVersion = msg.version || null;
-          completeAgentRegistration(ws, pending.agentId, pending.agentName, pending.workDir, authResult.sessionKey, capabilities, authResult.userId, authResult.username, agentVersion);
+          // Build owner-scoped key to prevent cross-user collision
+          resolvedAgentId = buildAgentMapKey(authResult.userId, pending.agentName);
+          completeAgentRegistration(ws, resolvedAgentId, pending.agentName, pending.workDir, authResult.sessionKey, capabilities, authResult.userId, authResult.username, agentVersion);
         }
       } catch (e) {
         console.error('Failed to parse agent auth message:', e.message);
       }
     } else {
       // Already authenticated, handle normally
-      const agent = agents.get(agentId);
+      if (!resolvedAgentId) return;
+      const agent = agents.get(resolvedAgentId);
       if (!agent) {
-        console.error(`[Agent] No agent found for id: ${agentId}`);
+        console.error(`[Agent] No agent found for id: ${resolvedAgentId}`);
         return;
       }
       const msg = await parseMessage(data, agent.sessionKey);
       if (msg) {
-        console.log(`[Agent] Received message from ${agentId}: ${msg.type}`);
-        handleAgentMessage(agentId, msg);
+        console.log(`[Agent] Received message from ${resolvedAgentId}: ${msg.type}`);
+        handleAgentMessage(resolvedAgentId, msg);
       } else {
-        console.error(`[Agent] Failed to parse message from ${agentId}`);
+        console.error(`[Agent] Failed to parse message from ${resolvedAgentId}`);
       }
     }
   });
@@ -139,31 +134,41 @@ export function handleAgentConnection(ws, url) {
       clearTimeout(pending.timeout);
       pendingAgentConnections.delete(tempId);
     }
-    // Agent 断开时禁用所有端口（保留列表）
-    const agent = agents.get(agentId);
-    if (agent?.proxyPorts?.length > 0) {
-      agent.proxyPorts = agent.proxyPorts.map(p => ({ ...p, enabled: false }));
+    // Use resolvedAgentId if auth completed, otherwise nothing to clean
+    if (resolvedAgentId) {
+      handleAgentDisconnect(resolvedAgentId, agentName);
     }
-    // Bug #8: Agent 断连时设置所有 conversation 的 processing=false
-    if (agent?.conversations) {
-      for (const [, conv] of agent.conversations) {
-        conv.processing = false;
-      }
-    }
-    // Phase 4: 清理目录缓存
-    clearAgentDirCache(agentId);
-    // Phase 1: 清理同步超时
-    if (agent?._syncTimeout) {
-      clearTimeout(agent._syncTimeout);
-      delete agent._syncTimeout;
-    }
-    console.log(`Agent disconnected: ${agentName}`);
-    broadcastAgentList();
   });
 
   ws.on('error', (err) => {
     console.error(`Agent error (${agentName}):`, err.message);
   });
+}
+
+/**
+ * Shared disconnect handler: disable ports, stop processing, clear caches.
+ */
+function handleAgentDisconnect(agentId, agentName) {
+  const agent = agents.get(agentId);
+  // Agent 断开时禁用所有端口（保留列表）
+  if (agent?.proxyPorts?.length > 0) {
+    agent.proxyPorts = agent.proxyPorts.map(p => ({ ...p, enabled: false }));
+  }
+  // Bug #8: Agent 断连时设置所有 conversation 的 processing=false
+  if (agent?.conversations) {
+    for (const [, conv] of agent.conversations) {
+      conv.processing = false;
+    }
+  }
+  // Phase 4: 清理目录缓存
+  clearAgentDirCache(agentId);
+  // Phase 1: 清理同步超时
+  if (agent?._syncTimeout) {
+    clearTimeout(agent._syncTimeout);
+    delete agent._syncTimeout;
+  }
+  console.log(`Agent disconnected: ${agentName}`);
+  broadcastAgentList();
 }
 
 function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null) {
