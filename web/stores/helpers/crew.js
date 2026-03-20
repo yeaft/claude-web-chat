@@ -102,10 +102,39 @@ export function loadCrewHistory(store, sessionId) {
   return true;
 }
 
+/**
+ * Infer taskId for a human message so it appears in the relevant feature detail.
+ * Priority: 1) @mentioned role's latest taskId, 2) currently streaming feature taskId, 3) null (global)
+ */
+function inferHumanMessageTaskId(store, sessionId, targetRole) {
+  const messages = store.crewMessagesMap[sessionId];
+  if (!messages || messages.length === 0) return null;
+
+  // 1. If user @mentioned a specific role, find that role's latest taskId
+  if (targetRole) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === targetRole && m.taskId) return m.taskId;
+    }
+  }
+
+  // 2. Find the currently streaming feature's taskId
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m._streaming && m.taskId) return m.taskId;
+  }
+
+  return null;
+}
+
 export function sendCrewMessage(store, content, targetRole, attachments) {
   const sessionId = store.currentConversation;
   // 添加人的消息到本地显示
   if (!store.crewMessagesMap[sessionId]) store.crewMessagesMap[sessionId] = [];
+
+  // Infer taskId for the human message so it appears in feature detail
+  const taskId = inferHumanMessageTaskId(store, sessionId, targetRole);
+
   store.crewMessagesMap[sessionId].push({
     id: Date.now(),
     role: 'human',
@@ -114,6 +143,7 @@ export function sendCrewMessage(store, content, targetRole, attachments) {
     type: 'text',
     content,
     attachments,
+    taskId,
     timestamp: Date.now()
   });
   // Update lastMessageAt for sidebar sorting

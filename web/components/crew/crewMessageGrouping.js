@@ -97,9 +97,11 @@ export function appendToSegments(allMessages, startIdx, cache) {
   for (let i = startIdx; i < allMessages.length; i++) {
     const msg = allMessages[i];
     const taskId = msg.taskId || null;
-    const isGlobal = !taskId || msg.role === 'human' || msg.isDecisionMaker;
+    const isGlobal = !taskId || msg.isDecisionMaker;
+    // Human messages with taskId: dual-write to both global and feature segments
+    const isDualWrite = msg.role === 'human' && !!taskId;
 
-    if (isGlobal) {
+    if (isGlobal || isDualWrite) {
       const lastSeg = segments.length > 0 ? segments[segments.length - 1] : null;
       if (lastSeg && !lastSeg.taskId) {
         lastSeg.messages.push(msg);
@@ -107,8 +109,8 @@ export function appendToSegments(allMessages, startIdx, cache) {
       } else {
         segments.push({ taskId: null, messages: [msg], _dirty: true });
       }
-      // Decision maker messages with taskId also go into their feature segment
-      if (msg.isDecisionMaker && taskId) {
+      // Decision maker and human messages with taskId also go into their feature segment
+      if ((msg.isDecisionMaker || isDualWrite) && taskId) {
         if (segIndex.has(taskId)) {
           const seg = segments[segIndex.get(taskId)];
           seg.messages.push(msg);
