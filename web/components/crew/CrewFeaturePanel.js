@@ -35,11 +35,14 @@ export default {
   emits: ['toggle-turn', 'expand-feature', 'close-feature'],
   data() {
     return {
-      showCompletedFeatures: false
+      showCompletedFeatures: false,
+      expandedVisibleCount: 20
     };
   },
   watch: {
     expandedFeatureTaskId(newVal) {
+      // Reset pagination when switching features
+      this.expandedVisibleCount = 20;
       if (newVal) {
         this.$nextTick(() => {
           const scrollEl = this.$el?.querySelector('.crew-panel-right-scroll');
@@ -57,7 +60,15 @@ export default {
     },
     expandedTurnsList() {
       if (!this.expandedBlock) return [];
-      return this.getBlockTurns(this.expandedBlock);
+      const allTurns = this.getBlockTurns(this.expandedBlock);
+      if (!allTurns || allTurns.length <= this.expandedVisibleCount) return allTurns;
+      // Show only the last N turns (latest messages visible by default)
+      return allTurns.slice(allTurns.length - this.expandedVisibleCount);
+    },
+    expandedHasMoreTurns() {
+      if (!this.expandedBlock) return false;
+      const allTurns = this.getBlockTurns(this.expandedBlock);
+      return allTurns && allTurns.length > this.expandedVisibleCount;
     },
     expandedFeatureTitle() {
       if (!this.expandedFeatureTaskId) return '';
@@ -131,6 +142,9 @@ export default {
           </div>
           <div class="crew-feature-expanded-messages">
             <template v-if="expandedTurnsList.length > 0">
+              <div v-if="expandedHasMoreTurns" class="crew-load-older" @click="expandedVisibleCount += 20">
+                {{ $t('crew.loadOlder') }}
+              </div>
               <template v-for="(turn, tidx) in expandedTurnsList" :key="turn.id">
                 <div v-if="tidx > 0 && shouldShowTurnDivider(expandedTurnsList, tidx)" class="crew-turn-divider"></div>
                 <div v-if="turn.type === 'turn' && getMaxRound(turn) > 0" class="crew-round-divider">
@@ -140,7 +154,7 @@ export default {
                 </div>
                 <crew-turn-renderer
                   :turn="turn"
-                  :show-human-bubble="false"
+                  :show-human-bubble="true"
                   :expanded-turns="expandedTurns"
                   :icons="icons"
                   :get-role-display-name="getRoleDisplayName"
