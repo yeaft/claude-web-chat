@@ -359,6 +359,7 @@ export default {
   'settings.dashboard.loading': '加载中...',
   'settings.dashboard.error': '数据加载失败',
   'settings.dashboard.ago': '{time}前',
+  'settings.dashboard.loadMore': '加载更多（剩余 {remaining} 条）',
 
   // ============ Workbench Panel ============
   'workbench.maximize': '最大化面板',

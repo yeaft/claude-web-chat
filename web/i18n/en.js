@@ -359,6 +359,7 @@ export default {
   'settings.dashboard.loading': 'Loading...',
   'settings.dashboard.error': 'Failed to load data',
   'settings.dashboard.ago': '{time} ago',
+  'settings.dashboard.loadMore': 'Load more ({remaining} remaining)',
 
   // ============ Workbench Panel ============
   'workbench.maximize': 'Maximize panel',
