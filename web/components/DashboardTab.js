@@ -1,5 +1,7 @@
 import { useAuthStore } from '../stores/auth.js';
 
+const PAGE_SIZE = 20;
+
 export default {
   name: 'DashboardTab',
   template: `
@@ -55,16 +57,34 @@ export default {
             <table class="db-table">
               <thead>
                 <tr>
-                  <th>{{ $t('settings.dashboard.name') }}</th>
-                  <th class="db-cell-num">{{ $t('settings.dashboard.messages') }}</th>
-                  <th class="db-cell-num">{{ $t('settings.dashboard.sessions') }}</th>
-                  <th class="db-cell-num">{{ $t('settings.dashboard.requests') }}</th>
-                  <th class="db-cell-num">{{ $t('settings.dashboard.traffic') }}</th>
-                  <th>{{ $t('settings.dashboard.lastLogin') }}</th>
+                  <th class="db-th-sort" @click="toggleSort('user', 'username')">
+                    {{ $t('settings.dashboard.name') }}
+                    <span class="db-sort-arrow" v-if="userSort.field === 'username'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
+                  </th>
+                  <th class="db-cell-num db-th-sort" @click="toggleSort('user', 'messageCount')">
+                    {{ $t('settings.dashboard.messages') }}
+                    <span class="db-sort-arrow" v-if="userSort.field === 'messageCount'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
+                  </th>
+                  <th class="db-cell-num db-th-sort" @click="toggleSort('user', 'sessionCount')">
+                    {{ $t('settings.dashboard.sessions') }}
+                    <span class="db-sort-arrow" v-if="userSort.field === 'sessionCount'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
+                  </th>
+                  <th class="db-cell-num db-th-sort" @click="toggleSort('user', 'requestCount')">
+                    {{ $t('settings.dashboard.requests') }}
+                    <span class="db-sort-arrow" v-if="userSort.field === 'requestCount'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
+                  </th>
+                  <th class="db-cell-num db-th-sort" @click="toggleSort('user', 'traffic')">
+                    {{ $t('settings.dashboard.traffic') }}
+                    <span class="db-sort-arrow" v-if="userSort.field === 'traffic'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
+                  </th>
+                  <th class="db-th-sort" @click="toggleSort('user', 'lastLoginAt')">
+                    {{ $t('settings.dashboard.lastLogin') }}
+                    <span class="db-sort-arrow" v-if="userSort.field === 'lastLoginAt'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="user in userStats" :key="user.username">
+                <tr v-for="user in pagedUserStats" :key="user.username">
                   <td class="db-cell-name">{{ user.username }}</td>
                   <td class="db-cell-num">{{ formatNumber(user.messageCount) }}</td>
                   <td class="db-cell-num">{{ formatNumber(user.sessionCount) }}</td>
@@ -74,11 +94,14 @@ export default {
                 </tr>
               </tbody>
             </table>
+            <button v-if="userVisibleCount < sortedUserStats.length" class="db-load-more" @click="userVisibleCount += ${PAGE_SIZE}">
+              {{ $t('settings.dashboard.loadMore', { remaining: sortedUserStats.length - userVisibleCount }) }}
+            </button>
           </div>
 
           <!-- Mobile cards -->
           <div class="db-card-list">
-            <div class="db-user-card" v-for="user in userStats" :key="'m-' + user.username">
+            <div class="db-user-card" v-for="user in pagedUserStats" :key="'m-' + user.username">
               <div class="db-user-card-name">{{ user.username }}</div>
               <div class="db-user-card-stats">
                 <span>{{ $t('settings.dashboard.messages') }} {{ formatNumber(user.messageCount) }}</span>
@@ -93,6 +116,9 @@ export default {
               <div class="db-user-card-meta">{{ $t('settings.dashboard.lastLogin') }}: {{ formatRelativeTime(user.lastLoginAt) }}</div>
             </div>
             <div v-if="userStats.length === 0" class="db-empty">{{ $t('settings.dashboard.noUserData') }}</div>
+            <button v-if="userVisibleCount < sortedUserStats.length" class="db-load-more" @click="userVisibleCount += ${PAGE_SIZE}">
+              {{ $t('settings.dashboard.loadMore', { remaining: sortedUserStats.length - userVisibleCount }) }}
+            </button>
           </div>
         </div>
 
@@ -108,15 +134,30 @@ export default {
               <table class="db-table">
                 <thead>
                   <tr>
-                    <th>{{ $t('settings.dashboard.name') }}</th>
-                    <th>{{ $t('settings.dashboard.status') }}</th>
-                    <th class="db-cell-num">{{ $t('settings.dashboard.latency') }}</th>
-                    <th>{{ $t('settings.dashboard.version') }}</th>
-                    <th>{{ $t('settings.dashboard.owner') }}</th>
+                    <th class="db-th-sort" @click="toggleSort('agent', 'name')">
+                      {{ $t('settings.dashboard.name') }}
+                      <span class="db-sort-arrow" v-if="agentSort.field === 'name'">{{ agentSort.order === 'asc' ? '▲' : '▼' }}</span>
+                    </th>
+                    <th class="db-th-sort" @click="toggleSort('agent', 'online')">
+                      {{ $t('settings.dashboard.status') }}
+                      <span class="db-sort-arrow" v-if="agentSort.field === 'online'">{{ agentSort.order === 'asc' ? '▲' : '▼' }}</span>
+                    </th>
+                    <th class="db-cell-num db-th-sort" @click="toggleSort('agent', 'latency')">
+                      {{ $t('settings.dashboard.latency') }}
+                      <span class="db-sort-arrow" v-if="agentSort.field === 'latency'">{{ agentSort.order === 'asc' ? '▲' : '▼' }}</span>
+                    </th>
+                    <th class="db-th-sort" @click="toggleSort('agent', 'version')">
+                      {{ $t('settings.dashboard.version') }}
+                      <span class="db-sort-arrow" v-if="agentSort.field === 'version'">{{ agentSort.order === 'asc' ? '▲' : '▼' }}</span>
+                    </th>
+                    <th class="db-th-sort" @click="toggleSort('agent', 'owner')">
+                      {{ $t('settings.dashboard.owner') }}
+                      <span class="db-sort-arrow" v-if="agentSort.field === 'owner'">{{ agentSort.order === 'asc' ? '▲' : '▼' }}</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="agent in agents" :key="agent.name">
+                  <tr v-for="agent in pagedAgents" :key="agent.name">
                     <td class="db-cell-name">{{ agent.name }}</td>
                     <td>
                       <span class="db-status-dot" :class="agent.online ? 'online' : 'offline'"></span>
@@ -131,11 +172,14 @@ export default {
                   </tr>
                 </tbody>
               </table>
+              <button v-if="agentVisibleCount < sortedAgents.length" class="db-load-more" @click="agentVisibleCount += ${PAGE_SIZE}">
+                {{ $t('settings.dashboard.loadMore', { remaining: sortedAgents.length - agentVisibleCount }) }}
+              </button>
             </div>
 
             <!-- Mobile cards -->
             <div class="db-card-list">
-              <div class="db-agent-card" v-for="agent in agents" :key="'m-' + agent.name">
+              <div class="db-agent-card" v-for="agent in pagedAgents" :key="'m-' + agent.name">
                 <div class="db-agent-card-name">
                   <span class="db-status-dot" :class="agent.online ? 'online' : 'offline'"></span>
                   {{ agent.name }}
@@ -147,6 +191,9 @@ export default {
                 </div>
                 <div class="db-agent-card-meta">{{ $t('settings.dashboard.owner') }}: {{ agent.owner || '—' }}</div>
               </div>
+              <button v-if="agentVisibleCount < sortedAgents.length" class="db-load-more" @click="agentVisibleCount += ${PAGE_SIZE}">
+                {{ $t('settings.dashboard.loadMore', { remaining: sortedAgents.length - agentVisibleCount }) }}
+              </button>
             </div>
           </template>
           <div v-else class="db-empty">{{ $t('settings.dashboard.noAgents') }}</div>
@@ -164,13 +211,22 @@ export default {
               <table class="db-table">
                 <thead>
                   <tr>
-                    <th>{{ $t('settings.dashboard.name') }}</th>
-                    <th>{{ $t('settings.dashboard.role') }}</th>
-                    <th>{{ $t('settings.dashboard.agent') }}</th>
+                    <th class="db-th-sort" @click="toggleSort('online', 'username')">
+                      {{ $t('settings.dashboard.name') }}
+                      <span class="db-sort-arrow" v-if="onlineSort.field === 'username'">{{ onlineSort.order === 'asc' ? '▲' : '▼' }}</span>
+                    </th>
+                    <th class="db-th-sort" @click="toggleSort('online', 'role')">
+                      {{ $t('settings.dashboard.role') }}
+                      <span class="db-sort-arrow" v-if="onlineSort.field === 'role'">{{ onlineSort.order === 'asc' ? '▲' : '▼' }}</span>
+                    </th>
+                    <th class="db-th-sort" @click="toggleSort('online', 'agentName')">
+                      {{ $t('settings.dashboard.agent') }}
+                      <span class="db-sort-arrow" v-if="onlineSort.field === 'agentName'">{{ onlineSort.order === 'asc' ? '▲' : '▼' }}</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="user in onlineUsers" :key="user.username">
+                  <tr v-for="user in pagedOnlineUsers" :key="user.username">
                     <td class="db-cell-name">{{ user.username }}</td>
                     <td>
                       <span class="sp-badge" :class="'sp-role-' + (user.role || 'pro')">{{ user.role || 'pro' }}</span>
@@ -179,17 +235,23 @@ export default {
                   </tr>
                 </tbody>
               </table>
+              <button v-if="onlineVisibleCount < sortedOnlineUsers.length" class="db-load-more" @click="onlineVisibleCount += ${PAGE_SIZE}">
+                {{ $t('settings.dashboard.loadMore', { remaining: sortedOnlineUsers.length - onlineVisibleCount }) }}
+              </button>
             </div>
 
             <!-- Mobile cards -->
             <div class="db-card-list">
-              <div class="db-online-card" v-for="user in onlineUsers" :key="'m-' + user.username">
+              <div class="db-online-card" v-for="user in pagedOnlineUsers" :key="'m-' + user.username">
                 <div class="db-online-card-name">
                   {{ user.username }}
                   <span class="sp-badge" :class="'sp-role-' + (user.role || 'pro')">{{ user.role || 'pro' }}</span>
                 </div>
                 <div class="db-agent-card-meta" v-if="user.agentName">{{ $t('settings.dashboard.agent') }}: {{ user.agentName }}</div>
               </div>
+              <button v-if="onlineVisibleCount < sortedOnlineUsers.length" class="db-load-more" @click="onlineVisibleCount += ${PAGE_SIZE}">
+                {{ $t('settings.dashboard.loadMore', { remaining: sortedOnlineUsers.length - onlineVisibleCount }) }}
+              </button>
             </div>
           </template>
           <div v-else class="db-empty">{{ $t('settings.dashboard.noOnlineUsers') }}</div>
@@ -206,7 +268,15 @@ export default {
       statsPeriod: 'all',
       userStats: [],
       agents: [],
-      onlineUsers: []
+      onlineUsers: [],
+      // Sort state per table
+      userSort: { field: null, order: 'asc' },
+      agentSort: { field: null, order: 'asc' },
+      onlineSort: { field: null, order: 'asc' },
+      // Pagination visible counts
+      userVisibleCount: PAGE_SIZE,
+      agentVisibleCount: PAGE_SIZE,
+      onlineVisibleCount: PAGE_SIZE
     };
   },
   mounted() {
@@ -220,6 +290,27 @@ export default {
         { value: 'month', label: this.$t('settings.dashboard.thisMonth') },
         { value: 'all', label: this.$t('settings.dashboard.all') }
       ];
+    },
+    sortedUserStats() {
+      if (!this.userSort.field) return this.userStats;
+      return this.sortArray(this.userStats, this.userSort.field, this.userSort.order, 'user');
+    },
+    pagedUserStats() {
+      return this.sortedUserStats.slice(0, this.userVisibleCount);
+    },
+    sortedAgents() {
+      if (!this.agentSort.field) return this.agents;
+      return this.sortArray(this.agents, this.agentSort.field, this.agentSort.order, 'agent');
+    },
+    pagedAgents() {
+      return this.sortedAgents.slice(0, this.agentVisibleCount);
+    },
+    sortedOnlineUsers() {
+      if (!this.onlineSort.field) return this.onlineUsers;
+      return this.sortArray(this.onlineUsers, this.onlineSort.field, this.onlineSort.order, 'online');
+    },
+    pagedOnlineUsers() {
+      return this.sortedOnlineUsers.slice(0, this.onlineVisibleCount);
     }
   },
   methods: {
@@ -230,6 +321,49 @@ export default {
         h['Authorization'] = `Bearer ${authStore.token}`;
       }
       return h;
+    },
+
+    toggleSort(table, field) {
+      const key = table + 'Sort';
+      if (this[key].field === field) {
+        this[key].order = this[key].order === 'asc' ? 'desc' : 'asc';
+      } else {
+        this[key].field = field;
+        this[key].order = 'asc';
+      }
+    },
+
+    sortArray(arr, field, order, table) {
+      const sorted = [...arr];
+      sorted.sort((a, b) => {
+        let va, vb;
+        if (table === 'user' && field === 'traffic') {
+          va = (a.bytesSent || 0) + (a.bytesReceived || 0);
+          vb = (b.bytesSent || 0) + (b.bytesReceived || 0);
+        } else if (table === 'agent' && field === 'online') {
+          va = a.online ? 1 : 0;
+          vb = b.online ? 1 : 0;
+        } else {
+          va = a[field];
+          vb = b[field];
+        }
+
+        // Null/undefined sort to end
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;
+        if (vb == null) return -1;
+
+        let cmp;
+        if (typeof va === 'string') {
+          cmp = va.localeCompare(vb, undefined, { sensitivity: 'base' });
+        } else if (typeof va === 'boolean') {
+          cmp = (va === vb) ? 0 : (va ? -1 : 1);
+        } else {
+          cmp = va - vb;
+        }
+        return order === 'desc' ? -cmp : cmp;
+      });
+      return sorted;
     },
 
     async fetchAll() {
@@ -280,6 +414,7 @@ export default {
     async switchPeriod(period) {
       if (period === this.statsPeriod) return;
       this.statsPeriod = period;
+      this.userVisibleCount = PAGE_SIZE;
       await this.fetchUserStats();
     },
 

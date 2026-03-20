@@ -207,6 +207,46 @@
 .db-latency-warn { color: #eab308; }
 .db-latency-bad { color: var(--error); }
 
+/* Sortable table headers */
+.db-th-sort {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.db-th-sort:hover {
+  color: var(--text-primary);
+}
+
+.db-sort-arrow {
+  font-size: 9px;
+  margin-left: 3px;
+  vertical-align: middle;
+  opacity: 0.8;
+}
+
+/* Load more button */
+.db-load-more {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  margin-top: 4px;
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+
+.db-load-more:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+  background: var(--sidebar-hover);
+}
+
 /* Mobile card list — hidden on desktop */
 .db-card-list { display: none; }
 
