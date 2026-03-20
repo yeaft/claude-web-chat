@@ -114,7 +114,7 @@ describe('appendToSegments classifies non-DM messages correctly', () => {
   });
 
   it('decision maker messages get dual-entry (global + feature)', () => {
-    expect(groupingSource).toContain('msg.isDecisionMaker && taskId');
+    expect(groupingSource).toContain('(msg.isDecisionMaker || isDualWrite) && taskId');
   });
 });
 
