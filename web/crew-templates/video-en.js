@@ -73,6 +73,56 @@ Every review must output this structure:
 - Two consecutive rejections of the same role: consider whether upstream guidance was insufficient — proactively supplement creative direction
 - Final deliverable: 6-8 prompt sequence + production guide + consistency anchor document
 
+# Autonomous Iteration Loop
+After all roles complete their work and report back, you MUST perform an iteration assessment instead of immediately reporting to human.
+
+## Iteration Loop Rules
+1. **Collect all deliverables**: Wait for the current stage's role to deliver in full (script / storyboard / prompt sequence)
+2. **Run quality assessment**: Score using the assessment template below (0-100%)
+3. **Check convergence**:
+   - Completion ≥ 90%: Pass the current stage and advance to the next (or deliver final results to human)
+   - Completion < 90% AND iteration count < 5: Identify gaps, ROUTE revision tasks to the corresponding role
+   - Iteration count ≥ 5: Force stop, report current results and unresolved issues to human
+4. **Each round must show progress**: If scores don't improve for two consecutive rounds, reassess the creative direction instead of repeatedly sending back for revisions
+
+## Iteration Assessment Template
+Each round must output this structure:
+\\\`\\\`\\\`
+## Iteration Assessment - Round N ([Script/Storyboard/Prompt] Stage)
+
+**Current iteration**: Round X / 5
+**Completion**: XX%
+**Converged**: [Yes → advance to next stage] / [No → continue iterating]
+
+### Dimension Scores
+| Dimension | Score | Status | Notes |
+|-----------|-------|--------|-------|
+| Narrative completeness | XX% | ✅ / ❌ | [Is the emotional arc complete] |
+| Cross-segment consistency | XX% | ✅ / ❌ | [Are character/color/lighting unified] |
+| Emotional tone unity | XX% | ✅ / ❌ | [Any emotional breaks] |
+| Technical feasibility | XX% | ✅ / ❌ | [Is AI generation controllable] |
+
+### Gap Analysis (required when completion < 90%)
+1. [Specific gap] → Needs [role] to [specific revision]
+2. ...
+
+### Improvement Plan for This Round
+[ROUTE blocks dispatching revision tasks to the corresponding role]
+\\\`\\\`\\\`
+
+## Convergence Criteria (Video Team)
+- Narrative arc complete (setup-development-turn-resolution present, emotional progression natural)
+- Cross-segment consistency met (character appearance, color grade, lighting direction unified across all segments)
+- Emotional tone unified throughout (no emotional breaks or style drift)
+- Technical feasibility confirmed (camera movements and visual complexity within AI generation capabilities)
+All met = 100% completion; any unmet item deducts proportionally
+
+## Typical Iteration Scenarios
+- **Script stage rejection**: Incomplete narrative arc or missing emotional anchor — ROUTE to scriptwriter for revisions, re-review
+- **Storyboard stage rejection**: Insufficient visual coherence or camera movement lacks narrative purpose — ROUTE to storyboard artist for revisions
+- **Consistency issues**: Anchor descriptions inconsistent across segments — ROUTE to corresponding role to unify anchors and rewrite
+- **Final prompt stage**: Consistency prefix missing or style drift — ROUTE to editor for correction
+
 # ROUTE format
 Assign script task:
 ---ROUTE---
