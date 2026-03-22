@@ -70,9 +70,18 @@ export class Query {
 
   /**
    * Read messages from Claude process stdout
+   *
+   * With --include-partial-messages, the CLI emits stream_event messages
+   * containing incremental text deltas (content_block_delta / text_delta).
+   * We convert these to assistant-format messages for real-time streaming,
+   * then deduplicate when the final complete assistant message arrives.
    */
   async readMessages() {
     const rl = createInterface({ input: this.childStdout });
+
+    // Track whether we've forwarded text deltas for the current assistant turn.
+    // When true, the next complete `assistant` message's text blocks are redundant.
+    let hasStreamedTextDeltas = false;
 
     try {
       for await (const line of rl) {
@@ -98,6 +107,58 @@ export class Query {
             } else if (message.type === 'control_cancel_request') {
               this.handleControlCancelRequest(message);
               continue;
+            }
+
+            // Handle stream_event messages (from --include-partial-messages)
+            if (message.type === 'stream_event') {
+              const event = message.event;
+              if (!event) continue;
+
+              // content_block_delta with text_delta → convert to assistant message for streaming
+              if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
+                hasStreamedTextDeltas = true;
+                this.inputStream.enqueue({
+                  type: 'assistant',
+                  message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: event.delta.text }]
+                  }
+                });
+              }
+              // All other stream events (message_start, content_block_start,
+              // input_json_delta, content_block_stop, message_stop) are ignored.
+              // tool_use is handled via the complete assistant message.
+              continue;
+            }
+
+            // Deduplicate: when a complete assistant message arrives after we've
+            // already streamed text deltas, strip the text blocks (already sent).
+            // Keep tool_use blocks which are NOT sent incrementally.
+            if (message.type === 'assistant' && hasStreamedTextDeltas) {
+              hasStreamedTextDeltas = false; // Reset for next assistant turn
+
+              const content = message.message?.content;
+              if (Array.isArray(content)) {
+                const nonTextBlocks = content.filter(b => b.type !== 'text');
+                if (nonTextBlocks.length > 0) {
+                  // Forward only tool_use blocks (text already sent via deltas)
+                  message.message.content = nonTextBlocks;
+                  this.inputStream.enqueue(message);
+                }
+                // If only text blocks: skip entirely (all content already streamed)
+              } else if (typeof content === 'string') {
+                // String content was already streamed — skip
+              } else {
+                // Unknown format — forward as-is to be safe
+                this.inputStream.enqueue(message);
+              }
+              continue;
+            }
+
+            // Reset delta tracking on non-assistant messages
+            // (e.g., user, result, system — a new turn boundary)
+            if (message.type !== 'assistant') {
+              hasStreamedTextDeltas = false;
             }
 
             this.inputStream.enqueue(message);
@@ -284,7 +345,7 @@ export function query(config) {
   } = config;
 
   // Build command arguments
-  const args = ['--output-format', 'stream-json', '--verbose'];
+  const args = ['--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
 
   if (customSystemPrompt) args.push('--system-prompt', customSystemPrompt);
   if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt);
