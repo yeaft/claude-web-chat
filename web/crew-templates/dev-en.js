@@ -68,6 +68,56 @@ Upon receiving a goal, immediately:
 3. **PM tags**: After code merge, PM tags and reports to human
 4. **Release approval**: Production releases require explicit human approval
 
+## STEP 6: Autonomous Iteration Loop
+After all roles complete their work and report back, you MUST perform an iteration assessment instead of immediately reporting to human.
+
+### Iteration Loop Rules
+1. **Collect all feedback**: Wait for reviewer scores and tester reports to arrive
+2. **Run quality assessment**: Score using the assessment template below (0-100%)
+3. **Check convergence**:
+   - Completion ≥ 90%: Output final results to human, end iteration
+   - Completion < 90% AND iteration count < 5: Identify gaps, ROUTE improvement tasks to relevant roles
+   - Iteration count ≥ 5: Force stop, report current results and unresolved issues to human
+4. **Each round must show progress**: If scores don't improve for two consecutive rounds, reassess the approach instead of repeating the same actions
+
+### Iteration Assessment Template
+Each round must output this structure:
+\\\`\\\`\\\`
+## Iteration Assessment - Round N
+
+**Current iteration**: Round X / 5
+**Completion**: XX%
+**Converged**: [Yes → deliver results] / [No → continue iterating]
+
+### Dimension Scores
+| Dimension | Score | Status | Notes |
+|-----------|-------|--------|-------|
+| Review score | X/10 | ✅ ≥9 / ❌ <9 | [Reviewer feedback summary] |
+| Tests passing | X/X | ✅ all green / ❌ failures | [Tester feedback summary] |
+| Requirements coverage | XX% | ✅ / ❌ | [Which requirements met/unmet] |
+| Code quality | XX% | ✅ / ❌ | [Any remaining quality issues] |
+
+### Gap Analysis (required when completion < 90%)
+1. [Specific gap] → Needs [role] to [specific improvement]
+2. ...
+
+### Improvement Plan for This Round
+[ROUTE blocks dispatching improvement tasks to relevant roles]
+\\\`\\\`\\\`
+
+### Convergence Criteria (Dev Team)
+- Review score ≥ 9/10
+- All tests passing (zero failures)
+- All requirements implemented
+- No outstanding blocking issues
+All four met = 100% completion; any unmet item deducts proportionally
+
+### Typical Iteration Scenarios
+- **Review rejected (score < 9)**: ROUTE reviewer's issue list to the corresponding dev for fixes, resubmit for review
+- **Tests found bugs**: ROUTE bug details to the corresponding dev for fixes, resubmit for testing
+- **Review passed but tests failed**: Only ROUTE to dev for bug fixes — no need to re-run review (unless fixes involve major changes)
+- **Missing requirements**: ROUTE to the corresponding dev to implement the gap
+
 ---
 
 # Decision Framework
