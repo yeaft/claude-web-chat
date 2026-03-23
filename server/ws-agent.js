@@ -146,27 +146,20 @@ export function handleAgentConnection(ws, url) {
 }
 
 /**
- * Shared disconnect handler: disable ports, stop processing, clear caches.
+ * Shared disconnect handler: clean up and remove agent from the agents Map.
+ * Conversations are persisted in DB and will be restored on reconnect via
+ * get_agents (client-side recovery) and conversation_list (agent-side sync).
  */
 function handleAgentDisconnect(agentId, agentName) {
   const agent = agents.get(agentId);
-  // Agent 断开时禁用所有端口（保留列表）
-  if (agent?.proxyPorts?.length > 0) {
-    agent.proxyPorts = agent.proxyPorts.map(p => ({ ...p, enabled: false }));
-  }
-  // Bug #8: Agent 断连时设置所有 conversation 的 processing=false
-  if (agent?.conversations) {
-    for (const [, conv] of agent.conversations) {
-      conv.processing = false;
-    }
-  }
   // Phase 4: 清理目录缓存
   clearAgentDirCache(agentId);
   // Phase 1: 清理同步超时
   if (agent?._syncTimeout) {
     clearTimeout(agent._syncTimeout);
-    delete agent._syncTimeout;
   }
+  // Remove agent entirely — eliminates zombie agents from broadcastAgentList
+  agents.delete(agentId);
   console.log(`Agent disconnected: ${agentName}`);
   broadcastAgentList();
 }
