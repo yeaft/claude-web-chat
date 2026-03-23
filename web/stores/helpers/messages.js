@@ -147,7 +147,7 @@ export function formatDbMessage(dbMsg) {
   };
 
   if (dbMsg.message_type === 'tool_use') {
-    return {
+    const result = {
       ...base,
       type: 'tool-use',
       toolName: dbMsg.tool_name || 'unknown',
@@ -159,6 +159,19 @@ export function formatDbMessage(dbMsg) {
       isHistory: true,
       startTime: dbMsg.created_at || 0
     };
+    // Restore AskUserQuestion state from persisted metadata
+    if (dbMsg.metadata) {
+      try {
+        const meta = JSON.parse(dbMsg.metadata);
+        if (meta.askRequestId) {
+          result.askRequestId = meta.askRequestId;
+          result.askQuestions = meta.askQuestions;
+          result.askAnswered = !!meta.askAnswered;
+          result.selectedAnswers = meta.selectedAnswers || null;
+        }
+      } catch { /* invalid metadata JSON, ignore */ }
+    }
+    return result;
   }
 
   const extractTextContent = (content) => {

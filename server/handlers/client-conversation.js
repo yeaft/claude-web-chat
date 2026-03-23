@@ -386,6 +386,30 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         requestId: msg.requestId,
         answers: msg.answers
       });
+      // Persist answered state into the AskUserQuestion tool_use DB record
+      try {
+        if (answerConvId && msg.requestId) {
+          const recent = messageDb.getRecent(answerConvId, 20);
+          const askMsg = recent.find(m => {
+            if (m.message_type !== 'tool_use' || m.tool_name !== 'AskUserQuestion') return false;
+            if (!m.metadata) return false;
+            try {
+              const meta = JSON.parse(m.metadata);
+              return meta.askRequestId === msg.requestId;
+            } catch { return false; }
+          });
+          if (askMsg) {
+            const meta = JSON.parse(askMsg.metadata);
+            messageDb.updateMetadata(askMsg.id, JSON.stringify({
+              ...meta,
+              askAnswered: true,
+              selectedAnswers: msg.answers
+            }));
+          }
+        }
+      } catch (e) {
+        // Silent — don't block the main flow
+      }
       break;
     }
 

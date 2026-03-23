@@ -145,6 +145,10 @@ export const messageDb = {
     return stmts.getMessageCount.get(sessionId)?.count || 0;
   },
 
+  updateMetadata(messageId, metadata) {
+    stmts.updateMessageMetadata.run(metadata, messageId);
+  },
+
   deleteBySession(sessionId) {
     stmts.deleteMessagesBySession.run(sessionId);
   }
