@@ -92,6 +92,7 @@ export default {
                 :icons="icons"
                 :get-role-display-name="getRoleDisplayName"
                 @toggle-turn="toggleTurn"
+                @ask-submit="onAskSubmit"
               />
             </template>
           </template>
@@ -122,10 +123,10 @@ export default {
             <span class="crew-hint-meta">{{ formatTokens(totalTokens) }}</span>
           </template>
         </div>
-        <div v-if="currentPendingAsk" class="crew-ask-hint" @click="dismissPendingAsk">
+        <div v-if="currentPendingAsk" class="crew-ask-hint" @click="scrollToAskCard">
           <span class="crew-ask-hint-icon">{{ currentPendingAsk.roleIcon }}</span>
           <span class="crew-ask-hint-text">{{ currentPendingAsk.roleName }} {{ $t('crew.askingYou') }}</span>
-          <span class="crew-ask-hint-dismiss" :title="$t('crew.dismissAsk')">✕</span>
+          <span class="crew-ask-hint-dismiss" :title="$t('crew.dismissAsk')" @click.stop="dismissPendingAsk">✕</span>
         </div>
         <div class="attachments-preview" v-if="input.attachments.value.length > 0">
           <div class="attachment-item" v-for="(file, index) in input.attachments.value" :key="index">
@@ -212,6 +213,7 @@ export default {
           @toggle-turn="toggleTurn"
           @expand-feature="expandFeature"
           @close-feature="closeFeature"
+          @ask-submit="onAskSubmit"
         />
       </div><!-- /crew-workspace -->
 
@@ -503,6 +505,20 @@ export default {
         ask.askMsg.askAnswered = true;
         ask.askMsg.selectedAnswers = { _dismissed: true };
       }
+    },
+
+    scrollToAskCard() {
+      // Find the first AskCard element in the messages area and scroll to it
+      const container = this.$refs.messagesRef;
+      if (!container) return;
+      const askCard = container.querySelector('.ask-card-wrapper');
+      if (askCard) {
+        askCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    },
+
+    onAskSubmit(requestId, answers) {
+      this.store.answerUserQuestion(requestId, answers);
     },
 
     scrollToRoleLatest(roleName) {

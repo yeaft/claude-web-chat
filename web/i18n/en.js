@@ -180,6 +180,7 @@ export default {
   'message.askCustomPlaceholder': 'Or type a custom answer...',
   'message.askSubmit': 'Submit Answer',
   'message.askWaiting': 'Waiting for question...',
+  'message.askExpired': 'This question has expired. Ask the role to re-ask.',
   'message.openInEditor': 'Open in editor',
   'message.resultDone': 'Done',
   'message.done': 'Done',

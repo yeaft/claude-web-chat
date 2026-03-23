@@ -1,8 +1,9 @@
 import ToolLine from './ToolLine.js';
+import AskCard from './AskCard.js';
 
 export default {
   name: 'AssistantTurn',
-  components: { ToolLine },
+  components: { ToolLine, AskCard },
   props: {
     turn: {
       type: Object,
@@ -62,59 +63,7 @@ export default {
 
       <!-- 4. AskUserQuestion interactive card -->
       <div v-if="turn.askMsg" class="turn-ask">
-        <!-- Collapsed summary for answered questions -->
-        <div v-if="isAskAnswered" class="ask-summary">
-          <span class="ask-summary-icon">✓</span>
-          <span class="ask-summary-text">{{ askSummaryText }}</span>
-        </div>
-        <!-- Full interactive card for unanswered questions -->
-        <div v-else class="ask-card" :class="{ 'ask-waiting': !!turn.askMsg.askRequestId }">
-          <div class="ask-icon-row">
-            <span class="ask-icon">❓</span>
-            <span class="ask-label">{{ $t('message.askInput') }}</span>
-          </div>
-          <div v-for="(q, qIdx) in effectiveQuestions" :key="qIdx" class="ask-question">
-            <div class="ask-q-text">
-              <span class="ask-q-chip" v-if="q.header">{{ q.header }}</span>
-              {{ q.question }}
-            </div>
-            <div class="ask-options">
-              <button
-                v-for="opt in q.options"
-                :key="opt.label"
-                class="ask-opt"
-                :class="{ selected: isOptionSelected(q.question, opt.label) }"
-                :disabled="!turn.askMsg.askRequestId"
-                @click="selectOption(q, opt)"
-              >
-                <span class="ask-opt-radio" :class="{ checked: isOptionSelected(q.question, opt.label) }"></span>
-                <span class="ask-opt-body">
-                  <span class="ask-opt-label">{{ opt.label }}</span>
-                  <span class="ask-opt-desc" v-if="opt.description">{{ opt.description }}</span>
-                </span>
-              </button>
-            </div>
-            <div class="ask-custom" v-if="turn.askMsg.askRequestId">
-              <input
-                type="text"
-                :placeholder="$t('message.askCustomPlaceholder')"
-                :value="customAnswers[q.question] || ''"
-                @input="setCustomAnswer(q.question, $event.target.value)"
-                @keyup.enter="submitToolAnswers"
-              />
-            </div>
-          </div>
-          <div class="ask-actions" v-if="turn.askMsg.askRequestId">
-            <button class="ask-submit" @click="submitToolAnswers" :disabled="!hasAnyToolSelection">
-              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-              {{ $t('message.askSubmit') }}
-            </button>
-          </div>
-          <div class="ask-waiting-hint" v-if="!turn.askMsg.askRequestId">
-            <span class="ask-waiting-spinner"></span>
-            {{ $t('message.askWaiting') }}
-          </div>
-        </div>
+        <AskCard :ask-msg="turn.askMsg" @submit="onAskSubmit" />
       </div>
     </div>
   `,
@@ -124,11 +73,10 @@ export default {
     const expanded = Vue.ref(false);
     const t = Vue.inject('t');
 
-    // AskUserQuestion state
-    const selectedOptions = Vue.reactive({});
-    const customAnswers = Vue.reactive({});
-    const localAskAnswered = Vue.ref(false);
-    const localSelectedAnswers = Vue.ref(null);
+    // AskUserQuestion — delegate to AskCard component
+    const onAskSubmit = (requestId, answers) => {
+      store.answerUserQuestion(requestId, answers);
+    };
 
     const showToolActions = Vue.computed(() => {
       return props.turn.toolMsgs.length > 0;
@@ -244,95 +192,6 @@ export default {
       }
     };
 
-    // AskUserQuestion logic
-    const isAskAnswered = Vue.computed(() => {
-      if (localAskAnswered.value) return true;
-      const ask = props.turn.askMsg;
-      return ask && (!!ask.askAnswered || !!ask.selectedAnswers);
-    });
-
-    const effectiveQuestions = Vue.computed(() => {
-      const ask = props.turn.askMsg;
-      return ask?.askQuestions || ask?.toolInput?.questions || [];
-    });
-
-    const isOptionSelected = (questionText, label) => {
-      const sel = selectedOptions[questionText];
-      if (Array.isArray(sel)) return sel.includes(label);
-      return sel === label;
-    };
-
-    const selectOption = (q, opt) => {
-      if (isAskAnswered.value) return;
-      customAnswers[q.question] = '';
-      if (q.multiSelect) {
-        const arr = selectedOptions[q.question] || [];
-        const newArr = Array.isArray(arr) ? [...arr] : [];
-        const idx = newArr.indexOf(opt.label);
-        if (idx >= 0) newArr.splice(idx, 1);
-        else newArr.push(opt.label);
-        selectedOptions[q.question] = newArr;
-      } else {
-        selectedOptions[q.question] = opt.label;
-      }
-    };
-
-    const setCustomAnswer = (questionText, value) => {
-      customAnswers[questionText] = value;
-      if (value) delete selectedOptions[questionText];
-    };
-
-    const hasAnyToolSelection = Vue.computed(() => {
-      const questions = effectiveQuestions.value;
-      if (!questions || questions.length === 0) return false;
-      return questions.some(q => {
-        const sel = selectedOptions[q.question];
-        const custom = customAnswers[q.question];
-        if (custom) return true;
-        if (Array.isArray(sel)) return sel.length > 0;
-        return !!sel;
-      });
-    });
-
-    const submitToolAnswers = () => {
-      if (isAskAnswered.value || !hasAnyToolSelection.value) return;
-      const questions = effectiveQuestions.value;
-      const answers = {};
-      for (const q of questions) {
-        const custom = customAnswers[q.question];
-        if (custom) {
-          answers[q.question] = custom;
-        } else {
-          const sel = selectedOptions[q.question];
-          if (Array.isArray(sel) && sel.length > 0) {
-            answers[q.question] = sel.join(', ');
-          } else if (sel) {
-            answers[q.question] = sel;
-          }
-        }
-      }
-      const requestId = props.turn.askMsg.askRequestId;
-      if (!requestId) return;
-      store.answerUserQuestion(requestId, answers);
-      // Set local reactive state for immediate UI collapse
-      localAskAnswered.value = true;
-      localSelectedAnswers.value = answers;
-    };
-
-    const getAnswerForQuestion = (questionText) => {
-      const answers = props.turn.askMsg?.selectedAnswers;
-      if (!answers) return '-';
-      return answers[questionText] || '-';
-    };
-
-    // Summary text for collapsed answered card
-    const askSummaryText = Vue.computed(() => {
-      const answers = localSelectedAnswers.value || props.turn.askMsg?.selectedAnswers;
-      if (!answers) return '';
-      const values = Object.values(answers).filter(v => v && v !== '-');
-      return values.join(', ');
-    });
-
     // Syntax highlighting
     Vue.onMounted(() => {
       if (!window.copyCodeBlock) {
@@ -380,16 +239,7 @@ export default {
       toggleExpand,
       renderedContent,
       copyContent,
-      isAskAnswered,
-      effectiveQuestions,
-      isOptionSelected,
-      selectOption,
-      setCustomAnswer,
-      customAnswers,
-      hasAnyToolSelection,
-      submitToolAnswers,
-      getAnswerForQuestion,
-      askSummaryText
+      onAskSubmit
     };
   }
 };

@@ -180,6 +180,7 @@ export default {
   'message.askCustomPlaceholder': '或输入自定义回答...',
   'message.askSubmit': '提交回答',
   'message.askWaiting': '等待问题加载...',
+  'message.askExpired': '此问题已失效，请让角色重新提问',
   'message.openInEditor': '在编辑器中打开',
   'message.resultDone': '完成',
   'message.done': '完成',

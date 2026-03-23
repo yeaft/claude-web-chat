@@ -32,7 +32,7 @@ export default {
     icons: { type: Object, required: true },
     getRoleDisplayName: { type: Function, default: (name) => name }
   },
-  emits: ['toggle-turn', 'expand-feature', 'close-feature'],
+  emits: ['toggle-turn', 'expand-feature', 'close-feature', 'ask-submit'],
   data() {
     return {
       showCompletedFeatures: false,
@@ -159,6 +159,7 @@ export default {
                   :icons="icons"
                   :get-role-display-name="getRoleDisplayName"
                   @toggle-turn="$emit('toggle-turn', $event)"
+                  @ask-submit="(rid, ans) => $emit('ask-submit', rid, ans)"
                 />
               </template>
             </template>

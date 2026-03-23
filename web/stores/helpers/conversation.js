@@ -319,12 +319,24 @@ export function answerUserQuestion(store, requestId, answers) {
     answers
   });
   // Find the AskUserQuestion tool-use message by askRequestId and mark it answered
-  const msg = store.messages.find(m =>
+  // Check both Chat messages and Crew messages
+  const chatMsg = store.messages.find(m =>
     m.type === 'tool-use' && m.toolName === 'AskUserQuestion' && m.askRequestId === requestId
   );
-  if (msg) {
-    msg.askAnswered = true;
-    msg.selectedAnswers = answers;
+  if (chatMsg) {
+    chatMsg.askAnswered = true;
+    chatMsg.selectedAnswers = answers;
+  }
+  // Also check Crew messages for the current conversation
+  const crewMsgs = store.crewMessagesMap?.[store.currentConversation];
+  if (crewMsgs) {
+    const crewMsg = crewMsgs.find(m =>
+      m.type === 'tool' && m.toolName === 'AskUserQuestion' && m.askRequestId === requestId
+    );
+    if (crewMsg) {
+      crewMsg.askAnswered = true;
+      crewMsg.selectedAnswers = answers;
+    }
   }
   // 立刻进入 processing 状态，显示"思考中"指示器
   if (store.currentConversation && !store.processingConversations[store.currentConversation]) {
