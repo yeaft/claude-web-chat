@@ -91,12 +91,13 @@ export function handleWebConnection(ws, url) {
 
   ws.on('message', async (data) => {
     const client = webClients.get(clientId);
-    // Stats tracking: count request + bytes received
-    trackRequest(client?.userId, data.length || 0);
     const msg = await parseMessage(data, client?.sessionKey);
-    if (msg) {
-      handleWebMessage(clientId, msg);
+    if (!msg) return;
+    // Stats tracking: exclude ping heartbeats from request count
+    if (msg.type !== 'ping') {
+      trackRequest(client?.userId, data.length || 0);
     }
+    handleWebMessage(clientId, msg);
   });
 
   ws.on('close', () => {
