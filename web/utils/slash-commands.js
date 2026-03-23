@@ -9,7 +9,8 @@ export const SYSTEM_SKILLS = {
   '/model': 'View/switch model',
   '/review': 'Code review',
   '/mcp': 'MCP server status',
-  '/skills': 'List available skills'
+  '/skills': 'List available skills',
+  '/btw': 'Side question (no history)'
 };
 
 export const SYSTEM_SKILL_NAMES = new Set(Object.keys(SYSTEM_SKILLS));

@@ -1,0 +1,170 @@
+/* /btw side question overlay */
+
+.btw-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+  outline: none;
+}
+
+.btw-card {
+  width: 90%;
+  max-width: 600px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+.btw-question {
+  padding: 16px 20px 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.btw-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 0 20px;
+}
+
+.btw-answer {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.7;
+  min-height: 60px;
+}
+
+.btw-answer-content {
+  word-break: break-word;
+}
+
+/* Reuse markdown styles inline */
+.btw-answer-content p {
+  margin: 0 0 8px;
+}
+
+.btw-answer-content p:last-child {
+  margin-bottom: 0;
+}
+
+.btw-answer-content code {
+  background: rgba(128, 128, 128, 0.15);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.btw-answer-content pre {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.btw-answer-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.btw-answer-content ul,
+.btw-answer-content ol {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+
+.btw-answer-content li {
+  margin: 4px 0;
+}
+
+/* Blinking cursor during streaming */
+.btw-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 16px;
+  background: var(--text-primary);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: btw-blink 0.8s step-end infinite;
+}
+
+@keyframes btw-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Loading dots before any content arrives */
+.btw-loading-dots {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.btw-loading-dots span {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: btw-dot-bounce 1.2s ease-in-out infinite;
+}
+
+.btw-loading-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.btw-loading-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes btw-dot-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+
+.btw-footer {
+  padding: 10px 20px;
+  border-top: 1px solid var(--border-color);
+  text-align: center;
+}
+
+.btw-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* Mobile: card sticks to bottom, full width */
+@media (max-width: 768px) {
+  .btw-overlay {
+    align-items: flex-end;
+  }
+
+  .btw-card {
+    width: 100%;
+    max-width: 100%;
+    border-radius: 12px 12px 0 0;
+    max-height: 80vh;
+  }
+}

@@ -7,11 +7,12 @@ import SettingsPanel from './SettingsPanel.js';
 import CrewConfigPanel from './CrewConfigPanel.js';
 import CrewChatView from './CrewChatView.js';
 import ExpertPanel from './ExpertPanel.js';
+import BtwOverlay from './BtwOverlay.js';
 import { useAuthStore } from '../stores/auth.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView, ExpertPanel },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, ProxyTab, SettingsPanel, CrewConfigPanel, CrewChatView, ExpertPanel, BtwOverlay },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': showMobileSidebar }">
 
@@ -277,6 +278,9 @@ export default {
 
       <!-- Settings (floating modal) -->
       <SettingsPanel :visible="showSettingsPanel" @close="showSettingsPanel = false" />
+
+      <!-- /btw side question overlay -->
+      <BtwOverlay />
 
       <!-- Crew Config Panel -->
       <CrewConfigPanel

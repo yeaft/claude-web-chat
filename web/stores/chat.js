@@ -94,6 +94,12 @@ export const useChatStore = defineStore('chat', {
     // MCP servers 配置: agentId -> [{ name, enabled, source }]
     mcpServers: {},
 
+    // /btw side question state (ephemeral overlay)
+    btwQuestion: null,
+    btwAnswer: '',
+    btwLoading: false,
+    btwVisible: false,
+
     // Per-conversation MCP servers: conversationId -> [{ name, enabled, source }]
     conversationMcpServers: {},
     // Per-conversation MCP server tools: conversationId -> { serverName: [toolName, ...] }
@@ -214,6 +220,31 @@ export const useChatStore = defineStore('chat', {
     },
     toggleCrewPanel(panel) {
       this.crewPanelVisible[panel] = !this.crewPanelVisible[panel];
+    },
+
+    // =====================
+    // /btw side question
+    // =====================
+    sendBtwQuestion(question) {
+      if (!this.currentConversation) return;
+      this.btwQuestion = question;
+      this.btwAnswer = '';
+      this.btwLoading = true;
+      this.btwVisible = true;
+      this.sendWsMessage({
+        type: 'btw_question',
+        conversationId: this.currentConversation,
+        question
+      });
+    },
+    closeBtw() {
+      this.btwQuestion = null;
+      this.btwAnswer = '';
+      this.btwLoading = false;
+      this.btwVisible = false;
+    },
+    appendBtwDelta(delta) {
+      this.btwAnswer += delta;
     },
 
     // =====================

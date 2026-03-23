@@ -428,6 +428,16 @@ export default {
       showAutocomplete.value = false;
       showExpertAutocomplete.value = false;
 
+      // Intercept /btw side question
+      const trimmed = inputText.value.trim();
+      if (trimmed.startsWith('/btw ')) {
+        store.sendBtwQuestion(trimmed.substring(5));
+        inputText.value = '';
+        delete store.inputDrafts[store.currentConversation];
+        if (inputRef.value) inputRef.value.style.height = 'auto';
+        return;
+      }
+
       const attachmentInfos = attachments.value
         .filter(a => a.fileId)
         .map(a => ({

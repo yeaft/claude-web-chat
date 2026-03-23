@@ -283,6 +283,17 @@ export function createCrewInput(store, authStore, { getInputRef, getFileInputRef
     slashMenuVisible.value = false;
 
     const text = inputText.value.trim();
+
+    // Intercept /btw side question
+    if (text.startsWith('/btw ')) {
+      store.sendBtwQuestion(text.substring(5));
+      inputText.value = '';
+      delete store.inputDrafts[store.currentConversation];
+      const textarea = getInputRef();
+      if (textarea) textarea.style.height = 'auto';
+      return;
+    }
+
     const attachmentInfos = attachments.value
       .filter(a => a.fileId)
       .map(a => ({
