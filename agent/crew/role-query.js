@@ -3,7 +3,7 @@
  * createRoleQuery, buildRoleSystemPrompt, sessionId 持久化, 错误分类
  */
 import { query, Stream } from '../sdk/index.js';
-import { promises as fs } from 'fs';
+import { promises as fs, mkdirSync } from 'fs';
 import { join } from 'path';
 import { getMessages } from '../crew-i18n.js';
 import ctx from '../context.js';
@@ -140,8 +140,9 @@ async function _createRoleQueryInner(session, roleName) {
   // 尝试加载之前保存的 sessionId
   const savedSessionId = await loadRoleSessionId(session.sharedDir, roleName);
 
-  // cwd 设为角色目录
+  // cwd 设为角色目录（确保目录存在，否则 spawn() 会报误导性的 ENOENT）
   const roleCwd = join(session.sharedDir, 'roles', roleName);
+  mkdirSync(roleCwd, { recursive: true });
 
   // 继承全局 MCP disallowedTools，避免不必要的 tool schema token 消耗
   const globalDisallowed = ctx.CONFIG?.disallowedTools || [];
