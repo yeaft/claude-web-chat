@@ -445,7 +445,8 @@ export function query(config) {
     if (abort?.aborted) {
       queryInstance.setError(new AbortError('Claude Code process aborted by user'));
     } else {
-      queryInstance.setError(new Error(`Failed to spawn Claude Code process: ${error.message}`));
+      const cwdInfo = error.code === 'ENOENT' && cwd ? ` (cwd: ${cwd})` : '';
+      queryInstance.setError(new Error(`Failed to spawn Claude Code process: ${error.message}${cwdInfo}`));
     }
   });
 
