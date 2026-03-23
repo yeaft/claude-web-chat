@@ -152,6 +152,21 @@ export async function handleAgentOutput(agentId, agent, msg) {
 
     case 'ask_user_question':
       console.log(`[AskUser] Question for conversation ${msg.conversationId}, requestId: ${msg.requestId}`);
+      // Persist requestId + questions into the AskUserQuestion tool_use DB record
+      try {
+        if (msg.conversationId && msg.requestId) {
+          const recent = messageDb.getRecent(msg.conversationId, 20);
+          const askMsg = recent.find(m => m.message_type === 'tool_use' && m.tool_name === 'AskUserQuestion');
+          if (askMsg) {
+            messageDb.updateMetadata(askMsg.id, JSON.stringify({
+              askRequestId: msg.requestId,
+              askQuestions: msg.questions
+            }));
+          }
+        }
+      } catch (e) {
+        // Silent — don't block the main flow
+      }
       await forwardToClients(agentId, msg.conversationId, {
         type: 'ask_user_question',
         conversationId: msg.conversationId,

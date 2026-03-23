@@ -340,6 +340,10 @@ export const stmts = {
     DELETE FROM messages WHERE session_id = ?
   `),
 
+  updateMessageMetadata: db.prepare(`
+    UPDATE messages SET metadata = ? WHERE id = ?
+  `),
+
   // UserStats 操作
   upsertUserStats: db.prepare(`
     INSERT INTO user_stats (user_id, message_count, session_count, request_count, bytes_sent, bytes_received, updated_at)
