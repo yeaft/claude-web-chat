@@ -7,7 +7,8 @@ import { trackMessage } from '../context.js';
  * Types: claude_output, context_usage, execution_cancelled,
  *        background_task_started, background_task_output,
  *        slash_commands_update, compact_status, ask_user_question,
- *        conversation_mcp_update, error
+ *        conversation_mcp_update, error,
+ *        btw_stream, btw_done, btw_error
  */
 export async function handleAgentOutput(agentId, agent, msg) {
   switch (msg.type) {
@@ -173,6 +174,29 @@ export async function handleAgentOutput(agentId, agent, msg) {
         type: 'error',
         conversationId: msg.conversationId,
         message: msg.message
+      });
+      break;
+
+    case 'btw_stream':
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'btw_stream',
+        conversationId: msg.conversationId,
+        delta: msg.delta
+      });
+      break;
+
+    case 'btw_done':
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'btw_done',
+        conversationId: msg.conversationId
+      });
+      break;
+
+    case 'btw_error':
+      await forwardToClients(agentId, msg.conversationId, {
+        type: 'btw_error',
+        conversationId: msg.conversationId,
+        error: msg.error
       });
       break;
 
