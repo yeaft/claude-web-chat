@@ -13,9 +13,11 @@ import { openImagePreview } from '../../utils/imagePreview.js';
 import {
   formatTime, shortName, getRoleStyle, getImageUrl
 } from './crewHelpers.js';
+import AskCard from '../AskCard.js';
 
 export default {
   name: 'CrewTurnRenderer',
+  components: { AskCard },
   props: {
     turn: { type: Object, required: true },
     showHumanBubble: { type: Boolean, default: false },
@@ -23,7 +25,7 @@ export default {
     icons: { type: Object, required: true },
     getRoleDisplayName: { type: Function, default: (name) => name }
   },
-  emits: ['toggle-turn'],
+  emits: ['toggle-turn', 'ask-submit'],
   template: `
     <div v-if="turn.type !== 'turn'" class="crew-message" :class="['crew-msg-' + (turn.message.type), 'crew-role-' + (turn.message.role), { 'crew-msg-human-bubble': showHumanBubble && turn.message.role === 'human' && turn.message.type === 'text' }]" :data-role="turn.message.role" :style="getRoleStyle(turn.message.role)">
       <div class="crew-msg-body">
@@ -75,6 +77,9 @@ export default {
             </button>
           </div>
         </div>
+        <template v-if="askToolMsg">
+          <AskCard :ask-msg="askToolMsg" :compact="true" @submit="(rid, ans) => $emit('ask-submit', rid, ans)" />
+        </template>
         <div v-if="turn.imageMsgs.length > 0" class="crew-msg-images">
           <div v-for="img in turn.imageMsgs" :key="img.id" class="crew-msg-image">
             <img v-if="img.fileId" :src="getImageUrl(img)" class="crew-screenshot" @error="handleImageError($event)" @click="openImagePreview(getImageUrl(img))" :alt="'Screenshot by ' + (img.roleName || img.role)" />
@@ -94,6 +99,12 @@ export default {
       </div>
     </div>
   `,
+  computed: {
+    askToolMsg() {
+      if (this.turn.type !== 'turn') return null;
+      return this.turn.toolMsgs?.find(m => m.toolName === 'AskUserQuestion') || null;
+    }
+  },
   methods: {
     formatTime,
     shortName,

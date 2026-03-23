@@ -304,21 +304,8 @@ export function createCrewInput(store, authStore, { getInputRef, getFileInputRef
         mimeType: a.file?.type || ''
       }));
 
-    const ask = getCurrentPendingAsk();
-    if (ask && ask.askMsg.askRequestId && text) {
-      const questions = ask.askMsg.toolInput?.questions || ask.askMsg.askQuestions || [];
-      const answers = {};
-      if (questions.length > 0) {
-        for (const q of questions) {
-          answers[q.question] = text;
-        }
-      } else {
-        answers['response'] = text;
-      }
-      store.answerUserQuestion(ask.askMsg.askRequestId, answers);
-      ask.askMsg.askAnswered = true;
-      ask.askMsg.selectedAnswers = answers;
-    }
+    // AskUserQuestion answers are now handled by AskCard component's submit event,
+    // no longer intercepted here in the input handler.
 
     store.sendCrewMessage(text, null, attachmentInfos.length > 0 ? attachmentInfos : undefined);
     inputText.value = '';
