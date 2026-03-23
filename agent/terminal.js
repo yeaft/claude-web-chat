@@ -7,11 +7,12 @@ import ctx from './context.js';
 // Fix spawn-helper executable permission on Unix systems.
 // npm may strip execute bits from prebuilt binaries, causing
 // "posix_spawnp failed" on macOS/Linux.
+// TODO: Remove this workaround once node-pty ships with correct permissions.
 function fixSpawnHelperPermissions() {
   if (platform() === 'win32') return;
   try {
-    const require = createRequire(import.meta.url);
-    const ptyPkgPath = dirname(require.resolve('node-pty/package.json'));
+    const cjsRequire = createRequire(import.meta.url);
+    const ptyPkgPath = dirname(cjsRequire.resolve('node-pty/package.json'));
     const targets = [
       join(ptyPkgPath, 'prebuilds', `${platform()}-${arch()}`, 'spawn-helper'),
       join(ptyPkgPath, 'build', 'Release', 'spawn-helper'),
@@ -20,11 +21,13 @@ function fixSpawnHelperPermissions() {
       if (!existsSync(helper)) continue;
       const mode = statSync(helper).mode;
       if (!(mode & 0o111)) {
-        chmodSync(helper, mode | 0o755);
+        chmodSync(helper, 0o755);
         console.log(`[PTY] Fixed spawn-helper permissions: ${helper}`);
       }
     }
-  } catch {}
+  } catch (e) {
+    console.warn('[PTY] Failed to fix spawn-helper permissions:', e.message);
+  }
 }
 
 // 动态加载 node-pty (optionalDependency)
