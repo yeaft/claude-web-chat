@@ -126,7 +126,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       break;
     }
 
-    case 'delete_conversation':
+    case 'delete_conversation': {
       if (!client.currentAgent) return;
       if (!await checkAgentAccess(client.currentAgent)) return;
       if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId)) {
@@ -134,11 +134,26 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
       }
+
+      // Server-side cleanup: always execute regardless of agent online status
+      const deleteAgent = agents.get(client.currentAgent);
+      if (deleteAgent) {
+        deleteAgent.conversations.delete(msg.conversationId);
+      }
+      try {
+        sessionDb.setActive(msg.conversationId, false);
+      } catch (e) {
+        console.error('Failed to deactivate session in database:', e.message);
+      }
+      await broadcastAgentList();
+
+      // Forward to agent for resource cleanup (terminals, processes, etc.) — best effort
       await forwardToAgent(client.currentAgent, {
         type: 'delete_conversation',
         conversationId: msg.conversationId
       });
       break;
+    }
 
     case 'select_conversation':
       if (!CONFIG.skipAuth && !verifyConversationOwnership(msg.conversationId, client.userId)) {
