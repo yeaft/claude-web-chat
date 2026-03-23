@@ -1,4 +1,5 @@
 import ctx from './context.js';
+import { query } from './sdk/index.js';
 import { loadSessionHistory } from './history.js';
 import { startClaudeQuery } from './claude.js';
 import { crewSessions, loadCrewIndex } from './crew.js';
@@ -582,5 +583,65 @@ export function handleAskUserAnswer(msg) {
     });
   } else {
     console.log(`[AskUser] No pending question for requestId: ${msg.requestId}`);
+  }
+}
+
+/**
+ * Handle /btw side question — ephemeral, no history pollution.
+ * Spawns an independent CLI process with --resume + --fork-session so
+ * the answer has full context but writes nothing back to the original session.
+ */
+export async function handleBtwQuestion(msg) {
+  const { conversationId, question } = msg;
+  const state = ctx.conversations.get(conversationId);
+
+  if (!state?.claudeSessionId) {
+    ctx.sendToServer({ type: 'btw_error', conversationId, question, error: 'No active session' });
+    return;
+  }
+
+  console.log(`[btw] ${conversationId} question: ${question.substring(0, 80)}`);
+
+  try {
+    const btwQuery = query({
+      prompt: question,
+      options: {
+        cwd: state.workDir,
+        resume: state.claudeSessionId,
+        forkSession: true,
+        maxTurns: 1,
+        permissionMode: 'bypassPermissions',
+        disallowedTools: [
+          'Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep',
+          'Agent', 'NotebookEdit', 'WebFetch', 'WebSearch', 'TodoWrite',
+          'EnterPlanMode', 'ExitPlanMode', 'EnterWorktree', 'ExitWorktree',
+          'CronCreate', 'CronDelete', 'CronList', 'TaskOutput', 'TaskStop',
+          'AskUserQuestion', 'Skill'
+        ]
+      }
+    });
+
+    for await (const message of btwQuery) {
+      if (message.type === 'assistant') {
+        const content = message.message?.content;
+        let delta = '';
+        if (typeof content === 'string') {
+          delta = content;
+        } else if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === 'text') delta += block.text;
+          }
+        }
+        if (delta) {
+          ctx.sendToServer({ type: 'btw_stream', conversationId, delta });
+        }
+      }
+      // result / system messages — ignored (no usage tracking for btw)
+    }
+
+    ctx.sendToServer({ type: 'btw_done', conversationId, question });
+  } catch (err) {
+    console.error(`[btw] ${conversationId} error:`, err.message);
+    ctx.sendToServer({ type: 'btw_error', conversationId, question, error: err.message });
   }
 }

@@ -12,7 +12,7 @@ import {
   createConversation, resumeConversation, deleteConversation,
   handleRefreshConversation, handleCancelExecution,
   handleUserInput, handleUpdateConversationSettings, handleAskUserAnswer,
-  sendConversationList
+  sendConversationList, handleBtwQuestion
 } from '../conversation.js';
 import {
   createCrewSession, handleCrewHumanInput, handleCrewControl,
@@ -96,6 +96,10 @@ export async function handleMessage(msg) {
 
     case 'execute':
       await handleUserInput(msg);
+      break;
+
+    case 'btw_question':
+      await handleBtwQuestion(msg);
       break;
 
     case 'cancel_execution':

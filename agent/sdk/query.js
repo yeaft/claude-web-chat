@@ -338,6 +338,7 @@ export function query(config) {
       permissionMode = 'default',
       continue: continueConversation,
       resume,
+      forkSession,
       model,
       canCallTool,
       abort
@@ -359,6 +360,7 @@ export function query(config) {
   }
   if (continueConversation) args.push('--continue');
   if (resume) args.push('--resume', resume);
+  if (forkSession) args.push('--fork-session');
   if (allowedTools.length > 0) args.push('--allowedTools', ...allowedTools);
   if (disallowedTools.length > 0) args.push('--disallowedTools', ...disallowedTools);
   if (permissionMode) args.push('--permission-mode', permissionMode);
