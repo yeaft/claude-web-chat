@@ -66,7 +66,7 @@ export default {
               <svg class="dropdown-chevron" :class="{ open: agentManagerOpen }" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
               <!-- Agent Dropdown Menu -->
               <div class="agent-dropdown" v-if="agentManagerOpen" @click.stop>
-                <div v-for="agent in store.agents" :key="agent.id" class="agent-dropdown-item" :class="{ offline: !agent.online && !upgradingAgents[agent.id] && !restartingAgents[agent.id] }">
+                <div v-for="agent in onlineAgents" :key="agent.id" class="agent-dropdown-item">
                   <span class="status-dot" :class="{ online: agent.online, restarting: restartingAgents[agent.id], upgrading: upgradingAgents[agent.id] }"></span>
                   <span class="agent-dropdown-name">{{ agent.name }}</span>
                   <span class="agent-dropdown-version" v-if="agent.version">v{{ agent.version }}</span>
@@ -92,7 +92,7 @@ export default {
                     <svg v-else viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
                   </button>
                 </div>
-                <div v-if="store.agents.length === 0" class="agent-dropdown-empty">{{ $t('chat.agent.none') }}</div>
+                <div v-if="onlineAgents.length === 0" class="agent-dropdown-empty">{{ $t('chat.agent.none') }}</div>
               </div>
             </div>
             <div class="sidebar-header-actions">
@@ -511,8 +511,11 @@ export default {
       const agent = this.store.agents.find(a => a.id === this.convModalAgent);
       return agent?.workDir || '';
     },
+    onlineAgents() {
+      return this.store.agents.filter(a => a.online);
+    },
     onlineAgentCount() {
-      return this.store.agents.filter(a => a.online).length;
+      return this.onlineAgents.length;
     },
     crewCapableAgentCount() {
       return this.store.agents.filter(a => a.online && a.capabilities?.includes('crew')).length;
