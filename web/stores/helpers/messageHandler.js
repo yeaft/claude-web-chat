@@ -378,5 +378,19 @@ export function handleMessage(store, msg) {
       clearRefreshTimeout();
       break;
 
+    // /btw side question streaming
+    case 'btw_stream':
+      store.appendBtwDelta(msg.delta);
+      break;
+
+    case 'btw_done':
+      store.btwLoading = false;
+      break;
+
+    case 'btw_error':
+      store.btwAnswer = 'Error: ' + msg.error;
+      store.btwLoading = false;
+      break;
+
   }
 }
