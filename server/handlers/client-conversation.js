@@ -13,7 +13,7 @@ import {
  *        delete_conversation, select_conversation, sync_messages, chat,
  *        get_conversations, list_history_sessions, list_folders,
  *        cancel_execution, refresh_conversation,
- *        update_conversation_settings, ask_user_answer
+ *        update_conversation_settings, ask_user_answer, btw_question
  */
 export async function handleClientConversation(clientId, client, msg, checkAgentAccess) {
   switch (msg.type) {
@@ -385,6 +385,30 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         conversationId: answerConvId,
         requestId: msg.requestId,
         answers: msg.answers
+      });
+      break;
+    }
+
+    case 'btw_question': {
+      if (!client.currentAgent) {
+        await sendToWebClient(client, { type: 'btw_error', error: 'No agent selected' });
+        return;
+      }
+      if (!await checkAgentAccess(client.currentAgent)) return;
+      const btwConvId = msg.conversationId || client.currentConversation;
+      if (!btwConvId) {
+        await sendToWebClient(client, { type: 'btw_error', error: 'No conversation selected' });
+        return;
+      }
+      if (!CONFIG.skipAuth && !verifyConversationOwnership(btwConvId, client.userId)) {
+        console.warn(`[Security] User ${client.userId} btw_question denied for ${btwConvId}`);
+        await sendToWebClient(client, { type: 'btw_error', conversationId: btwConvId, error: 'Permission denied' });
+        return;
+      }
+      await forwardToAgent(client.currentAgent, {
+        type: 'btw_question',
+        conversationId: btwConvId,
+        question: msg.question
       });
       break;
     }
