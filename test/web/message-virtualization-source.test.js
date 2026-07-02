@@ -88,6 +88,8 @@ describe('MessageList virtualization wiring', () => {
     const source = read('components/MessageList.js');
 
     expect(source).toContain('const autoFollowPaused = Vue.ref(false);');
+    expect(source).toContain('const SCROLL_THRESHOLD = virtualTranscriptDefaults.bottomThreshold;');
+    expect(source).toContain('shouldFollowTranscriptBottom({ scrollTop, scrollHeight, clientHeight, threshold: SCROLL_THRESHOLD });');
     expect(source).toContain('const visibleTranscriptTailSignature = Vue.computed(() => {');
     expect(source).toContain('Vue.watch(visibleTranscriptTailSignature, smartScrollToBottom);');
     expect(source).not.toContain('Vue.watch(() => store.messages.length, smartScrollToBottom);');

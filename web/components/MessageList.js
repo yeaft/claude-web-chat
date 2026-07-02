@@ -14,7 +14,11 @@ import SubAgentCard from './SubAgentCard.js';
 import UserTurnBlock from './UserTurnBlock.js';
 import VirtualTranscript from './VirtualTranscript.js';
 import { shouldCloseYeaftVpTurn } from '../stores/helpers/yeaft-turn-boundary.js';
-import { estimateVirtualItemHeight } from '../utils/virtual-transcript.js';
+import {
+  estimateVirtualItemHeight,
+  shouldFollowTranscriptBottom,
+  virtualTranscriptDefaults,
+} from '../utils/virtual-transcript.js';
 import {
   annotateMessageBlocksForResponseCollapse,
   collapsedResponsePreviewForMessageBlock,
@@ -1273,7 +1277,7 @@ export default {
     // return to the latest row or switch sessions.
     const isAtBottom = Vue.ref(true);
     const autoFollowPaused = Vue.ref(false);
-    const SCROLL_THRESHOLD = 50;
+    const SCROLL_THRESHOLD = virtualTranscriptDefaults.bottomThreshold;
     const LOAD_MORE_TOP_THRESHOLD = 100;
     let loadMoreArmed = true;
 
@@ -1664,7 +1668,7 @@ export default {
     const checkIfAtBottom = () => {
       if (!containerRef.value) return true;
       const { scrollTop, scrollHeight, clientHeight } = containerRef.value;
-      return scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;
+      return shouldFollowTranscriptBottom({ scrollTop, scrollHeight, clientHeight, threshold: SCROLL_THRESHOLD });
     };
 
     const maybeLoadMoreNearTop = (scrollTop, { allowContinuation = false } = {}) => {
@@ -1721,7 +1725,7 @@ export default {
     };
 
     const setAutoFollowFromScrollState = ({ scrollTop, scrollHeight, clientHeight }) => {
-      const atBottom = scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;
+      const atBottom = shouldFollowTranscriptBottom({ scrollTop, scrollHeight, clientHeight, threshold: SCROLL_THRESHOLD });
       isAtBottom.value = atBottom;
       autoFollowPaused.value = !atBottom;
       return atBottom;

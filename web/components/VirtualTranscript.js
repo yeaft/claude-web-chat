@@ -6,7 +6,6 @@ import {
   virtualTranscriptDefaults,
 } from '../utils/virtual-transcript.js';
 
-const BOTTOM_THRESHOLD = 80;
 const HEIGHT_CHANGE_THRESHOLD = 2;
 
 export default {
@@ -106,7 +105,7 @@ export default {
         scrollTop: el.scrollTop,
         scrollHeight: el.scrollHeight,
         clientHeight: el.clientHeight,
-        threshold: BOTTOM_THRESHOLD,
+        threshold: virtualTranscriptDefaults.bottomThreshold,
       });
     }
 

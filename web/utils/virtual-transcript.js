@@ -3,6 +3,7 @@ const DEFAULT_VIEWPORT_HEIGHT = 720;
 const DEFAULT_OVERSCAN = 1;
 const DEFAULT_ITEM_GAP = 18;
 const MAX_ESTIMATED_HEIGHT = 1400;
+const DEFAULT_BOTTOM_THRESHOLD = 80;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -142,7 +143,7 @@ export function computeVirtualWindow(items, params = {}) {
   };
 }
 
-export function shouldFollowTranscriptBottom({ scrollTop = 0, scrollHeight = 0, clientHeight = 0, threshold = 80 } = {}) {
+export function shouldFollowTranscriptBottom({ scrollTop = 0, scrollHeight = 0, clientHeight = 0, threshold = DEFAULT_BOTTOM_THRESHOLD } = {}) {
   return Math.max(0, Number(scrollHeight) - Number(scrollTop) - Number(clientHeight)) <= Math.max(0, Number(threshold));
 }
 
@@ -167,4 +168,5 @@ export const virtualTranscriptDefaults = Object.freeze({
   viewportHeight: DEFAULT_VIEWPORT_HEIGHT,
   overscan: DEFAULT_OVERSCAN,
   itemGap: DEFAULT_ITEM_GAP,
+  bottomThreshold: DEFAULT_BOTTOM_THRESHOLD,
 });

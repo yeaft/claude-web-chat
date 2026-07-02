@@ -6,6 +6,7 @@ import {
   estimateVirtualItemHeight,
   getVirtualItemKey,
   shouldFollowTranscriptBottom,
+  virtualTranscriptDefaults,
 } from '../../web/utils/virtual-transcript.js';
 
 function turns(count) {
@@ -122,8 +123,9 @@ describe('virtual transcript range calculation', () => {
   });
 
   it('distinguishes bottom-follow from reading history', () => {
-    expect(shouldFollowTranscriptBottom({ scrollTop: 920, scrollHeight: 1000, clientHeight: 80, threshold: 80 })).toBe(true);
-    expect(shouldFollowTranscriptBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 80, threshold: 80 })).toBe(false);
+    expect(virtualTranscriptDefaults.bottomThreshold).toBe(80);
+    expect(shouldFollowTranscriptBottom({ scrollTop: 920, scrollHeight: 1000, clientHeight: 80 })).toBe(true);
+    expect(shouldFollowTranscriptBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 80 })).toBe(false);
   });
 
   it('keeps the current anchor stable when measured heights above the window change', () => {
