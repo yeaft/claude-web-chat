@@ -241,6 +241,43 @@ function buildRawMessagesDelta(previousMessages, nextMessages) {
   return { messagesFrom: 0, messagesAppend: boundRawValue(nextMessages, 'raw_request_messages_append_budget') };
 }
 
+function rawRequestMessageKey(body) {
+  if (!isPlainObject(body)) return null;
+  if (Array.isArray(body.messages)) return 'messages';
+  if (Array.isArray(body.input)) return 'input';
+  return null;
+}
+
+function buildInitialRawRequestDelta(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') return { replacement: rawRequestSentinel('raw_request_string_replaced', value) };
+  if (!isPlainObject(value)) return { replacement: boundRawValue(value) };
+  const delta = { set: {}, body: {} };
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'body') continue;
+    delta.set[key] = boundRawValue(item, `raw_request_${key}_budget`);
+  }
+  const body = isPlainObject(value.body) ? value.body : null;
+  if (body) {
+    for (const [key, bodyValue] of Object.entries(body)) {
+      if (key === 'messages' || key === 'input') continue;
+      delta.body[key] = boundRawValue(bodyValue, `raw_request_body_${key}_budget`);
+    }
+    const messageKey = rawRequestMessageKey(body);
+    if (messageKey) {
+      delta.body.messagesKey = messageKey;
+      Object.assign(delta.body, buildRawMessagesDelta([], body[messageKey]) || {});
+    }
+  } else if (Object.prototype.hasOwnProperty.call(value, 'body')) {
+    delta.set.body = rawRequestSentinel('raw_request_body_replaced');
+  }
+  if (Object.keys(delta.set).length === 0) delete delta.set;
+  if (Object.keys(delta.body).length === 0) delete delta.body;
+  if (!delta.set && !delta.body) return null;
+  if (jsonByteLength(delta) > MAX_RAW_REQUEST_BYTES) return { replacement: rawRequestSentinel('raw_request_delta_budget') };
+  return delta;
+}
+
 function rawComparableRequest(value) {
   if (value == null) return null;
   if (!isPlainObject(value)) return value;
@@ -251,7 +288,7 @@ function rawComparableRequest(value) {
 
 function buildRawRequestDelta(previous, next) {
   if (next == null) return previous == null ? null : { replacement: null };
-  if (previous == null) return { base: buildRawRequestBase(next) };
+  if (previous == null) return buildInitialRawRequestDelta(next);
   const comparablePrevious = rawComparableRequest(previous);
   const comparableNext = rawComparableRequest(next);
   if (typeof comparablePrevious === 'string' || typeof comparableNext === 'string') {
@@ -308,10 +345,12 @@ export function applyRawRequestDelta(previous, delta) {
   if (isPlainObject(delta.body)) {
     const body = isPlainObject(next.body) ? { ...next.body } : {};
     for (const [key, value] of Object.entries(delta.body)) {
-      if (key === 'messagesFrom' || key === 'messagesAppend' || key === 'messages') continue;
+      if (key === 'messagesFrom' || key === 'messagesAppend' || key === 'messages' || key === 'messagesKey') continue;
       body[key] = cloneJsonValue(value) ?? value;
     }
-    const messageKey = Array.isArray(body.messages) || Object.prototype.hasOwnProperty.call(delta.body, 'messages') ? 'messages' : 'input';
+    const messageKey = delta.body.messagesKey === 'messages' || delta.body.messagesKey === 'input'
+      ? delta.body.messagesKey
+      : (Array.isArray(body.messages) || Object.prototype.hasOwnProperty.call(delta.body, 'messages') ? 'messages' : 'input');
     if (Array.isArray(delta.body.messages)) {
       body[messageKey] = cloneJsonValue(delta.body.messages) || [];
     } else if (Array.isArray(delta.body.messagesAppend)) {

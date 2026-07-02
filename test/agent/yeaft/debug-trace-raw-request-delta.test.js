@@ -73,7 +73,9 @@ describe('DebugTrace raw request deltas', () => {
     await t.close();
     const stored = readStoredTrace('s1');
     expect(stored.baseRequest.rawRequest).toBeNull();
-    expect(stored.loops[0].requestDelta.rawRequestDelta.base.body.input).toHaveLength(1);
+    expect(stored.loops[0].requestDelta.rawRequestDelta).not.toHaveProperty('base');
+    expect(stored.loops[0].requestDelta.rawRequestDelta.body).toMatchObject({ messagesKey: 'input', messagesFrom: 0 });
+    expect(stored.loops[0].requestDelta.rawRequestDelta.body.messagesAppend).toHaveLength(1);
     expect(stored.loops[1].requestDelta.rawRequestDelta.body).toMatchObject({ messagesFrom: 1 });
     expect(stored.loops[1].requestDelta.rawRequestDelta.body).not.toHaveProperty('messages');
 
@@ -85,6 +87,6 @@ describe('DebugTrace raw request deltas', () => {
     const detail = await t.fetchRecentDebugHistory({ sessionId: 's1', detailTurnId: 'req-1', dreamLimit: 0 });
     expect(detail.loops).toHaveLength(2);
     expect(detail.loops[0].rawRequest).toBeNull();
-    expect(detail.loops[0].requestDelta.rawRequestDelta.base.body.input).toHaveLength(1);
+    expect(detail.loops[0].requestDelta.rawRequestDelta.body.messagesAppend).toHaveLength(1);
   });
 });

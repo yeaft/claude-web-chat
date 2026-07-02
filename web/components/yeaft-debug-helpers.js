@@ -46,10 +46,12 @@ export function applyDebugRawRequestDelta(previous, delta) {
   if (delta.body && typeof delta.body === 'object') {
     const body = next.body && typeof next.body === 'object' && !Array.isArray(next.body) ? { ...next.body } : {};
     for (const [key, value] of Object.entries(delta.body)) {
-      if (key === 'messages' || key === 'messagesFrom' || key === 'messagesAppend') continue;
+      if (key === 'messages' || key === 'messagesFrom' || key === 'messagesAppend' || key === 'messagesKey') continue;
       body[key] = cloneDebugValue(value);
     }
-    const messageKey = Array.isArray(body.messages) || Object.prototype.hasOwnProperty.call(delta.body, 'messages') ? 'messages' : 'input';
+    const messageKey = delta.body.messagesKey === 'messages' || delta.body.messagesKey === 'input'
+      ? delta.body.messagesKey
+      : (Array.isArray(body.messages) || Object.prototype.hasOwnProperty.call(delta.body, 'messages') ? 'messages' : 'input');
     if (Array.isArray(delta.body.messages)) {
       body[messageKey] = cloneDebugValue(delta.body.messages) || [];
     } else if (Array.isArray(delta.body.messagesAppend)) {

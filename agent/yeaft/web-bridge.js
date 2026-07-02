@@ -4081,7 +4081,7 @@ function startSessionLoadInBackground({ sessionId = null, sessionMeta = null, pe
  */
 async function runVpTurnWithEscalation(args) {
   const { sessionId, vpId, turnId, threadId, thread } = args;
-  const queryTimeoutMs = queryTimeoutMsForSessionConfig(session?.config);
+  const queryTimeoutMs = queryTimeoutMsForSession(sessionId);
   const deadlineMs = queryTimeoutMs + ESCALATE_AFTER_ABORT_MS;
   await raceWithEscalation(runVpTurn(args), {
     deadlineMs,
@@ -4236,7 +4236,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
     }
 
     let queryTimer = null;
-    const queryTimeoutMs = queryTimeoutMsForSessionConfig(session?.config);
+    const queryTimeoutMs = queryTimeoutMsForSession(sessionId);
     const resetQueryTimer = () => {
       if (queryTimer) clearTimeout(queryTimer);
       queryTimer = setTimeout(() => {
@@ -6254,6 +6254,7 @@ export const __testHooks = {
     return projectRuntimes.size;
   },
   queryTimeoutMsForSessionConfig,
+  queryTimeoutMsForSession,
   seedQueuedVpTurn({ sessionId = 'session-test', vpId = 'vp-test', threadId = 'main', turnId = 'turn-test' } = {}) {
     const key = threadKey(sessionId, vpId, threadId);
     const inbox = vpInboxes.get(key) || [];

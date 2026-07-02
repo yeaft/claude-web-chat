@@ -6,14 +6,16 @@ describe('debug raw request reconstruction', () => {
   it('reconstructs full request bodies from append-only message deltas', () => {
     const first = reconstructDebugRawRequest(null, {
       rawRequestDelta: {
-        base: {
+        set: {
           method: 'POST',
           url: 'https://llm.example/v1/responses',
-          body: {
-            model: 'm',
-            input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
-            stream: true,
-          },
+        },
+        body: {
+          model: 'm',
+          stream: true,
+          messagesKey: 'input',
+          messagesFrom: 0,
+          messagesAppend: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
         },
       },
     });
@@ -21,6 +23,7 @@ describe('debug raw request reconstruction', () => {
     const secondDelta = {
       rawRequestDelta: {
         body: {
+          messagesKey: 'input',
           messagesFrom: 1,
           messagesAppend: [
             { type: 'function_call', call_id: 'call_1', name: 'Bash', arguments: '{"command":"pwd"}' },
@@ -49,6 +52,7 @@ describe('debug raw request reconstruction', () => {
 
     const next = applyDebugRawRequestDelta(base, {
       body: {
+        messagesKey: 'input',
         messagesFrom: 1,
         messagesAppend: [{ type: 'function_call_output', call_id: 'call_1', output: 'ok' }],
       },
