@@ -13,7 +13,7 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('@scroll-state="onVirtualTranscriptScrollState"');
     expect(source).toContain('showInitialMessagesLoading');
     expect(source).toContain('initial-message-loading');
-    expect(source).toContain('the following VP replies into one virtual item');
+    expect(source).toContain('the following AI replies into one virtual item');
     expect(source).toContain('v-if="block.type === \'message-block\'"');
     expect(source).not.toContain('<template v-for="block in messageBlocks"');
   });
@@ -25,6 +25,9 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('const toolExpandStates = Vue.reactive({});');
     expect(source).toContain(':actions-expanded="assistantTurnActionsExpandedFor(block)"');
     expect(source).toContain(':tool-expand-states="toolExpandStates"');
+    expect(source).toContain(':response-collapsible="responseToggleBelongsToItem(block, item)"');
+    expect(source).toContain('@toggle-response-collapse="toggleMessageTurnResponse(block)"');
+    expect(source).not.toContain('message-turn-collapse-toggle');
     expect(source).not.toContain('vpTurnExpandStates');
     expect(source).not.toContain(':expand-state="vpTurnExpandStateFor(block)"');
   });

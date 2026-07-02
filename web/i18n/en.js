@@ -227,6 +227,7 @@ export default {
   'yeaft.dreamDebug.noSearchResults': 'No Dream sessions match this search.',
   'yeaft.dreamDebug.noSummary': 'No summary available',
   'yeaft.dreamDebug.segments': 'segments',
+  'yeaft.dreamDebug.lastError': 'Last error',
   'yeaft.dreamDebug.overview': 'Overview',
   'yeaft.dreamDebug.sessionId': 'Session ID',
   'yeaft.dreamDebug.loadedAt': 'Loaded at',
@@ -460,6 +461,9 @@ export default {
   'message.loadingMore': 'Loading more messages...',
   'message.loadMore': '↑ Click or scroll up to load more',
   'message.scrollToLatest': '↓ Latest',
+  'message.showResponses': 'Show {count} response(s)',
+  'message.hideResponses': 'Hide response(s)',
+  'message.assistant': 'Assistant',
 
   // ============ Typing Health ============
   'chat.waiting.disconnected': 'Connection lost',
@@ -803,6 +807,7 @@ export default {
   'settings.dashboard.totalSessions': 'Total Sessions',
   'settings.dashboard.todayActive': 'Today Active',
   'settings.dashboard.todayMessages': 'Today Messages',
+  'settings.dashboard.todayUserTurns': 'Today User Turns',
   'settings.dashboard.today': 'Today',
   'settings.dashboard.thisWeek': 'This Week',
   'settings.dashboard.thisMonth': 'This Month',
@@ -813,6 +818,7 @@ export default {
   'settings.dashboard.refresh': 'Refresh',
   'settings.dashboard.name': 'Name',
   'settings.dashboard.messages': 'Messages',
+  'settings.dashboard.userTurns': 'User Turns',
   'settings.dashboard.sessions': 'Sessions',
   'settings.dashboard.requests': 'Requests',
   'settings.dashboard.traffic': 'Traffic',

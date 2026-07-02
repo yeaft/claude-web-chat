@@ -1357,11 +1357,80 @@
   transition: opacity 0.15s;
 }
 
-.assistant-turn:hover .turn-footer {
+.assistant-turn:hover .turn-footer,
+.message-block:hover .message-block-collapse-footer {
   opacity: 1;
 }
 
-.copy-full-btn {
+.message-block-collapse-footer {
+  justify-content: flex-end;
+}
+
+.message-block-collapsed-response {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.message-block-collapsed-preview {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1.35;
+  text-align: left;
+  overflow: hidden;
+}
+
+.message-block-collapsed-preview-meta,
+.message-block-collapsed-preview-line {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.message-block-collapsed-preview-meta {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.message-block-collapsed-preview-sep,
+.message-block-collapsed-preview-time {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.message-block-collapsed-preview-line {
+  color: var(--text-secondary);
+}
+
+.message-block-collapsed-preview:hover .message-block-collapsed-preview-line,
+.message-block-collapsed-preview:focus-visible .message-block-collapsed-preview-line {
+  color: var(--text-primary);
+}
+
+.message-block-collapsed-preview:focus-visible {
+  outline: none;
+}
+
+.message-block-collapsed-response .message-block-collapse-footer {
+  opacity: 1;
+  padding-top: 0;
+}
+
+.copy-full-btn,
+.response-collapse-btn {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1375,12 +1444,19 @@
   transition: background 0.15s, color 0.15s;
 }
 
-.copy-full-btn:hover {
+.copy-full-btn:hover,
+.response-collapse-btn:hover,
+.response-collapse-btn:focus-visible {
   background: var(--bg-user-msg);
   color: var(--text-primary);
 }
 
-.copy-full-label {
+.response-collapse-btn:focus-visible {
+  outline: none;
+}
+
+.copy-full-label,
+.response-collapse-label {
   font-size: 11px;
 }
 

@@ -15,6 +15,13 @@ import UserTurnBlock from './UserTurnBlock.js';
 import VirtualTranscript from './VirtualTranscript.js';
 import { shouldCloseYeaftVpTurn } from '../stores/helpers/yeaft-turn-boundary.js';
 import { estimateVirtualItemHeight } from '../utils/virtual-transcript.js';
+import {
+  annotateMessageBlocksForResponseCollapse,
+  collapsedResponsePreviewForMessageBlock,
+  estimateCollapsedMessageBlockHeight,
+  isResponseItem,
+  visibleItemsForMessageBlock,
+} from '../utils/message-turn-collapse.js';
 // task-757: appendTypingPlaceholders removed from the pipeline.
 // The standalone typing card it produced (at the bottom of the
 // conversation) showed "[VP] is typing…" in a separate row that
@@ -179,7 +186,7 @@ export default {
             :data-vp-id="block.vpId || ''"
             :data-message-id="block.messageId || ''"
           >
-            <template v-for="item in block.items" :key="item.id">
+            <template v-for="item in visibleItemsForBlock(block)" :key="item.id">
               <!-- task-312: wrapper carries data-msg-id so the Yeaft sidebar
                    jump-to-message feature can scroll/flash a specific row. -->
               <div class="msg-row" :data-msg-id="item.id" :class="{ 'msg-flash': item.id === flashMsgId }">
@@ -205,6 +212,10 @@ export default {
                   v-else-if="item.type === 'assistant-turn' && item.speakerVpId"
                   :turn="item"
                   :now-ms="nowMs"
+                  :response-collapsible="responseToggleBelongsToItem(block, item)"
+                  :response-collapsed="block.responseCollapsed"
+                  :response-toggle-label="responseCollapseLabel(block)"
+                  @toggle-response-collapse="toggleMessageTurnResponse(block)"
                 />
                 <AssistantTurn
                   v-else-if="item.type === 'assistant-turn'"
@@ -212,8 +223,12 @@ export default {
                   :actions-expanded="assistantTurnActionsExpandedFor(item)"
                   :tool-expand-states="toolExpandStates"
                   :tool-state-prefix="turnUiKey(item)"
+                  :response-collapsible="responseToggleBelongsToItem(block, item)"
+                  :response-collapsed="block.responseCollapsed"
+                  :response-toggle-label="responseCollapseLabel(block)"
                   @update-actions-expanded="value => setAssistantTurnActionsExpanded(item, value)"
                   @update-tool-expanded="setToolExpanded"
+                  @toggle-response-collapse="toggleMessageTurnResponse(block)"
                 />
               </div>
         <!-- feat-6af5f9f1 PR A: ReflectionCard mounts removed from the
@@ -230,6 +245,48 @@ export default {
                 :card="card"
               />
             </template>
+            <div v-if="showBlockResponseToggle(block)" class="message-block-collapsed-response">
+              <button
+                type="button"
+                class="message-block-collapsed-preview"
+                @click="toggleMessageTurnResponse(block)"
+                :title="responseCollapseLabel(block)"
+                :aria-label="responseCollapseLabel(block)"
+              >
+                <span class="message-block-collapsed-preview-meta">
+                  <span class="message-block-collapsed-preview-speaker">{{ collapsedResponsePreviewSpeaker(block).name }}</span>
+                  <template v-if="collapsedResponsePreviewSpeaker(block).timeText">
+                    <span class="message-block-collapsed-preview-sep" aria-hidden="true">·</span>
+                    <span
+                      class="message-block-collapsed-preview-time"
+                      :title="collapsedResponsePreviewSpeaker(block).fullTimeText"
+                    >{{ collapsedResponsePreviewSpeaker(block).timeText }}</span>
+                  </template>
+                </span>
+                <span
+                  v-for="(line, index) in collapsedResponsePreviewLines(block)"
+                  :key="index"
+                  class="message-block-collapsed-preview-line"
+                >{{ line }}</span>
+              </button>
+              <div class="turn-footer message-block-collapse-footer">
+                <button
+                  type="button"
+                  class="response-collapse-btn"
+                  :class="{ 'is-collapsed': block.responseCollapsed }"
+                  @click="toggleMessageTurnResponse(block)"
+                  :title="responseCollapseLabel(block)"
+                  :aria-label="responseCollapseLabel(block)"
+                  :aria-expanded="String(!block.responseCollapsed)"
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                    <path v-if="block.responseCollapsed" fill="currentColor" d="M7 10l5 5 5-5z"/>
+                    <path v-else fill="currentColor" d="M7 14l5-5 5 5z"/>
+                  </svg>
+                  <span class="response-collapse-label">{{ responseCollapseLabel(block) }}</span>
+                </button>
+              </div>
+            </div>
           </section>
           <template v-else>
             <div class="msg-row" :data-msg-id="block.id" :class="{ 'msg-flash': block.id === flashMsgId }">
@@ -591,9 +648,14 @@ export default {
   setup() {
     const store = Pinia.useChatStore();
     const authStore = useAuthStore();
+    const vpStore = (typeof window !== 'undefined' && window.Pinia?.useVpStore)
+      ? window.Pinia.useVpStore()
+      : null;
+    const t = Vue.inject('t', null);
     const containerRef = Vue.ref(null);
     const assistantTurnActionStates = Vue.reactive({});
     const toolExpandStates = Vue.reactive({});
+    const messageTurnCollapseStates = Vue.reactive({});
 
     const turnUiKey = (turn) => String(
       turn?.id
@@ -616,7 +678,75 @@ export default {
       if (!key) return;
       toolExpandStates[key] = !!value;
     };
-    const estimateMessageBlockHeight = (block) => estimateVirtualItemHeight(block);
+    const estimateMessageBlockHeight = (block) => {
+      const collapsedHeight = estimateCollapsedMessageBlockHeight(block, estimateVirtualItemHeight);
+      return Number.isFinite(collapsedHeight) ? collapsedHeight : estimateVirtualItemHeight(block);
+    };
+    const visibleItemsForBlock = (block) => visibleItemsForMessageBlock(block);
+    const collapsedResponsePreviewLines = (block) => {
+      const preview = Array.isArray(block?.collapsedResponsePreview)
+        ? block.collapsedResponsePreview
+        : collapsedResponsePreviewForMessageBlock(block);
+      return Array.isArray(preview) ? preview : (preview ? [String(preview)] : []);
+    };
+    const collapsedResponsePreviewSpeaker = (block) => {
+      const firstResponse = Array.isArray(block?.items)
+        ? block.items.find(item => isResponseItem(item))
+        : null;
+      const vpId = firstResponse?.speakerVpId
+        || firstResponse?.vpId
+        || firstResponse?.message?.speakerVpId
+        || firstResponse?.message?.vpId
+        || block?.vpId
+        || '';
+      const name = vpId && vpStore && typeof vpStore.vpLabel === 'function'
+        ? (vpStore.vpLabel(vpId) || vpId)
+        : (vpId || (typeof t === 'function' ? t('message.assistant') : 'Assistant'));
+      const ts = firstResponse?.speakerTimestamp
+        || firstResponse?.timestamp
+        || firstResponse?.createdAt
+        || firstResponse?.message?.timestamp
+        || firstResponse?.message?.createdAt
+        || 0;
+      let timeText = '';
+      let fullTimeText = '';
+      if (ts) {
+        try {
+          const d = new Date(ts);
+          if (!Number.isNaN(d.getTime())) {
+            timeText = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+            fullTimeText = d.toLocaleString();
+          }
+        } catch (_) {}
+      }
+      return { name, timeText, fullTimeText };
+    };
+    const lastResponseItemForBlock = (block) => {
+      const items = Array.isArray(block?.items) ? block.items : [];
+      for (let i = items.length - 1; i >= 0; i -= 1) {
+        if (isResponseItem(items[i])) return items[i];
+      }
+      return null;
+    };
+    const responseToggleBelongsToItem = (block, item) => {
+      if (!block?.responseCollapsible || !item) return false;
+      return lastResponseItemForBlock(block) === item;
+    };
+    const showBlockResponseToggle = (block) => !!(
+      block?.responseCollapsible
+      && !visibleItemsForMessageBlock(block).some(item => responseToggleBelongsToItem(block, item))
+    );
+    const toggleMessageTurnResponse = (block) => {
+      const key = block?.responseCollapseKey;
+      if (!key) return;
+      messageTurnCollapseStates[key] = !block.responseCollapsed;
+    };
+    const responseCollapseLabel = (block) => {
+      const count = Number(block?.responseCount || 0);
+      const key = block?.responseCollapsed ? 'message.showResponses' : 'message.hideResponses';
+      const template = (typeof t === 'function' ? t(key) : '') || (block?.responseCollapsed ? 'Show {count} response(s)' : 'Hide response(s)');
+      return String(template).replace('{count}', String(count));
+    };
 
     // Resolve whether the user is viewing an active Yeaft Session. This gates
     // IM-style turn layout here; the announcement editor itself now lives in
@@ -630,8 +760,8 @@ export default {
       const gs = sessionsStore();
       if (!gs) return null;
       const filterId = store.yeaftActiveSessionFilter || null;
-      if (filterId && gs.sessions[filterId]) return filterId;
-      if (gs.activeSessionId && gs.sessions[gs.activeSessionId]) return gs.activeSessionId;
+      if (filterId && typeof gs.sessionById === 'function' && gs.sessionById(filterId, store.currentAgent || null)) return filterId;
+      if (gs.activeSessionId && typeof gs.sessionById === 'function' && gs.sessionById(gs.activeSessionId, store.currentAgent || null)) return gs.activeSessionId;
       return null;
     });
 
@@ -1014,10 +1144,9 @@ export default {
     });
 
     const messageBlocks = Vue.computed(() => {
-      // Chat mode keeps the flat legacy list. Yeaft groups one user row plus
-      // the following VP replies into one virtual item, so virtualization never
-      // shows a reply without the turn context that caused it.
-      if (store.currentView !== 'yeaft' || !activeYeaftSessionId.value) return turnGroups.value;
+      // Group one user row plus the following AI replies into one virtual item.
+      // That keeps reply context attached during virtualization and lets older
+      // user turns collapse their AI response without touching message storage.
       const blocks = [];
       let currentBlock = null;
       const finishBlock = () => {
@@ -1050,7 +1179,7 @@ export default {
       });
 
       finishBlock();
-      return blocks;
+      return annotateMessageBlocksForResponseCollapse(blocks, messageTurnCollapseStates);
     });
 
     // PR-L: reflection cards grouped by anchor (the message id present at the
@@ -1768,6 +1897,7 @@ export default {
       () => {
         for (const key of Object.keys(assistantTurnActionStates)) delete assistantTurnActionStates[key];
         for (const key of Object.keys(toolExpandStates)) delete toolExpandStates[key];
+        for (const key of Object.keys(messageTurnCollapseStates)) delete messageTurnCollapseStates[key];
         resumeAutoFollow();
         Vue.nextTick(scrollToBottom);
       }
@@ -1832,6 +1962,13 @@ export default {
       turnGroups,
       messageBlocks,
       estimateMessageBlockHeight,
+      visibleItemsForBlock,
+      collapsedResponsePreviewLines,
+      collapsedResponsePreviewSpeaker,
+      responseToggleBelongsToItem,
+      showBlockResponseToggle,
+      toggleMessageTurnResponse,
+      responseCollapseLabel,
       turnUiKey,
       assistantTurnActionsExpandedFor,
       setAssistantTurnActionsExpanded,
