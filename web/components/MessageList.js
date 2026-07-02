@@ -1138,8 +1138,12 @@ export default {
       return map.__orphans || [];
     });
 
-    // Track if user is at bottom (within threshold)
+    // Track if user is at bottom (within threshold). `autoFollowPaused` is the
+    // stronger user-intent latch: once the user scrolls into history, live
+    // updates must not pull the transcript back down until they explicitly
+    // return to the latest row or switch sessions.
     const isAtBottom = Vue.ref(true);
+    const autoFollowPaused = Vue.ref(false);
     const SCROLL_THRESHOLD = 50;
     const LOAD_MORE_TOP_THRESHOLD = 100;
     let loadMoreArmed = true;
@@ -1587,8 +1591,24 @@ export default {
       });
     };
 
+    const setAutoFollowFromScrollState = ({ scrollTop, scrollHeight, clientHeight }) => {
+      const atBottom = scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;
+      isAtBottom.value = atBottom;
+      autoFollowPaused.value = !atBottom;
+      return atBottom;
+    };
+
+    const resumeAutoFollow = () => {
+      autoFollowPaused.value = false;
+      isAtBottom.value = true;
+    };
+
     const onVirtualTranscriptScrollState = ({ scrollTop, scrollHeight, clientHeight }) => {
-      isAtBottom.value = scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;
+      setAutoFollowFromScrollState({
+        scrollTop: scrollTop || 0,
+        scrollHeight: scrollHeight || 0,
+        clientHeight: clientHeight || 0,
+      });
       maybeLoadMoreNearTop(scrollTop || 0);
     };
 
@@ -1662,8 +1682,10 @@ export default {
     };
 
     const onScroll = () => {
-      isAtBottom.value = checkIfAtBottom();
-      if (isAtBottom.value) pruneYeaftWindowNearBottom();
+      const atBottom = checkIfAtBottom();
+      isAtBottom.value = atBottom;
+      autoFollowPaused.value = !atBottom;
+      if (atBottom) pruneYeaftWindowNearBottom();
 
       if (containerRef.value) maybeLoadMoreNearTop(containerRef.value.scrollTop || 0);
     };
@@ -1675,26 +1697,56 @@ export default {
     const scrollToBottom = () => {
       if (containerRef.value) {
         containerRef.value.scrollTop = containerRef.value.scrollHeight;
-        isAtBottom.value = true;
+        resumeAutoFollow();
         pruneYeaftWindowNearBottom();
       }
     };
 
     const scrollToLatest = () => {
-      // If the user jumped away while an initial Yeaft group page was still
+      // If the user jumped away while an initial Yeaft Session page was still
       // being hydrated, make the intent explicit: stay on the newest loaded
       // row, and when the in-flight page lands the existing smart-scroll
-      // watchers will keep us pinned because isAtBottom is true.
-      isAtBottom.value = true;
+      // watchers will keep us pinned because auto-follow has resumed.
+      resumeAutoFollow();
       Vue.nextTick(scrollToBottom);
     };
 
     const smartScrollToBottom = () => {
-      if (isAtBottom.value) {
+      if (!autoFollowPaused.value && isAtBottom.value) {
         pruneYeaftWindowNearBottom();
         Vue.nextTick(scrollToBottom);
       }
     };
+
+    const autoScrollItemIdentity = (item) => {
+      if (!item) return '';
+      if (Array.isArray(item.items)) {
+        return item.items.map(autoScrollItemIdentity).join(',');
+      }
+      const msg = item.message || {};
+      return [
+        item.type || '',
+        item.id || '',
+        item.atMessageId || '',
+        item.turnId || '',
+        item.messageId || '',
+        item.speakerVpId || '',
+        msg.id || '',
+        msg.content ? String(msg.content).length : 0,
+        item.textContent ? String(item.textContent).length : 0,
+        item.isStreaming || msg.isStreaming ? 'streaming' : 'done',
+      ].join(':');
+    };
+
+    const visibleTranscriptTailSignature = Vue.computed(() => {
+      const blocks = messageBlocks.value || [];
+      return [
+        store.currentConversation || '',
+        activeYeaftSessionId.value || '',
+        blocks.length,
+        autoScrollItemIdentity(blocks[blocks.length - 1]),
+      ].join('|');
+    });
 
     Vue.watch(
       () => [store.currentConversation, onlineAgents.value.length, authStore.token],
@@ -1709,15 +1761,14 @@ export default {
       { immediate: true }
     );
 
-    Vue.watch(() => store.messages.length, smartScrollToBottom);
-    Vue.watch(() => store.messages[store.messages.length - 1]?.content, smartScrollToBottom);
+    Vue.watch(visibleTranscriptTailSignature, smartScrollToBottom);
     Vue.watch(previewShowTypingDots, (show) => { if (show) smartScrollToBottom(); });
     Vue.watch(
-      () => store.currentConversation,
+      () => [store.currentConversation, activeYeaftSessionId.value],
       () => {
         for (const key of Object.keys(assistantTurnActionStates)) delete assistantTurnActionStates[key];
         for (const key of Object.keys(toolExpandStates)) delete toolExpandStates[key];
-        isAtBottom.value = true;
+        resumeAutoFollow();
         Vue.nextTick(scrollToBottom);
       }
     );
