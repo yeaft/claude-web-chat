@@ -20,8 +20,8 @@ describe('ChatInput paste attachments', () => {
 
   it('clears stale auth instead of silently swallowing unauthorized uploads', () => {
     expect(chatInputSource).toContain('if (response.status === 401 || response.status === 403)');
-    expect(chatInputSource).toContain('authStore.handleAuthFailure?.();');
-    expect(chatInputSource.indexOf('authStore.handleAuthFailure?.();')).toBeLessThan(
+    expect(chatInputSource).toContain('authStore.handleAuthFailure?.(undefined, requestToken);');
+    expect(chatInputSource.indexOf('authStore.handleAuthFailure?.(undefined, requestToken);')).toBeLessThan(
       chatInputSource.indexOf("throw new Error('Upload failed: authentication required')"),
     );
   });

@@ -136,12 +136,12 @@ describe('SettingsPanel Agent secret behavior', () => {
       throw new Error(`Unexpected fetch ${url}`);
     });
     globalThis.fetch = fetch;
-    const authStore = { role: 'pro', loadIdentities: vi.fn(), handleAuthFailure: vi.fn() };
+    const authStore = { role: 'pro', token: 'expired-token', loadIdentities: vi.fn(), handleAuthFailure: vi.fn() };
     const instance = createInstance(component, { visible: true, authStore, _consumeSsoQueryFlags: vi.fn() });
 
     await instance.loadData();
 
-    expect(authStore.handleAuthFailure).toHaveBeenCalledWith('auth.sessionExpired');
+    expect(authStore.handleAuthFailure).toHaveBeenCalledWith('auth.sessionExpired', 'expired-token');
     expect(authStore.loadIdentities).not.toHaveBeenCalled();
     expect(instance.profile).toBe(null);
   });

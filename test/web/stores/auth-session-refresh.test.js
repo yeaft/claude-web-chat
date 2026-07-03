@@ -108,4 +108,28 @@ describe('auth store session restore and refresh', () => {
     expect(auth.token).toBe('renewed-token');
     expect(globalThis.localStorage.setItem).toHaveBeenCalledWith('authToken', 'renewed-token');
   });
+
+  it('does not let stale auth failures clear a newer login token', async () => {
+    globalThis.localStorage = createLocalStorage({ authToken: 'new-token' });
+    const auth = await loadAuthStore();
+    auth.token = 'new-token';
+    auth.isAuthenticated = true;
+
+    const ok = auth.handleAuthFailure('expired', 'old-token');
+
+    expect(ok).toBe(false);
+    expect(auth.isAuthenticated).toBe(true);
+    expect(auth.token).toBe('new-token');
+    expect(globalThis.localStorage.removeItem).not.toHaveBeenCalledWith('authToken');
+  });
+
+  it('hydrates the active token from storage before authenticated requests', async () => {
+    globalThis.localStorage = createLocalStorage({ authToken: 'stored-token' });
+    const auth = await loadAuthStore();
+
+    const token = auth.getActiveToken();
+
+    expect(token).toBe('stored-token');
+    expect(auth.token).toBe('stored-token');
+  });
 });
