@@ -124,6 +124,29 @@ describe('auth fetch interceptor', () => {
     expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token');
   });
 
+  it('does not clear a newer login when an old no-token request later returns 401', async () => {
+    const authStore = {
+      token: null,
+      getActiveToken: vi.fn(() => null),
+      handleAuthFailure: vi.fn(),
+    };
+    globalThis.localStorage = createLocalStorage();
+    const originalFetch = vi.fn(async () => {
+      authStore.token = 'new-token';
+      globalThis.localStorage.setItem('authToken', 'new-token');
+      return response({ status: 401 });
+    });
+    const fetch = await loadInstaller({ authStore, fetchImpl: originalFetch });
+    globalThis.localStorage.removeItem('authToken');
+
+    await fetch('/api/user/profile');
+
+    expect(originalFetch.mock.calls[0][1]).toBeUndefined();
+    expect(authStore.handleAuthFailure).not.toHaveBeenCalled();
+    expect(authStore.token).toBe('new-token');
+    expect(globalThis.localStorage.getItem('authToken')).toBe('new-token');
+  });
+
   it('does not treat authorization denials as expired login sessions', async () => {
     const authStore = {
       token: 'pro-token',

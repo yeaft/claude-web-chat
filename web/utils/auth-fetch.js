@@ -101,9 +101,10 @@ function withHeaders(init, headers) {
 }
 
 function handleUnauthorized(requestToken) {
+  if (!requestToken) return;
   const store = getAuthStore();
   if (store && typeof store.handleAuthFailure === 'function') {
-    store.handleAuthFailure(undefined, requestToken || undefined);
+    store.handleAuthFailure(undefined, requestToken);
   }
 }
 
