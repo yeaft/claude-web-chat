@@ -84,4 +84,18 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('return !!store.currentConversation && store.hasMoreMessages && !store.loadingMoreMessages;');
   });
 
+  it('keeps Yeaft auto-follow scoped to the visible session tail and explicit resume intents', () => {
+    const source = read('components/MessageList.js');
+
+    expect(source).toContain('const autoFollowPaused = Vue.ref(false);');
+    expect(source).toContain('const SCROLL_THRESHOLD = virtualTranscriptDefaults.bottomThreshold;');
+    expect(source).toContain('shouldFollowTranscriptBottom({ scrollTop, scrollHeight, clientHeight, threshold: SCROLL_THRESHOLD });');
+    expect(source).toContain('const visibleTranscriptTailSignature = Vue.computed(() => {');
+    expect(source).toContain('Vue.watch(visibleTranscriptTailSignature, smartScrollToBottom);');
+    expect(source).not.toContain('Vue.watch(() => store.messages.length, smartScrollToBottom);');
+    expect(source).not.toContain('Vue.watch(() => store.messages[store.messages.length - 1]?.content, smartScrollToBottom);');
+    expect(source).toContain('() => [store.currentConversation, activeYeaftSessionId.value]');
+    expect(source).toContain('resumeAutoFollow();');
+  });
+
 });
