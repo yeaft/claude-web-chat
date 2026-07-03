@@ -129,7 +129,7 @@ export function handleMessage(store, msg) {
           type: 'error',
           content: msg.error || t('login.error.loginFailed')
         });
-        authStore.handleAuthFailure?.(undefined, store._wsAuthToken);
+        authStore.handleAuthFailure?.(undefined, msg._wsAuthToken);
       }
       break;
 
