@@ -2,6 +2,7 @@ import ToolLine from './ToolLine.js';
 import AskCard from './AskCard.js';
 import VpSpeakerHeader from './VpSpeakerHeader.js';
 import { normalizeTerminalOutput } from '../utils/terminal-output.js';
+import { normalizeRouteForwardDisplay } from '../utils/route-forward-display.js';
 import { getTodoDisplayState } from '../utils/todo-display-state.js';
 import { renderMermaidIn } from '../utils/markdown.js';
 
@@ -74,7 +75,19 @@ export default {
         <span v-if="turn.isStreaming" class="cursor-blink"></span>
       </div>
 
-      <!-- 2. Todo progress (TodoWrite) -->
+      <!-- 2. VP hand-off messages (RouteForward) -->
+      <div v-if="routeMessages.length > 0" class="turn-route-messages">
+        <div v-for="(route, i) in routeMessages" :key="route.key || i" class="turn-route-message">
+          <span class="turn-route-icon" aria-hidden="true">@</span>
+          <div class="turn-route-body">
+            <div class="turn-route-target">{{ route.target }}</div>
+            <div v-if="route.text" class="turn-route-text">{{ route.text }}</div>
+            <div v-if="route.reason" class="turn-route-reason">{{ route.reason }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. Todo progress (TodoWrite) -->
       <div v-if="turn.todoMsg" class="turn-todos">
         <div v-for="todo in displayedTodos" :key="todo.content"
              class="todo-item" :class="todo.displayStatus">
@@ -105,12 +118,12 @@ export default {
           </template>
         </div>
         <div v-if="latestTool" class="turn-actions-latest">
-          <button v-if="turn.toolMsgs.length > 1" class="turn-expand-btn" @click="toggleExpand">
+          <button v-if="actionTools.length > 1" class="turn-expand-btn" @click="toggleExpand">
             <svg viewBox="0 0 24 24" width="12" height="12">
               <path v-if="expanded" fill="currentColor" d="M7 14l5-5 5 5z"/>
               <path v-else fill="currentColor" d="M7 10l5 5 5-5z"/>
             </svg>
-            <span>{{ turn.toolMsgs.length - 1 }} more</span>
+            <span>{{ actionTools.length - 1 }} more</span>
           </button>
           <ToolLine
             :tool-name="latestTool.toolName"
@@ -195,18 +208,35 @@ export default {
       store.answerUserQuestion(requestId, answers, props.conversationId || undefined);
     };
 
+    const routeMessages = Vue.computed(() => {
+      const tools = Array.isArray(props.turn?.toolMsgs) ? props.turn.toolMsgs : [];
+      return tools
+        .filter(tool => tool?.toolName === 'RouteForward')
+        .map((tool, index) => ({
+          ...normalizeRouteForwardDisplay(tool.toolInput || {}),
+          key: tool.toolId || `${tool.startTime || 0}:${index}`,
+        }));
+    });
+
+    const actionTools = Vue.computed(() => {
+      const tools = Array.isArray(props.turn?.toolMsgs) ? props.turn.toolMsgs : [];
+      return tools.filter(tool => tool?.toolName !== 'RouteForward');
+    });
+
     const showToolActions = Vue.computed(() => {
-      return props.turn.toolMsgs.length > 0 || Number(props.turn.toolSummaryCount || 0) > 0;
+      return actionTools.value.length > 0 || Number(props.turn.toolSummaryCount || 0) > 0;
     });
 
     const latestTool = Vue.computed(() => {
-      const tools = props.turn.toolMsgs;
+      const tools = actionTools.value;
       return tools[tools.length - 1];
     });
 
     const historyTools = Vue.computed(() => {
-      return props.turn.toolMsgs.slice(0, -1);
+      return actionTools.value.slice(0, -1);
     });
+
+    const latestToolIndex = Vue.computed(() => Math.max(0, actionTools.value.length - 1));
 
     const toolSummaryLabel = Vue.computed(() => {
       const count = Number(props.turn.toolSummaryCount || 0);
@@ -510,6 +540,9 @@ export default {
       showToolActions,
       latestTool,
       historyTools,
+      latestToolIndex,
+      actionTools,
+      routeMessages,
       toolSummaryLabel,
       toggleExpand,
       toolExpandedValue,
