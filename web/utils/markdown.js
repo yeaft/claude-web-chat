@@ -1,10 +1,199 @@
 /**
  * Shared Markdown rendering utilities
  */
+import { t } from './i18n.js';
 
 let _configured = false;
 let _mermaidInitializedTheme = null;
 let _mermaidRenderSeq = 0;
+
+function safeDownloadFilename(base, ext) {
+  const cleanBase = String(base || 'mermaid-diagram')
+    .replace(/[^a-z0-9_-]+/gi, '-')
+    .replace(/^-+|-+$/g, '') || 'mermaid-diagram';
+  return `${cleanBase}.${ext}`;
+}
+
+function decodeHtmlEntities(html) {
+  if (typeof document === 'undefined') {
+    return String(html || '')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+  }
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = String(html || '');
+  return textarea.value;
+}
+
+function mermaidSourceAttribute(lang, codeHtml) {
+  if (lang !== 'mermaid') return '';
+  return ` data-mermaid-source="${encodeURIComponent(decodeHtmlEntities(codeHtml))}"`;
+}
+
+function readMermaidSource(codeEl) {
+  const encoded = codeEl?.dataset?.mermaidSource;
+  if (!encoded) return '';
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return '';
+  }
+}
+
+function downloadUrl(url, filename) {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  downloadUrl(url, filename);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function getSvgDimensions(svgEl) {
+  const parseSize = (value) => {
+    const num = Number.parseFloat(String(value || '').replace('px', ''));
+    return Number.isFinite(num) && num > 0 ? num : null;
+  };
+  const width = parseSize(svgEl.getAttribute('width'));
+  const height = parseSize(svgEl.getAttribute('height'));
+  if (width && height) return { width, height };
+
+  const viewBox = svgEl.getAttribute('viewBox');
+  if (viewBox) {
+    const parts = viewBox.trim().split(/\s+/).map(Number.parseFloat);
+    if (parts.length === 4 && parts.every((part) => Number.isFinite(part)) && parts[2] > 0 && parts[3] > 0) {
+      return { width: parts[2], height: parts[3] };
+    }
+  }
+
+  const rect = svgEl.getBoundingClientRect?.();
+  if (rect?.width && rect?.height) return { width: rect.width, height: rect.height };
+  return { width: 1200, height: 800 };
+}
+
+function getCssVariable(name, fallback) {
+  if (typeof getComputedStyle === 'undefined' || typeof document === 'undefined') return fallback;
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+function forceSvgDimensions(svgEl, width, height) {
+  svgEl.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  svgEl.setAttribute('width', String(width));
+  svgEl.setAttribute('height', String(height));
+  if (!svgEl.getAttribute('viewBox')) {
+    svgEl.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  }
+}
+
+async function exportMermaidImageWithHtmlToImage(svgEl, format, width, height) {
+  if (!window.htmlToImage) return false;
+  const filename = safeDownloadFilename('mermaid-diagram', format === 'jpg' ? 'jpg' : 'png');
+  const options = {
+    backgroundColor: getCssVariable('--bg-main', 'white'),
+    height,
+    pixelRatio: Math.max(1, Math.min(3, window.devicePixelRatio || 1)),
+    width,
+  };
+  const dataUrl = format === 'jpg'
+    ? await window.htmlToImage.toJpeg(svgEl, { ...options, quality: 0.92 })
+    : await window.htmlToImage.toPng(svgEl, options);
+  downloadUrl(dataUrl, filename);
+  return true;
+}
+
+async function exportMermaidImage(renderedEl, format) {
+  const svgEl = renderedEl.querySelector('svg');
+  if (!svgEl) throw new Error('No Mermaid SVG found');
+
+  const { width, height } = getSvgDimensions(svgEl);
+  try {
+    if (await exportMermaidImageWithHtmlToImage(svgEl, format, width, height)) return;
+  } catch (error) {
+    console.warn('Mermaid html-to-image export failed, falling back:', error);
+  }
+
+  const clonedSvg = svgEl.cloneNode(true);
+  forceSvgDimensions(clonedSvg, width, height);
+
+  const svgText = new XMLSerializer().serializeToString(clonedSvg);
+  const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+  const svgUrl = URL.createObjectURL(svgBlob);
+  try {
+    const image = new Image();
+    const loaded = new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error('Failed to load Mermaid SVG for export'));
+    });
+    image.src = svgUrl;
+    await loaded;
+
+    const scale = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(width * scale);
+    canvas.height = Math.ceil(height * scale);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas is not available');
+    ctx.scale(scale, scale);
+    if (format === 'jpg') {
+      ctx.fillStyle = getCssVariable('--bg-main', 'white');
+      ctx.fillRect(0, 0, width, height);
+    }
+    ctx.drawImage(image, 0, 0, width, height);
+
+    const mime = format === 'jpg' ? 'image/jpeg' : 'image/png';
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob((result) => result ? resolve(result) : reject(new Error('Failed to export Mermaid image')), mime, 0.92);
+    });
+    downloadBlob(blob, safeDownloadFilename('mermaid-diagram', format === 'jpg' ? 'jpg' : 'png'));
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+}
+
+function exportMermaidMarkdown(code) {
+  const content = `\`\`\`mermaid\n${String(code || '').trim()}\n\`\`\`\n`;
+  downloadBlob(new Blob([content], { type: 'text/markdown;charset=utf-8' }), safeDownloadFilename('mermaid-diagram', 'md'));
+}
+
+function createMermaidExportControls(renderedEl, code) {
+  const controls = document.createElement('div');
+  controls.className = 'mermaid-export-controls';
+  controls.setAttribute('aria-label', t('mermaid.export'));
+
+  const items = [
+    { label: t('mermaid.exportMd'), action: () => exportMermaidMarkdown(code) },
+    { label: t('mermaid.exportPng'), action: () => exportMermaidImage(renderedEl, 'png') },
+    { label: t('mermaid.exportJpg'), action: () => exportMermaidImage(renderedEl, 'jpg') },
+  ];
+  for (const item of items) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'mermaid-export-btn';
+    button.textContent = item.label;
+    button.title = item.label;
+    button.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        await item.action();
+      } catch (error) {
+        console.warn('Mermaid export failed:', error);
+      }
+    });
+    controls.appendChild(button);
+  }
+
+  return controls;
+}
 
 export function configureMarked() {
   if (_configured || typeof marked === 'undefined') return;
@@ -26,6 +215,7 @@ export function addCodeBlockCopyButtons(html) {
     (match, attrs, code) => {
       const langMatch = attrs.match(/class="language-(\w+)"/);
       const lang = langMatch ? langMatch[1] : '';
+      const sourceAttr = mermaidSourceAttribute(lang, code);
       return `<div class="code-block-wrapper">
         <div class="code-block-header">
           <span class="code-lang">${lang}</span>
@@ -35,7 +225,7 @@ export function addCodeBlockCopyButtons(html) {
             </svg>
           </button>
         </div>
-        <pre><code${attrs}>${code}</code></pre>
+        <pre><code${attrs}${sourceAttr}>${code}</code></pre>
       </div>`;
     });
 }
@@ -66,7 +256,7 @@ export async function renderMermaidIn(container) {
     const pre = codeEl.closest('pre');
     if (!pre || pre.dataset.mermaidRendered === 'true') continue;
     const wrapper = pre.closest('.code-block-wrapper');
-    const code = codeEl.textContent || '';
+    const code = readMermaidSource(codeEl) || codeEl.textContent || '';
     if (!code.trim()) continue;
     pre.dataset.mermaidRendered = 'true';
     try {
@@ -75,6 +265,8 @@ export async function renderMermaidIn(container) {
       const div = document.createElement('div');
       div.className = 'mermaid-rendered';
       div.innerHTML = svg;
+      div.dataset.mermaidSource = code;
+      div.appendChild(createMermaidExportControls(div, code));
       (wrapper || pre).replaceWith(div);
     } catch (e) {
       pre.dataset.mermaidRendered = 'false';
@@ -92,8 +284,11 @@ export function simpleMarkdownFallback(text) {
     return div.innerHTML;
   };
   return text
-    .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
-      `<div class="code-block-wrapper"><pre><code class="language-${lang}">${escape(code.trim())}</code></pre></div>`)
+    .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+      const trimmed = code.trim();
+      const sourceAttr = lang === 'mermaid' ? ` data-mermaid-source="${encodeURIComponent(trimmed)}"` : '';
+      return `<div class="code-block-wrapper"><pre><code class="language-${lang}"${sourceAttr}>${escape(trimmed)}</code></pre></div>`;
+    })
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')

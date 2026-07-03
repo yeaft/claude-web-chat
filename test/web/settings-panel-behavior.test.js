@@ -38,7 +38,7 @@ describe('SettingsPanel Agent secret behavior', () => {
       initialEditVpId: '',
       visibleTabs: [{ key: 'security' }],
       yeaftSubTabs: [{ key: 'vp' }],
-      authStore: { role: 'pro', loadIdentities: vi.fn() },
+      authStore: { role: 'pro', loadIdentities: vi.fn(), handleAuthFailure: vi.fn() },
       chatStore: { locale: 'en', theme: 'light', toggleTheme: vi.fn(), changeLocale: vi.fn() },
       $t: key => key,
       showMessage: vi.fn(),
@@ -122,6 +122,28 @@ describe('SettingsPanel Agent secret behavior', () => {
 
     expect(fetch).toHaveBeenCalledWith('/api/user/agent-secret', expect.any(Object));
     expect(instance.agentSecret).toBe('fake-secret-reloaded');
+  });
+
+  it('clears stale auth when settings profile or secret requests are unauthorized', async () => {
+    const component = await loadComponent();
+    const fetch = vi.fn(async url => {
+      if (url === '/api/user/profile') {
+        return { ok: false, status: 401, json: async () => ({ error: 'expired' }) };
+      }
+      if (url === '/api/user/agent-secret') {
+        return { ok: false, status: 401, json: async () => ({ error: 'expired' }) };
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    globalThis.fetch = fetch;
+    const authStore = { role: 'pro', token: 'expired-token', loadIdentities: vi.fn(), handleAuthFailure: vi.fn() };
+    const instance = createInstance(component, { visible: true, authStore, _consumeSsoQueryFlags: vi.fn() });
+
+    await instance.loadData();
+
+    expect(authStore.handleAuthFailure).toHaveBeenCalledWith('auth.sessionExpired', 'expired-token');
+    expect(authStore.loadIdentities).not.toHaveBeenCalled();
+    expect(instance.profile).toBe(null);
   });
 
   it('applies Yeaft VP edit entry point when mounted already visible', async () => {

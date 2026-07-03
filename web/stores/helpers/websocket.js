@@ -119,12 +119,16 @@ export function connect(store) {
     store.reconnectTimer = null;
   }
 
-  if (store.ws && store.ws.readyState === WebSocket.CONNECTING) {
+  const authToken = authStore.getActiveToken?.() || authStore.token || null;
+
+  if (store.ws && store.ws.readyState === WebSocket.CONNECTING && store._wsAuthToken === authToken) {
     console.log('[WS] Already connecting, skip');
     return;
   }
 
   if (store.ws) {
+    store.ws.onopen = null;
+    store.ws.onmessage = null;
     store.ws.onclose = null;
     store.ws.close();
     store.ws = null;
@@ -133,14 +137,17 @@ export function connect(store) {
   store.connectionState = store.reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
   console.log(`[WS] Connecting... (attempt ${store.reconnectAttempts + 1})`);
 
+  store._wsAuthToken = authToken;
   let wsUrl = `${protocol}//${location.host}?type=web`;
-  if (authStore.token) {
-    wsUrl += `&token=${encodeURIComponent(authStore.token)}`;
+  if (authToken) {
+    wsUrl += `&token=${encodeURIComponent(authToken)}`;
   }
 
-  store.ws = new WebSocket(wsUrl);
+  const socket = new WebSocket(wsUrl);
+  store.ws = socket;
 
-  store.ws.onopen = () => {
+  socket.onopen = () => {
+    if (socket !== store.ws) return;
     console.log('[WS] Connected');
     store.connectionState = 'connected';
     store.reconnectAttempts = 0;
@@ -154,7 +161,7 @@ export function connect(store) {
     // key arrives — the receive path stays unconditional (decrypt iff
     // the frame looks encrypted), so the handshake ordering is benign.
     try {
-      store.ws.send(JSON.stringify({
+      socket.send(JSON.stringify({
         type: 'client_hello',
         plaintextOk: true
       }));
@@ -164,17 +171,22 @@ export function connect(store) {
     _settleConnectResolvers(true);
   };
 
-  store.ws.onmessage = (event) => {
+  socket.onmessage = (event) => {
+    if (socket !== store.ws) return;
     const msg = store.parseWsMessage(event.data);
     if (msg) {
       if (msg.type === 'file_content') console.log('[WS.onmessage] Received file_content, path:', msg.filePath, 'contentLen:', msg.content?.length);
-      store.handleMessage(msg);
+      store.handleMessage({ ...msg, _wsAuthToken: authToken });
     } else {
       console.warn('[WS.onmessage] parseWsMessage returned null, raw data length:', event.data?.length);
     }
   };
 
-  store.ws.onclose = (event) => {
+  socket.onclose = (event) => {
+    if (socket !== store.ws) {
+      if (event.code === 1008) authStore.handleAuthFailure?.(undefined, authToken);
+      return;
+    }
     console.log('[WS] Disconnected:', event.code, event.reason);
     store.authenticated = false;
     const wasUpdating = store.connectionState === 'updating';
@@ -184,8 +196,7 @@ export function connect(store) {
 
     if (event.code === 1008) {
       console.log('[WS] Auth failure, clearing token and resetting auth state');
-      localStorage.removeItem('authToken');
-      authStore.reset();
+      authStore.handleAuthFailure?.(undefined, authToken);
       store.reconnectAttempts = 0;
       _settleConnectResolvers(false);
       return;

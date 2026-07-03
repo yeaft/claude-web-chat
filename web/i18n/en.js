@@ -22,6 +22,12 @@ export default {
   'common.comma': ', ',
   'common.select': 'Select',
 
+  // ============ Mermaid ============
+  'mermaid.export': 'Export',
+  'mermaid.exportMd': 'Export MD',
+  'mermaid.exportPng': 'Export PNG',
+  'mermaid.exportJpg': 'Export JPG',
+
   // ============ Chat messages ============
   'chat.toolActionsOmitted': '{count} older tool actions omitted',
 
@@ -227,6 +233,7 @@ export default {
   'yeaft.dreamDebug.noSearchResults': 'No Dream sessions match this search.',
   'yeaft.dreamDebug.noSummary': 'No summary available',
   'yeaft.dreamDebug.segments': 'segments',
+  'yeaft.dreamDebug.lastError': 'Last error',
   'yeaft.dreamDebug.overview': 'Overview',
   'yeaft.dreamDebug.sessionId': 'Session ID',
   'yeaft.dreamDebug.loadedAt': 'Loaded at',
@@ -460,6 +467,9 @@ export default {
   'message.loadingMore': 'Loading more messages...',
   'message.loadMore': '↑ Click or scroll up to load more',
   'message.scrollToLatest': '↓ Latest',
+  'message.showResponses': 'Show {count} response(s)',
+  'message.hideResponses': 'Hide response(s)',
+  'message.assistant': 'Assistant',
 
   // ============ Typing Health ============
   'chat.waiting.disconnected': 'Connection lost',
@@ -564,12 +574,14 @@ export default {
   'settings.tabs.security': 'Security',
   'settings.tabs.general': 'General',
   'settings.tabs.invitations': 'Invitations',
+  'auth.sessionExpired': 'Session expired. Please log in again.',
 
   // Settings - Account
   'settings.account.username': 'Username',
   'settings.account.role': 'Role',
   'settings.account.email': 'Email',
   'settings.account.emailNotSet': 'Not set',
+  'settings.account.profileLoadFailed': 'Failed to load account profile',
   'settings.account.logout': 'Log Out',
   'settings.account.roleAdmin': 'Admin',
   'settings.account.rolePro': 'Pro',
@@ -803,6 +815,7 @@ export default {
   'settings.dashboard.totalSessions': 'Total Sessions',
   'settings.dashboard.todayActive': 'Today Active',
   'settings.dashboard.todayMessages': 'Today Messages',
+  'settings.dashboard.todayUserTurns': 'Today User Turns',
   'settings.dashboard.today': 'Today',
   'settings.dashboard.thisWeek': 'This Week',
   'settings.dashboard.thisMonth': 'This Month',
@@ -813,6 +826,7 @@ export default {
   'settings.dashboard.refresh': 'Refresh',
   'settings.dashboard.name': 'Name',
   'settings.dashboard.messages': 'Messages',
+  'settings.dashboard.userTurns': 'User Turns',
   'settings.dashboard.sessions': 'Sessions',
   'settings.dashboard.requests': 'Requests',
   'settings.dashboard.traffic': 'Traffic',

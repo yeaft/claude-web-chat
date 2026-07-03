@@ -13,7 +13,7 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('@scroll-state="onVirtualTranscriptScrollState"');
     expect(source).toContain('showInitialMessagesLoading');
     expect(source).toContain('initial-message-loading');
-    expect(source).toContain('the following VP replies into one virtual item');
+    expect(source).toContain('the following AI replies into one virtual item');
     expect(source).toContain('v-if="block.type === \'message-block\'"');
     expect(source).not.toContain('<template v-for="block in messageBlocks"');
   });
@@ -25,6 +25,9 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('const toolExpandStates = Vue.reactive({});');
     expect(source).toContain(':actions-expanded="assistantTurnActionsExpandedFor(block)"');
     expect(source).toContain(':tool-expand-states="toolExpandStates"');
+    expect(source).toContain(':response-collapsible="responseToggleBelongsToItem(block, item)"');
+    expect(source).toContain('@toggle-response-collapse="toggleMessageTurnResponse(block)"');
+    expect(source).not.toContain('message-turn-collapse-toggle');
     expect(source).not.toContain('vpTurnExpandStates');
     expect(source).not.toContain(':expand-state="vpTurnExpandStateFor(block)"');
   });
@@ -79,6 +82,20 @@ describe('MessageList virtualization wiring', () => {
     const source = read('components/MessageList.js');
 
     expect(source).toContain('return !!store.currentConversation && store.hasMoreMessages && !store.loadingMoreMessages;');
+  });
+
+  it('keeps Yeaft auto-follow scoped to the visible session tail and explicit resume intents', () => {
+    const source = read('components/MessageList.js');
+
+    expect(source).toContain('const autoFollowPaused = Vue.ref(false);');
+    expect(source).toContain('const SCROLL_THRESHOLD = virtualTranscriptDefaults.bottomThreshold;');
+    expect(source).toContain('shouldFollowTranscriptBottom({ scrollTop, scrollHeight, clientHeight, threshold: SCROLL_THRESHOLD });');
+    expect(source).toContain('const visibleTranscriptTailSignature = Vue.computed(() => {');
+    expect(source).toContain('Vue.watch(visibleTranscriptTailSignature, smartScrollToBottom);');
+    expect(source).not.toContain('Vue.watch(() => store.messages.length, smartScrollToBottom);');
+    expect(source).not.toContain('Vue.watch(() => store.messages[store.messages.length - 1]?.content, smartScrollToBottom);');
+    expect(source).toContain('() => [store.currentConversation, activeYeaftSessionId.value]');
+    expect(source).toContain('resumeAutoFollow();');
   });
 
 });

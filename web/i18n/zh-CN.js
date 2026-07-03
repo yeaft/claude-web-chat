@@ -22,6 +22,12 @@ export default {
   'common.comma': '，',
   'common.select': '选择',
 
+  // ============ Mermaid ============
+  'mermaid.export': '导出',
+  'mermaid.exportMd': '导出 MD',
+  'mermaid.exportPng': '导出 PNG',
+  'mermaid.exportJpg': '导出 JPG',
+
   // ============ Chat messages ============
   'chat.toolActionsOmitted': '已省略 {count} 个历史工具动作',
 
@@ -227,6 +233,7 @@ export default {
   'yeaft.dreamDebug.noSearchResults': '没有匹配的 Dream Session。',
   'yeaft.dreamDebug.noSummary': '暂无摘要',
   'yeaft.dreamDebug.segments': '段',
+  'yeaft.dreamDebug.lastError': '最近错误',
   'yeaft.dreamDebug.overview': '概览',
   'yeaft.dreamDebug.sessionId': 'Session ID',
   'yeaft.dreamDebug.loadedAt': '加载时间',
@@ -424,6 +431,9 @@ export default {
   'message.loadingMore': '加载更多消息...',
   'message.loadMore': '↑ 点击或向上滚动加载更多',
   'message.scrollToLatest': '↓ 最新',
+  'message.showResponses': '展开 {count} 条回复',
+  'message.hideResponses': '折叠回复',
+  'message.assistant': '助手',
 
   // ============ Typing Health ============
   'chat.waiting.disconnected': '连接已断开',
@@ -528,12 +538,14 @@ export default {
   'settings.tabs.security': '安全',
   'settings.tabs.general': '通用',
   'settings.tabs.invitations': '邀请',
+  'auth.sessionExpired': '登录已过期，请重新登录。',
 
   // Settings - Account
   'settings.account.username': '用户名',
   'settings.account.role': '角色',
   'settings.account.email': '邮箱',
   'settings.account.emailNotSet': '未设置',
+  'settings.account.profileLoadFailed': '账号资料加载失败',
   'settings.account.logout': '退出登录',
   'settings.account.roleAdmin': '管理员',
   'settings.account.rolePro': 'Pro',
@@ -800,6 +812,7 @@ export default {
   'settings.dashboard.totalSessions': '总会话数',
   'settings.dashboard.todayActive': '今日活跃',
   'settings.dashboard.todayMessages': '今日消息',
+  'settings.dashboard.todayUserTurns': '今日用户 Turn',
   'settings.dashboard.today': '今天',
   'settings.dashboard.thisWeek': '本周',
   'settings.dashboard.thisMonth': '本月',
@@ -810,6 +823,7 @@ export default {
   'settings.dashboard.refresh': '刷新',
   'settings.dashboard.name': '名称',
   'settings.dashboard.messages': '消息数',
+  'settings.dashboard.userTurns': '用户 Turn 数',
   'settings.dashboard.sessions': '会话数',
   'settings.dashboard.requests': '请求数',
   'settings.dashboard.traffic': '流量',
