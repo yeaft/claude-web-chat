@@ -36,6 +36,11 @@ export async function loginStep1(username, password) {
     return { success: false, error: 'Invalid username or password' };
   }
 
+  if (!user.passwordHash) {
+    await bcrypt.compare(password, '$2b$10$invalidhashfortiminginvalidhash');
+    return { success: false, error: 'Invalid username or password' };
+  }
+
   const passwordValid = await bcrypt.compare(password, user.passwordHash);
   if (!passwordValid) {
     return { success: false, error: 'Invalid username or password' };
