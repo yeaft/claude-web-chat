@@ -1425,10 +1425,11 @@
   padding: 2px 8px;
   border: none;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   cursor: pointer;
   font: inherit;
-  line-height: 1.35;
+  font-size: 14px;
+  line-height: 1.65;
   text-align: left;
   overflow: hidden;
 }
@@ -1445,23 +1446,15 @@
 
 .message-block-collapsed-preview-meta {
   color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 600;
 }
 
 .message-block-collapsed-preview-sep,
 .message-block-collapsed-preview-time {
   color: var(--text-muted);
-  font-weight: 400;
 }
 
 .message-block-collapsed-preview-line {
-  color: var(--text-secondary);
-}
-
-.message-block-collapsed-preview:hover .message-block-collapsed-preview-line,
-.message-block-collapsed-preview:focus-visible .message-block-collapsed-preview-line {
-  color: var(--text-primary);
+  color: inherit;
 }
 
 .message-block-collapsed-preview:focus-visible {
