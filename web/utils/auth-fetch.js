@@ -100,6 +100,10 @@ function withHeaders(init, headers) {
   return { ...(init || {}), headers };
 }
 
+function isSessionValidationEndpoint(url) {
+  return url?.pathname === '/api/user/profile';
+}
+
 function handleUnauthorized(requestToken) {
   if (!requestToken) return;
   const store = getAuthStore();
@@ -137,7 +141,7 @@ export function installAuthFetch() {
       const fresh = response.headers && response.headers.get && response.headers.get('X-New-Token');
       if (fresh) applyFreshToken(fresh);
 
-      if (shouldAuth && response.status === 401) {
+      if (shouldAuth && isSessionValidationEndpoint(url) && response.status === 401) {
         handleUnauthorized(requestToken);
       }
     } catch {

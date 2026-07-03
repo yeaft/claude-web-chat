@@ -110,7 +110,7 @@ describe('auth fetch interceptor', () => {
     expect(globalThis.localStorage.setItem).toHaveBeenCalledWith('authToken', 'fresh-token');
   });
 
-  it('reports 401 failures against the token used for that request', async () => {
+  it('reports session validation 401 failures against the token used for that request', async () => {
     const authStore = {
       token: 'new-token',
       getActiveToken: vi.fn(() => 'old-token'),
@@ -122,6 +122,22 @@ describe('auth fetch interceptor', () => {
     await fetch('/api/user/profile');
 
     expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token');
+  });
+
+  it('does not clear the login session when a non-session API returns 401', async () => {
+    const authStore = {
+      token: 'store-token',
+      getActiveToken: vi.fn(() => 'store-token'),
+      handleAuthFailure: vi.fn(),
+    };
+    const originalFetch = vi.fn(async () => response({ status: 401 }));
+    const fetch = await loadInstaller({ authStore, fetchImpl: originalFetch });
+
+    await fetch('/api/invitations');
+
+    const headers = originalFetch.mock.calls[0][1].headers;
+    expect(headers.get('Authorization')).toBe('Bearer store-token');
+    expect(authStore.handleAuthFailure).not.toHaveBeenCalled();
   });
 
   it('does not clear a newer login when an old no-token request later returns 401', async () => {

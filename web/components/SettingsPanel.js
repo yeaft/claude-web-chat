@@ -601,6 +601,11 @@ export default {
         if (this.authStore.qrPanel) this.cancelQrBind();
       }
     },
+    activeTab(tab) {
+      if (tab === 'invitations' && this.authStore.role === 'admin') {
+        this.loadInvitations();
+      }
+    },
     // When the bind QR completes (server reports status='bound'), close the
     // modal, refresh the linked-identities list, and surface a success toast.
     'authStore.qrPanel.status'(status) {
@@ -691,7 +696,7 @@ export default {
           const data = await secretRes.json();
           this.applyAgentSecretResponse(data);
         }
-        if (this.authStore.role === 'admin') {
+        if (this.authStore.role === 'admin' && this.activeTab === 'invitations') {
           await this.loadInvitations();
         }
         // Load linked SSO identities (best-effort).

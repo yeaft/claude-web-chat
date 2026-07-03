@@ -188,12 +188,12 @@ export function isEmailConfigured() {
  * @returns {object|null} Normalized user object with { username, passwordHash, email, totpSecret, totpEnabled, role, id }
  */
 export function getUserByUsername(username) {
-  // Query database first (includes migrated + registered users)
+  // Query database first (includes migrated, registered, and SSO-only users).
   const dbUser = userDb.getByUsername(username);
-  if (dbUser && dbUser.password_hash) {
+  if (dbUser) {
     return {
       username: dbUser.username,
-      passwordHash: dbUser.password_hash,
+      passwordHash: dbUser.password_hash || null,
       email: dbUser.email,
       totpSecret: dbUser.totp_secret,
       totpEnabled: !!dbUser.totp_enabled,
