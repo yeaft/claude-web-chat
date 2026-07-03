@@ -98,7 +98,7 @@ describe('auth fetch interceptor', () => {
   it('syncs renewed tokens from response headers into storage and auth store', async () => {
     const authStore = {
       token: 'old-token',
-      getActiveToken: vi.fn(() => 'old-token'),
+      getActiveToken: vi.fn(function getActiveToken() { return this.token; }),
       handleAuthFailure: vi.fn(),
     };
     const originalFetch = vi.fn(async () => response({ headers: { 'X-New-Token': 'fresh-token' } }));
@@ -108,6 +108,26 @@ describe('auth fetch interceptor', () => {
 
     expect(authStore.token).toBe('fresh-token');
     expect(globalThis.localStorage.setItem).toHaveBeenCalledWith('authToken', 'fresh-token');
+  });
+
+  it('does not let stale renewal headers overwrite a newer login token', async () => {
+    const authStore = {
+      token: 'old-token',
+      getActiveToken: vi.fn(function getActiveToken() { return this.token; }),
+      handleAuthFailure: vi.fn(),
+    };
+    const originalFetch = vi.fn(async () => {
+      authStore.token = 'qr-login-token';
+      globalThis.localStorage.setItem('authToken', 'qr-login-token');
+      return response({ headers: { 'X-New-Token': 'renewed-old-token' } });
+    });
+    const fetch = await loadInstaller({ authStore, fetchImpl: originalFetch });
+
+    await fetch('/api/user/profile');
+
+    expect(authStore.token).toBe('qr-login-token');
+    expect(globalThis.localStorage.getItem('authToken')).toBe('qr-login-token');
+    expect(globalThis.localStorage.setItem).not.toHaveBeenCalledWith('authToken', 'renewed-old-token');
   });
 
   it('reports session validation 401 failures against the token used for that request', async () => {

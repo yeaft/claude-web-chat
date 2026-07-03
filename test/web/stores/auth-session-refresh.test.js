@@ -90,6 +90,25 @@ describe('auth store session restore and refresh', () => {
     expect(globalThis.localStorage.setItem).toHaveBeenCalledWith('authToken', 'new-token');
   });
 
+  it('does not let stale restore renewals overwrite a newer login token', async () => {
+    globalThis.localStorage = createLocalStorage({ authToken: 'old-token' });
+    globalThis.fetch = vi.fn(async () => {
+      globalThis.localStorage.setItem('authToken', 'qr-login-token');
+      return jsonResponse({
+        body: { username: 'dev', role: 'admin' },
+        headers: { 'X-New-Token': 'renewed-old-token' },
+      });
+    });
+    const auth = await loadAuthStore();
+
+    const restored = await auth.restoreSession();
+
+    expect(restored).toBe(true);
+    expect(auth.token).toBe('qr-login-token');
+    expect(globalThis.localStorage.getItem('authToken')).toBe('qr-login-token');
+    expect(globalThis.localStorage.setItem).not.toHaveBeenCalledWith('authToken', 'renewed-old-token');
+  });
+
   it('keeps active sessions alive by refreshing the current token periodically', async () => {
     globalThis.localStorage = createLocalStorage({ authToken: 'old-token' });
     globalThis.fetch = vi.fn(async () => jsonResponse({
@@ -107,6 +126,28 @@ describe('auth store session restore and refresh', () => {
     });
     expect(auth.token).toBe('renewed-token');
     expect(globalThis.localStorage.setItem).toHaveBeenCalledWith('authToken', 'renewed-token');
+  });
+
+  it('does not let stale refresh renewals overwrite a newer login token', async () => {
+    globalThis.localStorage = createLocalStorage({ authToken: 'old-token' });
+    let auth;
+    globalThis.fetch = vi.fn(async () => {
+      auth.token = 'qr-login-token';
+      globalThis.localStorage.setItem('authToken', 'qr-login-token');
+      return jsonResponse({
+        body: { username: 'dev', role: 'pro' },
+        headers: { 'X-New-Token': 'renewed-old-token' },
+      });
+    });
+    auth = await loadAuthStore();
+    auth.token = 'old-token';
+
+    const ok = await auth.refreshSession();
+
+    expect(ok).toBe(true);
+    expect(auth.token).toBe('qr-login-token');
+    expect(globalThis.localStorage.getItem('authToken')).toBe('qr-login-token');
+    expect(globalThis.localStorage.setItem).not.toHaveBeenCalledWith('authToken', 'renewed-old-token');
   });
 
   it('does not let stale auth failures clear a newer login token', async () => {

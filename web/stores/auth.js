@@ -699,7 +699,8 @@ export const useAuthStore = defineStore('auth', {
 
         const profile = await res.json().catch(() => ({}));
         const freshToken = res.headers?.get?.('X-New-Token');
-        if (freshToken) {
+        const storedToken = localStorage.getItem('authToken');
+        if (freshToken && this.token === requestToken && (!storedToken || storedToken === requestToken)) {
           this.token = freshToken;
           localStorage.setItem('authToken', freshToken);
         }
@@ -813,7 +814,9 @@ export const useAuthStore = defineStore('auth', {
         }
 
         const profile = await res.json();
-        const freshToken = res.headers?.get?.('X-New-Token') || localStorage.getItem('authToken') || token;
+        const headerToken = res.headers?.get?.('X-New-Token');
+        const activeToken = this.getActiveToken();
+        const freshToken = headerToken && activeToken === token ? headerToken : activeToken || token;
         this.token = freshToken;
         if (freshToken !== token) localStorage.setItem('authToken', freshToken);
         this.role = profile?.role || 'pro';
