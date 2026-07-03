@@ -1284,9 +1284,8 @@
   right: 10px;
   bottom: 10px;
   display: flex;
-  align-items: flex-end;
-  flex-direction: column-reverse;
-  gap: 6px;
+  align-items: center;
+  gap: 4px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease;
@@ -1294,51 +1293,32 @@
 }
 
 .mermaid-rendered:hover .mermaid-export-controls,
-.mermaid-rendered:focus-within .mermaid-export-controls,
-.mermaid-export-controls.open {
+.mermaid-rendered:focus-within .mermaid-export-controls {
   opacity: 1;
   pointer-events: auto;
 }
 
-.mermaid-export-toggle,
-.mermaid-export-item {
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-sidebar);
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 12px;
-  line-height: 1;
-}
-
-.mermaid-export-toggle {
-  padding: 7px 10px;
-}
-
-.mermaid-export-menu {
-  display: none;
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  background: var(--bg-sidebar);
-}
-
-.mermaid-export-controls.open .mermaid-export-menu,
-.mermaid-export-controls:hover .mermaid-export-menu,
-.mermaid-export-controls:focus-within .mermaid-export-menu {
+.mermaid-export-btn {
   display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  transition: background 0.15s, color 0.15s;
 }
 
-.mermaid-export-item {
-  padding: 6px 8px;
+.mermaid-export-btn:hover,
+.mermaid-export-btn:focus-visible {
+  background: var(--bg-user-msg);
+  color: var(--text-primary);
 }
 
-.mermaid-export-toggle:hover,
-.mermaid-export-item:hover,
-.mermaid-export-toggle:focus-visible,
-.mermaid-export-item:focus-visible {
-  background: var(--sidebar-hover);
+.mermaid-export-btn:focus-visible {
   outline: none;
 }
 

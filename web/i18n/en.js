@@ -24,6 +24,9 @@ export default {
 
   // ============ Mermaid ============
   'mermaid.export': 'Export',
+  'mermaid.exportMd': 'Export MD',
+  'mermaid.exportPng': 'Export PNG',
+  'mermaid.exportJpg': 'Export JPG',
 
   // ============ Chat messages ============
   'chat.toolActionsOmitted': '{count} older tool actions omitted',

@@ -60,8 +60,8 @@ describe('markdown Mermaid rendering', () => {
 
     const rendered = container.querySelector('.mermaid-rendered');
     expect(rendered.dataset.mermaidSource).toContain('A-->B');
-    expect(rendered.querySelector('.mermaid-export-toggle').textContent).toBe('mermaid.export');
-    expect([...rendered.querySelectorAll('.mermaid-export-item')].map((item) => item.textContent)).toEqual(['MD', 'PNG', 'JPG']);
+    expect(rendered.querySelector('.mermaid-export-toggle')).toBeNull();
+    expect([...rendered.querySelectorAll('.mermaid-export-btn')].map((item) => item.textContent)).toEqual(['mermaid.exportMd', 'mermaid.exportPng', 'mermaid.exportJpg']);
   });
 
   it('exports Mermaid source as a Markdown fenced block', async () => {
@@ -84,7 +84,7 @@ describe('markdown Mermaid rendering', () => {
 
     try {
       await renderMermaidIn(container);
-      container.querySelector('.mermaid-export-item').click();
+      container.querySelector('.mermaid-export-btn').click();
 
       expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
       expect(objectUrls).toHaveLength(1);
@@ -133,7 +133,7 @@ describe('markdown Mermaid rendering', () => {
 
     try {
       await renderMermaidIn(container);
-      container.querySelectorAll('.mermaid-export-item')[1].click();
+      container.querySelectorAll('.mermaid-export-btn')[1].click();
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(drawImage).toHaveBeenCalled();
@@ -147,6 +147,45 @@ describe('markdown Mermaid rendering', () => {
       globalThis.Image = originalImage;
       HTMLCanvasElement.prototype.getContext = originalGetContext;
       HTMLCanvasElement.prototype.toBlob = originalToBlob;
+    }
+  });
+
+
+  it('uses html-to-image for browser image exports when available', async () => {
+    globalThis.mermaid = {
+      initialize: vi.fn(),
+      render: vi.fn(async (id, code) => ({ svg: `<svg data-id="${id}" viewBox="0 0 200 100"><text>${code}</text></svg>` })),
+    };
+    const originalHtmlToImage = window.htmlToImage;
+    const originalClick = HTMLAnchorElement.prototype.click;
+    window.htmlToImage = {
+      toPng: vi.fn(async () => 'data:image/png;base64,png'),
+      toJpeg: vi.fn(async () => 'data:image/jpeg;base64,jpg'),
+    };
+    HTMLAnchorElement.prototype.click = vi.fn();
+    const container = document.createElement('div');
+    container.innerHTML = renderMarkdown('```mermaid\ngraph TD\n  A-->B\n```');
+
+    try {
+      await renderMermaidIn(container);
+      const buttons = container.querySelectorAll('.mermaid-export-btn');
+      buttons[1].click();
+      await Promise.resolve();
+      buttons[2].click();
+      await Promise.resolve();
+
+      expect(window.htmlToImage.toPng).toHaveBeenCalledWith(
+        container.querySelector('.mermaid-rendered svg'),
+        expect.objectContaining({ backgroundColor: expect.any(String), height: 100, pixelRatio: expect.any(Number), width: 200 })
+      );
+      expect(window.htmlToImage.toJpeg).toHaveBeenCalledWith(
+        container.querySelector('.mermaid-rendered svg'),
+        expect.objectContaining({ backgroundColor: expect.any(String), height: 100, quality: 0.92, width: 200 })
+      );
+      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(2);
+    } finally {
+      window.htmlToImage = originalHtmlToImage;
+      HTMLAnchorElement.prototype.click = originalClick;
     }
   });
 

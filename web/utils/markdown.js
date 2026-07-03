@@ -43,14 +43,18 @@ function readMermaidSource(codeEl) {
   }
 }
 
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
+function downloadUrl(url, filename) {
   const link = document.createElement('a');
   link.href = url;
   link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  downloadUrl(url, filename);
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
@@ -76,15 +80,49 @@ function getSvgDimensions(svgEl) {
   return { width: 1200, height: 800 };
 }
 
+function getCssVariable(name, fallback) {
+  if (typeof getComputedStyle === 'undefined' || typeof document === 'undefined') return fallback;
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+function forceSvgDimensions(svgEl, width, height) {
+  svgEl.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  svgEl.setAttribute('width', String(width));
+  svgEl.setAttribute('height', String(height));
+  if (!svgEl.getAttribute('viewBox')) {
+    svgEl.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  }
+}
+
+async function exportMermaidImageWithHtmlToImage(svgEl, format, width, height) {
+  if (!window.htmlToImage) return false;
+  const filename = safeDownloadFilename('mermaid-diagram', format === 'jpg' ? 'jpg' : 'png');
+  const options = {
+    backgroundColor: getCssVariable('--bg-main', 'white'),
+    height,
+    pixelRatio: Math.max(1, Math.min(3, window.devicePixelRatio || 1)),
+    width,
+  };
+  const dataUrl = format === 'jpg'
+    ? await window.htmlToImage.toJpeg(svgEl, { ...options, quality: 0.92 })
+    : await window.htmlToImage.toPng(svgEl, options);
+  downloadUrl(dataUrl, filename);
+  return true;
+}
+
 async function exportMermaidImage(renderedEl, format) {
   const svgEl = renderedEl.querySelector('svg');
   if (!svgEl) throw new Error('No Mermaid SVG found');
 
-  const clonedSvg = svgEl.cloneNode(true);
   const { width, height } = getSvgDimensions(svgEl);
-  clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-  clonedSvg.setAttribute('width', String(width));
-  clonedSvg.setAttribute('height', String(height));
+  try {
+    if (await exportMermaidImageWithHtmlToImage(svgEl, format, width, height)) return;
+  } catch (error) {
+    console.warn('Mermaid html-to-image export failed, falling back:', error);
+  }
+
+  const clonedSvg = svgEl.cloneNode(true);
+  forceSvgDimensions(clonedSvg, width, height);
 
   const svgText = new XMLSerializer().serializeToString(clonedSvg);
   const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
@@ -106,7 +144,7 @@ async function exportMermaidImage(renderedEl, format) {
     if (!ctx) throw new Error('Canvas is not available');
     ctx.scale(scale, scale);
     if (format === 'jpg') {
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = getCssVariable('--bg-main', 'white');
       ctx.fillRect(0, 0, width, height);
     }
     ctx.drawImage(image, 0, 0, width, height);
@@ -129,29 +167,19 @@ function exportMermaidMarkdown(code) {
 function createMermaidExportControls(renderedEl, code) {
   const controls = document.createElement('div');
   controls.className = 'mermaid-export-controls';
-
-  const toggle = document.createElement('button');
-  toggle.type = 'button';
-  toggle.className = 'mermaid-export-toggle';
-  toggle.textContent = t('mermaid.export');
-  toggle.setAttribute('aria-haspopup', 'true');
-  toggle.setAttribute('aria-expanded', 'false');
-
-  const menu = document.createElement('div');
-  menu.className = 'mermaid-export-menu';
-  menu.setAttribute('role', 'menu');
+  controls.setAttribute('aria-label', t('mermaid.export'));
 
   const items = [
-    { label: 'MD', action: () => exportMermaidMarkdown(code) },
-    { label: 'PNG', action: () => exportMermaidImage(renderedEl, 'png') },
-    { label: 'JPG', action: () => exportMermaidImage(renderedEl, 'jpg') },
+    { label: t('mermaid.exportMd'), action: () => exportMermaidMarkdown(code) },
+    { label: t('mermaid.exportPng'), action: () => exportMermaidImage(renderedEl, 'png') },
+    { label: t('mermaid.exportJpg'), action: () => exportMermaidImage(renderedEl, 'jpg') },
   ];
   for (const item of items) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'mermaid-export-item';
+    button.className = 'mermaid-export-btn';
     button.textContent = item.label;
-    button.setAttribute('role', 'menuitem');
+    button.title = item.label;
     button.addEventListener('click', async (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -161,23 +189,9 @@ function createMermaidExportControls(renderedEl, code) {
         console.warn('Mermaid export failed:', error);
       }
     });
-    menu.appendChild(button);
+    controls.appendChild(button);
   }
 
-  toggle.addEventListener('click', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const open = controls.classList.toggle('open');
-    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-  });
-
-  controls.addEventListener('mouseleave', () => {
-    controls.classList.remove('open');
-    toggle.setAttribute('aria-expanded', 'false');
-  });
-
-  controls.appendChild(toggle);
-  controls.appendChild(menu);
   return controls;
 }
 
