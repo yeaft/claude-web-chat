@@ -53,11 +53,14 @@ function getActiveToken() {
   return getStoredToken();
 }
 
-function applyFreshToken(token) {
-  if (!token) return;
+function applyFreshToken(token, requestToken) {
+  if (!token || !requestToken) return false;
+  const activeToken = getActiveToken();
+  if (activeToken && activeToken !== requestToken) return false;
   try { localStorage.setItem('authToken', token); } catch {}
   const store = getAuthStore();
   if (store) store.token = token;
+  return true;
 }
 
 function toUrl(input) {
@@ -139,7 +142,7 @@ export function installAuthFetch() {
     const response = await originalFetch(input, nextInit);
     try {
       const fresh = response.headers && response.headers.get && response.headers.get('X-New-Token');
-      if (fresh) applyFreshToken(fresh);
+      if (fresh) applyFreshToken(fresh, requestToken);
 
       if (shouldAuth && isSessionValidationEndpoint(url) && response.status === 401) {
         handleUnauthorized(requestToken);
