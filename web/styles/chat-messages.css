@@ -42,6 +42,54 @@
   opacity: 1;
 }
 
+/* Turn: VP route_forward messages */
+.turn-route-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.turn-route-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.turn-route-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  color: var(--accent-fg);
+  background: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.turn-route-body {
+  min-width: 0;
+}
+
+.turn-route-target {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.turn-route-text {
+  white-space: pre-wrap;
+}
+
+.turn-route-reason {
+  color: var(--text-muted);
+}
+
 /* Turn: todo progress */
 .turn-todos {
   border-top: 1px solid var(--border-light);

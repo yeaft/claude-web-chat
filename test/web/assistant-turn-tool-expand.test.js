@@ -11,4 +11,14 @@ describe('AssistantTurn tool expansion bindings', () => {
     expect(source).toContain('@update:expanded="value => updateToolExpanded(latestTool, latestToolIndex, \'latest\', value)"');
     expect(source).toMatch(/return\s*\{[\s\S]*toolExpandedValue,[\s\S]*updateToolExpanded[\s\S]*\};/);
   });
+
+  it('keeps RouteForward out of generic tool expansion history', () => {
+    expect(source).toContain(".filter(tool => tool?.toolName === 'RouteForward')");
+    expect(source).toContain("return tools.filter(tool => tool?.toolName !== 'RouteForward');");
+    expect(source).toContain('class="turn-route-message"');
+    expect(source).toContain('class="turn-route-target"');
+    expect(source).toContain('class="turn-route-text"');
+    expect(source).toContain('class="turn-route-reason"');
+  });
+
 });
