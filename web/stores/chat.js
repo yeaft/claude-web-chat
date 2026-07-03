@@ -64,6 +64,24 @@ function taskStopKey(sessionId, taskId) {
   return `${sessionId || ''}::${taskId || ''}`;
 }
 
+function markVpStatusesIdle(state, { sessionId = null, vpId = null, turnIds = [] } = {}) {
+  const turnSet = new Set((Array.isArray(turnIds) ? turnIds : []).filter(Boolean));
+  const next = { ...(state.vpStatuses || {}) };
+  let changed = false;
+  for (const [key, status] of Object.entries(next)) {
+    if (!status) continue;
+    const statusSessionId = status.sessionId || status.groupId || null;
+    if (sessionId && statusSessionId !== sessionId) continue;
+    if (vpId && status.vpId !== vpId) continue;
+    if (turnSet.size > 0 && status.turnId && !turnSet.has(status.turnId)) continue;
+    if (!YEAFT_RUNNING_VP_STATES.has(status.state)) continue;
+    next[key] = { ...status, state: 'idle', turnId: null, since: Date.now() };
+    changed = true;
+  }
+  if (changed) state.vpStatuses = next;
+  return changed;
+}
+
 function keepRecentSessionTasks(tasksById) {
   const entries = Object.entries(tasksById || {});
   const running = entries.filter(([, task]) => task?.status === 'running');
@@ -2467,7 +2485,11 @@ export const useChatStore = defineStore('chat', {
               removeIds.add(turnId);
             }
           }
-          if (removeIds.size === 0) break;
+          markVpStatusesIdle(this, { sessionId: targetSessionId, vpId: targetVpId, turnIds: Array.from(removeIds) });
+          if (removeIds.size === 0) {
+            this.clearYeaftSessionProcessingIfIdle(targetSessionId || null);
+            break;
+          }
           let removedSessionId = targetSessionId;
           const activeRest = { ...(this.activeVpTurns || {}) };
           const stoppingRest = { ...(this.stoppingVpTurnIds || {}) };
@@ -2485,6 +2507,7 @@ export const useChatStore = defineStore('chat', {
         case 'yeaft_aborted': {
           const sessionId = event.sessionId || msg.sessionId || null;
           if (sessionId) {
+            markVpStatusesIdle(this, { sessionId });
             this.activeVpTurns = Object.fromEntries(
               Object.entries(this.activeVpTurns || {}).filter(([, info]) => info?.sessionId !== sessionId)
             );
@@ -2493,6 +2516,7 @@ export const useChatStore = defineStore('chat', {
             );
             this.clearYeaftSessionProcessingIfIdle(sessionId);
           } else if (event.all) {
+            markVpStatusesIdle(this);
             this.activeVpTurns = {};
             this.stoppingVpTurnIds = {};
             this.yeaftProcessingSessions = {};
@@ -3887,6 +3911,7 @@ export const useChatStore = defineStore('chat', {
       if (this.yeaftConversationId) {
         delete this.processingConversations[this.yeaftConversationId];
       }
+      markVpStatusesIdle(this);
       this.activeVpTurns = {};
       this.stoppingVpTurnIds = {};
       this.yeaftProcessingSessions = {};
@@ -3899,6 +3924,7 @@ export const useChatStore = defineStore('chat', {
         agentId: targetAgentId,
         sessionId,
       });
+      markVpStatusesIdle(this, { sessionId });
       this.activeVpTurns = Object.fromEntries(
         Object.entries(this.activeVpTurns || {}).filter(([, info]) => info?.sessionId !== sessionId)
       );

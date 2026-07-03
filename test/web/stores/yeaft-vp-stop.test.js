@@ -141,6 +141,27 @@ describe('Yeaft VP stop', () => {
     expect(store.stoppingVpTurnIds['turn-a']).toBeUndefined();
     expect(store.activeVpTurns['turn-a']).toBeUndefined();
   });
+
+  it('marks VP status idle immediately when abort ack has no active turn record', () => {
+    const store = freshStore();
+    store.yeaftProcessingSessions = { 'session-1': true };
+    store.vpStatuses = {
+      'session-1::vp-a': {
+        state: 'thinking',
+        turnId: 'turn-a',
+        vpId: 'vp-a',
+        sessionId: 'session-1',
+      },
+    };
+
+    store.handleYeaftOutput({ event: { type: 'yeaft_turn_aborted', turnId: 'turn-a', turnIds: ['turn-a'], success: true, sessionId: 'session-1', vpId: 'vp-a' } });
+
+    expect(store.vpStatuses['session-1::vp-a']).toEqual(expect.objectContaining({
+      state: 'idle',
+      turnId: null,
+    }));
+    expect(store.isYeaftSessionProcessing('session-1')).toBe(false);
+  });
 });
 
 describe('Yeaft session active indicator state', () => {
@@ -232,6 +253,23 @@ describe('Yeaft session active indicator state', () => {
     expect(store.activeVpTurns['turn-a']).toBeUndefined();
     expect(store.activeVpTurns['turn-b']).toEqual(expect.objectContaining({ sessionId: 'session-b' }));
     expect(store.stoppingVpTurnIds).toEqual({ 'turn-b': 1 });
+  });
+
+  it('marks only the selected Yeaft session statuses idle on stop', () => {
+    const store = freshStore();
+    store.currentAgent = 'agent-1';
+    store.yeaftProcessingSessions = { 'session-a': true, 'session-b': true };
+    store.vpStatuses = {
+      'session-a::vp-a': { state: 'streaming', turnId: 'turn-a', vpId: 'vp-a', sessionId: 'session-a' },
+      'session-b::vp-b': { state: 'thinking', turnId: 'turn-b', vpId: 'vp-b', sessionId: 'session-b' },
+    };
+
+    store.cancelYeaftSession('session-a');
+
+    expect(store.vpStatuses['session-a::vp-a']).toEqual(expect.objectContaining({ state: 'idle', turnId: null }));
+    expect(store.vpStatuses['session-b::vp-b']).toEqual(expect.objectContaining({ state: 'thinking', turnId: 'turn-b' }));
+    expect(store.isYeaftSessionProcessing('session-a')).toBe(false);
+    expect(store.isYeaftSessionProcessing('session-b')).toBe(true);
   });
 
   it('clears only the aborted Yeaft session on abort ack', () => {

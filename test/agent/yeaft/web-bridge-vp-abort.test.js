@@ -50,6 +50,13 @@ describe('Yeaft VP turn abort routing', () => {
     expect(sent.some((msg) => msg.event?.type === 'yeaft_turn_aborted'
       && msg.event.turnId === 'turn-a'
       && msg.event.success === true)).toBe(true);
+    expect(sent.filter((msg) => msg.event?.type === 'vp_turn_end'
+      && msg.event.turnId === 'turn-a'
+      && msg.event.reason === 'aborted')).toHaveLength(1);
+    expect(sent.some((msg) => msg.event?.type === 'vp_status_changed'
+      && msg.event.sessionId === 'session-test'
+      && msg.event.vpId === 'vp-a'
+      && msg.event.state === 'idle')).toBe(true);
   });
 
   it('aborts a running VP turn by sessionId and vpId when turnId is unknown to the UI', () => {

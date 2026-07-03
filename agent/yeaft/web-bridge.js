@@ -257,6 +257,15 @@ const turnAbortCtrls = new Map();
 const turnAbortMeta = new Map();
 
 /**
+ * Turn ids that already received a synthetic terminal event from the abort
+ * handler. `runVpTurn` checks this before emitting its own terminal event so
+ * an immediate stop acknowledgement cannot later be overwritten by the
+ * cooperative AbortError path.
+ * @type {Set<string>}
+ */
+const externallyTerminatedTurnIds = new Set();
+
+/**
  * Per-VP status broker — the agent-side authority for VP timeline
  * status. Lazy-initialized on first use because `sendSessionEvent` is
  * declared below; trying to call it at module top-level would crash
@@ -675,6 +684,7 @@ function invalidateGroupContext(sessionId) {
     if (meta?.sessionId !== sessionId) continue;
     turnAbortCtrls.delete(turnId);
     turnAbortMeta.delete(turnId);
+    externallyTerminatedTurnIds.delete(turnId);
   }
   for (const [k, inbox] of vpInboxes) {
     if (!k.startsWith(prefix)) continue;
@@ -1855,6 +1865,7 @@ export async function __testResetVpState() {
   vpThreads.clear();
   turnAbortCtrls.clear();
   turnAbortMeta.clear();
+  externallyTerminatedTurnIds.clear();
   await __testDrainVpDrivers();
   vpInboxes.clear();
   vpDrivers.clear();
@@ -4058,35 +4069,92 @@ function startSessionLoadInBackground({ sessionId = null, sessionMeta = null, pe
  * helpers) or for adapter implementations that ignore signal.
  */
 async function runVpTurnWithEscalation(args) {
-  const { sessionId, vpId, turnId, threadId, thread } = args;
+  const { sessionId, vpId, turnId, threadId, thread, vpAbort } = args;
   const deadlineMs = QUERY_TIMEOUT_MS + ESCALATE_AFTER_ABORT_MS;
-  await raceWithEscalation(runVpTurn(args), {
-    deadlineMs,
-    onEscalate: () => {
-      console.error(
-        `[Yeaft] runVpTurn watchdog escalation: VP ${vpId} did not return ${deadlineMs}ms after enqueue — emitting synthetic stop and unblocking driver`,
+  const escalationState = { terminalEmitted: false, escalated: false };
+  let escalated = false;
+  let escalationTimer = null;
+  let abortEscalationTimer = null;
+
+  const escalate = (reason) => {
+    if (escalated) return;
+    escalated = true;
+    escalationState.terminalEmitted = true;
+    escalationState.escalated = true;
+    console.error(
+      `[Yeaft] runVpTurn watchdog escalation (${reason}): session=${sessionId || ''} vp=${vpId || ''} thread=${threadId || 'main'} turn=${turnId || ''} did not return — emitting synthetic stop and unblocking driver`,
+    );
+    try {
+      sendSessionOutputFrame(
+        { type: 'result', result_text: '', stopped: true },
+        { sessionId, vpId, turnId, threadId },
       );
-      try {
-        sendSessionOutputFrame(
-          { type: 'result', result_text: '', stopped: true },
-          { sessionId, vpId, turnId, threadId },
-        );
-      } catch { /* never crash WS pipeline */ }
-      // vp-status: when the watchdog escalates, `runVpTurn`'s inner
-      // promise is still dangling (the adapter is ignoring `signal`)
-      // and its outer `finally` won't run until the adapter eventually
-      // returns — which may be never. Settle the broker here so the
-      // row drops to idle in lockstep with the synthetic stop frame.
-      // This is the exact failure mode the watchdog exists for; not
-      // settling here would re-introduce the "stuck on streaming" bug
-      // the whole PR is meant to fix.
-      try {
-        getVpStatusBroker().settleIdle({ sessionId, vpId, threadId: threadId || 'main', title: thread?.title || '' });
-      } catch (err) {
-        console.warn('[Yeaft] vp-status settleIdle (escalation) failed:', err?.message || err);
-      }
-    },
+    } catch { /* never crash WS pipeline */ }
+    try {
+      sendSessionEvent({
+        type: 'vp_turn_end',
+        sessionId,
+        vpId,
+        threadId: threadId || 'main',
+        turnId,
+        reason: 'aborted',
+        detail: { reason },
+        ts: Date.now(),
+      }, { sessionId, vpId, threadId: threadId || 'main', turnId });
+    } catch { /* never crash WS pipeline */ }
+    // vp-status: when the watchdog escalates, `runVpTurn`'s inner
+    // promise is still dangling (the adapter is ignoring `signal`)
+    // and its outer `finally` won't run until the adapter eventually
+    // returns — which may be never. Settle the broker here so the
+    // row drops to idle in lockstep with the synthetic stop frame.
+    // This is the exact failure mode the watchdog exists for; not
+    // settling here would re-introduce the "stuck on streaming" bug
+    // the whole PR is meant to fix.
+    try {
+      getVpStatusBroker().settleIdle({ sessionId, vpId, threadId: threadId || 'main', title: thread?.title || '' });
+    } catch (err) {
+      console.warn('[Yeaft] vp-status settleIdle (escalation) failed:', err?.message || err);
+    }
+    if (thread) {
+      thread.status = 'idle';
+      thread.updatedAt = Date.now();
+    }
+  };
+
+  const inner = runVpTurn({ ...args, escalationState });
+  let abortSignal = null;
+  let scheduleAbortEscalation = null;
+  const escalation = new Promise((resolve) => {
+    const finish = (reason) => {
+      escalate(reason);
+      resolve();
+    };
+    escalationTimer = setTimeout(() => finish(`deadline:${deadlineMs}ms`), deadlineMs);
+    if (escalationTimer && typeof escalationTimer.unref === 'function') escalationTimer.unref();
+
+    scheduleAbortEscalation = () => {
+      if (abortEscalationTimer || escalated) return;
+      abortEscalationTimer = setTimeout(() => finish(`abort:${ESCALATE_AFTER_ABORT_MS}ms`), ESCALATE_AFTER_ABORT_MS);
+      if (abortEscalationTimer && typeof abortEscalationTimer.unref === 'function') abortEscalationTimer.unref();
+    };
+
+    abortSignal = vpAbort?.signal || null;
+    if (abortSignal?.aborted) {
+      scheduleAbortEscalation();
+    } else if (abortSignal) {
+      try { abortSignal.addEventListener('abort', scheduleAbortEscalation, { once: true }); } catch { /* old runtimes */ }
+    }
   });
+
+  try {
+    await Promise.race([inner, escalation]);
+  } finally {
+    clearTimeout(escalationTimer);
+    clearTimeout(abortEscalationTimer);
+    if (abortSignal && scheduleAbortEscalation) {
+      try { abortSignal.removeEventListener('abort', scheduleAbortEscalation); } catch { /* old runtimes */ }
+    }
+  }
 }
 
 /**
@@ -4152,7 +4220,7 @@ async function raceWithEscalation(inner, { deadlineMs, onEscalate }) {
  *
  * @param {{ prompt: string, sessionId: string, vpId: string, turnId: string, envelope: object, vpAbort: AbortController, baseSnapshot: Array }} args
  */
-async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId = 'main', thread = null, turnId, envelope: inboundEnvelope, vpAbort, baseSnapshot }) {
+async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId = 'main', thread = null, turnId, envelope: inboundEnvelope, vpAbort, baseSnapshot, escalationState = null }) {
   if (!prompt?.trim()) return;
 
   const perfTraceId = typeof inboundEnvelope?._perfTraceId === 'string' && inboundEnvelope._perfTraceId.trim()
@@ -4186,10 +4254,21 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
   let turnEndEmitted = false;
   let turnEndDetail = null;
   let handlerCtx = null;
-  const markTurnEnd = (reason) => { turnEndEmitted = true; turnEndReason = reason; };
-  const emitVpTurnEnd = (reason, detail = null) => {
-    if (turnEndEmitted) return;
+  const markTurnEnd = (reason) => {
     turnEndEmitted = true;
+    if (escalationState) escalationState.terminalEmitted = true;
+    turnEndReason = reason;
+  };
+  const emitVpTurnEnd = (reason, detail = null) => {
+    if (turnEndEmitted || escalationState?.terminalEmitted) return;
+    if (externallyTerminatedTurnIds.has(turnId)) {
+      externallyTerminatedTurnIds.delete(turnId);
+      turnEndEmitted = true;
+      if (escalationState) escalationState.terminalEmitted = true;
+      return;
+    }
+    turnEndEmitted = true;
+    if (escalationState) escalationState.terminalEmitted = true;
     try {
       sendSessionEvent({
         type: 'vp_turn_end',
@@ -4392,14 +4471,16 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         });
       }
 
-      sendSessionOutputFrame({
-        type: 'assistant',
-        message: { content: [] },
-      }, envelope);
-      sendSessionOutputFrame({
-        type: 'result',
-        result_text: '',
-      }, envelope);
+      if (!escalationState?.escalated && !externallyTerminatedTurnIds.has(turnId)) {
+        sendSessionOutputFrame({
+          type: 'assistant',
+          message: { content: [] },
+        }, envelope);
+        sendSessionOutputFrame({
+          type: 'result',
+          result_text: '',
+        }, envelope);
+      }
       // Normal end-of-turn (no route_forward, no abort, no error). Emit
       // the message-status terminal so the web client can flip the
       // assistant message status from 'pending' → 'completed'.
@@ -4411,11 +4492,13 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
     const isAbort = err && (err.name === 'AbortError' || err.name === 'LLMAbortError');
     if (isAbort) {
       flushStreamTextBatch(handlerCtx, envelope, { resetImmediate: true });
-      sendSessionOutputFrame({
-        type: 'result',
-        result_text: '',
-        stopped: true,
-      }, envelope);
+      if (!escalationState?.escalated && !externallyTerminatedTurnIds.has(turnId)) {
+        sendSessionOutputFrame({
+          type: 'result',
+          result_text: '',
+          stopped: true,
+        }, envelope);
+      }
       emitVpTurnEnd('aborted');
       return;
     }
@@ -4860,7 +4943,11 @@ export function handleYeaftAbortThread(_msg = {}) {
     for (const [turnId, ctrl] of Array.from(turnAbortCtrls.entries())) {
       const meta = turnAbortMeta.get(turnId);
       if ((meta?.threadId || 'main') !== targetThreadId) continue;
-      try { if (!ctrl.signal.aborted) { ctrl.abort(); aborted.push(turnId); } } catch { /* best-effort */ }
+      let didAbort = false;
+      try { if (!ctrl.signal.aborted) { ctrl.abort(); didAbort = true; } } catch { /* best-effort */ }
+      if (didAbort) aborted.push(turnId);
+      externallyTerminatedTurnIds.add(turnId);
+      emitQueuedTurnAbort(meta, turnId);
       turnAbortCtrls.delete(turnId);
       turnAbortMeta.delete(turnId);
     }
@@ -4877,7 +4964,15 @@ export function handleYeaftAbortThread(_msg = {}) {
   }
   currentAbortCtrl = null;
   for (const [turnId, ctrl] of turnAbortCtrls) {
-    try { if (!ctrl.signal.aborted) { ctrl.abort(); aborted.push(turnId); } } catch { /* best-effort */ }
+    const meta = turnAbortMeta.get(turnId);
+    try {
+      if (!ctrl.signal.aborted) {
+        ctrl.abort();
+        aborted.push(turnId);
+        externallyTerminatedTurnIds.add(turnId);
+        emitQueuedTurnAbort(meta, turnId);
+      }
+    } catch { /* best-effort */ }
   }
   turnAbortCtrls.clear();
   turnAbortMeta.clear();
@@ -4904,7 +4999,11 @@ export function handleYeaftAbortAll(msg = {}) {
   for (const [turnId, ctrl] of turnAbortCtrls) {
     const meta = turnAbortMeta.get(turnId);
     if (sessionId && meta?.sessionId !== sessionId) continue;
-    try { if (!ctrl.signal.aborted) { ctrl.abort(); aborted.push(turnId); } } catch { /* best-effort */ }
+    let didAbort = false;
+    try { if (!ctrl.signal.aborted) { ctrl.abort(); didAbort = true; } } catch { /* best-effort */ }
+    if (didAbort) aborted.push(turnId);
+    externallyTerminatedTurnIds.add(turnId);
+    emitQueuedTurnAbort(meta, turnId);
     turnAbortCtrls.delete(turnId);
     turnAbortMeta.delete(turnId);
   }
@@ -4946,6 +5045,8 @@ export function handleYeaftAbortTurn(msg = {}) {
     let turnAborted = false;
     if (ctrl && !ctrl.signal.aborted) {
       try { ctrl.abort(); turnAborted = true; } catch { /* best-effort */ }
+      externallyTerminatedTurnIds.add(turnId);
+      emitQueuedTurnAbort(meta, turnId);
     } else if (removeQueuedVpTurn(turnId)) {
       turnAborted = true;
       emitQueuedTurnAbort(meta, turnId);
@@ -5865,6 +5966,7 @@ export async function resetYeaftSession() {
   vpAborts.clear();
   turnAbortCtrls.clear();
   turnAbortMeta.clear();
+  externallyTerminatedTurnIds.clear();
   vpInboxes.clear();
   vpDrivers.clear();
   vpEngines.clear();
