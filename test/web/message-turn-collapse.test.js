@@ -112,4 +112,17 @@ describe('message turn response collapse', () => {
     expect(cssSource).toContain('.copy-full-btn,\n.response-collapse-btn');
     expect(cssSource).not.toContain('.message-turn-collapse-toggle');
   });
+
+  it('keeps collapsed response preview typography aligned with normal markdown text', () => {
+    const cssSource = readWebFile('styles/chat-messages.css');
+    const markdownBodyRule = cssSource.match(/\.markdown-body\s*\{[\s\S]*?\n\}/)?.[0] || '';
+    const collapsedPreviewRule = cssSource.match(/\.message-block-collapsed-preview\s*\{[\s\S]*?\n\}/)?.[0] || '';
+    expect(markdownBodyRule).toContain('font-size: 14px;');
+    expect(markdownBodyRule).toContain('line-height: 1.65;');
+    expect(collapsedPreviewRule).toContain('font-size: 14px;');
+    expect(collapsedPreviewRule).toContain('line-height: 1.65;');
+    expect(collapsedPreviewRule).toContain('color: var(--text-primary);');
+    expect(cssSource).toContain('.message-block-collapsed-preview-line {\n  color: inherit;\n}');
+    expect(cssSource).not.toContain('.message-block-collapsed-preview-line {\n  color: var(--text-secondary);\n}');
+  });
 });
