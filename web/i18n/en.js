@@ -22,6 +22,9 @@ export default {
   'common.comma': ', ',
   'common.select': 'Select',
 
+  // ============ Mermaid ============
+  'mermaid.export': 'Export',
+
   // ============ Chat messages ============
   'chat.toolActionsOmitted': '{count} older tool actions omitted',
 
