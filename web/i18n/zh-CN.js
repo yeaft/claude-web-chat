@@ -24,6 +24,9 @@ export default {
 
   // ============ Mermaid ============
   'mermaid.export': '导出',
+  'mermaid.exportMd': '导出 MD',
+  'mermaid.exportPng': '导出 PNG',
+  'mermaid.exportJpg': '导出 JPG',
 
   // ============ Chat messages ============
   'chat.toolActionsOmitted': '已省略 {count} 个历史工具动作',
