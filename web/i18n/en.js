@@ -574,12 +574,14 @@ export default {
   'settings.tabs.security': 'Security',
   'settings.tabs.general': 'General',
   'settings.tabs.invitations': 'Invitations',
+  'auth.sessionExpired': 'Session expired. Please log in again.',
 
   // Settings - Account
   'settings.account.username': 'Username',
   'settings.account.role': 'Role',
   'settings.account.email': 'Email',
   'settings.account.emailNotSet': 'Not set',
+  'settings.account.profileLoadFailed': 'Failed to load account profile',
   'settings.account.logout': 'Log Out',
   'settings.account.roleAdmin': 'Admin',
   'settings.account.rolePro': 'Pro',

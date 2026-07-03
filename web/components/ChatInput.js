@@ -526,6 +526,11 @@ export default {
           body: formData
         });
 
+        if (response.status === 401 || response.status === 403) {
+          authStore.handleAuthFailure?.();
+          throw new Error('Upload failed: authentication required');
+        }
+
         if (!response.ok) {
           throw new Error('Upload failed');
         }

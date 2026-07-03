@@ -676,8 +676,15 @@ export default {
           fetch('/api/user/profile', { headers }),
           fetch('/api/user/agent-secret', { headers })
         ]);
+        if (profileRes.status === 401 || profileRes.status === 403 || secretRes.status === 401 || secretRes.status === 403) {
+          this.authStore.handleAuthFailure?.(this.$t('auth.sessionExpired'));
+          return;
+        }
         if (profileRes.ok) {
           this.profile = await profileRes.json();
+        } else {
+          const data = await profileRes.json().catch(() => ({}));
+          this.showMessage(data.error || this.$t('settings.account.profileLoadFailed'), true);
         }
         if (secretRes.ok) {
           const data = await secretRes.json();

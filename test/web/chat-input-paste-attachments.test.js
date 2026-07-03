@@ -18,6 +18,14 @@ describe('ChatInput paste attachments', () => {
     expect(chatInputSource).not.toContain("formData.append('files', file);");
   });
 
+  it('clears stale auth instead of silently swallowing unauthorized uploads', () => {
+    expect(chatInputSource).toContain('if (response.status === 401 || response.status === 403)');
+    expect(chatInputSource).toContain('authStore.handleAuthFailure?.();');
+    expect(chatInputSource.indexOf('authStore.handleAuthFailure?.();')).toBeLessThan(
+      chatInputSource.indexOf("throw new Error('Upload failed: authentication required')"),
+    );
+  });
+
   it('maps upload results only to the files in the current paste batch', () => {
     expect(chatInputSource).toContain('const pendingAttachments = [];');
     expect(chatInputSource).toContain('pendingAttachments.push(attachment);');

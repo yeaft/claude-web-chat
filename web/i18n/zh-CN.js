@@ -538,12 +538,14 @@ export default {
   'settings.tabs.security': '安全',
   'settings.tabs.general': '通用',
   'settings.tabs.invitations': '邀请',
+  'auth.sessionExpired': '登录已过期，请重新登录。',
 
   // Settings - Account
   'settings.account.username': '用户名',
   'settings.account.role': '角色',
   'settings.account.email': '邮箱',
   'settings.account.emailNotSet': '未设置',
+  'settings.account.profileLoadFailed': '账号资料加载失败',
   'settings.account.logout': '退出登录',
   'settings.account.roleAdmin': '管理员',
   'settings.account.rolePro': 'Pro',
