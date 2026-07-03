@@ -22,6 +22,9 @@ export default {
   'common.comma': '，',
   'common.select': '选择',
 
+  // ============ Mermaid ============
+  'mermaid.export': '导出',
+
   // ============ Chat messages ============
   'chat.toolActionsOmitted': '已省略 {count} 个历史工具动作',
 

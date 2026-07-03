@@ -1270,12 +1270,76 @@
 }
 
 .mermaid-rendered {
+  position: relative;
   max-width: 100%;
   margin: 1em 0;
   padding: 16px;
   overflow-x: auto;
   background: var(--bg-main);
   border-radius: 8px;
+}
+
+.mermaid-export-controls {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column-reverse;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  z-index: 2;
+}
+
+.mermaid-rendered:hover .mermaid-export-controls,
+.mermaid-rendered:focus-within .mermaid-export-controls,
+.mermaid-export-controls.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.mermaid-export-toggle,
+.mermaid-export-item {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-sidebar);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.mermaid-export-toggle {
+  padding: 7px 10px;
+}
+
+.mermaid-export-menu {
+  display: none;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+}
+
+.mermaid-export-controls.open .mermaid-export-menu,
+.mermaid-export-controls:hover .mermaid-export-menu,
+.mermaid-export-controls:focus-within .mermaid-export-menu {
+  display: flex;
+}
+
+.mermaid-export-item {
+  padding: 6px 8px;
+}
+
+.mermaid-export-toggle:hover,
+.mermaid-export-item:hover,
+.mermaid-export-toggle:focus-visible,
+.mermaid-export-item:focus-visible {
+  background: var(--sidebar-hover);
+  outline: none;
 }
 
 .mermaid-rendered:first-child {

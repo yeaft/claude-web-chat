@@ -48,6 +48,108 @@ describe('markdown Mermaid rendering', () => {
     expect(container.querySelector('pre code.language-mermaid')).toBeNull();
   });
 
+  it('adds per-diagram export controls with the original Mermaid source', async () => {
+    globalThis.mermaid = {
+      initialize: vi.fn(),
+      render: vi.fn(async (id, code) => ({ svg: `<svg data-id="${id}" viewBox="0 0 200 100"><text>${code}</text></svg>` })),
+    };
+    const container = document.createElement('div');
+    container.innerHTML = renderMarkdown('```mermaid\ngraph TD\n  A-->B\n```');
+
+    await renderMermaidIn(container);
+
+    const rendered = container.querySelector('.mermaid-rendered');
+    expect(rendered.dataset.mermaidSource).toContain('A-->B');
+    expect(rendered.querySelector('.mermaid-export-toggle').textContent).toBe('mermaid.export');
+    expect([...rendered.querySelectorAll('.mermaid-export-item')].map((item) => item.textContent)).toEqual(['MD', 'PNG', 'JPG']);
+  });
+
+  it('exports Mermaid source as a Markdown fenced block', async () => {
+    globalThis.mermaid = {
+      initialize: vi.fn(),
+      render: vi.fn(async (id, code) => ({ svg: `<svg data-id="${id}" viewBox="0 0 200 100"><text>${code}</text></svg>` })),
+    };
+    const objectUrls = [];
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    const originalClick = HTMLAnchorElement.prototype.click;
+    URL.createObjectURL = vi.fn((blob) => {
+      objectUrls.push(blob);
+      return `blob:mermaid-${objectUrls.length}`;
+    });
+    URL.revokeObjectURL = vi.fn();
+    HTMLAnchorElement.prototype.click = vi.fn();
+    const container = document.createElement('div');
+    container.innerHTML = renderMarkdown('```mermaid\ngraph TD\n  A-->B\n```');
+
+    try {
+      await renderMermaidIn(container);
+      container.querySelector('.mermaid-export-item').click();
+
+      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
+      expect(objectUrls).toHaveLength(1);
+      await expect(objectUrls[0].text()).resolves.toBe('```mermaid\ngraph TD\n  A-->B\n```\n');
+    } finally {
+      URL.createObjectURL = originalCreateObjectURL;
+      URL.revokeObjectURL = originalRevokeObjectURL;
+      HTMLAnchorElement.prototype.click = originalClick;
+    }
+  });
+
+  it('exports Mermaid SVG through canvas for image formats', async () => {
+    globalThis.mermaid = {
+      initialize: vi.fn(),
+      render: vi.fn(async (id, code) => ({ svg: `<svg data-id="${id}" viewBox="0 0 200 100"><text>${code}</text></svg>` })),
+    };
+    const objectUrls = [];
+    const drawImage = vi.fn();
+    const toBlob = vi.fn((callback, mime) => callback(new Blob([mime], { type: mime })));
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    const originalClick = HTMLAnchorElement.prototype.click;
+    const originalImage = globalThis.Image;
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    const originalToBlob = HTMLCanvasElement.prototype.toBlob;
+    URL.createObjectURL = vi.fn((blob) => {
+      objectUrls.push(blob);
+      return `blob:mermaid-${objectUrls.length}`;
+    });
+    URL.revokeObjectURL = vi.fn();
+    HTMLAnchorElement.prototype.click = vi.fn();
+    globalThis.Image = class {
+      set src(value) {
+        this._src = value;
+        queueMicrotask(() => this.onload?.());
+      }
+    };
+    HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
+      scale: vi.fn(),
+      fillRect: vi.fn(),
+      drawImage,
+    }));
+    HTMLCanvasElement.prototype.toBlob = toBlob;
+    const container = document.createElement('div');
+    container.innerHTML = renderMarkdown('```mermaid\ngraph TD\n  A-->B\n```');
+
+    try {
+      await renderMermaidIn(container);
+      container.querySelectorAll('.mermaid-export-item')[1].click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(drawImage).toHaveBeenCalled();
+      expect(toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/png', 0.92);
+      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
+      expect(objectUrls.at(-1).type).toBe('image/png');
+    } finally {
+      URL.createObjectURL = originalCreateObjectURL;
+      URL.revokeObjectURL = originalRevokeObjectURL;
+      HTMLAnchorElement.prototype.click = originalClick;
+      globalThis.Image = originalImage;
+      HTMLCanvasElement.prototype.getContext = originalGetContext;
+      HTMLCanvasElement.prototype.toBlob = originalToBlob;
+    }
+  });
+
   it('leaves the code block in place when Mermaid rendering fails', async () => {
     globalThis.mermaid = {
       initialize: vi.fn(),
