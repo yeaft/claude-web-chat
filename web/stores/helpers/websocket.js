@@ -184,8 +184,11 @@ export function connect(store) {
 
     if (event.code === 1008) {
       console.log('[WS] Auth failure, clearing token and resetting auth state');
-      localStorage.removeItem('authToken');
-      authStore.reset();
+      authStore.handleAuthFailure?.();
+      if (authStore.isAuthenticated) {
+        localStorage.removeItem('authToken');
+        authStore.reset();
+      }
       store.reconnectAttempts = 0;
       _settleConnectResolvers(false);
       return;
