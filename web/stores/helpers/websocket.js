@@ -133,9 +133,11 @@ export function connect(store) {
   store.connectionState = store.reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
   console.log(`[WS] Connecting... (attempt ${store.reconnectAttempts + 1})`);
 
+  const authToken = authStore.getActiveToken?.() || authStore.token || null;
+  store._wsAuthToken = authToken;
   let wsUrl = `${protocol}//${location.host}?type=web`;
-  if (authStore.token) {
-    wsUrl += `&token=${encodeURIComponent(authStore.token)}`;
+  if (authToken) {
+    wsUrl += `&token=${encodeURIComponent(authToken)}`;
   }
 
   store.ws = new WebSocket(wsUrl);
@@ -184,11 +186,7 @@ export function connect(store) {
 
     if (event.code === 1008) {
       console.log('[WS] Auth failure, clearing token and resetting auth state');
-      authStore.handleAuthFailure?.();
-      if (authStore.isAuthenticated) {
-        localStorage.removeItem('authToken');
-        authStore.reset();
-      }
+      authStore.handleAuthFailure?.(undefined, authToken);
       store.reconnectAttempts = 0;
       _settleConnectResolvers(false);
       return;

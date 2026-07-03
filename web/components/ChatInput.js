@@ -517,8 +517,9 @@ export default {
         }
 
         const headers = {};
-        if (authStore.token) {
-          headers['Authorization'] = `Bearer ${authStore.token}`;
+        const requestToken = authStore.getActiveToken?.() || authStore.token || null;
+        if (requestToken) {
+          headers['Authorization'] = `Bearer ${requestToken}`;
         }
         const response = await fetch('/api/upload', {
           method: 'POST',
@@ -527,7 +528,7 @@ export default {
         });
 
         if (response.status === 401 || response.status === 403) {
-          authStore.handleAuthFailure?.();
+          authStore.handleAuthFailure?.(undefined, requestToken);
           throw new Error('Upload failed: authentication required');
         }
 

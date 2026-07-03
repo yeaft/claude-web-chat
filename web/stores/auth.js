@@ -685,13 +685,14 @@ export const useAuthStore = defineStore('auth', {
 
     async refreshSession() {
       if (!this.token) return false;
+      const requestToken = this.token;
       try {
         const res = await fetch('/api/user/profile', {
-          headers: { 'Authorization': `Bearer ${this.token}` }
+          headers: { 'Authorization': `Bearer ${requestToken}` }
         });
 
         if (res.status === 401 || res.status === 403) {
-          return this.handleAuthFailure();
+          return this.handleAuthFailure(undefined, requestToken);
         }
 
         if (!res.ok) return false;
@@ -770,7 +771,21 @@ export const useAuthStore = defineStore('auth', {
       if (error) this.error = error;
     },
 
-    handleAuthFailure(error = 'Session expired. Please log in again.') {
+    getActiveToken() {
+      if (this.token) return this.token;
+      const stored = localStorage.getItem('authToken');
+      if (stored) this.token = stored;
+      return this.token;
+    },
+
+    handleAuthFailure(error = 'Session expired. Please log in again.', failedToken = undefined) {
+      // Auth failures are asynchronous: an old WebSocket or fetch request can
+      // fail after the user has already logged in again. Only clear the current
+      // session if the failed request used the token that is still active.
+      const activeToken = this.token || localStorage.getItem('authToken') || null;
+      if (failedToken !== undefined && failedToken !== activeToken) {
+        return false;
+      }
       this.clearStoredSession(error);
       return false;
     },
@@ -789,7 +804,7 @@ export const useAuthStore = defineStore('auth', {
         });
 
         if (res.status === 401 || res.status === 403) {
-          return this.handleAuthFailure();
+          return this.handleAuthFailure(undefined, token);
         }
 
         if (!res.ok) {
