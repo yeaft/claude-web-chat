@@ -1,6 +1,5 @@
 const DEFAULT_EXPANDED_RECENT_USER_TURNS = 2;
 const COLLAPSED_RESPONSE_PREVIEW_HEIGHT = 74;
-const RESPONSE_TOGGLE_HEIGHT = 28;
 const COLLAPSED_RESPONSE_PREVIEW_LINE_LIMIT = 2;
 
 export function messageTurnBlockKey(block, index = 0) {
@@ -128,10 +127,10 @@ export function estimateCollapsedMessageBlockHeight(block, estimateItemHeight) {
   const visibleItems = visibleItemsForMessageBlock(block);
   const previewHeight = firstResponseItemForMessageBlock(block) ? COLLAPSED_RESPONSE_PREVIEW_HEIGHT : 0;
   const visibleChildren = visibleItems.length + (previewHeight ? 1 : 0);
-  if (!visibleItems.length) return previewHeight + RESPONSE_TOGGLE_HEIGHT;
+  if (!visibleItems.length) return previewHeight;
   const childrenHeight = visibleItems.reduce((sum, item) => sum + estimateItemHeight(item), 0);
   const visibleGapHeight = Math.max(0, visibleChildren - 1) * 18;
-  return childrenHeight + visibleGapHeight + previewHeight + RESPONSE_TOGGLE_HEIGHT;
+  return childrenHeight + visibleGapHeight + previewHeight;
 }
 
 export { DEFAULT_EXPANDED_RECENT_USER_TURNS };

@@ -1459,59 +1459,57 @@
 }
 
 .message-block-collapsed-response {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   min-width: 0;
 }
 
 .message-block-collapsed-preview {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.message-block-collapsed-preview-header {
+  margin-bottom: 2px;
+}
+
+.message-block-collapsed-preview-speaker {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.message-block-collapsed-preview-body {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   max-width: 100%;
-  padding: 2px 8px;
+  padding: 0;
   border: none;
   background: transparent;
   color: var(--text-primary);
   cursor: pointer;
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.65;
+  font-family: inherit;
   text-align: left;
   overflow: hidden;
 }
 
-.message-block-collapsed-preview-meta,
 .message-block-collapsed-preview-line {
   display: block;
   min-width: 0;
   max-width: 100%;
+  color: inherit;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.message-block-collapsed-preview-meta {
-  color: var(--text-primary);
-}
-
-.message-block-collapsed-preview-sep,
-.message-block-collapsed-preview-time {
-  color: var(--text-muted);
-}
-
-.message-block-collapsed-preview-line {
-  color: inherit;
-}
-
-.message-block-collapsed-preview:focus-visible {
+.message-block-collapsed-preview-body:focus-visible,
+.message-block-collapse-header-btn:focus-visible {
   outline: none;
 }
 
-.message-block-collapsed-response .message-block-collapse-footer {
-  opacity: 1;
-  padding-top: 0;
+.message-block-collapse-header-btn {
+  flex-shrink: 0;
 }
 
 .copy-full-btn,

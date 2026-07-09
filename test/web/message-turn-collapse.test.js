@@ -92,10 +92,10 @@ describe('message turn response collapse', () => {
       { type: 'message-block', id: 'turn-1', messageId: 'u1', items: [user('u1'), assistant('a1')] },
     ], {}, { expandedRecentUserTurns: 0 });
 
-    expect(estimateCollapsedMessageBlockHeight(block, () => 100)).toBe(220);
+    expect(estimateCollapsedMessageBlockHeight(block, () => 100)).toBe(192);
   });
 
-  it('renders collapse controls inside the assistant footer actions', () => {
+  it('renders collapsed response controls in the preview header', () => {
     const assistantTurnSource = readWebFile('components/AssistantTurn.js');
     const messageListSource = readWebFile('components/MessageList.js');
     const cssSource = readWebFile('styles/chat-messages.css');
@@ -103,26 +103,31 @@ describe('message turn response collapse', () => {
     expect(assistantTurnSource).toContain('class="response-collapse-btn"');
     expect(assistantTurnSource).toContain("@click=\"$emit('toggle-response-collapse')\"");
     expect(messageListSource).toContain(':response-collapsible="responseToggleBelongsToItem(block, item)"');
-    expect(messageListSource).toContain('class="message-block-collapsed-preview"');
-    expect(messageListSource).toContain('collapsedResponsePreviewSpeaker(block).name');
+    expect(messageListSource).toContain('class="vp-turn-block-main-header message-block-collapsed-preview-header"');
+    expect(messageListSource).toContain('class="response-collapse-btn message-block-collapse-header-btn"');
+    expect(messageListSource).toContain('class="message-block-collapsed-preview-body markdown-body"');
+    expect(messageListSource).toContain('collapsedResponsePreviewSpeaker(block).style');
     expect(messageListSource).toContain('collapsedResponsePreviewLines(block)');
+    expect(messageListSource).not.toContain('message-block-collapse-footer');
     expect(messageListSource).not.toContain('class="message-turn-collapse-toggle"');
-    expect(cssSource).toContain('.message-block-collapsed-response .message-block-collapse-footer');
-    expect(cssSource).toContain('opacity: 1;');
+    expect(cssSource).not.toContain('.message-block-collapsed-response .message-block-collapse-footer');
     expect(cssSource).toContain('.copy-full-btn,\n.response-collapse-btn');
     expect(cssSource).not.toContain('.message-turn-collapse-toggle');
   });
 
-  it('keeps collapsed response preview typography aligned with normal markdown text', () => {
+  it('keeps collapsed response preview typography aligned with normal turn text', () => {
     const cssSource = readWebFile('styles/chat-messages.css');
+    const messageListSource = readWebFile('components/MessageList.js');
     const markdownBodyRule = cssSource.match(/\.markdown-body\s*\{[\s\S]*?\n\}/)?.[0] || '';
-    const collapsedPreviewRule = cssSource.match(/\.message-block-collapsed-preview\s*\{[\s\S]*?\n\}/)?.[0] || '';
+    const collapsedBodyRule = cssSource.match(/\.message-block-collapsed-preview-body\s*\{[\s\S]*?\n\}/)?.[0] || '';
     expect(markdownBodyRule).toContain('font-size: 14px;');
     expect(markdownBodyRule).toContain('line-height: 1.65;');
-    expect(collapsedPreviewRule).toContain('font-size: 14px;');
-    expect(collapsedPreviewRule).toContain('line-height: 1.65;');
-    expect(collapsedPreviewRule).toContain('color: var(--text-primary);');
-    expect(cssSource).toContain('.message-block-collapsed-preview-line {\n  color: inherit;\n}');
+    expect(messageListSource).toContain('class="message-block-collapsed-preview-body markdown-body"');
+    expect(collapsedBodyRule).toContain('font-family: inherit;');
+    expect(collapsedBodyRule).toContain('color: var(--text-primary);');
+    expect(collapsedBodyRule).not.toContain('font: inherit;');
+    expect(cssSource).toContain('.message-block-collapsed-preview-line {\n  display: block;');
+    expect(cssSource).toContain('color: inherit;');
     expect(cssSource).not.toContain('.message-block-collapsed-preview-line {\n  color: var(--text-secondary);\n}');
   });
 });
