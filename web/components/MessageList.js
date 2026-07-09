@@ -250,44 +250,48 @@ export default {
               />
             </template>
             <div v-if="showBlockResponseToggle(block)" class="message-block-collapsed-response">
-              <button
-                type="button"
-                class="message-block-collapsed-preview"
-                @click="toggleMessageTurnResponse(block)"
-                :title="responseCollapseLabel(block)"
-                :aria-label="responseCollapseLabel(block)"
-              >
-                <span class="message-block-collapsed-preview-meta">
-                  <span class="message-block-collapsed-preview-speaker">{{ collapsedResponsePreviewSpeaker(block).name }}</span>
+              <div class="message-block-collapsed-preview">
+                <div class="vp-turn-block-main-header message-block-collapsed-preview-header">
+                  <span
+                    class="vp-turn-block-name message-block-collapsed-preview-speaker"
+                    :style="collapsedResponsePreviewSpeaker(block).style"
+                  >{{ collapsedResponsePreviewSpeaker(block).name }}</span>
                   <template v-if="collapsedResponsePreviewSpeaker(block).timeText">
-                    <span class="message-block-collapsed-preview-sep" aria-hidden="true">·</span>
+                    <span class="vp-turn-block-sep" aria-hidden="true">·</span>
                     <span
-                      class="message-block-collapsed-preview-time"
+                      class="vp-turn-block-time"
                       :title="collapsedResponsePreviewSpeaker(block).fullTimeText"
                     >{{ collapsedResponsePreviewSpeaker(block).timeText }}</span>
                   </template>
-                </span>
-                <span
-                  v-for="(line, index) in collapsedResponsePreviewLines(block)"
-                  :key="index"
-                  class="message-block-collapsed-preview-line"
-                >{{ line }}</span>
-              </button>
-              <div class="turn-footer message-block-collapse-footer">
+                  <span class="vp-turn-block-spacer"></span>
+                  <button
+                    type="button"
+                    class="response-collapse-btn message-block-collapse-header-btn"
+                    :class="{ 'is-collapsed': block.responseCollapsed }"
+                    @click="toggleMessageTurnResponse(block)"
+                    :title="responseCollapseLabel(block)"
+                    :aria-label="responseCollapseLabel(block)"
+                    :aria-expanded="String(!block.responseCollapsed)"
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                      <path v-if="block.responseCollapsed" fill="currentColor" d="M7 10l5 5 5-5z"/>
+                      <path v-else fill="currentColor" d="M7 14l5-5 5 5z"/>
+                    </svg>
+                    <span class="response-collapse-label">{{ responseCollapseLabel(block) }}</span>
+                  </button>
+                </div>
                 <button
                   type="button"
-                  class="response-collapse-btn"
-                  :class="{ 'is-collapsed': block.responseCollapsed }"
+                  class="message-block-collapsed-preview-body markdown-body"
                   @click="toggleMessageTurnResponse(block)"
                   :title="responseCollapseLabel(block)"
                   :aria-label="responseCollapseLabel(block)"
-                  :aria-expanded="String(!block.responseCollapsed)"
                 >
-                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                    <path v-if="block.responseCollapsed" fill="currentColor" d="M7 10l5 5 5-5z"/>
-                    <path v-else fill="currentColor" d="M7 14l5-5 5 5z"/>
-                  </svg>
-                  <span class="response-collapse-label">{{ responseCollapseLabel(block) }}</span>
+                  <span
+                    v-for="(line, index) in collapsedResponsePreviewLines(block)"
+                    :key="index"
+                    class="message-block-collapsed-preview-line"
+                  >{{ line }}</span>
                 </button>
               </div>
             </div>
@@ -706,6 +710,9 @@ export default {
       const name = vpId && vpStore && typeof vpStore.vpLabel === 'function'
         ? (vpStore.vpLabel(vpId) || vpId)
         : (vpId || (typeof t === 'function' ? t('message.assistant') : 'Assistant'));
+      const style = vpId && vpStore && typeof vpStore.vpTextColor === 'function'
+        ? { color: vpStore.vpTextColor(vpId) }
+        : {};
       const ts = firstResponse?.speakerTimestamp
         || firstResponse?.timestamp
         || firstResponse?.createdAt
@@ -723,7 +730,7 @@ export default {
           }
         } catch (_) {}
       }
-      return { name, timeText, fullTimeText };
+      return { name, style, timeText, fullTimeText };
     };
     const lastResponseItemForBlock = (block) => {
       const items = Array.isArray(block?.items) ? block.items : [];
