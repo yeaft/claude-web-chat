@@ -3294,12 +3294,15 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'turn_close':
+      recordAgentTurn('yeaft');
       sendSessionEvent({
         type: 'turn_close',
         turnId: event.turnId,
+        threadId: event.threadId,
         totalMs: event.totalMs,
         totalTokens: event.totalTokens,
         loopCount: event.loopCount,
+        ts: Date.now(),
       }, envelope);
       break;
 
@@ -3388,19 +3391,6 @@ function handleEngineEvent(event, hctx) {
         loopNumber: event.loopNumber,
         aborted: Boolean(event.aborted),
         remainingTaskIds: Array.isArray(event.remainingTaskIds) ? event.remainingTaskIds : [],
-        ts: Date.now(),
-      }, envelope);
-      break;
-
-    case 'turn_close':
-      recordAgentTurn('yeaft');
-      sendSessionEvent({
-        type: 'turn_close',
-        turnId: event.turnId,
-        threadId: event.threadId,
-        totalMs: event.totalMs,
-        totalTokens: event.totalTokens,
-        loopCount: event.loopCount,
         ts: Date.now(),
       }, envelope);
       break;
