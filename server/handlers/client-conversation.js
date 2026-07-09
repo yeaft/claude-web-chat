@@ -1056,6 +1056,10 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             return true;
           }
         }
+        if (relayType === 'yeaft_fetch_agent_metrics') {
+          await forwardToAgent(relayAgentId, { type: 'get_agent_metrics' });
+          return true;
+        }
         // Forward the entire message minus the agentId field; the agent
         // router is the authoritative consumer of the payload shape.
         const { agentId: _discard, ...rest } = msg;

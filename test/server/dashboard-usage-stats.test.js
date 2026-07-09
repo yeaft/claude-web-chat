@@ -69,6 +69,23 @@ describe('dashboard usage accounting', () => {
     context.trackUserTurn('u1', 100);
     context.trackRequest('u1', 0, 'chat');
     context.trackMessageBytesSent('u1', 200, 'claude_output');
+    context.agents.set('agent-1', {
+      ws: { readyState: 1 },
+      name: 'agent-1',
+      conversations: new Map(),
+      metrics: {
+        chatTurns: 2,
+        yeaftTurns: 3,
+        totalTurns: 5,
+        sessionsCreated: 4,
+        inputTokens: 100,
+        outputTokens: 40,
+        cacheReadTokens: 10,
+        cacheWriteTokens: 5,
+        totalTokens: 155,
+        lastUpdatedAt: 123,
+      },
+    });
 
     let body = null;
     const res = { json: (payload) => { body = payload; }, status: () => res };
@@ -84,5 +101,24 @@ describe('dashboard usage accounting', () => {
 
     handlers.get('/api/admin/dashboard')({ query: {} }, res);
     expect(body.todayMessages).toBe(3);
+    expect(body.agentMetrics).toMatchObject({
+      chatTurns: 2,
+      yeaftTurns: 3,
+      totalTurns: 5,
+      sessionsCreated: 4,
+      inputTokens: 100,
+      outputTokens: 40,
+      cacheReadTokens: 10,
+      cacheWriteTokens: 5,
+      totalTokens: 155,
+    });
+    expect(body.totalAgentTurns).toBe(5);
+    expect(body.totalTokens).toBe(155);
+
+    handlers.get('/api/admin/agents')({ query: {} }, res);
+    expect(body).toEqual([expect.objectContaining({
+      id: 'agent-1',
+      metrics: expect.objectContaining({ totalTurns: 5, totalTokens: 155 }),
+    })]);
   });
 });

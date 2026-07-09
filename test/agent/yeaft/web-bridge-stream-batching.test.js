@@ -7,6 +7,8 @@ vi.mock('../../../agent/connection/buffer.js', () => ({
 }));
 
 const { __testHandleEngineEvent } = await import('../../../agent/yeaft/web-bridge.js');
+const ctx = (await import('../../../agent/context.js')).default;
+const { snapshotAgentMetrics } = await import('../../../agent/metrics.js');
 
 function makeHandlerCtx(overrides = {}) {
   return {
@@ -43,6 +45,17 @@ function assistantTextFrames() {
 describe('Yeaft web bridge stream text batching', () => {
   beforeEach(() => {
     sent.length = 0;
+    ctx.agentMetrics = {
+      chatTurns: 0,
+      yeaftTurns: 0,
+      sessionsCreated: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+      lastUpdatedAt: 0,
+    };
     vi.useFakeTimers();
   });
 
@@ -177,5 +190,47 @@ describe('Yeaft web bridge stream text batching', () => {
       'event:error',
       'text:⚠️ Error: provider exploded',
     ]);
+  });
+
+  it('records Yeaft loop tokens once and turn_close as a turn only', () => {
+    const hctx = makeHandlerCtx({ turnId: 'turn-metrics', threadId: 'thread-metrics' });
+
+    __testHandleEngineEvent({
+      type: 'loop',
+      turnId: 'turn-metrics',
+      loopNumber: 1,
+      usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, totalTokens: 17 },
+    }, hctx);
+    __testHandleEngineEvent({
+      type: 'turn_close',
+      turnId: 'turn-metrics',
+      threadId: 'thread-metrics',
+      totalMs: 123,
+      totalTokens: 456,
+      loopCount: 2,
+    }, hctx);
+
+    expect(snapshotAgentMetrics()).toMatchObject({
+      chatTurns: 0,
+      yeaftTurns: 1,
+      totalTurns: 1,
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 2,
+      totalTokens: 17,
+    });
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: 'yeaft_output',
+      turnId: 'turn-metrics',
+      threadId: 'thread-metrics',
+      event: expect.objectContaining({
+        type: 'turn_close',
+        turnId: 'turn-metrics',
+        threadId: 'thread-metrics',
+        totalMs: 123,
+        totalTokens: 456,
+        loopCount: 2,
+      }),
+    }));
   });
 });

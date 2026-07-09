@@ -7,9 +7,54 @@ import {
   handleProxyWsAgentMessage
 } from '../proxy.js';
 
+const numberMetric = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+};
+
+function normalizeAgentMetrics(metrics = {}) {
+  const chatTurns = numberMetric(metrics.chatTurns);
+  const yeaftTurns = numberMetric(metrics.yeaftTurns);
+  const totalTurns = numberMetric(metrics.totalTurns) || chatTurns + yeaftTurns;
+  const inputTokens = numberMetric(metrics.inputTokens);
+  const outputTokens = numberMetric(metrics.outputTokens);
+  const cacheReadTokens = numberMetric(metrics.cacheReadTokens);
+  const cacheWriteTokens = numberMetric(metrics.cacheWriteTokens);
+  const totalTokens = numberMetric(metrics.totalTokens) || inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
+  return {
+    chatTurns,
+    yeaftTurns,
+    totalTurns,
+    sessionsCreated: numberMetric(metrics.sessionsCreated),
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    totalTokens,
+    lastUpdatedAt: numberMetric(metrics.lastUpdatedAt) || null,
+  };
+}
+
+async function forwardAgentMetrics(agentId, agent) {
+  const payload = {
+    type: 'agent_metrics',
+    agentId,
+    metrics: agent.metrics,
+    metricsUpdatedAt: agent.metricsUpdatedAt || null,
+  };
+  for (const [, client] of webClients) {
+    if (client.authenticated && (CONFIG.skipAuth ||
+      (agent.ownerId && client.userId === agent.ownerId) ||
+      (!agent.ownerId && client.role === 'admin')
+    )) {
+      await sendToWebClient(client, payload);
+    }
+  }
+}
+
 /**
  * Handle sync, proxy, and agent control messages from agent.
- * Types: agent_sync_complete, sync_sessions,
+ * Types: agent_sync_complete, sync_sessions, agent_metrics,
  *        proxy_response, proxy_response_chunk, proxy_response_end,
  *        proxy_ports_update, proxy_ws_opened/message/closed/error,
  *        restart_agent_ack, upgrade_agent_ack
@@ -25,6 +70,13 @@ export async function handleAgentSync(agentId, agent, msg) {
       }
       console.log(`[Sync] Agent ${agent.name} sync complete, status: ready`);
       await broadcastAgentList();
+      break;
+    }
+
+    case 'agent_metrics': {
+      agent.metrics = normalizeAgentMetrics(msg.metrics || {});
+      agent.metricsUpdatedAt = Date.now();
+      await forwardAgentMetrics(agentId, agent);
       break;
     }
 
