@@ -22,7 +22,8 @@
  * {profile, entries, formatted} shape the engine already consumes.
  */
 
-import { runPreflow as runFtsPreflow } from '../memory/preflow.js';
+import { runPreflow as runFtsPreflow, filterScopes } from '../memory/preflow.js';
+import { approxTokens } from '../memory/budget.js';
 import { resolveFallbackVp, resolveMemberId } from './roster.js';
 
 /** Matches `@vp-id` where id is [A-Za-z0-9_-]+. Captures the id. */
@@ -179,6 +180,8 @@ function scopeHeading(scope) {
   if (m) return `## Memory: Session ${m[1]} (user)`;
   m = /^session\/([^/]+)\/feature\/(.+)$/.exec(scope);
   if (m) return `## Memory: Feature ${m[2]}`;
+  m = /^sessions\/([^/]+)\/topic\/(.+)$/.exec(scope);
+  if (m) return `## Memory: Topic ${m[2]}`;
   m = /^session\/([^/]+)\/topic\/(.+)$/.exec(scope);
   if (m) return `## Memory: Topic ${m[2]}`;
   // Legacy nested group scopes (un-migrated data).
@@ -239,6 +242,8 @@ export function formatPickedForInjection(picked) {
  * @property {string[]}       [currentTags]        Contextual tags for rerank
  * @property {number}         [topK]               Max FTS rows fetched (default 50)
  * @property {number}         [budgetTokens]       Token budget for picked segments
+ * @property {boolean}        [fallbackOnEmpty]    Include bounded recent scoped segments when FTS has no hits
+ * @property {number}         [fallbackPerScope]   Max fallback segments per scope
  */
 
 /**
@@ -282,12 +287,15 @@ export function buildRelevantScopes({ sessionId, chatId, vpId, extra } = {}) {
       scopes.push(`group/${sessionId}/vp/${vpId}`);
     }
   }
-  if (Array.isArray(extra)) {
-    for (const s of extra) {
-      if (s && !scopes.includes(s)) scopes.push(s);
-    }
-  }
+  appendUniqueScopes(scopes, extra);
   return scopes;
+}
+
+function appendUniqueScopes(scopes, extra) {
+  if (!Array.isArray(extra)) return;
+  for (const s of extra) {
+    if (s && !scopes.includes(s)) scopes.push(s);
+  }
 }
 
 /**
@@ -321,7 +329,7 @@ export function runMemoryPreflow(index, opts) {
     extra: opts.extraScopes,
   });
 
-  const result = runFtsPreflow(index, {
+  let result = runFtsPreflow(index, {
     userMsg,
     relevantScopes,
     ownVpId: opts.vpId || null,
@@ -329,6 +337,25 @@ export function runMemoryPreflow(index, opts) {
     topK: opts.topK,
     budgetTokens: opts.budgetTokens,
   });
+
+  let fallbackUsed = false;
+  if ((result.picked || []).length === 0 && opts.fallbackOnEmpty) {
+    const fallback = fallbackScopedSegments(index, {
+      relevantScopes,
+      ownVpId: opts.vpId || null,
+      budgetTokens: opts.budgetTokens,
+      perScope: opts.fallbackPerScope,
+    });
+    if (fallback.length > 0) {
+      fallbackUsed = true;
+      result = {
+        ...result,
+        picked: fallback,
+        pickedTokens: estimatePickedTokens(fallback),
+        droppedCount: result.droppedCount || 0,
+      };
+    }
+  }
 
   // Best-effort profile: pick any user-scope segment body.
   const userSeg = (result.picked || []).find(p => p.scope === 'user');
@@ -346,6 +373,61 @@ export function runMemoryPreflow(index, opts) {
       pickedTokens: result.pickedTokens,
       droppedCount: result.droppedCount,
       hitCount: (result.hits || []).length,
+      fallbackUsed,
     },
   };
+}
+
+function fallbackScopedSegments(index, opts) {
+  if (!index || typeof index.listByScope !== 'function') return [];
+  const scopes = prioritizeFallbackScopes(filterScopes(opts.relevantScopes || [], opts.ownVpId || null));
+  const perScope = Number.isFinite(opts.perScope) && opts.perScope > 0 ? Math.floor(opts.perScope) : 2;
+  const budgetTokens = Number.isFinite(opts.budgetTokens) && opts.budgetTokens > 0 ? opts.budgetTokens : 1200;
+  const buckets = [];
+  for (const scope of scopes) {
+    let segs = [];
+    try { segs = index.listByScope(scope) || []; } catch { continue; }
+    segs = [...segs]
+      .filter(seg => (seg?.body || '').trim())
+      .sort(compareSegmentRecency)
+      .slice(0, perScope);
+    if (segs.length > 0) buckets.push(segs);
+  }
+
+  const out = [];
+  let cost = 0;
+  for (let i = 0; i < perScope; i += 1) {
+    for (const bucket of buckets) {
+      const seg = bucket[i];
+      if (!seg) continue;
+      const tk = approxTokens(seg.body || '');
+      if (tk <= 0 || cost + tk > budgetTokens) continue;
+      out.push(seg);
+      cost += tk;
+    }
+  }
+  return out;
+}
+
+function prioritizeFallbackScopes(scopes) {
+  const topic = [];
+  const rest = [];
+  for (const scope of scopes) {
+    if (/^(?:sessions|session|group)\/[^/]+\/topic\//.test(scope)) topic.push(scope);
+    else rest.push(scope);
+  }
+  return [...topic, ...rest];
+}
+
+function compareSegmentRecency(a, b) {
+  return timestampOf(b) - timestampOf(a);
+}
+
+function timestampOf(seg) {
+  const t = Date.parse(seg?.updatedAt || seg?.createdAt || '');
+  return Number.isFinite(t) ? t : 0;
+}
+
+function estimatePickedTokens(segments) {
+  return (segments || []).reduce((sum, seg) => sum + approxTokens(seg?.body || ''), 0);
 }

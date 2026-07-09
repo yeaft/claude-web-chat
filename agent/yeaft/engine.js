@@ -379,7 +379,7 @@ export function shouldAllowGroupReflection({
  * @param {{
  *   sessionId?: string|null,
  *   ownVpId?: string|null,
- *   summaries: { user?: string, session?: string, vp?: string }
+ *   summaries: { user?: string, session?: string, vp?: string, topics?: Array<{scope:string, summary:string}> }
  * }} args
  * @returns {Array<{scope: string, summary: string}>}
  */
@@ -389,6 +389,11 @@ export function buildResidentEntries(args) {
   if (summaries.user) out.push({ scope: 'user', summary: summaries.user });
   if (args.sessionId && summaries.session) {
     out.push({ scope: `sessions/${args.sessionId}`, summary: summaries.session });
+  }
+  if (args.sessionId && Array.isArray(summaries.topics)) {
+    for (const topic of summaries.topics) {
+      if (topic?.scope && topic?.summary) out.push({ scope: topic.scope, summary: topic.summary });
+    }
   }
   // VP per-session isolation (2026-06-09): the VP summary scope MUST be
   // session-qualified. The legacy bare `vp/<id>` scope was a structural
@@ -783,12 +788,13 @@ export class Engine {
    * dream tick (Phase 6) is what populates these; on a fresh install they
    * all return ''.
    *
-   * @param {{sessionId?: string, vpId?: string, language?: string}} ctx
-   * @returns {Promise<{user:string, session:string, vp:string}>}
+   * @param {{sessionId?: string, vpId?: string, language?: string, topicScopes?: string[]}} ctx
+   * @returns {Promise<{user:string, session:string, vp:string, topics:Array<{scope:string, summary:string}>}>}
    */
-  async #loadLayerASummaries({ sessionId, vpId, language } = {}) {
-    if (!this.#yeaftDir) return { user: '', session: '', vp: '' };
+  async #loadLayerASummaries({ sessionId, vpId, language, topicScopes } = {}) {
+    if (!this.#yeaftDir) return { user: '', session: '', vp: '', topics: [] };
     const memoryRoot = `${this.#yeaftDir}/memory`;
+    const topicScopeList = Array.isArray(topicScopes) ? topicScopes.slice(0, 12) : [];
     const tasks = [
       readScopeSummary({ kind: 'user' }, { root: memoryRoot, language }).catch(() => ''),
       sessionId
@@ -797,17 +803,24 @@ export class Engine {
       vpId && sessionId
         ? readScopeSummary({ kind: 'session-vp', sessionId, id: vpId }, { root: memoryRoot, language }).catch(() => '')
         : Promise.resolve(''),
+      Promise.all(topicScopeList.map(scope => readTopicSummary(scope, { root: memoryRoot, language }))),
     ];
-    const [user, session, vp] = await Promise.all(tasks);
-    return { user: user || '', session: session || '', vp: vp || '' };
+    const [user, session, vp, topicsRaw] = await Promise.all(tasks);
+    const topics = (topicsRaw || []).filter(t => t && t.summary);
+    return { user: user || '', session: session || '', vp: vp || '', topics };
   }
 
   async #loadSessionTopicLabels(sessionId, limit = 8) {
+    return (await this.#loadSessionTopicScopes(sessionId, limit))
+      .map(scope => scope.replace(/^sessions\/[^/]+\/topic\//, ''));
+  }
+
+  async #loadSessionTopicScopes(sessionId, limit = 24) {
     if (!this.#yeaftDir || !sessionId) return [];
     const topicRoot = join(this.#yeaftDir, 'memory', 'sessions', sessionId, 'topic');
     const labels = [];
     await collectTopicLabels(topicRoot, '', labels, limit).catch(() => {});
-    return labels;
+    return labels.map(label => `sessions/${sessionId}/topic/${label}`);
   }
 
   /**
@@ -1240,7 +1253,7 @@ export class Engine {
    * without injection.
    *
    * @param {string} prompt
-   * @param {{ sessionId?: string, vpId?: string }} [ctx]
+   * @param {{ sessionId?: string, vpId?: string, extraScopes?: string[] }} [ctx]
    * @returns {Promise<{ profile: string, entries: object[], formatted: string }|null>}
    */
   async #recallMemory(prompt, ctx = {}) {
@@ -1252,6 +1265,8 @@ export class Engine {
         sessionId: ctx.sessionId,
         chatId: ctx.chatId || this.#chatId,
         vpId: ctx.vpId,
+        extraScopes: ctx.extraScopes,
+        fallbackOnEmpty: true,
       });
       memory.profile = result.profile || '';
       memory.entries = result.entries || [];
@@ -1784,11 +1799,13 @@ export class Engine {
     let memoryInjection = '';
     let recallEntryCount = 0;
 
+    const topicScopesForMemory = await this.#loadSessionTopicScopes(sessionId);
     const recallResult = await this.#recallMemory(prompt, {
       sessionId,
       vpId: vpPersona && typeof vpPersona === 'object' && typeof vpPersona.vpId === 'string'
         ? vpPersona.vpId
         : (typeof senderVpId === 'string' ? senderVpId : undefined),
+      extraScopes: topicScopesForMemory,
     });
     recallEntryCount = recallResult && Array.isArray(recallResult.entries)
       ? recallResult.entries.length
@@ -1806,6 +1823,7 @@ export class Engine {
         ? vpPersona.vpId
         : (typeof senderVpId === 'string' ? senderVpId : undefined),
       language: this.#config.language || 'en',
+      topicScopes: topicScopesForMemory,
     });
 
     // ─── AMS: populate + snapshot ───────────────────────────────
@@ -1837,9 +1855,13 @@ export class Engine {
     // frontend state. The full system prompt remains visible in the existing
     // debug-only system-prompt panel.
     const activeGroupDreamScope = sessionId ? `sessions/${sessionId}` : null;
+    const activeTopicDreamPrefix = sessionId ? `sessions/${sessionId}/topic/` : null;
     const dreamResidentLoaded = amsContext && Array.isArray(amsContext.residentEntries)
       ? amsContext.residentEntries
-        .filter(e => e && e.scope === activeGroupDreamScope && e.summary)
+        .filter(e => e && e.summary && (
+          e.scope === activeGroupDreamScope
+          || (activeTopicDreamPrefix && e.scope?.startsWith(activeTopicDreamPrefix))
+        ))
         .map(e => ({
           scope: e.scope,
           summary: String(e.summary).slice(0, 4000),
@@ -1854,7 +1876,7 @@ export class Engine {
     // only IDs + tiny labels. (Feature scope retired 2026-05-13.)
     const activeSessionTopics = Array.isArray(sessionTopics)
       ? sessionTopics
-      : await this.#loadSessionTopicLabels(sessionId);
+      : topicScopesForMemory.slice(0, 8).map(scope => scope.replace(/^sessions\/[^/]+\/topic\//, ''));
     const activeScope = {
       sessionId: sessionId || '',
       sessionMember: ownVpIdForAms || '',
@@ -3736,6 +3758,18 @@ export class Engine {
       return '';
     }
   }
+}
+
+async function readTopicSummary(scope, opts) {
+  const m = /^sessions\/([^/]+)\/topic\/(.+)$/.exec(String(scope || ''));
+  if (!m) return null;
+  const path = m[2].split('/').filter(Boolean);
+  if (path.length === 0) return null;
+  const summary = await readScopeSummary(
+    { kind: 'session-topic', sessionId: m[1], path },
+    opts,
+  ).catch(() => '');
+  return summary ? { scope, summary } : null;
 }
 
 async function collectTopicLabels(dir, prefix, labels, limit) {

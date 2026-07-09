@@ -312,6 +312,11 @@ describe('Engine', () => {
         'VP Dream summary should enter the prompt but not the session prompt-load payload.',
         { root: join(yeaftDir, 'memory') },
       );
+      await writeSummary(
+        { kind: 'session-topic', sessionId: 'g1', path: ['dream', 'recall'] },
+        'Topic Dream summary should enter the prompt through AMS Resident.',
+        { root: join(yeaftDir, 'memory') },
+      );
       mockAdapter.pushResponse([
         { type: 'text_delta', text: 'ok' },
         { type: 'stop', stopReason: 'end_turn' },
@@ -343,15 +348,23 @@ describe('Engine', () => {
       expect(system).toContain('Dream memory loaded into the prompt');
       expect(system).toContain('User-level Dream summary should enter the prompt');
       expect(system).toContain('VP Dream summary should enter the prompt');
+      expect(system).toContain('sessions/g1/topic/dream/recall');
+      expect(system).toContain('Topic Dream summary should enter the prompt through AMS Resident.');
 
       const loaded = events.find(e => e.type === 'dream_memory_loaded');
       expect(loaded).toBeTruthy();
       expect(loaded.loadedInto).toBe('system_prompt.memory');
-      expect(loaded.resident).toHaveLength(1);
-      expect(loaded.resident).toEqual([expect.objectContaining({
-        scope: 'sessions/g1',
-        source: 'resident-summary',
-      })]);
+      expect(loaded.resident).toHaveLength(2);
+      expect(loaded.resident).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          scope: 'sessions/g1',
+          source: 'resident-summary',
+        }),
+        expect.objectContaining({
+          scope: 'sessions/g1/topic/dream/recall',
+          source: 'resident-summary',
+        }),
+      ]));
     });
 
     it('should pass model and system prompt to adapter', async () => {
