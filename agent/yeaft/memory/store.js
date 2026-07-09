@@ -240,7 +240,7 @@ export function isValidTopic(scope) {
  */
 export function isVpForeign(relPath, currentVpId) {
   if (!relPath || !currentVpId) return false;
-  const m = /^(?:group|chat|session)\/[^/]+\/vp\/([^/]+)(?:\/|$)/.exec(relPath);
+  const m = /^(?:group|chat|sessions?)\/[^/]+\/vp\/([^/]+)(?:\/|$)/.exec(relPath);
   if (!m) return false;
   return m[1] !== currentVpId;
 }
