@@ -72,6 +72,7 @@ import { buildMcpFlattenedTools } from './tools/mcp-tools.js';
 import { getAgentRegistry, agentBelongsToScope } from './tools/agent.js';
 import { isPromptableAgentStatus } from './sub-agent/status.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
+import { recordAgentSessionCreated, recordAgentTokenUsage, recordAgentTurn } from '../metrics.js';
 
 const LEGACY_SKILL_COMMAND_PREFIX = 'skill:';
 const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
@@ -2211,6 +2212,9 @@ function mergedStatusForProjectRuntime(runtime) {
 
 /** Send a Yeaft Session metadata event over the legacy-compatible envelope. */
 function sendSessionEvent(event, { sessionId, chatId, vpId, turnId, threadId, perfTraceId } = {}) {
+  if (event?.type === 'loop') {
+    recordAgentTokenUsage(event.usage || {});
+  }
   sendToServer({
     type: 'yeaft_output',
     conversationId: yeaftConversationId,
@@ -2468,6 +2472,7 @@ export function handleYeaftCreateSession(msg) {
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const group = createSessionFromSpec(yeaftDir, withDefaultSessionConfig(payload));
+    recordAgentSessionCreated();
     group.config = loadSessionConfig(yeaftDir, group.id);
     sendSessionCrudResult({ op: 'create', requestId, ok: true, session: group });
     sendSessionSnapshotBroadcast();
@@ -3383,6 +3388,19 @@ function handleEngineEvent(event, hctx) {
         loopNumber: event.loopNumber,
         aborted: Boolean(event.aborted),
         remainingTaskIds: Array.isArray(event.remainingTaskIds) ? event.remainingTaskIds : [],
+        ts: Date.now(),
+      }, envelope);
+      break;
+
+    case 'turn_close':
+      recordAgentTurn('yeaft');
+      sendSessionEvent({
+        type: 'turn_close',
+        turnId: event.turnId,
+        threadId: event.threadId,
+        totalMs: event.totalMs,
+        totalTokens: event.totalTokens,
+        loopCount: event.loopCount,
         ts: Date.now(),
       }, envelope);
       break;

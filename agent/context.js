@@ -21,6 +21,17 @@ export default {
   slashCommands: [],
   // Slash command 描述映射: { commandName: description } — 从 plugin commands/*.md 提取
   slashCommandDescriptions: {},
+  agentMetrics: {
+    chatTurns: 0,
+    yeaftTurns: 0,
+    sessionsCreated: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    lastUpdatedAt: 0,
+  },
   // MCP servers 列表 (从 ~/.claude.json 读取): [{ name, enabled, source }]
   mcpServers: [],
   // 连接相关

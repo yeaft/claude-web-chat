@@ -23,6 +23,7 @@ import {
   handlePingSession
 } from '../conversation.js';
 import { sendToServer, flushMessageBuffer } from './buffer.js';
+import { sendAgentMetricsSnapshot } from '../metrics.js';
 import { handleRestartAgent, handleUpgradeAgent } from './upgrade.js';
 import { loadMcpServers, updateMcpConfig } from '../mcp.js';
 import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, getSearchSettings, updateSearchSettings, fetchTavilyUsage } from '../yeaft/config-api.js';
@@ -69,6 +70,7 @@ export async function handleMessage(msg) {
       }
 
       sendConversationList();
+      sendAgentMetricsSnapshot();
       startYeaftStatusRefresh();
 
       // fix-yeaft-session-per-agent: eagerly broadcast this agent's
@@ -118,6 +120,10 @@ export async function handleMessage(msg) {
 
     case 'get_conversations':
       sendConversationList();
+      break;
+
+    case 'get_agent_metrics':
+      sendAgentMetricsSnapshot();
       break;
 
     case 'list_history_sessions':

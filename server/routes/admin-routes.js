@@ -4,6 +4,53 @@ import { agents, webClients, userStatsDeltas } from '../context.js';
 
 const toNumber = (value) => Number(value) || 0;
 
+function emptyAgentMetrics() {
+  return {
+    totalTurns: 0,
+    chatTurns: 0,
+    yeaftTurns: 0,
+    sessionsCreated: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    lastUpdatedAt: null,
+  };
+}
+
+function safeAgentMetrics(metrics = {}) {
+  const out = emptyAgentMetrics();
+  for (const key of Object.keys(out)) {
+    if (key === 'lastUpdatedAt') continue;
+    out[key] = toNumber(metrics[key]);
+  }
+  out.lastUpdatedAt = metrics.lastUpdatedAt || null;
+  if (!out.totalTurns) out.totalTurns = out.chatTurns + out.yeaftTurns;
+  if (!out.totalTokens) out.totalTokens = out.inputTokens + out.outputTokens + out.cacheReadTokens + out.cacheWriteTokens;
+  return out;
+}
+
+function sumAgentMetrics() {
+  const totals = emptyAgentMetrics();
+  for (const [, agent] of agents) {
+    const metrics = safeAgentMetrics(agent.metrics || {});
+    totals.totalTurns += metrics.totalTurns;
+    totals.chatTurns += metrics.chatTurns;
+    totals.yeaftTurns += metrics.yeaftTurns;
+    totals.sessionsCreated += metrics.sessionsCreated;
+    totals.inputTokens += metrics.inputTokens;
+    totals.outputTokens += metrics.outputTokens;
+    totals.cacheReadTokens += metrics.cacheReadTokens;
+    totals.cacheWriteTokens += metrics.cacheWriteTokens;
+    totals.totalTokens += metrics.totalTokens;
+    if (metrics.lastUpdatedAt && (!totals.lastUpdatedAt || metrics.lastUpdatedAt > totals.lastUpdatedAt)) {
+      totals.lastUpdatedAt = metrics.lastUpdatedAt;
+    }
+  }
+  return totals;
+}
+
 function mergePendingUserStats(stats) {
   const byUser = new Map(stats.map(row => [row.user_id, { ...row }]));
   for (const [userId, delta] of userStatsDeltas) {
@@ -58,6 +105,7 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
         if (agent.ws.readyState === WebSocket.OPEN) onlineAgents++;
       }
 
+      const agentMetrics = sumAgentMetrics();
       res.json({
         totalUsers: totals.total_users,
         totalSessions: totals.total_sessions,
@@ -65,7 +113,10 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
         onlineUsers: onlineUsers.size,
         onlineAgents,
         todayActiveUsers: userStatsDb.getTodayActiveUsers(),
-        todayMessages: userStatsDb.getTodayMessages() + pendingTodayMessages()
+        todayMessages: userStatsDb.getTodayMessages() + pendingTodayMessages(),
+        agentMetrics,
+        totalAgentTurns: agentMetrics.totalTurns,
+        totalTokens: agentMetrics.totalTokens
       });
     } catch (e) {
       console.error('[Admin] Dashboard error:', e.message);
@@ -112,7 +163,9 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
         ownerId: agent.ownerId || null,
         ownerUsername: agent.ownerUsername || null,
         capabilities: agent.capabilities || [],
-        conversationCount: agent.conversations?.size || 0
+        conversationCount: agent.conversations?.size || 0,
+        metrics: safeAgentMetrics(agent.metrics || {}),
+        metricsUpdatedAt: agent.metricsUpdatedAt || null
       }));
       res.json(agentList);
     } catch (e) {

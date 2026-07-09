@@ -2,6 +2,7 @@ import { writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { query, Stream } from './sdk/index.js';
 import ctx from './context.js';
+import { recordAgentTokenUsage, recordAgentTurn } from './metrics.js';
 import { sendConversationList, sendOutput, sendError, handleAskUserQuestion } from './conversation.js';
 import { startSubagentWatcher, stopSubagentWatcher, cleanupSubagentWatchers } from './subagent.js';
 import { SYNTHETIC_TOOL_NAMES } from './synthetic-tools.js';
@@ -627,10 +628,18 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         if (message.usage) {
           const inputDelta = (message.usage.input_tokens || 0) - (state.lastResultInputTokens || 0);
           const outputDelta = (message.usage.output_tokens || 0) - (state.lastResultOutputTokens || 0);
+          const cacheReadDelta = Math.max(0, (message.usage.cache_read_input_tokens || 0) - (state.lastResultCacheRead || 0));
+          const cacheCreationDelta = Math.max(0, (message.usage.cache_creation_input_tokens || 0) - (state.lastResultCacheCreation || 0));
           if (inputDelta > 0) state.usage.inputTokens += inputDelta;
           if (outputDelta > 0) state.usage.outputTokens += outputDelta;
-          state.usage.cacheRead += Math.max(0, (message.usage.cache_read_input_tokens || 0) - (state.lastResultCacheRead || 0));
-          state.usage.cacheCreation += Math.max(0, (message.usage.cache_creation_input_tokens || 0) - (state.lastResultCacheCreation || 0));
+          state.usage.cacheRead += cacheReadDelta;
+          state.usage.cacheCreation += cacheCreationDelta;
+          recordAgentTokenUsage({
+            inputTokens: inputDelta,
+            outputTokens: outputDelta,
+            cacheReadTokens: cacheReadDelta,
+            cacheWriteTokens: cacheCreationDelta,
+          });
           state.lastResultInputTokens = message.usage.input_tokens || 0;
           state.lastResultOutputTokens = message.usage.output_tokens || 0;
           state.lastResultCacheRead = message.usage.cache_read_input_tokens || 0;
@@ -664,6 +673,7 @@ async function processClaudeOutput(conversationId, claudeQuery, state) {
         // ★ Turn 完成：发送 turn_completed，进程继续运行等待下一条消息
         // stream-json 模式下 Claude 进程是持久运行的，for-await 在 result 后继续等待
         // 不清空 state.query 和 state.inputStream，下次用户消息直接通过同一个 inputStream 发送
+        recordAgentTurn('chat');
         state.turnResultReceived = true;
         resultHandled = true;
         state.turnActive = false;
