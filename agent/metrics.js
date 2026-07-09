@@ -22,7 +22,10 @@ function ensureMetrics() {
   return metrics;
 }
 
+export const AGENT_METRICS_EMIT_INTERVAL_MS = 2000;
+
 let pendingMetricsEmit = null;
+let lastMetricsEmitAt = 0;
 
 function touch(metrics) {
   metrics.lastUpdatedAt = Date.now();
@@ -32,10 +35,14 @@ function touch(metrics) {
 
 function scheduleAgentMetricsSnapshot() {
   if (pendingMetricsEmit) return;
+  const now = Date.now();
+  const delay = lastMetricsEmitAt > 0
+    ? Math.max(AGENT_METRICS_EMIT_INTERVAL_MS - (now - lastMetricsEmitAt), 0)
+    : AGENT_METRICS_EMIT_INTERVAL_MS;
   pendingMetricsEmit = setTimeout(() => {
     pendingMetricsEmit = null;
-    sendAgentMetricsSnapshot();
-  }, 0);
+    emitAgentMetricsSnapshot();
+  }, delay);
 }
 
 export function recordAgentTurn(kind = 'chat') {
@@ -84,10 +91,19 @@ export function snapshotAgentMetrics() {
   };
 }
 
-export function sendAgentMetricsSnapshot() {
+function emitAgentMetricsSnapshot() {
+  lastMetricsEmitAt = Date.now();
   if (typeof ctx.sendToServer !== 'function') return;
   ctx.sendToServer({
     type: 'agent_metrics',
     metrics: snapshotAgentMetrics(),
   });
+}
+
+export function sendAgentMetricsSnapshot() {
+  if (pendingMetricsEmit) {
+    clearTimeout(pendingMetricsEmit);
+    pendingMetricsEmit = null;
+  }
+  emitAgentMetricsSnapshot();
 }

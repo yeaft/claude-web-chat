@@ -47,17 +47,33 @@ describe('agent metrics', () => {
     });
   });
 
-  it('emits a coalesced snapshot after updates', () => {
+  it('emits a throttled coalesced snapshot after updates', () => {
     metrics.recordAgentTurn('yeaft');
     metrics.recordAgentTokenUsage({ totalTokens: 42 });
 
     expect(ctx.sendToServer).not.toHaveBeenCalled();
-    vi.runOnlyPendingTimers();
+    vi.advanceTimersByTime(metrics.AGENT_METRICS_EMIT_INTERVAL_MS - 1);
+    expect(ctx.sendToServer).not.toHaveBeenCalled();
 
+    vi.advanceTimersByTime(1);
     expect(ctx.sendToServer).toHaveBeenCalledTimes(1);
     expect(ctx.sendToServer).toHaveBeenCalledWith({
       type: 'agent_metrics',
       metrics: expect.objectContaining({ yeaftTurns: 1, totalTokens: 42 }),
     });
+  });
+
+  it('flushes a snapshot immediately when explicitly requested', () => {
+    metrics.recordAgentTokenUsage({ totalTokens: 7 });
+
+    metrics.sendAgentMetricsSnapshot();
+
+    expect(ctx.sendToServer).toHaveBeenCalledTimes(1);
+    expect(ctx.sendToServer).toHaveBeenCalledWith({
+      type: 'agent_metrics',
+      metrics: expect.objectContaining({ totalTokens: 7 }),
+    });
+    vi.runOnlyPendingTimers();
+    expect(ctx.sendToServer).toHaveBeenCalledTimes(1);
   });
 });

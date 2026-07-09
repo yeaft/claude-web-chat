@@ -35,6 +35,23 @@ function normalizeAgentMetrics(metrics = {}) {
   };
 }
 
+async function forwardAgentMetrics(agentId, agent) {
+  const payload = {
+    type: 'agent_metrics',
+    agentId,
+    metrics: agent.metrics,
+    metricsUpdatedAt: agent.metricsUpdatedAt || null,
+  };
+  for (const [, client] of webClients) {
+    if (client.authenticated && (CONFIG.skipAuth ||
+      (agent.ownerId && client.userId === agent.ownerId) ||
+      (!agent.ownerId && client.role === 'admin')
+    )) {
+      await sendToWebClient(client, payload);
+    }
+  }
+}
+
 /**
  * Handle sync, proxy, and agent control messages from agent.
  * Types: agent_sync_complete, sync_sessions, agent_metrics,
@@ -59,7 +76,7 @@ export async function handleAgentSync(agentId, agent, msg) {
     case 'agent_metrics': {
       agent.metrics = normalizeAgentMetrics(msg.metrics || {});
       agent.metricsUpdatedAt = Date.now();
-      await broadcastAgentList();
+      await forwardAgentMetrics(agentId, agent);
       break;
     }
 
