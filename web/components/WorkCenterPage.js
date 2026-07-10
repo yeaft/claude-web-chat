@@ -138,7 +138,7 @@ export default {
           @open="openAgent"
         />
         <div v-if="!store.sidebarCollapsed" class="work-center-sidebar-actions">
-          <button class="btn-primary" type="button" @click="createOpen = true">
+          <button class="btn-primary" type="button" @click="createOpen = true" :disabled="onlineAgents.length === 0">
             {{ tr('workCenter.newWorkItem', 'New work item') }}
           </button>
           <button class="btn-ghost" type="button" @click="store.leaveWorkCenter()">
@@ -158,9 +158,14 @@ export default {
             <h1>{{ tr('workCenter.title', 'Work Center') }}</h1>
             <p>{{ tr('workCenter.subtitle', 'Persistent work owned by this Agent') }}</p>
           </div>
-          <button class="btn-secondary" type="button" @click="refresh" :disabled="loading">
-            {{ tr('workCenter.refresh', 'Refresh') }}
-          </button>
+          <div class="work-center-header-actions">
+            <button class="btn-secondary" type="button" @click="refresh" :disabled="loading">
+              {{ tr('workCenter.refresh', 'Refresh') }}
+            </button>
+            <button class="btn-primary" type="button" @click="createOpen = true" :disabled="onlineAgents.length === 0">
+              {{ tr('workCenter.newWorkItem', 'New work item') }}
+            </button>
+          </div>
         </header>
 
         <div class="work-center-toolbar">
@@ -172,23 +177,30 @@ export default {
           </select>
         </div>
 
+        <p v-if="onlineAgents.length === 0" class="work-center-notice">
+          {{ tr('workCenter.noOnlineAgents', 'No online agents') }}
+        </p>
         <p v-if="error" class="work-center-error">{{ error }}</p>
         <div class="work-center-body">
           <section class="work-center-list" :aria-busy="loading ? 'true' : 'false'">
             <button v-for="item in visibleItems" :key="item.id" type="button"
                     class="work-center-card" :class="{ active: selectedId === item.id }"
+                    :aria-label="item.title || tr('workCenter.workItem', 'Work item')"
                     @click="selectItem(item)">
-              <span class="work-center-card-title">{{ item.title }}</span>
-              <span class="work-center-card-meta">
+              <span class="work-center-card-row">
+                <span class="work-center-card-title">{{ item.title }}</span>
                 <span class="work-center-status" :data-status="item.status">{{ statusLabel(item.status) }}</span>
-                <span>{{ time(item.updatedAt) }}</span>
+              </span>
+              <span class="work-center-card-meta">
+                <span>{{ time(item.updatedAt) || tr('workCenter.noTimestamp', 'No timestamp') }}</span>
               </span>
               <span class="work-center-card-goal">{{ item.goal }}</span>
             </button>
+            <div v-if="loading" class="work-center-loading">{{ tr('workCenter.loading', 'Loading work items…') }}</div>
             <div v-if="!loading && visibleItems.length === 0" class="work-center-empty-state">
               <h2>{{ tr('workCenter.emptyTitle', 'No work items yet') }}</h2>
               <p>{{ tr('workCenter.emptyBody', 'Create a persistent task when work must continue beyond one conversation turn.') }}</p>
-              <button class="btn-primary" type="button" @click="createOpen = true">
+              <button class="btn-primary" type="button" @click="createOpen = true" :disabled="onlineAgents.length === 0">
                 {{ tr('workCenter.newWorkItem', 'New work item') }}
               </button>
             </div>
@@ -202,6 +214,9 @@ export default {
                   <h2>{{ selected.title }}</h2>
                 </div>
                 <div class="work-center-detail-actions">
+                  <button v-if="selected.status === 'cancelled'" class="btn-primary" type="button" @click="retrySelected">
+                    {{ tr('workCenter.retry', 'Retry') }}
+                  </button>
                   <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">
                     {{ tr('workCenter.start', 'Start') }}
                   </button>
@@ -213,6 +228,11 @@ export default {
                   </button>
                 </div>
               </div>
+              <dl class="work-center-detail-meta">
+                <div><dt>{{ tr('workCenter.updated', 'Updated') }}</dt><dd>{{ time(selected.updatedAt) || '—' }}</dd></div>
+                <div v-if="selected.workDir"><dt>{{ tr('workCenter.workDir', 'Working directory') }}</dt><dd>{{ selected.workDir }}</dd></div>
+                <div v-if="selected.workflowTemplate"><dt>{{ tr('workCenter.workflow', 'Workflow') }}</dt><dd>{{ selected.workflowTemplate }}</dd></div>
+              </dl>
 
               <div class="work-center-section">
                 <h3>{{ tr('workCenter.goal', 'Goal') }}</h3>
@@ -229,8 +249,11 @@ export default {
                 <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
                 <ol class="work-center-timeline">
                   <li v-for="action in selected.actions" :key="action.id" :data-status="action.status">
-                    <span>{{ actionLabel(action.type) }}</span>
-                    <small>{{ agentName(action.requiredRole) }} · {{ statusLabel(action.status) }}</small>
+                    <span class="work-center-timeline-main">{{ actionLabel(action.type) }}</span>
+                    <small>
+                      <span>{{ agentName(action.requiredRole) }}</span>
+                      <span class="work-center-status" :data-status="action.status">{{ statusLabel(action.status) }}</span>
+                    </small>
                   </li>
                 </ol>
               </div>

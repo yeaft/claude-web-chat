@@ -31,6 +31,9 @@ describe('Work Center UI contract', () => {
     expect(css).not.toMatch(/rgba?\(/i);
     expect(css).toContain('var(--bg-main)');
     expect(css).toContain('var(--text-primary)');
+    expect(css).toContain('var(--bg-sidebar)');
+    expect(css).toContain('var(--sidebar-hover)');
+    expect(css).toContain('var(--session-active)');
     expect(css).not.toContain('border-bottom');
     expect(css).not.toContain('border-top');
   });
@@ -41,8 +44,14 @@ describe('Work Center UI contract', () => {
     const keys = [
       'workCenter.title',
       'workCenter.newWorkItem',
+      'workCenter.noOnlineAgents',
+      'workCenter.workItem',
+      'workCenter.noTimestamp',
+      'workCenter.loading',
+      'workCenter.updated',
       'workCenter.status.needs_attention',
       'workCenter.action.review',
+      'workCenter.retry',
     ];
     for (const key of keys) {
       expect(en).toContain(`'${key}'`);
