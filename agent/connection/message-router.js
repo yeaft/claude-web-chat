@@ -30,7 +30,34 @@ import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, g
 import { discoverLlmModels } from '../llm-model-discovery.js';
 import { fetchModelsDev } from '../yeaft/llm/models-dev.js';
 import { handleYeaftSessionSend, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, handleYeaftLoadHistory, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
-import { startYeaftStatusRefresh, refreshYeaftStatus } from '../yeaft/status-cache.js';
+import { startYeaftStatusRefresh, forceRefreshYeaftStatus } from '../yeaft/status-cache.js';
+
+export async function applyLlmConfigUpdate(msg, dependencies = {}) {
+  const updateConfig = dependencies.updateLlmConfig || updateLlmConfig;
+  const broadcastLanguage = dependencies.broadcastLanguageChange || broadcastLanguageChange;
+  const forceStatusRefresh = dependencies.forceRefreshYeaftStatus || forceRefreshYeaftStatus;
+  const send = dependencies.sendToServer || sendToServer;
+  const yeaftDir = dependencies.yeaftDir ?? ctx.CONFIG?.yeaftDir;
+  const incomingLanguage = typeof msg.config?.language === 'string' && msg.config.language
+    ? msg.config.language
+    : null;
+  const result = updateConfig(msg.config || {}, yeaftDir);
+  if (!result.error && incomingLanguage) broadcastLanguage(result.language);
+
+  let statusRefreshError = null;
+  if (!result.error) {
+    try {
+      const statusEvent = await forceStatusRefresh({ reason: 'llm_config_updated' });
+      statusRefreshError = statusEvent?.refreshError || null;
+    } catch (err) {
+      statusRefreshError = err?.message || String(err);
+    }
+  }
+
+  const response = { type: 'llm_config_updated', ...result, statusRefreshError };
+  send(response);
+  return response;
+}
 
 export async function handleMessage(msg) {
   switch (msg.type) {
@@ -326,32 +353,10 @@ export async function handleMessage(msg) {
     }
 
     case 'update_llm_config': {
-      // Capture the user's intent BEFORE updateLlmConfig — the return
-      // envelope ALWAYS populates `language` (falls back to 'en'), so
-      // gating on the *output* would broadcast on every provider /
-      // primaryModel / fastModel save, not just locale flips. Gate on
-      // the *input* `language` field instead.
-      const incomingLanguage = typeof msg.config?.language === 'string' && msg.config.language
-        ? msg.config.language
-        : null;
-      const result = updateLlmConfig(msg.config || {}, ctx.CONFIG?.yeaftDir);
-      // task-708: live locale propagation. When the user flips the UI
-      // language dropdown, push the new value into every cached Engine
-      // (per-VP pool + 1:1 chat session.engine) so the very next turn
-      // renders the system prompt in the chosen language without the
-      // user reloading the session.
-      if (!result.error && incomingLanguage) {
-        broadcastLanguageChange(result.language);
-      }
-      if (!result.error) {
-        refreshYeaftStatus({ reason: 'llm_config_updated' }).catch(() => {});
-        if (!incomingLanguage) {
-          resetYeaftSession().catch(err => {
-            console.error('[LLM] Failed to reload Yeaft session after local config update:', err.message);
-          });
-        }
-      }
-      sendToServer({ type: 'llm_config_updated', ...result });
+      // Saving the file and refreshing the model menu are separate outcomes.
+      // Always acknowledge the completed write; the frontend owns the single
+      // runtime reset it dispatches after a successful save.
+      await applyLlmConfigUpdate(msg);
       break;
     }
 
