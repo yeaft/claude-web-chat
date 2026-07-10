@@ -26,7 +26,7 @@ export default {
     agentId() { return this.store.workCenterAgentId || this.store.currentAgent; },
     agents() { return this.store.agents || []; },
     onlineAgents() { return this.agents.filter(agent => agent?.online); },
-    agent() { return this.agents.find(agent => agent.id === this.agentId) || null; },
+    watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
     items() { return this.store.workCenterItemsByAgent[this.agentId] || []; },
     loading() { return !!this.store.workCenterLoadingByAgent[this.agentId]; },
     error() { return this.store.workCenterErrorByAgent[this.agentId] || null; },
@@ -142,163 +142,204 @@ export default {
   },
   template: `
     <div class="work-center-page">
+      <div class="sidebar-overlay work-center-sidebar-overlay" v-if="!store.sidebarCollapsed" @click="store.toggleSidebar()"></div>
       <aside class="sidebar work-center-sidebar" :class="{ collapsed: store.sidebarCollapsed }">
-        <div v-if="!store.sidebarCollapsed" class="sidebar-top">
+        <div v-if="store.sidebarCollapsed" class="sidebar-collapsed-bar">
+          <button class="collapsed-icon-btn" type="button" @click="store.toggleSidebar()" :title="tr('sidebar.expand', 'Expand sidebar')">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 18h18v-2H3v2Zm0-5h18v-2H3v2Zm0-7v2h18V6H3Z"/></svg>
+          </button>
+          <button class="collapsed-icon-btn active" type="button" :title="tr('workCenter.title', 'Work Center')">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 3h-3.18A3 3 0 0 0 13 1h-2a3 3 0 0 0-2.82 2H5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-8-1h2a1 1 0 0 1 1 1h-4a1 1 0 0 1 1-1Zm8 18H5V5h2v2h10V5h2v15Z"/></svg>
+          </button>
+          <div class="collapsed-spacer"></div>
+          <button class="collapsed-icon-btn" type="button" @click="store.leaveWorkCenter()" :title="tr('workCenter.backToChat', 'Back to chat')">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.42-1.41L7.83 13H20v-2Z"/></svg>
+          </button>
+        </div>
+        <div v-else class="sidebar-top">
           <div class="sidebar-header-row">
             <SidebarAgentHeader
               :online-agents="onlineAgents"
               :online-agent-count="onlineAgents.length"
               :show-agent-actions="false"
             />
+            <div class="sidebar-header-actions">
+              <button class="sidebar-icon-btn" type="button" @click="store.toggleSidebar()" :title="tr('sidebar.collapse', 'Collapse sidebar')">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 18h13v-2H3v2Zm0-5h10v-2H3v2Zm0-7v2h13V6H3Zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59Z"/></svg>
+              </button>
+            </div>
           </div>
         </div>
         <SidebarWorkCenter
+          v-if="!store.sidebarCollapsed"
           :agents="agents"
           :active-agent-id="agentId"
-          :collapsed="store.sidebarCollapsed"
+          :collapsed="false"
+          :active="true"
+          :default-expanded="true"
           @open="openAgent"
         />
         <div v-if="!store.sidebarCollapsed" class="work-center-sidebar-actions">
-          <button class="btn-primary" type="button" @click="createOpen = true">
-            {{ tr('workCenter.newWorkItem', 'New work item') }}
-          </button>
-          <button class="btn-ghost" type="button" @click="store.leaveWorkCenter()">
+          <button class="work-center-back-button" type="button" @click="store.leaveWorkCenter()">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.42-1.41L7.83 13H20v-2Z"/></svg>
             {{ tr('workCenter.backToChat', 'Back to chat') }}
           </button>
         </div>
-        <button class="sidebar-collapse-btn" type="button" @click="store.toggleSidebar()"
-                :aria-label="store.sidebarCollapsed ? tr('sidebar.expand', 'Expand sidebar') : tr('sidebar.collapse', 'Collapse sidebar')">
-          {{ store.sidebarCollapsed ? '›' : '‹' }}
-        </button>
       </aside>
 
       <main class="work-center-main">
-        <header class="work-center-header">
-          <div>
-            <p class="work-center-eyebrow">{{ agentName(agentId) }}</p>
-            <h1>{{ tr('workCenter.title', 'Work Center') }}</h1>
-            <p>{{ tr('workCenter.subtitle', 'Persistent work owned by this Agent') }}</p>
-          </div>
-          <button class="btn-secondary" type="button" @click="refresh" :disabled="loading">
-            {{ tr('workCenter.refresh', 'Refresh') }}
-          </button>
-        </header>
-
-        <div class="work-center-toolbar">
-          <input v-model="search" type="search" :placeholder="tr('workCenter.search', 'Search work items')">
-          <select v-model="filter" :aria-label="tr('workCenter.filter', 'Filter')">
-            <option value="open">{{ tr('workCenter.filterOpen', 'Open') }}</option>
-            <option value="all">{{ tr('workCenter.filterAll', 'All') }}</option>
-            <option value="done">{{ tr('workCenter.filterDone', 'Done') }}</option>
-          </select>
-        </div>
-
-        <p v-if="error" class="work-center-error">{{ error }}</p>
-        <div class="work-center-body">
-          <section class="work-center-list" :aria-busy="loading ? 'true' : 'false'">
-            <button v-for="item in visibleItems" :key="item.id" type="button"
-                    class="work-center-card" :class="{ active: selectedId === item.id }"
-                    @click="selectItem(item)">
-              <span class="work-center-card-title">{{ item.title }}</span>
-              <span class="work-center-card-meta">
-                <span class="work-center-status" :data-status="item.status">{{ statusLabel(item.status) }}</span>
-                <span>{{ time(item.updatedAt) }}</span>
+        <div class="work-center-shell">
+          <header class="work-center-header">
+            <div>
+              <p class="work-center-eyebrow">
+                <span class="work-center-agent-dot" aria-hidden="true"></span>
+                {{ agentName(agentId) }}
+              </p>
+              <h1>{{ tr('workCenter.title', 'Work Center') }}</h1>
+              <p>{{ tr('workCenter.subtitle', 'Persistent work owned by this Agent') }}</p>
+            </div>
+            <div class="work-center-header-actions">
+              <span v-if="watcher && watcher.enabled" class="work-center-watcher active">
+                <span aria-hidden="true"></span>{{ tr('workCenter.watcherActive', 'Watcher active') }}
               </span>
-              <span class="work-center-card-goal">{{ item.goal }}</span>
-            </button>
-            <div v-if="!loading && visibleItems.length === 0" class="work-center-empty-state">
-              <h2>{{ tr('workCenter.emptyTitle', 'No work items yet') }}</h2>
-              <p>{{ tr('workCenter.emptyBody', 'Create a persistent task when work must continue beyond one conversation turn.') }}</p>
-              <button class="btn-primary" type="button" @click="createOpen = true">
+              <button class="work-center-icon-button" type="button" @click="refresh" :disabled="loading"
+                      :title="tr('workCenter.refresh', 'Refresh')" :aria-label="tr('workCenter.refresh', 'Refresh')">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 16.22 7.78L13 11h7V4l-2.35 2.35Z"/></svg>
+              </button>
+              <button class="btn-primary work-center-header-create" type="button" @click="createOpen = true">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
                 {{ tr('workCenter.newWorkItem', 'New work item') }}
               </button>
             </div>
-          </section>
+          </header>
 
-          <section class="work-center-detail">
-            <template v-if="selected">
-              <div class="work-center-detail-heading">
-                <div>
-                  <span class="work-center-status" :data-status="selected.status">{{ statusLabel(selected.status) }}</span>
-                  <h2>{{ selected.title }}</h2>
-                </div>
-                <div class="work-center-detail-actions">
-                  <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">
-                    {{ tr('workCenter.start', 'Start') }}
-                  </button>
-                  <button v-if="selected.status === 'waiting' || selected.status === 'needs_attention'" class="btn-primary" type="button" @click="retrySelected" :disabled="selected.status === 'waiting' && !resumeAnswer.trim()">
-                    {{ tr('workCenter.retry', 'Retry') }}
-                  </button>
-                  <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">
-                    {{ tr('workCenter.cancel', 'Cancel') }}
-                  </button>
-                </div>
-              </div>
+          <div class="work-center-toolbar">
+            <label class="work-center-search">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M9.5 3a6.5 6.5 0 1 0 4.02 11.61L19.91 21 21 19.91l-6.39-6.39A6.5 6.5 0 0 0 9.5 3Zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z"/></svg>
+              <input v-model="search" type="search" :placeholder="tr('workCenter.search', 'Search work items')">
+            </label>
+            <div class="work-center-filter" role="group" :aria-label="tr('workCenter.filter', 'Filter')">
+              <button type="button" :class="{ active: filter === 'open' }" @click="filter = 'open'">{{ tr('workCenter.filterOpen', 'Open') }}</button>
+              <button type="button" :class="{ active: filter === 'all' }" @click="filter = 'all'">{{ tr('workCenter.filterAll', 'All') }}</button>
+              <button type="button" :class="{ active: filter === 'done' }" @click="filter = 'done'">{{ tr('workCenter.filterDone', 'Done') }}</button>
+            </div>
+          </div>
 
-              <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
-                <label>
-                  {{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}
-                  <textarea v-model="resumeAnswer" rows="3" :placeholder="tr('workCenter.resumeAnswerHint', 'Provide the information required to continue')"></textarea>
-                </label>
+          <p v-if="error" class="work-center-error">{{ error }}</p>
+          <div class="work-center-body" :class="{ 'is-empty': !loading && visibleItems.length === 0 }">
+            <section class="work-center-list" :aria-busy="loading ? 'true' : 'false'">
+              <div v-if="visibleItems.length > 0" class="work-center-list-heading">
+                <span>{{ filter === 'done' ? tr('workCenter.completedItems', 'Completed') : tr('workCenter.activeItems', 'Active work') }}</span>
+                <small>{{ visibleItems.length }}</small>
               </div>
+              <button v-for="item in visibleItems" :key="item.id" type="button"
+                      class="work-center-card" :class="{ active: selectedId === item.id }"
+                      @click="selectItem(item)">
+                <span class="work-center-card-topline">
+                  <span class="work-center-card-title">{{ item.title }}</span>
+                  <span class="work-center-status" :data-status="item.status"><span aria-hidden="true"></span>{{ statusLabel(item.status) }}</span>
+                </span>
+                <span class="work-center-card-goal">{{ item.goal }}</span>
+                <span class="work-center-card-meta">
+                  <span v-if="item.currentAction">{{ actionLabel(item.currentAction.type) }} · {{ item.currentAction.requiredRole }}</span>
+                  <span>{{ time(item.updatedAt) }}</span>
+                </span>
+              </button>
+              <div v-if="!loading && visibleItems.length === 0" class="work-center-empty-state">
+                <span class="work-center-empty-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M19 3h-3.18A3 3 0 0 0 13 1h-2a3 3 0 0 0-2.82 2H5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-8-1h2a1 1 0 0 1 1 1h-4a1 1 0 0 1 1-1Zm8 18H5V5h2v2h10V5h2v15Z"/></svg>
+                </span>
+                <h2>{{ search ? tr('workCenter.noMatchesTitle', 'No matching work items') : tr('workCenter.emptyTitle', 'No work items yet') }}</h2>
+                <p>{{ search ? tr('workCenter.noMatchesBody', 'Try a different search or filter.') : tr('workCenter.emptyBody', 'Create a persistent task when work must continue beyond one conversation turn.') }}</p>
+                <button v-if="!search" class="btn-primary" type="button" @click="createOpen = true">
+                  {{ tr('workCenter.newWorkItem', 'New work item') }}
+                </button>
+              </div>
+            </section>
 
-              <div class="work-center-section">
-                <h3>{{ tr('workCenter.goal', 'Goal') }}</h3>
-                <p>{{ selected.goal }}</p>
-              </div>
-              <div class="work-center-section">
-                <h3>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}</h3>
-                <ul v-if="selected.acceptanceCriteria?.length">
-                  <li v-for="criterion in selected.acceptanceCriteria" :key="criterion">{{ criterion }}</li>
-                </ul>
-                <p v-else class="work-center-muted">{{ tr('workCenter.noCriteria', 'No criteria provided') }}</p>
-              </div>
-              <div class="work-center-section" v-if="selected.actions?.length">
-                <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
-                <ol class="work-center-timeline">
-                  <li v-for="action in selected.actions" :key="action.id" :data-status="action.status">
-                    <span>{{ actionLabel(action.type) }}</span>
-                    <small>{{ agentName(action.requiredRole) }} · {{ statusLabel(action.status) }}</small>
-                  </li>
-                </ol>
-              </div>
-              <div class="work-center-section" v-if="selected.runs?.length">
-                <h3>{{ tr('workCenter.runs', 'Runs and evidence') }}</h3>
-                <article v-for="run in selected.runs" :key="run.id" class="work-center-run">
-                  <div class="work-center-run-heading">
-                    <strong>{{ actionLabel(selected.actions?.find(action => action.id === run.actionId)?.type) }}</strong>
-                    <span class="work-center-status" :data-status="run.status">{{ statusLabel(run.status) }}</span>
+            <section class="work-center-detail">
+              <template v-if="selected">
+                <div class="work-center-detail-heading">
+                  <div>
+                    <span class="work-center-status" :data-status="selected.status"><span aria-hidden="true"></span>{{ statusLabel(selected.status) }}</span>
+                    <h2>{{ selected.title }}</h2>
                   </div>
-                  <small>
-                    {{ run.vpSnapshot?.name || run.roleSnapshot?.id || tr('workCenter.unknownRole', 'Unknown role') }}
-                    <template v-if="run.modelSnapshot?.id"> · {{ run.modelSnapshot.id }}</template>
-                    · {{ time(run.startedAt) }}
-                  </small>
-                  <p v-if="run.summary">{{ run.summary }}</p>
-                  <p v-if="run.waitingReason" class="work-center-run-reason"><strong>{{ tr('workCenter.waitingReason', 'Waiting:') }}</strong> {{ run.waitingReason }}</p>
-                  <p v-if="run.error" class="work-center-error">{{ run.error }}</p>
-                  <ul v-if="run.evidence?.length" class="work-center-evidence">
-                    <li v-for="(evidence, index) in run.evidence" :key="run.id + ':' + index">
-                      <span>{{ evidence.label }}</span>
-                      <small v-if="evidence.status"> · {{ statusLabel(evidence.status) }}</small>
-                      <code v-if="evidence.ref">{{ evidence.ref }}</code>
+                  <div class="work-center-detail-actions">
+                    <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
+                    <button v-if="selected.status === 'waiting' || selected.status === 'needs_attention'" class="btn-primary" type="button" @click="retrySelected" :disabled="selected.status === 'waiting' && !resumeAnswer.trim()">{{ tr('workCenter.retry', 'Retry') }}</button>
+                    <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancel', 'Cancel') }}</button>
+                  </div>
+                </div>
+
+                <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
+                  <label>{{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}
+                    <textarea v-model="resumeAnswer" rows="3" :placeholder="tr('workCenter.resumeAnswerHint', 'Provide the information required to continue')"></textarea>
+                  </label>
+                </div>
+
+                <div class="work-center-section">
+                  <h3>{{ tr('workCenter.goal', 'Goal') }}</h3>
+                  <p>{{ selected.goal }}</p>
+                </div>
+                <div class="work-center-section">
+                  <h3>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}</h3>
+                  <ul v-if="selected.acceptanceCriteria?.length">
+                    <li v-for="criterion in selected.acceptanceCriteria" :key="criterion">{{ criterion }}</li>
+                  </ul>
+                  <p v-else class="work-center-muted">{{ tr('workCenter.noCriteria', 'No criteria provided') }}</p>
+                </div>
+                <div class="work-center-section" v-if="selected.actions?.length">
+                  <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
+                  <ol class="work-center-timeline">
+                    <li v-for="action in selected.actions" :key="action.id" :data-status="action.status">
+                      <span class="work-center-timeline-marker" aria-hidden="true"></span>
+                      <span>{{ actionLabel(action.type) }}</span>
+                      <small>{{ action.requiredRole }} · {{ statusLabel(action.status) }}</small>
+                    </li>
+                  </ol>
+                </div>
+                <div class="work-center-section" v-if="selected.runs?.length">
+                  <h3>{{ tr('workCenter.runs', 'Runs and evidence') }}</h3>
+                  <article v-for="run in selected.runs" :key="run.id" class="work-center-run">
+                    <div class="work-center-run-heading">
+                      <strong>{{ actionLabel(selected.actions?.find(action => action.id === run.actionId)?.type) }}</strong>
+                      <span class="work-center-status" :data-status="run.status"><span aria-hidden="true"></span>{{ statusLabel(run.status) }}</span>
+                    </div>
+                    <small>
+                      {{ run.vpSnapshot?.name || run.roleSnapshot?.id || tr('workCenter.unknownRole', 'Unknown role') }}
+                      <template v-if="run.modelSnapshot?.id"> · {{ run.modelSnapshot.id }}</template>
+                      · {{ time(run.startedAt) }}
+                    </small>
+                    <p v-if="run.summary">{{ run.summary }}</p>
+                    <p v-if="run.waitingReason" class="work-center-run-reason"><strong>{{ tr('workCenter.waitingReason', 'Waiting:') }}</strong> {{ run.waitingReason }}</p>
+                    <p v-if="run.error" class="work-center-error">{{ run.error }}</p>
+                    <ul v-if="run.evidence?.length" class="work-center-evidence">
+                      <li v-for="(evidence, index) in run.evidence" :key="run.id + ':' + index">
+                        <span>{{ evidence.label }}</span>
+                        <small v-if="evidence.status"> · {{ statusLabel(evidence.status) }}</small>
+                        <code v-if="evidence.ref">{{ evidence.ref }}</code>
+                      </li>
+                    </ul>
+                  </article>
+                </div>
+                <div class="work-center-section" v-if="selected.events?.length">
+                  <h3>{{ tr('workCenter.activity', 'Activity') }}</h3>
+                  <ul class="work-center-events">
+                    <li v-for="event in selected.events" :key="event.id">
+                      <span>{{ event.type }}</span><small>{{ time(event.createdAt) }}</small>
                     </li>
                   </ul>
-                </article>
+                </div>
+              </template>
+              <div v-else class="work-center-detail-empty">
+                <span class="work-center-detail-empty-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M6 2h9l5 5v15H6V2Zm8 2H8v16h10V8h-4V4Zm1.5 10H10v-2h5.5v2Zm0 4H10v-2h5.5v2Z"/></svg>
+                </span>
+                <strong>{{ tr('workCenter.selectTitle', 'Work item details') }}</strong>
+                <span>{{ tr('workCenter.selectPrompt', 'Select a work item to inspect its workflow and evidence.') }}</span>
               </div>
-              <div class="work-center-section" v-if="selected.events?.length">
-                <h3>{{ tr('workCenter.activity', 'Activity') }}</h3>
-                <ul class="work-center-events">
-                  <li v-for="event in selected.events" :key="event.id">
-                    <span>{{ event.type }}</span><small>{{ time(event.createdAt) }}</small>
-                  </li>
-                </ul>
-              </div>
-            </template>
-            <div v-else class="work-center-detail-empty">
-              {{ tr('workCenter.selectPrompt', 'Select a work item to inspect its workflow and evidence.') }}
-            </div>
-          </section>
+            </section>
+          </div>
         </div>
       </main>
 

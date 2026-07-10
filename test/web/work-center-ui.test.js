@@ -38,12 +38,30 @@ describe('Work Center UI contract', () => {
     expect(workCenter).toContain('run.evidence');
   });
 
+  it('uses inline SVG icons and a bounded list-detail workspace', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    const sidebar = read('web/components/SidebarWorkCenter.js');
+    const css = read('web/styles/work-center.css');
+
+    expect(page).toContain('class="work-center-shell"');
+    expect(page).toContain('class="work-center-filter"');
+    expect(page).toContain("'is-empty': !loading && visibleItems.length === 0");
+    expect(sidebar).toContain('<svg class="sidebar-work-center-icon"');
+    expect(sidebar).not.toContain('Symbols Nerd Font');
+    expect(sidebar).not.toContain('󰄲');
+    expect(css).toContain('width: min(100%, 1320px)');
+    expect(css).toContain('grid-template-columns: minmax(300px, 390px)');
+    expect(css).toContain('.work-center-body.is-empty .work-center-detail');
+    expect(css).toContain('.work-center-body.is-empty .work-center-list');
+  });
+
   it('uses existing design tokens and adds no hard-coded colors', () => {
     const css = read('web/styles/work-center.css');
     expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(css).not.toMatch(/rgba?\(/i);
     expect(css).toContain('var(--bg-main)');
     expect(css).toContain('var(--text-primary)');
+    expect(css).toContain('var(--modal-overlay-bg)');
     expect(css).not.toContain('border-bottom');
     expect(css).not.toContain('border-top');
   });
@@ -54,6 +72,9 @@ describe('Work Center UI contract', () => {
     const keys = [
       'workCenter.title',
       'workCenter.newWorkItem',
+      'workCenter.activeItems',
+      'workCenter.noMatchesTitle',
+      'workCenter.selectTitle',
       'workCenter.status.needs_attention',
       'workCenter.action.review',
     ];
