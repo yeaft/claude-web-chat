@@ -8,6 +8,7 @@ const os = require('os');
 const PKG = process.argv[2];
 const TARGET = process.argv[3];
 const LOGFILE = process.argv[4];
+const REGISTRY = process.argv[5];
 
 function log(msg) {
   const line = '[Upgrade-Worker] ' + msg;
@@ -75,7 +76,13 @@ try {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yeaft-upgrade-'));
   log('Temp dir: ' + tmpDir);
 
-  const packOutput = execFileSync('npm', ['pack', PKG, '--pack-destination', tmpDir], {
+  const packOutput = execFileSync('npm', [
+    'pack',
+    PKG,
+    '--pack-destination',
+    tmpDir,
+    `--registry=${REGISTRY}`,
+  ], {
     shell: process.platform === 'win32', encoding: 'utf8', cwd: tmpDir, timeout: 120000
   }).trim();
   const tgzName = packOutput.split('\n').pop().trim();
