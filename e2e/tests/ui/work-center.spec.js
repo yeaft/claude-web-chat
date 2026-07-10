@@ -60,7 +60,7 @@ test.describe('Work Center responsive UI', () => {
   test('keeps sidebar and content inside tablet and compact desktop viewports', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
 
-    for (const width of [768, 961, 1024]) {
+    for (const width of [768, 960, 961, 1024]) {
       await chatPage.setViewportSize({ width, height: 900 });
       await chatPage.waitForTimeout(350);
       const metrics = await layoutMetrics(chatPage);
@@ -78,7 +78,7 @@ test.describe('Work Center responsive UI', () => {
     await chatPage.setViewportSize({ width: 720, height: 900 });
     await chatPage.waitForTimeout(350);
 
-    await chatPage.locator('.sidebar-header-actions .sidebar-icon-btn').click();
+    await chatPage.locator('.sidebar-header-actions .sidebar-icon-btn[title="Collapse sidebar"]').click();
     await expect(chatPage.locator('.work-center-sidebar')).toHaveClass(/collapsed/);
 
     const create = chatPage.locator('.work-center-header-create');
@@ -93,7 +93,7 @@ test.describe('Work Center responsive UI', () => {
 
     await chatPage.getByRole('button', { name: 'Done', exact: true }).click();
     await expect(chatPage.getByRole('heading', { name: 'No completed work items' })).toBeVisible();
-    await expect(chatPage.locator('.work-center-empty-state .btn-primary')).toHaveCount(0);
+    await expect(chatPage.locator('.work-center-empty-state button')).toHaveCount(0);
 
     await chatPage.getByRole('button', { name: 'All', exact: true }).click();
     await expect(chatPage.locator('.work-center-list-heading')).toContainText('All work items');

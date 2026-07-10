@@ -22,6 +22,8 @@ describe('Work Center UI contract', () => {
     expect(store).toContain('workCenterItemsByAgent');
     expect(store).toContain('workCenterDetailByAgent');
     expect(store).toContain("type: 'work_center_request'");
+    expect(store).toContain("workCenterReturnView: 'chat'");
+    expect(store).toContain("this.workCenterReturnView = this.currentView === 'yeaft' ? 'yeaft' : 'chat'");
     expect(store).not.toContain('workCenterActiveTasksBySession');
   });
 
@@ -38,21 +40,39 @@ describe('Work Center UI contract', () => {
     expect(workCenter).toContain('run.evidence');
   });
 
-  it('uses inline SVG icons and a bounded list-detail workspace', () => {
+  it('reuses Session sidebar primitives for the Work Center Agent list', () => {
+    const chat = read('web/components/ChatPage.js');
     const page = read('web/components/WorkCenterPage.js');
     const sidebar = read('web/components/SidebarWorkCenter.js');
     const css = read('web/styles/work-center.css');
 
-    expect(page).toContain('class="work-center-shell"');
-    expect(page).toContain('class="work-center-filter"');
-    expect(page).toContain("'is-empty': !loading && visibleItems.length === 0");
-    expect(sidebar).toContain('<svg class="sidebar-work-center-icon"');
-    expect(sidebar).not.toContain('Symbols Nerd Font');
-    expect(sidebar).not.toContain('󰄲');
-    expect(css).toContain('width: min(100%, 1320px)');
-    expect(css).toContain('grid-template-columns: minmax(300px, 390px)');
+    expect(sidebar).toContain('session-tab-bar sidebar-work-center-tab-bar');
+    expect(sidebar).toContain('session-tab session-tab-solo sidebar-work-center-trigger');
+    expect(sidebar).toContain('session-panel-list sidebar-work-center-agent-list');
+    expect(sidebar).toContain('session-item sidebar-work-center-agent');
+    expect(sidebar).toContain('session-item-header');
+    expect(css).toContain('Work Center uses the same tab and row primitives as the Session list');
+    expect(page).toContain('sidebar-nav-item work-center-back-button');
+    expect(page).toContain('<SidebarModeToggle :view="store.workCenterReturnView');
+    expect(page).toContain('<WorkbenchPanel v-if="canUseWorkbench"');
+    expect(chat.indexOf('<SidebarWorkCenter')).toBeGreaterThan(chat.indexOf('<!-- Connection warning -->'));
+  });
+
+  it('uses a compact header and flat empty state instead of a dashboard hero', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    const css = read('web/styles/work-center.css');
+
+    expect(page).toContain('class="work-center-heading"');
+    expect(page).toContain('class="work-center-agent-context"');
+    expect(page).not.toContain('class="work-center-eyebrow"');
+    expect(page).not.toContain('class="work-center-empty-icon"');
+    expect(page).not.toContain('class="work-center-detail-empty-icon"');
+    expect(page).toContain("tr('workCenter.createFirst'");
+    expect(css).toContain('width: min(100%, 1080px)');
+    expect(css).toContain('grid-template-columns: minmax(280px, 340px)');
     expect(css).toContain('.work-center-body.is-empty .work-center-detail');
     expect(css).toContain('.work-center-body.is-empty .work-center-list');
+    expect(css).not.toContain('.work-center-empty-icon');
   });
 
   it('uses existing design tokens and adds no hard-coded colors', () => {
@@ -70,10 +90,11 @@ describe('Work Center UI contract', () => {
     const page = read('web/components/WorkCenterPage.js');
     const css = read('web/styles/work-center.css');
 
-    expect(css).toContain('@media (max-width: 1120px)');
+    expect(css).toContain('@media (max-width: 960px)');
     expect(css).toContain('@media (max-width: 768px)');
     expect(css).not.toContain('@media (max-width: 760px)');
     expect(css).toContain('.work-center-header-create span');
+    expect(css).toContain('flex-direction: column-reverse');
     expect(page).toContain(':aria-label="tr(\'workCenter.newWorkItem\'');
   });
 
@@ -94,7 +115,9 @@ describe('Work Center UI contract', () => {
     const zh = read('web/i18n/zh-CN.js');
     const keys = [
       'workCenter.title',
+      'workCenter.new',
       'workCenter.newWorkItem',
+      'workCenter.createFirst',
       'workCenter.activeItems',
       'workCenter.allItems',
       'workCenter.noOpenTitle',

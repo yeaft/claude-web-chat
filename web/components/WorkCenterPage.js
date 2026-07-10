@@ -1,9 +1,11 @@
 import SidebarAgentHeader from './SidebarAgentHeader.js';
+import SidebarModeToggle from './SidebarModeToggle.js';
 import SidebarWorkCenter from './SidebarWorkCenter.js';
+import WorkbenchPanel from './WorkbenchPanel.js';
 
 export default {
   name: 'WorkCenterPage',
-  components: { SidebarAgentHeader, SidebarWorkCenter },
+  components: { SidebarAgentHeader, SidebarModeToggle, SidebarWorkCenter, WorkbenchPanel },
   data() {
     return {
       selectedId: null,
@@ -26,6 +28,9 @@ export default {
     agentId() { return this.store.workCenterAgentId || this.store.currentAgent; },
     agents() { return this.store.agents || []; },
     onlineAgents() { return this.agents.filter(agent => agent?.online); },
+    canUseWorkbench() {
+      return !!(this.store.hasCapability?.('terminal') || this.store.hasCapability?.('file_editor'));
+    },
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
     items() { return this.store.workCenterItemsByAgent[this.agentId] || []; },
     loading() { return !!this.store.workCenterLoadingByAgent[this.agentId]; },
@@ -122,6 +127,13 @@ export default {
     openAgent(agentId) {
       this.store.enterWorkCenter(agentId);
     },
+    onModeFlip(target) {
+      if (target === 'yeaft') this.store.enterYeaft(this.agentId);
+      else {
+        this.store.workCenterReturnView = 'chat';
+        this.store.leaveWorkCenter();
+      }
+    },
     refresh() {
       return this.store.listWorkItems(this.agentId).catch(() => {});
     },
@@ -185,7 +197,7 @@ export default {
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 3h-3.18A3 3 0 0 0 13 1h-2a3 3 0 0 0-2.82 2H5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-8-1h2a1 1 0 0 1 1 1h-4a1 1 0 0 1 1-1Zm8 18H5V5h2v2h10V5h2v15Z"/></svg>
           </button>
           <div class="collapsed-spacer"></div>
-          <button class="collapsed-icon-btn" type="button" @click="store.leaveWorkCenter()" :title="tr('workCenter.backToChat', 'Back to chat')">
+          <button class="collapsed-icon-btn" type="button" @click="store.leaveWorkCenter()" :title="tr('common.back', 'Back')">
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.42-1.41L7.83 13H20v-2Z"/></svg>
           </button>
         </div>
@@ -197,8 +209,12 @@ export default {
               :show-agent-actions="false"
             />
             <div class="sidebar-header-actions">
+              <SidebarModeToggle :view="store.workCenterReturnView === 'yeaft' ? 'yeaft' : 'chat'" @flip="onModeFlip" />
               <button class="sidebar-icon-btn" type="button" @click="store.toggleSidebar()" :title="tr('sidebar.collapse', 'Collapse sidebar')">
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 18h13v-2H3v2Zm0-5h10v-2H3v2Zm0-7v2h13V6H3Zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59Z"/></svg>
+              </button>
+              <button v-if="canUseWorkbench" class="sidebar-icon-btn" type="button" :class="{ active: store.workbenchExpanded }" @click="store.toggleWorkbench()" :title="tr('chat.sidebar.workbench', 'Workbench')">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2Zm0 16H4V5h16v14ZM6 7h5v2H6V7Zm0 4h5v2H6v-2Zm0 4h5v2H6v-2Zm7-8h5v10h-5V7Z"/></svg>
               </button>
             </div>
           </div>
@@ -212,29 +228,27 @@ export default {
           :default-expanded="true"
           @open="openAgent"
         />
-        <div v-if="!store.sidebarCollapsed" class="work-center-sidebar-actions">
-          <button class="work-center-back-button" type="button" @click="store.leaveWorkCenter()">
+        <div v-if="!store.sidebarCollapsed" class="sidebar-bottom work-center-sidebar-actions">
+          <button class="sidebar-nav-item work-center-back-button" type="button" @click="store.leaveWorkCenter()">
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.42-1.41L7.83 13H20v-2Z"/></svg>
-            {{ tr('workCenter.backToChat', 'Back to chat') }}
+            {{ tr('common.back', 'Back') }}
           </button>
         </div>
       </aside>
 
+      <WorkbenchPanel v-if="canUseWorkbench" />
+
       <main class="work-center-main">
         <div class="work-center-shell">
           <header class="work-center-header">
-            <div>
-              <p class="work-center-eyebrow">
+            <div class="work-center-heading">
+              <h1>{{ tr('workCenter.title', 'Work Center') }}</h1>
+              <span class="work-center-agent-context">
                 <span class="work-center-agent-dot" aria-hidden="true"></span>
                 {{ agentName(agentId) }}
-              </p>
-              <h1>{{ tr('workCenter.title', 'Work Center') }}</h1>
-              <p>{{ tr('workCenter.subtitle', 'Persistent work owned by this Agent') }}</p>
+              </span>
             </div>
             <div class="work-center-header-actions">
-              <span v-if="watcher && watcher.enabled" class="work-center-watcher active">
-                <span aria-hidden="true"></span>{{ tr('workCenter.watcherActive', 'Watcher active') }}
-              </span>
               <button class="work-center-icon-button" type="button" @click="refresh" :disabled="loading"
                       :title="tr('workCenter.refresh', 'Refresh')" :aria-label="tr('workCenter.refresh', 'Refresh')">
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 16.22 7.78L13 11h7V4l-2.35 2.35Z"/></svg>
@@ -242,21 +256,24 @@ export default {
               <button class="btn-primary work-center-header-create" type="button" @click="createOpen = true"
                       :title="tr('workCenter.newWorkItem', 'New work item')" :aria-label="tr('workCenter.newWorkItem', 'New work item')">
                 <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
-                <span>{{ tr('workCenter.newWorkItem', 'New work item') }}</span>
+                <span>{{ tr('workCenter.new', 'New') }}</span>
               </button>
             </div>
           </header>
 
           <div class="work-center-toolbar">
-            <label class="work-center-search">
-              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M9.5 3a6.5 6.5 0 1 0 4.02 11.61L19.91 21 21 19.91l-6.39-6.39A6.5 6.5 0 0 0 9.5 3Zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z"/></svg>
-              <input v-model="search" type="search" :placeholder="tr('workCenter.search', 'Search work items')">
-            </label>
             <div class="work-center-filter" role="group" :aria-label="tr('workCenter.filter', 'Filter')">
               <button type="button" :class="{ active: filter === 'open' }" @click="filter = 'open'">{{ tr('workCenter.filterOpen', 'Open') }}</button>
               <button type="button" :class="{ active: filter === 'all' }" @click="filter = 'all'">{{ tr('workCenter.filterAll', 'All') }}</button>
               <button type="button" :class="{ active: filter === 'done' }" @click="filter = 'done'">{{ tr('workCenter.filterDone', 'Done') }}</button>
             </div>
+            <label class="work-center-search">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M9.5 3a6.5 6.5 0 1 0 4.02 11.61L19.91 21 21 19.91l-6.39-6.39A6.5 6.5 0 0 0 9.5 3Zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z"/></svg>
+              <input v-model="search" type="search" :placeholder="tr('workCenter.search', 'Search work items')">
+            </label>
+            <span v-if="watcher && watcher.enabled" class="work-center-watcher active">
+              <span aria-hidden="true"></span>{{ tr('workCenter.watcherActive', 'Watcher active') }}
+            </span>
           </div>
 
           <p v-if="error" class="work-center-error">{{ error }}</p>
@@ -280,13 +297,11 @@ export default {
                 </span>
               </button>
               <div v-if="!loading && visibleItems.length === 0" class="work-center-empty-state">
-                <span class="work-center-empty-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M19 3h-3.18A3 3 0 0 0 13 1h-2a3 3 0 0 0-2.82 2H5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-8-1h2a1 1 0 0 1 1 1h-4a1 1 0 0 1 1-1Zm8 18H5V5h2v2h10V5h2v15Z"/></svg>
-                </span>
                 <h2>{{ emptyState.title }}</h2>
                 <p>{{ emptyState.body }}</p>
-                <button v-if="emptyState.canCreate" class="btn-primary" type="button" @click="createOpen = true">
-                  {{ tr('workCenter.newWorkItem', 'New work item') }}
+                <button v-if="emptyState.canCreate" class="btn-ghost work-center-empty-create" type="button" @click="createOpen = true">
+                  <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
+                  {{ tr('workCenter.createFirst', 'Create first work item') }}
                 </button>
               </div>
             </section>
@@ -366,11 +381,7 @@ export default {
                 </div>
               </template>
               <div v-else class="work-center-detail-empty">
-                <span class="work-center-detail-empty-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M6 2h9l5 5v15H6V2Zm8 2H8v16h10V8h-4V4Zm1.5 10H10v-2h5.5v2Zm0 4H10v-2h5.5v2Z"/></svg>
-                </span>
                 <strong>{{ tr('workCenter.selectTitle', 'Work item details') }}</strong>
-                <span>{{ tr('workCenter.selectPrompt', 'Select a work item to inspect its workflow and evidence.') }}</span>
               </div>
             </section>
           </div>
