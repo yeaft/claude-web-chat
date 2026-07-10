@@ -5,7 +5,7 @@ import { defaultRegistry } from '../vp/registry.js';
 import { scanVpLibrary } from '../vp/vp-store.js';
 import { WorkCenterService } from './service.js';
 import { WorkItemRunner } from './runner.js';
-import { projectWorkCenterEvent } from './projection.js';
+import { projectWorkCenterEvent, projectWorkItemDetail } from './projection.js';
 import { previewWorkCenterPlan } from './planner.js';
 import { readWorkCenterSettings } from './settings.js';
 import { join } from 'node:path';
@@ -15,6 +15,8 @@ let initPromise = null;
 let shuttingDown = false;
 let shutdownPromise = null;
 let serviceFactory = null;
+
+const BROWSER_DETAIL_OPS = new Set(['get', 'create', 'update', 'start', 'cancel', 'guide', 'retry']);
 
 function send(msg) {
   sendToServer(msg);
@@ -129,6 +131,7 @@ export async function handleWorkCenterRequest(msg) {
     } else {
       data = await workCenter.handle(op, msg.payload || {});
     }
+    if (BROWSER_DETAIL_OPS.has(op)) data = projectWorkItemDetail(data);
     send({
       type: 'work_center_response',
       requestId,

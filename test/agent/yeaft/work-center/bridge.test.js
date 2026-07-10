@@ -11,6 +11,7 @@ vi.mock('../../../../agent/yeaft/web-bridge.js', () => ({
 
 const {
   bootWorkCenter,
+  createWorkItemFromProducer,
   handleWorkCenterRequest,
   shutdownWorkCenter,
   __testSetWorkCenterFactory,
@@ -21,6 +22,40 @@ function deferred() {
   let resolve;
   const promise = new Promise(r => { resolve = r; });
   return { promise, resolve };
+}
+
+function internalDetail() {
+  return {
+    id: 'wi-1', revision: 3, title: 'Private work', goal: 'Keep internals private',
+    acceptanceCriteria: ['Safe browser response'], workflowTemplate: 'software-change',
+    workflowSnapshot: { id: 'software-change', stages: [{ id: 'triage' }] },
+    status: 'running', currentActionId: 'a-1', currentRunId: 'r-1',
+    workDir: '/private/project', workspaceKey: '/private/canonical', reuseMemory: true,
+    origin: { sessionId: 'session-1', messageId: 'private-message', createdBy: 'linus' },
+    linkedSessionIds: ['session-1'], createdAt: 1, updatedAt: 2,
+    actions: [{
+      id: 'a-1', workItemId: 'wi-1', sequence: 1, type: 'triage', stageId: 'triage',
+      assignmentPolicy: { mode: 'auto', capability: 'triage' },
+      modelPolicy: { mode: 'specific', model: 'provider/model' },
+      requiredRole: '', instruction: 'private prompt', context: [{ secret: 'private context' }],
+      status: 'running', attempt: 1, maxAttempts: 2, currentRunId: 'r-1', createdAt: 1, updatedAt: 2,
+    }],
+    runs: [{
+      id: 'r-1', actionId: 'a-1', workItemId: 'wi-1', status: 'running', startedAt: 1, expiresAt: 2,
+      summary: 'Visible summary', evidence: [{ kind: 'test', label: 'passed' }],
+      roleSnapshot: { id: 'triage', actionType: 'triage', selectionReason: 'auto:triage', assignmentPolicy: { mode: 'auto' } },
+      vpSnapshot: { id: 'omni', name: 'Omni', role: 'Lead', persona: 'private persona', personaHash: 'private-hash' },
+      modelSnapshot: { id: 'provider/model', provider: 'provider', policy: { mode: 'specific' } },
+      toolPolicySnapshot: {
+        allowedToolNames: ['FileRead'], readRoots: ['/private/read'], writeRoots: ['/private/write'],
+        shell: { fixedCwd: '/private/cwd' },
+      },
+    }],
+    events: [{
+      id: 'e-1', workItemId: 'wi-1', actionId: 'a-1', runId: 'r-1',
+      type: 'run.started', data: { secret: 'private event data' }, createdAt: 1,
+    }],
+  };
 }
 
 describe('Work Center lifecycle bridge', () => {
@@ -61,6 +96,69 @@ describe('Work Center lifecycle bridge', () => {
       type: 'work_center_response', requestId: 'settings-1', op: 'get_settings', ok: true,
       data: { settings: { defaultWorkflowId: 'software-change' } }, _requestUserId: 'user-1',
     }));
+  });
+
+  it.each(['get', 'create', 'update', 'start', 'cancel', 'guide', 'retry'])(
+    'projects the %s browser response through the safe detail DTO',
+    async (op) => {
+      const raw = internalDetail();
+      const service = {
+        start: vi.fn(),
+        shutdown: vi.fn(),
+        handle: vi.fn().mockResolvedValue(raw),
+      };
+      __testSetWorkCenterService(service);
+
+      await handleWorkCenterRequest({
+        requestId: `detail-${op}`, op, payload: { id: raw.id }, _requestUserId: 'user-1',
+      });
+
+      const response = sendToServer.mock.calls.at(-1)[0];
+      expect(response).toMatchObject({
+        type: 'work_center_response', requestId: `detail-${op}`, op, ok: true,
+        data: {
+          id: raw.id,
+          actions: [{ id: 'a-1', assignmentPolicy: { mode: 'auto' } }],
+          runs: [{
+            id: 'r-1', summary: 'Visible summary',
+            vpSnapshot: { id: 'omni', name: 'Omni', role: 'Lead' },
+            modelSnapshot: { id: 'provider/model', provider: 'provider' },
+          }],
+          events: [{ id: 'e-1', type: 'run.started' }],
+        },
+      });
+      const wire = JSON.stringify(response.data);
+      for (const secret of [
+        '/private/project', '/private/canonical', 'workflowSnapshot', 'private-message',
+        'private prompt', 'private context', 'private persona', 'private-hash',
+        'toolPolicySnapshot', 'allowedToolNames', '/private/read', '/private/write', '/private/cwd',
+        'private event data',
+      ]) {
+        expect(wire).not.toContain(secret);
+      }
+    },
+  );
+
+  it('keeps Producer create results internal and unprojected', async () => {
+    const raw = internalDetail();
+    const service = {
+      start: vi.fn(),
+      shutdown: vi.fn(),
+      handle: vi.fn().mockResolvedValue(raw),
+    };
+    __testSetWorkCenterService(service);
+
+    const result = await createWorkItemFromProducer({ title: 'Internal', goal: 'Keep raw detail' });
+    expect(result).toBe(raw);
+    expect(result).toMatchObject({
+      workDir: '/private/project',
+      workflowSnapshot: { id: 'software-change' },
+      runs: [{
+        vpSnapshot: { persona: 'private persona' },
+        toolPolicySnapshot: { readRoots: ['/private/read'] },
+      }],
+    });
+    expect(sendToServer).not.toHaveBeenCalled();
   });
 
   it('waits for runtime reset before returning refreshed settings', async () => {
