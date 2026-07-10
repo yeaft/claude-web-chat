@@ -118,6 +118,15 @@ export function createYeaftStatusCache(options = {}) {
     return refreshPromise;
   }
 
+  async function forceRefresh(options = {}) {
+    // Invalidate any disk read that started before the config write, wait for it
+    // to drain, then start a new read. A plain refresh() intentionally dedupes
+    // concurrent callers, which is wrong after a successful config update.
+    generation += 1;
+    if (inFlight) await inFlight;
+    return refresh({ ...options, emitRefreshing: options.emitRefreshing ?? false });
+  }
+
   function hydrateFromSession(sessionLike, { reason = 'session_ready', emitEvent = true } = {}) {
     if (!sessionLike) return null;
     // Session hydration is authoritative. Any refresh that started before this
@@ -155,7 +164,7 @@ export function createYeaftStatusCache(options = {}) {
     timer = null;
   }
 
-  return { current, refresh, hydrateFromSession, start, stop, emitSnapshot };
+  return { current, refresh, forceRefresh, hydrateFromSession, start, stop, emitSnapshot };
 }
 
 export const yeaftStatusCache = createYeaftStatusCache();
@@ -170,6 +179,10 @@ export function stopYeaftStatusRefresh() {
 
 export function refreshYeaftStatus(options) {
   return yeaftStatusCache.refresh(options);
+}
+
+export function forceRefreshYeaftStatus(options) {
+  return yeaftStatusCache.forceRefresh(options);
 }
 
 export function hydrateYeaftStatusFromSession(sessionLike, options) {

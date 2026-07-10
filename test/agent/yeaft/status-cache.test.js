@@ -49,6 +49,54 @@ describe('Yeaft status cache', () => {
     ]);
   });
 
+  it('forces a fresh disk read after an older refresh drains', async () => {
+    const oldLoad = deferred();
+    const loadConfig = vi.fn()
+      .mockReturnValueOnce(oldLoad.promise)
+      .mockResolvedValueOnce({
+        primaryModel: 'github-copilot/gpt-new',
+        availableModels: [{ id: 'gpt-new', provider: 'github-copilot' }],
+      });
+    const emit = vi.fn();
+    const cache = createYeaftStatusCache({ loadConfig, emit, now: () => 150 });
+
+    const oldRefresh = cache.refresh({ reason: 'interval', emitRefreshing: false });
+    await Promise.resolve();
+    const forcedRefresh = cache.forceRefresh({ reason: 'llm_config_updated' });
+
+    oldLoad.resolve({
+      primaryModel: 'github-copilot/gpt-old',
+      availableModels: [{ id: 'gpt-old', provider: 'github-copilot' }],
+    });
+    await Promise.all([oldRefresh, forcedRefresh]);
+
+    expect(loadConfig).toHaveBeenCalledTimes(2);
+    expect(cache.current()).toMatchObject({
+      model: 'github-copilot/gpt-new',
+      availableModels: [{ id: 'gpt-new', provider: 'github-copilot' }],
+      refreshReason: 'llm_config_updated',
+    });
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns an error event from a forced refresh without discarding the last good snapshot', async () => {
+    const loadConfig = vi.fn()
+      .mockResolvedValueOnce({
+        primaryModel: 'github-copilot/gpt-current',
+        availableModels: [{ id: 'gpt-current', provider: 'github-copilot' }],
+      })
+      .mockRejectedValueOnce(new Error('disk read failed'));
+    const cache = createYeaftStatusCache({ loadConfig, emit: vi.fn(), now: () => 175 });
+    await cache.refresh({ reason: 'startup', emitRefreshing: false });
+
+    const event = await cache.forceRefresh({ reason: 'llm_config_updated' });
+
+    expect(event.refreshError).toBe('disk read failed');
+    expect(cache.current().availableModels).toEqual([
+      expect.objectContaining({ id: 'gpt-current' }),
+    ]);
+  });
+
   it('still publishes a normal config refresh when no newer hydration occurs', async () => {
     const emit = vi.fn();
     const cache = createYeaftStatusCache({
