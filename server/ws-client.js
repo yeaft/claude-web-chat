@@ -12,6 +12,7 @@ import {
 import { handleClientConversation } from './handlers/client-conversation.js';
 import { handleClientWorkbench } from './handlers/client-workbench.js';
 import { handleClientMisc } from './handlers/client-misc.js';
+import { clearWorkCenterRequestsForClient, handleClientWorkCenter } from './handlers/client-work-center.js';
 import { recordPerfTraceEvent } from './perf-trace.js';
 
 export function handleWebConnection(ws, url) {
@@ -151,6 +152,7 @@ export function handleWebConnection(ws, url) {
         }
       }
     }
+    clearWorkCenterRequestsForClient(client);
     webClients.delete(clientId);
     console.log(`Web client disconnected: ${clientId}`);
   });
@@ -207,5 +209,6 @@ async function handleWebMessage(clientId, msg) {
   // Dispatch to handler sub-modules
   if (await handleClientConversation(clientId, client, msg, checkAgentAccess)) return;
   if (await handleClientWorkbench(clientId, client, msg, checkAgentAccess)) return;
+  if (await handleClientWorkCenter(client, msg, checkAgentAccess)) return;
   if (await handleClientMisc(clientId, client, msg, checkAgentAccess)) return;
 }

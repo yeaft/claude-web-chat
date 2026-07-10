@@ -290,7 +290,7 @@ async function ensureYeaftSkills() {
 }
 
 // 优雅退出
-function cleanup() {
+async function cleanup() {
   // 清理所有终端
   for (const [, term] of ctx.terminals) {
     if (term.pty) {
@@ -309,18 +309,22 @@ function cleanup() {
     }
   }
   ctx.conversations.clear();
+  try {
+    const { shutdownWorkCenter } = await import('./yeaft/work-center/bridge.js');
+    await shutdownWorkCenter();
+  } catch {}
   if (ctx.ws) ctx.ws.close();
 }
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('Shutting down...');
-  cleanup();
+  await cleanup();
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('Shutting down...');
-  cleanup();
+  await cleanup();
   process.exit(0);
 });
 

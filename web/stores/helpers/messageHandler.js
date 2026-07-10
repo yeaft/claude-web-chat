@@ -96,6 +96,20 @@ export function handleMessage(store, msg) {
   store._lastPongAt = Date.now();
 
   switch (msg.type) {
+    case 'work_center_response': {
+      const pending = msg.requestId ? store.workCenterPending[msg.requestId] : null;
+      if (!pending) break;
+      clearTimeout(pending.timer);
+      delete store.workCenterPending[msg.requestId];
+      if (msg.ok) pending.resolve(msg.data);
+      else pending.reject(new Error(msg.error || 'Work Center request failed'));
+      break;
+    }
+
+    case 'work_center_event':
+      store.applyWorkCenterEvent(msg.agentId, msg.event);
+      break;
+
     case 'auth_result':
       if (msg.success) {
         store.authenticated = true;
@@ -135,10 +149,16 @@ export function handleMessage(store, msg) {
 
     case 'agent_list':
       handleAgentList(store, msg);
+      if (store.currentView === 'work-center' && store.workCenterAgentId) {
+        store.listWorkItems(store.workCenterAgentId).catch(() => {});
+      }
       break;
 
     case 'agent_selected':
       handleAgentSelected(store, msg);
+      if (store.currentView === 'work-center' && store.workCenterAgentId) {
+        store.listWorkItems(store.workCenterAgentId).catch(() => {});
+      }
       break;
 
     case 'conversation_created':

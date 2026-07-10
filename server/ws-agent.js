@@ -9,6 +9,7 @@ import {
 } from './ws-utils.js';
 import { handleAgentConversation } from './handlers/agent-conversation.js';
 import { handleAgentOutput } from './handlers/agent-output.js';
+import { handleAgentWorkCenter } from './handlers/agent-work-center.js';
 import { handleAgentFileTerminal } from './handlers/agent-file-terminal.js';
 import { handleAgentSync } from './handlers/agent-sync.js';
 import { recordPerfTraceEvent } from './perf-trace.js';
@@ -311,6 +312,7 @@ async function handleAgentMessage(agentId, msg) {
 
   // Dispatch to handler sub-modules
   if (await handleAgentConversation(agentId, agent, msg)) return;
+  if (await handleAgentWorkCenter(agentId, msg)) return;
   if (await handleAgentOutput(agentId, agent, msg)) return;
   if (await handleAgentFileTerminal(agentId, agent, msg)) return;
   if (await handleAgentSync(agentId, agent, msg)) return;

@@ -21,12 +21,13 @@ const DAY_MS = 24 * HOUR_MS;
 import SessionCreateModal from './SessionCreateModal.js';
 import SidebarModeToggle from './SidebarModeToggle.js';
 import SidebarAgentHeader from './SidebarAgentHeader.js';
+import SidebarWorkCenter from './SidebarWorkCenter.js';
 import { shortenPath } from '../utils/path-display.js';
 import { buildYeaftSidebarSessionList } from '../stores/helpers/yeaft-sidebar-sessions.js';
 
 export default {
   name: 'YeaftSidebar',
-  components: { SessionCreateModal, SidebarModeToggle, SidebarAgentHeader },
+  components: { SessionCreateModal, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter },
   emits: ['select-group', 'select-chat', 'toggle-sidebar', 'back', 'open-settings', 'open-group-settings'],
   template: `
     <aside class="yeaft-sidebar" :class="{ collapsed: collapsed }">
@@ -73,6 +74,13 @@ export default {
           </div>
         </div>
       </div>
+
+      <SidebarWorkCenter
+        :agents="chatStore ? chatStore.agents : []"
+        :active-agent-id="chatStore ? chatStore.workCenterAgentId : null"
+        :collapsed="false"
+        @open="onOpenWorkCenter"
+      />
 
       <div class="us-scroll us-scroll-flush">
         <!-- Parity with Chat sidebar: session-tab-bar (single Chat tab,
@@ -383,6 +391,10 @@ export default {
       if (target === 'chat') {
         this.$emit('back');
       }
+    },
+    onOpenWorkCenter(agentId) {
+      const s = this.chatStore || this.store;
+      if (s && typeof s.enterWorkCenter === 'function') s.enterWorkCenter(agentId);
     },
     // task-334m: session-create + selection handlers.
     onGroupCreated(_group) {
