@@ -5,7 +5,7 @@ import { parsePatch } from '../tools/apply-patch.js';
 import { defaultRegistry } from '../vp/registry.js';
 import { NullTrace } from '../debug-trace.js';
 import { isPathInsideOrEqual } from '../tools/path-safety.js';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
 const WORK_ITEM_TOOL_NAMES = Object.freeze([
@@ -49,19 +49,6 @@ function personaFor(vp) {
   };
 }
 
-function nearestExistingPath(value) {
-  let current = value;
-  const suffix = [];
-  while (!existsSync(current)) {
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    suffix.unshift(path.basename(current));
-    current = parent;
-  }
-  const canonical = realpathSync(current);
-  return path.resolve(canonical, ...suffix);
-}
-
 function canonicalWorkDir(workDir) {
   if (!existsSync(workDir)) throw new Error(`WorkItem workDir does not exist: ${workDir}`);
   return realpathSync(workDir);
@@ -69,9 +56,22 @@ function canonicalWorkDir(workDir) {
 
 function assertPathInside(toolName, workDir, value) {
   const resolved = path.resolve(workDir, value);
-  const canonical = nearestExistingPath(resolved);
-  if (!isPathInsideOrEqual(workDir, canonical)) {
+  if (!isPathInsideOrEqual(workDir, resolved)) {
     throw new Error(`${toolName} path escapes the WorkItem workDir`);
+  }
+
+  const relative = path.relative(workDir, resolved);
+  let current = workDir;
+  for (const component of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    try {
+      if (lstatSync(current).isSymbolicLink()) {
+        throw new Error(`${toolName} path escapes the WorkItem workDir through a symbolic link`);
+      }
+    } catch (error) {
+      if (error?.code === 'ENOENT') break;
+      throw error;
+    }
   }
   return resolved;
 }

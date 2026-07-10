@@ -55,6 +55,24 @@ describe('Work Center tool policy', () => {
     }, {})).rejects.toThrow(/escapes/);
   });
 
+  it('rejects dangling symlink targets before FileWrite or ApplyPatch can create external files', async () => {
+    const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
+    const writeTarget = join(outsideDir, 'write-target.txt');
+    const patchTarget = join(outsideDir, 'patch-target.txt');
+    symlinkSync(writeTarget, join(workDir, 'write-link.txt'));
+    symlinkSync(patchTarget, join(workDir, 'patch-link.txt'));
+
+    await expect(registry.execute('FileWrite', {
+      file_path: 'write-link.txt', content: 'outside',
+    }, {})).rejects.toThrow(/symbolic link/);
+    expect(existsSync(writeTarget)).toBe(false);
+
+    await expect(registry.execute('ApplyPatch', {
+      patch: '--- a/patch-link.txt\n+++ b/patch-link.txt\n@@ -0,0 +1 @@\n+outside\n',
+    }, {})).rejects.toThrow(/symbolic link/);
+    expect(existsSync(patchTarget)).toBe(false);
+  });
+
   it('uses parsed patch targets and rejects tab, control, symlink-parent, and multi-file escapes', async () => {
     const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
     const escaped = join(outsideDir, 'escaped.txt');
