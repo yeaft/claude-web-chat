@@ -344,11 +344,14 @@ export async function handleMessage(msg) {
         broadcastLanguageChange(result.language);
       }
       if (!result.error) {
-        refreshYeaftStatus({ reason: 'llm_config_updated' }).catch(() => {});
-        if (!incomingLanguage) {
-          resetYeaftSession().catch(err => {
-            console.error('[LLM] Failed to reload Yeaft session after local config update:', err.message);
-          });
+        if (incomingLanguage) {
+          await refreshYeaftStatus({ reason: 'llm_config_updated' });
+        } else {
+          // The reset reloads config.json and hydrates the status cache from the
+          // new Session before the save acknowledgement is sent. Do not start a
+          // parallel status refresh here: an older in-flight disk read could
+          // otherwise publish the previous model catalog after the reset.
+          await resetYeaftSession();
         }
       }
       sendToServer({ type: 'llm_config_updated', ...result });

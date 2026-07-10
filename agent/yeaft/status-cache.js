@@ -53,6 +53,7 @@ export function createYeaftStatusCache(options = {}) {
   let snapshot = null;
   let timer = null;
   let inFlight = null;
+  let generation = 0;
 
   function current() {
     return snapshot ? { ...snapshot, availableModels: normalizeAvailableModels(snapshot.availableModels) } : null;
@@ -68,14 +69,16 @@ export function createYeaftStatusCache(options = {}) {
   async function refresh({ reason = 'manual', emitRefreshing = true, sessionStatus = null } = {}) {
     if (inFlight) return inFlight;
     const startedAt = now();
+    const refreshGeneration = generation;
     if (emitRefreshing && snapshot) {
       snapshot = { ...snapshot, refreshing: true, refreshStartedAt: startedAt, refreshReason: reason };
       emitSnapshot();
     }
-    inFlight = Promise.resolve()
+    const refreshPromise = Promise.resolve()
       .then(async () => {
         const yeaftDir = options.getYeaftDir ? options.getYeaftDir() : ctx.CONFIG?.yeaftDir;
         const config = await load({ ...(yeaftDir && { dir: yeaftDir }) });
+        if (refreshGeneration !== generation) return current();
         const previous = snapshot || {};
         snapshot = {
           ...previous,
@@ -94,6 +97,7 @@ export function createYeaftStatusCache(options = {}) {
         return emitSnapshot();
       })
       .catch((err) => {
+        if (refreshGeneration !== generation) return current();
         const message = err?.message || String(err);
         const previous = snapshot || {};
         snapshot = {
@@ -107,12 +111,19 @@ export function createYeaftStatusCache(options = {}) {
         };
         return emitSnapshot();
       })
-      .finally(() => { inFlight = null; });
-    return inFlight;
+      .finally(() => {
+        if (inFlight === refreshPromise) inFlight = null;
+      });
+    inFlight = refreshPromise;
+    return refreshPromise;
   }
 
   function hydrateFromSession(sessionLike, { reason = 'session_ready', emitEvent = true } = {}) {
     if (!sessionLike) return null;
+    // Session hydration is authoritative. Any refresh that started before this
+    // point loaded an older disk snapshot and must not overwrite it when it
+    // resolves later.
+    generation += 1;
     const previous = snapshot || {};
     snapshot = {
       ...previous,
