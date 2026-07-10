@@ -4,7 +4,7 @@
 import { execSync, spawn } from 'child_process';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
-import { getConfigDir, getLogDir, getNodePath, getCliPath, getPm2AppName, DEFAULT_INSTANCE_ID } from './config.js';
+import { getConfigDir, getLogDir, getNodePath, getCliPath, getPm2AppName, loadServiceConfig, DEFAULT_INSTANCE_ID } from './config.js';
 
 const WIN_TASK_NAME = 'YeaftAgent';
 
@@ -59,6 +59,26 @@ function generateEcosystem(config) {
   }]
 };
 `;
+}
+
+function registerCurrentAgent(instanceId) {
+  const config = loadServiceConfig(instanceId);
+  if (!config) {
+    console.error('Service not installed. Run "yeaft-agent install" first.');
+    process.exit(1);
+  }
+
+  const pm2AppName = getPm2AppName(instanceId);
+  const ecoPath = getEcosystemPath(instanceId);
+  mkdirSync(getLogDir(instanceId), { recursive: true });
+  writeFileSync(ecoPath, generateEcosystem(config));
+
+  // PM2 keeps the original script path and package metadata when an existing
+  // app is started or restarted by name. Re-register from the current CLI so
+  // npm prefix changes and upgraded package versions are actually picked up.
+  try { execSync(`pm2 delete ${pm2AppName}`, { stdio: 'pipe' }); } catch {}
+  execSync(`pm2 start "${ecoPath}"`, { stdio: 'inherit' });
+  execSync('pm2 save', { stdio: 'pipe' });
 }
 
 export function winInstall(config) {
@@ -130,19 +150,7 @@ export function winUninstall(instanceId = DEFAULT_INSTANCE_ID) {
 }
 
 export function winStart(instanceId = DEFAULT_INSTANCE_ID) {
-  const pm2AppName = getPm2AppName(instanceId);
-  try {
-    execSync(`pm2 start ${pm2AppName}`, { stdio: 'inherit' });
-  } catch {
-    // Try ecosystem file
-    const ecoPath = getEcosystemPath(instanceId);
-    if (existsSync(ecoPath)) {
-      execSync(`pm2 start "${ecoPath}"`, { stdio: 'inherit' });
-    } else {
-      console.error('Service not installed. Run "yeaft-agent install" first.');
-      process.exit(1);
-    }
-  }
+  registerCurrentAgent(instanceId);
 }
 
 export function winStop(instanceId = DEFAULT_INSTANCE_ID) {
@@ -154,11 +162,7 @@ export function winStop(instanceId = DEFAULT_INSTANCE_ID) {
 }
 
 export function winRestart(instanceId = DEFAULT_INSTANCE_ID) {
-  try {
-    execSync(`pm2 restart ${getPm2AppName(instanceId)}`, { stdio: 'inherit' });
-  } catch {
-    console.error('Service not running. Use "yeaft-agent start" to start.');
-  }
+  registerCurrentAgent(instanceId);
 }
 
 /**
