@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildRelevantScopes, runMemoryPreflow } from '../../../../agent/yeaft/sessions/pre-flow.js';
+import {
+  buildRelevantScopes,
+  memoryScopeLabel,
+  runMemoryPreflow,
+} from '../../../../agent/yeaft/sessions/pre-flow.js';
 
 function fakeIndex(rows) {
   return {
@@ -23,6 +27,15 @@ function fakeIndex(rows) {
 }
 
 describe('Yeaft memory pre-flow scopes', () => {
+  it('renders compact model-facing labels without changing storage scopes', () => {
+    expect(memoryScopeLabel('sessions/s1')).toBe('session');
+    expect(memoryScopeLabel('sessions/s1/topic/dream/recall')).toBe('topic: dream/recall');
+    expect(memoryScopeLabel('session/s1/topic/storage')).toBe('topic: storage');
+    expect(memoryScopeLabel('group/s1/topic/legacy')).toBe('topic: legacy');
+    expect(memoryScopeLabel('sessions/s1/vp/linus')).toBe('sessions/s1/vp/linus');
+    expect(memoryScopeLabel('user')).toBe('user');
+  });
+
   it('includes current sessions/* Dream scopes plus legacy aliases', () => {
     expect(buildRelevantScopes({
       sessionId: 's1',
@@ -99,6 +112,7 @@ describe('Yeaft memory pre-flow scopes', () => {
       'sessions/s1/topic/storage',
     ]);
     expect(result.formatted).toContain('## Memory: Topic dream/recall');
+    expect(result.formatted).not.toContain('sessions/s1/topic/dream/recall');
     expect(result.formatted).toContain('Topic memory explains Dream recall wiring.');
     expect(result.formatted).not.toContain('Foreign topic must not leak.');
   });
