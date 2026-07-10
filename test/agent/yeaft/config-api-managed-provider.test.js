@@ -9,7 +9,7 @@ function tempDir() {
 }
 
 describe('LLM config API managed providers', () => {
-  it('persists GitHub Copilot as minimal managed config', () => {
+  it('persists the discovered GitHub Copilot model catalog', () => {
     const dir = tempDir();
     try {
       const result = updateLlmConfig({
@@ -29,6 +29,10 @@ describe('LLM config API managed providers', () => {
         name: 'github-copilot',
         credentialProvider: 'github-copilot',
         managed: 'github-copilot',
+        models: [
+          { id: 'claude-opus-4.8', protocol: 'anthropic' },
+          { id: 'gpt-5', protocol: 'openai-responses' },
+        ],
       }]);
       expect(saved.primaryModel).toBe('github-copilot/claude-opus-4.8');
     } finally {
