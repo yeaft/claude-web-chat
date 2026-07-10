@@ -45,10 +45,16 @@ function renderContext(context = []) {
   if (!Array.isArray(context) || context.length === 0) return '';
   const blocks = context.map(entry => {
     const evidence = Array.isArray(entry.evidence) && entry.evidence.length > 0
-      ? `\nEvidence:\n${entry.evidence.map(item => `- ${typeof item === 'string' ? item : JSON.stringify(item)}`).join('\n')}`
+      ? `\nEvidence:\n${entry.evidence.map(item => {
+          const status = item.status ? ` [${item.status}]` : '';
+          const ref = item.ref ? ` (${item.ref})` : '';
+          return `- ${item.kind}: ${item.label}${status}${ref}`;
+        }).join('\n')}`
       : '';
     const decision = entry.reviewDecision ? `\nReview decision: ${entry.reviewDecision}` : '';
-    return `### ${entry.type} (${entry.role || 'unknown role'})\n${entry.summary || '(no summary)'}${decision}${evidence}`;
+    const waitingReason = entry.waitingReason ? `\nWaiting reason: ${entry.waitingReason}` : '';
+    const answer = entry.answer ? `\nUser answer: ${entry.answer}` : '';
+    return `### ${entry.type} (${entry.role || 'unknown role'})\n${entry.summary || '(no summary)'}${decision}${waitingReason}${answer}${evidence}`;
   });
   return `\n\nPrior Action results:\n${blocks.join('\n\n')}`;
 }

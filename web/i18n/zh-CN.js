@@ -1406,6 +1406,8 @@ export default {
   'workCenter.fromSession': '从当前 Session 创建工作项',
   'workCenter.runs': '执行记录与证据',
   'workCenter.waitingReason': '等待原因：',
+  'workCenter.resumeAnswer': '回答等待中的问题',
+  'workCenter.resumeAnswerHint': '提供继续执行所需的信息',
   'workCenter.unknownRole': '未知角色',
   'workCenter.selectPrompt': '选择一个工作项，查看它的流程和交付证据。',
   'workCenter.createHint': '先定义稳定目标，再让 Agent 开始执行。',

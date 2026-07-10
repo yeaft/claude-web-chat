@@ -35,13 +35,25 @@ export class WorkItemWatcher {
   async stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    for (const run of this.activeRuns.values()) run.abortController.abort('watcher_stopped');
-    await Promise.allSettled(Array.from(this.activeRuns.values()).map(run => run.promise));
+    const active = Array.from(this.activeRuns.values());
+    for (const entry of active) {
+      this.store.interruptRun(
+        entry.runId,
+        this.ownerBootId,
+        entry.leaseEpoch,
+        'Work Center watcher stopped',
+      );
+      entry.abortController.abort('watcher_stopped');
+    }
+    await Promise.allSettled(active.map(entry => entry.promise));
   }
 
-  abortWorkItem(workItemId) {
+  abortInvalidWorkItemRuns(workItemId) {
     for (const entry of this.activeRuns.values()) {
-      if (entry.workItemId === workItemId) entry.abortController.abort('work_item_cancelled');
+      if (entry.workItemId !== workItemId) continue;
+      if (!this.store.isActiveRun(entry.runId, this.ownerBootId, entry.leaseEpoch)) {
+        entry.abortController.abort('work_item_state_changed');
+      }
     }
   }
 
@@ -69,7 +81,13 @@ export class WorkItemWatcher {
           clearInterval(renewal);
           this.activeRuns.delete(key);
         });
-      this.activeRuns.set(key, { promise, abortController, workItemId: claim.workItem.id });
+      this.activeRuns.set(key, {
+        promise,
+        abortController,
+        workItemId: claim.workItem.id,
+        runId: claim.run.id,
+        leaseEpoch: claim.run.leaseEpoch,
+      });
       this.onEvent({ type: 'run.started', workItem: this.store.getWorkItemDetail(claim.workItem.id) });
     } finally {
       this.ticking = false;

@@ -1,5 +1,4 @@
-import { agents } from '../context.js';
-import { forwardToClients } from '../ws-utils.js';
+import { forwardAgentEvent } from '../ws-utils.js';
 import { deliverWorkCenterResponse } from './client-work-center.js';
 
 const WORK_CENTER_TYPES = new Set([
@@ -23,13 +22,6 @@ export async function handleAgentWorkCenter(agentId, msg) {
 
   const { agentId: _untrustedAgentId, _requestUserId, ...payload } = msg;
   const outgoing = { ...payload, agentId };
-  const ownerId = agents.get(agentId)?.ownerId || null;
-  if (ownerId) {
-    Object.defineProperty(outgoing, '_requestUserId', {
-      value: ownerId,
-      enumerable: false,
-    });
-  }
-  await forwardToClients(agentId, null, outgoing);
+  await forwardAgentEvent(agentId, outgoing);
   return true;
 }

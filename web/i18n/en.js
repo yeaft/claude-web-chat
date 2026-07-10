@@ -1410,6 +1410,8 @@ export default {
   'workCenter.fromSession': 'Create a work item from this Session',
   'workCenter.runs': 'Runs and evidence',
   'workCenter.waitingReason': 'Waiting:',
+  'workCenter.resumeAnswer': 'Answer the waiting question',
+  'workCenter.resumeAnswerHint': 'Provide the information required to continue',
   'workCenter.unknownRole': 'Unknown role',
   'workCenter.selectPrompt': 'Select a work item to inspect its workflow and evidence.',
   'workCenter.createHint': 'Define a stable goal before the Agent starts execution.',

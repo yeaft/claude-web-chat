@@ -142,17 +142,60 @@ describe('Work Center core', () => {
     expect(store.getWorkItem(item.id).status).toBe('ready');
   });
 
-  it('records waiting as a terminal Run and resumes with a new Action', () => {
+  it('records waiting as a terminal Run and resumes with its result and the user answer', () => {
     const item = controller.create(createInput());
     const claim = store.claimReadyAction('boot-a', 5_000);
     const waiting = controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
-      outcome: 'waiting', summary: 'Need a choice', evidence: [], waitingReason: 'Choose behavior',
+      outcome: 'waiting',
+      summary: 'Need a choice',
+      evidence: [{ kind: 'file', label: 'Configuration', ref: 'config.json', stdout: 'hidden' }],
+      waitingReason: 'Choose behavior',
     });
     expect(waiting).toMatchObject({ status: 'waiting', currentRunId: null });
     expect(waiting.runs[0].status).toBe('waiting');
-    const resumed = controller.retry(item.id);
+    expect(() => controller.retry(item.id)).toThrow(/answer is required/i);
+
+    const resumed = controller.retry(item.id, { answer: 'Keep the current behavior' });
+    const nextAction = resumed.actions.at(-1);
     expect(resumed.actions).toHaveLength(2);
     expect(resumed.status).toBe('ready');
+    expect(nextAction.context.at(-1)).toEqual({
+      type: 'triage',
+      role: 'omni',
+      summary: 'Need a choice',
+      evidence: [{ kind: 'file', label: 'Configuration', ref: 'config.json' }],
+      waitingReason: 'Choose behavior',
+      answer: 'Keep the current behavior',
+    });
+    expect(nextAction.instruction).toContain('Need a choice');
+    expect(nextAction.instruction).toContain('Waiting reason: Choose behavior');
+    expect(nextAction.instruction).toContain('User answer: Keep the current behavior');
+    expect(nextAction.instruction).toContain('file: Configuration (config.json)');
+    expect(JSON.stringify(nextAction)).not.toContain('hidden');
+  });
+
+  it('bounds a waiting resume answer and does not require one for needs_attention', () => {
+    const waitingItem = controller.create(createInput());
+    const waitingClaim = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(waitingClaim.run.id, 'boot-a', waitingClaim.run.leaseEpoch, {
+      outcome: 'waiting', summary: 'Need input', evidence: [], waitingReason: 'Provide input',
+    });
+    const longAnswer = `${'a'.repeat(8_000)}discarded`;
+    const resumed = controller.retry(waitingItem.id, { answer: longAnswer });
+    expect(resumed.actions.at(-1).context.at(-1).answer).toHaveLength(8_000);
+    expect(resumed.actions.at(-1).instruction).not.toContain('discarded');
+
+    const failedItem = controller.create(createInput({ title: 'Failed item' }));
+    const failedClaim = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(failedClaim.run.id, 'boot-a', failedClaim.run.leaseEpoch, {
+      outcome: 'failed', summary: 'Permanent failure', evidence: [], error: 'Fix manually',
+    });
+    const retried = controller.retry(failedItem.id);
+    expect(retried.status).toBe('ready');
+    expect(retried.actions.at(-1).context.at(-1)).toMatchObject({
+      summary: 'Permanent failure',
+      answer: null,
+    });
   });
 
   it('cancels the Run atomically and rejects its late submit and recovery', () => {
@@ -198,6 +241,17 @@ describe('Work Center core', () => {
     expect(faultStore.getWorkItem(claim.workItem.id).status).toBe('running');
     faultStore.close();
     rmSync(faultDir, { recursive: true, force: true });
+  });
+
+  it('interrupts only the fenced current Run and makes it claimable again', () => {
+    const item = controller.create(createInput());
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    expect(store.interruptRun(claim.run.id, 'boot-b', claim.run.leaseEpoch, 'wrong owner')).toBe(false);
+    expect(store.getWorkItem(item.id).status).toBe('running');
+    expect(store.interruptRun(claim.run.id, 'boot-a', claim.run.leaseEpoch, 'watcher stopped')).toBe(true);
+    expect(store.getRun(claim.run.id).status).toBe('interrupted');
+    expect(store.getWorkItem(item.id).status).toBe('ready');
+    expect(store.claimReadyAction('boot-a', 5_000)?.action.id).toBe(claim.action.id);
   });
 
   it('recovers only the currently fenced expired Run', () => {

@@ -1,6 +1,7 @@
 import { Engine } from '../engine.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { allTools } from '../tools/index.js';
+import { parsePatch } from '../tools/apply-patch.js';
 import { defaultRegistry } from '../vp/registry.js';
 import { NullTrace } from '../debug-trace.js';
 import { isPathInsideOrEqual } from '../tools/path-safety.js';
@@ -92,10 +93,8 @@ function assertToolInput(toolName, input, workDir) {
     next[key] = assertPathInside(toolName, workDir, next[key]);
   }
   if (toolName === 'ApplyPatch' && typeof next.patch === 'string') {
-    const headers = [...next.patch.matchAll(/^\+\+\+\s+([^\t\r\n]+)$/gm)].map(match => match[1]);
-    for (const header of headers) {
-      if (header === '/dev/null') continue;
-      assertPathInside('ApplyPatch', workDir, header.replace(/^[ab]\//, ''));
+    for (const fileDiff of parsePatch(next.patch)) {
+      assertPathInside('ApplyPatch', workDir, fileDiff.file);
     }
   }
   return next;

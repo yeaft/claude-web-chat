@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { normalizeEvidence } from './evidence.js';
 
 const SCHEMA_VERSION = 2;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
@@ -73,7 +74,7 @@ function mapRun(row) {
     modelSnapshot: parseJson(row.model_snapshot, null),
     toolPolicySnapshot: parseJson(row.tool_policy_snapshot, null),
     summary: row.summary || '',
-    evidence: parseJson(row.evidence, []),
+    evidence: normalizeEvidence(parseJson(row.evidence, [])),
     waitingReason: row.waiting_reason || null,
     error: row.error || null,
     reviewDecision: row.review_decision || null,
@@ -482,9 +483,13 @@ export class WorkItemStore {
         throw new Error(`WorkItem in ${workItem.status} does not need retry`);
       }
       const previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
+      const previousRun = previous
+        ? mapRun(this.db.prepare(`SELECT * FROM runs WHERE work_item_id = ? AND action_id = ?
+            AND status != 'running' ORDER BY ended_at DESC, started_at DESC LIMIT 1`).get(id, previous.id))
+        : null;
       const now = this.now();
       const action = this.#insertAction(id, {
-        ...makeAction(workItem, previous),
+        ...makeAction(workItem, previous, previousRun),
         contractRevision: workItem.revision,
       }, this.#nextSequence(id), now);
       this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
@@ -577,6 +582,50 @@ export class WorkItemStore {
     return !!this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
   }
 
+  interruptRun(runId, ownerBootId, leaseEpoch, reason = 'Work Center watcher stopped') {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, false);
+      if (!active) return false;
+      const action = this.getAction(active.action_id);
+      const now = this.now();
+      const retryable = action.type !== 'deliver' && action.attempt < action.maxAttempts;
+      const runChanged = this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?
+        WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
+        now,
+        reason,
+        runId,
+        ownerBootId,
+        leaseEpoch,
+      );
+      if (Number(runChanged.changes) !== 1) return false;
+      const actionChanged = this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL,
+        updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
+        AND lease_epoch = ?`).run(
+        retryable ? 'ready' : 'failed',
+        now,
+        action.id,
+        runId,
+        leaseEpoch,
+      );
+      if (Number(actionChanged.changes) !== 1) throw new Error('Run interruption lost the Action fence');
+      const itemChanged = this.db.prepare(`UPDATE work_items SET status = ?, current_run_id = NULL,
+        updated_at = ? WHERE id = ? AND status = 'running' AND current_action_id = ?
+        AND current_run_id = ?`).run(
+        retryable ? 'ready' : 'needs_attention',
+        now,
+        active.work_item_id,
+        action.id,
+        runId,
+      );
+      if (Number(itemChanged.changes) !== 1) throw new Error('Run interruption lost the WorkItem fence');
+      this.appendEvent(active.work_item_id, 'run.interrupted', { retryable, reason }, {
+        actionId: action.id,
+        runId,
+      });
+      return true;
+    });
+  }
+
   setRunExecutionSnapshots(runId, ownerBootId, leaseEpoch, snapshots) {
     return withTransaction(this.db, () => {
       if (!this.#activeRunRow(runId, ownerBootId, leaseEpoch, true)) return false;
@@ -614,7 +663,7 @@ export class WorkItemStore {
         result.outcome,
         now,
         result.summary || '',
-        stringify(result.evidence || []),
+        stringify(normalizeEvidence(result.evidence)),
         result.waitingReason || null,
         result.error || null,
         result.reviewDecision || null,

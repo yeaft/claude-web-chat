@@ -66,7 +66,7 @@ export class WorkCenterService {
       case 'update': {
         const id = requiredString(payload.id, 'id');
         const detail = this.controller.update(id, payload.patch || {});
-        this.watcher.abortWorkItem(id);
+        this.watcher.abortInvalidWorkItemRuns(id);
         this.#emit({ type: 'work_item.updated', workItem: detail });
         return detail;
       }
@@ -76,18 +76,22 @@ export class WorkCenterService {
         return detail;
       }
       case 'cancel': {
-        const detail = this.controller.cancel(requiredString(payload.id, 'id'));
-        this.watcher.abortWorkItem(payload.id);
+        const id = requiredString(payload.id, 'id');
+        const detail = this.controller.cancel(id);
+        this.watcher.abortInvalidWorkItemRuns(id);
         this.#emit({ type: 'work_item.cancelled', workItem: detail });
         return detail;
       }
       case 'retry': {
-        const detail = this.controller.retry(requiredString(payload.id, 'id'));
+        const detail = this.controller.retry(requiredString(payload.id, 'id'), {
+          answer: typeof payload.answer === 'string' ? payload.answer : '',
+        });
         this.#emit({ type: 'work_item.retried', workItem: detail });
         return detail;
       }
       case 'set_watcher':
-        payload.enabled === false ? this.watcher.stop() : this.watcher.start();
+        if (payload.enabled === false) await this.watcher.stop();
+        else this.watcher.start();
         return this.watcher.status();
       default:
         throw new Error(`Unsupported Work Center operation: ${op || '(missing)'}`);

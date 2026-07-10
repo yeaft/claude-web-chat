@@ -1,4 +1,5 @@
 import { actionInstruction, getNextStep, initialActionFor, RUN_OUTCOMES } from './workflow.js';
+import { normalizeEvidence } from './evidence.js';
 
 function normalizeCriteria(value) {
   if (!Array.isArray(value)) return null;
@@ -24,7 +25,7 @@ function normalizeTerminalResult(result, action) {
   const normalized = {
     outcome: result.outcome,
     summary: String(result.summary || ''),
-    evidence: Array.isArray(result.evidence) ? result.evidence : [],
+    evidence: normalizeEvidence(result.evidence),
     waitingReason: result.waitingReason ? String(result.waitingReason) : null,
     error: result.error ? String(result.error) : null,
     reviewDecision: ['approved', 'changes_requested'].includes(result.reviewDecision)
@@ -90,12 +91,26 @@ export class WorkflowController {
     return this.store.getWorkItemDetail(id);
   }
 
-  retry(id) {
-    const detail = this.store.retryWorkItemAtomic(id, (workItem, previous) => {
+  retry(id, input = {}) {
+    const answer = typeof input.answer === 'string' ? input.answer.trim().slice(0, 8_000) : '';
+    const detail = this.store.retryWorkItemAtomic(id, (workItem, previous, previousRun) => {
+      if (workItem.status === 'waiting' && !answer) {
+        throw new Error('answer is required to resume a waiting WorkItem');
+      }
       const step = previous
         ? { type: previous.type, requiredRole: previous.requiredRole }
         : initialActionFor(workItem);
-      const context = Array.isArray(previous?.context) ? previous.context : [];
+      const context = Array.isArray(previous?.context) ? [...previous.context] : [];
+      if (previousRun) {
+        context.push({
+          type: previous.type,
+          role: previous.requiredRole,
+          summary: previousRun.summary || '',
+          evidence: normalizeEvidence(previousRun.evidence),
+          waitingReason: previousRun.waitingReason || null,
+          answer: answer || null,
+        });
+      }
       return {
         ...step,
         context,

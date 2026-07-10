@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createWorkItemToolRegistry, parseStructuredResult } from '../../../../agent/yeaft/work-center/runner.js';
@@ -53,6 +53,40 @@ describe('Work Center tool policy', () => {
     await expect(registry.execute('FileWrite', {
       file_path: join(safe, 'link', 'escaped.txt'), content: 'nope',
     }, {})).rejects.toThrow(/escapes/);
+  });
+
+  it('uses parsed patch targets and rejects tab, control, symlink-parent, and multi-file escapes', async () => {
+    const registry = createWorkItemToolRegistry({ workDir, isRunActive: () => true });
+    const escaped = join(outsideDir, 'escaped.txt');
+    await expect(registry.execute('ApplyPatch', {
+      patch: '--- a/safe.txt\n+++ ../escaped.txt\t\n@@ -0,0 +1 @@\n+escaped\n',
+    }, {})).rejects.toThrow(/escapes/);
+    expect(existsSync(escaped)).toBe(false);
+
+    await expect(registry.execute('ApplyPatch', {
+      patch: '--- a/safe.txt\n+++ safe\u0001.txt\n@@ -0,0 +1 @@\n+bad\n',
+    }, {})).rejects.toThrow(/control characters/);
+
+    const safe = join(workDir, 'safe');
+    mkdirSync(safe);
+    symlinkSync(outsideDir, join(safe, 'link'));
+    await expect(registry.execute('ApplyPatch', {
+      patch: '--- a/safe/link/escaped.txt\n+++ b/safe/link/escaped.txt\n@@ -0,0 +1 @@\n+bad\n',
+    }, {})).rejects.toThrow(/escapes/);
+
+    await expect(registry.execute('ApplyPatch', {
+      patch: [
+        '--- a/inside.txt', '+++ b/inside.txt', '@@ -0,0 +1 @@', '+inside',
+        '--- a/other.txt', '+++ ../outside.txt\t', '@@ -0,0 +1 @@', '+outside', '',
+      ].join('\n'),
+    }, {})).rejects.toThrow(/escapes/);
+    expect(existsSync(join(workDir, 'inside.txt'))).toBe(false);
+
+    const result = JSON.parse(await registry.execute('ApplyPatch', {
+      patch: '--- a/inside.txt\n+++ b/inside.txt\n@@ -0,0 +1 @@\n+inside\n',
+    }, {}));
+    expect(result.results[0].success).toBe(true);
+    expect(readFileSync(join(workDir, 'inside.txt'), 'utf8')).toContain('inside');
   });
 
   it('fences execution after the Run loses its lease', async () => {
