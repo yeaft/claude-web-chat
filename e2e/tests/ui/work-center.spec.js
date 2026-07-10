@@ -73,6 +73,27 @@ test.describe('Work Center responsive UI', () => {
     }
   });
 
+  test('maximizes and restores the Workbench without leaving the main area in the layout', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent);
+    await chatPage.setViewportSize({ width: 1440, height: 900 });
+
+    await chatPage.locator('.work-center-sidebar .sidebar-icon-btn[title="Workbench"]').click();
+    const panel = chatPage.locator('.workbench-panel');
+    const main = chatPage.locator('.work-center-main');
+    await expect(panel).toHaveClass(/expanded/);
+    await expect(main).toBeVisible();
+
+    const maximize = panel.locator('.wb-tab-action').first();
+    await maximize.click();
+    await expect(panel).toHaveClass(/maximized/);
+    await expect(main).toBeHidden();
+
+    await maximize.click();
+    await expect(panel).not.toHaveClass(/maximized/);
+    await expect(panel).toHaveClass(/expanded/);
+    await expect(main).toBeVisible();
+  });
+
   test('keeps a create action available on mobile with existing work items', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 720, height: 900 });

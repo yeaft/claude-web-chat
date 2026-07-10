@@ -55,6 +55,8 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('sidebar-nav-item work-center-back-button');
     expect(page).toContain('<SidebarModeToggle :view="store.workCenterReturnView');
     expect(page).toContain('<WorkbenchPanel v-if="canUseWorkbench"');
+    expect(page).toContain("'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded");
+    expect(css).toContain('.work-center-main.workbench-maximized');
     expect(chat.indexOf('<SidebarWorkCenter')).toBeGreaterThan(chat.indexOf('<!-- Connection warning -->'));
   });
 

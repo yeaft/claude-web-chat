@@ -159,6 +159,14 @@
   overflow: hidden;
 }
 
+.work-center-main.workbench-active {
+  min-width: 0;
+}
+
+.work-center-main.workbench-maximized {
+  display: none;
+}
+
 .work-center-shell {
   display: flex;
   width: min(100%, 1080px);

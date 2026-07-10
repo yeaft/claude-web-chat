@@ -238,7 +238,7 @@ export default {
 
       <WorkbenchPanel v-if="canUseWorkbench" />
 
-      <main class="work-center-main">
+      <main class="work-center-main" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
         <div class="work-center-shell">
           <header class="work-center-header">
             <div class="work-center-heading">
