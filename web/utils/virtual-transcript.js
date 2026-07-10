@@ -153,9 +153,29 @@ export function resolveTranscriptBottomFollow({ following = true, atBottom = fal
 }
 
 const TRANSCRIPT_SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+const INTERACTIVE_TARGET_SELECTOR = 'input, textarea, select, button, a, [contenteditable], [role="button"], [role="link"]';
 
 export function isTranscriptScrollKey(key) {
   return TRANSCRIPT_SCROLL_KEYS.has(String(key || ''));
+}
+
+export function isTranscriptScrollbarPointer(event, scroller) {
+  if (!event || !scroller || event.button !== 0) return false;
+  const rect = scroller.getBoundingClientRect?.();
+  const scrollbarWidth = Math.max(0, Number(scroller.offsetWidth || 0) - Number(scroller.clientWidth || 0));
+  if (!rect || scrollbarWidth <= 0) return false;
+  return Number(event.clientX) >= Number(rect.right) - scrollbarWidth
+    && Number(event.clientX) <= Number(rect.right)
+    && Number(event.clientY) >= Number(rect.top)
+    && Number(event.clientY) <= Number(rect.bottom);
+}
+
+export function shouldMarkTranscriptKeyScroll(event, scroller, documentRef = globalThis.document) {
+  if (!event || event.defaultPrevented || !scroller || !isTranscriptScrollKey(event.key)) return false;
+  const target = event.target;
+  if (!target) return false;
+  if (target.closest?.(INTERACTIVE_TARGET_SELECTOR)) return false;
+  return target === scroller || target === documentRef?.body || target === documentRef?.documentElement;
 }
 
 export function adjustedScrollTopForMeasuredHeight({

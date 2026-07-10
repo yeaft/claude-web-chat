@@ -16,9 +16,10 @@ import VirtualTranscript from './VirtualTranscript.js';
 import { shouldCloseYeaftVpTurn } from '../stores/helpers/yeaft-turn-boundary.js';
 import {
   estimateVirtualItemHeight,
-  isTranscriptScrollKey,
+  isTranscriptScrollbarPointer,
   resolveTranscriptBottomFollow,
   shouldFollowTranscriptBottom,
+  shouldMarkTranscriptKeyScroll,
   virtualTranscriptDefaults,
 } from '../utils/virtual-transcript.js';
 import {
@@ -1856,7 +1857,8 @@ export default {
       scheduleUserScrollInteractionEnd();
     };
 
-    const onPointerScrollStart = () => {
+    const onPointerScrollStart = (event) => {
+      if (!isTranscriptScrollbarPointer(event, containerRef.value)) return;
       pointerScrollActive = true;
       userScrollInteractionActive = true;
       if (userScrollEndTimer) {
@@ -1871,10 +1873,7 @@ export default {
     };
 
     const onScrollKey = (event) => {
-      const target = event?.target;
-      const tagName = String(target?.tagName || '').toLowerCase();
-      if (target?.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select') return;
-      if (isTranscriptScrollKey(event?.key)) markUserScrollIntent();
+      if (shouldMarkTranscriptKeyScroll(event, containerRef.value)) markUserScrollIntent();
     };
 
     const onScroll = () => {

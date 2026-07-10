@@ -68,7 +68,8 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain("window.addEventListener('pointerup', onPointerScrollEnd, { passive: true });");
     expect(source).toContain("window.addEventListener('pointercancel', onPointerScrollEnd, { passive: true });");
     expect(source).toContain("window.addEventListener('keydown', onScrollKey);");
-    expect(source).toContain('if (isTranscriptScrollKey(event?.key)) markUserScrollIntent();');
+    expect(source).toContain('if (!isTranscriptScrollbarPointer(event, containerRef.value)) return;');
+    expect(source).toContain('if (shouldMarkTranscriptKeyScroll(event, containerRef.value)) markUserScrollIntent();');
     expect(source).not.toContain('USER_SCROLL_INTENT_WINDOW_MS');
     expect(source).not.toContain('isAtBottom.value = scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;');
   });
