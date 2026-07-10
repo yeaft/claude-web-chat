@@ -59,7 +59,7 @@ function thinkingV1Enabled() {
 /**
  * Translate a normalised effort ('minimal'|'low'|'medium'|'high'|'xhigh'|'max') into the value
  * accepted by the OpenAI Responses `reasoning.effort` field. Responses today
- * accepts 'minimal'|'low'|'medium'|'high'. Unsupported Anthropic-only
+ * accepts 'minimal'|'low'|'medium'|'high'|'xhigh'. Unsupported Anthropic-only
  * adaptive efforts must be dropped, not downgraded.
  */
 function effortForResponses(effort) {
