@@ -39,7 +39,7 @@ const shellOpt = isWin ? { shell: true, windowsHide: true } : {};
 const currentPath = process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin';
 const safePath = currentPath.includes(nodeBinDir) ? currentPath : `${nodeBinDir}:${currentPath}`;
 const safeEnv = { ...process.env, PATH: safePath };
-const PUBLIC_NPM_REGISTRY = 'https://registry.npmjs.org/';
+export const PUBLIC_NPM_REGISTRY = 'https://registry.npmjs.org/';
 
 /**
  * Build an npm metadata query that bypasses stale local metadata and registry
@@ -64,6 +64,11 @@ export function isUpgradeAvailable(currentVersion, latestVersion) {
   const latest = parseSemver(latestVersion);
   if (!current || !latest) return currentVersion !== latestVersion;
   return cmpTuple(latest, current) > 0;
+}
+
+/** Build the Windows worker invocation with the same registry used for metadata. */
+export function buildWindowsWorkerCommand(nodePath) {
+  return `"${nodePath.replace(/\//g, '\\')}" "%WORKER%" "%PKG%" "%PKG_DIR%" "%LOGFILE%" "${PUBLIC_NPM_REGISTRY}"`;
 }
 
 // Shared cleanup logic for restart/upgrade
@@ -340,7 +345,7 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
   // Use Node.js worker for file-level upgrade (avoids EBUSY on directory rename)
   batLines.push(
     'echo [Upgrade] Running upgrade worker at %time%... >> "%LOGFILE%"',
-    `"${process.execPath.replace(/\//g, '\\')}" "%WORKER%" "%PKG%" "%PKG_DIR%" "%LOGFILE%"`,
+    buildWindowsWorkerCommand(process.execPath),
     'if not "%errorlevel%"=="0" (',
     '  echo [Upgrade] Worker failed with exit code %errorlevel% at %time% >> "%LOGFILE%"',
     '  goto CLEANUP',
@@ -452,6 +457,7 @@ export function buildUnixUpgradeScript({
     '#!/bin/bash',
     `PID=${pid}`,
     `PKG="${pkgName}@${targetVersion}"`,
+    `REGISTRY="${PUBLIC_NPM_REGISTRY}"`,
     `NPM="${npmPath}"`,
     `LOGFILE="${join(configDir, 'logs', 'upgrade.log')}"`,
     `export PATH="${safePath}"`,
@@ -506,8 +512,8 @@ export function buildUnixUpgradeScript({
 
   // npm install (use absolute path via $NPM variable)
   const npmCmd = isGlobalInstall
-    ? `"$NPM" install -g "$PKG"`
-    : `cd "$INSTALL_DIR" && "$NPM" install "$PKG"`;
+    ? `"$NPM" install -g "$PKG" --registry="$REGISTRY"`
+    : `cd "$INSTALL_DIR" && "$NPM" install "$PKG" --registry="$REGISTRY"`;
 
   shLines.push(
     'echo "[Upgrade] Installing $PKG..."',
