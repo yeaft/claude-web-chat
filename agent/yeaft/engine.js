@@ -23,7 +23,7 @@ import { join, resolve as resolvePath } from 'path';
 import { buildSystemPrompt, buildWorkerPrompt } from './prompts.js';
 import { getRuntimePlatformInfo } from './runtime-platform.js';
 import { LLMContextError, LLMAbortError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
-import { runMemoryPreflow, buildRelevantScopes } from './sessions/pre-flow.js';
+import { runMemoryPreflow, buildRelevantScopes, memoryScopeLabel } from './sessions/pre-flow.js';
 import { readProjectDoc, pickProjectDocFile, DEFAULT_PROJECT_DOC_MAX_BYTES } from './sessions/project-doc.js';
 import { partitionMessages } from './compact/partition.js';
 import { runCompact as runCompactOrchestrator } from './compact/orchestrator.js';
@@ -905,19 +905,19 @@ export class Engine {
     if (snap.resident.length > 0) {
       parts.push(zh ? '### 常驻记忆' : '### Resident');
       for (const r of snap.resident) {
-        parts.push(`- **${r.scope}**: ${r.summary}`);
+        parts.push(`- **${memoryScopeLabel(r.scope)}**: ${r.summary}`);
       }
     }
     if (snap.recent.length > 0) {
       parts.push(zh ? '### 最近记忆' : '### Recent');
       for (const s of snap.recent) {
-        parts.push(`- (${s.scope}) ${(s.body || '').trim()}`);
+        parts.push(`- (${memoryScopeLabel(s.scope)}) ${(s.body || '').trim()}`);
       }
     }
     if (snap.onDemand.length > 0) {
       parts.push(zh ? '### 按需记忆' : '### OnDemand');
       for (const s of snap.onDemand) {
-        parts.push(`- (${s.scope}) ${(s.body || '').trim()}`);
+        parts.push(`- (${memoryScopeLabel(s.scope)}) ${(s.body || '').trim()}`);
       }
     }
     return parts.join('\n');
