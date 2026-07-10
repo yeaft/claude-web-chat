@@ -74,6 +74,7 @@ describe('Yeaft model selector dropdown', () => {
 
   it('defaults effort to the second highest available option', () => {
     expect(getDefaultModelEffort(['minimal', 'low', 'medium', 'high'])).toBe('medium');
+    expect(getDefaultModelEffort(['minimal', 'low', 'medium', 'high', 'xhigh'])).toBe('high');
     expect(getDefaultModelEffort(['low', 'medium', 'high'])).toBe('medium');
     expect(getDefaultModelEffort(['low', 'high'])).toBe('low');
     expect(getDefaultModelEffort(['low', 'medium', 'high', 'xhigh'])).toBe('high');
@@ -82,6 +83,7 @@ describe('Yeaft model selector dropdown', () => {
 
   it('hides minimal and low effort variants from the selectable model rows', () => {
     expect(getSelectableModelEfforts(['minimal', 'low', 'medium', 'high'])).toEqual(['medium', 'high']);
+    expect(getSelectableModelEfforts(['minimal', 'low', 'medium', 'high', 'xhigh'])).toEqual(['medium', 'high', 'xhigh']);
     expect(getSelectableModelEfforts(['low', 'medium', 'high', 'xhigh', 'max'])).toEqual(['medium', 'high', 'xhigh', 'max']);
   });
 

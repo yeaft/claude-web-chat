@@ -33,10 +33,10 @@ describe('Yeaft model effort metadata and config', () => {
   });
 
   it('exposes effort options for OpenAI and Anthropic reasoning-capable models', () => {
-    expect(getModelEffortOptions('gpt-5')).toEqual(['minimal', 'low', 'medium', 'high']);
-    expect(getModelEffortOptions('gpt-5.5')).toEqual(['minimal', 'low', 'medium', 'high']);
-    expect(getModelEffortOptions('github-copilot/gpt-5.4')).toEqual(['minimal', 'low', 'medium', 'high']);
-    expect(getModelEffortOptions('github-copilot/gpt-5.5')).toEqual(['minimal', 'low', 'medium', 'high']);
+    expect(getModelEffortOptions('gpt-5')).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh']);
+    expect(getModelEffortOptions('gpt-5.5')).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh']);
+    expect(getModelEffortOptions('github-copilot/gpt-5.4')).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh']);
+    expect(getModelEffortOptions('github-copilot/gpt-5.5')).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh']);
     expect(getModelEffortOptions('github-copilot/claude-opus-4.8')).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     expect(getModelEffortOptions('claude-opus-4-7')).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     expect(getModelEffortOptions('claude-opus-4-6')).toEqual(['low', 'medium', 'high', 'max']);
@@ -72,7 +72,7 @@ describe('Yeaft model effort metadata and config', () => {
       const byId = Object.fromEntries(config.availableModels.map(m => [m.id, m]));
       expect(byId['gpt-5.4']).toMatchObject({
         ref: 'github-copilot/gpt-5.4',
-        effortOptions: ['minimal', 'low', 'medium', 'high'],
+        effortOptions: ['minimal', 'low', 'medium', 'high', 'xhigh'],
       });
       expect(byId['claude-opus-4.8']).toMatchObject({
         ref: 'github-copilot/claude-opus-4.8',
@@ -161,8 +161,8 @@ describe('Yeaft adapter effort request mapping', () => {
       .toBeUndefined();
     expect(filterEffortForModel({ model: 'gpt-5', effort: 'max', effortSource: 'user' }).effort)
       .toBeUndefined();
-    expect(filterEffortForModel({ model: 'gpt-5', effort: 'xhigh', effortSource: 'user' }).effort)
-      .toBeUndefined();
+    expect(filterEffortForModel({ model: 'gpt-5', effort: 'xhigh', effortSource: 'user' }))
+      .toMatchObject({ effort: 'xhigh', effortSource: 'user' });
 
     // DeepSeek OpenAI-Responses-compatible models accept low/medium/high; minimal/max stay
     // filtered out because they are not on the published DeepSeek scale.
@@ -198,12 +198,12 @@ describe('Yeaft adapter effort request mapping', () => {
       model: 'gpt-5',
       system: 's',
       messages: [{ role: 'user', content: 'hi' }],
-      effort: 'high',
+      effort: 'xhigh',
       effortSource: 'user',
     });
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body.reasoning).toEqual({ effort: 'high' });
+    expect(body.reasoning).toEqual({ effort: 'xhigh' });
   });
 
   it('maps explicit gpt-5.5 effort through provider-qualified OpenAI Responses routing', async () => {
@@ -229,14 +229,14 @@ describe('Yeaft adapter effort request mapping', () => {
       model: 'github-copilot/gpt-5.5',
       system: 's',
       messages: [{ role: 'user', content: 'hi' }],
-      effort: 'minimal',
+      effort: 'xhigh',
       effortSource: 'user',
     });
 
     const requestCall = fetchMock.mock.calls.find(([, init]) => init && init.body);
     const body = JSON.parse(requestCall[1].body);
     expect(body.model).toBe('gpt-5.5');
-    expect(body.reasoning).toEqual({ effort: 'minimal' });
+    expect(body.reasoning).toEqual({ effort: 'xhigh' });
   });
 
 

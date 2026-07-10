@@ -14,12 +14,12 @@ describe('Yeaft model effort provider-qualified refs', () => {
   });
 
   it('groups each model into one UI row with selectable effort chips', () => {
-    const gpt = { id: 'gpt-5.5', provider: 'github-copilot', effortOptions: ['minimal', 'low', 'medium', 'high'] };
+    const gpt = { id: 'gpt-5.5', provider: 'github-copilot', effortOptions: ['minimal', 'low', 'medium', 'high', 'xhigh'] };
     const claude = { id: 'claude-opus-4.8', provider: 'github-copilot', effortOptions: ['low', 'medium', 'high', 'xhigh', 'max'], effortProtocol: 'anthropic-adaptive' };
     const rows = buildModelSelectionRows([gpt, claude]);
 
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatchObject({ modelRef: 'github-copilot/gpt-5.5', efforts: ['medium', 'high'], defaultEffort: 'medium' });
+    expect(rows[0]).toMatchObject({ modelRef: 'github-copilot/gpt-5.5', efforts: ['medium', 'high', 'xhigh'], defaultEffort: 'high' });
     expect(rows[1]).toMatchObject({ modelRef: 'github-copilot/claude-opus-4.8', efforts: ['medium', 'high', 'xhigh', 'max'], defaultEffort: 'xhigh' });
     expect(modelOptionMatchesRef(gpt, 'github-copilot/gpt-5.5')).toBe(true);
     expect(modelOptionMatchesRef(claude, 'github-copilot/claude-opus-4.8')).toBe(true);
@@ -77,6 +77,7 @@ describe('Yeaft model selector popover contract', () => {
 
   it('defaults reasoning effort to the second-highest option', () => {
     expect(getDefaultModelEffort(['minimal', 'low', 'medium', 'high'])).toBe('medium');
+    expect(getDefaultModelEffort(['minimal', 'low', 'medium', 'high', 'xhigh'])).toBe('high');
     expect(getDefaultModelEffort(['low', 'medium', 'high'])).toBe('medium');
     expect(getDefaultModelEffort(['low', 'high'])).toBe('low');
     expect(getDefaultModelEffort(['low', 'medium', 'high', 'xhigh'])).toBe('high');
@@ -84,6 +85,7 @@ describe('Yeaft model selector popover contract', () => {
 
   it('only exposes medium-or-stronger effort variants in the model menu', () => {
     expect(getSelectableModelEfforts(['minimal', 'low', 'medium', 'high'])).toEqual(['medium', 'high']);
+    expect(getSelectableModelEfforts(['minimal', 'low', 'medium', 'high', 'xhigh'])).toEqual(['medium', 'high', 'xhigh']);
     expect(getSelectableModelEfforts(['low', 'medium', 'high', 'xhigh', 'max'])).toEqual(['medium', 'high', 'xhigh', 'max']);
     expect(getSelectableModelEfforts(['minimal', 'low'])).toEqual([]);
     expect(getSelectableModelEfforts(['medium', 'medium', 'high'])).toEqual(['medium', 'high']);
