@@ -90,7 +90,6 @@ export default {
       <!-- 2. VP hand-off messages (RouteForward) -->
       <div v-if="routeMessages.length > 0" class="turn-route-messages">
         <div v-for="(route, i) in routeMessages" :key="route.key || i" class="turn-route-message">
-          <span class="turn-route-icon" aria-hidden="true">@</span>
           <div class="turn-route-body">
             <div class="turn-route-target">{{ route.target }}</div>
             <div v-if="route.text" class="turn-route-text">{{ route.text }}</div>
