@@ -16,7 +16,10 @@ import VirtualTranscript from './VirtualTranscript.js';
 import { shouldCloseYeaftVpTurn } from '../stores/helpers/yeaft-turn-boundary.js';
 import {
   estimateVirtualItemHeight,
+  isTranscriptScrollbarPointer,
+  resolveTranscriptBottomFollow,
   shouldFollowTranscriptBottom,
+  shouldMarkTranscriptKeyScroll,
   virtualTranscriptDefaults,
 } from '../utils/virtual-transcript.js';
 import {
@@ -1744,11 +1747,20 @@ export default {
     };
 
     const onVirtualTranscriptScrollState = ({ scrollTop, scrollHeight, clientHeight }) => {
-      setAutoFollowFromScrollState({
+      const atBottom = shouldFollowTranscriptBottom({
         scrollTop: scrollTop || 0,
         scrollHeight: scrollHeight || 0,
         clientHeight: clientHeight || 0,
+        threshold: SCROLL_THRESHOLD,
       });
+      // VirtualTranscript emits after both user scrolls and layout work such as
+      // delayed height measurement. Layout changes must never resume following
+      // while the user is reading history.
+      isAtBottom.value = resolveTranscriptBottomFollow({
+        following: !autoFollowPaused.value,
+        atBottom,
+      });
+      autoFollowPaused.value = !isAtBottom.value;
       maybeLoadMoreNearTop(scrollTop || 0);
     };
 
@@ -1821,11 +1833,58 @@ export default {
       );
     };
 
+    let userScrollInteractionActive = false;
+    let pointerScrollActive = false;
+    let userScrollEndTimer = null;
+    const USER_SCROLL_END_FALLBACK_MS = 250;
+
+    const clearUserScrollInteraction = () => {
+      userScrollInteractionActive = false;
+      if (userScrollEndTimer) {
+        clearTimeout(userScrollEndTimer);
+        userScrollEndTimer = null;
+      }
+    };
+
+    const scheduleUserScrollInteractionEnd = () => {
+      if (pointerScrollActive) return;
+      if (userScrollEndTimer) clearTimeout(userScrollEndTimer);
+      userScrollEndTimer = setTimeout(clearUserScrollInteraction, USER_SCROLL_END_FALLBACK_MS);
+    };
+
+    const markUserScrollIntent = () => {
+      userScrollInteractionActive = true;
+      scheduleUserScrollInteractionEnd();
+    };
+
+    const onPointerScrollStart = (event) => {
+      if (!isTranscriptScrollbarPointer(event, containerRef.value)) return;
+      pointerScrollActive = true;
+      userScrollInteractionActive = true;
+      if (userScrollEndTimer) {
+        clearTimeout(userScrollEndTimer);
+        userScrollEndTimer = null;
+      }
+    };
+
+    const onPointerScrollEnd = () => {
+      pointerScrollActive = false;
+      scheduleUserScrollInteractionEnd();
+    };
+
+    const onScrollKey = (event) => {
+      if (shouldMarkTranscriptKeyScroll(event, containerRef.value)) markUserScrollIntent();
+    };
+
     const onScroll = () => {
-      const atBottom = checkIfAtBottom();
-      isAtBottom.value = atBottom;
-      autoFollowPaused.value = !atBottom;
-      if (atBottom) pruneYeaftWindowNearBottom();
+      isAtBottom.value = resolveTranscriptBottomFollow({
+        following: !autoFollowPaused.value,
+        atBottom: checkIfAtBottom(),
+        userScroll: userScrollInteractionActive,
+      });
+      autoFollowPaused.value = !isAtBottom.value;
+      if (isAtBottom.value) pruneYeaftWindowNearBottom();
+      if (userScrollInteractionActive) scheduleUserScrollInteractionEnd();
 
       if (containerRef.value) maybeLoadMoreNearTop(containerRef.value.scrollTop || 0);
     };
@@ -1923,14 +1982,27 @@ export default {
     Vue.onMounted(() => {
       scrollToBottom();
       if (containerRef.value) {
+        containerRef.value.addEventListener('wheel', markUserScrollIntent, { passive: true });
+        containerRef.value.addEventListener('touchmove', markUserScrollIntent, { passive: true });
+        containerRef.value.addEventListener('pointerdown', onPointerScrollStart, { passive: true });
         containerRef.value.addEventListener('scroll', onScroll);
       }
+      window.addEventListener('pointerup', onPointerScrollEnd, { passive: true });
+      window.addEventListener('pointercancel', onPointerScrollEnd, { passive: true });
+      window.addEventListener('keydown', onScrollKey);
     });
 
     Vue.onUnmounted(() => {
       if (containerRef.value) {
+        containerRef.value.removeEventListener('wheel', markUserScrollIntent);
+        containerRef.value.removeEventListener('touchmove', markUserScrollIntent);
+        containerRef.value.removeEventListener('pointerdown', onPointerScrollStart);
         containerRef.value.removeEventListener('scroll', onScroll);
       }
+      window.removeEventListener('pointerup', onPointerScrollEnd);
+      window.removeEventListener('pointercancel', onPointerScrollEnd);
+      window.removeEventListener('keydown', onScrollKey);
+      clearUserScrollInteraction();
       if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
       if (typingHideTimer) { clearTimeout(typingHideTimer); typingHideTimer = null; }
       if (catRafId) { cancelAnimationFrame(catRafId); catRafId = null; }

@@ -417,6 +417,7 @@ export const useChatStore = defineStore('chat', {
     // Yeaft 独立页面状态
     // =====================
     currentView: 'chat',           // 'chat' | 'yeaft' | 'work-center' — 顶级页面切换
+    workCenterReturnView: 'chat',  // Work Center is Agent-level; remember the originating conversation surface
     workCenterAgentId: null,
     workCenterItemsByAgent: {},
     workCenterDetailByAgent: {},
@@ -1014,6 +1015,9 @@ export const useChatStore = defineStore('chat', {
     enterWorkCenter(agentId = null) {
       const target = agentId || this.currentAgent || this.agents.find(agent => agent.online)?.id || null;
       if (!target) return;
+      if (this.currentView !== 'work-center') {
+        this.workCenterReturnView = this.currentView === 'yeaft' ? 'yeaft' : 'chat';
+      }
       if (this.currentView === 'yeaft') {
         yeaftViewHelpers.applyLeaveYeaftTransition(this);
       }
@@ -1028,6 +1032,10 @@ export const useChatStore = defineStore('chat', {
       this.listWorkItems(target).catch(() => {});
     },
     leaveWorkCenter() {
+      if (this.workCenterReturnView === 'yeaft') {
+        this.enterYeaft(this.workCenterAgentId || this.currentAgent);
+        return;
+      }
       this.currentView = 'chat';
     },
     enterWorkCenterFromSession(session, seedGoal = '') {

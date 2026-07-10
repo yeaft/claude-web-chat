@@ -56,6 +56,24 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('maybeLoadMoreNearTop(containerRef.value.scrollTop || 0, { allowContinuation: true });');
   });
 
+  it('does not let virtual layout updates re-enable bottom following while reading history', () => {
+    const source = read('components/MessageList.js');
+
+    expect(source).toContain('isAtBottom.value = resolveTranscriptBottomFollow({');
+    expect(source).toContain('following: !autoFollowPaused.value,');
+    expect(source).toContain('userScroll: userScrollInteractionActive,');
+    expect(source).toContain("containerRef.value.addEventListener('wheel', markUserScrollIntent, { passive: true });");
+    expect(source).toContain("containerRef.value.addEventListener('touchmove', markUserScrollIntent, { passive: true });");
+    expect(source).toContain("containerRef.value.addEventListener('pointerdown', onPointerScrollStart, { passive: true });");
+    expect(source).toContain("window.addEventListener('pointerup', onPointerScrollEnd, { passive: true });");
+    expect(source).toContain("window.addEventListener('pointercancel', onPointerScrollEnd, { passive: true });");
+    expect(source).toContain("window.addEventListener('keydown', onScrollKey);");
+    expect(source).toContain('if (!isTranscriptScrollbarPointer(event, containerRef.value)) return;');
+    expect(source).toContain('if (shouldMarkTranscriptKeyScroll(event, containerRef.value)) markUserScrollIntent();');
+    expect(source).not.toContain('USER_SCROLL_INTENT_WINDOW_MS');
+    expect(source).not.toContain('isAtBottom.value = scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;');
+  });
+
   it('defers ResizeObserver measurements out of the observer callback', () => {
     const source = read('components/VirtualTranscript.js');
 

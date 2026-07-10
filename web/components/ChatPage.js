@@ -86,13 +86,6 @@ export default {
             </div>
           </div>
 
-          <SidebarWorkCenter
-            :agents="store.agents"
-            :active-agent-id="store.workCenterAgentId"
-            :collapsed="false"
-            @open="store.enterWorkCenter"
-          />
-
           <!-- Connection warning -->
           <div v-if="store.connectionState !== 'connected'" class="connection-status" :class="store.connectionState">
             <span v-if="store.connectionState === 'updating'" class="status-text">
@@ -111,6 +104,13 @@ export default {
           </div>
 
         </div>
+
+        <SidebarWorkCenter
+          :agents="store.agents"
+          :active-agent-id="store.workCenterAgentId"
+          :collapsed="false"
+          @open="store.enterWorkCenter"
+        />
 
         <!-- Session Tab Bar -->
         <div class="session-tab-bar">
