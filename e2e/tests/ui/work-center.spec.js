@@ -129,6 +129,7 @@ async function respondUntilOperation(mockAgent, targetOp, responses, limit = 8) 
     if (request.op === targetOp) return request;
   }
   throw new Error(`Work Center op ${targetOp} did not arrive within ${limit} requests`);
+}
 
 async function openWorkCenter(chatPage, mockAgent, items = [OPEN_ITEM]) {
   await chatPage.locator('.sidebar-work-center-trigger').click();
