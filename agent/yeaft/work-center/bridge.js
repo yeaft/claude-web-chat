@@ -5,10 +5,14 @@ import { defaultRegistry } from '../vp/registry.js';
 import { scanVpLibrary } from '../vp/vp-store.js';
 import { WorkCenterService } from './service.js';
 import { WorkItemRunner } from './runner.js';
+import { projectWorkCenterEvent } from './projection.js';
 import { join } from 'node:path';
 
 let service = null;
 let initPromise = null;
+let shuttingDown = false;
+let shutdownPromise = null;
+let serviceFactory = null;
 
 function send(msg) {
   sendToServer(msg);
@@ -18,46 +22,62 @@ async function getRuntime() {
   return ensureSessionLoaded();
 }
 
+async function createDefaultService() {
+  const yeaftDir = ctx.CONFIG?.yeaftDir;
+  if (!yeaftDir) throw new Error('Work Center requires a configured Yeaft directory');
+  const runner = new WorkItemRunner({
+    runtimeProvider: async () => {
+      const runtime = await getRuntime();
+      if (defaultRegistry.vpCount() === 0) {
+        for (const vp of scanVpLibrary({ dir: join(runtime.yeaftDir, 'virtual-persons') })) defaultRegistry.setVp(vp);
+      }
+      return {
+        ...runtime,
+        defaultWorkDir: ctx.CONFIG?.workDir || process.cwd(),
+      };
+    },
+    registry: defaultRegistry,
+    store: null,
+  });
+  const created = new WorkCenterService({
+    yeaftDir,
+    runner,
+    onEvent(event) {
+      send({ type: 'work_center_event', event: projectWorkCenterEvent(event) });
+    },
+  });
+  runner.store = created.store;
+  return created;
+}
+
 async function ensureWorkCenter() {
   if (service) return service;
+  if (shuttingDown) throw new Error('Work Center is shutting down');
   if (initPromise) return initPromise;
   initPromise = (async () => {
-    const yeaftDir = ctx.CONFIG?.yeaftDir;
-    if (!yeaftDir) throw new Error('Work Center requires a configured Yeaft directory');
-    // Boot the shared Yeaft runtime first. Besides adapters/config it seeds the
-    // default VP library on a fresh install, so role resolution below sees the
-    // same profiles as normal Session execution.
-    const runtime = await ensureSessionLoaded();
-    if (defaultRegistry.vpCount() === 0) {
-      for (const vp of scanVpLibrary({ dir: join(runtime.yeaftDir, 'virtual-persons') })) defaultRegistry.setVp(vp);
+    const created = serviceFactory ? await serviceFactory() : await createDefaultService();
+    if (shuttingDown) {
+      await created.shutdown();
+      throw new Error('Work Center shut down during initialization');
     }
-    const runner = new WorkItemRunner({
-      runtimeProvider: async () => ({
-        ...(await getRuntime()),
-        defaultWorkDir: ctx.CONFIG?.workDir || process.cwd(),
-      }),
-      registry: defaultRegistry,
-      store: null,
-    });
-    const created = new WorkCenterService({
-      yeaftDir,
-      runner,
-      onEvent(event) {
-        send({ type: 'work_center_event', event });
-      },
-    });
-    // The runner needs the service store for lease fencing. Assign after the
-    // service has completed its synchronous construction.
-    runner.store = created.store;
     created.start();
     service = created;
-    return service;
+    return created;
   })();
   try {
     return await initPromise;
   } finally {
     initPromise = null;
   }
+}
+
+export async function bootWorkCenter() {
+  return ensureWorkCenter();
+}
+
+export async function createWorkItemFromProducer(payload) {
+  const workCenter = await ensureWorkCenter();
+  return workCenter.handle('create', payload);
 }
 
 export async function handleWorkCenterRequest(msg) {
@@ -87,12 +107,36 @@ export async function handleWorkCenterRequest(msg) {
 }
 
 export async function shutdownWorkCenter() {
-  const current = service;
-  service = null;
-  if (current) await current.shutdown();
+  if (shutdownPromise) return shutdownPromise;
+  shuttingDown = true;
+  const pendingInit = initPromise;
+  shutdownPromise = (async () => {
+    let current = service;
+    if (!current && pendingInit) {
+      try { current = await pendingInit; } catch {}
+    }
+    service = null;
+    if (current) await current.shutdown();
+  })();
+  try {
+    await shutdownPromise;
+  } finally {
+    initPromise = null;
+    shutdownPromise = null;
+  }
 }
 
 export function __testSetWorkCenterService(next) {
   service = next || null;
   initPromise = null;
+  shuttingDown = false;
+  shutdownPromise = null;
+}
+
+export function __testSetWorkCenterFactory(factory) {
+  serviceFactory = factory || null;
+  service = null;
+  initPromise = null;
+  shuttingDown = false;
+  shutdownPromise = null;
 }

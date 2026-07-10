@@ -4,9 +4,10 @@ import { allTools } from '../tools/index.js';
 import { defaultRegistry } from '../vp/registry.js';
 import { NullTrace } from '../debug-trace.js';
 import { isPathInsideOrEqual } from '../tools/path-safety.js';
+import { existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
-const WORK_ITEM_TOOL_ALLOWLIST = new Set([
+const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'FileRead',
   'FileWrite',
   'FileEdit',
@@ -18,6 +19,7 @@ const WORK_ITEM_TOOL_ALLOWLIST = new Set([
   'WebSearch',
   'WebFetch',
 ]);
+const WORK_ITEM_TOOL_ALLOWLIST = new Set(WORK_ITEM_TOOL_NAMES);
 
 function copyVp(vp) {
   if (!vp) return null;
@@ -35,7 +37,6 @@ function copyVp(vp) {
 }
 
 function personaFor(vp) {
-  if (!vp) return null;
   return {
     vpId: vp.id,
     displayName: vp.name || vp.id,
@@ -47,39 +48,73 @@ function personaFor(vp) {
   };
 }
 
+function nearestExistingPath(value) {
+  let current = value;
+  const suffix = [];
+  while (!existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    suffix.unshift(path.basename(current));
+    current = parent;
+  }
+  const canonical = realpathSync(current);
+  return path.resolve(canonical, ...suffix);
+}
+
+function canonicalWorkDir(workDir) {
+  if (!existsSync(workDir)) throw new Error(`WorkItem workDir does not exist: ${workDir}`);
+  return realpathSync(workDir);
+}
+
+function assertPathInside(toolName, workDir, value) {
+  const resolved = path.resolve(workDir, value);
+  const canonical = nearestExistingPath(resolved);
+  if (!isPathInsideOrEqual(workDir, canonical)) {
+    throw new Error(`${toolName} path escapes the WorkItem workDir`);
+  }
+  return resolved;
+}
+
 function assertToolInput(toolName, input, workDir) {
   if (toolName === 'Bash') {
     if (input?.background === true) throw new Error('Work Center does not allow background Bash jobs');
-    if (input?.cwd && path.resolve(input.cwd) !== path.resolve(workDir)) {
+    if (input?.cwd && canonicalWorkDir(path.resolve(input.cwd)) !== workDir) {
       throw new Error('Work Center Bash cwd is fixed to the WorkItem workDir');
     }
+    // fixedCwd is process setup, not a shell sandbox. The WorkItem role is
+    // trusted; containers are required before running untrusted shell input.
     return { ...input, cwd: workDir, background: false };
   }
   const pathKeys = ['file_path', 'notebook_path', 'output_path', 'path'];
   const next = { ...(input || {}) };
   for (const key of pathKeys) {
     if (typeof next[key] !== 'string' || !next[key]) continue;
-    const resolved = path.resolve(workDir, next[key]);
-    if (!isPathInsideOrEqual(workDir, resolved)) {
-      throw new Error(`${toolName} path escapes the WorkItem workDir`);
-    }
-    next[key] = resolved;
+    next[key] = assertPathInside(toolName, workDir, next[key]);
   }
   if (toolName === 'ApplyPatch' && typeof next.patch === 'string') {
     const headers = [...next.patch.matchAll(/^\+\+\+\s+([^\t\r\n]+)$/gm)].map(match => match[1]);
     for (const header of headers) {
       if (header === '/dev/null') continue;
-      const patchPath = header.replace(/^[ab]\//, '');
-      const resolved = path.resolve(workDir, patchPath);
-      if (!isPathInsideOrEqual(workDir, resolved)) {
-        throw new Error('ApplyPatch target escapes the WorkItem workDir');
-      }
+      assertPathInside('ApplyPatch', workDir, header.replace(/^[ab]\//, ''));
     }
   }
   return next;
 }
 
+export function workItemToolPolicySnapshot(workDir) {
+  return {
+    policyVersion: 1,
+    allowedToolNames: [...WORK_ITEM_TOOL_NAMES],
+    readRoots: [workDir],
+    writeRoots: [workDir],
+    shell: { enabled: true, fixedCwd: workDir, background: false, sandboxed: false },
+    async: false,
+    mcpTools: [],
+  };
+}
+
 export function createWorkItemToolRegistry({ workDir, isRunActive }) {
+  const canonicalDir = canonicalWorkDir(path.resolve(workDir));
   const registry = new ToolRegistry();
   for (const tool of allTools) {
     if (!WORK_ITEM_TOOL_ALLOWLIST.has(tool.name)) continue;
@@ -87,10 +122,10 @@ export function createWorkItemToolRegistry({ workDir, isRunActive }) {
       ...tool,
       async execute(input, ctx) {
         if (!isRunActive()) throw new Error('Work Center Run lease is no longer active');
-        const output = await tool.execute(assertToolInput(tool.name, input, workDir), {
+        const output = await tool.execute(assertToolInput(tool.name, input, canonicalDir), {
           ...ctx,
-          cwd: workDir,
-          workDir,
+          cwd: canonicalDir,
+          workDir: canonicalDir,
         });
         if (!isRunActive()) throw new Error('Work Center Run lease was lost during tool execution');
         return output;
@@ -100,24 +135,34 @@ export function createWorkItemToolRegistry({ workDir, isRunActive }) {
   return registry;
 }
 
-function parseStructuredResult(text, actionType) {
+export function parseStructuredResult(text, actionType) {
   const fenced = String(text || '').match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidates = [fenced?.[1], String(text || '')].filter(Boolean);
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate.trim());
-      if (['completed', 'waiting', 'retryable', 'failed'].includes(parsed.outcome)) {
+      if (!['completed', 'waiting', 'retryable', 'failed'].includes(parsed.outcome)) continue;
+      const result = {
+        outcome: parsed.outcome,
+        summary: String(parsed.summary || ''),
+        evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
+        waitingReason: parsed.waitingReason ? String(parsed.waitingReason) : null,
+        error: parsed.error ? String(parsed.error) : null,
+        reviewDecision: ['approved', 'changes_requested'].includes(parsed.reviewDecision)
+          ? parsed.reviewDecision
+          : null,
+        contractPatch: actionType === 'triage' && parsed.contractPatch && typeof parsed.contractPatch === 'object'
+          ? parsed.contractPatch
+          : null,
+      };
+      if (actionType === 'review' && result.outcome === 'completed' && !result.reviewDecision) {
         return {
-          outcome: parsed.outcome,
-          summary: String(parsed.summary || ''),
-          evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
-          waitingReason: parsed.waitingReason ? String(parsed.waitingReason) : null,
-          error: parsed.error ? String(parsed.error) : null,
-          reviewDecision: actionType === 'review' && ['approved', 'changes_requested'].includes(parsed.reviewDecision)
-            ? parsed.reviewDecision
-            : null,
+          ...result,
+          outcome: 'failed',
+          error: 'Completed review requires approved or changes_requested',
         };
       }
+      return result;
     } catch {}
   }
   return {
@@ -129,13 +174,25 @@ function parseStructuredResult(text, actionType) {
 }
 
 function completionContract(action) {
+  const reviewField = action.type === 'review'
+    ? ',\n  "reviewDecision": "approved|changes_requested"'
+    : '';
+  const triageField = action.type === 'triage'
+    ? ',\n  "contractPatch": { "goal": "optional refined goal", "acceptanceCriteria": ["optional refined criterion"] }'
+    : '';
   return `\n\nYou are executing one Work Center Action. End your response with exactly one JSON object, preferably in a json code fence:\n{
   "outcome": "completed|waiting|retryable|failed",
   "summary": "short result",
   "evidence": ["test, PR, file, or other verifiable evidence"],
   "waitingReason": null,
-  "error": null${action.type === 'review' ? ',\n  "reviewDecision": "approved|changes_requested"' : ''}
+  "error": null${reviewField}${triageField}
 }\nA model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
+}
+
+function resolveModel(config, vp) {
+  if (vp.modelHint === 'fast' && config.fastModel) return config.fastModel;
+  if (vp.modelHint === 'primary' && config.primaryModel) return config.primaryModel;
+  return config.model || config.primaryModel || null;
 }
 
 export class WorkItemRunner {
@@ -147,25 +204,46 @@ export class WorkItemRunner {
 
   async run({ workItem, action, run, signal, ownerBootId }) {
     const runtime = await this.runtimeProvider();
-    const workDir = workItem.workDir || runtime.defaultWorkDir || process.cwd();
-    const vp = copyVp(this.registry.getVp(action.requiredRole) || this.registry.getVp('omni'));
+    const rawWorkDir = workItem.workDir || runtime.defaultWorkDir || process.cwd();
+    const workDir = canonicalWorkDir(path.resolve(rawWorkDir));
+    const vp = copyVp(this.registry.getVp(action.requiredRole));
+    if (!vp) {
+      const error = new Error(`Required Work Center role is unavailable: ${action.requiredRole}`);
+      error.retryable = false;
+      throw error;
+    }
     const isRunActive = () => !signal.aborted
       && this.store.isActiveRun(run.id, ownerBootId, run.leaseEpoch);
+    const toolPolicySnapshot = workItemToolPolicySnapshot(workDir);
     const toolRegistry = createWorkItemToolRegistry({ workDir, isRunActive });
+    const model = resolveModel(runtime.config, vp);
     const config = {
       ...runtime.config,
+      model,
       _readOnly: true,
       serverMode: true,
+      // WorkItem messages live in the Work Center DB. Never archive their
+      // transient tool bodies into the user memory tree.
+      archive: { ...(runtime.config.archive || {}), toolResults: false },
     };
-    if (vp?.modelHint === 'fast' && runtime.config.fastModel) {
-      config.model = runtime.config.fastModel;
-    } else if (vp?.modelHint === 'primary' && runtime.config.primaryModel) {
-      config.model = runtime.config.primaryModel;
+    if (!this.store || typeof this.store.setRunExecutionSnapshots !== 'function') {
+      throw new Error('Work Center Runner requires a persistent Run store');
     }
+    const snapshotsWritten = this.store.setRunExecutionSnapshots(
+      run.id,
+      ownerBootId,
+      run.leaseEpoch,
+      {
+        roleSnapshot: { id: action.requiredRole, actionType: action.type },
+        vpSnapshot: vp,
+        modelSnapshot: { id: model, provider: runtime.config.provider || null },
+        toolPolicySnapshot,
+      },
+    );
+    if (!snapshotsWritten) throw new Error('Work Center Run lost its lease before execution');
+
     const engine = new Engine({
       adapter: runtime.adapter,
-      // WorkItem execution must not appear in a Session debug timeline.
-      // Run/Event evidence is persisted by Work Center itself.
       trace: new NullTrace(),
       config,
       conversationStore: null,
@@ -174,10 +252,12 @@ export class WorkItemRunner {
       toolRegistry,
       skillManager: null,
       mcpManager: null,
-      yeaftDir: runtime.yeaftDir,
-      toolStats: runtime.toolStats || null,
+      // WorkItem execution has its own durable Run/Event record. Do not let
+      // the Engine create Session exec logs, archives, or shared tool stats.
+      yeaftDir: null,
+      toolStats: null,
       taskManager: null,
-      vpId: vp?.id || action.requiredRole,
+      vpId: vp.id,
     });
 
     let text = '';
@@ -200,7 +280,6 @@ export class WorkItemRunner {
           toolEvidence.push({
             tool: event.name,
             isError: !!event.isError,
-            output: String(event.output || '').slice(0, 2_000),
           });
         }
       }

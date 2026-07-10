@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { WorkItemStore } from './store.js';
 import { WorkflowController } from './controller.js';
 import { WorkItemWatcher } from './watcher.js';
+import { projectWorkItemSummary } from './projection.js';
 
 function requiredString(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
@@ -31,7 +32,10 @@ export class WorkCenterService {
   async handle(op, payload = {}) {
     switch (op) {
       case 'list':
-        return { items: this.store.listWorkItems(payload), watcher: this.watcher.status() };
+        return {
+          items: this.store.listWorkItems(payload).map(projectWorkItemSummary),
+          watcher: this.watcher.status(),
+        };
       case 'get':
         return this.#requiredItem(payload.id);
       case 'create': {
@@ -43,8 +47,16 @@ export class WorkCenterService {
             : [],
           workflowTemplate: payload.workflowTemplate || 'software-change',
           workDir: typeof payload.workDir === 'string' ? payload.workDir.trim() : '',
-          origin: payload.origin && typeof payload.origin === 'object' ? payload.origin : null,
-          linkedSessionIds: Array.isArray(payload.linkedSessionIds) ? payload.linkedSessionIds : [],
+          origin: payload.origin && typeof payload.origin === 'object'
+            ? {
+                sessionId: typeof payload.origin.sessionId === 'string' ? payload.origin.sessionId : null,
+                messageId: typeof payload.origin.messageId === 'string' ? payload.origin.messageId : null,
+                createdBy: typeof payload.origin.createdBy === 'string' ? payload.origin.createdBy : null,
+              }
+            : null,
+          linkedSessionIds: Array.isArray(payload.linkedSessionIds)
+            ? [...new Set(payload.linkedSessionIds.map(value => String(value).trim()).filter(Boolean))]
+            : [],
           start: payload.start !== false,
         });
         const detail = this.#requiredItem(item.id);

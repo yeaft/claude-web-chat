@@ -104,19 +104,25 @@ describe('Work Center relay', () => {
     expect(sendToWebClient).not.toHaveBeenCalled();
   });
 
-  it('uses the trusted Agent owner for unsolicited projection events', async () => {
+  it('uses the trusted Agent owner for redacted unsolicited projection events', async () => {
     agents.set('trusted-agent', { ownerId: 'owner-1' });
     await handleAgentWorkCenter('trusted-agent', {
       type: 'work_center_event',
       agentId: 'spoofed-agent',
       _requestUserId: 'victim',
-      event: { type: 'work_item.updated' },
+      event: {
+        type: 'work_item.updated',
+        workItem: { id: 'wi-1', title: 'Safe summary', status: 'running' },
+      },
     });
 
     expect(forwardToClients).toHaveBeenCalledWith('trusted-agent', null, {
       type: 'work_center_event',
       agentId: 'trusted-agent',
-      event: { type: 'work_item.updated' },
+      event: {
+        type: 'work_item.updated',
+        workItem: { id: 'wi-1', title: 'Safe summary', status: 'running' },
+      },
     });
     const outgoing = forwardToClients.mock.calls[0][2];
     expect(outgoing._requestUserId).toBe('owner-1');

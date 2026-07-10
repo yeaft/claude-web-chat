@@ -54,6 +54,18 @@ export default {
       },
     },
   },
+  mounted() {
+    const draft = this.store.workCenterCreateDraft;
+    if (!draft) return;
+    this.form = {
+      title: draft.title || '',
+      goal: draft.goal || '',
+      acceptanceCriteriaText: '',
+      workDir: draft.workDir || '',
+      start: true,
+    };
+    this.createOpen = true;
+  },
   methods: {
     tr(key, fallback) {
       const translated = this.$t ? this.$t(key) : key;
@@ -84,12 +96,15 @@ export default {
       try { await this.store.getWorkItem(item.id, this.agentId); } catch {}
     },
     closeCreate() {
-      if (!this.saving) this.createOpen = false;
+      if (this.saving) return;
+      this.createOpen = false;
+      this.store.workCenterCreateDraft = null;
     },
     async submitCreate() {
       if (!this.form.title.trim() || !this.form.goal.trim()) return;
       this.saving = true;
       try {
+        const draft = this.store.workCenterCreateDraft;
         const detail = await this.store.createWorkItem({
           title: this.form.title.trim(),
           goal: this.form.goal.trim(),
@@ -97,10 +112,13 @@ export default {
             .split('\n').map(value => value.trim()).filter(Boolean),
           workDir: this.form.workDir.trim(),
           workflowTemplate: 'software-change',
+          origin: draft?.origin || null,
+          linkedSessionIds: draft?.linkedSessionIds || [],
           start: this.form.start,
         }, this.agentId);
         this.selectedId = detail.id;
         this.form = { title: '', goal: '', acceptanceCriteriaText: '', workDir: '', start: true };
+        this.store.workCenterCreateDraft = null;
         this.createOpen = false;
       } finally {
         this.saving = false;
@@ -233,6 +251,28 @@ export default {
                     <small>{{ agentName(action.requiredRole) }} · {{ statusLabel(action.status) }}</small>
                   </li>
                 </ol>
+              </div>
+              <div class="work-center-section" v-if="selected.runs?.length">
+                <h3>{{ tr('workCenter.runs', 'Runs and evidence') }}</h3>
+                <article v-for="run in selected.runs" :key="run.id" class="work-center-run">
+                  <div class="work-center-run-heading">
+                    <strong>{{ actionLabel(selected.actions?.find(action => action.id === run.actionId)?.type) }}</strong>
+                    <span class="work-center-status" :data-status="run.status">{{ statusLabel(run.status) }}</span>
+                  </div>
+                  <small>
+                    {{ run.vpSnapshot?.name || run.roleSnapshot?.id || tr('workCenter.unknownRole', 'Unknown role') }}
+                    <template v-if="run.modelSnapshot?.id"> · {{ run.modelSnapshot.id }}</template>
+                    · {{ time(run.startedAt) }}
+                  </small>
+                  <p v-if="run.summary">{{ run.summary }}</p>
+                  <p v-if="run.waitingReason" class="work-center-run-reason"><strong>{{ tr('workCenter.waitingReason', 'Waiting:') }}</strong> {{ run.waitingReason }}</p>
+                  <p v-if="run.error" class="work-center-error">{{ run.error }}</p>
+                  <ul v-if="run.evidence?.length" class="work-center-evidence">
+                    <li v-for="(evidence, index) in run.evidence" :key="run.id + ':' + index">
+                      {{ typeof evidence === 'string' ? evidence : (evidence.tool ? evidence.tool + (evidence.isError ? ' · error' : ' · completed') : JSON.stringify(evidence)) }}
+                    </li>
+                  </ul>
+                </article>
               </div>
               <div class="work-center-section" v-if="selected.events?.length">
                 <h3>{{ tr('workCenter.activity', 'Activity') }}</h3>

@@ -281,6 +281,7 @@ export default {
           :send-fn="sendMessage"
           :cancel-fn="cancelYeaft"
           :show-stop="isProcessing"
+          :work-item-fn="openWorkItemDraft"
           placeholder-key="yeaft.placeholder"
         />
         </div><!-- /.yeaft-main-center -->
@@ -688,6 +689,11 @@ export default {
       const gs = sessionsStore();
       const sessionId = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
       if (sessionId) store.cancelYeaftSession(sessionId);
+    };
+
+    const openWorkItemDraft = (seedGoal = '') => {
+      const session = topbarGroup.value;
+      if (session) store.enterWorkCenterFromSession(session, seedGoal);
     };
 
     const toggleSidebar = () => {
@@ -1252,6 +1258,7 @@ export default {
       goBack,
       sendMessage,
       cancelYeaft,
+      openWorkItemDraft,
       toggleSidebar,
       toggleDebug,
       closeDebug,

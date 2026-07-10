@@ -73,7 +73,7 @@ export function buildWindowsWorkerCommand(nodePath) {
 
 // Shared cleanup logic for restart/upgrade
 function cleanupAndExit(exitCode) {
-  setTimeout(() => {
+  setTimeout(async () => {
     for (const [, term] of ctx.terminals) {
       if (term.pty) { try { term.pty.kill(); } catch {} }
       if (term.timer) clearTimeout(term.timer);
@@ -84,6 +84,12 @@ function cleanupAndExit(exitCode) {
       if (state.inputStream) state.inputStream.done();
     }
     ctx.conversations.clear();
+    try {
+      const { shutdownWorkCenter } = await import('../yeaft/work-center/bridge.js');
+      await shutdownWorkCenter();
+    } catch (err) {
+      console.warn(`[Agent] Work Center shutdown failed: ${err?.message || err}`);
+    }
     stopAgentHeartbeat();
     if (ctx.ws) {
       ctx.ws.removeAllListeners('close');

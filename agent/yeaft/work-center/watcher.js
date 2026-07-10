@@ -83,7 +83,7 @@ export class WorkItemWatcher {
     } catch (err) {
       if (signal.aborted) return;
       result = {
-        outcome: 'retryable',
+        outcome: err?.retryable === false ? 'failed' : 'retryable',
         summary: '',
         evidence: [],
         error: err?.message || String(err),

@@ -423,6 +423,7 @@ export const useChatStore = defineStore('chat', {
     workCenterErrorByAgent: {},
     workCenterWatcherByAgent: {},
     workCenterPending: {},
+    workCenterCreateDraft: null,
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
     yeaftConversationIdsByAgent: {}, // { [agentId]: conversationId } 跨机器 agent 的 Yeaft message cache 隔离
     yeaftSessionAgentById: {},      // { [sessionId]: agentId } 用 active session 反查所属 agent 的 conversationId
@@ -1027,6 +1028,18 @@ export const useChatStore = defineStore('chat', {
     },
     leaveWorkCenter() {
       this.currentView = 'chat';
+    },
+    enterWorkCenterFromSession(session, seedGoal = '') {
+      if (!session?.id) return;
+      const agentId = session.agentId || resolveAgentIdForSession(this, session.id);
+      this.workCenterCreateDraft = {
+        title: String(session.title || session.name || '').trim(),
+        goal: String(seedGoal || '').trim(),
+        workDir: String(session.workDir || '').trim(),
+        origin: { sessionId: session.id, messageId: null, createdBy: 'user' },
+        linkedSessionIds: [session.id],
+      };
+      this.enterWorkCenter(agentId);
     },
     workCenterRequest(op, payload = {}, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;

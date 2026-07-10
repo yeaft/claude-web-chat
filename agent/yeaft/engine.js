@@ -2278,7 +2278,7 @@ export class Engine {
         // OpenAI/Anthropic toolCallId pairing intact.
         let wireMessages = stripMetaForWire([...conversationMessages]);
 
-        if (this.#yeaftDir && (this.#config?.archive?.toolResults !== false)) {
+        if (scenario !== 'work-item' && this.#yeaftDir && (this.#config?.archive?.toolResults !== false)) {
           try {
             const swept = await archiveToolResults({
               root: `${this.#yeaftDir}/memory`,
@@ -2315,7 +2315,7 @@ export class Engine {
         // The estimator (`estimateMessagesTokens`) is approxTokens
         // (char/4 with CJK weighting) — good enough for a guard rail; a
         // real tokenizer would be exact but adds a heavy dep.
-        if (this.#yeaftDir && (this.#config?.archive?.toolResults !== false)) {
+        if (scenario !== 'work-item' && this.#yeaftDir && (this.#config?.archive?.toolResults !== false)) {
           const PREFLIGHT_RATIO = 0.85;
           const threshold = Math.floor(currentContextWindow * PREFLIGHT_RATIO);
           const estimate = estimateMessagesTokens(systemPrompt, wireMessages);

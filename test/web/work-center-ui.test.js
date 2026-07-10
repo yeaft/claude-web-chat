@@ -25,6 +25,19 @@ describe('Work Center UI contract', () => {
     expect(store).not.toContain('workCenterActiveTasksBySession');
   });
 
+  it('offers Session-to-WorkItem creation and renders Run evidence', () => {
+    const input = read('web/components/ChatInput.js');
+    const page = read('web/components/YeaftPage.js');
+    const workCenter = read('web/components/WorkCenterPage.js');
+    const store = read('web/stores/chat.js');
+    expect(input).toContain('workItemFn');
+    expect(page).toContain(':work-item-fn="openWorkItemDraft"');
+    expect(store).toContain('enterWorkCenterFromSession');
+    expect(workCenter).toContain("tr('workCenter.runs'");
+    expect(workCenter).toContain('run.waitingReason');
+    expect(workCenter).toContain('run.evidence');
+  });
+
   it('uses existing design tokens and adds no hard-coded colors', () => {
     const css = read('web/styles/work-center.css');
     expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i);
