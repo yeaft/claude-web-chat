@@ -260,7 +260,6 @@ export class WorkItemRunner {
     });
 
     let text = '';
-    const toolEvidence = [];
     try {
       for await (const event of engine.query({
         prompt: `${action.instruction}${completionContract(action)}`,
@@ -275,18 +274,10 @@ export class WorkItemRunner {
         if (typeof event?.text === 'string') text += event.text;
         else if (typeof event?.delta === 'string') text += event.delta;
         else if (typeof event?.content === 'string' && event.type === 'assistant') text += event.content;
-        if (event?.type === 'tool_end') {
-          toolEvidence.push({
-            tool: event.name,
-            isError: !!event.isError,
-          });
-        }
       }
     } finally {
       try { engine.abort?.('work_item_run_finished'); } catch {}
     }
-    const result = parseStructuredResult(text, action.type);
-    result.evidence = [...result.evidence, ...toolEvidence].slice(-100);
-    return result;
+    return parseStructuredResult(text, action.type);
   }
 }

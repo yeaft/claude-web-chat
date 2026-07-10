@@ -35,7 +35,8 @@ describe('Work Center UI contract', () => {
     expect(input).toContain('workItemFn');
     expect(page).toContain(':work-item-fn="openWorkItemDraft"');
     expect(store).toContain('enterWorkCenterFromSession');
-    expect(workCenter).toContain("tr('workCenter.runs'");
+    expect(workCenter).toContain('class="work-center-action-card"');
+    expect(workCenter).toContain('runsForAction(action.id)');
     expect(workCenter).toContain('run.waitingReason');
     expect(workCenter).toContain('run.evidence');
   });
@@ -58,6 +59,20 @@ describe('Work Center UI contract', () => {
     expect(page).toContain("'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded");
     expect(css).toContain('.work-center-main.workbench-maximized');
     expect(chat.indexOf('<SidebarWorkCenter')).toBeGreaterThan(chat.indexOf('<!-- Connection warning -->'));
+  });
+
+  it('uses collapsible Action cards and Action-level guidance instead of a tool-call feed', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    const store = read('web/stores/chat.js');
+    const css = read('web/styles/work-center.css');
+
+    expect(page).toContain('class="work-center-action-card"');
+    expect(page).toContain('@click="toggleAction(action)"');
+    expect(page).toContain("['ready','running'].includes(selected.status)");
+    expect(page).toContain('@click="guideSelectedAction"');
+    expect(store).toContain("workCenterRequest('guide'");
+    expect(css).toContain('.work-center-action-card');
+    expect(page).not.toContain('v-for="tool');
   });
 
   it('uses a compact header and flat empty state instead of a dashboard hero', () => {
@@ -132,6 +147,9 @@ describe('Work Center UI contract', () => {
       'workCenter.selectTitle',
       'workCenter.status.needs_attention',
       'workCenter.action.review',
+      'workCenter.guidance',
+      'workCenter.sendGuidance',
+      'workCenter.reuseMemory',
     ];
     for (const key of keys) {
       expect(en).toContain(`'${key}'`);

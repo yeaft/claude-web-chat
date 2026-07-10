@@ -69,12 +69,29 @@ export class WorkflowController {
       workflowTemplate: input.workflowTemplate || 'software-change',
       acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? input.acceptanceCriteria : [],
     };
-    const firstAction = input.start !== false ? initialActionFor(draft) : null;
+    let firstAction = input.start !== false ? initialActionFor(draft) : null;
+    if (firstAction && draft.reuseMemory !== false) {
+      const context = this.store.getReusableContext(draft.workDir, draft.id);
+      firstAction = {
+        ...firstAction,
+        context,
+        instruction: actionInstruction(firstAction, draft, context),
+      };
+    }
     return this.store.createWorkItem(draft, firstAction);
   }
 
   start(id) {
-    const detail = this.store.startWorkItemAtomic(id, initialActionFor);
+    const detail = this.store.startWorkItemAtomic(id, workItem => {
+      const action = initialActionFor(workItem);
+      if (workItem.reuseMemory === false) return action;
+      const context = this.store.getReusableContext(workItem.workDir, workItem.id);
+      return {
+        ...action,
+        context,
+        instruction: actionInstruction(action, workItem, context),
+      };
+    });
     if (!detail) throw new Error(`WorkItem not found: ${id}`);
     return detail;
   }
@@ -89,6 +106,35 @@ export class WorkflowController {
     const workItem = this.store.cancelWorkItemAtomic(id);
     if (!workItem) throw new Error(`WorkItem not found: ${id}`);
     return this.store.getWorkItemDetail(id);
+  }
+
+  guide(id, input = {}) {
+    const guidance = typeof input.guidance === 'string' ? input.guidance.trim().slice(0, 8_000) : '';
+    if (!guidance) throw new Error('guidance is required');
+    const expected = {
+      actionId: typeof input.actionId === 'string' ? input.actionId : '',
+      revision: Number(input.revision),
+    };
+    if (!expected.actionId || !Number.isInteger(expected.revision)) {
+      throw new Error('actionId and revision are required for guidance');
+    }
+    const detail = this.store.addActionGuidance(id, guidance, expected, (workItem, previous) => {
+      const context = [...(previous.context || []), {
+        type: 'guidance',
+        role: 'user',
+        summary: guidance,
+        evidence: [],
+      }];
+      const step = { type: previous.type, requiredRole: previous.requiredRole };
+      return {
+        ...step,
+        context,
+        instruction: actionInstruction(step, workItem, context),
+        maxAttempts: previous.maxAttempts || 2,
+      };
+    });
+    if (!detail) throw new Error(`WorkItem not found: ${id}`);
+    return detail;
   }
 
   retry(id, input = {}) {

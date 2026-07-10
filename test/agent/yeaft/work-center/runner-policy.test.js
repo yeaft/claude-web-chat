@@ -114,6 +114,16 @@ describe('Work Center tool policy', () => {
       .rejects.toThrow(/lease is no longer active/);
   });
 
+  it('keeps model-selected evidence structured instead of exposing every tool call', () => {
+    const result = parseStructuredResult(JSON.stringify({
+      outcome: 'completed',
+      summary: 'Implemented and verified',
+      evidence: [{ kind: 'test', label: 'Focused tests', status: 'passed' }],
+    }), 'implement');
+    expect(result.evidence).toEqual([{ kind: 'test', label: 'Focused tests', status: 'passed' }]);
+    expect(result.evidence).not.toContainEqual(expect.objectContaining({ kind: 'tool' }));
+  });
+
   it('does not interpret a missing review decision as approval', () => {
     const result = parseStructuredResult(JSON.stringify({
       outcome: 'completed', summary: 'looks fine', evidence: [],

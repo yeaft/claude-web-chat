@@ -47,6 +47,7 @@ export class WorkCenterService {
             : [],
           workflowTemplate: payload.workflowTemplate || 'software-change',
           workDir: typeof payload.workDir === 'string' ? payload.workDir.trim() : '',
+          reuseMemory: payload.reuseMemory !== false,
           origin: payload.origin && typeof payload.origin === 'object'
             ? {
                 sessionId: typeof payload.origin.sessionId === 'string' ? payload.origin.sessionId : null,
@@ -80,6 +81,17 @@ export class WorkCenterService {
         const detail = this.controller.cancel(id);
         this.watcher.abortInvalidWorkItemRuns(id);
         this.#emit({ type: 'work_item.cancelled', workItem: detail });
+        return detail;
+      }
+      case 'guide': {
+        const id = requiredString(payload.id, 'id');
+        const detail = this.controller.guide(id, {
+          guidance: typeof payload.guidance === 'string' ? payload.guidance : '',
+          actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
+          revision: payload.revision,
+        });
+        this.watcher.abortInvalidWorkItemRuns(id);
+        this.#emit({ type: 'action.guidance_added', workItem: detail });
         return detail;
       }
       case 'retry': {

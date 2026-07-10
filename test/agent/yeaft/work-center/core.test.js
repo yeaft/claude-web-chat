@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
@@ -58,6 +58,95 @@ describe('Work Center core', () => {
     expect(detail.origin).toEqual({ sessionId: 'session-1', messageId: 'message-1', createdBy: 'user' });
     expect(detail.linkedSessionIds).toEqual(['session-1']);
     expect(store.listWorkItems({ sessionId: 'session-1' }).map(row => row.id)).toEqual([item.id]);
+  });
+
+  it('reuses only structured completed context from the same explicit work directory', () => {
+    const source = controller.create(createInput({ title: 'Earlier work' }));
+    for (const type of ['triage', 'implement', 'review', 'deliver']) {
+      const claim = store.claimReadyAction('boot-a', 5_000);
+      controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, completed(type, type === 'triage' ? {
+        summary: 'Earlier project decision',
+        evidence: [{ kind: 'file', label: 'Config', ref: 'config.json', stdout: 'hidden' }],
+      } : {}));
+    }
+
+    const reused = controller.create(createInput({ title: 'Follow-up work' }));
+    const reusedAction = store.getWorkItemDetail(reused.id).actions[0];
+    expect(reusedAction.context).toContainEqual({
+      type: 'triage',
+      role: 'omni',
+      summary: 'Earlier project decision',
+      evidence: [{ kind: 'file', label: 'Config', ref: 'config.json' }],
+      reviewDecision: null,
+      sourceTitle: 'Earlier work',
+    });
+    expect(reusedAction.instruction).toContain('Earlier project decision');
+    expect(reusedAction.instruction).not.toContain('hidden');
+
+    const isolated = controller.create(createInput({
+      title: 'Isolated work',
+      workDir: dir,
+      reuseMemory: false,
+    }));
+    expect(store.getWorkItemDetail(isolated.id).actions[0].context).toEqual([]);
+    expect(source.id).not.toBe(reused.id);
+  });
+
+  it('uses a creation-time canonical workspace identity for memory reuse', () => {
+    const projectA = mkdtempSync(join(dir, 'project-a-'));
+    const projectB = mkdtempSync(join(dir, 'project-b-'));
+    const alias = join(dir, 'current');
+    symlinkSync(projectA, alias);
+    const source = controller.create(createInput({ title: 'Project A', workDir: alias }));
+    for (const type of ['triage', 'implement', 'review', 'deliver']) {
+      const claim = store.claimReadyAction('boot-a', 5_000);
+      controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, completed(type, type === 'triage'
+        ? { summary: 'Project A only' }
+        : {}));
+    }
+
+    const equivalent = controller.create(createInput({ title: 'Equivalent path', workDir: `${projectA}/` }));
+    expect(store.getWorkItemDetail(equivalent.id).actions[0].instruction).toContain('Project A only');
+
+    unlinkSync(alias);
+    symlinkSync(projectB, alias);
+    const retargeted = controller.create(createInput({ title: 'Project B', workDir: alias }));
+    expect(store.getWorkItemDetail(retargeted.id).actions[0].instruction).not.toContain('Project A only');
+    expect(store.getWorkItem(source.id).workspaceKey).toBe(projectA);
+  });
+
+  it('restarts only the current Action when the user adds guidance', () => {
+    const item = controller.create(createInput());
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    const guided = controller.guide(item.id, {
+      guidance: 'Keep the public API unchanged',
+      actionId: claim.action.id,
+      revision: item.revision,
+    });
+
+    expect(store.getRun(claim.run.id).status).toBe('superseded');
+    expect(guided.status).toBe('ready');
+    expect(guided.actions).toHaveLength(2);
+    expect(guided.actions[0].status).toBe('superseded');
+    expect(guided.actions[1]).toMatchObject({ type: 'triage', requiredRole: 'omni', status: 'ready' });
+    expect(guided.actions[1].instruction).toContain('Keep the public API unchanged');
+    expect(() => controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, completed('triage')))
+      .toThrow(/stale|cancelled|expired|finished/i);
+  });
+
+  it('rejects guidance when the visible Action or revision is stale', () => {
+    const item = controller.create(createInput());
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage'));
+
+    expect(() => controller.guide(item.id, {
+      guidance: 'This was intended for triage',
+      actionId: triage.action.id,
+      revision: item.revision,
+    })).toThrow(/Action changed/i);
+    expect(store.getWorkItemDetail(item.id).actions.at(-1)).toMatchObject({
+      type: 'implement', status: 'ready',
+    });
   });
 
   it('claims a ready Action exactly once and fences stale terminal submissions', () => {

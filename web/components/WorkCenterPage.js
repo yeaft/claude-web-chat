@@ -14,11 +14,15 @@ export default {
       filter: 'open',
       search: '',
       resumeAnswer: '',
+      actionGuidance: '',
+      expandedActions: {},
+      activityOpen: false,
       form: {
         title: '',
         goal: '',
         acceptanceCriteriaText: '',
         workDir: '',
+        reuseMemory: true,
         start: true,
       },
     };
@@ -101,6 +105,7 @@ export default {
       goal: draft.goal || '',
       acceptanceCriteriaText: '',
       workDir: draft.workDir || '',
+      reuseMemory: true,
       start: true,
     };
     this.createOpen = true;
@@ -140,7 +145,22 @@ export default {
     async selectItem(item) {
       this.selectedId = item.id;
       this.resumeAnswer = '';
-      try { await this.store.getWorkItem(item.id, this.agentId); } catch {}
+      this.actionGuidance = '';
+      this.activityOpen = false;
+      try {
+        const detail = await this.store.getWorkItem(item.id, this.agentId);
+        const currentId = detail?.currentActionId;
+        this.expandedActions = currentId ? { [currentId]: true } : {};
+      } catch {}
+    },
+    toggleAction(action) {
+      this.expandedActions = {
+        ...this.expandedActions,
+        [action.id]: !this.expandedActions[action.id],
+      };
+    },
+    runsForAction(actionId) {
+      return (this.selected?.runs || []).filter(run => run.actionId === actionId);
     },
     closeCreate() {
       if (this.saving) return;
@@ -161,10 +181,12 @@ export default {
           workflowTemplate: 'software-change',
           origin: draft?.origin || null,
           linkedSessionIds: draft?.linkedSessionIds || [],
+          reuseMemory: this.form.reuseMemory,
           start: this.form.start,
         }, this.agentId);
         this.selectedId = detail.id;
-        this.form = { title: '', goal: '', acceptanceCriteriaText: '', workDir: '', start: true };
+        this.expandedActions = detail.currentActionId ? { [detail.currentActionId]: true } : {};
+        this.form = { title: '', goal: '', acceptanceCriteriaText: '', workDir: '', reuseMemory: true, start: true };
         this.store.workCenterCreateDraft = null;
         this.createOpen = false;
       } finally {
@@ -175,10 +197,23 @@ export default {
       if (!this.selected) return;
       await this.store.startWorkItem(this.selected.id, this.agentId);
     },
+    async guideSelectedAction() {
+      if (!this.selected || !this.actionGuidance.trim()) return;
+      const detail = await this.store.guideWorkItemAction(
+        this.selected.id,
+        this.actionGuidance.trim(),
+        this.selected.currentActionId,
+        this.selected.revision,
+        this.agentId,
+      );
+      this.actionGuidance = '';
+      this.expandedActions = detail.currentActionId ? { [detail.currentActionId]: true } : {};
+    },
     async retrySelected() {
       if (!this.selected) return;
-      await this.store.retryWorkItem(this.selected.id, this.resumeAnswer, this.agentId);
+      const detail = await this.store.retryWorkItem(this.selected.id, this.resumeAnswer, this.agentId);
       this.resumeAnswer = '';
+      this.expandedActions = detail.currentActionId ? { [detail.currentActionId]: true } : {};
     },
     async cancelSelected() {
       if (!this.selected) return;
@@ -348,43 +383,62 @@ export default {
                   </ul>
                   <p v-else class="work-center-muted">{{ tr('workCenter.noCriteria', 'No criteria provided') }}</p>
                 </div>
+                <div v-if="['ready','running'].includes(selected.status)" class="work-center-section work-center-guidance">
+                  <label>{{ tr('workCenter.guidance', 'Add guidance to the current Action') }}
+                    <textarea v-model="actionGuidance" rows="2" :placeholder="tr('workCenter.guidanceHint', 'Clarify constraints or redirect the current Action')"></textarea>
+                  </label>
+                  <div>
+                    <small>{{ tr('workCenter.guidanceRestartHint', 'This restarts the current Action with the new guidance.') }}</small>
+                    <button class="btn-secondary" type="button" @click="guideSelectedAction" :disabled="!actionGuidance.trim()">
+                      {{ tr('workCenter.sendGuidance', 'Send guidance') }}
+                    </button>
+                  </div>
+                </div>
                 <div class="work-center-section" v-if="selected.actions?.length">
                   <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
-                  <ol class="work-center-timeline">
-                    <li v-for="action in selected.actions" :key="action.id" :data-status="action.status">
-                      <span class="work-center-timeline-marker" aria-hidden="true"></span>
-                      <span>{{ actionLabel(action.type) }}</span>
-                      <small>{{ action.requiredRole }} · {{ statusLabel(action.status) }}</small>
-                    </li>
-                  </ol>
-                </div>
-                <div class="work-center-section" v-if="selected.runs?.length">
-                  <h3>{{ tr('workCenter.runs', 'Runs and evidence') }}</h3>
-                  <article v-for="run in selected.runs" :key="run.id" class="work-center-run">
-                    <div class="work-center-run-heading">
-                      <strong>{{ actionLabel(selected.actions?.find(action => action.id === run.actionId)?.type) }}</strong>
-                      <span class="work-center-status" :data-status="run.status"><span aria-hidden="true"></span>{{ statusLabel(run.status) }}</span>
-                    </div>
-                    <small>
-                      {{ run.vpSnapshot?.name || run.roleSnapshot?.id || tr('workCenter.unknownRole', 'Unknown role') }}
-                      <template v-if="run.modelSnapshot?.id"> · {{ run.modelSnapshot.id }}</template>
-                      · {{ time(run.startedAt) }}
-                    </small>
-                    <p v-if="run.summary">{{ run.summary }}</p>
-                    <p v-if="run.waitingReason" class="work-center-run-reason"><strong>{{ tr('workCenter.waitingReason', 'Waiting:') }}</strong> {{ run.waitingReason }}</p>
-                    <p v-if="run.error" class="work-center-error">{{ run.error }}</p>
-                    <ul v-if="run.evidence?.length" class="work-center-evidence">
-                      <li v-for="(evidence, index) in run.evidence" :key="run.id + ':' + index">
-                        <span>{{ evidence.label }}</span>
-                        <small v-if="evidence.status"> · {{ statusLabel(evidence.status) }}</small>
-                        <code v-if="evidence.ref">{{ evidence.ref }}</code>
-                      </li>
-                    </ul>
-                  </article>
+                  <div class="work-center-action-list">
+                    <article v-for="action in selected.actions" :key="action.id" class="work-center-action-card" :data-status="action.status">
+                      <button type="button" class="work-center-action-toggle" @click="toggleAction(action)" :aria-expanded="expandedActions[action.id] ? 'true' : 'false'">
+                        <span class="work-center-action-index">{{ action.sequence }}</span>
+                        <span class="work-center-action-title">
+                          <strong>{{ actionLabel(action.type) }}</strong>
+                          <small>{{ action.requiredRole }} · {{ statusLabel(action.status) }}</small>
+                        </span>
+                        <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
+                        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" :class="{ expanded: expandedActions[action.id] }"><path fill="currentColor" d="m7.41 8.59 4.59 4.58 4.59-4.58L18 10l-6 6-6-6 1.41-1.41Z"/></svg>
+                      </button>
+                      <div v-if="expandedActions[action.id]" class="work-center-action-body">
+                        <p v-if="!runsForAction(action.id).length" class="work-center-muted">{{ tr('workCenter.noRuns', 'No execution yet') }}</p>
+                        <article v-for="run in runsForAction(action.id)" :key="run.id" class="work-center-run">
+                          <div class="work-center-run-heading">
+                            <small>
+                              {{ run.vpSnapshot?.name || run.roleSnapshot?.id || tr('workCenter.unknownRole', 'Unknown role') }}
+                              <template v-if="run.modelSnapshot?.id"> · {{ run.modelSnapshot.id }}</template>
+                              · {{ time(run.startedAt) }}
+                            </small>
+                            <span class="work-center-status" :data-status="run.status"><span aria-hidden="true"></span>{{ statusLabel(run.status) }}</span>
+                          </div>
+                          <p v-if="run.summary">{{ run.summary }}</p>
+                          <p v-if="run.waitingReason" class="work-center-run-reason"><strong>{{ tr('workCenter.waitingReason', 'Waiting:') }}</strong> {{ run.waitingReason }}</p>
+                          <p v-if="run.error" class="work-center-error">{{ run.error }}</p>
+                          <ul v-if="run.evidence?.length" class="work-center-evidence">
+                            <li v-for="(evidence, index) in run.evidence" :key="run.id + ':' + index">
+                              <span>{{ evidence.label }}</span>
+                              <small v-if="evidence.status"> · {{ statusLabel(evidence.status) }}</small>
+                              <code v-if="evidence.ref">{{ evidence.ref }}</code>
+                            </li>
+                          </ul>
+                        </article>
+                      </div>
+                    </article>
+                  </div>
                 </div>
                 <div class="work-center-section" v-if="selected.events?.length">
-                  <h3>{{ tr('workCenter.activity', 'Activity') }}</h3>
-                  <ul class="work-center-events">
+                  <button class="work-center-activity-toggle" type="button" @click="activityOpen = !activityOpen" :aria-expanded="activityOpen ? 'true' : 'false'">
+                    <span>{{ tr('workCenter.activity', 'Activity') }}</span>
+                    <small>{{ selected.events.length }}</small>
+                  </button>
+                  <ul v-if="activityOpen" class="work-center-events">
                     <li v-for="event in selected.events" :key="event.id">
                       <span>{{ event.type }}</span><small>{{ time(event.createdAt) }}</small>
                     </li>
@@ -410,6 +464,7 @@ export default {
             <label>{{ tr('workCenter.goal', 'Goal') }}<textarea v-model="form.goal" rows="4" required></textarea></label>
             <label>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}<textarea v-model="form.acceptanceCriteriaText" rows="4" :placeholder="tr('workCenter.criteriaHint', 'One criterion per line')"></textarea></label>
             <label>{{ tr('workCenter.workDir', 'Working directory') }}<input v-model="form.workDir" type="text" :placeholder="tr('workCenter.workDirHint', 'Optional project directory')"></label>
+            <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox">{{ tr('workCenter.reuseMemory', 'Reuse context from this working directory') }}</label>
             <label class="work-center-checkbox"><input v-model="form.start" type="checkbox">{{ tr('workCenter.startImmediately', 'Start immediately') }}</label>
           </div>
           <footer>

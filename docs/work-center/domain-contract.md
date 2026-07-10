@@ -14,6 +14,7 @@
   currentActionId,
   currentRunId,
   workDir,
+  reuseMemory,
   origin: { sessionId, messageId, createdBy },
   linkedSessionIds: [],
   createdAt,
@@ -98,6 +99,8 @@ triage (omni)
 10. completed review 必须带 `approved|changes_requested`；缺失或非法值进入 `needs_attention`。
 11. Triage 可提交受限 `contractPatch`；下一 Action 的 context 必须包含有效前序 summary/evidence/decision。
 12. Role 无法解析时停止执行并进入 `needs_attention`，不得自动回退到 omni。
+13. Work Center 只复用同一 Agent、创建时 canonical workspace key 相同且已完成 WorkItem 的结构化 Run summary/evidence；不复用原始工具输出，`reuseMemory=false` 时完全关闭。
+14. 用户补充提示作用于当前 Action：请求用 `actionId + revision` 做事务 fence；匹配后旧 Run 原子终止、旧 Action superseded，新 Action 保留类型、角色和历史 context 后重新执行。
 
 ## 恢复策略
 

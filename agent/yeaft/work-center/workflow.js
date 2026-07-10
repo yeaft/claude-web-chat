@@ -54,9 +54,10 @@ function renderContext(context = []) {
     const decision = entry.reviewDecision ? `\nReview decision: ${entry.reviewDecision}` : '';
     const waitingReason = entry.waitingReason ? `\nWaiting reason: ${entry.waitingReason}` : '';
     const answer = entry.answer ? `\nUser answer: ${entry.answer}` : '';
-    return `### ${entry.type} (${entry.role || 'unknown role'})\n${entry.summary || '(no summary)'}${decision}${waitingReason}${answer}${evidence}`;
+    const source = entry.sourceTitle ? ` from ${entry.sourceTitle}` : '';
+    return `### ${entry.type}${source} (${entry.role || 'unknown role'})\n${entry.summary || '(no summary)'}${decision}${waitingReason}${answer}${evidence}`;
   });
-  return `\n\nPrior Action results:\n${blocks.join('\n\n')}`;
+  return `\n\nReusable Work Center context and prior Action results:\n${blocks.join('\n\n')}`;
 }
 
 export function actionInstruction(step, workItem, context = []) {
