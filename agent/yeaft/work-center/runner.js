@@ -54,6 +54,16 @@ function canonicalWorkDir(workDir) {
   return realpathSync(workDir);
 }
 
+export function resolveWorkItemWorkDir(workItem, defaultWorkDir) {
+  if (typeof workItem?.workspaceKey === 'string' && workItem.workspaceKey) {
+    return canonicalWorkDir(workItem.workspaceKey);
+  }
+  if (typeof workItem?.workDir === 'string' && workItem.workDir.trim()) {
+    throw new Error('WorkItem has no canonical workspace identity; update its workDir before retrying');
+  }
+  return canonicalWorkDir(path.resolve(defaultWorkDir || process.cwd()));
+}
+
 function assertPathInside(toolName, workDir, value) {
   const resolved = path.resolve(workDir, value);
   if (!isPathInsideOrEqual(workDir, resolved)) {
@@ -203,8 +213,7 @@ export class WorkItemRunner {
 
   async run({ workItem, action, run, signal, ownerBootId }) {
     const runtime = await this.runtimeProvider();
-    const rawWorkDir = workItem.workDir || runtime.defaultWorkDir || process.cwd();
-    const workDir = canonicalWorkDir(path.resolve(rawWorkDir));
+    const workDir = resolveWorkItemWorkDir(workItem, runtime.defaultWorkDir);
     const vp = copyVp(this.registry.getVp(action.requiredRole));
     if (!vp) {
       const error = new Error(`Required Work Center role is unavailable: ${action.requiredRole}`);

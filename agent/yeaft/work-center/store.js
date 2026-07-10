@@ -214,7 +214,14 @@ export class WorkItemStore {
     // The feature shipped first as an unmerged PR, but keep the store tolerant
     // of databases created by review builds.
     if (!hasColumn(this.db, 'work_items', 'workspace_key')) {
-      this.db.exec("ALTER TABLE work_items ADD COLUMN workspace_key TEXT NOT NULL DEFAULT ''");
+      withTransaction(this.db, () => {
+        this.db.exec("ALTER TABLE work_items ADD COLUMN workspace_key TEXT NOT NULL DEFAULT ''");
+        const update = this.db.prepare('UPDATE work_items SET workspace_key = ? WHERE id = ?');
+        for (const row of this.db.prepare("SELECT id, work_dir FROM work_items WHERE work_dir != ''").all()) {
+          const workspaceKey = canonicalWorkspaceKey(row.work_dir);
+          if (workspaceKey) update.run(workspaceKey, row.id);
+        }
+      });
     }
     if (!hasColumn(this.db, 'work_items', 'reuse_memory')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN reuse_memory INTEGER NOT NULL DEFAULT 1');

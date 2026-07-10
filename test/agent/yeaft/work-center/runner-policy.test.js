@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createWorkItemToolRegistry, parseStructuredResult } from '../../../../agent/yeaft/work-center/runner.js';
+import {
+  createWorkItemToolRegistry,
+  parseStructuredResult,
+  resolveWorkItemWorkDir,
+  WorkItemRunner,
+} from '../../../../agent/yeaft/work-center/runner.js';
 
 describe('Work Center tool policy', () => {
   let workDir;
@@ -105,6 +110,81 @@ describe('Work Center tool policy', () => {
     }, {}));
     expect(result.results[0].success).toBe(true);
     expect(readFileSync(join(workDir, 'inside.txt'), 'utf8')).toContain('inside');
+  });
+
+  it('uses the creation-time workspace identity after a symlink is retargeted', () => {
+    const projectA = join(workDir, 'project-a');
+    const projectB = join(workDir, 'project-b');
+    const alias = join(workDir, 'current');
+    mkdirSync(projectA);
+    mkdirSync(projectB);
+    symlinkSync(projectA, alias);
+    const workItem = { workDir: alias, workspaceKey: projectA };
+
+    unlinkSync(alias);
+    symlinkSync(projectB, alias);
+
+    expect(resolveWorkItemWorkDir(workItem, outsideDir)).toBe(projectA);
+    expect(() => resolveWorkItemWorkDir({ workDir: alias, workspaceKey: '' }, outsideDir))
+      .toThrow(/canonical workspace identity/);
+  });
+
+  it('rejects an explicit workDir without a canonical workspace identity', () => {
+    expect(() => resolveWorkItemWorkDir({ workDir, workspaceKey: '' }, outsideDir))
+      .toThrow(/canonical workspace identity/);
+  });
+
+  it('runs in the creation-time workspace after a symlink is retargeted', async () => {
+    const projectA = join(workDir, 'run-project-a');
+    const projectB = join(workDir, 'run-project-b');
+    const alias = join(workDir, 'run-current');
+    mkdirSync(projectA);
+    mkdirSync(projectB);
+    symlinkSync(projectA, alias);
+    const prompts = [];
+    let snapshots = null;
+    const runner = new WorkItemRunner({
+      runtimeProvider: async () => ({
+        defaultWorkDir: outsideDir,
+        config: { model: 'provider/model', maxOutputTokens: 1_024 },
+        adapter: {
+          async *stream(params) {
+            prompts.push(params);
+            yield {
+              type: 'text_delta',
+              text: JSON.stringify({ outcome: 'completed', summary: 'done', evidence: [] }),
+            };
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+        },
+      }),
+      store: {
+        isActiveRun: () => true,
+        setRunExecutionSnapshots: (_runId, _ownerBootId, _leaseEpoch, value) => {
+          snapshots = value;
+          return true;
+        },
+      },
+      registry: {
+        getVp: () => ({ id: 'omni', name: 'Omni', role: 'developer', persona: '' }),
+      },
+    });
+    unlinkSync(alias);
+    symlinkSync(projectB, alias);
+
+    await expect(runner.run({
+      workItem: { workDir: alias, workspaceKey: projectA },
+      action: { type: 'triage', requiredRole: 'omni', instruction: 'Inspect workspace' },
+      run: { id: 'run-1', leaseEpoch: 1 },
+      signal: new AbortController().signal,
+      ownerBootId: 'boot-a',
+    })).resolves.toMatchObject({ outcome: 'completed' });
+    expect(prompts).toHaveLength(1);
+    expect(snapshots.toolPolicySnapshot).toMatchObject({
+      readRoots: [projectA],
+      writeRoots: [projectA],
+      shell: { fixedCwd: projectA },
+    });
   });
 
   it('fences execution after the Run loses its lease', async () => {
