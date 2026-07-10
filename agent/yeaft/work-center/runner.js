@@ -56,7 +56,12 @@ function canonicalWorkDir(workDir) {
 
 export function resolveWorkItemWorkDir(workItem, defaultWorkDir) {
   if (typeof workItem?.workspaceKey === 'string' && workItem.workspaceKey) {
-    return canonicalWorkDir(workItem.workspaceKey);
+    const expected = path.resolve(workItem.workspaceKey);
+    const actual = canonicalWorkDir(expected);
+    if (actual !== expected) {
+      throw new Error('WorkItem canonical workspace identity changed; update its workDir before retrying');
+    }
+    return expected;
   }
   if (typeof workItem?.workDir === 'string' && workItem.workDir.trim()) {
     throw new Error('WorkItem has no canonical workspace identity; update its workDir before retrying');

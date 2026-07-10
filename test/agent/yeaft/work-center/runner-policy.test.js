@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -127,6 +136,57 @@ describe('Work Center tool policy', () => {
     expect(resolveWorkItemWorkDir(workItem, outsideDir)).toBe(projectA);
     expect(() => resolveWorkItemWorkDir({ workDir: alias, workspaceKey: '' }, outsideDir))
       .toThrow(/canonical workspace identity/);
+  });
+
+  it('rejects when the persisted canonical workspace path is replaced by a symlink', () => {
+    const projectA = join(workDir, 'canonical-project-a');
+    const movedProjectA = join(workDir, 'moved-project-a');
+    const projectB = join(workDir, 'canonical-project-b');
+    mkdirSync(projectA);
+    mkdirSync(projectB);
+    renameSync(projectA, movedProjectA);
+    symlinkSync(projectB, projectA);
+
+    expect(() => resolveWorkItemWorkDir({ workDir: projectA, workspaceKey: projectA }, outsideDir))
+      .toThrow(/canonical workspace identity changed/);
+  });
+
+  it('rejects a replaced canonical target before snapshots or adapter execution', async () => {
+    const projectA = join(workDir, 'runner-canonical-a');
+    const movedProjectA = join(workDir, 'runner-moved-a');
+    const projectB = join(workDir, 'runner-canonical-b');
+    mkdirSync(projectA);
+    mkdirSync(projectB);
+    renameSync(projectA, movedProjectA);
+    symlinkSync(projectB, projectA);
+    let adapterStarted = false;
+    const setRunExecutionSnapshots = vi.fn();
+    const runner = new WorkItemRunner({
+      runtimeProvider: async () => ({
+        defaultWorkDir: outsideDir,
+        config: { model: 'provider/model', maxOutputTokens: 1_024 },
+        adapter: {
+          async *stream() {
+            adapterStarted = true;
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+        },
+      }),
+      store: { isActiveRun: () => true, setRunExecutionSnapshots },
+      registry: {
+        getVp: () => ({ id: 'omni', name: 'Omni', role: 'developer', persona: '' }),
+      },
+    });
+
+    await expect(runner.run({
+      workItem: { workDir: projectA, workspaceKey: projectA },
+      action: { type: 'triage', requiredRole: 'omni', instruction: 'Inspect workspace' },
+      run: { id: 'run-replaced', leaseEpoch: 1 },
+      signal: new AbortController().signal,
+      ownerBootId: 'boot-a',
+    })).rejects.toThrow(/canonical workspace identity changed/);
+    expect(setRunExecutionSnapshots).not.toHaveBeenCalled();
+    expect(adapterStarted).toBe(false);
   });
 
   it('rejects an explicit workDir without a canonical workspace identity', () => {
