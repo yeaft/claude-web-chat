@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 
 // Regression test for the UI-triggered self-upgrade leaving a *named* instance
 // permanently offline. Root cause: the generated upgrade.sh hardcoded the
@@ -36,11 +36,18 @@ vi.mock('fs', async (importOriginal) => {
   };
 });
 
-const { buildUnixUpgradeScript, resolveInstanceId } = await import('../../agent/connection/upgrade.js');
+const {
+  buildNpmMetadataArgs,
+  buildUnixUpgradeScript,
+  buildWindowsWorkerCommand,
+  isUpgradeAvailable,
+  resolveInstanceId,
+} = await import('../../agent/connection/upgrade.js');
 const { default: ctx } = await import('../../agent/context.js');
 
 const BASE = {
   pkgName: '@yeaft/webchat-agent',
+  targetVersion: '1.0.119',
   installDir: '/opt/agent',
   isGlobalInstall: true,
   pid: 4242,
@@ -48,6 +55,42 @@ const BASE = {
   npmPath: '/usr/bin/npm',
   safePath: '/usr/bin:/bin',
 };
+
+describe('agent upgrade version resolution', () => {
+  it('forces metadata reads to the public registry and bypasses stale npm cache', () => {
+    expect(buildNpmMetadataArgs('@yeaft/webchat-agent@latest', 'version')).toEqual([
+      'view',
+      '@yeaft/webchat-agent@latest',
+      'version',
+      '--registry=https://registry.npmjs.org/',
+      '--prefer-online',
+      '--prefer-offline=false',
+      '--offline=false',
+    ]);
+  });
+
+  it('only upgrades when the registry version is semantically newer', () => {
+    expect(isUpgradeAvailable('1.0.114', '1.0.119')).toBe(true);
+    expect(isUpgradeAvailable('v1.0.114', '1.0.119')).toBe(true);
+    expect(isUpgradeAvailable('1.0.119', '1.0.119')).toBe(false);
+    expect(isUpgradeAvailable('1.0.120', '1.0.119')).toBe(false);
+  });
+
+  it('passes the public registry to the Windows package worker', () => {
+    expect(buildWindowsWorkerCommand('C:/Program Files/nodejs/node.exe')).toBe(
+      '"C:\\Program Files\\nodejs\\node.exe" "%WORKER%" "%PKG%" "%PKG_DIR%" "%LOGFILE%" "https://registry.npmjs.org/"',
+    );
+  });
+
+  it('uses the passed registry when the Windows worker fetches the target tarball', () => {
+    const workerSource = readFileSync(
+      new URL('../../agent/connection/upgrade-worker-template.js', import.meta.url),
+      'utf8',
+    );
+    expect(workerSource).toContain('const REGISTRY = process.argv[5];');
+    expect(workerSource).toContain('`--registry=${REGISTRY}`');
+  });
+});
 
 describe('buildUnixUpgradeScript — instance-aware service restart', () => {
   beforeEach(() => { vi.clearAllMocks(); serviceManager = 'systemd'; });
@@ -97,9 +140,12 @@ describe('buildUnixUpgradeScript — instance-aware service restart', () => {
     expect(script).not.toContain('com.yeaft.agent.plist');
   });
 
-  it('still installs the package and writes the version-agnostic body', () => {
+  it('installs the exact version selected by the metadata check', () => {
     const script = buildUnixUpgradeScript({ ...BASE, instanceId: 'server-e7a9eb' });
-    expect(script).toContain('"$NPM" install -g "$PKG"');
+    expect(script).toContain('PKG="@yeaft/webchat-agent@1.0.119"');
+    expect(script).toContain('REGISTRY="https://registry.npmjs.org/"');
+    expect(script).toContain('"$NPM" install -g "$PKG" --registry="$REGISTRY"');
+    expect(script).not.toContain('@latest');
     expect(script).toContain('PID=4242');
     expect(script).toMatch(/^#!\/bin\/bash/);
   });

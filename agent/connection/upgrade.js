@@ -39,6 +39,37 @@ const shellOpt = isWin ? { shell: true, windowsHide: true } : {};
 const currentPath = process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin';
 const safePath = currentPath.includes(nodeBinDir) ? currentPath : `${nodeBinDir}:${currentPath}`;
 const safeEnv = { ...process.env, PATH: safePath };
+export const PUBLIC_NPM_REGISTRY = 'https://registry.npmjs.org/';
+
+/**
+ * Build an npm metadata query that bypasses stale local metadata and registry
+ * mirrors. Upgrade decisions must use the package actually published to the
+ * public registry, not a cached `latest` value from a previous release.
+ */
+export function buildNpmMetadataArgs(packageSpec, field) {
+  return [
+    'view',
+    packageSpec,
+    field,
+    `--registry=${PUBLIC_NPM_REGISTRY}`,
+    '--prefer-online',
+    '--prefer-offline=false',
+    '--offline=false',
+  ];
+}
+
+/** Return true only when `latestVersion` is semantically newer. */
+export function isUpgradeAvailable(currentVersion, latestVersion) {
+  const current = parseSemver(currentVersion);
+  const latest = parseSemver(latestVersion);
+  if (!current || !latest) return currentVersion !== latestVersion;
+  return cmpTuple(latest, current) > 0;
+}
+
+/** Build the Windows worker invocation with the same registry used for metadata. */
+export function buildWindowsWorkerCommand(nodePath) {
+  return `"${nodePath.replace(/\//g, '\\')}" "%WORKER%" "%PKG%" "%PKG_DIR%" "%LOGFILE%" "${PUBLIC_NPM_REGISTRY}"`;
+}
 
 // Shared cleanup logic for restart/upgrade
 function cleanupAndExit(exitCode) {
@@ -82,7 +113,7 @@ async function fetchRequiredNodeRange(pkgName, version) {
     const stdout = await new Promise((resolve, reject) => {
       execFile(
         npmPath,
-        ['view', `${pkgName}@${version}`, 'engines.node'],
+        buildNpmMetadataArgs(`${pkgName}@${version}`, 'engines.node'),
         { stdio: 'pipe', env: safeEnv, ...shellOpt },
         (err, out) => { if (err) reject(err); else resolve(out.toString().trim()); },
       );
@@ -154,14 +185,15 @@ export async function handleUpgradeAgent() {
   console.log('[Agent] Upgrade requested, checking for updates...');
   try {
     const pkgName = ctx.pkgName || '@yeaft/webchat-agent';
-    // Check latest version (async to avoid blocking heartbeat)
+    // Force a public-registry refresh so stale Windows npm metadata or a lagging
+    // registry mirror cannot report the installed version as the latest one.
     const latestVersion = await new Promise((resolve, reject) => {
-      execFile(npmPath, ['view', pkgName, 'version'], { stdio: 'pipe', env: safeEnv, ...shellOpt }, (err, stdout) => {
+      execFile(npmPath, buildNpmMetadataArgs(`${pkgName}@latest`, 'version'), { stdio: 'pipe', env: safeEnv, ...shellOpt }, (err, stdout) => {
         if (err) reject(err); else resolve(stdout.toString().trim());
       });
     });
-    if (latestVersion === ctx.agentVersion) {
-      console.log(`[Agent] Already at latest version (${ctx.agentVersion}), skipping upgrade.`);
+    if (!isUpgradeAvailable(ctx.agentVersion, latestVersion)) {
+      console.log(`[Agent] No newer version than ${ctx.agentVersion} is available (registry: ${latestVersion}), skipping upgrade.`);
       await sendToServer({ type: 'upgrade_agent_ack', success: true, alreadyLatest: true, version: ctx.agentVersion });
       return;
     }
@@ -270,7 +302,7 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
     '@echo off',
     'setlocal',
     `set PID=${pid}`,
-    `set PKG=${pkgName}@latest`,
+    `set PKG=${pkgName}@${latestVersion}`,
     `set INSTALL_DIR=${installDirWin}`,
     `set PKG_DIR=${pkgDir}`,
     `set LOGFILE=${logPath}`,
@@ -313,7 +345,7 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
   // Use Node.js worker for file-level upgrade (avoids EBUSY on directory rename)
   batLines.push(
     'echo [Upgrade] Running upgrade worker at %time%... >> "%LOGFILE%"',
-    `"${process.execPath.replace(/\//g, '\\')}" "%WORKER%" "%PKG%" "%PKG_DIR%" "%LOGFILE%"`,
+    buildWindowsWorkerCommand(process.execPath),
     'if not "%errorlevel%"=="0" (',
     '  echo [Upgrade] Worker failed with exit code %errorlevel% at %time% >> "%LOGFILE%"',
     '  goto CLEANUP',
@@ -390,6 +422,7 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
  *
  * @param {object} opts
  * @param {string} opts.pkgName        npm package name
+ * @param {string} opts.targetVersion  exact version selected by the metadata check
  * @param {string} opts.installDir     install dir (local install) — used as cwd
  * @param {boolean} opts.isGlobalInstall  global vs local npm install
  * @param {number} opts.pid            pid of the exiting agent to wait on
@@ -402,6 +435,7 @@ async function spawnWindowsUpgradeScript(pkgName, installDir, isGlobalInstall, l
  */
 export function buildUnixUpgradeScript({
   pkgName,
+  targetVersion,
   installDir,
   isGlobalInstall,
   pid,
@@ -422,7 +456,8 @@ export function buildUnixUpgradeScript({
   const shLines = [
     '#!/bin/bash',
     `PID=${pid}`,
-    `PKG="${pkgName}@latest"`,
+    `PKG="${pkgName}@${targetVersion}"`,
+    `REGISTRY="${PUBLIC_NPM_REGISTRY}"`,
     `NPM="${npmPath}"`,
     `LOGFILE="${join(configDir, 'logs', 'upgrade.log')}"`,
     `export PATH="${safePath}"`,
@@ -477,8 +512,8 @@ export function buildUnixUpgradeScript({
 
   // npm install (use absolute path via $NPM variable)
   const npmCmd = isGlobalInstall
-    ? `"$NPM" install -g "$PKG"`
-    : `cd "$INSTALL_DIR" && "$NPM" install "$PKG"`;
+    ? `"$NPM" install -g "$PKG" --registry="$REGISTRY"`
+    : `cd "$INSTALL_DIR" && "$NPM" install "$PKG" --registry="$REGISTRY"`;
 
   shLines.push(
     'echo "[Upgrade] Installing $PKG..."',
@@ -535,6 +570,7 @@ async function spawnUnixUpgradeScript(pkgName, installDir, isGlobalInstall, late
 
   const script = buildUnixUpgradeScript({
     pkgName,
+    targetVersion: latestVersion,
     installDir,
     isGlobalInstall,
     pid: process.pid,

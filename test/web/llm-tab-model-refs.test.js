@@ -53,7 +53,7 @@ describe('LlmTab editable model refs', () => {
     expect(LlmTab.template).not.toContain('toggleAutoAuth');
   });
 
-  it('saves managed Copilot as minimal config without protocol, baseUrl, or models', () => {
+  it('saves the GitHub Copilot catalog for the Session model menu', () => {
     const sent = [];
     const ctx = {
       effectiveAgentId: 'agent-1',
@@ -80,6 +80,10 @@ describe('LlmTab editable model refs', () => {
       name: 'github-copilot',
       credentialProvider: 'github-copilot',
       managed: 'github-copilot',
+      models: [
+        { id: 'claude-opus-4.8', protocol: 'anthropic' },
+        { id: 'gpt-5', protocol: 'openai-responses' },
+      ],
     }]);
   });
 

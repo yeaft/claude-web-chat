@@ -761,4 +761,23 @@ describe('managed GitHub Copilot provider config', () => {
       expect.objectContaining({ id: 'gpt-5-mini', provider: 'github-copilot' }),
     ]));
   });
+
+  it('uses the persisted live Copilot catalog instead of the fallback list', () => {
+    writeFileSync(join(TEST_DIR, 'config.json'), JSON.stringify({
+      providers: [{
+        name: 'github-copilot',
+        credentialProvider: 'github-copilot',
+        managed: 'github-copilot',
+        models: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'],
+      }],
+      primaryModel: 'github-copilot/gpt-5.6-sol',
+    }));
+
+    const config = loadConfig({ dir: TEST_DIR });
+    expect(config.availableModels.map(model => model.id)).toEqual([
+      'gpt-5.6-luna',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+    ]);
+  });
 });

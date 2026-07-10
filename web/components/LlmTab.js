@@ -619,6 +619,9 @@ export default {
               name: p.name.trim() || 'github-copilot',
               credentialProvider: 'github-copilot',
               managed: p.managed || 'github-copilot',
+              // Keep the catalog returned by GitHub Copilot. The Session model
+              // menu is rebuilt from persisted providers after this save.
+              models: (p.models || []).filter(m => this._modelId(m)),
             };
           }
           const clean = {
