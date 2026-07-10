@@ -36,11 +36,17 @@ vi.mock('fs', async (importOriginal) => {
   };
 });
 
-const { buildUnixUpgradeScript, resolveInstanceId } = await import('../../agent/connection/upgrade.js');
+const {
+  buildNpmMetadataArgs,
+  buildUnixUpgradeScript,
+  isUpgradeAvailable,
+  resolveInstanceId,
+} = await import('../../agent/connection/upgrade.js');
 const { default: ctx } = await import('../../agent/context.js');
 
 const BASE = {
   pkgName: '@yeaft/webchat-agent',
+  targetVersion: '1.0.119',
   installDir: '/opt/agent',
   isGlobalInstall: true,
   pid: 4242,
@@ -48,6 +54,27 @@ const BASE = {
   npmPath: '/usr/bin/npm',
   safePath: '/usr/bin:/bin',
 };
+
+describe('agent upgrade version resolution', () => {
+  it('forces metadata reads to the public registry and bypasses stale npm cache', () => {
+    expect(buildNpmMetadataArgs('@yeaft/webchat-agent@latest', 'version')).toEqual([
+      'view',
+      '@yeaft/webchat-agent@latest',
+      'version',
+      '--registry=https://registry.npmjs.org/',
+      '--prefer-online',
+      '--prefer-offline=false',
+      '--offline=false',
+    ]);
+  });
+
+  it('only upgrades when the registry version is semantically newer', () => {
+    expect(isUpgradeAvailable('1.0.114', '1.0.119')).toBe(true);
+    expect(isUpgradeAvailable('v1.0.114', '1.0.119')).toBe(true);
+    expect(isUpgradeAvailable('1.0.119', '1.0.119')).toBe(false);
+    expect(isUpgradeAvailable('1.0.120', '1.0.119')).toBe(false);
+  });
+});
 
 describe('buildUnixUpgradeScript — instance-aware service restart', () => {
   beforeEach(() => { vi.clearAllMocks(); serviceManager = 'systemd'; });
@@ -97,9 +124,11 @@ describe('buildUnixUpgradeScript — instance-aware service restart', () => {
     expect(script).not.toContain('com.yeaft.agent.plist');
   });
 
-  it('still installs the package and writes the version-agnostic body', () => {
+  it('installs the exact version selected by the metadata check', () => {
     const script = buildUnixUpgradeScript({ ...BASE, instanceId: 'server-e7a9eb' });
+    expect(script).toContain('PKG="@yeaft/webchat-agent@1.0.119"');
     expect(script).toContain('"$NPM" install -g "$PKG"');
+    expect(script).not.toContain('@latest');
     expect(script).toContain('PID=4242');
     expect(script).toMatch(/^#!\/bin\/bash/);
   });
