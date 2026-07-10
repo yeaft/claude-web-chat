@@ -134,6 +134,35 @@ describe('Work Center core', () => {
       .toThrow(/stale|cancelled|expired|finished/i);
   });
 
+  it('preserves the frozen assignment and model policies when guidance restarts an Action', () => {
+    const workflowSnapshot = {
+      version: 1,
+      id: 'policy-workflow',
+      name: 'Policy workflow',
+      stages: [{
+        id: 'analysis-one', name: 'Analysis', type: 'triage', instruction: '', maxAttempts: 2,
+        assignmentPolicy: {
+          mode: 'pool', capability: 'triage', candidateVpIds: ['omni'], fixedVpId: null,
+          separateFromStageTypes: [],
+        },
+        modelPolicy: { mode: 'specific', model: 'provider/review', effort: 'high' },
+      }],
+    };
+    const item = controller.create(createInput({ workflowTemplate: 'policy-workflow', workflowSnapshot }));
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    const guided = controller.guide(item.id, {
+      guidance: 'Use the frozen policy', actionId: claim.action.id, revision: item.revision,
+    });
+
+    expect(guided.actions.at(-1)).toMatchObject({
+      stageId: 'analysis-one',
+      requiredRole: '',
+      assignmentPolicy: workflowSnapshot.stages[0].assignmentPolicy,
+      modelPolicy: workflowSnapshot.stages[0].modelPolicy,
+      status: 'ready',
+    });
+  });
+
   it('rejects guidance when the visible Action or revision is stale', () => {
     const item = controller.create(createInput());
     const triage = store.claimReadyAction('boot-a', 5_000);

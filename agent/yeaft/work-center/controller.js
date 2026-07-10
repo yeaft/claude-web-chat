@@ -127,7 +127,13 @@ export class WorkflowController {
         summary: guidance,
         evidence: [],
       }];
-      const step = { type: previous.type, requiredRole: previous.requiredRole };
+      const step = {
+        type: previous.type,
+        stageId: previous.stageId || previous.type,
+        assignmentPolicy: previous.assignmentPolicy,
+        modelPolicy: previous.modelPolicy,
+        requiredRole: previous.requiredRole,
+      };
       return {
         ...step,
         context,

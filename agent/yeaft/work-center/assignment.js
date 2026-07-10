@@ -120,6 +120,10 @@ export function resolveWorkItemModel(config, vp, rawPolicy) {
   if (Array.isArray(config.availableModels) && config.availableModels.length > 0 && !available) {
     throw policyError(`Configured Work Center model is unavailable: ${model}`);
   }
+  const effortOptions = Array.isArray(available?.effortOptions) ? available.effortOptions : [];
+  if (policy.effort && !effortOptions.includes(policy.effort)) {
+    throw policyError(`Configured Work Center effort is unsupported by ${model}: ${policy.effort}`);
+  }
   const parsed = parseModelRef(model);
   return {
     model,

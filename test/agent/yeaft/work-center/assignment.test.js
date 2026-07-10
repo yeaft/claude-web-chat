@@ -19,9 +19,9 @@ const config = {
   primaryModel: 'provider/primary',
   fastModel: 'provider/fast',
   availableModels: [
-    { id: 'primary', ref: 'provider/primary', provider: 'provider' },
-    { id: 'fast', ref: 'provider/fast', provider: 'provider' },
-    { id: 'review', ref: 'provider/review', provider: 'provider' },
+    { id: 'primary', ref: 'provider/primary', provider: 'provider', effortOptions: [] },
+    { id: 'fast', ref: 'provider/fast', provider: 'provider', effortOptions: ['low'] },
+    { id: 'review', ref: 'provider/review', provider: 'provider', effortOptions: ['medium', 'high'] },
   ],
 };
 
@@ -73,6 +73,9 @@ describe('Work Center assignment and model policy', () => {
     expect(() => resolveWorkItemModel(config, vps[0], {
       mode: 'specific', model: 'missing/model',
     })).toThrow(/unavailable/);
+    expect(() => resolveWorkItemModel(config, vps[0], {
+      mode: 'specific', model: 'provider/primary', effort: 'high',
+    })).toThrow(/effort is unsupported/);
   });
 
   it('previews the same full workflow policy used by execution', () => {

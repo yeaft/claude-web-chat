@@ -123,15 +123,35 @@ export default {
       const [stage] = stages.splice(index, 1);
       stages.splice(target, 0, stage);
     },
+    reviewReturnCandidates(stage) {
+      const stages = this.defaultWorkflow?.stages || [];
+      const reviewIndex = stages.findIndex(item => item.id === stage.id);
+      if (reviewIndex <= 0) return [];
+      return stages.slice(0, reviewIndex)
+        .filter(candidate => candidate.type !== 'review' && candidate.type !== 'deliver');
+    },
+    canRemoveStage(index) {
+      const stages = this.defaultWorkflow?.stages;
+      if (!stages || stages.length <= 1) return false;
+      const removed = stages[index];
+      const remaining = stages.filter((_, candidateIndex) => candidateIndex !== index);
+      return remaining.every((stage, stageIndex) => {
+        if (stage.type !== 'review' || stage.changesRequestedStageId !== removed.id) return true;
+        return remaining.slice(0, stageIndex)
+          .some(candidate => candidate.type !== 'review' && candidate.type !== 'deliver');
+      });
+    },
     removeStage(index) {
       const stages = this.defaultWorkflow?.stages;
-      if (!stages || stages.length <= 1) return;
+      if (!stages || !this.canRemoveStage(index)) return false;
       const [removed] = stages.splice(index, 1);
-      for (const stage of stages) {
-        if (stage.changesRequestedStageId === removed.id) {
-          stage.changesRequestedStageId = stages.find(item => item.type === 'implement')?.id || stages[0].id;
-        }
+      for (const [stageIndex, stage] of stages.entries()) {
+        if (stage.type !== 'review' || stage.changesRequestedStageId !== removed.id) continue;
+        const candidates = stages.slice(0, stageIndex)
+          .filter(candidate => candidate.type !== 'review' && candidate.type !== 'deliver');
+        stage.changesRequestedStageId = candidates.at(-1).id;
       }
+      return true;
     },
     toggleCandidate(stage, vpId, checked) {
       const current = new Set(stage.assignmentPolicy.candidateVpIds || []);
@@ -139,11 +159,33 @@ export default {
       else current.delete(vpId);
       stage.assignmentPolicy.candidateVpIds = [...current];
     },
+    modelRefForStage(stage) {
+      if (stage.modelPolicy.mode === 'specific') return stage.modelPolicy.model;
+      if (stage.modelPolicy.mode === 'primary') return this.runtime.primaryModel || null;
+      if (stage.modelPolicy.mode === 'fast') return this.runtime.fastModel || null;
+      return null;
+    },
+    effortOptionsForStage(stage) {
+      const ref = this.modelRefForStage(stage);
+      if (!ref) return [];
+      const model = this.models.find(item => (item.ref || item.id) === ref);
+      return Array.isArray(model?.effortOptions) ? model.effortOptions : [];
+    },
+    normalizeStageEffort(stage) {
+      const options = this.effortOptionsForStage(stage);
+      if (!stage.modelPolicy.effort || options.includes(stage.modelPolicy.effort)) return;
+      stage.modelPolicy.effort = null;
+    },
     setModelMode(stage, mode) {
       stage.modelPolicy.mode = mode;
       if (mode === 'specific' && !stage.modelPolicy.model) {
         stage.modelPolicy.model = this.models[0]?.ref || this.models[0]?.id || null;
       }
+      this.normalizeStageEffort(stage);
+    },
+    setStageModel(stage, model) {
+      stage.modelPolicy.model = model || null;
+      this.normalizeStageEffort(stage);
     },
     async save() {
       if (!this.draft || this.saving) return;
@@ -218,7 +260,7 @@ export default {
                     <div class="work-center-stage-actions">
                       <button type="button" @click="moveStage(index, -1)" :disabled="index === 0" :aria-label="$t('workCenter.settings.moveUp')">↑</button>
                       <button type="button" @click="moveStage(index, 1)" :disabled="index === defaultWorkflow.stages.length - 1" :aria-label="$t('workCenter.settings.moveDown')">↓</button>
-                      <button type="button" @click="removeStage(index)" :disabled="defaultWorkflow.stages.length <= 1" :aria-label="$t('workCenter.settings.removeStage')">×</button>
+                      <button type="button" @click="removeStage(index)" :disabled="!canRemoveStage(index)" :aria-label="$t('workCenter.settings.removeStage')">×</button>
                     </div>
                   </header>
                   <label>{{ $t('workCenter.settings.stageType') }}
@@ -243,7 +285,7 @@ export default {
                   </label>
                   <label v-if="stage.type === 'review'">{{ $t('workCenter.settings.reviewReturnStage') }}
                     <select v-model="stage.changesRequestedStageId">
-                      <option v-for="candidate in defaultWorkflow.stages.filter(item => item.id !== stage.id)" :key="candidate.id" :value="candidate.id">{{ candidate.name }}</option>
+                      <option v-for="candidate in reviewReturnCandidates(stage)" :key="candidate.id" :value="candidate.id">{{ candidate.name }}</option>
                     </select>
                   </label>
                   <label class="work-center-stage-instruction">{{ $t('workCenter.settings.instruction') }}
@@ -277,14 +319,14 @@ export default {
                     </select>
                   </label>
                   <label v-if="stage.modelPolicy.mode === 'specific'">{{ $t('workCenter.settings.model') }}
-                    <select v-model="stage.modelPolicy.model">
+                    <select :value="stage.modelPolicy.model" @change="setStageModel(stage, $event.target.value)">
                       <option v-for="model in models" :key="model.ref || model.id" :value="model.ref || model.id">{{ model.provider }} · {{ model.label || model.id }}</option>
                     </select>
                   </label>
-                  <label>{{ $t('workCenter.settings.effort') }}
+                  <label v-if="effortOptionsForStage(stage).length">{{ $t('workCenter.settings.effort') }}
                     <select v-model="stage.modelPolicy.effort">
                       <option :value="null">{{ $t('workCenter.settings.effortDefault') }}</option>
-                      <option v-for="effort in ['minimal','low','medium','high','xhigh','max']" :key="effort" :value="effort">{{ effort }}</option>
+                      <option v-for="effort in effortOptionsForStage(stage)" :key="effort" :value="effort">{{ effort }}</option>
                     </select>
                   </label>
                 </article>

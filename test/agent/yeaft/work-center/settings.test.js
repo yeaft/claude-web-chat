@@ -114,6 +114,14 @@ describe('Work Center settings', () => {
     const review = defaultWorkCenterSettings();
     review.workflows[0].stages.find(stage => stage.type === 'review').changesRequestedStageId = 'missing';
     expect(() => normalizeWorkCenterSettings(review)).toThrow(/missing stage/);
+
+    const selfReview = defaultWorkCenterSettings();
+    selfReview.workflows[0].stages.find(stage => stage.type === 'review').changesRequestedStageId = 'review';
+    expect(() => normalizeWorkCenterSettings(selfReview)).toThrow(/earlier editable stage/);
+
+    const futureReview = defaultWorkCenterSettings();
+    futureReview.workflows[0].stages.find(stage => stage.type === 'review').changesRequestedStageId = 'deliver';
+    expect(() => normalizeWorkCenterSettings(futureReview)).toThrow(/earlier editable stage/);
   });
 
   it('rejects stale concurrent settings updates', () => {

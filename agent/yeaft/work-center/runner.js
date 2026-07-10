@@ -241,6 +241,10 @@ export class WorkItemRunner {
     const config = {
       ...runtime.config,
       model: resolvedModel.model,
+      // WorkItem model policy is part of the frozen execution contract. The
+      // Agent-level fallback would silently execute a different model while
+      // leaving the Run snapshot unchanged, so WorkItems must fail explicitly.
+      fallbackModel: null,
       ...(resolvedModel.effort ? { modelEffort: resolvedModel.effort } : {}),
       _readOnly: true,
       serverMode: true,

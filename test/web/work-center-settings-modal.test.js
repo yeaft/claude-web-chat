@@ -44,6 +44,36 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.draft).toMatchObject({ marker: 'agent-a' });
   });
 
+  it('prevents deleting the only editable stage before review', () => {
+    const stages = [
+      { id: 'implement', type: 'implement' },
+      { id: 'review', type: 'review', changesRequestedStageId: 'implement' },
+      { id: 'deliver', type: 'deliver' },
+    ];
+    const vm = modalVm({ defaultWorkflow: { stages } });
+    vm.canRemoveStage = WorkCenterSettingsModal.methods.canRemoveStage.bind(vm);
+    expect(WorkCenterSettingsModal.methods.removeStage.call(vm, 0)).toBe(false);
+    expect(stages.map(stage => stage.id)).toEqual(['implement', 'review', 'deliver']);
+    expect(WorkCenterSettingsModal.methods.reviewReturnCandidates.call(vm, stages[1]))
+      .toEqual([stages[0]]);
+  });
+
+  it('uses only the selected model effort options and clears unsupported values', () => {
+    const stage = { modelPolicy: { mode: 'specific', model: 'provider/review', effort: 'low' } };
+    const vm = modalVm({
+      runtime: { primaryModel: 'provider/primary', fastModel: 'provider/fast' },
+      models: [
+        { ref: 'provider/review', effortOptions: ['medium', 'high'] },
+        { ref: 'provider/primary', effortOptions: [] },
+      ],
+    });
+    vm.modelRefForStage = WorkCenterSettingsModal.methods.modelRefForStage.bind(vm);
+    vm.effortOptionsForStage = WorkCenterSettingsModal.methods.effortOptionsForStage.bind(vm);
+    expect(vm.effortOptionsForStage(stage)).toEqual(['medium', 'high']);
+    WorkCenterSettingsModal.methods.normalizeStageEffort.call(vm, stage);
+    expect(stage.modelPolicy.effort).toBeNull();
+  });
+
   it('turns a revision conflict into an explicit reload state', async () => {
     const vm = modalVm({
       store: {

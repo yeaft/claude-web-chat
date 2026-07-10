@@ -1123,6 +1123,37 @@ export const useChatStore = defineStore('chat', {
         }
       }
     },
+    async refreshWorkCenterRuntime(agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      if (!target) throw new Error('No Agent selected');
+      const generation = Number(this._workCenterSettingsGenerationByAgent[target] || 0) + 1;
+      this._workCenterSettingsGenerationByAgent = {
+        ...this._workCenterSettingsGenerationByAgent,
+        [target]: generation,
+      };
+      this.workCenterSettingsLoadingByAgent = { ...this.workCenterSettingsLoadingByAgent, [target]: true };
+      this.workCenterSettingsErrorByAgent = { ...this.workCenterSettingsErrorByAgent, [target]: null };
+      try {
+        const data = await this.workCenterRequest('refresh_runtime', {}, target);
+        if (this._workCenterSettingsGenerationByAgent[target] === generation) {
+          this.workCenterSettingsByAgent = { ...this.workCenterSettingsByAgent, [target]: data?.settings || null };
+          this.workCenterRuntimeByAgent = { ...this.workCenterRuntimeByAgent, [target]: data?.runtime || null };
+        }
+        return data;
+      } catch (err) {
+        if (this._workCenterSettingsGenerationByAgent[target] === generation) {
+          this.workCenterSettingsErrorByAgent = {
+            ...this.workCenterSettingsErrorByAgent,
+            [target]: err?.message || String(err),
+          };
+        }
+        throw err;
+      } finally {
+        if (this._workCenterSettingsGenerationByAgent[target] === generation) {
+          this.workCenterSettingsLoadingByAgent = { ...this.workCenterSettingsLoadingByAgent, [target]: false };
+        }
+      }
+    },
     async saveWorkCenterSettings(settings, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       if (!target) throw new Error('No Agent selected');

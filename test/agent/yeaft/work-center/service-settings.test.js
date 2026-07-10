@@ -45,6 +45,32 @@ describe('Work Center settings service', () => {
     expect((await service.handle('get_settings')).settings.defaultWorkDir).toBe('/project');
   });
 
+  it('returns the redacted browser detail DTO from the real get operation', async () => {
+    const service = await createService();
+    const item = await service.handle('create', {
+      title: 'Redacted task', goal: 'Keep snapshots private', workDir: '/tmp', start: true,
+    });
+    const claim = service.store.claimReadyAction('boot', 5_000);
+    service.store.setRunExecutionSnapshots(claim.run.id, 'boot', claim.run.leaseEpoch, {
+      roleSnapshot: { id: 'triage', actionType: 'triage', selectionReason: 'auto:triage' },
+      vpSnapshot: { id: 'omni', name: 'Omni', persona: 'secret persona', personaHash: 'secret-hash' },
+      modelSnapshot: { id: 'provider/model', provider: 'provider' },
+      toolPolicySnapshot: {
+        allowedToolNames: ['FileRead'], readRoots: ['/private/read'], writeRoots: ['/private/write'],
+        shell: { fixedCwd: '/private/cwd' },
+      },
+    });
+    const detail = await service.handle('get', { id: item.id });
+    expect(detail.runs[0]).toMatchObject({
+      vpSnapshot: { id: 'omni', name: 'Omni' },
+      modelSnapshot: { id: 'provider/model', provider: 'provider' },
+    });
+    const wire = JSON.stringify(detail);
+    for (const secret of ['/tmp', 'secret persona', 'secret-hash', 'allowedToolNames', '/private/read', '/private/write', '/private/cwd']) {
+      expect(wire).not.toContain(secret);
+    }
+  });
+
   it('freezes the effective workflow and stage overrides on creation', async () => {
     const service = await createService();
     const item = await service.handle('create', {
@@ -70,7 +96,7 @@ describe('Work Center settings service', () => {
       mode: 'fixed', capability: 'implement', fixedVpId: 'someone-else', candidateVpIds: [], separateFromStageTypes: [],
     };
     await service.handle('update_settings', { settings: changed });
-    expect((await service.handle('get', { id: item.id })).workflowSnapshot.stages
+    expect(service.store.getWorkItem(item.id).workflowSnapshot.stages
       .find(stage => stage.id === 'implement').assignmentPolicy.fixedVpId).toBe('linus');
   });
 });

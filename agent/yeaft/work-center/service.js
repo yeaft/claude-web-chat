@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { WorkItemStore } from './store.js';
 import { WorkflowController } from './controller.js';
 import { WorkItemWatcher } from './watcher.js';
-import { projectWorkItemSummary } from './projection.js';
+import { projectWorkItemDetail, projectWorkItemSummary } from './projection.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
 import { resolveWorkflowSnapshot } from './workflow.js';
 
@@ -45,7 +45,7 @@ export class WorkCenterService {
           watcher: this.watcher.status(),
         };
       case 'get':
-        return this.#requiredItem(payload.id);
+        return projectWorkItemDetail(this.#requiredItem(payload.id));
       case 'get_settings': {
         const settings = this.settingsReader(this.yeaftDir);
         return { settings, runtime: await this.runtimeInfoProvider() };

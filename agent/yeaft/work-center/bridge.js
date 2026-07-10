@@ -1,6 +1,6 @@
 import ctx from '../../context.js';
 import { sendToServer } from '../../connection/buffer.js';
-import { ensureSessionLoaded } from '../web-bridge.js';
+import { ensureSessionLoaded, resetYeaftSession } from '../web-bridge.js';
 import { defaultRegistry } from '../vp/registry.js';
 import { scanVpLibrary } from '../vp/vp-store.js';
 import { WorkCenterService } from './service.js';
@@ -123,6 +123,9 @@ export async function handleWorkCenterRequest(msg) {
         registry: defaultRegistry,
         config: runtime.config,
       });
+    } else if (op === 'refresh_runtime') {
+      await resetYeaftSession();
+      data = await workCenter.handle('get_settings', {});
     } else {
       data = await workCenter.handle(op, msg.payload || {});
     }

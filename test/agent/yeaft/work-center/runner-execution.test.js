@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Registry } from '../../../../agent/yeaft/vp/registry.js';
+import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
+import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 
 const engineOptions = [];
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
@@ -27,6 +29,64 @@ afterEach(() => {
 });
 
 describe('Work Center Runner execution resolution', () => {
+  it('runs a guidance-restarted policy Action with its frozen VP and model policy', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-guidance-runner-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const assignmentPolicy = {
+      mode: 'pool', capability: 'triage', candidateVpIds: ['omni'], fixedVpId: null,
+      separateFromStageTypes: [],
+    };
+    const modelPolicy = { mode: 'specific', model: 'provider/review', effort: 'high' };
+    const workflowSnapshot = {
+      version: 1, id: 'policy', name: 'Policy', stages: [{
+        id: 'analysis-one', name: 'Analysis', type: 'triage', instruction: '', maxAttempts: 2,
+        assignmentPolicy, modelPolicy,
+      }],
+    };
+    const item = controller.create({
+      title: 'Guided policy task', goal: 'Keep the policy', acceptanceCriteria: [],
+      workflowTemplate: 'policy', workflowSnapshot, workDir, start: true,
+    });
+    const first = store.claimReadyAction('boot-1', 5_000);
+    controller.guide(item.id, {
+      guidance: 'Keep the frozen execution policy', actionId: first.action.id, revision: item.revision,
+    });
+    const guided = store.claimReadyAction('boot-1', 5_000);
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Triage Lead', traits: ['triage'], modelHint: 'primary',
+      persona: 'Triage', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: {},
+        config: {
+          primaryModel: 'provider/primary', fallbackModel: 'provider/fallback',
+          availableModels: [
+            { id: 'review', ref: 'provider/review', provider: 'provider', effortOptions: ['high'] },
+          ],
+        },
+      }),
+    });
+    try {
+      const result = await runner.run({
+        workItem: store.getWorkItem(item.id), action: guided.action, run: guided.run,
+        ownerBootId: 'boot-1', signal: new AbortController().signal,
+      });
+      expect(result).toMatchObject({ outcome: 'completed' });
+      expect(guided.action).toMatchObject({ stageId: 'analysis-one', assignmentPolicy, modelPolicy });
+      expect(engineOptions[0]).toMatchObject({
+        vpId: 'omni',
+        config: { model: 'provider/review', modelEffort: 'high', fallbackModel: null },
+      });
+    } finally {
+      store.close();
+    }
+  });
+
   it('persists the actual VP, Provider, model, effort, and selection reason before execution', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-runner-'));
     const registry = new Registry();
@@ -53,9 +113,11 @@ describe('Work Center Runner execution resolution', () => {
         adapter: {},
         config: {
           primaryModel: 'provider/primary',
+          fallbackModel: 'provider/fallback',
           availableModels: [
-            { id: 'primary', ref: 'provider/primary', provider: 'provider' },
-            { id: 'review', ref: 'provider/review', provider: 'provider' },
+            { id: 'primary', ref: 'provider/primary', provider: 'provider', effortOptions: [] },
+            { id: 'review', ref: 'provider/review', provider: 'provider', effortOptions: ['high'] },
+            { id: 'fallback', ref: 'provider/fallback', provider: 'provider', effortOptions: [] },
           ],
         },
       }),
@@ -87,7 +149,7 @@ describe('Work Center Runner execution resolution', () => {
       },
     }));
     expect(engineOptions[0]).toMatchObject({
-      config: { model: 'provider/review', modelEffort: 'high' },
+      config: { model: 'provider/review', modelEffort: 'high', fallbackModel: null },
       vpId: 'martin',
     });
   });

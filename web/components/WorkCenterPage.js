@@ -251,8 +251,10 @@ export default {
       this.schedulePreview();
     },
     onLlmConfigSaved() {
-      this.store.loadWorkCenterSettings(this.agentId)
-        .then(() => { if (this.createOpen) this.schedulePreview(); })
+      const agentId = this.agentId;
+      if (!agentId) return;
+      return this.store.refreshWorkCenterRuntime(agentId)
+        .then(() => { if (this.createOpen && agentId === this.agentId) this.schedulePreview(); })
         .catch(() => {});
     },
     async submitCreate() {

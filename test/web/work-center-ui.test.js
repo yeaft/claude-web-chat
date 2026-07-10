@@ -150,6 +150,8 @@ describe('Work Center UI contract', () => {
     expect(store).toContain("workCenterRequest('get_settings'");
     expect(store).toContain("workCenterRequest('update_settings'");
     expect(store).toContain("workCenterRequest('preview'");
+    expect(store).toContain("workCenterRequest('refresh_runtime'");
+    expect(page).toContain('refreshWorkCenterRuntime(agentId)');
     expect(css).toContain('width: min(960px, 92vw)');
     expect(css).toContain('height: min(720px, 86vh)');
     expect(css).toContain('.work-center-settings-pane');

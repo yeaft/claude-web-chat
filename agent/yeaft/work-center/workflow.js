@@ -105,9 +105,15 @@ export function normalizeWorkflowDefinition(value, index = 0) {
     }
     return stage;
   });
-  for (const stage of stages) {
-    if (stage.type === 'review' && !seen.has(stage.changesRequestedStageId)) {
+  for (const [stageIndex, stage] of stages.entries()) {
+    if (stage.type !== 'review') continue;
+    const targetIndex = stages.findIndex(candidate => candidate.id === stage.changesRequestedStageId);
+    if (targetIndex === -1) {
       throw new Error(`Review stage "${stage.id}" points to missing stage "${stage.changesRequestedStageId}"`);
+    }
+    const target = stages[targetIndex];
+    if (targetIndex >= stageIndex || target.type === 'review' || target.type === 'deliver') {
+      throw new Error(`Review stage "${stage.id}" must return to an earlier editable stage`);
     }
   }
   return { version: 1, id, name, stages };
