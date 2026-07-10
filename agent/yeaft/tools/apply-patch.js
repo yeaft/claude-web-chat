@@ -15,7 +15,19 @@ import { resolve, dirname } from 'path';
  * @param {string} patch
  * @returns {Array<{ file: string, hunks: Array }>}
  */
-function parsePatch(patch) {
+function parsePatchTarget(line) {
+  const raw = line.slice(4).replace(/\r$/, '');
+  const tabIndex = raw.indexOf('\t');
+  let filePath = (tabIndex === -1 ? raw : raw.slice(0, tabIndex)).trim();
+  if (!filePath) throw new Error('Patch target path is empty');
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(filePath)) {
+    throw new Error('Patch target path contains control characters');
+  }
+  if (filePath.startsWith('b/')) filePath = filePath.slice(2);
+  return filePath === '/dev/null' ? null : filePath;
+}
+
+export function parsePatch(patch) {
   const files = [];
   const lines = patch.split('\n');
   let currentFile = null;
@@ -30,10 +42,8 @@ function parsePatch(patch) {
       continue;
     }
     if (line.startsWith('+++ ')) {
-      let filePath = line.slice(4).trim();
-      // Strip a/ or b/ prefix
-      if (filePath.startsWith('b/')) filePath = filePath.slice(2);
-      if (filePath === '/dev/null') continue;
+      const filePath = parsePatchTarget(line);
+      if (!filePath) continue;
 
       currentFile = { file: filePath, hunks: [] };
       files.push(currentFile);

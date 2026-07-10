@@ -10,6 +10,7 @@ import SplitPane from './SplitPane.js';
 import ModernSelect from './ModernSelect.js';
 import SidebarModeToggle from './SidebarModeToggle.js';
 import SidebarAgentHeader from './SidebarAgentHeader.js';
+import SidebarWorkCenter from './SidebarWorkCenter.js';
 import { shortenPath as shortenPathUtil } from '../utils/path-display.js';
 import { getLastPathSegment as _getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
 import { sortSessionsByActivity } from '../stores/helpers/session-order.js';
@@ -17,7 +18,7 @@ import { useAuthStore } from '../stores/auth.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': showMobileSidebar }">
 
@@ -84,6 +85,13 @@ export default {
               </button>
             </div>
           </div>
+
+          <SidebarWorkCenter
+            :agents="store.agents"
+            :active-agent-id="store.workCenterAgentId"
+            :collapsed="false"
+            @open="store.enterWorkCenter"
+          />
 
           <!-- Connection warning -->
           <div v-if="store.connectionState !== 'connected'" class="connection-status" :class="store.connectionState">

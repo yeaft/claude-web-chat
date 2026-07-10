@@ -9,6 +9,7 @@ import en from './i18n/en.js';
 import LoginPage from './components/LoginPage.js';
 import ChatPage from './components/ChatPage.js';
 import YeaftPage from './components/YeaftPage.js';
+import WorkCenterPage from './components/WorkCenterPage.js';
 import SplitPane from './components/SplitPane.js';
 import ToolLine from './components/ToolLine.js';
 
@@ -20,11 +21,12 @@ window.Pinia = {
 };
 
 const App = {
-  components: { LoginPage, ChatPage, YeaftPage },
+  components: { LoginPage, ChatPage, YeaftPage, WorkCenterPage },
   template: `
     <LoginPage v-if="!authStore.isAuthenticated" />
     <template v-else>
-      <YeaftPage v-if="chatStore.currentView === 'yeaft'" />
+      <WorkCenterPage v-if="chatStore.currentView === 'work-center'" />
+      <YeaftPage v-else-if="chatStore.currentView === 'yeaft'" />
       <ChatPage v-else />
     </template>
   `,

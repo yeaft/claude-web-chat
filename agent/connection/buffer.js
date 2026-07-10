@@ -9,7 +9,11 @@ export const BUFFERABLE_TYPES = new Set([
   'turn_completed', 'conversation_closed',
   'session_id_update', 'compact_status', 'slash_commands_update',
   'background_task_started', 'background_task_output',
-  'subagent_started', 'subagent_message', 'subagent_completed'
+  'subagent_started', 'subagent_message', 'subagent_completed',
+  // Work Center broadcasts are projections over Agent-local SQLite. Buffering
+  // prevents a terminal transition from disappearing during a short reconnect;
+  // clients still refresh with `list` after reconnect for authoritative state.
+  'work_center_event'
 ]);
 
 function bufferMessage(msg, reason) {

@@ -3943,7 +3943,7 @@ export function buildVpQueryOpts({ vpId, sessionCoordinator, sessionId, envelope
  * @param {{ workDir?: string, sessionId?: string|null, sessionMeta?: object, perfTraceId?: string|null, messageType?: string }} [opts]
  * @returns {Promise<import('./session.js').Session>}
  */
-async function ensureSessionLoaded(opts = {}) {
+export async function ensureSessionLoaded(opts = {}) {
   if (session) return session;
   if (sessionLoadPromise) return sessionLoadPromise;
 
