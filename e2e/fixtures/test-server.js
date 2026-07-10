@@ -44,6 +44,10 @@ class TestServer {
         clearTimeout(timeout);
         reject(err);
       });
+      this.process.on('exit', (code, signal) => {
+        clearTimeout(timeout);
+        reject(new Error(`Server exited before startup (code=${code}, signal=${signal || 'none'})`));
+      });
     });
   }
 
