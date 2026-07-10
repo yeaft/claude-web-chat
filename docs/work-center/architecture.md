@@ -82,7 +82,7 @@ SQLite 是唯一事实源，负责 WorkItem、Action、Run 和 Event 的事务�
 
 ### WorkItemRunner
 
-将 `requiredRole` 映射到 VP profile，创建一次隔离的 Engine Run，持久化 role/VP/model/tool-policy 快照，收集事件并提交结构化 outcome。角色缺失直接失败，不回退 omni。V1 禁止 MCP、后台 Bash、子 Agent、RouteForward、AskUser 和递归 CreateWorkItem；等待用户通过 `waiting` outcome 表达。
+从 Action 的 assignment policy 解析 auto/pool/fixed VP；auto 依据阶段 capability 做确定性匹配，review 等阶段可要求与前序实际 VP 隔离。模型按 Action override → Workflow policy → VP modelHint → Agent primary 的顺序解析，并在不可用时明确失败，不静默换模型。Runner 创建一次隔离的 Engine Run，持久化 stage/selection reason、VP、Provider/model/effort 和 tool-policy 快照，收集事件并提交结构化 outcome。历史 WorkItem 没有 workflow snapshot 时继续按旧 `requiredRole` 固定映射执行。V1 禁止 MCP、后台 Bash、子 Agent、RouteForward、AskUser 和递归 CreateWorkItem；等待用户通过 `waiting` outcome 表达。
 
 Runner 的路径 realpath 检查会拒绝文件工具的 symlink escape，但 Bash 的固定 cwd 不是安全沙箱。V1 threat model 是可信 Agent；若需要抵御恶意或 prompt-injected shell，必须把整个 Run 放入 container/sandbox。WorkItem Engine 不写 Session conversation、memory archive、exec-log 或共享 tool stats。
 
@@ -91,7 +91,7 @@ Runner 的路径 realpath 检查会拒绝文件工具的 symlink escape，但 Ba
 | 现有能力 | Work Center 用法 |
 | --- | --- |
 | Yeaft Engine | 复用 query loop、LLM router、工具执行和 abort |
-| VP library | 作为角色模板来源 |
+| VP library | 当前 Agent 的候选池；按 capability、候选池、固定 VP 和职责隔离策略选择 |
 | Session | origin/link；不是 owner |
 | Session TaskManager | 不复用；它只管理进程型后台作业 |
 | worktree 工具 | V1 由 Action 的 workDir/Runner 决定；不在 Store 内管理第二套 workspace |

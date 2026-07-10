@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { WorkItemStore } from './store.js';
 import { WorkflowController } from './controller.js';
 import { WorkItemWatcher } from './watcher.js';
-import { projectWorkItemSummary } from './projection.js';
+import { projectWorkItemDetail, projectWorkItemSummary } from './projection.js';
+import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
+import { resolveWorkflowSnapshot } from './workflow.js';
 
 function requiredString(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
@@ -13,6 +15,12 @@ function requiredString(value, name) {
 export class WorkCenterService {
   constructor(options) {
     const yeaftDir = requiredString(options?.yeaftDir, 'yeaftDir');
+    this.yeaftDir = yeaftDir;
+    this.settingsReader = options.settingsReader || readWorkCenterSettings;
+    this.settingsWriter = options.settingsWriter || writeWorkCenterSettings;
+    this.runtimeInfoProvider = typeof options.runtimeInfoProvider === 'function'
+      ? options.runtimeInfoProvider
+      : async () => ({ vps: [], models: [], primaryModel: null, fastModel: null });
     this.ownerBootId = options.ownerBootId || randomUUID();
     this.store = options.store || new WorkItemStore(join(yeaftDir, 'work-center', 'work-center.db'));
     this.controller = options.controller || new WorkflowController(this.store);
@@ -37,16 +45,32 @@ export class WorkCenterService {
           watcher: this.watcher.status(),
         };
       case 'get':
-        return this.#requiredItem(payload.id);
+        return projectWorkItemDetail(this.#requiredItem(payload.id));
+      case 'get_settings': {
+        const settings = this.settingsReader(this.yeaftDir);
+        return { settings, runtime: await this.runtimeInfoProvider() };
+      }
+      case 'update_settings': {
+        const settings = this.settingsWriter(this.yeaftDir, payload.settings);
+        return { settings, runtime: await this.runtimeInfoProvider() };
+      }
       case 'create': {
+        const settings = this.settingsReader(this.yeaftDir);
+        const workflowTemplate = typeof payload.workflowTemplate === 'string' && payload.workflowTemplate.trim()
+          ? payload.workflowTemplate.trim()
+          : settings.defaultWorkflowId;
+        const workflowSnapshot = resolveWorkflowSnapshot(settings, workflowTemplate, payload.stageOverrides);
         const item = this.controller.create({
           title: requiredString(payload.title, 'title'),
           goal: requiredString(payload.goal, 'goal'),
           acceptanceCriteria: Array.isArray(payload.acceptanceCriteria)
             ? payload.acceptanceCriteria.map(value => String(value).trim()).filter(Boolean)
             : [],
-          workflowTemplate: payload.workflowTemplate || 'software-change',
-          workDir: typeof payload.workDir === 'string' ? payload.workDir.trim() : '',
+          workflowTemplate,
+          workflowSnapshot,
+          workDir: typeof payload.workDir === 'string' && payload.workDir.trim()
+            ? payload.workDir.trim()
+            : settings.defaultWorkDir,
           reuseMemory: payload.reuseMemory !== false,
           origin: payload.origin && typeof payload.origin === 'object'
             ? {
@@ -58,7 +82,7 @@ export class WorkCenterService {
           linkedSessionIds: Array.isArray(payload.linkedSessionIds)
             ? [...new Set(payload.linkedSessionIds.map(value => String(value).trim()).filter(Boolean))]
             : [],
-          start: payload.start !== false,
+          start: payload.start === undefined ? settings.startImmediately : payload.start !== false,
         });
         const detail = this.#requiredItem(item.id);
         this.#emit({ type: 'work_item.created', workItem: detail });

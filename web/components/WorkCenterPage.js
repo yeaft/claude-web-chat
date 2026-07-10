@@ -2,15 +2,24 @@ import SidebarAgentHeader from './SidebarAgentHeader.js';
 import SidebarModeToggle from './SidebarModeToggle.js';
 import SidebarWorkCenter from './SidebarWorkCenter.js';
 import WorkbenchPanel from './WorkbenchPanel.js';
+import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
+import LlmTab from './LlmTab.js';
 
 export default {
   name: 'WorkCenterPage',
-  components: { SidebarAgentHeader, SidebarModeToggle, SidebarWorkCenter, WorkbenchPanel },
+  components: { SidebarAgentHeader, SidebarModeToggle, SidebarWorkCenter, WorkbenchPanel, WorkCenterSettingsModal, LlmTab },
   data() {
     return {
       selectedId: null,
       createOpen: false,
+      settingsOpen: false,
       saving: false,
+      previewLoading: false,
+      previewError: '',
+      planPreview: null,
+      previewTimer: null,
+      previewRevision: 0,
+      llmConfigOpen: false,
       filter: 'open',
       search: '',
       resumeAnswer: '',
@@ -23,6 +32,8 @@ export default {
         acceptanceCriteriaText: '',
         workDir: '',
         reuseMemory: true,
+        workflowTemplate: '',
+        stageOverrides: {},
         start: true,
       },
     };
@@ -36,6 +47,8 @@ export default {
       return !!(this.store.hasCapability?.('terminal') || this.store.hasCapability?.('file_editor'));
     },
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
+    settings() { return this.store.workCenterSettingsByAgent[this.agentId] || null; },
+    workflows() { return Array.isArray(this.settings?.workflows) ? this.settings.workflows : []; },
     items() { return this.store.workCenterItemsByAgent[this.agentId] || []; },
     loading() { return !!this.store.workCenterLoadingByAgent[this.agentId]; },
     error() { return this.store.workCenterErrorByAgent[this.agentId] || null; },
@@ -93,9 +106,17 @@ export default {
       immediate: true,
       handler(id) {
         this.selectedId = null;
-        if (id) this.store.listWorkItems(id).catch(() => {});
+        this.planPreview = null;
+        if (id) {
+          this.store.listWorkItems(id).catch(() => {});
+          this.store.loadWorkCenterSettings(id).then(data => {
+            if (!this.form.workflowTemplate) this.form.workflowTemplate = data?.settings?.defaultWorkflowId || '';
+            if (this.createOpen) this.schedulePreview();
+          }).catch(() => {});
+        }
       },
     },
+    'form.workflowTemplate'() { if (this.createOpen) this.schedulePreview(); },
   },
   mounted() {
     const draft = this.store.workCenterCreateDraft;
@@ -106,9 +127,15 @@ export default {
       acceptanceCriteriaText: '',
       workDir: draft.workDir || '',
       reuseMemory: true,
-      start: true,
+      workflowTemplate: this.settings?.defaultWorkflowId || '',
+      stageOverrides: {},
+      start: this.settings?.startImmediately !== false,
     };
     this.createOpen = true;
+    this.schedulePreview();
+  },
+  beforeUnmount() {
+    if (this.previewTimer) clearTimeout(this.previewTimer);
   },
   methods: {
     tr(key, fallback) {
@@ -162,10 +189,73 @@ export default {
     runsForAction(actionId) {
       return (this.selected?.runs || []).filter(run => run.actionId === actionId);
     },
+    openCreate() {
+      this.createOpen = true;
+      if (!this.form.workflowTemplate) this.form.workflowTemplate = this.settings?.defaultWorkflowId || '';
+      this.form.start = this.settings?.startImmediately !== false;
+      this.schedulePreview();
+    },
     closeCreate() {
       if (this.saving) return;
       this.createOpen = false;
+      this.previewError = '';
+      this.planPreview = null;
       this.store.workCenterCreateDraft = null;
+    },
+    schedulePreview() {
+      if (this.previewTimer) clearTimeout(this.previewTimer);
+      this.previewTimer = setTimeout(() => { this.refreshPreview(); }, 120);
+    },
+    async refreshPreview() {
+      if (!this.createOpen || !this.form.workflowTemplate) return;
+      const revision = ++this.previewRevision;
+      this.previewLoading = true;
+      this.previewError = '';
+      const target = this.agentId;
+      try {
+        const preview = await this.store.previewWorkCenterPlan({
+          workflowTemplate: this.form.workflowTemplate,
+          stageOverrides: this.form.stageOverrides,
+        }, target);
+        if (revision === this.previewRevision && target === this.agentId) this.planPreview = preview;
+      } catch (error) {
+        if (revision === this.previewRevision && target === this.agentId) {
+          this.previewError = error?.message || String(error);
+        }
+      } finally {
+        if (revision === this.previewRevision && target === this.agentId) this.previewLoading = false;
+      }
+    },
+    overrideStageVp(stageId, vpId) {
+      this.form.stageOverrides = {
+        ...this.form.stageOverrides,
+        [stageId]: {
+          ...(this.form.stageOverrides[stageId] || {}),
+          assignmentPolicy: vpId
+            ? { mode: 'fixed', fixedVpId: vpId }
+            : { mode: 'auto', fixedVpId: null },
+        },
+      };
+      this.schedulePreview();
+    },
+    overrideStageModel(stageId, model) {
+      this.form.stageOverrides = {
+        ...this.form.stageOverrides,
+        [stageId]: {
+          ...(this.form.stageOverrides[stageId] || {}),
+          modelPolicy: model
+            ? { mode: 'specific', model }
+            : { mode: 'inherit', model: null },
+        },
+      };
+      this.schedulePreview();
+    },
+    onLlmConfigSaved() {
+      const agentId = this.agentId;
+      if (!agentId) return;
+      return this.store.refreshWorkCenterRuntime(agentId)
+        .then(() => { if (this.createOpen && agentId === this.agentId) this.schedulePreview(); })
+        .catch(() => {});
     },
     async submitCreate() {
       if (!this.form.title.trim() || !this.form.goal.trim()) return;
@@ -178,7 +268,8 @@ export default {
           acceptanceCriteria: this.form.acceptanceCriteriaText
             .split('\n').map(value => value.trim()).filter(Boolean),
           workDir: this.form.workDir.trim(),
-          workflowTemplate: 'software-change',
+          workflowTemplate: this.form.workflowTemplate,
+          stageOverrides: this.form.stageOverrides,
           origin: draft?.origin || null,
           linkedSessionIds: draft?.linkedSessionIds || [],
           reuseMemory: this.form.reuseMemory,
@@ -186,7 +277,16 @@ export default {
         }, this.agentId);
         this.selectedId = detail.id;
         this.expandedActions = detail.currentActionId ? { [detail.currentActionId]: true } : {};
-        this.form = { title: '', goal: '', acceptanceCriteriaText: '', workDir: '', reuseMemory: true, start: true };
+        this.form = {
+          title: '',
+          goal: '',
+          acceptanceCriteriaText: '',
+          workDir: '',
+          reuseMemory: true,
+          workflowTemplate: this.settings?.defaultWorkflowId || '',
+          stageOverrides: {},
+          start: this.settings?.startImmediately !== false,
+        };
         this.store.workCenterCreateDraft = null;
         this.createOpen = false;
       } finally {
@@ -284,11 +384,15 @@ export default {
               </span>
             </div>
             <div class="work-center-header-actions">
+              <button class="work-center-icon-button" type="button" @click="settingsOpen = true"
+                      :title="tr('workCenter.settings.title', 'Work Center settings')" :aria-label="tr('workCenter.settings.title', 'Work Center settings')">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19.43 12.98c.04-.32.07-.65.07-.98s-.03-.66-.08-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.2 7.2 0 0 0-1.69-.98L14.5 2.42A.49.49 0 0 0 14 2h-4a.49.49 0 0 0-.49.42L9.13 5.07c-.61.25-1.17.59-1.69.98l-2.49-1a.49.49 0 0 0-.61.22l-2 3.46a.49.49 0 0 0 .12.64l2.11 1.65c-.04.32-.08.66-.08.98s.03.66.08.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.12.22.38.31.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.04.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.58 1.69-.98l2.49 1c.23.08.49 0 .61-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/></svg>
+              </button>
               <button class="work-center-icon-button" type="button" @click="refresh" :disabled="loading"
                       :title="tr('workCenter.refresh', 'Refresh')" :aria-label="tr('workCenter.refresh', 'Refresh')">
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 16.22 7.78L13 11h7V4l-2.35 2.35Z"/></svg>
               </button>
-              <button class="btn-primary work-center-header-create" type="button" @click="createOpen = true" :disabled="onlineAgents.length === 0"
+              <button class="btn-primary work-center-header-create" type="button" @click="openCreate" :disabled="onlineAgents.length === 0"
                       :title="tr('workCenter.newWorkItem', 'New work item')" :aria-label="tr('workCenter.newWorkItem', 'New work item')">
                 <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
                 <span>{{ tr('workCenter.new', 'New') }}</span>
@@ -331,7 +435,7 @@ export default {
                 </span>
                 <span class="work-center-card-goal">{{ item.goal }}</span>
                 <span class="work-center-card-meta">
-                  <span v-if="item.currentAction">{{ actionLabel(item.currentAction.type) }} · {{ item.currentAction.requiredRole }}</span>
+                  <span v-if="item.currentAction">{{ actionLabel(item.currentAction.type) }} · {{ item.currentAction.assignmentMode || tr('workCenter.assignment.auto', 'Auto') }}</span>
                   <span>{{ time(item.updatedAt) || tr('workCenter.noTimestamp', 'No timestamp') }}</span>
                 </span>
               </button>
@@ -339,7 +443,7 @@ export default {
               <div v-if="!loading && visibleItems.length === 0" class="work-center-empty-state">
                 <h2>{{ emptyState.title }}</h2>
                 <p>{{ emptyState.body }}</p>
-                <button v-if="emptyState.canCreate" class="btn-ghost work-center-empty-create" type="button" @click="createOpen = true" :disabled="onlineAgents.length === 0">
+                <button v-if="emptyState.canCreate" class="btn-ghost work-center-empty-create" type="button" @click="openCreate" :disabled="onlineAgents.length === 0">
                   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
                   {{ tr('workCenter.createFirst', 'Create first work item') }}
                 </button>
@@ -402,7 +506,7 @@ export default {
                         <span class="work-center-action-index">{{ action.sequence }}</span>
                         <span class="work-center-action-title">
                           <strong>{{ actionLabel(action.type) }}</strong>
-                          <small>{{ action.requiredRole }} · {{ statusLabel(action.status) }}</small>
+                          <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.mode || tr('workCenter.assignment.auto', 'Auto') }} · {{ statusLabel(action.status) }}</small>
                         </span>
                         <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
                         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" :class="{ expanded: expandedActions[action.id] }"><path fill="currentColor" d="m7.41 8.59 4.59 4.58 4.59-4.58L18 10l-6 6-6-6 1.41-1.41Z"/></svg>
@@ -413,7 +517,9 @@ export default {
                           <div class="work-center-run-heading">
                             <small>
                               {{ run.vpSnapshot?.name || run.roleSnapshot?.id || tr('workCenter.unknownRole', 'Unknown role') }}
+                              <template v-if="run.modelSnapshot?.provider"> · {{ run.modelSnapshot.provider }}</template>
                               <template v-if="run.modelSnapshot?.id"> · {{ run.modelSnapshot.id }}</template>
+                              <template v-if="run.modelSnapshot?.effort"> · {{ run.modelSnapshot.effort }}</template>
                               · {{ time(run.startedAt) }}
                             </small>
                             <span class="work-center-status" :data-status="run.status"><span aria-hidden="true"></span>{{ statusLabel(run.status) }}</span>
@@ -453,6 +559,19 @@ export default {
         </div>
       </main>
 
+      <WorkCenterSettingsModal v-if="settingsOpen" :key="agentId" :agent-id="agentId" @close="settingsOpen = false" @saved="refreshPreview" @open-agent-models="settingsOpen = false; llmConfigOpen = true" />
+      <div v-if="llmConfigOpen" class="modal-overlay yeaft-llm-config-overlay" @click.self="llmConfigOpen = false">
+        <div class="modal-card yeaft-llm-config-modal" role="dialog" aria-modal="true" :aria-label="$t('settings.llm.configureAgent')">
+          <div class="modal-header">
+            <h3>{{ $t('settings.llm.configureAgent') }}</h3>
+            <button class="modal-close" type="button" @click="llmConfigOpen = false" :aria-label="$t('common.close')">×</button>
+          </div>
+          <div class="yeaft-llm-config-body">
+            <LlmTab context="yeaft" @saved="onLlmConfigSaved" />
+          </div>
+        </div>
+      </div>
+
       <div v-if="createOpen" class="modal-overlay work-center-modal-overlay" @click.self="closeCreate">
         <form class="modal-card work-center-modal" @submit.prevent="submitCreate">
           <header>
@@ -463,13 +582,43 @@ export default {
             <label>{{ tr('workCenter.titleField', 'Title') }}<input v-model="form.title" type="text" required></label>
             <label>{{ tr('workCenter.goal', 'Goal') }}<textarea v-model="form.goal" rows="4" required></textarea></label>
             <label>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}<textarea v-model="form.acceptanceCriteriaText" rows="4" :placeholder="tr('workCenter.criteriaHint', 'One criterion per line')"></textarea></label>
-            <label>{{ tr('workCenter.workDir', 'Working directory') }}<input v-model="form.workDir" type="text" :placeholder="tr('workCenter.workDirHint', 'Optional project directory')"></label>
+            <div class="work-center-create-grid">
+              <label>{{ tr('workCenter.workflow', 'Workflow') }}
+                <select v-model="form.workflowTemplate">
+                  <option v-for="workflow in workflows" :key="workflow.id" :value="workflow.id">{{ workflow.name }}</option>
+                </select>
+              </label>
+              <label>{{ tr('workCenter.workDir', 'Working directory') }}<input v-model="form.workDir" type="text" :placeholder="tr('workCenter.workDirHint', 'Optional project directory')"></label>
+            </div>
+            <section class="work-center-plan-preview">
+              <div class="work-center-plan-preview-heading">
+                <div><strong>{{ tr('workCenter.planPreview', 'Execution plan') }}</strong><small>{{ tr('workCenter.planPreviewHelp', 'Resolved from this Agent’s VP pool and model settings.') }}</small></div>
+                <button type="button" class="btn-ghost" @click="settingsOpen = true">{{ tr('workCenter.settings.title', 'Settings') }}</button>
+              </div>
+              <p v-if="previewLoading" class="work-center-muted">{{ tr('common.loading', 'Loading…') }}</p>
+              <p v-else-if="previewError" class="work-center-error">{{ previewError }}</p>
+              <div v-else-if="planPreview" class="work-center-plan-stages">
+                <article v-for="stage in planPreview.stages" :key="stage.id" :class="{ invalid: stage.error }">
+                  <div><strong>{{ stage.name }}</strong><small v-if="stage.error">{{ stage.error }}</small><small v-else>{{ stage.selectedVp?.name }} · {{ stage.model?.provider || tr('workCenter.model.defaultProvider', 'default provider') }} · {{ stage.model?.id }}</small></div>
+                  <div class="work-center-plan-overrides">
+                    <select :value="form.stageOverrides[stage.id]?.assignmentPolicy?.fixedVpId || ''" @change="overrideStageVp(stage.id, $event.target.value)">
+                      <option value="">{{ tr('workCenter.assignment.auto', 'Use workflow policy') }}</option>
+                      <option v-for="vp in store.workCenterRuntimeByAgent[agentId]?.vps || []" :key="vp.id" :value="vp.id">{{ vp.name || vp.id }}</option>
+                    </select>
+                    <select :value="form.stageOverrides[stage.id]?.modelPolicy?.model || ''" @change="overrideStageModel(stage.id, $event.target.value)">
+                      <option value="">{{ tr('workCenter.model.inherit', 'Use workflow model') }}</option>
+                      <option v-for="model in store.workCenterRuntimeByAgent[agentId]?.models || []" :key="model.ref || model.id" :value="model.ref || model.id">{{ model.provider }} · {{ model.label || model.id }}</option>
+                    </select>
+                  </div>
+                </article>
+              </div>
+            </section>
             <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox">{{ tr('workCenter.reuseMemory', 'Reuse context from this working directory') }}</label>
             <label class="work-center-checkbox"><input v-model="form.start" type="checkbox">{{ tr('workCenter.startImmediately', 'Start immediately') }}</label>
           </div>
           <footer>
             <button class="btn-secondary" type="button" @click="closeCreate">{{ tr('common.cancel', 'Cancel') }}</button>
-            <button class="btn-primary" type="submit" :disabled="saving || !form.title.trim() || !form.goal.trim()">
+            <button class="btn-primary" type="submit" :disabled="saving || previewLoading || planPreview?.valid === false || !form.title.trim() || !form.goal.trim() || !form.workflowTemplate">
               {{ saving ? tr('workCenter.creating', 'Creating…') : tr('workCenter.create', 'Create') }}
             </button>
           </footer>

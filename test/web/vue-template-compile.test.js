@@ -18,6 +18,8 @@ const compileCoveredComponents = [
   'AssistantTurn.js',
   'YeaftDebugPanel.js',
   'YeaftSessionActions.js',
+  'WorkCenterPage.js',
+  'WorkCenterSettingsModal.js',
 ];
 
 function walkAst(node, visit) {

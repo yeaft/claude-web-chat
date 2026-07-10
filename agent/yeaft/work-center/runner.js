@@ -5,6 +5,7 @@ import { parsePatch } from '../tools/apply-patch.js';
 import { defaultRegistry } from '../vp/registry.js';
 import { NullTrace } from '../debug-trace.js';
 import { isPathInsideOrEqual } from '../tools/path-safety.js';
+import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
@@ -203,12 +204,6 @@ function completionContract(action) {
 }\nA model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
 }
 
-function resolveModel(config, vp) {
-  if (vp.modelHint === 'fast' && config.fastModel) return config.fastModel;
-  if (vp.modelHint === 'primary' && config.primaryModel) return config.primaryModel;
-  return config.model || config.primaryModel || null;
-}
-
 export class WorkItemRunner {
   constructor(options) {
     this.runtimeProvider = options.runtimeProvider;
@@ -219,20 +214,38 @@ export class WorkItemRunner {
   async run({ workItem, action, run, signal, ownerBootId }) {
     const runtime = await this.runtimeProvider();
     const workDir = resolveWorkItemWorkDir(workItem, runtime.defaultWorkDir);
-    const vp = copyVp(this.registry.getVp(action.requiredRole));
+    const priorRuns = this.store.listCompletedRuns(workItem.id);
+    const assignment = action.assignmentPolicy
+      ? selectWorkItemVp({
+          policy: action.assignmentPolicy,
+          stageType: action.type,
+          vps: this.registry.listVps(),
+          priorRuns,
+        })
+      : {
+          vp: this.registry.getVp(action.requiredRole),
+          reason: `legacy-fixed:${action.requiredRole}`,
+          policy: { mode: 'fixed', fixedVpId: action.requiredRole },
+        };
+    const vp = copyVp(assignment.vp);
     if (!vp) {
-      const error = new Error(`Required Work Center role is unavailable: ${action.requiredRole}`);
+      const error = new Error(`Required Work Center VP is unavailable: ${action.requiredRole || '(unassigned)'}`);
       error.retryable = false;
       throw error;
     }
+    const resolvedModel = resolveWorkItemModel(runtime.config, vp, action.modelPolicy);
     const isRunActive = () => !signal.aborted
       && this.store.isActiveRun(run.id, ownerBootId, run.leaseEpoch);
     const toolPolicySnapshot = workItemToolPolicySnapshot(workDir);
     const toolRegistry = createWorkItemToolRegistry({ workDir, isRunActive });
-    const model = resolveModel(runtime.config, vp);
     const config = {
       ...runtime.config,
-      model,
+      model: resolvedModel.model,
+      // WorkItem model policy is part of the frozen execution contract. The
+      // Agent-level fallback would silently execute a different model while
+      // leaving the Run snapshot unchanged, so WorkItems must fail explicitly.
+      fallbackModel: null,
+      ...(resolvedModel.effort ? { modelEffort: resolvedModel.effort } : {}),
       _readOnly: true,
       serverMode: true,
       // WorkItem messages live in the Work Center DB. Never archive their
@@ -247,9 +260,20 @@ export class WorkItemRunner {
       ownerBootId,
       run.leaseEpoch,
       {
-        roleSnapshot: { id: action.requiredRole, actionType: action.type },
+        roleSnapshot: {
+          id: action.stageId || action.type,
+          actionType: action.type,
+          assignmentPolicy: assignment.policy,
+          selectionReason: assignment.reason,
+        },
         vpSnapshot: vp,
-        modelSnapshot: { id: model, provider: runtime.config.provider || null },
+        modelSnapshot: {
+          id: resolvedModel.model,
+          provider: resolvedModel.provider,
+          effort: resolvedModel.effort,
+          source: resolvedModel.source,
+          policy: resolvedModel.policy,
+        },
         toolPolicySnapshot,
       },
     );

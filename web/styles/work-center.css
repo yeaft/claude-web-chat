@@ -870,6 +870,321 @@
   gap: 10px;
 }
 
+.work-center-create-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+  gap: 12px;
+}
+
+.work-center-plan-preview {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+}
+
+.work-center-plan-preview-heading,
+.work-center-plan-preview-heading > div,
+.work-center-plan-stages article > div:first-child {
+  display: flex;
+}
+
+.work-center-plan-preview-heading {
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.work-center-plan-preview-heading > div,
+.work-center-plan-stages article > div:first-child {
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.work-center-plan-preview small,
+.work-center-policy-stage small,
+.work-center-model-stage small {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.work-center-plan-stages {
+  display: grid;
+  gap: 5px;
+}
+
+.work-center-plan-stages article {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(260px, 1.25fr);
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.work-center-plan-stages article.invalid {
+  color: var(--error);
+}
+
+.work-center-plan-overrides {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.work-center-settings-overlay {
+  z-index: 1100;
+  background: var(--modal-overlay-bg);
+}
+
+.work-center-settings-card {
+  display: flex;
+  width: min(960px, 92vw);
+  height: min(720px, 86vh);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: var(--bg-main);
+  box-shadow: var(--modal-shadow);
+}
+
+.work-center-settings-header,
+.work-center-settings-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+}
+
+.work-center-settings-header h2,
+.work-center-settings-header p {
+  margin: 0;
+}
+
+.work-center-settings-header p {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.work-center-settings-close {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 22px;
+}
+
+.work-center-settings-close:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.work-center-settings-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.work-center-settings-nav {
+  display: flex;
+  width: 190px;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px;
+  background: var(--bg-sidebar);
+}
+
+.work-center-settings-nav button {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.work-center-settings-nav button:hover,
+.work-center-settings-nav button.active {
+  background: var(--session-active);
+  color: var(--text-primary);
+}
+
+.work-center-settings-pane {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 24px 32px;
+  overflow-y: auto;
+}
+
+.work-center-settings-section-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.work-center-settings-section-heading h3,
+.work-center-settings-section-heading p {
+  margin: 0;
+}
+
+.work-center-settings-section-heading p {
+  margin-top: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.work-center-policy-stage,
+.work-center-model-stage {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) repeat(2, minmax(160px, 1fr));
+  align-items: start;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+}
+
+.work-center-workflow-actions,
+.work-center-stage-actions,
+.work-center-policy-stage header,
+.work-center-policy-stage header div {
+  display: flex;
+}
+
+.work-center-workflow-actions,
+.work-center-stage-actions,
+.work-center-policy-stage header {
+  align-items: center;
+  gap: 9px;
+}
+
+.work-center-workflow-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.work-center-stage-actions {
+  margin-left: auto;
+}
+
+.work-center-stage-actions button {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.work-center-stage-actions button:hover:not(:disabled) {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.work-center-stage-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.work-center-policy-stage header > span {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--session-active);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.work-center-policy-stage header div {
+  flex-direction: column;
+}
+
+.work-center-policy-stage label,
+.work-center-model-stage label,
+.work-center-settings-field {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.work-center-stage-instruction,
+.work-center-vp-pool {
+  grid-column: 2 / -1;
+}
+
+.work-center-stage-instruction textarea {
+  resize: vertical;
+}
+
+.work-center-vp-pool {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 10px;
+  border: 0;
+}
+
+.work-center-vp-pool legend {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.work-center-vp-pool label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.work-center-vp-pool small {
+  color: var(--text-muted);
+}
+
+.work-center-settings-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.work-center-settings-error {
+  margin: 0;
+  padding: 0 20px 10px;
+  color: var(--error);
+  font-size: 12px;
+}
+
+.work-center-settings-footer {
+  justify-content: flex-end;
+}
+
+.work-center-settings-footer-spacer {
+  flex: 1;
+}
+
 @media (max-width: 1120px) {
   .work-center-shell {
     padding: 24px 20px 20px;
@@ -996,5 +1311,38 @@
   .work-center-detail {
     min-height: 300px;
     padding: 22px 18px;
+  }
+
+  .work-center-create-grid,
+  .work-center-plan-stages article,
+  .work-center-plan-overrides,
+  .work-center-policy-stage,
+  .work-center-model-stage {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .work-center-settings-card {
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 16px);
+  }
+
+  .work-center-settings-body {
+    flex-direction: column;
+  }
+
+  .work-center-settings-nav {
+    width: auto;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .work-center-settings-nav button {
+    white-space: nowrap;
+  }
+
+  .work-center-stage-instruction,
+  .work-center-vp-pool {
+    grid-column: auto;
+    grid-template-columns: minmax(0, 1fr);
   }
 }

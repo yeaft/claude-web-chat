@@ -27,6 +27,9 @@ V1 操作：
 - `guide`：给当前 ready/running Action 补充提示；请求必须携带用户看到的 `actionId` 和 WorkItem `revision`，匹配后才原子终止旧执行并重启同类型 Action。
 - `retry`：人工把 needs_attention/waiting 创建为新 ready Action。
 - `set_watcher`：启停当前 Agent 的 Watcher。
+- `get_settings`：读取当前 Agent 的 Work Center workflow / VP assignment / model policy 设置及可用 VP、模型目录。
+- `update_settings`：校验并原子写入当前 Agent 的 Work Center 设置；只影响之后创建的 WorkItem。
+- `preview`：使用与 Runner 相同的选择器解析 workflow、stage override、实际 VP 和模型；不创建 WorkItem。
 
 ## Agent → Web
 
@@ -66,4 +69,6 @@ V1 操作：
 - `work_center_event` 只广播 redacted summary DTO：id/title/goal/status/current Action/source Session/timestamps。不得携带 workDir、Run evidence、错误、模型快照或工具输出。
 - `get` 是用户显式选择详情后的鉴权读取，可返回结构化 Run summary/evidence/waitingReason/error，但 evidence 不包含原始工具输出。
 - WorkItem 的本地路径和完整执行日志只保存在 Agent 本地，不经过 Server 广播。
+- Provider API key 和动态凭证不属于 Work Center 设置；Work Center 只保存 Agent LLM 设置中已有的完整 model ref。
+- WorkItem 创建时固化 workflow policy snapshot；Run 开始时固化实际 VP、Provider、模型、effort 和选择原因。设置更新不得改变已有 WorkItem。
 - 离线 Agent 不支持写操作；Web 显示离线状态，不做本地乐观完成。

@@ -1,4 +1,4 @@
-import { actionInstruction, getNextStep, initialActionFor, RUN_OUTCOMES } from './workflow.js';
+import { actionForStage, actionInstruction, getNextStep, initialActionFor, RUN_OUTCOMES } from './workflow.js';
 import { normalizeEvidence } from './evidence.js';
 
 function normalizeCriteria(value) {
@@ -48,10 +48,12 @@ function normalizeTerminalResult(result, action) {
   return normalized;
 }
 
-function contextEntry(action, result) {
+function contextEntry(action, result, run) {
   return {
     type: action.type,
-    role: action.requiredRole,
+    stageId: action.stageId || action.type,
+    vpId: run?.vpSnapshot?.id || action.requiredRole || null,
+    role: run?.roleSnapshot?.id || action.requiredRole || null,
     summary: result.summary || '',
     evidence: result.evidence || [],
     reviewDecision: result.reviewDecision || null,
@@ -125,7 +127,13 @@ export class WorkflowController {
         summary: guidance,
         evidence: [],
       }];
-      const step = { type: previous.type, requiredRole: previous.requiredRole };
+      const step = {
+        type: previous.type,
+        stageId: previous.stageId || previous.type,
+        assignmentPolicy: previous.assignmentPolicy,
+        modelPolicy: previous.modelPolicy,
+        requiredRole: previous.requiredRole,
+      };
       return {
         ...step,
         context,
@@ -144,13 +152,21 @@ export class WorkflowController {
         throw new Error('answer is required to resume a waiting WorkItem');
       }
       const step = previous
-        ? { type: previous.type, requiredRole: previous.requiredRole }
+        ? {
+            type: previous.type,
+            stageId: previous.stageId || previous.type,
+            assignmentPolicy: previous.assignmentPolicy,
+            modelPolicy: previous.modelPolicy,
+            requiredRole: previous.requiredRole,
+          }
         : initialActionFor(workItem);
       const context = Array.isArray(previous?.context) ? [...previous.context] : [];
       if (previousRun) {
         context.push({
           type: previous.type,
-          role: previous.requiredRole,
+          stageId: previous.stageId || previous.type,
+          vpId: previousRun.vpSnapshot?.id || previous.requiredRole || null,
+          role: previousRun.roleSnapshot?.id || previous.requiredRole || null,
           summary: previousRun.summary || '',
           evidence: normalizeEvidence(previousRun.evidence),
           waitingReason: previousRun.waitingReason || null,
@@ -223,7 +239,7 @@ export class WorkflowController {
               revision: workItem.revision + 1,
             }
           : workItem;
-        const nextStep = getNextStep(workItem.workflowTemplate, action.type, result);
+        const nextStep = getNextStep(workItem, action.stageId || action.type, result);
         if (!nextStep) {
           return {
             actionStatus: 'completed',
@@ -234,17 +250,12 @@ export class WorkflowController {
           };
         }
 
-        const context = [...(action.context || []), contextEntry(action, result)];
+        const context = [...(action.context || []), contextEntry(action, result, activeRun)];
         return {
           actionStatus: 'completed',
           workItemStatus: 'ready',
           contractPatch,
-          nextAction: {
-            ...nextStep,
-            context,
-            instruction: actionInstruction(nextStep, effectiveWorkItem, context),
-            maxAttempts: 2,
-          },
+          nextAction: actionForStage(nextStep, effectiveWorkItem, context),
           eventType: 'action.completed',
           eventData: {
             nextActionType: nextStep.type,
