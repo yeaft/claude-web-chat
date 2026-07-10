@@ -253,7 +253,7 @@ export default {
                       :title="tr('workCenter.refresh', 'Refresh')" :aria-label="tr('workCenter.refresh', 'Refresh')">
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 16.22 7.78L13 11h7V4l-2.35 2.35Z"/></svg>
               </button>
-              <button class="btn-primary work-center-header-create" type="button" @click="createOpen = true"
+              <button class="btn-primary work-center-header-create" type="button" @click="createOpen = true" :disabled="onlineAgents.length === 0"
                       :title="tr('workCenter.newWorkItem', 'New work item')" :aria-label="tr('workCenter.newWorkItem', 'New work item')">
                 <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
                 <span>{{ tr('workCenter.new', 'New') }}</span>
@@ -276,6 +276,9 @@ export default {
             </span>
           </div>
 
+          <p v-if="onlineAgents.length === 0" class="work-center-notice">
+            {{ tr('workCenter.noOnlineAgents', 'No online agents') }}
+          </p>
           <p v-if="error" class="work-center-error">{{ error }}</p>
           <div class="work-center-body" :class="{ 'is-empty': !loading && visibleItems.length === 0 }">
             <section class="work-center-list" :aria-busy="loading ? 'true' : 'false'">
@@ -285,6 +288,7 @@ export default {
               </div>
               <button v-for="item in visibleItems" :key="item.id" type="button"
                       class="work-center-card" :class="{ active: selectedId === item.id }"
+                      :aria-label="item.title || tr('workCenter.workItem', 'Work item')"
                       @click="selectItem(item)">
                 <span class="work-center-card-topline">
                   <span class="work-center-card-title">{{ item.title }}</span>
@@ -293,13 +297,14 @@ export default {
                 <span class="work-center-card-goal">{{ item.goal }}</span>
                 <span class="work-center-card-meta">
                   <span v-if="item.currentAction">{{ actionLabel(item.currentAction.type) }} · {{ item.currentAction.requiredRole }}</span>
-                  <span>{{ time(item.updatedAt) }}</span>
+                  <span>{{ time(item.updatedAt) || tr('workCenter.noTimestamp', 'No timestamp') }}</span>
                 </span>
               </button>
+              <div v-if="loading" class="work-center-loading">{{ tr('workCenter.loading', 'Loading work items…') }}</div>
               <div v-if="!loading && visibleItems.length === 0" class="work-center-empty-state">
                 <h2>{{ emptyState.title }}</h2>
                 <p>{{ emptyState.body }}</p>
-                <button v-if="emptyState.canCreate" class="btn-ghost work-center-empty-create" type="button" @click="createOpen = true">
+                <button v-if="emptyState.canCreate" class="btn-ghost work-center-empty-create" type="button" @click="createOpen = true" :disabled="onlineAgents.length === 0">
                   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
                   {{ tr('workCenter.createFirst', 'Create first work item') }}
                 </button>
@@ -314,11 +319,17 @@ export default {
                     <h2>{{ selected.title }}</h2>
                   </div>
                   <div class="work-center-detail-actions">
+                    <button v-if="selected.status === 'cancelled'" class="btn-primary" type="button" @click="retrySelected">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
                     <button v-if="selected.status === 'waiting' || selected.status === 'needs_attention'" class="btn-primary" type="button" @click="retrySelected" :disabled="selected.status === 'waiting' && !resumeAnswer.trim()">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancel', 'Cancel') }}</button>
                   </div>
                 </div>
+                <dl class="work-center-detail-meta">
+                  <div><dt>{{ tr('workCenter.updated', 'Updated') }}</dt><dd>{{ time(selected.updatedAt) || '—' }}</dd></div>
+                  <div v-if="selected.workDir"><dt>{{ tr('workCenter.workDir', 'Working directory') }}</dt><dd>{{ selected.workDir }}</dd></div>
+                  <div v-if="selected.workflowTemplate"><dt>{{ tr('workCenter.workflow', 'Workflow') }}</dt><dd>{{ selected.workflowTemplate }}</dd></div>
+                </dl>
 
                 <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
                   <label>{{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}
