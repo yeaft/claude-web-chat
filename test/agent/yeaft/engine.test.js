@@ -344,11 +344,13 @@ describe('Engine', () => {
       const system = mockAdapter.callLog[0].system;
       expect(system).toContain('## Active Memory Set');
       expect(system).toContain('### Resident');
-      expect(system).toContain('sessions/g1');
       expect(system).toContain('Dream memory loaded into the prompt');
       expect(system).toContain('User-level Dream summary should enter the prompt');
       expect(system).toContain('VP Dream summary should enter the prompt');
-      expect(system).toContain('sessions/g1/topic/dream/recall');
+      expect(system).toContain('**session**: The user prefers concrete execution notes and wants Dream memory loaded into the prompt.');
+      expect(system).toContain('**topic: dream/recall**: Topic Dream summary should enter the prompt through AMS Resident.');
+      expect(system).not.toContain('**sessions/g1/topic/dream/recall**');
+      expect(system).not.toContain('**sessions/g1**');
       expect(system).toContain('Topic Dream summary should enter the prompt through AMS Resident.');
 
       const loaded = events.find(e => e.type === 'dream_memory_loaded');

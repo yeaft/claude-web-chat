@@ -158,6 +158,24 @@ export function selectRespondingVps(input) {
 
 
 /**
+ * Turn an internal memory scope into the compact label shown to the model.
+ * The active-scope prompt already carries the current session id, so repeating
+ * the full storage path on every memory entry only wastes context. Internal
+ * entries and debug events keep the original scope for ACLs and diagnostics.
+ *
+ * @param {string} scope
+ * @returns {string}
+ */
+export function memoryScopeLabel(scope) {
+  const value = typeof scope === 'string' && scope ? scope : 'unknown';
+  const sessionTopic = /^(?:sessions|session|group)\/[^/]+\/topic\/(.+)$/.exec(value);
+  if (sessionTopic) return `topic: ${sessionTopic[1]}`;
+  if (/^(?:sessions|session|group)\/[^/]+$/.test(value)) return 'session';
+  if (value.startsWith('topic/')) return `topic: ${value.slice(6)}`;
+  return value;
+}
+
+/**
  * Build the heading for a single scope's formatted memory block.
  *
  * Heading style is the original recall-v2 format, kept so the system
@@ -167,6 +185,8 @@ export function selectRespondingVps(input) {
  * @returns {string}
  */
 function scopeHeading(scope) {
+  const label = memoryScopeLabel(scope);
+  if (label.startsWith('topic: ')) return `## Memory: Topic ${label.slice(7)}`;
   if (scope === 'user') return '## Memory: User';
   // Nested chat scopes first.
   let m = /^chat\/([^/]+)\/vp\/(.+)$/.exec(scope);
@@ -180,10 +200,6 @@ function scopeHeading(scope) {
   if (m) return `## Memory: Session ${m[1]} (user)`;
   m = /^session\/([^/]+)\/feature\/(.+)$/.exec(scope);
   if (m) return `## Memory: Feature ${m[2]}`;
-  m = /^sessions\/([^/]+)\/topic\/(.+)$/.exec(scope);
-  if (m) return `## Memory: Topic ${m[2]}`;
-  m = /^session\/([^/]+)\/topic\/(.+)$/.exec(scope);
-  if (m) return `## Memory: Topic ${m[2]}`;
   // Legacy nested group scopes (un-migrated data).
   m = /^group\/([^/]+)\/vp\/(.+)$/.exec(scope);
   if (m) return `## Memory: VP ${m[2]}`;
@@ -191,8 +207,6 @@ function scopeHeading(scope) {
   if (m) return `## Memory: Session ${m[1]} (user)`;
   m = /^group\/([^/]+)\/feature\/(.+)$/.exec(scope);
   if (m) return `## Memory: Feature ${m[2]}`;
-  m = /^group\/([^/]+)\/topic\/(.+)$/.exec(scope);
-  if (m) return `## Memory: Topic ${m[2]}`;
   if (scope.startsWith('session/')) return `## Memory: Session ${scope.slice(8)}`;
   if (scope.startsWith('group/')) return `## Memory: Session ${scope.slice(6)}`;
   if (scope.startsWith('vp/')) return `## Memory: VP ${scope.slice(3)}`;
