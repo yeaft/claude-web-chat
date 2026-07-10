@@ -66,6 +66,29 @@ describe('Work Center UI contract', () => {
     expect(css).not.toContain('border-top');
   });
 
+  it('aligns responsive breakpoints and keeps the mobile create action', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    const css = read('web/styles/work-center.css');
+
+    expect(css).toContain('@media (max-width: 1120px)');
+    expect(css).toContain('@media (max-width: 768px)');
+    expect(css).not.toContain('@media (max-width: 760px)');
+    expect(css).toContain('.work-center-header-create span');
+    expect(page).toContain(':aria-label="tr(\'workCenter.newWorkItem\'');
+  });
+
+  it('uses filter-specific list headings and empty states', () => {
+    const page = read('web/components/WorkCenterPage.js');
+
+    expect(page).toContain("this.filter === 'all'");
+    expect(page).toContain("tr('workCenter.allItems'");
+    expect(page).toContain("tr('workCenter.noOpenTitle'");
+    expect(page).toContain("tr('workCenter.noCompletedTitle'");
+    expect(page).toContain('<span>{{ listHeading }}</span>');
+    expect(page).toContain('<h2>{{ emptyState.title }}</h2>');
+    expect(page).toContain('v-if="emptyState.canCreate"');
+  });
+
   it('provides matching English and Chinese Work Center strings', () => {
     const en = read('web/i18n/en.js');
     const zh = read('web/i18n/zh-CN.js');
@@ -73,6 +96,9 @@ describe('Work Center UI contract', () => {
       'workCenter.title',
       'workCenter.newWorkItem',
       'workCenter.activeItems',
+      'workCenter.allItems',
+      'workCenter.noOpenTitle',
+      'workCenter.noCompletedTitle',
       'workCenter.noMatchesTitle',
       'workCenter.selectTitle',
       'workCenter.status.needs_attention',

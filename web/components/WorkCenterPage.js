@@ -45,6 +45,39 @@ export default {
           || String(item.goal || '').toLowerCase().includes(q);
       });
     },
+    listHeading() {
+      if (this.filter === 'done') return this.tr('workCenter.completedItems', 'Completed');
+      if (this.filter === 'all') return this.tr('workCenter.allItems', 'All work items');
+      return this.tr('workCenter.activeItems', 'Active work');
+    },
+    emptyState() {
+      if (this.search.trim()) {
+        return {
+          title: this.tr('workCenter.noMatchesTitle', 'No matching work items'),
+          body: this.tr('workCenter.noMatchesBody', 'Try a different search or filter.'),
+          canCreate: false,
+        };
+      }
+      if (this.filter === 'done') {
+        return {
+          title: this.tr('workCenter.noCompletedTitle', 'No completed work items'),
+          body: this.tr('workCenter.noCompletedBody', 'Completed work items will appear here.'),
+          canCreate: false,
+        };
+      }
+      if (this.filter === 'open' && this.items.length > 0) {
+        return {
+          title: this.tr('workCenter.noOpenTitle', 'No open work items'),
+          body: this.tr('workCenter.noOpenBody', 'Open work items will appear here.'),
+          canCreate: true,
+        };
+      }
+      return {
+        title: this.tr('workCenter.emptyTitle', 'No work items yet'),
+        body: this.tr('workCenter.emptyBody', 'Create a persistent task when work must continue beyond one conversation turn.'),
+        canCreate: true,
+      };
+    },
   },
   watch: {
     agentId: {
@@ -206,9 +239,10 @@ export default {
                       :title="tr('workCenter.refresh', 'Refresh')" :aria-label="tr('workCenter.refresh', 'Refresh')">
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 16.22 7.78L13 11h7V4l-2.35 2.35Z"/></svg>
               </button>
-              <button class="btn-primary work-center-header-create" type="button" @click="createOpen = true">
+              <button class="btn-primary work-center-header-create" type="button" @click="createOpen = true"
+                      :title="tr('workCenter.newWorkItem', 'New work item')" :aria-label="tr('workCenter.newWorkItem', 'New work item')">
                 <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
-                {{ tr('workCenter.newWorkItem', 'New work item') }}
+                <span>{{ tr('workCenter.newWorkItem', 'New work item') }}</span>
               </button>
             </div>
           </header>
@@ -229,7 +263,7 @@ export default {
           <div class="work-center-body" :class="{ 'is-empty': !loading && visibleItems.length === 0 }">
             <section class="work-center-list" :aria-busy="loading ? 'true' : 'false'">
               <div v-if="visibleItems.length > 0" class="work-center-list-heading">
-                <span>{{ filter === 'done' ? tr('workCenter.completedItems', 'Completed') : tr('workCenter.activeItems', 'Active work') }}</span>
+                <span>{{ listHeading }}</span>
                 <small>{{ visibleItems.length }}</small>
               </div>
               <button v-for="item in visibleItems" :key="item.id" type="button"
@@ -249,9 +283,9 @@ export default {
                 <span class="work-center-empty-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M19 3h-3.18A3 3 0 0 0 13 1h-2a3 3 0 0 0-2.82 2H5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-8-1h2a1 1 0 0 1 1 1h-4a1 1 0 0 1 1-1Zm8 18H5V5h2v2h10V5h2v15Z"/></svg>
                 </span>
-                <h2>{{ search ? tr('workCenter.noMatchesTitle', 'No matching work items') : tr('workCenter.emptyTitle', 'No work items yet') }}</h2>
-                <p>{{ search ? tr('workCenter.noMatchesBody', 'Try a different search or filter.') : tr('workCenter.emptyBody', 'Create a persistent task when work must continue beyond one conversation turn.') }}</p>
-                <button v-if="!search" class="btn-primary" type="button" @click="createOpen = true">
+                <h2>{{ emptyState.title }}</h2>
+                <p>{{ emptyState.body }}</p>
+                <button v-if="emptyState.canCreate" class="btn-primary" type="button" @click="createOpen = true">
                   {{ tr('workCenter.newWorkItem', 'New work item') }}
                 </button>
               </div>
