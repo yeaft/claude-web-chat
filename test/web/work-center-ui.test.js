@@ -38,14 +38,55 @@ describe('Work Center UI contract', () => {
     expect(workCenter).toContain('run.evidence');
   });
 
+  it('uses inline SVG icons and a bounded list-detail workspace', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    const sidebar = read('web/components/SidebarWorkCenter.js');
+    const css = read('web/styles/work-center.css');
+
+    expect(page).toContain('class="work-center-shell"');
+    expect(page).toContain('class="work-center-filter"');
+    expect(page).toContain("'is-empty': !loading && visibleItems.length === 0");
+    expect(sidebar).toContain('<svg class="sidebar-work-center-icon"');
+    expect(sidebar).not.toContain('Symbols Nerd Font');
+    expect(sidebar).not.toContain('󰄲');
+    expect(css).toContain('width: min(100%, 1320px)');
+    expect(css).toContain('grid-template-columns: minmax(300px, 390px)');
+    expect(css).toContain('.work-center-body.is-empty .work-center-detail');
+    expect(css).toContain('.work-center-body.is-empty .work-center-list');
+  });
+
   it('uses existing design tokens and adds no hard-coded colors', () => {
     const css = read('web/styles/work-center.css');
     expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(css).not.toMatch(/rgba?\(/i);
     expect(css).toContain('var(--bg-main)');
     expect(css).toContain('var(--text-primary)');
+    expect(css).toContain('var(--modal-overlay-bg)');
     expect(css).not.toContain('border-bottom');
     expect(css).not.toContain('border-top');
+  });
+
+  it('aligns responsive breakpoints and keeps the mobile create action', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    const css = read('web/styles/work-center.css');
+
+    expect(css).toContain('@media (max-width: 1120px)');
+    expect(css).toContain('@media (max-width: 768px)');
+    expect(css).not.toContain('@media (max-width: 760px)');
+    expect(css).toContain('.work-center-header-create span');
+    expect(page).toContain(':aria-label="tr(\'workCenter.newWorkItem\'');
+  });
+
+  it('uses filter-specific list headings and empty states', () => {
+    const page = read('web/components/WorkCenterPage.js');
+
+    expect(page).toContain("this.filter === 'all'");
+    expect(page).toContain("tr('workCenter.allItems'");
+    expect(page).toContain("tr('workCenter.noOpenTitle'");
+    expect(page).toContain("tr('workCenter.noCompletedTitle'");
+    expect(page).toContain('<span>{{ listHeading }}</span>');
+    expect(page).toContain('<h2>{{ emptyState.title }}</h2>');
+    expect(page).toContain('v-if="emptyState.canCreate"');
   });
 
   it('provides matching English and Chinese Work Center strings', () => {
@@ -54,6 +95,12 @@ describe('Work Center UI contract', () => {
     const keys = [
       'workCenter.title',
       'workCenter.newWorkItem',
+      'workCenter.activeItems',
+      'workCenter.allItems',
+      'workCenter.noOpenTitle',
+      'workCenter.noCompletedTitle',
+      'workCenter.noMatchesTitle',
+      'workCenter.selectTitle',
       'workCenter.status.needs_attention',
       'workCenter.action.review',
     ];
