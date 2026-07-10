@@ -16,6 +16,7 @@ import VirtualTranscript from './VirtualTranscript.js';
 import { shouldCloseYeaftVpTurn } from '../stores/helpers/yeaft-turn-boundary.js';
 import {
   estimateVirtualItemHeight,
+  isTranscriptScrollKey,
   resolveTranscriptBottomFollow,
   shouldFollowTranscriptBottom,
   virtualTranscriptDefaults,
@@ -1831,21 +1832,60 @@ export default {
       );
     };
 
-    let lastUserScrollIntentAt = 0;
-    const USER_SCROLL_INTENT_WINDOW_MS = 500;
+    let userScrollInteractionActive = false;
+    let pointerScrollActive = false;
+    let userScrollEndTimer = null;
+    const USER_SCROLL_END_FALLBACK_MS = 250;
+
+    const clearUserScrollInteraction = () => {
+      userScrollInteractionActive = false;
+      if (userScrollEndTimer) {
+        clearTimeout(userScrollEndTimer);
+        userScrollEndTimer = null;
+      }
+    };
+
+    const scheduleUserScrollInteractionEnd = () => {
+      if (pointerScrollActive) return;
+      if (userScrollEndTimer) clearTimeout(userScrollEndTimer);
+      userScrollEndTimer = setTimeout(clearUserScrollInteraction, USER_SCROLL_END_FALLBACK_MS);
+    };
 
     const markUserScrollIntent = () => {
-      lastUserScrollIntentAt = Date.now();
+      userScrollInteractionActive = true;
+      scheduleUserScrollInteractionEnd();
+    };
+
+    const onPointerScrollStart = () => {
+      pointerScrollActive = true;
+      userScrollInteractionActive = true;
+      if (userScrollEndTimer) {
+        clearTimeout(userScrollEndTimer);
+        userScrollEndTimer = null;
+      }
+    };
+
+    const onPointerScrollEnd = () => {
+      pointerScrollActive = false;
+      scheduleUserScrollInteractionEnd();
+    };
+
+    const onScrollKey = (event) => {
+      const target = event?.target;
+      const tagName = String(target?.tagName || '').toLowerCase();
+      if (target?.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select') return;
+      if (isTranscriptScrollKey(event?.key)) markUserScrollIntent();
     };
 
     const onScroll = () => {
       isAtBottom.value = resolveTranscriptBottomFollow({
         following: !autoFollowPaused.value,
         atBottom: checkIfAtBottom(),
-        userScroll: Date.now() - lastUserScrollIntentAt <= USER_SCROLL_INTENT_WINDOW_MS,
+        userScroll: userScrollInteractionActive,
       });
       autoFollowPaused.value = !isAtBottom.value;
       if (isAtBottom.value) pruneYeaftWindowNearBottom();
+      if (userScrollInteractionActive) scheduleUserScrollInteractionEnd();
 
       if (containerRef.value) maybeLoadMoreNearTop(containerRef.value.scrollTop || 0);
     };
@@ -1945,18 +1985,25 @@ export default {
       if (containerRef.value) {
         containerRef.value.addEventListener('wheel', markUserScrollIntent, { passive: true });
         containerRef.value.addEventListener('touchmove', markUserScrollIntent, { passive: true });
-        containerRef.value.addEventListener('pointerdown', markUserScrollIntent, { passive: true });
+        containerRef.value.addEventListener('pointerdown', onPointerScrollStart, { passive: true });
         containerRef.value.addEventListener('scroll', onScroll);
       }
+      window.addEventListener('pointerup', onPointerScrollEnd, { passive: true });
+      window.addEventListener('pointercancel', onPointerScrollEnd, { passive: true });
+      window.addEventListener('keydown', onScrollKey);
     });
 
     Vue.onUnmounted(() => {
       if (containerRef.value) {
         containerRef.value.removeEventListener('wheel', markUserScrollIntent);
         containerRef.value.removeEventListener('touchmove', markUserScrollIntent);
-        containerRef.value.removeEventListener('pointerdown', markUserScrollIntent);
+        containerRef.value.removeEventListener('pointerdown', onPointerScrollStart);
         containerRef.value.removeEventListener('scroll', onScroll);
       }
+      window.removeEventListener('pointerup', onPointerScrollEnd);
+      window.removeEventListener('pointercancel', onPointerScrollEnd);
+      window.removeEventListener('keydown', onScrollKey);
+      clearUserScrollInteraction();
       if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
       if (typingHideTimer) { clearTimeout(typingHideTimer); typingHideTimer = null; }
       if (catRafId) { cancelAnimationFrame(catRafId); catRafId = null; }

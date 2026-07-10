@@ -152,6 +152,12 @@ export function resolveTranscriptBottomFollow({ following = true, atBottom = fal
   return !!following && !!atBottom;
 }
 
+const TRANSCRIPT_SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+
+export function isTranscriptScrollKey(key) {
+  return TRANSCRIPT_SCROLL_KEYS.has(String(key || ''));
+}
+
 export function adjustedScrollTopForMeasuredHeight({
   scrollTop = 0,
   itemIndex = 0,

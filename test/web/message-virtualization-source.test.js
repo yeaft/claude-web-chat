@@ -61,10 +61,15 @@ describe('MessageList virtualization wiring', () => {
 
     expect(source).toContain('isAtBottom.value = resolveTranscriptBottomFollow({');
     expect(source).toContain('following: !autoFollowPaused.value,');
-    expect(source).toContain('userScroll: Date.now() - lastUserScrollIntentAt <= USER_SCROLL_INTENT_WINDOW_MS,');
+    expect(source).toContain('userScroll: userScrollInteractionActive,');
     expect(source).toContain("containerRef.value.addEventListener('wheel', markUserScrollIntent, { passive: true });");
     expect(source).toContain("containerRef.value.addEventListener('touchmove', markUserScrollIntent, { passive: true });");
-    expect(source).toContain("containerRef.value.addEventListener('pointerdown', markUserScrollIntent, { passive: true });");
+    expect(source).toContain("containerRef.value.addEventListener('pointerdown', onPointerScrollStart, { passive: true });");
+    expect(source).toContain("window.addEventListener('pointerup', onPointerScrollEnd, { passive: true });");
+    expect(source).toContain("window.addEventListener('pointercancel', onPointerScrollEnd, { passive: true });");
+    expect(source).toContain("window.addEventListener('keydown', onScrollKey);");
+    expect(source).toContain('if (isTranscriptScrollKey(event?.key)) markUserScrollIntent();');
+    expect(source).not.toContain('USER_SCROLL_INTENT_WINDOW_MS');
     expect(source).not.toContain('isAtBottom.value = scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;');
   });
 

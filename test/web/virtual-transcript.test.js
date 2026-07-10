@@ -5,6 +5,7 @@ import {
   computeVirtualWindow,
   estimateVirtualItemHeight,
   getVirtualItemKey,
+  isTranscriptScrollKey,
   resolveTranscriptBottomFollow,
   shouldFollowTranscriptBottom,
   virtualTranscriptDefaults,
@@ -135,6 +136,14 @@ describe('virtual transcript range calculation', () => {
     expect(resolveTranscriptBottomFollow({ following: true, atBottom: true })).toBe(true);
     expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: true })).toBe(true);
     expect(resolveTranscriptBottomFollow({ following: true, atBottom: false, userScroll: true })).toBe(false);
+  });
+
+  it('recognizes keyboard actions that explicitly scroll the transcript', () => {
+    for (const key of ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']) {
+      expect(isTranscriptScrollKey(key)).toBe(true);
+    }
+    expect(isTranscriptScrollKey('Enter')).toBe(false);
+    expect(isTranscriptScrollKey('a')).toBe(false);
   });
 
   it('keeps the current anchor stable when measured heights above the window change', () => {
