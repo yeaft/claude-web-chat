@@ -76,6 +76,7 @@ export class MockAgent {
         if (msg.type === type) {
           clearTimeout(timeout);
           this._messageHandlers = this._messageHandlers.filter(h => h !== handler);
+          this._receivedMessages = this._receivedMessages.filter(message => message !== msg);
           resolve(msg);
         }
       };

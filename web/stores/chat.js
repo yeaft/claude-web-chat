@@ -1115,6 +1115,13 @@ export const useChatStore = defineStore('chat', {
       this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
       return detail;
     },
+    async guideWorkItemAction(id, guidance, actionId, revision, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const detail = await this.workCenterRequest('guide', { id, guidance, actionId, revision }, target);
+      await this.listWorkItems(target);
+      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      return detail;
+    },
     async retryWorkItem(id, answer = '', agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const detail = await this.workCenterRequest('retry', { id, answer }, target);

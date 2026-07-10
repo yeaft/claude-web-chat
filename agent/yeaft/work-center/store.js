@@ -1,11 +1,17 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { mkdirSync, realpathSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
+const MAX_REUSABLE_CONTEXT_ITEMS = 12;
+
+function canonicalWorkspaceKey(workDir) {
+  if (typeof workDir !== 'string' || !workDir.trim()) return '';
+  try { return realpathSync(resolve(workDir.trim())); } catch { return ''; }
+}
 
 function parseJson(value, fallback) {
   if (typeof value !== 'string' || !value) return fallback;
@@ -29,6 +35,8 @@ function mapWorkItem(row) {
     currentActionId: row.current_action_id || null,
     currentRunId: row.current_run_id || null,
     workDir: row.work_dir || '',
+    workspaceKey: row.workspace_key || '',
+    reuseMemory: row.reuse_memory !== 0,
     origin: parseJson(row.origin, null),
     linkedSessionIds: parseJson(row.linked_session_ids, []),
     createdAt: row.created_at,
@@ -142,6 +150,8 @@ export class WorkItemStore {
         current_action_id TEXT,
         current_run_id TEXT,
         work_dir TEXT NOT NULL DEFAULT '',
+        workspace_key TEXT NOT NULL DEFAULT '',
+        reuse_memory INTEGER NOT NULL DEFAULT 1,
         origin TEXT,
         linked_session_ids TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
@@ -202,7 +212,20 @@ export class WorkItemStore {
     `);
 
     // The feature shipped first as an unmerged PR, but keep the store tolerant
-    // of a v1 database created by a review build.
+    // of databases created by review builds.
+    if (!hasColumn(this.db, 'work_items', 'workspace_key')) {
+      withTransaction(this.db, () => {
+        this.db.exec("ALTER TABLE work_items ADD COLUMN workspace_key TEXT NOT NULL DEFAULT ''");
+        const update = this.db.prepare('UPDATE work_items SET workspace_key = ? WHERE id = ?');
+        for (const row of this.db.prepare("SELECT id, work_dir FROM work_items WHERE work_dir != ''").all()) {
+          const workspaceKey = canonicalWorkspaceKey(row.work_dir);
+          if (workspaceKey) update.run(workspaceKey, row.id);
+        }
+      });
+    }
+    if (!hasColumn(this.db, 'work_items', 'reuse_memory')) {
+      this.db.exec('ALTER TABLE work_items ADD COLUMN reuse_memory INTEGER NOT NULL DEFAULT 1');
+    }
     if (!hasColumn(this.db, 'actions', 'context')) {
       this.db.exec("ALTER TABLE actions ADD COLUMN context TEXT NOT NULL DEFAULT '[]'");
     }
@@ -244,11 +267,12 @@ export class WorkItemStore {
     return withTransaction(this.db, () => {
       const now = this.now();
       const id = input.id || randomUUID();
+      const workspaceKey = canonicalWorkspaceKey(input.workDir);
       this.db.prepare(`INSERT INTO work_items
         (id, revision, title, goal, acceptance_criteria, workflow_template, status,
-         current_action_id, current_run_id, work_dir, origin, linked_session_ids,
+         current_action_id, current_run_id, work_dir, workspace_key, reuse_memory, origin, linked_session_ids,
          created_at, updated_at)
-        VALUES (?, 1, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)`).run(
+        VALUES (?, 1, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)`).run(
         id,
         input.title,
         input.goal,
@@ -256,6 +280,8 @@ export class WorkItemStore {
         input.workflowTemplate || 'software-change',
         firstAction ? 'ready' : 'draft',
         input.workDir || '',
+        workspaceKey,
+        input.reuseMemory === false ? 0 : 1,
         stringify(input.origin || null),
         stringify(input.linkedSessionIds || []),
         now,
@@ -366,6 +392,64 @@ export class WorkItemStore {
     };
   }
 
+  getReusableContext(workDir, excludeWorkItemId = null) {
+    const workspaceKey = canonicalWorkspaceKey(workDir);
+    if (!workspaceKey) return [];
+    const rows = this.db.prepare(`SELECT r.*, a.type AS action_type, a.required_role,
+        w.title AS source_title
+      FROM runs r
+      JOIN actions a ON a.id = r.action_id
+      JOIN work_items w ON w.id = r.work_item_id
+      WHERE w.workspace_key = ? AND w.reuse_memory = 1 AND w.id != ? AND w.status = 'done'
+        AND r.status = 'completed' AND length(trim(COALESCE(r.summary, ''))) > 0
+      ORDER BY r.ended_at DESC, r.started_at DESC
+      LIMIT ?`).all(workspaceKey, excludeWorkItemId || '', MAX_REUSABLE_CONTEXT_ITEMS);
+    return rows.reverse().map(row => {
+      const run = mapRun(row);
+      return {
+        type: row.action_type,
+        role: row.required_role,
+        summary: run.summary,
+        evidence: run.evidence,
+        reviewDecision: run.reviewDecision,
+        sourceTitle: row.source_title,
+      };
+    });
+  }
+
+  addActionGuidance(id, guidance, expected, makeAction) {
+    return withTransaction(this.db, () => {
+      const workItem = this.getWorkItem(id);
+      if (!workItem) return null;
+      if (workItem.currentActionId !== expected.actionId || workItem.revision !== expected.revision) {
+        throw new Error('Action changed before guidance was applied; refresh and try again');
+      }
+      if (!['ready', 'running'].includes(workItem.status)) {
+        throw new Error(`WorkItem in ${workItem.status} cannot accept Action guidance`);
+      }
+      const previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
+      if (!previous || !['ready', 'running'].includes(previous.status)) {
+        throw new Error('WorkItem has no active Action for guidance');
+      }
+      const now = this.now();
+      this.#invalidateExecution(
+        workItem,
+        'superseded',
+        'superseded',
+        'Action restarted after user guidance',
+        now,
+      );
+      const action = this.#insertAction(id, {
+        ...makeAction(workItem, previous),
+        contractRevision: workItem.revision,
+      }, this.#nextSequence(id), now);
+      this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
+        current_run_id = NULL, updated_at = ? WHERE id = ?`).run(action.id, now, id);
+      this.appendEvent(id, 'action.guidance_added', { guidance }, { actionId: action.id });
+      return this.getWorkItemDetail(id);
+    });
+  }
+
   #invalidateExecution(workItem, actionStatus, runStatus, reason, now) {
     if (workItem.currentRunId) {
       this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, error = ?
@@ -403,11 +487,12 @@ export class WorkItemStore {
         );
       }
       this.db.prepare(`UPDATE work_items SET title = ?, goal = ?, acceptance_criteria = ?,
-        work_dir = ?, revision = ?, updated_at = ? WHERE id = ?`).run(
+        work_dir = ?, workspace_key = ?, revision = ?, updated_at = ? WHERE id = ?`).run(
         next.title,
         next.goal,
         stringify(next.acceptanceCriteria),
         next.workDir,
+        canonicalWorkspaceKey(next.workDir),
         revision,
         now,
         id,

@@ -54,6 +54,21 @@ function canonicalWorkDir(workDir) {
   return realpathSync(workDir);
 }
 
+export function resolveWorkItemWorkDir(workItem, defaultWorkDir) {
+  if (typeof workItem?.workspaceKey === 'string' && workItem.workspaceKey) {
+    const expected = path.resolve(workItem.workspaceKey);
+    const actual = canonicalWorkDir(expected);
+    if (actual !== expected) {
+      throw new Error('WorkItem canonical workspace identity changed; update its workDir before retrying');
+    }
+    return expected;
+  }
+  if (typeof workItem?.workDir === 'string' && workItem.workDir.trim()) {
+    throw new Error('WorkItem has no canonical workspace identity; update its workDir before retrying');
+  }
+  return canonicalWorkDir(path.resolve(defaultWorkDir || process.cwd()));
+}
+
 function assertPathInside(toolName, workDir, value) {
   const resolved = path.resolve(workDir, value);
   if (!isPathInsideOrEqual(workDir, resolved)) {
@@ -203,8 +218,7 @@ export class WorkItemRunner {
 
   async run({ workItem, action, run, signal, ownerBootId }) {
     const runtime = await this.runtimeProvider();
-    const rawWorkDir = workItem.workDir || runtime.defaultWorkDir || process.cwd();
-    const workDir = canonicalWorkDir(path.resolve(rawWorkDir));
+    const workDir = resolveWorkItemWorkDir(workItem, runtime.defaultWorkDir);
     const vp = copyVp(this.registry.getVp(action.requiredRole));
     if (!vp) {
       const error = new Error(`Required Work Center role is unavailable: ${action.requiredRole}`);
@@ -260,7 +274,6 @@ export class WorkItemRunner {
     });
 
     let text = '';
-    const toolEvidence = [];
     try {
       for await (const event of engine.query({
         prompt: `${action.instruction}${completionContract(action)}`,
@@ -275,18 +288,10 @@ export class WorkItemRunner {
         if (typeof event?.text === 'string') text += event.text;
         else if (typeof event?.delta === 'string') text += event.delta;
         else if (typeof event?.content === 'string' && event.type === 'assistant') text += event.content;
-        if (event?.type === 'tool_end') {
-          toolEvidence.push({
-            tool: event.name,
-            isError: !!event.isError,
-          });
-        }
       }
     } finally {
       try { engine.abort?.('work_item_run_finished'); } catch {}
     }
-    const result = parseStructuredResult(text, action.type);
-    result.evidence = [...result.evidence, ...toolEvidence].slice(-100);
-    return result;
+    return parseStructuredResult(text, action.type);
   }
 }
