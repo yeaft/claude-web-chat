@@ -31,6 +31,7 @@ function mapWorkItem(row) {
     goal: row.goal,
     acceptanceCriteria: parseJson(row.acceptance_criteria, []),
     workflowTemplate: row.workflow_template,
+    workflowSnapshot: parseJson(row.workflow_snapshot, null),
     status: row.status,
     currentActionId: row.current_action_id || null,
     currentRunId: row.current_run_id || null,
@@ -51,7 +52,10 @@ function mapAction(row) {
     workItemId: row.work_item_id,
     sequence: row.sequence,
     type: row.type,
-    requiredRole: row.required_role,
+    stageId: row.stage_id || row.type,
+    assignmentPolicy: parseJson(row.assignment_policy, null),
+    modelPolicy: parseJson(row.model_policy, null),
+    requiredRole: row.required_role || '',
     instruction: row.instruction,
     context: parseJson(row.context, []),
     contractRevision: row.contract_revision,
@@ -146,6 +150,7 @@ export class WorkItemStore {
         goal TEXT NOT NULL,
         acceptance_criteria TEXT NOT NULL,
         workflow_template TEXT NOT NULL,
+        workflow_snapshot TEXT,
         status TEXT NOT NULL,
         current_action_id TEXT,
         current_run_id TEXT,
@@ -163,6 +168,9 @@ export class WorkItemStore {
         sequence INTEGER NOT NULL,
         type TEXT NOT NULL,
         required_role TEXT NOT NULL,
+        stage_id TEXT,
+        assignment_policy TEXT,
+        model_policy TEXT,
         instruction TEXT NOT NULL,
         context TEXT NOT NULL DEFAULT '[]',
         contract_revision INTEGER NOT NULL DEFAULT 1,
@@ -241,6 +249,18 @@ export class WorkItemStore {
     if (!hasColumn(this.db, 'runs', 'contract_patch')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN contract_patch TEXT');
     }
+    if (!hasColumn(this.db, 'work_items', 'workflow_snapshot')) {
+      this.db.exec('ALTER TABLE work_items ADD COLUMN workflow_snapshot TEXT');
+    }
+    if (!hasColumn(this.db, 'actions', 'stage_id')) {
+      this.db.exec('ALTER TABLE actions ADD COLUMN stage_id TEXT');
+    }
+    if (!hasColumn(this.db, 'actions', 'assignment_policy')) {
+      this.db.exec('ALTER TABLE actions ADD COLUMN assignment_policy TEXT');
+    }
+    if (!hasColumn(this.db, 'actions', 'model_policy')) {
+      this.db.exec('ALTER TABLE actions ADD COLUMN model_policy TEXT');
+    }
     this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
   }
@@ -269,15 +289,16 @@ export class WorkItemStore {
       const id = input.id || randomUUID();
       const workspaceKey = canonicalWorkspaceKey(input.workDir);
       this.db.prepare(`INSERT INTO work_items
-        (id, revision, title, goal, acceptance_criteria, workflow_template, status,
+        (id, revision, title, goal, acceptance_criteria, workflow_template, workflow_snapshot, status,
          current_action_id, current_run_id, work_dir, workspace_key, reuse_memory, origin, linked_session_ids,
          created_at, updated_at)
-        VALUES (?, 1, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)`).run(
+        VALUES (?, 1, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)`).run(
         id,
         input.title,
         input.goal,
         stringify(input.acceptanceCriteria || []),
         input.workflowTemplate || 'software-change',
+        stringify(input.workflowSnapshot || null),
         firstAction ? 'ready' : 'draft',
         input.workDir || '',
         workspaceKey,
@@ -303,7 +324,10 @@ export class WorkItemStore {
       workItemId,
       sequence,
       type: input.type,
-      requiredRole: input.requiredRole,
+      stageId: input.stageId || input.type,
+      assignmentPolicy: input.assignmentPolicy || null,
+      modelPolicy: input.modelPolicy || null,
+      requiredRole: input.requiredRole || '',
       instruction: input.instruction || '',
       context: Array.isArray(input.context) ? input.context : [],
       contractRevision: Number.isInteger(input.contractRevision) ? input.contractRevision : 1,
@@ -316,15 +340,18 @@ export class WorkItemStore {
       updatedAt: now,
     };
     this.db.prepare(`INSERT INTO actions
-      (id, work_item_id, sequence, type, required_role, instruction, context,
-       contract_revision, status, attempt, max_attempts, current_run_id, lease_epoch,
-       created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
+      (id, work_item_id, sequence, type, required_role, stage_id, assignment_policy, model_policy,
+       instruction, context, contract_revision, status, attempt, max_attempts, current_run_id,
+       lease_epoch, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
       action.id,
       workItemId,
       action.sequence,
       action.type,
       action.requiredRole,
+      action.stageId,
+      stringify(action.assignmentPolicy),
+      stringify(action.modelPolicy),
       action.instruction,
       stringify(action.context),
       action.contractRevision,
@@ -356,6 +383,16 @@ export class WorkItemStore {
 
   getRun(id) {
     return mapRun(this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id));
+  }
+
+  listCompletedRuns(workItemId) {
+    return this.db.prepare(`SELECT r.*, a.type AS action_type FROM runs r
+      JOIN actions a ON a.id = r.action_id
+      WHERE r.work_item_id = ? AND r.status != 'running'
+      ORDER BY r.started_at ASC`).all(workItemId).map(row => ({
+        ...mapRun(row),
+        actionType: row.action_type,
+      }));
   }
 
   listWorkItems(filters = {}) {

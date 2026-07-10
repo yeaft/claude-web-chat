@@ -454,11 +454,14 @@ export function loadConfig(overrides = {}) {
       const p = normalizeKnownProviderForRuntime(rawProvider);
       const normalized = normalizeProviderModels(p);
       for (const m of normalized) {
-        // Avoid duplicates (first provider wins)
-        if (!config.availableModels.some(am => am.id === m.id)) {
+        const ref = p.name ? `${p.name}/${m.id}` : m.id;
+        // A model id is only unique inside its provider. Keep provider-qualified
+        // duplicates so an explicit `provider/model` never disappears from the
+        // runtime catalog just because another provider exposes the same id.
+        if (!config.availableModels.some(am => am.ref === ref)) {
           const entry = {
             id: m.id,
-            ref: p.name ? `${p.name}/${m.id}` : m.id,
+            ref,
             provider: p.name,
             label: m.id,
           };

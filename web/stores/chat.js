@@ -424,6 +424,11 @@ export const useChatStore = defineStore('chat', {
     workCenterLoadingByAgent: {},
     workCenterErrorByAgent: {},
     workCenterWatcherByAgent: {},
+    workCenterSettingsByAgent: {},
+    workCenterRuntimeByAgent: {},
+    workCenterSettingsLoadingByAgent: {},
+    workCenterSettingsErrorByAgent: {},
+    _workCenterSettingsGenerationByAgent: {},
     workCenterPending: {},
     workCenterCreateDraft: null,
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
@@ -1086,6 +1091,57 @@ export const useChatStore = defineStore('chat', {
       const detail = await this.workCenterRequest('get', { id }, target);
       this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
       return detail;
+    },
+    async loadWorkCenterSettings(agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      if (!target) throw new Error('No Agent selected');
+      const generation = Number(this._workCenterSettingsGenerationByAgent[target] || 0) + 1;
+      this._workCenterSettingsGenerationByAgent = {
+        ...this._workCenterSettingsGenerationByAgent,
+        [target]: generation,
+      };
+      this.workCenterSettingsLoadingByAgent = { ...this.workCenterSettingsLoadingByAgent, [target]: true };
+      this.workCenterSettingsErrorByAgent = { ...this.workCenterSettingsErrorByAgent, [target]: null };
+      try {
+        const data = await this.workCenterRequest('get_settings', {}, target);
+        if (this._workCenterSettingsGenerationByAgent[target] === generation) {
+          this.workCenterSettingsByAgent = { ...this.workCenterSettingsByAgent, [target]: data?.settings || null };
+          this.workCenterRuntimeByAgent = { ...this.workCenterRuntimeByAgent, [target]: data?.runtime || null };
+        }
+        return data;
+      } catch (err) {
+        if (this._workCenterSettingsGenerationByAgent[target] === generation) {
+          this.workCenterSettingsErrorByAgent = {
+            ...this.workCenterSettingsErrorByAgent,
+            [target]: err?.message || String(err),
+          };
+        }
+        throw err;
+      } finally {
+        if (this._workCenterSettingsGenerationByAgent[target] === generation) {
+          this.workCenterSettingsLoadingByAgent = { ...this.workCenterSettingsLoadingByAgent, [target]: false };
+        }
+      }
+    },
+    async saveWorkCenterSettings(settings, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      if (!target) throw new Error('No Agent selected');
+      const generation = Number(this._workCenterSettingsGenerationByAgent[target] || 0) + 1;
+      this._workCenterSettingsGenerationByAgent = {
+        ...this._workCenterSettingsGenerationByAgent,
+        [target]: generation,
+      };
+      const data = await this.workCenterRequest('update_settings', { settings }, target);
+      if (this._workCenterSettingsGenerationByAgent[target] === generation) {
+        this.workCenterSettingsByAgent = { ...this.workCenterSettingsByAgent, [target]: data?.settings || null };
+        this.workCenterRuntimeByAgent = { ...this.workCenterRuntimeByAgent, [target]: data?.runtime || null };
+        this.workCenterSettingsErrorByAgent = { ...this.workCenterSettingsErrorByAgent, [target]: null };
+      }
+      return data;
+    },
+    previewWorkCenterPlan(payload = {}, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      return this.workCenterRequest('preview', payload, target);
     },
     async createWorkItem(payload, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;

@@ -60,7 +60,9 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
       goal,
       acceptanceCriteria: cleanCriteria(input.acceptanceCriteria),
       workDir: typeof input.workDir === 'string' ? input.workDir.trim() : (ctx.cwd || ''),
-      workflowTemplate: 'software-change',
+      // The Agent-local Work Center settings choose the default workflow and
+      // freeze its policy snapshot. Tool callers create the contract; they do
+      // not get to smuggle a different dispatch policy into it.
       origin: {
         sessionId,
         messageId: ctx.inboundEnvelope?.msgId || null,

@@ -250,6 +250,8 @@ describe('Work Center core', () => {
     expect(resumed.status).toBe('ready');
     expect(nextAction.context.at(-1)).toEqual({
       type: 'triage',
+      stageId: 'triage',
+      vpId: 'omni',
       role: 'omni',
       summary: 'Need a choice',
       evidence: [{ kind: 'file', label: 'Configuration', ref: 'config.json' }],

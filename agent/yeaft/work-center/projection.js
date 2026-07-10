@@ -36,7 +36,8 @@ export function projectWorkItemSummary(detail) {
     currentAction: action ? {
       id: action.id,
       type: action.type,
-      requiredRole: action.requiredRole,
+      stageId: action.stageId || action.type,
+      assignmentMode: action.assignmentPolicy?.mode || (action.requiredRole ? 'fixed' : null),
       status: action.status,
     } : null,
     origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,

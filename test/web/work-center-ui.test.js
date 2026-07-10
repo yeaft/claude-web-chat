@@ -127,6 +127,35 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('v-if="emptyState.canCreate"');
   });
 
+  it('provides Agent-level workflow, VP pool, and model settings with creation preview', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    const modal = read('web/components/WorkCenterSettingsModal.js');
+    const store = read('web/stores/chat.js');
+    const css = read('web/styles/work-center.css');
+
+    expect(page).toContain('WorkCenterSettingsModal');
+    expect(page).toContain('planPreview');
+    expect(page).toContain('stageOverrides');
+    expect(page).toContain('run.modelSnapshot?.provider');
+    expect(modal).toContain("section: 'workflow'");
+    expect(modal).toContain("mode: 'auto'");
+    expect(modal).toContain("mode === 'pool'");
+    expect(modal).toContain("mode === 'fixed'");
+    expect(modal).toContain('addStage');
+    expect(modal).toContain('moveStage');
+    expect(modal).toContain("mode === 'specific'");
+    expect(modal).toContain("$emit('open-agent-models')");
+    expect(page).toContain('<LlmTab context="yeaft"');
+    expect(page).toContain('previewRevision');
+    expect(store).toContain("workCenterRequest('get_settings'");
+    expect(store).toContain("workCenterRequest('update_settings'");
+    expect(store).toContain("workCenterRequest('preview'");
+    expect(css).toContain('width: min(960px, 92vw)');
+    expect(css).toContain('height: min(720px, 86vh)');
+    expect(css).toContain('.work-center-settings-pane');
+    expect(css).toContain('overflow-y: auto');
+  });
+
   it('provides matching English and Chinese Work Center strings', () => {
     const en = read('web/i18n/en.js');
     const zh = read('web/i18n/zh-CN.js');
@@ -150,6 +179,11 @@ describe('Work Center UI contract', () => {
       'workCenter.guidance',
       'workCenter.sendGuidance',
       'workCenter.reuseMemory',
+      'workCenter.settings.title',
+      'workCenter.settings.assignment.auto',
+      'workCenter.settings.model.specific',
+      'workCenter.settings.addStage',
+      'workCenter.planPreview',
     ];
     for (const key of keys) {
       expect(en).toContain(`'${key}'`);
