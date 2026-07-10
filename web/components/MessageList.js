@@ -16,6 +16,7 @@ import VirtualTranscript from './VirtualTranscript.js';
 import { shouldCloseYeaftVpTurn } from '../stores/helpers/yeaft-turn-boundary.js';
 import {
   estimateVirtualItemHeight,
+  resolveTranscriptBottomFollow,
   shouldFollowTranscriptBottom,
   virtualTranscriptDefaults,
 } from '../utils/virtual-transcript.js';
@@ -1744,11 +1745,20 @@ export default {
     };
 
     const onVirtualTranscriptScrollState = ({ scrollTop, scrollHeight, clientHeight }) => {
-      setAutoFollowFromScrollState({
+      const atBottom = shouldFollowTranscriptBottom({
         scrollTop: scrollTop || 0,
         scrollHeight: scrollHeight || 0,
         clientHeight: clientHeight || 0,
+        threshold: SCROLL_THRESHOLD,
       });
+      // VirtualTranscript emits after both user scrolls and layout work such as
+      // delayed height measurement. Layout changes must never resume following
+      // while the user is reading history.
+      isAtBottom.value = resolveTranscriptBottomFollow({
+        following: !autoFollowPaused.value,
+        atBottom,
+      });
+      autoFollowPaused.value = !isAtBottom.value;
       maybeLoadMoreNearTop(scrollTop || 0);
     };
 
@@ -1821,11 +1831,21 @@ export default {
       );
     };
 
+    let lastUserScrollIntentAt = 0;
+    const USER_SCROLL_INTENT_WINDOW_MS = 500;
+
+    const markUserScrollIntent = () => {
+      lastUserScrollIntentAt = Date.now();
+    };
+
     const onScroll = () => {
-      const atBottom = checkIfAtBottom();
-      isAtBottom.value = atBottom;
-      autoFollowPaused.value = !atBottom;
-      if (atBottom) pruneYeaftWindowNearBottom();
+      isAtBottom.value = resolveTranscriptBottomFollow({
+        following: !autoFollowPaused.value,
+        atBottom: checkIfAtBottom(),
+        userScroll: Date.now() - lastUserScrollIntentAt <= USER_SCROLL_INTENT_WINDOW_MS,
+      });
+      autoFollowPaused.value = !isAtBottom.value;
+      if (isAtBottom.value) pruneYeaftWindowNearBottom();
 
       if (containerRef.value) maybeLoadMoreNearTop(containerRef.value.scrollTop || 0);
     };
@@ -1923,12 +1943,18 @@ export default {
     Vue.onMounted(() => {
       scrollToBottom();
       if (containerRef.value) {
+        containerRef.value.addEventListener('wheel', markUserScrollIntent, { passive: true });
+        containerRef.value.addEventListener('touchmove', markUserScrollIntent, { passive: true });
+        containerRef.value.addEventListener('pointerdown', markUserScrollIntent, { passive: true });
         containerRef.value.addEventListener('scroll', onScroll);
       }
     });
 
     Vue.onUnmounted(() => {
       if (containerRef.value) {
+        containerRef.value.removeEventListener('wheel', markUserScrollIntent);
+        containerRef.value.removeEventListener('touchmove', markUserScrollIntent);
+        containerRef.value.removeEventListener('pointerdown', markUserScrollIntent);
         containerRef.value.removeEventListener('scroll', onScroll);
       }
       if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }

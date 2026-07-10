@@ -147,6 +147,11 @@ export function shouldFollowTranscriptBottom({ scrollTop = 0, scrollHeight = 0, 
   return Math.max(0, Number(scrollHeight) - Number(scrollTop) - Number(clientHeight)) <= Math.max(0, Number(threshold));
 }
 
+export function resolveTranscriptBottomFollow({ following = true, atBottom = false, userScroll = false } = {}) {
+  if (userScroll) return !!atBottom;
+  return !!following && !!atBottom;
+}
+
 export function adjustedScrollTopForMeasuredHeight({
   scrollTop = 0,
   itemIndex = 0,

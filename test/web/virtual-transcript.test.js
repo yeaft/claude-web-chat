@@ -5,6 +5,7 @@ import {
   computeVirtualWindow,
   estimateVirtualItemHeight,
   getVirtualItemKey,
+  resolveTranscriptBottomFollow,
   shouldFollowTranscriptBottom,
   virtualTranscriptDefaults,
 } from '../../web/utils/virtual-transcript.js';
@@ -126,6 +127,14 @@ describe('virtual transcript range calculation', () => {
     expect(virtualTranscriptDefaults.bottomThreshold).toBe(80);
     expect(shouldFollowTranscriptBottom({ scrollTop: 920, scrollHeight: 1000, clientHeight: 80 })).toBe(true);
     expect(shouldFollowTranscriptBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 80 })).toBe(false);
+  });
+
+  it('keeps bottom following disabled across layout updates until the user returns', () => {
+    expect(resolveTranscriptBottomFollow({ following: false, atBottom: true })).toBe(false);
+    expect(resolveTranscriptBottomFollow({ following: true, atBottom: false })).toBe(false);
+    expect(resolveTranscriptBottomFollow({ following: true, atBottom: true })).toBe(true);
+    expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: true })).toBe(true);
+    expect(resolveTranscriptBottomFollow({ following: true, atBottom: false, userScroll: true })).toBe(false);
   });
 
   it('keeps the current anchor stable when measured heights above the window change', () => {

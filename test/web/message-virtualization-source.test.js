@@ -56,6 +56,18 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('maybeLoadMoreNearTop(containerRef.value.scrollTop || 0, { allowContinuation: true });');
   });
 
+  it('does not let virtual layout updates re-enable bottom following while reading history', () => {
+    const source = read('components/MessageList.js');
+
+    expect(source).toContain('isAtBottom.value = resolveTranscriptBottomFollow({');
+    expect(source).toContain('following: !autoFollowPaused.value,');
+    expect(source).toContain('userScroll: Date.now() - lastUserScrollIntentAt <= USER_SCROLL_INTENT_WINDOW_MS,');
+    expect(source).toContain("containerRef.value.addEventListener('wheel', markUserScrollIntent, { passive: true });");
+    expect(source).toContain("containerRef.value.addEventListener('touchmove', markUserScrollIntent, { passive: true });");
+    expect(source).toContain("containerRef.value.addEventListener('pointerdown', markUserScrollIntent, { passive: true });");
+    expect(source).not.toContain('isAtBottom.value = scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;');
+  });
+
   it('defers ResizeObserver measurements out of the observer callback', () => {
     const source = read('components/VirtualTranscript.js');
 
