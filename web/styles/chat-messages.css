@@ -59,20 +59,6 @@
   line-height: 1.45;
 }
 
-.turn-route-icon {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 999px;
-  color: var(--accent-fg);
-  background: var(--accent);
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .turn-route-body {
   min-width: 0;
 }
