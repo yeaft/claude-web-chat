@@ -407,6 +407,41 @@
   color: var(--success);
 }
 
+.work-center-run {
+  padding: 12px 0;
+}
+
+.work-center-run + .work-center-run {
+  margin-top: 8px;
+}
+
+.work-center-run-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.work-center-run > small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+}
+
+.work-center-run > p,
+.work-center-evidence {
+  margin-top: 9px;
+}
+
+.work-center-run-reason {
+  color: var(--text-secondary);
+}
+
+.work-center-evidence {
+  padding-left: 20px;
+  color: var(--text-secondary);
+}
+
 .work-center-empty-state,
 .work-center-detail-empty {
   display: flex;

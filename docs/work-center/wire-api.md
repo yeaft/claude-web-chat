@@ -62,5 +62,7 @@ V1 操作：
 - Server 把浏览器 requestId 替换为 opaque requestId，并在内存中保存 `requestId → client + agentId`；响应只回到原客户端。
 - Agent 输出中的 `agentId`、用户身份字段和浏览器 requestId 都不可信；Server 使用连接对应的 Agent 和自己的请求映射。
 - 无请求上下文的事件只按 Server 记录的 Agent owner 投影。
-- WorkItem 的本地路径和原始 Run 日志默认不经过 Server 广播；响应只返回结构化摘要和明确 evidence。
+- `work_center_event` 只广播 redacted summary DTO：id/title/goal/status/current Action/source Session/timestamps。不得携带 workDir、Run evidence、错误、模型快照或工具输出。
+- `get` 是用户显式选择详情后的鉴权读取，可返回结构化 Run summary/evidence/waitingReason/error，但 evidence 不包含原始工具输出。
+- WorkItem 的本地路径和完整执行日志只保存在 Agent 本地，不经过 Server 广播。
 - 离线 Agent 不支持写操作；Web 显示离线状态，不做本地乐观完成。

@@ -235,6 +235,19 @@ export function resolveAgentAccessError(agentId, userId, role = null) {
   return null;
 }
 
+/**
+ * Broadcast an Agent-level event to every authenticated browser that may
+ * access the Agent. Unlike conversation forwarding, this also supports
+ * ownerless global Agents, which are visible only to admins.
+ */
+export async function forwardAgentEvent(agentId, msg) {
+  for (const [, client] of webClients) {
+    if (!client.authenticated) continue;
+    if (!verifyAgentOwnership(agentId, client.userId, client.role)) continue;
+    await sendToWebClient(client, msg);
+  }
+}
+
 // 转发消息给拥有该会话的用户的所有客户端
 export async function forwardToClients(agentId, conversationId, msg) {
   // ★ Security: 从 agent.conversations 获取会话的 userId

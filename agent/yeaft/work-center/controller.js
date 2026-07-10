@@ -1,12 +1,61 @@
 import { actionInstruction, getNextStep, initialActionFor, RUN_OUTCOMES } from './workflow.js';
+import { normalizeEvidence } from './evidence.js';
 
-function assertTerminalResult(result) {
+function normalizeCriteria(value) {
+  if (!Array.isArray(value)) return null;
+  return value.map(item => String(item).trim()).filter(Boolean);
+}
+
+function normalizeContractPatch(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const patch = {};
+  if (typeof value.goal === 'string' && value.goal.trim()) patch.goal = value.goal.trim();
+  if (Object.prototype.hasOwnProperty.call(value, 'acceptanceCriteria')) {
+    const criteria = normalizeCriteria(value.acceptanceCriteria);
+    if (!criteria) throw new Error('contractPatch.acceptanceCriteria must be an array');
+    patch.acceptanceCriteria = criteria;
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+function normalizeTerminalResult(result, action) {
   if (!result || !RUN_OUTCOMES.includes(result.outcome)) {
     throw new Error(`Invalid Work Center outcome: ${result?.outcome || '(missing)'}`);
   }
-  if (result.outcome === 'waiting' && !result.waitingReason) {
+  const normalized = {
+    outcome: result.outcome,
+    summary: String(result.summary || ''),
+    evidence: normalizeEvidence(result.evidence),
+    waitingReason: result.waitingReason ? String(result.waitingReason) : null,
+    error: result.error ? String(result.error) : null,
+    reviewDecision: ['approved', 'changes_requested'].includes(result.reviewDecision)
+      ? result.reviewDecision
+      : null,
+    contractPatch: normalizeContractPatch(result.contractPatch),
+  };
+  if (normalized.outcome === 'waiting' && !normalized.waitingReason) {
     throw new Error('waiting outcome requires waitingReason');
   }
+  if (action.type !== 'triage' && normalized.contractPatch) {
+    normalized.outcome = 'failed';
+    normalized.error = 'Only triage may submit a WorkItem contractPatch';
+    normalized.contractPatch = null;
+  }
+  if (action.type === 'review' && normalized.outcome === 'completed' && !normalized.reviewDecision) {
+    normalized.outcome = 'failed';
+    normalized.error = 'Completed review requires approved or changes_requested';
+  }
+  return normalized;
+}
+
+function contextEntry(action, result) {
+  return {
+    type: action.type,
+    role: action.requiredRole,
+    summary: result.summary || '',
+    evidence: result.evidence || [],
+    reviewDecision: result.reviewDecision || null,
+  };
 }
 
 export class WorkflowController {
@@ -20,122 +69,145 @@ export class WorkflowController {
       workflowTemplate: input.workflowTemplate || 'software-change',
       acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? input.acceptanceCriteria : [],
     };
-    const startImmediately = input.start !== false;
-    const firstAction = startImmediately ? initialActionFor(draft) : null;
+    const firstAction = input.start !== false ? initialActionFor(draft) : null;
     return this.store.createWorkItem(draft, firstAction);
   }
 
   start(id) {
-    const current = this.store.getWorkItem(id);
-    if (!current) throw new Error(`WorkItem not found: ${id}`);
-    if (current.status === 'done' || current.status === 'cancelled') {
-      throw new Error(`Cannot start WorkItem in ${current.status}`);
-    }
-    if (current.currentActionId && this.store.getAction(current.currentActionId)?.status === 'ready') {
-      this.store.setWorkItemState(id, 'ready', { currentActionId: current.currentActionId, currentRunId: null });
-      return this.store.getWorkItemDetail(id);
-    }
-    const action = this.store.createNextAction(id, initialActionFor(current));
-    this.store.setWorkItemState(id, 'ready', { currentActionId: action.id, currentRunId: null });
-    this.store.appendEvent(id, 'work_item.started', {}, { actionId: action.id });
-    return this.store.getWorkItemDetail(id);
+    const detail = this.store.startWorkItemAtomic(id, initialActionFor);
+    if (!detail) throw new Error(`WorkItem not found: ${id}`);
+    return detail;
   }
 
   update(id, patch) {
-    const updated = this.store.updateWorkItemFields(id, patch);
+    const updated = this.store.updateWorkItemAtomic(id, patch, initialActionFor);
     if (!updated) throw new Error(`WorkItem not found: ${id}`);
-    if (updated.contractChanged) {
-      this.store.supersedeOpenActions(id);
-      const action = this.store.createNextAction(id, initialActionFor(updated.workItem));
-      this.store.setWorkItemState(id, 'ready', { currentActionId: action.id, currentRunId: null });
-      this.store.appendEvent(id, 'workflow.retriaged', { revision: updated.workItem.revision }, { actionId: action.id });
-    }
     return this.store.getWorkItemDetail(id);
   }
 
   cancel(id) {
-    const workItem = this.store.getWorkItem(id);
+    const workItem = this.store.cancelWorkItemAtomic(id);
     if (!workItem) throw new Error(`WorkItem not found: ${id}`);
-    if (workItem.status === 'done') throw new Error('Completed WorkItem cannot be cancelled');
-    this.store.supersedeOpenActions(id);
-    this.store.setWorkItemState(id, 'cancelled', { currentActionId: null, currentRunId: null });
-    this.store.appendEvent(id, 'work_item.cancelled');
     return this.store.getWorkItemDetail(id);
   }
 
-  retry(id) {
-    const workItem = this.store.getWorkItem(id);
-    if (!workItem) throw new Error(`WorkItem not found: ${id}`);
-    if (!['waiting', 'needs_attention'].includes(workItem.status)) {
-      throw new Error(`WorkItem in ${workItem.status} does not need retry`);
-    }
-    const previous = workItem.currentActionId ? this.store.getAction(workItem.currentActionId) : null;
-    const step = previous
-      ? { type: previous.type, requiredRole: previous.requiredRole }
-      : initialActionFor(workItem);
-    const action = this.store.createNextAction(id, {
-      ...step,
-      instruction: previous?.instruction || actionInstruction(step, workItem),
-      maxAttempts: previous?.maxAttempts || 2,
+  retry(id, input = {}) {
+    const answer = typeof input.answer === 'string' ? input.answer.trim().slice(0, 8_000) : '';
+    const detail = this.store.retryWorkItemAtomic(id, (workItem, previous, previousRun) => {
+      if (workItem.status === 'waiting' && !answer) {
+        throw new Error('answer is required to resume a waiting WorkItem');
+      }
+      const step = previous
+        ? { type: previous.type, requiredRole: previous.requiredRole }
+        : initialActionFor(workItem);
+      const context = Array.isArray(previous?.context) ? [...previous.context] : [];
+      if (previousRun) {
+        context.push({
+          type: previous.type,
+          role: previous.requiredRole,
+          summary: previousRun.summary || '',
+          evidence: normalizeEvidence(previousRun.evidence),
+          waitingReason: previousRun.waitingReason || null,
+          answer: answer || null,
+        });
+      }
+      return {
+        ...step,
+        context,
+        instruction: actionInstruction(step, workItem, context),
+        maxAttempts: previous?.maxAttempts || 2,
+      };
     });
-    this.store.setWorkItemState(id, 'ready', { currentActionId: action.id, currentRunId: null });
-    this.store.appendEvent(id, 'work_item.retried', {}, { actionId: action.id });
-    return this.store.getWorkItemDetail(id);
+    if (!detail) throw new Error(`WorkItem not found: ${id}`);
+    return detail;
   }
 
-  submit(runId, ownerBootId, leaseEpoch, result) {
-    assertTerminalResult(result);
-    const finished = this.store.finishRun(runId, ownerBootId, leaseEpoch, result);
-    if (!finished) throw new Error('Run is stale, cancelled, or already finished');
-    const { run, action, workItem } = finished;
+  submit(runId, ownerBootId, leaseEpoch, rawResult) {
+    const activeRun = this.store.getRun(runId);
+    const activeAction = activeRun ? this.store.getAction(activeRun.actionId) : null;
+    if (!activeRun || !activeAction) throw new Error('Run is stale, cancelled, or already finished');
+    const result = normalizeTerminalResult(rawResult, activeAction);
+    const detail = this.store.finalizeRun(
+      runId,
+      ownerBootId,
+      leaseEpoch,
+      result,
+      ({ action, workItem }) => {
+        if (result.outcome === 'waiting') {
+          return {
+            actionStatus: 'completed',
+            workItemStatus: 'waiting',
+            keepCurrentAction: true,
+            eventType: 'action.waiting',
+            eventData: { reason: result.waitingReason },
+          };
+        }
 
-    if (result.outcome === 'waiting') {
-      // The Run is terminal. Keep the Action as historical completion of this
-      // attempt; resuming always creates a new ready Action/Run instead of
-      // pretending the old Run is still executable.
-      this.store.setActionState(action.id, 'completed');
-      this.store.setWorkItemState(workItem.id, 'waiting', { currentActionId: action.id, currentRunId: null });
-      this.store.appendEvent(workItem.id, 'action.waiting', { reason: result.waitingReason }, { actionId: action.id, runId: run.id });
-      return this.store.getWorkItemDetail(workItem.id);
-    }
+        if (result.outcome === 'retryable') {
+          const retryable = action.attempt < action.maxAttempts;
+          return {
+            actionStatus: retryable ? 'ready' : 'failed',
+            workItemStatus: retryable ? 'ready' : 'needs_attention',
+            keepCurrentAction: true,
+            eventType: retryable ? 'action.retry_scheduled' : 'action.retry_exhausted',
+            eventData: {
+              attempt: action.attempt,
+              maxAttempts: action.maxAttempts,
+              error: result.error,
+            },
+          };
+        }
 
-    if (result.outcome === 'retryable') {
-      const retryable = action.attempt < action.maxAttempts;
-      this.store.setActionState(action.id, retryable ? 'ready' : 'failed');
-      this.store.setWorkItemState(workItem.id, retryable ? 'ready' : 'needs_attention', { currentActionId: action.id, currentRunId: null });
-      this.store.appendEvent(workItem.id, retryable ? 'action.retry_scheduled' : 'action.retry_exhausted', {
-        attempt: action.attempt,
-        maxAttempts: action.maxAttempts,
-        error: result.error || null,
-      }, { actionId: action.id, runId: run.id });
-      return this.store.getWorkItemDetail(workItem.id);
-    }
+        if (result.outcome === 'failed') {
+          return {
+            actionStatus: 'failed',
+            workItemStatus: 'needs_attention',
+            keepCurrentAction: true,
+            eventType: 'action.failed',
+            eventData: { error: result.error },
+          };
+        }
 
-    if (result.outcome === 'failed') {
-      this.store.setActionState(action.id, 'failed');
-      this.store.setWorkItemState(workItem.id, 'needs_attention', { currentActionId: action.id, currentRunId: null });
-      this.store.appendEvent(workItem.id, 'action.failed', { error: result.error || null }, { actionId: action.id, runId: run.id });
-      return this.store.getWorkItemDetail(workItem.id);
-    }
+        const contractPatch = action.type === 'triage' ? result.contractPatch : null;
+        const effectiveWorkItem = contractPatch
+          ? {
+              ...workItem,
+              goal: contractPatch.goal ?? workItem.goal,
+              acceptanceCriteria: contractPatch.acceptanceCriteria ?? workItem.acceptanceCriteria,
+              revision: workItem.revision + 1,
+            }
+          : workItem;
+        const nextStep = getNextStep(workItem.workflowTemplate, action.type, result);
+        if (!nextStep) {
+          return {
+            actionStatus: 'completed',
+            workItemStatus: 'done',
+            contractPatch,
+            eventType: 'work_item.completed',
+            eventData: { summary: result.summary },
+          };
+        }
 
-    this.store.setActionState(action.id, 'completed');
-    const nextStep = getNextStep(workItem.workflowTemplate, action.type, result);
-    if (!nextStep) {
-      this.store.setWorkItemState(workItem.id, 'done', { currentActionId: null, currentRunId: null });
-      this.store.appendEvent(workItem.id, 'work_item.completed', { summary: result.summary || '' }, { actionId: action.id, runId: run.id });
-      return this.store.getWorkItemDetail(workItem.id);
-    }
-
-    const nextAction = this.store.createNextAction(workItem.id, {
-      ...nextStep,
-      instruction: actionInstruction(nextStep, workItem),
-      maxAttempts: 2,
-    });
-    this.store.setWorkItemState(workItem.id, 'ready', { currentActionId: nextAction.id, currentRunId: null });
-    this.store.appendEvent(workItem.id, 'action.completed', {
-      nextActionType: nextStep.type,
-      reviewDecision: result.reviewDecision || null,
-    }, { actionId: action.id, runId: run.id });
-    return this.store.getWorkItemDetail(workItem.id);
+        const context = [...(action.context || []), contextEntry(action, result)];
+        return {
+          actionStatus: 'completed',
+          workItemStatus: 'ready',
+          contractPatch,
+          nextAction: {
+            ...nextStep,
+            context,
+            instruction: actionInstruction(nextStep, effectiveWorkItem, context),
+            maxAttempts: 2,
+          },
+          eventType: 'action.completed',
+          eventData: {
+            nextActionType: nextStep.type,
+            reviewDecision: result.reviewDecision,
+          },
+        };
+      },
+    );
+    if (!detail) throw new Error('Run is stale, cancelled, expired, or already finished');
+    return detail;
   }
 }

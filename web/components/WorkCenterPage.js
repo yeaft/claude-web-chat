@@ -11,6 +11,7 @@ export default {
       saving: false,
       filter: 'open',
       search: '',
+      resumeAnswer: '',
       form: {
         title: '',
         goal: '',
@@ -54,6 +55,18 @@ export default {
       },
     },
   },
+  mounted() {
+    const draft = this.store.workCenterCreateDraft;
+    if (!draft) return;
+    this.form = {
+      title: draft.title || '',
+      goal: draft.goal || '',
+      acceptanceCriteriaText: '',
+      workDir: draft.workDir || '',
+      start: true,
+    };
+    this.createOpen = true;
+  },
   methods: {
     tr(key, fallback) {
       const translated = this.$t ? this.$t(key) : key;
@@ -81,15 +94,19 @@ export default {
     },
     async selectItem(item) {
       this.selectedId = item.id;
+      this.resumeAnswer = '';
       try { await this.store.getWorkItem(item.id, this.agentId); } catch {}
     },
     closeCreate() {
-      if (!this.saving) this.createOpen = false;
+      if (this.saving) return;
+      this.createOpen = false;
+      this.store.workCenterCreateDraft = null;
     },
     async submitCreate() {
       if (!this.form.title.trim() || !this.form.goal.trim()) return;
       this.saving = true;
       try {
+        const draft = this.store.workCenterCreateDraft;
         const detail = await this.store.createWorkItem({
           title: this.form.title.trim(),
           goal: this.form.goal.trim(),
@@ -97,10 +114,13 @@ export default {
             .split('\n').map(value => value.trim()).filter(Boolean),
           workDir: this.form.workDir.trim(),
           workflowTemplate: 'software-change',
+          origin: draft?.origin || null,
+          linkedSessionIds: draft?.linkedSessionIds || [],
           start: this.form.start,
         }, this.agentId);
         this.selectedId = detail.id;
         this.form = { title: '', goal: '', acceptanceCriteriaText: '', workDir: '', start: true };
+        this.store.workCenterCreateDraft = null;
         this.createOpen = false;
       } finally {
         this.saving = false;
@@ -112,7 +132,8 @@ export default {
     },
     async retrySelected() {
       if (!this.selected) return;
-      await this.store.retryWorkItem(this.selected.id, this.agentId);
+      await this.store.retryWorkItem(this.selected.id, this.resumeAnswer, this.agentId);
+      this.resumeAnswer = '';
     },
     async cancelSelected() {
       if (!this.selected) return;
@@ -220,7 +241,7 @@ export default {
                   <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">
                     {{ tr('workCenter.start', 'Start') }}
                   </button>
-                  <button v-if="selected.status === 'waiting' || selected.status === 'needs_attention'" class="btn-primary" type="button" @click="retrySelected">
+                  <button v-if="selected.status === 'waiting' || selected.status === 'needs_attention'" class="btn-primary" type="button" @click="retrySelected" :disabled="selected.status === 'waiting' && !resumeAnswer.trim()">
                     {{ tr('workCenter.retry', 'Retry') }}
                   </button>
                   <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">
@@ -233,6 +254,13 @@ export default {
                 <div v-if="selected.workDir"><dt>{{ tr('workCenter.workDir', 'Working directory') }}</dt><dd>{{ selected.workDir }}</dd></div>
                 <div v-if="selected.workflowTemplate"><dt>{{ tr('workCenter.workflow', 'Workflow') }}</dt><dd>{{ selected.workflowTemplate }}</dd></div>
               </dl>
+
+              <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
+                <label>
+                  {{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}
+                  <textarea v-model="resumeAnswer" rows="3" :placeholder="tr('workCenter.resumeAnswerHint', 'Provide the information required to continue')"></textarea>
+                </label>
+              </div>
 
               <div class="work-center-section">
                 <h3>{{ tr('workCenter.goal', 'Goal') }}</h3>
@@ -256,6 +284,30 @@ export default {
                     </small>
                   </li>
                 </ol>
+              </div>
+              <div class="work-center-section" v-if="selected.runs?.length">
+                <h3>{{ tr('workCenter.runs', 'Runs and evidence') }}</h3>
+                <article v-for="run in selected.runs" :key="run.id" class="work-center-run">
+                  <div class="work-center-run-heading">
+                    <strong>{{ actionLabel(selected.actions?.find(action => action.id === run.actionId)?.type) }}</strong>
+                    <span class="work-center-status" :data-status="run.status">{{ statusLabel(run.status) }}</span>
+                  </div>
+                  <small>
+                    {{ run.vpSnapshot?.name || run.roleSnapshot?.id || tr('workCenter.unknownRole', 'Unknown role') }}
+                    <template v-if="run.modelSnapshot?.id"> · {{ run.modelSnapshot.id }}</template>
+                    · {{ time(run.startedAt) }}
+                  </small>
+                  <p v-if="run.summary">{{ run.summary }}</p>
+                  <p v-if="run.waitingReason" class="work-center-run-reason"><strong>{{ tr('workCenter.waitingReason', 'Waiting:') }}</strong> {{ run.waitingReason }}</p>
+                  <p v-if="run.error" class="work-center-error">{{ run.error }}</p>
+                  <ul v-if="run.evidence?.length" class="work-center-evidence">
+                    <li v-for="(evidence, index) in run.evidence" :key="run.id + ':' + index">
+                      <span>{{ evidence.label }}</span>
+                      <small v-if="evidence.status"> · {{ statusLabel(evidence.status) }}</small>
+                      <code v-if="evidence.ref">{{ evidence.ref }}</code>
+                    </li>
+                  </ul>
+                </article>
               </div>
               <div class="work-center-section" v-if="selected.events?.length">
                 <h3>{{ tr('workCenter.activity', 'Activity') }}</h3>

@@ -17,9 +17,9 @@ const TOOLS_DIR = join(import.meta.dirname, '..', '..', 'agent', 'yeaft', 'tools
 // ──────────────────────────────────────────────
 
 describe('index.js tool registration', () => {
-  it('allTools has 31 tools (mcp meta-tools removed 2026-06-12, flattened mcp__ tools registered at session start instead)', async () => {
+  it('allTools has 32 tools including the Session-scoped Work Center producer', async () => {
     const { allTools } = await import(`${TOOLS_DIR}/index.js`);
-    expect(allTools.length).toBe(31);
+    expect(allTools.length).toBe(32);
   });
 
   it('all tools have valid name, description, parameters, and execute', async () => {

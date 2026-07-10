@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { WorkItemStore } from './store.js';
 import { WorkflowController } from './controller.js';
 import { WorkItemWatcher } from './watcher.js';
+import { projectWorkItemSummary } from './projection.js';
 
 function requiredString(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
@@ -31,7 +32,10 @@ export class WorkCenterService {
   async handle(op, payload = {}) {
     switch (op) {
       case 'list':
-        return { items: this.store.listWorkItems(payload), watcher: this.watcher.status() };
+        return {
+          items: this.store.listWorkItems(payload).map(projectWorkItemSummary),
+          watcher: this.watcher.status(),
+        };
       case 'get':
         return this.#requiredItem(payload.id);
       case 'create': {
@@ -43,8 +47,16 @@ export class WorkCenterService {
             : [],
           workflowTemplate: payload.workflowTemplate || 'software-change',
           workDir: typeof payload.workDir === 'string' ? payload.workDir.trim() : '',
-          origin: payload.origin && typeof payload.origin === 'object' ? payload.origin : null,
-          linkedSessionIds: Array.isArray(payload.linkedSessionIds) ? payload.linkedSessionIds : [],
+          origin: payload.origin && typeof payload.origin === 'object'
+            ? {
+                sessionId: typeof payload.origin.sessionId === 'string' ? payload.origin.sessionId : null,
+                messageId: typeof payload.origin.messageId === 'string' ? payload.origin.messageId : null,
+                createdBy: typeof payload.origin.createdBy === 'string' ? payload.origin.createdBy : null,
+              }
+            : null,
+          linkedSessionIds: Array.isArray(payload.linkedSessionIds)
+            ? [...new Set(payload.linkedSessionIds.map(value => String(value).trim()).filter(Boolean))]
+            : [],
           start: payload.start !== false,
         });
         const detail = this.#requiredItem(item.id);
@@ -54,7 +66,7 @@ export class WorkCenterService {
       case 'update': {
         const id = requiredString(payload.id, 'id');
         const detail = this.controller.update(id, payload.patch || {});
-        this.watcher.abortWorkItem(id);
+        this.watcher.abortInvalidWorkItemRuns(id);
         this.#emit({ type: 'work_item.updated', workItem: detail });
         return detail;
       }
@@ -64,18 +76,22 @@ export class WorkCenterService {
         return detail;
       }
       case 'cancel': {
-        const detail = this.controller.cancel(requiredString(payload.id, 'id'));
-        this.watcher.abortWorkItem(payload.id);
+        const id = requiredString(payload.id, 'id');
+        const detail = this.controller.cancel(id);
+        this.watcher.abortInvalidWorkItemRuns(id);
         this.#emit({ type: 'work_item.cancelled', workItem: detail });
         return detail;
       }
       case 'retry': {
-        const detail = this.controller.retry(requiredString(payload.id, 'id'));
+        const detail = this.controller.retry(requiredString(payload.id, 'id'), {
+          answer: typeof payload.answer === 'string' ? payload.answer : '',
+        });
         this.#emit({ type: 'work_item.retried', workItem: detail });
         return detail;
       }
       case 'set_watcher':
-        payload.enabled === false ? this.watcher.stop() : this.watcher.start();
+        if (payload.enabled === false) await this.watcher.stop();
+        else this.watcher.start();
         return this.watcher.status();
       default:
         throw new Error(`Unsupported Work Center operation: ${op || '(missing)'}`);

@@ -13,6 +13,7 @@ import * as yeaftViewHelpers from './helpers/yeaft-view.js';
 import { incVpTyping, decVpTyping } from './helpers/vp-typing.js';
 import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
+import { applyWorkItemSummary, mergeWorkItemSummary } from './helpers/work-center.js';
 import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/perfTrace.js';
 import {
   getDefaultYeaftVisibleTurns,
@@ -423,6 +424,7 @@ export const useChatStore = defineStore('chat', {
     workCenterErrorByAgent: {},
     workCenterWatcherByAgent: {},
     workCenterPending: {},
+    workCenterCreateDraft: null,
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
     yeaftConversationIdsByAgent: {}, // { [agentId]: conversationId } 跨机器 agent 的 Yeaft message cache 隔离
     yeaftSessionAgentById: {},      // { [sessionId]: agentId } 用 active session 反查所属 agent 的 conversationId
@@ -1028,6 +1030,18 @@ export const useChatStore = defineStore('chat', {
     leaveWorkCenter() {
       this.currentView = 'chat';
     },
+    enterWorkCenterFromSession(session, seedGoal = '') {
+      if (!session?.id) return;
+      const agentId = session.agentId || resolveAgentIdForSession(this, session.id);
+      this.workCenterCreateDraft = {
+        title: String(session.title || session.name || '').trim(),
+        goal: String(seedGoal || '').trim(),
+        workDir: String(session.workDir || '').trim(),
+        origin: { sessionId: session.id, messageId: null, createdBy: 'user' },
+        linkedSessionIds: [session.id],
+      };
+      this.enterWorkCenter(agentId);
+    },
     workCenterRequest(op, payload = {}, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       if (!target) return Promise.reject(new Error('No Agent selected'));
@@ -1093,23 +1107,27 @@ export const useChatStore = defineStore('chat', {
       this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
       return detail;
     },
-    async retryWorkItem(id, agentId = null) {
+    async retryWorkItem(id, answer = '', agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const detail = await this.workCenterRequest('retry', { id }, target);
+      const detail = await this.workCenterRequest('retry', { id, answer }, target);
       await this.listWorkItems(target);
       this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
       return detail;
     },
     applyWorkCenterEvent(agentId, event) {
       if (!agentId || !event?.workItem) return;
-      const current = this.workCenterItemsByAgent[agentId] || [];
       const summary = event.workItem;
-      const next = [summary, ...current.filter(item => item.id !== summary.id)]
-        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
-      this.workCenterItemsByAgent = { ...this.workCenterItemsByAgent, [agentId]: next };
+      const current = this.workCenterItemsByAgent[agentId] || [];
+      this.workCenterItemsByAgent = {
+        ...this.workCenterItemsByAgent,
+        [agentId]: applyWorkItemSummary(current, summary),
+      };
       const selected = this.workCenterDetailByAgent[agentId];
       if (selected?.id === summary.id) {
-        this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [agentId]: summary };
+        this.workCenterDetailByAgent = {
+          ...this.workCenterDetailByAgent,
+          [agentId]: mergeWorkItemSummary(selected, summary),
+        };
       }
     },
 

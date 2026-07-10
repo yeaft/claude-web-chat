@@ -67,6 +67,7 @@ const RESTRICTED_TOOLS = new Set([
   'ListAgents',
   'RouteForward',
   'AskUser',
+  'CreateWorkItem',
 ]);
 
 /** How long an idle sub-agent may wait for a follow-up before the watchdog reaps it. */

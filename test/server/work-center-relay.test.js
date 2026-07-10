@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const forwardToAgent = vi.fn();
+const forwardAgentEvent = vi.fn();
 const forwardToClients = vi.fn();
 const sendToWebClient = vi.fn();
 const agents = new Map();
 
 vi.mock('../../server/ws-utils.js', () => ({
+  forwardAgentEvent,
   forwardToAgent,
   forwardToClients,
   sendToWebClient,
@@ -20,6 +22,7 @@ const { handleAgentWorkCenter } = await import('../../server/handlers/agent-work
 
 describe('Work Center relay', () => {
   beforeEach(() => {
+    forwardAgentEvent.mockReset();
     forwardToAgent.mockReset();
     forwardToClients.mockReset();
     sendToWebClient.mockReset();
@@ -104,22 +107,26 @@ describe('Work Center relay', () => {
     expect(sendToWebClient).not.toHaveBeenCalled();
   });
 
-  it('uses the trusted Agent owner for unsolicited projection events', async () => {
-    agents.set('trusted-agent', { ownerId: 'owner-1' });
+  it('uses Agent access authorization for redacted unsolicited projection events', async () => {
+    agents.set('trusted-agent', { ownerId: null });
     await handleAgentWorkCenter('trusted-agent', {
       type: 'work_center_event',
       agentId: 'spoofed-agent',
       _requestUserId: 'victim',
-      event: { type: 'work_item.updated' },
+      event: {
+        type: 'work_item.updated',
+        workItem: { id: 'wi-1', title: 'Safe summary', status: 'running' },
+      },
     });
 
-    expect(forwardToClients).toHaveBeenCalledWith('trusted-agent', null, {
+    expect(forwardAgentEvent).toHaveBeenCalledWith('trusted-agent', {
       type: 'work_center_event',
       agentId: 'trusted-agent',
-      event: { type: 'work_item.updated' },
+      event: {
+        type: 'work_item.updated',
+        workItem: { id: 'wi-1', title: 'Safe summary', status: 'running' },
+      },
     });
-    const outgoing = forwardToClients.mock.calls[0][2];
-    expect(outgoing._requestUserId).toBe('owner-1');
-    expect(Object.keys(outgoing)).not.toContain('_requestUserId');
+    expect(forwardToClients).not.toHaveBeenCalled();
   });
 });

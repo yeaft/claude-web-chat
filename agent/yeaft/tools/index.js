@@ -55,6 +55,7 @@ import routeForward from './route-forward.js';
 // --- P1 Progress tracking ---
 import todoWrite from './todo-write.js';
 import startPlan from './start-plan.js';
+import createWorkItem from './create-work-item.js';
 
 // H2.f.4: user-facing thread tools (spawnThread/switchThread/listThreads/...)
 // were deleted. PR #797 reintroduces runtime-owned VP thread routing below the
@@ -119,6 +120,7 @@ export const allTools = [
   // P1 Progress tracking
   todoWrite,
   startPlan,
+  createWorkItem,
 
   // P2 Auxiliary
   jsRepl,

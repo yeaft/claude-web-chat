@@ -31,6 +31,8 @@
   type: 'triage|implement|review|deliver',
   requiredRole,
   instruction,
+  context: [{ type, role, summary, evidence, reviewDecision }],
+  contractRevision,
   status: 'ready|running|waiting|completed|failed|superseded|cancelled',
   attempt,
   maxAttempts,
@@ -56,10 +58,13 @@
   roleSnapshot,
   vpSnapshot,
   modelSnapshot,
+  toolPolicySnapshot,
   summary,
   evidence: [],
   waitingReason,
-  error
+  error,
+  reviewDecision,
+  contractPatch
 }
 ```
 
@@ -88,7 +93,11 @@ triage (omni)
 5. `waiting` 会结束当前 Run，不保留假 running。
 6. WorkItem 只有最后一个必需 Action completed 后才能进入 done。
 7. 取消后任何旧 Run 不能再推进状态。
-8. 修改目标或验收条件会递增 WorkItem revision，并使未完成 Action superseded，重新进入 triage。
+8. 修改目标或验收条件会在一个 SQLite 事务中终止当前 Run、递增 WorkItem revision、使未完成 Action superseded，并重新进入 triage。
+9. Run 终态、Action 终态、WorkItem 状态、下一 Action 和 Event 必须在一个事务提交；中途失败全部回滚。
+10. completed review 必须带 `approved|changes_requested`；缺失或非法值进入 `needs_attention`。
+11. Triage 可提交受限 `contractPatch`；下一 Action 的 context 必须包含有效前序 summary/evidence/decision。
+12. Role 无法解析时停止执行并进入 `needs_attention`，不得自动回退到 omni。
 
 ## 恢复策略
 

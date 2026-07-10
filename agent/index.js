@@ -345,5 +345,12 @@ process.on('SIGTERM', async () => {
   } catch (err) {
     console.warn(`[Agent] models.dev prime failed (will use config/defaults): ${err?.message || err}`);
   }
+  try {
+    const { bootWorkCenter } = await import('./yeaft/work-center/bridge.js');
+    await bootWorkCenter();
+    console.log('[Agent] Work Center watcher started');
+  } catch (err) {
+    console.warn(`[Agent] Work Center failed to start: ${err?.message || err}`);
+  }
   connect();
 })();

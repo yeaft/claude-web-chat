@@ -59,11 +59,11 @@ WorkItem 是 per-agent，不是 per-session。
 
 ### WorkCenterService
 
-面向 wire/API 的应用服务。负责输入校验、调用 Store/Controller、生成快照和事件广播。
+面向 wire/API 的应用服务。负责输入校验、调用 Store/Controller、生成快照和事件广播。Agent boot 时启动 Watcher，不依赖浏览器首次访问；Session UI 和 `CreateWorkItem` tool 共用同一 Producer API。
 
 ### WorkItemStore
 
-SQLite 是唯一事实源，负责 WorkItem、Action、Run 和 Event 的事务写入。claim 必须在单事务内更新 `currentRunId`、`leaseEpoch` 和 Action 状态。
+SQLite 是唯一事实源，负责 WorkItem、Action、Run 和 Event 的事务写入。claim 必须在单事务内更新 `currentRunId`、`leaseEpoch` 和 Action 状态；terminal submit 必须在单事务内更新 Run、Action、WorkItem、下一 Action 与 Event。
 
 ### WorkflowController
 
@@ -73,6 +73,8 @@ SQLite 是唯一事实源，负责 WorkItem、Action、Run 和 Event 的事务�
 - `waiting`：WorkItem → `waiting`，当前 Run 结束；恢复时创建新 Run。
 - `retryable`：在重试上限内 Action → `ready`；否则 WorkItem → `needs_attention`。
 - `failed`：WorkItem → `needs_attention`，禁止盲目自动重跑。
+- `triage completed`：可提交受验证的 contract patch；阶段 summary/evidence/decision 作为下一 Action context 持久化。
+- `review completed`：必须明确 `approved|changes_requested`，缺失决定绝不进入 deliver。
 
 ### WorkItemWatcher
 
@@ -80,7 +82,9 @@ SQLite 是唯一事实源，负责 WorkItem、Action、Run 和 Event 的事务�
 
 ### WorkItemRunner
 
-将 `requiredRole` 映射到 VP profile，创建一次隔离的 Engine Run，收集事件并提交结构化 outcome。V1 禁止 MCP、后台 Bash、子 Agent、RouteForward 和 AskUser；等待用户通过 `waiting` outcome 表达。
+将 `requiredRole` 映射到 VP profile，创建一次隔离的 Engine Run，持久化 role/VP/model/tool-policy 快照，收集事件并提交结构化 outcome。角色缺失直接失败，不回退 omni。V1 禁止 MCP、后台 Bash、子 Agent、RouteForward、AskUser 和递归 CreateWorkItem；等待用户通过 `waiting` outcome 表达。
+
+Runner 的路径 realpath 检查会拒绝文件工具的 symlink escape，但 Bash 的固定 cwd 不是安全沙箱。V1 threat model 是可信 Agent；若需要抵御恶意或 prompt-injected shell，必须把整个 Run 放入 container/sandbox。WorkItem Engine 不写 Session conversation、memory archive、exec-log 或共享 tool stats。
 
 ## 与现有系统的关系
 
