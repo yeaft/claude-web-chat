@@ -11,6 +11,7 @@ import ModernSelect from './ModernSelect.js';
 import SidebarModeToggle from './SidebarModeToggle.js';
 import SidebarAgentHeader from './SidebarAgentHeader.js';
 import SidebarWorkCenter from './SidebarWorkCenter.js';
+import SessionSidebarShell from './SessionSidebarShell.js';
 import { shortenPath as shortenPathUtil } from '../utils/path-display.js';
 import { getLastPathSegment as _getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
 import { sortSessionsByActivity } from '../stores/helpers/session-order.js';
@@ -19,17 +20,18 @@ import { collapseSidebar } from '../utils/sidebar-collapse.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell },
   template: `
-    <div class="chat-page" :class="{ 'show-sidebar': showMobileSidebar }">
+    <div class="chat-page" :class="{ 'show-sidebar': store.sessionSidebarOpen }">
 
       <!-- Sidebar Overlay -->
-      <div class="sidebar-overlay" v-if="showMobileSidebar" @click="showMobileSidebar = false"></div>
+      <div class="sidebar-overlay" v-if="store.sessionSidebarOpen" @click="store.closeSessionSidebar()"></div>
 
       <!-- Left Sidebar -->
-      <aside class="sidebar" :class="{ collapsed: store.sidebarCollapsed }">
+      <SessionSidebarShell class="sidebar" :collapsed="effectiveSidebarCollapsed">
+        <template #collapsed>
         <!-- Collapsed Icon Bar -->
-        <div class="sidebar-collapsed-bar" v-if="store.sidebarCollapsed">
+        <div class="sidebar-collapsed-bar" v-if="effectiveSidebarCollapsed">
           <button v-if="!store.isSplitMode" class="collapsed-icon-btn" @click="store.toggleSidebar()" :title="$t('chat.sidebar.expand')">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
           </button>
@@ -50,6 +52,7 @@ export default {
             <svg v-else viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"/></svg>
           </button>
         </div>
+        </template>
         <!-- Agent Status -->
         <div class="sidebar-top">
           <!-- Header Row: Agent status + action icons (Copilot style) -->
@@ -236,7 +239,7 @@ export default {
             <span v-if="serverVersion" class="sidebar-version">{{ serverVersion }}</span>
           </button>
         </div>
-      </aside>
+      </SessionSidebarShell>
 
       <!-- Sidebar / Workbench 分隔线 -->
       <div class="sidebar-workbench-divider" v-if="canUseWorkbench && store.workbenchExpanded && !store.sidebarCollapsed && !store.isSplitMode"></div>
@@ -246,7 +249,7 @@ export default {
 
       <!-- Single-panel Main Chat Area -->
       <main v-if="!store.isSplitMode" class="main-content" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
-          <ChatHeader @toggle-sidebar="showMobileSidebar = !showMobileSidebar" />
+          <ChatHeader @toggle-sidebar="store.toggleSessionSidebar()" />
           <div class="chat-body" :class="{ 'expert-panel-open': store.activeRightPanel }">
             <div class="chat-body-main">
               <MessageList
@@ -466,7 +469,6 @@ export default {
   data() {
     return {
       showAgentDropdown: false,
-      showMobileSidebar: false,
       showSettingsPanel: false,
       restartingAgents: {},
       upgradingAgents: {},
@@ -528,6 +530,9 @@ export default {
     isMobileView() {
       return this.windowWidth <= 768;
     },
+    effectiveSidebarCollapsed() {
+      return this.isMobileView ? !this.store.sessionSidebarOpen : this.store.sidebarCollapsed;
+    },
     normalConversations() {
       return this.sortByActivity(this.store.conversations.filter(c => c.agentOnline !== false));
     },
@@ -546,8 +551,8 @@ export default {
     onSidebarCollapse() {
       collapseSidebar({
         isMobileView: this.isMobileView,
-        showMobileSidebar: this.showMobileSidebar,
-        closeMobileSidebar: () => { this.showMobileSidebar = false; },
+        showMobileSidebar: this.store.sessionSidebarOpen,
+        closeMobileSidebar: () => this.store.closeSessionSidebar(),
         toggleSidebar: () => this.store.toggleSidebar(),
       });
     },
@@ -696,7 +701,7 @@ export default {
     },
     selectConversation(conversationId, agentId) {
       this.store.selectConversation(conversationId, agentId);
-      this.showMobileSidebar = false;
+      this.store.closeSessionSidebar();
     },
     onSessionClick(conv) {
       if (conv.agentOnline === false) {
@@ -706,7 +711,7 @@ export default {
       // In multi-panel mode, route to the active panel
       if (this.store.isSplitMode && this.store.activePanelId) {
         this.store.setPanelConversation(this.store.activePanelId, conv.id);
-        this.showMobileSidebar = false;
+        this.store.closeSessionSidebar();
         return;
       }
       this.selectConversation(conv.id, conv.agentId);

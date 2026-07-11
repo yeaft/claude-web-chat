@@ -7,8 +7,13 @@ const readStyle = (name) => readFileSync(new URL(`../../web/styles/${name}`, imp
 
 describe('mobile sidebar header parity', () => {
   const chatPage = readComponent('ChatPage.js');
+  const yeaftPage = readComponent('YeaftPage.js');
   const yeaftSidebar = readComponent('YeaftSidebar.js');
+  const sidebarShell = readComponent('SessionSidebarShell.js');
   const chatModalCss = readStyle('chat-modals.css');
+  const sidebarCss = readStyle('sidebar.css');
+  const yeaftSidebarCss = readStyle('yeaft-sidebar.css');
+  const variablesCss = readStyle('variables.css');
 
   it('starts both expanded sidebars with the shared agent header', () => {
     expect(chatPage).not.toContain('sidebar-header-mobile');
@@ -33,6 +38,24 @@ describe('mobile sidebar header parity', () => {
     collapseSidebar({ isMobileView: false, showMobileSidebar: true, closeMobileSidebar: desktopClose, toggleSidebar: desktopToggle });
     expect(desktopClose).not.toHaveBeenCalled();
     expect(desktopToggle).toHaveBeenCalledOnce();
+  });
+
+  it('uses one sidebar shell and width token for Chat and Yeaft Session', () => {
+    expect(sidebarShell).toContain('class="session-sidebar-shell"');
+    expect(chatPage).toContain('<SessionSidebarShell class="sidebar"');
+    expect(yeaftSidebar).toContain('<SessionSidebarShell class="yeaft-sidebar"');
+    expect(variablesCss).toContain('--session-sidebar-width: 260px;');
+    expect(sidebarCss).toContain('width: var(--session-sidebar-width);');
+    expect(chatModalCss).toContain('width: var(--session-sidebar-width);');
+    expect(chatModalCss).not.toContain('width: 300px;');
+    expect(yeaftSidebarCss).not.toMatch(/\.yeaft-sidebar(?:\.collapsed)?\s*\{[^}]*(?:^|\n)\s*(?:width|min-width|max-width)\s*:/m);
+  });
+
+  it('keeps the mobile sidebar open while switching between conversation views', () => {
+    expect(chatPage).toContain("'show-sidebar': store.sessionSidebarOpen");
+    expect(chatPage).toContain('@toggle-sidebar="store.toggleSessionSidebar()"');
+    expect(yeaftPage).toContain('store.sessionSidebarOpen && isMobile');
+    expect(yeaftPage).toContain('isMobile.value ? !store.sessionSidebarOpen : store.sidebarCollapsed');
   });
 
   it('removes the obsolete mobile-only title and close button styles', () => {

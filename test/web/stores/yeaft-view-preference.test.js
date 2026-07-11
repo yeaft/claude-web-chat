@@ -225,6 +225,22 @@ describe('Yeaft conversation view preference', () => {
     ]);
   });
 
+  it('keeps the shared mobile sidebar state across Chat and Yeaft view switches', () => {
+    const store = createChatStore();
+    store.sessionSidebarOpen = true;
+    store.currentView = 'chat';
+    store.activeConversations = ['chat-conversation'];
+    store.yeaftConversationId = 'yeaft-local-agent-1';
+
+    store.enterYeaft();
+    expect(store.currentView).toBe('yeaft');
+    expect(store.sessionSidebarOpen).toBe(true);
+
+    store.leaveYeaft();
+    expect(store.currentView).toBe('chat');
+    expect(store.sessionSidebarOpen).toBe(true);
+  });
+
   it('does not overwrite the Chat snapshot on repeated Yeaft entry', () => {
     const store = {
       currentView: 'chat',

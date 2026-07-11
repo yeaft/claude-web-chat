@@ -16,23 +16,6 @@
 
 /* ── Left Sidebar (minimal: back + settings) ── */
 
-.yeaft-sidebar {
-  width: 260px;
-  min-width: 260px;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-sidebar);
-  overflow: hidden;
-  flex-shrink: 0;
-  transition: width 0.2s ease, min-width 0.2s ease, opacity 0.2s ease;
-}
-
-.yeaft-sidebar.collapsed {
-  width: 48px;
-  min-width: 48px;
-  border-right: 1px solid var(--border-color);
-}
-
 /* When collapsed, hide the full sidebar contents and only show the icon bar.
    Mirrors Chat sidebar behavior so the user can re-expand instead of having
    the sidebar disappear entirely. */

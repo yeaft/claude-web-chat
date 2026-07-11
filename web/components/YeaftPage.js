@@ -38,12 +38,12 @@ export default {
   template: `
     <div class="yeaft-page" ref="pageRef">
       <!-- Mobile sidebar overlay -->
-      <div class="yeaft-sidebar-overlay" v-if="!sidebarCollapsed && isMobile" @click="sidebarCollapsed = true"></div>
+      <div class="yeaft-sidebar-overlay" v-if="store.sessionSidebarOpen && isMobile" @click="store.closeSessionSidebar()"></div>
 
       <!-- Left Sidebar — V2 (task-341: V2 is the only sidebar now). -->
       <!-- Legacy sidebar event alias; canonical settings dialog uses session terminology. -->
       <YeaftSidebar
-        :collapsed="sidebarCollapsed"
+        :collapsed="effectiveSidebarCollapsed"
         @select-group="onSelectGroupV2"
         @select-chat="onSelectChat"
         @toggle-sidebar="toggleSidebar"
@@ -367,7 +367,6 @@ export default {
     const inst = Vue.getCurrentInstance();
     const $t = (inst && inst.appContext.config.globalProperties.$t) || ((key) => key);
 
-    const sidebarCollapsed = Vue.ref(false);
     // task-yeaft-group-ui-cleanup: debug mode now starts OFF (was always
     // visible as a "tasks memory / coming soon" placeholder). The right
     // detail panel is only rendered when debugMode is on, so the
@@ -460,7 +459,7 @@ export default {
       const id = g && g.id ? g.id : null;
       if (!id) return;
       store.setActiveSessionFilter(id);
-      if (isMobile.value) sidebarCollapsed.value = true;
+      if (isMobile.value) store.closeSessionSidebar();
     };
 
     // Yeaft Chat Mode (1:1): clicking a chat row narrows the main pane to
@@ -593,6 +592,9 @@ export default {
     const matchesMedia = (media, fallbackWidth) => media ? media.matches : window.innerWidth <= fallbackWidth;
     const isMobile = Vue.ref(matchesMedia(mobileMedia, 768));
     const isNarrowDetail = Vue.ref(matchesMedia(narrowDetailMedia, 1024));
+    const effectiveSidebarCollapsed = Vue.computed(() =>
+      isMobile.value ? !store.sessionSidebarOpen : store.sidebarCollapsed
+    );
     const syncResponsiveFlags = () => {
       isMobile.value = matchesMedia(mobileMedia, 768);
       isNarrowDetail.value = matchesMedia(narrowDetailMedia, 1024);
@@ -697,7 +699,11 @@ export default {
     };
 
     const toggleSidebar = () => {
-      sidebarCollapsed.value = !sidebarCollapsed.value;
+      if (isMobile.value) {
+        store.toggleSessionSidebar();
+        return;
+      }
+      store.toggleSidebar();
     };
 
     // task-yeaft-group-ui-cleanup: toggleDetail() was wired to a topbar
@@ -1227,7 +1233,7 @@ export default {
     return {
       store,
       pageRef,
-      sidebarCollapsed,
+      effectiveSidebarCollapsed,
       debugMode,
       modelDropdownOpen,
       topbarGroup,
