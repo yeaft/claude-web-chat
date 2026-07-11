@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import ctx from '../../../../agent/context.js';
 
 const sendToServer = vi.fn();
 const ensureSessionLoaded = vi.fn();
@@ -18,10 +22,27 @@ const {
   __testSetWorkCenterService,
 } = await import('../../../../agent/yeaft/work-center/bridge.js');
 
+const originalConfig = ctx.CONFIG;
+const dirs = [];
+
 function deferred() {
   let resolve;
   const promise = new Promise(r => { resolve = r; });
   return { promise, resolve };
+}
+
+function createYeaftDir() {
+  const dir = mkdtempSync(join(tmpdir(), 'work-center-bridge-'));
+  dirs.push(dir);
+  ctx.CONFIG = { yeaftDir: dir };
+  ensureSessionLoaded.mockResolvedValue({
+    config: {
+      availableModels: [{ id: 'model', ref: 'provider/model', provider: 'provider' }],
+      primaryModel: 'provider/model',
+      fastModel: null,
+    },
+  });
+  return dir;
 }
 
 function internalDetail() {
@@ -64,8 +85,14 @@ describe('Work Center lifecycle bridge', () => {
     ensureSessionLoaded.mockReset();
     resetYeaftSession.mockReset();
     resetYeaftSession.mockResolvedValue(undefined);
+    ctx.CONFIG = originalConfig;
     __testSetWorkCenterService(null);
     __testSetWorkCenterFactory(null);
+  });
+
+  afterEach(() => {
+    ctx.CONFIG = originalConfig;
+    while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true });
   });
 
   it('boots the autonomous watcher exactly once', async () => {
@@ -81,21 +108,58 @@ describe('Work Center lifecycle bridge', () => {
     expect(service.shutdown).toHaveBeenCalledTimes(1);
   });
 
-  it('routes settings operations through the existing response envelope', async () => {
-    const service = {
-      start: vi.fn(),
-      shutdown: vi.fn(),
-      handle: vi.fn().mockResolvedValue({ settings: { defaultWorkflowId: 'software-change' } }),
-    };
-    __testSetWorkCenterService(service);
+  it('returns default Agent settings without initializing the WorkItem service', async () => {
+    const yeaftDir = createYeaftDir();
+    const factory = vi.fn();
+    __testSetWorkCenterFactory(factory);
+
     await handleWorkCenterRequest({
       requestId: 'settings-1', op: 'get_settings', payload: {}, _requestUserId: 'user-1',
     });
-    expect(service.handle).toHaveBeenCalledWith('get_settings', {});
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(existsSync(join(yeaftDir, 'work-center', 'settings.json'))).toBe(false);
     expect(sendToServer).toHaveBeenCalledWith(expect.objectContaining({
       type: 'work_center_response', requestId: 'settings-1', op: 'get_settings', ok: true,
-      data: { settings: { defaultWorkflowId: 'software-change' } }, _requestUserId: 'user-1',
+      data: {
+        settings: expect.objectContaining({
+          revision: 1,
+          defaultWorkflowId: 'software-change',
+          startImmediately: true,
+          defaultWorkDir: '',
+          workflows: [expect.objectContaining({ id: 'software-change' })],
+        }),
+        runtime: expect.objectContaining({
+          models: [{ id: 'model', ref: 'provider/model', provider: 'provider' }],
+          primaryModel: 'provider/model',
+        }),
+      },
+      _requestUserId: 'user-1',
     }));
+  });
+
+  it('persists the first settings update before a WorkItem exists', async () => {
+    const yeaftDir = createYeaftDir();
+    const factory = vi.fn();
+    __testSetWorkCenterFactory(factory);
+
+    await handleWorkCenterRequest({
+      requestId: 'settings-read', op: 'get_settings', payload: {}, _requestUserId: 'user-1',
+    });
+    const initial = sendToServer.mock.calls.at(-1)[0].data.settings;
+    await handleWorkCenterRequest({
+      requestId: 'settings-write',
+      op: 'update_settings',
+      payload: { settings: { ...initial, defaultWorkDir: '/project' } },
+      _requestUserId: 'user-1',
+    });
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(existsSync(join(yeaftDir, 'work-center', 'settings.json'))).toBe(true);
+    expect(sendToServer.mock.calls.at(-1)[0]).toMatchObject({
+      type: 'work_center_response', requestId: 'settings-write', op: 'update_settings', ok: true,
+      data: { settings: { revision: 2, defaultWorkDir: '/project' } },
+    });
   });
 
   it.each(['get', 'create', 'update', 'start', 'cancel', 'guide', 'retry'])(
@@ -162,33 +226,37 @@ describe('Work Center lifecycle bridge', () => {
   });
 
   it('waits for runtime reset before returning refreshed settings', async () => {
+    createYeaftDir();
     const gate = deferred();
     resetYeaftSession.mockReturnValue(gate.promise);
-    const fresh = {
-      settings: { defaultWorkflowId: 'software-change' },
-      runtime: { primaryModel: 'new-provider/new-model' },
-    };
-    const service = {
-      start: vi.fn(),
-      shutdown: vi.fn(),
-      handle: vi.fn().mockResolvedValue(fresh),
-    };
-    __testSetWorkCenterService(service);
+    ensureSessionLoaded.mockResolvedValue({
+      config: {
+        availableModels: [],
+        primaryModel: 'new-provider/new-model',
+        fastModel: null,
+      },
+    });
+    const factory = vi.fn();
+    __testSetWorkCenterFactory(factory);
 
     const request = handleWorkCenterRequest({
       requestId: 'refresh-1', op: 'refresh_runtime', payload: {}, _requestUserId: 'user-1',
     });
     await Promise.resolve();
     expect(resetYeaftSession).toHaveBeenCalledTimes(1);
-    expect(service.handle).not.toHaveBeenCalled();
+    expect(factory).not.toHaveBeenCalled();
     expect(sendToServer).not.toHaveBeenCalled();
 
     gate.resolve();
     await request;
-    expect(service.handle).toHaveBeenCalledWith('get_settings', {});
+    expect(factory).not.toHaveBeenCalled();
     expect(sendToServer).toHaveBeenCalledWith(expect.objectContaining({
       type: 'work_center_response', requestId: 'refresh-1', op: 'refresh_runtime', ok: true,
-      data: fresh, _requestUserId: 'user-1',
+      data: {
+        settings: expect.objectContaining({ defaultWorkflowId: 'software-change' }),
+        runtime: expect.objectContaining({ primaryModel: 'new-provider/new-model' }),
+      },
+      _requestUserId: 'user-1',
     }));
   });
 

@@ -185,6 +185,7 @@ describe('Work Center UI contract', () => {
       'workCenter.settings.assignment.auto',
       'workCenter.settings.model.specific',
       'workCenter.settings.addStage',
+      'workCenter.settings.upgradeRequired',
       'workCenter.planPreview',
     ];
     for (const key of keys) {

@@ -2,6 +2,58 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function defaultAssignmentPolicy(capability, separateFromStageTypes = []) {
+  return {
+    mode: 'auto',
+    capability,
+    candidateVpIds: [],
+    fixedVpId: null,
+    separateFromStageTypes,
+  };
+}
+
+function defaultStage(id, name, type, extra = {}) {
+  return {
+    id,
+    name,
+    type,
+    instruction: '',
+    assignmentPolicy: defaultAssignmentPolicy(type, extra.separateFromStageTypes),
+    modelPolicy: { mode: 'inherit', model: null, effort: null },
+    maxAttempts: 2,
+    ...(extra.changesRequestedStageId ? { changesRequestedStageId: extra.changesRequestedStageId } : {}),
+  };
+}
+
+function defaultSettingsDraft() {
+  return {
+    version: 1,
+    revision: 1,
+    defaultWorkflowId: 'software-change',
+    startImmediately: true,
+    defaultWorkDir: '',
+    workflows: [{
+      version: 1,
+      id: 'software-change',
+      name: 'Software change',
+      stages: [
+        defaultStage('triage', 'Triage', 'triage'),
+        defaultStage('implement', 'Implement', 'implement'),
+        defaultStage('review', 'Review', 'review', {
+          separateFromStageTypes: ['implement'],
+          changesRequestedStageId: 'implement',
+        }),
+        defaultStage('deliver', 'Deliver', 'deliver'),
+      ],
+    }],
+  };
+}
+
+function isUnsupportedSettingsError(error) {
+  const message = error?.message || String(error);
+  return /^Unsupported Work Center operation:\s*get_settings$/i.test(message.trim());
+}
+
 export default {
   name: 'WorkCenterSettingsModal',
   emits: ['close', 'saved', 'open-agent-models'],
@@ -16,6 +68,7 @@ export default {
       saving: false,
       error: '',
       conflict: false,
+      settingsUnsupported: false,
       draftAgentId: null,
       loadGeneration: 0,
     };
@@ -64,9 +117,17 @@ export default {
         this.draft = clone(data.settings);
         this.draftAgentId = target;
         this.conflict = false;
+        this.settingsUnsupported = false;
       } catch (error) {
         if (generation !== this.loadGeneration || target !== this.agentId) return;
-        this.error = error?.message || String(error);
+        if (isUnsupportedSettingsError(error)) {
+          this.draft = defaultSettingsDraft();
+          this.draftAgentId = target;
+          this.settingsUnsupported = true;
+          this.error = this.$t('workCenter.settings.upgradeRequired');
+        } else {
+          this.error = error?.message || String(error);
+        }
       } finally {
         if (generation === this.loadGeneration && target === this.agentId) this.loading = false;
       }
@@ -188,7 +249,7 @@ export default {
       this.normalizeStageEffort(stage);
     },
     async save() {
-      if (!this.draft || this.saving) return;
+      if (!this.draft || this.saving || this.settingsUnsupported) return;
       const target = this.agentId;
       if (this.draftAgentId !== target) {
         this.conflict = true;
@@ -352,7 +413,7 @@ export default {
             <button v-if="conflict" class="btn-secondary" type="button" @click="load" :disabled="saving || loading">{{ $t('workCenter.settings.reload') }}</button>
             <span class="work-center-settings-footer-spacer"></span>
             <button class="btn-secondary" type="button" @click="close">{{ $t('common.cancel') }}</button>
-            <button class="btn-primary" type="button" @click="save" :disabled="saving || loading || conflict">{{ saving ? $t('workCenter.settings.saving') : $t('common.save') }}</button>
+            <button class="btn-primary" type="button" @click="save" :disabled="saving || loading || conflict || settingsUnsupported">{{ saving ? $t('workCenter.settings.saving') : $t('common.save') }}</button>
           </footer>
         </section>
       </div>

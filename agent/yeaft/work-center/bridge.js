@@ -7,7 +7,7 @@ import { WorkCenterService } from './service.js';
 import { WorkItemRunner } from './runner.js';
 import { projectWorkCenterEvent, projectWorkItemDetail } from './projection.js';
 import { previewWorkCenterPlan } from './planner.js';
-import { readWorkCenterSettings } from './settings.js';
+import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
 import { join } from 'node:path';
 
 let service = null;
@@ -26,9 +26,45 @@ async function getRuntime() {
   return ensureSessionLoaded();
 }
 
-async function createDefaultService() {
+function requireYeaftDir() {
   const yeaftDir = ctx.CONFIG?.yeaftDir;
   if (!yeaftDir) throw new Error('Work Center requires a configured Yeaft directory');
+  return yeaftDir;
+}
+
+async function getSettingsRuntime() {
+  const runtime = await getRuntime();
+  const yeaftDir = requireYeaftDir();
+  if (defaultRegistry.vpCount() === 0) {
+    for (const vp of scanVpLibrary({ dir: join(yeaftDir, 'virtual-persons') })) defaultRegistry.setVp(vp);
+  }
+  return {
+    vps: defaultRegistry.listVps().map(vp => ({
+      id: vp.id,
+      name: vp.name || vp.id,
+      nameZh: vp.nameZh || '',
+      role: vp.role || '',
+      roleZh: vp.roleZh || '',
+      area: vp.area || '',
+      traits: Array.isArray(vp.traits) ? vp.traits : [],
+      modelHint: vp.modelHint || null,
+    })),
+    models: Array.isArray(runtime.config.availableModels) ? runtime.config.availableModels : [],
+    primaryModel: runtime.config.primaryModel || runtime.config.model || null,
+    fastModel: runtime.config.fastModel || null,
+  };
+}
+
+async function readSettingsResponse() {
+  const yeaftDir = requireYeaftDir();
+  return {
+    settings: readWorkCenterSettings(yeaftDir),
+    runtime: await getSettingsRuntime(),
+  };
+}
+
+async function createDefaultService() {
+  const yeaftDir = requireYeaftDir();
   const runner = new WorkItemRunner({
     runtimeProvider: async () => {
       const runtime = await getRuntime();
@@ -46,27 +82,7 @@ async function createDefaultService() {
   const created = new WorkCenterService({
     yeaftDir,
     runner,
-    runtimeInfoProvider: async () => {
-      const runtime = await getRuntime();
-      if (defaultRegistry.vpCount() === 0) {
-        for (const vp of scanVpLibrary({ dir: join(yeaftDir, 'virtual-persons') })) defaultRegistry.setVp(vp);
-      }
-      return {
-        vps: defaultRegistry.listVps().map(vp => ({
-          id: vp.id,
-          name: vp.name || vp.id,
-          nameZh: vp.nameZh || '',
-          role: vp.role || '',
-          roleZh: vp.roleZh || '',
-          area: vp.area || '',
-          traits: Array.isArray(vp.traits) ? vp.traits : [],
-          modelHint: vp.modelHint || null,
-        })),
-        models: Array.isArray(runtime.config.availableModels) ? runtime.config.availableModels : [],
-        primaryModel: runtime.config.primaryModel || runtime.config.model || null,
-        fastModel: runtime.config.fastModel || null,
-      };
-    },
+    runtimeInfoProvider: getSettingsRuntime,
     onEvent(event) {
       send({ type: 'work_center_event', event: projectWorkCenterEvent(event) });
     },
@@ -109,12 +125,15 @@ export async function handleWorkCenterRequest(msg) {
   const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
   const op = typeof msg.op === 'string' ? msg.op : '';
   try {
-    const workCenter = await ensureWorkCenter();
     let data;
-    if (op === 'preview') {
+    if (op === 'get_settings') {
+      data = await readSettingsResponse();
+    } else if (op === 'update_settings') {
+      const settings = writeWorkCenterSettings(requireYeaftDir(), msg.payload?.settings);
+      data = { settings, runtime: await getSettingsRuntime() };
+    } else if (op === 'preview') {
       const runtime = await getRuntime();
-      const yeaftDir = ctx.CONFIG?.yeaftDir;
-      if (!yeaftDir) throw new Error('Work Center requires a configured Yeaft directory');
+      const yeaftDir = requireYeaftDir();
       if (defaultRegistry.vpCount() === 0) {
         for (const vp of scanVpLibrary({ dir: join(yeaftDir, 'virtual-persons') })) defaultRegistry.setVp(vp);
       }
@@ -127,8 +146,9 @@ export async function handleWorkCenterRequest(msg) {
       });
     } else if (op === 'refresh_runtime') {
       await resetYeaftSession();
-      data = await workCenter.handle('get_settings', {});
+      data = await readSettingsResponse();
     } else {
+      const workCenter = await ensureWorkCenter();
       data = await workCenter.handle(op, msg.payload || {});
     }
     if (BROWSER_DETAIL_OPS.has(op)) data = projectWorkItemDetail(data);
