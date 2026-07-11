@@ -8,6 +8,7 @@ import {
 } from '../../../agent/yeaft/llm/usage-accounting.js';
 import { AnthropicAdapter } from '../../../agent/yeaft/llm/anthropic.js';
 import { OpenAIResponsesAdapter } from '../../../agent/yeaft/llm/openai-responses.js';
+import { AdapterRouter } from '../../../agent/yeaft/llm/router.js';
 import { startSubAgent } from '../../../agent/yeaft/sub-agent/runner.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 
@@ -98,6 +99,46 @@ describe('LLM usage accounting', () => {
       agent.abortController.abort();
       rmSync(logDir, { recursive: true, force: true });
     }
+  });
+
+  it('preserves router runtime controls and delegates provider refreshes', () => {
+    const initialProviders = [{
+      name: 'initial',
+      baseUrl: 'https://initial.test/v1',
+      apiKey: 'initial-key',
+      protocol: 'openai-responses',
+      models: ['gpt-initial'],
+    }];
+    const refreshedProviders = [{
+      name: 'refreshed',
+      baseUrl: 'https://refreshed.test/v1',
+      apiKey: 'refreshed-key',
+      protocol: 'openai-responses',
+      models: ['gpt-refreshed'],
+    }];
+    const router = new AdapterRouter({ providers: initialProviders });
+    const refreshSpy = vi.spyOn(router, 'refreshProviders');
+    const adapter = withUsageAccounting(router, vi.fn());
+
+    expect(typeof adapter.stream).toBe('function');
+    expect(typeof adapter.call).toBe('function');
+    expect(typeof adapter.refreshProviders).toBe('function');
+    expect(typeof adapter.getProviderForModel).toBe('function');
+    expect(typeof adapter.listAvailableModels).toBe('function');
+    expect(adapter.listAvailableModels()).toEqual(router.listAvailableModels());
+
+    adapter.refreshProviders(refreshedProviders);
+
+    expect(refreshSpy).toHaveBeenCalledOnce();
+    expect(refreshSpy).toHaveBeenCalledWith(refreshedProviders);
+    expect(adapter.getProviderForModel('gpt-initial')).toBeNull();
+    expect(adapter.getProviderForModel('gpt-refreshed')).toMatchObject({
+      name: 'refreshed',
+      baseUrl: 'https://refreshed.test/v1',
+    });
+    expect(adapter.listAvailableModels()).toEqual([
+      { modelId: 'gpt-refreshed', providerName: 'refreshed' },
+    ]);
   });
 
   it('counts one non-streaming side call', async () => {

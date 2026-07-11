@@ -92,6 +92,10 @@ export class UsageAccountingAdapter extends LLMAdapter {
     return result;
   }
 
+  refreshProviders(providers) {
+    return this.#adapter.refreshProviders?.(providers);
+  }
+
   getProviderForModel(modelId) {
     return this.#adapter.getProviderForModel?.(modelId) || null;
   }
