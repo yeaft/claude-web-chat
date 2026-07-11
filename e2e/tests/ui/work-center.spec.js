@@ -304,13 +304,11 @@ test.describe('Work Center responsive UI', () => {
     const modal = chatPage.locator('.work-center-settings-card');
     await expect(modal).toBeVisible();
     await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(8);
-    const metrics = await modal.evaluate(element => {
+    const workflowMetrics = await modal.evaluate(element => {
       const rect = element.getBoundingClientRect();
       const pane = element.querySelector('.work-center-settings-pane');
-      const input = element.querySelector('.work-center-policy-stage input[type="text"]');
       const textarea = element.querySelector('.work-center-stage-instruction textarea');
       const save = element.querySelector('.work-center-settings-footer .btn-primary');
-      const inputStyle = getComputedStyle(input);
       const textareaStyle = getComputedStyle(textarea);
       const saveStyle = getComputedStyle(save);
       return {
@@ -322,26 +320,33 @@ test.describe('Work Center responsive UI', () => {
         viewportHeight: window.innerHeight,
         paneScrollable: pane.scrollHeight >= pane.clientHeight,
         background: getComputedStyle(element).backgroundColor,
-        inputBackground: inputStyle.backgroundColor,
         textareaBackground: textareaStyle.backgroundColor,
-        inputColor: inputStyle.color,
         textareaColor: textareaStyle.color,
         saveBackground: saveStyle.backgroundColor,
         saveColor: saveStyle.color,
       };
     });
-    expect(metrics.left).toBeGreaterThanOrEqual(0);
-    expect(metrics.right).toBeLessThanOrEqual(metrics.viewportWidth);
-    expect(metrics.top).toBeGreaterThanOrEqual(0);
-    expect(metrics.bottom).toBeLessThanOrEqual(metrics.viewportHeight);
-    expect(metrics.paneScrollable).toBe(true);
-    expect(metrics.background).not.toBe('rgba(0, 0, 0, 0)');
-    expect(metrics.inputBackground).not.toBe('rgb(255, 255, 255)');
-    expect(metrics.textareaBackground).toBe(metrics.inputBackground);
-    expect(metrics.inputColor).not.toBe(metrics.inputBackground);
-    expect(metrics.textareaColor).not.toBe(metrics.textareaBackground);
-    expect(metrics.saveBackground).not.toBe(metrics.background);
-    expect(metrics.saveColor).not.toBe(metrics.saveBackground);
+    expect(workflowMetrics.left).toBeGreaterThanOrEqual(0);
+    expect(workflowMetrics.right).toBeLessThanOrEqual(workflowMetrics.viewportWidth);
+    expect(workflowMetrics.top).toBeGreaterThanOrEqual(0);
+    expect(workflowMetrics.bottom).toBeLessThanOrEqual(workflowMetrics.viewportHeight);
+    expect(workflowMetrics.paneScrollable).toBe(true);
+    expect(workflowMetrics.background).not.toBe('rgba(0, 0, 0, 0)');
+    expect(workflowMetrics.textareaBackground).not.toBe('rgb(255, 255, 255)');
+    expect(workflowMetrics.textareaColor).not.toBe(workflowMetrics.textareaBackground);
+    expect(workflowMetrics.saveBackground).not.toBe(workflowMetrics.background);
+    expect(workflowMetrics.saveColor).not.toBe(workflowMetrics.saveBackground);
+
+    await modal.getByRole('button', { name: 'General', exact: true }).click();
+    const generalInput = modal.locator('.work-center-settings-field input[type="text"]');
+    await expect(generalInput).toBeVisible();
+    const inputStyle = await generalInput.evaluate(element => {
+      const style = getComputedStyle(element);
+      return { background: style.backgroundColor, color: style.color };
+    });
+    expect(inputStyle.background).not.toBe('rgb(255, 255, 255)');
+    expect(inputStyle.background).toBe(workflowMetrics.textareaBackground);
+    expect(inputStyle.color).not.toBe(inputStyle.background);
   });
 
   test('creates from a goal contract and leaves planning to AI triage', async ({ chatPage, mockAgent }) => {
