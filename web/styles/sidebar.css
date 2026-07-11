@@ -7,8 +7,9 @@
 }
 
 /* Left Sidebar - Sessions */
-.sidebar {
-  width: 260px;
+.session-sidebar-shell {
+  width: var(--session-sidebar-width);
+  min-width: var(--session-sidebar-width);
   background: var(--bg-sidebar);
   display: flex;
   flex-direction: column;
@@ -17,7 +18,7 @@
   overflow: hidden;
 }
 
-.sidebar.collapsed {
+.session-sidebar-shell.collapsed {
   width: 48px;
   min-width: 48px;
   border-right: 1px solid var(--border-color);

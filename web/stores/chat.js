@@ -265,8 +265,9 @@ export const useChatStore = defineStore('chat', {
     workbenchExpanded: false,
     // Workbench 面板是否最大化（隐藏 conversation）
     workbenchMaximized: false,
-    // 左侧侧边栏是否收起
+    // 桌面侧栏折叠与移动端抽屉开关由 Chat / Yeaft Session 共用。
     sidebarCollapsed: false,
+    sessionSidebarOpen: false,
     // Context compact 状态: { conversationId, status: 'compacting'|'completed', message }
     compactStatus: null,
     // Context clear 状态: { conversationId, status: 'clearing'|'completed' }
@@ -4642,6 +4643,14 @@ export const useChatStore = defineStore('chat', {
 
     toggleSidebar() {
       this.sidebarCollapsed = !this.sidebarCollapsed;
+    },
+
+    toggleSessionSidebar() {
+      this.sessionSidebarOpen = !this.sessionSidebarOpen;
+    },
+
+    closeSessionSidebar() {
+      this.sessionSidebarOpen = false;
     },
 
     toggleWorkbenchMaximized() {
