@@ -1503,6 +1503,8 @@ export default {
   'workCenter.settings.moveDown': 'Move stage down',
   'workCenter.settings.stageType': 'Stage type',
   'workCenter.settings.reviewReturnStage': 'Return to stage when changes are requested',
-  'workCenter.settings.instruction': 'Stage instruction',
-  'workCenter.settings.instructionHint': 'Optional instruction appended to the WorkItem contract.',
+  'workCenter.settings.instruction': 'Stage prompt',
+  'workCenter.settings.instructionHint': 'Define what this stage must do.',
+  'workCenter.settings.instructionHelp': 'The WorkItem goal, acceptance criteria, and reusable context are added automatically at run time.',
+  'workCenter.settings.instructionReset': 'Restore default',
 };

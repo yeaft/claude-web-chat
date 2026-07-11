@@ -8,6 +8,7 @@ import { WorkItemRunner } from './runner.js';
 import { projectWorkCenterEvent, projectWorkItemDetail } from './projection.js';
 import { previewWorkCenterPlan } from './planner.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
+import { defaultWorkCenterStageInstructions } from './workflow.js';
 import { join } from 'node:path';
 
 let service = null;
@@ -52,6 +53,7 @@ async function getSettingsRuntime() {
     models: Array.isArray(runtime.config.availableModels) ? runtime.config.availableModels : [],
     primaryModel: runtime.config.primaryModel || runtime.config.model || null,
     fastModel: runtime.config.fastModel || null,
+    defaultStageInstructions: defaultWorkCenterStageInstructions(),
   };
 }
 

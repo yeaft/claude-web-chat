@@ -15,7 +15,7 @@ async function createService(overrides = {}) {
     runner: null,
     runtimeInfoProvider: async () => ({
       vps: [{ id: 'linus', name: 'Linus' }],
-      models: [{ id: 'model', ref: 'provider/model', provider: 'provider' }],
+      models: [{ id: 'model', ref: 'provider/model', provider: 'provider', effortOptions: ['medium', 'high'] }],
       primaryModel: 'provider/model',
       fastModel: null,
     }),
@@ -35,7 +35,9 @@ describe('Work Center settings service', () => {
     const service = await createService();
     const initial = await service.handle('get_settings');
     expect(initial.settings.defaultWorkflowId).toBe('software-change');
+    expect(initial.settings.workflows[0].stages[0].instruction).toContain('Do not implement yet');
     expect(initial.runtime.vps[0].id).toBe('linus');
+    expect(initial.runtime.defaultStageInstructions.implement).toContain('Add and run relevant tests');
 
     const next = defaultWorkCenterSettings();
     next.defaultWorkDir = '/project';
@@ -80,14 +82,14 @@ describe('Work Center settings service', () => {
       stageOverrides: {
         implement: {
           assignmentPolicy: { mode: 'fixed', fixedVpId: 'linus' },
-          modelPolicy: { mode: 'specific', model: 'provider/model' },
+          modelPolicy: { mode: 'specific', model: 'provider/model', effort: 'high' },
         },
       },
     });
     expect(item.workflowSnapshot.id).toBe('software-change');
     expect(item.workflowSnapshot.stages.find(stage => stage.id === 'implement')).toMatchObject({
       assignmentPolicy: { mode: 'fixed', fixedVpId: 'linus' },
-      modelPolicy: { mode: 'specific', model: 'provider/model' },
+      modelPolicy: { mode: 'specific', model: 'provider/model', effort: 'high' },
     });
 
     const changed = defaultWorkCenterSettings();

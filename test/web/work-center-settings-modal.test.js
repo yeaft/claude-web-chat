@@ -123,17 +123,57 @@ describe('Work Center settings modal ownership', () => {
       .toEqual([stages[0]]);
   });
 
-  it('uses only the selected model effort options and clears unsupported values', () => {
-    const stage = { modelPolicy: { mode: 'specific', model: 'provider/review', effort: 'low' } };
+  it('restores the executable default prompt for the selected stage type', () => {
+    const stage = { type: 'implement', instruction: 'Custom prompt' };
+    const vm = modalVm({
+      defaultStageInstructions: {
+        implement: 'Implement the smallest correct change.',
+        custom: 'Complete this stage.',
+      },
+    });
+    vm.defaultInstructionForStage = WorkCenterSettingsModal.methods.defaultInstructionForStage.bind(vm);
+
+    WorkCenterSettingsModal.methods.resetStageInstruction.call(vm, stage);
+
+    expect(stage.instruction).toBe('Implement the smallest correct change.');
+  });
+
+  it('updates a default prompt when the stage type changes without overwriting a custom prompt', () => {
+    const vm = modalVm({
+      defaultStageInstructions: {
+        triage: 'Default triage.',
+        implement: 'Default implement.',
+        custom: 'Default custom.',
+      },
+    });
+    vm.defaultInstructionForStage = WorkCenterSettingsModal.methods.defaultInstructionForStage.bind(vm);
+    vm.resetStageInstruction = WorkCenterSettingsModal.methods.resetStageInstruction.bind(vm);
+    const stage = { type: 'triage', instruction: 'Default triage.' };
+
+    WorkCenterSettingsModal.methods.setStageType.call(vm, stage, 'implement');
+    expect(stage).toMatchObject({ type: 'implement', instruction: 'Default implement.' });
+
+    stage.instruction = 'Keep this custom prompt.';
+    WorkCenterSettingsModal.methods.setStageType.call(vm, stage, 'triage');
+    expect(stage).toMatchObject({ type: 'triage', instruction: 'Keep this custom prompt.' });
+  });
+
+  it('uses only the resolved model effort options and clears unsupported values', () => {
+    const stage = { modelPolicy: { mode: 'primary', model: null, effort: 'low' } };
     const vm = modalVm({
       runtime: { primaryModel: 'provider/primary', fastModel: 'provider/fast' },
       models: [
         { ref: 'provider/review', effortOptions: ['medium', 'high'] },
-        { ref: 'provider/primary', effortOptions: [] },
+        { ref: 'provider/primary', effortOptions: ['low', 'medium', 'high'] },
       ],
     });
     vm.modelRefForStage = WorkCenterSettingsModal.methods.modelRefForStage.bind(vm);
     vm.effortOptionsForStage = WorkCenterSettingsModal.methods.effortOptionsForStage.bind(vm);
+    expect(vm.effortOptionsForStage(stage)).toEqual(['low', 'medium', 'high']);
+    stage.modelPolicy.mode = 'inherit';
+    expect(vm.effortOptionsForStage(stage)).toEqual([]);
+    stage.modelPolicy.mode = 'specific';
+    stage.modelPolicy.model = 'provider/review';
     expect(vm.effortOptionsForStage(stage)).toEqual(['medium', 'high']);
     WorkCenterSettingsModal.methods.normalizeStageEffort.call(vm, stage);
     expect(stage.modelPolicy.effort).toBeNull();

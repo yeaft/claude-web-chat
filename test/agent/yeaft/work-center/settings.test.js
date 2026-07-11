@@ -84,6 +84,19 @@ describe('Work Center settings', () => {
     expect(readWorkCenterSettings(dir).workflows[0].name).toBe('Software change');
   });
 
+  it('materializes the executable default prompt for every workflow stage', () => {
+    const settings = defaultWorkCenterSettings();
+    const prompts = Object.fromEntries(settings.workflows[0].stages.map(stage => [stage.type, stage.instruction]));
+    expect(prompts.triage).toContain('Do not implement yet');
+    expect(prompts.implement).toContain('Implement the smallest correct change');
+    expect(prompts.review).toContain('changes_requested');
+    expect(prompts.deliver).toContain('repository release policy');
+
+    settings.workflows[0].stages[0].instruction = '  ';
+    expect(normalizeWorkCenterSettings(settings).workflows[0].stages[0].instruction)
+      .toContain('Do not implement yet');
+  });
+
   it('normalizes and atomically persists workflow policies', () => {
     const dir = tempDir();
     const settings = defaultWorkCenterSettings();

@@ -3,6 +3,17 @@ const ASSIGNMENT_MODES = new Set(['auto', 'pool', 'fixed']);
 const MODEL_MODES = new Set(['inherit', 'primary', 'fast', 'specific']);
 const MODEL_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
+const DEFAULT_STAGE_INSTRUCTIONS = Object.freeze({
+  triage: 'Analyze the request, verify scope and risks, and make the contract executable. Do not implement yet. If the goal or acceptance criteria need refinement, submit a contractPatch.',
+  implement: 'Implement the smallest correct change in the supplied work directory. Add and run relevant tests. Use the prior triage/review findings. Do not approve your own work.',
+  test: 'Verify the implementation against the acceptance criteria. Run focused tests and report reproducible evidence. Do not modify unrelated code.',
+  review: 'Review the implementation and evidence independently. Return approved or changes_requested with concrete findings.',
+  deliver: 'Deliver the approved change using the repository release policy. Verify the final remote state and provide evidence.',
+  research: 'Research the question using verifiable sources. Separate evidence from inference and return a concise synthesis.',
+  write: 'Produce the requested written deliverable, then verify it against every acceptance criterion.',
+  custom: 'Complete this stage and return verifiable evidence.',
+});
+
 const DEFAULT_SOFTWARE_CHANGE_STAGES = Object.freeze([
   {
     id: 'triage', name: 'Triage', type: 'triage',
@@ -75,6 +86,14 @@ export function normalizeModelPolicy(value) {
   return { mode, model, effort };
 }
 
+export function defaultWorkCenterStageInstruction(type) {
+  return DEFAULT_STAGE_INSTRUCTIONS[STAGE_TYPES.has(type) ? type : 'custom'];
+}
+
+export function defaultWorkCenterStageInstructions() {
+  return { ...DEFAULT_STAGE_INSTRUCTIONS };
+}
+
 export function normalizeWorkflowDefinition(value, index = 0) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Work Center workflow must be an object');
@@ -95,7 +114,9 @@ export function normalizeWorkflowDefinition(value, index = 0) {
       id: stageId,
       name: String(source.name || stageId).trim() || stageId,
       type,
-      instruction: typeof source.instruction === 'string' ? source.instruction.trim() : '',
+      instruction: typeof source.instruction === 'string' && source.instruction.trim()
+        ? source.instruction.trim()
+        : defaultWorkCenterStageInstruction(type),
       assignmentPolicy: normalizeAssignmentPolicy(source.assignmentPolicy, type),
       modelPolicy: normalizeModelPolicy(source.modelPolicy),
       maxAttempts: Math.min(Math.max(Number(source.maxAttempts) || 2, 1), 5),
@@ -266,25 +287,7 @@ function renderContext(context = []) {
 export function actionInstruction(stage, workItem, context = []) {
   const criteria = (workItem.acceptanceCriteria || []).map(item => `- ${item}`).join('\n') || '- No explicit criteria';
   const common = `WorkItem: ${workItem.title}\nGoal: ${workItem.goal}\nAcceptance criteria:\n${criteria}${renderContext(context)}`;
-  if (stage.instruction) return `${common}\n\n${stage.instruction}`;
-  switch (stage.type) {
-    case 'triage':
-      return `${common}\n\nAnalyze the request, verify scope and risks, and make the contract executable. Do not implement yet. If the goal or acceptance criteria need refinement, submit a contractPatch.`;
-    case 'implement':
-      return `${common}\n\nImplement the smallest correct change in the supplied work directory. Add and run relevant tests. Use the prior triage/review findings. Do not approve your own work.`;
-    case 'test':
-      return `${common}\n\nVerify the implementation against the acceptance criteria. Run focused tests and report reproducible evidence. Do not modify unrelated code.`;
-    case 'review':
-      return `${common}\n\nReview the implementation and evidence independently. Return approved or changes_requested with concrete findings.`;
-    case 'deliver':
-      return `${common}\n\nDeliver the approved change using the repository release policy. Verify the final remote state and provide evidence.`;
-    case 'research':
-      return `${common}\n\nResearch the question using verifiable sources. Separate evidence from inference and return a concise synthesis.`;
-    case 'write':
-      return `${common}\n\nProduce the requested written deliverable, then verify it against every acceptance criterion.`;
-    default:
-      return `${common}\n\nComplete this stage and return verifiable evidence.`;
-  }
+  return `${common}\n\n${stage.instruction || defaultWorkCenterStageInstruction(stage.type)}`;
 }
 
 export function actionForStage(stage, workItem, context = []) {
