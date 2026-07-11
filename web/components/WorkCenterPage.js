@@ -163,7 +163,7 @@ export default {
       if (target === 'yeaft') this.store.enterYeaft(this.agentId);
       else {
         this.store.workCenterReturnView = 'chat';
-        this.store.leaveWorkCenter();
+        this.store.leaveWorkCenter({ persistConversationView: true });
       }
     },
     refresh() {

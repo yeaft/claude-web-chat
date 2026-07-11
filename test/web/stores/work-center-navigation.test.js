@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-globalThis.localStorage = globalThis.localStorage || {
-  getItem: () => null,
-  setItem: () => {},
-  removeItem: () => {},
+globalThis.localStorage = {
+  getItem: vi.fn(() => null),
+  setItem: vi.fn(),
+  removeItem: vi.fn(),
 };
 globalThis.Pinia = globalThis.Pinia || {};
 globalThis.Pinia.defineStore = (_id, options) => () => ({
@@ -14,6 +14,7 @@ globalThis.window = globalThis.window || globalThis;
 globalThis.window.Pinia = globalThis.Pinia;
 
 const { useChatStore } = await import('../../../web/stores/chat.js');
+const { default: WorkCenterPage } = await import('../../../web/components/WorkCenterPage.js');
 
 function makeStore(view) {
   const store = useChatStore();
@@ -26,6 +27,18 @@ function makeStore(view) {
 }
 
 describe('Work Center navigation', () => {
+  it('marks the mode switch to Chat as an explicit persisted selection', () => {
+    const store = {
+      workCenterReturnView: 'yeaft',
+      leaveWorkCenter: vi.fn(),
+    };
+
+    WorkCenterPage.methods.onModeFlip.call({ store, agentId: 'agent-1' }, 'chat');
+
+    expect(store.workCenterReturnView).toBe('chat');
+    expect(store.leaveWorkCenter).toHaveBeenCalledWith({ persistConversationView: true });
+  });
+
   it('returns to Chat when opened from Chat', () => {
     const store = makeStore('chat');
 
@@ -50,6 +63,18 @@ describe('Work Center navigation', () => {
     store.leaveWorkCenter();
     expect(store.enterYeaft).toHaveBeenCalledWith('agent-1');
     expect(store.currentView).toBe('yeaft');
+  });
+
+  it('persists Chat only for an explicit Work Center mode selection', () => {
+    const store = makeStore('work-center');
+    store.workCenterReturnView = 'chat';
+
+    store.leaveWorkCenter();
+    expect(localStorage.setItem).not.toHaveBeenCalledWith('yeaft-preferred-conversation-view', 'chat');
+
+    store.currentView = 'work-center';
+    store.leaveWorkCenter({ persistConversationView: true });
+    expect(localStorage.setItem).toHaveBeenCalledWith('yeaft-preferred-conversation-view', 'chat');
   });
 
   it('does not overwrite the return surface when switching Agents inside Work Center', () => {
