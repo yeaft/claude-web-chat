@@ -416,7 +416,10 @@ export const useChatStore = defineStore('chat', {
     // =====================
     // Yeaft 独立页面状态
     // =====================
-    currentView: 'chat',           // 'chat' | 'yeaft' | 'work-center' — 顶级页面切换
+    // Refresh restores the last user-selected conversation surface. Runtime
+    // transition state stays separate so a cold Yeaft restore can still return
+    // to the last Chat conversation after bootstrap replaces the active id.
+    ...yeaftViewHelpers.createInitialConversationViewState(),
     workCenterReturnView: 'chat',  // Work Center is Agent-level; remember the originating conversation surface
     workCenterAgentId: null,
     workCenterItemsByAgent: {},
@@ -1014,6 +1017,32 @@ export const useChatStore = defineStore('chat', {
   },
 
   actions: {
+    /**
+     * Activate the Chat surface and finish any suspended Yeaft-to-Chat
+     * transition. Cold Yeaft restores carry a pending Chat conversation rather
+     * than a live snapshot; consume it here so every route to Chat restores the
+     * same workDir, history and server-side conversation selection.
+     *
+     * @param {{ persistPreference?: boolean }} options
+     */
+    activateChatView({ persistPreference = false } = {}) {
+      const pendingChatRestoreConversationId = this._pendingChatRestoreConversationId;
+      this._pendingChatRestoreConversationId = null;
+      this.currentView = 'chat';
+      if (persistPreference) {
+        yeaftViewHelpers.persistPreferredConversationView('chat');
+      }
+      yeaftViewHelpers.applyLeaveYeaftTransition(this);
+      if (pendingChatRestoreConversationId
+          && this.conversations.some(conversation => conversation.id === pendingChatRestoreConversationId)) {
+        this.autoRestoreConversation(pendingChatRestoreConversationId);
+        this.sendWsMessage({
+          type: 'refresh_conversation',
+          conversationId: pendingChatRestoreConversationId,
+        });
+      }
+    },
+
     // =====================
     // Work Center
     // =====================
@@ -1036,12 +1065,12 @@ export const useChatStore = defineStore('chat', {
       this.currentView = 'work-center';
       this.listWorkItems(target).catch(() => {});
     },
-    leaveWorkCenter() {
+    leaveWorkCenter({ persistConversationView = false } = {}) {
       if (this.workCenterReturnView === 'yeaft') {
         this.enterYeaft(this.workCenterAgentId || this.currentAgent);
         return;
       }
-      this.currentView = 'chat';
+      this.activateChatView({ persistPreference: persistConversationView });
     },
     enterWorkCenterFromSession(session, seedGoal = '') {
       if (!session?.id) return;
@@ -1339,6 +1368,7 @@ export const useChatStore = defineStore('chat', {
       // Reads `this.currentView` to decide; must run BEFORE the flip below.
       yeaftViewHelpers.applyEnterYeaftTransition(this);
       this.currentView = 'yeaft';
+      yeaftViewHelpers.persistPreferredConversationView('yeaft');
       // task-fix-yeaft-load-more-empty: clear leaked Chat-mode pagination
       // flags. `hasMoreMessages` is set true by Chat's `db_messages_loaded`
       // / `sync_messages_result` handlers and would otherwise survive the
@@ -1488,12 +1518,7 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
     leaveYeaft() {
-      this.currentView = 'chat';
-      // VP-block redesign (2026-05-08): the per-turn detail drawer was
-      // retired; nothing to clear here.
-      // Restore the original activeConversations snapshot taken on the
-      // last real Chat → Yeaft transition (idempotent — no-op if cold).
-      yeaftViewHelpers.applyLeaveYeaftTransition(this);
+      this.activateChatView({ persistPreference: true });
     },
     /**
      * 2026-05-13: ask the agent for the latest tool-call usage stats.
