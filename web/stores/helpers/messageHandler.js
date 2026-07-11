@@ -149,14 +149,14 @@ export function handleMessage(store, msg) {
 
     case 'agent_list':
       handleAgentList(store, msg);
-      if (store.currentView === 'work-center' && store.workCenterAgentId) {
+      if (store.workCenterOpen && store.workCenterAgentId) {
         store.listWorkItems(store.workCenterAgentId).catch(() => {});
       }
       break;
 
     case 'agent_selected':
       handleAgentSelected(store, msg);
-      if (store.currentView === 'work-center' && store.workCenterAgentId) {
+      if (store.workCenterOpen && store.workCenterAgentId) {
         store.listWorkItems(store.workCenterAgentId).catch(() => {});
       }
       break;
