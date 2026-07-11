@@ -50,7 +50,8 @@ function defaultSettingsDraft() {
 }
 
 function isUnsupportedSettingsError(error) {
-  return /Unsupported Work Center operation:\s*get_settings/i.test(error?.message || String(error));
+  const message = error?.message || String(error);
+  return /^Unsupported Work Center operation:\s*get_settings$/i.test(message.trim());
 }
 
 export default {

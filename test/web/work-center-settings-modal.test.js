@@ -58,6 +58,43 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.store.saveWorkCenterSettings).not.toHaveBeenCalled();
   });
 
+  it.each([
+    'Unsupported Work Center operation: get_settings_backup',
+    'Request failed: Unsupported Work Center operation: get_settings',
+    'Unsupported Work Center operation: get_settings (remote failure)',
+  ])('does not hide a real settings error as an older Agent fallback: %s', async message => {
+    const vm = modalVm({
+      draft: null,
+      store: {
+        loadWorkCenterSettings: vi.fn().mockRejectedValue(new Error(message)),
+        saveWorkCenterSettings: vi.fn(),
+      },
+    });
+
+    await WorkCenterSettingsModal.methods.load.call(vm);
+
+    expect(vm.settingsUnsupported).toBe(false);
+    expect(vm.error).toBe(message);
+    expect(vm.draft).toBeNull();
+  });
+
+  it('accepts surrounding whitespace on the exact older Agent error', async () => {
+    const vm = modalVm({
+      draft: null,
+      store: {
+        loadWorkCenterSettings: vi.fn().mockRejectedValue(
+          new Error('  Unsupported Work Center operation: get_settings\n'),
+        ),
+        saveWorkCenterSettings: vi.fn(),
+      },
+    });
+
+    await WorkCenterSettingsModal.methods.load.call(vm);
+
+    expect(vm.settingsUnsupported).toBe(true);
+    expect(vm.draft?.defaultWorkflowId).toBe('software-change');
+  });
+
   it('ignores a load response after the Agent changes', async () => {
     let resolve;
     const response = new Promise(done => { resolve = done; });
