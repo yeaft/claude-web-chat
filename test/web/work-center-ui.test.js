@@ -4,17 +4,22 @@ import { readFileSync } from 'node:fs';
 const read = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
 
 describe('Work Center UI contract', () => {
-  it('registers the Agent-level page and exposes it from both sidebars', () => {
+  it('renders Work Center inside both provider shells and keeps both Session lists mounted', () => {
     const app = read('web/app.js');
     const chat = read('web/components/ChatPage.js');
-    const yeaft = read('web/components/YeaftSidebar.js');
+    const yeaftPage = read('web/components/YeaftPage.js');
+    const yeaftSidebar = read('web/components/YeaftSidebar.js');
 
-    expect(app).toContain("currentView === 'work-center'");
-    expect(app).toContain('WorkCenterPage');
-    expect(chat).toContain('SidebarWorkCenter');
-    expect(chat).toContain('@open="store.enterWorkCenter"');
-    expect(yeaft).toContain('SidebarWorkCenter');
-    expect(yeaft).toContain('@open="onOpenWorkCenter"');
+    expect(app).not.toContain("currentView === 'work-center'");
+    expect(app).not.toContain('WorkCenterPage');
+    expect(chat).toContain('<WorkCenterPage v-if="store.workCenterOpen"');
+    expect(chat).toContain('v-else-if="!store.isSplitMode"');
+    expect(chat).toContain(':active="store.workCenterOpen"');
+    expect(chat.indexOf('<WorkCenterPage')).toBeGreaterThan(chat.indexOf('</SessionSidebarShell>'));
+    expect(yeaftPage).toContain('<WorkCenterPage v-if="store.workCenterOpen"');
+    expect(yeaftPage).toContain('<div v-else class="yeaft-main"');
+    expect(yeaftSidebar).toContain(':active="chatStore ? chatStore.workCenterOpen : false"');
+    expect(yeaftSidebar).toContain('leaveWorkCenter');
   });
 
   it('keeps Agent-level Work Center state separate from Session background tasks', () => {
@@ -22,8 +27,10 @@ describe('Work Center UI contract', () => {
     expect(store).toContain('workCenterItemsByAgent');
     expect(store).toContain('workCenterDetailByAgent');
     expect(store).toContain("type: 'work_center_request'");
-    expect(store).toContain("workCenterReturnView: 'chat'");
-    expect(store).toContain("this.workCenterReturnView = this.currentView === 'yeaft' ? 'yeaft' : 'chat'");
+    expect(store).toContain('workCenterOpen: false');
+    expect(store).toContain('this.workCenterOpen = true');
+    expect(store).toContain('this.workCenterOpen = false');
+    expect(store).not.toContain("currentView = 'work-center'");
     expect(store).not.toContain('workCenterActiveTasksBySession');
   });
 
@@ -43,27 +50,26 @@ describe('Work Center UI contract', () => {
     expect(workCenter).not.toContain('selected.events');
   });
 
-  it('reuses Session sidebar primitives for the Work Center Agent list', () => {
+  it('uses the shared provider sidebar and a content-only Work Center surface', () => {
     const chat = read('web/components/ChatPage.js');
     const page = read('web/components/WorkCenterPage.js');
     const sidebar = read('web/components/SidebarWorkCenter.js');
     const css = read('web/styles/work-center.css');
 
     expect(sidebar).toContain('session-tab-bar sidebar-work-center-tab-bar');
-    expect(sidebar).toContain('session-tab session-tab-solo sidebar-work-center-trigger');
-    expect(sidebar).toContain('session-panel-list sidebar-work-center-agent-list');
     expect(sidebar).toContain('session-item sidebar-work-center-agent');
-    expect(sidebar).toContain('session-item-header');
-    expect(css).toContain('Work Center uses the same tab and row primitives as the Session list');
     expect(css).toMatch(/\.sidebar-work-center-trigger:hover\s*\{[^}]*color: var\(--text-secondary\)/s);
     expect(css).toMatch(/\.sidebar-work-center-agent:hover\s*\{[^}]*color: var\(--text-secondary\)/s);
-    expect(css).toMatch(/\.sidebar-work-center-agent\.active,\s*\.sidebar-work-center-agent\.active:hover\s*\{[^}]*color: var\(--text-primary\)/s);
-    expect(page).toContain('sidebar-nav-item work-center-back-button');
-    expect(page).toContain('<SidebarModeToggle :view="store.workCenterReturnView');
-    expect(page).toContain('<WorkbenchPanel v-if="canUseWorkbench"');
-    expect(page).toContain("'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded");
+    expect(page).toContain('<main class="work-center-main"');
+    expect(page).toContain('work-center-sidebar-toggle');
+    expect(page).not.toContain('<aside');
+    expect(page).not.toContain('SidebarModeToggle');
+    expect(page).not.toContain('SidebarWorkCenter');
+    expect(page).not.toContain('WorkbenchPanel');
+    expect(css).not.toMatch(/\.work-center-sidebar(?:[\s.{:#]|$)/);
+    expect(css).not.toContain('padding-left: 48px');
     expect(css).toContain('.work-center-main.workbench-maximized');
-    expect(chat.indexOf('<SidebarWorkCenter')).toBeGreaterThan(chat.indexOf('<!-- Connection warning -->'));
+    expect(chat).toContain('<WorkbenchPanel v-if="canUseWorkbench && (!store.isSplitMode || store.workCenterOpen)"');
   });
 
   it('uses static Action summaries and Action-level guidance instead of execution detail', () => {

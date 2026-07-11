@@ -12,6 +12,7 @@ import SidebarModeToggle from './SidebarModeToggle.js';
 import SidebarAgentHeader from './SidebarAgentHeader.js';
 import SidebarWorkCenter from './SidebarWorkCenter.js';
 import SessionSidebarShell from './SessionSidebarShell.js';
+import WorkCenterPage from './WorkCenterPage.js';
 import { shortenPath as shortenPathUtil } from '../utils/path-display.js';
 import { getLastPathSegment as _getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
 import { sortSessionsByActivity } from '../stores/helpers/session-order.js';
@@ -20,7 +21,7 @@ import { collapseSidebar } from '../utils/sidebar-collapse.js';
 
 export default {
   name: 'ChatPage',
-  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell },
+  components: { ChatHeader, MessageList, ChatInput, WorkbenchPanel, WorkCenterPage, SettingsPanel, ExpertPanel, SubAgentPanel, BtwOverlay, SplitPane, ModernSelect, SidebarModeToggle, SidebarAgentHeader, SidebarWorkCenter, SessionSidebarShell },
   template: `
     <div class="chat-page" :class="{ 'show-sidebar': store.sessionSidebarOpen }">
 
@@ -105,6 +106,7 @@ export default {
           :agents="store.agents"
           :active-agent-id="store.workCenterAgentId"
           :collapsed="false"
+          :active="store.workCenterOpen"
           @open="store.enterWorkCenter"
         />
 
@@ -245,10 +247,12 @@ export default {
       <div class="sidebar-workbench-divider" v-if="canUseWorkbench && store.workbenchExpanded && !store.sidebarCollapsed && !store.isSplitMode"></div>
 
       <!-- Workbench Panel (Middle) — only in single mode -->
-      <WorkbenchPanel v-if="canUseWorkbench && !store.isSplitMode" />
+      <WorkbenchPanel v-if="canUseWorkbench && (!store.isSplitMode || store.workCenterOpen)" />
+
+      <WorkCenterPage v-if="store.workCenterOpen" />
 
       <!-- Single-panel Main Chat Area -->
-      <main v-if="!store.isSplitMode" class="main-content" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
+      <main v-else-if="!store.isSplitMode" class="main-content" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
           <ChatHeader @toggle-sidebar="store.toggleSessionSidebar()" />
           <div class="chat-body" :class="{ 'expert-panel-open': store.activeRightPanel }">
             <div class="chat-body-main">
@@ -279,7 +283,7 @@ export default {
       </main>
 
       <!-- Multi-panel mode: SplitPane ×N -->
-      <div v-else class="panels-container" :class="'panes-' + store.panels.length">
+      <div v-else-if="!store.workCenterOpen" class="panels-container" :class="'panes-' + store.panels.length">
         <SplitPane
           v-for="(panel, idx) in store.panels"
           :key="panel.id"
@@ -700,6 +704,7 @@ export default {
       return formatResumeDate(timestamp, this.$t.bind(this));
     },
     selectConversation(conversationId, agentId) {
+      this.store.leaveWorkCenter();
       this.store.selectConversation(conversationId, agentId);
       this.store.closeSessionSidebar();
     },
