@@ -38,32 +38,50 @@ function parseStructuredOutcome(value) {
   }
 }
 
-export function publicWorkItemResponse(text) {
+function terminalOutcomeBoundary(text) {
   const source = String(text || '');
   const fences = [...source.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
   const lastFence = fences.at(-1);
-  if (lastFence && !source.slice((lastFence.index || 0) + lastFence[0].length).trim()
-    && parseStructuredOutcome(lastFence[1])) {
-    return source.slice(0, lastFence.index).trim();
+  if (lastFence && !source.slice((lastFence.index || 0) + lastFence[0].length).trim()) {
+    const parsed = parseStructuredOutcome(lastFence[1]);
+    if (parsed) return { start: lastFence.index || 0, parsed };
   }
+
+  for (let index = source.lastIndexOf('{'); index >= 0;) {
+    const parsed = parseStructuredOutcome(source.slice(index));
+    if (parsed) return { start: index, parsed };
+    if (index === 0) break;
+    index = source.lastIndexOf('{', index - 1);
+  }
+
   const fenceMarkers = [...source.matchAll(/```/g)];
   if (fenceMarkers.length % 2 === 1) {
     const openIndex = fenceMarkers.at(-1).index;
     const partialFence = source.slice(openIndex).match(/^```(?:json)?\s*([\s\S]*)$/i);
     if (partialFence && (/^```json\b/i.test(partialFence[0]) || partialFence[1].trimStart().startsWith('{'))) {
-      return source.slice(0, openIndex).trim();
+      return { start: openIndex, parsed: null };
     }
   }
-  if (parseStructuredOutcome(source) || source.trimStart().startsWith('{')) return '';
+
+  const trimmed = source.trimStart();
+  if (trimmed.trim() === '{' || /^\{\s*["']/.test(trimmed)) {
+    return { start: source.length - trimmed.length, parsed: null };
+  }
   for (let index = source.lastIndexOf('\n{'); index >= 0; index = source.lastIndexOf('\n{', index - 1)) {
     const precedingFenceCount = [...source.slice(0, index).matchAll(/```/g)].length;
     if (precedingFenceCount % 2 === 1) continue;
-    const terminal = source.slice(index + 1);
-    if (parseStructuredOutcome(terminal) || /^\{\s*(?:["'])?/.test(terminal)) {
-      return source.slice(0, index).trim();
+    const terminal = source.slice(index + 1).trimStart();
+    if (terminal.trim() === '{' || /^\{\s*["']/.test(terminal)) {
+      return { start: index + 1, parsed: null };
     }
   }
-  return source.trim();
+  return null;
+}
+
+export function publicWorkItemResponse(text) {
+  const source = String(text || '');
+  const terminal = terminalOutcomeBoundary(source);
+  return terminal ? source.slice(0, terminal.start).trim() : source.trim();
 }
 
 function copyVp(vp) {
@@ -194,38 +212,30 @@ export function createWorkItemToolRegistry({ workDir, isRunActive }) {
 }
 
 export function parseStructuredResult(text, actionType) {
-  const source = String(text || '');
-  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidates = [fenced?.[1], source].filter(Boolean);
-  for (let index = source.lastIndexOf('{'); index > 0; index = source.lastIndexOf('{', index - 1)) {
-    candidates.push(source.slice(index));
-  }
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate.trim());
-      if (!['completed', 'waiting', 'retryable', 'failed'].includes(parsed.outcome)) continue;
-      const result = {
-        outcome: parsed.outcome,
-        summary: String(parsed.summary || ''),
-        evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
-        waitingReason: parsed.waitingReason ? String(parsed.waitingReason) : null,
-        error: parsed.error ? String(parsed.error) : null,
-        reviewDecision: ['approved', 'changes_requested'].includes(parsed.reviewDecision)
-          ? parsed.reviewDecision
-          : null,
-        contractPatch: actionType === 'triage' && parsed.contractPatch && typeof parsed.contractPatch === 'object'
-          ? parsed.contractPatch
-          : null,
+  const terminal = terminalOutcomeBoundary(text);
+  if (terminal?.parsed) {
+    const parsed = terminal.parsed;
+    const result = {
+      outcome: parsed.outcome,
+      summary: String(parsed.summary || ''),
+      evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
+      waitingReason: parsed.waitingReason ? String(parsed.waitingReason) : null,
+      error: parsed.error ? String(parsed.error) : null,
+      reviewDecision: ['approved', 'changes_requested'].includes(parsed.reviewDecision)
+        ? parsed.reviewDecision
+        : null,
+      contractPatch: actionType === 'triage' && parsed.contractPatch && typeof parsed.contractPatch === 'object'
+        ? parsed.contractPatch
+        : null,
+    };
+    if (actionType === 'review' && result.outcome === 'completed' && !result.reviewDecision) {
+      return {
+        ...result,
+        outcome: 'failed',
+        error: 'Completed review requires approved or changes_requested',
       };
-      if (actionType === 'review' && result.outcome === 'completed' && !result.reviewDecision) {
-        return {
-          ...result,
-          outcome: 'failed',
-          error: 'Completed review requires approved or changes_requested',
-        };
-      }
-      return result;
-    } catch {}
+    }
+    return result;
   }
   return {
     outcome: 'failed',
@@ -371,9 +381,7 @@ export class WorkItemRunner {
       })) {
         if (event?.type === 'loop') loopCount += 1;
         else if (event?.type === 'tool_end') toolCount += 1;
-        if (typeof event?.text === 'string') text += event.text;
-        else if (typeof event?.delta === 'string') text += event.delta;
-        else if (typeof event?.content === 'string' && event.type === 'assistant') text += event.content;
+        if (event?.type === 'text_delta' && typeof event.text === 'string') text += event.text;
         reportProgress();
       }
     } catch (error) {

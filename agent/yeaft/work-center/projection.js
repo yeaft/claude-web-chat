@@ -24,8 +24,8 @@ function actionExecution(action, runs) {
     toolCount: total.toolCount + count(run.toolCount),
   }), { loopCount: 0, toolCount: 0 });
   const latest = [...matchingRuns].sort((left, right) => (
-    count(right.startedAt) - count(left.startedAt)
-      || count(right.progressRevision) - count(left.progressRevision)
+    count(right.progressRevision) - count(left.progressRevision)
+      || count(right.startedAt) - count(left.startedAt)
   ))[0];
   return {
     ...stats,

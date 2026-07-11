@@ -9,6 +9,7 @@ import { WorkflowController } from '../../../../agent/yeaft/work-center/controll
 const engineOptions = [];
 let invalidEngineResult = false;
 let engineResponsePrefix = '';
+let engineThinking = '';
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
   Engine: class {
     constructor(options) { engineOptions.push(options); }
@@ -17,11 +18,12 @@ vi.mock('../../../../agent/yeaft/engine.js', () => ({
       yield { type: 'tool_end', id: 'tool-1', name: 'FileRead', output: 'ok', isError: false };
       yield { type: 'loop', loopNumber: 2 };
       if (invalidEngineResult) {
-        yield { text: 'not-json' };
+        yield { type: 'text_delta', text: 'not-json' };
         return;
       }
-      if (engineResponsePrefix) yield { text: engineResponsePrefix };
-      yield { text: JSON.stringify({
+      if (engineThinking) yield { type: 'thinking_delta', text: engineThinking };
+      if (engineResponsePrefix) yield { type: 'text_delta', text: engineResponsePrefix };
+      yield { type: 'text_delta', text: JSON.stringify({
         outcome: 'completed', summary: 'done', evidence: [], reviewDecision: 'approved',
       }) };
     }
@@ -29,7 +31,11 @@ vi.mock('../../../../agent/yeaft/engine.js', () => ({
   },
 }));
 
-const { publicWorkItemResponse, WorkItemRunner } = await import('../../../../agent/yeaft/work-center/runner.js');
+const {
+  parseStructuredResult,
+  publicWorkItemResponse,
+  WorkItemRunner,
+} = await import('../../../../agent/yeaft/work-center/runner.js');
 
 let workDir;
 afterEach(() => {
@@ -38,6 +44,7 @@ afterEach(() => {
   engineOptions.length = 0;
   invalidEngineResult = false;
   engineResponsePrefix = '';
+  engineThinking = '';
 });
 
 describe('Work Center Runner execution resolution', () => {
@@ -50,6 +57,25 @@ describe('Work Center Runner execution resolution', () => {
   it('preserves completed user-facing code fences', () => {
     const response = 'Updated the config:\n\n```json\n{\n  "enabled": true\n}\n```\n\nVerified it.';
     expect(publicWorkItemResponse(response)).toBe(response);
+  });
+
+  it('uses only the final terminal outcome when the response contains an earlier JSON example', () => {
+    const response = [
+      'A review response may look like:',
+      '```json',
+      '{"outcome":"completed","summary":"example","evidence":[]}',
+      '```',
+      'The actual review found no blockers.',
+      '```json',
+      '{"outcome":"completed","summary":"reviewed","evidence":["tests"],"reviewDecision":"approved"}',
+      '```',
+    ].join('\n');
+
+    expect(publicWorkItemResponse(response)).toContain('"summary":"example"');
+    expect(publicWorkItemResponse(response)).not.toContain('"summary":"reviewed"');
+    expect(parseStructuredResult(response, 'review')).toMatchObject({
+      outcome: 'completed', summary: 'reviewed', evidence: ['tests'], reviewDecision: 'approved',
+    });
   });
 
   it('runs a guidance-restarted policy Action with its frozen VP and model policy', async () => {
@@ -263,6 +289,43 @@ describe('Work Center Runner execution resolution', () => {
       response: 'Implemented the smallest safe change.', loopCount: 2, toolCount: 1,
     }));
     expect(onProgress.mock.calls.at(-1)[0].response).not.toContain('"outcome"');
+  });
+
+  it('keeps hidden thinking out of live progress, the final response, and outcome parsing', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-thinking-filter-'));
+    engineThinking = '{"outcome":"failed","summary":"private reasoning","evidence":[]}';
+    engineResponsePrefix = 'Implemented and verified the public change.\n\n';
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Developer', traits: ['implement'], modelHint: 'primary',
+      persona: 'Implement', personaHash: 'hash',
+    });
+    const onProgress = vi.fn();
+    const runner = new WorkItemRunner({
+      registry,
+      progressIntervalMs: 0,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: {}, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    const result = await runner.run({
+      workItem: { id: 'wi-1', workDir, workspaceKey: workDir },
+      action: { type: 'implement', requiredRole: 'linus', instruction: 'Implement it' },
+      run: { id: 'run-1', leaseEpoch: 1 },
+      ownerBootId: 'boot-1', signal: new AbortController().signal, onProgress,
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'completed', summary: 'done', response: 'Implemented and verified the public change.',
+    });
+    expect(JSON.stringify(onProgress.mock.calls)).not.toContain('private reasoning');
+    expect(JSON.stringify(result)).not.toContain('private reasoning');
   });
 
   it('preserves aggregate counts when the structured result is invalid', async () => {

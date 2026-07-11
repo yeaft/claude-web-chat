@@ -84,4 +84,19 @@ describe('Work Center event projection', () => {
       expect(wire).not.toContain(secret);
     }
   });
+
+  it('uses the highest progress revision after retry even when the clock moves backward', () => {
+    const detail = internalDetail();
+    detail.runs = [{
+      id: 'r-old', actionId: 'a-1', startedAt: 2_000,
+      response: 'Old response', loopCount: 1, toolCount: 1, progressRevision: 8,
+    }, {
+      id: 'r-new', actionId: 'a-1', startedAt: 1_000,
+      response: 'New retry response', loopCount: 2, toolCount: 3, progressRevision: 9,
+    }];
+
+    expect(projectWorkItemDetail(detail).actions[0]).toMatchObject({
+      response: 'New retry response', progressRevision: 9, loopCount: 3, toolCount: 4,
+    });
+  });
 });
