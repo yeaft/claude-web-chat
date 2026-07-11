@@ -12,6 +12,7 @@ describe('mobile sidebar header parity', () => {
   const sidebarShell = readComponent('SessionSidebarShell.js');
   const chatModalCss = readStyle('chat-modals.css');
   const sidebarCss = readStyle('sidebar.css');
+  const yeaftSidebarCss = readStyle('yeaft-sidebar.css');
   const variablesCss = readStyle('variables.css');
 
   it('starts both expanded sidebars with the shared agent header', () => {
@@ -47,6 +48,7 @@ describe('mobile sidebar header parity', () => {
     expect(sidebarCss).toContain('width: var(--session-sidebar-width);');
     expect(chatModalCss).toContain('width: var(--session-sidebar-width);');
     expect(chatModalCss).not.toContain('width: 300px;');
+    expect(yeaftSidebarCss).not.toMatch(/\.yeaft-sidebar(?:\.collapsed)?\s*\{[^}]*(?:^|\n)\s*(?:width|min-width|max-width)\s*:/m);
   });
 
   it('keeps the mobile sidebar open while switching between conversation views', () => {
