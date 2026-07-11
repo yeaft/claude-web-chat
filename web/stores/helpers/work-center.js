@@ -2,6 +2,8 @@ const DETAIL_SUMMARY_FIELDS = Object.freeze([
   'revision',
   'title',
   'goal',
+  'workItemType',
+  'planningMode',
   'status',
   'currentActionId',
   'currentAction',

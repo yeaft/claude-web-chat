@@ -624,6 +624,7 @@ export async function loadSession(options = {}) {
     trace,
     yeaftDir,
     status,
+    memoryIndex,
     amsRegistry,
     toolStats,
     taskManager,

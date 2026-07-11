@@ -5,7 +5,11 @@ import { WorkflowController } from './controller.js';
 import { WorkItemWatcher } from './watcher.js';
 import { projectWorkItemDetail, projectWorkItemSummary } from './projection.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
-import { defaultWorkCenterStageInstructions, resolveWorkflowSnapshot } from './workflow.js';
+import {
+  defaultWorkCenterStageInstructions,
+  resolvePlanningWorkflowSnapshot,
+  resolveWorkflowSnapshot,
+} from './workflow.js';
 
 function requiredString(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
@@ -41,7 +45,7 @@ export class WorkCenterService {
     this.store.recoverInterruptedRuns(this.ownerBootId);
   }
 
-  async handle(op, payload = {}) {
+  async handle(op, payload = {}, requestContext = {}) {
     switch (op) {
       case 'list':
         return {
@@ -60,10 +64,14 @@ export class WorkCenterService {
       }
       case 'create': {
         const settings = this.settingsReader(this.yeaftDir);
-        const workflowTemplate = typeof payload.workflowTemplate === 'string' && payload.workflowTemplate.trim()
+        const explicitWorkflow = requestContext.trustedProducer === true
+          && typeof payload.workflowTemplate === 'string' && payload.workflowTemplate.trim()
           ? payload.workflowTemplate.trim()
-          : settings.defaultWorkflowId;
-        const workflowSnapshot = resolveWorkflowSnapshot(settings, workflowTemplate, payload.stageOverrides);
+          : null;
+        const workflowTemplate = explicitWorkflow || 'ai-planned';
+        const workflowSnapshot = explicitWorkflow
+          ? resolveWorkflowSnapshot(settings, explicitWorkflow, payload.stageOverrides)
+          : resolvePlanningWorkflowSnapshot(settings);
         const item = this.controller.create({
           title: requiredString(payload.title, 'title'),
           goal: requiredString(payload.goal, 'goal'),
@@ -81,6 +89,7 @@ export class WorkCenterService {
                 sessionId: typeof payload.origin.sessionId === 'string' ? payload.origin.sessionId : null,
                 messageId: typeof payload.origin.messageId === 'string' ? payload.origin.messageId : null,
                 createdBy: typeof payload.origin.createdBy === 'string' ? payload.origin.createdBy : null,
+                trustedSession: requestContext.trustedProducer === true,
               }
             : null,
           linkedSessionIds: Array.isArray(payload.linkedSessionIds)

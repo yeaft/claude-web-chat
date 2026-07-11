@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
+import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
 
 function createInput(overrides = {}) {
   return {
@@ -58,6 +59,106 @@ describe('Work Center core', () => {
     expect(detail.origin).toEqual({ sessionId: 'session-1', messageId: 'message-1', createdBy: 'user' });
     expect(detail.linkedSessionIds).toEqual(['session-1']);
     expect(store.listWorkItems({ sessionId: 'session-1' }).map(row => row.id)).toEqual([item.id]);
+  });
+
+  it('freezes an AI-generated WorkItem type and task-specific Action flow after triage', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({
+      modelPolicy: { mode: 'specific', model: 'provider/work-center', effort: 'high' },
+    });
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned', workflowSnapshot,
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'bug-fix',
+        actions: [
+          { id: 'diagnose', type: 'research', capability: 'analysis', objective: 'Find the root cause' },
+          { id: 'fix', type: 'implement', capability: 'implement', objective: 'Apply the minimal fix' },
+          { id: 'verify', type: 'test', capability: 'test', objective: 'Verify acceptance criteria' },
+          { id: 'review', type: 'review', capability: 'review', objective: 'Review independently', changesRequestedActionId: 'fix' },
+        ],
+      },
+    }));
+
+    expect(detail.workflowSnapshot).toMatchObject({
+      id: 'ai-planned', planningMode: 'ai', workItemType: 'bug-fix',
+    });
+    expect(detail.workflowSnapshot.stages.map(stage => stage.id))
+      .toEqual(['triage', 'diagnose', 'fix', 'verify', 'review']);
+    expect(detail.actions.at(-1)).toMatchObject({
+      type: 'research', stageId: 'diagnose',
+      assignmentPolicy: { mode: 'auto', capability: 'analysis' },
+      modelPolicy: { mode: 'specific', model: 'provider/work-center', effort: 'high' },
+      status: 'ready',
+    });
+    expect(detail.actions.at(-1).instruction).toContain('Find the root cause');
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
+  it('rejects an AI-planned triage result that tries to skip the Action plan', () => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(
+      triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage'),
+    );
+    expect(detail).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
+    expect(store.getRun(triage.run.id)).toMatchObject({ status: 'failed', error: expect.stringMatching(/structured plan/i) });
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
+  it.each([
+    ['missing', 'missing-action'],
+    ['self', 'review'],
+    ['future', 'deliver'],
+  ])('rejects an AI-planned review with an explicit %s return target', (_kind, target) => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'software-change',
+        actions: [
+          { id: 'fix', type: 'implement', objective: 'Implement the change' },
+          { id: 'review', type: 'review', objective: 'Review independently', changesRequestedActionId: target },
+          { id: 'deliver', type: 'deliver', objective: 'Deliver the result' },
+        ],
+      },
+    }));
+
+    expect(detail).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
+    expect(store.getRun(triage.run.id)).toMatchObject({
+      status: 'failed',
+      error: expect.stringMatching(/invalid return Action/i),
+    });
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
+  it('defaults an omitted review return target to the nearest earlier editable Action', () => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'software-change',
+        actions: [
+          { id: 'fix', type: 'implement', objective: 'Implement the change' },
+          { id: 'verify', type: 'test', objective: 'Verify the change' },
+          { id: 'review', type: 'review', objective: 'Review independently' },
+        ],
+      },
+    }));
+
+    expect(detail.workflowSnapshot.stages.find(stage => stage.id === 'review'))
+      .toMatchObject({ changesRequestedStageId: 'verify' });
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
   });
 
   it('reuses only structured completed context from the same explicit work directory', () => {
