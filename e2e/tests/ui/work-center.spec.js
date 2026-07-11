@@ -132,7 +132,7 @@ async function openWorkCenter(chatPage, mockAgent, items = [OPEN_ITEM]) {
 
   await chatPage.locator('.sidebar-work-center-agent').first().click();
   await responses;
-  await expect(chatPage.locator('.work-center-page')).toBeVisible();
+  await expect(chatPage.locator('.work-center-main')).toBeVisible();
   await expect(chatPage.locator('.work-center-card')).toHaveCount(items.length);
 }
 
@@ -144,7 +144,7 @@ async function layoutMetrics(page) {
     return {
       viewportWidth: window.innerWidth,
       documentScrollWidth: document.documentElement.scrollWidth,
-      sidebar: rect('.work-center-sidebar'),
+      sidebar: rect('.session-sidebar-shell'),
       main: rect('.work-center-main'),
       detail: rect('.work-center-detail'),
       mainClientWidth: main?.clientWidth || 0,
@@ -176,7 +176,7 @@ test.describe('Work Center responsive UI', () => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1440, height: 900 });
 
-    await chatPage.locator('.work-center-sidebar .sidebar-icon-btn[title="Workbench"]').click();
+    await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Workbench"]').click();
     const panel = chatPage.locator('.workbench-panel');
     const main = chatPage.locator('.work-center-main');
     await expect(panel).toHaveClass(/expanded/);
@@ -255,8 +255,10 @@ test.describe('Work Center responsive UI', () => {
     await chatPage.setViewportSize({ width: 720, height: 900 });
     await chatPage.waitForTimeout(350);
 
-    await chatPage.locator('.sidebar-header-actions .sidebar-icon-btn[title="Collapse sidebar"]').click();
-    await expect(chatPage.locator('.work-center-sidebar')).toHaveClass(/collapsed/);
+    await chatPage.locator('.work-center-sidebar-toggle').click();
+    await expect(chatPage.locator('.session-sidebar-shell')).not.toHaveClass(/collapsed/);
+    await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Collapse sidebar"]').click();
+    await expect(chatPage.locator('.session-sidebar-shell')).toHaveClass(/collapsed/);
 
     const create = chatPage.locator('.work-center-header-create');
     await expect(create).toBeVisible();
@@ -293,7 +295,9 @@ test.describe('Work Center responsive UI', () => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
     await chatPage.setViewportSize({ width: 720, height: 780 });
-    await chatPage.locator('.work-center-sidebar .sidebar-icon-btn[title="Collapse sidebar"]').click();
+    await chatPage.locator('.work-center-sidebar-toggle').click();
+    await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Collapse sidebar"]').click();
+    await expect(chatPage.locator('.session-sidebar-shell')).toHaveClass(/collapsed/);
     const settingsRequest = respondUntilOperation(mockAgent, 'get_settings', {
       list: { items: [OPEN_ITEM], watcher: { enabled: true } },
       get_settings: WORK_CENTER_SETTINGS,
