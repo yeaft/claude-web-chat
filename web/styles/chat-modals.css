@@ -1299,40 +1299,6 @@
   fill: currentColor;
 }
 
-/* Sidebar Header - Mobile Only */
-.sidebar-header-mobile {
-  display: none;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.sidebar-header-mobile .sidebar-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.sidebar-close-btn {
-  width: 36px;
-  height: 36px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-secondary);
-  transition: background 0.15s, color 0.15s;
-}
-
-.sidebar-close-btn:hover {
-  background: var(--sidebar-hover);
-  color: var(--text-primary);
-}
-
 /* Header Sidebar Toggle — inline ghost button for mobile sidebar */
 .header-sidebar-toggle {
   display: none;
@@ -1375,11 +1341,6 @@
   /* Hide "Open in new panel" menu item on mobile — split screen not available */
   .split-to-panel-item {
     display: none !important;
-  }
-
-  /* Show sidebar header on mobile */
-  .sidebar-header-mobile {
-    display: flex;
   }
 
   .sidebar-overlay {
