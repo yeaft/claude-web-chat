@@ -1,13 +1,9 @@
-import SidebarAgentHeader from './SidebarAgentHeader.js';
-import SidebarModeToggle from './SidebarModeToggle.js';
-import SidebarWorkCenter from './SidebarWorkCenter.js';
-import WorkbenchPanel from './WorkbenchPanel.js';
 import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import LlmTab from './LlmTab.js';
 
 export default {
   name: 'WorkCenterPage',
-  components: { SidebarAgentHeader, SidebarModeToggle, SidebarWorkCenter, WorkbenchPanel, WorkCenterSettingsModal, LlmTab },
+  components: { WorkCenterSettingsModal, LlmTab },
   data() {
     return {
       selectedId: null,
@@ -35,9 +31,6 @@ export default {
     agentId() { return this.store.workCenterAgentId || this.store.currentAgent; },
     agents() { return this.store.agents || []; },
     onlineAgents() { return this.agents.filter(agent => agent?.online); },
-    canUseWorkbench() {
-      return !!(this.store.hasCapability?.('terminal') || this.store.hasCapability?.('file_editor'));
-    },
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
     settings() { return this.store.workCenterSettingsByAgent[this.agentId] || null; },
     items() { return this.store.workCenterItemsByAgent[this.agentId] || []; },
@@ -136,16 +129,6 @@ export default {
       if (!value) return '';
       try { return new Date(Number(value)).toLocaleString(); } catch { return ''; }
     },
-    openAgent(agentId) {
-      this.store.enterWorkCenter(agentId);
-    },
-    onModeFlip(target) {
-      if (target === 'yeaft') this.store.enterYeaft(this.agentId);
-      else {
-        this.store.workCenterReturnView = 'chat';
-        this.store.leaveWorkCenter({ persistConversationView: true });
-      }
-    },
     refresh() {
       return this.store.listWorkItems(this.agentId).catch(() => {});
     },
@@ -243,62 +226,14 @@ export default {
     },
   },
   template: `
-    <div class="work-center-page">
-      <div class="sidebar-overlay work-center-sidebar-overlay" v-if="!store.sidebarCollapsed" @click="store.toggleSidebar()"></div>
-      <aside class="sidebar work-center-sidebar" :class="{ collapsed: store.sidebarCollapsed }">
-        <div v-if="store.sidebarCollapsed" class="sidebar-collapsed-bar">
-          <button class="collapsed-icon-btn" type="button" @click="store.toggleSidebar()" :title="tr('sidebar.expand', 'Expand sidebar')">
-            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 18h18v-2H3v2Zm0-5h18v-2H3v2Zm0-7v2h18V6H3Z"/></svg>
-          </button>
-          <button class="collapsed-icon-btn active" type="button" :title="tr('workCenter.title', 'Work Center')">
-            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 3h-3.18A3 3 0 0 0 13 1h-2a3 3 0 0 0-2.82 2H5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-8-1h2a1 1 0 0 1 1 1h-4a1 1 0 0 1 1-1Zm8 18H5V5h2v2h10V5h2v15Z"/></svg>
-          </button>
-          <div class="collapsed-spacer"></div>
-          <button class="collapsed-icon-btn" type="button" @click="store.leaveWorkCenter()" :title="tr('common.back', 'Back')">
-            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.42-1.41L7.83 13H20v-2Z"/></svg>
-          </button>
-        </div>
-        <div v-else class="sidebar-top">
-          <div class="sidebar-header-row">
-            <SidebarAgentHeader
-              :online-agents="onlineAgents"
-              :online-agent-count="onlineAgents.length"
-              :show-agent-actions="false"
-            />
-            <div class="sidebar-header-actions">
-              <SidebarModeToggle :view="store.workCenterReturnView === 'yeaft' ? 'yeaft' : 'chat'" @flip="onModeFlip" />
-              <button class="sidebar-icon-btn" type="button" @click="store.toggleSidebar()" :title="tr('sidebar.collapse', 'Collapse sidebar')">
-                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 18h13v-2H3v2Zm0-5h10v-2H3v2Zm0-7v2h13V6H3Zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59Z"/></svg>
-              </button>
-              <button v-if="canUseWorkbench" class="sidebar-icon-btn" type="button" :class="{ active: store.workbenchExpanded }" @click="store.toggleWorkbench()" :title="tr('chat.sidebar.workbench', 'Workbench')">
-                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2Zm0 16H4V5h16v14ZM6 7h5v2H6V7Zm0 4h5v2H6v-2Zm0 4h5v2H6v-2Zm7-8h5v10h-5V7Z"/></svg>
-              </button>
-            </div>
-          </div>
-        </div>
-        <SidebarWorkCenter
-          v-if="!store.sidebarCollapsed"
-          :agents="agents"
-          :active-agent-id="agentId"
-          :collapsed="false"
-          :active="true"
-          :default-expanded="true"
-          @open="openAgent"
-        />
-        <div v-if="!store.sidebarCollapsed" class="sidebar-bottom work-center-sidebar-actions">
-          <button class="sidebar-nav-item work-center-back-button" type="button" @click="store.leaveWorkCenter()">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.42-1.41L7.83 13H20v-2Z"/></svg>
-            {{ tr('common.back', 'Back') }}
-          </button>
-        </div>
-      </aside>
-
-      <WorkbenchPanel v-if="canUseWorkbench" />
-
-      <main class="work-center-main" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
+    <main class="work-center-main" :class="{ 'workbench-maximized': store.workbenchMaximized && store.workbenchExpanded }">
         <div class="work-center-shell">
           <header class="work-center-header">
             <div class="work-center-heading">
+              <button class="work-center-sidebar-toggle" type="button" @click="store.toggleSessionSidebar()"
+                      :title="tr('chat.sidebar.expand', 'Open sidebar')" :aria-label="tr('chat.sidebar.expand', 'Open sidebar')">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 18h18v-2H3v2Zm0-5h18v-2H3v2Zm0-7v2h18V6H3Z"/></svg>
+              </button>
               <h1>{{ tr('workCenter.title', 'Work Center') }}</h1>
               <span class="work-center-agent-context">
                 <span class="work-center-agent-dot" aria-hidden="true"></span>
@@ -453,7 +388,7 @@ export default {
             </section>
           </div>
         </div>
-      </main>
+    </main>
 
       <WorkCenterSettingsModal v-if="settingsOpen" :key="agentId" :agent-id="agentId" @close="settingsOpen = false" @saved="refresh" @open-agent-models="settingsOpen = false; llmConfigOpen = true" />
       <div v-if="llmConfigOpen" class="modal-overlay yeaft-llm-config-overlay" @click.self="llmConfigOpen = false">
@@ -498,6 +433,5 @@ export default {
           </footer>
         </form>
       </div>
-    </div>
   `,
 };

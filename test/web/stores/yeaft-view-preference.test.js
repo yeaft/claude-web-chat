@@ -144,54 +144,23 @@ describe('Yeaft conversation view preference', () => {
     expect(store._pendingChatRestoreConversationId).toBeNull();
   });
 
-  it('restores pending Chat through an explicit Work Center mode selection', () => {
+  it('keeps Work Center inside a cold-restored Yeaft provider', () => {
     const store = createChatStore();
     Object.assign(store, createInitialConversationViewState(createStorage({
       'yeaft-preferred-conversation-view': 'yeaft',
       lastViewedConversation: 'chat-conversation',
     })));
-    store.lastViewedConversation = 'chat-conversation';
-    store.conversations = [{
-      id: 'chat-conversation',
-      agentId: 'agent-1',
-      type: 'chat',
-      workDir: '/workspace/chat',
-    }];
+    store.currentAgent = 'agent-1';
+    store.agents = [{ id: 'agent-1', online: true }];
+    store.listWorkItems = vi.fn().mockResolvedValue([]);
+    localStorage.setItem.mockClear();
 
-    handleAgentList(store, {
-      type: 'agent_list',
-      agents: [{ id: 'agent-1', name: 'Agent 1', online: true, conversations: store.conversations }],
-    });
-    store.handleYeaftOutput({
-      agentId: 'agent-1',
-      event: {
-        type: 'session_ready',
-        conversationId: 'yeaft-real-agent-1',
-        model: 'test-model',
-        availableModels: [],
-        skills: [],
-        mcpServers: [],
-        tools: [],
-      },
-    });
     store.enterWorkCenter('agent-1');
-    expect(store.currentView).toBe('work-center');
-    expect(store.activeConversations).toEqual([]);
+
+    expect(store.currentView).toBe('yeaft');
+    expect(store.workCenterOpen).toBe(true);
     expect(store._pendingChatRestoreConversationId).toBe('chat-conversation');
-
-    store.sent = [];
-    WorkCenterPage.methods.onModeFlip.call({ store, agentId: 'agent-1' }, 'chat');
-
-    expect(store.currentView).toBe('chat');
-    expect(store.activeConversations).toEqual(['chat-conversation']);
-    expect(store.currentWorkDir).toBe('/workspace/chat');
-    expect(store._pendingChatRestoreConversationId).toBeNull();
-    expect(store.sent).toEqual([
-      { type: 'sync_messages', conversationId: 'chat-conversation', turns: 5 },
-      { type: 'select_conversation', conversationId: 'chat-conversation' },
-      { type: 'refresh_conversation', conversationId: 'chat-conversation' },
-    ]);
-    expect(localStorage.setItem).toHaveBeenCalledWith('yeaft-preferred-conversation-view', 'chat');
+    expect(localStorage.setItem).not.toHaveBeenCalledWith('yeaft-preferred-conversation-view', 'chat');
   });
 
   it('uses the normal loading path when the pending Chat restore has an agent session', () => {
