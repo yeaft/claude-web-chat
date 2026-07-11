@@ -5,7 +5,7 @@ import { WorkflowController } from './controller.js';
 import { WorkItemWatcher } from './watcher.js';
 import { projectWorkItemDetail, projectWorkItemSummary } from './projection.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
-import { resolveWorkflowSnapshot } from './workflow.js';
+import { defaultWorkCenterStageInstructions, resolveWorkflowSnapshot } from './workflow.js';
 
 function requiredString(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
@@ -21,6 +21,10 @@ export class WorkCenterService {
     this.runtimeInfoProvider = typeof options.runtimeInfoProvider === 'function'
       ? options.runtimeInfoProvider
       : async () => ({ vps: [], models: [], primaryModel: null, fastModel: null });
+    this.runtimeInfo = async () => ({
+      ...(await this.runtimeInfoProvider()),
+      defaultStageInstructions: defaultWorkCenterStageInstructions(),
+    });
     this.ownerBootId = options.ownerBootId || randomUUID();
     this.store = options.store || new WorkItemStore(join(yeaftDir, 'work-center', 'work-center.db'));
     this.controller = options.controller || new WorkflowController(this.store);
@@ -48,11 +52,11 @@ export class WorkCenterService {
         return projectWorkItemDetail(this.#requiredItem(payload.id));
       case 'get_settings': {
         const settings = this.settingsReader(this.yeaftDir);
-        return { settings, runtime: await this.runtimeInfoProvider() };
+        return { settings, runtime: await this.runtimeInfo() };
       }
       case 'update_settings': {
         const settings = this.settingsWriter(this.yeaftDir, payload.settings);
-        return { settings, runtime: await this.runtimeInfoProvider() };
+        return { settings, runtime: await this.runtimeInfo() };
       }
       case 'create': {
         const settings = this.settingsReader(this.yeaftDir);

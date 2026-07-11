@@ -1499,6 +1499,8 @@ export default {
   'workCenter.settings.moveDown': '下移阶段',
   'workCenter.settings.stageType': '阶段类型',
   'workCenter.settings.reviewReturnStage': '要求修改时退回阶段',
-  'workCenter.settings.instruction': '阶段指令',
-  'workCenter.settings.instructionHint': '可选；追加到工作项契约中的阶段指令。',
+  'workCenter.settings.instruction': '阶段 Prompt',
+  'workCenter.settings.instructionHint': '定义这个阶段具体要做什么。',
+  'workCenter.settings.instructionHelp': '运行时会自动加入 Work Item 的目标、验收标准和可复用上下文。',
+  'workCenter.settings.instructionReset': '恢复默认值',
 };

@@ -222,14 +222,40 @@ export default {
       };
       this.schedulePreview();
     },
+    modelForStage(stage) {
+      const modelRef = this.form.stageOverrides[stage.id]?.modelPolicy?.model || stage.model?.id;
+      const models = this.store.workCenterRuntimeByAgent[this.agentId]?.models || [];
+      return models.find(model => (model.ref || model.id) === modelRef) || null;
+    },
+    effortOptionsForPlanStage(stage) {
+      const options = this.modelForStage(stage)?.effortOptions;
+      return Array.isArray(options) ? options : [];
+    },
     overrideStageModel(stageId, model) {
       this.form.stageOverrides = {
         ...this.form.stageOverrides,
         [stageId]: {
           ...(this.form.stageOverrides[stageId] || {}),
           modelPolicy: model
-            ? { mode: 'specific', model }
-            : { mode: 'inherit', model: null },
+            ? { mode: 'specific', model, effort: null }
+            : { mode: 'inherit', model: null, effort: null },
+        },
+      };
+      this.schedulePreview();
+    },
+    overrideStageEffort(stageId, effort) {
+      const current = this.form.stageOverrides[stageId]?.modelPolicy || {};
+      const previewStage = this.planPreview?.stages?.find(stage => stage.id === stageId);
+      const inheritedPolicy = previewStage?.modelPolicy || { mode: 'inherit', model: null };
+      this.form.stageOverrides = {
+        ...this.form.stageOverrides,
+        [stageId]: {
+          ...(this.form.stageOverrides[stageId] || {}),
+          modelPolicy: {
+            ...inheritedPolicy,
+            ...current,
+            effort: effort || null,
+          },
         },
       };
       this.schedulePreview();
@@ -546,7 +572,7 @@ export default {
               <p v-else-if="previewError" class="work-center-error">{{ previewError }}</p>
               <div v-else-if="planPreview" class="work-center-plan-stages">
                 <article v-for="stage in planPreview.stages" :key="stage.id" :class="{ invalid: stage.error }">
-                  <div><strong>{{ stage.name }}</strong><small v-if="stage.error">{{ stage.error }}</small><small v-else>{{ stage.selectedVp?.name }} · {{ stage.model?.provider || tr('workCenter.model.defaultProvider', 'default provider') }} · {{ stage.model?.id }}</small></div>
+                  <div><strong>{{ stage.name }}</strong><small v-if="stage.error">{{ stage.error }}</small><small v-else>{{ stage.selectedVp?.name }} · {{ stage.model?.provider || tr('workCenter.model.defaultProvider', 'default provider') }} · {{ stage.model?.id }}<template v-if="stage.model?.effort"> · {{ stage.model.effort }}</template></small></div>
                   <div class="work-center-plan-overrides">
                     <select :value="form.stageOverrides[stage.id]?.assignmentPolicy?.fixedVpId || ''" @change="overrideStageVp(stage.id, $event.target.value)">
                       <option value="">{{ tr('workCenter.assignment.auto', 'Use workflow policy') }}</option>
@@ -555,6 +581,12 @@ export default {
                     <select :value="form.stageOverrides[stage.id]?.modelPolicy?.model || ''" @change="overrideStageModel(stage.id, $event.target.value)">
                       <option value="">{{ tr('workCenter.model.inherit', 'Use workflow model') }}</option>
                       <option v-for="model in store.workCenterRuntimeByAgent[agentId]?.models || []" :key="model.ref || model.id" :value="model.ref || model.id">{{ model.provider }} · {{ model.label || model.id }}</option>
+                    </select>
+                    <select v-if="effortOptionsForPlanStage(stage).length"
+                            :value="form.stageOverrides[stage.id]?.modelPolicy?.effort || stage.modelPolicy?.effort || ''"
+                            @change="overrideStageEffort(stage.id, $event.target.value)">
+                      <option value="">{{ tr('workCenter.settings.effortDefault', 'Model default') }}</option>
+                      <option v-for="effort in effortOptionsForPlanStage(stage)" :key="effort" :value="effort">{{ effort }}</option>
                     </select>
                   </div>
                 </article>

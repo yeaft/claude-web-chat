@@ -96,6 +96,26 @@ describe('Work Center lifecycle bridge', () => {
     while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true });
   });
 
+  it('serves executable default stage prompts through the browser settings path', async () => {
+    createYeaftDir();
+
+    await handleWorkCenterRequest({ requestId: 'settings-1', op: 'get_settings', payload: {} });
+
+    expect(sendToServer).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'settings-1',
+      ok: true,
+      data: expect.objectContaining({
+        settings: expect.objectContaining({ defaultWorkflowId: 'software-change' }),
+        runtime: expect.objectContaining({
+          defaultStageInstructions: expect.objectContaining({
+            triage: expect.stringContaining('Do not implement yet'),
+            implement: expect.stringContaining('Add and run relevant tests'),
+          }),
+        }),
+      }),
+    }));
+  });
+
   it('boots the autonomous watcher exactly once', async () => {
     const service = { start: vi.fn(), shutdown: vi.fn() };
     const factory = vi.fn().mockResolvedValue(service);

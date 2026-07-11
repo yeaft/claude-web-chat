@@ -84,6 +84,9 @@ export default {
         || this.workflows[0]
         || null;
     },
+    defaultStageInstructions() {
+      return this.runtime.defaultStageInstructions || {};
+    },
     sections() {
       return [
         { id: 'workflow', label: this.$t('workCenter.settings.workflow') },
@@ -171,7 +174,7 @@ export default {
         id: stageId,
         name: this.$t('workCenter.settings.newStage'),
         type: 'custom',
-        instruction: '',
+        instruction: this.defaultStageInstructions.custom || '',
         assignmentPolicy: { mode: 'auto', capability: 'custom', candidateVpIds: [], fixedVpId: null, separateFromStageTypes: [] },
         modelPolicy: { mode: 'inherit', model: null, effort: null },
         maxAttempts: 2,
@@ -219,6 +222,20 @@ export default {
       if (checked) current.add(vpId);
       else current.delete(vpId);
       stage.assignmentPolicy.candidateVpIds = [...current];
+    },
+    defaultInstructionForStage(stage) {
+      return this.defaultStageInstructions[stage.type]
+        || this.defaultStageInstructions.custom
+        || '';
+    },
+    resetStageInstruction(stage) {
+      stage.instruction = this.defaultInstructionForStage(stage);
+    },
+    setStageType(stage, type) {
+      const previousDefault = this.defaultInstructionForStage(stage);
+      const shouldReplaceInstruction = !stage.instruction || stage.instruction === previousDefault;
+      stage.type = type;
+      if (shouldReplaceInstruction) this.resetStageInstruction(stage);
     },
     modelRefForStage(stage) {
       if (stage.modelPolicy.mode === 'specific') return stage.modelPolicy.model;
@@ -325,7 +342,7 @@ export default {
                     </div>
                   </header>
                   <label>{{ $t('workCenter.settings.stageType') }}
-                    <select v-model="stage.type">
+                    <select :value="stage.type" @change="setStageType(stage, $event.target.value)">
                       <option v-for="type in ['triage','implement','test','review','deliver','research','write','custom']" :key="type" :value="type">{{ type }}</option>
                     </select>
                   </label>
@@ -349,9 +366,15 @@ export default {
                       <option v-for="candidate in reviewReturnCandidates(stage)" :key="candidate.id" :value="candidate.id">{{ candidate.name }}</option>
                     </select>
                   </label>
-                  <label class="work-center-stage-instruction">{{ $t('workCenter.settings.instruction') }}
-                    <textarea v-model="stage.instruction" rows="3" :placeholder="$t('workCenter.settings.instructionHint')"></textarea>
-                  </label>
+                  <div class="work-center-stage-instruction">
+                    <div class="work-center-stage-instruction-heading">
+                      <span>{{ $t('workCenter.settings.instruction') }}</span>
+                      <button class="btn-ghost" type="button" @click="resetStageInstruction(stage)"
+                              :disabled="stage.instruction === defaultInstructionForStage(stage)">{{ $t('workCenter.settings.instructionReset') }}</button>
+                    </div>
+                    <textarea v-model="stage.instruction" rows="5" :placeholder="$t('workCenter.settings.instructionHint')"></textarea>
+                    <small>{{ $t('workCenter.settings.instructionHelp') }}</small>
+                  </div>
                   <fieldset v-if="stage.assignmentPolicy.mode === 'pool'" class="work-center-vp-pool">
                     <legend>{{ $t('workCenter.settings.poolMembers') }}</legend>
                     <label v-for="vp in vps" :key="vp.id">

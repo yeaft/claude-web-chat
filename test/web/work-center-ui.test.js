@@ -151,6 +151,11 @@ describe('Work Center UI contract', () => {
     expect(modal).toContain('addStage');
     expect(modal).toContain('moveStage');
     expect(modal).toContain("mode === 'specific'");
+    expect(modal).toContain('resetStageInstruction');
+    expect(modal).toContain('defaultStageInstructions');
+    expect(modal).toContain('stage.modelPolicy.effort');
+    expect(page).toContain('overrideStageEffort');
+    expect(page).toContain('effortOptionsForPlanStage');
     expect(modal).toContain("$emit('open-agent-models')");
     expect(page).toContain('<LlmTab context="yeaft"');
     expect(page).toContain('previewRevision');
@@ -178,6 +183,8 @@ describe('Work Center UI contract', () => {
       'workCenter.allItems',
       'workCenter.noOpenTitle',
       'workCenter.noCompletedTitle',
+      'workCenter.settings.instructionHelp',
+      'workCenter.settings.instructionReset',
       'workCenter.noMatchesTitle',
       'workCenter.loading',
       'workCenter.noTimestamp',

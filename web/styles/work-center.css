@@ -848,7 +848,7 @@
 
 .work-center-plan-overrides {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1051,7 +1051,28 @@
   grid-column: 2 / -1;
 }
 
+.work-center-stage-instruction {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.work-center-stage-instruction-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.work-center-stage-instruction-heading button {
+  padding: 3px 6px;
+  font-size: 11px;
+}
+
 .work-center-stage-instruction textarea {
+  min-height: 112px;
   resize: vertical;
 }
 
