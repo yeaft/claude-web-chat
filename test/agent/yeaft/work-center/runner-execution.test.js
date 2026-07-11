@@ -161,6 +161,53 @@ describe('Work Center Runner execution resolution', () => {
     });
   });
 
+  it('clears the Agent effort when the frozen stage policy uses the model default', async () => {
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implementation'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const snapshots = vi.fn().mockReturnValue(true);
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: snapshots,
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: {},
+        config: {
+          primaryModel: 'provider/primary',
+          modelEffort: 'high',
+          availableModels: [
+            { id: 'plain', ref: 'provider/plain', provider: 'provider', effortOptions: [] },
+          ],
+        },
+      }),
+    });
+
+    await runner.run({
+      workItem: { id: 'wi-1' },
+      action: {
+        type: 'implement', stageId: 'implement', instruction: 'Implement it',
+        requiredRole: 'linus',
+        modelPolicy: { mode: 'specific', model: 'provider/plain', effort: null },
+      },
+      run: { id: 'run-1', leaseEpoch: 1 },
+      ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
+    });
+
+    expect(snapshots).toHaveBeenCalledWith('run-1', 'boot-1', 1, expect.objectContaining({
+      modelSnapshot: expect.objectContaining({ id: 'provider/plain', effort: null }),
+    }));
+    expect(engineOptions[0]).toMatchObject({
+      config: { model: 'provider/plain', modelEffort: null, fallbackModel: null },
+    });
+  });
+
   it('preserves aggregate counts when the structured result is invalid', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-invalid-result-'));
     invalidEngineResult = true;

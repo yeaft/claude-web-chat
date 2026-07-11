@@ -245,7 +245,7 @@ export class WorkItemRunner {
       // Agent-level fallback would silently execute a different model while
       // leaving the Run snapshot unchanged, so WorkItems must fail explicitly.
       fallbackModel: null,
-      ...(resolvedModel.effort ? { modelEffort: resolvedModel.effort } : {}),
+      modelEffort: resolvedModel.effort,
       _readOnly: true,
       serverMode: true,
       // WorkItem messages live in the Work Center DB. Never archive their
