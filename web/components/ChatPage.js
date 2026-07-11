@@ -15,6 +15,7 @@ import { shortenPath as shortenPathUtil } from '../utils/path-display.js';
 import { getLastPathSegment as _getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
 import { sortSessionsByActivity } from '../stores/helpers/session-order.js';
 import { useAuthStore } from '../stores/auth.js';
+import { collapseSidebar } from '../utils/sidebar-collapse.js';
 
 export default {
   name: 'ChatPage',
@@ -49,14 +50,6 @@ export default {
             <svg v-else viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"/></svg>
           </button>
         </div>
-        <!-- Mobile Sidebar Header -->
-        <div class="sidebar-header-mobile">
-          <span class="sidebar-title">Yeaft</span>
-          <button class="sidebar-close-btn" @click="showMobileSidebar = false">
-            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-          </button>
-        </div>
-
         <!-- Agent Status -->
         <div class="sidebar-top">
           <!-- Header Row: Agent status + action icons (Copilot style) -->
@@ -76,7 +69,7 @@ export default {
                 :disabled="onlineAgentCount === 0"
                 @flip="onModeFlip"
               />
-              <button class="sidebar-icon-btn" @click="store.toggleSidebar()" :title="$t('chat.sidebar.collapse')">
+              <button class="sidebar-icon-btn" @click="onSidebarCollapse" :title="$t('chat.sidebar.collapse')">
                 <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 18h13v-2H3v2zm0-5h10v-2H3v2zm0-7v2h13V6H3zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59z"/></svg>
               </button>
               <button v-if="canUseWorkbench" class="sidebar-icon-btn" :class="{ active: store.workbenchExpanded }" @click="store.toggleWorkbench()" :title="$t('chat.sidebar.workbench')">
@@ -533,7 +526,7 @@ export default {
       return this.onlineAgents.length;
     },
     isMobileView() {
-      return this.windowWidth < 640;
+      return this.windowWidth <= 768;
     },
     normalConversations() {
       return this.sortByActivity(this.store.conversations.filter(c => c.agentOnline !== false));
@@ -550,6 +543,14 @@ export default {
     },
   },
   methods: {
+    onSidebarCollapse() {
+      collapseSidebar({
+        isMobileView: this.isMobileView,
+        showMobileSidebar: this.showMobileSidebar,
+        closeMobileSidebar: () => { this.showMobileSidebar = false; },
+        toggleSidebar: () => this.store.toggleSidebar(),
+      });
+    },
     onModeFlip(target) {
       if (target === 'yeaft') {
         this.store.enterYeaft();

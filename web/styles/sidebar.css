@@ -31,7 +31,6 @@
 }
 
 /* Collapsed sidebar: hide everything except the icon bar */
-.sidebar.collapsed .sidebar-header-mobile,
 .sidebar.collapsed .sidebar-top,
 .sidebar.collapsed .session-list,
 .sidebar.collapsed .session-tab-bar,
