@@ -16,17 +16,19 @@ function internalDetail() {
     }],
     runs: [{
       id: 'r-2', actionId: 'a-1', workItemId: 'wi-1', status: 'waiting', startedAt: 2,
-      summary: 'private latest summary', evidence: [{ output: 'secret latest evidence' }],
+      response: 'Reviewed the change and found one compatibility decision.',
+      summary: 'Review needs a compatibility choice', evidence: [{ output: 'secret latest evidence' }],
       waitingReason: 'Choose the compatibility behavior', error: 'private latest error',
-      loopCount: 2, toolCount: 5,
+      loopCount: 2, toolCount: 5, progressRevision: 4,
       roleSnapshot: { id: 'review', actionType: 'review', selectionReason: 'auto:review' },
       vpSnapshot: { id: 'martin', name: 'Martin', persona: 'secret persona' },
       modelSnapshot: { id: 'provider/review', provider: 'provider', effort: 'high' },
       toolPolicySnapshot: { allowedToolNames: ['FileRead'], readRoots: ['/private/read'] },
     }, {
       id: 'r-1', actionId: 'a-1', workItemId: 'wi-1', status: 'retryable', startedAt: 1,
-      summary: 'private earlier summary', evidence: [{ output: 'secret earlier evidence' }],
-      loopCount: 1, toolCount: 3,
+      response: 'Earlier retry response',
+      summary: 'Earlier retry summary', evidence: [{ output: 'secret earlier evidence' }],
+      loopCount: 1, toolCount: 3, progressRevision: 2,
     }],
     events: [{
       id: 'e-1', workItemId: 'wi-1', actionId: 'a-1', runId: 'r-1',
@@ -36,24 +38,26 @@ function internalDetail() {
 }
 
 describe('Work Center event projection', () => {
-  it('broadcasts only list state plus live Action aggregate counts', () => {
+  it('broadcasts list state plus safe live Action response and aggregate counts', () => {
     const detail = internalDetail();
     const projected = projectWorkCenterEvent({ type: 'run.finished', workItem: detail });
 
     expect(projected.workItem).toMatchObject({ id: 'wi-1', status: 'waiting' });
-    expect(projected.workItem.actionStats).toEqual([
-      { id: 'a-1', status: 'completed', loopCount: 3, toolCount: 8 },
-    ]);
+    expect(projected.workItem.actionStats).toEqual([{
+      id: 'a-1', status: 'completed', loopCount: 3, toolCount: 8,
+      response: 'Reviewed the change and found one compatibility decision.',
+      progressRevision: 4,
+    }]);
     const wire = JSON.stringify(projected);
     for (const secret of [
-      '/project', 'provider/review', 'private latest summary', 'secret latest evidence',
+      '/project', 'provider/review', 'Review needs a compatibility choice', 'secret latest evidence',
       'private latest error', 'secret-message', 'linus', 'Choose the compatibility behavior',
     ]) {
       expect(wire).not.toContain(secret);
     }
   });
 
-  it('projects Action aggregate counts without Run, event, model, or evidence detail', () => {
+  it('projects user-facing Action text without Run, event, model, or evidence detail', () => {
     const projected = projectWorkItemDetail(internalDetail());
 
     expect(projected).toMatchObject({
@@ -63,6 +67,8 @@ describe('Work Center event projection', () => {
         id: 'a-1', sequence: 1, type: 'review', stageId: 'review',
         assignmentPolicy: { mode: 'auto', fixedVpId: null },
         status: 'completed', loopCount: 3, toolCount: 8,
+        response: 'Reviewed the change and found one compatibility decision.',
+        progressRevision: 4,
       }],
     });
     expect(projected).not.toHaveProperty('currentRunId');
@@ -71,7 +77,7 @@ describe('Work Center event projection', () => {
     expect(projected.actions[0]).not.toHaveProperty('modelPolicy');
     const wire = JSON.stringify(projected);
     for (const secret of [
-      '/project', 'provider/review', 'private latest summary', 'secret latest evidence',
+      '/project', 'provider/review', 'Review needs a compatibility choice', 'secret latest evidence',
       'private latest error', 'secret persona', 'allowedToolNames', '/private/read',
       'secret-message', 'candidateVpIds',
     ]) {

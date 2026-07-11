@@ -22,6 +22,49 @@ const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'WebFetch',
 ]);
 const WORK_ITEM_TOOL_ALLOWLIST = new Set(WORK_ITEM_TOOL_NAMES);
+const DEFAULT_PROGRESS_INTERVAL_MS = 200;
+
+function structuredOutcome(value) {
+  return value && typeof value === 'object'
+    && ['completed', 'waiting', 'retryable', 'failed'].includes(value.outcome);
+}
+
+function parseStructuredOutcome(value) {
+  try {
+    const parsed = JSON.parse(String(value || '').trim());
+    return structuredOutcome(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function publicWorkItemResponse(text) {
+  const source = String(text || '');
+  const fences = [...source.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+  const lastFence = fences.at(-1);
+  if (lastFence && !source.slice((lastFence.index || 0) + lastFence[0].length).trim()
+    && parseStructuredOutcome(lastFence[1])) {
+    return source.slice(0, lastFence.index).trim();
+  }
+  const fenceMarkers = [...source.matchAll(/```/g)];
+  if (fenceMarkers.length % 2 === 1) {
+    const openIndex = fenceMarkers.at(-1).index;
+    const partialFence = source.slice(openIndex).match(/^```(?:json)?\s*([\s\S]*)$/i);
+    if (partialFence && (/^```json\b/i.test(partialFence[0]) || partialFence[1].trimStart().startsWith('{'))) {
+      return source.slice(0, openIndex).trim();
+    }
+  }
+  if (parseStructuredOutcome(source) || source.trimStart().startsWith('{')) return '';
+  for (let index = source.lastIndexOf('\n{'); index >= 0; index = source.lastIndexOf('\n{', index - 1)) {
+    const precedingFenceCount = [...source.slice(0, index).matchAll(/```/g)].length;
+    if (precedingFenceCount % 2 === 1) continue;
+    const terminal = source.slice(index + 1);
+    if (parseStructuredOutcome(terminal) || /^\{\s*(?:["'])?/.test(terminal)) {
+      return source.slice(0, index).trim();
+    }
+  }
+  return source.trim();
+}
 
 function copyVp(vp) {
   if (!vp) return null;
@@ -151,8 +194,12 @@ export function createWorkItemToolRegistry({ workDir, isRunActive }) {
 }
 
 export function parseStructuredResult(text, actionType) {
-  const fenced = String(text || '').match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidates = [fenced?.[1], String(text || '')].filter(Boolean);
+  const source = String(text || '');
+  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidates = [fenced?.[1], source].filter(Boolean);
+  for (let index = source.lastIndexOf('{'); index > 0; index = source.lastIndexOf('{', index - 1)) {
+    candidates.push(source.slice(index));
+  }
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate.trim());
@@ -195,7 +242,7 @@ function completionContract(action) {
   const triageField = action.type === 'triage'
     ? ',\n  "contractPatch": { "goal": "optional refined goal", "acceptanceCriteria": ["optional refined criterion"] }'
     : '';
-  return `\n\nYou are executing one Work Center Action. End your response with exactly one JSON object, preferably in a json code fence:\n{
+  return `\n\nYou are executing one Work Center Action. Before the terminal JSON, write a concise user-facing response describing what you did and the result. Do not include raw tool output or secrets. End your response with exactly one JSON object, preferably in a json code fence:\n{
   "outcome": "completed|waiting|retryable|failed",
   "summary": "short result",
   "evidence": ["test, PR, file, or other verifiable evidence"],
@@ -209,9 +256,12 @@ export class WorkItemRunner {
     this.runtimeProvider = options.runtimeProvider;
     this.store = options.store;
     this.registry = options.registry || defaultRegistry;
+    this.progressIntervalMs = Number.isFinite(Number(options.progressIntervalMs))
+      ? Math.max(0, Number(options.progressIntervalMs))
+      : DEFAULT_PROGRESS_INTERVAL_MS;
   }
 
-  async run({ workItem, action, run, signal, ownerBootId }) {
+  async run({ workItem, action, run, signal, ownerBootId, onProgress }) {
     const runtime = await this.runtimeProvider();
     const workDir = resolveWorkItemWorkDir(workItem, runtime.defaultWorkDir);
     const priorRuns = this.store.listCompletedRuns(workItem.id);
@@ -300,6 +350,14 @@ export class WorkItemRunner {
     let text = '';
     let loopCount = 0;
     let toolCount = 0;
+    let lastProgressAt = 0;
+    const reportProgress = (force = false) => {
+      if (typeof onProgress !== 'function') return;
+      const now = Date.now();
+      if (!force && now - lastProgressAt < this.progressIntervalMs) return;
+      lastProgressAt = now;
+      onProgress({ response: publicWorkItemResponse(text), loopCount, toolCount });
+    };
     try {
       for await (const event of engine.query({
         prompt: `${action.instruction}${completionContract(action)}`,
@@ -316,15 +374,23 @@ export class WorkItemRunner {
         if (typeof event?.text === 'string') text += event.text;
         else if (typeof event?.delta === 'string') text += event.delta;
         else if (typeof event?.content === 'string' && event.type === 'assistant') text += event.content;
+        reportProgress();
       }
     } catch (error) {
-      error.workItemExecutionStats = { loopCount, toolCount };
+      error.workItemExecutionStats = {
+        response: publicWorkItemResponse(text),
+        loopCount,
+        toolCount,
+      };
       throw error;
     } finally {
       try { engine.abort?.('work_item_run_finished'); } catch {}
     }
+    const response = publicWorkItemResponse(text);
+    reportProgress(true);
     return {
       ...parseStructuredResult(text, action.type),
+      response,
       loopCount,
       toolCount,
     };

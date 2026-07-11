@@ -45,6 +45,39 @@ describe('WorkItemWatcher', () => {
     await watcher.stop();
   });
 
+  it('persists and emits fenced live response progress', async () => {
+    const claim = {
+      workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 3 },
+    };
+    const detail = { id: 'w1', actions: [{ id: 'a1', response: 'Inspecting files' }] };
+    const updateRunProgress = vi.fn().mockReturnValue(detail);
+    const onEvent = vi.fn();
+    let resolveRun;
+    const runner = {
+      run: vi.fn(options => new Promise(resolve => {
+        resolveRun = resolve;
+        options.onProgress({ response: 'Inspecting files', loopCount: 1, toolCount: 2 });
+      })),
+    };
+    const store = {
+      claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
+      renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
+      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(() => detail), updateRunProgress,
+    };
+    const watcher = new WorkItemWatcher({
+      store, controller: { submit: vi.fn(() => detail) }, runner, onEvent,
+      ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+
+    await watcher.tick();
+    expect(updateRunProgress).toHaveBeenCalledWith('r1', 'boot', 3, {
+      response: 'Inspecting files', loopCount: 1, toolCount: 2,
+    });
+    expect(onEvent).toHaveBeenCalledWith({ type: 'run.progress', workItem: detail });
+    resolveRun({ outcome: 'completed', response: 'Done', summary: 'Done', evidence: [] });
+    await watcher.activeRuns.get('r1').promise;
+  });
+
   it('persists a fenced interruption before aborting an active Run', async () => {
     const gate = deferred();
     const store = {

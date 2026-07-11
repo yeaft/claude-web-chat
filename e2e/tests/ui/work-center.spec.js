@@ -60,7 +60,8 @@ const OPEN_ITEM_DETAIL = {
   acceptanceCriteria: ['The Action flow remains readable'],
   actions: [{
     id: 'action-1', sequence: 1, type: 'implement', requiredRole: 'developer', status: 'running',
-    loopCount: 3, toolCount: 8,
+    loopCount: 3, toolCount: 8, progressRevision: 4,
+    response: 'Implemented the layout fix and verified the responsive breakpoints.',
   }],
 };
 
@@ -208,6 +209,9 @@ test.describe('Work Center responsive UI', () => {
     await expect(action).toContainText('3 loops');
     await expect(action).toContainText('8 tools');
     await expect(action.locator('.work-center-action-body')).toHaveCount(0);
+    await action.locator('.work-center-action-summary').click();
+    await expect(action.locator('.work-center-action-response')).toContainText('Implemented the layout fix');
+    await expect(action.locator('.work-center-run')).toHaveCount(0);
 
     await chatPage.locator('.work-center-guidance textarea').fill('Keep the public API unchanged');
     const guide = respondToWorkCenterOp(mockAgent, 'guide', OPEN_ITEM_DETAIL);
@@ -306,6 +310,12 @@ test.describe('Work Center responsive UI', () => {
     const metrics = await modal.evaluate(element => {
       const rect = element.getBoundingClientRect();
       const pane = element.querySelector('.work-center-settings-pane');
+      const input = element.querySelector('.work-center-policy-stage input[type="text"]');
+      const textarea = element.querySelector('.work-center-stage-instruction textarea');
+      const save = element.querySelector('.work-center-settings-footer .btn-primary');
+      const inputStyle = getComputedStyle(input);
+      const textareaStyle = getComputedStyle(textarea);
+      const saveStyle = getComputedStyle(save);
       return {
         left: rect.left,
         right: rect.right,
@@ -315,6 +325,12 @@ test.describe('Work Center responsive UI', () => {
         viewportHeight: window.innerHeight,
         paneScrollable: pane.scrollHeight >= pane.clientHeight,
         background: getComputedStyle(element).backgroundColor,
+        inputBackground: inputStyle.backgroundColor,
+        textareaBackground: textareaStyle.backgroundColor,
+        inputColor: inputStyle.color,
+        textareaColor: textareaStyle.color,
+        saveBackground: saveStyle.backgroundColor,
+        saveColor: saveStyle.color,
       };
     });
     expect(metrics.left).toBeGreaterThanOrEqual(0);
@@ -323,6 +339,12 @@ test.describe('Work Center responsive UI', () => {
     expect(metrics.bottom).toBeLessThanOrEqual(metrics.viewportHeight);
     expect(metrics.paneScrollable).toBe(true);
     expect(metrics.background).not.toBe('rgba(0, 0, 0, 0)');
+    expect(metrics.inputBackground).not.toBe('rgb(255, 255, 255)');
+    expect(metrics.textareaBackground).toBe(metrics.inputBackground);
+    expect(metrics.inputColor).not.toBe(metrics.inputBackground);
+    expect(metrics.textareaColor).not.toBe(metrics.textareaBackground);
+    expect(metrics.saveBackground).not.toBe(metrics.background);
+    expect(metrics.saveColor).not.toBe(metrics.saveBackground);
   });
 
   test('previews the actual VP, Provider, and model before creating work', async ({ chatPage, mockAgent }) => {

@@ -186,17 +186,41 @@ describe('Work Center core', () => {
       .toThrow(/stale|cancelled|expired|finished/i);
   });
 
-  it('persists aggregate Loop and tool counts with the completed Run', () => {
+  it('persists fenced live response progress and aggregate counts', () => {
+    const item = controller.create(createInput());
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    const detail = store.updateRunProgress(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
+      response: 'Inspecting the existing implementation', loopCount: 2, toolCount: 3,
+    });
+
+    expect(detail.runs[0]).toMatchObject({
+      response: 'Inspecting the existing implementation', loopCount: 2, toolCount: 3,
+      progressRevision: 2,
+    });
+    expect(store.updateRunProgress(claim.run.id, 'boot-b', claim.run.leaseEpoch, {
+      response: 'stale', loopCount: 9, toolCount: 9,
+    })).toBeNull();
+    expect(store.getRun(claim.run.id).response).toBe('Inspecting the existing implementation');
+    expect(item.id).toBe(claim.workItem.id);
+  });
+
+  it('persists the user-facing response and aggregate counts with the completed Run', () => {
     const item = controller.create(createInput());
     const claim = store.claimReadyAction('boot-a', 5_000);
     controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, completed('triage', {
+      response: 'Validated scope and prepared the contract.',
       loopCount: 3,
       toolCount: 8,
     }));
 
     const run = store.getRun(claim.run.id);
-    expect(run).toMatchObject({ loopCount: 3, toolCount: 8 });
-    expect(store.getWorkItemDetail(item.id).runs[0]).toMatchObject({ loopCount: 3, toolCount: 8 });
+    expect(run).toMatchObject({
+      response: 'Validated scope and prepared the contract.', loopCount: 3, toolCount: 8,
+      progressRevision: 2,
+    });
+    expect(store.getWorkItemDetail(item.id).runs[0]).toMatchObject({
+      response: 'Validated scope and prepared the contract.', loopCount: 3, toolCount: 8,
+    });
   });
 
   it('persists immutable execution snapshots only for the fenced Run', () => {

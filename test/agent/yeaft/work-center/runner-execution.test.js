@@ -8,6 +8,7 @@ import { WorkflowController } from '../../../../agent/yeaft/work-center/controll
 
 const engineOptions = [];
 let invalidEngineResult = false;
+let engineResponsePrefix = '';
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
   Engine: class {
     constructor(options) { engineOptions.push(options); }
@@ -15,7 +16,12 @@ vi.mock('../../../../agent/yeaft/engine.js', () => ({
       yield { type: 'loop', loopNumber: 1 };
       yield { type: 'tool_end', id: 'tool-1', name: 'FileRead', output: 'ok', isError: false };
       yield { type: 'loop', loopNumber: 2 };
-      yield { text: invalidEngineResult ? 'not-json' : JSON.stringify({
+      if (invalidEngineResult) {
+        yield { text: 'not-json' };
+        return;
+      }
+      if (engineResponsePrefix) yield { text: engineResponsePrefix };
+      yield { text: JSON.stringify({
         outcome: 'completed', summary: 'done', evidence: [], reviewDecision: 'approved',
       }) };
     }
@@ -23,7 +29,7 @@ vi.mock('../../../../agent/yeaft/engine.js', () => ({
   },
 }));
 
-const { WorkItemRunner } = await import('../../../../agent/yeaft/work-center/runner.js');
+const { publicWorkItemResponse, WorkItemRunner } = await import('../../../../agent/yeaft/work-center/runner.js');
 
 let workDir;
 afterEach(() => {
@@ -31,9 +37,21 @@ afterEach(() => {
   workDir = null;
   engineOptions.length = 0;
   invalidEngineResult = false;
+  engineResponsePrefix = '';
 });
 
 describe('Work Center Runner execution resolution', () => {
+  it('never exposes partial terminal JSON as the user-facing response', () => {
+    expect(publicWorkItemResponse('Implemented the fix.\n\n```json\n{')).toBe('Implemented the fix.');
+    expect(publicWorkItemResponse('Implemented the fix.\n\n{\n  "out')).toBe('Implemented the fix.');
+    expect(publicWorkItemResponse('{\n  "outcome": "completed"')).toBe('');
+  });
+
+  it('preserves completed user-facing code fences', () => {
+    const response = 'Updated the config:\n\n```json\n{\n  "enabled": true\n}\n```\n\nVerified it.';
+    expect(publicWorkItemResponse(response)).toBe(response);
+  });
+
   it('runs a guidance-restarted policy Action with its frozen VP and model policy', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-guidance-runner-'));
     const store = new WorkItemStore(join(workDir, 'work-center.db'));
@@ -206,6 +224,45 @@ describe('Work Center Runner execution resolution', () => {
     expect(engineOptions[0]).toMatchObject({
       config: { model: 'provider/plain', modelEffort: null, fallbackModel: null },
     });
+  });
+
+  it('reports a live user-facing response and strips the terminal outcome JSON', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-response-'));
+    engineResponsePrefix = 'Implemented the smallest safe change.\n\n';
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Developer', traits: ['implement'], modelHint: 'primary',
+      persona: 'Implement', personaHash: 'hash',
+    });
+    const onProgress = vi.fn();
+    const runner = new WorkItemRunner({
+      registry,
+      progressIntervalMs: 0,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: {}, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    const result = await runner.run({
+      workItem: { id: 'wi-1', workDir, workspaceKey: workDir },
+      action: { type: 'implement', requiredRole: 'linus', instruction: 'Implement it' },
+      run: { id: 'run-1', leaseEpoch: 1 },
+      ownerBootId: 'boot-1', signal: new AbortController().signal, onProgress,
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'completed', response: 'Implemented the smallest safe change.',
+      loopCount: 2, toolCount: 1,
+    });
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
+      response: 'Implemented the smallest safe change.', loopCount: 2, toolCount: 1,
+    }));
+    expect(onProgress.mock.calls.at(-1)[0].response).not.toContain('"outcome"');
   });
 
   it('preserves aggregate counts when the structured result is invalid', async () => {

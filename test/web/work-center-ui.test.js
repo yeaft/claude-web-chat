@@ -66,15 +66,16 @@ describe('Work Center UI contract', () => {
     expect(chat.indexOf('<SidebarWorkCenter')).toBeGreaterThan(chat.indexOf('<!-- Connection warning -->'));
   });
 
-  it('uses static Action summaries and Action-level guidance instead of execution detail', () => {
+  it('uses expandable user-facing Action responses without raw execution detail', () => {
     const page = read('web/components/WorkCenterPage.js');
     const store = read('web/stores/chat.js');
     const css = read('web/styles/work-center.css');
 
     expect(page).toContain('class="work-center-action-card"');
     expect(page).toContain('class="work-center-action-stats"');
-    expect(page).not.toContain('@click="toggleAction(action)"');
-    expect(page).not.toContain('class="work-center-action-body"');
+    expect(page).toContain('@click="toggleAction(action)"');
+    expect(page).toContain('class="work-center-action-body"');
+    expect(page).toContain('class="work-center-action-response"');
     expect(page).not.toContain('class="work-center-run"');
     expect(page).not.toContain('class="work-center-activity-toggle"');
     expect(page).toContain("['ready','running'].includes(selected.status)");
@@ -82,6 +83,7 @@ describe('Work Center UI contract', () => {
     expect(store).toContain("workCenterRequest('guide'");
     expect(css).toContain('.work-center-action-card');
     expect(css).toContain('.work-center-action-stats');
+    expect(css).toContain('.work-center-action-response');
     expect(page).not.toContain('v-for="tool');
   });
 
@@ -171,6 +173,11 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('height: min(720px, 86vh)');
     expect(css).toContain('.work-center-settings-pane');
     expect(css).toContain('overflow-y: auto');
+    expect(css).toContain('.work-center-settings-card input[type="text"]');
+    expect(css).toContain('.work-center-settings-card input[type="number"]');
+    expect(css).toContain('background: var(--bg-input)');
+    expect(css).toContain('.work-center-settings-card .btn-primary');
+    expect(css).toContain('color: var(--accent-fg)');
   });
 
   it('provides matching English and Chinese Work Center strings', () => {

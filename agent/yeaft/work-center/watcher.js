@@ -97,11 +97,26 @@ export class WorkItemWatcher {
   async #execute(claim, signal) {
     let result;
     try {
-      result = await this.runner.run({ ...claim, signal, ownerBootId: this.ownerBootId });
+      result = await this.runner.run({
+        ...claim,
+        signal,
+        ownerBootId: this.ownerBootId,
+        onProgress: progress => {
+          const detail = this.store.updateRunProgress(
+            claim.run.id,
+            this.ownerBootId,
+            claim.run.leaseEpoch,
+            progress,
+          );
+          if (detail) this.onEvent({ type: 'run.progress', workItem: detail });
+          return !!detail;
+        },
+      });
     } catch (err) {
       if (signal.aborted) return;
       result = {
         outcome: err?.retryable === false ? 'failed' : 'retryable',
+        response: err?.workItemExecutionStats?.response || '',
         summary: '',
         evidence: [],
         error: err?.message || String(err),
