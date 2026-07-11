@@ -421,7 +421,7 @@ export const useChatStore = defineStore('chat', {
     // transition state stays separate so a cold Yeaft restore can still return
     // to the last Chat conversation after bootstrap replaces the active id.
     ...yeaftViewHelpers.createInitialConversationViewState(),
-    workCenterReturnView: 'chat',  // Work Center is Agent-level; remember the originating conversation surface
+    workCenterOpen: false,
     workCenterAgentId: null,
     workCenterItemsByAgent: {},
     workCenterDetailByAgent: {},
@@ -1050,12 +1050,6 @@ export const useChatStore = defineStore('chat', {
     enterWorkCenter(agentId = null) {
       const target = agentId || this.currentAgent || this.agents.find(agent => agent.online)?.id || null;
       if (!target) return;
-      if (this.currentView !== 'work-center') {
-        this.workCenterReturnView = this.currentView === 'yeaft' ? 'yeaft' : 'chat';
-      }
-      if (this.currentView === 'yeaft') {
-        yeaftViewHelpers.applyLeaveYeaftTransition(this);
-      }
       if (this.currentAgent !== target) {
         this.selectAgent(target);
         this.currentAgent = target;
@@ -1063,15 +1057,11 @@ export const useChatStore = defineStore('chat', {
         if (info) this.currentAgentInfo = info;
       }
       this.workCenterAgentId = target;
-      this.currentView = 'work-center';
+      this.workCenterOpen = true;
       this.listWorkItems(target).catch(() => {});
     },
-    leaveWorkCenter({ persistConversationView = false } = {}) {
-      if (this.workCenterReturnView === 'yeaft') {
-        this.enterYeaft(this.workCenterAgentId || this.currentAgent);
-        return;
-      }
-      this.activateChatView({ persistPreference: persistConversationView });
+    leaveWorkCenter() {
+      this.workCenterOpen = false;
     },
     enterWorkCenterFromSession(session, seedGoal = '') {
       if (!session?.id) return;

@@ -10,6 +10,7 @@ import YeaftDebugPanel from './YeaftDebugPanel.js';
 import VpTimelinePane from './VpTimelinePane.js';
 import YeaftSessionActions from './YeaftSessionActions.js';
 import LlmTab from './LlmTab.js';
+import WorkCenterPage from './WorkCenterPage.js';
 import { parseMentions } from '../utils/parseMentions.js';
 import { buildTimelineRows, resolveTimelineSession, selectGroupRosterVpList } from '../stores/helpers/vp-timeline.js';
 import { buildModelSelectionRows, getDefaultModelEffort, getSelectableModelEfforts, modelOptionMatchesRef, modelOptionRef, resolveSessionModelEffort, resolveSessionModelRef } from '../utils/modelRefs.js';
@@ -34,7 +35,7 @@ export function visibleSessionStatusTasks(taskMap) {
 
 export default {
   name: 'YeaftPage',
-  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, LlmTab },
+  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, LlmTab },
   template: `
     <div class="yeaft-page" ref="pageRef">
       <!-- Mobile sidebar overlay -->
@@ -55,10 +56,12 @@ export default {
       <!-- Workbench Panel (between sidebar and main) -->
       <WorkbenchPanel v-if="canUseWorkbench" />
 
+      <WorkCenterPage v-if="store.workCenterOpen" />
+
       <!-- Center Conversation. The Session status pane is rendered as a
            sibling to the RIGHT of this main column so the visual order is
            [conversation][Session status][debug], with debug always far right. -->
-      <div class="yeaft-main" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
+      <div v-else class="yeaft-main" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
         <!-- Center column: topbar + (settings | empty-hero | MessageList) + ChatInput. -->
         <div class="yeaft-main-center">
         <!-- Conversation Header -->

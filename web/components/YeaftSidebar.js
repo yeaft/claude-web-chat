@@ -82,6 +82,7 @@ export default {
         :agents="chatStore ? chatStore.agents : []"
         :active-agent-id="chatStore ? chatStore.workCenterAgentId : null"
         :collapsed="false"
+        :active="chatStore ? chatStore.workCenterOpen : false"
         @open="onOpenWorkCenter"
       />
 
@@ -414,6 +415,8 @@ export default {
     },
     onSelectGroup(g) {
       if (!g || !g.id) return;
+      const activeStore = this.chatStore || this.store;
+      if (activeStore && typeof activeStore.leaveWorkCenter === 'function') activeStore.leaveWorkCenter();
       // Cross-agent routing: when selecting a session owned by an agent
       // other than the currently-selected one, switch the chat store's
       // active agent so subsequent CRUD/messaging hits the owning agent.
