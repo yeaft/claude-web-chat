@@ -139,39 +139,33 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('v-if="emptyState.canCreate"');
   });
 
-  it('provides Agent-level workflow, VP pool, and model settings with creation preview', () => {
+  it('lets AI plan WorkItems while settings define reusable prompts, model, and effort', () => {
     const page = read('web/components/WorkCenterPage.js');
     const modal = read('web/components/WorkCenterSettingsModal.js');
     const store = read('web/stores/chat.js');
     const css = read('web/styles/work-center.css');
 
     expect(page).toContain('WorkCenterSettingsModal');
-    expect(page).toContain('planPreview');
-    expect(page).toContain('stageOverrides');
+    expect(page).toContain("tr('workCenter.aiPlan'");
+    expect(page).not.toContain('planPreview');
+    expect(page).not.toContain('stageOverrides');
+    expect(page).not.toContain('workflowTemplate: this.form');
     expect(page).not.toContain('run.modelSnapshot');
     expect(modal).toContain("section: 'workflow'");
-    expect(modal).toContain("mode: 'auto'");
-    expect(modal).toContain("mode === 'pool'");
-    expect(modal).toContain("mode === 'fixed'");
-    expect(modal).toContain('addStage');
-    expect(modal).toContain('moveStage');
+    expect(modal).toContain('draft.actionInstructions[type]');
+    expect(modal).toContain("$t('workCenter.action.' + type)");
+    expect(modal).toContain('draft.modelPolicy.effort');
     expect(modal).toContain("mode === 'specific'");
-    expect(modal).toContain('resetStageInstruction');
-    expect(modal).toContain('defaultStageInstructions');
-    expect(modal).toContain('stage.modelPolicy.effort');
-    expect(page).toContain('overrideStageEffort');
-    expect(page).toContain('effortOptionsForPlanStage');
     expect(modal).toContain("$emit('open-agent-models')");
     expect(page).toContain('<LlmTab context="yeaft"');
-    expect(page).toContain('previewRevision');
     expect(store).toContain("workCenterRequest('get_settings'");
     expect(store).toContain("workCenterRequest('update_settings'");
-    expect(store).toContain("workCenterRequest('preview'");
     expect(store).toContain("workCenterRequest('refresh_runtime'");
     expect(page).toContain('refreshWorkCenterRuntime(agentId)');
     expect(css).toContain('width: min(960px, 92vw)');
     expect(css).toContain('height: min(720px, 86vh)');
     expect(css).toContain('.work-center-settings-pane');
+    expect(css).toContain('.work-center-settings-card .btn-ghost');
     expect(css).toContain('overflow-y: auto');
     expect(css).toContain('.work-center-settings-card input[type="text"]');
     expect(css).toContain('.work-center-settings-card input[type="number"]');
@@ -202,6 +196,7 @@ describe('Work Center UI contract', () => {
       'workCenter.selectTitle',
       'workCenter.status.needs_attention',
       'workCenter.action.review',
+      'workCenter.action.custom',
       'workCenter.guidance',
       'workCenter.sendGuidance',
       'workCenter.loopCount',

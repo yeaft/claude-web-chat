@@ -11,10 +11,10 @@ export default defineTool({
   description: {
     en: `Create a persistent Agent-level Work Center item from the current Session.
 
-Use this when work must continue beyond the current turn, needs role handoffs, review, waiting, retry, or durable tracking. This creates the work contract; it does not execute it inline. The current Session is always stamped as the origin and cannot be overridden by model input.`,
+Use this when work must continue beyond the current turn, needs role handoffs, review, waiting, retry, or durable tracking. This creates only the goal contract; Work Center triage chooses the task type, Actions, and executors. The current Session is always stamped as the origin and cannot be overridden by model input.`,
     zh: `从当前 Session 创建一个持久化的 Agent 级工作项。
 
-当工作需要跨 turn 继续、需要角色接力、评审、等待、重试或长期跟踪时使用。该工具只创建工作契约，不在当前 turn 内执行。来源 Session 由运行时强制写入，模型输入不能覆盖。`,
+当工作需要跨 turn 继续、需要角色接力、评审、等待、重试或长期跟踪时使用。该工具只创建目标契约，任务类型、Action 和执行者由 Work Center triage 决定，不在当前 turn 内执行。来源 Session 由运行时强制写入，模型输入不能覆盖。`,
   },
   parameters: {
     type: 'object',

@@ -5,15 +5,18 @@ import { tmpdir } from 'node:os';
 import { Registry } from '../../../../agent/yeaft/vp/registry.js';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
+import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
 
 const engineOptions = [];
+const engineQueries = [];
 let invalidEngineResult = false;
 let engineResponsePrefix = '';
 let engineThinking = '';
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
   Engine: class {
     constructor(options) { engineOptions.push(options); }
-    async *query() {
+    async *query(input) {
+      engineQueries.push(input);
       yield { type: 'loop', loopNumber: 1 };
       yield { type: 'tool_end', id: 'tool-1', name: 'FileRead', output: 'ok', isError: false };
       yield { type: 'loop', loopNumber: 2 };
@@ -42,6 +45,7 @@ afterEach(() => {
   if (workDir) rmSync(workDir, { recursive: true, force: true });
   workDir = null;
   engineOptions.length = 0;
+  engineQueries.length = 0;
   invalidEngineResult = false;
   engineResponsePrefix = '';
   engineThinking = '';
@@ -252,46 +256,178 @@ describe('Work Center Runner execution resolution', () => {
     });
   });
 
-  it('reports a live user-facing response and strips the terminal outcome JSON', async () => {
-    workDir = mkdtempSync(join(tmpdir(), 'work-center-response-'));
-    engineResponsePrefix = 'Implemented the smallest safe change.\n\n';
+  it('uses the current Work Center model and effort for AI-planned Actions', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-current-policy-'));
     const registry = new Registry();
     registry.setVp({
-      id: 'linus', name: 'Linus', role: 'Developer', traits: ['implement'], modelHint: 'primary',
-      persona: 'Implement', personaHash: 'hash',
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
     });
-    const onProgress = vi.fn();
     const runner = new WorkItemRunner({
       registry,
-      progressIntervalMs: 0,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      policyProvider: async () => ({
+        modelPolicy: { mode: 'specific', model: 'provider/current', effort: 'high' },
+      }),
+      runtimeProvider: async () => ({
+        adapter: {},
+        config: {
+          primaryModel: 'provider/primary',
+          availableModels: [{ id: 'current', ref: 'provider/current', provider: 'provider', effortOptions: ['high'] }],
+        },
+      }),
+    });
+
+    await runner.run({
+      workItem: {
+        id: 'wi-1', workDir, workspaceKey: workDir,
+        workflowSnapshot: { planningMode: 'ai' },
+      },
+      action: {
+        type: 'implement', instruction: 'Implement it', requiredRole: 'linus',
+        modelPolicy: { mode: 'specific', model: 'provider/old', effort: null },
+      },
+      run: { id: 'run-1', leaseEpoch: 1 }, ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
+    });
+
+    expect(engineOptions[0]).toMatchObject({
+      config: { model: 'provider/current', modelEffort: 'high', fallbackModel: null },
+    });
+  });
+
+  it('injects bounded relevant Agent memory without widening Session or VP scopes', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-memory-runner-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const search = vi.fn().mockReturnValue([{
+      id: 'memory-1', scope: 'sessions/session-1/vp/linus', kind: 'decision', tags: ['implement'],
+      body: 'Preserve the public API.', sourceMessages: [], rank: -1,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    }]);
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry, store,
+      runtimeProvider: async () => ({
+        adapter: {}, memoryIndex: { search },
+        config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: {
+        id: 'wi-1', workDir, workspaceKey: workDir, reuseMemory: true,
+        origin: { sessionId: 'session-1', trustedSession: true }, linkedSessionIds: ['session-1'],
+      },
+      action: {
+        type: 'implement', stageId: 'fix', instruction: 'Fix the public API regression',
+        assignmentPolicy: { mode: 'auto', capability: 'implement', separateFromStageTypes: [] },
+      },
+      run: { id: 'run-1', leaseEpoch: 1 },
+      ownerBootId: 'boot-1', signal: new AbortController().signal,
+    });
+
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({
+      scopeFilter: expect.arrayContaining([
+        'user', 'sessions/session-1', 'sessions/session-1/vp/linus',
+      ]),
+      limit: 20,
+    }));
+    expect(search.mock.calls[0][0].scopeFilter).not.toContain('sessions/session-1/vp/martin');
+    expect(engineQueries[0].prompt).toContain('<work-center-memory>');
+    expect(engineQueries[0].prompt).toContain('Preserve the public API.');
+    expect(engineQueries[0].prompt.indexOf('<work-center-memory>'))
+      .toBeLessThan(engineQueries[0].prompt.indexOf('You are executing one Work Center Action'));
+  });
+
+  it('budgets the complete injected memory block including its safety wrapper', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-memory-budget-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const search = vi.fn().mockReturnValue([{
+      id: 'memory-large', scope: 'user', kind: 'decision', tags: ['implement'],
+      body: '界'.repeat(4_000), sourceMessages: [], rank: -1,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    }]);
+    const runner = new WorkItemRunner({
+      registry,
       store: {
         listCompletedRuns: vi.fn().mockReturnValue([]),
         isActiveRun: vi.fn().mockReturnValue(true),
         setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
       },
       runtimeProvider: async () => ({
-        adapter: {}, config: { primaryModel: 'provider/model', availableModels: [] },
+        adapter: {}, memoryIndex: { search },
+        config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });
 
-    const result = await runner.run({
-      workItem: { id: 'wi-1', workDir, workspaceKey: workDir },
-      action: { type: 'implement', requiredRole: 'linus', instruction: 'Implement it' },
-      run: { id: 'run-1', leaseEpoch: 1 },
-      ownerBootId: 'boot-1', signal: new AbortController().signal, onProgress,
+    await runner.run({
+      workItem: { id: 'wi-1', workDir, workspaceKey: workDir, reuseMemory: true },
+      action: { type: 'implement', instruction: 'Implement it', requiredRole: 'linus' },
+      run: { id: 'run-1', leaseEpoch: 1 }, ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
     });
 
-    expect(result).toMatchObject({
-      outcome: 'completed', response: 'Implemented the smallest safe change.',
-      loopCount: 2, toolCount: 1,
-    });
-    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
-      response: 'Implemented the smallest safe change.', loopCount: 2, toolCount: 1,
-    }));
-    expect(onProgress.mock.calls.at(-1)[0].response).not.toContain('"outcome"');
+    const prompt = engineQueries[0].prompt;
+    const memoryBlock = prompt.slice(
+      prompt.indexOf('\n\nRelevant memory for this Action follows.'),
+      prompt.indexOf('</work-center-memory>') + '</work-center-memory>'.length,
+    );
+    expect(memoryBlock).toContain('<work-center-memory>');
+    expect(memoryBlock).toContain('</work-center-memory>');
+    expect(approxTokens(memoryBlock)).toBeLessThanOrEqual(4_000);
   });
 
-  it('keeps hidden thinking out of live progress, the final response, and outcome parsing', async () => {
+  it('does not trust browser-like Session metadata for memory scope expansion', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-untrusted-memory-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const search = vi.fn().mockReturnValue([]);
+    const runner = new WorkItemRunner({
+      registry,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: {}, memoryIndex: { search },
+        config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: {
+        id: 'wi-1', workDir, workspaceKey: workDir,
+        origin: { sessionId: 'foreign-session' }, linkedSessionIds: ['foreign-session'],
+      },
+      action: { type: 'implement', instruction: 'Implement it', requiredRole: 'linus' },
+      run: { id: 'run-1', leaseEpoch: 1 }, ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
+    });
+
+    expect(search.mock.calls[0][0].scopeFilter).toEqual(['user']);
+  });
+
+  it('reports public text while filtering hidden thinking from progress and the result', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-thinking-filter-'));
     engineThinking = '{"outcome":"failed","summary":"private reasoning","evidence":[]}';
     engineResponsePrefix = 'Implemented and verified the public change.\n\n';
@@ -323,7 +459,11 @@ describe('Work Center Runner execution resolution', () => {
 
     expect(result).toMatchObject({
       outcome: 'completed', summary: 'done', response: 'Implemented and verified the public change.',
+      loopCount: 2, toolCount: 1,
     });
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
+      response: 'Implemented and verified the public change.', loopCount: 2, toolCount: 1,
+    }));
     expect(JSON.stringify(onProgress.mock.calls)).not.toContain('private reasoning');
     expect(JSON.stringify(result)).not.toContain('private reasoning');
   });

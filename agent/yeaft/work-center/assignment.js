@@ -77,6 +77,16 @@ export function selectWorkItemVp({ policy: rawPolicy, stageType, vps, priorRuns 
     .map(vp => ({ vp, score: capabilityScore(vp, policy.capability || stageType) }))
     .sort((left, right) => right.score - left.score || left.vp.id.localeCompare(right.vp.id));
   if (ranked[0].score === 0 && policy.mode === 'auto') {
+    const fallback = eligible
+      .map(vp => ({ vp, score: capabilityScore(vp, stageType) }))
+      .sort((left, right) => right.score - left.score || left.vp.id.localeCompare(right.vp.id));
+    if (fallback[0]?.score > 0) {
+      return {
+        vp: fallback[0].vp,
+        reason: `${policy.mode}:${policy.capability || stageType}:fallback=${stageType}:score=${fallback[0].score}`,
+        policy,
+      };
+    }
     throw policyError(`No Work Center VP matches capability: ${policy.capability || stageType}`);
   }
   return {

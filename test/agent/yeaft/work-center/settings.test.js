@@ -101,18 +101,36 @@ describe('Work Center settings', () => {
     const dir = tempDir();
     const settings = defaultWorkCenterSettings();
     settings.defaultWorkDir = ' /project ';
+    settings.modelPolicy = { mode: 'specific', model: 'provider/work-center', effort: 'high' };
+    settings.actionInstructions.implement = 'Implement with a minimal verified diff.';
     settings.workflows[0].stages[1].assignmentPolicy = {
       mode: 'pool', capability: 'javascript', candidateVpIds: ['linus', 'linus', 'grace'],
       fixedVpId: null, separateFromStageTypes: [],
     };
     const saved = writeWorkCenterSettings(dir, settings);
     expect(saved.defaultWorkDir).toBe('/project');
+    expect(saved.modelPolicy).toEqual({ mode: 'specific', model: 'provider/work-center', effort: 'high' });
+    expect(saved.actionInstructions.implement).toBe('Implement with a minimal verified diff.');
     expect(saved.revision).toBe(2);
     expect(saved.workflows[0].stages[1].assignmentPolicy.candidateVpIds).toEqual(['linus', 'grace']);
     const file = join(dir, 'work-center', 'settings.json');
     expect(existsSync(file)).toBe(true);
     expect(readFileSync(file, 'utf8')).toMatch(/\n$/);
     expect(readWorkCenterSettings(dir)).toEqual(saved);
+  });
+
+  it('backfills dynamic prompts and model policy from legacy workflow settings', () => {
+    const legacy = defaultWorkCenterSettings();
+    delete legacy.actionInstructions;
+    delete legacy.modelPolicy;
+    legacy.workflows[0].stages.find(stage => stage.type === 'triage').modelPolicy = {
+      mode: 'specific', model: 'provider/legacy', effort: 'high',
+    };
+    legacy.workflows[0].stages.find(stage => stage.type === 'implement').instruction = 'Legacy implementation prompt';
+
+    const normalized = normalizeWorkCenterSettings(legacy);
+    expect(normalized.modelPolicy).toEqual({ mode: 'specific', model: 'provider/legacy', effort: 'high' });
+    expect(normalized.actionInstructions.implement).toBe('Legacy implementation prompt');
   });
 
   it('rejects invalid fixed, pool, duplicate, and review-return policies', () => {

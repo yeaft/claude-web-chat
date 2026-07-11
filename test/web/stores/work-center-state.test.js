@@ -23,8 +23,12 @@ describe('Work Center summary state', () => {
   it('merges a redacted summary without dropping loaded detail data', () => {
     const merged = mergeWorkItemSummary(detail, {
       id: 'wi-1', revision: 3, title: 'Updated title', status: 'waiting', updatedAt: 31,
+      workItemType: 'bug-fix', planningMode: 'ai',
     });
-    expect(merged).toMatchObject({ title: 'Updated title', status: 'waiting', updatedAt: 31 });
+    expect(merged).toMatchObject({
+      title: 'Updated title', status: 'waiting', updatedAt: 31,
+      workItemType: 'bug-fix', planningMode: 'ai',
+    });
     expect(merged.actions).toEqual(detail.actions);
     expect(merged.workDir).toBe('/local/project');
   });

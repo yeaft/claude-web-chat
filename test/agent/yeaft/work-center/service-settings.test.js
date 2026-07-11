@@ -72,20 +72,40 @@ describe('Work Center settings service', () => {
     }
   });
 
-  it('freezes the effective workflow and stage overrides on creation', async () => {
+  it('creates an AI-planned WorkItem without a caller-defined workflow', async () => {
+    const service = await createService();
+    const item = await service.handle('create', {
+      title: 'Dynamic task', goal: 'Choose the best task-specific flow', workDir: '/tmp', start: false,
+      stageOverrides: {
+        implement: {
+          assignmentPolicy: { mode: 'fixed', fixedVpId: 'caller-choice' },
+          modelPolicy: { mode: 'specific', model: 'caller/model', effort: 'max' },
+        },
+      },
+    });
+
+    expect(item).toMatchObject({ workflowTemplate: 'ai-planned', status: 'draft' });
+    expect(item.workflowSnapshot).toMatchObject({ id: 'ai-planned', planningMode: 'ai' });
+    expect(item.workflowSnapshot.stages.map(stage => stage.id)).toEqual(['triage']);
+    expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller-choice');
+    expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller/model');
+  });
+
+  it('freezes the effective workflow and stage overrides for trusted explicit legacy producers', async () => {
     const service = await createService();
     const item = await service.handle('create', {
       title: 'Configurable task',
       goal: 'Use a fixed implementation VP and model',
       workDir: '/tmp',
       start: false,
+      workflowTemplate: 'software-change',
       stageOverrides: {
         implement: {
           assignmentPolicy: { mode: 'fixed', fixedVpId: 'linus' },
           modelPolicy: { mode: 'specific', model: 'provider/model', effort: 'high' },
         },
       },
-    });
+    }, { trustedProducer: true });
     expect(item.workflowSnapshot.id).toBe('software-change');
     expect(item.workflowSnapshot.stages.find(stage => stage.id === 'implement')).toMatchObject({
       assignmentPolicy: { mode: 'fixed', fixedVpId: 'linus' },
@@ -99,5 +119,27 @@ describe('Work Center settings service', () => {
     await service.handle('update_settings', { settings: changed });
     expect(service.store.getWorkItem(item.id).workflowSnapshot.stages
       .find(stage => stage.id === 'implement').assignmentPolicy.fixedVpId).toBe('linus');
+  });
+
+  it('ignores explicit workflow and stage overrides from untrusted callers', async () => {
+    const service = await createService();
+    const item = await service.handle('create', {
+      title: 'Untrusted configurable task',
+      goal: 'Do not accept caller execution policy',
+      workDir: '/tmp',
+      start: false,
+      workflowTemplate: 'software-change',
+      stageOverrides: {
+        implement: {
+          assignmentPolicy: { mode: 'fixed', fixedVpId: 'caller-choice' },
+          modelPolicy: { mode: 'specific', model: 'caller/model', effort: 'max' },
+        },
+      },
+    });
+
+    expect(item).toMatchObject({ workflowTemplate: 'ai-planned' });
+    expect(item.workflowSnapshot.stages.map(stage => stage.id)).toEqual(['triage']);
+    expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller-choice');
+    expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller/model');
   });
 });

@@ -18,6 +18,23 @@ let shutdownPromise = null;
 let serviceFactory = null;
 
 const BROWSER_DETAIL_OPS = new Set(['get', 'create', 'update', 'start', 'cancel', 'guide', 'retry']);
+const BROWSER_CREATE_FIELDS = Object.freeze([
+  'title',
+  'goal',
+  'acceptanceCriteria',
+  'workDir',
+  'reuseMemory',
+  'origin',
+  'linkedSessionIds',
+  'start',
+]);
+
+function browserCreatePayload(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(BROWSER_CREATE_FIELDS
+    .filter(field => Object.prototype.hasOwnProperty.call(source, field))
+    .map(field => [field, source[field]]));
+}
 
 function send(msg) {
   sendToServer(msg);
@@ -78,6 +95,7 @@ async function createDefaultService() {
         defaultWorkDir: ctx.CONFIG?.workDir || process.cwd(),
       };
     },
+    policyProvider: async () => readWorkCenterSettings(yeaftDir),
     registry: defaultRegistry,
     store: null,
   });
@@ -120,7 +138,7 @@ export async function bootWorkCenter() {
 
 export async function createWorkItemFromProducer(payload) {
   const workCenter = await ensureWorkCenter();
-  return workCenter.handle('create', payload);
+  return workCenter.handle('create', payload, { trustedProducer: true });
 }
 
 export async function handleWorkCenterRequest(msg) {
@@ -151,7 +169,10 @@ export async function handleWorkCenterRequest(msg) {
       data = await readSettingsResponse();
     } else {
       const workCenter = await ensureWorkCenter();
-      data = await workCenter.handle(op, msg.payload || {});
+      data = await workCenter.handle(
+        op,
+        op === 'create' ? browserCreatePayload(msg.payload) : (msg.payload || {}),
+      );
     }
     if (BROWSER_DETAIL_OPS.has(op)) data = projectWorkItemDetail(data);
     send({
