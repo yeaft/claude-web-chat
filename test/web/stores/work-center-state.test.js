@@ -14,7 +14,10 @@ describe('Work Center summary state', () => {
     status: 'running',
     updatedAt: 30,
     workDir: '/local/project',
-    actions: [{ id: 'action-1', loopCount: 2, toolCount: 5 }],
+    actions: [{
+      id: 'action-1', loopCount: 2, toolCount: 5, response: 'Reading files',
+      progressRevision: 2,
+    }],
   };
 
   it('merges a redacted summary without dropping loaded detail data', () => {
@@ -33,11 +36,36 @@ describe('Work Center summary state', () => {
   it('patches live Action aggregate counts without replacing detail Actions', () => {
     const merged = mergeWorkItemSummary(detail, {
       id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
-      actionStats: [{ id: 'action-1', status: 'running', loopCount: 4, toolCount: 9 }],
+      actionStats: [{
+        id: 'action-1', status: 'running', loopCount: 4, toolCount: 9,
+        response: 'Implemented the fix', progressRevision: 3,
+      }],
     });
-    expect(merged.actions).toEqual([
-      { id: 'action-1', status: 'running', loopCount: 4, toolCount: 9 },
-    ]);
+    expect(merged.actions).toEqual([{
+      id: 'action-1', status: 'running', loopCount: 4, toolCount: 9,
+      response: 'Implemented the fix', progressRevision: 3,
+    }]);
+  });
+
+  it('does not let a legacy Action patch without a progress revision erase live response text', () => {
+    const merged = mergeWorkItemSummary(detail, {
+      id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
+      actionStats: [{ id: 'action-1', status: 'running', loopCount: 3, toolCount: 7 }],
+    });
+    expect(merged.actions[0]).toMatchObject({
+      response: 'Reading files', progressRevision: 2, loopCount: 3, toolCount: 7,
+    });
+  });
+
+  it('rejects an out-of-order Action progress patch within the same WorkItem revision', () => {
+    const merged = mergeWorkItemSummary(detail, {
+      id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
+      actionStats: [{
+        id: 'action-1', status: 'running', loopCount: 1, toolCount: 1,
+        response: 'Stale response', progressRevision: 1,
+      }],
+    });
+    expect(merged.actions).toEqual(detail.actions);
   });
 
   it('rejects an older revision even when its timestamp is newer', () => {

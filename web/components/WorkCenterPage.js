@@ -15,6 +15,7 @@ export default {
       search: '',
       resumeAnswer: '',
       actionGuidance: '',
+      expandedActions: {},
       form: {
         title: '',
         goal: '',
@@ -135,7 +136,24 @@ export default {
       this.selectedId = item.id;
       this.resumeAnswer = '';
       this.actionGuidance = '';
+      this.expandedActions = {};
       try { await this.store.getWorkItem(item.id, this.agentId); } catch {}
+    },
+    actionHasResponse(action) {
+      return !!String(action?.response || '').trim();
+    },
+    actionExpanded(action) {
+      return !!this.expandedActions[action?.id];
+    },
+    toggleAction(action) {
+      if (!this.actionHasResponse(action)) return;
+      this.expandedActions = {
+        ...this.expandedActions,
+        [action.id]: !this.expandedActions[action.id],
+      };
+    },
+    actionResponseText(action) {
+      return String(action?.response || '').trim();
     },
     openCreate() {
       this.createOpen = true;
@@ -342,17 +360,24 @@ export default {
                 <div class="work-center-section" v-if="selected.actions?.length">
                   <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
                   <div class="work-center-action-list">
-                    <article v-for="action in selected.actions" :key="action.id" class="work-center-action-card" :data-status="action.status">
-                      <span class="work-center-action-index">{{ action.sequence }}</span>
-                      <span class="work-center-action-title">
-                        <strong>{{ actionLabel(action.type) }}</strong>
-                        <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.capability || tr('workCenter.assignment.auto', 'Auto') }}</small>
-                      </span>
-                      <span class="work-center-action-stats">
-                        <span>{{ $t('workCenter.loopCount', { count: action.loopCount || 0 }) }}</span>
-                        <span>{{ $t('workCenter.toolCount', { count: action.toolCount || 0 }) }}</span>
-                      </span>
-                      <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
+                    <article v-for="action in selected.actions" :key="action.id" class="work-center-action-card" :data-status="action.status" :class="{ expanded: actionExpanded(action) }">
+                      <button class="work-center-action-summary" type="button" @click="toggleAction(action)"
+                              :disabled="!actionHasResponse(action)" :aria-expanded="actionHasResponse(action) ? actionExpanded(action) : undefined">
+                        <span class="work-center-action-index">{{ action.sequence }}</span>
+                        <span class="work-center-action-title">
+                          <strong>{{ actionLabel(action.type) }}</strong>
+                          <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.capability || tr('workCenter.assignment.auto', 'Auto') }}</small>
+                        </span>
+                        <span class="work-center-action-stats">
+                          <span>{{ $t('workCenter.loopCount', { count: action.loopCount || 0 }) }}</span>
+                          <span>{{ $t('workCenter.toolCount', { count: action.toolCount || 0 }) }}</span>
+                        </span>
+                        <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
+                        <span v-if="actionHasResponse(action)" class="work-center-action-chevron" aria-hidden="true"></span>
+                      </button>
+                      <div v-if="actionExpanded(action)" class="work-center-action-body">
+                        <div class="work-center-action-response">{{ actionResponseText(action) }}</div>
+                      </div>
                     </article>
                   </div>
                 </div>

@@ -40,7 +40,14 @@ export function mergeWorkItemSummary(current, summary) {
     const statsById = new Map(summary.actionStats.map(stats => [stats?.id, stats]));
     merged.actions = current.actions.map(action => {
       const stats = statsById.get(action?.id);
-      return stats ? { ...action, ...stats } : action;
+      if (!stats) return action;
+      const currentProgress = numberOrNull(action?.progressRevision) ?? 0;
+      const nextProgress = numberOrNull(stats?.progressRevision);
+      if (nextProgress == null) {
+        const { response, ...legacyStats } = stats;
+        return { ...action, ...legacyStats };
+      }
+      return nextProgress < currentProgress ? action : { ...action, ...stats };
     });
   }
   return merged;

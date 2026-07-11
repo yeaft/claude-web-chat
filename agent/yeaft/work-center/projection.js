@@ -7,7 +7,7 @@ function count(value) {
   return Math.max(0, Number(value) || 0);
 }
 
-function actionExecutionStats(action, runs) {
+function actionExecution(action, runs) {
   const matchingRuns = Array.isArray(runs)
     ? runs.filter(run => run?.actionId === action?.id)
     : [];
@@ -15,12 +15,23 @@ function actionExecutionStats(action, runs) {
     return {
       loopCount: count(action?.loopCount),
       toolCount: count(action?.toolCount),
+      response: '',
+      progressRevision: 0,
     };
   }
-  return matchingRuns.reduce((total, run) => ({
+  const stats = matchingRuns.reduce((total, run) => ({
     loopCount: total.loopCount + count(run.loopCount),
     toolCount: total.toolCount + count(run.toolCount),
   }), { loopCount: 0, toolCount: 0 });
+  const latest = [...matchingRuns].sort((left, right) => (
+    count(right.progressRevision) - count(left.progressRevision)
+      || count(right.startedAt) - count(left.startedAt)
+  ))[0];
+  return {
+    ...stats,
+    response: typeof latest?.response === 'string' ? latest.response : '',
+    progressRevision: count(latest?.progressRevision),
+  };
 }
 
 function projectAssignmentPolicy(policy) {
@@ -34,7 +45,7 @@ function projectAssignmentPolicy(policy) {
 
 function projectAction(action, runs) {
   if (!action) return null;
-  const stats = actionExecutionStats(action, runs);
+  const execution = actionExecution(action, runs);
   return {
     id: action.id,
     sequence: action.sequence,
@@ -43,8 +54,10 @@ function projectAction(action, runs) {
     assignmentPolicy: projectAssignmentPolicy(action.assignmentPolicy),
     requiredRole: action.requiredRole || '',
     status: action.status,
-    loopCount: stats.loopCount,
-    toolCount: stats.toolCount,
+    loopCount: execution.loopCount,
+    toolCount: execution.toolCount,
+    response: execution.response,
+    progressRevision: execution.progressRevision,
   };
 }
 
@@ -57,6 +70,8 @@ function projectActionStats(detail) {
       status: projected.status,
       loopCount: projected.loopCount,
       toolCount: projected.toolCount,
+      response: projected.response,
+      progressRevision: projected.progressRevision,
     };
   });
 }
@@ -70,8 +85,8 @@ function waitingReason(detail) {
 }
 
 /**
- * Authenticated browser detail DTO. Execution records stay Agent-local; the
- * browser receives only Action status and aggregate Loop/tool counts.
+ * Authenticated browser detail DTO. Raw execution records stay Agent-local;
+ * the browser receives only Action status/counts plus the explicit user-facing response.
  */
 export function projectWorkItemDetail(detail) {
   if (!detail) return null;

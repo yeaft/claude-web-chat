@@ -31,6 +31,7 @@ function normalizeTerminalResult(result, action) {
   }
   const normalized = {
     outcome: result.outcome,
+    response: String(result.response || ''),
     summary: String(result.summary || ''),
     evidence: normalizeEvidence(result.evidence),
     waitingReason: result.waitingReason ? String(result.waitingReason) : null,
