@@ -35,6 +35,7 @@ describe('agent metrics', () => {
     });
 
     expect(metrics.snapshotAgentMetrics()).toMatchObject({
+      metricEpoch: expect.any(String),
       chatTurns: 1,
       yeaftTurns: 1,
       totalTurns: 2,

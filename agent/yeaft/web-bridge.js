@@ -72,7 +72,7 @@ import { buildMcpFlattenedTools } from './tools/mcp-tools.js';
 import { getAgentRegistry, agentBelongsToScope } from './tools/agent.js';
 import { isPromptableAgentStatus } from './sub-agent/status.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
-import { recordAgentSessionCreated, recordAgentTokenUsage, recordAgentTurn } from '../metrics.js';
+import { recordAgentSessionCreated, recordAgentTurn } from '../metrics.js';
 
 const LEGACY_SKILL_COMMAND_PREFIX = 'skill:';
 const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
@@ -2212,9 +2212,6 @@ function mergedStatusForProjectRuntime(runtime) {
 
 /** Send a Yeaft Session metadata event over the legacy-compatible envelope. */
 function sendSessionEvent(event, { sessionId, chatId, vpId, turnId, threadId, perfTraceId } = {}) {
-  if (event?.type === 'loop') {
-    recordAgentTokenUsage(event.usage || {});
-  }
   sendToServer({
     type: 'yeaft_output',
     conversationId: yeaftConversationId,

@@ -53,6 +53,11 @@ export const userStatsDb = {
           delta.requests || 0,
           delta.bytesSent || 0,
           delta.bytesReceived || 0,
+          delta.inputTokens || 0,
+          delta.outputTokens || 0,
+          delta.cacheReadTokens || 0,
+          delta.cacheWriteTokens || 0,
+          delta.totalTokens || 0,
           now
         );
         // Daily stats
@@ -63,7 +68,12 @@ export const userStatsDb = {
           delta.sessions || 0,
           delta.requests || 0,
           delta.bytesSent || 0,
-          delta.bytesReceived || 0
+          delta.bytesReceived || 0,
+          delta.inputTokens || 0,
+          delta.outputTokens || 0,
+          delta.cacheReadTokens || 0,
+          delta.cacheWriteTokens || 0,
+          delta.totalTokens || 0
         );
       }
     });
@@ -90,8 +100,77 @@ export const userStatsDb = {
     return stmts.getUserStatsById.get(userId) || null;
   },
 
+  /**
+   * Convert one cumulative agent snapshot into an idempotent user delta.
+   * A new metric epoch means the agent process restarted and counters began at
+   * zero. Repeated or lower snapshots in the same epoch never add usage.
+   */
+  recordAgentTokenSnapshot(userId, agentInstanceId, metrics = {}) {
+    const metricEpoch = typeof metrics.metricEpoch === 'string' ? metrics.metricEpoch : '';
+    if (!userId || !agentInstanceId || !metricEpoch) return null;
+
+    const fields = [
+      ['inputTokens', 'input_tokens'],
+      ['outputTokens', 'output_tokens'],
+      ['cacheReadTokens', 'cache_read_tokens'],
+      ['cacheWriteTokens', 'cache_write_tokens'],
+      ['totalTokens', 'total_tokens'],
+    ];
+    const current = {};
+    for (const [metricKey] of fields) {
+      current[metricKey] = Math.max(0, Number(metrics[metricKey]) || 0);
+    }
+
+    const now = Date.now();
+    return transaction(() => {
+      const previous = stmts.getAgentMetricWatermark.get(userId, agentInstanceId, metricEpoch);
+      const delta = {};
+      const watermark = {};
+      for (const [metricKey, column] of fields) {
+        const previousValue = Number(previous?.[column]) || 0;
+        delta[metricKey] = Math.max(0, current[metricKey] - previousValue);
+        watermark[metricKey] = Math.max(previousValue, current[metricKey]);
+      }
+      stmts.upsertAgentMetricWatermark.run(
+        userId,
+        agentInstanceId,
+        metricEpoch,
+        watermark.inputTokens,
+        watermark.outputTokens,
+        watermark.cacheReadTokens,
+        watermark.cacheWriteTokens,
+        watermark.totalTokens,
+        now
+      );
+      if (Object.values(delta).some(value => value > 0)) {
+        stmts.upsertUserStats.run(
+          userId, 0, 0, 0, 0, 0,
+          delta.inputTokens,
+          delta.outputTokens,
+          delta.cacheReadTokens,
+          delta.cacheWriteTokens,
+          delta.totalTokens,
+          now
+        );
+        stmts.upsertDailyStats.run(
+          userId, todayStr(), 0, 0, 0, 0, 0,
+          delta.inputTokens,
+          delta.outputTokens,
+          delta.cacheReadTokens,
+          delta.cacheWriteTokens,
+          delta.totalTokens
+        );
+      }
+      return delta;
+    })();
+  },
+
   getDashboardTotals() {
     return stmts.getDashboardTotals.get();
+  },
+
+  getDashboardTokenTotals() {
+    return stmts.getDashboardTokenTotals.get();
   },
 
   getTodayActiveUsers() {

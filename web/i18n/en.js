@@ -817,6 +817,7 @@ export default {
   'settings.dashboard.todayMessages': 'Today Messages',
   'settings.dashboard.todayUserTurns': 'Today User Turns',
   'settings.dashboard.totalTokens': 'Total Tokens',
+  'settings.dashboard.tokenAccuracy': 'Provider-reported usage, accumulated from the version that enabled per-user token tracking. Heartbeats are excluded.',
   'settings.dashboard.agentTurns': 'Agent Turns',
   'settings.dashboard.agentSessions': 'Agent Sessions',
   'settings.dashboard.turns': 'Turns',
