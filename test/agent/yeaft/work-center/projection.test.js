@@ -4,7 +4,8 @@ import { projectWorkCenterEvent, projectWorkItemDetail } from '../../../../agent
 function internalDetail() {
   return {
     id: 'wi-1', revision: 2, title: 'Fix', goal: 'Goal', status: 'waiting',
-    acceptanceCriteria: ['Safe detail'], workflowTemplate: 'software-change',
+    acceptanceCriteria: ['Safe detail'], workflowTemplate: 'ai-planned',
+    workflowSnapshot: { planningMode: 'ai', workItemType: 'bug-fix' },
     currentActionId: 'a-1', currentRunId: 'r-2', workDir: '/project', reuseMemory: true,
     origin: { sessionId: 's-1', messageId: 'secret-message', createdBy: 'linus' },
     linkedSessionIds: ['s-1'], createdAt: 1, updatedAt: 2,
@@ -40,7 +41,9 @@ describe('Work Center event projection', () => {
     const detail = internalDetail();
     const projected = projectWorkCenterEvent({ type: 'run.finished', workItem: detail });
 
-    expect(projected.workItem).toMatchObject({ id: 'wi-1', status: 'waiting' });
+    expect(projected.workItem).toMatchObject({
+      id: 'wi-1', status: 'waiting', workItemType: 'bug-fix', planningMode: 'ai',
+    });
     expect(projected.workItem.actionStats).toEqual([
       { id: 'a-1', status: 'completed', loopCount: 3, toolCount: 8 },
     ]);
@@ -59,9 +62,10 @@ describe('Work Center event projection', () => {
     expect(projected).toMatchObject({
       id: 'wi-1',
       waitingReason: 'Choose the compatibility behavior',
+      workItemType: 'bug-fix', planningMode: 'ai',
       actions: [{
         id: 'a-1', sequence: 1, type: 'review', stageId: 'review',
-        assignmentPolicy: { mode: 'auto', fixedVpId: null },
+        assignmentPolicy: { mode: 'auto', capability: 'review', fixedVpId: null },
         status: 'completed', loopCount: 3, toolCount: 8,
       }],
     });

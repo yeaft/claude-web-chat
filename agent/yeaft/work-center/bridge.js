@@ -78,6 +78,7 @@ async function createDefaultService() {
         defaultWorkDir: ctx.CONFIG?.workDir || process.cwd(),
       };
     },
+    policyProvider: async () => readWorkCenterSettings(yeaftDir),
     registry: defaultRegistry,
     store: null,
   });
@@ -120,7 +121,7 @@ export async function bootWorkCenter() {
 
 export async function createWorkItemFromProducer(payload) {
   const workCenter = await ensureWorkCenter();
-  return workCenter.handle('create', payload);
+  return workCenter.handle('create', payload, { trustedProducer: true });
 }
 
 export async function handleWorkCenterRequest(msg) {

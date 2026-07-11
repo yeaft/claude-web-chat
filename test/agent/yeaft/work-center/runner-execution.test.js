@@ -7,11 +7,13 @@ import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 
 const engineOptions = [];
+const engineQueries = [];
 let invalidEngineResult = false;
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
   Engine: class {
     constructor(options) { engineOptions.push(options); }
-    async *query() {
+    async *query(input) {
+      engineQueries.push(input);
       yield { type: 'loop', loopNumber: 1 };
       yield { type: 'tool_end', id: 'tool-1', name: 'FileRead', output: 'ok', isError: false };
       yield { type: 'loop', loopNumber: 2 };
@@ -30,6 +32,7 @@ afterEach(() => {
   if (workDir) rmSync(workDir, { recursive: true, force: true });
   workDir = null;
   engineOptions.length = 0;
+  engineQueries.length = 0;
   invalidEngineResult = false;
 });
 
@@ -206,6 +209,135 @@ describe('Work Center Runner execution resolution', () => {
     expect(engineOptions[0]).toMatchObject({
       config: { model: 'provider/plain', modelEffort: null, fallbackModel: null },
     });
+  });
+
+  it('uses the current Work Center model and effort for AI-planned Actions', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-current-policy-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      policyProvider: async () => ({
+        modelPolicy: { mode: 'specific', model: 'provider/current', effort: 'high' },
+      }),
+      runtimeProvider: async () => ({
+        adapter: {},
+        config: {
+          primaryModel: 'provider/primary',
+          availableModels: [{ id: 'current', ref: 'provider/current', provider: 'provider', effortOptions: ['high'] }],
+        },
+      }),
+    });
+
+    await runner.run({
+      workItem: {
+        id: 'wi-1', workDir, workspaceKey: workDir,
+        workflowSnapshot: { planningMode: 'ai' },
+      },
+      action: {
+        type: 'implement', instruction: 'Implement it', requiredRole: 'linus',
+        modelPolicy: { mode: 'specific', model: 'provider/old', effort: null },
+      },
+      run: { id: 'run-1', leaseEpoch: 1 }, ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
+    });
+
+    expect(engineOptions[0]).toMatchObject({
+      config: { model: 'provider/current', modelEffort: 'high', fallbackModel: null },
+    });
+  });
+
+  it('injects bounded relevant Agent memory without widening Session or VP scopes', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-memory-runner-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const search = vi.fn().mockReturnValue([{
+      id: 'memory-1', scope: 'sessions/session-1/vp/linus', kind: 'decision', tags: ['implement'],
+      body: 'Preserve the public API.', sourceMessages: [], rank: -1,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    }]);
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry, store,
+      runtimeProvider: async () => ({
+        adapter: {}, memoryIndex: { search },
+        config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: {
+        id: 'wi-1', workDir, workspaceKey: workDir, reuseMemory: true,
+        origin: { sessionId: 'session-1', trustedSession: true }, linkedSessionIds: ['session-1'],
+      },
+      action: {
+        type: 'implement', stageId: 'fix', instruction: 'Fix the public API regression',
+        assignmentPolicy: { mode: 'auto', capability: 'implement', separateFromStageTypes: [] },
+      },
+      run: { id: 'run-1', leaseEpoch: 1 },
+      ownerBootId: 'boot-1', signal: new AbortController().signal,
+    });
+
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({
+      scopeFilter: expect.arrayContaining([
+        'user', 'sessions/session-1', 'sessions/session-1/vp/linus',
+      ]),
+      limit: 20,
+    }));
+    expect(search.mock.calls[0][0].scopeFilter).not.toContain('sessions/session-1/vp/martin');
+    expect(engineQueries[0].prompt).toContain('<work-center-memory>');
+    expect(engineQueries[0].prompt).toContain('Preserve the public API.');
+    expect(engineQueries[0].prompt.indexOf('<work-center-memory>'))
+      .toBeLessThan(engineQueries[0].prompt.indexOf('You are executing one Work Center Action'));
+  });
+
+  it('does not trust browser-like Session metadata for memory scope expansion', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-untrusted-memory-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const search = vi.fn().mockReturnValue([]);
+    const runner = new WorkItemRunner({
+      registry,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: {}, memoryIndex: { search },
+        config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: {
+        id: 'wi-1', workDir, workspaceKey: workDir,
+        origin: { sessionId: 'foreign-session' }, linkedSessionIds: ['foreign-session'],
+      },
+      action: { type: 'implement', instruction: 'Implement it', requiredRole: 'linus' },
+      run: { id: 'run-1', leaseEpoch: 1 }, ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
+    });
+
+    expect(search.mock.calls[0][0].scopeFilter).toEqual(['user']);
   });
 
   it('preserves aggregate counts when the structured result is invalid', async () => {

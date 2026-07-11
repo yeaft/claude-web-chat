@@ -1,4 +1,11 @@
-import { actionForStage, actionInstruction, getNextStep, initialActionFor, RUN_OUTCOMES } from './workflow.js';
+import {
+  actionForStage,
+  actionInstruction,
+  applyGeneratedPlan,
+  getNextStep,
+  initialActionFor,
+  RUN_OUTCOMES,
+} from './workflow.js';
 import { normalizeEvidence } from './evidence.js';
 
 function normalizeCriteria(value) {
@@ -32,6 +39,9 @@ function normalizeTerminalResult(result, action) {
       ? result.reviewDecision
       : null,
     contractPatch: normalizeContractPatch(result.contractPatch),
+    plan: result.plan && typeof result.plan === 'object' && !Array.isArray(result.plan)
+      ? result.plan
+      : null,
     loopCount: Math.max(0, Number(result.loopCount) || 0),
     toolCount: Math.max(0, Number(result.toolCount) || 0),
   };
@@ -191,6 +201,26 @@ export class WorkflowController {
     const activeAction = activeRun ? this.store.getAction(activeRun.actionId) : null;
     if (!activeRun || !activeAction) throw new Error('Run is stale, cancelled, or already finished');
     const result = normalizeTerminalResult(rawResult, activeAction);
+    let validatedGeneratedWorkflow = null;
+    if (result.outcome === 'completed'
+        && activeAction.type === 'triage'
+        && activeRun
+        && this.store.getWorkItem(activeRun.workItemId)?.workflowSnapshot?.planningMode === 'ai') {
+      const current = this.store.getWorkItem(activeRun.workItemId);
+      const effective = result.contractPatch
+        ? {
+            ...current,
+            goal: result.contractPatch.goal ?? current.goal,
+            acceptanceCriteria: result.contractPatch.acceptanceCriteria ?? current.acceptanceCriteria,
+          }
+        : current;
+      try {
+        validatedGeneratedWorkflow = applyGeneratedPlan(effective, result.plan);
+      } catch (error) {
+        result.outcome = 'failed';
+        result.error = error?.message || String(error);
+      }
+    }
     const detail = this.store.finalizeRun(
       runId,
       ownerBootId,
@@ -241,12 +271,20 @@ export class WorkflowController {
               revision: workItem.revision + 1,
             }
           : workItem;
-        const nextStep = getNextStep(workItem, action.stageId || action.type, result);
+        const generatedWorkflow = action.type === 'triage'
+          && workItem.workflowSnapshot?.planningMode === 'ai'
+          ? validatedGeneratedWorkflow
+          : null;
+        const plannedWorkItem = generatedWorkflow
+          ? { ...effectiveWorkItem, workflowSnapshot: generatedWorkflow }
+          : effectiveWorkItem;
+        const nextStep = getNextStep(plannedWorkItem, action.stageId || action.type, result);
         if (!nextStep) {
           return {
             actionStatus: 'completed',
             workItemStatus: 'done',
             contractPatch,
+            workflowSnapshot: generatedWorkflow,
             eventType: 'work_item.completed',
             eventData: { summary: result.summary },
           };
@@ -257,7 +295,8 @@ export class WorkflowController {
           actionStatus: 'completed',
           workItemStatus: 'ready',
           contractPatch,
-          nextAction: actionForStage(nextStep, effectiveWorkItem, context),
+          workflowSnapshot: generatedWorkflow,
+          nextAction: actionForStage(nextStep, plannedWorkItem, context),
           eventType: 'action.completed',
           eventData: {
             nextActionType: nextStep.type,

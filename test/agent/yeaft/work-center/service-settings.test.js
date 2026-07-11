@@ -72,13 +72,33 @@ describe('Work Center settings service', () => {
     }
   });
 
-  it('freezes the effective workflow and stage overrides on creation', async () => {
+  it('creates an AI-planned WorkItem without a caller-defined workflow', async () => {
+    const service = await createService();
+    const item = await service.handle('create', {
+      title: 'Dynamic task', goal: 'Choose the best task-specific flow', workDir: '/tmp', start: false,
+      stageOverrides: {
+        implement: {
+          assignmentPolicy: { mode: 'fixed', fixedVpId: 'caller-choice' },
+          modelPolicy: { mode: 'specific', model: 'caller/model', effort: 'max' },
+        },
+      },
+    });
+
+    expect(item).toMatchObject({ workflowTemplate: 'ai-planned', status: 'draft' });
+    expect(item.workflowSnapshot).toMatchObject({ id: 'ai-planned', planningMode: 'ai' });
+    expect(item.workflowSnapshot.stages.map(stage => stage.id)).toEqual(['triage']);
+    expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller-choice');
+    expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller/model');
+  });
+
+  it('freezes the effective workflow and stage overrides for explicit legacy producers', async () => {
     const service = await createService();
     const item = await service.handle('create', {
       title: 'Configurable task',
       goal: 'Use a fixed implementation VP and model',
       workDir: '/tmp',
       start: false,
+      workflowTemplate: 'software-change',
       stageOverrides: {
         implement: {
           assignmentPolicy: { mode: 'fixed', fixedVpId: 'linus' },

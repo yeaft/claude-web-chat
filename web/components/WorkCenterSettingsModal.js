@@ -32,6 +32,9 @@ function defaultSettingsDraft() {
     defaultWorkflowId: 'software-change',
     startImmediately: true,
     defaultWorkDir: '',
+    modelPolicy: { mode: 'inherit', model: null, effort: null },
+    actionInstructions: Object.fromEntries(['triage','implement','test','review','deliver','research','write','custom']
+      .map(type => [type, ''])),
     workflows: [{
       version: 1,
       id: 'software-change',
@@ -318,99 +321,47 @@ export default {
                 <div class="work-center-settings-section-heading">
                   <div>
                     <h3>{{ $t('workCenter.settings.workflow') }}</h3>
-                    <p>{{ $t('workCenter.settings.workflowHelp') }}</p>
-                  </div>
-                  <div class="work-center-workflow-actions">
-                    <select v-model="draft.defaultWorkflowId">
-                      <option v-for="workflow in workflows" :key="workflow.id" :value="workflow.id">{{ workflow.name }}</option>
-                    </select>
-                    <button class="btn-secondary" type="button" @click="addWorkflow">{{ $t('workCenter.settings.addWorkflow') }}</button>
-                    <button class="btn-ghost" type="button" @click="removeWorkflow" :disabled="workflows.length <= 1">{{ $t('workCenter.settings.removeWorkflow') }}</button>
+                    <p>{{ $t('workCenter.settings.aiWorkflowHelp') }}</p>
                   </div>
                 </div>
-                <label class="work-center-settings-field">{{ $t('workCenter.settings.workflowName') }}
-                  <input v-model="defaultWorkflow.name" type="text">
-                </label>
-                <article v-for="(stage, index) in defaultWorkflow?.stages || []" :key="stage.id" class="work-center-policy-stage">
-                  <header>
-                    <span>{{ index + 1 }}</span>
-                    <div><input v-model="stage.name" type="text"><small>{{ stage.id }}</small></div>
-                    <div class="work-center-stage-actions">
-                      <button type="button" @click="moveStage(index, -1)" :disabled="index === 0" :aria-label="$t('workCenter.settings.moveUp')">↑</button>
-                      <button type="button" @click="moveStage(index, 1)" :disabled="index === defaultWorkflow.stages.length - 1" :aria-label="$t('workCenter.settings.moveDown')">↓</button>
-                      <button type="button" @click="removeStage(index)" :disabled="!canRemoveStage(index)" :aria-label="$t('workCenter.settings.removeStage')">×</button>
-                    </div>
-                  </header>
-                  <label>{{ $t('workCenter.settings.stageType') }}
-                    <select :value="stage.type" @change="setStageType(stage, $event.target.value)">
-                      <option v-for="type in ['triage','implement','test','review','deliver','research','write','custom']" :key="type" :value="type">{{ type }}</option>
-                    </select>
-                  </label>
-                  <label>{{ $t('workCenter.settings.assignment') }}
-                    <select :value="stage.assignmentPolicy.mode" @change="setAssignmentMode(stage, $event.target.value)">
-                      <option value="auto">{{ $t('workCenter.settings.assignment.auto') }}</option>
-                      <option value="pool">{{ $t('workCenter.settings.assignment.pool') }}</option>
-                      <option value="fixed">{{ $t('workCenter.settings.assignment.fixed') }}</option>
-                    </select>
-                  </label>
-                  <label v-if="stage.assignmentPolicy.mode === 'auto'">{{ $t('workCenter.settings.capability') }}
-                    <input v-model="stage.assignmentPolicy.capability" type="text">
-                  </label>
-                  <label v-if="stage.assignmentPolicy.mode === 'fixed'">{{ $t('workCenter.settings.vp') }}
-                    <select v-model="stage.assignmentPolicy.fixedVpId">
-                      <option v-for="vp in vps" :key="vp.id" :value="vp.id">{{ vpLabel(vp) }} · {{ vp.role }}</option>
-                    </select>
-                  </label>
-                  <label v-if="stage.type === 'review'">{{ $t('workCenter.settings.reviewReturnStage') }}
-                    <select v-model="stage.changesRequestedStageId">
-                      <option v-for="candidate in reviewReturnCandidates(stage)" :key="candidate.id" :value="candidate.id">{{ candidate.name }}</option>
-                    </select>
-                  </label>
+                <article v-for="type in ['triage','implement','test','review','deliver','research','write','custom']" :key="type" class="work-center-policy-stage">
+                  <header><strong>{{ type }}</strong></header>
                   <div class="work-center-stage-instruction">
                     <div class="work-center-stage-instruction-heading">
                       <span>{{ $t('workCenter.settings.instruction') }}</span>
-                      <button class="btn-ghost" type="button" @click="resetStageInstruction(stage)"
-                              :disabled="stage.instruction === defaultInstructionForStage(stage)">{{ $t('workCenter.settings.instructionReset') }}</button>
+                      <button class="btn-ghost" type="button" @click="draft.actionInstructions[type] = defaultStageInstructions[type] || ''"
+                              :disabled="draft.actionInstructions[type] === (defaultStageInstructions[type] || '')">{{ $t('workCenter.settings.instructionReset') }}</button>
                     </div>
-                    <textarea v-model="stage.instruction" rows="5" :placeholder="$t('workCenter.settings.instructionHint')"></textarea>
-                    <small>{{ $t('workCenter.settings.instructionHelp') }}</small>
+                    <textarea v-model="draft.actionInstructions[type]" rows="5" :placeholder="$t('workCenter.settings.instructionHint')"></textarea>
+                    <small>{{ $t('workCenter.settings.dynamicInstructionHelp') }}</small>
                   </div>
-                  <fieldset v-if="stage.assignmentPolicy.mode === 'pool'" class="work-center-vp-pool">
-                    <legend>{{ $t('workCenter.settings.poolMembers') }}</legend>
-                    <label v-for="vp in vps" :key="vp.id">
-                      <input type="checkbox" :checked="stage.assignmentPolicy.candidateVpIds.includes(vp.id)"
-                             @change="toggleCandidate(stage, vp.id, $event.target.checked)">
-                      <span>{{ vpLabel(vp) }}</span><small>{{ vp.role }}</small>
-                    </label>
-                  </fieldset>
                 </article>
-                <button class="btn-secondary work-center-add-stage" type="button" @click="addStage">{{ $t('workCenter.settings.addStage') }}</button>
               </template>
 
               <template v-else-if="section === 'models'">
                 <div class="work-center-settings-section-heading">
-                  <div><h3>{{ $t('workCenter.settings.models') }}</h3><p>{{ $t('workCenter.settings.modelsHelp') }}</p></div>
+                  <div><h3>{{ $t('workCenter.settings.models') }}</h3><p>{{ $t('workCenter.settings.dynamicModelsHelp') }}</p></div>
                   <button class="btn-secondary" type="button" @click="$emit('open-agent-models')">{{ $t('workCenter.settings.manageProviders') }}</button>
                 </div>
-                <article v-for="stage in defaultWorkflow?.stages || []" :key="stage.id" class="work-center-model-stage">
-                  <strong>{{ stage.name }}</strong>
+                <article class="work-center-model-stage">
+                  <strong>{{ $t('workCenter.settings.allActions') }}</strong>
                   <label>{{ $t('workCenter.settings.modelPolicy') }}
-                    <select :value="stage.modelPolicy.mode" @change="setModelMode(stage, $event.target.value)">
+                    <select :value="draft.modelPolicy.mode" @change="setModelMode({ modelPolicy: draft.modelPolicy }, $event.target.value)">
                       <option value="inherit">{{ $t('workCenter.settings.model.inherit') }}</option>
                       <option value="primary">{{ $t('workCenter.settings.model.primary') }}</option>
                       <option value="fast">{{ $t('workCenter.settings.model.fast') }}</option>
                       <option value="specific">{{ $t('workCenter.settings.model.specific') }}</option>
                     </select>
                   </label>
-                  <label v-if="stage.modelPolicy.mode === 'specific'">{{ $t('workCenter.settings.model') }}
-                    <select :value="stage.modelPolicy.model" @change="setStageModel(stage, $event.target.value)">
+                  <label v-if="draft.modelPolicy.mode === 'specific'">{{ $t('workCenter.settings.model') }}
+                    <select :value="draft.modelPolicy.model" @change="setStageModel({ modelPolicy: draft.modelPolicy }, $event.target.value)">
                       <option v-for="model in models" :key="model.ref || model.id" :value="model.ref || model.id">{{ model.provider }} · {{ model.label || model.id }}</option>
                     </select>
                   </label>
-                  <label v-if="effortOptionsForStage(stage).length">{{ $t('workCenter.settings.effort') }}
-                    <select v-model="stage.modelPolicy.effort">
+                  <label v-if="effortOptionsForStage({ modelPolicy: draft.modelPolicy }).length">{{ $t('workCenter.settings.effort') }}
+                    <select v-model="draft.modelPolicy.effort">
                       <option :value="null">{{ $t('workCenter.settings.effortDefault') }}</option>
-                      <option v-for="effort in effortOptionsForStage(stage)" :key="effort" :value="effort">{{ effort }}</option>
+                      <option v-for="effort in effortOptionsForStage({ modelPolicy: draft.modelPolicy })" :key="effort" :value="effort">{{ effort }}</option>
                     </select>
                   </label>
                 </article>

@@ -70,5 +70,5 @@ V1 操作：
 - `get` 是用户显式选择详情后的鉴权读取，可返回结构化 Run summary/evidence/waitingReason/error，但 evidence 不包含原始工具输出。
 - WorkItem 的本地路径和完整执行日志只保存在 Agent 本地，不经过 Server 广播。
 - Provider API key 和动态凭证不属于 Work Center 设置；Work Center 只保存 Agent LLM 设置中已有的完整 model ref。
-- WorkItem 创建时固化 workflow policy snapshot；Run 开始时固化实际 VP、Provider、模型、effort 和选择原因。设置更新不得改变已有 WorkItem。
+- 新建 WorkItem 不接受浏览器提供的 workflow/stage/VP/model override；triage 冻结动态任务类型和 Action 流。AI 规划 WorkItem 每个 Run 读取当前 Work Center model/effort policy，并固化实际 VP、Provider、模型、effort 和选择原因；旧显式 workflow WorkItem 保留冻结 policy。
 - 离线 Agent 不支持写操作；Web 显示离线状态，不做本地乐观完成。

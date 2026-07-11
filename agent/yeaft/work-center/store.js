@@ -831,6 +831,16 @@ export class WorkItemStore {
         );
         nextWorkItem = this.getWorkItem(workItem.id);
       }
+      if (transition.workflowSnapshot) {
+        this.db.prepare(`UPDATE work_items SET workflow_template = ?, workflow_snapshot = ?, updated_at = ?
+          WHERE id = ?`).run(
+          transition.workflowSnapshot.id,
+          stringify(transition.workflowSnapshot),
+          now,
+          workItem.id,
+        );
+        nextWorkItem = this.getWorkItem(workItem.id);
+      }
 
       let nextAction = null;
       if (transition.nextAction) {

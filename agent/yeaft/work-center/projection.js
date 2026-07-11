@@ -27,6 +27,7 @@ function projectAssignmentPolicy(policy) {
   if (!policy || typeof policy !== 'object') return null;
   return {
     mode: policy.mode || null,
+    capability: policy.capability || null,
     fixedVpId: policy.fixedVpId || null,
   };
 }
@@ -81,6 +82,8 @@ export function projectWorkItemDetail(detail) {
     goal: detail.goal,
     acceptanceCriteria: Array.isArray(detail.acceptanceCriteria) ? detail.acceptanceCriteria : [],
     workflowTemplate: detail.workflowTemplate,
+    workItemType: detail.workflowSnapshot?.workItemType || null,
+    planningMode: detail.workflowSnapshot?.planningMode || 'static',
     status: detail.status,
     currentActionId: detail.currentActionId || null,
     reuseMemory: detail.reuseMemory !== false,
@@ -107,6 +110,8 @@ export function projectWorkItemSummary(detail) {
       revision: detail.revision,
       title: detail.title,
       goal: detail.goal,
+      workItemType: detail.workflowSnapshot?.workItemType || null,
+      planningMode: detail.workflowSnapshot?.planningMode || 'static',
       status: detail.status,
       currentActionId: detail.currentActionId || null,
       currentAction: null,
@@ -123,6 +128,8 @@ export function projectWorkItemSummary(detail) {
     revision: detail.revision,
     title: detail.title,
     goal: detail.goal,
+    workItemType: detail.workflowSnapshot?.workItemType || null,
+    planningMode: detail.workflowSnapshot?.planningMode || 'static',
     status: detail.status,
     currentActionId: detail.currentActionId || null,
     currentAction: projectedAction ? {

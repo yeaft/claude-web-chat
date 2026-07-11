@@ -34,6 +34,15 @@ describe('Work Center assignment and model policy', () => {
     expect(selected.reason).toMatch(/^auto:review/);
   });
 
+  it('falls back from an over-specific AI capability to the Action type', () => {
+    const selected = selectWorkItemVp({
+      policy: { mode: 'auto', capability: 'kernel-regression-forensics' },
+      stageType: 'implement', vps,
+    });
+    expect(selected.vp.id).toBe('linus');
+    expect(selected.reason).toContain('fallback=implement');
+  });
+
   it('honors pool and fixed assignments and rejects unavailable members', () => {
     expect(selectWorkItemVp({
       policy: { mode: 'pool', capability: 'implement', candidateVpIds: ['martin', 'linus'] },

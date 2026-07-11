@@ -232,6 +232,11 @@ describe('Work Center lifecycle bridge', () => {
     __testSetWorkCenterService(service);
 
     const result = await createWorkItemFromProducer({ title: 'Internal', goal: 'Keep raw detail' });
+    expect(service.handle).toHaveBeenCalledWith(
+      'create',
+      { title: 'Internal', goal: 'Keep raw detail' },
+      { trustedProducer: true },
+    );
     expect(result).toBe(raw);
     expect(result).toMatchObject({
       workDir: '/private/project',
