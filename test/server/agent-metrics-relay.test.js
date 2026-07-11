@@ -10,6 +10,12 @@ vi.mock('../../server/ws-utils.js', () => ({
   broadcastAgentList,
 }));
 
+const recordAgentTokenSnapshot = vi.fn();
+vi.mock('../../server/database.js', () => ({
+  sessionDb: {},
+  userStatsDb: { recordAgentTokenSnapshot },
+}));
+
 const { CONFIG } = await import('../../server/config.js');
 const { webClients } = await import('../../server/context.js');
 const { handleAgentSync } = await import('../../server/handlers/agent-sync.js');
@@ -21,6 +27,7 @@ afterEach(() => {
   webClients.clear();
   sendToWebClient.mockClear();
   broadcastAgentList.mockClear();
+  recordAgentTokenSnapshot.mockClear();
 });
 
 describe('agent metrics relay', () => {
@@ -39,10 +46,11 @@ describe('agent metrics relay', () => {
       sent: [],
     });
 
-    const agent = { ownerId: 'owner-1' };
+    const agent = { ownerId: 'owner-1', instanceId: 'instance-1' };
     await handleAgentSync('agent-1', agent, {
       type: 'agent_metrics',
       metrics: {
+        metricEpoch: 'epoch-1',
         chatTurns: 1,
         yeaftTurns: 2,
         inputTokens: 10,
@@ -59,6 +67,11 @@ describe('agent metrics relay', () => {
       totalTokens: 15,
     });
     expect(agent.metricsUpdatedAt).toEqual(expect.any(Number));
+    expect(recordAgentTokenSnapshot).toHaveBeenCalledWith(
+      'owner-1',
+      'instance-1',
+      expect.objectContaining({ metricEpoch: 'epoch-1', totalTokens: 15 })
+    );
     expect(broadcastAgentList).not.toHaveBeenCalled();
     expect(webClients.get('owner-client').sent).toEqual([{
       type: 'agent_metrics',

@@ -814,6 +814,7 @@ export default {
   'settings.dashboard.todayMessages': '今日消息',
   'settings.dashboard.todayUserTurns': '今日用户 Turn',
   'settings.dashboard.totalTokens': '总 Token',
+  'settings.dashboard.tokenAccuracy': '来自模型服务商返回的实际用量；从启用按用户 Token 统计的版本开始累计，且不包含心跳。',
   'settings.dashboard.agentTurns': 'Agent Turn',
   'settings.dashboard.agentSessions': 'Agent Session',
   'settings.dashboard.turns': 'Turn',

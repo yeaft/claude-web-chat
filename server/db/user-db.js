@@ -136,6 +136,7 @@ export const userDb = {
    *   - sessions                hard delete (messages cascade via FK)
    *   - user_stats              hard delete
    *   - daily_stats             hard delete
+   *   - agent_metric_watermarks cascade delete
    *   - custom_expert_roles     hard delete (custom_expert_actions cascade via FK)
    *   - invitations.created_by  rows deleted (codes the user issued)
    *   - invitations.used_by     set NULL (preserve history of *who consumed what* — but we lose the link)

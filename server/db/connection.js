@@ -80,6 +80,11 @@ db.exec(`
     request_count INTEGER DEFAULT 0,
     bytes_sent INTEGER DEFAULT 0,
     bytes_received INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT 0
   );
 
@@ -92,7 +97,27 @@ db.exec(`
     request_count INTEGER DEFAULT 0,
     bytes_sent INTEGER DEFAULT 0,
     bytes_received INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
     PRIMARY KEY (user_id, date)
+  );
+
+  -- Agent token metric watermarks. Agent snapshots are cumulative within one
+  -- process epoch; this table makes reconnects and server restarts idempotent.
+  CREATE TABLE IF NOT EXISTS agent_metric_watermarks (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_instance_id TEXT NOT NULL,
+    metric_epoch TEXT NOT NULL,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, agent_instance_id, metric_epoch)
   );
 
   -- 基本索引（不依赖迁移列）
@@ -155,7 +180,17 @@ const migrations = [
   // without one → the UI lost the "copilot" marker AND sends mis-routed to
   // Claude (handleUserInput resolved providerName to the default). The send
   // forward now reads this column so the agent can self-heal its ACP child.
-  `ALTER TABLE sessions ADD COLUMN provider TEXT`
+  `ALTER TABLE sessions ADD COLUMN provider TEXT`,
+  `ALTER TABLE user_stats ADD COLUMN input_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE user_stats ADD COLUMN output_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE user_stats ADD COLUMN cache_read_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE user_stats ADD COLUMN cache_write_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE user_stats ADD COLUMN total_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE daily_stats ADD COLUMN input_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE daily_stats ADD COLUMN output_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE daily_stats ADD COLUMN cache_read_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE daily_stats ADD COLUMN cache_write_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE daily_stats ADD COLUMN total_tokens INTEGER DEFAULT 0`
 ];
 
 // Yeaft sessions table — server-side persistence so the unified sidebar
@@ -640,34 +675,52 @@ export const stmts = {
 
   // UserStats 操作
   upsertUserStats: db.prepare(`
-    INSERT INTO user_stats (user_id, message_count, session_count, request_count, bytes_sent, bytes_received, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO user_stats (
+      user_id, message_count, session_count, request_count, bytes_sent, bytes_received,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
       message_count = message_count + excluded.message_count,
       session_count = session_count + excluded.session_count,
       request_count = request_count + excluded.request_count,
       bytes_sent = bytes_sent + excluded.bytes_sent,
       bytes_received = bytes_received + excluded.bytes_received,
+      input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens,
+      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+      total_tokens = total_tokens + excluded.total_tokens,
       updated_at = excluded.updated_at
   `),
 
   // DailyStats 操作
   upsertDailyStats: db.prepare(`
-    INSERT INTO daily_stats (user_id, date, message_count, session_count, request_count, bytes_sent, bytes_received)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO daily_stats (
+      user_id, date, message_count, session_count, request_count, bytes_sent, bytes_received,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, date) DO UPDATE SET
       message_count = message_count + excluded.message_count,
       session_count = session_count + excluded.session_count,
       request_count = request_count + excluded.request_count,
       bytes_sent = bytes_sent + excluded.bytes_sent,
-      bytes_received = bytes_received + excluded.bytes_received
+      bytes_received = bytes_received + excluded.bytes_received,
+      input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens,
+      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+      total_tokens = total_tokens + excluded.total_tokens
   `),
 
   getDailyStatsAll: db.prepare(`
     SELECT ds.user_id, u.username, u.display_name, u.role, u.last_login_at,
       SUM(ds.message_count) as message_count, SUM(ds.session_count) as session_count,
       SUM(ds.request_count) as request_count, SUM(ds.bytes_sent) as bytes_sent,
-      SUM(ds.bytes_received) as bytes_received
+      SUM(ds.bytes_received) as bytes_received,
+      SUM(ds.input_tokens) as input_tokens, SUM(ds.output_tokens) as output_tokens,
+      SUM(ds.cache_read_tokens) as cache_read_tokens,
+      SUM(ds.cache_write_tokens) as cache_write_tokens,
+      SUM(ds.total_tokens) as total_tokens
     FROM daily_stats ds
     JOIN users u ON ds.user_id = u.id
     WHERE ds.date >= ?
@@ -692,6 +745,25 @@ export const stmts = {
 
   getUserStatsById: db.prepare(`
     SELECT * FROM user_stats WHERE user_id = ?
+  `),
+
+  getAgentMetricWatermark: db.prepare(`
+    SELECT * FROM agent_metric_watermarks
+    WHERE user_id = ? AND agent_instance_id = ? AND metric_epoch = ?
+  `),
+
+  upsertAgentMetricWatermark: db.prepare(`
+    INSERT INTO agent_metric_watermarks (
+      user_id, agent_instance_id, metric_epoch, input_tokens, output_tokens,
+      cache_read_tokens, cache_write_tokens, total_tokens, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, agent_instance_id, metric_epoch) DO UPDATE SET
+      input_tokens = excluded.input_tokens,
+      output_tokens = excluded.output_tokens,
+      cache_read_tokens = excluded.cache_read_tokens,
+      cache_write_tokens = excluded.cache_write_tokens,
+      total_tokens = excluded.total_tokens,
+      updated_at = excluded.updated_at
   `),
 
   // Identity 操作 (multi-provider SSO)
@@ -835,6 +907,16 @@ export const stmts = {
       (SELECT COUNT(*) FROM users) as total_users,
       (SELECT COUNT(*) FROM sessions) as total_sessions,
       (SELECT COUNT(*) FROM messages) as total_messages
+  `),
+
+  getDashboardTokenTotals: db.prepare(`
+    SELECT
+      COALESCE(SUM(input_tokens), 0) as input_tokens,
+      COALESCE(SUM(output_tokens), 0) as output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+      COALESCE(SUM(cache_write_tokens), 0) as cache_write_tokens,
+      COALESCE(SUM(total_tokens), 0) as total_tokens
+    FROM user_stats
   `)
 };
 

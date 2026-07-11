@@ -1,5 +1,5 @@
 import { CONFIG } from '../config.js';
-import { sessionDb } from '../database.js';
+import { sessionDb, userStatsDb } from '../database.js';
 import { agents, webClients } from '../context.js';
 import { sendToWebClient, broadcastAgentList } from '../ws-utils.js';
 import {
@@ -22,6 +22,7 @@ function normalizeAgentMetrics(metrics = {}) {
   const cacheWriteTokens = numberMetric(metrics.cacheWriteTokens);
   const totalTokens = numberMetric(metrics.totalTokens) || inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
   return {
+    metricEpoch: typeof metrics.metricEpoch === 'string' ? metrics.metricEpoch : null,
     chatTurns,
     yeaftTurns,
     totalTurns,
@@ -76,6 +77,17 @@ export async function handleAgentSync(agentId, agent, msg) {
     case 'agent_metrics': {
       agent.metrics = normalizeAgentMetrics(msg.metrics || {});
       agent.metricsUpdatedAt = Date.now();
+      if (agent.ownerId && agent.metrics.metricEpoch) {
+        try {
+          userStatsDb.recordAgentTokenSnapshot(
+            agent.ownerId,
+            agent.instanceId || agentId,
+            agent.metrics
+          );
+        } catch (error) {
+          console.error(`[AgentMetrics] Failed to persist token usage for ${agentId}:`, error.message);
+        }
+      }
       await forwardAgentMetrics(agentId, agent);
       break;
     }

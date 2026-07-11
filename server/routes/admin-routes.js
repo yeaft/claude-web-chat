@@ -106,6 +106,7 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
       }
 
       const agentMetrics = sumAgentMetrics();
+      const tokenTotals = userStatsDb.getDashboardTokenTotals();
       res.json({
         totalUsers: totals.total_users,
         totalSessions: totals.total_sessions,
@@ -116,7 +117,7 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
         todayMessages: userStatsDb.getTodayMessages() + pendingTodayMessages(),
         agentMetrics,
         totalAgentTurns: agentMetrics.totalTurns,
-        totalTokens: agentMetrics.totalTokens
+        totalTokens: toNumber(tokenTotals.total_tokens)
       });
     } catch (e) {
       console.error('[Admin] Dashboard error:', e.message);
@@ -140,6 +141,11 @@ export function registerAdminRoutes(app, { requireAuth, requireAdmin }) {
         requestCount: s.request_count,
         bytesSent: s.bytes_sent,
         bytesReceived: s.bytes_received,
+        inputTokens: s.input_tokens,
+        outputTokens: s.output_tokens,
+        cacheReadTokens: s.cache_read_tokens,
+        cacheWriteTokens: s.cache_write_tokens,
+        totalTokens: s.total_tokens,
         lastLoginAt: s.last_login_at,
         updatedAt: s.updated_at
       })));
