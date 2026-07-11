@@ -110,6 +110,57 @@ describe('Work Center core', () => {
     expect(item.workflowSnapshot.stages).toHaveLength(1);
   });
 
+  it.each([
+    ['missing', 'missing-action'],
+    ['self', 'review'],
+    ['future', 'deliver'],
+  ])('rejects an AI-planned review with an explicit %s return target', (_kind, target) => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'software-change',
+        actions: [
+          { id: 'fix', type: 'implement', objective: 'Implement the change' },
+          { id: 'review', type: 'review', objective: 'Review independently', changesRequestedActionId: target },
+          { id: 'deliver', type: 'deliver', objective: 'Deliver the result' },
+        ],
+      },
+    }));
+
+    expect(detail).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
+    expect(store.getRun(triage.run.id)).toMatchObject({
+      status: 'failed',
+      error: expect.stringMatching(/invalid return Action/i),
+    });
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
+  it('defaults an omitted review return target to the nearest earlier editable Action', () => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'software-change',
+        actions: [
+          { id: 'fix', type: 'implement', objective: 'Implement the change' },
+          { id: 'verify', type: 'test', objective: 'Verify the change' },
+          { id: 'review', type: 'review', objective: 'Review independently' },
+        ],
+      },
+    }));
+
+    expect(detail.workflowSnapshot.stages.find(stage => stage.id === 'review'))
+      .toMatchObject({ changesRequestedStageId: 'verify' });
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
   it('reuses only structured completed context from the same explicit work directory', () => {
     const source = controller.create(createInput({ title: 'Earlier work' }));
     for (const type of ['triage', 'implement', 'review', 'deliver']) {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { Registry } from '../../../../agent/yeaft/vp/registry.js';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
+import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
 
 const engineOptions = [];
 const engineQueries = [];
@@ -304,6 +305,48 @@ describe('Work Center Runner execution resolution', () => {
     expect(engineQueries[0].prompt).toContain('Preserve the public API.');
     expect(engineQueries[0].prompt.indexOf('<work-center-memory>'))
       .toBeLessThan(engineQueries[0].prompt.indexOf('You are executing one Work Center Action'));
+  });
+
+  it('budgets the complete injected memory block including its safety wrapper', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-memory-budget-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const search = vi.fn().mockReturnValue([{
+      id: 'memory-large', scope: 'user', kind: 'decision', tags: ['implement'],
+      body: '界'.repeat(4_000), sourceMessages: [], rank: -1,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    }]);
+    const runner = new WorkItemRunner({
+      registry,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: {}, memoryIndex: { search },
+        config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: { id: 'wi-1', workDir, workspaceKey: workDir, reuseMemory: true },
+      action: { type: 'implement', instruction: 'Implement it', requiredRole: 'linus' },
+      run: { id: 'run-1', leaseEpoch: 1 }, ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
+    });
+
+    const prompt = engineQueries[0].prompt;
+    const memoryBlock = prompt.slice(
+      prompt.indexOf('\n\nRelevant memory for this Action follows.'),
+      prompt.indexOf('</work-center-memory>') + '</work-center-memory>'.length,
+    );
+    expect(memoryBlock).toContain('<work-center-memory>');
+    expect(memoryBlock).toContain('</work-center-memory>');
+    expect(approxTokens(memoryBlock)).toBeLessThanOrEqual(4_000);
   });
 
   it('does not trust browser-like Session metadata for memory scope expansion', async () => {

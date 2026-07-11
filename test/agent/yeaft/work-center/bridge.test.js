@@ -249,6 +249,39 @@ describe('Work Center lifecycle bridge', () => {
     expect(sendToServer).not.toHaveBeenCalled();
   });
 
+  it('removes explicit workflow and execution overrides from browser create requests', async () => {
+    const raw = internalDetail();
+    const service = {
+      start: vi.fn(),
+      shutdown: vi.fn(),
+      handle: vi.fn().mockResolvedValue(raw),
+    };
+    __testSetWorkCenterService(service);
+
+    await handleWorkCenterRequest({
+      requestId: 'browser-create',
+      op: 'create',
+      payload: {
+        title: 'Browser task',
+        goal: 'Let AI plan it',
+        start: false,
+        workflowTemplate: 'software-change',
+        stageOverrides: {
+          implement: {
+            assignmentPolicy: { mode: 'fixed', fixedVpId: 'caller-choice' },
+            modelPolicy: { mode: 'specific', model: 'caller/model', effort: 'max' },
+          },
+        },
+      },
+    });
+
+    expect(service.handle).toHaveBeenCalledWith('create', {
+      title: 'Browser task',
+      goal: 'Let AI plan it',
+      start: false,
+    });
+  });
+
   it('waits for runtime reset before returning refreshed settings', async () => {
     createYeaftDir();
     const gate = deferred();

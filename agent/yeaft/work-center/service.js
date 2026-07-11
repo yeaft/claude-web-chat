@@ -64,7 +64,8 @@ export class WorkCenterService {
       }
       case 'create': {
         const settings = this.settingsReader(this.yeaftDir);
-        const explicitWorkflow = typeof payload.workflowTemplate === 'string' && payload.workflowTemplate.trim()
+        const explicitWorkflow = requestContext.trustedProducer === true
+          && typeof payload.workflowTemplate === 'string' && payload.workflowTemplate.trim()
           ? payload.workflowTemplate.trim()
           : null;
         const workflowTemplate = explicitWorkflow || 'ai-planned';

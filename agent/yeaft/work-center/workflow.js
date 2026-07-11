@@ -294,8 +294,10 @@ export function applyGeneratedPlan(workItem, rawPlan) {
       modelPolicy: source.modelPolicy,
       maxAttempts: Math.min(Math.max(Number(input.maxAttempts) || 2, 1), 5),
     };
-    if (type === 'review' && typeof input.changesRequestedActionId === 'string') {
-      stage.changesRequestedStageId = cleanId(input.changesRequestedActionId, '');
+    if (type === 'review' && Object.prototype.hasOwnProperty.call(input, 'changesRequestedActionId')) {
+      stage.changesRequestedStageId = typeof input.changesRequestedActionId === 'string'
+        ? cleanId(input.changesRequestedActionId, '')
+        : '';
     }
     return stage;
   });
@@ -303,8 +305,15 @@ export function applyGeneratedPlan(workItem, rawPlan) {
     if (stage.type !== 'review') continue;
     const candidates = generated.slice(0, index)
       .filter(candidate => candidate.type !== 'review' && candidate.type !== 'deliver');
-    const requested = candidates.find(candidate => candidate.id === stage.changesRequestedStageId);
-    stage.changesRequestedStageId = (requested || candidates.at(-1))?.id || '';
+    if (Object.prototype.hasOwnProperty.call(stage, 'changesRequestedStageId')) {
+      const requested = candidates.find(candidate => candidate.id === stage.changesRequestedStageId);
+      if (!requested) {
+        throw new Error(`AI-planned review Action "${stage.id}" points to an invalid return Action`);
+      }
+      stage.changesRequestedStageId = requested.id;
+    } else {
+      stage.changesRequestedStageId = candidates.at(-1)?.id || '';
+    }
     if (!stage.changesRequestedStageId) {
       throw new Error(`AI-planned review Action "${stage.id}" requires an earlier editable Action`);
     }

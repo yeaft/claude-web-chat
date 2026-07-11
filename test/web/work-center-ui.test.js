@@ -148,6 +148,7 @@ describe('Work Center UI contract', () => {
     expect(page).not.toContain('run.modelSnapshot');
     expect(modal).toContain("section: 'workflow'");
     expect(modal).toContain('draft.actionInstructions[type]');
+    expect(modal).toContain("$t('workCenter.action.' + type)");
     expect(modal).toContain('draft.modelPolicy.effort');
     expect(modal).toContain("mode === 'specific'");
     expect(modal).toContain("$emit('open-agent-models')");
@@ -159,6 +160,7 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('width: min(960px, 92vw)');
     expect(css).toContain('height: min(720px, 86vh)');
     expect(css).toContain('.work-center-settings-pane');
+    expect(css).toContain('.work-center-settings-card .btn-ghost');
     expect(css).toContain('overflow-y: auto');
   });
 
@@ -184,6 +186,7 @@ describe('Work Center UI contract', () => {
       'workCenter.selectTitle',
       'workCenter.status.needs_attention',
       'workCenter.action.review',
+      'workCenter.action.custom',
       'workCenter.guidance',
       'workCenter.sendGuidance',
       'workCenter.loopCount',

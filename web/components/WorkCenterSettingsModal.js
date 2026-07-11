@@ -325,7 +325,7 @@ export default {
                   </div>
                 </div>
                 <article v-for="type in ['triage','implement','test','review','deliver','research','write','custom']" :key="type" class="work-center-policy-stage">
-                  <header><strong>{{ type }}</strong></header>
+                  <header><strong>{{ $t('workCenter.action.' + type) }}</strong></header>
                   <div class="work-center-stage-instruction">
                     <div class="work-center-stage-instruction-heading">
                       <span>{{ $t('workCenter.settings.instruction') }}</span>
