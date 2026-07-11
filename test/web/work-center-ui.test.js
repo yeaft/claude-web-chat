@@ -27,7 +27,7 @@ describe('Work Center UI contract', () => {
     expect(store).not.toContain('workCenterActiveTasksBySession');
   });
 
-  it('offers Session-to-WorkItem creation and renders Run evidence', () => {
+  it('offers Session-to-WorkItem creation and renders aggregate Action execution counts', () => {
     const input = read('web/components/ChatInput.js');
     const page = read('web/components/YeaftPage.js');
     const workCenter = read('web/components/WorkCenterPage.js');
@@ -36,9 +36,11 @@ describe('Work Center UI contract', () => {
     expect(page).toContain(':work-item-fn="openWorkItemDraft"');
     expect(store).toContain('enterWorkCenterFromSession');
     expect(workCenter).toContain('class="work-center-action-card"');
-    expect(workCenter).toContain('runsForAction(action.id)');
-    expect(workCenter).toContain('run.waitingReason');
-    expect(workCenter).toContain('run.evidence');
+    expect(workCenter).toContain("$t('workCenter.loopCount', { count: action.loopCount || 0 })");
+    expect(workCenter).toContain("$t('workCenter.toolCount', { count: action.toolCount || 0 })");
+    expect(workCenter).not.toContain('runsForAction(action.id)');
+    expect(workCenter).not.toContain('run.evidence');
+    expect(workCenter).not.toContain('selected.events');
   });
 
   it('reuses Session sidebar primitives for the Work Center Agent list', () => {
@@ -61,17 +63,22 @@ describe('Work Center UI contract', () => {
     expect(chat.indexOf('<SidebarWorkCenter')).toBeGreaterThan(chat.indexOf('<!-- Connection warning -->'));
   });
 
-  it('uses collapsible Action cards and Action-level guidance instead of a tool-call feed', () => {
+  it('uses static Action summaries and Action-level guidance instead of execution detail', () => {
     const page = read('web/components/WorkCenterPage.js');
     const store = read('web/stores/chat.js');
     const css = read('web/styles/work-center.css');
 
     expect(page).toContain('class="work-center-action-card"');
-    expect(page).toContain('@click="toggleAction(action)"');
+    expect(page).toContain('class="work-center-action-stats"');
+    expect(page).not.toContain('@click="toggleAction(action)"');
+    expect(page).not.toContain('class="work-center-action-body"');
+    expect(page).not.toContain('class="work-center-run"');
+    expect(page).not.toContain('class="work-center-activity-toggle"');
     expect(page).toContain("['ready','running'].includes(selected.status)");
     expect(page).toContain('@click="guideSelectedAction"');
     expect(store).toContain("workCenterRequest('guide'");
     expect(css).toContain('.work-center-action-card');
+    expect(css).toContain('.work-center-action-stats');
     expect(page).not.toContain('v-for="tool');
   });
 
@@ -136,7 +143,7 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('WorkCenterSettingsModal');
     expect(page).toContain('planPreview');
     expect(page).toContain('stageOverrides');
-    expect(page).toContain('run.modelSnapshot?.provider');
+    expect(page).not.toContain('run.modelSnapshot');
     expect(modal).toContain("section: 'workflow'");
     expect(modal).toContain("mode: 'auto'");
     expect(modal).toContain("mode === 'pool'");
@@ -180,6 +187,8 @@ describe('Work Center UI contract', () => {
       'workCenter.action.review',
       'workCenter.guidance',
       'workCenter.sendGuidance',
+      'workCenter.loopCount',
+      'workCenter.toolCount',
       'workCenter.reuseMemory',
       'workCenter.settings.title',
       'workCenter.settings.assignment.auto',

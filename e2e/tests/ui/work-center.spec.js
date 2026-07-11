@@ -60,18 +60,8 @@ const OPEN_ITEM_DETAIL = {
   acceptanceCriteria: ['The Action flow remains readable'],
   actions: [{
     id: 'action-1', sequence: 1, type: 'implement', requiredRole: 'developer', status: 'running',
+    loopCount: 3, toolCount: 8,
   }],
-  runs: [{
-    id: 'run-1',
-    actionId: 'action-1',
-    status: 'running',
-    startedAt: Date.now(),
-    roleSnapshot: { id: 'developer' },
-    modelSnapshot: { id: 'provider/model' },
-    summary: 'Implementing the compact Action view.',
-    evidence: [{ kind: 'test', label: 'Focused UI test', status: 'passed' }],
-  }],
-  events: [{ id: 1, type: 'run.started', createdAt: Date.now() }],
 };
 
 async function respondToWorkCenterRequest(mockAgent, data) {
@@ -214,9 +204,10 @@ test.describe('Work Center responsive UI', () => {
 
     const action = chatPage.locator('.work-center-action-card');
     await expect(action).toHaveCount(1);
-    await expect(action.locator('.work-center-action-body')).toBeVisible();
     await expect(action).toContainText('Implement');
-    await expect(action).toContainText('Focused UI test');
+    await expect(action).toContainText('3 loops');
+    await expect(action).toContainText('8 tools');
+    await expect(action.locator('.work-center-action-body')).toHaveCount(0);
 
     await chatPage.locator('.work-center-guidance textarea').fill('Keep the public API unchanged');
     const guide = respondToWorkCenterOp(mockAgent, 'guide', OPEN_ITEM_DETAIL);

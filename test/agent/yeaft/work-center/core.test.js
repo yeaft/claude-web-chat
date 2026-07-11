@@ -186,6 +186,19 @@ describe('Work Center core', () => {
       .toThrow(/stale|cancelled|expired|finished/i);
   });
 
+  it('persists aggregate Loop and tool counts with the completed Run', () => {
+    const item = controller.create(createInput());
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, completed('triage', {
+      loopCount: 3,
+      toolCount: 8,
+    }));
+
+    const run = store.getRun(claim.run.id);
+    expect(run).toMatchObject({ loopCount: 3, toolCount: 8 });
+    expect(store.getWorkItemDetail(item.id).runs[0]).toMatchObject({ loopCount: 3, toolCount: 8 });
+  });
+
   it('persists immutable execution snapshots only for the fenced Run', () => {
     controller.create(createInput());
     const claim = store.claimReadyAction('boot-a', 5_000);

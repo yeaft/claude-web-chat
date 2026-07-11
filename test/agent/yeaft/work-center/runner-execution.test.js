@@ -7,11 +7,15 @@ import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 
 const engineOptions = [];
+let invalidEngineResult = false;
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
   Engine: class {
     constructor(options) { engineOptions.push(options); }
     async *query() {
-      yield { text: JSON.stringify({
+      yield { type: 'loop', loopNumber: 1 };
+      yield { type: 'tool_end', id: 'tool-1', name: 'FileRead', output: 'ok', isError: false };
+      yield { type: 'loop', loopNumber: 2 };
+      yield { text: invalidEngineResult ? 'not-json' : JSON.stringify({
         outcome: 'completed', summary: 'done', evidence: [], reviewDecision: 'approved',
       }) };
     }
@@ -26,6 +30,7 @@ afterEach(() => {
   if (workDir) rmSync(workDir, { recursive: true, force: true });
   workDir = null;
   engineOptions.length = 0;
+  invalidEngineResult = false;
 });
 
 describe('Work Center Runner execution resolution', () => {
@@ -137,7 +142,9 @@ describe('Work Center Runner execution resolution', () => {
       signal: new AbortController().signal,
     });
 
-    expect(result).toMatchObject({ outcome: 'completed', summary: 'done' });
+    expect(result).toMatchObject({
+      outcome: 'completed', summary: 'done', loopCount: 2, toolCount: 1,
+    });
     expect(snapshots).toHaveBeenCalledWith('run-1', 'boot-1', 2, expect.objectContaining({
       roleSnapshot: expect.objectContaining({
         id: 'review', actionType: 'review', selectionReason: expect.stringMatching(/^auto:review/),
@@ -152,5 +159,35 @@ describe('Work Center Runner execution resolution', () => {
       config: { model: 'provider/review', modelEffort: 'high', fallbackModel: null },
       vpId: 'martin',
     });
+  });
+
+  it('preserves aggregate counts when the structured result is invalid', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-invalid-result-'));
+    invalidEngineResult = true;
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Developer', traits: ['implement'], modelHint: 'primary',
+      persona: 'Implement', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: {},
+        config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await expect(runner.run({
+      workItem: { id: 'wi-1', workDir, workspaceKey: workDir },
+      action: { type: 'implement', requiredRole: 'linus', instruction: 'Implement it' },
+      run: { id: 'run-1', leaseEpoch: 1 },
+      ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({ outcome: 'failed', loopCount: 2, toolCount: 1 });
   });
 });

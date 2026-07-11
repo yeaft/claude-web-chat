@@ -61,12 +61,11 @@ describe('Work Center settings service', () => {
       },
     });
     const detail = await service.handle('get', { id: item.id });
-    expect(detail.runs[0]).toMatchObject({
-      vpSnapshot: { id: 'omni', name: 'Omni' },
-      modelSnapshot: { id: 'provider/model', provider: 'provider' },
-    });
+    expect(detail.actions[0]).toMatchObject({ loopCount: 0, toolCount: 0 });
+    expect(detail).not.toHaveProperty('runs');
+    expect(detail).not.toHaveProperty('events');
     const wire = JSON.stringify(detail);
-    for (const secret of ['/tmp', 'secret persona', 'secret-hash', 'allowedToolNames', '/private/read', '/private/write', '/private/cwd']) {
+    for (const secret of ['/tmp', 'secret persona', 'secret-hash', 'provider/model', 'allowedToolNames', '/private/read', '/private/write', '/private/cwd']) {
       expect(wire).not.toContain(secret);
     }
   });

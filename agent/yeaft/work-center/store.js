@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 
@@ -91,6 +91,8 @@ function mapRun(row) {
     error: row.error || null,
     reviewDecision: row.review_decision || null,
     contractPatch: parseJson(row.contract_patch, null),
+    loopCount: Math.max(0, Number(row.loop_count) || 0),
+    toolCount: Math.max(0, Number(row.tool_count) || 0),
   };
 }
 
@@ -202,7 +204,9 @@ export class WorkItemStore {
         waiting_reason TEXT,
         error TEXT,
         review_decision TEXT,
-        contract_patch TEXT
+        contract_patch TEXT,
+        loop_count INTEGER NOT NULL DEFAULT 0,
+        tool_count INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -248,6 +252,12 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'runs', 'contract_patch')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN contract_patch TEXT');
+    }
+    if (!hasColumn(this.db, 'runs', 'loop_count')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN loop_count INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!hasColumn(this.db, 'runs', 'tool_count')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN tool_count INTEGER NOT NULL DEFAULT 0');
     }
     if (!hasColumn(this.db, 'work_items', 'workflow_snapshot')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN workflow_snapshot TEXT');
@@ -780,8 +790,8 @@ export class WorkItemStore {
       }
       const now = this.now();
       this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, summary = ?, evidence = ?,
-        waiting_reason = ?, error = ?, review_decision = ?, contract_patch = ?
-        WHERE id = ?`).run(
+        waiting_reason = ?, error = ?, review_decision = ?, contract_patch = ?,
+        loop_count = ?, tool_count = ? WHERE id = ?`).run(
         result.outcome,
         now,
         result.summary || '',
@@ -790,6 +800,8 @@ export class WorkItemStore {
         result.error || null,
         result.reviewDecision || null,
         stringify(result.contractPatch || null),
+        Math.max(0, Number(result.loopCount) || 0),
+        Math.max(0, Number(result.toolCount) || 0),
         runId,
       );
       this.onTransitionStep?.('after_run_update');

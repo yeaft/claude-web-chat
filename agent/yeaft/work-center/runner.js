@@ -298,6 +298,8 @@ export class WorkItemRunner {
     });
 
     let text = '';
+    let loopCount = 0;
+    let toolCount = 0;
     try {
       for await (const event of engine.query({
         prompt: `${action.instruction}${completionContract(action)}`,
@@ -309,13 +311,22 @@ export class WorkItemRunner {
         userAlreadyPersisted: true,
         collabToolPolicy: 'single-vp',
       })) {
+        if (event?.type === 'loop') loopCount += 1;
+        else if (event?.type === 'tool_end') toolCount += 1;
         if (typeof event?.text === 'string') text += event.text;
         else if (typeof event?.delta === 'string') text += event.delta;
         else if (typeof event?.content === 'string' && event.type === 'assistant') text += event.content;
       }
+    } catch (error) {
+      error.workItemExecutionStats = { loopCount, toolCount };
+      throw error;
     } finally {
       try { engine.abort?.('work_item_run_finished'); } catch {}
     }
-    return parseStructuredResult(text, action.type);
+    return {
+      ...parseStructuredResult(text, action.type),
+      loopCount,
+      toolCount,
+    };
   }
 }

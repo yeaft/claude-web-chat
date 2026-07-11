@@ -24,8 +24,6 @@ export default {
       search: '',
       resumeAnswer: '',
       actionGuidance: '',
-      expandedActions: {},
-      activityOpen: false,
       form: {
         title: '',
         goal: '',
@@ -173,21 +171,7 @@ export default {
       this.selectedId = item.id;
       this.resumeAnswer = '';
       this.actionGuidance = '';
-      this.activityOpen = false;
-      try {
-        const detail = await this.store.getWorkItem(item.id, this.agentId);
-        const currentId = detail?.currentActionId;
-        this.expandedActions = currentId ? { [currentId]: true } : {};
-      } catch {}
-    },
-    toggleAction(action) {
-      this.expandedActions = {
-        ...this.expandedActions,
-        [action.id]: !this.expandedActions[action.id],
-      };
-    },
-    runsForAction(actionId) {
-      return (this.selected?.runs || []).filter(run => run.actionId === actionId);
+      try { await this.store.getWorkItem(item.id, this.agentId); } catch {}
     },
     openCreate() {
       this.createOpen = true;
@@ -276,7 +260,6 @@ export default {
           start: this.form.start,
         }, this.agentId);
         this.selectedId = detail.id;
-        this.expandedActions = detail.currentActionId ? { [detail.currentActionId]: true } : {};
         this.form = {
           title: '',
           goal: '',
@@ -307,13 +290,11 @@ export default {
         this.agentId,
       );
       this.actionGuidance = '';
-      this.expandedActions = detail.currentActionId ? { [detail.currentActionId]: true } : {};
     },
     async retrySelected() {
       if (!this.selected) return;
-      const detail = await this.store.retryWorkItem(this.selected.id, this.resumeAnswer, this.agentId);
+      await this.store.retryWorkItem(this.selected.id, this.resumeAnswer, this.agentId);
       this.resumeAnswer = '';
-      this.expandedActions = detail.currentActionId ? { [detail.currentActionId]: true } : {};
     },
     async cancelSelected() {
       if (!this.selected) return;
@@ -471,6 +452,7 @@ export default {
                 </dl>
 
                 <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
+                  <p v-if="selected.waitingReason">{{ selected.waitingReason }}</p>
                   <label>{{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}
                     <textarea v-model="resumeAnswer" rows="3" :placeholder="tr('workCenter.resumeAnswerHint', 'Provide the information required to continue')"></textarea>
                   </label>
@@ -502,53 +484,18 @@ export default {
                   <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
                   <div class="work-center-action-list">
                     <article v-for="action in selected.actions" :key="action.id" class="work-center-action-card" :data-status="action.status">
-                      <button type="button" class="work-center-action-toggle" @click="toggleAction(action)" :aria-expanded="expandedActions[action.id] ? 'true' : 'false'">
-                        <span class="work-center-action-index">{{ action.sequence }}</span>
-                        <span class="work-center-action-title">
-                          <strong>{{ actionLabel(action.type) }}</strong>
-                          <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.mode || tr('workCenter.assignment.auto', 'Auto') }} · {{ statusLabel(action.status) }}</small>
-                        </span>
-                        <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
-                        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" :class="{ expanded: expandedActions[action.id] }"><path fill="currentColor" d="m7.41 8.59 4.59 4.58 4.59-4.58L18 10l-6 6-6-6 1.41-1.41Z"/></svg>
-                      </button>
-                      <div v-if="expandedActions[action.id]" class="work-center-action-body">
-                        <p v-if="!runsForAction(action.id).length" class="work-center-muted">{{ tr('workCenter.noRuns', 'No execution yet') }}</p>
-                        <article v-for="run in runsForAction(action.id)" :key="run.id" class="work-center-run">
-                          <div class="work-center-run-heading">
-                            <small>
-                              {{ run.vpSnapshot?.name || run.roleSnapshot?.id || tr('workCenter.unknownRole', 'Unknown role') }}
-                              <template v-if="run.modelSnapshot?.provider"> · {{ run.modelSnapshot.provider }}</template>
-                              <template v-if="run.modelSnapshot?.id"> · {{ run.modelSnapshot.id }}</template>
-                              <template v-if="run.modelSnapshot?.effort"> · {{ run.modelSnapshot.effort }}</template>
-                              · {{ time(run.startedAt) }}
-                            </small>
-                            <span class="work-center-status" :data-status="run.status"><span aria-hidden="true"></span>{{ statusLabel(run.status) }}</span>
-                          </div>
-                          <p v-if="run.summary">{{ run.summary }}</p>
-                          <p v-if="run.waitingReason" class="work-center-run-reason"><strong>{{ tr('workCenter.waitingReason', 'Waiting:') }}</strong> {{ run.waitingReason }}</p>
-                          <p v-if="run.error" class="work-center-error">{{ run.error }}</p>
-                          <ul v-if="run.evidence?.length" class="work-center-evidence">
-                            <li v-for="(evidence, index) in run.evidence" :key="run.id + ':' + index">
-                              <span>{{ evidence.label }}</span>
-                              <small v-if="evidence.status"> · {{ statusLabel(evidence.status) }}</small>
-                              <code v-if="evidence.ref">{{ evidence.ref }}</code>
-                            </li>
-                          </ul>
-                        </article>
-                      </div>
+                      <span class="work-center-action-index">{{ action.sequence }}</span>
+                      <span class="work-center-action-title">
+                        <strong>{{ actionLabel(action.type) }}</strong>
+                        <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.mode || tr('workCenter.assignment.auto', 'Auto') }}</small>
+                      </span>
+                      <span class="work-center-action-stats">
+                        <span>{{ $t('workCenter.loopCount', { count: action.loopCount || 0 }) }}</span>
+                        <span>{{ $t('workCenter.toolCount', { count: action.toolCount || 0 }) }}</span>
+                      </span>
+                      <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
                     </article>
                   </div>
-                </div>
-                <div class="work-center-section" v-if="selected.events?.length">
-                  <button class="work-center-activity-toggle" type="button" @click="activityOpen = !activityOpen" :aria-expanded="activityOpen ? 'true' : 'false'">
-                    <span>{{ tr('workCenter.activity', 'Activity') }}</span>
-                    <small>{{ selected.events.length }}</small>
-                  </button>
-                  <ul v-if="activityOpen" class="work-center-events">
-                    <li v-for="event in selected.events" :key="event.id">
-                      <span>{{ event.type }}</span><small>{{ time(event.createdAt) }}</small>
-                    </li>
-                  </ul>
                 </div>
               </template>
               <div v-else class="work-center-detail-empty">

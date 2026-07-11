@@ -105,6 +105,8 @@ export class WorkItemWatcher {
         summary: '',
         evidence: [],
         error: err?.message || String(err),
+        loopCount: err?.workItemExecutionStats?.loopCount || 0,
+        toolCount: err?.workItemExecutionStats?.toolCount || 0,
       };
     }
     if (signal.aborted) return;

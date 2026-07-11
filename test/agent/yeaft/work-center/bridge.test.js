@@ -63,7 +63,8 @@ function internalDetail() {
     }],
     runs: [{
       id: 'r-1', actionId: 'a-1', workItemId: 'wi-1', status: 'running', startedAt: 1, expiresAt: 2,
-      summary: 'Visible summary', evidence: [{ kind: 'test', label: 'passed' }],
+      summary: 'Private summary', evidence: [{ kind: 'test', label: 'passed' }],
+      loopCount: 3, toolCount: 8,
       roleSnapshot: { id: 'triage', actionType: 'triage', selectionReason: 'auto:triage', assignmentPolicy: { mode: 'auto' } },
       vpSnapshot: { id: 'omni', name: 'Omni', role: 'Lead', persona: 'private persona', personaHash: 'private-hash' },
       modelSnapshot: { id: 'provider/model', provider: 'provider', policy: { mode: 'specific' } },
@@ -182,19 +183,17 @@ describe('Work Center lifecycle bridge', () => {
         type: 'work_center_response', requestId: `detail-${op}`, op, ok: true,
         data: {
           id: raw.id,
-          actions: [{ id: 'a-1', assignmentPolicy: { mode: 'auto' } }],
-          runs: [{
-            id: 'r-1', summary: 'Visible summary',
-            vpSnapshot: { id: 'omni', name: 'Omni', role: 'Lead' },
-            modelSnapshot: { id: 'provider/model', provider: 'provider' },
+          actions: [{
+            id: 'a-1', assignmentPolicy: { mode: 'auto', fixedVpId: null },
+            loopCount: 3, toolCount: 8,
           }],
-          events: [{ id: 'e-1', type: 'run.started' }],
         },
       });
       const wire = JSON.stringify(response.data);
       for (const secret of [
         '/private/project', '/private/canonical', 'workflowSnapshot', 'private-message',
         'private prompt', 'private context', 'private persona', 'private-hash',
+        'Private summary', 'modelSnapshot', 'provider/model', 'runs', 'events',
         'toolPolicySnapshot', 'allowedToolNames', '/private/read', '/private/write', '/private/cwd',
         'private event data',
       ]) {

@@ -34,6 +34,13 @@ export function mergeWorkItemSummary(current, summary) {
   for (const field of DETAIL_SUMMARY_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(summary, field)) merged[field] = summary[field];
   }
+  if (Array.isArray(current.actions) && Array.isArray(summary.actionStats)) {
+    const statsById = new Map(summary.actionStats.map(stats => [stats?.id, stats]));
+    merged.actions = current.actions.map(action => {
+      const stats = statsById.get(action?.id);
+      return stats ? { ...action, ...stats } : action;
+    });
+  }
   return merged;
 }
 

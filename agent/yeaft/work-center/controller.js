@@ -32,6 +32,8 @@ function normalizeTerminalResult(result, action) {
       ? result.reviewDecision
       : null,
     contractPatch: normalizeContractPatch(result.contractPatch),
+    loopCount: Math.max(0, Number(result.loopCount) || 0),
+    toolCount: Math.max(0, Number(result.toolCount) || 0),
   };
   if (normalized.outcome === 'waiting' && !normalized.waitingReason) {
     throw new Error('waiting outcome requires waitingReason');
