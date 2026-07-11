@@ -1490,6 +1490,7 @@ export default {
   'workCenter.settings.saving': '保存中…',
   'workCenter.settings.reload': '重新加载设置',
   'workCenter.settings.conflict': '设置已在其他位置更新，请重新加载后再保存。',
+  'workCenter.settings.upgradeRequired': '当前 Agent 版本无法保存工作中心设置。这里先显示默认任务流；升级 Agent 后即可编辑并保存。',
   'workCenter.settings.addWorkflow': '复制任务流',
   'workCenter.settings.removeWorkflow': '删除',
   'workCenter.settings.newWorkflow': '任务流 {index}',

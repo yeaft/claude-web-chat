@@ -11,6 +11,7 @@ function modalVm(overrides = {}) {
     saving: false,
     error: '',
     conflict: false,
+    settingsUnsupported: false,
     $t: key => key,
     $emit: vi.fn(),
     store: {
@@ -28,6 +29,33 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.store.saveWorkCenterSettings).not.toHaveBeenCalled();
     expect(vm.conflict).toBe(true);
     expect(vm.error).toBe('workCenter.settings.conflict');
+  });
+
+  it('shows the default workflow when an older Agent does not support settings', async () => {
+    const vm = modalVm({
+      draft: null,
+      store: {
+        loadWorkCenterSettings: vi.fn().mockRejectedValue(
+          new Error('Unsupported Work Center operation: get_settings'),
+        ),
+        saveWorkCenterSettings: vi.fn(),
+      },
+    });
+
+    await WorkCenterSettingsModal.methods.load.call(vm);
+
+    expect(vm.settingsUnsupported).toBe(true);
+    expect(vm.error).toBe('workCenter.settings.upgradeRequired');
+    expect(vm.draft).toMatchObject({
+      revision: 1,
+      defaultWorkflowId: 'software-change',
+      startImmediately: true,
+      defaultWorkDir: '',
+    });
+    expect(vm.draft.workflows[0].stages.map(stage => stage.id))
+      .toEqual(['triage', 'implement', 'review', 'deliver']);
+    await WorkCenterSettingsModal.methods.save.call(vm);
+    expect(vm.store.saveWorkCenterSettings).not.toHaveBeenCalled();
   });
 
   it('ignores a load response after the Agent changes', async () => {

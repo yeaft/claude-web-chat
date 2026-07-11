@@ -1494,6 +1494,7 @@ export default {
   'workCenter.settings.saving': 'Saving…',
   'workCenter.settings.reload': 'Reload settings',
   'workCenter.settings.conflict': 'Settings changed elsewhere. Reload before saving again.',
+  'workCenter.settings.upgradeRequired': 'This Agent version cannot save Work Center settings. The default workflow is shown; upgrade the Agent to edit and save it.',
   'workCenter.settings.addWorkflow': 'Duplicate workflow',
   'workCenter.settings.removeWorkflow': 'Remove',
   'workCenter.settings.newWorkflow': 'Workflow {index}',
