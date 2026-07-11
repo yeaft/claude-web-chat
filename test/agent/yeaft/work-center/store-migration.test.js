@@ -70,5 +70,6 @@ describe('Work Center store migration', () => {
       summary: 'Legacy reusable decision',
       sourceTitle: 'Legacy work',
     }));
+    expect(store.getRun('legacy-run')).toMatchObject({ loopCount: 0, toolCount: 0 });
   });
 });

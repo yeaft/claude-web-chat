@@ -14,9 +14,7 @@ describe('Work Center summary state', () => {
     status: 'running',
     updatedAt: 30,
     workDir: '/local/project',
-    actions: [{ id: 'action-1' }],
-    runs: [{ id: 'run-1', evidence: [{ kind: 'test', label: 'passed' }] }],
-    events: [{ id: 1 }],
+    actions: [{ id: 'action-1', loopCount: 2, toolCount: 5 }],
   };
 
   it('merges a redacted summary without dropping loaded detail data', () => {
@@ -25,9 +23,17 @@ describe('Work Center summary state', () => {
     });
     expect(merged).toMatchObject({ title: 'Updated title', status: 'waiting', updatedAt: 31 });
     expect(merged.actions).toEqual(detail.actions);
-    expect(merged.runs).toEqual(detail.runs);
-    expect(merged.events).toEqual(detail.events);
     expect(merged.workDir).toBe('/local/project');
+  });
+
+  it('patches live Action aggregate counts without replacing detail Actions', () => {
+    const merged = mergeWorkItemSummary(detail, {
+      id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
+      actionStats: [{ id: 'action-1', status: 'running', loopCount: 4, toolCount: 9 }],
+    });
+    expect(merged.actions).toEqual([
+      { id: 'action-1', status: 'running', loopCount: 4, toolCount: 9 },
+    ]);
   });
 
   it('rejects an older revision even when its timestamp is newer', () => {
