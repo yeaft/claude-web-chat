@@ -55,6 +55,9 @@ describe('Work Center UI contract', () => {
     expect(sidebar).toContain('session-item sidebar-work-center-agent');
     expect(sidebar).toContain('session-item-header');
     expect(css).toContain('Work Center uses the same tab and row primitives as the Session list');
+    expect(css).toMatch(/\.sidebar-work-center-trigger:hover\s*\{[^}]*color: var\(--text-secondary\)/s);
+    expect(css).toMatch(/\.sidebar-work-center-agent:hover\s*\{[^}]*color: var\(--text-secondary\)/s);
+    expect(css).toMatch(/\.sidebar-work-center-agent\.active,\s*\.sidebar-work-center-agent\.active:hover\s*\{[^}]*color: var\(--text-primary\)/s);
     expect(page).toContain('sidebar-nav-item work-center-back-button');
     expect(page).toContain('<SidebarModeToggle :view="store.workCenterReturnView');
     expect(page).toContain('<WorkbenchPanel v-if="canUseWorkbench"');

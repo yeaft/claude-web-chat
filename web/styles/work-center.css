@@ -53,8 +53,11 @@
   text-align: left;
 }
 
-.sidebar-work-center-trigger.active,
 .sidebar-work-center-trigger:hover {
+  color: var(--text-secondary);
+}
+
+.sidebar-work-center-trigger.active {
   color: var(--text-primary);
 }
 
@@ -108,10 +111,11 @@
 }
 
 .sidebar-work-center-agent:hover {
-  color: var(--text-primary);
+  color: var(--text-secondary);
 }
 
-.sidebar-work-center-agent.active {
+.sidebar-work-center-agent.active,
+.sidebar-work-center-agent.active:hover {
   color: var(--text-primary);
 }
 
