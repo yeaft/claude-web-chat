@@ -12,8 +12,17 @@ globalThis.Pinia.defineStore = (_id, options) => () => ({
 });
 globalThis.window = globalThis.window || globalThis;
 globalThis.window.Pinia = globalThis.Pinia;
+globalThis.Vue = globalThis.Vue || {
+  ref: vi.fn(),
+  computed: vi.fn(),
+  watch: vi.fn(),
+  onMounted: vi.fn(),
+  onBeforeUnmount: vi.fn(),
+  nextTick: vi.fn(),
+};
 
 const { useChatStore } = await import('../../../web/stores/chat.js');
+const { default: ChatPage } = await import('../../../web/components/ChatPage.js');
 
 function makeStore(view) {
   const store = useChatStore();
@@ -26,6 +35,26 @@ function makeStore(view) {
 }
 
 describe('Work Center navigation', () => {
+  it('leaves Work Center when a split-panel Session is selected', () => {
+    const store = {
+      isSplitMode: true,
+      activePanelId: 'panel-1',
+      leaveWorkCenter: vi.fn(),
+      setPanelConversation: vi.fn(),
+      closeSessionSidebar: vi.fn(),
+    };
+
+    ChatPage.methods.onSessionClick.call({ store }, {
+      id: 'conversation-2',
+      agentId: 'agent-1',
+      agentOnline: true,
+    });
+
+    expect(store.leaveWorkCenter).toHaveBeenCalledOnce();
+    expect(store.setPanelConversation).toHaveBeenCalledWith('panel-1', 'conversation-2');
+    expect(store.closeSessionSidebar).toHaveBeenCalledOnce();
+  });
+
   it('opens and closes inside the Chat provider without replacing it', () => {
     const store = makeStore('chat');
 

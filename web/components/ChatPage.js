@@ -715,6 +715,7 @@ export default {
       }
       // In multi-panel mode, route to the active panel
       if (this.store.isSplitMode && this.store.activePanelId) {
+        this.store.leaveWorkCenter();
         this.store.setPanelConversation(this.store.activePanelId, conv.id);
         this.store.closeSessionSidebar();
         return;
