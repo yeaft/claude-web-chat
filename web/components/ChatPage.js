@@ -14,6 +14,7 @@ import { shortenPath as shortenPathUtil } from '../utils/path-display.js';
 import { getLastPathSegment as _getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
 import { sortSessionsByActivity } from '../stores/helpers/session-order.js';
 import { useAuthStore } from '../stores/auth.js';
+import { collapseSidebar } from '../utils/sidebar-collapse.js';
 
 export default {
   name: 'ChatPage',
@@ -517,7 +518,7 @@ export default {
       return this.onlineAgents.length;
     },
     isMobileView() {
-      return this.windowWidth < 640;
+      return this.windowWidth <= 768;
     },
     normalConversations() {
       return this.sortByActivity(this.store.conversations.filter(c => c.agentOnline !== false));
@@ -535,11 +536,12 @@ export default {
   },
   methods: {
     onSidebarCollapse() {
-      if (this.showMobileSidebar) {
-        this.showMobileSidebar = false;
-        return;
-      }
-      this.store.toggleSidebar();
+      collapseSidebar({
+        isMobileView: this.isMobileView,
+        showMobileSidebar: this.showMobileSidebar,
+        closeMobileSidebar: () => { this.showMobileSidebar = false; },
+        toggleSidebar: () => this.store.toggleSidebar(),
+      });
     },
     onModeFlip(target) {
       if (target === 'yeaft') {

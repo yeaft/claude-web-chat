@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { collapseSidebar } from '../../web/utils/sidebar-collapse.js';
 
 const readComponent = (name) => readFileSync(new URL(`../../web/components/${name}`, import.meta.url), 'utf8');
 const readStyle = (name) => readFileSync(new URL(`../../web/styles/${name}`, import.meta.url), 'utf8');
@@ -17,9 +18,21 @@ describe('mobile sidebar header parity', () => {
     expect(yeaftSidebar).toContain('<div class="sidebar-top">');
   });
 
-  it('uses the shared collapse action to close the mobile Chat drawer', () => {
+  it('closes the mobile drawer without swallowing the first desktop collapse after resize', () => {
     expect(chatPage).toContain('@click="onSidebarCollapse"');
-    expect(chatPage).toMatch(/onSidebarCollapse\(\)\s*\{[\s\S]*?if \(this\.showMobileSidebar\) \{[\s\S]*?this\.showMobileSidebar = false;[\s\S]*?return;[\s\S]*?\}[\s\S]*?this\.store\.toggleSidebar\(\);/);
+    expect(chatPage).toContain('return this.windowWidth <= 768;');
+
+    const closeMobileSidebar = vi.fn();
+    const mobileToggle = vi.fn();
+    collapseSidebar({ isMobileView: true, showMobileSidebar: true, closeMobileSidebar, toggleSidebar: mobileToggle });
+    expect(closeMobileSidebar).toHaveBeenCalledOnce();
+    expect(mobileToggle).not.toHaveBeenCalled();
+
+    const desktopClose = vi.fn();
+    const desktopToggle = vi.fn();
+    collapseSidebar({ isMobileView: false, showMobileSidebar: true, closeMobileSidebar: desktopClose, toggleSidebar: desktopToggle });
+    expect(desktopClose).not.toHaveBeenCalled();
+    expect(desktopToggle).toHaveBeenCalledOnce();
   });
 
   it('removes the obsolete mobile-only title and close button styles', () => {
