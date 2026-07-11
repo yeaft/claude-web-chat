@@ -57,7 +57,8 @@ const OPEN_ITEM_DETAIL = {
   acceptanceCriteria: ['The Action flow remains readable'],
   actions: [{
     id: 'action-1', sequence: 1, type: 'implement', requiredRole: 'developer', status: 'running',
-    loopCount: 3, toolCount: 8,
+    loopCount: 3, toolCount: 8, progressRevision: 4,
+    response: 'Implemented the layout fix and verified the responsive breakpoints.',
   }],
 };
 
@@ -131,7 +132,7 @@ async function openWorkCenter(chatPage, mockAgent, items = [OPEN_ITEM]) {
 
   await chatPage.locator('.sidebar-work-center-agent').first().click();
   await responses;
-  await expect(chatPage.locator('.work-center-page')).toBeVisible();
+  await expect(chatPage.locator('.work-center-main')).toBeVisible();
   await expect(chatPage.locator('.work-center-card')).toHaveCount(items.length);
 }
 
@@ -143,7 +144,7 @@ async function layoutMetrics(page) {
     return {
       viewportWidth: window.innerWidth,
       documentScrollWidth: document.documentElement.scrollWidth,
-      sidebar: rect('.work-center-sidebar'),
+      sidebar: rect('.session-sidebar-shell'),
       main: rect('.work-center-main'),
       detail: rect('.work-center-detail'),
       mainClientWidth: main?.clientWidth || 0,
@@ -175,7 +176,7 @@ test.describe('Work Center responsive UI', () => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1440, height: 900 });
 
-    await chatPage.locator('.work-center-sidebar .sidebar-icon-btn[title="Workbench"]').click();
+    await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Workbench"]').click();
     const panel = chatPage.locator('.workbench-panel');
     const main = chatPage.locator('.work-center-main');
     await expect(panel).toHaveClass(/expanded/);
@@ -205,6 +206,9 @@ test.describe('Work Center responsive UI', () => {
     await expect(action).toContainText('3 loops');
     await expect(action).toContainText('8 tools');
     await expect(action.locator('.work-center-action-body')).toHaveCount(0);
+    await action.locator('.work-center-action-summary').click();
+    await expect(action.locator('.work-center-action-response')).toContainText('Implemented the layout fix');
+    await expect(action.locator('.work-center-run')).toHaveCount(0);
 
     await chatPage.locator('.work-center-guidance textarea').fill('Keep the public API unchanged');
     const guide = respondToWorkCenterOp(mockAgent, 'guide', OPEN_ITEM_DETAIL);
@@ -251,8 +255,10 @@ test.describe('Work Center responsive UI', () => {
     await chatPage.setViewportSize({ width: 720, height: 900 });
     await chatPage.waitForTimeout(350);
 
-    await chatPage.locator('.sidebar-header-actions .sidebar-icon-btn[title="Collapse sidebar"]').click();
-    await expect(chatPage.locator('.work-center-sidebar')).toHaveClass(/collapsed/);
+    await chatPage.locator('.work-center-sidebar-toggle').click();
+    await expect(chatPage.locator('.session-sidebar-shell')).not.toHaveClass(/collapsed/);
+    await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Collapse sidebar"]').click();
+    await expect(chatPage.locator('.session-sidebar-shell')).toHaveClass(/collapsed/);
 
     const create = chatPage.locator('.work-center-header-create');
     await expect(create).toBeVisible();
@@ -289,7 +295,9 @@ test.describe('Work Center responsive UI', () => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
     await chatPage.setViewportSize({ width: 720, height: 780 });
-    await chatPage.locator('.work-center-sidebar .sidebar-icon-btn[title="Collapse sidebar"]').click();
+    await chatPage.locator('.work-center-sidebar-toggle').click();
+    await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Collapse sidebar"]').click();
+    await expect(chatPage.locator('.session-sidebar-shell')).toHaveClass(/collapsed/);
     const settingsRequest = respondUntilOperation(mockAgent, 'get_settings', {
       list: { items: [OPEN_ITEM], watcher: { enabled: true } },
       get_settings: WORK_CENTER_SETTINGS,
@@ -300,9 +308,13 @@ test.describe('Work Center responsive UI', () => {
     const modal = chatPage.locator('.work-center-settings-card');
     await expect(modal).toBeVisible();
     await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(8);
-    const metrics = await modal.evaluate(element => {
+    const workflowMetrics = await modal.evaluate(element => {
       const rect = element.getBoundingClientRect();
       const pane = element.querySelector('.work-center-settings-pane');
+      const textarea = element.querySelector('.work-center-stage-instruction textarea');
+      const save = element.querySelector('.work-center-settings-footer .btn-primary');
+      const textareaStyle = getComputedStyle(textarea);
+      const saveStyle = getComputedStyle(save);
       return {
         left: rect.left,
         right: rect.right,
@@ -312,14 +324,33 @@ test.describe('Work Center responsive UI', () => {
         viewportHeight: window.innerHeight,
         paneScrollable: pane.scrollHeight >= pane.clientHeight,
         background: getComputedStyle(element).backgroundColor,
+        textareaBackground: textareaStyle.backgroundColor,
+        textareaColor: textareaStyle.color,
+        saveBackground: saveStyle.backgroundColor,
+        saveColor: saveStyle.color,
       };
     });
-    expect(metrics.left).toBeGreaterThanOrEqual(0);
-    expect(metrics.right).toBeLessThanOrEqual(metrics.viewportWidth);
-    expect(metrics.top).toBeGreaterThanOrEqual(0);
-    expect(metrics.bottom).toBeLessThanOrEqual(metrics.viewportHeight);
-    expect(metrics.paneScrollable).toBe(true);
-    expect(metrics.background).not.toBe('rgba(0, 0, 0, 0)');
+    expect(workflowMetrics.left).toBeGreaterThanOrEqual(0);
+    expect(workflowMetrics.right).toBeLessThanOrEqual(workflowMetrics.viewportWidth);
+    expect(workflowMetrics.top).toBeGreaterThanOrEqual(0);
+    expect(workflowMetrics.bottom).toBeLessThanOrEqual(workflowMetrics.viewportHeight);
+    expect(workflowMetrics.paneScrollable).toBe(true);
+    expect(workflowMetrics.background).not.toBe('rgba(0, 0, 0, 0)');
+    expect(workflowMetrics.textareaBackground).not.toBe('rgb(255, 255, 255)');
+    expect(workflowMetrics.textareaColor).not.toBe(workflowMetrics.textareaBackground);
+    expect(workflowMetrics.saveBackground).not.toBe(workflowMetrics.background);
+    expect(workflowMetrics.saveColor).not.toBe(workflowMetrics.saveBackground);
+
+    await modal.getByRole('button', { name: 'General', exact: true }).click();
+    const generalInput = modal.locator('.work-center-settings-field input[type="text"]');
+    await expect(generalInput).toBeVisible();
+    const inputStyle = await generalInput.evaluate(element => {
+      const style = getComputedStyle(element);
+      return { background: style.backgroundColor, color: style.color };
+    });
+    expect(inputStyle.background).not.toBe('rgb(255, 255, 255)');
+    expect(inputStyle.background).toBe(workflowMetrics.textareaBackground);
+    expect(inputStyle.color).not.toBe(inputStyle.background);
   });
 
   test('creates from a goal contract and leaves planning to AI triage', async ({ chatPage, mockAgent }) => {
