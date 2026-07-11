@@ -10,11 +10,6 @@ export default {
       createOpen: false,
       settingsOpen: false,
       saving: false,
-      previewLoading: false,
-      previewError: '',
-      planPreview: null,
-      previewTimer: null,
-      previewRevision: 0,
       llmConfigOpen: false,
       filter: 'open',
       search: '',
@@ -26,8 +21,6 @@ export default {
         acceptanceCriteriaText: '',
         workDir: '',
         reuseMemory: true,
-        workflowTemplate: '',
-        stageOverrides: {},
         start: true,
       },
     };
@@ -39,7 +32,6 @@ export default {
     onlineAgents() { return this.agents.filter(agent => agent?.online); },
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
     settings() { return this.store.workCenterSettingsByAgent[this.agentId] || null; },
-    workflows() { return Array.isArray(this.settings?.workflows) ? this.settings.workflows : []; },
     items() { return this.store.workCenterItemsByAgent[this.agentId] || []; },
     loading() { return !!this.store.workCenterLoadingByAgent[this.agentId]; },
     error() { return this.store.workCenterErrorByAgent[this.agentId] || null; },
@@ -97,17 +89,12 @@ export default {
       immediate: true,
       handler(id) {
         this.selectedId = null;
-        this.planPreview = null;
         if (id) {
           this.store.listWorkItems(id).catch(() => {});
-          this.store.loadWorkCenterSettings(id).then(data => {
-            if (!this.form.workflowTemplate) this.form.workflowTemplate = data?.settings?.defaultWorkflowId || '';
-            if (this.createOpen) this.schedulePreview();
-          }).catch(() => {});
+          this.store.loadWorkCenterSettings(id).catch(() => {});
         }
       },
     },
-    'form.workflowTemplate'() { if (this.createOpen) this.schedulePreview(); },
   },
   mounted() {
     const draft = this.store.workCenterCreateDraft;
@@ -118,15 +105,9 @@ export default {
       acceptanceCriteriaText: '',
       workDir: draft.workDir || '',
       reuseMemory: true,
-      workflowTemplate: this.settings?.defaultWorkflowId || '',
-      stageOverrides: {},
       start: this.settings?.startImmediately !== false,
     };
     this.createOpen = true;
-    this.schedulePreview();
-  },
-  beforeUnmount() {
-    if (this.previewTimer) clearTimeout(this.previewTimer);
   },
   methods: {
     tr(key, fallback) {
@@ -158,97 +139,17 @@ export default {
     },
     openCreate() {
       this.createOpen = true;
-      if (!this.form.workflowTemplate) this.form.workflowTemplate = this.settings?.defaultWorkflowId || '';
       this.form.start = this.settings?.startImmediately !== false;
-      this.schedulePreview();
     },
     closeCreate() {
       if (this.saving) return;
       this.createOpen = false;
-      this.previewError = '';
-      this.planPreview = null;
       this.store.workCenterCreateDraft = null;
-    },
-    schedulePreview() {
-      if (this.previewTimer) clearTimeout(this.previewTimer);
-      this.previewTimer = setTimeout(() => { this.refreshPreview(); }, 120);
-    },
-    async refreshPreview() {
-      if (!this.createOpen || !this.form.workflowTemplate) return;
-      const revision = ++this.previewRevision;
-      this.previewLoading = true;
-      this.previewError = '';
-      const target = this.agentId;
-      try {
-        const preview = await this.store.previewWorkCenterPlan({
-          workflowTemplate: this.form.workflowTemplate,
-          stageOverrides: this.form.stageOverrides,
-        }, target);
-        if (revision === this.previewRevision && target === this.agentId) this.planPreview = preview;
-      } catch (error) {
-        if (revision === this.previewRevision && target === this.agentId) {
-          this.previewError = error?.message || String(error);
-        }
-      } finally {
-        if (revision === this.previewRevision && target === this.agentId) this.previewLoading = false;
-      }
-    },
-    overrideStageVp(stageId, vpId) {
-      this.form.stageOverrides = {
-        ...this.form.stageOverrides,
-        [stageId]: {
-          ...(this.form.stageOverrides[stageId] || {}),
-          assignmentPolicy: vpId
-            ? { mode: 'fixed', fixedVpId: vpId }
-            : { mode: 'auto', fixedVpId: null },
-        },
-      };
-      this.schedulePreview();
-    },
-    modelForStage(stage) {
-      const modelRef = this.form.stageOverrides[stage.id]?.modelPolicy?.model || stage.model?.id;
-      const models = this.store.workCenterRuntimeByAgent[this.agentId]?.models || [];
-      return models.find(model => (model.ref || model.id) === modelRef) || null;
-    },
-    effortOptionsForPlanStage(stage) {
-      const options = this.modelForStage(stage)?.effortOptions;
-      return Array.isArray(options) ? options : [];
-    },
-    overrideStageModel(stageId, model) {
-      this.form.stageOverrides = {
-        ...this.form.stageOverrides,
-        [stageId]: {
-          ...(this.form.stageOverrides[stageId] || {}),
-          modelPolicy: model
-            ? { mode: 'specific', model, effort: null }
-            : { mode: 'inherit', model: null, effort: null },
-        },
-      };
-      this.schedulePreview();
-    },
-    overrideStageEffort(stageId, effort) {
-      const current = this.form.stageOverrides[stageId]?.modelPolicy || {};
-      const previewStage = this.planPreview?.stages?.find(stage => stage.id === stageId);
-      const inheritedPolicy = previewStage?.modelPolicy || { mode: 'inherit', model: null };
-      this.form.stageOverrides = {
-        ...this.form.stageOverrides,
-        [stageId]: {
-          ...(this.form.stageOverrides[stageId] || {}),
-          modelPolicy: {
-            ...inheritedPolicy,
-            ...current,
-            effort: effort || null,
-          },
-        },
-      };
-      this.schedulePreview();
     },
     onLlmConfigSaved() {
       const agentId = this.agentId;
       if (!agentId) return;
-      return this.store.refreshWorkCenterRuntime(agentId)
-        .then(() => { if (this.createOpen && agentId === this.agentId) this.schedulePreview(); })
-        .catch(() => {});
+      return this.store.refreshWorkCenterRuntime(agentId).catch(() => {});
     },
     async submitCreate() {
       if (!this.form.title.trim() || !this.form.goal.trim()) return;
@@ -261,8 +162,6 @@ export default {
           acceptanceCriteria: this.form.acceptanceCriteriaText
             .split('\n').map(value => value.trim()).filter(Boolean),
           workDir: this.form.workDir.trim(),
-          workflowTemplate: this.form.workflowTemplate,
-          stageOverrides: this.form.stageOverrides,
           origin: draft?.origin || null,
           linkedSessionIds: draft?.linkedSessionIds || [],
           reuseMemory: this.form.reuseMemory,
@@ -275,8 +174,6 @@ export default {
           acceptanceCriteriaText: '',
           workDir: '',
           reuseMemory: true,
-          workflowTemplate: this.settings?.defaultWorkflowId || '',
-          stageOverrides: {},
           start: this.settings?.startImmediately !== false,
         };
         this.store.workCenterCreateDraft = null;
@@ -409,7 +306,8 @@ export default {
                 <dl class="work-center-detail-meta">
                   <div><dt>{{ tr('workCenter.updated', 'Updated') }}</dt><dd>{{ time(selected.updatedAt) || '—' }}</dd></div>
                   <div v-if="selected.workDir"><dt>{{ tr('workCenter.workDir', 'Working directory') }}</dt><dd>{{ selected.workDir }}</dd></div>
-                  <div v-if="selected.workflowTemplate"><dt>{{ tr('workCenter.workflow', 'Workflow') }}</dt><dd>{{ selected.workflowTemplate }}</dd></div>
+                  <div v-if="selected.workItemType"><dt>{{ tr('workCenter.workItemType', 'Type') }}</dt><dd>{{ selected.workItemType }}</dd></div>
+                  <div v-else-if="selected.planningMode === 'ai'"><dt>{{ tr('workCenter.workItemType', 'Type') }}</dt><dd>{{ tr('workCenter.planning', 'Planning') }}</dd></div>
                 </dl>
 
                 <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
@@ -448,7 +346,7 @@ export default {
                       <span class="work-center-action-index">{{ action.sequence }}</span>
                       <span class="work-center-action-title">
                         <strong>{{ actionLabel(action.type) }}</strong>
-                        <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.mode || tr('workCenter.assignment.auto', 'Auto') }}</small>
+                        <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.capability || tr('workCenter.assignment.auto', 'Auto') }}</small>
                       </span>
                       <span class="work-center-action-stats">
                         <span>{{ $t('workCenter.loopCount', { count: action.loopCount || 0 }) }}</span>
@@ -467,7 +365,7 @@ export default {
         </div>
     </main>
 
-      <WorkCenterSettingsModal v-if="settingsOpen" :key="agentId" :agent-id="agentId" @close="settingsOpen = false" @saved="refreshPreview" @open-agent-models="settingsOpen = false; llmConfigOpen = true" />
+      <WorkCenterSettingsModal v-if="settingsOpen" :key="agentId" :agent-id="agentId" @close="settingsOpen = false" @saved="refresh" @open-agent-models="settingsOpen = false; llmConfigOpen = true" />
       <div v-if="llmConfigOpen" class="modal-overlay yeaft-llm-config-overlay" @click.self="llmConfigOpen = false">
         <div class="modal-card yeaft-llm-config-modal" role="dialog" aria-modal="true" :aria-label="$t('settings.llm.configureAgent')">
           <div class="modal-header">
@@ -491,40 +389,12 @@ export default {
             <label>{{ tr('workCenter.goal', 'Goal') }}<textarea v-model="form.goal" rows="4" required></textarea></label>
             <label>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}<textarea v-model="form.acceptanceCriteriaText" rows="4" :placeholder="tr('workCenter.criteriaHint', 'One criterion per line')"></textarea></label>
             <div class="work-center-create-grid">
-              <label>{{ tr('workCenter.workflow', 'Workflow') }}
-                <select v-model="form.workflowTemplate">
-                  <option v-for="workflow in workflows" :key="workflow.id" :value="workflow.id">{{ workflow.name }}</option>
-                </select>
-              </label>
               <label>{{ tr('workCenter.workDir', 'Working directory') }}<input v-model="form.workDir" type="text" :placeholder="tr('workCenter.workDirHint', 'Optional project directory')"></label>
             </div>
             <section class="work-center-plan-preview">
               <div class="work-center-plan-preview-heading">
-                <div><strong>{{ tr('workCenter.planPreview', 'Execution plan') }}</strong><small>{{ tr('workCenter.planPreviewHelp', 'Resolved from this Agent’s VP pool and model settings.') }}</small></div>
+                <div><strong>{{ tr('workCenter.aiPlan', 'AI-planned execution') }}</strong><small>{{ tr('workCenter.aiPlanHelp', 'Triage will choose the task type, Actions, executors, and the smallest reliable flow. Work Center settings control the model and effort.') }}</small></div>
                 <button type="button" class="btn-ghost" @click="settingsOpen = true">{{ tr('workCenter.settings.title', 'Settings') }}</button>
-              </div>
-              <p v-if="previewLoading" class="work-center-muted">{{ tr('common.loading', 'Loading…') }}</p>
-              <p v-else-if="previewError" class="work-center-error">{{ previewError }}</p>
-              <div v-else-if="planPreview" class="work-center-plan-stages">
-                <article v-for="stage in planPreview.stages" :key="stage.id" :class="{ invalid: stage.error }">
-                  <div><strong>{{ stage.name }}</strong><small v-if="stage.error">{{ stage.error }}</small><small v-else>{{ stage.selectedVp?.name }} · {{ stage.model?.provider || tr('workCenter.model.defaultProvider', 'default provider') }} · {{ stage.model?.id }}<template v-if="stage.model?.effort"> · {{ stage.model.effort }}</template></small></div>
-                  <div class="work-center-plan-overrides">
-                    <select :value="form.stageOverrides[stage.id]?.assignmentPolicy?.fixedVpId || ''" @change="overrideStageVp(stage.id, $event.target.value)">
-                      <option value="">{{ tr('workCenter.assignment.auto', 'Use workflow policy') }}</option>
-                      <option v-for="vp in store.workCenterRuntimeByAgent[agentId]?.vps || []" :key="vp.id" :value="vp.id">{{ vp.name || vp.id }}</option>
-                    </select>
-                    <select :value="form.stageOverrides[stage.id]?.modelPolicy?.model || ''" @change="overrideStageModel(stage.id, $event.target.value)">
-                      <option value="">{{ tr('workCenter.model.inherit', 'Use workflow model') }}</option>
-                      <option v-for="model in store.workCenterRuntimeByAgent[agentId]?.models || []" :key="model.ref || model.id" :value="model.ref || model.id">{{ model.provider }} · {{ model.label || model.id }}</option>
-                    </select>
-                    <select v-if="effortOptionsForPlanStage(stage).length"
-                            :value="form.stageOverrides[stage.id]?.modelPolicy?.effort || stage.modelPolicy?.effort || ''"
-                            @change="overrideStageEffort(stage.id, $event.target.value)">
-                      <option value="">{{ tr('workCenter.settings.effortDefault', 'Model default') }}</option>
-                      <option v-for="effort in effortOptionsForPlanStage(stage)" :key="effort" :value="effort">{{ effort }}</option>
-                    </select>
-                  </div>
-                </article>
               </div>
             </section>
             <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox">{{ tr('workCenter.reuseMemory', 'Reuse context from this working directory') }}</label>
@@ -532,7 +402,7 @@ export default {
           </div>
           <footer>
             <button class="btn-secondary" type="button" @click="closeCreate">{{ tr('common.cancel', 'Cancel') }}</button>
-            <button class="btn-primary" type="submit" :disabled="saving || previewLoading || planPreview?.valid === false || !form.title.trim() || !form.goal.trim() || !form.workflowTemplate">
+            <button class="btn-primary" type="submit" :disabled="saving || !form.title.trim() || !form.goal.trim()">
               {{ saving ? tr('workCenter.creating', 'Creating…') : tr('workCenter.create', 'Create') }}
             </button>
           </footer>

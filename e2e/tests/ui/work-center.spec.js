@@ -7,6 +7,12 @@ const WORK_CENTER_SETTINGS = {
     defaultWorkflowId: 'software-change',
     startImmediately: true,
     defaultWorkDir: '/tmp/test',
+    modelPolicy: { mode: 'specific', model: 'provider/review', effort: 'high' },
+    actionInstructions: {
+      triage: 'Plan the task', implement: 'Implement the change', test: 'Test the change',
+      review: 'Review independently', deliver: 'Deliver the result', research: 'Research the problem',
+      write: 'Write the content', custom: 'Complete the custom Action',
+    },
     workflows: [{
       version: 1,
       id: 'software-change',
@@ -26,20 +32,11 @@ const WORK_CENTER_SETTINGS = {
     ],
     models: [
       { id: 'primary', ref: 'provider/primary', provider: 'provider', label: 'primary' },
-      { id: 'review', ref: 'provider/review', provider: 'provider', label: 'review' },
+      { id: 'review', ref: 'provider/review', provider: 'provider', label: 'review', effortOptions: ['high'] },
     ],
     primaryModel: 'provider/primary',
     fastModel: null,
   },
-};
-
-const PLAN_PREVIEW = {
-  valid: true,
-  stages: [
-    { id: 'triage', name: 'Triage', selectedVp: { id: 'omni', name: 'Omni' }, model: { provider: 'provider', id: 'provider/primary' }, error: null },
-    { id: 'implement', name: 'Implement', selectedVp: { id: 'linus', name: 'Linus' }, model: { provider: 'provider', id: 'provider/primary' }, error: null },
-    { id: 'review', name: 'Review', selectedVp: { id: 'martin', name: 'Martin' }, model: { provider: 'provider', id: 'provider/review', effort: 'high' }, error: null },
-  ],
 };
 
 const OPEN_ITEM = {
@@ -264,7 +261,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-modal')).toBeVisible();
   });
 
-  test('opens a fixed settings shell and edits workflow assignment and models', async ({ chatPage, mockAgent }) => {
+  test('opens a fixed settings shell for Action prompts and Work Center model policy', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1280, height: 900 });
 
@@ -280,12 +277,12 @@ test.describe('Work Center responsive UI', () => {
     expect(box.width).toBeGreaterThan(850);
     expect(box.height).toBeGreaterThan(650);
 
-    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(3);
+    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(8);
+    await expect(chatPage.locator('.work-center-policy-stage textarea').first()).toHaveValue('Plan the task');
     await chatPage.getByRole('button', { name: 'Models', exact: true }).click();
-    await expect(chatPage.locator('.work-center-model-stage')).toHaveCount(3);
-    await chatPage.getByRole('button', { name: 'Workflow', exact: true }).click();
-    await chatPage.getByRole('button', { name: 'Add stage', exact: true }).click();
-    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(4);
+    await expect(chatPage.locator('.work-center-model-stage')).toHaveCount(1);
+    await expect(chatPage.locator('.work-center-model-stage')).toContainText('All Work Center Actions');
+    await expect(chatPage.locator('.work-center-model-stage select').last()).toHaveValue('high');
   });
 
   test('keeps settings usable in dark theme and mobile viewport', async ({ chatPage, mockAgent }) => {
@@ -302,7 +299,7 @@ test.describe('Work Center responsive UI', () => {
 
     const modal = chatPage.locator('.work-center-settings-card');
     await expect(modal).toBeVisible();
-    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(3);
+    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(8);
     const metrics = await modal.evaluate(element => {
       const rect = element.getBoundingClientRect();
       const pane = element.querySelector('.work-center-settings-pane');
@@ -325,19 +322,20 @@ test.describe('Work Center responsive UI', () => {
     expect(metrics.background).not.toBe('rgba(0, 0, 0, 0)');
   });
 
-  test('previews the actual VP, Provider, and model before creating work', async ({ chatPage, mockAgent }) => {
+  test('creates from a goal contract and leaves planning to AI triage', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
-    const previewRequest = respondUntilOperation(mockAgent, 'preview', {
-      list: { items: [OPEN_ITEM], watcher: { enabled: true } },
-      get_settings: WORK_CENTER_SETTINGS,
-      preview: PLAN_PREVIEW,
-    });
     await chatPage.locator('.work-center-header-create').click();
-    await previewRequest;
-    await expect(chatPage.locator('.work-center-plan-stages article')).toHaveCount(3);
-    await expect(chatPage.locator('.work-center-plan-stages')).toContainText('Omni');
-    await expect(chatPage.locator('.work-center-plan-stages')).toContainText('Martin');
-    await expect(chatPage.locator('.work-center-plan-stages')).toContainText('provider/review');
+    await expect(chatPage.locator('.work-center-plan-preview')).toContainText('AI-planned execution');
+    await expect(chatPage.locator('.work-center-plan-preview')).toContainText('Triage chooses the task type');
+    await expect(chatPage.locator('.work-center-plan-stages')).toHaveCount(0);
+
+    await chatPage.locator('.work-center-modal input').first().fill('Fix dynamic planning');
+    await chatPage.locator('.work-center-modal textarea').first().fill('Let AI choose the smallest safe flow');
+    const createRequest = respondToWorkCenterOp(mockAgent, 'create', OPEN_ITEM_DETAIL);
+    await chatPage.getByRole('button', { name: 'Create', exact: true }).click();
+    const request = await createRequest;
+    expect(request.payload).not.toHaveProperty('workflowTemplate');
+    expect(request.payload).not.toHaveProperty('stageOverrides');
   });
 
   test('uses filter-specific headings and empty states', async ({ chatPage, mockAgent }) => {

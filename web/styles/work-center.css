@@ -241,7 +241,10 @@
 
 .work-center-main .btn-primary,
 .work-center-main .btn-secondary,
-.work-center-main .btn-ghost {
+.work-center-main .btn-ghost,
+.work-center-settings-card .btn-primary,
+.work-center-settings-card .btn-secondary,
+.work-center-settings-card .btn-ghost {
   min-height: 34px;
   padding: 7px 12px;
   border-radius: 8px;
@@ -251,35 +254,45 @@
   cursor: pointer;
 }
 
-.work-center-main .btn-primary {
+.work-center-main .btn-primary,
+.work-center-settings-card .btn-primary {
   border: 0;
   background: var(--accent);
   color: var(--accent-fg);
 }
 
-.work-center-main .btn-primary:hover:not(:disabled) {
+.work-center-main .btn-primary:hover:not(:disabled),
+.work-center-settings-card .btn-primary:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 
-.work-center-main .btn-secondary {
+.work-center-main .btn-secondary,
+.work-center-settings-card .btn-secondary {
   border: 1px solid var(--border-color);
   background: transparent;
   color: var(--text-primary);
 }
 
 .work-center-main .btn-secondary:hover:not(:disabled),
-.work-center-main .btn-ghost:hover:not(:disabled) {
+.work-center-main .btn-ghost:hover:not(:disabled),
+.work-center-settings-card .btn-secondary:hover:not(:disabled),
+.work-center-settings-card .btn-ghost:hover:not(:disabled) {
   background: var(--sidebar-hover);
 }
 
-.work-center-main .btn-ghost {
+.work-center-main .btn-ghost,
+.work-center-settings-card .btn-ghost {
   border: 0;
   background: transparent;
   color: var(--text-secondary);
 }
 
 .work-center-main .btn-primary:disabled,
-.work-center-main .btn-secondary:disabled {
+.work-center-main .btn-secondary:disabled,
+.work-center-main .btn-ghost:disabled,
+.work-center-settings-card .btn-primary:disabled,
+.work-center-settings-card .btn-secondary:disabled,
+.work-center-settings-card .btn-ghost:disabled {
   cursor: not-allowed;
   opacity: 0.4;
 }

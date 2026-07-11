@@ -23,6 +23,11 @@ describe('CreateWorkItem tool', () => {
       origin: { sessionId: 'session-real', messageId: 'msg-1', createdBy: 'linus' },
       linkedSessionIds: ['session-real'],
     }));
+    const payload = createWorkItemFromProducer.mock.calls.at(-1)[0];
+    expect(payload).not.toHaveProperty('workflowTemplate');
+    expect(payload).not.toHaveProperty('stageOverrides');
+    expect(payload).not.toHaveProperty('model');
+    expect(payload).not.toHaveProperty('effort');
   });
 
   it('rejects execution outside a Session', async () => {
