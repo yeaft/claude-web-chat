@@ -131,6 +131,38 @@ describe('Work Center core', () => {
     expect(detail.actions.at(-1).instruction).not.toContain('Never publish deployment artifacts without explicit approval.');
   });
 
+  it.each(['constructor', '__proto__'])(
+    'uses the custom execution baseline for the dynamic Action type %s',
+    (type) => {
+      const customInstruction = 'Use the custom baseline and verify the domain result.';
+      const item = controller.create(createInput({
+        workflowTemplate: 'ai-planned',
+        workflowSnapshot: resolvePlanningWorkflowSnapshot({
+          actionInstructions: { custom: customInstruction },
+        }),
+      }));
+      const triage = store.claimReadyAction('boot-a', 5_000);
+      const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+        plan: {
+          workItemType: 'domain-task',
+          actions: [{
+            id: 'domain-action',
+            type,
+            capability: type,
+            objective: 'Complete the domain-specific objective',
+          }],
+        },
+      }));
+
+      expect(detail.workflowSnapshot.stages.at(-1)).toMatchObject({ type });
+      expect(detail.actions.at(-1).instruction).toContain(customInstruction);
+      expect(detail.actions.at(-1).instruction).toContain(`Action type: ${type}`);
+      expect(detail.actions.at(-1).instruction).not.toContain('function Object()');
+      expect(detail.actions.at(-1).instruction).not.toContain('[object Object]');
+      expect(item.workflowSnapshot.stages).toHaveLength(1);
+    },
+  );
+
   it('rejects an AI-planned triage result without a specific WorkItem type', () => {
     const item = controller.create(createInput({
       workflowTemplate: 'ai-planned', workflowSnapshot: resolvePlanningWorkflowSnapshot({}),

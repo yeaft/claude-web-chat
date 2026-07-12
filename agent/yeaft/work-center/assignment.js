@@ -39,7 +39,7 @@ function capabilityScore(vp, capability) {
   const needle = String(capability || '').trim().toLowerCase();
   if (!needle) return 0;
   const text = vpSearchText(vp);
-  const terms = CAPABILITY_TERMS[needle] || [needle];
+  const terms = Object.hasOwn(CAPABILITY_TERMS, needle) ? CAPABILITY_TERMS[needle] : [needle];
   let score = 0;
   for (const term of terms) {
     if (text.includes(term)) score += term === needle ? 6 : 2;

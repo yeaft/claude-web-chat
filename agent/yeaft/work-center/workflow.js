@@ -318,11 +318,14 @@ export function applyGeneratedPlan(workItem, rawPlan) {
     seen.add(id);
     const objective = typeof input.objective === 'string' ? input.objective.trim().slice(0, 2_000) : '';
     if (!objective) throw new Error(`AI-planned Action "${id}" requires an objective`);
+    const actionInstruction = Object.hasOwn(source.actionInstructions, type)
+      ? source.actionInstructions[type]
+      : source.actionInstructions.custom;
     const stage = {
       id,
       name: String(input.name || id).trim().slice(0, 120) || id,
       type,
-      instruction: `${source.actionInstructions[type] || source.actionInstructions.custom}\n\nAction type: ${type}\nAction objective for this WorkItem:\n${objective}`,
+      instruction: `${actionInstruction}\n\nAction type: ${type}\nAction objective for this WorkItem:\n${objective}`,
       assignmentPolicy: {
         mode: 'auto',
         capability: cleanId(input.capability, type),
