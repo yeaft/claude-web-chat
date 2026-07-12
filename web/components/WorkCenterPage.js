@@ -514,19 +514,24 @@ export default {
       </div>
 
       <div v-if="createOpen" class="modal-overlay work-center-modal-overlay" @click.self="closeCreate">
-        <form class="modal-card work-center-modal" @submit.prevent="submitCreate">
-          <header>
-            <h2>{{ tr('workCenter.newWorkItem', 'New work item') }}</h2>
-            <p>{{ tr('workCenter.createHint', 'Define a stable goal before the Agent starts execution.') }}</p>
+        <form class="modal-card work-center-modal" role="dialog" aria-modal="true" aria-labelledby="work-center-create-title" @submit.prevent="submitCreate">
+          <header class="work-center-modal-header">
+            <div>
+              <h2 id="work-center-create-title">{{ tr('workCenter.newWorkItem', 'New work item') }}</h2>
+              <p>{{ tr('workCenter.createHint', 'Define a stable goal before the Agent starts execution.') }}</p>
+            </div>
+            <button class="modal-close" type="button" @click="closeCreate" :disabled="saving" :aria-label="tr('common.close', 'Close')">×</button>
           </header>
           <div class="work-center-modal-body">
-            <label>{{ tr('workCenter.titleField', 'Title') }}<input v-model="form.title" type="text" required></label>
-            <label>{{ tr('workCenter.goal', 'Goal') }}<textarea v-model="form.goal" rows="4" required></textarea></label>
-            <label>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}<textarea v-model="form.acceptanceCriteriaText" rows="4" :placeholder="tr('workCenter.criteriaHint', 'One criterion per line')"></textarea></label>
-            <section class="work-center-create-attachments">
-              <div>
-                <strong>{{ tr('workCenter.attachments', 'Attachments') }}</strong>
-                <small>{{ tr('workCenter.attachmentsHelp', 'Screenshots and files stay bound to this Work Item and are available to every Action.') }}</small>
+            <section class="work-center-form-section">
+              <label>{{ tr('workCenter.titleField', 'Title') }}<input v-model="form.title" type="text" required autofocus :placeholder="tr('workCenter.titleHint', 'A short, specific outcome')"></label>
+              <label>{{ tr('workCenter.goal', 'Goal') }}<textarea v-model="form.goal" rows="3" required :placeholder="tr('workCenter.goalHint', 'Describe the result the Agent must deliver')"></textarea></label>
+              <label>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}<textarea v-model="form.acceptanceCriteriaText" rows="3" :placeholder="tr('workCenter.criteriaHint', 'One criterion per line')"></textarea></label>
+            </section>
+            <section class="work-center-form-section work-center-create-attachments">
+              <div class="work-center-form-section-heading">
+                <h3>{{ tr('workCenter.attachments', 'Attachments') }}</h3>
+                <p>{{ tr('workCenter.attachmentsHelp', 'Screenshots and files stay bound to this Work Item and are available to every Action.') }}</p>
               </div>
               <label class="btn-secondary work-center-attachment-picker">
                 <input type="file" multiple accept="image/*,text/*,.pdf,.doc,.docx,.xls,.xlsx,.json,.md,.py,.js,.ts,.css,.html" @change="onCreateAttachmentInput">
@@ -540,22 +545,25 @@ export default {
                 </span>
               </div>
             </section>
-            <div class="work-center-create-grid">
+            <section class="work-center-form-section work-center-execution-section">
+              <div class="work-center-form-section-heading">
+                <h3>{{ tr('workCenter.execution', 'Execution') }}</h3>
+                <p>{{ tr('workCenter.executionHint', 'Choose where and how this work item starts.') }}</p>
+              </div>
               <label>{{ tr('workCenter.workDir', 'Working directory') }}<input v-model="form.workDir" type="text" required :placeholder="tr('workCenter.workDirHint', 'Project directory')" @input="onCreateWorkDirInput"></label>
-            </div>
+              <div class="work-center-create-options">
+                <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox"><span><strong>{{ tr('workCenter.reuseMemory', 'Use relevant Agent memory and completed work from this project') }}</strong><small>{{ tr('workCenter.reuseMemoryHelp', 'Uses scope-bounded Agent memory and structured results from completed WorkItems in the same project.') }}</small></span></label>
+                <label class="work-center-checkbox"><input v-model="form.start" type="checkbox" @change="onCreateStartInput"><span><strong>{{ tr('workCenter.startImmediately', 'Start immediately') }}</strong><small>{{ tr('workCenter.startImmediatelyHint', 'Turn this off to create a draft you can review first.') }}</small></span></label>
+              </div>
+            </section>
             <section class="work-center-plan-preview">
               <div class="work-center-plan-preview-heading">
                 <div><strong>{{ tr('workCenter.aiPlan', 'AI-planned execution') }}</strong><small>{{ tr('workCenter.aiPlanHelp', 'Triage will choose the task type, Actions, executors, and the smallest reliable flow. Work Center settings control the model and effort.') }}</small></div>
-                <button type="button" class="btn-ghost" @click="settingsOpen = true">{{ tr('workCenter.settings.title', 'Settings') }}</button>
+                <button type="button" class="btn-secondary" @click="settingsOpen = true">{{ tr('workCenter.settings.title', 'Settings') }}</button>
               </div>
             </section>
-            <div class="work-center-memory-option">
-              <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox">{{ tr('workCenter.reuseMemory', 'Use relevant Agent memory and completed work from this project') }}</label>
-              <small>{{ tr('workCenter.reuseMemoryHelp', 'Uses scope-bounded Agent memory and structured results from completed WorkItems in the same project.') }}</small>
-            </div>
-            <label class="work-center-checkbox"><input v-model="form.start" type="checkbox" @change="onCreateStartInput">{{ tr('workCenter.startImmediately', 'Start immediately') }}</label>
           </div>
-          <footer>
+          <footer class="work-center-modal-footer">
             <button class="btn-secondary" type="button" @click="closeCreate">{{ tr('common.cancel', 'Cancel') }}</button>
             <button class="btn-primary" type="submit" :disabled="saving || attachmentsUploading || !form.title.trim() || !form.goal.trim() || !form.workDir.trim()">
               {{ saving ? tr('workCenter.creating', 'Creating…') : tr('workCenter.create', 'Create') }}

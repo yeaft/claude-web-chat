@@ -12,22 +12,18 @@ import { applyLiveToolWindow } from './tool-window.js';
 // can use strict equality without hiding "untagged" messages.
 const DEFAULT_SESSION_ID = 'grp_default';
 
-// Are we currently writing into the *active* Yeaft conversation? Both
-// the speaker-attribution stamper and the sessionId stamper key off this
-// same predicate; centralising it keeps the rules in one place.
+// Is this one of the per-agent Yeaft conversations? Both the
+// speaker-attribution stamper and the sessionId stamper key off this same
+// predicate; centralising it keeps the rules in one place.
 //
-// IMPORTANT: this does NOT gate on `store.currentView === 'yeaft'`.
-// Yeaft turns keep running on the agent regardless of which view the
-// user is looking at; messages can arrive while the user is browsing
-// Chat. If we gated on view, those messages would land in messagesMap
-// without a `sessionId` and the `messages` getter would silently filter
-// them out (it does a strict `m.sessionId === activeSessionFilter` match).
-// The user would see the UI frozen on switch-back until something forced
-// a re-fetch. Keying purely off "is this the yeaft conversation id"
-// keeps stamping consistent regardless of view.
-function inActiveYeaftConv(store, conversationId) {
-  return !!store.yeaftConversationId
-    && conversationId === store.yeaftConversationId;
+// IMPORTANT: this does NOT gate on `store.currentView === 'yeaft'` or only
+// compare the visible `yeaftConversationId`. Yeaft turns keep running on every
+// connected agent while the user reads another Session (or Chat). Background
+// frames still need routing stamps, but they must not become the active view.
+function isYeaftConversation(store, conversationId) {
+  if (!conversationId) return false;
+  if (conversationId === store.yeaftConversationId) return true;
+  return Object.values(store.yeaftConversationIdsByAgent || {}).includes(conversationId);
 }
 
 // Idempotently mirror the routing context (vpId / turnId / speakerVpId)
@@ -50,7 +46,7 @@ function inActiveYeaftConv(store, conversationId) {
 function stampSpeakerOnVpMessage(store, conversationId, m) {
   if (!m) return;
   if (m.type !== 'assistant' && m.type !== 'tool-use') return;
-  if (!inActiveYeaftConv(store, conversationId)) return;
+  if (!isYeaftConversation(store, conversationId)) return;
   if (!m.vpId && store._currentYeaftVpId) m.vpId = store._currentYeaftVpId;
   if (!m.turnId && store._currentYeaftTurnId) m.turnId = store._currentYeaftTurnId;
   if (!m.speakerVpId && m.vpId) m.speakerVpId = m.vpId;
@@ -212,7 +208,7 @@ export function addMessageToConversation(store, conversationId, msg) {
   // session set by handleYeaftOutput before dispatching streaming
   // chunks) over the user's current filter — otherwise messages arriving
   // while the user has switched sessions get stamped with the wrong one.
-  if (inActiveYeaftConv(store, conversationId) && !newMsg.sessionId) {
+  if (isYeaftConversation(store, conversationId) && !newMsg.sessionId) {
     newMsg.sessionId = store._currentYeaftSessionId
       || store.yeaftActiveSessionFilter
       || DEFAULT_SESSION_ID;
@@ -223,7 +219,7 @@ export function addMessageToConversation(store, conversationId, msg) {
   // speakerVpId derivation lives inside stampSpeakerOnVpMessage — but
   // every Yeaft message (assistant *or* user) still gets vpId / turnId,
   // so we keep that here.
-  if (inActiveYeaftConv(store, conversationId)) {
+  if (isYeaftConversation(store, conversationId)) {
     if (!newMsg.vpId && store._currentYeaftVpId) {
       newMsg.vpId = store._currentYeaftVpId;
     }

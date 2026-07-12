@@ -112,7 +112,8 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('Vue.watch(visibleTranscriptTailSignature, smartScrollToBottom);');
     expect(source).not.toContain('Vue.watch(() => store.messages.length, smartScrollToBottom);');
     expect(source).not.toContain('Vue.watch(() => store.messages[store.messages.length - 1]?.content, smartScrollToBottom);');
-    expect(source).toContain('() => [store.currentConversation, activeYeaftSessionId.value]');
+    expect(source).toContain('() => [store.activeConversationId, activeYeaftSessionId.value]');
+    expect(source).not.toContain('() => [store.currentConversation, activeYeaftSessionId.value]');
     expect(source).toContain('resumeAutoFollow();');
   });
 

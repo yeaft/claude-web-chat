@@ -18,8 +18,11 @@
  * read `state.activeConversations[0]` — chat messages bled into the
  * Yeaft view and VP typing badges silently disappeared.
  *
- * The fix: in Yeaft view, source from `state.yeaftConversationId`
- * instead. Chat keeps the existing behaviour.
+ * The fix: in Yeaft view, source only from the explicit visible pointer
+ * `state.yeaftConversationId`. Per-agent conversation ids are transport/cache
+ * metadata and can change when an inactive Session resolves local → real; they
+ * must not masquerade as a user-visible conversation switch. Chat keeps the
+ * existing behaviour.
  */
 
 /**
@@ -28,22 +31,11 @@
  */
 export function selectActiveConversationId(state) {
   if (state.currentView === 'yeaft') {
-    // Cross-agent Yeaft sessions do not share an agent-side conversationId:
-    // every local agent process owns its own virtual conversation. In Yeaft
-    // view, prefer the conversation owned by the active session's agent; if
-    // the session row is not known yet, fall back to the agent this client is
-    // bound to (`currentAgent`). This prevents A -> B -> A switches from
-    // rendering A rows out of B's message cache just because B was the last
-    // agent to replay session_ready.
-    const sessionId = state.yeaftActiveSessionFilter || null;
-    const sessionAgentId = sessionId && state.yeaftSessionAgentById
-      ? state.yeaftSessionAgentById[sessionId]
-      : null;
-    const agentId = sessionAgentId || state.currentAgent || null;
-    const agentConversationId = agentId && state.yeaftConversationIdsByAgent
-      ? state.yeaftConversationIdsByAgent[agentId]
-      : null;
-    return agentConversationId || state.yeaftConversationId || null;
+    // `yeaftConversationIdsByAgent` tracks each bridge's latest transport id.
+    // Background Sessions on the same agent share that entry, so reading it
+    // here lets an inactive local → real migration look like a visible switch.
+    // User actions and visible output explicitly maintain this pointer instead.
+    return state.yeaftConversationId || null;
   }
   // Chat uses `activeConversations[0]`.
   return state.activeConversations[0] || null;
