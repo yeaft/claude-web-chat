@@ -480,7 +480,7 @@ export default {
               </div>
               <label>{{ tr('workCenter.workDir', 'Working directory') }}<input v-model="form.workDir" type="text" required :placeholder="tr('workCenter.workDirHint', 'Project directory')" @input="onCreateWorkDirInput"></label>
               <div class="work-center-create-options">
-                <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox"><span><strong>{{ tr('workCenter.reuseMemory', 'Reuse context from this working directory') }}</strong><small>{{ tr('workCenter.reuseMemoryHint', 'Include relevant project history when planning and executing.') }}</small></span></label>
+                <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox"><span><strong>{{ tr('workCenter.reuseMemory', 'Use relevant Agent memory and completed work from this project') }}</strong><small>{{ tr('workCenter.reuseMemoryHelp', 'Uses scope-bounded Agent memory and structured results from completed WorkItems in the same project.') }}</small></span></label>
                 <label class="work-center-checkbox"><input v-model="form.start" type="checkbox" @change="onCreateStartInput"><span><strong>{{ tr('workCenter.startImmediately', 'Start immediately') }}</strong><small>{{ tr('workCenter.startImmediatelyHint', 'Turn this off to create a draft you can review first.') }}</small></span></label>
               </div>
             </section>

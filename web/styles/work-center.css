@@ -1189,6 +1189,14 @@
   font-size: 12px;
 }
 
+.work-center-action-policy-heading {
+  margin-top: 8px;
+}
+
+.work-center-global-policy textarea {
+  min-height: 160px;
+}
+
 .work-center-policy-stage,
 .work-center-model-stage {
   display: grid;

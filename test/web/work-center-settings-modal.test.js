@@ -44,6 +44,7 @@ describe('Work Center settings modal ownership', () => {
     const draft = normalizeSettingsDraft({
       revision: 7,
       defaultWorkflowId: 'software-change',
+      globalInstructions: 'Apply this policy to every Action.',
       workflows: [{
         id: 'software-change',
         stages: [
@@ -62,12 +63,14 @@ describe('Work Center settings modal ownership', () => {
     });
 
     expect(draft.revision).toBe(7);
+    expect(draft.globalInstructions).toBe('Apply this policy to every Action.');
     expect(draft.actionInstructions).toMatchObject({
       triage: 'Inspect the legacy task.',
       implement: 'Keep the legacy implementation prompt.',
       review: 'Review the result.',
       custom: 'Complete the Action.',
     });
+    expect(draft.actionInstructions.design).toBe('');
     expect(draft.modelPolicy).toEqual({
       mode: 'specific', model: 'provider/legacy', effort: 'high',
     });
@@ -117,10 +120,12 @@ describe('Work Center settings modal ownership', () => {
 
     const stages = [...document.body.querySelectorAll('.work-center-policy-stage')];
     expect(errors).toEqual([]);
-    expect(stages).toHaveLength(8);
-    expect(stages[0].querySelector('textarea').value).toBe('Legacy triage prompt.');
+    expect(stages).toHaveLength(14);
+    expect(stages[0].querySelector('textarea').value).toBe('');
     expect(stages[0].querySelector('textarea').disabled).toBe(true);
-    expect(stages[1].querySelector('textarea').value).toBe('Implement the task.');
+    expect(stages[1].querySelector('textarea').value).toBe('Legacy triage prompt.');
+    expect(stages[1].querySelector('textarea').disabled).toBe(true);
+    expect(stages[5].querySelector('textarea').value).toBe('Implement the task.');
     expect(document.body.querySelector('.work-center-settings-footer .btn-primary').disabled).toBe(true);
     expect(store.saveWorkCenterSettings).not.toHaveBeenCalled();
     wrapper.unmount();
@@ -157,7 +162,8 @@ describe('Work Center settings modal ownership', () => {
       revision: 3,
       modelPolicy: { mode: 'specific', model: 'provider/new', effort: 'low' },
       actionInstructions: Object.fromEntries([
-        'triage', 'implement', 'test', 'review', 'deliver', 'research', 'write', 'custom',
+        'triage', 'research', 'design', 'diagnose', 'implement', 'migrate', 'test', 'review',
+        'document', 'operate', 'deliver', 'write', 'custom',
       ].map(type => [type, type === 'triage' ? 'Edited triage.' : `Edited ${type}.`])),
     });
     const store = {

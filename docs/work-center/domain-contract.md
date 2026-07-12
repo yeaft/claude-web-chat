@@ -10,7 +10,7 @@
   goal,
   acceptanceCriteria: [],
   workflowTemplate: 'ai-planned',
-  workflowSnapshot: { id, name, planningMode, workItemType, modelPolicy, actionInstructions, stages: [] },
+  workflowSnapshot: { id, name, planningMode, workItemType, globalInstructions, modelPolicy, actionInstructions, stages: [] },
   status: 'draft|ready|running|waiting|needs_attention|done|cancelled',
   currentActionId,
   currentRunId,
@@ -30,7 +30,7 @@
   id,
   workItemId,
   sequence,
-  type: 'triage|implement|test|review|deliver|research|write|custom',
+  type: 'lowercase-slug', // built-in policy types or a validated AI-planned domain type
   stageId,
   assignmentPolicy: { mode: 'auto|pool|fixed', capability, candidateVpIds, fixedVpId, separateFromStageTypes },
   modelPolicy: { mode: 'inherit|primary|fast|specific', model, effort },
@@ -79,11 +79,13 @@ Event 是 append-only 的人类可读审计记录。每次创建、认领、开�
 
 ## 默认 AI 规划
 
-新 WorkItem 只从目标、验收标准和工作目录创建一个 triage Action。Triage 必须返回受 schema 约束的 `workItemType` 与 1..8 个后续 Action；Controller 校验后在同一个终态事务中冻结计划并创建第一个 Action。Action 可动态选择 `implement`、`test`、`review`、`deliver`、`research`、`write` 或 `custom`，但不能指定 VP、模型或 effort。
+新 WorkItem 只从目标、验收标准和工作目录创建一个 triage Action。Triage 必须返回受 schema 约束的 `workItemType` 与 1..8 个后续 Action；Controller 校验后在同一个终态事务中冻结计划并创建第一个 Action。Action type 是经过 slug 归一化的可扩展领域类型；内置的 research/design/diagnose/implement/migrate/test/review/document/operate/deliver/write 等类型有专用执行基线，其他类型保留原始领域语义并使用 custom 基线。计划不能指定 VP、模型或 effort。
 
 Action 只绑定任务类型、能力和执行隔离约束，实际 VP 在 Run claim 后从当前 Agent VP 池动态选择。AI 规划 WorkItem 的模型和 effort 在每次 Run 开始时读取当前 Work Center policy，并固化到 Run snapshot；旧的显式 workflow WorkItem 继续使用创建时冻结的 policy。Provider 凭证仍由 Agent LLM 设置管理，不写入 Work Center。
 
-Work Center memory recall 复用当前 Agent 的 SQLite FTS：查询由 WorkItem 合同和当前 Action instruction 构造，浏览器和旧数据只读取 `user` scope；只有 Agent 内部 Session producer 创建的 WorkItem 才可额外读取经过可信来源 Session + 当前 VP 限定的 scope。预算上限 4000 tokens，不启用无关键词的最近内容 fallback。召回结果是可能过期的参考资料，不能覆盖合同、Action prompt、工具策略或完成协议。
+Agent 级 `globalInstructions` 类似 Session 公告，但只作用于 Work Center。创建 WorkItem 时它会冻结进 workflow snapshot，并以低于 WorkItem 合同及系统/工具安全规则的优先级注入 triage 和每个后续 Action；修改设置不会追溯改变正在执行或历史 WorkItem。
+
+Work Center memory 有两条受 `reuseMemory` 控制的路径：同 canonical workspace key 下已完成 WorkItem 的结构化 summary/evidence，以及当前 Agent SQLite FTS 的 scope-bounded 召回。FTS 查询由 WorkItem 合同和当前 Action instruction 构造；浏览器和旧数据只读取 Agent 全局 `user` scope，只有 Agent 内部 Session producer 创建的 WorkItem 才可额外读取经过可信来源 Session + 当前 VP 限定的 scope。FTS 注入预算上限 4000 tokens，不启用无关键词的最近内容 fallback。召回结果是可能过期的参考资料，不能覆盖合同、全局指令、Action prompt、工具策略或完成协议。
 
 ## 状态不变量
 

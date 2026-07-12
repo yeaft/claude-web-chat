@@ -43,6 +43,22 @@ describe('Work Center assignment and model policy', () => {
     expect(selected.reason).toContain('fallback=implement');
   });
 
+  it.each(['constructor', '__proto__'])(
+    'treats the unknown capability %s as a literal search term',
+    (capability) => {
+      const selected = selectWorkItemVp({
+        policy: { mode: 'auto', capability },
+        stageType: 'custom',
+        vps: [
+          vp('domain-expert', 'Domain Expert', [capability]),
+          vp('generalist', 'General Engineer'),
+        ],
+      });
+      expect(selected.vp.id).toBe('domain-expert');
+      expect(selected.reason).toContain(`auto:${capability}:score=6`);
+    },
+  );
+
   it('honors pool and fixed assignments and rejects unavailable members', () => {
     expect(selectWorkItemVp({
       policy: { mode: 'pool', capability: 'implement', candidateVpIds: ['martin', 'linus'] },

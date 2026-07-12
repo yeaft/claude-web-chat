@@ -177,8 +177,10 @@ describe('Work Center UI contract', () => {
     expect(page).not.toContain('workflowTemplate: this.form');
     expect(page).not.toContain('run.modelSnapshot');
     expect(modal).toContain("section: 'workflow'");
+    expect(modal).toContain('draft.globalInstructions');
     expect(modal).toContain('draft.actionInstructions[type]');
     expect(modal).toContain("$t('workCenter.action.' + type)");
+    expect(modal).toContain('v-for="type in actionTypes"');
     expect(modal).toContain('draft.modelPolicy.effort');
     expect(modal).toContain('work-center-model-effort');
     expect(modal).toContain('effortChooseModelHelp');
@@ -228,13 +230,22 @@ describe('Work Center UI contract', () => {
       'workCenter.selectTitle',
       'workCenter.status.needs_attention',
       'workCenter.action.review',
+      'workCenter.action.design',
+      'workCenter.action.diagnose',
+      'workCenter.action.migrate',
+      'workCenter.action.document',
+      'workCenter.action.operate',
       'workCenter.action.custom',
       'workCenter.guidance',
       'workCenter.sendGuidance',
       'workCenter.loopCount',
       'workCenter.toolCount',
       'workCenter.reuseMemory',
+      'workCenter.reuseMemoryHelp',
       'workCenter.settings.title',
+      'workCenter.settings.globalInstructions',
+      'workCenter.settings.globalInstructionsHelp',
+      'workCenter.settings.actionPolicies',
       'workCenter.settings.assignment.auto',
       'workCenter.settings.model.specific',
       'workCenter.settings.effortHelp',

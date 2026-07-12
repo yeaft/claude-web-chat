@@ -204,6 +204,8 @@ const PROMPTS = {
     activeScopeEnvelopeLabel: 'Handoff',
     multiVpRoutingHeader: '## multi_vp_routing',
     sessionAnnouncementHeader: '[Session Announcement]',
+    workCenterInstructionsHeader: '[Work Center Agent Instructions]',
+    workCenterInstructionsIntro: 'These Agent-level instructions apply to every Action in this WorkItem. Follow them unless they conflict with system/tool safety rules, the authoritative project document, or the WorkItem contract.',
     // Project-doc (CLAUDE.md / AGENTS.md) header + one-liner intro. Both
     // filenames are recognized: CLAUDE.md is this project's convention,
     // AGENTS.md is the cross-tool convention (Codex / OpenAI Codex CLI).
@@ -224,6 +226,8 @@ const PROMPTS = {
     activeScopeEnvelopeLabel: '转交消息',
     multiVpRoutingHeader: '## multi_vp_routing',
     sessionAnnouncementHeader: '[会话公告]',
+    workCenterInstructionsHeader: '[Work Center Agent 指令]',
+    workCenterInstructionsIntro: '这些 Agent 级指令作用于当前 Work Item 的每个 Action。除非与系统/工具安全规则、权威项目文档或 Work Item 契约冲突，否则必须遵循。',
     // 项目文档块：CLAUDE.md / AGENTS.md（与 Codex 通用命名兼容）。
     projectDocHeader: '[项目文档]',
     projectDocIntro:
@@ -293,6 +297,7 @@ export function normalizePromptLanguage(language) {
  *   activeScope?: object,
  *   vpPersona?: object,
  *   sessionAnnouncement?: string,
+ *   workCenterInstructions?: string,
  *   projectDoc?: string,
  * }} params
  * @returns {string}
@@ -306,6 +311,7 @@ export function buildSystemPrompt({
   activeScope,
   vpPersona,
   sessionAnnouncement = '',
+  workCenterInstructions = '',
   projectDoc = '',
   runtimePlatform,
   activeTasks = '',
@@ -358,6 +364,13 @@ export function buildSystemPrompt({
   const annText = (typeof sessionAnnouncement === 'string') ? sessionAnnouncement.trim() : '';
   if (annText) {
     parts.push(`${lang.sessionAnnouncementHeader || '[Session Announcement]'}\n${annText}`);
+  }
+
+  const workCenterText = (typeof workCenterInstructions === 'string') ? workCenterInstructions.trim() : '';
+  if (workCenterText) {
+    const header = lang.workCenterInstructionsHeader || '[Work Center Agent Instructions]';
+    const intro = lang.workCenterInstructionsIntro || '';
+    parts.push(`${header}\n${intro ? `${intro}\n\n` : ''}${workCenterText}`);
   }
 
   // ─── 2. Date Metadata ──────────────────────────────────

@@ -277,7 +277,7 @@ function completionContract(action, workItem) {
     ? ',\n  "contractPatch": { "goal": "optional refined goal", "acceptanceCriteria": ["optional refined criterion"] }'
     : '';
   const planField = action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
-    ? ',\n  "plan": { "workItemType": "dynamic-type", "actions": [{ "id": "stable-id", "name": "User-facing name", "type": "implement|test|review|deliver|research|write|custom", "capability": "executor capability", "objective": "specific Action objective", "separateFromActionTypes": ["optional prior Action type"], "changesRequestedActionId": "required for review when applicable", "maxAttempts": 2 }] }'
+    ? ',\n  "plan": { "workItemType": "specific-lowercase-slug", "actions": [{ "id": "stable-id", "name": "User-facing name", "type": "extensible-lowercase-slug (built-ins include research|design|diagnose|implement|migrate|test|review|document|operate|deliver|write|custom)", "capability": "specific executor capability", "objective": "independently executable and verifiable Action objective", "separateFromActionTypes": ["optional prior Action type"], "changesRequestedActionId": "for review: optional earlier editable Action id; omit to use nearest", "maxAttempts": 2 }] }'
     : '';
   return `\n\nYou are executing one Work Center Action. Before the terminal JSON, write a concise user-facing response describing what you did and the result. Do not include raw tool output or secrets. End your response with exactly one JSON object, preferably in a json code fence:\n{
   "outcome": "completed|waiting|retryable|failed",
@@ -452,6 +452,7 @@ export class WorkItemRunner {
         signal,
         scenario: 'work-item',
         vpPersona: personaFor(vp),
+        workCenterInstructions: workItem?.workflowSnapshot?.globalInstructions || '',
         workDir,
         userAlreadyPersisted: true,
         collabToolPolicy: 'single-vp',
