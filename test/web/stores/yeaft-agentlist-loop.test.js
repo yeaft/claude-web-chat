@@ -36,6 +36,7 @@ globalThis.localStorage = globalThis.localStorage || {
 };
 
 const { useChatStore } = await import('../../../web/stores/chat.js');
+const { selectActiveConversationId } = await import('../../../web/stores/helpers/active-conv.js');
 const { handleAgentList, detectYeaftAgentRestart } = await import('../../../web/stores/helpers/handlers/agentHandler.js');
 
 const AGENT_ID = 'user_1:C1';
@@ -102,11 +103,15 @@ describe('Yeaft early history frames', () => {
     expect(store.messagesMap['yeaft-real-1'].map(m => m.content)).toEqual(['draft', 'hello']);
   });
 
-  it('caches an inactive Session reply without changing the visible conversation', () => {
+  it('keeps the canonical conversation stable when an inactive same-agent Session resolves local to real', () => {
     const store = makeStore();
-    store.yeaftConversationIdsByAgent = { [AGENT_ID]: 'yeaft-1' };
-    store.activeConversations = ['yeaft-1'];
-    store.messagesMap = { 'yeaft-1': [{ id: 'active-old', type: 'user', content: 'reading', timestamp: 1, sessionId: SESSION_ID }] };
+    const localConversationId = 'yeaft-local-agent-1';
+    store.yeaftConversationId = localConversationId;
+    store.yeaftConversationIdsByAgent = { [AGENT_ID]: localConversationId };
+    store.activeConversations = [localConversationId];
+    store.messagesMap = {
+      [localConversationId]: [{ id: 'active-old', type: 'user', content: 'reading', timestamp: 1, sessionId: SESSION_ID }],
+    };
     store.handleAssistantOutputFrame = (conversationId, data) => {
       store.messagesMap[conversationId].push({
         id: data.message?.id,
@@ -116,18 +121,50 @@ describe('Yeaft early history frames', () => {
         sessionId: store._currentYeaftSessionId,
       });
     };
+    const canonicalBefore = selectActiveConversationId(store);
 
     store.handleYeaftOutput({
-      conversationId: 'yeaft-1',
+      conversationId: 'yeaft-real-1',
       agentId: AGENT_ID,
       sessionId: 'sess-background',
       data: { type: 'assistant', message: { id: 'background-1', content: 'background reply' } },
     });
 
-    expect(store.yeaftConversationId).toBe('yeaft-1');
-    expect(store.activeConversations).toEqual(['yeaft-1']);
-    expect(store.messagesMap['yeaft-1'].at(-1)).toMatchObject({
+    expect(selectActiveConversationId(store)).toBe(canonicalBefore);
+    expect(store.yeaftConversationId).toBe(localConversationId);
+    expect(store.activeConversations).toEqual([localConversationId]);
+    expect(store.messagesMap[localConversationId]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'active-old', sessionId: SESSION_ID }),
+    ]));
+    expect(store.messagesMap['yeaft-real-1'].at(-1)).toMatchObject({
       content: 'background reply',
+      sessionId: 'sess-background',
+    });
+  });
+
+  it('accepts a legacy groupId envelope without treating it as active output', () => {
+    const store = makeStore();
+    store.yeaftConversationIdsByAgent = { [AGENT_ID]: 'yeaft-1' };
+    store.activeConversations = ['yeaft-1'];
+    store.messagesMap = { 'yeaft-1': [] };
+    store.handleAssistantOutputFrame = (conversationId, data) => {
+      store.messagesMap[conversationId].push({
+        id: data.message?.id,
+        type: data.type,
+        content: data.message?.content,
+        sessionId: store._currentYeaftSessionId,
+      });
+    };
+
+    store.handleYeaftOutput({
+      conversationId: 'yeaft-1',
+      agentId: AGENT_ID,
+      groupId: 'sess-background',
+      data: { type: 'assistant', message: { id: 'legacy-background', content: 'legacy reply' } },
+    });
+
+    expect(store.messagesMap['yeaft-1'].at(-1)).toMatchObject({
+      content: 'legacy reply',
       sessionId: 'sess-background',
     });
   });
@@ -203,18 +240,23 @@ describe('Yeaft early history frames', () => {
     });
   });
 
-  it('does not let background session_ready replace the visible Session conversation', () => {
+  it('keeps the canonical conversation stable for inactive same-agent session_ready', () => {
     const store = makeStore();
-    const otherAgentId = 'user_1:C2';
-    store.yeaftConversationIdsByAgent = { [AGENT_ID]: 'yeaft-1' };
-    store.activeConversations = ['yeaft-1'];
+    const localConversationId = 'yeaft-local-agent-1';
+    store.yeaftConversationId = localConversationId;
+    store.yeaftConversationIdsByAgent = { [AGENT_ID]: localConversationId };
+    store.activeConversations = [localConversationId];
+    store.messagesMap = {
+      [localConversationId]: [{ id: 'active-old', type: 'user', content: 'reading', timestamp: 1, sessionId: SESSION_ID }],
+    };
+    const canonicalBefore = selectActiveConversationId(store);
 
     store.handleYeaftOutput({
-      agentId: otherAgentId,
+      agentId: AGENT_ID,
       sessionId: 'sess-background',
       event: {
         type: 'session_ready',
-        conversationId: 'yeaft-2',
+        conversationId: 'yeaft-real-1',
         model: 'test-model',
         availableModels: [],
         skills: [],
@@ -223,9 +265,15 @@ describe('Yeaft early history frames', () => {
       },
     });
 
-    expect(store.yeaftConversationId).toBe('yeaft-1');
-    expect(store.yeaftConversationIdsByAgent[otherAgentId]).toBe('yeaft-2');
-    expect(store.activeConversations).toEqual(['yeaft-1']);
+    expect(selectActiveConversationId(store)).toBe(canonicalBefore);
+    expect(store.yeaftConversationId).toBe(localConversationId);
+    expect(store.activeConversations).toEqual([localConversationId]);
+    expect(store.messagesMap[localConversationId]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'active-old', sessionId: SESSION_ID }),
+    ]));
+    expect(store.messagesMap['yeaft-real-1']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'active-old', sessionId: SESSION_ID }),
+    ]));
   });
 
   it('still promotes session_ready from the active Session owner', () => {

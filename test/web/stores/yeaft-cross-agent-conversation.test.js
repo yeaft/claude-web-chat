@@ -12,11 +12,11 @@ function visibleMessages(state) {
 }
 
 describe('Yeaft cross-agent conversation selection', () => {
-  it('uses the active session owner agent conversation when returning from another agent', () => {
+  it('uses the explicit visible conversation when returning from another agent', () => {
     const state = {
       currentView: 'yeaft',
       currentAgent: 'agent-a',
-      yeaftConversationId: 'conv-b',
+      yeaftConversationId: 'conv-a',
       yeaftConversationIdsByAgent: {
         'agent-a': 'conv-a',
         'agent-b': 'conv-b',
@@ -42,20 +42,20 @@ describe('Yeaft cross-agent conversation selection', () => {
     expect(visibleMessages(state).map(m => m.content)).toEqual(['A once']);
   });
 
-  it('falls back to the current agent conversation when the session owner is unknown', () => {
+  it('does not let a per-agent transport id override the explicit visible conversation', () => {
     const state = {
       currentView: 'yeaft',
       currentAgent: 'agent-b',
-      yeaftConversationId: 'conv-b',
+      yeaftConversationId: 'conv-visible',
       yeaftConversationIdsByAgent: {
         'agent-a': 'conv-a',
-        'agent-b': 'conv-b',
+        'agent-b': 'conv-transport',
       },
       yeaftActiveSessionFilter: 'session-new',
       yeaftSessionAgentById: {},
       activeConversations: ['conv-b'],
     };
 
-    expect(selectActiveConversationId(state)).toBe('conv-b');
+    expect(selectActiveConversationId(state)).toBe('conv-visible');
   });
 });

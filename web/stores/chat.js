@@ -1829,16 +1829,25 @@ export const useChatStore = defineStore('chat', {
         const conversationId = msg.conversationId || this.yeaftConversationId;
         if (conversationId) {
           const frameAgentId = msg.agentId || this.yeaftAgentId || this.currentAgent || null;
+          const msgSessionId = msg.sessionId ?? msg.groupId ?? null;
+          const outputIsVisible = isVisibleYeaftOutput(this, msgSessionId, frameAgentId);
           const previousAgentConvId = frameAgentId && this.yeaftConversationIdsByAgent
             ? this.yeaftConversationIdsByAgent[frameAgentId]
             : null;
+          const retainVisibleSource = !outputIsVisible && previousAgentConvId === this.yeaftConversationId;
           if (this.currentView === 'yeaft' && frameAgentId && previousAgentConvId && previousAgentConvId !== conversationId) {
             const existingMsgs = this.messagesMap[previousAgentConvId] || [];
             const targetMsgs = this.messagesMap[conversationId] || [];
             this.messagesMap[conversationId] = msgHelpers
               .mergeMessagesByStableId(targetMsgs, existingMsgs)
               .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-            if (String(previousAgentConvId).startsWith('yeaft-local-')) delete this.messagesMap[previousAgentConvId];
+            // An inactive same-agent Session can be the first frame carrying
+            // the real bridge id. Copy the visible placeholder into that cache,
+            // but keep the source alive until an active/user-driven transition
+            // moves the explicit visible pointer.
+            if (!retainVisibleSource && String(previousAgentConvId).startsWith('yeaft-local-')) {
+              delete this.messagesMap[previousAgentConvId];
+            }
           }
           if (frameAgentId) {
             this.yeaftConversationIdsByAgent = {
@@ -1846,8 +1855,6 @@ export const useChatStore = defineStore('chat', {
               [frameAgentId]: conversationId,
             };
           }
-          const msgSessionId = msg.sessionId;
-          const outputIsVisible = isVisibleYeaftOutput(this, msgSessionId, frameAgentId);
           // Cache every agent's conversation, but only move the visible Yeaft
           // pointer for output from the Session the user is actually reading.
           // Otherwise a background reply looks like a conversation switch to
@@ -1953,6 +1960,9 @@ export const useChatStore = defineStore('chat', {
             ? this.yeaftConversationId
             : null;
           const localConvId = previousAgentConvId || fallbackLocalConvId;
+          const readySessionId = event.sessionId || msg.sessionId || null;
+          const readyIsVisible = isVisibleYeaftOutput(this, readySessionId, statusAgentId);
+          const retainVisibleSource = !readyIsVisible && localConvId === this.yeaftConversationId;
 
           // Migrate messages from this agent's local placeholder to this
           // agent's conversationId. Do not merge the last globally-active
@@ -1964,16 +1974,18 @@ export const useChatStore = defineStore('chat', {
             this.messagesMap[agentConvId] = msgHelpers
               .mergeMessagesByStableId(targetMsgs, existingMsgs)
               .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-            if (localConvId.startsWith('yeaft-local-')) delete this.messagesMap[localConvId];
+            if (!retainVisibleSource && localConvId.startsWith('yeaft-local-')) {
+              delete this.messagesMap[localConvId];
+            }
             // Migrate processing state
             if (this.processingConversations[localConvId]) {
               this.processingConversations[agentConvId] = true;
-              delete this.processingConversations[localConvId];
+              if (!retainVisibleSource) delete this.processingConversations[localConvId];
             }
             // Migrate execution status
             if (this.executionStatusMap[localConvId]) {
               this.executionStatusMap[agentConvId] = this.executionStatusMap[localConvId];
-              delete this.executionStatusMap[localConvId];
+              if (!retainVisibleSource) delete this.executionStatusMap[localConvId];
             }
           } else if (!this.messagesMap[agentConvId]) {
             this.messagesMap[agentConvId] = [];
@@ -2018,8 +2030,6 @@ export const useChatStore = defineStore('chat', {
             multiVp: !!event.multiVp,
           };
 
-          const readySessionId = event.sessionId || msg.sessionId || null;
-          const readyIsVisible = isVisibleYeaftOutput(this, readySessionId, statusAgentId);
           if (readyIsVisible || !this.yeaftConversationId) {
             this.yeaftConversationId = agentConvId;
           }
