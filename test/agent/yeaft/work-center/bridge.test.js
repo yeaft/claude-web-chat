@@ -111,8 +111,8 @@ describe('Work Center lifecycle bridge', () => {
         runtime: expect.objectContaining({
           defaultWorkDir: workDir,
           defaultStageInstructions: expect.objectContaining({
-            triage: expect.stringContaining('Do not implement yet'),
-            implement: expect.stringContaining('Add and run relevant tests'),
+            triage: expect.stringContaining('Do not implement'),
+            implement: expect.stringContaining('add or update focused tests'),
           }),
         }),
       }),

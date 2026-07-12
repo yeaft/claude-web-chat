@@ -1,4 +1,4 @@
-const ACTION_TYPES = ['triage', 'implement', 'test', 'review', 'deliver', 'research', 'write', 'custom'];
+const ACTION_TYPES = ['triage', 'research', 'design', 'diagnose', 'implement', 'migrate', 'test', 'review', 'document', 'operate', 'deliver', 'write', 'custom'];
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -34,6 +34,7 @@ function defaultSettingsDraft() {
     defaultWorkflowId: 'software-change',
     startImmediately: true,
     defaultWorkDir: '',
+    globalInstructions: '',
     modelPolicy: { mode: 'inherit', model: null, effort: null },
     actionInstructions: Object.fromEntries(ACTION_TYPES.map(type => [type, ''])),
     workflows: [{
@@ -56,6 +57,7 @@ function defaultSettingsDraft() {
 export function supportsDynamicSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   if (!value.modelPolicy || typeof value.modelPolicy !== 'object' || Array.isArray(value.modelPolicy)) return false;
+  if (typeof value.globalInstructions !== 'string') return false;
   if (!value.actionInstructions || typeof value.actionInstructions !== 'object' || Array.isArray(value.actionInstructions)) return false;
   return ACTION_TYPES.every(type => typeof value.actionInstructions[type] === 'string');
 }
@@ -136,6 +138,7 @@ export default {
     vps() { return Array.isArray(this.runtime.vps) ? this.runtime.vps : []; },
     models() { return Array.isArray(this.runtime.models) ? this.runtime.models : []; },
     workflows() { return Array.isArray(this.draft?.workflows) ? this.draft.workflows : []; },
+    actionTypes() { return ACTION_TYPES; },
     defaultWorkflow() {
       return this.workflows.find(workflow => workflow.id === this.draft?.defaultWorkflowId)
         || this.workflows[0]
@@ -413,7 +416,18 @@ export default {
                     <p>{{ $t('workCenter.settings.aiWorkflowHelp') }}</p>
                   </div>
                 </div>
-                <article v-for="type in ['triage','implement','test','review','deliver','research','write','custom']" :key="type" class="work-center-policy-stage">
+                <article class="work-center-policy-stage work-center-global-policy">
+                  <header><strong>{{ $t('workCenter.settings.globalInstructions') }}</strong></header>
+                  <div class="work-center-stage-instruction">
+                    <textarea v-model="draft.globalInstructions" rows="7" maxlength="20000"
+                              :placeholder="$t('workCenter.settings.globalInstructionsHint')" :disabled="settingsUnsupported"></textarea>
+                    <small>{{ $t('workCenter.settings.globalInstructionsHelp') }}</small>
+                  </div>
+                </article>
+                <div class="work-center-settings-section-heading work-center-action-policy-heading">
+                  <div><h3>{{ $t('workCenter.settings.actionPolicies') }}</h3><p>{{ $t('workCenter.settings.actionPoliciesHelp') }}</p></div>
+                </div>
+                <article v-for="type in actionTypes" :key="type" class="work-center-policy-stage">
                   <header><strong>{{ $t('workCenter.action.' + type) }}</strong></header>
                   <div class="work-center-stage-instruction">
                     <div class="work-center-stage-instruction-heading">

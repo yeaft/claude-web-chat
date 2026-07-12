@@ -96,6 +96,57 @@ describe('Work Center core', () => {
     expect(item.workflowSnapshot.stages).toHaveLength(1);
   });
 
+  it('preserves a validated domain-specific Action type and applies the custom execution baseline', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({
+      globalInstructions: 'Never publish deployment artifacts without explicit approval.',
+      actionInstructions: { custom: 'Follow the domain objective and verify the result.' },
+    });
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned', workflowSnapshot,
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'incident-response',
+        actions: [{
+          id: 'threat-model',
+          name: 'Threat model',
+          type: 'security-assessment',
+          capability: 'security',
+          objective: 'Assess trust boundaries and produce concrete mitigations',
+        }],
+      },
+    }));
+
+    expect(detail.workflowSnapshot).toMatchObject({
+      workItemType: 'incident-response',
+      globalInstructions: 'Never publish deployment artifacts without explicit approval.',
+    });
+    expect(detail.workflowSnapshot.stages.at(-1)).toMatchObject({
+      type: 'security-assessment',
+      assignmentPolicy: { capability: 'security' },
+    });
+    expect(detail.actions.at(-1).instruction).toContain('Follow the domain objective and verify the result.');
+    expect(detail.actions.at(-1).instruction).toContain('Action type: security-assessment');
+    expect(detail.actions.at(-1).instruction).not.toContain('Never publish deployment artifacts without explicit approval.');
+  });
+
+  it('rejects an AI-planned triage result without a specific WorkItem type', () => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned', workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { actions: [{ id: 'fix', type: 'implement', objective: 'Implement the fix' }] },
+    }));
+
+    expect(detail).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
+    expect(store.getRun(triage.run.id)).toMatchObject({
+      status: 'failed', error: expect.stringMatching(/specific workItemType/i),
+    });
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
   it('rejects an AI-planned triage result that tries to skip the Action plan', () => {
     const item = controller.create(createInput({
       workflowTemplate: 'ai-planned',

@@ -87,20 +87,24 @@ describe('Work Center settings', () => {
   it('materializes the executable default prompt for every workflow stage', () => {
     const settings = defaultWorkCenterSettings();
     const prompts = Object.fromEntries(settings.workflows[0].stages.map(stage => [stage.type, stage.instruction]));
-    expect(prompts.triage).toContain('Do not implement yet');
-    expect(prompts.implement).toContain('Implement the smallest correct change');
+    expect(prompts.triage).toContain('Do not implement');
+    expect(prompts.implement).toContain('smallest correct diff');
     expect(prompts.review).toContain('changes_requested');
     expect(prompts.deliver).toContain('repository release policy');
+    expect(settings.actionInstructions.diagnose).toContain('root cause');
+    expect(settings.actionInstructions.migrate).toContain('legacy data');
+    expect(settings.actionInstructions.operate).toContain('rollback');
 
     settings.workflows[0].stages[0].instruction = '  ';
     expect(normalizeWorkCenterSettings(settings).workflows[0].stages[0].instruction)
-      .toContain('Do not implement yet');
+      .toContain('Do not implement');
   });
 
   it('normalizes and atomically persists workflow policies', () => {
     const dir = tempDir();
     const settings = defaultWorkCenterSettings();
     settings.defaultWorkDir = ' /project ';
+    settings.globalInstructions = '  Follow repository policy for every Action.  ';
     settings.modelPolicy = { mode: 'specific', model: 'provider/work-center', effort: 'high' };
     settings.actionInstructions.implement = 'Implement with a minimal verified diff.';
     settings.workflows[0].stages[1].assignmentPolicy = {
@@ -109,6 +113,7 @@ describe('Work Center settings', () => {
     };
     const saved = writeWorkCenterSettings(dir, settings);
     expect(saved.defaultWorkDir).toBe('/project');
+    expect(saved.globalInstructions).toBe('Follow repository policy for every Action.');
     expect(saved.modelPolicy).toEqual({ mode: 'specific', model: 'provider/work-center', effort: 'high' });
     expect(saved.actionInstructions.implement).toBe('Implement with a minimal verified diff.');
     expect(saved.revision).toBe(2);

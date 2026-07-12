@@ -7,11 +7,14 @@ const WORK_CENTER_SETTINGS = {
     defaultWorkflowId: 'software-change',
     startImmediately: true,
     defaultWorkDir: '/tmp/test',
+    globalInstructions: 'Follow the Agent release policy for every Action.',
     modelPolicy: { mode: 'specific', model: 'provider/review', effort: 'high' },
     actionInstructions: {
-      triage: 'Plan the task', implement: 'Implement the change', test: 'Test the change',
-      review: 'Review independently', deliver: 'Deliver the result', research: 'Research the problem',
-      write: 'Write the content', custom: 'Complete the custom Action',
+      triage: 'Plan the task', research: 'Research the problem', design: 'Design the solution',
+      diagnose: 'Diagnose the root cause', implement: 'Implement the change', migrate: 'Migrate safely',
+      test: 'Test the change', review: 'Review independently', document: 'Document the result',
+      operate: 'Operate safely', deliver: 'Deliver the result', write: 'Write the content',
+      custom: 'Complete the custom Action',
     },
     workflows: [{
       version: 1,
@@ -322,8 +325,9 @@ test.describe('Work Center responsive UI', () => {
     expect(box.width).toBeGreaterThan(850);
     expect(box.height).toBeGreaterThan(650);
 
-    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(8);
-    await expect(chatPage.locator('.work-center-policy-stage textarea').first()).toHaveValue('Plan the task');
+    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(14);
+    await expect(chatPage.locator('.work-center-global-policy textarea')).toHaveValue('Follow the Agent release policy for every Action.');
+    await expect(chatPage.locator('.work-center-policy-stage textarea').nth(1)).toHaveValue('Plan the task');
     await chatPage.getByRole('button', { name: 'Models', exact: true }).click();
     const modelStage = chatPage.locator('.work-center-model-stage');
     await expect(modelStage).toHaveCount(1);
@@ -364,8 +368,8 @@ test.describe('Work Center responsive UI', () => {
 
     const modal = chatPage.locator('.work-center-settings-card');
     await expect(modal).toBeVisible();
-    await expect(modal.locator('.work-center-policy-stage')).toHaveCount(8);
-    const triagePrompt = modal.locator('.work-center-policy-stage textarea').first();
+    await expect(modal.locator('.work-center-policy-stage')).toHaveCount(14);
+    const triagePrompt = modal.locator('.work-center-policy-stage textarea').nth(1);
     await expect(triagePrompt).toHaveValue('Legacy triage prompt.');
     await expect(triagePrompt).toBeDisabled();
     await expect(modal.getByText(/cannot save Work Center settings/)).toBeVisible();
@@ -392,7 +396,7 @@ test.describe('Work Center responsive UI', () => {
 
     const modal = chatPage.locator('.work-center-settings-card');
     await expect(modal).toBeVisible();
-    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(8);
+    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(14);
     const workflowMetrics = await modal.evaluate(element => {
       const rect = element.getBoundingClientRect();
       const pane = element.querySelector('.work-center-settings-pane');

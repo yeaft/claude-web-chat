@@ -14,6 +14,11 @@ const CAPABILITY_TERMS = Object.freeze({
   review: ['review', 'reviewer', 'refactor', 'architecture', 'code-smells', 'readability', 'maintainability'],
   deliver: ['deliver', 'release', 'ship', 'git', 'engineering', 'systems', 'execution'],
   research: ['research', 'science', 'analysis', 'evidence', 'investigation'],
+  design: ['design', 'architecture', 'architect', 'systems', 'product', 'ux'],
+  diagnose: ['diagnose', 'debug', 'root-cause', 'reliability', 'investigation', 'systems'],
+  migrate: ['migrate', 'migration', 'database', 'compatibility', 'data', 'systems'],
+  document: ['document', 'documentation', 'writer', 'writing', 'communication'],
+  operate: ['operate', 'operations', 'release', 'deployment', 'reliability', 'systems'],
   write: ['write', 'writer', 'writing', 'documentation', 'editor', 'communication'],
 });
 

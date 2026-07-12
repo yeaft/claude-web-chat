@@ -36,16 +36,22 @@ describe('Work Center settings service', () => {
     const service = await createService();
     const initial = await service.handle('get_settings');
     expect(initial.settings.defaultWorkflowId).toBe('software-change');
-    expect(initial.settings.workflows[0].stages[0].instruction).toContain('Do not implement yet');
+    expect(initial.settings.globalInstructions).toBe('');
+    expect(initial.settings.workflows[0].stages[0].instruction).toContain('Do not implement');
     expect(initial.runtime.vps[0].id).toBe('linus');
-    expect(initial.runtime.defaultStageInstructions.implement).toContain('Add and run relevant tests');
+    expect(initial.runtime.defaultStageInstructions.implement).toContain('add or update focused tests');
 
     const next = defaultWorkCenterSettings();
     next.defaultWorkDir = '/project';
+    next.globalInstructions = 'Apply the Agent release policy to every Action.';
     const saved = await service.handle('update_settings', { settings: next });
     expect(saved.settings.defaultWorkDir).toBe('/project');
+    expect(saved.settings.globalInstructions).toBe('Apply the Agent release policy to every Action.');
     expect(saved.settings.revision).toBe(2);
-    expect((await service.handle('get_settings')).settings.defaultWorkDir).toBe('/project');
+    expect((await service.handle('get_settings')).settings).toMatchObject({
+      defaultWorkDir: '/project',
+      globalInstructions: 'Apply the Agent release policy to every Action.',
+    });
   });
 
   it('canonicalizes an omitted runtime directory default before creating', async () => {
@@ -139,7 +145,7 @@ describe('Work Center settings service', () => {
     });
 
     expect(item).toMatchObject({ workflowTemplate: 'ai-planned', status: 'draft' });
-    expect(item.workflowSnapshot).toMatchObject({ id: 'ai-planned', planningMode: 'ai' });
+    expect(item.workflowSnapshot).toMatchObject({ id: 'ai-planned', planningMode: 'ai', globalInstructions: '' });
     expect(item.workflowSnapshot.stages.map(stage => stage.id)).toEqual(['triage']);
     expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller-choice');
     expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller/model');
