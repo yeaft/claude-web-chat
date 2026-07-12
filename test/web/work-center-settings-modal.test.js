@@ -543,6 +543,8 @@ describe('Work Center settings modal ownership', () => {
       workDirTouched: false,
       startTouched: false,
       createOpen: true,
+      workItemAttachmentsSupported: false,
+      createAttachments: [{ fileId: 'stale-file', name: 'stale.txt', mimeType: 'text/plain', size: 5 }],
       form: {
         title: 'Keep title', goal: 'Keep goal', acceptanceCriteriaText: '',
         workDir: '/workspace/b', reuseMemory: true, start: false,
@@ -560,7 +562,7 @@ describe('Work Center settings modal ownership', () => {
     await WorkCenterPage.methods.submitCreate.call(vm);
 
     expect(vm.store.createWorkItem).toHaveBeenCalledWith(
-      expect.objectContaining({ origin: null, linkedSessionIds: [] }),
+      expect.objectContaining({ origin: null, linkedSessionIds: [], attachments: [] }),
       'agent-b',
     );
   });

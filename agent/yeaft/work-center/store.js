@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -46,6 +46,7 @@ function mapWorkItem(row) {
     reuseMemory: row.reuse_memory !== 0,
     origin: parseJson(row.origin, null),
     linkedSessionIds: parseJson(row.linked_session_ids, []),
+    attachments: parseJson(row.attachments, []),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -169,6 +170,7 @@ export class WorkItemStore {
         reuse_memory INTEGER NOT NULL DEFAULT 1,
         origin TEXT,
         linked_session_ids TEXT NOT NULL DEFAULT '[]',
+        attachments TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -278,6 +280,9 @@ export class WorkItemStore {
     if (!hasColumn(this.db, 'work_items', 'workflow_snapshot')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN workflow_snapshot TEXT');
     }
+    if (!hasColumn(this.db, 'work_items', 'attachments')) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
+    }
     if (!hasColumn(this.db, 'actions', 'stage_id')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN stage_id TEXT');
     }
@@ -317,8 +322,8 @@ export class WorkItemStore {
       this.db.prepare(`INSERT INTO work_items
         (id, revision, title, goal, acceptance_criteria, workflow_template, workflow_snapshot, status,
          current_action_id, current_run_id, work_dir, workspace_key, reuse_memory, origin, linked_session_ids,
-         created_at, updated_at)
-        VALUES (?, 1, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)`).run(
+         attachments, created_at, updated_at)
+        VALUES (?, 1, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         id,
         input.title,
         input.goal,
@@ -331,6 +336,7 @@ export class WorkItemStore {
         input.reuseMemory === false ? 0 : 1,
         stringify(input.origin || null),
         stringify(input.linkedSessionIds || []),
+        stringify(input.attachments || []),
         now,
         now,
       );

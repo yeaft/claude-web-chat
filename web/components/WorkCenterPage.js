@@ -18,6 +18,8 @@ export default {
       expandedActions: {},
       workDirTouched: false,
       startTouched: false,
+      createAttachments: [],
+      attachmentsUploading: false,
       form: {
         title: '',
         goal: '',
@@ -36,6 +38,7 @@ export default {
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
     settings() { return this.store.workCenterSettingsByAgent[this.agentId] || null; },
     runtime() { return this.store.workCenterRuntimeByAgent[this.agentId] || null; },
+    workItemAttachmentsSupported() { return this.runtime?.workItemAttachments === true; },
     createDefaultWorkDir() {
       return this.settings?.defaultWorkDir || this.runtime?.defaultWorkDir || '';
     },
@@ -205,6 +208,47 @@ export default {
     onCreateStartInput() {
       this.startTouched = true;
     },
+    async onCreateAttachmentInput(event) {
+      if (!this.workItemAttachmentsSupported) {
+        event.target.value = '';
+        throw new Error(this.tr('workCenter.attachmentsUnsupported', 'The selected Agent does not support Work Item attachments.'));
+      }
+      const files = Array.from(event.target.files || []);
+      event.target.value = '';
+      if (files.length === 0) return;
+      const remaining = Math.max(0, 10 - this.createAttachments.length);
+      const selected = files.slice(0, remaining);
+      if (selected.length === 0) return;
+      this.attachmentsUploading = true;
+      try {
+        const formData = new FormData();
+        for (const file of selected) formData.append('files', file, file.name || 'attachment');
+        const authStore = Pinia.useAuthStore();
+        const token = authStore.getActiveToken?.() || authStore.token || null;
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        const response = await fetch('/api/upload', { method: 'POST', headers, body: formData });
+        if (response.status === 401 || response.status === 403) {
+          authStore.handleAuthFailure?.(undefined, token);
+        }
+        if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
+        const result = await response.json();
+        this.createAttachments = [
+          ...this.createAttachments,
+          ...(Array.isArray(result.files) ? result.files : []),
+        ].slice(0, 10);
+      } finally {
+        this.attachmentsUploading = false;
+      }
+    },
+    removeCreateAttachment(index) {
+      this.createAttachments = this.createAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
+    },
+    formatAttachmentSize(value) {
+      const size = Math.max(0, Number(value) || 0);
+      if (size < 1024) return `${size} B`;
+      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+      return `${(size / 1024 / 1024).toFixed(1)} MB`;
+    },
     openCreate() {
       this.createOpen = true;
       this.workDirTouched = false;
@@ -235,6 +279,14 @@ export default {
           workDir: this.form.workDir.trim(),
           origin: draftOwnedByAgent ? (draft.origin || null) : null,
           linkedSessionIds: draftOwnedByAgent ? (draft.linkedSessionIds || []) : [],
+          attachments: this.workItemAttachmentsSupported
+            ? (this.createAttachments || []).map(attachment => ({
+            fileId: attachment.fileId,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            size: attachment.size,
+          }))
+            : [],
           reuseMemory: this.form.reuseMemory,
           start: this.form.start,
         }, this.agentId);
@@ -248,6 +300,7 @@ export default {
           start: this.settings?.startImmediately !== false,
         };
         this.store.workCenterCreateDraft = null;
+        this.createAttachments = [];
         this.workDirTouched = false;
         this.startTouched = false;
         this.createOpen = false;
@@ -401,6 +454,15 @@ export default {
                   </ul>
                   <p v-else class="work-center-muted">{{ tr('workCenter.noCriteria', 'No criteria provided') }}</p>
                 </div>
+                <div v-if="selected.attachments?.length" class="work-center-section">
+                  <h3>{{ tr('workCenter.attachments', 'Attachments') }}</h3>
+                  <div class="work-center-attachment-list">
+                    <span v-for="attachment in selected.attachments" :key="attachment.id" class="work-center-attachment-chip">
+                      <span>{{ attachment.name }}</span>
+                      <small>{{ formatAttachmentSize(attachment.size) }}</small>
+                    </span>
+                  </div>
+                </div>
                 <div v-if="['ready','running'].includes(selected.status)" class="work-center-section work-center-guidance">
                   <label>{{ tr('workCenter.guidance', 'Add guidance to the current Action') }}
                     <textarea v-model="actionGuidance" rows="2" :placeholder="tr('workCenter.guidanceHint', 'Clarify constraints or redirect the current Action')"></textarea>
@@ -473,6 +535,24 @@ export default {
               <label>{{ tr('workCenter.goal', 'Goal') }}<textarea v-model="form.goal" rows="3" required :placeholder="tr('workCenter.goalHint', 'Describe the result the Agent must deliver')"></textarea></label>
               <label>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}<textarea v-model="form.acceptanceCriteriaText" rows="3" :placeholder="tr('workCenter.criteriaHint', 'One criterion per line')"></textarea></label>
             </section>
+            <section class="work-center-form-section work-center-create-attachments">
+              <div class="work-center-form-section-heading">
+                <h3>{{ tr('workCenter.attachments', 'Attachments') }}</h3>
+                <p>{{ tr('workCenter.attachmentsHelp', 'Screenshots and files stay bound to this Work Item and are available to every Action.') }}</p>
+              </div>
+              <label v-if="workItemAttachmentsSupported" class="btn-secondary work-center-attachment-picker">
+                <input type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,text/*,application/pdf,application/json,application/xml,.pdf,.json,.md,.py,.js,.ts,.css,.html,.xml,.yaml,.yml,.csv" @change="onCreateAttachmentInput">
+                {{ attachmentsUploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : tr('workCenter.addAttachments', 'Add files') }}
+              </label>
+              <p v-else class="work-center-muted">{{ tr('workCenter.attachmentsUnsupported', 'The selected Agent does not support Work Item attachments.') }}</p>
+              <div v-if="workItemAttachmentsSupported && createAttachments.length" class="work-center-attachment-list">
+                <span v-for="(attachment, index) in createAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
+                  <span>{{ attachment.name }}</span>
+                  <small>{{ formatAttachmentSize(attachment.size) }}</small>
+                  <button type="button" @click="removeCreateAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove attachment')">×</button>
+                </span>
+              </div>
+            </section>
             <section class="work-center-form-section work-center-execution-section">
               <div class="work-center-form-section-heading">
                 <h3>{{ tr('workCenter.execution', 'Execution') }}</h3>
@@ -493,7 +573,7 @@ export default {
           </div>
           <footer class="work-center-modal-footer">
             <button class="btn-secondary" type="button" @click="closeCreate">{{ tr('common.cancel', 'Cancel') }}</button>
-            <button class="btn-primary" type="submit" :disabled="saving || !form.title.trim() || !form.goal.trim() || !form.workDir.trim()">
+            <button class="btn-primary" type="submit" :disabled="saving || attachmentsUploading || !form.title.trim() || !form.goal.trim() || !form.workDir.trim()">
               {{ saving ? tr('workCenter.creating', 'Creating…') : tr('workCenter.create', 'Create') }}
             </button>
           </footer>

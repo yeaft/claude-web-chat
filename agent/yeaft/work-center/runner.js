@@ -11,6 +11,7 @@ import { runPreflow } from '../memory/preflow.js';
 import { formatPickedForInjection } from '../sessions/pre-flow.js';
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { buildWorkItemAttachmentContext } from './attachments.js';
 
 const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'FileRead',
@@ -23,6 +24,7 @@ const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'Bash',
   'WebSearch',
   'WebFetch',
+  'ViewImage',
 ]);
 const WORK_ITEM_TOOL_ALLOWLIST = new Set(WORK_ITEM_TOOL_NAMES);
 const DEFAULT_PROGRESS_INTERVAL_MS = 200;
@@ -174,7 +176,13 @@ function assertPathInside(toolName, workDir, value) {
   return resolved;
 }
 
-function assertToolInput(toolName, input, workDir) {
+function assertReadPath(toolName, workDir, attachmentFiles, value) {
+  const attachment = attachmentFiles.find(file => file.ref === value);
+  if (attachment) return assertPathInside(toolName, attachment.root, attachment.path);
+  return assertPathInside(toolName, workDir, value);
+}
+
+function assertToolInput(toolName, input, workDir, attachmentFiles) {
   if (toolName === 'Bash') {
     if (input?.background === true) throw new Error('Work Center does not allow background Bash jobs');
     if (input?.cwd && canonicalWorkDir(path.resolve(input.cwd)) !== workDir) {
@@ -186,9 +194,15 @@ function assertToolInput(toolName, input, workDir) {
   }
   const pathKeys = ['file_path', 'notebook_path', 'output_path', 'path'];
   const next = { ...(input || {}) };
+  const readOnlyTool = ['FileRead', 'ViewImage'].includes(toolName);
   for (const key of pathKeys) {
     if (typeof next[key] !== 'string' || !next[key]) continue;
-    next[key] = assertPathInside(toolName, workDir, next[key]);
+    if (!readOnlyTool && next[key].startsWith('work-item-attachment://')) {
+      throw new Error(`${toolName} cannot modify a WorkItem attachment`);
+    }
+    next[key] = readOnlyTool
+      ? assertReadPath(toolName, workDir, attachmentFiles, next[key])
+      : assertPathInside(toolName, workDir, next[key]);
   }
   if (toolName === 'ApplyPatch' && typeof next.patch === 'string') {
     for (const fileDiff of parsePatch(next.patch)) {
@@ -198,33 +212,51 @@ function assertToolInput(toolName, input, workDir) {
   return next;
 }
 
-export function workItemToolPolicySnapshot(workDir) {
+export function workItemToolPolicySnapshot(workDir, attachmentRefs = []) {
+  const hasAttachments = attachmentRefs.length > 0;
   return {
     policyVersion: 1,
-    allowedToolNames: [...WORK_ITEM_TOOL_NAMES],
+    allowedToolNames: WORK_ITEM_TOOL_NAMES.filter(name => !hasAttachments || name !== 'Bash'),
     readRoots: [workDir],
+    attachmentRefs,
     writeRoots: [workDir],
-    shell: { enabled: true, fixedCwd: workDir, background: false, sandboxed: false },
+    shell: { enabled: !hasAttachments, fixedCwd: workDir, background: false, sandboxed: false },
     async: false,
     mcpTools: [],
   };
 }
 
-export function createWorkItemToolRegistry({ workDir, isRunActive }) {
+export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRunActive }) {
   const canonicalDir = canonicalWorkDir(path.resolve(workDir));
+  const canonicalAttachmentFiles = attachmentFiles.map(file => ({
+    ...file,
+    root: canonicalWorkDir(file.root),
+  }));
   const registry = new ToolRegistry();
+  const hasAttachments = canonicalAttachmentFiles.length > 0;
   for (const tool of allTools) {
-    if (!WORK_ITEM_TOOL_ALLOWLIST.has(tool.name)) continue;
+    if (!WORK_ITEM_TOOL_ALLOWLIST.has(tool.name) || (hasAttachments && tool.name === 'Bash')) continue;
     registry.register({
       ...tool,
       async execute(input, ctx) {
         if (!isRunActive()) throw new Error('Work Center Run lease is no longer active');
-        const output = await tool.execute(assertToolInput(tool.name, input, canonicalDir), {
+        const output = await tool.execute(assertToolInput(tool.name, input, canonicalDir, canonicalAttachmentFiles), {
           ...ctx,
           cwd: canonicalDir,
           workDir: canonicalDir,
+          imageAllowlist: canonicalAttachmentFiles.map(file => file.root),
         });
         if (!isRunActive()) throw new Error('Work Center Run lease was lost during tool execution');
+        if (['FileRead', 'ViewImage'].includes(tool.name) && typeof output === 'string') {
+          const withoutFilePaths = canonicalAttachmentFiles.reduce(
+            (safeOutput, file) => safeOutput.split(file.path).join(file.ref),
+            output,
+          );
+          return [...new Set(canonicalAttachmentFiles.map(file => file.root))].reduce(
+            (safeOutput, root) => safeOutput.split(root).join('work-item-attachment://'),
+            withoutFilePaths,
+          );
+        }
         return output;
       },
     });
@@ -333,6 +365,7 @@ export class WorkItemRunner {
   constructor(options) {
     this.runtimeProvider = options.runtimeProvider;
     this.policyProvider = typeof options.policyProvider === 'function' ? options.policyProvider : null;
+    this.attachmentRoot = options.attachmentRoot || null;
     this.store = options.store;
     this.registry = options.registry || defaultRegistry;
     this.progressIntervalMs = Number.isFinite(Number(options.progressIntervalMs))
@@ -371,10 +404,18 @@ export class WorkItemRunner {
     }
     const resolvedModel = resolveWorkItemModel(runtime.config, vp, executionAction.modelPolicy);
     const memoryBlock = recallWorkItemMemory(runtime, workItem, executionAction, vp);
+    const attachmentContext = buildWorkItemAttachmentContext(workItem, { root: this.attachmentRoot });
     const isRunActive = () => !signal.aborted
       && this.store.isActiveRun(run.id, ownerBootId, run.leaseEpoch);
-    const toolPolicySnapshot = workItemToolPolicySnapshot(workDir);
-    const toolRegistry = createWorkItemToolRegistry({ workDir, isRunActive });
+    const toolPolicySnapshot = workItemToolPolicySnapshot(
+      workDir,
+      attachmentContext.files.map(file => file.ref),
+    );
+    const toolRegistry = createWorkItemToolRegistry({
+      workDir,
+      attachmentFiles: attachmentContext.files,
+      isRunActive,
+    });
     const config = {
       ...runtime.config,
       model: resolvedModel.model,
@@ -446,8 +487,13 @@ export class WorkItemRunner {
       onProgress({ response: publicWorkItemResponse(text), loopCount, toolCount });
     };
     try {
+      const prompt = `${executionAction.instruction}${attachmentContext.promptBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
+      const promptParts = attachmentContext.promptParts.length > 0
+        ? [{ type: 'text', text: prompt }, ...attachmentContext.promptParts]
+        : null;
       for await (const event of engine.query({
-        prompt: `${executionAction.instruction}${memoryBlock}${completionContract(executionAction, workItem)}`,
+        prompt,
+        promptParts,
         messages: [],
         signal,
         scenario: 'work-item',

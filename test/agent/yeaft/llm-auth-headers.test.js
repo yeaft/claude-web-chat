@@ -131,4 +131,38 @@ describe('LLM adapter auth headers', () => {
     expect(calls[0].init.headers.Authorization).toBe('Bearer copilot-token');
     expect(calls[0].init.headers['x-api-key']).toBeUndefined();
   });
+
+  it('translates PDF document blocks to Responses input_file content', async () => {
+    const calls = [];
+    global.fetch = vi.fn(async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return jsonResponse({ output_text: 'ok', usage: { input_tokens: 1, output_tokens: 1 } });
+    });
+
+    const adapter = new OpenAIResponsesAdapter({ apiKey: 'key', baseUrl: 'https://openai.test/v1' });
+    await adapter.call({
+      model: 'gpt-5.5',
+      system: '',
+      messages: [{
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'document',
+          source: { type: 'base64', media_type: 'application/pdf', data: 'cGRm' },
+          title: 'requirements.pdf',
+        }],
+      }],
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.input).toEqual([{
+      type: 'message',
+      role: 'user',
+      content: [{
+        type: 'input_file',
+        filename: 'requirements.pdf',
+        file_data: 'data:application/pdf;base64,cGRm',
+      }],
+    }]);
+  });
 });

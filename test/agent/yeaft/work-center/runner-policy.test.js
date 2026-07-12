@@ -8,12 +8,14 @@ import {
   rmSync,
   symlinkSync,
   unlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   createWorkItemToolRegistry,
   parseStructuredResult,
+  workItemToolPolicySnapshot,
   resolveWorkItemWorkDir,
   WorkItemRunner,
 } from '../../../../agent/yeaft/work-center/runner.js';
@@ -41,6 +43,34 @@ describe('Work Center tool policy', () => {
     expect(names).not.toContain('RouteForward');
     expect(names).not.toContain('AskUser');
     expect(names).not.toContain('EnterWorktree');
+  });
+
+  it('removes Bash from both registry and policy when attachments are present', async () => {
+    const attachmentDir = join(outsideDir, 'attachments');
+    mkdirSync(attachmentDir);
+    const attachmentPath = join(attachmentDir, 'evidence.txt');
+    writeFileSync(attachmentPath, 'evidence');
+    const ref = 'work-item-attachment://attachment-1/evidence.txt';
+    const registry = createWorkItemToolRegistry({
+      workDir,
+      attachmentFiles: [{ ref, path: attachmentPath, root: attachmentDir }],
+      isRunActive: () => true,
+    });
+    expect(registry.getAllTools().map(tool => tool.name)).not.toContain('Bash');
+    await expect(registry.execute('Bash', {
+      command: `find ${JSON.stringify(attachmentDir)} -type f -delete`,
+      cwd: workDir,
+      background: false,
+    }, {})).rejects.toThrow(/Unknown tool: Bash/);
+    expect(readFileSync(attachmentPath, 'utf8')).toBe('evidence');
+    expect(workItemToolPolicySnapshot(workDir, [ref])).toMatchObject({
+      allowedToolNames: expect.not.arrayContaining(['Bash']),
+      shell: { enabled: false },
+    });
+    expect(workItemToolPolicySnapshot(workDir, [])).toMatchObject({
+      allowedToolNames: expect.arrayContaining(['Bash']),
+      shell: { enabled: true },
+    });
   });
 
   it('rejects background or redirected Bash before execution', async () => {
@@ -119,6 +149,36 @@ describe('Work Center tool policy', () => {
     }, {}));
     expect(result.results[0].success).toBe(true);
     expect(readFileSync(join(workDir, 'inside.txt'), 'utf8')).toContain('inside');
+  });
+
+  it('maps attachment references only for read tools without exposing filesystem paths', async () => {
+    const attachmentDir = join(outsideDir, 'attachments');
+    mkdirSync(attachmentDir);
+    const attachmentPath = join(attachmentDir, 'evidence.txt');
+    const binaryPath = join(attachmentDir, 'screen.png');
+    writeFileSync(attachmentPath, 'persistent evidence');
+    writeFileSync(binaryPath, 'not-a-real-image');
+    const ref = 'work-item-attachment://attachment-1/evidence.txt';
+    const binaryRef = 'work-item-attachment://attachment-2/screen.png';
+    const registry = createWorkItemToolRegistry({
+      workDir,
+      attachmentFiles: [
+        { ref, path: attachmentPath, root: attachmentDir },
+        { ref: binaryRef, path: binaryPath, root: attachmentDir },
+      ],
+      isRunActive: () => true,
+    });
+
+    const read = await registry.execute('FileRead', { file_path: ref }, {});
+    expect(read).toContain('persistent evidence');
+    await expect(registry.execute('FileWrite', { file_path: ref, content: 'changed' }, {}))
+      .rejects.toThrow(/cannot modify/);
+    expect(readFileSync(attachmentPath, 'utf8')).toBe('persistent evidence');
+    const binaryError = await registry.execute('FileRead', { file_path: binaryRef }, {});
+    expect(binaryError).toContain(binaryRef);
+    expect(binaryError).not.toContain(attachmentDir);
+    await expect(registry.execute('FileRead', { file_path: attachmentPath }, {}))
+      .rejects.toThrow(/escapes/);
   });
 
   it('uses the creation-time workspace identity after a symlink is retargeted', () => {

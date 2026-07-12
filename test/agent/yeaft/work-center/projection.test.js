@@ -8,7 +8,12 @@ function internalDetail() {
     workflowSnapshot: { planningMode: 'ai', workItemType: 'bug-fix' },
     currentActionId: 'a-1', currentRunId: 'r-2', workDir: '/project', reuseMemory: true,
     origin: { sessionId: 's-1', messageId: 'secret-message', createdBy: 'linus' },
-    linkedSessionIds: ['s-1'], createdAt: 1, updatedAt: 2,
+    linkedSessionIds: ['s-1'],
+    attachments: [{
+      id: 'att-1', name: 'screen.png', mimeType: 'image/png', size: 42, isImage: true,
+      storageName: 'private.png', sha256: 'secret-digest',
+    }],
+    createdAt: 1, updatedAt: 2,
     actions: [{
       id: 'a-1', workItemId: 'wi-1', sequence: 1, type: 'review', stageId: 'review',
       assignmentPolicy: { mode: 'auto', capability: 'review', candidateVpIds: ['martin'] },
@@ -67,6 +72,7 @@ describe('Work Center event projection', () => {
       id: 'wi-1',
       waitingReason: 'Choose the compatibility behavior',
       workItemType: 'bug-fix', planningMode: 'ai',
+      attachments: [{ id: 'att-1', name: 'screen.png', mimeType: 'image/png', size: 42, isImage: true }],
       actions: [{
         id: 'a-1', sequence: 1, type: 'review', stageId: 'review',
         assignmentPolicy: { mode: 'auto', capability: 'review', fixedVpId: null },
@@ -83,7 +89,7 @@ describe('Work Center event projection', () => {
     for (const secret of [
       '/project', 'provider/review', 'Review needs a compatibility choice', 'secret latest evidence',
       'private latest error', 'secret persona', 'allowedToolNames', '/private/read',
-      'secret-message', 'candidateVpIds',
+      'secret-message', 'candidateVpIds', 'private.png', 'secret-digest',
     ]) {
       expect(wire).not.toContain(secret);
     }

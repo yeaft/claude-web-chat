@@ -64,7 +64,10 @@ describe('Work Center store migration', () => {
 
     store = new WorkItemStore(dbPath);
 
-    expect(store.getWorkItem('legacy-item').workspaceKey).toBe(realpathSync(dir));
+    expect(store.getWorkItem('legacy-item')).toMatchObject({
+      workspaceKey: realpathSync(dir),
+      attachments: [],
+    });
     expect(store.getReusableContext(dir)).toContainEqual(expect.objectContaining({
       type: 'triage',
       summary: 'Legacy reusable decision',

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
+import { projectWorkItemDetail } from '../../../../agent/yeaft/work-center/projection.js';
 import { defaultWorkCenterSettings } from '../../../../agent/yeaft/work-center/workflow.js';
 
 const services = [];
@@ -52,6 +53,45 @@ describe('Work Center settings service', () => {
       defaultWorkDir: '/project',
       globalInstructions: 'Apply the Agent release policy to every Action.',
     });
+  });
+
+  it('persists WorkItem attachments with the item and returns only safe browser metadata', async () => {
+    const service = await createService();
+    const detail = await service.handle('create', {
+      title: 'Inspect evidence', goal: 'Use the uploaded evidence in every Action', workDir: '/tmp', start: false,
+      files: [{
+        name: '../evidence.txt', mimeType: 'text/plain', data: Buffer.from('persistent evidence').toString('base64'),
+      }],
+    });
+    const stored = service.store.getWorkItem(detail.id);
+    const projected = projectWorkItemDetail(detail);
+
+    expect(projected.attachments).toEqual([expect.objectContaining({
+      name: 'evidence.txt', mimeType: 'text/plain', size: 19, isImage: false,
+    })]);
+    expect(JSON.stringify(projected.attachments)).not.toContain('storageName');
+    expect(JSON.stringify(projected.attachments)).not.toContain('sha256');
+    expect(stored.attachments).toEqual([expect.objectContaining({
+      name: 'evidence.txt', storageName: expect.any(String), sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    })]);
+  });
+
+  it('removes persisted attachments through the secure cleanup path when WorkItem creation fails', async () => {
+    const service = await createService({
+      controller: {
+        create() { throw new Error('database create failed'); },
+      },
+    });
+
+    await expect(service.handle('create', {
+      title: 'Fail after persistence', goal: 'Verify cleanup', workDir: '/tmp', start: false,
+      files: [{
+        name: 'evidence.txt', mimeType: 'text/plain', data: Buffer.from('evidence').toString('base64'),
+      }],
+    })).rejects.toThrow('database create failed');
+
+    expect(existsSync(service.attachmentRoot)).toBe(true);
+    expect(readdirSync(service.attachmentRoot)).toEqual([]);
   });
 
   it('canonicalizes an omitted runtime directory default before creating', async () => {

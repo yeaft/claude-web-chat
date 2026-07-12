@@ -18,6 +18,8 @@ let shutdownPromise = null;
 let serviceFactory = null;
 
 const BROWSER_DETAIL_OPS = new Set(['get', 'create', 'update', 'start', 'cancel', 'guide', 'retry']);
+// `files` is an internal server-to-Agent field. The browser relay rejects any
+// client-supplied value and only emits files resolved from owned upload ids.
 const BROWSER_CREATE_FIELDS = Object.freeze([
   'title',
   'goal',
@@ -26,6 +28,7 @@ const BROWSER_CREATE_FIELDS = Object.freeze([
   'reuseMemory',
   'origin',
   'linkedSessionIds',
+  'files',
   'start',
 ]);
 
@@ -71,6 +74,8 @@ async function getSettingsRuntime() {
     primaryModel: runtime.config.primaryModel || runtime.config.model || null,
     fastModel: runtime.config.fastModel || null,
     defaultWorkDir: ctx.CONFIG?.workDir || process.cwd(),
+    workItemAttachments: Array.isArray(ctx.agentCapabilities)
+      && ctx.agentCapabilities.includes('work_item_attachments'),
     defaultStageInstructions: defaultWorkCenterStageInstructions(),
   };
 }
@@ -97,6 +102,7 @@ async function createDefaultService() {
       };
     },
     policyProvider: async () => readWorkCenterSettings(yeaftDir),
+    attachmentRoot: join(yeaftDir, 'work-center', 'attachments'),
     registry: defaultRegistry,
     store: null,
   });

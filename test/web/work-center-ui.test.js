@@ -208,6 +208,15 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('color: var(--accent-fg)');
   });
 
+  it('gates Work Item attachment controls on the Agent runtime capability', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    expect(page).toContain('workItemAttachmentsSupported()');
+    expect(page).toContain("this.runtime?.workItemAttachments === true");
+    expect(page).toContain('v-if="workItemAttachmentsSupported" class="btn-secondary work-center-attachment-picker"');
+    expect(page).toContain("tr('workCenter.attachmentsUnsupported'");
+    expect(page).toContain('attachments: this.workItemAttachmentsSupported');
+  });
+
   it('provides matching English and Chinese Work Center strings', () => {
     const en = read('web/i18n/en.js');
     const zh = read('web/i18n/zh-CN.js');
@@ -254,6 +263,7 @@ describe('Work Center UI contract', () => {
       'workCenter.settings.addStage',
       'workCenter.settings.upgradeRequired',
       'workCenter.planPreview',
+      'workCenter.attachmentsUnsupported',
     ];
     for (const key of keys) {
       expect(en).toContain(`'${key}'`);
