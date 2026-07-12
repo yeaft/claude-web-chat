@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { CONFIG } from '../config.js';
-import { pendingFiles } from '../context.js';
+import { agents, pendingFiles } from '../context.js';
 import { forwardToAgent, sendToWebClient } from '../ws-utils.js';
 import {
   assertSupportedWorkItemAttachment,
+  assertWorkItemAttachmentSize,
   MAX_WORK_ITEM_ATTACHMENTS,
   MAX_WORK_ITEM_ATTACHMENT_BYTES,
-  MAX_WORK_ITEM_INLINE_BYTES,
 } from '../work-item-attachment-policy.js';
 
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -44,10 +44,8 @@ function resolveCreateAttachments(client, payload) {
     if (totalBytes > MAX_WORK_ITEM_ATTACHMENT_BYTES) {
       throw new Error(`WorkItem attachments exceed ${MAX_WORK_ITEM_ATTACHMENT_BYTES} bytes`);
     }
-    const kind = assertSupportedWorkItemAttachment(file.name, file.mimeType);
-    if ((kind === 'image' || kind === 'pdf') && buffer.length > MAX_WORK_ITEM_INLINE_BYTES) {
-      throw new Error(`WorkItem ${kind} attachment exceeds ${MAX_WORK_ITEM_INLINE_BYTES} bytes`);
-    }
+    assertSupportedWorkItemAttachment(file.name, file.mimeType);
+    assertWorkItemAttachmentSize(buffer.length);
     resolvedFiles.push({ file, buffer });
     consumedIds.push(fileId);
   }
@@ -85,6 +83,13 @@ export async function handleClientWorkCenter(client, msg, checkAgentAccess) {
   const sourcePayload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
   let resolved = { payload: sourcePayload, consumedIds: [] };
   try {
+    const attachments = Array.isArray(sourcePayload.attachments) ? sourcePayload.attachments : [];
+    if (op === 'create' && attachments.length > 0) {
+      const capabilities = agents.get(agentId)?.capabilities;
+      if (!Array.isArray(capabilities) || !capabilities.includes('work_item_attachments')) {
+        throw new Error('The selected Agent does not support WorkItem attachments');
+      }
+    }
     if (op === 'create') resolved = resolveCreateAttachments(client, sourcePayload);
   } catch (error) {
     await sendToWebClient(client, {

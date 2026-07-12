@@ -72,6 +72,8 @@ async function getSettingsRuntime() {
     primaryModel: runtime.config.primaryModel || runtime.config.model || null,
     fastModel: runtime.config.fastModel || null,
     defaultWorkDir: ctx.CONFIG?.workDir || process.cwd(),
+    workItemAttachments: Array.isArray(ctx.agentCapabilities)
+      && ctx.agentCapabilities.includes('work_item_attachments'),
     defaultStageInstructions: defaultWorkCenterStageInstructions(),
   };
 }

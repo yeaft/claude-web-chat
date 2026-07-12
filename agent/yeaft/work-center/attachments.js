@@ -15,6 +15,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   assertSupportedWorkItemAttachment,
+  assertWorkItemAttachmentSize,
   MAX_WORK_ITEM_ATTACHMENTS,
   MAX_WORK_ITEM_ATTACHMENT_BYTES,
   MAX_WORK_ITEM_INLINE_BYTES,
@@ -193,9 +194,7 @@ export function persistWorkItemAttachments(files, options = {}) {
         : 'application/octet-stream';
       const kind = assertSupportedWorkItemAttachment(name, mimeType);
       const buffer = decodeBase64(file.data);
-      if ((kind === 'image' || kind === 'pdf') && buffer.length > MAX_WORK_ITEM_INLINE_BYTES) {
-        throw new Error(`WorkItem ${kind} attachment exceeds ${MAX_WORK_ITEM_INLINE_BYTES} bytes`);
-      }
+      assertWorkItemAttachmentSize(buffer.length);
       totalBytes += buffer.length;
       if (totalBytes > MAX_WORK_ITEM_ATTACHMENT_BYTES) {
         throw new Error(`WorkItem attachments exceed ${MAX_WORK_ITEM_ATTACHMENT_BYTES} bytes`);
@@ -227,17 +226,47 @@ export function persistWorkItemAttachments(files, options = {}) {
   }
 }
 
-export function removeWorkItemAttachments(root, workItemId) {
+export function removeWorkItemAttachments(root, workItemId, options = {}) {
   if (!root || !workItemId) return;
+  if (process.platform !== 'linux') {
+    throw new Error('Secure WorkItem attachment removal requires Linux');
+  }
+
   const { attachmentRoot, itemDirectory } = attachmentDirectory(root, workItemId);
+  const parent = resolve(attachmentRoot, '..');
+  const rootName = basename(attachmentRoot);
+  const ownerName = safeWorkItemId(workItemId);
+  let parentDescriptor;
+  let rootDescriptor;
+  let itemDescriptor;
   try {
-    assertStableDirectory(attachmentRoot, 'WorkItem attachment root');
-    assertStableDirectory(itemDirectory, 'WorkItem attachment owner directory');
+    parentDescriptor = openDirectory(parent, 'WorkItem attachment parent');
+    rootDescriptor = openDirectory(
+      `/proc/self/fd/${parentDescriptor}/${rootName}`,
+      'WorkItem attachment root',
+    );
+    itemDescriptor = openDirectory(
+      `/proc/self/fd/${rootDescriptor}/${ownerName}`,
+      'WorkItem attachment owner directory',
+    );
+    assertDescriptorMatchesPath(parentDescriptor, parent, 'WorkItem attachment parent');
+    assertDescriptorMatchesPath(rootDescriptor, attachmentRoot, 'WorkItem attachment root');
+    assertDescriptorMatchesPath(itemDescriptor, itemDirectory, 'WorkItem attachment owner directory');
+
+    options.beforeRemove?.();
+
+    assertDescriptorMatchesPath(parentDescriptor, parent, 'WorkItem attachment parent');
+    assertDescriptorMatchesPath(rootDescriptor, attachmentRoot, 'WorkItem attachment root');
+    assertDescriptorMatchesPath(itemDescriptor, itemDirectory, 'WorkItem attachment owner directory');
+    rmSync(`/proc/self/fd/${rootDescriptor}/${ownerName}`, { recursive: true, force: true });
   } catch (error) {
     if (error?.code === 'ENOENT') return;
     throw error;
+  } finally {
+    if (itemDescriptor !== undefined) closeSync(itemDescriptor);
+    if (rootDescriptor !== undefined) closeSync(rootDescriptor);
+    if (parentDescriptor !== undefined) closeSync(parentDescriptor);
   }
-  rmSync(itemDirectory, { recursive: true, force: true });
 }
 
 function resolveAttachmentPath(root, workItemId, attachment) {

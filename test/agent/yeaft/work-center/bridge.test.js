@@ -23,6 +23,7 @@ const {
 } = await import('../../../../agent/yeaft/work-center/bridge.js');
 
 const originalConfig = ctx.CONFIG;
+const originalAgentCapabilities = ctx.agentCapabilities;
 const dirs = [];
 
 function deferred() {
@@ -88,18 +89,21 @@ describe('Work Center lifecycle bridge', () => {
     resetYeaftSession.mockReset();
     resetYeaftSession.mockResolvedValue(undefined);
     ctx.CONFIG = originalConfig;
+    ctx.agentCapabilities = originalAgentCapabilities;
     __testSetWorkCenterService(null);
     __testSetWorkCenterFactory(null);
   });
 
   afterEach(() => {
     ctx.CONFIG = originalConfig;
+    ctx.agentCapabilities = originalAgentCapabilities;
     while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true });
   });
 
-  it('serves executable defaults through the browser settings path', async () => {
+  it('serves executable defaults and attachment capability through the browser settings path', async () => {
     const workDir = createYeaftDir();
     ctx.CONFIG.workDir = workDir;
+    ctx.agentCapabilities = ['work_item_attachments'];
 
     await handleWorkCenterRequest({ requestId: 'settings-1', op: 'get_settings', payload: {} });
 
@@ -110,6 +114,7 @@ describe('Work Center lifecycle bridge', () => {
         settings: expect.objectContaining({ defaultWorkflowId: 'software-change' }),
         runtime: expect.objectContaining({
           defaultWorkDir: workDir,
+          workItemAttachments: true,
           defaultStageInstructions: expect.objectContaining({
             triage: expect.stringContaining('Do not implement'),
             implement: expect.stringContaining('add or update focused tests'),

@@ -39,6 +39,7 @@ const WORK_CENTER_SETTINGS = {
     ],
     primaryModel: 'provider/primary',
     fastModel: null,
+    workItemAttachments: true,
   },
 };
 

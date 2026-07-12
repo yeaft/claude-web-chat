@@ -31,4 +31,12 @@ describe('Work Item attachment policy parity', () => {
     expect(agentPolicy.classifyWorkItemAttachment(name, mimeType)).toBe(expected);
     expect(serverPolicy.classifyWorkItemAttachment(name, mimeType)).toBe(expected);
   });
+
+  it('accepts exactly 10 MiB and rejects one additional byte in both packages', () => {
+    const limit = 10 * 1024 * 1024;
+    expect(() => agentPolicy.assertWorkItemAttachmentSize(limit)).not.toThrow();
+    expect(() => serverPolicy.assertWorkItemAttachmentSize(limit)).not.toThrow();
+    expect(() => agentPolicy.assertWorkItemAttachmentSize(limit + 1)).toThrow(/10485760/);
+    expect(() => serverPolicy.assertWorkItemAttachmentSize(limit + 1)).toThrow(/10485760/);
+  });
 });

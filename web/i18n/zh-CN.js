@@ -1439,6 +1439,7 @@ export default {
   'workCenter.criteriaHint': '每行一条验收条件',
   'workCenter.attachments': '附件',
   'workCenter.attachmentsHelp': '图片、PDF 和文本文件会持续绑定到此 Work Item，并提供给每个 Action。',
+  'workCenter.attachmentsUnsupported': '所选 Agent 不支持 Work Item 附件。',
   'workCenter.addAttachments': '添加文件',
   'workCenter.attachmentsUploading': '上传中…',
   'workCenter.attachmentsUploadFailed': '附件上传失败',

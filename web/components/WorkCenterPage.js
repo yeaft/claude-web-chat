@@ -38,6 +38,7 @@ export default {
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
     settings() { return this.store.workCenterSettingsByAgent[this.agentId] || null; },
     runtime() { return this.store.workCenterRuntimeByAgent[this.agentId] || null; },
+    workItemAttachmentsSupported() { return this.runtime?.workItemAttachments === true; },
     createDefaultWorkDir() {
       return this.settings?.defaultWorkDir || this.runtime?.defaultWorkDir || '';
     },
@@ -208,6 +209,10 @@ export default {
       this.startTouched = true;
     },
     async onCreateAttachmentInput(event) {
+      if (!this.workItemAttachmentsSupported) {
+        event.target.value = '';
+        throw new Error(this.tr('workCenter.attachmentsUnsupported', 'The selected Agent does not support Work Item attachments.'));
+      }
       const files = Array.from(event.target.files || []);
       event.target.value = '';
       if (files.length === 0) return;
@@ -274,12 +279,14 @@ export default {
           workDir: this.form.workDir.trim(),
           origin: draftOwnedByAgent ? (draft.origin || null) : null,
           linkedSessionIds: draftOwnedByAgent ? (draft.linkedSessionIds || []) : [],
-          attachments: (this.createAttachments || []).map(attachment => ({
+          attachments: this.workItemAttachmentsSupported
+            ? (this.createAttachments || []).map(attachment => ({
             fileId: attachment.fileId,
             name: attachment.name,
             mimeType: attachment.mimeType,
             size: attachment.size,
-          })),
+          }))
+            : [],
           reuseMemory: this.form.reuseMemory,
           start: this.form.start,
         }, this.agentId);
@@ -533,11 +540,12 @@ export default {
                 <h3>{{ tr('workCenter.attachments', 'Attachments') }}</h3>
                 <p>{{ tr('workCenter.attachmentsHelp', 'Screenshots and files stay bound to this Work Item and are available to every Action.') }}</p>
               </div>
-              <label class="btn-secondary work-center-attachment-picker">
+              <label v-if="workItemAttachmentsSupported" class="btn-secondary work-center-attachment-picker">
                 <input type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,text/*,application/pdf,application/json,application/xml,.pdf,.json,.md,.py,.js,.ts,.css,.html,.xml,.yaml,.yml,.csv" @change="onCreateAttachmentInput">
                 {{ attachmentsUploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : tr('workCenter.addAttachments', 'Add files') }}
               </label>
-              <div v-if="createAttachments.length" class="work-center-attachment-list">
+              <p v-else class="work-center-muted">{{ tr('workCenter.attachmentsUnsupported', 'The selected Agent does not support Work Item attachments.') }}</p>
+              <div v-if="workItemAttachmentsSupported && createAttachments.length" class="work-center-attachment-list">
                 <span v-for="(attachment, index) in createAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
                   <span>{{ attachment.name }}</span>
                   <small>{{ formatAttachmentSize(attachment.size) }}</small>

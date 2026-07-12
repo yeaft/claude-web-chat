@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import {
   buildWorkItemAttachmentContext,
   persistWorkItemAttachments,
+  removeWorkItemAttachments,
 } from '../../../../agent/yeaft/work-center/attachments.js';
 
 describe('Work Item attachment storage', () => {
@@ -149,6 +150,27 @@ describe('Work Item attachment storage', () => {
       name: 'invalid.txt', mimeType: 'text/plain', data: 'not base64',
     }], { root, workItemId: 'work-item-2' })).toThrow(/base64/);
     expect(existsSync(join(root, 'work-item-2'))).toBe(false);
+  });
+
+  it('preserves external data when the attachment root changes after delete checks', () => {
+    dir = mkdtempSync(join(tmpdir(), 'work-item-attachments-'));
+    const root = join(dir, 'attachments');
+    const movedRoot = join(dir, 'moved-attachments');
+    const outside = join(dir, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'keep.txt'), 'keep');
+    persistWorkItemAttachments([{
+      name: 'evidence.txt', mimeType: 'text/plain', data: Buffer.from('evidence').toString('base64'),
+    }], { root, workItemId: 'work-item-remove-drift' });
+
+    expect(() => removeWorkItemAttachments(root, 'work-item-remove-drift', {
+      beforeRemove() {
+        renameSync(root, movedRoot);
+        symlinkSync(outside, root);
+      },
+    })).toThrow(/identity changed/);
+    expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('keep');
+    expect(existsSync(join(movedRoot, 'work-item-remove-drift'))).toBe(true);
   });
 
   it('fails closed when persisted bytes or the owner directory identity changes', () => {

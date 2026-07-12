@@ -118,6 +118,7 @@ async function detectCapabilities() {
   // flip `agent.encryptOutbound = false`, stopping outbound encryption
   // to this peer. Old servers ignore the unknown capability token.
   const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok'];
+  if (process.platform === 'linux') capabilities.push('work_item_attachments');
   const pty = await loadNodePty();
   if (pty) capabilities.push('terminal');
 

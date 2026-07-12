@@ -1443,6 +1443,7 @@ export default {
   'workCenter.criteriaHint': 'One criterion per line',
   'workCenter.attachments': 'Attachments',
   'workCenter.attachmentsHelp': 'Images, PDFs, and text files stay bound to this Work Item and are available to every Action.',
+  'workCenter.attachmentsUnsupported': 'The selected Agent does not support Work Item attachments.',
   'workCenter.addAttachments': 'Add files',
   'workCenter.attachmentsUploading': 'Uploading…',
   'workCenter.attachmentsUploadFailed': 'Attachment upload failed',

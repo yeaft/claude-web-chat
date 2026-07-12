@@ -48,3 +48,9 @@ export function assertSupportedWorkItemAttachment(name, mimeType) {
   }
   return kind;
 }
+
+export function assertWorkItemAttachmentSize(size) {
+  if (!Number.isSafeInteger(size) || size < 0 || size > MAX_WORK_ITEM_INLINE_BYTES) {
+    throw new Error(`WorkItem attachment exceeds ${MAX_WORK_ITEM_INLINE_BYTES} bytes`);
+  }
+}
