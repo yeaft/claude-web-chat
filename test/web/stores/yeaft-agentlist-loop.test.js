@@ -276,6 +276,35 @@ describe('Yeaft early history frames', () => {
     ]));
   });
 
+  it('does not let anonymous same-agent session_ready move the visible conversation', () => {
+    const store = makeStore();
+    const localConversationId = 'yeaft-local-agent-1';
+    store.yeaftConversationId = localConversationId;
+    store.yeaftConversationIdsByAgent = { [AGENT_ID]: localConversationId };
+    store.activeConversations = [localConversationId];
+    store.messagesMap = {
+      [localConversationId]: [{ id: 'active-old', type: 'user', content: 'reading', timestamp: 1, sessionId: SESSION_ID }],
+    };
+    const canonicalBefore = selectActiveConversationId(store);
+
+    store.handleYeaftOutput({
+      agentId: AGENT_ID,
+      event: {
+        type: 'session_ready',
+        conversationId: 'yeaft-real-1',
+        model: 'test-model',
+        availableModels: [],
+        skills: [],
+        mcpServers: [],
+        tools: [],
+      },
+    });
+
+    expect(selectActiveConversationId(store)).toBe(canonicalBefore);
+    expect(store.yeaftConversationId).toBe(localConversationId);
+    expect(store.activeConversations).toEqual([localConversationId]);
+  });
+
   it('still promotes session_ready from the active Session owner', () => {
     const store = makeStore();
     store.yeaftConversationId = 'yeaft-local-agent-1';

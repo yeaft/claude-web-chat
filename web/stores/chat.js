@@ -145,7 +145,11 @@ function resolveYeaftConversationIdForSession(state, sessionId = null) {
 function isVisibleYeaftOutput(state, sessionId, agentId) {
   if (state?.currentView !== 'yeaft') return false;
   const activeSessionId = state?.yeaftActiveSessionFilter || null;
-  if (activeSessionId && sessionId && sessionId !== activeSessionId) return false;
+  // A Session-scoped page cannot grant an anonymous metadata frame authority
+  // to move its visible pointer. Older/malformed producers may omit sessionId;
+  // those frames can refresh caches, but only an identified active Session can
+  // promote a local conversation to the real bridge id.
+  if (activeSessionId && sessionId !== activeSessionId) return false;
   const activeAgentId = resolveAgentIdForSession(state, activeSessionId);
   return !activeAgentId || !agentId || activeAgentId === agentId;
 }
