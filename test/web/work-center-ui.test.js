@@ -133,6 +133,25 @@ describe('Work Center UI contract', () => {
     expect(page).toContain(':aria-label="tr(\'workCenter.newWorkItem\'');
   });
 
+  it('uses shared controls and a fixed shell for the create dialog', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    const css = read('web/styles/work-center.css');
+
+    expect(page).toContain('role="dialog" aria-modal="true"');
+    expect(page).toContain('class="work-center-modal-header"');
+    expect(page).toContain('class="modal-close"');
+    expect(page).toContain('class="work-center-modal-footer"');
+    expect(page).toContain('class="work-center-create-options"');
+    expect(page).toContain("tr('workCenter.titleHint'");
+    expect(page).toContain("tr('workCenter.startImmediatelyHint'");
+    expect(css).toMatch(/\.work-center-modal\s*\{[^}]*height: min\(660px, 86vh\)[^}]*overflow: hidden/s);
+    expect(css).toMatch(/\.work-center-modal-body\s*\{[^}]*overflow-y: auto/s);
+    expect(css).toContain('.work-center-modal .btn-primary');
+    expect(css).toContain('.work-center-modal .btn-secondary');
+    expect(css).toContain('width: calc(100vw - 16px)');
+    expect(css).toContain('height: calc(100dvh - 16px)');
+  });
+
   it('uses filter-specific list headings and empty states', () => {
     const page = read('web/components/WorkCenterPage.js');
 
