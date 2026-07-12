@@ -300,6 +300,41 @@ describe('Work Center Runner execution resolution', () => {
     });
   });
 
+  it('passes the frozen Agent-level Work Center instructions as a dedicated system block input', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-global-instructions-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: {}, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: {
+        id: 'wi-1', workDir, workspaceKey: workDir,
+        workflowSnapshot: { globalInstructions: 'Require independent review before delivery.' },
+      },
+      action: { type: 'implement', instruction: 'Implement it', requiredRole: 'linus' },
+      run: { id: 'run-1', leaseEpoch: 1 }, ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
+    });
+
+    expect(engineQueries[0]).toMatchObject({
+      workCenterInstructions: 'Require independent review before delivery.',
+    });
+    expect(engineQueries[0].prompt).not.toContain('Require independent review before delivery.');
+  });
+
   it('injects bounded relevant Agent memory without widening Session or VP scopes', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-memory-runner-'));
     const registry = new Registry();
@@ -425,6 +460,43 @@ describe('Work Center Runner execution resolution', () => {
     });
 
     expect(search.mock.calls[0][0].scopeFilter).toEqual(['user']);
+  });
+
+  it('fully disables Agent memory recall when the WorkItem opts out', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-memory-disabled-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const search = vi.fn().mockReturnValue([{
+      id: 'memory-1', scope: 'user', kind: 'decision', tags: ['implement'],
+      body: 'This content must not be injected.', sourceMessages: [], rank: -1,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    }]);
+    const runner = new WorkItemRunner({
+      registry,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: {}, memoryIndex: { search },
+        config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: { id: 'wi-1', workDir, workspaceKey: workDir, reuseMemory: false },
+      action: { type: 'implement', instruction: 'Implement it', requiredRole: 'linus' },
+      run: { id: 'run-1', leaseEpoch: 1 }, ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
+    });
+
+    expect(search).not.toHaveBeenCalled();
+    expect(engineQueries[0].prompt).not.toContain('<work-center-memory>');
+    expect(engineQueries[0].prompt).not.toContain('This content must not be injected.');
   });
 
   it('reports public text while filtering hidden thinking from progress and the result', async () => {

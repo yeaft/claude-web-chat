@@ -1,17 +1,37 @@
-const STAGE_TYPES = new Set(['triage', 'implement', 'test', 'review', 'deliver', 'research', 'write', 'custom']);
+export const BUILT_IN_ACTION_TYPES = Object.freeze([
+  'triage',
+  'research',
+  'design',
+  'diagnose',
+  'implement',
+  'migrate',
+  'test',
+  'review',
+  'document',
+  'operate',
+  'deliver',
+  'write',
+  'custom',
+]);
+const STAGE_TYPES = new Set(BUILT_IN_ACTION_TYPES);
 const ASSIGNMENT_MODES = new Set(['auto', 'pool', 'fixed']);
 const MODEL_MODES = new Set(['inherit', 'primary', 'fast', 'specific']);
 const MODEL_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 const DEFAULT_STAGE_INSTRUCTIONS = Object.freeze({
-  triage: 'Analyze the request, verify scope and risks, and make the contract executable. Do not implement yet. If the goal or acceptance criteria need refinement, submit a contractPatch.',
-  implement: 'Implement the smallest correct change in the supplied work directory. Add and run relevant tests. Use the prior triage/review findings. Do not approve your own work.',
-  test: 'Verify the implementation against the acceptance criteria. Run focused tests and report reproducible evidence. Do not modify unrelated code.',
-  review: 'Review the implementation and evidence independently. Return approved or changes_requested with concrete findings.',
-  deliver: 'Deliver the approved change using the repository release policy. Verify the final remote state and provide evidence.',
-  research: 'Research the question using verifiable sources. Separate evidence from inference and return a concise synthesis.',
-  write: 'Produce the requested written deliverable, then verify it against every acceptance criterion.',
-  custom: 'Complete this stage and return verifiable evidence.',
+  triage: 'Turn the request into an executable contract. Inspect relevant repository facts before deciding the flow. Classify the WorkItem, identify constraints, risks, dependencies, and missing acceptance criteria, then plan only the Actions needed for this task. Do not implement. If the goal or acceptance criteria must change, submit a contractPatch and explain why.',
+  research: 'Answer the Action objective with verifiable evidence. Search the repository and, when needed, authoritative external sources. Separate observed facts from inference, record unresolved uncertainty, and produce a concise conclusion that a later Action can use.',
+  design: 'Design the smallest maintainable solution that satisfies the WorkItem contract. Inspect existing architecture and conventions, define data flow and boundaries, consider failure and compatibility cases, and leave concrete implementation guidance. Do not add abstraction without a demonstrated need.',
+  diagnose: 'Reproduce or otherwise establish the reported behavior, trace it to a root cause, and distinguish evidence from hypotheses. Identify the smallest safe correction and the regression tests that would prove it. Do not stop at the visible symptom.',
+  implement: 'Implement the Action objective in the supplied work directory using the smallest correct diff. Follow repository conventions, preserve compatibility, handle relevant boundary conditions, and add or update focused tests. Run the checks needed to prove the change. Use prior Action and review findings; do not approve your own work.',
+  migrate: 'Execute the required migration without losing existing semantics or data. Define compatibility and rollback boundaries, make the operation repeatable or safely fenced, validate representative legacy data, and provide evidence for both upgraded and already-current states.',
+  test: 'Verify the current result against every applicable acceptance criterion. Run focused tests first, then the broader checks justified by the risk. Cover failure, compatibility, and boundary cases, report exact reproducible evidence, and do not hide skipped or inconclusive checks.',
+  review: 'Review the implementation and evidence independently against the WorkItem contract and repository rules. Prioritize correctness, security, data loss, compatibility, and missing tests over style preferences. Return approved or changes_requested with concrete, actionable findings and evidence.',
+  document: 'Update the user or maintainer documentation required by the Action objective. Keep terminology and examples consistent with actual behavior, cover compatibility or operational consequences, and verify links, commands, and bilingual requirements where applicable.',
+  operate: 'Perform the operational change with explicit preconditions, safety fences, observability, and rollback handling. Verify the live or simulated postcondition from authoritative state, avoid destructive shortcuts, and record the exact evidence needed for handoff.',
+  deliver: 'Deliver only an approved result using the repository release policy. Recheck the reviewed commit and remote state, run required final verification on the immutable delivery tree, publish only the requested artifacts, and report commit, tag, deployment, and residual-risk evidence.',
+  write: 'Produce the requested written deliverable for its intended audience. Use the available evidence, preserve required terminology and structure, avoid unsupported claims, and verify the result against every acceptance criterion.',
+  custom: 'Complete the Action objective using repository facts and the WorkItem contract. State the approach, handle relevant risks and boundary conditions, produce the requested artifact or change, verify the result, and return concrete evidence plus any residual uncertainty.',
 });
 
 const DEFAULT_SOFTWARE_CHANGE_STAGES = Object.freeze([
@@ -94,6 +114,14 @@ export function defaultWorkCenterStageInstructions() {
   return { ...DEFAULT_STAGE_INSTRUCTIONS };
 }
 
+function normalizeGlobalInstructions(value) {
+  return typeof value === 'string' ? value.trim().slice(0, 20_000) : '';
+}
+
+function generatedActionType(value) {
+  return cleanId(value, 'custom').slice(0, 64);
+}
+
 export function normalizeWorkflowDefinition(value, index = 0) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Work Center workflow must be an object');
@@ -103,10 +131,13 @@ export function normalizeWorkflowDefinition(value, index = 0) {
   if (!Array.isArray(value.stages) || value.stages.length === 0) {
     throw new Error(`Work Center workflow "${id}" requires at least one stage`);
   }
+  const planningMode = value.planningMode === 'ai' ? 'ai' : 'static';
   const seen = new Set();
   const stages = value.stages.map((rawStage, stageIndex) => {
     const source = rawStage && typeof rawStage === 'object' ? rawStage : {};
-    const type = STAGE_TYPES.has(source.type) ? source.type : 'custom';
+    const type = planningMode === 'ai'
+      ? generatedActionType(source.type)
+      : (STAGE_TYPES.has(source.type) ? source.type : 'custom');
     const stageId = cleanId(source.id, `${type}-${stageIndex + 1}`);
     if (seen.has(stageId)) throw new Error(`Duplicate Work Center stage id: ${stageId}`);
     seen.add(stageId);
@@ -137,7 +168,6 @@ export function normalizeWorkflowDefinition(value, index = 0) {
       throw new Error(`Review stage "${stage.id}" must return to an earlier editable stage`);
     }
   }
-  const planningMode = value.planningMode === 'ai' ? 'ai' : 'static';
   return {
     version: 1,
     id,
@@ -146,6 +176,7 @@ export function normalizeWorkflowDefinition(value, index = 0) {
     workItemType: typeof value.workItemType === 'string' && value.workItemType.trim()
       ? cleanId(value.workItemType, 'general')
       : null,
+    globalInstructions: normalizeGlobalInstructions(value.globalInstructions),
     modelPolicy: normalizeModelPolicy(value.modelPolicy),
     actionInstructions: normalizeActionInstructions(value.actionInstructions),
     stages,
@@ -169,6 +200,7 @@ export function defaultWorkCenterSettings() {
     defaultWorkflowId: 'software-change',
     startImmediately: true,
     defaultWorkDir: '',
+    globalInstructions: '',
     modelPolicy: { mode: 'inherit', model: null, effort: null },
     actionInstructions: normalizeActionInstructions(),
     workflows: [normalizeWorkflowDefinition({
@@ -204,6 +236,7 @@ export function normalizeWorkCenterSettings(value) {
     defaultWorkflowId,
     startImmediately: source.startImmediately !== false,
     defaultWorkDir: typeof source.defaultWorkDir === 'string' ? source.defaultWorkDir.trim() : '',
+    globalInstructions: normalizeGlobalInstructions(source.globalInstructions),
     modelPolicy: normalizeModelPolicy(source.modelPolicy || migratedModelPolicy),
     actionInstructions: normalizeActionInstructions(source.actionInstructions || migratedInstructions),
     workflows,
@@ -212,11 +245,12 @@ export function normalizeWorkCenterSettings(value) {
 
 export function resolvePlanningWorkflowSnapshot(settings) {
   const normalized = normalizeWorkCenterSettings(settings);
-  const triageInstruction = `${normalized.actionInstructions.triage}\n\nDecide the smallest reliable execution flow for this specific WorkItem. Classify the WorkItem and return a structured plan. Do not copy a generic workflow when fewer Actions are sufficient.`;
+  const triageInstruction = `${normalized.actionInstructions.triage}\n\nChoose a specific workItemType and the smallest reliable sequence of 1 to 8 Actions for this WorkItem. Action types are extensible lowercase slugs: use a built-in type when its reusable policy fits, or define a precise domain type when it does not. For every Action, provide an objective that is independently executable and verifiable, plus the capability needed to select the right VP. Add research, design, diagnosis, migration, documentation, operations, testing, independent review, or delivery only when the task requires them. Do not copy a generic workflow.`;
   return normalizeWorkflowDefinition({
     id: 'ai-planned',
     name: 'AI planned',
     planningMode: 'ai',
+    globalInstructions: normalized.globalInstructions,
     modelPolicy: normalized.modelPolicy,
     actionInstructions: normalized.actionInstructions,
     stages: [{
@@ -266,24 +300,32 @@ export function applyGeneratedPlan(workItem, rawPlan) {
   if (!rawPlan || typeof rawPlan !== 'object' || Array.isArray(rawPlan)) {
     throw new Error('AI-planned triage requires a structured plan');
   }
-  const workItemType = cleanId(rawPlan.workItemType, 'general');
+  if (typeof rawPlan.workItemType !== 'string' || !rawPlan.workItemType.trim()) {
+    throw new Error('AI-planned triage requires a specific workItemType');
+  }
+  const workItemType = cleanId(rawPlan.workItemType, '').slice(0, 64);
+  if (!workItemType) throw new Error('AI-planned triage requires a valid workItemType');
   if (!Array.isArray(rawPlan.actions) || rawPlan.actions.length < 1 || rawPlan.actions.length > 8) {
     throw new Error('AI-planned triage requires between 1 and 8 Actions');
   }
   const seen = new Set(['triage']);
   const generated = rawPlan.actions.map((rawAction, index) => {
     const input = rawAction && typeof rawAction === 'object' && !Array.isArray(rawAction) ? rawAction : {};
-    const type = STAGE_TYPES.has(input.type) && input.type !== 'triage' ? input.type : 'custom';
+    const type = generatedActionType(input.type);
+    if (type === 'triage') throw new Error('AI-planned Actions cannot add another triage Action');
     const id = cleanId(input.id, `${type}-${index + 1}`);
     if (seen.has(id)) throw new Error(`Duplicate AI-planned Action id: ${id}`);
     seen.add(id);
     const objective = typeof input.objective === 'string' ? input.objective.trim().slice(0, 2_000) : '';
     if (!objective) throw new Error(`AI-planned Action "${id}" requires an objective`);
+    const actionInstruction = Object.hasOwn(source.actionInstructions, type)
+      ? source.actionInstructions[type]
+      : source.actionInstructions.custom;
     const stage = {
       id,
       name: String(input.name || id).trim().slice(0, 120) || id,
       type,
-      instruction: `${source.actionInstructions[type] || source.actionInstructions.custom}\n\nAction objective for this WorkItem:\n${objective}`,
+      instruction: `${actionInstruction}\n\nAction type: ${type}\nAction objective for this WorkItem:\n${objective}`,
       assignmentPolicy: {
         mode: 'auto',
         capability: cleanId(input.capability, type),

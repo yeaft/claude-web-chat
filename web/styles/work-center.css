@@ -841,6 +841,18 @@
   color: var(--text-secondary);
 }
 
+.work-center-memory-option {
+  display: grid;
+  gap: 5px;
+}
+
+.work-center-memory-option small {
+  padding-left: 24px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .work-center-modal footer {
   display: flex;
   justify-content: flex-end;
@@ -1099,6 +1111,14 @@
   margin-top: 5px;
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.work-center-action-policy-heading {
+  margin-top: 8px;
+}
+
+.work-center-global-policy textarea {
+  min-height: 160px;
 }
 
 .work-center-policy-stage,

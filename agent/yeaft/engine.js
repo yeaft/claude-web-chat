@@ -1008,12 +1008,13 @@ export class Engine {
    * @param {object} [args.vpPersona]
    * @param {object} [args.activeScope] — DESIGN-PROMPT §3 ④ structured scope summary
    * @param {string} [args.sessionAnnouncement]
+   * @param {string} [args.workCenterInstructions] — frozen Agent-level Work Center policy
    * @param {string} [args.projectDoc] — resolved CLAUDE.md / AGENTS.md text (already truncated)
    * @param {object} [args.taskCtx] — legacy task-context sub-block (optional)
    * @param {string} [args.explicitSkillName] — leading /skill:<name> command, if present
    * @returns {string}
    */
-  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectDoc, taskCtx, activeTasks, explicitSkillName } = {}) {
+  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, workCenterInstructions, projectDoc, taskCtx, activeTasks, explicitSkillName } = {}) {
     // Get relevant skill content if SkillManager is wired. A leading
     // /skill:<name> is explicit, not relevance matching: load that skill by
     // name or inject a visible prompt warning when the command is unknown.
@@ -1040,6 +1041,7 @@ export class Engine {
       vpPersona,
       activeScope,
       sessionAnnouncement,
+      workCenterInstructions,
       projectDoc,
       runtimePlatform: getRuntimePlatformInfo(),
       taskCtx,
@@ -1647,7 +1649,7 @@ export class Engine {
    *   string-prompt shape (no regression for existing callers).
    * @yields {EngineEvent}
    */
-  async *query({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null } = {}) {
+  async *query({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null } = {}) {
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
       yield {
         type: 'error',
@@ -1715,7 +1717,7 @@ export class Engine {
 
     try {
       this.#currentThreadId = threadId || MAIN_THREAD_ID;
-      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics, vpPlan, sessionAnnouncement, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName });
+      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName });
     } finally {
       if (signal) {
         try { signal.removeEventListener('abort', onExternalAbort); } catch { /* ignore */ }
@@ -1759,7 +1761,7 @@ export class Engine {
    * in a try/finally without indenting the whole loop.
    * @private
    */
-  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null, explicitSkillName = null }) {
+  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null, explicitSkillName = null }) {
 
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
@@ -1896,6 +1898,7 @@ export class Engine {
       vpPersona,
       activeScope,
       sessionAnnouncement,
+      workCenterInstructions,
       projectDoc,
       activeTasks,
       explicitSkillName,

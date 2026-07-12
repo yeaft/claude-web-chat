@@ -477,7 +477,10 @@ export default {
                 <button type="button" class="btn-ghost" @click="settingsOpen = true">{{ tr('workCenter.settings.title', 'Settings') }}</button>
               </div>
             </section>
-            <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox">{{ tr('workCenter.reuseMemory', 'Reuse context from this working directory') }}</label>
+            <div class="work-center-memory-option">
+              <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox">{{ tr('workCenter.reuseMemory', 'Use relevant Agent memory and completed work from this project') }}</label>
+              <small>{{ tr('workCenter.reuseMemoryHelp', 'Uses scope-bounded Agent memory and structured results from completed WorkItems in the same project.') }}</small>
+            </div>
             <label class="work-center-checkbox"><input v-model="form.start" type="checkbox" @change="onCreateStartInput">{{ tr('workCenter.startImmediately', 'Start immediately') }}</label>
           </div>
           <footer>
