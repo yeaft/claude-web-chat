@@ -8,6 +8,7 @@ import {
   rmSync,
   symlinkSync,
   unlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -119,6 +120,36 @@ describe('Work Center tool policy', () => {
     }, {}));
     expect(result.results[0].success).toBe(true);
     expect(readFileSync(join(workDir, 'inside.txt'), 'utf8')).toContain('inside');
+  });
+
+  it('maps attachment references only for read tools without exposing filesystem paths', async () => {
+    const attachmentDir = join(outsideDir, 'attachments');
+    mkdirSync(attachmentDir);
+    const attachmentPath = join(attachmentDir, 'evidence.txt');
+    const binaryPath = join(attachmentDir, 'screen.png');
+    writeFileSync(attachmentPath, 'persistent evidence');
+    writeFileSync(binaryPath, 'not-a-real-image');
+    const ref = 'work-item-attachment://attachment-1/evidence.txt';
+    const binaryRef = 'work-item-attachment://attachment-2/screen.png';
+    const registry = createWorkItemToolRegistry({
+      workDir,
+      attachmentFiles: [
+        { ref, path: attachmentPath, root: attachmentDir },
+        { ref: binaryRef, path: binaryPath, root: attachmentDir },
+      ],
+      isRunActive: () => true,
+    });
+
+    const read = await registry.execute('FileRead', { file_path: ref }, {});
+    expect(read).toContain('persistent evidence');
+    await expect(registry.execute('FileWrite', { file_path: ref, content: 'changed' }, {}))
+      .rejects.toThrow(/cannot modify/);
+    expect(readFileSync(attachmentPath, 'utf8')).toBe('persistent evidence');
+    const binaryError = await registry.execute('FileRead', { file_path: binaryRef }, {});
+    expect(binaryError).toContain(binaryRef);
+    expect(binaryError).not.toContain(attachmentDir);
+    await expect(registry.execute('FileRead', { file_path: attachmentPath }, {}))
+      .rejects.toThrow(/escapes/);
   });
 
   it('uses the creation-time workspace identity after a symlink is retargeted', () => {

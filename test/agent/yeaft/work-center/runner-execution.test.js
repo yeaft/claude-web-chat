@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { persistWorkItemAttachments } from '../../../../agent/yeaft/work-center/attachments.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Registry } from '../../../../agent/yeaft/vp/registry.js';
@@ -138,6 +139,58 @@ describe('Work Center Runner execution resolution', () => {
     } finally {
       store.close();
     }
+  });
+
+  it('injects the same persistent attachments into every Action run', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-attachment-runner-'));
+    const attachmentRoot = join(workDir, 'attachment-store');
+    const attachments = persistWorkItemAttachments([{
+      name: 'screen.png', mimeType: 'image/png', data: Buffer.from('image-bytes').toString('base64'), isImage: true,
+    }], { root: attachmentRoot, workItemId: 'wi-attachment' });
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Triage Lead', traits: ['triage'], modelHint: 'primary',
+      persona: 'Inspect evidence', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry, store, attachmentRoot,
+      runtimeProvider: async () => ({ adapter: {}, config: { primaryModel: 'provider/model', availableModels: [] } }),
+    });
+    const input = {
+      workItem: { id: 'wi-attachment', workDir, workspaceKey: workDir, attachments },
+      action: { type: 'triage', stageId: 'triage', instruction: 'Inspect evidence', requiredRole: 'omni' },
+      run: { id: 'run-attachment', leaseEpoch: 1 }, ownerBootId: 'boot', signal: new AbortController().signal,
+    };
+
+    await runner.run(input);
+    input.run = { id: 'run-attachment-2', leaseEpoch: 1 };
+    input.action = { ...input.action, type: 'review', stageId: 'review', instruction: 'Review evidence' };
+    await runner.run(input);
+
+    expect(engineQueries).toHaveLength(2);
+    for (const query of engineQueries) {
+      expect(query.prompt).toContain('<work-item-attachments>');
+      expect(query.prompt).toContain('screen.png');
+      expect(query.prompt).toContain('work-item-attachment://');
+      expect(query.prompt).not.toContain(attachmentRoot);
+      expect(query.promptParts).toEqual([
+        expect.objectContaining({ type: 'text' }),
+        expect.objectContaining({ type: 'image', source: expect.objectContaining({ media_type: 'image/png' }) }),
+      ]);
+    }
+    expect(store.setRunExecutionSnapshots).toHaveBeenCalledWith(
+      expect.any(String), 'boot', 1,
+      expect.objectContaining({ toolPolicySnapshot: expect.objectContaining({
+        readRoots: [workDir],
+        attachmentRefs: [expect.stringMatching(/^work-item-attachment:\/\//)],
+        writeRoots: [workDir],
+      }) }),
+    );
   });
 
   it('persists the actual VP, Provider, model, effort, and selection reason before execution', async () => {

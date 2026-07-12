@@ -5,6 +5,7 @@ const forwardAgentEvent = vi.fn();
 const forwardToClients = vi.fn();
 const sendToWebClient = vi.fn();
 const agents = new Map();
+const pendingFiles = new Map();
 
 vi.mock('../../server/ws-utils.js', () => ({
   forwardAgentEvent,
@@ -12,10 +13,12 @@ vi.mock('../../server/ws-utils.js', () => ({
   forwardToClients,
   sendToWebClient,
 }));
-vi.mock('../../server/context.js', () => ({ agents }));
+vi.mock('../../server/context.js', () => ({ agents, pendingFiles }));
+vi.mock('../../server/config.js', () => ({ CONFIG: { skipAuth: false, maxFileSize: 50 * 1024 * 1024 } }));
 
 const {
   handleClientWorkCenter,
+  deliverWorkCenterResponse,
   __testResetWorkCenterRequests,
 } = await import('../../server/handlers/client-work-center.js');
 const { handleAgentWorkCenter } = await import('../../server/handlers/agent-work-center.js');
@@ -27,6 +30,7 @@ describe('Work Center relay', () => {
     forwardToClients.mockReset();
     sendToWebClient.mockReset();
     agents.clear();
+    pendingFiles.clear();
     __testResetWorkCenterRequests();
   });
 
@@ -51,6 +55,46 @@ describe('Work Center relay', () => {
     });
     expect(request.requestId).not.toBe('browser-1');
     expect(request).not.toHaveProperty('_requestUserId');
+  });
+
+  it('resolves owned create attachments and consumes them only after Agent success', async () => {
+    pendingFiles.set('file-1', {
+      name: 'screen.png', mimeType: 'image/png', buffer: Buffer.from('image'), userId: 'user-1',
+    });
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-create', op: 'create',
+      payload: { title: 'Inspect screenshot', attachments: [{ fileId: 'file-1', name: 'forged.png' }] },
+    }, vi.fn().mockResolvedValue(true));
+
+    const request = forwardToAgent.mock.calls[0][1];
+    expect(request.payload).toMatchObject({
+      title: 'Inspect screenshot',
+      files: [{ name: 'screen.png', mimeType: 'image/png', data: Buffer.from('image').toString('base64'), isImage: true }],
+    });
+    expect(pendingFiles.has('file-1')).toBe(true);
+
+    await deliverWorkCenterResponse('agent-a', {
+      type: 'work_center_response', requestId: request.requestId, op: 'create', ok: true, data: { id: 'wi-1' },
+    });
+    expect(pendingFiles.has('file-1')).toBe(false);
+  });
+
+  it('rejects foreign create attachments without forwarding or consuming them', async () => {
+    pendingFiles.set('file-foreign', {
+      name: 'secret.txt', mimeType: 'text/plain', buffer: Buffer.from('secret'), userId: 'user-2',
+    });
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-create', op: 'create',
+      payload: { attachments: [{ fileId: 'file-foreign' }] },
+    }, vi.fn().mockResolvedValue(true));
+
+    expect(forwardToAgent).not.toHaveBeenCalled();
+    expect(pendingFiles.has('file-foreign')).toBe(true);
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      requestId: 'browser-create', ok: false, error: expect.stringMatching(/access denied/),
+    }));
   });
 
   it('does not forward a request when access is denied', async () => {

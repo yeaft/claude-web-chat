@@ -18,6 +18,8 @@ export default {
       expandedActions: {},
       workDirTouched: false,
       startTouched: false,
+      createAttachments: [],
+      attachmentsUploading: false,
       form: {
         title: '',
         goal: '',
@@ -205,6 +207,43 @@ export default {
     onCreateStartInput() {
       this.startTouched = true;
     },
+    async onCreateAttachmentInput(event) {
+      const files = Array.from(event.target.files || []);
+      event.target.value = '';
+      if (files.length === 0) return;
+      const remaining = Math.max(0, 10 - this.createAttachments.length);
+      const selected = files.slice(0, remaining);
+      if (selected.length === 0) return;
+      this.attachmentsUploading = true;
+      try {
+        const formData = new FormData();
+        for (const file of selected) formData.append('files', file, file.name || 'attachment');
+        const authStore = Pinia.useAuthStore();
+        const token = authStore.getActiveToken?.() || authStore.token || null;
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        const response = await fetch('/api/upload', { method: 'POST', headers, body: formData });
+        if (response.status === 401 || response.status === 403) {
+          authStore.handleAuthFailure?.(undefined, token);
+        }
+        if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
+        const result = await response.json();
+        this.createAttachments = [
+          ...this.createAttachments,
+          ...(Array.isArray(result.files) ? result.files : []),
+        ].slice(0, 10);
+      } finally {
+        this.attachmentsUploading = false;
+      }
+    },
+    removeCreateAttachment(index) {
+      this.createAttachments = this.createAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
+    },
+    formatAttachmentSize(value) {
+      const size = Math.max(0, Number(value) || 0);
+      if (size < 1024) return `${size} B`;
+      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+      return `${(size / 1024 / 1024).toFixed(1)} MB`;
+    },
     openCreate() {
       this.createOpen = true;
       this.workDirTouched = false;
@@ -235,6 +274,12 @@ export default {
           workDir: this.form.workDir.trim(),
           origin: draftOwnedByAgent ? (draft.origin || null) : null,
           linkedSessionIds: draftOwnedByAgent ? (draft.linkedSessionIds || []) : [],
+          attachments: (this.createAttachments || []).map(attachment => ({
+            fileId: attachment.fileId,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            size: attachment.size,
+          })),
           reuseMemory: this.form.reuseMemory,
           start: this.form.start,
         }, this.agentId);
@@ -248,6 +293,7 @@ export default {
           start: this.settings?.startImmediately !== false,
         };
         this.store.workCenterCreateDraft = null;
+        this.createAttachments = [];
         this.workDirTouched = false;
         this.startTouched = false;
         this.createOpen = false;
@@ -401,6 +447,15 @@ export default {
                   </ul>
                   <p v-else class="work-center-muted">{{ tr('workCenter.noCriteria', 'No criteria provided') }}</p>
                 </div>
+                <div v-if="selected.attachments?.length" class="work-center-section">
+                  <h3>{{ tr('workCenter.attachments', 'Attachments') }}</h3>
+                  <div class="work-center-attachment-list">
+                    <span v-for="attachment in selected.attachments" :key="attachment.id" class="work-center-attachment-chip">
+                      <span>{{ attachment.name }}</span>
+                      <small>{{ formatAttachmentSize(attachment.size) }}</small>
+                    </span>
+                  </div>
+                </div>
                 <div v-if="['ready','running'].includes(selected.status)" class="work-center-section work-center-guidance">
                   <label>{{ tr('workCenter.guidance', 'Add guidance to the current Action') }}
                     <textarea v-model="actionGuidance" rows="2" :placeholder="tr('workCenter.guidanceHint', 'Clarify constraints or redirect the current Action')"></textarea>
@@ -468,6 +523,23 @@ export default {
             <label>{{ tr('workCenter.titleField', 'Title') }}<input v-model="form.title" type="text" required></label>
             <label>{{ tr('workCenter.goal', 'Goal') }}<textarea v-model="form.goal" rows="4" required></textarea></label>
             <label>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}<textarea v-model="form.acceptanceCriteriaText" rows="4" :placeholder="tr('workCenter.criteriaHint', 'One criterion per line')"></textarea></label>
+            <section class="work-center-create-attachments">
+              <div>
+                <strong>{{ tr('workCenter.attachments', 'Attachments') }}</strong>
+                <small>{{ tr('workCenter.attachmentsHelp', 'Screenshots and files stay bound to this Work Item and are available to every Action.') }}</small>
+              </div>
+              <label class="btn-secondary work-center-attachment-picker">
+                <input type="file" multiple accept="image/*,text/*,.pdf,.doc,.docx,.xls,.xlsx,.json,.md,.py,.js,.ts,.css,.html" @change="onCreateAttachmentInput">
+                {{ attachmentsUploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : tr('workCenter.addAttachments', 'Add files') }}
+              </label>
+              <div v-if="createAttachments.length" class="work-center-attachment-list">
+                <span v-for="(attachment, index) in createAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
+                  <span>{{ attachment.name }}</span>
+                  <small>{{ formatAttachmentSize(attachment.size) }}</small>
+                  <button type="button" @click="removeCreateAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove attachment')">×</button>
+                </span>
+              </div>
+            </section>
             <div class="work-center-create-grid">
               <label>{{ tr('workCenter.workDir', 'Working directory') }}<input v-model="form.workDir" type="text" required :placeholder="tr('workCenter.workDirHint', 'Project directory')" @input="onCreateWorkDirInput"></label>
             </div>
@@ -485,7 +557,7 @@ export default {
           </div>
           <footer>
             <button class="btn-secondary" type="button" @click="closeCreate">{{ tr('common.cancel', 'Cancel') }}</button>
-            <button class="btn-primary" type="submit" :disabled="saving || !form.title.trim() || !form.goal.trim() || !form.workDir.trim()">
+            <button class="btn-primary" type="submit" :disabled="saving || attachmentsUploading || !form.title.trim() || !form.goal.trim() || !form.workDir.trim()">
               {{ saving ? tr('workCenter.creating', 'Creating…') : tr('workCenter.create', 'Create') }}
             </button>
           </footer>

@@ -83,6 +83,7 @@ export class WorkflowController {
       ...input,
       workflowTemplate: input.workflowTemplate || 'software-change',
       acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? input.acceptanceCriteria : [],
+      attachments: Array.isArray(input.attachments) ? input.attachments : [],
     };
     let firstAction = input.start !== false ? initialActionFor(draft) : null;
     if (firstAction && draft.reuseMemory !== false) {

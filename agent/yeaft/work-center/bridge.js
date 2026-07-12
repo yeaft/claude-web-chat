@@ -26,6 +26,7 @@ const BROWSER_CREATE_FIELDS = Object.freeze([
   'reuseMemory',
   'origin',
   'linkedSessionIds',
+  'files',
   'start',
 ]);
 
@@ -97,6 +98,7 @@ async function createDefaultService() {
       };
     },
     policyProvider: async () => readWorkCenterSettings(yeaftDir),
+    attachmentRoot: join(yeaftDir, 'work-center', 'attachments'),
     registry: defaultRegistry,
     store: null,
   });

@@ -34,6 +34,17 @@ function actionExecution(action, runs) {
   };
 }
 
+function projectAttachments(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(attachment => ({
+    id: attachment.id,
+    name: attachment.name,
+    mimeType: attachment.mimeType,
+    size: count(attachment.size),
+    isImage: attachment.isImage === true,
+  }));
+}
+
 function projectAssignmentPolicy(policy) {
   if (!policy || typeof policy !== 'object') return null;
   return {
@@ -105,6 +116,7 @@ export function projectWorkItemDetail(detail) {
     waitingReason: waitingReason(detail),
     origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
     linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
+    attachments: projectAttachments(detail.attachments),
     createdAt: detail.createdAt,
     updatedAt: detail.updatedAt,
     actions: Array.isArray(detail.actions)
@@ -132,6 +144,7 @@ export function projectWorkItemSummary(detail) {
       currentAction: null,
       origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
       linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
+      attachmentCount: Array.isArray(detail.attachments) ? detail.attachments.length : 0,
       createdAt: detail.createdAt,
       updatedAt: detail.updatedAt,
     };
@@ -156,6 +169,7 @@ export function projectWorkItemSummary(detail) {
     } : null,
     origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
     linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
+    attachmentCount: Array.isArray(detail.attachments) ? detail.attachments.length : 0,
     createdAt: detail.createdAt,
     updatedAt: detail.updatedAt,
   };

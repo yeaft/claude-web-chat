@@ -4,6 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { WorkItemStore } from './store.js';
 import { WorkflowController } from './controller.js';
 import { WorkItemWatcher } from './watcher.js';
+import {
+  persistWorkItemAttachments,
+  removeWorkItemAttachments,
+} from './attachments.js';
 import { projectWorkItemDetail, projectWorkItemSummary } from './projection.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
 import {
@@ -43,6 +47,7 @@ export class WorkCenterService {
       defaultStageInstructions: defaultWorkCenterStageInstructions(),
     });
     this.ownerBootId = options.ownerBootId || randomUUID();
+    this.attachmentRoot = options.attachmentRoot || join(yeaftDir, 'work-center', 'attachments');
     this.store = options.store || new WorkItemStore(join(yeaftDir, 'work-center', 'work-center.db'));
     this.controller = options.controller || new WorkflowController(this.store);
     this.onEvent = typeof options.onEvent === 'function' ? options.onEvent : () => {};
@@ -91,32 +96,45 @@ export class WorkCenterService {
         const workDir = requiredWorkDir(Object.hasOwn(payload, 'workDir')
           ? payload.workDir
           : settings.defaultWorkDir || runtime?.defaultWorkDir);
-        const item = this.controller.create({
-          title: requiredString(payload.title, 'title'),
-          goal: requiredString(payload.goal, 'goal'),
-          acceptanceCriteria: Array.isArray(payload.acceptanceCriteria)
-            ? payload.acceptanceCriteria.map(value => String(value).trim()).filter(Boolean)
-            : [],
-          workflowTemplate,
-          workflowSnapshot,
-          workDir,
-          reuseMemory: payload.reuseMemory !== false,
-          origin: payload.origin && typeof payload.origin === 'object'
-            ? {
-                sessionId: typeof payload.origin.sessionId === 'string' ? payload.origin.sessionId : null,
-                messageId: typeof payload.origin.messageId === 'string' ? payload.origin.messageId : null,
-                createdBy: typeof payload.origin.createdBy === 'string' ? payload.origin.createdBy : null,
-                trustedSession: requestContext.trustedProducer === true,
-              }
-            : null,
-          linkedSessionIds: Array.isArray(payload.linkedSessionIds)
-            ? [...new Set(payload.linkedSessionIds.map(value => String(value).trim()).filter(Boolean))]
-            : [],
-          start: payload.start === undefined ? settings.startImmediately : payload.start !== false,
-        });
-        const detail = this.#requiredItem(item.id);
-        this.#emit({ type: 'work_item.created', workItem: detail });
-        return detail;
+        const workItemId = randomUUID();
+        let attachments = [];
+        try {
+          attachments = persistWorkItemAttachments(payload.files, {
+            root: this.attachmentRoot,
+            workItemId,
+          });
+          this.controller.create({
+            id: workItemId,
+            title: requiredString(payload.title, 'title'),
+            goal: requiredString(payload.goal, 'goal'),
+            acceptanceCriteria: Array.isArray(payload.acceptanceCriteria)
+              ? payload.acceptanceCriteria.map(value => String(value).trim()).filter(Boolean)
+              : [],
+            workflowTemplate,
+            workflowSnapshot,
+            workDir,
+            reuseMemory: payload.reuseMemory !== false,
+            origin: payload.origin && typeof payload.origin === 'object'
+              ? {
+                  sessionId: typeof payload.origin.sessionId === 'string' ? payload.origin.sessionId : null,
+                  messageId: typeof payload.origin.messageId === 'string' ? payload.origin.messageId : null,
+                  createdBy: typeof payload.origin.createdBy === 'string' ? payload.origin.createdBy : null,
+                  trustedSession: requestContext.trustedProducer === true,
+                }
+              : null,
+            linkedSessionIds: Array.isArray(payload.linkedSessionIds)
+              ? [...new Set(payload.linkedSessionIds.map(value => String(value).trim()).filter(Boolean))]
+              : [],
+            attachments,
+            start: payload.start === undefined ? settings.startImmediately : payload.start !== false,
+          });
+          const detail = this.#requiredItem(workItemId);
+          this.#emit({ type: 'work_item.created', workItem: detail });
+          return detail;
+        } catch (error) {
+          removeWorkItemAttachments(this.attachmentRoot, workItemId);
+          throw error;
+        }
       }
       case 'update': {
         const id = requiredString(payload.id, 'id');

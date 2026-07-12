@@ -853,6 +853,77 @@
   line-height: 1.45;
 }
 
+.work-center-create-attachments {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+}
+
+.work-center-create-attachments > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.work-center-create-attachments strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.work-center-create-attachments small,
+.work-center-attachment-chip small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.work-center-attachment-picker {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.work-center-attachment-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.work-center-attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.work-center-attachment-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.work-center-attachment-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-center-attachment-chip button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+}
+
 .work-center-modal footer {
   display: flex;
   justify-content: flex-end;

@@ -459,6 +459,30 @@ test.describe('Work Center responsive UI', () => {
     expect(request.payload).not.toHaveProperty('stageOverrides');
   });
 
+  test('uploads files and binds their references to the Work Item create request', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent);
+    await chatPage.locator('.work-center-header-create').click();
+    await chatPage.locator('.work-center-modal input').first().fill('Inspect uploaded screenshot');
+    await chatPage.locator('.work-center-modal textarea').first().fill('Use the screenshot in every Action');
+
+    const upload = chatPage.waitForResponse(response => response.url().includes('/api/upload') && response.request().method() === 'POST');
+    await chatPage.locator('.work-center-attachment-picker input').setInputFiles({
+      name: 'screen.png', mimeType: 'image/png', buffer: Buffer.from('fake-image'),
+    });
+    await upload;
+    await expect(chatPage.locator('.work-center-attachment-chip')).toContainText('screen.png');
+
+    const createRequest = respondToWorkCenterOp(mockAgent, 'create', {
+      ...OPEN_ITEM_DETAIL,
+      attachments: [{ id: 'attachment-1', name: 'screen.png', mimeType: 'image/png', size: 10, isImage: true }],
+    });
+    await chatPage.getByRole('button', { name: 'Create', exact: true }).click();
+    const request = await createRequest;
+    expect(request.payload.attachments).toEqual([expect.objectContaining({
+      fileId: expect.any(String), name: 'screen.png', mimeType: 'image/png', size: 10,
+    })]);
+  });
+
   test('uses filter-specific headings and empty states', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
 
