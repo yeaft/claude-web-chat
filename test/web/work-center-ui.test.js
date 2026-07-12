@@ -161,6 +161,13 @@ describe('Work Center UI contract', () => {
     expect(modal).toContain('draft.actionInstructions[type]');
     expect(modal).toContain("$t('workCenter.action.' + type)");
     expect(modal).toContain('draft.modelPolicy.effort');
+    expect(modal).toContain('work-center-model-effort');
+    expect(modal).toContain('effortChooseModelHelp');
+    expect(modal).not.toContain("{ id: 'general'");
+    expect(modal).not.toContain('v-model="draft.defaultWorkDir"');
+    expect(page).toContain("this.settings?.defaultWorkDir || this.runtime?.defaultWorkDir || ''");
+    expect(page).toContain('createDefaultWorkDir()');
+    expect(page).toContain('@input="onCreateWorkDirInput"');
     expect(modal).toContain("mode === 'specific'");
     expect(modal).toContain("$emit('open-agent-models')");
     expect(page).toContain('<LlmTab context="yeaft"');
@@ -211,6 +218,9 @@ describe('Work Center UI contract', () => {
       'workCenter.settings.title',
       'workCenter.settings.assignment.auto',
       'workCenter.settings.model.specific',
+      'workCenter.settings.effortHelp',
+      'workCenter.settings.effortChooseModelHelp',
+      'workCenter.settings.effortUnsupportedHelp',
       'workCenter.settings.addStage',
       'workCenter.settings.upgradeRequired',
       'workCenter.planPreview',

@@ -1,4 +1,5 @@
-import { join } from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { WorkItemStore } from './store.js';
 import { WorkflowController } from './controller.js';
@@ -14,6 +15,18 @@ import {
 function requiredString(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
   return value.trim();
+}
+
+function requiredWorkDir(value) {
+  const workDir = requiredString(value, 'workDir');
+  let canonical;
+  try {
+    canonical = realpathSync(resolve(workDir));
+    if (!statSync(canonical).isDirectory()) throw new Error('not a directory');
+  } catch {
+    throw new Error('workDir must be an existing directory');
+  }
+  return canonical;
 }
 
 export class WorkCenterService {
@@ -72,6 +85,12 @@ export class WorkCenterService {
         const workflowSnapshot = explicitWorkflow
           ? resolveWorkflowSnapshot(settings, explicitWorkflow, payload.stageOverrides)
           : resolvePlanningWorkflowSnapshot(settings);
+        const runtime = !Object.hasOwn(payload, 'workDir') && !settings.defaultWorkDir
+          ? await this.runtimeInfo()
+          : null;
+        const workDir = requiredWorkDir(Object.hasOwn(payload, 'workDir')
+          ? payload.workDir
+          : settings.defaultWorkDir || runtime?.defaultWorkDir);
         const item = this.controller.create({
           title: requiredString(payload.title, 'title'),
           goal: requiredString(payload.goal, 'goal'),
@@ -80,9 +99,7 @@ export class WorkCenterService {
             : [],
           workflowTemplate,
           workflowSnapshot,
-          workDir: typeof payload.workDir === 'string' && payload.workDir.trim()
-            ? payload.workDir.trim()
-            : settings.defaultWorkDir,
+          workDir,
           reuseMemory: payload.reuseMemory !== false,
           origin: payload.origin && typeof payload.origin === 'object'
             ? {

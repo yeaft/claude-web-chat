@@ -97,8 +97,9 @@ describe('Work Center lifecycle bridge', () => {
     while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true });
   });
 
-  it('serves executable default stage prompts through the browser settings path', async () => {
-    createYeaftDir();
+  it('serves executable defaults through the browser settings path', async () => {
+    const workDir = createYeaftDir();
+    ctx.CONFIG.workDir = workDir;
 
     await handleWorkCenterRequest({ requestId: 'settings-1', op: 'get_settings', payload: {} });
 
@@ -108,6 +109,7 @@ describe('Work Center lifecycle bridge', () => {
       data: expect.objectContaining({
         settings: expect.objectContaining({ defaultWorkflowId: 'software-change' }),
         runtime: expect.objectContaining({
+          defaultWorkDir: workDir,
           defaultStageInstructions: expect.objectContaining({
             triage: expect.stringContaining('Do not implement yet'),
             implement: expect.stringContaining('Add and run relevant tests'),

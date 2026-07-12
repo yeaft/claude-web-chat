@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
@@ -18,6 +18,7 @@ async function createService(overrides = {}) {
       models: [{ id: 'model', ref: 'provider/model', provider: 'provider', effortOptions: ['medium', 'high'] }],
       primaryModel: 'provider/model',
       fastModel: null,
+      defaultWorkDir: dir,
     }),
     ...overrides,
   });
@@ -45,6 +46,59 @@ describe('Work Center settings service', () => {
     expect(saved.settings.defaultWorkDir).toBe('/project');
     expect(saved.settings.revision).toBe(2);
     expect((await service.handle('get_settings')).settings.defaultWorkDir).toBe('/project');
+  });
+
+  it('canonicalizes an omitted runtime directory default before creating', async () => {
+    const runtimeDir = mkdtempSync(join(tmpdir(), 'work-center-runtime-'));
+    dirs.push(runtimeDir);
+    const service = await createService({
+      runtimeInfoProvider: async () => ({ defaultWorkDir: runtimeDir }),
+    });
+
+    const omitted = await service.handle('create', {
+      title: 'Legacy default', goal: 'Keep omitted-field compatibility', start: false,
+    });
+    const stored = service.store.getWorkItem(omitted.id);
+
+    expect(stored.workDir).toBe(realpathSync(runtimeDir));
+    expect(stored.workspaceKey).toBe(realpathSync(runtimeDir));
+  });
+
+  it('prefers the saved directory default over the runtime default', async () => {
+    const savedDir = mkdtempSync(join(tmpdir(), 'work-center-saved-'));
+    dirs.push(savedDir);
+    const service = await createService();
+    const settings = defaultWorkCenterSettings();
+    settings.defaultWorkDir = savedDir;
+    await service.handle('update_settings', { settings });
+
+    const omitted = await service.handle('create', {
+      title: 'Saved default', goal: 'Keep settings compatibility', start: false,
+    });
+    const stored = service.store.getWorkItem(omitted.id);
+
+    expect(stored.workDir).toBe(realpathSync(savedDir));
+    expect(stored.workspaceKey).toBe(realpathSync(savedDir));
+  });
+
+  it.each([
+    ['', 'blank'],
+    ['   ', 'whitespace'],
+    [null, 'null'],
+    [42, 'non-string'],
+    ['/definitely/missing/work-center-directory', 'missing'],
+  ])('rejects an explicit %s workDir without create side effects', async (workDir) => {
+    const emitted = [];
+    const service = await createService({ onEvent: event => emitted.push(event) });
+
+    await expect(service.handle('create', {
+      title: 'Unsafe directory', goal: 'Do not create incomplete workspace identity', workDir, start: false,
+    })).rejects.toThrow(/workDir/);
+
+    expect(service.store.listWorkItems({})).toEqual([]);
+    expect(service.store.db.prepare('SELECT COUNT(*) AS count FROM actions').get().count).toBe(0);
+    expect(service.store.db.prepare('SELECT COUNT(*) AS count FROM events').get().count).toBe(0);
+    expect(emitted).toEqual([]);
   });
 
   it('returns the redacted browser detail DTO from the real get operation', async () => {

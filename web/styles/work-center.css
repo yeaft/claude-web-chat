@@ -1196,6 +1196,12 @@
   font-weight: 600;
 }
 
+.work-center-model-effort small {
+  color: var(--text-muted);
+  font-weight: 400;
+  line-height: 1.45;
+}
+
 .work-center-stage-instruction,
 .work-center-vp-pool {
   grid-column: 1 / -1;

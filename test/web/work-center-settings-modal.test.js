@@ -2,6 +2,7 @@
 import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as Vue from 'vue';
+import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import WorkCenterSettingsModal, {
   normalizeSettingsDraft,
   supportsDynamicSettings,
@@ -24,6 +25,7 @@ function modalVm(overrides = {}) {
     settingsUnsupported: false,
     $t: key => key,
     $emit: vi.fn(),
+    normalizeDraftEffort: vi.fn(),
     store: {
       loadWorkCenterSettings: vi.fn(),
       saveWorkCenterSettings: vi.fn(),
@@ -360,25 +362,255 @@ describe('Work Center settings modal ownership', () => {
     expect(stage).toMatchObject({ type: 'triage', instruction: 'Keep this custom prompt.' });
   });
 
-  it('uses only the resolved model effort options and clears unsupported values', () => {
+  it('uses only the resolved model effort options and explains unavailable effort', () => {
     const stage = { modelPolicy: { mode: 'primary', model: null, effort: 'low' } };
     const vm = modalVm({
       runtime: { primaryModel: 'provider/primary', fastModel: 'provider/fast' },
       models: [
         { ref: 'provider/review', effortOptions: ['medium', 'high'] },
+        { ref: 'provider/plain', effortOptions: [] },
         { ref: 'provider/primary', effortOptions: ['low', 'medium', 'high'] },
       ],
     });
     vm.modelRefForStage = WorkCenterSettingsModal.methods.modelRefForStage.bind(vm);
+    vm.modelForStage = WorkCenterSettingsModal.methods.modelForStage.bind(vm);
     vm.effortOptionsForStage = WorkCenterSettingsModal.methods.effortOptionsForStage.bind(vm);
+    vm.effortHelpKeyForStage = WorkCenterSettingsModal.methods.effortHelpKeyForStage.bind(vm);
     expect(vm.effortOptionsForStage(stage)).toEqual(['low', 'medium', 'high']);
+    expect(vm.effortHelpKeyForStage(stage)).toBe('workCenter.settings.effortHelp');
+
     stage.modelPolicy.mode = 'inherit';
     expect(vm.effortOptionsForStage(stage)).toEqual([]);
+    expect(vm.effortHelpKeyForStage(stage)).toBe('workCenter.settings.effortChooseModelHelp');
+
     stage.modelPolicy.mode = 'specific';
+    stage.modelPolicy.model = 'provider/plain';
+    expect(vm.effortHelpKeyForStage(stage)).toBe('workCenter.settings.effortUnsupportedHelp');
+
     stage.modelPolicy.model = 'provider/review';
     expect(vm.effortOptionsForStage(stage)).toEqual(['medium', 'high']);
     WorkCenterSettingsModal.methods.normalizeStageEffort.call(vm, stage);
     expect(stage.modelPolicy.effort).toBeNull();
+  });
+
+  it('shows only Action prompts and model policy in settings', () => {
+    const vm = modalVm({ $t: key => key });
+    const sections = WorkCenterSettingsModal.computed.sections.call(vm);
+    expect(sections.map(section => section.id)).toEqual(['workflow', 'models']);
+    expect(WorkCenterSettingsModal.template).not.toContain('draft.defaultWorkDir');
+    expect(WorkCenterSettingsModal.template).not.toContain('draft.startImmediately');
+  });
+
+  it('backfills delayed create defaults without overriding user input', () => {
+    const vm = {
+      createOpen: false,
+      workDirTouched: false,
+      startTouched: false,
+      createDefaultWorkDir: '',
+      createDefaultStart: false,
+      settings: { startImmediately: false },
+      form: { workDir: '', start: true },
+    };
+    vm.applyCreateDefaults = WorkCenterPage.methods.applyCreateDefaults.bind(vm);
+
+    WorkCenterPage.methods.openCreate.call(vm);
+    expect(vm.form).toMatchObject({ workDir: '', start: false });
+
+    vm.createDefaultWorkDir = '/workspace/default';
+    WorkCenterPage.watch.createDefaultWorkDir.call(vm);
+    expect(vm.form.workDir).toBe('/workspace/default');
+
+    vm.form.workDir = '/workspace/chosen';
+    WorkCenterPage.methods.onCreateWorkDirInput.call(vm);
+    vm.createDefaultWorkDir = '/workspace/changed';
+    WorkCenterPage.watch.createDefaultWorkDir.call(vm);
+    expect(vm.form.workDir).toBe('/workspace/chosen');
+  });
+
+  it('waits for the new Agent defaults before replacing untouched execution input', async () => {
+    const vm = {
+      createOpen: true,
+      workDirTouched: false,
+      startTouched: false,
+      createDefaultWorkDir: '',
+      createDefaultStart: true,
+      form: {
+        workDir: '/workspace/a', start: false, title: 'Keep title', goal: 'Keep goal',
+        acceptanceCriteriaText: '', reuseMemory: true,
+      },
+      selectedId: 'item-a',
+      agentId: 'agent-b',
+      saving: false,
+      settings: { startImmediately: true },
+      store: {
+        workCenterCreateDraft: {
+          sourceAgentId: 'agent-a',
+          title: 'Keep title',
+          goal: 'Keep goal',
+          origin: { sessionId: 'session-a', messageId: null, createdBy: 'user' },
+          linkedSessionIds: ['session-a'],
+        },
+        listWorkItems: vi.fn().mockResolvedValue([]),
+        loadWorkCenterSettings: vi.fn().mockResolvedValue({}),
+        createWorkItem: vi.fn().mockResolvedValue({ id: 'item-b' }),
+      },
+    };
+    vm.applyCreateDefaults = WorkCenterPage.methods.applyCreateDefaults.bind(vm);
+    vm.resetCreateExecutionContext = WorkCenterPage.methods.resetCreateExecutionContext.bind(vm);
+
+    WorkCenterPage.watch.agentId.handler.call(vm, 'agent-b', 'agent-a');
+
+    expect(vm.createOpen).toBe(true);
+    expect(vm.form).toMatchObject({
+      workDir: '', start: true, title: 'Keep title', goal: 'Keep goal',
+    });
+    expect(vm.store.workCenterCreateDraft).toMatchObject({
+      sourceAgentId: 'agent-b', origin: null, linkedSessionIds: [],
+    });
+    expect(vm.store.listWorkItems).toHaveBeenCalledWith('agent-b');
+    expect(vm.store.loadWorkCenterSettings).toHaveBeenCalledWith('agent-b');
+
+    vm.createDefaultWorkDir = '/workspace/b';
+    WorkCenterPage.watch.createDefaultWorkDir.call(vm);
+    vm.createDefaultStart = false;
+    WorkCenterPage.watch.createDefaultStart.call(vm);
+
+    expect(vm.form).toMatchObject({
+      workDir: '/workspace/b', start: false, title: 'Keep title', goal: 'Keep goal',
+    });
+
+    await WorkCenterPage.methods.submitCreate.call(vm);
+
+    expect(vm.store.createWorkItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workDir: '/workspace/b', start: false, origin: null, linkedSessionIds: [],
+      }),
+      'agent-b',
+    );
+  });
+
+  it('closes edited execution input instead of carrying it to another Agent', () => {
+    const vm = {
+      createOpen: true,
+      workDirTouched: true,
+      startTouched: false,
+      createDefaultWorkDir: '/workspace/b',
+      createDefaultStart: false,
+      form: { workDir: '/workspace/custom-a', start: true, title: 'Keep title', goal: 'Keep goal' },
+      selectedId: 'item-a',
+      store: {
+        workCenterCreateDraft: {
+          sourceAgentId: 'agent-a',
+          title: 'Keep title',
+          goal: 'Keep goal',
+          origin: { sessionId: 'session-a', messageId: null, createdBy: 'user' },
+          linkedSessionIds: ['session-a'],
+        },
+        listWorkItems: vi.fn().mockResolvedValue([]),
+        loadWorkCenterSettings: vi.fn().mockResolvedValue({}),
+      },
+    };
+    vm.applyCreateDefaults = WorkCenterPage.methods.applyCreateDefaults.bind(vm);
+
+    vm.resetCreateExecutionContext = WorkCenterPage.methods.resetCreateExecutionContext.bind(vm);
+    WorkCenterPage.watch.agentId.handler.call(vm, 'agent-b', 'agent-a');
+
+    expect(vm.createOpen).toBe(false);
+    expect(vm.form).toMatchObject({ workDir: '', start: true, title: 'Keep title', goal: 'Keep goal' });
+    expect(vm.store.workCenterCreateDraft).toMatchObject({
+      sourceAgentId: 'agent-b', origin: null, linkedSessionIds: [],
+    });
+    expect(vm.workDirTouched).toBe(false);
+
+    WorkCenterPage.methods.openCreate.call(vm);
+    expect(vm.createOpen).toBe(true);
+    expect(vm.store.workCenterCreateDraft.origin).toBeNull();
+    expect(vm.store.workCenterCreateDraft.linkedSessionIds).toEqual([]);
+  });
+
+  it('drops provenance when a stale draft bypasses the Agent watcher', async () => {
+    const vm = {
+      agentId: 'agent-b',
+      saving: false,
+      selectedId: null,
+      settings: { startImmediately: true },
+      workDirTouched: false,
+      startTouched: false,
+      createOpen: true,
+      form: {
+        title: 'Keep title', goal: 'Keep goal', acceptanceCriteriaText: '',
+        workDir: '/workspace/b', reuseMemory: true, start: false,
+      },
+      store: {
+        workCenterCreateDraft: {
+          sourceAgentId: 'agent-a',
+          origin: { sessionId: 'session-a', messageId: null, createdBy: 'user' },
+          linkedSessionIds: ['session-a'],
+        },
+        createWorkItem: vi.fn().mockResolvedValue({ id: 'item-b' }),
+      },
+    };
+
+    await WorkCenterPage.methods.submitCreate.call(vm);
+
+    expect(vm.store.createWorkItem).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: null, linkedSessionIds: [] }),
+      'agent-b',
+    );
+  });
+
+  it('clears stale effort after load and before saving without model interaction', async () => {
+    const loaded = normalizeWorkCenterSettings({
+      revision: 3,
+      modelPolicy: { mode: 'specific', model: 'provider/model', effort: 'high' },
+    });
+    const store = {
+      loadWorkCenterSettings: vi.fn().mockResolvedValue({ settings: loaded }),
+      saveWorkCenterSettings: vi.fn().mockImplementation(async submitted => ({
+        settings: normalizeWorkCenterSettings({ ...structuredClone(submitted), revision: 4 }),
+      })),
+    };
+    const vm = modalVm({
+      draft: null,
+      store,
+      defaultStageInstructions: {},
+      runtime: {
+        models: [{ ref: 'provider/model', effortOptions: ['medium'] }],
+        primaryModel: 'provider/model',
+      },
+      models: [{ ref: 'provider/model', effortOptions: ['medium'] }],
+    });
+    vm.modelRefForStage = WorkCenterSettingsModal.methods.modelRefForStage.bind(vm);
+    vm.modelForStage = WorkCenterSettingsModal.methods.modelForStage.bind(vm);
+    vm.effortOptionsForStage = WorkCenterSettingsModal.methods.effortOptionsForStage.bind(vm);
+    vm.normalizeStageEffort = WorkCenterSettingsModal.methods.normalizeStageEffort.bind(vm);
+    vm.normalizeDraftEffort = WorkCenterSettingsModal.methods.normalizeDraftEffort.bind(vm);
+
+    await WorkCenterSettingsModal.methods.load.call(vm);
+    expect(vm.draft.modelPolicy.effort).toBeNull();
+    await WorkCenterSettingsModal.methods.save.call(vm);
+
+    expect(store.saveWorkCenterSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ modelPolicy: expect.objectContaining({ effort: null }) }),
+      'agent-a',
+    );
+  });
+
+  it('clears effort when refreshed runtime removes its capability', () => {
+    const vm = modalVm({
+      draft: { modelPolicy: { mode: 'specific', model: 'provider/model', effort: 'high' } },
+      runtime: { models: [{ ref: 'provider/model', effortOptions: ['medium'] }] },
+      models: [{ ref: 'provider/model', effortOptions: ['medium'] }],
+    });
+    vm.modelRefForStage = WorkCenterSettingsModal.methods.modelRefForStage.bind(vm);
+    vm.modelForStage = WorkCenterSettingsModal.methods.modelForStage.bind(vm);
+    vm.effortOptionsForStage = WorkCenterSettingsModal.methods.effortOptionsForStage.bind(vm);
+    vm.normalizeStageEffort = WorkCenterSettingsModal.methods.normalizeStageEffort.bind(vm);
+    vm.normalizeDraftEffort = WorkCenterSettingsModal.methods.normalizeDraftEffort.bind(vm);
+
+    WorkCenterSettingsModal.watch.runtime.handler.call(vm);
+
+    expect(vm.draft.modelPolicy.effort).toBeNull();
   });
 
   it('turns a revision conflict into an explicit reload state', async () => {

@@ -148,8 +148,15 @@ export default {
       return [
         { id: 'workflow', label: this.$t('workCenter.settings.workflow') },
         { id: 'models', label: this.$t('workCenter.settings.models') },
-        { id: 'general', label: this.$t('workCenter.settings.general') },
       ];
+    },
+  },
+  watch: {
+    runtime: {
+      deep: true,
+      handler() {
+        this.normalizeDraftEffort();
+      },
     },
   },
   async mounted() {
@@ -157,6 +164,7 @@ export default {
     const cached = this.store.workCenterSettingsByAgent[this.agentId];
     if (cached) {
       this.draft = normalizeSettingsDraft(cached, this.defaultStageInstructions);
+      this.normalizeDraftEffort();
       this.draftAgentId = this.agentId;
       this.settingsUnsupported = !supportsDynamicSettings(cached);
       if (this.settingsUnsupported) this.error = this.$t('workCenter.settings.upgradeRequired');
@@ -179,6 +187,7 @@ export default {
         const data = await this.store.loadWorkCenterSettings(target);
         if (generation !== this.loadGeneration || target !== this.agentId) return;
         this.draft = normalizeSettingsDraft(data.settings, this.defaultStageInstructions);
+        this.normalizeDraftEffort();
         this.draftAgentId = target;
         this.conflict = false;
         this.settingsUnsupported = !supportsDynamicSettings(data.settings);
@@ -305,16 +314,28 @@ export default {
       if (stage.modelPolicy.mode === 'fast') return this.runtime.fastModel || null;
       return null;
     },
-    effortOptionsForStage(stage) {
+    modelForStage(stage) {
       const ref = this.modelRefForStage(stage);
-      if (!ref) return [];
-      const model = this.models.find(item => (item.ref || item.id) === ref);
+      if (!ref) return null;
+      return this.models.find(item => (item.ref || item.id) === ref) || null;
+    },
+    effortOptionsForStage(stage) {
+      const model = this.modelForStage(stage);
       return Array.isArray(model?.effortOptions) ? model.effortOptions : [];
+    },
+    effortHelpKeyForStage(stage) {
+      if (!this.modelRefForStage(stage)) return 'workCenter.settings.effortChooseModelHelp';
+      if (this.effortOptionsForStage(stage).length === 0) return 'workCenter.settings.effortUnsupportedHelp';
+      return 'workCenter.settings.effortHelp';
     },
     normalizeStageEffort(stage) {
       const options = this.effortOptionsForStage(stage);
       if (!stage.modelPolicy.effort || options.includes(stage.modelPolicy.effort)) return;
       stage.modelPolicy.effort = null;
+    },
+    normalizeDraftEffort() {
+      if (!this.draft?.modelPolicy || !Array.isArray(this.runtime?.models)) return;
+      this.normalizeStageEffort({ modelPolicy: this.draft.modelPolicy });
     },
     setModelMode(stage, mode) {
       stage.modelPolicy.mode = mode;
@@ -339,6 +360,7 @@ export default {
       this.error = '';
       this.conflict = false;
       try {
+        this.normalizeDraftEffort();
         const submitted = clone(this.draft);
         const data = await this.store.saveWorkCenterSettings(submitted, target);
         if (target !== this.agentId || this.draftAgentId !== target) return;
@@ -425,26 +447,15 @@ export default {
                       <option v-for="model in models" :key="model.ref || model.id" :value="model.ref || model.id">{{ model.provider }} · {{ model.label || model.id }}</option>
                     </select>
                   </label>
-                  <label v-if="effortOptionsForStage({ modelPolicy: draft.modelPolicy }).length">{{ $t('workCenter.settings.effort') }}
-                    <select v-model="draft.modelPolicy.effort" :disabled="settingsUnsupported">
+                  <label class="work-center-model-effort">{{ $t('workCenter.settings.effort') }}
+                    <select v-model="draft.modelPolicy.effort"
+                            :disabled="settingsUnsupported || effortOptionsForStage({ modelPolicy: draft.modelPolicy }).length === 0">
                       <option :value="null">{{ $t('workCenter.settings.effortDefault') }}</option>
                       <option v-for="effort in effortOptionsForStage({ modelPolicy: draft.modelPolicy })" :key="effort" :value="effort">{{ effort }}</option>
                     </select>
+                    <small>{{ $t(effortHelpKeyForStage({ modelPolicy: draft.modelPolicy })) }}</small>
                   </label>
                 </article>
-              </template>
-
-              <template v-else>
-                <div class="work-center-settings-section-heading">
-                  <div><h3>{{ $t('workCenter.settings.general') }}</h3><p>{{ $t('workCenter.settings.generalHelp') }}</p></div>
-                </div>
-                <label class="work-center-settings-field">{{ $t('workCenter.workDir') }}
-                  <input v-model="draft.defaultWorkDir" type="text" :placeholder="$t('workCenter.workDirHint')" :disabled="settingsUnsupported">
-                </label>
-                <label class="work-center-settings-checkbox">
-                  <input v-model="draft.startImmediately" type="checkbox" :disabled="settingsUnsupported">
-                  <span>{{ $t('workCenter.startImmediately') }}</span>
-                </label>
               </template>
             </main>
           </div>

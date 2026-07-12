@@ -32,7 +32,7 @@ const WORK_CENTER_SETTINGS = {
     ],
     models: [
       { id: 'primary', ref: 'provider/primary', provider: 'provider', label: 'primary' },
-      { id: 'review', ref: 'provider/review', provider: 'provider', label: 'review', effortOptions: ['high'] },
+      { id: 'review', ref: 'provider/review', provider: 'provider', label: 'review', effortOptions: ['medium', 'high'] },
     ],
     primaryModel: 'provider/primary',
     fastModel: null,
@@ -250,6 +250,43 @@ test.describe('Work Center responsive UI', () => {
     expect(colors.border).not.toBe(colors.background);
   });
 
+  test('shows delayed directory defaults before sending the create request', async ({ chatPage, mockAgent }) => {
+    await chatPage.locator('.sidebar-work-center-trigger').click();
+    const settingsRequest = (async () => {
+      for (;;) {
+        const request = await mockAgent.waitForMessage('work_center_request');
+        if (request.op === 'get_settings') return request;
+        if (request.op !== 'list') throw new Error(`Expected Work Center list or get_settings, received ${request.op}`);
+        mockAgent.send({
+          type: 'work_center_response', requestId: request.requestId, op: request.op, ok: true,
+          data: { items: [OPEN_ITEM], watcher: { enabled: true } },
+        });
+      }
+    })();
+
+    await chatPage.locator('.sidebar-work-center-agent').first().click();
+    const pendingSettings = await settingsRequest;
+    await expect(chatPage.locator('.work-center-main')).toBeVisible();
+    await chatPage.locator('.work-center-header-create').click();
+    const createModal = chatPage.locator('.work-center-modal');
+    const workDir = createModal.locator('input[placeholder="Project directory"]');
+    await expect(workDir).toHaveValue('');
+    await expect(createModal.getByRole('button', { name: 'Create', exact: true })).toBeDisabled();
+
+    mockAgent.send({
+      type: 'work_center_response', requestId: pendingSettings.requestId, op: pendingSettings.op, ok: true,
+      data: WORK_CENTER_SETTINGS,
+    });
+    await expect(workDir).toHaveValue('/tmp/test');
+    await createModal.locator('input').first().fill('Visible directory');
+    await createModal.locator('textarea').first().fill('Use the directory shown in the form');
+    const createRequest = respondToWorkCenterOp(mockAgent, 'create', OPEN_ITEM_DETAIL);
+    await createModal.getByRole('button', { name: 'Create', exact: true }).click();
+    const request = await createRequest;
+    await respondToWorkCenterOp(mockAgent, 'list', { items: [OPEN_ITEM], watcher: { enabled: true } });
+    expect(request.payload.workDir).toBe('/tmp/test');
+  });
+
   test('keeps a create action available on mobile with existing work items', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 720, height: 900 });
@@ -264,7 +301,9 @@ test.describe('Work Center responsive UI', () => {
     await expect(create).toBeVisible();
     await expect(create).toHaveAttribute('aria-label', 'New work item');
     await create.click();
-    await expect(chatPage.locator('.work-center-modal')).toBeVisible();
+    const createModal = chatPage.locator('.work-center-modal');
+    await expect(createModal).toBeVisible();
+    await expect(createModal.locator('input[placeholder="Project directory"]')).toHaveValue('/tmp/test');
   });
 
   test('opens a fixed settings shell for Action prompts and Work Center model policy', async ({ chatPage, mockAgent }) => {
@@ -286,9 +325,20 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(8);
     await expect(chatPage.locator('.work-center-policy-stage textarea').first()).toHaveValue('Plan the task');
     await chatPage.getByRole('button', { name: 'Models', exact: true }).click();
-    await expect(chatPage.locator('.work-center-model-stage')).toHaveCount(1);
-    await expect(chatPage.locator('.work-center-model-stage')).toContainText('All Work Center Actions');
-    await expect(chatPage.locator('.work-center-model-stage select').last()).toHaveValue('high');
+    const modelStage = chatPage.locator('.work-center-model-stage');
+    await expect(modelStage).toHaveCount(1);
+    await expect(modelStage).toContainText('All Work Center Actions');
+    const effort = modelStage.locator('.work-center-model-effort');
+    await expect(effort).toContainText('Reasoning effort');
+    await expect(effort.locator('select')).toHaveValue('high');
+    await expect(effort.locator('select')).toBeEnabled();
+    await expect(effort).toContainText('Overrides the selected model');
+
+    await modelStage.locator('select').first().selectOption('inherit');
+    await expect(effort).toBeVisible();
+    await expect(effort.locator('select')).toBeDisabled();
+    await expect(effort).toContainText('Select the Agent primary model');
+    await expect(modal.getByRole('button', { name: 'General', exact: true })).toHaveCount(0);
   });
 
   test('opens settings returned by an older Agent without dynamic fields', async ({ chatPage, mockAgent }) => {
@@ -376,16 +426,17 @@ test.describe('Work Center responsive UI', () => {
     expect(workflowMetrics.saveBackground).not.toBe(workflowMetrics.background);
     expect(workflowMetrics.saveColor).not.toBe(workflowMetrics.saveBackground);
 
-    await modal.getByRole('button', { name: 'General', exact: true }).click();
-    const generalInput = modal.locator('.work-center-settings-field input[type="text"]');
-    await expect(generalInput).toBeVisible();
-    const inputStyle = await generalInput.evaluate(element => {
+    await modal.getByRole('button', { name: 'Models', exact: true }).click();
+    const effort = modal.locator('.work-center-model-effort');
+    await expect(effort).toBeVisible();
+    await expect(effort.locator('select')).toHaveValue('high');
+    const effortStyle = await effort.locator('select').evaluate(element => {
       const style = getComputedStyle(element);
       return { background: style.backgroundColor, color: style.color };
     });
-    expect(inputStyle.background).not.toBe('rgb(255, 255, 255)');
-    expect(inputStyle.background).toBe(workflowMetrics.textareaBackground);
-    expect(inputStyle.color).not.toBe(inputStyle.background);
+    expect(effortStyle.background).not.toBe('rgb(255, 255, 255)');
+    expect(effortStyle.color).not.toBe(effortStyle.background);
+    await expect(modal.getByRole('button', { name: 'General', exact: true })).toHaveCount(0);
   });
 
   test('creates from a goal contract and leaves planning to AI triage', async ({ chatPage, mockAgent }) => {
