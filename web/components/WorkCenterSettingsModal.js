@@ -60,17 +60,11 @@ export function supportsDynamicSettings(value) {
   return ACTION_TYPES.every(type => typeof value.actionInstructions[type] === 'string');
 }
 
-function dynamicSettingsMatch(actual, expected) {
-  if (!supportsDynamicSettings(actual)) return false;
-  const instructionsMatch = ACTION_TYPES.every(type => (
-    actual.actionInstructions[type].trim() === String(expected.actionInstructions[type] || '').trim()
-  ));
-  const actualPolicy = actual.modelPolicy;
-  const expectedPolicy = expected.modelPolicy || {};
-  return instructionsMatch
-    && actualPolicy.mode === expectedPolicy.mode
-    && (actualPolicy.model || null) === (expectedPolicy.model || null)
-    && (actualPolicy.effort || null) === (expectedPolicy.effort || null);
+function confirmsSettingsSave(actual, submittedRevision) {
+  return supportsDynamicSettings(actual)
+    && Number.isInteger(actual.revision)
+    && Number.isInteger(submittedRevision)
+    && actual.revision > submittedRevision;
 }
 
 export function normalizeSettingsDraft(value, defaultStageInstructions = {}) {
@@ -348,7 +342,7 @@ export default {
         const submitted = clone(this.draft);
         const data = await this.store.saveWorkCenterSettings(submitted, target);
         if (target !== this.agentId || this.draftAgentId !== target) return;
-        if (!dynamicSettingsMatch(data.settings, submitted)) {
+        if (!confirmsSettingsSave(data.settings, submitted.revision)) {
           this.settingsUnsupported = !supportsDynamicSettings(data.settings);
           this.error = this.$t(this.settingsUnsupported
             ? 'workCenter.settings.upgradeRequired'

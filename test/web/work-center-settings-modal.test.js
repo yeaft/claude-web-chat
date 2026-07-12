@@ -6,6 +6,10 @@ import WorkCenterSettingsModal, {
   normalizeSettingsDraft,
   supportsDynamicSettings,
 } from '../../web/components/WorkCenterSettingsModal.js';
+import {
+  defaultWorkCenterStageInstruction,
+  normalizeWorkCenterSettings,
+} from '../../agent/yeaft/work-center/workflow.js';
 
 function modalVm(overrides = {}) {
   return {
@@ -183,24 +187,42 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.$emit).not.toHaveBeenCalledWith('close');
   });
 
-  it('closes only after a modern Agent confirms the submitted dynamic settings', async () => {
-    const draft = normalizeSettingsDraft({
+  it('accepts a modern Agent canonical response and uses its advanced revision', async () => {
+    const draft = normalizeWorkCenterSettings({
       revision: 3,
       modelPolicy: { mode: 'specific', model: 'provider/new', effort: 'low' },
-      actionInstructions: Object.fromEntries([
-        'triage', 'implement', 'test', 'review', 'deliver', 'research', 'write', 'custom',
-      ].map(type => [type, `Prompt for ${type}.`])),
     });
-    const saved = { ...structuredClone(draft), revision: 4 };
+    draft.actionInstructions.triage = '   ';
+    draft.modelPolicy.model = '  provider/new  ';
+    const saved = normalizeWorkCenterSettings({ ...structuredClone(draft), revision: 4 });
     const store = { saveWorkCenterSettings: vi.fn().mockResolvedValue({ settings: saved }) };
     const vm = modalVm({ draft, store, defaultStageInstructions: {} });
 
     await WorkCenterSettingsModal.methods.save.call(vm);
 
+    expect(saved.actionInstructions.triage).toBe(defaultWorkCenterStageInstruction('triage'));
+    expect(saved.modelPolicy.model).toBe('provider/new');
     expect(vm.error).toBe('');
     expect(vm.draft.revision).toBe(4);
+    expect(vm.draft.actionInstructions.triage).toBe(defaultWorkCenterStageInstruction('triage'));
+    expect(vm.draft.modelPolicy.model).toBe('provider/new');
     expect(vm.$emit).toHaveBeenCalledWith('saved', saved);
     expect(vm.$emit).toHaveBeenCalledWith('close');
+  });
+
+  it('does not close when a complete save response fails to advance revision', async () => {
+    const draft = normalizeWorkCenterSettings({ revision: 3 });
+    const saved = normalizeWorkCenterSettings({ ...structuredClone(draft), revision: 3 });
+    const store = { saveWorkCenterSettings: vi.fn().mockResolvedValue({ settings: saved }) };
+    const vm = modalVm({ draft, store, defaultStageInstructions: {} });
+
+    await WorkCenterSettingsModal.methods.save.call(vm);
+
+    expect(vm.settingsUnsupported).toBe(false);
+    expect(vm.error).toBe('workCenter.settings.saveNotConfirmed');
+    expect(vm.draft.revision).toBe(3);
+    expect(vm.$emit).not.toHaveBeenCalledWith('saved', expect.anything());
+    expect(vm.$emit).not.toHaveBeenCalledWith('close');
   });
 
   it('does not save a draft loaded for a different Agent', async () => {
