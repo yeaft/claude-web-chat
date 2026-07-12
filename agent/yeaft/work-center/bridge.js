@@ -18,6 +18,8 @@ let shutdownPromise = null;
 let serviceFactory = null;
 
 const BROWSER_DETAIL_OPS = new Set(['get', 'create', 'update', 'start', 'cancel', 'guide', 'retry']);
+// `files` is an internal server-to-Agent field. The browser relay rejects any
+// client-supplied value and only emits files resolved from owned upload ids.
 const BROWSER_CREATE_FIELDS = Object.freeze([
   'title',
   'goal',

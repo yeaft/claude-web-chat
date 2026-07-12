@@ -58,6 +58,44 @@ describe('Work Center relay', () => {
     expect(request).not.toHaveProperty('_requestUserId');
   });
 
+  it.each([
+    ['without capability', []],
+    ['with capability', ['work_item_attachments']],
+  ])('rejects browser-supplied files %s', async (_label, capabilities) => {
+    agents.set('agent-a', { capabilities });
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-direct-files', op: 'create',
+      payload: {
+        title: 'Bypass upload ownership',
+        files: [{ name: 'notes.txt', mimeType: 'text/plain', data: 'YnlwYXNz' }],
+      },
+    }, vi.fn().mockResolvedValue(true));
+
+    expect(forwardToAgent).not.toHaveBeenCalled();
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      requestId: 'browser-direct-files',
+      ok: false,
+      error: expect.stringMatching(/server-generated/),
+    }));
+  });
+
+  it('rejects oversized browser-supplied base64 without forwarding it', async () => {
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+    const data = 'A'.repeat(12 * 1024 * 1024);
+
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-direct-oversized', op: 'create',
+      payload: { files: [{ name: 'large.txt', mimeType: 'text/plain', data }] },
+    }, vi.fn().mockResolvedValue(true));
+
+    expect(forwardToAgent).not.toHaveBeenCalled();
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      requestId: 'browser-direct-oversized', ok: false, error: expect.stringMatching(/server-generated/),
+    }));
+  });
+
   it('rejects attachments for an Agent without capability before reading or forwarding pending bytes', async () => {
     agents.set('agent-a', { capabilities: [] });
     let bufferRead = false;

@@ -83,6 +83,9 @@ export async function handleClientWorkCenter(client, msg, checkAgentAccess) {
   const sourcePayload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
   let resolved = { payload: sourcePayload, consumedIds: [] };
   try {
+    if (op === 'create' && Object.hasOwn(sourcePayload, 'files')) {
+      throw new Error('WorkItem files are server-generated and cannot be supplied by the browser');
+    }
     const attachments = Array.isArray(sourcePayload.attachments) ? sourcePayload.attachments : [];
     if (op === 'create' && attachments.length > 0) {
       const capabilities = agents.get(agentId)?.capabilities;
