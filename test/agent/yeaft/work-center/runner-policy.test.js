@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import {
   createWorkItemToolRegistry,
   parseStructuredResult,
+  workItemToolPolicySnapshot,
   resolveWorkItemWorkDir,
   WorkItemRunner,
 } from '../../../../agent/yeaft/work-center/runner.js';
@@ -42,6 +43,34 @@ describe('Work Center tool policy', () => {
     expect(names).not.toContain('RouteForward');
     expect(names).not.toContain('AskUser');
     expect(names).not.toContain('EnterWorktree');
+  });
+
+  it('removes Bash from both registry and policy when attachments are present', async () => {
+    const attachmentDir = join(outsideDir, 'attachments');
+    mkdirSync(attachmentDir);
+    const attachmentPath = join(attachmentDir, 'evidence.txt');
+    writeFileSync(attachmentPath, 'evidence');
+    const ref = 'work-item-attachment://attachment-1/evidence.txt';
+    const registry = createWorkItemToolRegistry({
+      workDir,
+      attachmentFiles: [{ ref, path: attachmentPath, root: attachmentDir }],
+      isRunActive: () => true,
+    });
+    expect(registry.getAllTools().map(tool => tool.name)).not.toContain('Bash');
+    await expect(registry.execute('Bash', {
+      command: `find ${JSON.stringify(attachmentDir)} -type f -delete`,
+      cwd: workDir,
+      background: false,
+    }, {})).rejects.toThrow(/Unknown tool: Bash/);
+    expect(readFileSync(attachmentPath, 'utf8')).toBe('evidence');
+    expect(workItemToolPolicySnapshot(workDir, [ref])).toMatchObject({
+      allowedToolNames: expect.not.arrayContaining(['Bash']),
+      shell: { enabled: false },
+    });
+    expect(workItemToolPolicySnapshot(workDir, [])).toMatchObject({
+      allowedToolNames: expect.arrayContaining(['Bash']),
+      shell: { enabled: true },
+    });
   });
 
   it('rejects background or redirected Bash before execution', async () => {

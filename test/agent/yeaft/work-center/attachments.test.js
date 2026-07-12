@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -58,6 +60,83 @@ describe('Work Item attachment storage', () => {
       source: expect.objectContaining({ media_type: 'image/png', data: Buffer.from('png-bytes').toString('base64') }),
     })]);
     expect(readFileSync(join(root, workItemId, stored[1].storageName), 'utf8')).toBe('# Notes');
+  });
+
+  it('rejects a symlinked attachment root without writing outside the controlled parent', () => {
+    dir = mkdtempSync(join(tmpdir(), 'work-item-attachments-'));
+    const root = join(dir, 'attachments');
+    const outside = join(dir, 'outside');
+    mkdirSync(outside);
+    symlinkSync(outside, root);
+
+    expect(() => persistWorkItemAttachments([{
+      name: 'evidence.txt', mimeType: 'text/plain', data: Buffer.from('evidence').toString('base64'),
+    }], { root, workItemId: 'work-item-symlink-root' })).toThrow(/real directory|identity/);
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it('fails closed when the attachment root is replaced during a batch', () => {
+    dir = mkdtempSync(join(tmpdir(), 'work-item-attachments-'));
+    const root = join(dir, 'attachments');
+    const movedRoot = join(dir, 'moved-attachments');
+    const outside = join(dir, 'outside');
+    mkdirSync(outside);
+    let replaced = false;
+    const second = {
+      name: 'second.txt',
+      mimeType: 'text/plain',
+      get data() {
+        if (!replaced) {
+          renameSync(root, movedRoot);
+          symlinkSync(outside, root);
+          replaced = true;
+        }
+        return Buffer.from('second').toString('base64');
+      },
+    };
+
+    expect(() => persistWorkItemAttachments([{
+      name: 'first.txt', mimeType: 'text/plain', data: Buffer.from('first').toString('base64'),
+    }, second], { root, workItemId: 'work-item-drift' })).toThrow(/identity changed/);
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it('rejects unsupported Office and archive attachments before persistence', () => {
+    dir = mkdtempSync(join(tmpdir(), 'work-item-attachments-'));
+    const root = join(dir, 'attachments');
+    expect(() => persistWorkItemAttachments([{
+      name: 'requirements.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      data: Buffer.from('office').toString('base64'),
+    }], { root, workItemId: 'work-item-office' })).toThrow(/Unsupported WorkItem attachment type/);
+    expect(existsSync(join(root, 'work-item-office'))).toBe(false);
+  });
+
+  it('rejects binary extensions even when the MIME type claims text', () => {
+    dir = mkdtempSync(join(tmpdir(), 'work-item-attachments-'));
+    const root = join(dir, 'attachments');
+    for (const name of ['payload.zip', 'payload.exe']) {
+      expect(() => persistWorkItemAttachments([{
+        name, mimeType: 'text/plain', data: Buffer.from('binary').toString('base64'),
+      }], { root, workItemId: `work-item-forged-${name.replace('.', '-')}` }))
+        .toThrow(/Unsupported WorkItem attachment type/);
+    }
+    expect(existsSync(root) ? readdirSync(root) : []).toEqual([]);
+  });
+
+  it('builds an inline document block for PDF attachments', () => {
+    dir = mkdtempSync(join(tmpdir(), 'work-item-attachments-'));
+    const root = join(dir, 'attachments');
+    const bytes = Buffer.from('%PDF-1.7 evidence');
+    const attachments = persistWorkItemAttachments([{
+      name: 'requirements.pdf', mimeType: 'application/pdf', data: bytes.toString('base64'),
+    }], { root, workItemId: 'work-item-pdf' });
+    const context = buildWorkItemAttachmentContext({ id: 'work-item-pdf', attachments }, { root });
+    expect(context.promptParts).toEqual([{
+      type: 'document',
+      source: { type: 'base64', media_type: 'application/pdf', data: bytes.toString('base64') },
+      title: 'requirements.pdf',
+    }]);
   });
 
   it('removes partial files when the attachment batch is invalid', () => {

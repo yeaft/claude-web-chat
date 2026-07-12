@@ -1442,7 +1442,7 @@ export default {
   'workCenter.goalHint': 'Describe the result the Agent must deliver',
   'workCenter.criteriaHint': 'One criterion per line',
   'workCenter.attachments': 'Attachments',
-  'workCenter.attachmentsHelp': 'Screenshots and files stay bound to this Work Item and are available to every Action.',
+  'workCenter.attachmentsHelp': 'Images, PDFs, and text files stay bound to this Work Item and are available to every Action.',
   'workCenter.addAttachments': 'Add files',
   'workCenter.attachmentsUploading': 'Uploading…',
   'workCenter.attachmentsUploadFailed': 'Attachment upload failed',

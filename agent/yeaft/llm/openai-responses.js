@@ -133,8 +133,19 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
           }
           return { type: 'input_image', image_url: imageUrl };
         }
+        if (part.type === 'document') {
+          const src = part.source || {};
+          const mediaType = src.media_type || src.mediaType;
+          if (src.type === 'base64' && mediaType === 'application/pdf' && src.data) {
+            return {
+              type: 'input_file',
+              filename: part.title || 'attachment.pdf',
+              file_data: `data:application/pdf;base64,${src.data}`,
+            };
+          }
+        }
         // Passthrough for already-shaped parts
-        if (part.type === 'input_text' || part.type === 'input_image') return part;
+        if (part.type === 'input_text' || part.type === 'input_image' || part.type === 'input_file') return part;
         return { type: 'input_text', text: String(part.text || '') };
       });
     }

@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { CONFIG } from '../config.js';
 import { pendingFiles } from '../context.js';
 import { forwardToAgent, sendToWebClient } from '../ws-utils.js';
+import {
+  assertSupportedWorkItemAttachment,
+  MAX_WORK_ITEM_ATTACHMENTS,
+  MAX_WORK_ITEM_ATTACHMENT_BYTES,
+  MAX_WORK_ITEM_INLINE_BYTES,
+} from '../work-item-attachment-policy.js';
 
 const REQUEST_TIMEOUT_MS = 60_000;
 const pendingRequests = new Map();
@@ -15,11 +21,14 @@ function prunePendingRequests(now = Date.now()) {
 function resolveCreateAttachments(client, payload) {
   const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
   if (attachments.length === 0) return { payload, consumedIds: [] };
-  if (attachments.length > 10) throw new Error('WorkItem supports at most 10 attachments');
+  if (attachments.length > MAX_WORK_ITEM_ATTACHMENTS) {
+    throw new Error(`WorkItem supports at most ${MAX_WORK_ITEM_ATTACHMENTS} attachments`);
+  }
 
-  const files = [];
+  const resolvedFiles = [];
   const consumedIds = [];
   const seen = new Set();
+  let totalBytes = 0;
   for (const attachment of attachments) {
     const fileId = typeof attachment?.fileId === 'string' ? attachment.fileId : '';
     if (!fileId || seen.has(fileId)) throw new Error('Invalid WorkItem attachment reference');
@@ -31,14 +40,23 @@ function resolveCreateAttachments(client, payload) {
     }
     const buffer = Buffer.isBuffer(file.buffer) ? file.buffer : Buffer.from(file.buffer || '');
     if (buffer.length > CONFIG.maxFileSize) throw new Error('WorkItem attachment exceeds the upload size limit');
-    files.push({
-      name: file.name,
-      mimeType: file.mimeType,
-      data: buffer.toString('base64'),
-      isImage: String(file.mimeType || '').startsWith('image/'),
-    });
+    totalBytes += buffer.length;
+    if (totalBytes > MAX_WORK_ITEM_ATTACHMENT_BYTES) {
+      throw new Error(`WorkItem attachments exceed ${MAX_WORK_ITEM_ATTACHMENT_BYTES} bytes`);
+    }
+    const kind = assertSupportedWorkItemAttachment(file.name, file.mimeType);
+    if ((kind === 'image' || kind === 'pdf') && buffer.length > MAX_WORK_ITEM_INLINE_BYTES) {
+      throw new Error(`WorkItem ${kind} attachment exceeds ${MAX_WORK_ITEM_INLINE_BYTES} bytes`);
+    }
+    resolvedFiles.push({ file, buffer });
     consumedIds.push(fileId);
   }
+  const files = resolvedFiles.map(({ file, buffer }) => ({
+    name: file.name,
+    mimeType: file.mimeType,
+    data: buffer.toString('base64'),
+    isImage: String(file.mimeType || '').startsWith('image/'),
+  }));
   return {
     payload: { ...(payload || {}), files },
     consumedIds,

@@ -1438,7 +1438,7 @@ export default {
   'workCenter.goalHint': '说明 Agent 必须交付的最终结果',
   'workCenter.criteriaHint': '每行一条验收条件',
   'workCenter.attachments': '附件',
-  'workCenter.attachmentsHelp': '截图和文件会持续绑定到此 Work Item，并提供给每个 Action。',
+  'workCenter.attachmentsHelp': '图片、PDF 和文本文件会持续绑定到此 Work Item，并提供给每个 Action。',
   'workCenter.addAttachments': '添加文件',
   'workCenter.attachmentsUploading': '上传中…',
   'workCenter.attachmentsUploadFailed': '附件上传失败',

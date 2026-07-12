@@ -80,6 +80,78 @@ describe('Work Center relay', () => {
     expect(pendingFiles.has('file-1')).toBe(false);
   });
 
+  it('forwards attachments whose aggregate size equals the WorkItem limit', async () => {
+    const halfLimit = 25 * 1024 * 1024;
+    for (let index = 0; index < 2; index += 1) {
+      pendingFiles.set(`boundary-${index}`, {
+        name: `boundary-${index}.txt`, mimeType: 'text/plain', buffer: Buffer.alloc(halfLimit), userId: 'user-1',
+      });
+    }
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-create', op: 'create',
+      payload: { attachments: [{ fileId: 'boundary-0' }, { fileId: 'boundary-1' }] },
+    }, vi.fn().mockResolvedValue(true));
+
+    expect(forwardToAgent).toHaveBeenCalledTimes(1);
+    expect(forwardToAgent.mock.calls[0][1].payload.files).toHaveLength(2);
+  });
+
+  it('rejects aggregate attachment bytes before base64 encoding or Agent forwarding', async () => {
+    const oversized = 30 * 1024 * 1024;
+    for (let index = 0; index < 4; index += 1) {
+      pendingFiles.set(`large-${index}`, {
+        name: `large-${index}.txt`, mimeType: 'text/plain', buffer: Buffer.alloc(oversized), userId: 'user-1',
+      });
+    }
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-create', op: 'create',
+      payload: { attachments: Array.from({ length: 4 }, (_value, index) => ({ fileId: `large-${index}` })) },
+    }, vi.fn().mockResolvedValue(true));
+
+    expect(forwardToAgent).not.toHaveBeenCalled();
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      ok: false, error: expect.stringMatching(/exceed/),
+    }));
+    expect([...pendingFiles.keys()]).toEqual(['large-0', 'large-1', 'large-2', 'large-3']);
+  });
+
+  it('rejects oversized inline PDFs before Agent forwarding', async () => {
+    pendingFiles.set('large-pdf', {
+      name: 'requirements.pdf', mimeType: 'application/pdf',
+      buffer: Buffer.alloc(10 * 1024 * 1024 + 1), userId: 'user-1',
+    });
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-create', op: 'create',
+      payload: { attachments: [{ fileId: 'large-pdf' }] },
+    }, vi.fn().mockResolvedValue(true));
+
+    expect(forwardToAgent).not.toHaveBeenCalled();
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      ok: false, error: expect.stringMatching(/pdf attachment exceeds/),
+    }));
+  });
+
+  it('rejects unsupported attachment types before Agent forwarding', async () => {
+    pendingFiles.set('office-1', {
+      name: 'requirements.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      buffer: Buffer.from('office'), userId: 'user-1',
+    });
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-create', op: 'create',
+      payload: { attachments: [{ fileId: 'office-1' }] },
+    }, vi.fn().mockResolvedValue(true));
+
+    expect(forwardToAgent).not.toHaveBeenCalled();
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      ok: false, error: expect.stringMatching(/Unsupported WorkItem attachment type/),
+    }));
+  });
+
   it('rejects foreign create attachments without forwarding or consuming them', async () => {
     pendingFiles.set('file-foreign', {
       name: 'secret.txt', mimeType: 'text/plain', buffer: Buffer.from('secret'), userId: 'user-2',

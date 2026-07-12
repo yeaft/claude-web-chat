@@ -213,13 +213,14 @@ function assertToolInput(toolName, input, workDir, attachmentFiles) {
 }
 
 export function workItemToolPolicySnapshot(workDir, attachmentRefs = []) {
+  const hasAttachments = attachmentRefs.length > 0;
   return {
     policyVersion: 1,
-    allowedToolNames: [...WORK_ITEM_TOOL_NAMES],
+    allowedToolNames: WORK_ITEM_TOOL_NAMES.filter(name => !hasAttachments || name !== 'Bash'),
     readRoots: [workDir],
     attachmentRefs,
     writeRoots: [workDir],
-    shell: { enabled: true, fixedCwd: workDir, background: false, sandboxed: false },
+    shell: { enabled: !hasAttachments, fixedCwd: workDir, background: false, sandboxed: false },
     async: false,
     mcpTools: [],
   };
@@ -232,8 +233,9 @@ export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRu
     root: canonicalWorkDir(file.root),
   }));
   const registry = new ToolRegistry();
+  const hasAttachments = canonicalAttachmentFiles.length > 0;
   for (const tool of allTools) {
-    if (!WORK_ITEM_TOOL_ALLOWLIST.has(tool.name)) continue;
+    if (!WORK_ITEM_TOOL_ALLOWLIST.has(tool.name) || (hasAttachments && tool.name === 'Bash')) continue;
     registry.register({
       ...tool,
       async execute(input, ctx) {
