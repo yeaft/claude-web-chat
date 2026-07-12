@@ -157,6 +157,7 @@ export default {
     },
     openCreate() {
       this.createOpen = true;
+      if (!this.form.workDir.trim()) this.form.workDir = this.settings?.defaultWorkDir || '';
       this.form.start = this.settings?.startImmediately !== false;
     },
     closeCreate() {

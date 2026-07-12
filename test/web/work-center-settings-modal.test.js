@@ -2,6 +2,7 @@
 import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as Vue from 'vue';
+import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 import WorkCenterSettingsModal, {
   normalizeSettingsDraft,
   supportsDynamicSettings,
@@ -360,25 +361,58 @@ describe('Work Center settings modal ownership', () => {
     expect(stage).toMatchObject({ type: 'triage', instruction: 'Keep this custom prompt.' });
   });
 
-  it('uses only the resolved model effort options and clears unsupported values', () => {
+  it('uses only the resolved model effort options and explains unavailable effort', () => {
     const stage = { modelPolicy: { mode: 'primary', model: null, effort: 'low' } };
     const vm = modalVm({
       runtime: { primaryModel: 'provider/primary', fastModel: 'provider/fast' },
       models: [
         { ref: 'provider/review', effortOptions: ['medium', 'high'] },
+        { ref: 'provider/plain', effortOptions: [] },
         { ref: 'provider/primary', effortOptions: ['low', 'medium', 'high'] },
       ],
     });
     vm.modelRefForStage = WorkCenterSettingsModal.methods.modelRefForStage.bind(vm);
+    vm.modelForStage = WorkCenterSettingsModal.methods.modelForStage.bind(vm);
     vm.effortOptionsForStage = WorkCenterSettingsModal.methods.effortOptionsForStage.bind(vm);
+    vm.effortHelpKeyForStage = WorkCenterSettingsModal.methods.effortHelpKeyForStage.bind(vm);
     expect(vm.effortOptionsForStage(stage)).toEqual(['low', 'medium', 'high']);
+    expect(vm.effortHelpKeyForStage(stage)).toBe('workCenter.settings.effortHelp');
+
     stage.modelPolicy.mode = 'inherit';
     expect(vm.effortOptionsForStage(stage)).toEqual([]);
+    expect(vm.effortHelpKeyForStage(stage)).toBe('workCenter.settings.effortChooseModelHelp');
+
     stage.modelPolicy.mode = 'specific';
+    stage.modelPolicy.model = 'provider/plain';
+    expect(vm.effortHelpKeyForStage(stage)).toBe('workCenter.settings.effortUnsupportedHelp');
+
     stage.modelPolicy.model = 'provider/review';
     expect(vm.effortOptionsForStage(stage)).toEqual(['medium', 'high']);
     WorkCenterSettingsModal.methods.normalizeStageEffort.call(vm, stage);
     expect(stage.modelPolicy.effort).toBeNull();
+  });
+
+  it('shows only Action prompts and model policy in settings', () => {
+    const vm = modalVm({ $t: key => key });
+    const sections = WorkCenterSettingsModal.computed.sections.call(vm);
+    expect(sections.map(section => section.id)).toEqual(['workflow', 'models']);
+    expect(WorkCenterSettingsModal.template).not.toContain('draft.defaultWorkDir');
+    expect(WorkCenterSettingsModal.template).not.toContain('draft.startImmediately');
+  });
+
+  it('prefills the create form with visible legacy defaults without overriding user input', () => {
+    const vm = {
+      createOpen: false,
+      settings: { defaultWorkDir: '/workspace/default', startImmediately: false },
+      form: { workDir: '', start: true },
+    };
+
+    WorkCenterPage.methods.openCreate.call(vm);
+    expect(vm.form).toMatchObject({ workDir: '/workspace/default', start: false });
+
+    vm.form.workDir = '/workspace/chosen';
+    WorkCenterPage.methods.openCreate.call(vm);
+    expect(vm.form.workDir).toBe('/workspace/chosen');
   });
 
   it('turns a revision conflict into an explicit reload state', async () => {
