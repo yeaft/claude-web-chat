@@ -142,6 +142,14 @@ function resolveYeaftConversationIdForSession(state, sessionId = null) {
   return agentConversationId || state?.yeaftConversationId || null;
 }
 
+function isVisibleYeaftOutput(state, sessionId, agentId) {
+  if (state?.currentView !== 'yeaft') return false;
+  const activeSessionId = state?.yeaftActiveSessionFilter || null;
+  if (activeSessionId && sessionId && sessionId !== activeSessionId) return false;
+  const activeAgentId = resolveAgentIdForSession(state, activeSessionId);
+  return !activeAgentId || !agentId || activeAgentId === agentId;
+}
+
 // Debug history is request-bounded on disk. The panel loads only the newest
 // request globally by default; search can ask the agent-side index for a small
 // result window, and details are fetched one request at a time on expansion.
@@ -1838,8 +1846,17 @@ export const useChatStore = defineStore('chat', {
               [frameAgentId]: conversationId,
             };
           }
-          this.yeaftConversationId = conversationId;
-          if (this.currentView === 'yeaft') this.activeConversations = [conversationId];
+          const msgSessionId = msg.sessionId;
+          const outputIsVisible = isVisibleYeaftOutput(this, msgSessionId, frameAgentId);
+          // Cache every agent's conversation, but only move the visible Yeaft
+          // pointer for output from the Session the user is actually reading.
+          // Otherwise a background reply looks like a conversation switch to
+          // MessageList, which explicitly resumes bottom-follow and jumps away
+          // from history.
+          if (outputIsVisible || !this.yeaftConversationId) {
+            this.yeaftConversationId = conversationId;
+          }
+          if (outputIsVisible) this.activeConversations = [conversationId];
           // Ensure messagesMap exists for this conversation
           if (!this.messagesMap[conversationId]) {
             this.messagesMap[conversationId] = [];
@@ -1852,7 +1869,6 @@ export const useChatStore = defineStore('chat', {
           // Inbound envelopes now carry `sessionId` (legacy `groupId` is
           // accepted as a fallback for older agents that haven't been
           // upgraded yet — drop after the next major version).
-          const msgSessionId = msg.sessionId;
           const prevGroup = this._currentYeaftSessionId;
           const prevVpId = this._currentYeaftVpId;
           const prevTurnId = this._currentYeaftTurnId;
@@ -1963,7 +1979,6 @@ export const useChatStore = defineStore('chat', {
             this.messagesMap[agentConvId] = [];
           }
 
-          this.yeaftConversationId = agentConvId;
           if (statusAgentId) {
             // Cache this agent's conversationId + status, but do NOT change
             // which agent the page operates on. `session_ready` is just a
@@ -2003,8 +2018,14 @@ export const useChatStore = defineStore('chat', {
             multiVp: !!event.multiVp,
           };
 
-          // Update activeConversations to point to the agent's conversationId
-          if (this.currentView === 'yeaft') {
+          const readySessionId = event.sessionId || msg.sessionId || null;
+          const readyIsVisible = isVisibleYeaftOutput(this, readySessionId, statusAgentId);
+          if (readyIsVisible || !this.yeaftConversationId) {
+            this.yeaftConversationId = agentConvId;
+          }
+          // session_ready is also replayed for background agents. Keep their
+          // metadata cached without manufacturing a visible conversation switch.
+          if (readyIsVisible) {
             this.activeConversations = [agentConvId];
           }
 

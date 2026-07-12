@@ -101,6 +101,157 @@ describe('Yeaft early history frames', () => {
     expect(store.messagesMap['yeaft-local-agent-1']).toBeUndefined();
     expect(store.messagesMap['yeaft-real-1'].map(m => m.content)).toEqual(['draft', 'hello']);
   });
+
+  it('caches an inactive Session reply without changing the visible conversation', () => {
+    const store = makeStore();
+    store.yeaftConversationIdsByAgent = { [AGENT_ID]: 'yeaft-1' };
+    store.activeConversations = ['yeaft-1'];
+    store.messagesMap = { 'yeaft-1': [{ id: 'active-old', type: 'user', content: 'reading', timestamp: 1, sessionId: SESSION_ID }] };
+    store.handleAssistantOutputFrame = (conversationId, data) => {
+      store.messagesMap[conversationId].push({
+        id: data.message?.id,
+        type: data.type,
+        content: data.message?.content,
+        timestamp: 2,
+        sessionId: store._currentYeaftSessionId,
+      });
+    };
+
+    store.handleYeaftOutput({
+      conversationId: 'yeaft-1',
+      agentId: AGENT_ID,
+      sessionId: 'sess-background',
+      data: { type: 'assistant', message: { id: 'background-1', content: 'background reply' } },
+    });
+
+    expect(store.yeaftConversationId).toBe('yeaft-1');
+    expect(store.activeConversations).toEqual(['yeaft-1']);
+    expect(store.messagesMap['yeaft-1'].at(-1)).toMatchObject({
+      content: 'background reply',
+      sessionId: 'sess-background',
+    });
+  });
+
+  it('keeps active Session streaming visible', () => {
+    const store = makeStore();
+    store.yeaftConversationIdsByAgent = { [AGENT_ID]: 'yeaft-1' };
+    store.activeConversations = ['stale-conversation'];
+    store.handleAssistantOutputFrame = (conversationId, data) => {
+      store.messagesMap[conversationId].push({
+        id: data.message?.id,
+        type: data.type,
+        content: data.message?.content,
+        timestamp: 2,
+        sessionId: store._currentYeaftSessionId,
+      });
+    };
+
+    store.handleYeaftOutput({
+      conversationId: 'yeaft-1',
+      agentId: AGENT_ID,
+      sessionId: SESSION_ID,
+      data: { type: 'assistant', message: { id: 'active-1', content: 'active reply' } },
+    });
+
+    expect(store.yeaftConversationId).toBe('yeaft-1');
+    expect(store.activeConversations).toEqual(['yeaft-1']);
+    expect(store.messagesMap['yeaft-1'].at(-1)).toMatchObject({
+      content: 'active reply',
+      sessionId: SESSION_ID,
+    });
+  });
+
+  it('does not let another agent background reply replace the visible Session conversation', () => {
+    const store = makeStore();
+    const otherAgentId = 'user_1:C2';
+    store.yeaftSessionAgentById = {
+      [SESSION_ID]: AGENT_ID,
+      'sess-background': otherAgentId,
+    };
+    store.yeaftConversationIdsByAgent = {
+      [AGENT_ID]: 'yeaft-1',
+      [otherAgentId]: 'yeaft-2',
+    };
+    store.activeConversations = ['yeaft-1'];
+    store.messagesMap = {
+      'yeaft-1': [{ id: 'active-old', type: 'user', content: 'reading', timestamp: 1, sessionId: SESSION_ID }],
+      'yeaft-2': [],
+    };
+    store.handleAssistantOutputFrame = (conversationId, data) => {
+      store.messagesMap[conversationId].push({
+        id: data.message?.id,
+        type: data.type,
+        content: data.message?.content,
+        timestamp: 2,
+        sessionId: store._currentYeaftSessionId,
+      });
+    };
+
+    store.handleYeaftOutput({
+      conversationId: 'yeaft-2',
+      agentId: otherAgentId,
+      sessionId: 'sess-background',
+      data: { type: 'assistant', message: { id: 'background-2', content: 'other agent reply' } },
+    });
+
+    expect(store.yeaftConversationId).toBe('yeaft-1');
+    expect(store.yeaftConversationIdsByAgent[otherAgentId]).toBe('yeaft-2');
+    expect(store.activeConversations).toEqual(['yeaft-1']);
+    expect(store.messagesMap['yeaft-2'].at(-1)).toMatchObject({
+      content: 'other agent reply',
+      sessionId: 'sess-background',
+    });
+  });
+
+  it('does not let background session_ready replace the visible Session conversation', () => {
+    const store = makeStore();
+    const otherAgentId = 'user_1:C2';
+    store.yeaftConversationIdsByAgent = { [AGENT_ID]: 'yeaft-1' };
+    store.activeConversations = ['yeaft-1'];
+
+    store.handleYeaftOutput({
+      agentId: otherAgentId,
+      sessionId: 'sess-background',
+      event: {
+        type: 'session_ready',
+        conversationId: 'yeaft-2',
+        model: 'test-model',
+        availableModels: [],
+        skills: [],
+        mcpServers: [],
+        tools: [],
+      },
+    });
+
+    expect(store.yeaftConversationId).toBe('yeaft-1');
+    expect(store.yeaftConversationIdsByAgent[otherAgentId]).toBe('yeaft-2');
+    expect(store.activeConversations).toEqual(['yeaft-1']);
+  });
+
+  it('still promotes session_ready from the active Session owner', () => {
+    const store = makeStore();
+    store.yeaftConversationId = 'yeaft-local-agent-1';
+    store.yeaftConversationIdsByAgent = { [AGENT_ID]: 'yeaft-local-agent-1' };
+    store.activeConversations = ['yeaft-local-agent-1'];
+
+    store.handleYeaftOutput({
+      agentId: AGENT_ID,
+      sessionId: SESSION_ID,
+      event: {
+        type: 'session_ready',
+        conversationId: 'yeaft-real-1',
+        model: 'test-model',
+        availableModels: [],
+        skills: [],
+        mcpServers: [],
+        tools: [],
+      },
+    });
+
+    expect(store.yeaftConversationId).toBe('yeaft-real-1');
+    expect(store.yeaftConversationIdsByAgent[AGENT_ID]).toBe('yeaft-real-1');
+    expect(store.activeConversations).toEqual(['yeaft-real-1']);
+  });
 });
 
 describe('Yeaft agent_list does not loop history catch-up', () => {
