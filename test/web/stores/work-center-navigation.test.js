@@ -103,6 +103,7 @@ describe('Work Center navigation', () => {
     expect(store.currentView).toBe('yeaft');
     expect(store.yeaftActiveSessionFilter).toBe('session-1');
     expect(store.workCenterOpen).toBe(true);
+    expect(store.workCenterCreateDraft.sourceAgentId).toBe('agent-1');
     expect(store.workCenterCreateDraft.linkedSessionIds).toEqual(['session-1']);
   });
 });

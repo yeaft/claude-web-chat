@@ -443,7 +443,13 @@ describe('Work Center settings modal ownership', () => {
       saving: false,
       settings: { startImmediately: true },
       store: {
-        workCenterCreateDraft: null,
+        workCenterCreateDraft: {
+          sourceAgentId: 'agent-a',
+          title: 'Keep title',
+          goal: 'Keep goal',
+          origin: { sessionId: 'session-a', messageId: null, createdBy: 'user' },
+          linkedSessionIds: ['session-a'],
+        },
         listWorkItems: vi.fn().mockResolvedValue([]),
         loadWorkCenterSettings: vi.fn().mockResolvedValue({}),
         createWorkItem: vi.fn().mockResolvedValue({ id: 'item-b' }),
@@ -457,6 +463,9 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.createOpen).toBe(true);
     expect(vm.form).toMatchObject({
       workDir: '', start: true, title: 'Keep title', goal: 'Keep goal',
+    });
+    expect(vm.store.workCenterCreateDraft).toMatchObject({
+      sourceAgentId: 'agent-b', origin: null, linkedSessionIds: [],
     });
     expect(vm.store.listWorkItems).toHaveBeenCalledWith('agent-b');
     expect(vm.store.loadWorkCenterSettings).toHaveBeenCalledWith('agent-b');
@@ -473,7 +482,9 @@ describe('Work Center settings modal ownership', () => {
     await WorkCenterPage.methods.submitCreate.call(vm);
 
     expect(vm.store.createWorkItem).toHaveBeenCalledWith(
-      expect.objectContaining({ workDir: '/workspace/b', start: false }),
+      expect.objectContaining({
+        workDir: '/workspace/b', start: false, origin: null, linkedSessionIds: [],
+      }),
       'agent-b',
     );
   });
@@ -488,6 +499,13 @@ describe('Work Center settings modal ownership', () => {
       form: { workDir: '/workspace/custom-a', start: true, title: 'Keep title', goal: 'Keep goal' },
       selectedId: 'item-a',
       store: {
+        workCenterCreateDraft: {
+          sourceAgentId: 'agent-a',
+          title: 'Keep title',
+          goal: 'Keep goal',
+          origin: { sessionId: 'session-a', messageId: null, createdBy: 'user' },
+          linkedSessionIds: ['session-a'],
+        },
         listWorkItems: vi.fn().mockResolvedValue([]),
         loadWorkCenterSettings: vi.fn().mockResolvedValue({}),
       },
@@ -499,7 +517,46 @@ describe('Work Center settings modal ownership', () => {
 
     expect(vm.createOpen).toBe(false);
     expect(vm.form).toMatchObject({ workDir: '', start: true, title: 'Keep title', goal: 'Keep goal' });
+    expect(vm.store.workCenterCreateDraft).toMatchObject({
+      sourceAgentId: 'agent-b', origin: null, linkedSessionIds: [],
+    });
     expect(vm.workDirTouched).toBe(false);
+
+    WorkCenterPage.methods.openCreate.call(vm);
+    expect(vm.createOpen).toBe(true);
+    expect(vm.store.workCenterCreateDraft.origin).toBeNull();
+    expect(vm.store.workCenterCreateDraft.linkedSessionIds).toEqual([]);
+  });
+
+  it('drops provenance when a stale draft bypasses the Agent watcher', async () => {
+    const vm = {
+      agentId: 'agent-b',
+      saving: false,
+      selectedId: null,
+      settings: { startImmediately: true },
+      workDirTouched: false,
+      startTouched: false,
+      createOpen: true,
+      form: {
+        title: 'Keep title', goal: 'Keep goal', acceptanceCriteriaText: '',
+        workDir: '/workspace/b', reuseMemory: true, start: false,
+      },
+      store: {
+        workCenterCreateDraft: {
+          sourceAgentId: 'agent-a',
+          origin: { sessionId: 'session-a', messageId: null, createdBy: 'user' },
+          linkedSessionIds: ['session-a'],
+        },
+        createWorkItem: vi.fn().mockResolvedValue({ id: 'item-b' }),
+      },
+    };
+
+    await WorkCenterPage.methods.submitCreate.call(vm);
+
+    expect(vm.store.createWorkItem).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: null, linkedSessionIds: [] }),
+      'agent-b',
+    );
   });
 
   it('clears stale effort after load and before saving without model interaction', async () => {

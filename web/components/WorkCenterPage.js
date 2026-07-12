@@ -99,7 +99,7 @@ export default {
       immediate: true,
       handler(id, previousId) {
         this.selectedId = null;
-        if (previousId && id !== previousId) this.resetCreateExecutionContext();
+        if (previousId && id !== previousId) this.resetCreateExecutionContext(id);
         if (id) {
           this.store.listWorkItems(id).catch(() => {});
           this.store.loadWorkCenterSettings(id).catch(() => {});
@@ -174,8 +174,19 @@ export default {
     actionResponseText(action) {
       return String(action?.response || '').trim();
     },
-    resetCreateExecutionContext() {
+    resetCreateExecutionContext(agentId) {
       const hadUserExecutionInput = this.workDirTouched || this.startTouched;
+      const draft = this.store.workCenterCreateDraft;
+      if (draft) {
+        this.store.workCenterCreateDraft = {
+          sourceAgentId: agentId || null,
+          title: draft.title || '',
+          goal: draft.goal || '',
+          workDir: '',
+          origin: null,
+          linkedSessionIds: [],
+        };
+      }
       this.form.workDir = '';
       this.form.start = true;
       this.workDirTouched = false;
@@ -215,14 +226,15 @@ export default {
       this.saving = true;
       try {
         const draft = this.store.workCenterCreateDraft;
+        const draftOwnedByAgent = draft?.sourceAgentId === this.agentId;
         const detail = await this.store.createWorkItem({
           title: this.form.title.trim(),
           goal: this.form.goal.trim(),
           acceptanceCriteria: this.form.acceptanceCriteriaText
             .split('\n').map(value => value.trim()).filter(Boolean),
           workDir: this.form.workDir.trim(),
-          origin: draft?.origin || null,
-          linkedSessionIds: draft?.linkedSessionIds || [],
+          origin: draftOwnedByAgent ? (draft.origin || null) : null,
+          linkedSessionIds: draftOwnedByAgent ? (draft.linkedSessionIds || []) : [],
           reuseMemory: this.form.reuseMemory,
           start: this.form.start,
         }, this.agentId);

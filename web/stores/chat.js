@@ -1067,6 +1067,7 @@ export const useChatStore = defineStore('chat', {
       if (!session?.id) return;
       const agentId = session.agentId || resolveAgentIdForSession(this, session.id);
       this.workCenterCreateDraft = {
+        sourceAgentId: agentId,
         title: String(session.title || session.name || '').trim(),
         goal: String(seedGoal || '').trim(),
         workDir: String(session.workDir || '').trim(),
