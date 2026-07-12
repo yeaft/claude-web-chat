@@ -315,10 +315,14 @@ test.describe('Work Center responsive UI', () => {
     const modal = chatPage.locator('.work-center-settings-card');
     await expect(modal).toBeVisible();
     await expect(modal.locator('.work-center-policy-stage')).toHaveCount(8);
-    await expect(modal.locator('.work-center-policy-stage textarea').first())
-      .toHaveValue('Legacy triage prompt.');
+    const triagePrompt = modal.locator('.work-center-policy-stage textarea').first();
+    await expect(triagePrompt).toHaveValue('Legacy triage prompt.');
+    await expect(triagePrompt).toBeDisabled();
+    await expect(modal.getByText(/cannot save Work Center settings/)).toBeVisible();
+    await expect(modal.locator('.work-center-settings-footer .btn-primary')).toBeDisabled();
     await modal.getByRole('button', { name: 'Models', exact: true }).click();
     await expect(modal.locator('.work-center-model-stage select').first()).toHaveValue('specific');
+    await expect(modal.locator('.work-center-model-stage select').first()).toBeDisabled();
     await expect(modal.locator('.work-center-model-stage select').last()).toHaveValue('high');
   });
 

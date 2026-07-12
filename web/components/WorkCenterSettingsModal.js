@@ -53,6 +53,26 @@ function defaultSettingsDraft() {
   };
 }
 
+export function supportsDynamicSettings(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (!value.modelPolicy || typeof value.modelPolicy !== 'object' || Array.isArray(value.modelPolicy)) return false;
+  if (!value.actionInstructions || typeof value.actionInstructions !== 'object' || Array.isArray(value.actionInstructions)) return false;
+  return ACTION_TYPES.every(type => typeof value.actionInstructions[type] === 'string');
+}
+
+function dynamicSettingsMatch(actual, expected) {
+  if (!supportsDynamicSettings(actual)) return false;
+  const instructionsMatch = ACTION_TYPES.every(type => (
+    actual.actionInstructions[type].trim() === String(expected.actionInstructions[type] || '').trim()
+  ));
+  const actualPolicy = actual.modelPolicy;
+  const expectedPolicy = expected.modelPolicy || {};
+  return instructionsMatch
+    && actualPolicy.mode === expectedPolicy.mode
+    && (actualPolicy.model || null) === (expectedPolicy.model || null)
+    && (actualPolicy.effort || null) === (expectedPolicy.effort || null);
+}
+
 export function normalizeSettingsDraft(value, defaultStageInstructions = {}) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? clone(value) : {};
   const workflows = Array.isArray(source.workflows) && source.workflows.length > 0
@@ -144,6 +164,8 @@ export default {
     if (cached) {
       this.draft = normalizeSettingsDraft(cached, this.defaultStageInstructions);
       this.draftAgentId = this.agentId;
+      this.settingsUnsupported = !supportsDynamicSettings(cached);
+      if (this.settingsUnsupported) this.error = this.$t('workCenter.settings.upgradeRequired');
       this.loading = false;
     }
     await this.load();
@@ -156,14 +178,17 @@ export default {
       const target = this.agentId;
       const generation = ++this.loadGeneration;
       this.loading = true;
-      this.error = '';
+      this.error = this.settingsUnsupported && this.draft
+        ? this.$t('workCenter.settings.upgradeRequired')
+        : '';
       try {
         const data = await this.store.loadWorkCenterSettings(target);
         if (generation !== this.loadGeneration || target !== this.agentId) return;
         this.draft = normalizeSettingsDraft(data.settings, this.defaultStageInstructions);
         this.draftAgentId = target;
         this.conflict = false;
-        this.settingsUnsupported = false;
+        this.settingsUnsupported = !supportsDynamicSettings(data.settings);
+        this.error = this.settingsUnsupported ? this.$t('workCenter.settings.upgradeRequired') : '';
       } catch (error) {
         if (generation !== this.loadGeneration || target !== this.agentId) return;
         if (isUnsupportedSettingsError(error)) {
@@ -320,8 +345,16 @@ export default {
       this.error = '';
       this.conflict = false;
       try {
-        const data = await this.store.saveWorkCenterSettings(this.draft, target);
+        const submitted = clone(this.draft);
+        const data = await this.store.saveWorkCenterSettings(submitted, target);
         if (target !== this.agentId || this.draftAgentId !== target) return;
+        if (!dynamicSettingsMatch(data.settings, submitted)) {
+          this.settingsUnsupported = !supportsDynamicSettings(data.settings);
+          this.error = this.$t(this.settingsUnsupported
+            ? 'workCenter.settings.upgradeRequired'
+            : 'workCenter.settings.saveNotConfirmed');
+          return;
+        }
         this.draft = normalizeSettingsDraft(data.settings, this.defaultStageInstructions);
         this.$emit('saved', data.settings);
         this.$emit('close');
@@ -370,9 +403,9 @@ export default {
                     <div class="work-center-stage-instruction-heading">
                       <span>{{ $t('workCenter.settings.instruction') }}</span>
                       <button class="btn-ghost" type="button" @click="draft.actionInstructions[type] = defaultStageInstructions[type] || ''"
-                              :disabled="draft.actionInstructions[type] === (defaultStageInstructions[type] || '')">{{ $t('workCenter.settings.instructionReset') }}</button>
+                              :disabled="settingsUnsupported || draft.actionInstructions[type] === (defaultStageInstructions[type] || '')">{{ $t('workCenter.settings.instructionReset') }}</button>
                     </div>
-                    <textarea v-model="draft.actionInstructions[type]" rows="5" :placeholder="$t('workCenter.settings.instructionHint')"></textarea>
+                    <textarea v-model="draft.actionInstructions[type]" rows="5" :placeholder="$t('workCenter.settings.instructionHint')" :disabled="settingsUnsupported"></textarea>
                     <small>{{ $t('workCenter.settings.dynamicInstructionHelp') }}</small>
                   </div>
                 </article>
@@ -386,7 +419,7 @@ export default {
                 <article class="work-center-model-stage">
                   <strong>{{ $t('workCenter.settings.allActions') }}</strong>
                   <label>{{ $t('workCenter.settings.modelPolicy') }}
-                    <select :value="draft.modelPolicy.mode" @change="setModelMode({ modelPolicy: draft.modelPolicy }, $event.target.value)">
+                    <select :value="draft.modelPolicy.mode" :disabled="settingsUnsupported" @change="setModelMode({ modelPolicy: draft.modelPolicy }, $event.target.value)">
                       <option value="inherit">{{ $t('workCenter.settings.model.inherit') }}</option>
                       <option value="primary">{{ $t('workCenter.settings.model.primary') }}</option>
                       <option value="fast">{{ $t('workCenter.settings.model.fast') }}</option>
@@ -394,12 +427,12 @@ export default {
                     </select>
                   </label>
                   <label v-if="draft.modelPolicy.mode === 'specific'">{{ $t('workCenter.settings.model') }}
-                    <select :value="draft.modelPolicy.model" @change="setStageModel({ modelPolicy: draft.modelPolicy }, $event.target.value)">
+                    <select :value="draft.modelPolicy.model" :disabled="settingsUnsupported" @change="setStageModel({ modelPolicy: draft.modelPolicy }, $event.target.value)">
                       <option v-for="model in models" :key="model.ref || model.id" :value="model.ref || model.id">{{ model.provider }} · {{ model.label || model.id }}</option>
                     </select>
                   </label>
                   <label v-if="effortOptionsForStage({ modelPolicy: draft.modelPolicy }).length">{{ $t('workCenter.settings.effort') }}
-                    <select v-model="draft.modelPolicy.effort">
+                    <select v-model="draft.modelPolicy.effort" :disabled="settingsUnsupported">
                       <option :value="null">{{ $t('workCenter.settings.effortDefault') }}</option>
                       <option v-for="effort in effortOptionsForStage({ modelPolicy: draft.modelPolicy })" :key="effort" :value="effort">{{ effort }}</option>
                     </select>
@@ -412,10 +445,10 @@ export default {
                   <div><h3>{{ $t('workCenter.settings.general') }}</h3><p>{{ $t('workCenter.settings.generalHelp') }}</p></div>
                 </div>
                 <label class="work-center-settings-field">{{ $t('workCenter.workDir') }}
-                  <input v-model="draft.defaultWorkDir" type="text" :placeholder="$t('workCenter.workDirHint')">
+                  <input v-model="draft.defaultWorkDir" type="text" :placeholder="$t('workCenter.workDirHint')" :disabled="settingsUnsupported">
                 </label>
                 <label class="work-center-settings-checkbox">
-                  <input v-model="draft.startImmediately" type="checkbox">
+                  <input v-model="draft.startImmediately" type="checkbox" :disabled="settingsUnsupported">
                   <span>{{ $t('workCenter.startImmediately') }}</span>
                 </label>
               </template>
