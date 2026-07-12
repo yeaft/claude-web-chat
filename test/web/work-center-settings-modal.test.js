@@ -1,5 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
-import WorkCenterSettingsModal from '../../web/components/WorkCenterSettingsModal.js';
+// @vitest-environment happy-dom
+import { mount } from '@vue/test-utils';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as Vue from 'vue';
+import WorkCenterSettingsModal, {
+  normalizeSettingsDraft,
+  supportsDynamicSettings,
+} from '../../web/components/WorkCenterSettingsModal.js';
+import {
+  defaultWorkCenterStageInstruction,
+  normalizeWorkCenterSettings,
+} from '../../agent/yeaft/work-center/workflow.js';
 
 function modalVm(overrides = {}) {
   return {
@@ -23,6 +33,198 @@ function modalVm(overrides = {}) {
 }
 
 describe('Work Center settings modal ownership', () => {
+  afterEach(() => {
+    delete globalThis.Pinia;
+    document.body.innerHTML = '';
+  });
+
+  it('migrates missing dynamic settings from an older workflow response', () => {
+    const draft = normalizeSettingsDraft({
+      revision: 7,
+      defaultWorkflowId: 'software-change',
+      workflows: [{
+        id: 'software-change',
+        stages: [
+          {
+            id: 'triage',
+            type: 'triage',
+            instruction: 'Inspect the legacy task.',
+            modelPolicy: { mode: 'specific', model: 'provider/legacy', effort: 'high' },
+          },
+          { id: 'implement', type: 'implement', instruction: 'Keep the legacy implementation prompt.' },
+        ],
+      }],
+    }, {
+      review: 'Review the result.',
+      custom: 'Complete the Action.',
+    });
+
+    expect(draft.revision).toBe(7);
+    expect(draft.actionInstructions).toMatchObject({
+      triage: 'Inspect the legacy task.',
+      implement: 'Keep the legacy implementation prompt.',
+      review: 'Review the result.',
+      custom: 'Complete the Action.',
+    });
+    expect(draft.modelPolicy).toEqual({
+      mode: 'specific', model: 'provider/legacy', effort: 'high',
+    });
+    expect(supportsDynamicSettings(draft)).toBe(true);
+    expect(supportsDynamicSettings({ workflows: draft.workflows })).toBe(false);
+  });
+
+  it('renders cached settings without actionInstructions while refresh is pending', async () => {
+    const legacySettings = {
+      revision: 3,
+      defaultWorkflowId: 'software-change',
+      workflows: [{
+        id: 'software-change',
+        stages: [{ id: 'triage', type: 'triage', instruction: 'Legacy triage prompt.' }],
+      }],
+    };
+    const store = {
+      workCenterSettingsByAgent: { 'agent-a': legacySettings },
+      workCenterRuntimeByAgent: {
+        'agent-a': {
+          defaultStageInstructions: {
+            implement: 'Implement the task.',
+            custom: 'Complete the Action.',
+          },
+        },
+      },
+      loadWorkCenterSettings: vi.fn().mockReturnValue(new Promise(() => {})),
+      saveWorkCenterSettings: vi.fn(),
+    };
+    globalThis.Pinia = { useChatStore: () => store };
+    const errors = [];
+    const wrapper = mount(WorkCenterSettingsModal, {
+      props: { agentId: 'agent-a' },
+      global: {
+        mocks: {
+          $t: key => key,
+          $i18n: { locale: 'en' },
+        },
+        config: {
+          errorHandler: error => errors.push(error),
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await Vue.nextTick();
+
+    const stages = [...document.body.querySelectorAll('.work-center-policy-stage')];
+    expect(errors).toEqual([]);
+    expect(stages).toHaveLength(8);
+    expect(stages[0].querySelector('textarea').value).toBe('Legacy triage prompt.');
+    expect(stages[0].querySelector('textarea').disabled).toBe(true);
+    expect(stages[1].querySelector('textarea').value).toBe('Implement the task.');
+    expect(document.body.querySelector('.work-center-settings-footer .btn-primary').disabled).toBe(true);
+    expect(store.saveWorkCenterSettings).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('keeps successful legacy settings responses read-only instead of silently losing edits', async () => {
+    const store = {
+      loadWorkCenterSettings: vi.fn().mockResolvedValue({
+        settings: {
+          revision: 3,
+          defaultWorkflowId: 'software-change',
+          workflows: [{
+            id: 'software-change',
+            stages: [{ id: 'triage', type: 'triage', instruction: 'Legacy prompt.' }],
+          }],
+        },
+      }),
+      saveWorkCenterSettings: vi.fn(),
+    };
+    const vm = modalVm({ draft: null, store, defaultStageInstructions: {} });
+
+    await WorkCenterSettingsModal.methods.load.call(vm);
+    await WorkCenterSettingsModal.methods.save.call(vm);
+
+    expect(vm.settingsUnsupported).toBe(true);
+    expect(vm.error).toBe('workCenter.settings.upgradeRequired');
+    expect(vm.draft.actionInstructions.triage).toBe('Legacy prompt.');
+    expect(store.saveWorkCenterSettings).not.toHaveBeenCalled();
+    expect(vm.$emit).not.toHaveBeenCalledWith('close');
+  });
+
+  it('does not close when a save response drops submitted dynamic settings', async () => {
+    const draft = normalizeSettingsDraft({
+      revision: 3,
+      modelPolicy: { mode: 'specific', model: 'provider/new', effort: 'low' },
+      actionInstructions: Object.fromEntries([
+        'triage', 'implement', 'test', 'review', 'deliver', 'research', 'write', 'custom',
+      ].map(type => [type, type === 'triage' ? 'Edited triage.' : `Edited ${type}.`])),
+    });
+    const store = {
+      saveWorkCenterSettings: vi.fn().mockResolvedValue({
+        settings: {
+          revision: 4,
+          defaultWorkflowId: 'software-change',
+          workflows: [{
+            id: 'software-change',
+            stages: [{
+              id: 'triage',
+              type: 'triage',
+              instruction: 'Legacy triage.',
+              modelPolicy: { mode: 'specific', model: 'provider/old', effort: 'high' },
+            }],
+          }],
+        },
+      }),
+    };
+    const vm = modalVm({ draft, store, defaultStageInstructions: {} });
+
+    await WorkCenterSettingsModal.methods.save.call(vm);
+
+    expect(store.saveWorkCenterSettings).toHaveBeenCalledOnce();
+    expect(vm.settingsUnsupported).toBe(true);
+    expect(vm.error).toBe('workCenter.settings.upgradeRequired');
+    expect(vm.draft.actionInstructions.triage).toBe('Edited triage.');
+    expect(vm.$emit).not.toHaveBeenCalledWith('saved', expect.anything());
+    expect(vm.$emit).not.toHaveBeenCalledWith('close');
+  });
+
+  it('accepts a modern Agent canonical response and uses its advanced revision', async () => {
+    const draft = normalizeWorkCenterSettings({
+      revision: 3,
+      modelPolicy: { mode: 'specific', model: 'provider/new', effort: 'low' },
+    });
+    draft.actionInstructions.triage = '   ';
+    draft.modelPolicy.model = '  provider/new  ';
+    const saved = normalizeWorkCenterSettings({ ...structuredClone(draft), revision: 4 });
+    const store = { saveWorkCenterSettings: vi.fn().mockResolvedValue({ settings: saved }) };
+    const vm = modalVm({ draft, store, defaultStageInstructions: {} });
+
+    await WorkCenterSettingsModal.methods.save.call(vm);
+
+    expect(saved.actionInstructions.triage).toBe(defaultWorkCenterStageInstruction('triage'));
+    expect(saved.modelPolicy.model).toBe('provider/new');
+    expect(vm.error).toBe('');
+    expect(vm.draft.revision).toBe(4);
+    expect(vm.draft.actionInstructions.triage).toBe(defaultWorkCenterStageInstruction('triage'));
+    expect(vm.draft.modelPolicy.model).toBe('provider/new');
+    expect(vm.$emit).toHaveBeenCalledWith('saved', saved);
+    expect(vm.$emit).toHaveBeenCalledWith('close');
+  });
+
+  it('does not close when a complete save response fails to advance revision', async () => {
+    const draft = normalizeWorkCenterSettings({ revision: 3 });
+    const saved = normalizeWorkCenterSettings({ ...structuredClone(draft), revision: 3 });
+    const store = { saveWorkCenterSettings: vi.fn().mockResolvedValue({ settings: saved }) };
+    const vm = modalVm({ draft, store, defaultStageInstructions: {} });
+
+    await WorkCenterSettingsModal.methods.save.call(vm);
+
+    expect(vm.settingsUnsupported).toBe(false);
+    expect(vm.error).toBe('workCenter.settings.saveNotConfirmed');
+    expect(vm.draft.revision).toBe(3);
+    expect(vm.$emit).not.toHaveBeenCalledWith('saved', expect.anything());
+    expect(vm.$emit).not.toHaveBeenCalledWith('close');
+  });
+
   it('does not save a draft loaded for a different Agent', async () => {
     const vm = modalVm({ agentId: 'agent-b', draftAgentId: 'agent-a' });
     await WorkCenterSettingsModal.methods.save.call(vm);
