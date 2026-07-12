@@ -1439,7 +1439,7 @@ export default {
   'workCenter.titleField': 'Title',
   'workCenter.criteriaHint': 'One criterion per line',
   'workCenter.workDir': 'Working directory',
-  'workCenter.workDirHint': 'Optional project directory',
+  'workCenter.workDirHint': 'Project directory',
   'workCenter.startImmediately': 'Start immediately',
   'workCenter.creating': 'Creating…',
   'workCenter.create': 'Create',

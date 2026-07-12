@@ -80,8 +80,8 @@ export class WorkCenterService {
             : [],
           workflowTemplate,
           workflowSnapshot,
-          workDir: typeof payload.workDir === 'string' && payload.workDir.trim()
-            ? payload.workDir.trim()
+          workDir: Object.hasOwn(payload, 'workDir')
+            ? (typeof payload.workDir === 'string' ? payload.workDir.trim() : '')
             : settings.defaultWorkDir,
           reuseMemory: payload.reuseMemory !== false,
           origin: payload.origin && typeof payload.origin === 'object'

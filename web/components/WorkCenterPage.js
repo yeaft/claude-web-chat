@@ -16,6 +16,8 @@ export default {
       resumeAnswer: '',
       actionGuidance: '',
       expandedActions: {},
+      workDirTouched: false,
+      startTouched: false,
       form: {
         title: '',
         goal: '',
@@ -33,6 +35,13 @@ export default {
     onlineAgents() { return this.agents.filter(agent => agent?.online); },
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
     settings() { return this.store.workCenterSettingsByAgent[this.agentId] || null; },
+    runtime() { return this.store.workCenterRuntimeByAgent[this.agentId] || null; },
+    createDefaultWorkDir() {
+      return this.settings?.defaultWorkDir || this.runtime?.defaultWorkDir || '';
+    },
+    createDefaultStart() {
+      return this.settings?.startImmediately !== false;
+    },
     items() { return this.store.workCenterItemsByAgent[this.agentId] || []; },
     loading() { return !!this.store.workCenterLoadingByAgent[this.agentId]; },
     error() { return this.store.workCenterErrorByAgent[this.agentId] || null; },
@@ -96,6 +105,12 @@ export default {
         }
       },
     },
+    createDefaultWorkDir() {
+      this.applyCreateDefaults();
+    },
+    createDefaultStart() {
+      this.applyCreateDefaults();
+    },
   },
   mounted() {
     const draft = this.store.workCenterCreateDraft;
@@ -109,6 +124,9 @@ export default {
       start: this.settings?.startImmediately !== false,
     };
     this.createOpen = true;
+    this.workDirTouched = !!String(draft.workDir || '').trim();
+    this.startTouched = false;
+    this.applyCreateDefaults();
   },
   methods: {
     tr(key, fallback) {
@@ -155,10 +173,22 @@ export default {
     actionResponseText(action) {
       return String(action?.response || '').trim();
     },
+    applyCreateDefaults() {
+      if (!this.createOpen) return;
+      if (!this.workDirTouched && !this.form.workDir.trim()) this.form.workDir = this.createDefaultWorkDir;
+      if (!this.startTouched) this.form.start = this.createDefaultStart;
+    },
+    onCreateWorkDirInput() {
+      this.workDirTouched = true;
+    },
+    onCreateStartInput() {
+      this.startTouched = true;
+    },
     openCreate() {
       this.createOpen = true;
-      if (!this.form.workDir.trim()) this.form.workDir = this.settings?.defaultWorkDir || '';
-      this.form.start = this.settings?.startImmediately !== false;
+      this.workDirTouched = false;
+      this.startTouched = false;
+      this.applyCreateDefaults();
     },
     closeCreate() {
       if (this.saving) return;
@@ -171,7 +201,7 @@ export default {
       return this.store.refreshWorkCenterRuntime(agentId).catch(() => {});
     },
     async submitCreate() {
-      if (!this.form.title.trim() || !this.form.goal.trim()) return;
+      if (!this.form.title.trim() || !this.form.goal.trim() || !this.form.workDir.trim()) return;
       this.saving = true;
       try {
         const draft = this.store.workCenterCreateDraft;
@@ -196,6 +226,8 @@ export default {
           start: this.settings?.startImmediately !== false,
         };
         this.store.workCenterCreateDraft = null;
+        this.workDirTouched = false;
+        this.startTouched = false;
         this.createOpen = false;
       } finally {
         this.saving = false;
@@ -415,7 +447,7 @@ export default {
             <label>{{ tr('workCenter.goal', 'Goal') }}<textarea v-model="form.goal" rows="4" required></textarea></label>
             <label>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}<textarea v-model="form.acceptanceCriteriaText" rows="4" :placeholder="tr('workCenter.criteriaHint', 'One criterion per line')"></textarea></label>
             <div class="work-center-create-grid">
-              <label>{{ tr('workCenter.workDir', 'Working directory') }}<input v-model="form.workDir" type="text" :placeholder="tr('workCenter.workDirHint', 'Optional project directory')"></label>
+              <label>{{ tr('workCenter.workDir', 'Working directory') }}<input v-model="form.workDir" type="text" required :placeholder="tr('workCenter.workDirHint', 'Project directory')" @input="onCreateWorkDirInput"></label>
             </div>
             <section class="work-center-plan-preview">
               <div class="work-center-plan-preview-heading">
@@ -424,11 +456,11 @@ export default {
               </div>
             </section>
             <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox">{{ tr('workCenter.reuseMemory', 'Reuse context from this working directory') }}</label>
-            <label class="work-center-checkbox"><input v-model="form.start" type="checkbox">{{ tr('workCenter.startImmediately', 'Start immediately') }}</label>
+            <label class="work-center-checkbox"><input v-model="form.start" type="checkbox" @change="onCreateStartInput">{{ tr('workCenter.startImmediately', 'Start immediately') }}</label>
           </div>
           <footer>
             <button class="btn-secondary" type="button" @click="closeCreate">{{ tr('common.cancel', 'Cancel') }}</button>
-            <button class="btn-primary" type="submit" :disabled="saving || !form.title.trim() || !form.goal.trim()">
+            <button class="btn-primary" type="submit" :disabled="saving || !form.title.trim() || !form.goal.trim() || !form.workDir.trim()">
               {{ saving ? tr('workCenter.creating', 'Creating…') : tr('workCenter.create', 'Create') }}
             </button>
           </footer>

@@ -1435,7 +1435,7 @@ export default {
   'workCenter.titleField': '标题',
   'workCenter.criteriaHint': '每行一条验收条件',
   'workCenter.workDir': '工作目录',
-  'workCenter.workDirHint': '可选的项目目录',
+  'workCenter.workDirHint': '项目目录',
   'workCenter.startImmediately': '立即开始',
   'workCenter.creating': '创建中…',
   'workCenter.create': '创建',

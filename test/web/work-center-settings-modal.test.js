@@ -25,6 +25,7 @@ function modalVm(overrides = {}) {
     settingsUnsupported: false,
     $t: key => key,
     $emit: vi.fn(),
+    normalizeDraftEffort: vi.fn(),
     store: {
       loadWorkCenterSettings: vi.fn(),
       saveWorkCenterSettings: vi.fn(),
@@ -400,19 +401,84 @@ describe('Work Center settings modal ownership', () => {
     expect(WorkCenterSettingsModal.template).not.toContain('draft.startImmediately');
   });
 
-  it('prefills the create form with visible legacy defaults without overriding user input', () => {
+  it('backfills delayed create defaults without overriding user input', () => {
     const vm = {
       createOpen: false,
-      settings: { defaultWorkDir: '/workspace/default', startImmediately: false },
+      workDirTouched: false,
+      startTouched: false,
+      createDefaultWorkDir: '',
+      createDefaultStart: false,
+      settings: { startImmediately: false },
       form: { workDir: '', start: true },
     };
+    vm.applyCreateDefaults = WorkCenterPage.methods.applyCreateDefaults.bind(vm);
 
     WorkCenterPage.methods.openCreate.call(vm);
-    expect(vm.form).toMatchObject({ workDir: '/workspace/default', start: false });
+    expect(vm.form).toMatchObject({ workDir: '', start: false });
+
+    vm.createDefaultWorkDir = '/workspace/default';
+    WorkCenterPage.watch.createDefaultWorkDir.call(vm);
+    expect(vm.form.workDir).toBe('/workspace/default');
 
     vm.form.workDir = '/workspace/chosen';
-    WorkCenterPage.methods.openCreate.call(vm);
+    WorkCenterPage.methods.onCreateWorkDirInput.call(vm);
+    vm.createDefaultWorkDir = '/workspace/changed';
+    WorkCenterPage.watch.createDefaultWorkDir.call(vm);
     expect(vm.form.workDir).toBe('/workspace/chosen');
+  });
+
+  it('clears stale effort after load and before saving without model interaction', async () => {
+    const loaded = normalizeWorkCenterSettings({
+      revision: 3,
+      modelPolicy: { mode: 'specific', model: 'provider/model', effort: 'high' },
+    });
+    const store = {
+      loadWorkCenterSettings: vi.fn().mockResolvedValue({ settings: loaded }),
+      saveWorkCenterSettings: vi.fn().mockImplementation(async submitted => ({
+        settings: normalizeWorkCenterSettings({ ...structuredClone(submitted), revision: 4 }),
+      })),
+    };
+    const vm = modalVm({
+      draft: null,
+      store,
+      defaultStageInstructions: {},
+      runtime: {
+        models: [{ ref: 'provider/model', effortOptions: ['medium'] }],
+        primaryModel: 'provider/model',
+      },
+      models: [{ ref: 'provider/model', effortOptions: ['medium'] }],
+    });
+    vm.modelRefForStage = WorkCenterSettingsModal.methods.modelRefForStage.bind(vm);
+    vm.modelForStage = WorkCenterSettingsModal.methods.modelForStage.bind(vm);
+    vm.effortOptionsForStage = WorkCenterSettingsModal.methods.effortOptionsForStage.bind(vm);
+    vm.normalizeStageEffort = WorkCenterSettingsModal.methods.normalizeStageEffort.bind(vm);
+    vm.normalizeDraftEffort = WorkCenterSettingsModal.methods.normalizeDraftEffort.bind(vm);
+
+    await WorkCenterSettingsModal.methods.load.call(vm);
+    expect(vm.draft.modelPolicy.effort).toBeNull();
+    await WorkCenterSettingsModal.methods.save.call(vm);
+
+    expect(store.saveWorkCenterSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ modelPolicy: expect.objectContaining({ effort: null }) }),
+      'agent-a',
+    );
+  });
+
+  it('clears effort when refreshed runtime removes its capability', () => {
+    const vm = modalVm({
+      draft: { modelPolicy: { mode: 'specific', model: 'provider/model', effort: 'high' } },
+      runtime: { models: [{ ref: 'provider/model', effortOptions: ['medium'] }] },
+      models: [{ ref: 'provider/model', effortOptions: ['medium'] }],
+    });
+    vm.modelRefForStage = WorkCenterSettingsModal.methods.modelRefForStage.bind(vm);
+    vm.modelForStage = WorkCenterSettingsModal.methods.modelForStage.bind(vm);
+    vm.effortOptionsForStage = WorkCenterSettingsModal.methods.effortOptionsForStage.bind(vm);
+    vm.normalizeStageEffort = WorkCenterSettingsModal.methods.normalizeStageEffort.bind(vm);
+    vm.normalizeDraftEffort = WorkCenterSettingsModal.methods.normalizeDraftEffort.bind(vm);
+
+    WorkCenterSettingsModal.watch.runtime.handler.call(vm);
+
+    expect(vm.draft.modelPolicy.effort).toBeNull();
   });
 
   it('turns a revision conflict into an explicit reload state', async () => {

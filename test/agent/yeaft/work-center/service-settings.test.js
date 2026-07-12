@@ -47,6 +47,23 @@ describe('Work Center settings service', () => {
     expect((await service.handle('get_settings')).settings.defaultWorkDir).toBe('/project');
   });
 
+  it('uses a directory default only when legacy callers omit workDir', async () => {
+    const service = await createService();
+    const settings = defaultWorkCenterSettings();
+    settings.defaultWorkDir = '/tmp';
+    await service.handle('update_settings', { settings });
+
+    const omitted = await service.handle('create', {
+      title: 'Legacy default', goal: 'Keep omitted-field compatibility', start: false,
+    });
+    const explicitBlank = await service.handle('create', {
+      title: 'Explicit blank', goal: 'Do not hide a directory choice', workDir: '', start: false,
+    });
+
+    expect(service.store.getWorkItem(omitted.id).workDir).toBe('/tmp');
+    expect(service.store.getWorkItem(explicitBlank.id).workDir).toBe('');
+  });
+
   it('returns the redacted browser detail DTO from the real get operation', async () => {
     const service = await createService();
     const item = await service.handle('create', {

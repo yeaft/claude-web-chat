@@ -250,6 +250,43 @@ test.describe('Work Center responsive UI', () => {
     expect(colors.border).not.toBe(colors.background);
   });
 
+  test('shows delayed directory defaults before sending the create request', async ({ chatPage, mockAgent }) => {
+    await chatPage.locator('.sidebar-work-center-trigger').click();
+    const settingsRequest = (async () => {
+      for (;;) {
+        const request = await mockAgent.waitForMessage('work_center_request');
+        if (request.op === 'get_settings') return request;
+        if (request.op !== 'list') throw new Error(`Expected Work Center list or get_settings, received ${request.op}`);
+        mockAgent.send({
+          type: 'work_center_response', requestId: request.requestId, op: request.op, ok: true,
+          data: { items: [OPEN_ITEM], watcher: { enabled: true } },
+        });
+      }
+    })();
+
+    await chatPage.locator('.sidebar-work-center-agent').first().click();
+    const pendingSettings = await settingsRequest;
+    await expect(chatPage.locator('.work-center-main')).toBeVisible();
+    await chatPage.locator('.work-center-header-create').click();
+    const createModal = chatPage.locator('.work-center-modal');
+    const workDir = createModal.locator('input[placeholder="Project directory"]');
+    await expect(workDir).toHaveValue('');
+    await expect(createModal.getByRole('button', { name: 'Create', exact: true })).toBeDisabled();
+
+    mockAgent.send({
+      type: 'work_center_response', requestId: pendingSettings.requestId, op: pendingSettings.op, ok: true,
+      data: WORK_CENTER_SETTINGS,
+    });
+    await expect(workDir).toHaveValue('/tmp/test');
+    await createModal.locator('input').first().fill('Visible directory');
+    await createModal.locator('textarea').first().fill('Use the directory shown in the form');
+    const createRequest = respondToWorkCenterOp(mockAgent, 'create', OPEN_ITEM_DETAIL);
+    await createModal.getByRole('button', { name: 'Create', exact: true }).click();
+    const request = await createRequest;
+    await respondToWorkCenterOp(mockAgent, 'list', { items: [OPEN_ITEM], watcher: { enabled: true } });
+    expect(request.payload.workDir).toBe('/tmp/test');
+  });
+
   test('keeps a create action available on mobile with existing work items', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 720, height: 900 });
@@ -266,7 +303,7 @@ test.describe('Work Center responsive UI', () => {
     await create.click();
     const createModal = chatPage.locator('.work-center-modal');
     await expect(createModal).toBeVisible();
-    await expect(createModal.locator('input[placeholder="Optional project directory"]')).toHaveValue('/tmp/test');
+    await expect(createModal.locator('input[placeholder="Project directory"]')).toHaveValue('/tmp/test');
   });
 
   test('opens a fixed settings shell for Action prompts and Work Center model policy', async ({ chatPage, mockAgent }) => {

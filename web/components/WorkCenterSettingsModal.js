@@ -151,11 +151,20 @@ export default {
       ];
     },
   },
+  watch: {
+    runtime: {
+      deep: true,
+      handler() {
+        this.normalizeDraftEffort();
+      },
+    },
+  },
   async mounted() {
     window.addEventListener('keydown', this.onKeydown);
     const cached = this.store.workCenterSettingsByAgent[this.agentId];
     if (cached) {
       this.draft = normalizeSettingsDraft(cached, this.defaultStageInstructions);
+      this.normalizeDraftEffort();
       this.draftAgentId = this.agentId;
       this.settingsUnsupported = !supportsDynamicSettings(cached);
       if (this.settingsUnsupported) this.error = this.$t('workCenter.settings.upgradeRequired');
@@ -178,6 +187,7 @@ export default {
         const data = await this.store.loadWorkCenterSettings(target);
         if (generation !== this.loadGeneration || target !== this.agentId) return;
         this.draft = normalizeSettingsDraft(data.settings, this.defaultStageInstructions);
+        this.normalizeDraftEffort();
         this.draftAgentId = target;
         this.conflict = false;
         this.settingsUnsupported = !supportsDynamicSettings(data.settings);
@@ -323,6 +333,10 @@ export default {
       if (!stage.modelPolicy.effort || options.includes(stage.modelPolicy.effort)) return;
       stage.modelPolicy.effort = null;
     },
+    normalizeDraftEffort() {
+      if (!this.draft?.modelPolicy || !Array.isArray(this.runtime?.models)) return;
+      this.normalizeStageEffort({ modelPolicy: this.draft.modelPolicy });
+    },
     setModelMode(stage, mode) {
       stage.modelPolicy.mode = mode;
       if (mode === 'specific' && !stage.modelPolicy.model) {
@@ -346,6 +360,7 @@ export default {
       this.error = '';
       this.conflict = false;
       try {
+        this.normalizeDraftEffort();
         const submitted = clone(this.draft);
         const data = await this.store.saveWorkCenterSettings(submitted, target);
         if (target !== this.agentId || this.draftAgentId !== target) return;

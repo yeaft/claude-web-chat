@@ -165,7 +165,9 @@ describe('Work Center UI contract', () => {
     expect(modal).toContain('effortChooseModelHelp');
     expect(modal).not.toContain("{ id: 'general'");
     expect(modal).not.toContain('v-model="draft.defaultWorkDir"');
-    expect(page).toContain("this.settings?.defaultWorkDir || ''");
+    expect(page).toContain("this.settings?.defaultWorkDir || this.runtime?.defaultWorkDir || ''");
+    expect(page).toContain('createDefaultWorkDir()');
+    expect(page).toContain('@input="onCreateWorkDirInput"');
     expect(modal).toContain("mode === 'specific'");
     expect(modal).toContain("$emit('open-agent-models')");
     expect(page).toContain('<LlmTab context="yeaft"');
