@@ -291,6 +291,37 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-model-stage select').last()).toHaveValue('high');
   });
 
+  test('opens settings returned by an older Agent without dynamic fields', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent);
+    const legacySettings = structuredClone(WORK_CENTER_SETTINGS);
+    delete legacySettings.settings.actionInstructions;
+    delete legacySettings.settings.modelPolicy;
+    legacySettings.settings.workflows[0].stages[0].instruction = 'Legacy triage prompt.';
+    legacySettings.settings.workflows[0].stages[0].modelPolicy = {
+      mode: 'specific', model: 'provider/review', effort: 'high',
+    };
+    legacySettings.runtime.defaultStageInstructions = {
+      implement: 'Implement the task.',
+      custom: 'Complete the Action.',
+    };
+    const settingsRequest = respondUntilOperation(mockAgent, 'get_settings', {
+      list: { items: [OPEN_ITEM], watcher: { enabled: true } },
+      get_settings: legacySettings,
+    });
+
+    await chatPage.locator('.work-center-header-actions .work-center-icon-button').first().click();
+    await settingsRequest;
+
+    const modal = chatPage.locator('.work-center-settings-card');
+    await expect(modal).toBeVisible();
+    await expect(modal.locator('.work-center-policy-stage')).toHaveCount(8);
+    await expect(modal.locator('.work-center-policy-stage textarea').first())
+      .toHaveValue('Legacy triage prompt.');
+    await modal.getByRole('button', { name: 'Models', exact: true }).click();
+    await expect(modal.locator('.work-center-model-stage select').first()).toHaveValue('specific');
+    await expect(modal.locator('.work-center-model-stage select').last()).toHaveValue('high');
+  });
+
   test('keeps settings usable in dark theme and mobile viewport', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));

@@ -1,3 +1,5 @@
+const ACTION_TYPES = ['triage', 'implement', 'test', 'review', 'deliver', 'research', 'write', 'custom'];
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -33,8 +35,7 @@ function defaultSettingsDraft() {
     startImmediately: true,
     defaultWorkDir: '',
     modelPolicy: { mode: 'inherit', model: null, effort: null },
-    actionInstructions: Object.fromEntries(['triage','implement','test','review','deliver','research','write','custom']
-      .map(type => [type, ''])),
+    actionInstructions: Object.fromEntries(ACTION_TYPES.map(type => [type, ''])),
     workflows: [{
       version: 1,
       id: 'software-change',
@@ -49,6 +50,45 @@ function defaultSettingsDraft() {
         defaultStage('deliver', 'Deliver', 'deliver'),
       ],
     }],
+  };
+}
+
+export function normalizeSettingsDraft(value, defaultStageInstructions = {}) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? clone(value) : {};
+  const workflows = Array.isArray(source.workflows) && source.workflows.length > 0
+    ? source.workflows
+    : defaultSettingsDraft().workflows;
+  const defaultWorkflow = workflows.find(workflow => workflow?.id === source.defaultWorkflowId)
+    || workflows[0]
+    || null;
+  const stages = Array.isArray(defaultWorkflow?.stages) ? defaultWorkflow.stages : [];
+  const stageInstructions = Object.fromEntries(stages
+    .filter(stage => ACTION_TYPES.includes(stage?.type) && typeof stage.instruction === 'string')
+    .map(stage => [stage.type, stage.instruction]));
+  const sourceInstructions = source.actionInstructions && typeof source.actionInstructions === 'object'
+    && !Array.isArray(source.actionInstructions)
+    ? source.actionInstructions
+    : {};
+  const migratedModelPolicy = stages.find(stage => stage?.type === 'triage')?.modelPolicy
+    || stages[0]?.modelPolicy;
+
+  return {
+    ...defaultSettingsDraft(),
+    ...source,
+    modelPolicy: {
+      mode: 'inherit',
+      model: null,
+      effort: null,
+      ...(migratedModelPolicy || {}),
+      ...(source.modelPolicy || {}),
+    },
+    actionInstructions: Object.fromEntries(ACTION_TYPES.map(type => [
+      type,
+      typeof sourceInstructions[type] === 'string'
+        ? sourceInstructions[type]
+        : (stageInstructions[type] || defaultStageInstructions[type] || ''),
+    ])),
+    workflows,
   };
 }
 
@@ -102,7 +142,7 @@ export default {
     window.addEventListener('keydown', this.onKeydown);
     const cached = this.store.workCenterSettingsByAgent[this.agentId];
     if (cached) {
-      this.draft = clone(cached);
+      this.draft = normalizeSettingsDraft(cached, this.defaultStageInstructions);
       this.draftAgentId = this.agentId;
       this.loading = false;
     }
@@ -120,14 +160,14 @@ export default {
       try {
         const data = await this.store.loadWorkCenterSettings(target);
         if (generation !== this.loadGeneration || target !== this.agentId) return;
-        this.draft = clone(data.settings);
+        this.draft = normalizeSettingsDraft(data.settings, this.defaultStageInstructions);
         this.draftAgentId = target;
         this.conflict = false;
         this.settingsUnsupported = false;
       } catch (error) {
         if (generation !== this.loadGeneration || target !== this.agentId) return;
         if (isUnsupportedSettingsError(error)) {
-          this.draft = defaultSettingsDraft();
+          this.draft = normalizeSettingsDraft(null, this.defaultStageInstructions);
           this.draftAgentId = target;
           this.settingsUnsupported = true;
           this.error = this.$t('workCenter.settings.upgradeRequired');
@@ -282,7 +322,7 @@ export default {
       try {
         const data = await this.store.saveWorkCenterSettings(this.draft, target);
         if (target !== this.agentId || this.draftAgentId !== target) return;
-        this.draft = clone(data.settings);
+        this.draft = normalizeSettingsDraft(data.settings, this.defaultStageInstructions);
         this.$emit('saved', data.settings);
         this.$emit('close');
       } catch (error) {

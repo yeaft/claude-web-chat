@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
-import WorkCenterSettingsModal from '../../web/components/WorkCenterSettingsModal.js';
+// @vitest-environment happy-dom
+import { mount } from '@vue/test-utils';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as Vue from 'vue';
+import WorkCenterSettingsModal, {
+  normalizeSettingsDraft,
+} from '../../web/components/WorkCenterSettingsModal.js';
 
 function modalVm(overrides = {}) {
   return {
@@ -23,6 +28,92 @@ function modalVm(overrides = {}) {
 }
 
 describe('Work Center settings modal ownership', () => {
+  afterEach(() => {
+    delete globalThis.Pinia;
+    document.body.innerHTML = '';
+  });
+
+  it('migrates missing dynamic settings from an older workflow response', () => {
+    const draft = normalizeSettingsDraft({
+      revision: 7,
+      defaultWorkflowId: 'software-change',
+      workflows: [{
+        id: 'software-change',
+        stages: [
+          {
+            id: 'triage',
+            type: 'triage',
+            instruction: 'Inspect the legacy task.',
+            modelPolicy: { mode: 'specific', model: 'provider/legacy', effort: 'high' },
+          },
+          { id: 'implement', type: 'implement', instruction: 'Keep the legacy implementation prompt.' },
+        ],
+      }],
+    }, {
+      review: 'Review the result.',
+      custom: 'Complete the Action.',
+    });
+
+    expect(draft.revision).toBe(7);
+    expect(draft.actionInstructions).toMatchObject({
+      triage: 'Inspect the legacy task.',
+      implement: 'Keep the legacy implementation prompt.',
+      review: 'Review the result.',
+      custom: 'Complete the Action.',
+    });
+    expect(draft.modelPolicy).toEqual({
+      mode: 'specific', model: 'provider/legacy', effort: 'high',
+    });
+  });
+
+  it('renders cached settings without actionInstructions while refresh is pending', async () => {
+    const legacySettings = {
+      revision: 3,
+      defaultWorkflowId: 'software-change',
+      workflows: [{
+        id: 'software-change',
+        stages: [{ id: 'triage', type: 'triage', instruction: 'Legacy triage prompt.' }],
+      }],
+    };
+    const store = {
+      workCenterSettingsByAgent: { 'agent-a': legacySettings },
+      workCenterRuntimeByAgent: {
+        'agent-a': {
+          defaultStageInstructions: {
+            implement: 'Implement the task.',
+            custom: 'Complete the Action.',
+          },
+        },
+      },
+      loadWorkCenterSettings: vi.fn().mockReturnValue(new Promise(() => {})),
+      saveWorkCenterSettings: vi.fn(),
+    };
+    globalThis.Pinia = { useChatStore: () => store };
+    const errors = [];
+    const wrapper = mount(WorkCenterSettingsModal, {
+      props: { agentId: 'agent-a' },
+      global: {
+        mocks: {
+          $t: key => key,
+          $i18n: { locale: 'en' },
+        },
+        config: {
+          errorHandler: error => errors.push(error),
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await Vue.nextTick();
+
+    const stages = [...document.body.querySelectorAll('.work-center-policy-stage')];
+    expect(errors).toEqual([]);
+    expect(stages).toHaveLength(8);
+    expect(stages[0].querySelector('textarea').value).toBe('Legacy triage prompt.');
+    expect(stages[1].querySelector('textarea').value).toBe('Implement the task.');
+    wrapper.unmount();
+  });
+
   it('does not save a draft loaded for a different Agent', async () => {
     const vm = modalVm({ agentId: 'agent-b', draftAgentId: 'agent-a' });
     await WorkCenterSettingsModal.methods.save.call(vm);
