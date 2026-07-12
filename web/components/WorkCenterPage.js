@@ -97,8 +97,9 @@ export default {
   watch: {
     agentId: {
       immediate: true,
-      handler(id) {
+      handler(id, previousId) {
         this.selectedId = null;
+        if (previousId && id !== previousId) this.resetCreateExecutionContext();
         if (id) {
           this.store.listWorkItems(id).catch(() => {});
           this.store.loadWorkCenterSettings(id).catch(() => {});
@@ -172,6 +173,15 @@ export default {
     },
     actionResponseText(action) {
       return String(action?.response || '').trim();
+    },
+    resetCreateExecutionContext() {
+      const hadUserExecutionInput = this.workDirTouched || this.startTouched;
+      this.form.workDir = '';
+      this.form.start = true;
+      this.workDirTouched = false;
+      this.startTouched = false;
+      if (hadUserExecutionInput) this.createOpen = false;
+      this.applyCreateDefaults();
     },
     applyCreateDefaults() {
       if (!this.createOpen) return;

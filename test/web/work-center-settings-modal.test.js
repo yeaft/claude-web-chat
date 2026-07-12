@@ -427,6 +427,81 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.form.workDir).toBe('/workspace/chosen');
   });
 
+  it('waits for the new Agent defaults before replacing untouched execution input', async () => {
+    const vm = {
+      createOpen: true,
+      workDirTouched: false,
+      startTouched: false,
+      createDefaultWorkDir: '',
+      createDefaultStart: true,
+      form: {
+        workDir: '/workspace/a', start: false, title: 'Keep title', goal: 'Keep goal',
+        acceptanceCriteriaText: '', reuseMemory: true,
+      },
+      selectedId: 'item-a',
+      agentId: 'agent-b',
+      saving: false,
+      settings: { startImmediately: true },
+      store: {
+        workCenterCreateDraft: null,
+        listWorkItems: vi.fn().mockResolvedValue([]),
+        loadWorkCenterSettings: vi.fn().mockResolvedValue({}),
+        createWorkItem: vi.fn().mockResolvedValue({ id: 'item-b' }),
+      },
+    };
+    vm.applyCreateDefaults = WorkCenterPage.methods.applyCreateDefaults.bind(vm);
+    vm.resetCreateExecutionContext = WorkCenterPage.methods.resetCreateExecutionContext.bind(vm);
+
+    WorkCenterPage.watch.agentId.handler.call(vm, 'agent-b', 'agent-a');
+
+    expect(vm.createOpen).toBe(true);
+    expect(vm.form).toMatchObject({
+      workDir: '', start: true, title: 'Keep title', goal: 'Keep goal',
+    });
+    expect(vm.store.listWorkItems).toHaveBeenCalledWith('agent-b');
+    expect(vm.store.loadWorkCenterSettings).toHaveBeenCalledWith('agent-b');
+
+    vm.createDefaultWorkDir = '/workspace/b';
+    WorkCenterPage.watch.createDefaultWorkDir.call(vm);
+    vm.createDefaultStart = false;
+    WorkCenterPage.watch.createDefaultStart.call(vm);
+
+    expect(vm.form).toMatchObject({
+      workDir: '/workspace/b', start: false, title: 'Keep title', goal: 'Keep goal',
+    });
+
+    await WorkCenterPage.methods.submitCreate.call(vm);
+
+    expect(vm.store.createWorkItem).toHaveBeenCalledWith(
+      expect.objectContaining({ workDir: '/workspace/b', start: false }),
+      'agent-b',
+    );
+  });
+
+  it('closes edited execution input instead of carrying it to another Agent', () => {
+    const vm = {
+      createOpen: true,
+      workDirTouched: true,
+      startTouched: false,
+      createDefaultWorkDir: '/workspace/b',
+      createDefaultStart: false,
+      form: { workDir: '/workspace/custom-a', start: true, title: 'Keep title', goal: 'Keep goal' },
+      selectedId: 'item-a',
+      store: {
+        listWorkItems: vi.fn().mockResolvedValue([]),
+        loadWorkCenterSettings: vi.fn().mockResolvedValue({}),
+      },
+    };
+    vm.applyCreateDefaults = WorkCenterPage.methods.applyCreateDefaults.bind(vm);
+
+    vm.resetCreateExecutionContext = WorkCenterPage.methods.resetCreateExecutionContext.bind(vm);
+    WorkCenterPage.watch.agentId.handler.call(vm, 'agent-b', 'agent-a');
+
+    expect(vm.createOpen).toBe(false);
+    expect(vm.form).toMatchObject({ workDir: '', start: true, title: 'Keep title', goal: 'Keep goal' });
+    expect(vm.workDirTouched).toBe(false);
+  });
+
   it('clears stale effort after load and before saving without model interaction', async () => {
     const loaded = normalizeWorkCenterSettings({
       revision: 3,

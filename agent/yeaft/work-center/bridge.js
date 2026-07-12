@@ -70,6 +70,7 @@ async function getSettingsRuntime() {
     models: Array.isArray(runtime.config.availableModels) ? runtime.config.availableModels : [],
     primaryModel: runtime.config.primaryModel || runtime.config.model || null,
     fastModel: runtime.config.fastModel || null,
+    defaultWorkDir: ctx.CONFIG?.workDir || process.cwd(),
     defaultStageInstructions: defaultWorkCenterStageInstructions(),
   };
 }
