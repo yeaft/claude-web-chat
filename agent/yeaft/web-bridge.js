@@ -207,7 +207,7 @@ function scheduleYeaftLoadHistoryMetadataReplay(sessionId) {
         tools: status.tools,
         yeaftDir: ctx.CONFIG?.yeaftDir || null,
         tasks: replaySession.taskManager ? replaySession.taskManager.listActiveTasks() : [],
-      });
+      }, { sessionId });
       sendSessionSnapshotBroadcast();
       if (sessionId && session === replaySession) {
         sendDreamSnapshotForSession(sessionId, { trigger: 'load_history' }).catch(() => null);
@@ -1108,7 +1108,7 @@ function emitVisibleHistoryReplay({ store, sessionId, limit, beforeSeq = null, m
       hasMore: visiblePage.hasMore,
       oldestSeq: visiblePage.oldestSeq,
       latestSeq: Number.isFinite(latestSeq) ? latestSeq : null,
-    }, perfTraceId ? { sessionId, perfTraceId } : undefined);
+    }, { sessionId, perfTraceId });
     return;
   }
 
@@ -4005,7 +4005,10 @@ export async function ensureSessionLoaded(opts = {}) {
       tools: bootStatus.tools,
       yeaftDir: ctx.CONFIG?.yeaftDir || null,
       tasks: session.taskManager ? session.taskManager.listActiveTasks() : [],
-    }, opts?.perfTraceId ? { sessionId: opts?.sessionMeta?.id || opts?.sessionId || null, perfTraceId: opts.perfTraceId } : undefined);
+    }, {
+      sessionId: opts?.sessionMeta?.id || opts?.sessionId || null,
+      perfTraceId: opts?.perfTraceId || null,
+    });
     sendSessionSnapshotBroadcast();
     // vp-status: rebuild frontend status table from authoritative agent
     // memory. Sent unconditionally so reconnect/refresh paths get the same
@@ -5623,7 +5626,7 @@ export async function handleYeaftLoadHistory(msg) {
         sessionId,
         latestSeq: delta.latestSeq,
         afterSeq,
-      }, perfTraceId ? { sessionId, perfTraceId } : undefined);
+      }, { sessionId, perfTraceId });
       return;
     }
 
@@ -5700,7 +5703,7 @@ export async function handleYeaftLoadHistory(msg) {
       hasMore,
       oldestSeq,
       latestSeq,
-    }, perfTraceId ? { sessionId, perfTraceId } : undefined);
+    }, { sessionId, perfTraceId });
   };
 
   if (!session) {
@@ -5749,7 +5752,7 @@ export async function handleYeaftLoadHistory(msg) {
         perfTraceId,
       });
       traceDuration('history.emit_chunk', emitStart, { detail: { mode: 'delta', count: projectedMessages.length, cold: true } });
-      sendSessionEvent({ type: 'history_loaded', mode: 'delta', count: projectedMessages.length, sessionId, latestSeq: delta.latestSeq, afterSeq }, perfTraceId ? { sessionId, perfTraceId } : undefined);
+      sendSessionEvent({ type: 'history_loaded', mode: 'delta', count: projectedMessages.length, sessionId, latestSeq: delta.latestSeq, afterSeq }, { sessionId, perfTraceId });
     } else if (!metadataOnly) {
       const replayStart = perfNowMs();
       emitVisibleHistoryReplay({ store: coldStore, sessionId, limit, mode: 'recent', perfTraceId });
