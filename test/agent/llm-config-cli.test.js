@@ -52,7 +52,10 @@ describe('yeaft-agent local LLM config helpers', () => {
     });
     expect(result.provider.protocol).toBeUndefined();
     expect(result.provider.apiKey).toBeUndefined();
-    expect(result.provider.models).toBeUndefined();
+    expect(result.provider.models).toEqual([
+      { id: 'claude-sonnet-4.5', protocol: 'anthropic' },
+      { id: 'gpt-5', protocol: 'openai-responses' },
+    ]);
   });
 
   it('clears stale fast model when GitHub Copilot is used without --fast', async () => {
@@ -84,9 +87,38 @@ describe('yeaft-agent local LLM config helpers', () => {
     };
 
     await expect(useGitHubCopilot({}, { model: 'missing-model', ...discovery })).rejects.toThrow('was not found');
-    const allowed = await useGitHubCopilot({}, { model: 'missing-model', allowUnknownModel: true, ...discovery });
+    const allowed = await useGitHubCopilot({}, {
+      model: 'missing-model',
+      fast: 'gpt-9-future',
+      allowUnknownModel: true,
+      ...discovery,
+    });
     expect(allowed.config.primaryModel).toBe('github-copilot/missing-model');
-    expect(allowed.provider.models).toBeUndefined();
+    expect(allowed.config.fastModel).toBe('github-copilot/gpt-9-future');
+    expect(allowed.provider.models).toEqual([
+      { id: 'gpt-5', protocol: 'openai-responses' },
+      { id: 'missing-model' },
+      { id: 'gpt-9-future', protocol: 'openai-responses' },
+    ]);
+  });
+
+  it('deduplicates allowed unknown Copilot primary and fast models', async () => {
+    const result = await useGitHubCopilot({}, {
+      model: 'missing-model',
+      fast: 'missing-model',
+      allowUnknownModel: true,
+      getTokenFn: async () => ({ token: 'copilot-token' }),
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [{ id: 'gpt-5' }] }),
+      }),
+    });
+
+    expect(result.provider.models).toEqual([
+      { id: 'gpt-5', protocol: 'openai-responses' },
+      { id: 'missing-model' },
+    ]);
   });
 
   it('auto-configures GitHub Copilot with gpt-5.5 when a credential is already available', async () => {

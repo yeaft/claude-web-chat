@@ -167,9 +167,13 @@ export async function handleClientWorkCenter(client, msg, checkAgentAccess) {
     return true;
   }
 
+  // Store the browser correlation id before forwarding. Agent responses can
+  // arrive synchronously for an empty Work Center, so writing it after the
+  // awaited send creates a race where the response deletes this entry first.
   pendingRequests.set(requestId, {
     client,
     agentId,
+    clientRequestId: typeof msg.requestId === 'string' ? msg.requestId : null,
     attachmentFileIds: resolved.consumedIds,
     expiresAt: Date.now() + REQUEST_TIMEOUT_MS,
   });
@@ -186,9 +190,6 @@ export async function handleClientWorkCenter(client, msg, checkAgentAccess) {
     throw error;
   }
 
-  // The browser owns the original id; Agent responses carry only the opaque
-  // server id. This mapping prevents cross-client response spoofing.
-  pendingRequests.get(requestId).clientRequestId = typeof msg.requestId === 'string' ? msg.requestId : null;
   return true;
 }
 

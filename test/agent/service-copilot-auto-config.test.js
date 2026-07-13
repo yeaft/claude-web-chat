@@ -11,15 +11,19 @@ function yeaftDir() {
   return join(tmp, '.yeaft');
 }
 
-function liveGpt55Options() {
+function liveCopilotOptions(models = ['gpt-5.5']) {
   return {
     getTokenFn: async () => ({ token: 'copilot-token' }),
     fetchFn: async () => ({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({ data: [{ id: 'gpt-5.5' }] }),
+      text: async () => JSON.stringify({ data: models.map(id => ({ id })) }),
     }),
   };
+}
+
+function liveGpt55Options() {
+  return liveCopilotOptions();
 }
 
 afterEach(() => {
@@ -40,6 +44,30 @@ describe('service GitHub Copilot auto-config integration', () => {
     expect(result.configured).toBe(true);
     expect(readLocalLlmConfig(configPath).primaryModel).toBe('github-copilot/gpt-5.5');
     expect(log).toHaveBeenCalledWith('Configured GitHub Copilot provider automatically with gpt-5.5.');
+  });
+
+  it('persists the live Copilot catalog for the first Session model menu', async () => {
+    const dir = yeaftDir();
+    const configPath = join(dir, 'config.json');
+    writeLocalLlmConfig({ language: 'zh' }, configPath);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await autoConfigureGitHubCopilotIfAvailable(
+      dir,
+      liveCopilotOptions(['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.5']),
+    );
+
+    expect(result.configured).toBe(true);
+    expect(readLocalLlmConfig(configPath).providers).toEqual([
+      expect.objectContaining({
+        name: 'github-copilot',
+        models: [
+          { id: 'gpt-5.6-luna', protocol: 'openai-responses' },
+          { id: 'gpt-5.6-sol', protocol: 'openai-responses' },
+          { id: 'gpt-5.5', protocol: 'openai-responses' },
+        ],
+      }),
+    ]);
   });
 
   it('skips an existing user LLM config without discovering Copilot models', async () => {

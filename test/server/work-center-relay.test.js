@@ -60,6 +60,54 @@ describe('Work Center relay', () => {
     expect(request).not.toHaveProperty('_requestUserId');
   });
 
+  it('correlates an immediate empty list response before forwarding resolves', async () => {
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+    forwardToAgent.mockImplementationOnce(async (agentId, request) => {
+      await deliverWorkCenterResponse(agentId, {
+        type: 'work_center_response',
+        requestId: request.requestId,
+        op: 'list',
+        ok: true,
+        data: { items: [], watcher: { enabled: true, activeRuns: 0 } },
+      });
+    });
+
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-empty-list', op: 'list', payload: {},
+    }, vi.fn().mockResolvedValue(true));
+
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      requestId: 'browser-empty-list',
+      op: 'list',
+      ok: true,
+      data: { items: [], watcher: { enabled: true, activeRuns: 0 } },
+    }));
+  });
+
+  it('correlates an immediate default settings response before forwarding resolves', async () => {
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+    forwardToAgent.mockImplementationOnce(async (agentId, request) => {
+      await deliverWorkCenterResponse(agentId, {
+        type: 'work_center_response',
+        requestId: request.requestId,
+        op: 'get_settings',
+        ok: true,
+        data: { settings: { revision: 1 }, runtime: { models: [] } },
+      });
+    });
+
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-default-settings', op: 'get_settings', payload: {},
+    }, vi.fn().mockResolvedValue(true));
+
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      requestId: 'browser-default-settings',
+      op: 'get_settings',
+      ok: true,
+      data: { settings: { revision: 1 }, runtime: { models: [] } },
+    }));
+  });
+
   it.each([
     ['without capability', []],
     ['with capability', ['work_item_attachments']],
