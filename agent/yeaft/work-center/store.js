@@ -3,10 +3,17 @@ import { mkdirSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
+import { normalizeActionCheckpoint } from './action-checkpoint.js';
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 7;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
+const MAX_RUN_RESPONSE_CHARS = 65_536;
+
+function normalizeRunResponse(value) {
+  const response = typeof value === 'string' ? value : String(value || '');
+  return response.slice(0, MAX_RUN_RESPONSE_CHARS);
+}
 
 function canonicalWorkspaceKey(workDir) {
   if (typeof workDir !== 'string' || !workDir.trim()) return '';
@@ -40,6 +47,17 @@ function mapWorkItem(row) {
     reuseMemory: row.reuse_memory !== 0,
     origin: parseJson(row.origin, null),
     linkedSessionIds: parseJson(row.linked_session_ids, []),
+    attachments: parseJson(row.attachments, []),
+    executionStats: {
+      llmRequestCount: Math.max(0, Number(row.usage_llm_request_count) || 0),
+      loopCount: Math.max(0, Number(row.usage_loop_count) || 0),
+      toolCount: Math.max(0, Number(row.usage_tool_count) || 0),
+      inputTokens: Math.max(0, Number(row.usage_input_tokens) || 0),
+      outputTokens: Math.max(0, Number(row.usage_output_tokens) || 0),
+      cacheReadTokens: Math.max(0, Number(row.usage_cache_read_tokens) || 0),
+      cacheWriteTokens: Math.max(0, Number(row.usage_cache_write_tokens) || 0),
+      totalTokens: Math.max(0, Number(row.usage_total_tokens) || 0),
+    },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -85,6 +103,7 @@ function mapRun(row) {
     vpSnapshot: parseJson(row.vp_snapshot, null),
     modelSnapshot: parseJson(row.model_snapshot, null),
     toolPolicySnapshot: parseJson(row.tool_policy_snapshot, null),
+    response: row.response || '',
     summary: row.summary || '',
     evidence: normalizeEvidence(parseJson(row.evidence, [])),
     waitingReason: row.waiting_reason || null,
@@ -93,6 +112,14 @@ function mapRun(row) {
     contractPatch: parseJson(row.contract_patch, null),
     loopCount: Math.max(0, Number(row.loop_count) || 0),
     toolCount: Math.max(0, Number(row.tool_count) || 0),
+    llmRequestCount: Math.max(0, Number(row.llm_request_count) || 0),
+    inputTokens: Math.max(0, Number(row.input_tokens) || 0),
+    outputTokens: Math.max(0, Number(row.output_tokens) || 0),
+    cacheReadTokens: Math.max(0, Number(row.cache_read_tokens) || 0),
+    cacheWriteTokens: Math.max(0, Number(row.cache_write_tokens) || 0),
+    totalTokens: Math.max(0, Number(row.total_tokens) || 0),
+    progressRevision: Math.max(0, Number(row.progress_revision) || 0),
+    checkpoint: normalizeActionCheckpoint(parseJson(row.checkpoint, null)),
   };
 }
 
@@ -161,6 +188,7 @@ export class WorkItemStore {
         reuse_memory INTEGER NOT NULL DEFAULT 1,
         origin TEXT,
         linked_session_ids TEXT NOT NULL DEFAULT '[]',
+        attachments TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -205,8 +233,17 @@ export class WorkItemStore {
         error TEXT,
         review_decision TEXT,
         contract_patch TEXT,
+        response TEXT NOT NULL DEFAULT '',
         loop_count INTEGER NOT NULL DEFAULT 0,
-        tool_count INTEGER NOT NULL DEFAULT 0
+        tool_count INTEGER NOT NULL DEFAULT 0,
+        llm_request_count INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        progress_revision INTEGER NOT NULL DEFAULT 0,
+        checkpoint TEXT
       );
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -259,8 +296,32 @@ export class WorkItemStore {
     if (!hasColumn(this.db, 'runs', 'tool_count')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN tool_count INTEGER NOT NULL DEFAULT 0');
     }
+    for (const column of [
+      'llm_request_count',
+      'input_tokens',
+      'output_tokens',
+      'cache_read_tokens',
+      'cache_write_tokens',
+      'total_tokens',
+    ]) {
+      if (!hasColumn(this.db, 'runs', column)) {
+        this.db.exec(`ALTER TABLE runs ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+      }
+    }
+    if (!hasColumn(this.db, 'runs', 'response')) {
+      this.db.exec("ALTER TABLE runs ADD COLUMN response TEXT NOT NULL DEFAULT ''");
+    }
+    if (!hasColumn(this.db, 'runs', 'progress_revision')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN progress_revision INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!hasColumn(this.db, 'runs', 'checkpoint')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN checkpoint TEXT');
+    }
     if (!hasColumn(this.db, 'work_items', 'workflow_snapshot')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN workflow_snapshot TEXT');
+    }
+    if (!hasColumn(this.db, 'work_items', 'attachments')) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
     }
     if (!hasColumn(this.db, 'actions', 'stage_id')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN stage_id TEXT');
@@ -301,8 +362,8 @@ export class WorkItemStore {
       this.db.prepare(`INSERT INTO work_items
         (id, revision, title, goal, acceptance_criteria, workflow_template, workflow_snapshot, status,
          current_action_id, current_run_id, work_dir, workspace_key, reuse_memory, origin, linked_session_ids,
-         created_at, updated_at)
-        VALUES (?, 1, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)`).run(
+         attachments, created_at, updated_at)
+        VALUES (?, 1, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         id,
         input.title,
         input.goal,
@@ -315,6 +376,7 @@ export class WorkItemStore {
         input.reuseMemory === false ? 0 : 1,
         stringify(input.origin || null),
         stringify(input.linkedSessionIds || []),
+        stringify(input.attachments || []),
         now,
         now,
       );
@@ -409,22 +471,32 @@ export class WorkItemStore {
     const where = [];
     const values = [];
     if (typeof filters.status === 'string' && filters.status) {
-      where.push('status = ?');
+      where.push('w.status = ?');
       values.push(filters.status);
     }
     if (typeof filters.sessionId === 'string' && filters.sessionId.trim()) {
       const sessionId = filters.sessionId.trim();
-      where.push('(instr(origin, ?) > 0 OR instr(linked_session_ids, ?) > 0)');
+      where.push('(instr(w.origin, ?) > 0 OR instr(w.linked_session_ids, ?) > 0)');
       values.push(`\"sessionId\":${JSON.stringify(sessionId)}`, JSON.stringify(sessionId));
     }
     if (typeof filters.search === 'string' && filters.search.trim()) {
-      where.push('(title LIKE ? OR goal LIKE ?)');
+      where.push('(w.title LIKE ? OR w.goal LIKE ?)');
       const query = `%${filters.search.trim()}%`;
       values.push(query, query);
     }
     const limit = Math.min(Math.max(Number(filters.limit) || 100, 1), 500);
-    const sql = `SELECT * FROM work_items ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY updated_at DESC LIMIT ?`;
+    const sql = `SELECT w.*,
+        COALESCE(SUM(r.llm_request_count), 0) AS usage_llm_request_count,
+        COALESCE(SUM(r.loop_count), 0) AS usage_loop_count,
+        COALESCE(SUM(r.tool_count), 0) AS usage_tool_count,
+        COALESCE(SUM(r.input_tokens), 0) AS usage_input_tokens,
+        COALESCE(SUM(r.output_tokens), 0) AS usage_output_tokens,
+        COALESCE(SUM(r.cache_read_tokens), 0) AS usage_cache_read_tokens,
+        COALESCE(SUM(r.cache_write_tokens), 0) AS usage_cache_write_tokens,
+        COALESCE(SUM(r.total_tokens), 0) AS usage_total_tokens
+      FROM work_items w LEFT JOIN runs r ON r.work_item_id = w.id
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      GROUP BY w.id ORDER BY w.updated_at DESC LIMIT ?`;
     return this.db.prepare(sql).all(...values, limit).map(mapWorkItem);
   }
 
@@ -464,7 +536,7 @@ export class WorkItemStore {
     });
   }
 
-  addActionGuidance(id, guidance, expected, makeAction) {
+  addActionGuidance(id, guidance, expected, makeAction, attachments = null) {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
@@ -491,7 +563,12 @@ export class WorkItemStore {
         contractRevision: workItem.revision,
       }, this.#nextSequence(id), now);
       this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
-        current_run_id = NULL, updated_at = ? WHERE id = ?`).run(action.id, now, id);
+        current_run_id = NULL, attachments = ?, updated_at = ? WHERE id = ?`).run(
+        action.id,
+        stringify(Array.isArray(attachments) ? attachments : workItem.attachments),
+        now,
+        id,
+      );
       this.appendEvent(id, 'action.guidance_added', { guidance }, { actionId: action.id });
       return this.getWorkItemDetail(id);
     });
@@ -642,6 +719,9 @@ export class WorkItemStore {
       const now = this.now();
       const runId = randomUUID();
       const leaseEpoch = Number(row.lease_epoch) + 1;
+      const priorProgress = this.db.prepare(`SELECT MAX(progress_revision) AS value FROM runs
+        WHERE action_id = ?`).get(row.id);
+      const progressRevision = Math.max(0, Number(priorProgress?.value) || 0) + 1;
       const changedAction = this.db.prepare(`UPDATE actions SET status = 'running', attempt = attempt + 1,
         current_run_id = ?, lease_epoch = ?, updated_at = ?
         WHERE id = ? AND status = 'ready' AND current_run_id IS NULL`).run(
@@ -662,8 +742,8 @@ export class WorkItemStore {
       if (Number(changedWorkItem.changes) !== 1) throw new Error('WorkItem claim lost its current Action');
       this.db.prepare(`INSERT INTO runs
         (id, action_id, work_item_id, owner_boot_id, lease_epoch, status, started_at,
-         expires_at, evidence)
-        VALUES (?, ?, ?, ?, ?, 'running', ?, ?, '[]')`).run(
+         expires_at, evidence, progress_revision)
+        VALUES (?, ?, ?, ?, ?, 'running', ?, ?, '[]', ?)`).run(
         runId,
         row.id,
         row.work_item_id,
@@ -671,6 +751,7 @@ export class WorkItemStore {
         leaseEpoch,
         now,
         now + leaseMs,
+        progressRevision,
       );
       this.appendEvent(row.work_item_id, 'run.claimed', { ownerBootId, leaseEpoch }, { actionId: row.id, runId });
       return {
@@ -714,22 +795,52 @@ export class WorkItemStore {
     return !!this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
   }
 
-  interruptRun(runId, ownerBootId, leaseEpoch, reason = 'Work Center watcher stopped') {
+  interruptRun(
+    runId,
+    ownerBootId,
+    leaseEpoch,
+    reason = 'Work Center watcher stopped',
+    finalProgress = null,
+  ) {
     return withTransaction(this.db, () => {
       const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, false);
       if (!active) return false;
       const action = this.getAction(active.action_id);
       const now = this.now();
       const retryable = action.type !== 'deliver' && action.attempt < action.maxAttempts;
-      const runChanged = this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?
-        WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
-        now,
-        reason,
-        runId,
-        ownerBootId,
-        leaseEpoch,
-      );
+      const hasFinalProgress = finalProgress && typeof finalProgress === 'object';
+      const runChanged = hasFinalProgress
+        ? this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?,
+          response = ?, loop_count = ?, tool_count = ?, llm_request_count = ?, input_tokens = ?,
+          output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, total_tokens = ?, checkpoint = ?,
+          progress_revision = progress_revision + 1
+          WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
+          now,
+          reason,
+          normalizeRunResponse(finalProgress.response),
+          Math.max(0, Number(finalProgress.loopCount) || 0),
+          Math.max(0, Number(finalProgress.toolCount) || 0),
+          Math.max(0, Number(finalProgress.llmRequestCount) || 0),
+          Math.max(0, Number(finalProgress.inputTokens) || 0),
+          Math.max(0, Number(finalProgress.outputTokens) || 0),
+          Math.max(0, Number(finalProgress.cacheReadTokens) || 0),
+          Math.max(0, Number(finalProgress.cacheWriteTokens) || 0),
+          Math.max(0, Number(finalProgress.totalTokens) || 0),
+          stringify(normalizeActionCheckpoint(finalProgress.checkpoint)),
+          runId,
+          ownerBootId,
+          leaseEpoch,
+        )
+        : this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?
+          WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
+          now,
+          reason,
+          runId,
+          ownerBootId,
+          leaseEpoch,
+        );
       if (Number(runChanged.changes) !== 1) return false;
+      this.onTransitionStep?.('after_interrupt_run_update');
       const actionChanged = this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL,
         updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
         AND lease_epoch = ?`).run(
@@ -775,6 +886,53 @@ export class WorkItemStore {
     });
   }
 
+  updateRunProgress(runId, ownerBootId, leaseEpoch, progress = {}) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
+      if (!active) return null;
+      const checkpoint = normalizeActionCheckpoint(progress.checkpoint);
+      const result = this.db.prepare(`UPDATE runs SET response = ?, loop_count = ?, tool_count = ?,
+        llm_request_count = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
+        cache_write_tokens = ?, total_tokens = ?, checkpoint = ?, progress_revision = progress_revision + 1
+        WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
+        normalizeRunResponse(progress.response),
+        Math.max(0, Number(progress.loopCount) || 0),
+        Math.max(0, Number(progress.toolCount) || 0),
+        Math.max(0, Number(progress.llmRequestCount) || 0),
+        Math.max(0, Number(progress.inputTokens) || 0),
+        Math.max(0, Number(progress.outputTokens) || 0),
+        Math.max(0, Number(progress.cacheReadTokens) || 0),
+        Math.max(0, Number(progress.cacheWriteTokens) || 0),
+        Math.max(0, Number(progress.totalTokens) || 0),
+        stringify(checkpoint),
+        runId,
+        ownerBootId,
+        leaseEpoch,
+      );
+      if (Number(result.changes) !== 1) return null;
+      return this.getWorkItemDetail(active.work_item_id);
+    });
+  }
+
+  getActionResumeContext(actionId, excludeRunId = null) {
+    const runs = this.db.prepare(`SELECT * FROM runs
+      WHERE action_id = ? AND id != ? AND status IN ('interrupted', 'retryable')
+      ORDER BY ended_at DESC, started_at DESC`).all(actionId, excludeRunId || '').map(mapRun);
+    if (runs.length === 0) return null;
+    const latest = runs[0];
+    const response = runs.find(run => run.response)?.response || '';
+    const checkpoint = normalizeActionCheckpoint({
+      toolEvents: runs.slice().reverse().flatMap(run => run.checkpoint?.toolEvents || []),
+    });
+    if (!response && !latest.error && (checkpoint?.toolEvents.length || 0) === 0) return null;
+    return {
+      status: latest.status,
+      response,
+      error: latest.error,
+      checkpoint,
+    };
+  }
+
   finalizeRun(runId, ownerBootId, leaseEpoch, result, makeTransition) {
     return withTransaction(this.db, () => {
       const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
@@ -789,19 +947,29 @@ export class WorkItemStore {
         throw new Error('Work Center transition plan is incomplete');
       }
       const now = this.now();
-      this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, summary = ?, evidence = ?,
-        waiting_reason = ?, error = ?, review_decision = ?, contract_patch = ?,
-        loop_count = ?, tool_count = ? WHERE id = ?`).run(
+      this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, response = ?, summary = ?, evidence = ?,
+        waiting_reason = ?, error = ?, review_decision = ?, contract_patch = ?, checkpoint = ?,
+        loop_count = ?, tool_count = ?, llm_request_count = ?, input_tokens = ?, output_tokens = ?,
+        cache_read_tokens = ?, cache_write_tokens = ?, total_tokens = ?,
+        progress_revision = progress_revision + 1 WHERE id = ?`).run(
         result.outcome,
         now,
+        normalizeRunResponse(result.response),
         result.summary || '',
         stringify(normalizeEvidence(result.evidence)),
         result.waitingReason || null,
         result.error || null,
         result.reviewDecision || null,
         stringify(result.contractPatch || null),
+        stringify(normalizeActionCheckpoint(result.checkpoint)),
         Math.max(0, Number(result.loopCount) || 0),
         Math.max(0, Number(result.toolCount) || 0),
+        Math.max(0, Number(result.llmRequestCount) || 0),
+        Math.max(0, Number(result.inputTokens) || 0),
+        Math.max(0, Number(result.outputTokens) || 0),
+        Math.max(0, Number(result.cacheReadTokens) || 0),
+        Math.max(0, Number(result.cacheWriteTokens) || 0),
+        Math.max(0, Number(result.totalTokens) || 0),
         runId,
       );
       this.onTransitionStep?.('after_run_update');

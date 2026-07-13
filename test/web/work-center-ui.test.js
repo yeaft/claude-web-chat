@@ -18,8 +18,39 @@ describe('Work Center UI contract', () => {
     expect(chat.indexOf('<WorkCenterPage')).toBeGreaterThan(chat.indexOf('</SessionSidebarShell>'));
     expect(yeaftPage).toContain('<WorkCenterPage v-if="store.workCenterOpen"');
     expect(yeaftPage).toContain('<div v-else class="yeaft-main"');
+    expect(yeaftPage).toContain('v-if="!store.workCenterOpen && showVpTimeline"');
+    expect(yeaftPage).toContain('v-if="!store.workCenterOpen && debugMode"');
     expect(yeaftSidebar).toContain(':active="chatStore ? chatStore.workCenterOpen : false"');
     expect(yeaftSidebar).toContain('leaveWorkCenter');
+  });
+
+  it('keeps Yeaft global Settings mounted outside the Work Center content branch', () => {
+    const page = read('web/components/YeaftPage.js');
+    const workCenterStart = page.indexOf('<WorkCenterPage v-if="store.workCenterOpen"');
+    const conversationStart = page.indexOf('<div v-else class="yeaft-main"');
+    const conversationEnd = page.indexOf('<!-- Keep global Settings outside the conversation/Work Center branch');
+    const settingsStart = page.indexOf('<SettingsPanel', conversationEnd);
+
+    expect(workCenterStart).toBeGreaterThan(-1);
+    expect(conversationStart).toBeGreaterThan(workCenterStart);
+    expect(conversationEnd).toBeGreaterThan(conversationStart);
+    expect(settingsStart).toBeGreaterThan(conversationEnd);
+    expect(page).toContain('@open-settings="toggleSettings"');
+  });
+
+  it('uses the shared Chat settings row styles without Yeaft overrides', () => {
+    const chat = read('web/components/ChatPage.js');
+    const yeaftSidebar = read('web/components/YeaftSidebar.js');
+    const sidebarCss = read('web/styles/sidebar.css');
+    const yeaftSidebarCss = read('web/styles/yeaft-sidebar.css');
+
+    expect(chat).toContain('<div class="sidebar-bottom">');
+    expect(yeaftSidebar).toContain('<div class="sidebar-bottom">');
+    expect(chat).toContain('<button class="sidebar-nav-item" @click="showSettingsPanel = true">');
+    expect(yeaftSidebar).toContain('<button class="sidebar-nav-item" @click="$emit(\'open-settings\')">');
+    expect(sidebarCss).toContain('.sidebar-bottom .sidebar-nav-item');
+    expect(yeaftSidebarCss).not.toContain('.yeaft-sidebar .sidebar-bottom');
+    expect(yeaftSidebarCss).not.toContain('.yeaft-sidebar .sidebar-bottom .sidebar-nav-item');
   });
 
   it('keeps Agent-level Work Center state separate from Session background tasks', () => {
@@ -43,8 +74,10 @@ describe('Work Center UI contract', () => {
     expect(page).toContain(':work-item-fn="openWorkItemDraft"');
     expect(store).toContain('enterWorkCenterFromSession');
     expect(workCenter).toContain('class="work-center-action-card"');
-    expect(workCenter).toContain("$t('workCenter.loopCount', { count: action.loopCount || 0 })");
-    expect(workCenter).toContain("$t('workCenter.toolCount', { count: action.toolCount || 0 })");
+    expect(workCenter).toContain("$t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) })");
+    expect(workCenter).toContain("$t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) })");
+    expect(workCenter).toContain("$t('workCenter.toolCount', { count: formatCount(executionStats(action).toolCount) })");
+    expect(workCenter).toContain("$t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) })");
     expect(workCenter).not.toContain('runsForAction(action.id)');
     expect(workCenter).not.toContain('run.evidence');
     expect(workCenter).not.toContain('selected.events');
@@ -72,15 +105,16 @@ describe('Work Center UI contract', () => {
     expect(chat).toContain('<WorkbenchPanel v-if="canUseWorkbench && (!store.isSplitMode || store.workCenterOpen)"');
   });
 
-  it('uses static Action summaries and Action-level guidance instead of execution detail', () => {
+  it('uses expandable user-facing Action responses without raw execution detail', () => {
     const page = read('web/components/WorkCenterPage.js');
     const store = read('web/stores/chat.js');
     const css = read('web/styles/work-center.css');
 
     expect(page).toContain('class="work-center-action-card"');
     expect(page).toContain('class="work-center-action-stats"');
-    expect(page).not.toContain('@click="toggleAction(action)"');
-    expect(page).not.toContain('class="work-center-action-body"');
+    expect(page).toContain('@click="toggleAction(action)"');
+    expect(page).toContain('class="work-center-action-body"');
+    expect(page).toContain('class="work-center-action-response"');
     expect(page).not.toContain('class="work-center-run"');
     expect(page).not.toContain('class="work-center-activity-toggle"');
     expect(page).toContain("['ready','running'].includes(selected.status)");
@@ -88,6 +122,7 @@ describe('Work Center UI contract', () => {
     expect(store).toContain("workCenterRequest('guide'");
     expect(css).toContain('.work-center-action-card');
     expect(css).toContain('.work-center-action-stats');
+    expect(css).toContain('.work-center-action-response');
     expect(page).not.toContain('v-for="tool');
   });
 
@@ -131,6 +166,35 @@ describe('Work Center UI contract', () => {
     expect(page).toContain(':aria-label="tr(\'workCenter.newWorkItem\'');
   });
 
+  it('uses shared controls and a fixed shell for the create dialog', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    const css = read('web/styles/work-center.css');
+
+    expect(page).toContain('role="dialog" aria-modal="true"');
+    expect(page).toContain('class="work-center-modal-header"');
+    expect(page).toContain('class="modal-close"');
+    expect(page).toContain('class="work-center-modal-footer"');
+    expect(page).toContain('class="work-center-create-options"');
+    expect(page).toContain("tr('workCenter.titleHint'");
+    expect(page).toContain("tr('workCenter.startImmediatelyHint'");
+    expect(page).toContain("mixins: [folderPickerMixin]");
+    expect(page).toContain('class="work-center-workdir-picker"');
+    expect(page).toContain('v-model="form.workDir" type="text" required readonly');
+    expect(page).toContain('@click="openFolderPicker"');
+    expect(page).toContain('class="folder-picker-dialog"');
+    expect(page).toContain('folderPickerSetWorkDir(path)');
+    expect(page).not.toContain('@input="onCreateWorkDirInput"');
+    expect(css).toMatch(/\.work-center-modal\s*\{[^}]*height: min\(660px, 86vh\)[^}]*overflow: hidden/s);
+    expect(css).toMatch(/\.work-center-modal-body\s*\{[^}]*overflow-y: auto/s);
+    expect(css).toContain('.work-center-modal .btn-primary');
+    expect(css).toContain('.work-center-modal .btn-secondary');
+    expect(css).toContain('.work-center-modal .folder-picker-dialog');
+    expect(css).toContain('background: var(--modal-overlay-bg)');
+    expect(css).toContain('background: var(--session-active) !important');
+    expect(css).toContain('width: calc(100vw - 16px)');
+    expect(css).toContain('height: calc(100dvh - 16px)');
+  });
+
   it('uses filter-specific list headings and empty states', () => {
     const page = read('web/components/WorkCenterPage.js');
 
@@ -156,9 +220,19 @@ describe('Work Center UI contract', () => {
     expect(page).not.toContain('workflowTemplate: this.form');
     expect(page).not.toContain('run.modelSnapshot');
     expect(modal).toContain("section: 'workflow'");
+    expect(modal).toContain('draft.globalInstructions');
     expect(modal).toContain('draft.actionInstructions[type]');
     expect(modal).toContain("$t('workCenter.action.' + type)");
+    expect(modal).toContain('v-for="type in actionTypes"');
     expect(modal).toContain('draft.modelPolicy.effort');
+    expect(modal).toContain('work-center-model-effort');
+    expect(modal).toContain('effortChooseModelHelp');
+    expect(modal).not.toContain("{ id: 'general'");
+    expect(modal).not.toContain('v-model="draft.defaultWorkDir"');
+    expect(page).toContain("this.settings?.defaultWorkDir || this.runtime?.defaultWorkDir || ''");
+    expect(page).toContain('createDefaultWorkDir()');
+    expect(page).toContain('folderPickerInitialDir()');
+    expect(page).toContain('folderPickerAgentId()');
     expect(modal).toContain("mode === 'specific'");
     expect(modal).toContain("$emit('open-agent-models')");
     expect(page).toContain('<LlmTab context="yeaft"');
@@ -171,6 +245,34 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('.work-center-settings-pane');
     expect(css).toContain('.work-center-settings-card .btn-ghost');
     expect(css).toContain('overflow-y: auto');
+    expect(css).toContain('.work-center-settings-card input[type="text"]');
+    expect(css).toContain('.work-center-settings-card input[type="number"]');
+    expect(css).toContain('background: var(--bg-input)');
+    expect(css).toContain('.work-center-settings-card .btn-primary');
+    expect(css).toContain('color: var(--accent-fg)');
+  });
+
+  it('gates Work Item attachment controls on the Agent runtime capability', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    expect(page).toContain('workItemAttachmentsSupported()');
+    expect(page).toContain("this.runtime?.workItemAttachments === true");
+    expect(page).toContain('v-if="workItemAttachmentsSupported" class="btn-secondary work-center-attachment-picker"');
+    expect(page).toContain('v-if="workItemAttachmentsSupported" class="btn-ghost work-center-attachment-picker"');
+    expect(page).toContain('@change="onGuidanceAttachmentInput"');
+    expect(page).toContain('guidanceAttachments.map(attachment => ({');
+    expect(page).toContain('@click="previewAttachment(attachment)"');
+    expect(page).toContain('previewWorkItemAttachment(this.selected.id, attachment.id, this.agentId)');
+    expect(page).toContain("tr('workCenter.attachmentsUnsupported'");
+    expect(page).toContain('attachments: this.workItemAttachmentsSupported');
+  });
+
+  it('animates only running status dots and honors reduced motion', () => {
+    const css = read('web/styles/work-center.css');
+    expect(css).toContain('.work-center-status[data-status="running"] > span');
+    expect(css).toContain('animation: work-center-running-pulse');
+    expect(css).toContain('@keyframes work-center-running-pulse');
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(css).not.toMatch(/\.work-center-status\[data-status="ready"\][^{]*\{[^}]*animation:/s);
   });
 
   it('provides matching English and Chinese Work Center strings', () => {
@@ -188,6 +290,8 @@ describe('Work Center UI contract', () => {
       'workCenter.noCompletedTitle',
       'workCenter.settings.instructionHelp',
       'workCenter.settings.instructionReset',
+      'workCenter.chooseFolder',
+      'workCenter.workDirPickerHelp',
       'workCenter.noMatchesTitle',
       'workCenter.loading',
       'workCenter.noTimestamp',
@@ -195,18 +299,36 @@ describe('Work Center UI contract', () => {
       'workCenter.selectTitle',
       'workCenter.status.needs_attention',
       'workCenter.action.review',
+      'workCenter.action.design',
+      'workCenter.action.diagnose',
+      'workCenter.action.migrate',
+      'workCenter.action.document',
+      'workCenter.action.operate',
       'workCenter.action.custom',
       'workCenter.guidance',
       'workCenter.sendGuidance',
+      'workCenter.llmRequestCount',
       'workCenter.loopCount',
       'workCenter.toolCount',
+      'workCenter.tokenCount',
+      'workCenter.tokenBreakdown',
       'workCenter.reuseMemory',
+      'workCenter.reuseMemoryHelp',
       'workCenter.settings.title',
+      'workCenter.settings.globalInstructions',
+      'workCenter.settings.globalInstructionsHelp',
+      'workCenter.settings.actionPolicies',
       'workCenter.settings.assignment.auto',
       'workCenter.settings.model.specific',
+      'workCenter.settings.effortHelp',
+      'workCenter.settings.effortChooseModelHelp',
+      'workCenter.settings.effortUnsupportedHelp',
       'workCenter.settings.addStage',
       'workCenter.settings.upgradeRequired',
       'workCenter.planPreview',
+      'workCenter.attachmentsUnsupported',
+      'workCenter.addAttachments',
+      'workCenter.previewAttachment',
     ];
     for (const key of keys) {
       expect(en).toContain(`'${key}'`);

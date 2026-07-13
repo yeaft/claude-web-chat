@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 // 共享上下文对象 - 所有模块通过 import 访问
 // 由 index.js 在启动时初始化
 
@@ -22,6 +24,7 @@ export default {
   // Slash command 描述映射: { commandName: description } — 从 plugin commands/*.md 提取
   slashCommandDescriptions: {},
   agentMetrics: {
+    metricEpoch: randomUUID(),
     chatTurns: 0,
     yeaftTurns: 0,
     sessionsCreated: 0,

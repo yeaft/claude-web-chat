@@ -192,7 +192,7 @@ describe('Yeaft web bridge stream text batching', () => {
     ]);
   });
 
-  it('records Yeaft loop tokens once and turn_close as a turn only', () => {
+  it('records turn_close as a turn without double-counting adapter tokens', () => {
     const hctx = makeHandlerCtx({ turnId: 'turn-metrics', threadId: 'thread-metrics' });
 
     __testHandleEngineEvent({
@@ -214,10 +214,10 @@ describe('Yeaft web bridge stream text batching', () => {
       chatTurns: 0,
       yeaftTurns: 1,
       totalTurns: 1,
-      inputTokens: 10,
-      outputTokens: 5,
-      cacheReadTokens: 2,
-      totalTokens: 17,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      totalTokens: 0,
     });
     expect(sent).toContainEqual(expect.objectContaining({
       type: 'yeaft_output',

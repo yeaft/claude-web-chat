@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { appendToAssistantMessageForConversation } from '../../web/stores/helpers/messages.js';
+import {
+  addMessageToConversation,
+  appendToAssistantMessageForConversation,
+} from '../../web/stores/helpers/messages.js';
 import {
   buildYeaftMessageTurnSpans,
   hasHiddenYeaftMessageTurns,
@@ -51,6 +54,32 @@ describe('message flow regressions', () => {
     appendToAssistantMessageForConversation(store, 'conv-1', 'hello world', { id: 'msg-1', turnId: 'turn-1' });
 
     expect(store.messagesMap['conv-1'][0].content).toBe('hello world');
+  });
+
+  it('stamps background agent messages without promoting that conversation', () => {
+    const store = makeStore();
+    store.yeaftConversationIdsByAgent = {
+      'agent-1': 'conv-1',
+      'agent-2': 'conv-2',
+    };
+    store.messagesMap['conv-2'] = [];
+    store._currentYeaftSessionId = 'session-2';
+    store._currentYeaftVpId = 'vp-2';
+    store._currentYeaftTurnId = 'turn-2';
+
+    addMessageToConversation(store, 'conv-2', {
+      id: 'msg-2',
+      type: 'assistant',
+      content: 'background',
+    });
+
+    expect(store.yeaftConversationId).toBe('conv-1');
+    expect(store.messagesMap['conv-2'][0]).toMatchObject({
+      sessionId: 'session-2',
+      vpId: 'vp-2',
+      turnId: 'turn-2',
+      speakerVpId: 'vp-2',
+    });
   });
 
   it('counts hyphenated tool-use/tool-result events as part of Yeaft assistant turns', () => {

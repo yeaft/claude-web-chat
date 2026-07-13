@@ -23,6 +23,7 @@ const {
 } = await import('../../../../agent/yeaft/work-center/bridge.js');
 
 const originalConfig = ctx.CONFIG;
+const originalAgentCapabilities = ctx.agentCapabilities;
 const dirs = [];
 
 function deferred() {
@@ -63,8 +64,9 @@ function internalDetail() {
     }],
     runs: [{
       id: 'r-1', actionId: 'a-1', workItemId: 'wi-1', status: 'running', startedAt: 1, expiresAt: 2,
-      summary: 'Private summary', evidence: [{ kind: 'test', label: 'passed' }],
-      loopCount: 3, toolCount: 8,
+      response: 'Analyzed the request and prepared the contract.',
+      summary: 'Contract prepared', evidence: [{ kind: 'test', label: 'passed' }],
+      loopCount: 3, toolCount: 8, progressRevision: 6,
       roleSnapshot: { id: 'triage', actionType: 'triage', selectionReason: 'auto:triage', assignmentPolicy: { mode: 'auto' } },
       vpSnapshot: { id: 'omni', name: 'Omni', role: 'Lead', persona: 'private persona', personaHash: 'private-hash' },
       modelSnapshot: { id: 'provider/model', provider: 'provider', policy: { mode: 'specific' } },
@@ -87,17 +89,21 @@ describe('Work Center lifecycle bridge', () => {
     resetYeaftSession.mockReset();
     resetYeaftSession.mockResolvedValue(undefined);
     ctx.CONFIG = originalConfig;
+    ctx.agentCapabilities = originalAgentCapabilities;
     __testSetWorkCenterService(null);
     __testSetWorkCenterFactory(null);
   });
 
   afterEach(() => {
     ctx.CONFIG = originalConfig;
+    ctx.agentCapabilities = originalAgentCapabilities;
     while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true });
   });
 
-  it('serves executable default stage prompts through the browser settings path', async () => {
-    createYeaftDir();
+  it('serves executable defaults and attachment capability through the browser settings path', async () => {
+    const workDir = createYeaftDir();
+    ctx.CONFIG.workDir = workDir;
+    ctx.agentCapabilities = ['work_item_attachments'];
 
     await handleWorkCenterRequest({ requestId: 'settings-1', op: 'get_settings', payload: {} });
 
@@ -107,9 +113,11 @@ describe('Work Center lifecycle bridge', () => {
       data: expect.objectContaining({
         settings: expect.objectContaining({ defaultWorkflowId: 'software-change' }),
         runtime: expect.objectContaining({
+          defaultWorkDir: workDir,
+          workItemAttachments: true,
           defaultStageInstructions: expect.objectContaining({
-            triage: expect.stringContaining('Do not implement yet'),
-            implement: expect.stringContaining('Add and run relevant tests'),
+            triage: expect.stringContaining('Do not implement'),
+            implement: expect.stringContaining('add or update focused tests'),
           }),
         }),
       }),
@@ -205,7 +213,8 @@ describe('Work Center lifecycle bridge', () => {
           id: raw.id,
           actions: [{
             id: 'a-1', assignmentPolicy: { mode: 'auto', fixedVpId: null },
-            loopCount: 3, toolCount: 8,
+            loopCount: 3, toolCount: 8, progressRevision: 6,
+            response: 'Analyzed the request and prepared the contract.',
           }],
         },
       });
@@ -213,7 +222,7 @@ describe('Work Center lifecycle bridge', () => {
       for (const secret of [
         '/private/project', '/private/canonical', 'workflowSnapshot', 'private-message',
         'private prompt', 'private context', 'private persona', 'private-hash',
-        'Private summary', 'modelSnapshot', 'provider/model', 'runs', 'events',
+        'Contract prepared', 'modelSnapshot', 'provider/model', 'runs', 'events',
         'toolPolicySnapshot', 'allowedToolNames', '/private/read', '/private/write', '/private/cwd',
         'private event data',
       ]) {

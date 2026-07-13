@@ -37,6 +37,28 @@ describe('assistant/session output aliases', () => {
     }
   });
 
+  it('hydrates persisted Yeaft Session pins from the top-level server replay', () => {
+    const applySnapshot = vi.fn();
+    globalThis.window = {
+      Pinia: {
+        useSessionsStore: () => ({ applySnapshot }),
+      },
+    };
+    const store = mkStore();
+    const sessions = [
+      { id: 'session_default', agentId: 'agent-a', pinned: true },
+    ];
+
+    handleMessage(store, {
+      type: 'yeaft_session_hydrate',
+      agentId: 'agent-a',
+      sessions,
+      fromDb: true,
+    });
+
+    expect(applySnapshot).toHaveBeenCalledWith(sessions, 'agent-a');
+  });
+
   it('applies session_pinned acknowledgements through the chat pin cache owner', () => {
     const applyPinState = vi.fn();
     globalThis.window = {

@@ -120,7 +120,12 @@ describe('Yeaft load-history first paint', () => {
       await flushMicrotasks();
 
       await new Promise(resolve => setTimeout(resolve, 0));
-      expect(sent.some(m => m.event?.type === 'session_ready' && !m.event.partial)).toBe(true);
+      const ready = sent.find(m => m.event?.type === 'session_ready' && !m.event.partial);
+      expect(ready).toMatchObject({
+        type: 'yeaft_output',
+        sessionId: 'session-fast',
+        event: { type: 'session_ready' },
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -487,6 +492,11 @@ describe('Yeaft load-history first paint', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
       sessionReadyIndex = sent.findIndex(m => m.event?.type === 'session_ready');
       expect(sessionReadyIndex).toBeGreaterThan(firstHistoryIndex);
+      expect(sent[sessionReadyIndex]).toMatchObject({
+        type: 'yeaft_output',
+        sessionId: 'session-fast',
+        event: { type: 'session_ready' },
+      });
       expect(sent[firstHistoryIndex].messages.map(m => m.content)).toEqual([
         'ready recent user',
         'ready recent assistant',

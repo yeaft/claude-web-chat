@@ -34,7 +34,7 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
       },
       workDir: {
         type: 'string',
-        description: { en: 'Optional project directory for execution', zh: '执行时使用的可选项目目录' },
+        description: { en: 'Existing project directory for execution', zh: '执行时使用的已存在项目目录' },
       },
       start: {
         type: 'boolean',

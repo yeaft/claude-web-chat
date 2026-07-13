@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkCenterService } from '../../../../agent/yeaft/work-center/service.js';
+import { projectWorkItemDetail } from '../../../../agent/yeaft/work-center/projection.js';
 import { defaultWorkCenterSettings } from '../../../../agent/yeaft/work-center/workflow.js';
 
 const services = [];
@@ -18,6 +19,7 @@ async function createService(overrides = {}) {
       models: [{ id: 'model', ref: 'provider/model', provider: 'provider', effortOptions: ['medium', 'high'] }],
       primaryModel: 'provider/model',
       fastModel: null,
+      defaultWorkDir: dir,
     }),
     ...overrides,
   });
@@ -35,16 +37,184 @@ describe('Work Center settings service', () => {
     const service = await createService();
     const initial = await service.handle('get_settings');
     expect(initial.settings.defaultWorkflowId).toBe('software-change');
-    expect(initial.settings.workflows[0].stages[0].instruction).toContain('Do not implement yet');
+    expect(initial.settings.globalInstructions).toBe('');
+    expect(initial.settings.workflows[0].stages[0].instruction).toContain('Do not implement');
     expect(initial.runtime.vps[0].id).toBe('linus');
-    expect(initial.runtime.defaultStageInstructions.implement).toContain('Add and run relevant tests');
+    expect(initial.runtime.defaultStageInstructions.implement).toContain('add or update focused tests');
 
     const next = defaultWorkCenterSettings();
     next.defaultWorkDir = '/project';
+    next.globalInstructions = 'Apply the Agent release policy to every Action.';
     const saved = await service.handle('update_settings', { settings: next });
     expect(saved.settings.defaultWorkDir).toBe('/project');
+    expect(saved.settings.globalInstructions).toBe('Apply the Agent release policy to every Action.');
     expect(saved.settings.revision).toBe(2);
-    expect((await service.handle('get_settings')).settings.defaultWorkDir).toBe('/project');
+    expect((await service.handle('get_settings')).settings).toMatchObject({
+      defaultWorkDir: '/project',
+      globalInstructions: 'Apply the Agent release policy to every Action.',
+    });
+  });
+
+  it('persists WorkItem attachments with the item and returns only safe browser metadata', async () => {
+    const service = await createService();
+    const detail = await service.handle('create', {
+      title: 'Inspect evidence', goal: 'Use the uploaded evidence in every Action', workDir: '/tmp', start: false,
+      files: [{
+        name: '../evidence.txt', mimeType: 'text/plain', data: Buffer.from('persistent evidence').toString('base64'),
+      }],
+    });
+    const stored = service.store.getWorkItem(detail.id);
+    const projected = projectWorkItemDetail(detail);
+
+    expect(projected.attachments).toEqual([expect.objectContaining({
+      name: 'evidence.txt', mimeType: 'text/plain', size: 19, isImage: false,
+    })]);
+    expect(JSON.stringify(projected.attachments)).not.toContain('storageName');
+    expect(JSON.stringify(projected.attachments)).not.toContain('sha256');
+    expect(stored.attachments).toEqual([expect.objectContaining({
+      name: 'evidence.txt', storageName: expect.any(String), sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    })]);
+  });
+
+  it('appends guidance attachments and exposes their bytes only through the preview operation', async () => {
+    const service = await createService();
+    const created = await service.handle('create', {
+      title: 'Inspect evidence', goal: 'Use additional evidence', workDir: '/tmp', start: true,
+    });
+    const guided = await service.handle('guide', {
+      id: created.id,
+      guidance: '',
+      actionId: created.currentActionId,
+      revision: created.revision,
+      files: [{
+        name: 'screen.png', mimeType: 'image/png', data: Buffer.from('image bytes').toString('base64'),
+      }],
+    });
+
+    expect(guided.status).toBe('ready');
+    expect(guided.attachments).toEqual([expect.objectContaining({ name: 'screen.png', isImage: true })]);
+    expect(guided.actions.at(-1).instruction).toContain('The user added 1 attachment(s)');
+    const preview = await service.handle('preview_attachment', {
+      id: created.id,
+      attachmentId: guided.attachments[0].id,
+    });
+    expect(preview).toMatchObject({
+      attachment: { name: 'screen.png', isImage: true },
+      previewData: { data: Buffer.from('image bytes').toString('base64'), mimeType: 'image/png' },
+    });
+  });
+
+  it('removes a newly created attachment directory when stale guidance is rejected', async () => {
+    const service = await createService();
+    const created = await service.handle('create', {
+      title: 'Reject stale guidance', goal: 'Do not leave orphaned files', workDir: '/tmp', start: true,
+    });
+
+    await expect(service.handle('guide', {
+      id: created.id,
+      guidance: 'stale',
+      actionId: 'wrong-action',
+      revision: created.revision,
+      files: [{
+        name: 'notes.txt', mimeType: 'text/plain', data: Buffer.from('orphan').toString('base64'),
+      }],
+    })).rejects.toThrow(/Action changed/);
+
+    expect(existsSync(join(service.attachmentRoot, created.id))).toBe(false);
+    expect(service.store.getWorkItem(created.id).attachments).toEqual([]);
+  });
+
+  it('keeps committed attachment metadata and files when the post-commit watcher step fails', async () => {
+    const service = await createService();
+    const created = await service.handle('create', {
+      title: 'Keep committed guidance', goal: 'Preserve committed attachment state', workDir: '/tmp', start: true,
+    });
+    service.watcher.abortInvalidWorkItemRuns = () => { throw new Error('watcher failed after commit'); };
+
+    await expect(service.handle('guide', {
+      id: created.id,
+      guidance: '',
+      actionId: created.currentActionId,
+      revision: created.revision,
+      files: [{
+        name: 'evidence.txt', mimeType: 'text/plain', data: Buffer.from('committed evidence').toString('base64'),
+      }],
+    })).rejects.toThrow('watcher failed after commit');
+
+    const stored = service.store.getWorkItem(created.id);
+    expect(stored.attachments).toEqual([expect.objectContaining({ name: 'evidence.txt' })]);
+    expect(existsSync(join(service.attachmentRoot, created.id, stored.attachments[0].storageName))).toBe(true);
+  });
+
+  it('removes persisted attachments through the secure cleanup path when WorkItem creation fails', async () => {
+    const service = await createService({
+      controller: {
+        create() { throw new Error('database create failed'); },
+      },
+    });
+
+    await expect(service.handle('create', {
+      title: 'Fail after persistence', goal: 'Verify cleanup', workDir: '/tmp', start: false,
+      files: [{
+        name: 'evidence.txt', mimeType: 'text/plain', data: Buffer.from('evidence').toString('base64'),
+      }],
+    })).rejects.toThrow('database create failed');
+
+    expect(existsSync(service.attachmentRoot)).toBe(true);
+    expect(readdirSync(service.attachmentRoot)).toEqual([]);
+  });
+
+  it('canonicalizes an omitted runtime directory default before creating', async () => {
+    const runtimeDir = mkdtempSync(join(tmpdir(), 'work-center-runtime-'));
+    dirs.push(runtimeDir);
+    const service = await createService({
+      runtimeInfoProvider: async () => ({ defaultWorkDir: runtimeDir }),
+    });
+
+    const omitted = await service.handle('create', {
+      title: 'Legacy default', goal: 'Keep omitted-field compatibility', start: false,
+    });
+    const stored = service.store.getWorkItem(omitted.id);
+
+    expect(stored.workDir).toBe(realpathSync(runtimeDir));
+    expect(stored.workspaceKey).toBe(realpathSync(runtimeDir));
+  });
+
+  it('prefers the saved directory default over the runtime default', async () => {
+    const savedDir = mkdtempSync(join(tmpdir(), 'work-center-saved-'));
+    dirs.push(savedDir);
+    const service = await createService();
+    const settings = defaultWorkCenterSettings();
+    settings.defaultWorkDir = savedDir;
+    await service.handle('update_settings', { settings });
+
+    const omitted = await service.handle('create', {
+      title: 'Saved default', goal: 'Keep settings compatibility', start: false,
+    });
+    const stored = service.store.getWorkItem(omitted.id);
+
+    expect(stored.workDir).toBe(realpathSync(savedDir));
+    expect(stored.workspaceKey).toBe(realpathSync(savedDir));
+  });
+
+  it.each([
+    ['', 'blank'],
+    ['   ', 'whitespace'],
+    [null, 'null'],
+    [42, 'non-string'],
+    ['/definitely/missing/work-center-directory', 'missing'],
+  ])('rejects an explicit %s workDir without create side effects', async (workDir) => {
+    const emitted = [];
+    const service = await createService({ onEvent: event => emitted.push(event) });
+
+    await expect(service.handle('create', {
+      title: 'Unsafe directory', goal: 'Do not create incomplete workspace identity', workDir, start: false,
+    })).rejects.toThrow(/workDir/);
+
+    expect(service.store.listWorkItems({})).toEqual([]);
+    expect(service.store.db.prepare('SELECT COUNT(*) AS count FROM actions').get().count).toBe(0);
+    expect(service.store.db.prepare('SELECT COUNT(*) AS count FROM events').get().count).toBe(0);
+    expect(emitted).toEqual([]);
   });
 
   it('returns the redacted browser detail DTO from the real get operation', async () => {
@@ -85,7 +255,7 @@ describe('Work Center settings service', () => {
     });
 
     expect(item).toMatchObject({ workflowTemplate: 'ai-planned', status: 'draft' });
-    expect(item.workflowSnapshot).toMatchObject({ id: 'ai-planned', planningMode: 'ai' });
+    expect(item.workflowSnapshot).toMatchObject({ id: 'ai-planned', planningMode: 'ai', globalInstructions: '' });
     expect(item.workflowSnapshot.stages.map(stage => stage.id)).toEqual(['triage']);
     expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller-choice');
     expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller/model');

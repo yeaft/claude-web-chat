@@ -1,3 +1,12 @@
+import {
+  clearOverlayPointerGesture,
+  shouldDismissFromOverlayClick,
+  trackOverlayPointerDown,
+  trackOverlayPointerUp,
+} from '../utils/overlay-dismiss.js';
+
+const ACTION_TYPES = ['triage', 'research', 'design', 'diagnose', 'implement', 'migrate', 'test', 'review', 'document', 'operate', 'deliver', 'write', 'custom'];
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -32,9 +41,9 @@ function defaultSettingsDraft() {
     defaultWorkflowId: 'software-change',
     startImmediately: true,
     defaultWorkDir: '',
+    globalInstructions: '',
     modelPolicy: { mode: 'inherit', model: null, effort: null },
-    actionInstructions: Object.fromEntries(['triage','implement','test','review','deliver','research','write','custom']
-      .map(type => [type, ''])),
+    actionInstructions: Object.fromEntries(ACTION_TYPES.map(type => [type, ''])),
     workflows: [{
       version: 1,
       id: 'software-change',
@@ -49,6 +58,60 @@ function defaultSettingsDraft() {
         defaultStage('deliver', 'Deliver', 'deliver'),
       ],
     }],
+  };
+}
+
+export function supportsDynamicSettings(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (!value.modelPolicy || typeof value.modelPolicy !== 'object' || Array.isArray(value.modelPolicy)) return false;
+  if (typeof value.globalInstructions !== 'string') return false;
+  if (!value.actionInstructions || typeof value.actionInstructions !== 'object' || Array.isArray(value.actionInstructions)) return false;
+  return ACTION_TYPES.every(type => typeof value.actionInstructions[type] === 'string');
+}
+
+function confirmsSettingsSave(actual, submittedRevision) {
+  return supportsDynamicSettings(actual)
+    && Number.isInteger(actual.revision)
+    && Number.isInteger(submittedRevision)
+    && actual.revision > submittedRevision;
+}
+
+export function normalizeSettingsDraft(value, defaultStageInstructions = {}) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? clone(value) : {};
+  const workflows = Array.isArray(source.workflows) && source.workflows.length > 0
+    ? source.workflows
+    : defaultSettingsDraft().workflows;
+  const defaultWorkflow = workflows.find(workflow => workflow?.id === source.defaultWorkflowId)
+    || workflows[0]
+    || null;
+  const stages = Array.isArray(defaultWorkflow?.stages) ? defaultWorkflow.stages : [];
+  const stageInstructions = Object.fromEntries(stages
+    .filter(stage => ACTION_TYPES.includes(stage?.type) && typeof stage.instruction === 'string')
+    .map(stage => [stage.type, stage.instruction]));
+  const sourceInstructions = source.actionInstructions && typeof source.actionInstructions === 'object'
+    && !Array.isArray(source.actionInstructions)
+    ? source.actionInstructions
+    : {};
+  const migratedModelPolicy = stages.find(stage => stage?.type === 'triage')?.modelPolicy
+    || stages[0]?.modelPolicy;
+
+  return {
+    ...defaultSettingsDraft(),
+    ...source,
+    modelPolicy: {
+      mode: 'inherit',
+      model: null,
+      effort: null,
+      ...(migratedModelPolicy || {}),
+      ...(source.modelPolicy || {}),
+    },
+    actionInstructions: Object.fromEntries(ACTION_TYPES.map(type => [
+      type,
+      typeof sourceInstructions[type] === 'string'
+        ? sourceInstructions[type]
+        : (stageInstructions[type] || defaultStageInstructions[type] || ''),
+    ])),
+    workflows,
   };
 }
 
@@ -82,6 +145,7 @@ export default {
     vps() { return Array.isArray(this.runtime.vps) ? this.runtime.vps : []; },
     models() { return Array.isArray(this.runtime.models) ? this.runtime.models : []; },
     workflows() { return Array.isArray(this.draft?.workflows) ? this.draft.workflows : []; },
+    actionTypes() { return ACTION_TYPES; },
     defaultWorkflow() {
       return this.workflows.find(workflow => workflow.id === this.draft?.defaultWorkflowId)
         || this.workflows[0]
@@ -94,16 +158,26 @@ export default {
       return [
         { id: 'workflow', label: this.$t('workCenter.settings.workflow') },
         { id: 'models', label: this.$t('workCenter.settings.models') },
-        { id: 'general', label: this.$t('workCenter.settings.general') },
       ];
+    },
+  },
+  watch: {
+    runtime: {
+      deep: true,
+      handler() {
+        this.normalizeDraftEffort();
+      },
     },
   },
   async mounted() {
     window.addEventListener('keydown', this.onKeydown);
     const cached = this.store.workCenterSettingsByAgent[this.agentId];
     if (cached) {
-      this.draft = clone(cached);
+      this.draft = normalizeSettingsDraft(cached, this.defaultStageInstructions);
+      this.normalizeDraftEffort();
       this.draftAgentId = this.agentId;
+      this.settingsUnsupported = !supportsDynamicSettings(cached);
+      if (this.settingsUnsupported) this.error = this.$t('workCenter.settings.upgradeRequired');
       this.loading = false;
     }
     await this.load();
@@ -112,22 +186,30 @@ export default {
     window.removeEventListener('keydown', this.onKeydown);
   },
   methods: {
+    trackOverlayPointerDown,
+    trackOverlayPointerUp,
+    clearOverlayPointerGesture,
+
     async load() {
       const target = this.agentId;
       const generation = ++this.loadGeneration;
       this.loading = true;
-      this.error = '';
+      this.error = this.settingsUnsupported && this.draft
+        ? this.$t('workCenter.settings.upgradeRequired')
+        : '';
       try {
         const data = await this.store.loadWorkCenterSettings(target);
         if (generation !== this.loadGeneration || target !== this.agentId) return;
-        this.draft = clone(data.settings);
+        this.draft = normalizeSettingsDraft(data.settings, this.defaultStageInstructions);
+        this.normalizeDraftEffort();
         this.draftAgentId = target;
         this.conflict = false;
-        this.settingsUnsupported = false;
+        this.settingsUnsupported = !supportsDynamicSettings(data.settings);
+        this.error = this.settingsUnsupported ? this.$t('workCenter.settings.upgradeRequired') : '';
       } catch (error) {
         if (generation !== this.loadGeneration || target !== this.agentId) return;
         if (isUnsupportedSettingsError(error)) {
-          this.draft = defaultSettingsDraft();
+          this.draft = normalizeSettingsDraft(null, this.defaultStageInstructions);
           this.draftAgentId = target;
           this.settingsUnsupported = true;
           this.error = this.$t('workCenter.settings.upgradeRequired');
@@ -140,6 +222,9 @@ export default {
     },
     onKeydown(event) {
       if (event.key === 'Escape' && !this.saving) this.$emit('close');
+    },
+    onOverlayClick(event) {
+      if (shouldDismissFromOverlayClick(event)) this.close();
     },
     close() {
       if (!this.saving) this.$emit('close');
@@ -246,16 +331,28 @@ export default {
       if (stage.modelPolicy.mode === 'fast') return this.runtime.fastModel || null;
       return null;
     },
-    effortOptionsForStage(stage) {
+    modelForStage(stage) {
       const ref = this.modelRefForStage(stage);
-      if (!ref) return [];
-      const model = this.models.find(item => (item.ref || item.id) === ref);
+      if (!ref) return null;
+      return this.models.find(item => (item.ref || item.id) === ref) || null;
+    },
+    effortOptionsForStage(stage) {
+      const model = this.modelForStage(stage);
       return Array.isArray(model?.effortOptions) ? model.effortOptions : [];
+    },
+    effortHelpKeyForStage(stage) {
+      if (!this.modelRefForStage(stage)) return 'workCenter.settings.effortChooseModelHelp';
+      if (this.effortOptionsForStage(stage).length === 0) return 'workCenter.settings.effortUnsupportedHelp';
+      return 'workCenter.settings.effortHelp';
     },
     normalizeStageEffort(stage) {
       const options = this.effortOptionsForStage(stage);
       if (!stage.modelPolicy.effort || options.includes(stage.modelPolicy.effort)) return;
       stage.modelPolicy.effort = null;
+    },
+    normalizeDraftEffort() {
+      if (!this.draft?.modelPolicy || !Array.isArray(this.runtime?.models)) return;
+      this.normalizeStageEffort({ modelPolicy: this.draft.modelPolicy });
     },
     setModelMode(stage, mode) {
       stage.modelPolicy.mode = mode;
@@ -280,9 +377,18 @@ export default {
       this.error = '';
       this.conflict = false;
       try {
-        const data = await this.store.saveWorkCenterSettings(this.draft, target);
+        this.normalizeDraftEffort();
+        const submitted = clone(this.draft);
+        const data = await this.store.saveWorkCenterSettings(submitted, target);
         if (target !== this.agentId || this.draftAgentId !== target) return;
-        this.draft = clone(data.settings);
+        if (!confirmsSettingsSave(data.settings, submitted.revision)) {
+          this.settingsUnsupported = !supportsDynamicSettings(data.settings);
+          this.error = this.$t(this.settingsUnsupported
+            ? 'workCenter.settings.upgradeRequired'
+            : 'workCenter.settings.saveNotConfirmed');
+          return;
+        }
+        this.draft = normalizeSettingsDraft(data.settings, this.defaultStageInstructions);
         this.$emit('saved', data.settings);
         this.$emit('close');
       } catch (error) {
@@ -297,7 +403,13 @@ export default {
   },
   template: `
     <Teleport to="body">
-      <div class="modal-overlay work-center-settings-overlay" @click.self="close">
+      <div
+        class="modal-overlay work-center-settings-overlay"
+        @pointerdown="trackOverlayPointerDown"
+        @pointerup="trackOverlayPointerUp"
+        @pointercancel="clearOverlayPointerGesture"
+        @click="onOverlayClick"
+      >
         <section class="modal-card work-center-settings-card" role="dialog" aria-modal="true" :aria-label="$t('workCenter.settings.title')">
           <header class="work-center-settings-header">
             <div>
@@ -324,15 +436,26 @@ export default {
                     <p>{{ $t('workCenter.settings.aiWorkflowHelp') }}</p>
                   </div>
                 </div>
-                <article v-for="type in ['triage','implement','test','review','deliver','research','write','custom']" :key="type" class="work-center-policy-stage">
+                <article class="work-center-policy-stage work-center-global-policy">
+                  <header><strong>{{ $t('workCenter.settings.globalInstructions') }}</strong></header>
+                  <div class="work-center-stage-instruction">
+                    <textarea v-model="draft.globalInstructions" rows="7" maxlength="20000"
+                              :placeholder="$t('workCenter.settings.globalInstructionsHint')" :disabled="settingsUnsupported"></textarea>
+                    <small>{{ $t('workCenter.settings.globalInstructionsHelp') }}</small>
+                  </div>
+                </article>
+                <div class="work-center-settings-section-heading work-center-action-policy-heading">
+                  <div><h3>{{ $t('workCenter.settings.actionPolicies') }}</h3><p>{{ $t('workCenter.settings.actionPoliciesHelp') }}</p></div>
+                </div>
+                <article v-for="type in actionTypes" :key="type" class="work-center-policy-stage">
                   <header><strong>{{ $t('workCenter.action.' + type) }}</strong></header>
                   <div class="work-center-stage-instruction">
                     <div class="work-center-stage-instruction-heading">
                       <span>{{ $t('workCenter.settings.instruction') }}</span>
                       <button class="btn-ghost" type="button" @click="draft.actionInstructions[type] = defaultStageInstructions[type] || ''"
-                              :disabled="draft.actionInstructions[type] === (defaultStageInstructions[type] || '')">{{ $t('workCenter.settings.instructionReset') }}</button>
+                              :disabled="settingsUnsupported || draft.actionInstructions[type] === (defaultStageInstructions[type] || '')">{{ $t('workCenter.settings.instructionReset') }}</button>
                     </div>
-                    <textarea v-model="draft.actionInstructions[type]" rows="5" :placeholder="$t('workCenter.settings.instructionHint')"></textarea>
+                    <textarea v-model="draft.actionInstructions[type]" rows="5" :placeholder="$t('workCenter.settings.instructionHint')" :disabled="settingsUnsupported"></textarea>
                     <small>{{ $t('workCenter.settings.dynamicInstructionHelp') }}</small>
                   </div>
                 </article>
@@ -346,7 +469,7 @@ export default {
                 <article class="work-center-model-stage">
                   <strong>{{ $t('workCenter.settings.allActions') }}</strong>
                   <label>{{ $t('workCenter.settings.modelPolicy') }}
-                    <select :value="draft.modelPolicy.mode" @change="setModelMode({ modelPolicy: draft.modelPolicy }, $event.target.value)">
+                    <select :value="draft.modelPolicy.mode" :disabled="settingsUnsupported" @change="setModelMode({ modelPolicy: draft.modelPolicy }, $event.target.value)">
                       <option value="inherit">{{ $t('workCenter.settings.model.inherit') }}</option>
                       <option value="primary">{{ $t('workCenter.settings.model.primary') }}</option>
                       <option value="fast">{{ $t('workCenter.settings.model.fast') }}</option>
@@ -354,30 +477,19 @@ export default {
                     </select>
                   </label>
                   <label v-if="draft.modelPolicy.mode === 'specific'">{{ $t('workCenter.settings.model') }}
-                    <select :value="draft.modelPolicy.model" @change="setStageModel({ modelPolicy: draft.modelPolicy }, $event.target.value)">
+                    <select :value="draft.modelPolicy.model" :disabled="settingsUnsupported" @change="setStageModel({ modelPolicy: draft.modelPolicy }, $event.target.value)">
                       <option v-for="model in models" :key="model.ref || model.id" :value="model.ref || model.id">{{ model.provider }} · {{ model.label || model.id }}</option>
                     </select>
                   </label>
-                  <label v-if="effortOptionsForStage({ modelPolicy: draft.modelPolicy }).length">{{ $t('workCenter.settings.effort') }}
-                    <select v-model="draft.modelPolicy.effort">
+                  <label class="work-center-model-effort">{{ $t('workCenter.settings.effort') }}
+                    <select v-model="draft.modelPolicy.effort"
+                            :disabled="settingsUnsupported || effortOptionsForStage({ modelPolicy: draft.modelPolicy }).length === 0">
                       <option :value="null">{{ $t('workCenter.settings.effortDefault') }}</option>
                       <option v-for="effort in effortOptionsForStage({ modelPolicy: draft.modelPolicy })" :key="effort" :value="effort">{{ effort }}</option>
                     </select>
+                    <small>{{ $t(effortHelpKeyForStage({ modelPolicy: draft.modelPolicy })) }}</small>
                   </label>
                 </article>
-              </template>
-
-              <template v-else>
-                <div class="work-center-settings-section-heading">
-                  <div><h3>{{ $t('workCenter.settings.general') }}</h3><p>{{ $t('workCenter.settings.generalHelp') }}</p></div>
-                </div>
-                <label class="work-center-settings-field">{{ $t('workCenter.workDir') }}
-                  <input v-model="draft.defaultWorkDir" type="text" :placeholder="$t('workCenter.workDirHint')">
-                </label>
-                <label class="work-center-settings-checkbox">
-                  <input v-model="draft.startImmediately" type="checkbox">
-                  <span>{{ $t('workCenter.startImmediately') }}</span>
-                </label>
               </template>
             </main>
           </div>

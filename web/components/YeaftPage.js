@@ -14,6 +14,12 @@ import WorkCenterPage from './WorkCenterPage.js';
 import { parseMentions } from '../utils/parseMentions.js';
 import { buildTimelineRows, resolveTimelineSession, selectGroupRosterVpList } from '../stores/helpers/vp-timeline.js';
 import { buildModelSelectionRows, getDefaultModelEffort, getSelectableModelEfforts, modelOptionMatchesRef, modelOptionRef, resolveSessionModelEffort, resolveSessionModelRef } from '../utils/modelRefs.js';
+import {
+  clearOverlayPointerGesture,
+  shouldDismissFromOverlayClick,
+  trackOverlayPointerDown,
+  trackOverlayPointerUp,
+} from '../utils/overlay-dismiss.js';
 import { shouldShowYeaftOnboardingGuide } from '../utils/yeaftOnboarding.js';
 import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils/yeaftSessionSettings.js';
 
@@ -258,12 +264,16 @@ export default {
           </button>
         </div>
         <MessageList v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty" />
-
-        <!-- Settings Panel -->
-        <SettingsPanel v-if="showSettings" :visible="showSettings" :initial-tab="'yeaft'" :initial-sub-tab="settingsInitialTab" :initial-edit-vp-id="settingsInitialEditVpId" @close="showSettings = false" />
         </div>
 
-        <div v-if="showLlmConfig" class="modal-overlay yeaft-llm-config-overlay" @click.self="showLlmConfig = false">
+        <div
+          v-if="showLlmConfig"
+          class="modal-overlay yeaft-llm-config-overlay"
+          @pointerdown="trackOverlayPointerDown"
+          @pointerup="trackOverlayPointerUp"
+          @pointercancel="clearOverlayPointerGesture"
+          @click="closeLlmConfigFromOverlay"
+        >
           <div class="modal-card yeaft-llm-config-modal" role="dialog" aria-modal="true" :aria-label="$t('settings.llm.configureAgent')">
             <div class="modal-header">
               <h3>{{ $t('settings.llm.configureAgent') }}</h3>
@@ -293,7 +303,7 @@ export default {
       <!-- Session status pane: announcement + VP roster + background tasks.
            It sits to the right of the conversation and to the left of debug. -->
       <VpTimelinePane
-        v-if="showVpTimeline"
+        v-if="!store.workCenterOpen && showVpTimeline"
         :rows="vpTimelineRows"
         :tasks="sessionStatusTasksForActiveSession"
         :announcement-text="sessionStatusAnnouncementText"
@@ -315,7 +325,7 @@ export default {
            right-pane content today, and it should not occupy layout space
            unless explicitly opened. -->
       <aside
-        v-if="debugMode"
+        v-if="!store.workCenterOpen && debugMode"
         class="yeaft-detail"
         :class="{ resizing: isResizingDetail, 'mobile-debug': isNarrowDetail }"
         :style="detailWidthStyle"
@@ -325,7 +335,16 @@ export default {
         <YeaftDebugPanel @close="closeDebug" />
       </aside>
 
-      <!-- task-343: VP library is now an in-Settings tab (initial-tab='vp'). -->
+      <!-- Keep global Settings outside the conversation/Work Center branch so
+           the shared sidebar entry works from either content surface. -->
+      <SettingsPanel
+        v-if="showSettings"
+        :visible="showSettings"
+        :initial-tab="'yeaft'"
+        :initial-sub-tab="settingsInitialTab"
+        :initial-edit-vp-id="settingsInitialEditVpId"
+        @close="showSettings = false"
+      />
 
       <!-- task-fix-group-member-editor: invite modal CTA now opens the
            group's member editor directly (the previous flow dumped the
@@ -901,6 +920,10 @@ export default {
       showLlmConfig.value = true;
     };
 
+    const closeLlmConfigFromOverlay = (event) => {
+      if (shouldDismissFromOverlayClick(event)) showLlmConfig.value = false;
+    };
+
     const loadAgentSecret = async () => {
       if (agentSecret.value || agentSecretLoading.value) return;
       agentSecretLoading.value = true;
@@ -1276,6 +1299,10 @@ export default {
       toggleModelDropdown,
       selectModel,
       openLlmConfig,
+      trackOverlayPointerDown,
+      trackOverlayPointerUp,
+      clearOverlayPointerGesture,
+      closeLlmConfigFromOverlay,
       openSessionCreate,
       onSessionCreated,
       copyOnboardingCommand,

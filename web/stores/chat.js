@@ -142,6 +142,18 @@ function resolveYeaftConversationIdForSession(state, sessionId = null) {
   return agentConversationId || state?.yeaftConversationId || null;
 }
 
+function isVisibleYeaftOutput(state, sessionId, agentId) {
+  if (state?.currentView !== 'yeaft') return false;
+  const activeSessionId = state?.yeaftActiveSessionFilter || null;
+  // A Session-scoped page cannot grant an anonymous metadata frame authority
+  // to move its visible pointer. Older/malformed producers may omit sessionId;
+  // those frames can refresh caches, but only an identified active Session can
+  // promote a local conversation to the real bridge id.
+  if (activeSessionId && sessionId !== activeSessionId) return false;
+  const activeAgentId = resolveAgentIdForSession(state, activeSessionId);
+  return !activeAgentId || !agentId || activeAgentId === agentId;
+}
+
 // Debug history is request-bounded on disk. The panel loads only the newest
 // request globally by default; search can ask the agent-side index for a small
 // result window, and details are fetched one request at a time on expansion.
@@ -1067,6 +1079,7 @@ export const useChatStore = defineStore('chat', {
       if (!session?.id) return;
       const agentId = session.agentId || resolveAgentIdForSession(this, session.id);
       this.workCenterCreateDraft = {
+        sourceAgentId: agentId,
         title: String(session.title || session.name || '').trim(),
         goal: String(seedGoal || '').trim(),
         workDir: String(session.workDir || '').trim(),
@@ -1222,12 +1235,18 @@ export const useChatStore = defineStore('chat', {
       this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
       return detail;
     },
-    async guideWorkItemAction(id, guidance, actionId, revision, agentId = null) {
+    async guideWorkItemAction(id, guidance, actionId, revision, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const detail = await this.workCenterRequest('guide', { id, guidance, actionId, revision }, target);
+      const detail = await this.workCenterRequest('guide', {
+        id, guidance, actionId, revision, attachments,
+      }, target);
       await this.listWorkItems(target);
       this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
       return detail;
+    },
+    previewWorkItemAttachment(id, attachmentId, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      return this.workCenterRequest('preview_attachment', { id, attachmentId }, target);
     },
     async retryWorkItem(id, answer = '', agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
@@ -1820,16 +1839,25 @@ export const useChatStore = defineStore('chat', {
         const conversationId = msg.conversationId || this.yeaftConversationId;
         if (conversationId) {
           const frameAgentId = msg.agentId || this.yeaftAgentId || this.currentAgent || null;
+          const msgSessionId = msg.sessionId ?? msg.groupId ?? null;
+          const outputIsVisible = isVisibleYeaftOutput(this, msgSessionId, frameAgentId);
           const previousAgentConvId = frameAgentId && this.yeaftConversationIdsByAgent
             ? this.yeaftConversationIdsByAgent[frameAgentId]
             : null;
+          const retainVisibleSource = !outputIsVisible && previousAgentConvId === this.yeaftConversationId;
           if (this.currentView === 'yeaft' && frameAgentId && previousAgentConvId && previousAgentConvId !== conversationId) {
             const existingMsgs = this.messagesMap[previousAgentConvId] || [];
             const targetMsgs = this.messagesMap[conversationId] || [];
             this.messagesMap[conversationId] = msgHelpers
               .mergeMessagesByStableId(targetMsgs, existingMsgs)
               .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-            if (String(previousAgentConvId).startsWith('yeaft-local-')) delete this.messagesMap[previousAgentConvId];
+            // An inactive same-agent Session can be the first frame carrying
+            // the real bridge id. Copy the visible placeholder into that cache,
+            // but keep the source alive until an active/user-driven transition
+            // moves the explicit visible pointer.
+            if (!retainVisibleSource && String(previousAgentConvId).startsWith('yeaft-local-')) {
+              delete this.messagesMap[previousAgentConvId];
+            }
           }
           if (frameAgentId) {
             this.yeaftConversationIdsByAgent = {
@@ -1837,8 +1865,15 @@ export const useChatStore = defineStore('chat', {
               [frameAgentId]: conversationId,
             };
           }
-          this.yeaftConversationId = conversationId;
-          if (this.currentView === 'yeaft') this.activeConversations = [conversationId];
+          // Cache every agent's conversation, but only move the visible Yeaft
+          // pointer for output from the Session the user is actually reading.
+          // Otherwise a background reply looks like a conversation switch to
+          // MessageList, which explicitly resumes bottom-follow and jumps away
+          // from history.
+          if (outputIsVisible || !this.yeaftConversationId) {
+            this.yeaftConversationId = conversationId;
+          }
+          if (outputIsVisible) this.activeConversations = [conversationId];
           // Ensure messagesMap exists for this conversation
           if (!this.messagesMap[conversationId]) {
             this.messagesMap[conversationId] = [];
@@ -1851,7 +1886,6 @@ export const useChatStore = defineStore('chat', {
           // Inbound envelopes now carry `sessionId` (legacy `groupId` is
           // accepted as a fallback for older agents that haven't been
           // upgraded yet — drop after the next major version).
-          const msgSessionId = msg.sessionId;
           const prevGroup = this._currentYeaftSessionId;
           const prevVpId = this._currentYeaftVpId;
           const prevTurnId = this._currentYeaftTurnId;
@@ -1936,6 +1970,9 @@ export const useChatStore = defineStore('chat', {
             ? this.yeaftConversationId
             : null;
           const localConvId = previousAgentConvId || fallbackLocalConvId;
+          const readySessionId = event.sessionId || msg.sessionId || null;
+          const readyIsVisible = isVisibleYeaftOutput(this, readySessionId, statusAgentId);
+          const retainVisibleSource = !readyIsVisible && localConvId === this.yeaftConversationId;
 
           // Migrate messages from this agent's local placeholder to this
           // agent's conversationId. Do not merge the last globally-active
@@ -1947,22 +1984,23 @@ export const useChatStore = defineStore('chat', {
             this.messagesMap[agentConvId] = msgHelpers
               .mergeMessagesByStableId(targetMsgs, existingMsgs)
               .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-            if (localConvId.startsWith('yeaft-local-')) delete this.messagesMap[localConvId];
+            if (!retainVisibleSource && localConvId.startsWith('yeaft-local-')) {
+              delete this.messagesMap[localConvId];
+            }
             // Migrate processing state
             if (this.processingConversations[localConvId]) {
               this.processingConversations[agentConvId] = true;
-              delete this.processingConversations[localConvId];
+              if (!retainVisibleSource) delete this.processingConversations[localConvId];
             }
             // Migrate execution status
             if (this.executionStatusMap[localConvId]) {
               this.executionStatusMap[agentConvId] = this.executionStatusMap[localConvId];
-              delete this.executionStatusMap[localConvId];
+              if (!retainVisibleSource) delete this.executionStatusMap[localConvId];
             }
           } else if (!this.messagesMap[agentConvId]) {
             this.messagesMap[agentConvId] = [];
           }
 
-          this.yeaftConversationId = agentConvId;
           if (statusAgentId) {
             // Cache this agent's conversationId + status, but do NOT change
             // which agent the page operates on. `session_ready` is just a
@@ -2002,8 +2040,12 @@ export const useChatStore = defineStore('chat', {
             multiVp: !!event.multiVp,
           };
 
-          // Update activeConversations to point to the agent's conversationId
-          if (this.currentView === 'yeaft') {
+          if (readyIsVisible || !this.yeaftConversationId) {
+            this.yeaftConversationId = agentConvId;
+          }
+          // session_ready is also replayed for background agents. Keep their
+          // metadata cached without manufacturing a visible conversation switch.
+          if (readyIsVisible) {
             this.activeConversations = [agentConvId];
           }
 

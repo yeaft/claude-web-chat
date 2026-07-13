@@ -42,6 +42,7 @@ describe('dashboard usage accounting', () => {
         getDashboardTotals: () => ({ total_users: 1, total_sessions: 0, total_messages: 0 }),
         getTodayActiveUsers: () => 1,
         getTodayMessages: () => 2,
+        getDashboardTokenTotals: () => ({ total_tokens: 155 }),
         getByPeriod: () => ([{
           user_id: 'u1',
           username: 'linus',
@@ -52,6 +53,11 @@ describe('dashboard usage accounting', () => {
           request_count: 4,
           bytes_sent: 5,
           bytes_received: 6,
+          input_tokens: 100,
+          output_tokens: 40,
+          cache_read_tokens: 10,
+          cache_write_tokens: 5,
+          total_tokens: 155,
           last_login_at: 7,
           updated_at: 8,
         }]),
@@ -97,6 +103,11 @@ describe('dashboard usage accounting', () => {
       requestCount: 5,
       bytesSent: 205,
       bytesReceived: 106,
+      inputTokens: 100,
+      outputTokens: 40,
+      cacheReadTokens: 10,
+      cacheWriteTokens: 5,
+      totalTokens: 155,
     })]);
 
     handlers.get('/api/admin/dashboard')({ query: {} }, res);

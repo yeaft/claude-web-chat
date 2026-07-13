@@ -10,6 +10,9 @@ function ensureMetrics() {
     ctx.agentMetrics = {};
   }
   const metrics = ctx.agentMetrics;
+  if (typeof metrics.metricEpoch !== 'string' || !metrics.metricEpoch) {
+    metrics.metricEpoch = `legacy-${process.pid}-${Date.now()}`;
+  }
   metrics.chatTurns = finiteNumber(metrics.chatTurns);
   metrics.yeaftTurns = finiteNumber(metrics.yeaftTurns);
   metrics.sessionsCreated = finiteNumber(metrics.sessionsCreated);
@@ -78,6 +81,7 @@ export function recordAgentTokenUsage(usage = {}) {
 export function snapshotAgentMetrics() {
   const metrics = ensureMetrics();
   return {
+    metricEpoch: metrics.metricEpoch,
     chatTurns: metrics.chatTurns,
     yeaftTurns: metrics.yeaftTurns,
     totalTurns: metrics.chatTurns + metrics.yeaftTurns,

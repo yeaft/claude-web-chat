@@ -70,6 +70,7 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
         await sendToWebClient(client, {
           type: 'directory_listing',
           conversationId: msg.conversationId,
+          requestId: msg.requestId,
           dirPath: msg.dirPath,
           entries: cached,
           fromCache: true

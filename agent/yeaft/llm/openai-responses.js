@@ -133,8 +133,19 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
           }
           return { type: 'input_image', image_url: imageUrl };
         }
+        if (part.type === 'document') {
+          const src = part.source || {};
+          const mediaType = src.media_type || src.mediaType;
+          if (src.type === 'base64' && mediaType === 'application/pdf' && src.data) {
+            return {
+              type: 'input_file',
+              filename: part.title || 'attachment.pdf',
+              file_data: `data:application/pdf;base64,${src.data}`,
+            };
+          }
+        }
         // Passthrough for already-shaped parts
-        if (part.type === 'input_text' || part.type === 'input_image') return part;
+        if (part.type === 'input_text' || part.type === 'input_image' || part.type === 'input_file') return part;
         return { type: 'input_text', text: String(part.text || '') };
       });
     }
@@ -237,7 +248,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
   // ─── Streaming ──────────────────────────────────────────
 
   /**
-   * @param {{ model: string, system: string, messages: import('./adapter.js').UnifiedMessage[], tools?: import('./adapter.js').UnifiedToolDef[], maxTokens?: number, effort?: 'minimal'|'low'|'medium'|'high'|'xhigh'|'max', effortSource?: 'user'|'auto', effortContext?: object, extraBody?: object, signal?: AbortSignal, onRawExchange?: ({rawRequest, rawResponse}) => void }} params
+   * @param {{ model: string, system: string, messages: import('./adapter.js').UnifiedMessage[], tools?: import('./adapter.js').UnifiedToolDef[], maxTokens?: number, effort?: 'minimal'|'low'|'medium'|'high'|'xhigh'|'max', effortSource?: 'user'|'auto', effortContext?: object, extraBody?: object, signal?: AbortSignal, onRawExchange?: ({rawRequest, rawResponse}) => void, onRequestStart?: () => void }} params
    *
    * NOTE on `extraBody`: any keys you spread here are merged verbatim into
    * the wire body and — because the verbatim debug feature is intentionally
@@ -246,7 +257,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
    * `api-key` headers are auto-redacted (see `redactRawRequest` in
    * `adapter.js`); request-body fields are caller-controlled.
    */
-  async *stream({ model, system, messages, tools, maxTokens = 16384, effort, effortSource, effortContext = {}, extraBody, signal, onRawExchange }) {
+  async *stream({ model, system, messages, tools, maxTokens = 16384, effort, effortSource, effortContext = {}, extraBody, signal, onRawExchange, onRequestStart }) {
     if (signal?.aborted) throw new LLMAbortError();
 
     const body = {
@@ -287,6 +298,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
 
     let response;
     try {
+      onRequestStart?.();
       response = await fetch(url, {
         method: 'POST',
         headers,
@@ -506,7 +518,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
    * expose them, mirror the stream() instrumentation. Parity with
    * anthropic.js's `call()`.
    */
-  async call({ model, system, messages, maxTokens = 4096, effort, effortSource, effortContext = {}, extraBody, signal }) {
+  async call({ model, system, messages, maxTokens = 4096, effort, effortSource, effortContext = {}, extraBody, signal, onRequestStart }) {
     if (signal?.aborted) throw new LLMAbortError();
 
     const body = {
@@ -531,6 +543,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
 
     let response;
     try {
+      onRequestStart?.();
       response = await fetch(`${this.#baseUrl}/responses`, {
         method: 'POST',
         headers: {
@@ -574,6 +587,9 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
       usage: {
         inputTokens: usage.input_tokens || 0,
         outputTokens: usage.output_tokens || 0,
+        cacheReadTokens: usage.input_tokens_details?.cached_tokens || 0,
+        cacheWriteTokens: 0,
+        cacheTokensAreIncludedInInput: true,
       },
     };
   }

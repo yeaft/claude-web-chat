@@ -67,7 +67,13 @@ const OUTBOUND_MESSAGE_TRAFFIC_TYPES = new Set([
 function getOrCreateDelta(userId) {
   let delta = userStatsDeltas.get(userId);
   if (!delta) {
-    delta = { requests: 0, bytesSent: 0, bytesReceived: 0, messages: 0, sessions: 0 };
+    delta = {
+      requests: 0,
+      bytesSent: 0,
+      bytesReceived: 0,
+      messages: 0,
+      sessions: 0,
+    };
     userStatsDeltas.set(userId, delta);
   }
   return delta;

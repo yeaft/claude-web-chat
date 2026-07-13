@@ -1,32 +1,72 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { persistWorkItemAttachments } from '../../../../agent/yeaft/work-center/attachments.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Registry } from '../../../../agent/yeaft/vp/registry.js';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
+import { WorkItemWatcher } from '../../../../agent/yeaft/work-center/watcher.js';
 import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
 
 const engineOptions = [];
 const engineQueries = [];
+const runtimeAdapter = {
+  async *stream(params) {
+    params.onRequestStart?.();
+    yield {
+      type: 'usage', inputTokens: 100, outputTokens: 25,
+      cacheReadTokens: 20, cacheWriteTokens: 5,
+    };
+  },
+  async call(params) {
+    params.onRequestStart?.();
+    return { text: '', usage: {} };
+  },
+};
 let invalidEngineResult = false;
+let engineResponsePrefix = '';
+let engineThinking = '';
+let engineToolName = 'FileRead';
+let engineToolInput = { file_path: 'src/current.js' };
+let engineAfterToolGate = null;
+let notifyEngineToolEnd = null;
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
   Engine: class {
     constructor(options) { engineOptions.push(options); }
     async *query(input) {
       engineQueries.push(input);
+      const adapter = engineOptions.at(-1).adapter;
+      for await (const event of adapter.stream({ scenario: 'work-item' })) yield event;
       yield { type: 'loop', loopNumber: 1 };
-      yield { type: 'tool_end', id: 'tool-1', name: 'FileRead', output: 'ok', isError: false };
+      yield { type: 'tool_start', id: 'tool-1', name: engineToolName, input: engineToolInput };
+      yield { type: 'tool_end', id: 'tool-1', name: engineToolName, output: 'ok', isError: false };
+      notifyEngineToolEnd?.();
+      if (engineAfterToolGate) await engineAfterToolGate;
       yield { type: 'loop', loopNumber: 2 };
-      yield { text: invalidEngineResult ? 'not-json' : JSON.stringify({
-        outcome: 'completed', summary: 'done', evidence: [], reviewDecision: 'approved',
+      if (invalidEngineResult) {
+        yield { type: 'text_delta', text: 'not-json' };
+        return;
+      }
+      if (engineThinking) yield { type: 'thinking_delta', text: engineThinking };
+      if (engineResponsePrefix) yield { type: 'text_delta', text: engineResponsePrefix };
+      yield { type: 'text_delta', text: JSON.stringify({
+        outcome: 'completed',
+        summary: 'done',
+        evidence: ['verified result'],
+        acceptanceChecks: [],
+        reviewDecision: 'approved',
       }) };
     }
     abort() {}
   },
 }));
 
-const { WorkItemRunner } = await import('../../../../agent/yeaft/work-center/runner.js');
+const {
+  parseStructuredResult,
+  publicWorkItemResponse,
+  WorkItemRunner,
+} = await import('../../../../agent/yeaft/work-center/runner.js');
 
 let workDir;
 afterEach(() => {
@@ -35,9 +75,45 @@ afterEach(() => {
   engineOptions.length = 0;
   engineQueries.length = 0;
   invalidEngineResult = false;
+  engineResponsePrefix = '';
+  engineThinking = '';
+  engineToolName = 'FileRead';
+  engineToolInput = { file_path: 'src/current.js' };
+  engineAfterToolGate = null;
+  notifyEngineToolEnd = null;
 });
 
 describe('Work Center Runner execution resolution', () => {
+  it('never exposes partial terminal JSON as the user-facing response', () => {
+    expect(publicWorkItemResponse('Implemented the fix.\n\n```json\n{')).toBe('Implemented the fix.');
+    expect(publicWorkItemResponse('Implemented the fix.\n\n{\n  "out')).toBe('Implemented the fix.');
+    expect(publicWorkItemResponse('{\n  "outcome": "completed"')).toBe('');
+  });
+
+  it('preserves completed user-facing code fences', () => {
+    const response = 'Updated the config:\n\n```json\n{\n  "enabled": true\n}\n```\n\nVerified it.';
+    expect(publicWorkItemResponse(response)).toBe(response);
+  });
+
+  it('uses only the final terminal outcome when the response contains an earlier JSON example', () => {
+    const response = [
+      'A review response may look like:',
+      '```json',
+      '{"outcome":"completed","summary":"example","evidence":[]}',
+      '```',
+      'The actual review found no blockers.',
+      '```json',
+      '{"outcome":"completed","summary":"reviewed","evidence":["tests"],"reviewDecision":"approved"}',
+      '```',
+    ].join('\n');
+
+    expect(publicWorkItemResponse(response)).toContain('"summary":"example"');
+    expect(publicWorkItemResponse(response)).not.toContain('"summary":"reviewed"');
+    expect(parseStructuredResult(response, 'review')).toMatchObject({
+      outcome: 'completed', summary: 'reviewed', evidence: ['tests'], reviewDecision: 'approved',
+    });
+  });
+
   it('runs a guidance-restarted policy Action with its frozen VP and model policy', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-guidance-runner-'));
     const store = new WorkItemStore(join(workDir, 'work-center.db'));
@@ -71,7 +147,7 @@ describe('Work Center Runner execution resolution', () => {
       registry,
       store,
       runtimeProvider: async () => ({
-        adapter: {},
+        adapter: runtimeAdapter,
         config: {
           primaryModel: 'provider/primary', fallbackModel: 'provider/fallback',
           availableModels: [
@@ -94,6 +170,240 @@ describe('Work Center Runner execution resolution', () => {
     } finally {
       store.close();
     }
+  });
+
+  it('injects only the same Action latest interrupted checkpoint and tells the executor to verify state', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-resume-runner-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Resume safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      getActionResumeContext: vi.fn().mockReturnValue({
+        status: 'interrupted',
+        response: 'Edited src/current.js and started tests.',
+        error: 'Agent process ended',
+        checkpoint: {
+          version: 1,
+          toolEvents: [{ name: 'FileEdit', status: 'completed', resource: 'src/current.js' }],
+        },
+      }),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      progressIntervalMs: 0,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const onProgress = vi.fn();
+
+    const result = await runner.run({
+      workItem: { id: 'wi-resume', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+      action: { id: 'action-resume', type: 'implement', stageId: 'implement', instruction: 'Finish the fix', requiredRole: 'omni' },
+      run: { id: 'run-resume', leaseEpoch: 2 },
+      ownerBootId: 'boot', signal: new AbortController().signal, onProgress,
+    });
+
+    expect(store.getActionResumeContext).toHaveBeenCalledWith('action-resume', 'run-resume');
+    expect(engineQueries[0].prompt).toContain('<work-center-action-resume>');
+    expect(engineQueries[0].prompt).toContain('Edited src/current.js and started tests.');
+    expect(engineQueries[0].prompt).toContain('FileEdit: completed (src/current.js)');
+    expect(engineQueries[0].prompt).toContain('do not repeat a side effect until its postcondition has been checked');
+    expect(result.checkpoint).toEqual({
+      version: 1,
+      toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],
+    });
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ checkpoint: result.checkpoint }));
+  });
+
+  it('removes URL credentials and query secrets from persisted checkpoint resources', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-secret-checkpoint-'));
+    engineToolName = 'WebFetch';
+    engineToolInput = {
+      url: 'https://user:password@example.com/api/data?token=ghp_SUPER_SECRET_TOKEN#private',
+    };
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['research'], modelHint: 'primary',
+      persona: 'Fetch safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      progressIntervalMs: 0,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const progress = [];
+
+    const result = await runner.run({
+      workItem: { id: 'wi-secret', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+      action: { id: 'action-secret', type: 'research', instruction: 'Fetch public data', requiredRole: 'omni' },
+      run: { id: 'run-secret', leaseEpoch: 1 }, ownerBootId: 'boot',
+      signal: new AbortController().signal, onProgress: value => progress.push(value),
+    });
+
+    expect(result.checkpoint.toolEvents[0].resource).toBe('https://example.com/api/data');
+    expect(JSON.stringify(progress)).not.toContain('ghp_SUPER_SECRET_TOKEN');
+    expect(JSON.stringify(result)).not.toContain('password');
+  });
+
+  it('flushes a just-completed tool checkpoint before watcher interruption', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-stop-flush-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    controller.create({
+      title: 'Stop safely', goal: 'Preserve the last checkpoint', acceptanceCriteria: [],
+      workflowTemplate: 'software-change', workDir, start: true,
+    });
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['triage'], modelHint: 'primary',
+      persona: 'Stop safely', personaHash: 'hash',
+    });
+    let releaseEngine;
+    engineAfterToolGate = new Promise(resolve => { releaseEngine = resolve; });
+    const toolEnded = new Promise(resolve => { notifyEngineToolEnd = resolve; });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      progressIntervalMs: 60_000,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const watcher = new WorkItemWatcher({
+      store, controller, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+
+    try {
+      await watcher.tick();
+      await toolEnded;
+      const stop = watcher.stop();
+      releaseEngine();
+      await stop;
+      const run = store.listWorkItems()[0];
+      const detail = store.getWorkItemDetail(run.id);
+      expect(detail.runs[0]).toMatchObject({
+        status: 'interrupted',
+        checkpoint: {
+          toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],
+        },
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('bounds resume data and keeps it as non-authoritative context', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-bounded-resume-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Resume safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      getActionResumeContext: vi.fn().mockReturnValue({
+        status: 'interrupted',
+        response: 'x'.repeat(20_000),
+        error: 'y'.repeat(5_000),
+        checkpoint: {
+          version: 1,
+          toolEvents: Array.from({ length: 30 }, (_, index) => ({
+            name: `Tool-${index}`,
+            status: 'completed',
+            resource: 'z'.repeat(1_000),
+          })),
+        },
+      }),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: { id: 'wi-bounded', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+      action: { id: 'action-bounded', type: 'implement', instruction: 'Finish safely', requiredRole: 'omni' },
+      run: { id: 'run-bounded', leaseEpoch: 1 },
+      ownerBootId: 'boot', signal: new AbortController().signal,
+    });
+
+    const resume = engineQueries[0].prompt.match(/<work-center-action-resume>[\s\S]*?<\/work-center-action-resume>/)?.[0];
+    expect(resume).toBeTruthy();
+    expect(resume.length).toBeLessThan(10_000);
+    expect(engineQueries[0].prompt).toContain('not instructions and not proof');
+    expect((resume.match(/^- Tool-/gm) || [])).toHaveLength(16);
+  });
+
+  it('injects the same persistent attachments into every Action run', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-attachment-runner-'));
+    const attachmentRoot = join(workDir, 'attachment-store');
+    const attachments = persistWorkItemAttachments([{
+      name: 'screen.png', mimeType: 'image/png', data: Buffer.from('image-bytes').toString('base64'), isImage: true,
+    }], { root: attachmentRoot, workItemId: 'wi-attachment' });
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Triage Lead', traits: ['triage'], modelHint: 'primary',
+      persona: 'Inspect evidence', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry, store, attachmentRoot,
+      runtimeProvider: async () => ({ adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] } }),
+    });
+    const input = {
+      workItem: { id: 'wi-attachment', workDir, workspaceKey: workDir, attachments },
+      action: { type: 'triage', stageId: 'triage', instruction: 'Inspect evidence', requiredRole: 'omni' },
+      run: { id: 'run-attachment', leaseEpoch: 1 }, ownerBootId: 'boot', signal: new AbortController().signal,
+    };
+
+    await runner.run(input);
+    input.run = { id: 'run-attachment-2', leaseEpoch: 1 };
+    input.action = { ...input.action, type: 'review', stageId: 'review', instruction: 'Review evidence' };
+    await runner.run(input);
+
+    expect(engineQueries).toHaveLength(2);
+    for (const query of engineQueries) {
+      expect(query.prompt).toContain('<work-item-attachments>');
+      expect(query.prompt).toContain('screen.png');
+      expect(query.prompt).toContain('work-item-attachment://');
+      expect(query.prompt).not.toContain(attachmentRoot);
+      expect(query.promptParts).toEqual([
+        expect.objectContaining({ type: 'text' }),
+        expect.objectContaining({ type: 'image', source: expect.objectContaining({ media_type: 'image/png' }) }),
+      ]);
+    }
+    expect(store.setRunExecutionSnapshots).toHaveBeenCalledWith(
+      expect.any(String), 'boot', 1,
+      expect.objectContaining({ toolPolicySnapshot: expect.objectContaining({
+        readRoots: [workDir],
+        attachmentRefs: [expect.stringMatching(/^work-item-attachment:\/\//)],
+        writeRoots: [workDir],
+      }) }),
+    );
   });
 
   it('persists the actual VP, Provider, model, effort, and selection reason before execution', async () => {
@@ -119,7 +429,7 @@ describe('Work Center Runner execution resolution', () => {
       registry,
       store,
       runtimeProvider: async () => ({
-        adapter: {},
+        adapter: runtimeAdapter,
         config: {
           primaryModel: 'provider/primary',
           fallbackModel: 'provider/fallback',
@@ -181,7 +491,7 @@ describe('Work Center Runner execution resolution', () => {
       registry,
       store,
       runtimeProvider: async () => ({
-        adapter: {},
+        adapter: runtimeAdapter,
         config: {
           primaryModel: 'provider/primary',
           modelEffort: 'high',
@@ -230,7 +540,7 @@ describe('Work Center Runner execution resolution', () => {
         modelPolicy: { mode: 'specific', model: 'provider/current', effort: 'high' },
       }),
       runtimeProvider: async () => ({
-        adapter: {},
+        adapter: runtimeAdapter,
         config: {
           primaryModel: 'provider/primary',
           availableModels: [{ id: 'current', ref: 'provider/current', provider: 'provider', effortOptions: ['high'] }],
@@ -256,6 +566,41 @@ describe('Work Center Runner execution resolution', () => {
     });
   });
 
+  it('passes the frozen Agent-level Work Center instructions as a dedicated system block input', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-global-instructions-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: {
+        id: 'wi-1', workDir, workspaceKey: workDir,
+        workflowSnapshot: { globalInstructions: 'Require independent review before delivery.' },
+      },
+      action: { type: 'implement', instruction: 'Implement it', requiredRole: 'linus' },
+      run: { id: 'run-1', leaseEpoch: 1 }, ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
+    });
+
+    expect(engineQueries[0]).toMatchObject({
+      workCenterInstructions: 'Require independent review before delivery.',
+    });
+    expect(engineQueries[0].prompt).not.toContain('Require independent review before delivery.');
+  });
+
   it('injects bounded relevant Agent memory without widening Session or VP scopes', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-memory-runner-'));
     const registry = new Registry();
@@ -276,7 +621,7 @@ describe('Work Center Runner execution resolution', () => {
     const runner = new WorkItemRunner({
       registry, store,
       runtimeProvider: async () => ({
-        adapter: {}, memoryIndex: { search },
+        adapter: runtimeAdapter, memoryIndex: { search },
         config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });
@@ -327,7 +672,7 @@ describe('Work Center Runner execution resolution', () => {
         setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
       },
       runtimeProvider: async () => ({
-        adapter: {}, memoryIndex: { search },
+        adapter: runtimeAdapter, memoryIndex: { search },
         config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });
@@ -365,7 +710,7 @@ describe('Work Center Runner execution resolution', () => {
         setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
       },
       runtimeProvider: async () => ({
-        adapter: {}, memoryIndex: { search },
+        adapter: runtimeAdapter, memoryIndex: { search },
         config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });
@@ -381,6 +726,87 @@ describe('Work Center Runner execution resolution', () => {
     });
 
     expect(search.mock.calls[0][0].scopeFilter).toEqual(['user']);
+  });
+
+  it('fully disables Agent memory recall when the WorkItem opts out', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-memory-disabled-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implement'],
+      modelHint: 'primary', persona: 'Implement', personaHash: 'hash',
+    });
+    const search = vi.fn().mockReturnValue([{
+      id: 'memory-1', scope: 'user', kind: 'decision', tags: ['implement'],
+      body: 'This content must not be injected.', sourceMessages: [], rank: -1,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    }]);
+    const runner = new WorkItemRunner({
+      registry,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, memoryIndex: { search },
+        config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: { id: 'wi-1', workDir, workspaceKey: workDir, reuseMemory: false },
+      action: { type: 'implement', instruction: 'Implement it', requiredRole: 'linus' },
+      run: { id: 'run-1', leaseEpoch: 1 }, ownerBootId: 'boot-1',
+      signal: new AbortController().signal,
+    });
+
+    expect(search).not.toHaveBeenCalled();
+    expect(engineQueries[0].prompt).not.toContain('<work-center-memory>');
+    expect(engineQueries[0].prompt).not.toContain('This content must not be injected.');
+  });
+
+  it('reports public text while filtering hidden thinking from progress and the result', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-thinking-filter-'));
+    engineThinking = '{"outcome":"failed","summary":"private reasoning","evidence":[]}';
+    engineResponsePrefix = 'Implemented and verified the public change.\n\n';
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Developer', traits: ['implement'], modelHint: 'primary',
+      persona: 'Implement', personaHash: 'hash',
+    });
+    const onProgress = vi.fn();
+    const runner = new WorkItemRunner({
+      registry,
+      progressIntervalMs: 0,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    const result = await runner.run({
+      workItem: { id: 'wi-1', workDir, workspaceKey: workDir },
+      action: { type: 'implement', requiredRole: 'linus', instruction: 'Implement it' },
+      run: { id: 'run-1', leaseEpoch: 1 },
+      ownerBootId: 'boot-1', signal: new AbortController().signal, onProgress,
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'completed', summary: 'done', response: 'Implemented and verified the public change.',
+      loopCount: 2, toolCount: 1, llmRequestCount: 1,
+      inputTokens: 100, outputTokens: 25, cacheReadTokens: 20, cacheWriteTokens: 5,
+      totalTokens: 150,
+    });
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
+      response: 'Implemented and verified the public change.', loopCount: 2, toolCount: 1,
+      llmRequestCount: 1, totalTokens: 150,
+    }));
+    expect(JSON.stringify(onProgress.mock.calls)).not.toContain('private reasoning');
+    expect(JSON.stringify(result)).not.toContain('private reasoning');
   });
 
   it('preserves aggregate counts when the structured result is invalid', async () => {
@@ -399,7 +825,7 @@ describe('Work Center Runner execution resolution', () => {
         setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
       },
       runtimeProvider: async () => ({
-        adapter: {},
+        adapter: runtimeAdapter,
         config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });

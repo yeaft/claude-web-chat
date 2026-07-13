@@ -1940,7 +1940,7 @@ export default {
     const visibleTranscriptTailSignature = Vue.computed(() => {
       const blocks = messageBlocks.value || [];
       return [
-        store.currentConversation || '',
+        store.activeConversationId || '',
         activeYeaftSessionId.value || '',
         blocks.length,
         autoScrollItemIdentity(blocks[blocks.length - 1]),
@@ -1963,7 +1963,7 @@ export default {
     Vue.watch(visibleTranscriptTailSignature, smartScrollToBottom);
     Vue.watch(previewShowTypingDots, (show) => { if (show) smartScrollToBottom(); });
     Vue.watch(
-      () => [store.currentConversation, activeYeaftSessionId.value],
+      () => [store.activeConversationId, activeYeaftSessionId.value],
       () => {
         for (const key of Object.keys(assistantTurnActionStates)) delete assistantTurnActionStates[key];
         for (const key of Object.keys(toolExpandStates)) delete toolExpandStates[key];

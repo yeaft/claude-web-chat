@@ -32,8 +32,8 @@ export default {
             <div class="db-stat-value">{{ formatNumber(overview.todayMessages) }}</div>
             <div class="db-stat-label">{{ $t('settings.dashboard.todayUserTurns') }}</div>
           </div>
-          <div class="db-stat-card">
-            <div class="db-stat-value">{{ formatCompactNumber(agentMetricTotals.totalTokens) }}</div>
+          <div class="db-stat-card" :title="$t('settings.dashboard.tokenAccuracy')">
+            <div class="db-stat-value">{{ formatCompactNumber(overview.totalTokens) }}</div>
             <div class="db-stat-label">{{ $t('settings.dashboard.totalTokens') }}</div>
           </div>
           <div class="db-stat-card">
@@ -85,6 +85,10 @@ export default {
                     {{ $t('settings.dashboard.requests') }}
                     <span class="db-sort-arrow" v-if="userSort.field === 'requestCount'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
                   </th>
+                  <th class="db-cell-num db-th-sort" :title="$t('settings.dashboard.tokenAccuracy')" @click="toggleSort('user', 'totalTokens')">
+                    {{ $t('settings.dashboard.tokens') }}
+                    <span class="db-sort-arrow" v-if="userSort.field === 'totalTokens'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
+                  </th>
                   <th class="db-cell-num db-th-sort" @click="toggleSort('user', 'traffic')">
                     {{ $t('settings.dashboard.traffic') }}
                     <span class="db-sort-arrow" v-if="userSort.field === 'traffic'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
@@ -101,6 +105,7 @@ export default {
                   <td class="db-cell-num">{{ formatNumber(user.messageCount) }}</td>
                   <td class="db-cell-num">{{ formatNumber(user.sessionCount) }}</td>
                   <td class="db-cell-num">{{ formatNumber(user.requestCount) }}</td>
+                  <td class="db-cell-num" :title="userTokenTitle(user)">{{ formatCompactNumber(user.totalTokens) }}</td>
                   <td class="db-cell-num">{{ formatBytes(user.bytesSent + user.bytesReceived) }}</td>
                   <td class="db-cell-time">{{ formatRelativeTime(user.lastLoginAt) }}</td>
                 </tr>
@@ -122,6 +127,8 @@ export default {
               </div>
               <div class="db-user-card-stats">
                 <span>{{ $t('settings.dashboard.requests') }} {{ formatNumber(user.requestCount) }}</span>
+                <span>·</span>
+                <span :title="userTokenTitle(user)">{{ $t('settings.dashboard.tokens') }} {{ formatCompactNumber(user.totalTokens) }}</span>
                 <span>·</span>
                 <span>{{ formatBytes(user.bytesSent + user.bytesReceived) }}</span>
               </div>
@@ -291,7 +298,7 @@ export default {
       loading: false,
       loaded: false,
       error: false,
-      overview: { totalUsers: 0, todayActiveUsers: 0, onlineAgents: 0, todayMessages: 0, agentMetrics: null },
+      overview: { totalUsers: 0, todayActiveUsers: 0, onlineAgents: 0, todayMessages: 0, totalTokens: 0, agentMetrics: null },
       statsPeriod: 'all',
       userStats: [],
       agents: [],
@@ -428,6 +435,7 @@ export default {
           todayActiveUsers: dashboard.todayActiveUsers ?? 0,
           onlineAgents: dashboard.onlineAgents ?? 0,
           todayMessages: dashboard.todayMessages ?? 0,
+          totalTokens: dashboard.totalTokens ?? 0,
           agentMetrics: this.normalizeMetrics(dashboard.agentMetrics || {})
         };
         this.userStats = Array.isArray(userStats) ? userStats : [];
@@ -500,10 +508,18 @@ export default {
 
     agentTokenTitle(agent) {
       const metrics = this.normalizeMetrics(agent?.metrics || {});
+      return this.tokenTitle(metrics);
+    },
+
+    userTokenTitle(user) {
+      return this.tokenTitle(user || {});
+    },
+
+    tokenTitle(usage) {
       return [
-        `${this.$t('settings.dashboard.inputTokens')}: ${this.formatNumber(metrics.inputTokens)}`,
-        `${this.$t('settings.dashboard.outputTokens')}: ${this.formatNumber(metrics.outputTokens)}`,
-        `${this.$t('settings.dashboard.cacheTokens')}: ${this.formatNumber(metrics.cacheReadTokens + metrics.cacheWriteTokens)}`
+        `${this.$t('settings.dashboard.inputTokens')}: ${this.formatNumber(Number(usage.inputTokens) || 0)}`,
+        `${this.$t('settings.dashboard.outputTokens')}: ${this.formatNumber(Number(usage.outputTokens) || 0)}`,
+        `${this.$t('settings.dashboard.cacheTokens')}: ${this.formatNumber((Number(usage.cacheReadTokens) || 0) + (Number(usage.cacheWriteTokens) || 0))}`
       ].join(' · ');
     },
 
