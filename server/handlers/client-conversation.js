@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { CONFIG } from '../config.js';
 import { sessionDb, messageDb, userDb, yeaftSessionDb } from '../database.js';
-import { agents, pendingFiles, trackUserTurn } from '../context.js';
+import { agents, pendingFiles, trackUserTurn, webClients } from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
   broadcastAgentList, verifyConversationOwnership, verifyAgentOwnership
@@ -23,6 +23,14 @@ function emptyYeaftToolStats(reason = '') {
   };
   if (reason) payload.notice = reason;
   return payload;
+}
+
+async function broadcastSessionPin(userId, payload) {
+  for (const [, target] of webClients) {
+    if (!target?.authenticated) continue;
+    if (!CONFIG.skipAuth && target.userId !== userId) continue;
+    await sendToWebClient(target, payload);
+  }
 }
 
 /**
@@ -390,7 +398,13 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         } catch (e) {
           console.warn(`[Server] yeaftSessionDb.setPinnedForAgent failed for ${msg.conversationId}:`, e?.message || e);
         }
-        await sendToWebClient(client, { type: 'session_pinned', conversationId: msg.conversationId, agentId: explicitYeaftAgentId, pinned: isPinned });
+        await broadcastSessionPin(client.userId, {
+          type: 'session_pinned',
+          conversationId: msg.conversationId,
+          agentId: explicitYeaftAgentId,
+          sessionKind: 'yeaft',
+          pinned: isPinned,
+        });
         break;
       }
 
