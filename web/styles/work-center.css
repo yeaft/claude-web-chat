@@ -534,6 +534,21 @@
   background: var(--accent-blue);
 }
 
+.work-center-status[data-status="running"] > span {
+  animation: work-center-running-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes work-center-running-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .work-center-status[data-status="running"] > span {
+    animation: none;
+  }
+}
+
 .work-center-status[data-status="done"],
 .work-center-status[data-status="completed"] {
   color: var(--success);
@@ -607,13 +622,20 @@
   background: var(--bg-sidebar);
 }
 
-.work-center-guidance > div {
+.work-center-guidance-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-top: 8px;
   color: var(--text-muted);
+}
+
+.work-center-guidance-actions > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
 }
 
 .work-center-resume textarea,
@@ -1075,6 +1097,20 @@
   color: var(--text-muted);
   cursor: pointer;
   font: inherit;
+}
+
+.work-center-attachment-preview {
+  font: inherit;
+  cursor: pointer;
+}
+
+.work-center-attachment-preview:hover:not(:disabled) {
+  background: var(--sidebar-hover);
+}
+
+.work-center-attachment-preview:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .work-center-modal-footer {

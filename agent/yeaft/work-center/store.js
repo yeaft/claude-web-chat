@@ -536,7 +536,7 @@ export class WorkItemStore {
     });
   }
 
-  addActionGuidance(id, guidance, expected, makeAction) {
+  addActionGuidance(id, guidance, expected, makeAction, attachments = null) {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
@@ -563,7 +563,12 @@ export class WorkItemStore {
         contractRevision: workItem.revision,
       }, this.#nextSequence(id), now);
       this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
-        current_run_id = NULL, updated_at = ? WHERE id = ?`).run(action.id, now, id);
+        current_run_id = NULL, attachments = ?, updated_at = ? WHERE id = ?`).run(
+        action.id,
+        stringify(Array.isArray(attachments) ? attachments : workItem.attachments),
+        now,
+        id,
+      );
       this.appendEvent(id, 'action.guidance_added', { guidance }, { actionId: action.id });
       return this.getWorkItemDetail(id);
     });

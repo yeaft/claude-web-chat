@@ -1,16 +1,77 @@
 import { randomUUID } from 'node:crypto';
 import { CONFIG } from '../config.js';
-import { agents, pendingFiles } from '../context.js';
+import { agents, pendingFiles, previewFiles } from '../context.js';
 import { forwardToAgent, sendToWebClient } from '../ws-utils.js';
 import {
   assertSupportedWorkItemAttachment,
   assertWorkItemAttachmentSize,
   MAX_WORK_ITEM_ATTACHMENTS,
   MAX_WORK_ITEM_ATTACHMENT_BYTES,
+  MAX_WORK_ITEM_INLINE_BYTES,
 } from '../work-item-attachment-policy.js';
 
 const REQUEST_TIMEOUT_MS = 60_000;
 const pendingRequests = new Map();
+
+function decodePreviewBase64(value) {
+  const data = typeof value === 'string' ? value : '';
+  const maxEncodedLength = Math.ceil(MAX_WORK_ITEM_INLINE_BYTES / 3) * 4;
+  if (!data || data.length > maxEncodedLength || data.length % 4 !== 0
+    || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
+    throw new Error('Attachment preview data is not valid base64');
+  }
+  const buffer = Buffer.from(data, 'base64');
+  if (buffer.length > MAX_WORK_ITEM_INLINE_BYTES) {
+    throw new Error(`Attachment preview exceeds ${MAX_WORK_ITEM_INLINE_BYTES} bytes`);
+  }
+  if (buffer.toString('base64') !== data) {
+    throw new Error('Attachment preview data is not canonical base64');
+  }
+  return buffer;
+}
+
+function hasPreviewSignature(buffer, mimeType) {
+  if (mimeType === 'image/png') {
+    return buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  }
+  if (mimeType === 'image/jpeg') {
+    return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  }
+  if (mimeType === 'image/gif') {
+    const signature = buffer.subarray(0, 6).toString('ascii');
+    return signature === 'GIF87a' || signature === 'GIF89a';
+  }
+  if (mimeType === 'image/webp') {
+    return buffer.length >= 12
+      && buffer.subarray(0, 4).toString('ascii') === 'RIFF'
+      && buffer.subarray(8, 12).toString('ascii') === 'WEBP';
+  }
+  if (mimeType === 'application/pdf') return buffer.subarray(0, 5).toString('ascii') === '%PDF-';
+  return true;
+}
+
+export function normalizeWorkItemPreview(previewData, attachment = {}) {
+  if (!previewData || typeof previewData !== 'object' || Array.isArray(previewData)) {
+    throw new Error('Attachment preview data is missing');
+  }
+  const filename = typeof previewData.filename === 'string' && previewData.filename.trim()
+    ? previewData.filename.trim()
+    : typeof attachment.name === 'string' ? attachment.name.trim() : '';
+  const mimeType = typeof previewData.mimeType === 'string' && previewData.mimeType.trim()
+    ? previewData.mimeType.trim().toLowerCase()
+    : typeof attachment.mimeType === 'string' ? attachment.mimeType.trim().toLowerCase() : '';
+  const kind = assertSupportedWorkItemAttachment(filename, mimeType);
+  const buffer = decodePreviewBase64(previewData.data);
+  if (!hasPreviewSignature(buffer, mimeType)) {
+    throw new Error('Attachment preview content does not match its declared type');
+  }
+  return {
+    buffer,
+    filename,
+    mimeType: kind === 'text' ? 'text/plain; charset=utf-8' : mimeType,
+    kind,
+  };
+}
 
 function prunePendingRequests(now = Date.now()) {
   for (const [requestId, pending] of pendingRequests) {
@@ -18,7 +79,7 @@ function prunePendingRequests(now = Date.now()) {
   }
 }
 
-function resolveCreateAttachments(client, payload) {
+function resolveWorkItemAttachments(client, payload) {
   const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
   if (attachments.length === 0) return { payload, consumedIds: [] };
   if (attachments.length > MAX_WORK_ITEM_ATTACHMENTS) {
@@ -83,17 +144,17 @@ export async function handleClientWorkCenter(client, msg, checkAgentAccess) {
   const sourcePayload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
   let resolved = { payload: sourcePayload, consumedIds: [] };
   try {
-    if (op === 'create' && Object.hasOwn(sourcePayload, 'files')) {
+    if (['create', 'guide'].includes(op) && Object.hasOwn(sourcePayload, 'files')) {
       throw new Error('WorkItem files are server-generated and cannot be supplied by the browser');
     }
     const attachments = Array.isArray(sourcePayload.attachments) ? sourcePayload.attachments : [];
-    if (op === 'create' && attachments.length > 0) {
+    if (['create', 'guide'].includes(op) && attachments.length > 0) {
       const capabilities = agents.get(agentId)?.capabilities;
       if (!Array.isArray(capabilities) || !capabilities.includes('work_item_attachments')) {
         throw new Error('The selected Agent does not support WorkItem attachments');
       }
     }
-    if (op === 'create') resolved = resolveCreateAttachments(client, sourcePayload);
+    if (['create', 'guide'].includes(op)) resolved = resolveWorkItemAttachments(client, sourcePayload);
   } catch (error) {
     await sendToWebClient(client, {
       type: 'work_center_response',
@@ -140,8 +201,34 @@ export async function deliverWorkCenterResponse(agentId, msg) {
     for (const fileId of pending.attachmentFileIds || []) pendingFiles.delete(fileId);
   }
   const { agentId: _untrustedAgentId, requestId: _opaqueRequestId, _requestUserId, ...payload } = msg;
+  let response = payload;
+  if (msg.ok === true && msg.op === 'preview_attachment') {
+    try {
+      const data = payload.data;
+      const preview = normalizeWorkItemPreview(data?.previewData, data?.attachment);
+      const fileId = randomUUID();
+      const token = randomUUID();
+      previewFiles.set(fileId, {
+        ...preview,
+        createdAt: Date.now(),
+        token,
+      });
+      const { previewData: _previewData, ...safeData } = data;
+      response = {
+        ...payload,
+        data: { ...safeData, preview: `/api/preview/${fileId}?token=${encodeURIComponent(token)}` },
+      };
+    } catch (error) {
+      response = {
+        ...payload,
+        ok: false,
+        error: error?.message || String(error),
+        data: undefined,
+      };
+    }
+  }
   await sendToWebClient(pending.client, {
-    ...payload,
+    ...response,
     agentId,
     requestId: pending.clientRequestId,
   });

@@ -172,7 +172,9 @@ export class WorkflowController {
 
   guide(id, input = {}) {
     const guidance = typeof input.guidance === 'string' ? input.guidance.trim().slice(0, 8_000) : '';
-    if (!guidance) throw new Error('guidance is required');
+    const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
+    if (!guidance && addedAttachmentCount === 0) throw new Error('guidance or attachments are required');
+    const guidanceSummary = guidance || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`;
     const expected = {
       actionId: typeof input.actionId === 'string' ? input.actionId : '',
       revision: Number(input.revision),
@@ -180,11 +182,11 @@ export class WorkflowController {
     if (!expected.actionId || !Number.isInteger(expected.revision)) {
       throw new Error('actionId and revision are required for guidance');
     }
-    const detail = this.store.addActionGuidance(id, guidance, expected, (workItem, previous) => {
+    const detail = this.store.addActionGuidance(id, guidanceSummary, expected, (workItem, previous) => {
       const context = [...(previous.context || []), {
         type: 'guidance',
         role: 'user',
-        summary: guidance,
+        summary: guidanceSummary,
         evidence: [],
       }];
       const step = {
@@ -200,7 +202,7 @@ export class WorkflowController {
         instruction: actionInstruction(step, workItem, context),
         maxAttempts: previous.maxAttempts || 2,
       };
-    });
+    }, input.attachments);
     if (!detail) throw new Error(`WorkItem not found: ${id}`);
     return detail;
   }

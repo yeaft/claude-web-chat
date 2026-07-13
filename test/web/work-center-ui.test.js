@@ -257,8 +257,22 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('workItemAttachmentsSupported()');
     expect(page).toContain("this.runtime?.workItemAttachments === true");
     expect(page).toContain('v-if="workItemAttachmentsSupported" class="btn-secondary work-center-attachment-picker"');
+    expect(page).toContain('v-if="workItemAttachmentsSupported" class="btn-ghost work-center-attachment-picker"');
+    expect(page).toContain('@change="onGuidanceAttachmentInput"');
+    expect(page).toContain('guidanceAttachments.map(attachment => ({');
+    expect(page).toContain('@click="previewAttachment(attachment)"');
+    expect(page).toContain('previewWorkItemAttachment(this.selected.id, attachment.id, this.agentId)');
     expect(page).toContain("tr('workCenter.attachmentsUnsupported'");
     expect(page).toContain('attachments: this.workItemAttachmentsSupported');
+  });
+
+  it('animates only running status dots and honors reduced motion', () => {
+    const css = read('web/styles/work-center.css');
+    expect(css).toContain('.work-center-status[data-status="running"] > span');
+    expect(css).toContain('animation: work-center-running-pulse');
+    expect(css).toContain('@keyframes work-center-running-pulse');
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(css).not.toMatch(/\.work-center-status\[data-status="ready"\][^{]*\{[^}]*animation:/s);
   });
 
   it('provides matching English and Chinese Work Center strings', () => {
@@ -313,6 +327,8 @@ describe('Work Center UI contract', () => {
       'workCenter.settings.upgradeRequired',
       'workCenter.planPreview',
       'workCenter.attachmentsUnsupported',
+      'workCenter.addAttachments',
+      'workCenter.previewAttachment',
     ];
     for (const key of keys) {
       expect(en).toContain(`'${key}'`);

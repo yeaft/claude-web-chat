@@ -1235,12 +1235,18 @@ export const useChatStore = defineStore('chat', {
       this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
       return detail;
     },
-    async guideWorkItemAction(id, guidance, actionId, revision, agentId = null) {
+    async guideWorkItemAction(id, guidance, actionId, revision, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const detail = await this.workCenterRequest('guide', { id, guidance, actionId, revision }, target);
+      const detail = await this.workCenterRequest('guide', {
+        id, guidance, actionId, revision, attachments,
+      }, target);
       await this.listWorkItems(target);
       this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
       return detail;
+    },
+    previewWorkItemAttachment(id, attachmentId, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      return this.workCenterRequest('preview_attachment', { id, attachmentId }, target);
     },
     async retryWorkItem(id, answer = '', agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;

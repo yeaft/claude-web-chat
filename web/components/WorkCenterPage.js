@@ -1,6 +1,7 @@
 import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import LlmTab from './LlmTab.js';
 import folderPickerMixin from './mixins/folder-picker-mixin.js';
+import { openImagePreview } from '../utils/imagePreview.js';
 import {
   clearOverlayPointerGesture,
   shouldDismissFromOverlayClick,
@@ -27,7 +28,10 @@ export default {
       workDirTouched: false,
       startTouched: false,
       createAttachments: [],
+      guidanceAttachments: [],
       attachmentsUploading: false,
+      guidanceAttachmentsUploading: false,
+      previewingAttachmentId: null,
       form: {
         title: '',
         goal: '',
@@ -183,6 +187,7 @@ export default {
       this.selectedId = item.id;
       this.resumeAnswer = '';
       this.actionGuidance = '';
+      this.guidanceAttachments = [];
       this.expandedActions = {};
       try { await this.store.getWorkItem(item.id, this.agentId); } catch {}
     },
@@ -284,6 +289,59 @@ export default {
     removeCreateAttachment(index) {
       this.createAttachments = this.createAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
     },
+    async onGuidanceAttachmentInput(event) {
+      if (!this.workItemAttachmentsSupported) {
+        event.target.value = '';
+        throw new Error(this.tr('workCenter.attachmentsUnsupported', 'The selected Agent does not support Work Item attachments.'));
+      }
+      const files = Array.from(event.target.files || []);
+      event.target.value = '';
+      if (files.length === 0) return;
+      const existingCount = Array.isArray(this.selected?.attachments) ? this.selected.attachments.length : 0;
+      const remaining = Math.max(0, 10 - existingCount - this.guidanceAttachments.length);
+      const selected = files.slice(0, remaining);
+      if (selected.length === 0) return;
+      this.guidanceAttachmentsUploading = true;
+      try {
+        const formData = new FormData();
+        for (const file of selected) formData.append('files', file, file.name || 'attachment');
+        const authStore = Pinia.useAuthStore();
+        const token = authStore.getActiveToken?.() || authStore.token || null;
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        const response = await fetch('/api/upload', { method: 'POST', headers, body: formData });
+        if (response.status === 401 || response.status === 403) {
+          authStore.handleAuthFailure?.(undefined, token);
+        }
+        if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
+        const result = await response.json();
+        this.guidanceAttachments = [
+          ...this.guidanceAttachments,
+          ...(Array.isArray(result.files) ? result.files : []),
+        ].slice(0, Math.max(0, 10 - existingCount));
+      } finally {
+        this.guidanceAttachmentsUploading = false;
+      }
+    },
+    removeGuidanceAttachment(index) {
+      this.guidanceAttachments = this.guidanceAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
+    },
+    async previewAttachment(attachment) {
+      if (!this.selected?.id || !attachment?.id || this.previewingAttachmentId) return;
+      const previewWindow = attachment.isImage ? null : window.open('', '_blank');
+      if (previewWindow) previewWindow.opener = null;
+      this.previewingAttachmentId = attachment.id;
+      try {
+        const data = await this.store.previewWorkItemAttachment(this.selected.id, attachment.id, this.agentId);
+        if (data?.preview && data.attachment?.isImage) openImagePreview(data.preview);
+        else if (data?.preview && previewWindow) previewWindow.location.replace(data.preview);
+        else previewWindow?.close();
+      } catch (error) {
+        previewWindow?.close();
+        throw error;
+      } finally {
+        this.previewingAttachmentId = null;
+      }
+    },
     formatAttachmentSize(value) {
       const size = Math.max(0, Number(value) || 0);
       if (size < 1024) return `${size} B`;
@@ -355,15 +413,22 @@ export default {
       await this.store.startWorkItem(this.selected.id, this.agentId);
     },
     async guideSelectedAction() {
-      if (!this.selected || !this.actionGuidance.trim()) return;
-      const detail = await this.store.guideWorkItemAction(
+      if (!this.selected || (!this.actionGuidance.trim() && this.guidanceAttachments.length === 0)) return;
+      await this.store.guideWorkItemAction(
         this.selected.id,
         this.actionGuidance.trim(),
         this.selected.currentActionId,
         this.selected.revision,
+        this.guidanceAttachments.map(attachment => ({
+          fileId: attachment.fileId,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+        })),
         this.agentId,
       );
       this.actionGuidance = '';
+      this.guidanceAttachments = [];
     },
     async retrySelected() {
       if (!this.selected) return;
@@ -505,19 +570,38 @@ export default {
                 <div v-if="selected.attachments?.length" class="work-center-section">
                   <h3>{{ tr('workCenter.attachments', 'Attachments') }}</h3>
                   <div class="work-center-attachment-list">
-                    <span v-for="attachment in selected.attachments" :key="attachment.id" class="work-center-attachment-chip">
+                    <button v-for="attachment in selected.attachments" :key="attachment.id" type="button"
+                            class="work-center-attachment-chip work-center-attachment-preview"
+                            @click="previewAttachment(attachment)" :disabled="previewingAttachmentId === attachment.id"
+                            :title="tr('workCenter.previewAttachment', 'Preview attachment')">
                       <span>{{ attachment.name }}</span>
                       <small>{{ formatAttachmentSize(attachment.size) }}</small>
-                    </span>
+                    </button>
                   </div>
                 </div>
                 <div v-if="['ready','running'].includes(selected.status)" class="work-center-section work-center-guidance">
                   <label>{{ tr('workCenter.guidance', 'Add guidance to the current Action') }}
                     <textarea v-model="actionGuidance" rows="2" :placeholder="tr('workCenter.guidanceHint', 'Clarify constraints or redirect the current Action')"></textarea>
                   </label>
-                  <div>
-                    <small>{{ tr('workCenter.guidanceRestartHint', 'This restarts the current Action with the new guidance.') }}</small>
-                    <button class="btn-secondary" type="button" @click="guideSelectedAction" :disabled="!actionGuidance.trim()">
+                  <div v-if="guidanceAttachments.length" class="work-center-attachment-list">
+                    <span v-for="(attachment, index) in guidanceAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
+                      <span>{{ attachment.name }}</span>
+                      <small>{{ formatAttachmentSize(attachment.size) }}</small>
+                      <button type="button" @click="removeGuidanceAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove attachment')">×</button>
+                    </span>
+                  </div>
+                  <div class="work-center-guidance-actions">
+                    <div>
+                      <label v-if="workItemAttachmentsSupported" class="btn-ghost work-center-attachment-picker">
+                        {{ tr('workCenter.addAttachments', 'Add files') }}
+                        <input type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv"
+                               @change="onGuidanceAttachmentInput">
+                      </label>
+                      <small v-if="guidanceAttachmentsUploading">{{ tr('workCenter.attachmentsUploading', 'Uploading…') }}</small>
+                      <small v-else>{{ tr('workCenter.guidanceRestartHint', 'This restarts the current Action with the new guidance.') }}</small>
+                    </div>
+                    <button class="btn-secondary" type="button" @click="guideSelectedAction"
+                            :disabled="guidanceAttachmentsUploading || (!actionGuidance.trim() && guidanceAttachments.length === 0)">
                       {{ tr('workCenter.sendGuidance', 'Send guidance') }}
                     </button>
                   </div>
