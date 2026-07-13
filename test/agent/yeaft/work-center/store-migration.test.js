@@ -76,7 +76,9 @@ describe('Work Center store migration', () => {
     expect(store.getRun('legacy-run')).toMatchObject({
       response: '', loopCount: 0, toolCount: 0, llmRequestCount: 0,
       inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0,
-      progressRevision: 0,
+      progressRevision: 0, checkpoint: null,
     });
+    expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
+      .toBe('7');
   });
 });

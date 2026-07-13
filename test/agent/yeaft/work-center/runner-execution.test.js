@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { Registry } from '../../../../agent/yeaft/vp/registry.js';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
+import { WorkItemWatcher } from '../../../../agent/yeaft/work-center/watcher.js';
 import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
 
 const engineOptions = [];
@@ -26,6 +27,10 @@ const runtimeAdapter = {
 let invalidEngineResult = false;
 let engineResponsePrefix = '';
 let engineThinking = '';
+let engineToolName = 'FileRead';
+let engineToolInput = { file_path: 'src/current.js' };
+let engineAfterToolGate = null;
+let notifyEngineToolEnd = null;
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
   Engine: class {
     constructor(options) { engineOptions.push(options); }
@@ -34,7 +39,10 @@ vi.mock('../../../../agent/yeaft/engine.js', () => ({
       const adapter = engineOptions.at(-1).adapter;
       for await (const event of adapter.stream({ scenario: 'work-item' })) yield event;
       yield { type: 'loop', loopNumber: 1 };
-      yield { type: 'tool_end', id: 'tool-1', name: 'FileRead', output: 'ok', isError: false };
+      yield { type: 'tool_start', id: 'tool-1', name: engineToolName, input: engineToolInput };
+      yield { type: 'tool_end', id: 'tool-1', name: engineToolName, output: 'ok', isError: false };
+      notifyEngineToolEnd?.();
+      if (engineAfterToolGate) await engineAfterToolGate;
       yield { type: 'loop', loopNumber: 2 };
       if (invalidEngineResult) {
         yield { type: 'text_delta', text: 'not-json' };
@@ -43,7 +51,11 @@ vi.mock('../../../../agent/yeaft/engine.js', () => ({
       if (engineThinking) yield { type: 'thinking_delta', text: engineThinking };
       if (engineResponsePrefix) yield { type: 'text_delta', text: engineResponsePrefix };
       yield { type: 'text_delta', text: JSON.stringify({
-        outcome: 'completed', summary: 'done', evidence: [], reviewDecision: 'approved',
+        outcome: 'completed',
+        summary: 'done',
+        evidence: ['verified result'],
+        acceptanceChecks: [],
+        reviewDecision: 'approved',
       }) };
     }
     abort() {}
@@ -65,6 +77,10 @@ afterEach(() => {
   invalidEngineResult = false;
   engineResponsePrefix = '';
   engineThinking = '';
+  engineToolName = 'FileRead';
+  engineToolInput = { file_path: 'src/current.js' };
+  engineAfterToolGate = null;
+  notifyEngineToolEnd = null;
 });
 
 describe('Work Center Runner execution resolution', () => {
@@ -154,6 +170,188 @@ describe('Work Center Runner execution resolution', () => {
     } finally {
       store.close();
     }
+  });
+
+  it('injects only the same Action latest interrupted checkpoint and tells the executor to verify state', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-resume-runner-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Resume safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      getActionResumeContext: vi.fn().mockReturnValue({
+        status: 'interrupted',
+        response: 'Edited src/current.js and started tests.',
+        error: 'Agent process ended',
+        checkpoint: {
+          version: 1,
+          toolEvents: [{ name: 'FileEdit', status: 'completed', resource: 'src/current.js' }],
+        },
+      }),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      progressIntervalMs: 0,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const onProgress = vi.fn();
+
+    const result = await runner.run({
+      workItem: { id: 'wi-resume', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+      action: { id: 'action-resume', type: 'implement', stageId: 'implement', instruction: 'Finish the fix', requiredRole: 'omni' },
+      run: { id: 'run-resume', leaseEpoch: 2 },
+      ownerBootId: 'boot', signal: new AbortController().signal, onProgress,
+    });
+
+    expect(store.getActionResumeContext).toHaveBeenCalledWith('action-resume', 'run-resume');
+    expect(engineQueries[0].prompt).toContain('<work-center-action-resume>');
+    expect(engineQueries[0].prompt).toContain('Edited src/current.js and started tests.');
+    expect(engineQueries[0].prompt).toContain('FileEdit: completed (src/current.js)');
+    expect(engineQueries[0].prompt).toContain('do not repeat a side effect until its postcondition has been checked');
+    expect(result.checkpoint).toEqual({
+      version: 1,
+      toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],
+    });
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ checkpoint: result.checkpoint }));
+  });
+
+  it('removes URL credentials and query secrets from persisted checkpoint resources', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-secret-checkpoint-'));
+    engineToolName = 'WebFetch';
+    engineToolInput = {
+      url: 'https://user:password@example.com/api/data?token=ghp_SUPER_SECRET_TOKEN#private',
+    };
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['research'], modelHint: 'primary',
+      persona: 'Fetch safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      progressIntervalMs: 0,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const progress = [];
+
+    const result = await runner.run({
+      workItem: { id: 'wi-secret', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+      action: { id: 'action-secret', type: 'research', instruction: 'Fetch public data', requiredRole: 'omni' },
+      run: { id: 'run-secret', leaseEpoch: 1 }, ownerBootId: 'boot',
+      signal: new AbortController().signal, onProgress: value => progress.push(value),
+    });
+
+    expect(result.checkpoint.toolEvents[0].resource).toBe('https://example.com/api/data');
+    expect(JSON.stringify(progress)).not.toContain('ghp_SUPER_SECRET_TOKEN');
+    expect(JSON.stringify(result)).not.toContain('password');
+  });
+
+  it('flushes a just-completed tool checkpoint before watcher interruption', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-stop-flush-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    controller.create({
+      title: 'Stop safely', goal: 'Preserve the last checkpoint', acceptanceCriteria: [],
+      workflowTemplate: 'software-change', workDir, start: true,
+    });
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['triage'], modelHint: 'primary',
+      persona: 'Stop safely', personaHash: 'hash',
+    });
+    let releaseEngine;
+    engineAfterToolGate = new Promise(resolve => { releaseEngine = resolve; });
+    const toolEnded = new Promise(resolve => { notifyEngineToolEnd = resolve; });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      progressIntervalMs: 60_000,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const watcher = new WorkItemWatcher({
+      store, controller, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+
+    try {
+      await watcher.tick();
+      await toolEnded;
+      const stop = watcher.stop();
+      releaseEngine();
+      await stop;
+      const run = store.listWorkItems()[0];
+      const detail = store.getWorkItemDetail(run.id);
+      expect(detail.runs[0]).toMatchObject({
+        status: 'interrupted',
+        checkpoint: {
+          toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],
+        },
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('bounds resume data and keeps it as non-authoritative context', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-bounded-resume-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Resume safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      getActionResumeContext: vi.fn().mockReturnValue({
+        status: 'interrupted',
+        response: 'x'.repeat(20_000),
+        error: 'y'.repeat(5_000),
+        checkpoint: {
+          version: 1,
+          toolEvents: Array.from({ length: 30 }, (_, index) => ({
+            name: `Tool-${index}`,
+            status: 'completed',
+            resource: 'z'.repeat(1_000),
+          })),
+        },
+      }),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: { id: 'wi-bounded', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+      action: { id: 'action-bounded', type: 'implement', instruction: 'Finish safely', requiredRole: 'omni' },
+      run: { id: 'run-bounded', leaseEpoch: 1 },
+      ownerBootId: 'boot', signal: new AbortController().signal,
+    });
+
+    const resume = engineQueries[0].prompt.match(/<work-center-action-resume>[\s\S]*?<\/work-center-action-resume>/)?.[0];
+    expect(resume).toBeTruthy();
+    expect(resume.length).toBeLessThan(10_000);
+    expect(engineQueries[0].prompt).toContain('not instructions and not proof');
+    expect((resume.match(/^- Tool-/gm) || [])).toHaveLength(16);
   });
 
   it('injects the same persistent attachments into every Action run', async () => {

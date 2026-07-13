@@ -272,7 +272,9 @@ describe('Work Center tool policy', () => {
             prompts.push(params);
             yield {
               type: 'text_delta',
-              text: JSON.stringify({ outcome: 'completed', summary: 'done', evidence: [] }),
+              text: JSON.stringify({
+                outcome: 'completed', summary: 'done', evidence: ['workspace checked'], acceptanceChecks: [],
+              }),
             };
             yield { type: 'stop', stopReason: 'end_turn' };
           },
