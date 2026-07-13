@@ -122,6 +122,7 @@ export class WorkItemWatcher {
         error: err?.message || String(err),
         loopCount: err?.workItemExecutionStats?.loopCount || 0,
         toolCount: err?.workItemExecutionStats?.toolCount || 0,
+        checkpoint: err?.workItemExecutionStats?.checkpoint || null,
       };
     }
     if (signal.aborted) return;

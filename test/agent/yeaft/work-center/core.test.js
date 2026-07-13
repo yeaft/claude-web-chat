@@ -23,6 +23,11 @@ function completed(type, overrides = {}) {
     outcome: 'completed',
     summary: `${type} complete`,
     evidence: [`${type}-evidence`],
+    acceptanceChecks: createInput().acceptanceCriteria.map(criterion => ({
+      criterion,
+      status: 'passed',
+      evidence: `${type}-evidence`,
+    })),
     ...(type === 'review' ? { reviewDecision: 'approved' } : {}),
     ...overrides,
   };
@@ -375,17 +380,97 @@ describe('Work Center core', () => {
     const claim = store.claimReadyAction('boot-a', 5_000);
     const detail = store.updateRunProgress(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
       response: 'Inspecting the existing implementation', loopCount: 2, toolCount: 3,
+      checkpoint: {
+        version: 1,
+        toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],
+      },
     });
 
     expect(detail.runs[0]).toMatchObject({
       response: 'Inspecting the existing implementation', loopCount: 2, toolCount: 3,
       progressRevision: 2,
+      checkpoint: {
+        version: 1,
+        toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],
+      },
     });
     expect(store.updateRunProgress(claim.run.id, 'boot-b', claim.run.leaseEpoch, {
       response: 'stale', loopCount: 9, toolCount: 9,
     })).toBeNull();
     expect(store.getRun(claim.run.id).response).toBe('Inspecting the existing implementation');
     expect(item.id).toBe(claim.workItem.id);
+  });
+
+  it('rejects completed Action claims without evidence and ordered acceptance checks', () => {
+    const item = controller.create(createInput());
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
+      outcome: 'completed',
+      summary: 'Claimed success without proof',
+      evidence: [],
+      acceptanceChecks: [],
+    });
+
+    expect(detail).toMatchObject({ status: 'needs_attention', currentActionId: claim.action.id });
+    expect(store.getRun(claim.run.id)).toMatchObject({
+      status: 'failed',
+      error: expect.stringMatching(/concrete evidence/i),
+    });
+    expect(item.id).toBe(claim.workItem.id);
+  });
+
+  it('rejects mismatched acceptance checks even when generic evidence exists', () => {
+    controller.create(createInput());
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
+      outcome: 'completed',
+      summary: 'Claimed success with incomplete checks',
+      evidence: ['some evidence'],
+      acceptanceChecks: [{
+        criterion: 'Completed work is completed', status: 'passed', evidence: 'some evidence',
+      }],
+    });
+
+    expect(detail.status).toBe('needs_attention');
+    expect(store.getRun(claim.run.id).error).toMatch(/every acceptance criterion/i);
+  });
+
+  it('allows intermediate Actions to defer criteria but requires verification Actions to resolve them', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const deferredChecks = createInput().acceptanceCriteria.map(criterion => ({
+      criterion, status: 'deferred', evidence: 'scheduled for verification',
+    }));
+    const planned = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      acceptanceChecks: deferredChecks,
+      plan: {
+        workItemType: 'verification-task',
+        actions: [{ id: 'verify', type: 'test', objective: 'Verify every criterion' }],
+      },
+    }));
+    expect(planned.status).toBe('ready');
+
+    const testClaim = store.claimReadyAction('boot-a', 5_000);
+    const rejected = controller.submit(testClaim.run.id, 'boot-a', testClaim.run.leaseEpoch, completed('test', {
+      acceptanceChecks: deferredChecks,
+    }));
+    expect(rejected.status).toBe('needs_attention');
+    expect(store.getRun(testClaim.run.id).error).toMatch(/cannot complete with deferred/i);
+    expect(item.id).toBe(testClaim.workItem.id);
+  });
+
+  it('validates triage acceptance checks against the proposed contract patch', () => {
+    const item = controller.create(createInput());
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      contractPatch: { acceptanceCriteria: ['Refined criterion'] },
+      acceptanceChecks: [{
+        criterion: 'Refined criterion', status: 'deferred', evidence: 'scheduled for implement and review',
+      }],
+    }));
+    expect(detail.status).toBe('ready');
+    expect(store.getWorkItem(item.id).acceptanceCriteria).toEqual(['Refined criterion']);
   });
 
   it('persists the user-facing response and aggregate counts with the completed Run', () => {
@@ -474,6 +559,9 @@ describe('Work Center core', () => {
     const triage = store.claimReadyAction('boot-a', 5_000);
     const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
       contractPatch: { goal: 'Refined goal', acceptanceCriteria: ['Refined criterion'] },
+      acceptanceChecks: [{
+        criterion: 'Refined criterion', status: 'deferred', evidence: 'scheduled for implementation',
+      }],
     }));
     expect(detail.revision).toBe(2);
     expect(detail.goal).toBe('Refined goal');
@@ -589,10 +677,62 @@ describe('Work Center core', () => {
     const claim = store.claimReadyAction('boot-a', 5_000);
     expect(store.interruptRun(claim.run.id, 'boot-b', claim.run.leaseEpoch, 'wrong owner')).toBe(false);
     expect(store.getWorkItem(item.id).status).toBe('running');
+    store.updateRunProgress(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
+      response: 'Changed src/current.js and started focused tests',
+      loopCount: 2,
+      toolCount: 2,
+      checkpoint: {
+        version: 1,
+        toolEvents: [
+          { name: 'FileEdit', status: 'completed', resource: 'src/current.js' },
+          { name: 'Bash', status: 'completed', resource: '/tmp' },
+        ],
+      },
+    });
     expect(store.interruptRun(claim.run.id, 'boot-a', claim.run.leaseEpoch, 'watcher stopped')).toBe(true);
     expect(store.getRun(claim.run.id).status).toBe('interrupted');
     expect(store.getWorkItem(item.id).status).toBe('ready');
-    expect(store.claimReadyAction('boot-a', 5_000)?.action.id).toBe(claim.action.id);
+    const next = store.claimReadyAction('boot-a', 5_000);
+    expect(next?.action.id).toBe(claim.action.id);
+    expect(store.getActionResumeContext(claim.action.id, next.run.id)).toMatchObject({
+      status: 'interrupted',
+      response: 'Changed src/current.js and started focused tests',
+      checkpoint: {
+        toolEvents: [
+          { name: 'FileEdit', status: 'completed', resource: 'src/current.js' },
+          { name: 'Bash', status: 'completed', resource: '/tmp' },
+        ],
+      },
+    });
+  });
+
+  it('recovers the latest retryable Run checkpoint for the same Action only', () => {
+    const first = controller.create(createInput());
+    const firstClaim = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, {
+      outcome: 'retryable',
+      response: 'Network failed after inspecting package.json',
+      summary: '',
+      evidence: [],
+      error: 'temporary network error',
+      checkpoint: {
+        version: 1,
+        toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'package.json' }],
+      },
+    });
+    const retryClaim = store.claimReadyAction('boot-a', 5_000);
+    expect(retryClaim.action.id).toBe(firstClaim.action.id);
+    expect(store.getActionResumeContext(firstClaim.action.id, retryClaim.run.id)).toMatchObject({
+      status: 'retryable',
+      error: 'temporary network error',
+      checkpoint: {
+        toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'package.json' }],
+      },
+    });
+
+    const second = controller.create(createInput({ title: 'Unrelated item' }));
+    expect(store.getActionResumeContext(second.currentActionId, '')).toBeNull();
+    expect(first.id).not.toBe(second.id);
   });
 
   it('recovers only the currently fenced expired Run', () => {

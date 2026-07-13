@@ -56,7 +56,15 @@ describe('WorkItemWatcher', () => {
     const runner = {
       run: vi.fn(options => new Promise(resolve => {
         resolveRun = resolve;
-        options.onProgress({ response: 'Inspecting files', loopCount: 1, toolCount: 2 });
+        options.onProgress({
+          response: 'Inspecting files',
+          loopCount: 1,
+          toolCount: 2,
+          checkpoint: {
+            version: 1,
+            toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],
+          },
+        });
       })),
     };
     const store = {
@@ -71,7 +79,13 @@ describe('WorkItemWatcher', () => {
 
     await watcher.tick();
     expect(updateRunProgress).toHaveBeenCalledWith('r1', 'boot', 3, {
-      response: 'Inspecting files', loopCount: 1, toolCount: 2,
+      response: 'Inspecting files',
+      loopCount: 1,
+      toolCount: 2,
+      checkpoint: {
+        version: 1,
+        toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],
+      },
     });
     expect(onEvent).toHaveBeenCalledWith({ type: 'run.progress', workItem: detail });
     resolveRun({ outcome: 'completed', response: 'Done', summary: 'Done', evidence: [] });
