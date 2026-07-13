@@ -52,7 +52,10 @@ describe('yeaft-agent local LLM config helpers', () => {
     });
     expect(result.provider.protocol).toBeUndefined();
     expect(result.provider.apiKey).toBeUndefined();
-    expect(result.provider.models).toBeUndefined();
+    expect(result.provider.models).toEqual([
+      { id: 'claude-sonnet-4.5', protocol: 'anthropic' },
+      { id: 'gpt-5', protocol: 'openai-responses' },
+    ]);
   });
 
   it('clears stale fast model when GitHub Copilot is used without --fast', async () => {
@@ -86,7 +89,9 @@ describe('yeaft-agent local LLM config helpers', () => {
     await expect(useGitHubCopilot({}, { model: 'missing-model', ...discovery })).rejects.toThrow('was not found');
     const allowed = await useGitHubCopilot({}, { model: 'missing-model', allowUnknownModel: true, ...discovery });
     expect(allowed.config.primaryModel).toBe('github-copilot/missing-model');
-    expect(allowed.provider.models).toBeUndefined();
+    expect(allowed.provider.models).toEqual([
+      { id: 'gpt-5', protocol: 'openai-responses' },
+    ]);
   });
 
   it('auto-configures GitHub Copilot with gpt-5.5 when a credential is already available', async () => {

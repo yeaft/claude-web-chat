@@ -219,7 +219,10 @@ export async function useGitHubCopilot(config, options = {}) {
 
   const next = { ...config };
   const providers = Array.isArray(config.providers) ? [...config.providers] : [];
-  const provider = { ...GITHUB_COPILOT_PROVIDER };
+  const provider = {
+    ...GITHUB_COPILOT_PROVIDER,
+    models: [...discovery.providerModels],
+  };
   const index = providers.findIndex(p => p && p.name === provider.name);
   if (index >= 0) providers[index] = provider;
   else providers.push(provider);
