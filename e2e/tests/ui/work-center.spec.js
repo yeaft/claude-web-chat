@@ -59,8 +59,18 @@ const OPEN_ITEM_DETAIL = {
   workDir: '/tmp/project',
   workflowTemplate: 'software-change',
   acceptanceCriteria: ['The Action flow remains readable'],
+  executionStats: {
+    llmRequestCount: 4, loopCount: 3, toolCount: 8,
+    inputTokens: 1200, outputTokens: 300, cacheReadTokens: 200, cacheWriteTokens: 50,
+    totalTokens: 1750,
+  },
   actions: [{
     id: 'action-1', sequence: 1, type: 'implement', requiredRole: 'developer', status: 'running',
+    executionStats: {
+      llmRequestCount: 4, loopCount: 3, toolCount: 8,
+      inputTokens: 1200, outputTokens: 300, cacheReadTokens: 200, cacheWriteTokens: 50,
+      totalTokens: 1750,
+    },
     loopCount: 3, toolCount: 8, progressRevision: 4,
     response: 'Implemented the layout fix and verified the responsive breakpoints.',
   }],
@@ -207,8 +217,12 @@ test.describe('Work Center responsive UI', () => {
     const action = chatPage.locator('.work-center-action-card');
     await expect(action).toHaveCount(1);
     await expect(action).toContainText('Implement');
+    await expect(action).toContainText('4 LLM requests');
     await expect(action).toContainText('3 loops');
     await expect(action).toContainText('8 tools');
+    await expect(action).toContainText('1.8k tokens');
+    await expect(chatPage.locator('.work-center-detail-usage')).toContainText('4 LLM requests');
+    await expect(chatPage.locator('.work-center-detail-usage')).toContainText('1.8k tokens');
     await expect(action.locator('.work-center-action-body')).toHaveCount(0);
     await action.locator('.work-center-action-summary').click();
     await expect(action.locator('.work-center-action-response')).toContainText('Implemented the layout fix');

@@ -23,6 +23,19 @@ function streamAdapter(events) {
   };
 }
 
+async function consume(generator) {
+  const events = [];
+  for await (const event of generator) events.push(event);
+  return events;
+}
+
+function anthropicSse(events) {
+  return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
 describe('LLM usage accounting', () => {
   it('counts a top-level stream once using Anthropic cache semantics', async () => {
     const onUsage = vi.fn();
@@ -50,6 +63,37 @@ describe('LLM usage accounting', () => {
       cacheWriteTokens: 10,
       totalTokens: 170,
     });
+  });
+
+  it('converts cumulative Anthropic message_delta usage before accounting', async () => {
+    const originalFetch = globalThis.fetch;
+    const onUsage = vi.fn();
+    try {
+      globalThis.fetch = vi.fn(async () => anthropicSse([
+        { type: 'message_start', message: { usage: {
+          input_tokens: 100, output_tokens: 0,
+        } } },
+        { type: 'message_delta', delta: {}, usage: { output_tokens: 10 } },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 20 } },
+        { type: 'message_stop' },
+      ]));
+      const adapter = withUsageAccounting(
+        new AnthropicAdapter({ baseUrl: 'https://anthropic.test', apiKey: 'k' }),
+        onUsage,
+      );
+
+      await consume(adapter.stream({
+        model: 'claude-test', system: '', messages: [{ role: 'user', content: 'hi' }],
+      }));
+
+      expect(onUsage).toHaveBeenCalledOnce();
+      expect(onUsage).toHaveBeenCalledWith({
+        inputTokens: 100, outputTokens: 20,
+        cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 120,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('counts an actual sub-agent engine through the shared adapter', async () => {
@@ -141,11 +185,60 @@ describe('LLM usage accounting', () => {
     ]);
   });
 
-  it('counts a failed request even when the provider reports no tokens', async () => {
+  it('does not count Router failures that occur before a provider request', async () => {
+    const onRequest = vi.fn();
+    const unknownModel = withUsageAccounting(
+      new AdapterRouter({ providers: [] }),
+      vi.fn(),
+      onRequest,
+    );
+    await expect(consume(unknownModel.stream({
+      model: 'missing/model', system: '', messages: [],
+    }))).rejects.toThrow('not found in any provider');
+
+    const invalidCredential = withUsageAccounting(new AdapterRouter({ providers: [{
+      name: 'managed', baseUrl: 'https://provider.test/v1',
+      credentialProvider: 'missing-provider', protocol: 'openai-responses', models: ['gpt-test'],
+    }] }), vi.fn(), onRequest);
+    await expect(invalidCredential.call({
+      model: 'managed/gpt-test', system: '', messages: [],
+    })).rejects.toThrow('Unknown credentialProvider');
+
+    expect(onRequest).not.toHaveBeenCalled();
+  });
+
+  it('counts provider HTTP failures for both stream and call requests', async () => {
+    const originalFetch = globalThis.fetch;
+    const onRequest = vi.fn();
+    try {
+      globalThis.fetch = vi.fn(async () => new Response('unavailable', { status: 503 }));
+      const adapter = withUsageAccounting(new AdapterRouter({ providers: [{
+        name: 'provider', baseUrl: 'https://provider.test/v1', apiKey: 'k',
+        protocol: 'openai-responses', models: ['gpt-test'],
+      }] }), vi.fn(), onRequest);
+
+      await expect(consume(adapter.stream({
+        model: 'provider/gpt-test', system: '', messages: [],
+      }))).rejects.toThrow();
+      await expect(adapter.call({
+        model: 'provider/gpt-test', system: '', messages: [],
+      })).rejects.toThrow();
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+      expect(onRequest).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('counts a failed request when the provider hook confirms it started', async () => {
     const onUsage = vi.fn();
     const onRequest = vi.fn();
     const base = streamAdapter([]);
-    base.call = vi.fn(async () => { throw new Error('provider failed'); });
+    base.call = vi.fn(async params => {
+      params.onRequestStart?.();
+      throw new Error('provider failed');
+    });
     const adapter = withUsageAccounting(base, onUsage, onRequest);
 
     await expect(adapter.call({ scenario: 'compact' })).rejects.toThrow('provider failed');

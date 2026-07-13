@@ -36,6 +36,8 @@ export class WorkItemWatcher {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     const active = Array.from(this.activeRuns.values());
+    for (const entry of active) entry.abortController.abort('watcher_stopped');
+    await Promise.allSettled(active.map(entry => entry.promise));
     for (const entry of active) {
       this.store.interruptRun(
         entry.runId,
@@ -43,9 +45,7 @@ export class WorkItemWatcher {
         entry.leaseEpoch,
         'Work Center watcher stopped',
       );
-      entry.abortController.abort('watcher_stopped');
     }
-    await Promise.allSettled(active.map(entry => entry.promise));
   }
 
   abortInvalidWorkItemRuns(workItemId) {

@@ -257,7 +257,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
    * `api-key` headers are auto-redacted (see `redactRawRequest` in
    * `adapter.js`); request-body fields are caller-controlled.
    */
-  async *stream({ model, system, messages, tools, maxTokens = 16384, effort, effortSource, extraBody, signal, onRawExchange }) {
+  async *stream({ model, system, messages, tools, maxTokens = 16384, effort, effortSource, extraBody, signal, onRawExchange, onRequestStart }) {
     if (signal?.aborted) throw new LLMAbortError();
 
     const body = {
@@ -297,6 +297,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
 
     let response;
     try {
+      onRequestStart?.();
       response = await fetch(url, {
         method: 'POST',
         headers,
@@ -516,7 +517,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
    * expose them, mirror the stream() instrumentation. Parity with
    * anthropic.js's `call()`.
    */
-  async call({ model, system, messages, maxTokens = 4096, effort, effortSource, extraBody, signal }) {
+  async call({ model, system, messages, maxTokens = 4096, effort, effortSource, extraBody, signal, onRequestStart }) {
     if (signal?.aborted) throw new LLMAbortError();
 
     const body = {
@@ -540,6 +541,7 @@ export class OpenAIResponsesAdapter extends LLMAdapter {
 
     let response;
     try {
+      onRequestStart?.();
       response = await fetch(`${this.#baseUrl}/responses`, {
         method: 'POST',
         headers: {

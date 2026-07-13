@@ -61,15 +61,27 @@ describe('Work Center summary state', () => {
     });
   });
 
-  it('rejects an out-of-order Action progress patch within the same WorkItem revision', () => {
-    const merged = mergeWorkItemSummary(detail, {
+  it('rejects an out-of-order Action and WorkItem aggregate within the same revision', () => {
+    const current = {
+      ...detail,
+      updatedAt: 31,
+      executionStats: { llmRequestCount: 5, loopCount: 4, toolCount: 9, totalTokens: 500 },
+      actions: [{
+        ...detail.actions[0], progressRevision: 5,
+        executionStats: { llmRequestCount: 5, loopCount: 4, toolCount: 9, totalTokens: 500 },
+      }],
+    };
+    const merged = mergeWorkItemSummary(current, {
       id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
+      executionStats: { llmRequestCount: 2, loopCount: 1, toolCount: 1, totalTokens: 200 },
       actionStats: [{
         id: 'action-1', status: 'running', loopCount: 1, toolCount: 1,
-        response: 'Stale response', progressRevision: 1,
+        executionStats: { llmRequestCount: 2, loopCount: 1, toolCount: 1, totalTokens: 200 },
+        response: 'Stale response', progressRevision: 2,
       }],
     });
-    expect(merged.actions).toEqual(detail.actions);
+    expect(merged.actions).toEqual(current.actions);
+    expect(merged.executionStats.totalTokens).toBe(500);
   });
 
   it('rejects an older revision even when its timestamp is newer', () => {

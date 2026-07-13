@@ -63,13 +63,23 @@ export class UsageAccountingAdapter extends LLMAdapter {
     this.#onRequest = onRequest;
   }
 
-  #reportRequest() {
-    if (typeof this.#onRequest !== 'function') return;
-    try {
-      this.#onRequest();
-    } catch (error) {
-      console.warn(`[llm-usage] request callback failed: ${error?.message || error}`);
-    }
+  #requestParams(params) {
+    if (typeof this.#onRequest !== 'function') return params;
+    const upstream = params?.onRequestStart;
+    return {
+      ...params,
+      onRequestStart: () => {
+        try {
+          upstream?.();
+        } finally {
+          try {
+            this.#onRequest();
+          } catch (error) {
+            console.warn(`[llm-usage] request callback failed: ${error?.message || error}`);
+          }
+        }
+      },
+    };
   }
 
   #report(usage) {
@@ -81,10 +91,9 @@ export class UsageAccountingAdapter extends LLMAdapter {
   }
 
   async *stream(params) {
-    this.#reportRequest();
     const total = normalizeTokenUsage();
     try {
-      for await (const event of this.#adapter.stream(params)) {
+      for await (const event of this.#adapter.stream(this.#requestParams(params))) {
         if (event?.type === 'usage') addUsage(total, event);
         yield event;
       }
@@ -94,10 +103,9 @@ export class UsageAccountingAdapter extends LLMAdapter {
   }
 
   async call(params) {
-    this.#reportRequest();
     let usage = normalizeTokenUsage();
     try {
-      const result = await this.#adapter.call(params);
+      const result = await this.#adapter.call(this.#requestParams(params));
       usage = normalizeTokenUsage(result?.usage || {});
       return result;
     } finally {

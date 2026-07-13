@@ -34,22 +34,32 @@ export function isWorkItemSummaryStale(summary, current) {
 export function mergeWorkItemSummary(current, summary) {
   if (!current || current.id !== summary?.id || isWorkItemSummaryStale(summary, current)) return current;
   const merged = { ...current };
-  for (const field of DETAIL_SUMMARY_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(summary, field)) merged[field] = summary[field];
-  }
+  let aggregateAccepted = !Array.isArray(current.actions) || !Array.isArray(summary.actionStats);
   if (Array.isArray(current.actions) && Array.isArray(summary.actionStats)) {
     const statsById = new Map(summary.actionStats.map(stats => [stats?.id, stats]));
+    let matchedStats = false;
+    aggregateAccepted = true;
     merged.actions = current.actions.map(action => {
       const stats = statsById.get(action?.id);
       if (!stats) return action;
+      matchedStats = true;
       const currentProgress = numberOrNull(action?.progressRevision) ?? 0;
       const nextProgress = numberOrNull(stats?.progressRevision);
       if (nextProgress == null) {
         const { response, ...legacyStats } = stats;
         return { ...action, ...legacyStats };
       }
-      return nextProgress < currentProgress ? action : { ...action, ...stats };
+      if (nextProgress < currentProgress) {
+        aggregateAccepted = false;
+        return action;
+      }
+      return { ...action, ...stats };
     });
+    if (!matchedStats) aggregateAccepted = false;
+  }
+  for (const field of DETAIL_SUMMARY_FIELDS) {
+    if (field === 'executionStats' && !aggregateAccepted) continue;
+    if (Object.prototype.hasOwnProperty.call(summary, field)) merged[field] = summary[field];
   }
   return merged;
 }

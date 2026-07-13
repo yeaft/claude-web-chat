@@ -11,13 +11,17 @@ import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
 const engineOptions = [];
 const engineQueries = [];
 const runtimeAdapter = {
-  async *stream() {
+  async *stream(params) {
+    params.onRequestStart?.();
     yield {
       type: 'usage', inputTokens: 100, outputTokens: 25,
       cacheReadTokens: 20, cacheWriteTokens: 5,
     };
   },
-  async call() { return { text: '', usage: {} }; },
+  async call(params) {
+    params.onRequestStart?.();
+    return { text: '', usage: {} };
+  },
 };
 let invalidEngineResult = false;
 let engineResponsePrefix = '';
