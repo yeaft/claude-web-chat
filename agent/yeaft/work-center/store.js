@@ -746,22 +746,45 @@ export class WorkItemStore {
     return !!this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
   }
 
-  interruptRun(runId, ownerBootId, leaseEpoch, reason = 'Work Center watcher stopped') {
+  interruptRun(
+    runId,
+    ownerBootId,
+    leaseEpoch,
+    reason = 'Work Center watcher stopped',
+    finalProgress = null,
+  ) {
     return withTransaction(this.db, () => {
       const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, false);
       if (!active) return false;
       const action = this.getAction(active.action_id);
       const now = this.now();
       const retryable = action.type !== 'deliver' && action.attempt < action.maxAttempts;
-      const runChanged = this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?
-        WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
-        now,
-        reason,
-        runId,
-        ownerBootId,
-        leaseEpoch,
-      );
+      const hasFinalProgress = finalProgress && typeof finalProgress === 'object';
+      const runChanged = hasFinalProgress
+        ? this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?,
+          response = ?, loop_count = ?, tool_count = ?, checkpoint = ?,
+          progress_revision = progress_revision + 1
+          WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
+          now,
+          reason,
+          normalizeRunResponse(finalProgress.response),
+          Math.max(0, Number(finalProgress.loopCount) || 0),
+          Math.max(0, Number(finalProgress.toolCount) || 0),
+          stringify(normalizeActionCheckpoint(finalProgress.checkpoint)),
+          runId,
+          ownerBootId,
+          leaseEpoch,
+        )
+        : this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?
+          WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
+          now,
+          reason,
+          runId,
+          ownerBootId,
+          leaseEpoch,
+        );
       if (Number(runChanged.changes) !== 1) return false;
+      this.onTransitionStep?.('after_interrupt_run_update');
       const actionChanged = this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL,
         updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
         AND lease_epoch = ?`).run(

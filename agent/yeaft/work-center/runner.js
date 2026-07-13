@@ -414,7 +414,7 @@ export class WorkItemRunner {
       : DEFAULT_PROGRESS_INTERVAL_MS;
   }
 
-  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerFlush }) {
+  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader }) {
     const runtime = await this.runtimeProvider();
     const currentModelPolicy = workItem?.workflowSnapshot?.planningMode === 'ai'
       && this.policyProvider
@@ -523,14 +523,20 @@ export class WorkItemRunner {
     let checkpoint = null;
     const toolInputs = new Map();
     let lastProgressAt = 0;
+    const currentProgress = () => ({
+      response: publicWorkItemResponse(text),
+      loopCount,
+      toolCount,
+      checkpoint,
+    });
     const reportProgress = (force = false) => {
       if (typeof onProgress !== 'function') return;
       const now = Date.now();
       if (!force && now - lastProgressAt < this.progressIntervalMs) return;
       lastProgressAt = now;
-      return onProgress({ response: publicWorkItemResponse(text), loopCount, toolCount, checkpoint });
+      return onProgress(currentProgress());
     };
-    if (typeof registerFlush === 'function') registerFlush(() => reportProgress(true));
+    if (typeof registerProgressReader === 'function') registerProgressReader(currentProgress);
     try {
       const prompt = `${executionAction.instruction}${resumeBlock}${attachmentContext.promptBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
       const promptParts = attachmentContext.promptParts.length > 0

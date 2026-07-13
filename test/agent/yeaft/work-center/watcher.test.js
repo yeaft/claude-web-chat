@@ -115,10 +115,106 @@ describe('WorkItemWatcher', () => {
     await watcher.tick();
     const stop = watcher.stop();
     expect(store.interruptRun).toHaveBeenCalledWith(
-      'r1', 'boot', 7, 'Work Center watcher stopped',
+      'r1', 'boot', 7, 'Work Center watcher stopped', null,
     );
     gate.resolve({ outcome: 'completed', summary: '', evidence: [] });
-    await stop;
+    await expect(stop).resolves.toEqual([{ runId: 'r1', interrupted: true }]);
+    expect(watcher.activeRuns.size).toBe(0);
+  });
+
+  it('aborts and settles an active Run when the atomic interruption loses its fence', async () => {
+    const gate = deferred();
+    let capturedSignal;
+    const store = {
+      claimReadyAction: vi.fn().mockReturnValueOnce({
+        workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 5 },
+      }),
+      renewLease: vi.fn(() => true),
+      interruptRun: vi.fn(() => false),
+      isActiveRun: vi.fn(() => true),
+      getWorkItemDetail: vi.fn(id => ({ id })),
+    };
+    const runner = { run: vi.fn(options => {
+      capturedSignal = options.signal;
+      options.registerProgressReader(() => ({
+        response: 'latest', loopCount: 1, toolCount: 1, checkpoint: null,
+      }));
+      return gate.promise;
+    }) };
+    const watcher = new WorkItemWatcher({
+      store, controller: { submit: vi.fn() }, runner,
+      ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+
+    await watcher.tick();
+    const stop = watcher.stop();
+    expect(capturedSignal.aborted).toBe(true);
+    expect(store.interruptRun).toHaveBeenCalledWith(
+      'r1', 'boot', 5, 'Work Center watcher stopped',
+      { response: 'latest', loopCount: 1, toolCount: 1, checkpoint: null },
+    );
+    gate.resolve({ outcome: 'completed', summary: '', evidence: [] });
+    await expect(stop).resolves.toEqual([{ runId: 'r1', interrupted: false }]);
+    expect(watcher.activeRuns.size).toBe(0);
+  });
+
+  it('aborts and settles every active Run before reporting an interruption write error', async () => {
+    const gate = deferred();
+    let capturedSignal;
+    const store = {
+      claimReadyAction: vi.fn().mockReturnValueOnce({
+        workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 6 },
+      }),
+      renewLease: vi.fn(() => true),
+      interruptRun: vi.fn(() => { throw new Error('sqlite busy'); }),
+      isActiveRun: vi.fn(() => true),
+      getWorkItemDetail: vi.fn(id => ({ id })),
+    };
+    const runner = { run: vi.fn(options => {
+      capturedSignal = options.signal;
+      return gate.promise;
+    }) };
+    const watcher = new WorkItemWatcher({
+      store, controller: { submit: vi.fn() }, runner,
+      ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+
+    await watcher.tick();
+    const stop = watcher.stop();
+    expect(capturedSignal.aborted).toBe(true);
+    gate.resolve({ outcome: 'completed', summary: '', evidence: [] });
+    await expect(stop).rejects.toThrow(/Could not persist.*interruptions/i);
+    expect(watcher.activeRuns.size).toBe(0);
+  });
+
+  it('aborts and settles an active Run when reading final progress throws', async () => {
+    const gate = deferred();
+    let capturedSignal;
+    const store = {
+      claimReadyAction: vi.fn().mockReturnValueOnce({
+        workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 8 },
+      }),
+      renewLease: vi.fn(() => true),
+      interruptRun: vi.fn(() => true),
+      isActiveRun: vi.fn(() => true),
+      getWorkItemDetail: vi.fn(id => ({ id })),
+    };
+    const runner = { run: vi.fn(options => {
+      capturedSignal = options.signal;
+      options.registerProgressReader(() => { throw new Error('progress snapshot failed'); });
+      return gate.promise;
+    }) };
+    const watcher = new WorkItemWatcher({
+      store, controller: { submit: vi.fn() }, runner,
+      ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+
+    await watcher.tick();
+    const stop = watcher.stop();
+    expect(capturedSignal.aborted).toBe(true);
+    expect(store.interruptRun).not.toHaveBeenCalled();
+    gate.resolve({ outcome: 'completed', summary: '', evidence: [] });
+    await expect(stop).rejects.toThrow(/Could not persist.*interruptions/i);
     expect(watcher.activeRuns.size).toBe(0);
   });
 

@@ -749,6 +749,49 @@ describe('Work Center core', () => {
     });
   });
 
+  it('atomically rolls back final progress when interruption transition faults', () => {
+    const faultDir = mkdtempSync(join(tmpdir(), 'yeaft-work-center-interrupt-fault-'));
+    const faultStore = new WorkItemStore(join(faultDir, 'work-center.db'), {
+      now: () => now,
+      onTransitionStep(step) {
+        if (step === 'after_interrupt_run_update') throw new Error('simulated interruption crash');
+      },
+    });
+    const faultController = new WorkflowController(faultStore);
+    faultController.create(createInput());
+    const claim = faultStore.claimReadyAction('boot-a', 5_000);
+    faultStore.updateRunProgress(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
+      response: 'older durable progress', loopCount: 1, toolCount: 1, checkpoint: null,
+    });
+
+    expect(() => faultStore.interruptRun(
+      claim.run.id,
+      'boot-a',
+      claim.run.leaseEpoch,
+      'watcher stopped',
+      {
+        response: 'new final progress',
+        loopCount: 2,
+        toolCount: 2,
+        checkpoint: {
+          version: 1,
+          toolEvents: [{ name: 'FileEdit', status: 'completed', resource: 'important.js' }],
+        },
+      },
+    )).toThrow(/simulated interruption crash/);
+    expect(faultStore.getRun(claim.run.id)).toMatchObject({
+      status: 'running',
+      response: 'older durable progress',
+      loopCount: 1,
+      toolCount: 1,
+      checkpoint: null,
+    });
+    expect(faultStore.getAction(claim.action.id).status).toBe('running');
+    expect(faultStore.getWorkItem(claim.workItem.id).status).toBe('running');
+    faultStore.close();
+    rmSync(faultDir, { recursive: true, force: true });
+  });
+
   it('recovers bounded state across attempts of the same Action only', () => {
     const workflowSnapshot = {
       version: 1,
