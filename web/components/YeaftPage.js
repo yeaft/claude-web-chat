@@ -258,9 +258,6 @@ export default {
           </button>
         </div>
         <MessageList v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty" />
-
-        <!-- Settings Panel -->
-        <SettingsPanel v-if="showSettings" :visible="showSettings" :initial-tab="'yeaft'" :initial-sub-tab="settingsInitialTab" :initial-edit-vp-id="settingsInitialEditVpId" @close="showSettings = false" />
         </div>
 
         <div v-if="showLlmConfig" class="modal-overlay yeaft-llm-config-overlay" @click.self="showLlmConfig = false">
@@ -325,7 +322,16 @@ export default {
         <YeaftDebugPanel @close="closeDebug" />
       </aside>
 
-      <!-- task-343: VP library is now an in-Settings tab (initial-tab='vp'). -->
+      <!-- Keep global Settings outside the conversation/Work Center branch so
+           the shared sidebar entry works from either content surface. -->
+      <SettingsPanel
+        v-if="showSettings"
+        :visible="showSettings"
+        :initial-tab="'yeaft'"
+        :initial-sub-tab="settingsInitialTab"
+        :initial-edit-vp-id="settingsInitialEditVpId"
+        @close="showSettings = false"
+      />
 
       <!-- task-fix-group-member-editor: invite modal CTA now opens the
            group's member editor directly (the previous flow dumped the
