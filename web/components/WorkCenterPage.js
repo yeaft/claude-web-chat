@@ -177,6 +177,18 @@ export default {
     actionResponseText(action) {
       return String(action?.response || '').trim();
     },
+    executionStats(value) {
+      return value?.executionStats || {};
+    },
+    formatCount(value) {
+      return new Intl.NumberFormat().format(Math.max(0, Number(value) || 0));
+    },
+    formatTokens(value) {
+      const tokens = Math.max(0, Number(value) || 0);
+      if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}m`;
+      if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+      return String(tokens);
+    },
     resetCreateExecutionContext(agentId) {
       const hadUserExecutionInput = this.workDirTouched || this.startTouched;
       const draft = this.store.workCenterCreateDraft;
@@ -435,6 +447,12 @@ export default {
                   <div v-if="selected.workItemType"><dt>{{ tr('workCenter.workItemType', 'Type') }}</dt><dd>{{ selected.workItemType }}</dd></div>
                   <div v-else-if="selected.planningMode === 'ai'"><dt>{{ tr('workCenter.workItemType', 'Type') }}</dt><dd>{{ tr('workCenter.planning', 'Planning') }}</dd></div>
                 </dl>
+                <div class="work-center-usage-summary work-center-detail-usage">
+                  <span>{{ $t('workCenter.llmRequestCount', { count: formatCount(executionStats(selected).llmRequestCount) }) }}</span>
+                  <span>{{ $t('workCenter.loopCount', { count: formatCount(executionStats(selected).loopCount) }) }}</span>
+                  <span>{{ $t('workCenter.toolCount', { count: formatCount(executionStats(selected).toolCount) }) }}</span>
+                  <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(selected).inputTokens), output: formatCount(executionStats(selected).outputTokens), cache: formatCount((executionStats(selected).cacheReadTokens || 0) + (executionStats(selected).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(selected).totalTokens) }) }}</span>
+                </div>
 
                 <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
                   <p v-if="selected.waitingReason">{{ selected.waitingReason }}</p>
@@ -486,8 +504,10 @@ export default {
                           <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.capability || tr('workCenter.assignment.auto', 'Auto') }}</small>
                         </span>
                         <span class="work-center-action-stats">
-                          <span>{{ $t('workCenter.loopCount', { count: action.loopCount || 0 }) }}</span>
-                          <span>{{ $t('workCenter.toolCount', { count: action.toolCount || 0 }) }}</span>
+                          <span>{{ $t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) }) }}</span>
+                          <span>{{ $t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) }) }}</span>
+                          <span>{{ $t('workCenter.toolCount', { count: formatCount(executionStats(action).toolCount) }) }}</span>
+                          <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(action).inputTokens), output: formatCount(executionStats(action).outputTokens), cache: formatCount((executionStats(action).cacheReadTokens || 0) + (executionStats(action).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) }) }}</span>
                         </span>
                         <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
                         <span v-if="actionHasResponse(action)" class="work-center-action-chevron" aria-hidden="true"></span>

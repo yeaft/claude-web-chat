@@ -7,22 +7,45 @@ function count(value) {
   return Math.max(0, Number(value) || 0);
 }
 
+function emptyExecutionStats() {
+  return {
+    llmRequestCount: 0,
+    loopCount: 0,
+    toolCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+  };
+}
+
+function executionStats(value) {
+  const stats = emptyExecutionStats();
+  for (const key of Object.keys(stats)) stats[key] = count(value?.[key]);
+  return stats;
+}
+
+function sumExecutionStats(values) {
+  return values.reduce((total, value) => {
+    const next = executionStats(value);
+    for (const key of Object.keys(total)) total[key] += next[key];
+    return total;
+  }, emptyExecutionStats());
+}
+
 function actionExecution(action, runs) {
   const matchingRuns = Array.isArray(runs)
     ? runs.filter(run => run?.actionId === action?.id)
     : [];
   if (matchingRuns.length === 0) {
     return {
-      loopCount: count(action?.loopCount),
-      toolCount: count(action?.toolCount),
+      ...executionStats(action),
       response: '',
       progressRevision: 0,
     };
   }
-  const stats = matchingRuns.reduce((total, run) => ({
-    loopCount: total.loopCount + count(run.loopCount),
-    toolCount: total.toolCount + count(run.toolCount),
-  }), { loopCount: 0, toolCount: 0 });
+  const stats = sumExecutionStats(matchingRuns);
   const latest = [...matchingRuns].sort((left, right) => (
     count(right.progressRevision) - count(left.progressRevision)
       || count(right.startedAt) - count(left.startedAt)
@@ -65,6 +88,7 @@ function projectAction(action, runs) {
     assignmentPolicy: projectAssignmentPolicy(action.assignmentPolicy),
     requiredRole: action.requiredRole || '',
     status: action.status,
+    executionStats: executionStats(execution),
     loopCount: execution.loopCount,
     toolCount: execution.toolCount,
     response: execution.response,
@@ -79,6 +103,7 @@ function projectActionStats(detail) {
     return {
       id: projected.id,
       status: projected.status,
+      executionStats: projected.executionStats,
       loopCount: projected.loopCount,
       toolCount: projected.toolCount,
       response: projected.response,
@@ -97,7 +122,7 @@ function waitingReason(detail) {
 
 /**
  * Authenticated browser detail DTO. Raw execution records stay Agent-local;
- * the browser receives only Action status/counts plus the explicit user-facing response.
+ * the browser receives only aggregate execution stats plus the explicit user-facing response.
  */
 export function projectWorkItemDetail(detail) {
   if (!detail) return null;
@@ -112,6 +137,7 @@ export function projectWorkItemDetail(detail) {
     planningMode: detail.workflowSnapshot?.planningMode || 'static',
     status: detail.status,
     currentActionId: detail.currentActionId || null,
+    executionStats: sumExecutionStats(Array.isArray(detail.runs) ? detail.runs : []),
     reuseMemory: detail.reuseMemory !== false,
     waitingReason: waitingReason(detail),
     origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
@@ -142,6 +168,7 @@ export function projectWorkItemSummary(detail) {
       status: detail.status,
       currentActionId: detail.currentActionId || null,
       currentAction: null,
+      executionStats: executionStats(detail.executionStats),
       origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
       linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
       attachmentCount: Array.isArray(detail.attachments) ? detail.attachments.length : 0,
@@ -160,6 +187,7 @@ export function projectWorkItemSummary(detail) {
     planningMode: detail.workflowSnapshot?.planningMode || 'static',
     status: detail.status,
     currentActionId: detail.currentActionId || null,
+    executionStats: sumExecutionStats(Array.isArray(detail.runs) ? detail.runs : []),
     currentAction: projectedAction ? {
       id: projectedAction.id,
       type: projectedAction.type,

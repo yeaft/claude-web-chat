@@ -45,8 +45,10 @@ describe('Work Center UI contract', () => {
     expect(page).toContain(':work-item-fn="openWorkItemDraft"');
     expect(store).toContain('enterWorkCenterFromSession');
     expect(workCenter).toContain('class="work-center-action-card"');
-    expect(workCenter).toContain("$t('workCenter.loopCount', { count: action.loopCount || 0 })");
-    expect(workCenter).toContain("$t('workCenter.toolCount', { count: action.toolCount || 0 })");
+    expect(workCenter).toContain("$t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) })");
+    expect(workCenter).toContain("$t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) })");
+    expect(workCenter).toContain("$t('workCenter.toolCount', { count: formatCount(executionStats(action).toolCount) })");
+    expect(workCenter).toContain("$t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) })");
     expect(workCenter).not.toContain('runsForAction(action.id)');
     expect(workCenter).not.toContain('run.evidence');
     expect(workCenter).not.toContain('selected.events');
@@ -249,8 +251,11 @@ describe('Work Center UI contract', () => {
       'workCenter.action.custom',
       'workCenter.guidance',
       'workCenter.sendGuidance',
+      'workCenter.llmRequestCount',
       'workCenter.loopCount',
       'workCenter.toolCount',
+      'workCenter.tokenCount',
+      'workCenter.tokenBreakdown',
       'workCenter.reuseMemory',
       'workCenter.reuseMemoryHelp',
       'workCenter.settings.title',

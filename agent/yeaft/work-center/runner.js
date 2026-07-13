@@ -12,6 +12,7 @@ import { formatPickedForInjection } from '../sessions/pre-flow.js';
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { buildWorkItemAttachmentContext } from './attachments.js';
+import { withUsageAccounting } from '../llm/usage-accounting.js';
 import {
   appendCheckpointToolEvent,
   renderActionResumeBlock,
@@ -499,8 +500,47 @@ export class WorkItemRunner {
     );
     if (!snapshotsWritten) throw new Error('Work Center Run lost its lease before execution');
 
+    let text = '';
+    let loopCount = 0;
+    let toolCount = 0;
+    let checkpoint = null;
+    const toolInputs = new Map();
+    const usageStats = {
+      llmRequestCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+    };
+    let lastProgressAt = 0;
+    const executionStats = () => ({ loopCount, toolCount, ...usageStats });
+    const currentProgress = () => ({
+      response: publicWorkItemResponse(text),
+      ...executionStats(),
+      checkpoint,
+    });
+    const reportProgress = (force = false) => {
+      if (typeof onProgress !== 'function') return;
+      const now = Date.now();
+      if (!force && now - lastProgressAt < this.progressIntervalMs) return;
+      lastProgressAt = now;
+      return onProgress(currentProgress());
+    };
+    if (typeof registerProgressReader === 'function') registerProgressReader(currentProgress);
+    const adapter = withUsageAccounting(runtime.adapter, usage => {
+      usageStats.inputTokens += usage.inputTokens;
+      usageStats.outputTokens += usage.outputTokens;
+      usageStats.cacheReadTokens += usage.cacheReadTokens;
+      usageStats.cacheWriteTokens += usage.cacheWriteTokens;
+      usageStats.totalTokens += usage.totalTokens;
+      reportProgress(true);
+    }, () => {
+      usageStats.llmRequestCount += 1;
+      reportProgress(true);
+    });
     const engine = new Engine({
-      adapter: runtime.adapter,
+      adapter,
       trace: new NullTrace(),
       config,
       conversationStore: null,
@@ -516,27 +556,6 @@ export class WorkItemRunner {
       taskManager: null,
       vpId: vp.id,
     });
-
-    let text = '';
-    let loopCount = 0;
-    let toolCount = 0;
-    let checkpoint = null;
-    const toolInputs = new Map();
-    let lastProgressAt = 0;
-    const currentProgress = () => ({
-      response: publicWorkItemResponse(text),
-      loopCount,
-      toolCount,
-      checkpoint,
-    });
-    const reportProgress = (force = false) => {
-      if (typeof onProgress !== 'function') return;
-      const now = Date.now();
-      if (!force && now - lastProgressAt < this.progressIntervalMs) return;
-      lastProgressAt = now;
-      return onProgress(currentProgress());
-    };
-    if (typeof registerProgressReader === 'function') registerProgressReader(currentProgress);
     try {
       const prompt = `${executionAction.instruction}${resumeBlock}${attachmentContext.promptBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
       const promptParts = attachmentContext.promptParts.length > 0
@@ -567,15 +586,10 @@ export class WorkItemRunner {
           });
         }
         if (event?.type === 'text_delta' && typeof event.text === 'string') text += event.text;
-        reportProgress();
+        reportProgress(event?.type === 'loop');
       }
     } catch (error) {
-      error.workItemExecutionStats = {
-        response: publicWorkItemResponse(text),
-        loopCount,
-        toolCount,
-        checkpoint,
-      };
+      error.workItemExecutionStats = currentProgress();
       throw error;
     } finally {
       try { engine.abort?.('work_item_run_finished'); } catch {}
@@ -585,8 +599,7 @@ export class WorkItemRunner {
     return {
       ...parseStructuredResult(text, executionAction.type),
       response,
-      loopCount,
-      toolCount,
+      ...executionStats(),
       checkpoint,
     };
   }

@@ -25,7 +25,9 @@ function internalDetail() {
       response: 'Reviewed the change and found one compatibility decision.',
       summary: 'Review needs a compatibility choice', evidence: [{ output: 'secret latest evidence' }],
       waitingReason: 'Choose the compatibility behavior', error: 'private latest error',
-      loopCount: 2, toolCount: 5, progressRevision: 4,
+      loopCount: 2, toolCount: 5, llmRequestCount: 3,
+      inputTokens: 200, outputTokens: 50, cacheReadTokens: 20, cacheWriteTokens: 10,
+      totalTokens: 280, progressRevision: 4,
       roleSnapshot: { id: 'review', actionType: 'review', selectionReason: 'auto:review' },
       vpSnapshot: { id: 'martin', name: 'Martin', persona: 'secret persona' },
       modelSnapshot: { id: 'provider/review', provider: 'provider', effort: 'high' },
@@ -34,7 +36,9 @@ function internalDetail() {
       id: 'r-1', actionId: 'a-1', workItemId: 'wi-1', status: 'retryable', startedAt: 1,
       response: 'Earlier retry response',
       summary: 'Earlier retry summary', evidence: [{ output: 'secret earlier evidence' }],
-      loopCount: 1, toolCount: 3, progressRevision: 2,
+      loopCount: 1, toolCount: 3, llmRequestCount: 2,
+      inputTokens: 100, outputTokens: 25, cacheReadTokens: 10, cacheWriteTokens: 5,
+      totalTokens: 140, progressRevision: 2,
     }],
     events: [{
       id: 'e-1', workItemId: 'wi-1', actionId: 'a-1', runId: 'r-1',
@@ -52,7 +56,13 @@ describe('Work Center event projection', () => {
       id: 'wi-1', status: 'waiting', workItemType: 'bug-fix', planningMode: 'ai',
     });
     expect(projected.workItem.actionStats).toEqual([{
-      id: 'a-1', status: 'completed', loopCount: 3, toolCount: 8,
+      id: 'a-1', status: 'completed',
+      executionStats: {
+        llmRequestCount: 5, loopCount: 3, toolCount: 8,
+        inputTokens: 300, outputTokens: 75, cacheReadTokens: 30, cacheWriteTokens: 15,
+        totalTokens: 420,
+      },
+      loopCount: 3, toolCount: 8,
       response: 'Reviewed the change and found one compatibility decision.',
       progressRevision: 4,
     }]);
@@ -73,10 +83,21 @@ describe('Work Center event projection', () => {
       waitingReason: 'Choose the compatibility behavior',
       workItemType: 'bug-fix', planningMode: 'ai',
       attachments: [{ id: 'att-1', name: 'screen.png', mimeType: 'image/png', size: 42, isImage: true }],
+      executionStats: {
+        llmRequestCount: 5, loopCount: 3, toolCount: 8,
+        inputTokens: 300, outputTokens: 75, cacheReadTokens: 30, cacheWriteTokens: 15,
+        totalTokens: 420,
+      },
       actions: [{
         id: 'a-1', sequence: 1, type: 'review', stageId: 'review',
         assignmentPolicy: { mode: 'auto', capability: 'review', fixedVpId: null },
-        status: 'completed', loopCount: 3, toolCount: 8,
+        status: 'completed',
+        executionStats: {
+          llmRequestCount: 5, loopCount: 3, toolCount: 8,
+          inputTokens: 300, outputTokens: 75, cacheReadTokens: 30, cacheWriteTokens: 15,
+          totalTokens: 420,
+        },
+        loopCount: 3, toolCount: 8,
         response: 'Reviewed the change and found one compatibility decision.',
         progressRevision: 4,
       }],

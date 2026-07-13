@@ -48,6 +48,16 @@ function mapWorkItem(row) {
     origin: parseJson(row.origin, null),
     linkedSessionIds: parseJson(row.linked_session_ids, []),
     attachments: parseJson(row.attachments, []),
+    executionStats: {
+      llmRequestCount: Math.max(0, Number(row.usage_llm_request_count) || 0),
+      loopCount: Math.max(0, Number(row.usage_loop_count) || 0),
+      toolCount: Math.max(0, Number(row.usage_tool_count) || 0),
+      inputTokens: Math.max(0, Number(row.usage_input_tokens) || 0),
+      outputTokens: Math.max(0, Number(row.usage_output_tokens) || 0),
+      cacheReadTokens: Math.max(0, Number(row.usage_cache_read_tokens) || 0),
+      cacheWriteTokens: Math.max(0, Number(row.usage_cache_write_tokens) || 0),
+      totalTokens: Math.max(0, Number(row.usage_total_tokens) || 0),
+    },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -102,6 +112,12 @@ function mapRun(row) {
     contractPatch: parseJson(row.contract_patch, null),
     loopCount: Math.max(0, Number(row.loop_count) || 0),
     toolCount: Math.max(0, Number(row.tool_count) || 0),
+    llmRequestCount: Math.max(0, Number(row.llm_request_count) || 0),
+    inputTokens: Math.max(0, Number(row.input_tokens) || 0),
+    outputTokens: Math.max(0, Number(row.output_tokens) || 0),
+    cacheReadTokens: Math.max(0, Number(row.cache_read_tokens) || 0),
+    cacheWriteTokens: Math.max(0, Number(row.cache_write_tokens) || 0),
+    totalTokens: Math.max(0, Number(row.total_tokens) || 0),
     progressRevision: Math.max(0, Number(row.progress_revision) || 0),
     checkpoint: normalizeActionCheckpoint(parseJson(row.checkpoint, null)),
   };
@@ -220,6 +236,12 @@ export class WorkItemStore {
         response TEXT NOT NULL DEFAULT '',
         loop_count INTEGER NOT NULL DEFAULT 0,
         tool_count INTEGER NOT NULL DEFAULT 0,
+        llm_request_count INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
         progress_revision INTEGER NOT NULL DEFAULT 0,
         checkpoint TEXT
       );
@@ -273,6 +295,18 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'runs', 'tool_count')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN tool_count INTEGER NOT NULL DEFAULT 0');
+    }
+    for (const column of [
+      'llm_request_count',
+      'input_tokens',
+      'output_tokens',
+      'cache_read_tokens',
+      'cache_write_tokens',
+      'total_tokens',
+    ]) {
+      if (!hasColumn(this.db, 'runs', column)) {
+        this.db.exec(`ALTER TABLE runs ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+      }
     }
     if (!hasColumn(this.db, 'runs', 'response')) {
       this.db.exec("ALTER TABLE runs ADD COLUMN response TEXT NOT NULL DEFAULT ''");
@@ -437,22 +471,32 @@ export class WorkItemStore {
     const where = [];
     const values = [];
     if (typeof filters.status === 'string' && filters.status) {
-      where.push('status = ?');
+      where.push('w.status = ?');
       values.push(filters.status);
     }
     if (typeof filters.sessionId === 'string' && filters.sessionId.trim()) {
       const sessionId = filters.sessionId.trim();
-      where.push('(instr(origin, ?) > 0 OR instr(linked_session_ids, ?) > 0)');
+      where.push('(instr(w.origin, ?) > 0 OR instr(w.linked_session_ids, ?) > 0)');
       values.push(`\"sessionId\":${JSON.stringify(sessionId)}`, JSON.stringify(sessionId));
     }
     if (typeof filters.search === 'string' && filters.search.trim()) {
-      where.push('(title LIKE ? OR goal LIKE ?)');
+      where.push('(w.title LIKE ? OR w.goal LIKE ?)');
       const query = `%${filters.search.trim()}%`;
       values.push(query, query);
     }
     const limit = Math.min(Math.max(Number(filters.limit) || 100, 1), 500);
-    const sql = `SELECT * FROM work_items ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY updated_at DESC LIMIT ?`;
+    const sql = `SELECT w.*,
+        COALESCE(SUM(r.llm_request_count), 0) AS usage_llm_request_count,
+        COALESCE(SUM(r.loop_count), 0) AS usage_loop_count,
+        COALESCE(SUM(r.tool_count), 0) AS usage_tool_count,
+        COALESCE(SUM(r.input_tokens), 0) AS usage_input_tokens,
+        COALESCE(SUM(r.output_tokens), 0) AS usage_output_tokens,
+        COALESCE(SUM(r.cache_read_tokens), 0) AS usage_cache_read_tokens,
+        COALESCE(SUM(r.cache_write_tokens), 0) AS usage_cache_write_tokens,
+        COALESCE(SUM(r.total_tokens), 0) AS usage_total_tokens
+      FROM work_items w LEFT JOIN runs r ON r.work_item_id = w.id
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      GROUP BY w.id ORDER BY w.updated_at DESC LIMIT ?`;
     return this.db.prepare(sql).all(...values, limit).map(mapWorkItem);
   }
 
@@ -762,7 +806,8 @@ export class WorkItemStore {
       const hasFinalProgress = finalProgress && typeof finalProgress === 'object';
       const runChanged = hasFinalProgress
         ? this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?,
-          response = ?, loop_count = ?, tool_count = ?, checkpoint = ?,
+          response = ?, loop_count = ?, tool_count = ?, llm_request_count = ?, input_tokens = ?,
+          output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, total_tokens = ?, checkpoint = ?,
           progress_revision = progress_revision + 1
           WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
           now,
@@ -770,6 +815,12 @@ export class WorkItemStore {
           normalizeRunResponse(finalProgress.response),
           Math.max(0, Number(finalProgress.loopCount) || 0),
           Math.max(0, Number(finalProgress.toolCount) || 0),
+          Math.max(0, Number(finalProgress.llmRequestCount) || 0),
+          Math.max(0, Number(finalProgress.inputTokens) || 0),
+          Math.max(0, Number(finalProgress.outputTokens) || 0),
+          Math.max(0, Number(finalProgress.cacheReadTokens) || 0),
+          Math.max(0, Number(finalProgress.cacheWriteTokens) || 0),
+          Math.max(0, Number(finalProgress.totalTokens) || 0),
           stringify(normalizeActionCheckpoint(finalProgress.checkpoint)),
           runId,
           ownerBootId,
@@ -835,12 +886,19 @@ export class WorkItemStore {
       const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
       if (!active) return null;
       const checkpoint = normalizeActionCheckpoint(progress.checkpoint);
-      const result = this.db.prepare(`UPDATE runs SET response = ?, loop_count = ?, tool_count = ?, checkpoint = ?,
-        progress_revision = progress_revision + 1 WHERE id = ? AND owner_boot_id = ?
-        AND lease_epoch = ? AND status = 'running'`).run(
+      const result = this.db.prepare(`UPDATE runs SET response = ?, loop_count = ?, tool_count = ?,
+        llm_request_count = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
+        cache_write_tokens = ?, total_tokens = ?, checkpoint = ?, progress_revision = progress_revision + 1
+        WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
         normalizeRunResponse(progress.response),
         Math.max(0, Number(progress.loopCount) || 0),
         Math.max(0, Number(progress.toolCount) || 0),
+        Math.max(0, Number(progress.llmRequestCount) || 0),
+        Math.max(0, Number(progress.inputTokens) || 0),
+        Math.max(0, Number(progress.outputTokens) || 0),
+        Math.max(0, Number(progress.cacheReadTokens) || 0),
+        Math.max(0, Number(progress.cacheWriteTokens) || 0),
+        Math.max(0, Number(progress.totalTokens) || 0),
         stringify(checkpoint),
         runId,
         ownerBootId,
@@ -886,7 +944,9 @@ export class WorkItemStore {
       const now = this.now();
       this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, response = ?, summary = ?, evidence = ?,
         waiting_reason = ?, error = ?, review_decision = ?, contract_patch = ?, checkpoint = ?,
-        loop_count = ?, tool_count = ?, progress_revision = progress_revision + 1 WHERE id = ?`).run(
+        loop_count = ?, tool_count = ?, llm_request_count = ?, input_tokens = ?, output_tokens = ?,
+        cache_read_tokens = ?, cache_write_tokens = ?, total_tokens = ?,
+        progress_revision = progress_revision + 1 WHERE id = ?`).run(
         result.outcome,
         now,
         normalizeRunResponse(result.response),
@@ -899,6 +959,12 @@ export class WorkItemStore {
         stringify(normalizeActionCheckpoint(result.checkpoint)),
         Math.max(0, Number(result.loopCount) || 0),
         Math.max(0, Number(result.toolCount) || 0),
+        Math.max(0, Number(result.llmRequestCount) || 0),
+        Math.max(0, Number(result.inputTokens) || 0),
+        Math.max(0, Number(result.outputTokens) || 0),
+        Math.max(0, Number(result.cacheReadTokens) || 0),
+        Math.max(0, Number(result.cacheWriteTokens) || 0),
+        Math.max(0, Number(result.totalTokens) || 0),
         runId,
       );
       this.onTransitionStep?.('after_run_update');

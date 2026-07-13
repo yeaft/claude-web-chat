@@ -36,6 +36,8 @@ export class WorkItemWatcher {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     const active = Array.from(this.activeRuns.values());
+    for (const entry of active) entry.abortController.abort('watcher_stopped');
+    await Promise.allSettled(active.map(entry => entry.promise));
     const failures = [];
     for (const entry of active) {
       try {
@@ -50,11 +52,8 @@ export class WorkItemWatcher {
       } catch (error) {
         entry.interrupted = false;
         failures.push(error);
-      } finally {
-        entry.abortController.abort('watcher_stopped');
       }
     }
-    await Promise.allSettled(active.map(entry => entry.promise));
     if (failures.length > 0) {
       throw new AggregateError(failures, 'Could not persist one or more Work Center interruptions');
     }
@@ -140,6 +139,12 @@ export class WorkItemWatcher {
         error: err?.message || String(err),
         loopCount: err?.workItemExecutionStats?.loopCount || 0,
         toolCount: err?.workItemExecutionStats?.toolCount || 0,
+        llmRequestCount: err?.workItemExecutionStats?.llmRequestCount || 0,
+        inputTokens: err?.workItemExecutionStats?.inputTokens || 0,
+        outputTokens: err?.workItemExecutionStats?.outputTokens || 0,
+        cacheReadTokens: err?.workItemExecutionStats?.cacheReadTokens || 0,
+        cacheWriteTokens: err?.workItemExecutionStats?.cacheWriteTokens || 0,
+        totalTokens: err?.workItemExecutionStats?.totalTokens || 0,
         checkpoint: err?.workItemExecutionStats?.checkpoint || null,
       };
     }

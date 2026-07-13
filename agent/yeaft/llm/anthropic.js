@@ -240,7 +240,7 @@ export class AnthropicAdapter extends LLMAdapter {
    * @param {{ model: string, system: string, messages: import('./adapter.js').UnifiedMessage[], tools?: import('./adapter.js').UnifiedToolDef[], maxTokens?: number, effort?: 'low'|'medium'|'high'|'xhigh'|'max', effortSource?: 'user'|'auto', effortContext?: object, signal?: AbortSignal, onRawExchange?: ({rawRequest, rawResponse}) => void }} params
    * @returns {AsyncGenerator<import('./adapter.js').StreamEvent>}
    */
-  async *stream({ model, system, messages, tools, maxTokens = 16384, effort, effortSource, effortContext, signal, onRawExchange }) {
+  async *stream({ model, system, messages, tools, maxTokens = 16384, effort, effortSource, effortContext, signal, onRawExchange, onRequestStart }) {
     if (signal?.aborted) throw new LLMAbortError();
 
     const body = {
@@ -272,6 +272,7 @@ export class AnthropicAdapter extends LLMAdapter {
 
     let response;
     try {
+      onRequestStart?.();
       response = await fetch(url, {
         method: 'POST',
         headers,
@@ -328,6 +329,7 @@ export class AnthropicAdapter extends LLMAdapter {
     const responseStatus = response.status;
     let sawStop = false;
     let sawMessageStart = false;
+    let cumulativeOutputTokens = 0;
 
     try {
       while (true) {
@@ -454,12 +456,17 @@ export class AnthropicAdapter extends LLMAdapter {
                 stopReason: this.#mapStopReason(stopReason),
               };
             }
-            // Usage from message_delta
+            // Anthropic message_delta usage is cumulative across the response.
+            // Expose only the newly consumed output tokens so shared accounting
+            // can safely add events from message_start and multiple deltas.
             if (event.usage) {
+              const nextOutputTokens = Math.max(0, Number(event.usage.output_tokens) || 0);
+              const outputTokens = Math.max(0, nextOutputTokens - cumulativeOutputTokens);
+              cumulativeOutputTokens = Math.max(cumulativeOutputTokens, nextOutputTokens);
               yield {
                 type: 'usage',
                 inputTokens: 0, // Only in message_start
-                outputTokens: event.usage.output_tokens || 0,
+                outputTokens,
               };
             }
           } else if (type === 'message_stop') {
@@ -468,10 +475,14 @@ export class AnthropicAdapter extends LLMAdapter {
             sawMessageStart = true;
             // Usage from message_start
             if (event.message?.usage) {
+              cumulativeOutputTokens = Math.max(
+                cumulativeOutputTokens,
+                Math.max(0, Number(event.message.usage.output_tokens) || 0),
+              );
               yield {
                 type: 'usage',
                 inputTokens: event.message.usage.input_tokens || 0,
-                outputTokens: event.message.usage.output_tokens || 0,
+                outputTokens: cumulativeOutputTokens,
                 cacheReadTokens: event.message.usage.cache_read_input_tokens || 0,
                 cacheWriteTokens: event.message.usage.cache_creation_input_tokens || 0,
               };
@@ -518,7 +529,7 @@ export class AnthropicAdapter extends LLMAdapter {
    * models silently drop the param. max_tokens auto-widens to budget+1024
    * when needed.
    */
-  async call({ model, system, messages, maxTokens = 4096, effort, effortSource, effortContext, signal }) {
+  async call({ model, system, messages, maxTokens = 4096, effort, effortSource, effortContext, signal, onRequestStart }) {
     if (signal?.aborted) throw new LLMAbortError();
 
     const body = {
@@ -536,6 +547,7 @@ export class AnthropicAdapter extends LLMAdapter {
 
     let response;
     try {
+      onRequestStart?.();
       response = await fetch(`${this.#baseUrl}/v1/messages`, {
         method: 'POST',
         headers: this.#headers(),

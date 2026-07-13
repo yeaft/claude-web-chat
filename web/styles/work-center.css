@@ -498,6 +498,20 @@
   font-size: 10px;
 }
 
+.work-center-usage-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 12px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.work-center-detail-usage {
+  margin-top: 10px;
+  font-size: 11px;
+}
+
 .work-center-status {
   display: inline-flex;
   min-height: 20px;
@@ -709,7 +723,9 @@
 .work-center-action-stats {
   display: flex;
   flex: 0 0 auto;
-  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px 10px;
   color: var(--text-muted);
   font-size: 11px;
   white-space: nowrap;

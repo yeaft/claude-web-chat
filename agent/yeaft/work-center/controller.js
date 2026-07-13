@@ -82,6 +82,12 @@ function normalizeTerminalResult(result, action) {
       : null,
     loopCount: Math.max(0, Number(result.loopCount) || 0),
     toolCount: Math.max(0, Number(result.toolCount) || 0),
+    llmRequestCount: Math.max(0, Number(result.llmRequestCount) || 0),
+    inputTokens: Math.max(0, Number(result.inputTokens) || 0),
+    outputTokens: Math.max(0, Number(result.outputTokens) || 0),
+    cacheReadTokens: Math.max(0, Number(result.cacheReadTokens) || 0),
+    cacheWriteTokens: Math.max(0, Number(result.cacheWriteTokens) || 0),
+    totalTokens: Math.max(0, Number(result.totalTokens) || 0),
     acceptanceChecks: Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : [],
     checkpoint: result.checkpoint && typeof result.checkpoint === 'object'
       ? result.checkpoint : null,
