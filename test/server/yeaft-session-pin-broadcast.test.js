@@ -128,4 +128,42 @@ describe('Yeaft Session pin synchronization', () => {
       });
     }
   });
+
+  it('does not broadcast success when pin persistence throws', async () => {
+    const firstDevice = client('user-1');
+    const secondDevice = client('user-1');
+    webClients.set('device-1', firstDevice);
+    webClients.set('device-2', secondDevice);
+    setPinnedForAgent.mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+
+    await handleClientConversation('device-1', firstDevice, {
+      type: 'pin_session',
+      sessionKind: 'yeaft',
+      agentId: 'agent-a',
+      conversationId: 'session_default',
+    }, allow);
+
+    expect(setPinnedForAgent).toHaveBeenCalledTimes(1);
+    expect(sendToWebClient).not.toHaveBeenCalled();
+  });
+
+  it('does not broadcast success when pin persistence rejects the write', async () => {
+    const firstDevice = client('user-1');
+    const secondDevice = client('user-1');
+    webClients.set('device-1', firstDevice);
+    webClients.set('device-2', secondDevice);
+    setPinnedForAgent.mockReturnValueOnce(false);
+
+    await handleClientConversation('device-1', firstDevice, {
+      type: 'pin_session',
+      sessionKind: 'yeaft',
+      agentId: 'agent-a',
+      conversationId: 'session_default',
+    }, allow);
+
+    expect(setPinnedForAgent).toHaveBeenCalledTimes(1);
+    expect(sendToWebClient).not.toHaveBeenCalled();
+  });
 });

@@ -397,6 +397,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           }
         } catch (e) {
           console.warn(`[Server] yeaftSessionDb.setPinnedForAgent failed for ${msg.conversationId}:`, e?.message || e);
+          break;
         }
         await broadcastSessionPin(client.userId, {
           type: 'session_pinned',
