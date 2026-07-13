@@ -177,10 +177,20 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('class="work-center-create-options"');
     expect(page).toContain("tr('workCenter.titleHint'");
     expect(page).toContain("tr('workCenter.startImmediatelyHint'");
+    expect(page).toContain("mixins: [folderPickerMixin]");
+    expect(page).toContain('class="work-center-workdir-picker"');
+    expect(page).toContain('v-model="form.workDir" type="text" required readonly');
+    expect(page).toContain('@click="openFolderPicker"');
+    expect(page).toContain('class="folder-picker-dialog"');
+    expect(page).toContain('folderPickerSetWorkDir(path)');
+    expect(page).not.toContain('@input="onCreateWorkDirInput"');
     expect(css).toMatch(/\.work-center-modal\s*\{[^}]*height: min\(660px, 86vh\)[^}]*overflow: hidden/s);
     expect(css).toMatch(/\.work-center-modal-body\s*\{[^}]*overflow-y: auto/s);
     expect(css).toContain('.work-center-modal .btn-primary');
     expect(css).toContain('.work-center-modal .btn-secondary');
+    expect(css).toContain('.work-center-modal .folder-picker-dialog');
+    expect(css).toContain('background: var(--modal-overlay-bg)');
+    expect(css).toContain('background: var(--session-active) !important');
     expect(css).toContain('width: calc(100vw - 16px)');
     expect(css).toContain('height: calc(100dvh - 16px)');
   });
@@ -221,7 +231,8 @@ describe('Work Center UI contract', () => {
     expect(modal).not.toContain('v-model="draft.defaultWorkDir"');
     expect(page).toContain("this.settings?.defaultWorkDir || this.runtime?.defaultWorkDir || ''");
     expect(page).toContain('createDefaultWorkDir()');
-    expect(page).toContain('@input="onCreateWorkDirInput"');
+    expect(page).toContain('folderPickerInitialDir()');
+    expect(page).toContain('folderPickerAgentId()');
     expect(modal).toContain("mode === 'specific'");
     expect(modal).toContain("$emit('open-agent-models')");
     expect(page).toContain('<LlmTab context="yeaft"');
@@ -265,6 +276,8 @@ describe('Work Center UI contract', () => {
       'workCenter.noCompletedTitle',
       'workCenter.settings.instructionHelp',
       'workCenter.settings.instructionReset',
+      'workCenter.chooseFolder',
+      'workCenter.workDirPickerHelp',
       'workCenter.noMatchesTitle',
       'workCenter.loading',
       'workCenter.noTimestamp',

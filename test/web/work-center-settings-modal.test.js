@@ -426,8 +426,7 @@ describe('Work Center settings modal ownership', () => {
     WorkCenterPage.watch.createDefaultWorkDir.call(vm);
     expect(vm.form.workDir).toBe('/workspace/default');
 
-    vm.form.workDir = '/workspace/chosen';
-    WorkCenterPage.methods.onCreateWorkDirInput.call(vm);
+    WorkCenterPage.methods.folderPickerSetWorkDir.call(vm, '/workspace/chosen');
     vm.createDefaultWorkDir = '/workspace/changed';
     WorkCenterPage.watch.createDefaultWorkDir.call(vm);
     expect(vm.form.workDir).toBe('/workspace/chosen');
