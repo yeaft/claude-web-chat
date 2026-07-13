@@ -375,10 +375,14 @@ describe('Work Center core', () => {
     const claim = store.claimReadyAction('boot-a', 5_000);
     const detail = store.updateRunProgress(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
       response: 'Inspecting the existing implementation', loopCount: 2, toolCount: 3,
+      llmRequestCount: 3, inputTokens: 240, outputTokens: 60,
+      cacheReadTokens: 40, cacheWriteTokens: 10, totalTokens: 350,
     });
 
     expect(detail.runs[0]).toMatchObject({
       response: 'Inspecting the existing implementation', loopCount: 2, toolCount: 3,
+      llmRequestCount: 3, inputTokens: 240, outputTokens: 60,
+      cacheReadTokens: 40, cacheWriteTokens: 10, totalTokens: 350,
       progressRevision: 2,
     });
     expect(store.updateRunProgress(claim.run.id, 'boot-b', claim.run.leaseEpoch, {
@@ -388,6 +392,29 @@ describe('Work Center core', () => {
     expect(item.id).toBe(claim.workItem.id);
   });
 
+  it('aggregates execution stats across retries at Action and WorkItem scope', () => {
+    const item = controller.create(createInput());
+    const first = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(first.run.id, 'boot-a', first.run.leaseEpoch, {
+      outcome: 'retryable', summary: '', evidence: [], error: 'retry',
+      loopCount: 1, toolCount: 2, llmRequestCount: 2,
+      inputTokens: 100, outputTokens: 20, cacheReadTokens: 10, cacheWriteTokens: 5,
+      totalTokens: 135,
+    });
+    const second = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(second.run.id, 'boot-a', second.run.leaseEpoch, completed('triage', {
+      loopCount: 2, toolCount: 3, llmRequestCount: 3,
+      inputTokens: 200, outputTokens: 40, cacheReadTokens: 20, cacheWriteTokens: 10,
+      totalTokens: 270,
+    }));
+
+    const detail = store.getWorkItemDetail(item.id);
+    const runs = detail.runs.filter(run => run.actionId === first.action.id);
+    expect(runs).toHaveLength(2);
+    expect(runs.reduce((total, run) => total + run.llmRequestCount, 0)).toBe(5);
+    expect(runs.reduce((total, run) => total + run.totalTokens, 0)).toBe(405);
+  });
+
   it('persists the user-facing response and aggregate counts with the completed Run', () => {
     const item = controller.create(createInput());
     const claim = store.claimReadyAction('boot-a', 5_000);
@@ -395,15 +422,24 @@ describe('Work Center core', () => {
       response: 'Validated scope and prepared the contract.',
       loopCount: 3,
       toolCount: 8,
+      llmRequestCount: 4,
+      inputTokens: 500,
+      outputTokens: 120,
+      cacheReadTokens: 80,
+      cacheWriteTokens: 20,
+      totalTokens: 720,
     }));
 
     const run = store.getRun(claim.run.id);
     expect(run).toMatchObject({
       response: 'Validated scope and prepared the contract.', loopCount: 3, toolCount: 8,
+      llmRequestCount: 4, inputTokens: 500, outputTokens: 120,
+      cacheReadTokens: 80, cacheWriteTokens: 20, totalTokens: 720,
       progressRevision: 2,
     });
     expect(store.getWorkItemDetail(item.id).runs[0]).toMatchObject({
       response: 'Validated scope and prepared the contract.', loopCount: 3, toolCount: 8,
+      llmRequestCount: 4, inputTokens: 500, outputTokens: 120, totalTokens: 720,
     });
   });
 

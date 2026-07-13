@@ -74,7 +74,9 @@ describe('Work Center store migration', () => {
       sourceTitle: 'Legacy work',
     }));
     expect(store.getRun('legacy-run')).toMatchObject({
-      response: '', loopCount: 0, toolCount: 0, progressRevision: 0,
+      response: '', loopCount: 0, toolCount: 0, llmRequestCount: 0,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0,
+      progressRevision: 0,
     });
   });
 });

@@ -122,6 +122,12 @@ export class WorkItemWatcher {
         error: err?.message || String(err),
         loopCount: err?.workItemExecutionStats?.loopCount || 0,
         toolCount: err?.workItemExecutionStats?.toolCount || 0,
+        llmRequestCount: err?.workItemExecutionStats?.llmRequestCount || 0,
+        inputTokens: err?.workItemExecutionStats?.inputTokens || 0,
+        outputTokens: err?.workItemExecutionStats?.outputTokens || 0,
+        cacheReadTokens: err?.workItemExecutionStats?.cacheReadTokens || 0,
+        cacheWriteTokens: err?.workItemExecutionStats?.cacheWriteTokens || 0,
+        totalTokens: err?.workItemExecutionStats?.totalTokens || 0,
       };
     }
     if (signal.aborted) return;

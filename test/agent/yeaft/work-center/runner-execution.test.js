@@ -10,6 +10,15 @@ import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
 
 const engineOptions = [];
 const engineQueries = [];
+const runtimeAdapter = {
+  async *stream() {
+    yield {
+      type: 'usage', inputTokens: 100, outputTokens: 25,
+      cacheReadTokens: 20, cacheWriteTokens: 5,
+    };
+  },
+  async call() { return { text: '', usage: {} }; },
+};
 let invalidEngineResult = false;
 let engineResponsePrefix = '';
 let engineThinking = '';
@@ -18,6 +27,8 @@ vi.mock('../../../../agent/yeaft/engine.js', () => ({
     constructor(options) { engineOptions.push(options); }
     async *query(input) {
       engineQueries.push(input);
+      const adapter = engineOptions.at(-1).adapter;
+      for await (const event of adapter.stream({ scenario: 'work-item' })) yield event;
       yield { type: 'loop', loopNumber: 1 };
       yield { type: 'tool_end', id: 'tool-1', name: 'FileRead', output: 'ok', isError: false };
       yield { type: 'loop', loopNumber: 2 };
@@ -116,7 +127,7 @@ describe('Work Center Runner execution resolution', () => {
       registry,
       store,
       runtimeProvider: async () => ({
-        adapter: {},
+        adapter: runtimeAdapter,
         config: {
           primaryModel: 'provider/primary', fallbackModel: 'provider/fallback',
           availableModels: [
@@ -159,7 +170,7 @@ describe('Work Center Runner execution resolution', () => {
     };
     const runner = new WorkItemRunner({
       registry, store, attachmentRoot,
-      runtimeProvider: async () => ({ adapter: {}, config: { primaryModel: 'provider/model', availableModels: [] } }),
+      runtimeProvider: async () => ({ adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] } }),
     });
     const input = {
       workItem: { id: 'wi-attachment', workDir, workspaceKey: workDir, attachments },
@@ -216,7 +227,7 @@ describe('Work Center Runner execution resolution', () => {
       registry,
       store,
       runtimeProvider: async () => ({
-        adapter: {},
+        adapter: runtimeAdapter,
         config: {
           primaryModel: 'provider/primary',
           fallbackModel: 'provider/fallback',
@@ -278,7 +289,7 @@ describe('Work Center Runner execution resolution', () => {
       registry,
       store,
       runtimeProvider: async () => ({
-        adapter: {},
+        adapter: runtimeAdapter,
         config: {
           primaryModel: 'provider/primary',
           modelEffort: 'high',
@@ -327,7 +338,7 @@ describe('Work Center Runner execution resolution', () => {
         modelPolicy: { mode: 'specific', model: 'provider/current', effort: 'high' },
       }),
       runtimeProvider: async () => ({
-        adapter: {},
+        adapter: runtimeAdapter,
         config: {
           primaryModel: 'provider/primary',
           availableModels: [{ id: 'current', ref: 'provider/current', provider: 'provider', effortOptions: ['high'] }],
@@ -368,7 +379,7 @@ describe('Work Center Runner execution resolution', () => {
         setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
       },
       runtimeProvider: async () => ({
-        adapter: {}, config: { primaryModel: 'provider/model', availableModels: [] },
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });
 
@@ -408,7 +419,7 @@ describe('Work Center Runner execution resolution', () => {
     const runner = new WorkItemRunner({
       registry, store,
       runtimeProvider: async () => ({
-        adapter: {}, memoryIndex: { search },
+        adapter: runtimeAdapter, memoryIndex: { search },
         config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });
@@ -459,7 +470,7 @@ describe('Work Center Runner execution resolution', () => {
         setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
       },
       runtimeProvider: async () => ({
-        adapter: {}, memoryIndex: { search },
+        adapter: runtimeAdapter, memoryIndex: { search },
         config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });
@@ -497,7 +508,7 @@ describe('Work Center Runner execution resolution', () => {
         setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
       },
       runtimeProvider: async () => ({
-        adapter: {}, memoryIndex: { search },
+        adapter: runtimeAdapter, memoryIndex: { search },
         config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });
@@ -535,7 +546,7 @@ describe('Work Center Runner execution resolution', () => {
         setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
       },
       runtimeProvider: async () => ({
-        adapter: {}, memoryIndex: { search },
+        adapter: runtimeAdapter, memoryIndex: { search },
         config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });
@@ -571,7 +582,7 @@ describe('Work Center Runner execution resolution', () => {
         setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
       },
       runtimeProvider: async () => ({
-        adapter: {}, config: { primaryModel: 'provider/model', availableModels: [] },
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });
 
@@ -584,10 +595,13 @@ describe('Work Center Runner execution resolution', () => {
 
     expect(result).toMatchObject({
       outcome: 'completed', summary: 'done', response: 'Implemented and verified the public change.',
-      loopCount: 2, toolCount: 1,
+      loopCount: 2, toolCount: 1, llmRequestCount: 1,
+      inputTokens: 100, outputTokens: 25, cacheReadTokens: 20, cacheWriteTokens: 5,
+      totalTokens: 150,
     });
     expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
       response: 'Implemented and verified the public change.', loopCount: 2, toolCount: 1,
+      llmRequestCount: 1, totalTokens: 150,
     }));
     expect(JSON.stringify(onProgress.mock.calls)).not.toContain('private reasoning');
     expect(JSON.stringify(result)).not.toContain('private reasoning');
@@ -609,7 +623,7 @@ describe('Work Center Runner execution resolution', () => {
         setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
       },
       runtimeProvider: async () => ({
-        adapter: {},
+        adapter: runtimeAdapter,
         config: { primaryModel: 'provider/model', availableModels: [] },
       }),
     });

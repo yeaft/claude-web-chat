@@ -141,6 +141,21 @@ describe('LLM usage accounting', () => {
     ]);
   });
 
+  it('counts a failed request even when the provider reports no tokens', async () => {
+    const onUsage = vi.fn();
+    const onRequest = vi.fn();
+    const base = streamAdapter([]);
+    base.call = vi.fn(async () => { throw new Error('provider failed'); });
+    const adapter = withUsageAccounting(base, onUsage, onRequest);
+
+    await expect(adapter.call({ scenario: 'compact' })).rejects.toThrow('provider failed');
+    expect(onRequest).toHaveBeenCalledOnce();
+    expect(onUsage).toHaveBeenCalledOnce();
+    expect(onUsage).toHaveBeenCalledWith({
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0,
+    });
+  });
+
   it('counts one non-streaming side call', async () => {
     const onUsage = vi.fn();
     const base = streamAdapter([]);

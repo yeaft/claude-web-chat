@@ -43,14 +43,10 @@ function addUsage(total, usage) {
   total.totalTokens += normalized.totalTokens;
 }
 
-function hasUsage(usage) {
-  return Object.values(usage).some(value => value > 0);
-}
-
 /**
  * Wrap the shared adapter at the provider-call boundary. Every stream request
- * reports once after its event stream finishes (or aborts after returning
- * usage), and every non-streaming side call reports once after success.
+ * reports once after its event stream finishes or aborts, and every
+ * non-streaming side call reports once whether it succeeds or fails.
  *
  * Parent VP engines, sub-agent engines, Dream, compact, reflection, AMS, and
  * classifiers all reuse this adapter, so none need their own accounting hook.
@@ -58,15 +54,25 @@ function hasUsage(usage) {
 export class UsageAccountingAdapter extends LLMAdapter {
   #adapter;
   #onUsage;
+  #onRequest;
 
-  constructor(adapter, onUsage) {
+  constructor(adapter, onUsage, onRequest = null) {
     super(adapter?.config || {});
     this.#adapter = adapter;
     this.#onUsage = onUsage;
+    this.#onRequest = onRequest;
+  }
+
+  #reportRequest() {
+    if (typeof this.#onRequest !== 'function') return;
+    try {
+      this.#onRequest();
+    } catch (error) {
+      console.warn(`[llm-usage] request callback failed: ${error?.message || error}`);
+    }
   }
 
   #report(usage) {
-    if (!hasUsage(usage)) return;
     try {
       this.#onUsage(usage);
     } catch (error) {
@@ -75,6 +81,7 @@ export class UsageAccountingAdapter extends LLMAdapter {
   }
 
   async *stream(params) {
+    this.#reportRequest();
     const total = normalizeTokenUsage();
     try {
       for await (const event of this.#adapter.stream(params)) {
@@ -87,9 +94,15 @@ export class UsageAccountingAdapter extends LLMAdapter {
   }
 
   async call(params) {
-    const result = await this.#adapter.call(params);
-    this.#report(normalizeTokenUsage(result?.usage || {}));
-    return result;
+    this.#reportRequest();
+    let usage = normalizeTokenUsage();
+    try {
+      const result = await this.#adapter.call(params);
+      usage = normalizeTokenUsage(result?.usage || {});
+      return result;
+    } finally {
+      this.#report(usage);
+    }
   }
 
   refreshProviders(providers) {
@@ -105,8 +118,8 @@ export class UsageAccountingAdapter extends LLMAdapter {
   }
 }
 
-export function withUsageAccounting(adapter, onUsage) {
+export function withUsageAccounting(adapter, onUsage, onRequest = null) {
   return typeof onUsage === 'function'
-    ? new UsageAccountingAdapter(adapter, onUsage)
+    ? new UsageAccountingAdapter(adapter, onUsage, onRequest)
     : adapter;
 }

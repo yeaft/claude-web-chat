@@ -15,8 +15,9 @@ describe('Work Center summary state', () => {
     updatedAt: 30,
     workDir: '/local/project',
     actions: [{
-      id: 'action-1', loopCount: 2, toolCount: 5, response: 'Reading files',
-      progressRevision: 2,
+      id: 'action-1', loopCount: 2, toolCount: 5,
+      executionStats: { llmRequestCount: 2, loopCount: 2, toolCount: 5, totalTokens: 100 },
+      response: 'Reading files', progressRevision: 2,
     }],
   };
 
@@ -38,13 +39,16 @@ describe('Work Center summary state', () => {
       id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
       actionStats: [{
         id: 'action-1', status: 'running', loopCount: 4, toolCount: 9,
+        executionStats: { llmRequestCount: 5, loopCount: 4, toolCount: 9, totalTokens: 450 },
         response: 'Implemented the fix', progressRevision: 3,
       }],
     });
     expect(merged.actions).toEqual([{
       id: 'action-1', status: 'running', loopCount: 4, toolCount: 9,
+      executionStats: { llmRequestCount: 5, loopCount: 4, toolCount: 9, totalTokens: 450 },
       response: 'Implemented the fix', progressRevision: 3,
     }]);
+    expect(merged.actions[0].executionStats.totalTokens).toBe(450);
   });
 
   it('does not let a legacy Action patch without a progress revision erase live response text', () => {

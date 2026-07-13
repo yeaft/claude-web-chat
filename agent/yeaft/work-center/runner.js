@@ -12,6 +12,7 @@ import { formatPickedForInjection } from '../sessions/pre-flow.js';
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { buildWorkItemAttachmentContext } from './attachments.js';
+import { withUsageAccounting } from '../llm/usage-accounting.js';
 
 const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'FileRead',
@@ -457,8 +458,39 @@ export class WorkItemRunner {
     );
     if (!snapshotsWritten) throw new Error('Work Center Run lost its lease before execution');
 
+    let text = '';
+    let loopCount = 0;
+    let toolCount = 0;
+    const usageStats = {
+      llmRequestCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+    };
+    let lastProgressAt = 0;
+    const executionStats = () => ({ loopCount, toolCount, ...usageStats });
+    const reportProgress = (force = false) => {
+      if (typeof onProgress !== 'function') return;
+      const now = Date.now();
+      if (!force && now - lastProgressAt < this.progressIntervalMs) return;
+      lastProgressAt = now;
+      onProgress({ response: publicWorkItemResponse(text), ...executionStats() });
+    };
+    const adapter = withUsageAccounting(runtime.adapter, usage => {
+      usageStats.inputTokens += usage.inputTokens;
+      usageStats.outputTokens += usage.outputTokens;
+      usageStats.cacheReadTokens += usage.cacheReadTokens;
+      usageStats.cacheWriteTokens += usage.cacheWriteTokens;
+      usageStats.totalTokens += usage.totalTokens;
+      reportProgress(true);
+    }, () => {
+      usageStats.llmRequestCount += 1;
+      reportProgress(true);
+    });
     const engine = new Engine({
-      adapter: runtime.adapter,
+      adapter,
       trace: new NullTrace(),
       config,
       conversationStore: null,
@@ -474,18 +506,6 @@ export class WorkItemRunner {
       taskManager: null,
       vpId: vp.id,
     });
-
-    let text = '';
-    let loopCount = 0;
-    let toolCount = 0;
-    let lastProgressAt = 0;
-    const reportProgress = (force = false) => {
-      if (typeof onProgress !== 'function') return;
-      const now = Date.now();
-      if (!force && now - lastProgressAt < this.progressIntervalMs) return;
-      lastProgressAt = now;
-      onProgress({ response: publicWorkItemResponse(text), loopCount, toolCount });
-    };
     try {
       const prompt = `${executionAction.instruction}${attachmentContext.promptBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
       const promptParts = attachmentContext.promptParts.length > 0
@@ -506,13 +526,12 @@ export class WorkItemRunner {
         if (event?.type === 'loop') loopCount += 1;
         else if (event?.type === 'tool_end') toolCount += 1;
         if (event?.type === 'text_delta' && typeof event.text === 'string') text += event.text;
-        reportProgress();
+        reportProgress(event?.type === 'loop');
       }
     } catch (error) {
       error.workItemExecutionStats = {
         response: publicWorkItemResponse(text),
-        loopCount,
-        toolCount,
+        ...executionStats(),
       };
       throw error;
     } finally {
@@ -523,8 +542,7 @@ export class WorkItemRunner {
     return {
       ...parseStructuredResult(text, executionAction.type),
       response,
-      loopCount,
-      toolCount,
+      ...executionStats(),
     };
   }
 }
