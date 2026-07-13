@@ -24,6 +24,35 @@ describe('Work Center UI contract', () => {
     expect(yeaftSidebar).toContain('leaveWorkCenter');
   });
 
+  it('keeps Yeaft global Settings mounted outside the Work Center content branch', () => {
+    const page = read('web/components/YeaftPage.js');
+    const workCenterStart = page.indexOf('<WorkCenterPage v-if="store.workCenterOpen"');
+    const conversationStart = page.indexOf('<div v-else class="yeaft-main"');
+    const conversationEnd = page.indexOf('<!-- Keep global Settings outside the conversation/Work Center branch');
+    const settingsStart = page.indexOf('<SettingsPanel', conversationEnd);
+
+    expect(workCenterStart).toBeGreaterThan(-1);
+    expect(conversationStart).toBeGreaterThan(workCenterStart);
+    expect(conversationEnd).toBeGreaterThan(conversationStart);
+    expect(settingsStart).toBeGreaterThan(conversationEnd);
+    expect(page).toContain('@open-settings="toggleSettings"');
+  });
+
+  it('uses the shared Chat settings row styles without Yeaft overrides', () => {
+    const chat = read('web/components/ChatPage.js');
+    const yeaftSidebar = read('web/components/YeaftSidebar.js');
+    const sidebarCss = read('web/styles/sidebar.css');
+    const yeaftSidebarCss = read('web/styles/yeaft-sidebar.css');
+
+    expect(chat).toContain('<div class="sidebar-bottom">');
+    expect(yeaftSidebar).toContain('<div class="sidebar-bottom">');
+    expect(chat).toContain('<button class="sidebar-nav-item" @click="showSettingsPanel = true">');
+    expect(yeaftSidebar).toContain('<button class="sidebar-nav-item" @click="$emit(\'open-settings\')">');
+    expect(sidebarCss).toContain('.sidebar-bottom .sidebar-nav-item');
+    expect(yeaftSidebarCss).not.toContain('.yeaft-sidebar .sidebar-bottom');
+    expect(yeaftSidebarCss).not.toContain('.yeaft-sidebar .sidebar-bottom .sidebar-nav-item');
+  });
+
   it('keeps Agent-level Work Center state separate from Session background tasks', () => {
     const store = read('web/stores/chat.js');
     expect(store).toContain('workCenterItemsByAgent');
