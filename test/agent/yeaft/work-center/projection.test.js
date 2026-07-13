@@ -19,6 +19,11 @@ function internalDetail() {
       assignmentPolicy: { mode: 'auto', capability: 'review', candidateVpIds: ['martin'] },
       modelPolicy: { mode: 'specific', model: 'provider/review', effort: 'high' },
       status: 'completed', createdAt: 1, updatedAt: 2,
+      brief: {
+        objective: 'Review the change',
+        approach: 'Inspect the diff and verification evidence',
+        expectedOutcome: 'An approval or actionable findings',
+      },
     }],
     runs: [{
       id: 'r-2', actionId: 'a-1', workItemId: 'wi-1', status: 'waiting', startedAt: 2,
@@ -65,6 +70,11 @@ describe('Work Center event projection', () => {
       loopCount: 3, toolCount: 8,
       response: 'Reviewed the change and found one compatibility decision.',
       progressRevision: 4,
+      messages: [{
+        id: 'a-1:1', status: 'retryable', text: 'Earlier retry response', createdAt: 1, updatedAt: 1,
+      }, {
+        id: 'a-1:2', status: 'waiting', text: 'Reviewed the change and found one compatibility decision.', createdAt: 2, updatedAt: 2,
+      }],
     }]);
     const wire = JSON.stringify(projected);
     for (const secret of [
@@ -88,6 +98,8 @@ describe('Work Center event projection', () => {
         inputTokens: 300, outputTokens: 75, cacheReadTokens: 30, cacheWriteTokens: 15,
         totalTokens: 420,
       },
+      actionCount: 1,
+      actionSummary: 'review',
       actions: [{
         id: 'a-1', sequence: 1, type: 'review', stageId: 'review',
         assignmentPolicy: { mode: 'auto', capability: 'review', fixedVpId: null },

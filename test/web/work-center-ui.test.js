@@ -114,6 +114,11 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('class="work-center-action-stats"');
     expect(page).toContain('@click="toggleAction(action)"');
     expect(page).toContain('class="work-center-action-body"');
+    expect(page).toContain('class="work-center-action-brief"');
+    expect(page).toContain("tr('workCenter.actionObjective'");
+    expect(page).toContain("tr('workCenter.actionApproach'");
+    expect(page).toContain("tr('workCenter.actionExpectedOutcome'");
+    expect(page).toContain('v-for="message in action.messages || []"');
     expect(page).toContain('class="work-center-action-response"');
     expect(page).not.toContain('class="work-center-run"');
     expect(page).not.toContain('class="work-center-activity-toggle"');
@@ -124,6 +129,19 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('.work-center-action-stats');
     expect(css).toContain('.work-center-action-response');
     expect(page).not.toContain('v-for="tool');
+  });
+
+  it('creates Work Items with Auto or a reusable type and keeps Action creation out of the UI', () => {
+    const page = read('web/components/WorkCenterPage.js');
+    expect(page).toContain('v-model="form.workItemType"');
+    expect(page).toContain('<option value="auto">');
+    expect(page).toContain('v-for="type in workItemTypes"');
+    expect(page).toContain("workItemType: this.form.workItemType || 'auto'");
+    expect(page).toContain("$t('workCenter.actionCount'");
+    expect(page).toContain('v-if="actionsExpanded" class="work-center-action-list"');
+    expect(page).toContain("tr('workCenter.expandActions'");
+    expect(page).not.toContain('addAction');
+    expect(page).not.toContain('createAction');
   });
 
   it('uses a compact header and flat empty state instead of a dashboard hero', () => {

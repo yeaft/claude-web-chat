@@ -32,6 +32,10 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
         items: { type: 'string' },
         description: { en: 'Verifiable completion criteria', zh: '可验证的完成条件' },
       },
+      workItemType: {
+        type: 'string',
+        description: { en: 'Optional explicit Work Item type; omit or use auto for LLM inference', zh: '可选的工作项类型；省略或填写 auto 时由 LLM 推断' },
+      },
       workDir: {
         type: 'string',
         description: { en: 'Existing project directory for execution', zh: '执行时使用的已存在项目目录' },
@@ -59,6 +63,7 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
       title,
       goal,
       acceptanceCriteria: cleanCriteria(input.acceptanceCriteria),
+      workItemType: typeof input.workItemType === 'string' ? input.workItemType.trim() : 'auto',
       workDir: typeof input.workDir === 'string' ? input.workDir.trim() : (ctx.cwd || ''),
       // The Agent-local Work Center settings choose the default workflow and
       // freeze its policy snapshot. Tool callers create the contract; they do

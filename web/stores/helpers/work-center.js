@@ -37,6 +37,12 @@ function isActionProgressStale(currentStats, nextStats) {
   return currentProgress != null && nextProgress != null && nextProgress < currentProgress;
 }
 
+export function workItemDetailNeedsRefresh(current, summary) {
+  if (!current || current.id !== summary?.id || !summary.currentActionId) return false;
+  return !Array.isArray(current.actions)
+    || !current.actions.some(action => action?.id === summary.currentActionId);
+}
+
 export function mergeWorkItemSummary(current, summary) {
   if (!current || current.id !== summary?.id || isWorkItemSummaryStale(summary, current)) return current;
   const merged = { ...current };
@@ -51,7 +57,7 @@ export function mergeWorkItemSummary(current, summary) {
       matchedStats = true;
       const nextProgress = numberOrNull(stats?.progressRevision);
       if (nextProgress == null) {
-        const { response, ...legacyStats } = stats;
+        const { response, messages, ...legacyStats } = stats;
         return { ...action, ...legacyStats };
       }
       if (isActionProgressStale(action, stats)) {

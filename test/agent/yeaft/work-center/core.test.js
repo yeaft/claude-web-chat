@@ -198,6 +198,48 @@ describe('Work Center core', () => {
     expect(item.workflowSnapshot.stages).toHaveLength(1);
   });
 
+  it('reuses a matching Work Item type Action template without accepting an LLM Action list', () => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}, 'auto'),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'software-change' },
+    }));
+
+    expect(detail.workflowSnapshot).toMatchObject({ workItemType: 'software-change' });
+    expect(detail.workflowSnapshot.stages.map(stage => stage.type))
+      .toEqual(['triage', 'implement', 'review', 'deliver']);
+    expect(detail.actions.at(-1)).toMatchObject({ type: 'implement', status: 'ready' });
+    expect(detail.actions.at(-1).brief).toMatchObject({
+      objective: expect.stringContaining('Implement'),
+      approach: expect.any(String),
+      expectedOutcome: expect.any(String),
+    });
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
+  it('freezes an explicit Work Item type and rejects a conflicting LLM type', () => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}, 'incident-response'),
+    }));
+    expect(item.workflowSnapshot).toMatchObject({ workItemType: 'incident-response' });
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'software-change',
+        actions: [{ id: 'fix', type: 'implement', objective: 'Implement the fix' }],
+      },
+    }));
+
+    expect(detail).toMatchObject({ status: 'needs_attention' });
+    expect(store.getRun(triage.run.id)).toMatchObject({
+      status: 'failed', error: expect.stringMatching(/keep the selected workItemType/i),
+    });
+  });
+
   it.each([
     ['missing', 'missing-action'],
     ['self', 'review'],
@@ -210,7 +252,7 @@ describe('Work Center core', () => {
     const triage = store.claimReadyAction('boot-a', 5_000);
     const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
       plan: {
-        workItemType: 'software-change',
+        workItemType: 'custom-change',
         actions: [
           { id: 'fix', type: 'implement', objective: 'Implement the change' },
           { id: 'review', type: 'review', objective: 'Review independently', changesRequestedActionId: target },
@@ -235,7 +277,7 @@ describe('Work Center core', () => {
     const triage = store.claimReadyAction('boot-a', 5_000);
     const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
       plan: {
-        workItemType: 'software-change',
+        workItemType: 'custom-change',
         actions: [
           { id: 'fix', type: 'implement', objective: 'Implement the change' },
           { id: 'verify', type: 'test', objective: 'Verify the change' },
@@ -318,6 +360,9 @@ describe('Work Center core', () => {
     expect(guided.actions).toHaveLength(2);
     expect(guided.actions[0].status).toBe('superseded');
     expect(guided.actions[1]).toMatchObject({ type: 'triage', requiredRole: 'omni', status: 'ready' });
+    for (const value of Object.values(claim.action.brief)) {
+      expect(guided.actions[1].instruction).toContain(value);
+    }
     expect(guided.actions[1].instruction).toContain('Keep the public API unchanged');
     expect(() => controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, completed('triage')))
       .toThrow(/stale|cancelled|expired|finished/i);
@@ -675,6 +720,9 @@ describe('Work Center core', () => {
       waitingReason: 'Choose behavior',
       answer: 'Keep the current behavior',
     });
+    for (const value of Object.values(claim.action.brief)) {
+      expect(nextAction.instruction).toContain(value);
+    }
     expect(nextAction.instruction).toContain('Need a choice');
     expect(nextAction.instruction).toContain('Waiting reason: Choose behavior');
     expect(nextAction.instruction).toContain('User answer: Keep the current behavior');

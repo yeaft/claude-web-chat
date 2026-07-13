@@ -41,6 +41,9 @@ describe('Work Center settings service', () => {
     expect(initial.settings.workflows[0].stages[0].instruction).toContain('Do not implement');
     expect(initial.runtime.vps[0].id).toBe('linus');
     expect(initial.runtime.defaultStageInstructions.implement).toContain('add or update focused tests');
+    expect(initial.runtime.workItemTypes).toEqual([
+      { id: 'software-change', name: 'Software change', actionCount: 4 },
+    ]);
 
     const next = defaultWorkCenterSettings();
     next.defaultWorkDir = '/project';
@@ -259,6 +262,34 @@ describe('Work Center settings service', () => {
     expect(item.workflowSnapshot.stages.map(stage => stage.id)).toEqual(['triage']);
     expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller-choice');
     expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller/model');
+  });
+
+  it('uses an explicit reusable Work Item type without running LLM triage', async () => {
+    const service = await createService();
+    const item = await service.handle('create', {
+      title: 'Typed change', goal: 'Use the reusable software change template',
+      workItemType: 'software-change', workDir: '/tmp', start: false,
+    });
+
+    expect(item).toMatchObject({ workflowTemplate: 'ai-planned', status: 'draft' });
+    expect(item.workflowSnapshot).toMatchObject({
+      id: 'software-change', workItemType: 'software-change', planningMode: 'static',
+    });
+    expect(item.workflowSnapshot.stages.map(stage => stage.type))
+      .toEqual(['triage', 'implement', 'review', 'deliver']);
+  });
+
+  it('freezes an explicit custom Work Item type for LLM planning', async () => {
+    const service = await createService();
+    const item = await service.handle('create', {
+      title: 'Incident response', goal: 'Plan the smallest incident response flow',
+      workItemType: 'incident-response', workDir: '/tmp', start: false,
+    });
+
+    expect(item.workflowSnapshot).toMatchObject({
+      id: 'ai-planned', workItemType: 'incident-response', planningMode: 'ai',
+    });
+    expect(item.workflowSnapshot.stages.map(stage => stage.type)).toEqual(['triage']);
   });
 
   it('freezes the effective workflow and stage overrides for trusted explicit legacy producers', async () => {

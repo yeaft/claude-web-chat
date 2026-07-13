@@ -13,7 +13,11 @@ import * as yeaftViewHelpers from './helpers/yeaft-view.js';
 import { incVpTyping, decVpTyping } from './helpers/vp-typing.js';
 import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
-import { applyWorkItemSummary, mergeWorkItemSummary } from './helpers/work-center.js';
+import {
+  applyWorkItemSummary,
+  mergeWorkItemSummary,
+  workItemDetailNeedsRefresh,
+} from './helpers/work-center.js';
 import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/perfTrace.js';
 import {
   getDefaultYeaftVisibleTurns,
@@ -445,6 +449,7 @@ export const useChatStore = defineStore('chat', {
     workCenterSettingsLoadingByAgent: {},
     workCenterSettingsErrorByAgent: {},
     _workCenterSettingsGenerationByAgent: {},
+    _workCenterDetailRefreshByAgent: {},
     workCenterPending: {},
     workCenterCreateDraft: null,
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
@@ -1265,10 +1270,40 @@ export const useChatStore = defineStore('chat', {
       };
       const selected = this.workCenterDetailByAgent[agentId];
       if (selected?.id === summary.id) {
+        const needsRefresh = workItemDetailNeedsRefresh(selected, summary);
         this.workCenterDetailByAgent = {
           ...this.workCenterDetailByAgent,
           [agentId]: mergeWorkItemSummary(selected, summary),
         };
+        if (needsRefresh) this.refreshWorkItemDetailAfterActionChange(agentId, summary);
+      }
+    },
+    async refreshWorkItemDetailAfterActionChange(agentId, summary) {
+      const key = `${summary.id}:${summary.currentActionId}`;
+      if (this._workCenterDetailRefreshByAgent[agentId] === key) return;
+      this._workCenterDetailRefreshByAgent = {
+        ...this._workCenterDetailRefreshByAgent,
+        [agentId]: key,
+      };
+      try {
+        const detail = await this.workCenterRequest('get', { id: summary.id }, agentId);
+        const selected = this.workCenterDetailByAgent[agentId];
+        if (selected?.id === summary.id
+            && selected.currentActionId === summary.currentActionId
+            && detail?.currentActionId === summary.currentActionId) {
+          this.workCenterDetailByAgent = {
+            ...this.workCenterDetailByAgent,
+            [agentId]: detail,
+          };
+        }
+      } catch {
+        // The next event or explicit selection retries; event handling remains non-fatal.
+      } finally {
+        if (this._workCenterDetailRefreshByAgent[agentId] === key) {
+          const next = { ...this._workCenterDetailRefreshByAgent };
+          delete next[agentId];
+          this._workCenterDetailRefreshByAgent = next;
+        }
       }
     },
 
