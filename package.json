@@ -36,14 +36,14 @@
     "@dicebear/collection": "^9.4.2",
     "@dicebear/core": "^9.4.2",
     "@playwright/test": "^1.58.2",
-    "@vue/test-utils": "^2.4.6",
-    "concurrently": "^8.2.2",
+    "@vue/test-utils": "^2.4.11",
+    "concurrently": "9.2.4",
     "cross-env": "^7.0.3",
-    "esbuild": "^0.20.0",
+    "esbuild": "^0.28.1",
     "happy-dom": "^20.9.0",
     "supertest": "^7.2.2",
-    "vitepress": "^1.6.4",
-    "vitest": "^4.0.18",
+    "vitepress": "2.0.0-alpha.6",
+    "vitest": "^4.1.10",
     "vue": "^3.5.32"
   },
   "repository": {
@@ -66,5 +66,8 @@
   "author": "Yeaft",
   "engines": {
     "node": ">=22.5.0"
+  },
+  "overrides": {
+    "js-cookie": "^3.0.8"
   }
 }
