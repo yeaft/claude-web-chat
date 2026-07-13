@@ -168,29 +168,65 @@ describe('Work Center relay', () => {
     expect(pendingFiles.has('guide-file')).toBe(false);
   });
 
-  it('converts attachment preview bytes to a short-lived token URL before browser delivery', async () => {
+  async function deliverPreview(data, browserRequestId = 'browser-preview') {
     const client = { currentAgent: 'agent-a', userId: 'user-1' };
     await handleClientWorkCenter(client, {
-      type: 'work_center_request', requestId: 'browser-preview', op: 'preview_attachment',
+      type: 'work_center_request', requestId: browserRequestId, op: 'preview_attachment',
       payload: { id: 'wi-1', attachmentId: 'attachment-1' },
     }, vi.fn().mockResolvedValue(true));
-    const request = forwardToAgent.mock.calls[0][1];
-
+    const request = forwardToAgent.mock.calls.at(-1)[1];
     await deliverWorkCenterResponse('agent-a', {
-      type: 'work_center_response', requestId: request.requestId, op: 'preview_attachment', ok: true,
-      data: {
-        attachment: { id: 'attachment-1', name: 'screen.png', mimeType: 'image/png', isImage: true },
-        previewData: { data: Buffer.from('image').toString('base64'), mimeType: 'image/png', filename: 'screen.png' },
-      },
+      type: 'work_center_response', requestId: request.requestId, op: 'preview_attachment', ok: true, data,
+    });
+    return sendToWebClient.mock.calls.at(-1)[1];
+  }
+
+  it('converts attachment preview bytes to a short-lived token URL before browser delivery', async () => {
+    const image = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
+    const delivered = await deliverPreview({
+      attachment: { id: 'attachment-1', name: 'screen.png', mimeType: 'image/png', isImage: true },
+      previewData: { data: image.toString('base64'), mimeType: 'image/png', filename: 'screen.png' },
     });
 
-    const delivered = sendToWebClient.mock.calls.at(-1)[1];
     expect(delivered.data.preview).toMatch(/^\/api\/preview\/.+\?token=/);
     expect(delivered.data).not.toHaveProperty('previewData');
     expect(previewFiles.size).toBe(1);
     expect([...previewFiles.values()][0]).toMatchObject({
-      buffer: Buffer.from('image'), mimeType: 'image/png', filename: 'screen.png', token: expect.any(String),
+      buffer: image, mimeType: 'image/png', filename: 'screen.png', token: expect.any(String),
     });
+  });
+
+  it.each([
+    ['HTML', 'page.html', 'text/html'],
+    ['JavaScript', 'script.js', 'application/javascript'],
+  ])('serves active %s previews as plain text', async (_label, filename, mimeType) => {
+    const delivered = await deliverPreview({
+      attachment: { id: 'attachment-1', name: filename, mimeType, isImage: false },
+      previewData: { data: Buffer.from('<script>alert(1)</script>').toString('base64'), mimeType, filename },
+    });
+
+    expect(delivered.ok).toBe(true);
+    expect([...previewFiles.values()][0]).toMatchObject({
+      mimeType: 'text/plain; charset=utf-8', filename, kind: 'text',
+    });
+  });
+
+  it.each([
+    ['forged image filename', { data: 'aW1hZ2U=', mimeType: 'image/png', filename: 'page.html' }, /Unsupported/],
+    ['forged image content', { data: 'aW1hZ2U=', mimeType: 'image/png', filename: 'screen.png' }, /does not match/],
+    ['invalid base64', { data: '%%%=', mimeType: 'text/plain', filename: 'notes.txt' }, /valid base64/],
+    ['oversized data', {
+      data: Buffer.alloc(10 * 1024 * 1024 + 1).toString('base64'), mimeType: 'text/plain', filename: 'large.txt',
+    }, /valid base64|exceeds/],
+  ])('rejects %s preview responses without caching bytes', async (_label, previewData, error) => {
+    const delivered = await deliverPreview({
+      attachment: { id: 'attachment-1', name: previewData.filename, mimeType: previewData.mimeType },
+      previewData,
+    });
+
+    expect(delivered).toMatchObject({ ok: false, error: expect.stringMatching(error) });
+    expect(delivered.data).toBeUndefined();
+    expect(previewFiles.size).toBe(0);
   });
 
   it('forwards attachments whose aggregate size equals the WorkItem limit', async () => {

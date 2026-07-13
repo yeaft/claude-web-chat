@@ -426,8 +426,7 @@ describe('Work Center settings modal ownership', () => {
     WorkCenterPage.watch.createDefaultWorkDir.call(vm);
     expect(vm.form.workDir).toBe('/workspace/default');
 
-    vm.form.workDir = '/workspace/chosen';
-    WorkCenterPage.methods.onCreateWorkDirInput.call(vm);
+    WorkCenterPage.methods.folderPickerSetWorkDir.call(vm, '/workspace/chosen');
     vm.createDefaultWorkDir = '/workspace/changed';
     WorkCenterPage.watch.createDefaultWorkDir.call(vm);
     expect(vm.form.workDir).toBe('/workspace/chosen');
@@ -448,6 +447,7 @@ describe('Work Center settings modal ownership', () => {
       agentId: 'agent-b',
       saving: false,
       settings: { startImmediately: true },
+      closeFolderPicker: vi.fn(),
       store: {
         workCenterCreateDraft: {
           sourceAgentId: 'agent-a',
@@ -503,6 +503,7 @@ describe('Work Center settings modal ownership', () => {
       createDefaultWorkDir: '/workspace/b',
       createDefaultStart: false,
       form: { workDir: '/workspace/custom-a', start: true, title: 'Keep title', goal: 'Keep goal' },
+      closeFolderPicker: vi.fn(),
       selectedId: 'item-a',
       store: {
         workCenterCreateDraft: {

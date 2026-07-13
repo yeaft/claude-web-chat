@@ -7,10 +7,71 @@ import {
   assertWorkItemAttachmentSize,
   MAX_WORK_ITEM_ATTACHMENTS,
   MAX_WORK_ITEM_ATTACHMENT_BYTES,
+  MAX_WORK_ITEM_INLINE_BYTES,
 } from '../work-item-attachment-policy.js';
 
 const REQUEST_TIMEOUT_MS = 60_000;
 const pendingRequests = new Map();
+
+function decodePreviewBase64(value) {
+  const data = typeof value === 'string' ? value : '';
+  const maxEncodedLength = Math.ceil(MAX_WORK_ITEM_INLINE_BYTES / 3) * 4;
+  if (!data || data.length > maxEncodedLength || data.length % 4 !== 0
+    || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
+    throw new Error('Attachment preview data is not valid base64');
+  }
+  const buffer = Buffer.from(data, 'base64');
+  if (buffer.length > MAX_WORK_ITEM_INLINE_BYTES) {
+    throw new Error(`Attachment preview exceeds ${MAX_WORK_ITEM_INLINE_BYTES} bytes`);
+  }
+  if (buffer.toString('base64') !== data) {
+    throw new Error('Attachment preview data is not canonical base64');
+  }
+  return buffer;
+}
+
+function hasPreviewSignature(buffer, mimeType) {
+  if (mimeType === 'image/png') {
+    return buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  }
+  if (mimeType === 'image/jpeg') {
+    return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  }
+  if (mimeType === 'image/gif') {
+    const signature = buffer.subarray(0, 6).toString('ascii');
+    return signature === 'GIF87a' || signature === 'GIF89a';
+  }
+  if (mimeType === 'image/webp') {
+    return buffer.length >= 12
+      && buffer.subarray(0, 4).toString('ascii') === 'RIFF'
+      && buffer.subarray(8, 12).toString('ascii') === 'WEBP';
+  }
+  if (mimeType === 'application/pdf') return buffer.subarray(0, 5).toString('ascii') === '%PDF-';
+  return true;
+}
+
+export function normalizeWorkItemPreview(previewData, attachment = {}) {
+  if (!previewData || typeof previewData !== 'object' || Array.isArray(previewData)) {
+    throw new Error('Attachment preview data is missing');
+  }
+  const filename = typeof previewData.filename === 'string' && previewData.filename.trim()
+    ? previewData.filename.trim()
+    : typeof attachment.name === 'string' ? attachment.name.trim() : '';
+  const mimeType = typeof previewData.mimeType === 'string' && previewData.mimeType.trim()
+    ? previewData.mimeType.trim().toLowerCase()
+    : typeof attachment.mimeType === 'string' ? attachment.mimeType.trim().toLowerCase() : '';
+  const kind = assertSupportedWorkItemAttachment(filename, mimeType);
+  const buffer = decodePreviewBase64(previewData.data);
+  if (!hasPreviewSignature(buffer, mimeType)) {
+    throw new Error('Attachment preview content does not match its declared type');
+  }
+  return {
+    buffer,
+    filename,
+    mimeType: kind === 'text' ? 'text/plain; charset=utf-8' : mimeType,
+    kind,
+  };
+}
 
 function prunePendingRequests(now = Date.now()) {
   for (const [requestId, pending] of pendingRequests) {
@@ -140,23 +201,34 @@ export async function deliverWorkCenterResponse(agentId, msg) {
     for (const fileId of pending.attachmentFileIds || []) pendingFiles.delete(fileId);
   }
   const { agentId: _untrustedAgentId, requestId: _opaqueRequestId, _requestUserId, ...payload } = msg;
-  let data = payload.data;
-  if (msg.ok === true && msg.op === 'preview_attachment' && data?.previewData?.data) {
-    const fileId = randomUUID();
-    const token = randomUUID();
-    previewFiles.set(fileId, {
-      buffer: Buffer.from(data.previewData.data, 'base64'),
-      mimeType: data.previewData.mimeType || data.attachment?.mimeType || 'application/octet-stream',
-      filename: data.previewData.filename || data.attachment?.name || 'attachment',
-      createdAt: Date.now(),
-      token,
-    });
-    const { previewData: _previewData, ...safeData } = data;
-    data = { ...safeData, preview: `/api/preview/${fileId}?token=${encodeURIComponent(token)}` };
+  let response = payload;
+  if (msg.ok === true && msg.op === 'preview_attachment') {
+    try {
+      const data = payload.data;
+      const preview = normalizeWorkItemPreview(data?.previewData, data?.attachment);
+      const fileId = randomUUID();
+      const token = randomUUID();
+      previewFiles.set(fileId, {
+        ...preview,
+        createdAt: Date.now(),
+        token,
+      });
+      const { previewData: _previewData, ...safeData } = data;
+      response = {
+        ...payload,
+        data: { ...safeData, preview: `/api/preview/${fileId}?token=${encodeURIComponent(token)}` },
+      };
+    } catch (error) {
+      response = {
+        ...payload,
+        ok: false,
+        error: error?.message || String(error),
+        data: undefined,
+      };
+    }
   }
   await sendToWebClient(pending.client, {
-    ...payload,
-    data,
+    ...response,
     agentId,
     requestId: pending.clientRequestId,
   });

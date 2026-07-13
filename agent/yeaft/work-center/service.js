@@ -162,21 +162,19 @@ export class WorkCenterService {
         const id = requiredString(payload.id, 'id');
         const workItem = this.#requiredItem(id);
         let addedAttachments = [];
+        let detail;
         try {
           addedAttachments = appendWorkItemAttachments(workItem.attachments, payload.files, {
             root: this.attachmentRoot,
             workItemId: id,
           });
-          const detail = this.controller.guide(id, {
+          detail = this.controller.guide(id, {
             guidance: typeof payload.guidance === 'string' ? payload.guidance : '',
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
             addedAttachmentCount: addedAttachments.length,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
           });
-          this.watcher.abortInvalidWorkItemRuns(id);
-          this.#emit({ type: 'action.guidance_added', workItem: detail });
-          return detail;
         } catch (error) {
           try {
             if ((workItem.attachments || []).length === 0 && addedAttachments.length > 0) {
@@ -187,6 +185,9 @@ export class WorkCenterService {
           } catch {}
           throw error;
         }
+        this.watcher.abortInvalidWorkItemRuns(id);
+        this.#emit({ type: 'action.guidance_added', workItem: detail });
+        return detail;
       }
       case 'preview_attachment': {
         const id = requiredString(payload.id, 'id');

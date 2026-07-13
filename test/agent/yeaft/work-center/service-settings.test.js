@@ -124,6 +124,28 @@ describe('Work Center settings service', () => {
     expect(service.store.getWorkItem(created.id).attachments).toEqual([]);
   });
 
+  it('keeps committed attachment metadata and files when the post-commit watcher step fails', async () => {
+    const service = await createService();
+    const created = await service.handle('create', {
+      title: 'Keep committed guidance', goal: 'Preserve committed attachment state', workDir: '/tmp', start: true,
+    });
+    service.watcher.abortInvalidWorkItemRuns = () => { throw new Error('watcher failed after commit'); };
+
+    await expect(service.handle('guide', {
+      id: created.id,
+      guidance: '',
+      actionId: created.currentActionId,
+      revision: created.revision,
+      files: [{
+        name: 'evidence.txt', mimeType: 'text/plain', data: Buffer.from('committed evidence').toString('base64'),
+      }],
+    })).rejects.toThrow('watcher failed after commit');
+
+    const stored = service.store.getWorkItem(created.id);
+    expect(stored.attachments).toEqual([expect.objectContaining({ name: 'evidence.txt' })]);
+    expect(existsSync(join(service.attachmentRoot, created.id, stored.attachments[0].storageName))).toBe(true);
+  });
+
   it('removes persisted attachments through the secure cleanup path when WorkItem creation fails', async () => {
     const service = await createService({
       controller: {

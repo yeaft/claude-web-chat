@@ -1,5 +1,6 @@
 import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import LlmTab from './LlmTab.js';
+import folderPickerMixin from './mixins/folder-picker-mixin.js';
 import { openImagePreview } from '../utils/imagePreview.js';
 import {
   clearOverlayPointerGesture,
@@ -11,6 +12,7 @@ import {
 export default {
   name: 'WorkCenterPage',
   components: { WorkCenterSettingsModal, LlmTab },
+  mixins: [folderPickerMixin],
   data() {
     return {
       selectedId: null,
@@ -54,6 +56,12 @@ export default {
     },
     createDefaultStart() {
       return this.settings?.startImmediately !== false;
+    },
+    folderPickerAgentId() {
+      return this.agentId || '';
+    },
+    defaultWorkDir() {
+      return this.createDefaultWorkDir;
     },
     items() { return this.store.workCenterItemsByAgent[this.agentId] || []; },
     loading() { return !!this.store.workCenterLoadingByAgent[this.agentId]; },
@@ -112,7 +120,10 @@ export default {
       immediate: true,
       handler(id, previousId) {
         this.selectedId = null;
-        if (previousId && id !== previousId) this.resetCreateExecutionContext(id);
+        if (previousId && id !== previousId) {
+          this.closeFolderPicker();
+          this.resetCreateExecutionContext(id);
+        }
         if (id) {
           this.store.listWorkItems(id).catch(() => {});
           this.store.loadWorkCenterSettings(id).catch(() => {});
@@ -233,7 +244,11 @@ export default {
       if (!this.workDirTouched && !this.form.workDir.trim()) this.form.workDir = this.createDefaultWorkDir;
       if (!this.startTouched) this.form.start = this.createDefaultStart;
     },
-    onCreateWorkDirInput() {
+    folderPickerInitialDir() {
+      return this.form.workDir.trim() || this.createDefaultWorkDir;
+    },
+    folderPickerSetWorkDir(path) {
+      this.form.workDir = path;
       this.workDirTouched = true;
     },
     onCreateStartInput() {
@@ -341,6 +356,7 @@ export default {
     },
     closeCreate() {
       if (this.saving) return;
+      this.closeFolderPicker();
       this.createOpen = false;
       this.store.workCenterCreateDraft = null;
     },
@@ -683,7 +699,16 @@ export default {
                 <h3>{{ tr('workCenter.execution', 'Execution') }}</h3>
                 <p>{{ tr('workCenter.executionHint', 'Choose where and how this work item starts.') }}</p>
               </div>
-              <label>{{ tr('workCenter.workDir', 'Working directory') }}<input v-model="form.workDir" type="text" required :placeholder="tr('workCenter.workDirHint', 'Project directory')" @input="onCreateWorkDirInput"></label>
+              <label>{{ tr('workCenter.workDir', 'Working directory') }}
+                <div class="work-center-workdir-picker">
+                  <input v-model="form.workDir" type="text" required readonly :placeholder="tr('workCenter.workDirHint', 'Choose an existing project directory')">
+                  <button class="btn-secondary" type="button" @click="openFolderPicker" :disabled="!folderPickerAgentId">
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2Z"/></svg>
+                    {{ tr('workCenter.chooseFolder', 'Choose folder') }}
+                  </button>
+                </div>
+                <small class="work-center-field-help">{{ tr('workCenter.workDirPickerHelp', 'Select an existing folder on the chosen Agent.') }}</small>
+              </label>
               <div class="work-center-create-options">
                 <label class="work-center-checkbox"><input v-model="form.reuseMemory" type="checkbox"><span><strong>{{ tr('workCenter.reuseMemory', 'Use relevant Agent memory and completed work from this project') }}</strong><small>{{ tr('workCenter.reuseMemoryHelp', 'Uses scope-bounded Agent memory and structured results from completed WorkItems in the same project.') }}</small></span></label>
                 <label class="work-center-checkbox"><input v-model="form.start" type="checkbox" @change="onCreateStartInput"><span><strong>{{ tr('workCenter.startImmediately', 'Start immediately') }}</strong><small>{{ tr('workCenter.startImmediatelyHint', 'Turn this off to create a draft you can review first.') }}</small></span></label>
@@ -702,6 +727,43 @@ export default {
               {{ saving ? tr('workCenter.creating', 'Creating…') : tr('workCenter.create', 'Create') }}
             </button>
           </footer>
+
+          <div class="folder-picker-overlay" v-if="folderPickerOpen" @click.self="closeFolderPicker">
+            <div class="folder-picker-dialog" role="dialog" aria-modal="true" :aria-label="tr('modal.folderPicker.title', 'Select work directory')">
+              <div class="folder-picker-header">
+                <span>{{ tr('modal.folderPicker.title', 'Select work directory') }}</span>
+                <button class="wb-btn-sm" type="button" @click="closeFolderPicker" :aria-label="tr('common.close', 'Close')">×</button>
+              </div>
+              <div class="folder-picker-path">
+                <button class="wb-btn-sm" type="button" @click="folderPickerNavigateUp" :disabled="!folderPickerPath" :title="tr('modal.folderPicker.parentDir', 'Parent directory')">
+                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2Z"/></svg>
+                </button>
+                <span class="folder-picker-current">{{ folderPickerPath || tr('common.rootDir', 'Root') }}</span>
+              </div>
+              <div class="folder-picker-list">
+                <div class="git-loading" v-if="folderPickerLoading"><span class="spinner-mini"></span> {{ tr('common.loading', 'Loading') }}</div>
+                <template v-else>
+                  <button
+                    v-for="entry in folderPickerEntries"
+                    :key="entry.name"
+                    class="tree-item tree-dir folder-picker-item"
+                    :class="{ 'folder-picker-selected': folderPickerSelected === entry.name }"
+                    type="button"
+                    @click="folderPickerSelectItem(entry)"
+                    @dblclick="folderPickerEnter(entry)"
+                  >
+                    <span class="tree-icon"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2Z"/></svg></span>
+                    <span class="tree-name">{{ entry.name }}</span>
+                  </button>
+                  <div class="tree-empty" v-if="folderPickerEntries.length === 0">{{ tr('common.noSubdirectories', 'No subdirectories') }}</div>
+                </template>
+              </div>
+              <div class="folder-picker-footer">
+                <button class="btn-secondary" type="button" @click="closeFolderPicker">{{ tr('common.cancel', 'Cancel') }}</button>
+                <button class="btn-primary" type="button" @click="confirmFolderPicker" :disabled="!folderPickerPath">{{ tr('common.confirm', 'Confirm') }}</button>
+              </div>
+            </div>
+          </div>
         </form>
       </div>
   `,
