@@ -5,7 +5,10 @@ import { WorkItemStore } from './store.js';
 import { WorkflowController } from './controller.js';
 import { WorkItemWatcher } from './watcher.js';
 import {
+  appendWorkItemAttachments,
   persistWorkItemAttachments,
+  readWorkItemAttachment,
+  removeWorkItemAttachmentFiles,
   removeWorkItemAttachments,
 } from './attachments.js';
 import { projectWorkItemDetail, projectWorkItemSummary } from './projection.js';
@@ -157,14 +160,55 @@ export class WorkCenterService {
       }
       case 'guide': {
         const id = requiredString(payload.id, 'id');
-        const detail = this.controller.guide(id, {
-          guidance: typeof payload.guidance === 'string' ? payload.guidance : '',
-          actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
-          revision: payload.revision,
-        });
-        this.watcher.abortInvalidWorkItemRuns(id);
-        this.#emit({ type: 'action.guidance_added', workItem: detail });
-        return detail;
+        const workItem = this.#requiredItem(id);
+        let addedAttachments = [];
+        try {
+          addedAttachments = appendWorkItemAttachments(workItem.attachments, payload.files, {
+            root: this.attachmentRoot,
+            workItemId: id,
+          });
+          const detail = this.controller.guide(id, {
+            guidance: typeof payload.guidance === 'string' ? payload.guidance : '',
+            actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
+            revision: payload.revision,
+            addedAttachmentCount: addedAttachments.length,
+            attachments: [...(workItem.attachments || []), ...addedAttachments],
+          });
+          this.watcher.abortInvalidWorkItemRuns(id);
+          this.#emit({ type: 'action.guidance_added', workItem: detail });
+          return detail;
+        } catch (error) {
+          try {
+            if ((workItem.attachments || []).length === 0 && addedAttachments.length > 0) {
+              removeWorkItemAttachments(this.attachmentRoot, id);
+            } else {
+              removeWorkItemAttachmentFiles(this.attachmentRoot, id, addedAttachments);
+            }
+          } catch {}
+          throw error;
+        }
+      }
+      case 'preview_attachment': {
+        const id = requiredString(payload.id, 'id');
+        const attachment = readWorkItemAttachment(
+          this.#requiredItem(id),
+          requiredString(payload.attachmentId, 'attachmentId'),
+          { root: this.attachmentRoot },
+        );
+        return {
+          attachment: {
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            size: attachment.size,
+            isImage: attachment.isImage,
+          },
+          previewData: {
+            data: attachment.data,
+            mimeType: attachment.mimeType,
+            filename: attachment.name,
+          },
+        };
       }
       case 'retry': {
         const detail = this.controller.retry(requiredString(payload.id, 'id'), {

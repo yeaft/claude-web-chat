@@ -1447,6 +1447,8 @@ export default {
   'workCenter.attachmentsUploading': '上传中…',
   'workCenter.attachmentsUploadFailed': '附件上传失败',
   'workCenter.removeAttachment': '移除附件',
+  'workCenter.addAttachments': '添加文件',
+  'workCenter.previewAttachment': '预览附件',
   'workCenter.execution': '执行方式',
   'workCenter.executionHint': '选择工作项在哪里执行，以及创建后是否立即开始。',
   'workCenter.workDir': '工作目录',

@@ -1451,6 +1451,8 @@ export default {
   'workCenter.attachmentsUploading': 'Uploading…',
   'workCenter.attachmentsUploadFailed': 'Attachment upload failed',
   'workCenter.removeAttachment': 'Remove attachment',
+  'workCenter.addAttachments': 'Add files',
+  'workCenter.previewAttachment': 'Preview attachment',
   'workCenter.execution': 'Execution',
   'workCenter.executionHint': 'Choose where and how this work item starts.',
   'workCenter.workDir': 'Working directory',

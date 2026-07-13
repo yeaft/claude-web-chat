@@ -20,21 +20,18 @@ let serviceFactory = null;
 const BROWSER_DETAIL_OPS = new Set(['get', 'create', 'update', 'start', 'cancel', 'guide', 'retry']);
 // `files` is an internal server-to-Agent field. The browser relay rejects any
 // client-supplied value and only emits files resolved from owned upload ids.
-const BROWSER_CREATE_FIELDS = Object.freeze([
-  'title',
-  'goal',
-  'acceptanceCriteria',
-  'workDir',
-  'reuseMemory',
-  'origin',
-  'linkedSessionIds',
-  'files',
-  'start',
-]);
+const BROWSER_FILE_FIELDS = Object.freeze({
+  create: [
+    'title', 'goal', 'acceptanceCriteria', 'workDir', 'reuseMemory', 'origin',
+    'linkedSessionIds', 'files', 'start',
+  ],
+  guide: ['id', 'guidance', 'actionId', 'revision', 'files'],
+});
 
-function browserCreatePayload(value) {
+function browserFilePayload(op, value) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  return Object.fromEntries(BROWSER_CREATE_FIELDS
+  const fields = BROWSER_FILE_FIELDS[op] || [];
+  return Object.fromEntries(fields
     .filter(field => Object.prototype.hasOwnProperty.call(source, field))
     .map(field => [field, source[field]]));
 }
@@ -176,10 +173,10 @@ export async function handleWorkCenterRequest(msg) {
       data = await readSettingsResponse();
     } else {
       const workCenter = await ensureWorkCenter();
-      data = await workCenter.handle(
-        op,
-        op === 'create' ? browserCreatePayload(msg.payload) : (msg.payload || {}),
-      );
+      const payload = Object.hasOwn(BROWSER_FILE_FIELDS, op)
+        ? browserFilePayload(op, msg.payload)
+        : (msg.payload || {});
+      data = await workCenter.handle(op, payload);
     }
     if (BROWSER_DETAIL_OPS.has(op)) data = projectWorkItemDetail(data);
     send({

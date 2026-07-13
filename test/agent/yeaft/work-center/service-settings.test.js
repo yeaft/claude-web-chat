@@ -76,6 +76,54 @@ describe('Work Center settings service', () => {
     })]);
   });
 
+  it('appends guidance attachments and exposes their bytes only through the preview operation', async () => {
+    const service = await createService();
+    const created = await service.handle('create', {
+      title: 'Inspect evidence', goal: 'Use additional evidence', workDir: '/tmp', start: true,
+    });
+    const guided = await service.handle('guide', {
+      id: created.id,
+      guidance: '',
+      actionId: created.currentActionId,
+      revision: created.revision,
+      files: [{
+        name: 'screen.png', mimeType: 'image/png', data: Buffer.from('image bytes').toString('base64'),
+      }],
+    });
+
+    expect(guided.status).toBe('ready');
+    expect(guided.attachments).toEqual([expect.objectContaining({ name: 'screen.png', isImage: true })]);
+    expect(guided.actions.at(-1).instruction).toContain('The user added 1 attachment(s)');
+    const preview = await service.handle('preview_attachment', {
+      id: created.id,
+      attachmentId: guided.attachments[0].id,
+    });
+    expect(preview).toMatchObject({
+      attachment: { name: 'screen.png', isImage: true },
+      previewData: { data: Buffer.from('image bytes').toString('base64'), mimeType: 'image/png' },
+    });
+  });
+
+  it('removes a newly created attachment directory when stale guidance is rejected', async () => {
+    const service = await createService();
+    const created = await service.handle('create', {
+      title: 'Reject stale guidance', goal: 'Do not leave orphaned files', workDir: '/tmp', start: true,
+    });
+
+    await expect(service.handle('guide', {
+      id: created.id,
+      guidance: 'stale',
+      actionId: 'wrong-action',
+      revision: created.revision,
+      files: [{
+        name: 'notes.txt', mimeType: 'text/plain', data: Buffer.from('orphan').toString('base64'),
+      }],
+    })).rejects.toThrow(/Action changed/);
+
+    expect(existsSync(join(service.attachmentRoot, created.id))).toBe(false);
+    expect(service.store.getWorkItem(created.id).attachments).toEqual([]);
+  });
+
   it('removes persisted attachments through the secure cleanup path when WorkItem creation fails', async () => {
     const service = await createService({
       controller: {

@@ -6,6 +6,7 @@ const forwardToClients = vi.fn();
 const sendToWebClient = vi.fn();
 const agents = new Map();
 const pendingFiles = new Map();
+const previewFiles = new Map();
 
 vi.mock('../../server/ws-utils.js', () => ({
   forwardAgentEvent,
@@ -13,7 +14,7 @@ vi.mock('../../server/ws-utils.js', () => ({
   forwardToClients,
   sendToWebClient,
 }));
-vi.mock('../../server/context.js', () => ({ agents, pendingFiles }));
+vi.mock('../../server/context.js', () => ({ agents, pendingFiles, previewFiles }));
 vi.mock('../../server/config.js', () => ({ CONFIG: { skipAuth: false, maxFileSize: 50 * 1024 * 1024 } }));
 
 const {
@@ -32,6 +33,7 @@ describe('Work Center relay', () => {
     agents.clear();
     agents.set('agent-a', { capabilities: ['work_item_attachments'] });
     pendingFiles.clear();
+    previewFiles.clear();
     __testResetWorkCenterRequests();
   });
 
@@ -139,6 +141,56 @@ describe('Work Center relay', () => {
       type: 'work_center_response', requestId: request.requestId, op: 'create', ok: true, data: { id: 'wi-1' },
     });
     expect(pendingFiles.has('file-1')).toBe(false);
+  });
+
+  it('resolves owned guidance attachments and consumes them only after Agent success', async () => {
+    pendingFiles.set('guide-file', {
+      name: 'follow-up.txt', mimeType: 'text/plain', buffer: Buffer.from('follow up'), userId: 'user-1',
+    });
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-guide', op: 'guide',
+      payload: {
+        id: 'wi-1', guidance: '', actionId: 'action-1', revision: 2,
+        attachments: [{ fileId: 'guide-file' }],
+      },
+    }, vi.fn().mockResolvedValue(true));
+
+    const request = forwardToAgent.mock.calls[0][1];
+    expect(request.payload).toMatchObject({
+      id: 'wi-1', actionId: 'action-1', revision: 2,
+      files: [{ name: 'follow-up.txt', mimeType: 'text/plain', data: Buffer.from('follow up').toString('base64') }],
+    });
+    expect(pendingFiles.has('guide-file')).toBe(true);
+    await deliverWorkCenterResponse('agent-a', {
+      type: 'work_center_response', requestId: request.requestId, op: 'guide', ok: true, data: { id: 'wi-1' },
+    });
+    expect(pendingFiles.has('guide-file')).toBe(false);
+  });
+
+  it('converts attachment preview bytes to a short-lived token URL before browser delivery', async () => {
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+    await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-preview', op: 'preview_attachment',
+      payload: { id: 'wi-1', attachmentId: 'attachment-1' },
+    }, vi.fn().mockResolvedValue(true));
+    const request = forwardToAgent.mock.calls[0][1];
+
+    await deliverWorkCenterResponse('agent-a', {
+      type: 'work_center_response', requestId: request.requestId, op: 'preview_attachment', ok: true,
+      data: {
+        attachment: { id: 'attachment-1', name: 'screen.png', mimeType: 'image/png', isImage: true },
+        previewData: { data: Buffer.from('image').toString('base64'), mimeType: 'image/png', filename: 'screen.png' },
+      },
+    });
+
+    const delivered = sendToWebClient.mock.calls.at(-1)[1];
+    expect(delivered.data.preview).toMatch(/^\/api\/preview\/.+\?token=/);
+    expect(delivered.data).not.toHaveProperty('previewData');
+    expect(previewFiles.size).toBe(1);
+    expect([...previewFiles.values()][0]).toMatchObject({
+      buffer: Buffer.from('image'), mimeType: 'image/png', filename: 'screen.png', token: expect.any(String),
+    });
   });
 
   it('forwards attachments whose aggregate size equals the WorkItem limit', async () => {
