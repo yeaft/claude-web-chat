@@ -149,6 +149,7 @@ export async function handleListDirectory(msg) {
       ctx.sendToServer({
         type: 'directory_listing',
         conversationId,
+        requestId,
         _requestUserId,
         _requestClientId,
         dirPath: '',
