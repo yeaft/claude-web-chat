@@ -12,6 +12,10 @@ import { formatPickedForInjection } from '../sessions/pre-flow.js';
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { buildWorkItemAttachmentContext } from './attachments.js';
+import {
+  appendCheckpointToolEvent,
+  renderActionResumeBlock,
+} from './action-checkpoint.js';
 
 const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'FileRead',
@@ -283,6 +287,7 @@ export function parseStructuredResult(text, actionType) {
       plan: actionType === 'triage' && parsed.plan && typeof parsed.plan === 'object'
         ? parsed.plan
         : null,
+      acceptanceChecks: Array.isArray(parsed.acceptanceChecks) ? parsed.acceptanceChecks : [],
     };
     if (actionType === 'review' && result.outcome === 'completed' && !result.reviewDecision) {
       return {
@@ -311,13 +316,49 @@ function completionContract(action, workItem) {
   const planField = action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
     ? ',\n  "plan": { "workItemType": "specific-lowercase-slug", "actions": [{ "id": "stable-id", "name": "User-facing name", "type": "extensible-lowercase-slug (built-ins include research|design|diagnose|implement|migrate|test|review|document|operate|deliver|write|custom)", "capability": "specific executor capability", "objective": "independently executable and verifiable Action objective", "separateFromActionTypes": ["optional prior Action type"], "changesRequestedActionId": "for review: optional earlier editable Action id; omit to use nearest", "maxAttempts": 2 }] }'
     : '';
+  const acceptanceChecks = (workItem?.acceptanceCriteria || []).map(criterion => ({
+    criterion,
+    status: 'passed|deferred|not_applicable',
+    evidence: 'specific evidence reference',
+  }));
   return `\n\nYou are executing one Work Center Action. Before the terminal JSON, write a concise user-facing response describing what you did and the result. Do not include raw tool output or secrets. End your response with exactly one JSON object, preferably in a json code fence:\n{
   "outcome": "completed|waiting|retryable|failed",
   "summary": "short result",
   "evidence": ["test, PR, file, or other verifiable evidence"],
+  "acceptanceChecks": ${JSON.stringify(acceptanceChecks)},
   "waitingReason": null,
   "error": null${reviewField}${triageField}${planField}
-}\nA model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
+}\nFor completed, provide at least one concrete evidence item and exactly one acceptanceChecks entry for every current acceptance criterion, in the same order, with status passed, deferred, or not_applicable and a non-empty evidence reference. Triage must use its proposed criteria when submitting a contractPatch. Test, approved review, and deliver require every criterion to be passed; if a criterion is not applicable, triage must remove or rewrite it through contractPatch before verification. This is a deterministic submission gate, not independent proof: later test, review, and deliver Actions must verify the claims. A model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
+}
+
+function safeCheckpointUrl(value) {
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return '';
+  }
+}
+
+function safeCheckpointPath(value, workDir) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const resolved = path.resolve(workDir, value.trim());
+  if (!isPathInsideOrEqual(workDir, resolved)) return '';
+  const relative = path.relative(workDir, resolved);
+  return relative || '.';
+}
+
+function checkpointResource(toolName, input, workDir) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
+  if (['WebFetch', 'WebSearch'].includes(toolName) && typeof input.url === 'string') {
+    return safeCheckpointUrl(input.url);
+  }
+  for (const key of ['file_path', 'path', 'cwd']) {
+    const resource = safeCheckpointPath(input[key], workDir);
+    if (resource) return resource;
+  }
+  return '';
 }
 
 function workItemMemoryScopes(workItem, vpId) {
@@ -373,7 +414,7 @@ export class WorkItemRunner {
       : DEFAULT_PROGRESS_INTERVAL_MS;
   }
 
-  async run({ workItem, action, run, signal, ownerBootId, onProgress }) {
+  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader }) {
     const runtime = await this.runtimeProvider();
     const currentModelPolicy = workItem?.workflowSnapshot?.planningMode === 'ai'
       && this.policyProvider
@@ -384,6 +425,7 @@ export class WorkItemRunner {
       : action;
     const workDir = resolveWorkItemWorkDir(workItem, runtime.defaultWorkDir);
     const priorRuns = this.store.listCompletedRuns(workItem.id);
+    const resumeBlock = renderActionResumeBlock(this.store.getActionResumeContext?.(action.id, run.id));
     const assignment = executionAction.assignmentPolicy
       ? selectWorkItemVp({
           policy: executionAction.assignmentPolicy,
@@ -478,16 +520,25 @@ export class WorkItemRunner {
     let text = '';
     let loopCount = 0;
     let toolCount = 0;
+    let checkpoint = null;
+    const toolInputs = new Map();
     let lastProgressAt = 0;
+    const currentProgress = () => ({
+      response: publicWorkItemResponse(text),
+      loopCount,
+      toolCount,
+      checkpoint,
+    });
     const reportProgress = (force = false) => {
       if (typeof onProgress !== 'function') return;
       const now = Date.now();
       if (!force && now - lastProgressAt < this.progressIntervalMs) return;
       lastProgressAt = now;
-      onProgress({ response: publicWorkItemResponse(text), loopCount, toolCount });
+      return onProgress(currentProgress());
     };
+    if (typeof registerProgressReader === 'function') registerProgressReader(currentProgress);
     try {
-      const prompt = `${executionAction.instruction}${attachmentContext.promptBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
+      const prompt = `${executionAction.instruction}${resumeBlock}${attachmentContext.promptBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
       const promptParts = attachmentContext.promptParts.length > 0
         ? [{ type: 'text', text: prompt }, ...attachmentContext.promptParts]
         : null;
@@ -504,7 +555,17 @@ export class WorkItemRunner {
         collabToolPolicy: 'single-vp',
       })) {
         if (event?.type === 'loop') loopCount += 1;
-        else if (event?.type === 'tool_end') toolCount += 1;
+        else if (event?.type === 'tool_start') toolInputs.set(event.id, event.input);
+        else if (event?.type === 'tool_end') {
+          toolCount += 1;
+          const input = toolInputs.get(event.id);
+          toolInputs.delete(event.id);
+          checkpoint = appendCheckpointToolEvent(checkpoint, {
+            name: event.name,
+            status: event.isError ? 'error' : 'completed',
+            resource: checkpointResource(event.name, input, workDir),
+          });
+        }
         if (event?.type === 'text_delta' && typeof event.text === 'string') text += event.text;
         reportProgress();
       }
@@ -513,6 +574,7 @@ export class WorkItemRunner {
         response: publicWorkItemResponse(text),
         loopCount,
         toolCount,
+        checkpoint,
       };
       throw error;
     } finally {
@@ -525,6 +587,7 @@ export class WorkItemRunner {
       response,
       loopCount,
       toolCount,
+      checkpoint,
     };
   }
 }

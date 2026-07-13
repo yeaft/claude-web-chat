@@ -3,8 +3,9 @@ import { mkdirSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
+import { normalizeActionCheckpoint } from './action-checkpoint.js';
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -102,6 +103,7 @@ function mapRun(row) {
     loopCount: Math.max(0, Number(row.loop_count) || 0),
     toolCount: Math.max(0, Number(row.tool_count) || 0),
     progressRevision: Math.max(0, Number(row.progress_revision) || 0),
+    checkpoint: normalizeActionCheckpoint(parseJson(row.checkpoint, null)),
   };
 }
 
@@ -218,7 +220,8 @@ export class WorkItemStore {
         response TEXT NOT NULL DEFAULT '',
         loop_count INTEGER NOT NULL DEFAULT 0,
         tool_count INTEGER NOT NULL DEFAULT 0,
-        progress_revision INTEGER NOT NULL DEFAULT 0
+        progress_revision INTEGER NOT NULL DEFAULT 0,
+        checkpoint TEXT
       );
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -276,6 +279,9 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'runs', 'progress_revision')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN progress_revision INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!hasColumn(this.db, 'runs', 'checkpoint')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN checkpoint TEXT');
     }
     if (!hasColumn(this.db, 'work_items', 'workflow_snapshot')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN workflow_snapshot TEXT');
@@ -740,22 +746,45 @@ export class WorkItemStore {
     return !!this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
   }
 
-  interruptRun(runId, ownerBootId, leaseEpoch, reason = 'Work Center watcher stopped') {
+  interruptRun(
+    runId,
+    ownerBootId,
+    leaseEpoch,
+    reason = 'Work Center watcher stopped',
+    finalProgress = null,
+  ) {
     return withTransaction(this.db, () => {
       const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, false);
       if (!active) return false;
       const action = this.getAction(active.action_id);
       const now = this.now();
       const retryable = action.type !== 'deliver' && action.attempt < action.maxAttempts;
-      const runChanged = this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?
-        WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
-        now,
-        reason,
-        runId,
-        ownerBootId,
-        leaseEpoch,
-      );
+      const hasFinalProgress = finalProgress && typeof finalProgress === 'object';
+      const runChanged = hasFinalProgress
+        ? this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?,
+          response = ?, loop_count = ?, tool_count = ?, checkpoint = ?,
+          progress_revision = progress_revision + 1
+          WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
+          now,
+          reason,
+          normalizeRunResponse(finalProgress.response),
+          Math.max(0, Number(finalProgress.loopCount) || 0),
+          Math.max(0, Number(finalProgress.toolCount) || 0),
+          stringify(normalizeActionCheckpoint(finalProgress.checkpoint)),
+          runId,
+          ownerBootId,
+          leaseEpoch,
+        )
+        : this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?
+          WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
+          now,
+          reason,
+          runId,
+          ownerBootId,
+          leaseEpoch,
+        );
       if (Number(runChanged.changes) !== 1) return false;
+      this.onTransitionStep?.('after_interrupt_run_update');
       const actionChanged = this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL,
         updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
         AND lease_epoch = ?`).run(
@@ -805,12 +834,14 @@ export class WorkItemStore {
     return withTransaction(this.db, () => {
       const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
       if (!active) return null;
-      const result = this.db.prepare(`UPDATE runs SET response = ?, loop_count = ?, tool_count = ?,
+      const checkpoint = normalizeActionCheckpoint(progress.checkpoint);
+      const result = this.db.prepare(`UPDATE runs SET response = ?, loop_count = ?, tool_count = ?, checkpoint = ?,
         progress_revision = progress_revision + 1 WHERE id = ? AND owner_boot_id = ?
         AND lease_epoch = ? AND status = 'running'`).run(
         normalizeRunResponse(progress.response),
         Math.max(0, Number(progress.loopCount) || 0),
         Math.max(0, Number(progress.toolCount) || 0),
+        stringify(checkpoint),
         runId,
         ownerBootId,
         leaseEpoch,
@@ -818,6 +849,25 @@ export class WorkItemStore {
       if (Number(result.changes) !== 1) return null;
       return this.getWorkItemDetail(active.work_item_id);
     });
+  }
+
+  getActionResumeContext(actionId, excludeRunId = null) {
+    const runs = this.db.prepare(`SELECT * FROM runs
+      WHERE action_id = ? AND id != ? AND status IN ('interrupted', 'retryable')
+      ORDER BY ended_at DESC, started_at DESC`).all(actionId, excludeRunId || '').map(mapRun);
+    if (runs.length === 0) return null;
+    const latest = runs[0];
+    const response = runs.find(run => run.response)?.response || '';
+    const checkpoint = normalizeActionCheckpoint({
+      toolEvents: runs.slice().reverse().flatMap(run => run.checkpoint?.toolEvents || []),
+    });
+    if (!response && !latest.error && (checkpoint?.toolEvents.length || 0) === 0) return null;
+    return {
+      status: latest.status,
+      response,
+      error: latest.error,
+      checkpoint,
+    };
   }
 
   finalizeRun(runId, ownerBootId, leaseEpoch, result, makeTransition) {
@@ -835,7 +885,7 @@ export class WorkItemStore {
       }
       const now = this.now();
       this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, response = ?, summary = ?, evidence = ?,
-        waiting_reason = ?, error = ?, review_decision = ?, contract_patch = ?,
+        waiting_reason = ?, error = ?, review_decision = ?, contract_patch = ?, checkpoint = ?,
         loop_count = ?, tool_count = ?, progress_revision = progress_revision + 1 WHERE id = ?`).run(
         result.outcome,
         now,
@@ -846,6 +896,7 @@ export class WorkItemStore {
         result.error || null,
         result.reviewDecision || null,
         stringify(result.contractPatch || null),
+        stringify(normalizeActionCheckpoint(result.checkpoint)),
         Math.max(0, Number(result.loopCount) || 0),
         Math.max(0, Number(result.toolCount) || 0),
         runId,

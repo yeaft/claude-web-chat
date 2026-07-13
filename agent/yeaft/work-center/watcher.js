@@ -36,16 +36,29 @@ export class WorkItemWatcher {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     const active = Array.from(this.activeRuns.values());
+    const failures = [];
     for (const entry of active) {
-      this.store.interruptRun(
-        entry.runId,
-        this.ownerBootId,
-        entry.leaseEpoch,
-        'Work Center watcher stopped',
-      );
-      entry.abortController.abort('watcher_stopped');
+      try {
+        const finalProgress = entry.readFinalProgress?.() || null;
+        entry.interrupted = this.store.interruptRun(
+          entry.runId,
+          this.ownerBootId,
+          entry.leaseEpoch,
+          'Work Center watcher stopped',
+          finalProgress,
+        );
+      } catch (error) {
+        entry.interrupted = false;
+        failures.push(error);
+      } finally {
+        entry.abortController.abort('watcher_stopped');
+      }
     }
     await Promise.allSettled(active.map(entry => entry.promise));
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'Could not persist one or more Work Center interruptions');
+    }
+    return active.map(entry => ({ runId: entry.runId, interrupted: entry.interrupted === true }));
   }
 
   abortInvalidWorkItemRuns(workItemId) {
@@ -76,31 +89,36 @@ export class WorkItemWatcher {
       }, renewEvery);
       renewal.unref?.();
 
-      const promise = this.#execute(claim, abortController.signal)
-        .finally(() => {
-          clearInterval(renewal);
-          this.activeRuns.delete(key);
-        });
-      this.activeRuns.set(key, {
-        promise,
+      const entry = {
+        promise: null,
         abortController,
+        readFinalProgress: null,
+        interrupted: false,
         workItemId: claim.workItem.id,
         runId: claim.run.id,
         leaseEpoch: claim.run.leaseEpoch,
+      };
+      entry.promise = this.#execute(claim, abortController.signal, readProgress => {
+        entry.readFinalProgress = readProgress;
+      }).finally(() => {
+        clearInterval(renewal);
+        this.activeRuns.delete(key);
       });
+      this.activeRuns.set(key, entry);
       this.onEvent({ type: 'run.started', workItem: this.store.getWorkItemDetail(claim.workItem.id) });
     } finally {
       this.ticking = false;
     }
   }
 
-  async #execute(claim, signal) {
+  async #execute(claim, signal, registerProgressReader) {
     let result;
     try {
       result = await this.runner.run({
         ...claim,
         signal,
         ownerBootId: this.ownerBootId,
+        registerProgressReader,
         onProgress: progress => {
           const detail = this.store.updateRunProgress(
             claim.run.id,
@@ -122,6 +140,7 @@ export class WorkItemWatcher {
         error: err?.message || String(err),
         loopCount: err?.workItemExecutionStats?.loopCount || 0,
         toolCount: err?.workItemExecutionStats?.toolCount || 0,
+        checkpoint: err?.workItemExecutionStats?.checkpoint || null,
       };
     }
     if (signal.aborted) return;

@@ -25,6 +25,43 @@ function normalizeContractPatch(value) {
   return Object.keys(patch).length > 0 ? patch : null;
 }
 
+function normalizeAcceptanceChecks(value, criteria) {
+  if (!Array.isArray(value) || value.length !== criteria.length) return null;
+  const checks = value.map((raw, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const criterion = typeof raw.criterion === 'string' ? raw.criterion.trim() : '';
+    const status = ['passed', 'deferred', 'not_applicable'].includes(raw.status) ? raw.status : '';
+    const evidence = typeof raw.evidence === 'string' ? raw.evidence.trim().slice(0, 1_000) : '';
+    if (criterion !== criteria[index] || !status || !evidence) return null;
+    return { criterion, status, evidence };
+  });
+  return checks.every(Boolean) ? checks : null;
+}
+
+function validateCompletedResult(result, action, workItem) {
+  if (result.outcome !== 'completed') return;
+  if (result.evidence.length === 0) {
+    result.outcome = 'failed';
+    result.error = 'Completed Action requires at least one concrete evidence item';
+    return;
+  }
+  const criteria = result.contractPatch?.acceptanceCriteria
+    ?? (Array.isArray(workItem.acceptanceCriteria) ? workItem.acceptanceCriteria : []);
+  const checks = normalizeAcceptanceChecks(result.acceptanceChecks, criteria);
+  if (!checks) {
+    result.outcome = 'failed';
+    result.error = 'Completed Action requires one ordered acceptance check with evidence for every acceptance criterion';
+    return;
+  }
+  const mustVerify = action.type === 'test'
+    || action.type === 'deliver'
+    || (action.type === 'review' && result.reviewDecision === 'approved');
+  if (mustVerify && checks.some(check => check.status !== 'passed')) {
+    result.outcome = 'failed';
+    result.error = `${action.type} Action requires every acceptance check to pass`;
+  }
+}
+
 function normalizeTerminalResult(result, action) {
   if (!result || !RUN_OUTCOMES.includes(result.outcome)) {
     throw new Error(`Invalid Work Center outcome: ${result?.outcome || '(missing)'}`);
@@ -45,6 +82,9 @@ function normalizeTerminalResult(result, action) {
       : null,
     loopCount: Math.max(0, Number(result.loopCount) || 0),
     toolCount: Math.max(0, Number(result.toolCount) || 0),
+    acceptanceChecks: Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : [],
+    checkpoint: result.checkpoint && typeof result.checkpoint === 'object'
+      ? result.checkpoint : null,
   };
   if (normalized.outcome === 'waiting' && !normalized.waitingReason) {
     throw new Error('waiting outcome requires waitingReason');
@@ -202,7 +242,9 @@ export class WorkflowController {
     const activeRun = this.store.getRun(runId);
     const activeAction = activeRun ? this.store.getAction(activeRun.actionId) : null;
     if (!activeRun || !activeAction) throw new Error('Run is stale, cancelled, or already finished');
+    const activeWorkItem = this.store.getWorkItem(activeRun.workItemId);
     const result = normalizeTerminalResult(rawResult, activeAction);
+    validateCompletedResult(result, activeAction, activeWorkItem);
     let validatedGeneratedWorkflow = null;
     if (result.outcome === 'completed'
         && activeAction.type === 'triage'
