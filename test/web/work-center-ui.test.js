@@ -18,6 +18,8 @@ describe('Work Center UI contract', () => {
     expect(chat.indexOf('<WorkCenterPage')).toBeGreaterThan(chat.indexOf('</SessionSidebarShell>'));
     expect(yeaftPage).toContain('<WorkCenterPage v-if="store.workCenterOpen"');
     expect(yeaftPage).toContain('<div v-else class="yeaft-main"');
+    expect(yeaftPage).toContain('v-if="!store.workCenterOpen && showVpTimeline"');
+    expect(yeaftPage).toContain('v-if="!store.workCenterOpen && debugMode"');
     expect(yeaftSidebar).toContain(':active="chatStore ? chatStore.workCenterOpen : false"');
     expect(yeaftSidebar).toContain('leaveWorkCenter');
   });

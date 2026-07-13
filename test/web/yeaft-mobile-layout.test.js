@@ -135,7 +135,7 @@ describe('Yeaft mobile layout CSS', () => {
     const tablet = mediaBlock(css, '(max-width: 1024px)', '.yeaft-detail.mobile-debug');
     const mobile = mediaBlock(css, '(max-width: 768px)', '.yeaft-detail.mobile-debug');
 
-    expect(pageSource).toContain('v-if="debugMode"');
+    expect(pageSource).toContain('v-if="!store.workCenterOpen && debugMode"');
     expect(pageSource).toContain(":class=\"{ resizing: isResizingDetail, 'mobile-debug': isNarrowDetail }\"");
     expect(pageSource).toContain("const NARROW_DETAIL_QUERY = '(max-width: 1024px)';");
     expect(pageSource).toContain('window.matchMedia(NARROW_DETAIL_QUERY)');

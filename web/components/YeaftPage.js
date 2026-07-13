@@ -293,7 +293,7 @@ export default {
       <!-- Session status pane: announcement + VP roster + background tasks.
            It sits to the right of the conversation and to the left of debug. -->
       <VpTimelinePane
-        v-if="showVpTimeline"
+        v-if="!store.workCenterOpen && showVpTimeline"
         :rows="vpTimelineRows"
         :tasks="sessionStatusTasksForActiveSession"
         :announcement-text="sessionStatusAnnouncementText"
@@ -315,7 +315,7 @@ export default {
            right-pane content today, and it should not occupy layout space
            unless explicitly opened. -->
       <aside
-        v-if="debugMode"
+        v-if="!store.workCenterOpen && debugMode"
         class="yeaft-detail"
         :class="{ resizing: isResizingDetail, 'mobile-debug': isNarrowDetail }"
         :style="detailWidthStyle"
