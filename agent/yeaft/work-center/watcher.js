@@ -37,6 +37,7 @@ export class WorkItemWatcher {
     this.timer = null;
     const active = Array.from(this.activeRuns.values());
     for (const entry of active) {
+      entry.flushProgress?.();
       this.store.interruptRun(
         entry.runId,
         this.ownerBootId,
@@ -76,31 +77,35 @@ export class WorkItemWatcher {
       }, renewEvery);
       renewal.unref?.();
 
-      const promise = this.#execute(claim, abortController.signal)
-        .finally(() => {
-          clearInterval(renewal);
-          this.activeRuns.delete(key);
-        });
-      this.activeRuns.set(key, {
-        promise,
+      const entry = {
+        promise: null,
         abortController,
+        flushProgress: null,
         workItemId: claim.workItem.id,
         runId: claim.run.id,
         leaseEpoch: claim.run.leaseEpoch,
+      };
+      entry.promise = this.#execute(claim, abortController.signal, flush => {
+        entry.flushProgress = flush;
+      }).finally(() => {
+        clearInterval(renewal);
+        this.activeRuns.delete(key);
       });
+      this.activeRuns.set(key, entry);
       this.onEvent({ type: 'run.started', workItem: this.store.getWorkItemDetail(claim.workItem.id) });
     } finally {
       this.ticking = false;
     }
   }
 
-  async #execute(claim, signal) {
+  async #execute(claim, signal, registerFlush) {
     let result;
     try {
       result = await this.runner.run({
         ...claim,
         signal,
         ownerBootId: this.ownerBootId,
+        registerFlush,
         onProgress: progress => {
           const detail = this.store.updateRunProgress(
             claim.run.id,

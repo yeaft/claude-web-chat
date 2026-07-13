@@ -456,9 +456,52 @@ describe('Work Center core', () => {
       acceptanceChecks: deferredChecks,
     }));
     expect(rejected.status).toBe('needs_attention');
-    expect(store.getRun(testClaim.run.id).error).toMatch(/cannot complete with deferred/i);
+    expect(store.getRun(testClaim.run.id).error).toMatch(/requires every acceptance check to pass/i);
     expect(item.id).toBe(testClaim.workItem.id);
   });
+
+  it.each(['test', 'review', 'deliver'])(
+    'requires every acceptance check to pass before %s can complete',
+    (type) => {
+      const targetStage = {
+        id: type,
+        name: type,
+        type,
+        instruction: 'Verify the WorkItem contract',
+        assignmentPolicy: { mode: 'fixed', fixedVpId: 'omni' },
+        modelPolicy: { mode: 'inherit' },
+        maxAttempts: 2,
+      };
+      const stages = type === 'review'
+        ? [{ ...targetStage, id: 'implement', type: 'implement' }, {
+            ...targetStage, changesRequestedStageId: 'implement',
+          }]
+        : [targetStage];
+      const workflowSnapshot = {
+        version: 1,
+        id: `verify-${type}`,
+        name: `Verify ${type}`,
+        stages,
+      };
+      controller.create(createInput({ workflowTemplate: workflowSnapshot.id, workflowSnapshot }));
+      if (type === 'review') {
+        const implement = store.claimReadyAction('boot-a', 5_000);
+        controller.submit(
+          implement.run.id, 'boot-a', implement.run.leaseEpoch, completed('implement'),
+        );
+      }
+      const claim = store.claimReadyAction('boot-a', 5_000);
+      const result = completed(type, {
+        acceptanceChecks: createInput().acceptanceCriteria.map(criterion => ({
+          criterion, status: 'not_applicable', evidence: 'executor declared this irrelevant',
+        })),
+      });
+      const detail = controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, result);
+
+      expect(detail.status).toBe('needs_attention');
+      expect(store.getRun(claim.run.id).error).toMatch(/requires every acceptance check to pass/i);
+    },
+  );
 
   it('validates triage acceptance checks against the proposed contract patch', () => {
     const item = controller.create(createInput());
@@ -706,33 +749,48 @@ describe('Work Center core', () => {
     });
   });
 
-  it('recovers the latest retryable Run checkpoint for the same Action only', () => {
-    const first = controller.create(createInput());
+  it('recovers bounded state across attempts of the same Action only', () => {
+    const workflowSnapshot = {
+      version: 1,
+      id: 'three-attempts',
+      name: 'Three attempts',
+      stages: [{
+        id: 'triage', name: 'Triage', type: 'triage', instruction: 'Triage safely',
+        assignmentPolicy: { mode: 'fixed', fixedVpId: 'omni' },
+        modelPolicy: { mode: 'inherit' }, maxAttempts: 3,
+      }],
+    };
+    const first = controller.create(createInput({ workflowTemplate: workflowSnapshot.id, workflowSnapshot }));
     const firstClaim = store.claimReadyAction('boot-a', 5_000);
     controller.submit(firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, {
       outcome: 'retryable',
-      response: 'Network failed after inspecting package.json',
+      response: 'Edited important.js before the transient failure',
       summary: '',
       evidence: [],
       error: 'temporary network error',
       checkpoint: {
         version: 1,
-        toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'package.json' }],
+        toolEvents: [{ name: 'FileEdit', status: 'completed', resource: 'important.js' }],
       },
     });
-    const retryClaim = store.claimReadyAction('boot-a', 5_000);
-    expect(retryClaim.action.id).toBe(firstClaim.action.id);
-    expect(store.getActionResumeContext(firstClaim.action.id, retryClaim.run.id)).toMatchObject({
-      status: 'retryable',
-      error: 'temporary network error',
+    const secondClaim = store.claimReadyAction('boot-a', 5_000);
+    expect(store.interruptRun(
+      secondClaim.run.id, 'boot-a', secondClaim.run.leaseEpoch, 'stopped before progress',
+    )).toBe(true);
+    const thirdClaim = store.claimReadyAction('boot-a', 5_000);
+    expect(thirdClaim.action.id).toBe(firstClaim.action.id);
+    expect(store.getActionResumeContext(firstClaim.action.id, thirdClaim.run.id)).toMatchObject({
+      status: 'interrupted',
+      error: 'stopped before progress',
+      response: 'Edited important.js before the transient failure',
       checkpoint: {
-        toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'package.json' }],
+        toolEvents: [{ name: 'FileEdit', status: 'completed', resource: 'important.js' }],
       },
     });
 
-    const second = controller.create(createInput({ title: 'Unrelated item' }));
-    expect(store.getActionResumeContext(second.currentActionId, '')).toBeNull();
-    expect(first.id).not.toBe(second.id);
+    const unrelated = controller.create(createInput({ title: 'Unrelated item' }));
+    expect(store.getActionResumeContext(unrelated.currentActionId, '')).toBeNull();
+    expect(first.id).not.toBe(unrelated.id);
   });
 
   it('recovers only the currently fenced expired Run', () => {

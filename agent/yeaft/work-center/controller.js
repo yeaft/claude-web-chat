@@ -56,9 +56,9 @@ function validateCompletedResult(result, action, workItem) {
   const mustVerify = action.type === 'test'
     || action.type === 'deliver'
     || (action.type === 'review' && result.reviewDecision === 'approved');
-  if (mustVerify && checks.some(check => check.status === 'deferred')) {
+  if (mustVerify && checks.some(check => check.status !== 'passed')) {
     result.outcome = 'failed';
-    result.error = `${action.type} Action cannot complete with deferred acceptance checks`;
+    result.error = `${action.type} Action requires every acceptance check to pass`;
   }
 }
 

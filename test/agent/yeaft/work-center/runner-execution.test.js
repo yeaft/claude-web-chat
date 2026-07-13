@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { Registry } from '../../../../agent/yeaft/vp/registry.js';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
+import { WorkItemWatcher } from '../../../../agent/yeaft/work-center/watcher.js';
 import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
 
 const engineOptions = [];
@@ -13,15 +14,20 @@ const engineQueries = [];
 let invalidEngineResult = false;
 let engineResponsePrefix = '';
 let engineThinking = '';
+let engineToolName = 'FileRead';
 let engineToolInput = { file_path: 'src/current.js' };
+let engineAfterToolGate = null;
+let notifyEngineToolEnd = null;
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
   Engine: class {
     constructor(options) { engineOptions.push(options); }
     async *query(input) {
       engineQueries.push(input);
       yield { type: 'loop', loopNumber: 1 };
-      yield { type: 'tool_start', id: 'tool-1', name: 'FileRead', input: engineToolInput };
-      yield { type: 'tool_end', id: 'tool-1', name: 'FileRead', output: 'ok', isError: false };
+      yield { type: 'tool_start', id: 'tool-1', name: engineToolName, input: engineToolInput };
+      yield { type: 'tool_end', id: 'tool-1', name: engineToolName, output: 'ok', isError: false };
+      notifyEngineToolEnd?.();
+      if (engineAfterToolGate) await engineAfterToolGate;
       yield { type: 'loop', loopNumber: 2 };
       if (invalidEngineResult) {
         yield { type: 'text_delta', text: 'not-json' };
@@ -56,7 +62,10 @@ afterEach(() => {
   invalidEngineResult = false;
   engineResponsePrefix = '';
   engineThinking = '';
+  engineToolName = 'FileRead';
   engineToolInput = { file_path: 'src/current.js' };
+  engineAfterToolGate = null;
+  notifyEngineToolEnd = null;
 });
 
 describe('Work Center Runner execution resolution', () => {
@@ -196,6 +205,91 @@ describe('Work Center Runner execution resolution', () => {
       toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],
     });
     expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ checkpoint: result.checkpoint }));
+  });
+
+  it('removes URL credentials and query secrets from persisted checkpoint resources', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-secret-checkpoint-'));
+    engineToolName = 'WebFetch';
+    engineToolInput = {
+      url: 'https://user:password@example.com/api/data?token=ghp_SUPER_SECRET_TOKEN#private',
+    };
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['research'], modelHint: 'primary',
+      persona: 'Fetch safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      progressIntervalMs: 0,
+      runtimeProvider: async () => ({
+        adapter: {}, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const progress = [];
+
+    const result = await runner.run({
+      workItem: { id: 'wi-secret', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+      action: { id: 'action-secret', type: 'research', instruction: 'Fetch public data', requiredRole: 'omni' },
+      run: { id: 'run-secret', leaseEpoch: 1 }, ownerBootId: 'boot',
+      signal: new AbortController().signal, onProgress: value => progress.push(value),
+    });
+
+    expect(result.checkpoint.toolEvents[0].resource).toBe('https://example.com/api/data');
+    expect(JSON.stringify(progress)).not.toContain('ghp_SUPER_SECRET_TOKEN');
+    expect(JSON.stringify(result)).not.toContain('password');
+  });
+
+  it('flushes a just-completed tool checkpoint before watcher interruption', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-stop-flush-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    controller.create({
+      title: 'Stop safely', goal: 'Preserve the last checkpoint', acceptanceCriteria: [],
+      workflowTemplate: 'software-change', workDir, start: true,
+    });
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['triage'], modelHint: 'primary',
+      persona: 'Stop safely', personaHash: 'hash',
+    });
+    let releaseEngine;
+    engineAfterToolGate = new Promise(resolve => { releaseEngine = resolve; });
+    const toolEnded = new Promise(resolve => { notifyEngineToolEnd = resolve; });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      progressIntervalMs: 60_000,
+      runtimeProvider: async () => ({
+        adapter: {}, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const watcher = new WorkItemWatcher({
+      store, controller, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+
+    try {
+      await watcher.tick();
+      await toolEnded;
+      const stop = watcher.stop();
+      releaseEngine();
+      await stop;
+      const run = store.listWorkItems()[0];
+      const detail = store.getWorkItemDetail(run.id);
+      expect(detail.runs[0]).toMatchObject({
+        status: 'interrupted',
+        checkpoint: {
+          toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],
+        },
+      });
+    } finally {
+      store.close();
+    }
   });
 
   it('bounds resume data and keeps it as non-authoritative context', async () => {

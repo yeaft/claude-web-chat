@@ -829,16 +829,21 @@ export class WorkItemStore {
   }
 
   getActionResumeContext(actionId, excludeRunId = null) {
-    const row = this.db.prepare(`SELECT * FROM runs
+    const runs = this.db.prepare(`SELECT * FROM runs
       WHERE action_id = ? AND id != ? AND status IN ('interrupted', 'retryable')
-      ORDER BY ended_at DESC, started_at DESC LIMIT 1`).get(actionId, excludeRunId || '');
-    const run = mapRun(row);
-    if (!run || (!run.response && !run.error && !run.checkpoint)) return null;
+      ORDER BY ended_at DESC, started_at DESC`).all(actionId, excludeRunId || '').map(mapRun);
+    if (runs.length === 0) return null;
+    const latest = runs[0];
+    const response = runs.find(run => run.response)?.response || '';
+    const checkpoint = normalizeActionCheckpoint({
+      toolEvents: runs.slice().reverse().flatMap(run => run.checkpoint?.toolEvents || []),
+    });
+    if (!response && !latest.error && (checkpoint?.toolEvents.length || 0) === 0) return null;
     return {
-      status: run.status,
-      response: run.response,
-      error: run.error,
-      checkpoint: run.checkpoint,
+      status: latest.status,
+      response,
+      error: latest.error,
+      checkpoint,
     };
   }
 

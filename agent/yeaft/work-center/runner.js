@@ -328,13 +328,35 @@ function completionContract(action, workItem) {
   "acceptanceChecks": ${JSON.stringify(acceptanceChecks)},
   "waitingReason": null,
   "error": null${reviewField}${triageField}${planField}
-}\nFor completed, provide at least one concrete evidence item and exactly one acceptanceChecks entry for every current acceptance criterion, in the same order, with status passed, deferred, or not_applicable and a non-empty evidence reference. Triage must use its proposed criteria when submitting a contractPatch. Test, approved review, and deliver may not defer a criterion. This is a deterministic submission gate, not independent proof: later test, review, and deliver Actions must verify the claims. A model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
+}\nFor completed, provide at least one concrete evidence item and exactly one acceptanceChecks entry for every current acceptance criterion, in the same order, with status passed, deferred, or not_applicable and a non-empty evidence reference. Triage must use its proposed criteria when submitting a contractPatch. Test, approved review, and deliver require every criterion to be passed; if a criterion is not applicable, triage must remove or rewrite it through contractPatch before verification. This is a deterministic submission gate, not independent proof: later test, review, and deliver Actions must verify the claims. A model turn ending is not completion. Use waiting when user or external input is required. Use retryable only for a transient failure. Do not start background jobs or delegate this Action.`;
 }
 
-function checkpointResource(input) {
+function safeCheckpointUrl(value) {
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return '';
+  }
+}
+
+function safeCheckpointPath(value, workDir) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const resolved = path.resolve(workDir, value.trim());
+  if (!isPathInsideOrEqual(workDir, resolved)) return '';
+  const relative = path.relative(workDir, resolved);
+  return relative || '.';
+}
+
+function checkpointResource(toolName, input, workDir) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
-  for (const key of ['file_path', 'path', 'url', 'cwd']) {
-    if (typeof input[key] === 'string' && input[key].trim()) return input[key].trim();
+  if (['WebFetch', 'WebSearch'].includes(toolName) && typeof input.url === 'string') {
+    return safeCheckpointUrl(input.url);
+  }
+  for (const key of ['file_path', 'path', 'cwd']) {
+    const resource = safeCheckpointPath(input[key], workDir);
+    if (resource) return resource;
   }
   return '';
 }
@@ -392,7 +414,7 @@ export class WorkItemRunner {
       : DEFAULT_PROGRESS_INTERVAL_MS;
   }
 
-  async run({ workItem, action, run, signal, ownerBootId, onProgress }) {
+  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerFlush }) {
     const runtime = await this.runtimeProvider();
     const currentModelPolicy = workItem?.workflowSnapshot?.planningMode === 'ai'
       && this.policyProvider
@@ -506,8 +528,9 @@ export class WorkItemRunner {
       const now = Date.now();
       if (!force && now - lastProgressAt < this.progressIntervalMs) return;
       lastProgressAt = now;
-      onProgress({ response: publicWorkItemResponse(text), loopCount, toolCount, checkpoint });
+      return onProgress({ response: publicWorkItemResponse(text), loopCount, toolCount, checkpoint });
     };
+    if (typeof registerFlush === 'function') registerFlush(() => reportProgress(true));
     try {
       const prompt = `${executionAction.instruction}${resumeBlock}${attachmentContext.promptBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
       const promptParts = attachmentContext.promptParts.length > 0
@@ -534,7 +557,7 @@ export class WorkItemRunner {
           checkpoint = appendCheckpointToolEvent(checkpoint, {
             name: event.name,
             status: event.isError ? 'error' : 'completed',
-            resource: checkpointResource(input),
+            resource: checkpointResource(event.name, input, workDir),
           });
         }
         if (event?.type === 'text_delta' && typeof event.text === 'string') text += event.text;

@@ -8,6 +8,18 @@ function boundedString(value, maxLength) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
+function safeResource(value) {
+  const resource = boundedString(value, MAX_RESOURCE_LENGTH);
+  if (!resource) return '';
+  try {
+    const url = new URL(resource);
+    if (['http:', 'https:'].includes(url.protocol)) {
+      return `${url.protocol}//${url.host}${url.pathname}`.slice(0, MAX_RESOURCE_LENGTH);
+    }
+  } catch {}
+  return resource;
+}
+
 function normalizeToolEvent(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const name = boundedString(value.name, MAX_TOOL_NAME_LENGTH);
@@ -16,7 +28,7 @@ function normalizeToolEvent(value) {
     name,
     status: value.status === 'error' ? 'error' : 'completed',
   };
-  const resource = boundedString(value.resource, MAX_RESOURCE_LENGTH);
+  const resource = safeResource(value.resource);
   if (resource) event.resource = resource;
   return event;
 }
