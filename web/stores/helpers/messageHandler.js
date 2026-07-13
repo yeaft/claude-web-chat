@@ -154,6 +154,13 @@ export function handleMessage(store, msg) {
       }
       break;
 
+    case 'yeaft_session_hydrate': {
+      const sessions = window.Pinia?.useSessionsStore?.()
+        || (window.__useSessionsStore && window.__useSessionsStore());
+      if (sessions) sessions.applySnapshot(msg.sessions || [], msg.agentId || null);
+      break;
+    }
+
     case 'agent_selected':
       handleAgentSelected(store, msg);
       if (store.workCenterOpen && store.workCenterAgentId) {
