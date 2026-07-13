@@ -79,6 +79,9 @@ const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
 const PROJECT_SKILL_TIERS = new Set(['project', 'project-claude', 'project-codex']);
 const BASE_RUNTIME_KEY = '__base__';
 
+/** @type {Map<string, {resolve:Function, sessionId:string, vpId:string, threadId:string, turnId:string, signal?:AbortSignal, onAbort?:Function}>} */
+const pendingUserPrompts = new Map();
+
 /** @type {import('./session.js').Session | null} */
 let session = null;
 
@@ -4361,6 +4364,44 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         // each write a copy of the user message, and history replay
         // would render the user's prompt N times.
         userAlreadyPersisted: true,
+        askUser: ({ question, options }) => new Promise((resolve, reject) => {
+          const requestId = `ask_${randomUUID()}`;
+          const signal = vpAbort.signal;
+          // User think time is not engine silence. Pause the query watchdog until
+          // the card is answered; the normal tool/LLM budget resumes afterward.
+          if (queryTimer) {
+            clearTimeout(queryTimer);
+            queryTimer = null;
+          }
+          const onAbort = () => {
+            pendingUserPrompts.delete(requestId);
+            reject(new Error('aborted'));
+          };
+          pendingUserPrompts.set(requestId, {
+            resolve: answers => {
+              resetQueryTimer();
+              resolve(answers);
+            },
+            sessionId,
+            vpId,
+            threadId,
+            turnId,
+            signal,
+            onAbort,
+          });
+          signal.addEventListener('abort', onAbort, { once: true });
+          sendSessionEvent({
+            type: 'ask_user_question',
+            requestId,
+            questions: [{
+              question,
+              options: Array.isArray(options)
+                ? options.map(label => ({ label, description: '' }))
+                : [],
+              multiSelect: false,
+            }],
+          }, envelope);
+        }),
         threadId,
         vpTurnId: turnId,
         drainPendingUserMessages: () => {
@@ -5387,6 +5428,24 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
   });
 }
 
+/** Resolve a pending Yeaft AskUser prompt from the web UI. */
+export function handleYeaftAskUserAnswer(msg) {
+  const requestId = typeof msg?.requestId === 'string' ? msg.requestId : '';
+  const pending = pendingUserPrompts.get(requestId);
+  if (!pending) return false;
+  if (msg.sessionId && msg.sessionId !== pending.sessionId) return false;
+  if (msg.vpId && msg.vpId !== pending.vpId) return false;
+  if (msg.turnId && msg.turnId !== pending.turnId) return false;
+  if (msg.threadId && msg.threadId !== pending.threadId) return false;
+
+  pendingUserPrompts.delete(requestId);
+  if (pending.signal && pending.onAbort) {
+    try { pending.signal.removeEventListener('abort', pending.onAbort); } catch { /* ignore */ }
+  }
+  pending.resolve(msg.answers || {});
+  return true;
+}
+
 export async function handleYeaftSessionSend(msg) {
   return runYeaftSessionSend(msg);
 }
@@ -6206,6 +6265,15 @@ export const __testHooks = {
     turnAbortMeta.clear();
     vpAborts.clear();
     vpInboxes.clear();
+  },
+  seedPendingUserPrompt({ requestId = 'ask-test', sessionId = 'session-test', vpId = 'vp-test', threadId = 'main', turnId = 'turn-test' } = {}) {
+    let resolved;
+    const promise = new Promise(resolve => { resolved = resolve; });
+    pendingUserPrompts.set(requestId, { resolve: resolved, sessionId, vpId, threadId, turnId });
+    return promise;
+  },
+  resetPendingUserPrompts() {
+    pendingUserPrompts.clear();
   },
   resetVpStatusBroker() {
     if (vpStatusBroker) vpStatusBroker.reset();

@@ -9,7 +9,6 @@
  */
 
 import { defineTool } from './types.js';
-import { randomUUID } from 'crypto';
 
 export default defineTool({
   name: 'AskUser',
@@ -57,22 +56,16 @@ Guidelines:
   },
   isConcurrencySafe: () => false,
   isReadOnly: () => true,
+  // This is an intentionally user-driven wait, not a stalled tool call.
+  timeoutMs: 0,
   async execute(input, ctx) {
     const { question, options } = input;
     if (!question) return JSON.stringify({ error: 'question is required' });
+    if (typeof ctx?.askUser !== 'function') {
+      return JSON.stringify({ error: 'Interactive user input is unavailable in this runtime.' });
+    }
 
-    // Generate a unique request ID for this ask
-    const requestId = `ask_${randomUUID().slice(0, 8)}`;
-
-    // In a full web-bridge integration, this would send an ask_user event
-    // and await the answer. For now, return a formatted prompt that the
-    // LLM can see — the web-bridge handles the ask flow externally.
-    return JSON.stringify({
-      type: 'ask_user',
-      requestId,
-      question,
-      ...(options ? { options } : {}),
-      message: `Question sent to user: "${question}"${options ? ` [Options: ${options.join(', ')}]` : ''}`,
-    });
+    const answers = await ctx.askUser({ question, options });
+    return JSON.stringify({ question, answers });
   },
 });

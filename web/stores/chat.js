@@ -1993,6 +1993,43 @@ export const useChatStore = defineStore('chat', {
       if (!event) return;
 
       switch (event.type) {
+        case 'ask_user_question': {
+          const conversationId = msg.conversationId || this.yeaftConversationId;
+          if (!conversationId) break;
+          const expected = {
+            sessionId: msg.sessionId || event.sessionId || null,
+            vpId: msg.vpId || event.vpId || null,
+            turnId: msg.turnId || event.turnId || null,
+            threadId: msg.threadId || event.threadId || 'main',
+          };
+          const matches = row => row?.type === 'tool-use'
+            && row.toolName === 'AskUser'
+            && !row.askRequestId
+            && (!expected.sessionId || row.sessionId === expected.sessionId)
+            && (!expected.vpId || (row.vpId || row.speakerVpId) === expected.vpId)
+            && (!expected.turnId || row.turnId === expected.turnId)
+            && (!expected.threadId || (row.threadId || 'main') === expected.threadId);
+          const linkPrompt = () => {
+            const messages = this.messagesMap[conversationId] || [];
+            for (let i = messages.length - 1; i >= 0; i--) {
+              if (!matches(messages[i])) continue;
+              messages[i].toolName = 'AskUserQuestion';
+              messages[i].askRequestId = event.requestId;
+              messages[i].askQuestions = event.questions || [];
+              return true;
+            }
+            return false;
+          };
+          if (!linkPrompt()) {
+            let retries = 0;
+            const retryInterval = setInterval(() => {
+              retries += 1;
+              if (linkPrompt() || retries >= 10) clearInterval(retryInterval);
+            }, 200);
+          }
+          break;
+        }
+
         case 'session_ready': {
           const agentConvId = event.conversationId;
           const statusAgentId = msg.agentId || this.currentAgent;
