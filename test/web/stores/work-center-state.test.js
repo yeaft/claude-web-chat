@@ -84,6 +84,67 @@ describe('Work Center summary state', () => {
     expect(merged.executionStats.totalTokens).toBe(500);
   });
 
+  it('does not let an out-of-order list event roll aggregate usage backwards', () => {
+    const fresh = {
+      id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
+      executionStats: { llmRequestCount: 5, loopCount: 4, toolCount: 9, totalTokens: 500 },
+      actionStats: [{
+        id: 'action-1', status: 'running', progressRevision: 5,
+        executionStats: { llmRequestCount: 5, loopCount: 4, toolCount: 9, totalTokens: 500 },
+      }],
+    };
+    const stale = {
+      id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
+      executionStats: { llmRequestCount: 2, loopCount: 1, toolCount: 1, totalTokens: 200 },
+      actionStats: [{
+        id: 'action-1', status: 'running', progressRevision: 2,
+        executionStats: { llmRequestCount: 2, loopCount: 1, toolCount: 1, totalTokens: 200 },
+      }],
+    };
+
+    const items = applyWorkItemSummary(applyWorkItemSummary([], fresh), stale);
+    expect(items[0].executionStats.totalTokens).toBe(500);
+    expect(items[0].actionStats[0].progressRevision).toBe(5);
+  });
+
+  it('keeps aggregate usage when any Action in a list event is stale', () => {
+    const current = {
+      id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
+      executionStats: { llmRequestCount: 8, loopCount: 6, toolCount: 12, totalTokens: 800 },
+      actionStats: [
+        { id: 'action-1', progressRevision: 5, executionStats: { totalTokens: 500 } },
+        { id: 'action-2', progressRevision: 3, executionStats: { totalTokens: 300 } },
+      ],
+    };
+    const mixed = {
+      id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
+      executionStats: { llmRequestCount: 7, loopCount: 5, toolCount: 11, totalTokens: 700 },
+      actionStats: [
+        { id: 'action-1', progressRevision: 4, executionStats: { totalTokens: 400 } },
+        { id: 'action-2', progressRevision: 4, executionStats: { totalTokens: 300 } },
+      ],
+    };
+
+    const result = applyWorkItemSummary([current], mixed)[0];
+    expect(result.executionStats.totalTokens).toBe(800);
+    expect(result.actionStats).toEqual(current.actionStats);
+  });
+
+  it('accepts lower Action progress after the WorkItem version advances', () => {
+    const current = {
+      id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
+      executionStats: { totalTokens: 500 },
+      actionStats: [{ id: 'action-1', progressRevision: 5 }],
+    };
+    const next = {
+      id: 'wi-1', revision: 4, status: 'ready', updatedAt: 32,
+      executionStats: { totalTokens: 0 },
+      actionStats: [{ id: 'action-2', progressRevision: 1 }],
+    };
+
+    expect(applyWorkItemSummary([current], next)[0]).toEqual(next);
+  });
+
   it('rejects an older revision even when its timestamp is newer', () => {
     const stale = { id: 'wi-1', revision: 2, status: 'done', updatedAt: 99 };
     expect(isWorkItemSummaryStale(stale, detail)).toBe(true);

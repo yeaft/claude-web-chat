@@ -31,6 +31,12 @@ export function isWorkItemSummaryStale(summary, current) {
   return summaryUpdatedAt != null && currentUpdatedAt != null && summaryUpdatedAt < currentUpdatedAt;
 }
 
+function isActionProgressStale(currentStats, nextStats) {
+  const currentProgress = numberOrNull(currentStats?.progressRevision);
+  const nextProgress = numberOrNull(nextStats?.progressRevision);
+  return currentProgress != null && nextProgress != null && nextProgress < currentProgress;
+}
+
 export function mergeWorkItemSummary(current, summary) {
   if (!current || current.id !== summary?.id || isWorkItemSummaryStale(summary, current)) return current;
   const merged = { ...current };
@@ -43,13 +49,12 @@ export function mergeWorkItemSummary(current, summary) {
       const stats = statsById.get(action?.id);
       if (!stats) return action;
       matchedStats = true;
-      const currentProgress = numberOrNull(action?.progressRevision) ?? 0;
       const nextProgress = numberOrNull(stats?.progressRevision);
       if (nextProgress == null) {
         const { response, ...legacyStats } = stats;
         return { ...action, ...legacyStats };
       }
-      if (nextProgress < currentProgress) {
+      if (isActionProgressStale(action, stats)) {
         aggregateAccepted = false;
         return action;
       }
@@ -64,10 +69,32 @@ export function mergeWorkItemSummary(current, summary) {
   return merged;
 }
 
+function hasStaleActionProgress(currentStats, nextStats) {
+  if (!Array.isArray(currentStats) || !Array.isArray(nextStats)) return false;
+  const currentById = new Map(currentStats.map(stats => [stats?.id, stats]));
+  return nextStats.some(stats => {
+    const current = currentById.get(stats?.id);
+    return current ? isActionProgressStale(current, stats) : false;
+  });
+}
+
+function isSameWorkItemVersion(current, summary) {
+  return numberOrNull(current?.revision) === numberOrNull(summary?.revision)
+    && numberOrNull(current?.updatedAt) === numberOrNull(summary?.updatedAt);
+}
+
 export function applyWorkItemSummary(items, summary) {
   const current = Array.isArray(items) ? items : [];
   const existing = current.find(item => item.id === summary?.id) || null;
-  const nextSummary = existing && isWorkItemSummaryStale(summary, existing) ? existing : summary;
+  let nextSummary = existing && isWorkItemSummaryStale(summary, existing) ? existing : summary;
+  if (existing && nextSummary === summary && isSameWorkItemVersion(existing, summary)
+    && hasStaleActionProgress(existing.actionStats, summary.actionStats)) {
+    nextSummary = {
+      ...summary,
+      executionStats: existing.executionStats,
+      actionStats: existing.actionStats,
+    };
+  }
   if (!nextSummary?.id) return current;
   return [nextSummary, ...current.filter(item => item.id !== nextSummary.id)]
     .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
