@@ -87,10 +87,37 @@ describe('yeaft-agent local LLM config helpers', () => {
     };
 
     await expect(useGitHubCopilot({}, { model: 'missing-model', ...discovery })).rejects.toThrow('was not found');
-    const allowed = await useGitHubCopilot({}, { model: 'missing-model', allowUnknownModel: true, ...discovery });
+    const allowed = await useGitHubCopilot({}, {
+      model: 'missing-model',
+      fast: 'gpt-9-future',
+      allowUnknownModel: true,
+      ...discovery,
+    });
     expect(allowed.config.primaryModel).toBe('github-copilot/missing-model');
+    expect(allowed.config.fastModel).toBe('github-copilot/gpt-9-future');
     expect(allowed.provider.models).toEqual([
       { id: 'gpt-5', protocol: 'openai-responses' },
+      { id: 'missing-model' },
+      { id: 'gpt-9-future', protocol: 'openai-responses' },
+    ]);
+  });
+
+  it('deduplicates allowed unknown Copilot primary and fast models', async () => {
+    const result = await useGitHubCopilot({}, {
+      model: 'missing-model',
+      fast: 'missing-model',
+      allowUnknownModel: true,
+      getTokenFn: async () => ({ token: 'copilot-token' }),
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [{ id: 'gpt-5' }] }),
+      }),
+    });
+
+    expect(result.provider.models).toEqual([
+      { id: 'gpt-5', protocol: 'openai-responses' },
+      { id: 'missing-model' },
     ]);
   });
 
