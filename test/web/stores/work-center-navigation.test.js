@@ -106,4 +106,61 @@ describe('Work Center navigation', () => {
     expect(store.workCenterCreateDraft.sourceAgentId).toBe('agent-1');
     expect(store.workCenterCreateDraft.linkedSessionIds).toEqual(['session-1']);
   });
+
+  it('refetches detail once when an event advances to an Action missing locally', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterItemsByAgent = { 'agent-1': [] };
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 1, currentActionId: 'action-1', actionCount: 1,
+        actionSummary: 'triage', actions: [{ id: 'action-1', type: 'triage' }],
+      },
+    };
+    let resolveDetail;
+    store.workCenterRequest = vi.fn(() => new Promise(resolve => { resolveDetail = resolve; }));
+    const summary = {
+      id: 'wi-1', revision: 2, currentActionId: 'action-2', actionCount: 2,
+      actionSummary: 'triage → implement', actions: [],
+    };
+
+    store.applyWorkCenterEvent('agent-1', { workItem: summary });
+    store.applyWorkCenterEvent('agent-1', { workItem: summary });
+    expect(store.workCenterRequest).toHaveBeenCalledTimes(1);
+    expect(store.workCenterRequest).toHaveBeenCalledWith('get', { id: 'wi-1' }, 'agent-1');
+
+    resolveDetail({
+      ...summary,
+      actions: [{ id: 'action-1', type: 'triage' }, { id: 'action-2', type: 'implement' }],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
+      currentActionId: 'action-2', actionCount: 2, actionSummary: 'triage → implement',
+    });
+    expect(store.workCenterDetailByAgent['agent-1'].actions.map(action => action.id))
+      .toEqual(['action-1', 'action-2']);
+  });
+
+  it('does not let a delayed Action refresh overwrite a newly selected Work Item', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterItemsByAgent = { 'agent-1': [] };
+    store.workCenterDetailByAgent = {
+      'agent-1': { id: 'wi-1', revision: 1, currentActionId: 'action-1', actions: [{ id: 'action-1' }] },
+    };
+    let resolveDetail;
+    store.workCenterRequest = vi.fn(() => new Promise(resolve => { resolveDetail = resolve; }));
+
+    store.applyWorkCenterEvent('agent-1', {
+      workItem: { id: 'wi-1', revision: 2, currentActionId: 'action-2' },
+    });
+    store.workCenterDetailByAgent = {
+      'agent-1': { id: 'wi-2', revision: 1, currentActionId: 'other-action', actions: [] },
+    };
+    resolveDetail({ id: 'wi-1', revision: 2, currentActionId: 'action-2', actions: [{ id: 'action-2' }] });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({ id: 'wi-2' });
+  });
 });

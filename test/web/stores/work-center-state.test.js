@@ -3,6 +3,7 @@ import {
   applyWorkItemSummary,
   isWorkItemSummaryStale,
   mergeWorkItemSummary,
+  workItemDetailNeedsRefresh,
 } from '../../../web/stores/helpers/work-center.js';
 
 describe('Work Center summary state', () => {
@@ -32,6 +33,12 @@ describe('Work Center summary state', () => {
     });
     expect(merged.actions).toEqual(detail.actions);
     expect(merged.workDir).toBe('/local/project');
+  });
+
+  it('requests a detail refresh only when the current Action is missing locally', () => {
+    expect(workItemDetailNeedsRefresh(detail, { id: 'wi-1', currentActionId: 'action-1' })).toBe(false);
+    expect(workItemDetailNeedsRefresh(detail, { id: 'wi-1', currentActionId: 'action-2' })).toBe(true);
+    expect(workItemDetailNeedsRefresh(detail, { id: 'wi-2', currentActionId: 'action-2' })).toBe(false);
   });
 
   it('patches live Action aggregate counts without replacing detail Actions', () => {

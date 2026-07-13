@@ -360,6 +360,9 @@ describe('Work Center core', () => {
     expect(guided.actions).toHaveLength(2);
     expect(guided.actions[0].status).toBe('superseded');
     expect(guided.actions[1]).toMatchObject({ type: 'triage', requiredRole: 'omni', status: 'ready' });
+    for (const value of Object.values(claim.action.brief)) {
+      expect(guided.actions[1].instruction).toContain(value);
+    }
     expect(guided.actions[1].instruction).toContain('Keep the public API unchanged');
     expect(() => controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, completed('triage')))
       .toThrow(/stale|cancelled|expired|finished/i);
@@ -717,6 +720,9 @@ describe('Work Center core', () => {
       waitingReason: 'Choose behavior',
       answer: 'Keep the current behavior',
     });
+    for (const value of Object.values(claim.action.brief)) {
+      expect(nextAction.instruction).toContain(value);
+    }
     expect(nextAction.instruction).toContain('Need a choice');
     expect(nextAction.instruction).toContain('Waiting reason: Choose behavior');
     expect(nextAction.instruction).toContain('User answer: Keep the current behavior');

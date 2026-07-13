@@ -37,6 +37,12 @@ function isActionProgressStale(currentStats, nextStats) {
   return currentProgress != null && nextProgress != null && nextProgress < currentProgress;
 }
 
+export function workItemDetailNeedsRefresh(current, summary) {
+  if (!current || current.id !== summary?.id || !summary.currentActionId) return false;
+  return !Array.isArray(current.actions)
+    || !current.actions.some(action => action?.id === summary.currentActionId);
+}
+
 export function mergeWorkItemSummary(current, summary) {
   if (!current || current.id !== summary?.id || isWorkItemSummaryStale(summary, current)) return current;
   const merged = { ...current };

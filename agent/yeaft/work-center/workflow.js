@@ -419,7 +419,7 @@ export function applyGeneratedPlan(workItem, rawPlan) {
       objective,
       approach,
       expectedOutcome,
-      instruction: `${actionInstruction}\n\nAction type: ${type}\nWhat to do:\n${objective}\n\nHow to do it:\n${approach}\n\nExpected result:\n${expectedOutcome}`,
+      instruction: actionInstruction,
       assignmentPolicy: {
         mode: 'auto',
         capability: cleanId(input.capability, type),
@@ -542,7 +542,10 @@ function renderContext(context = []) {
 export function actionInstruction(stage, workItem, context = []) {
   const criteria = (workItem.acceptanceCriteria || []).map(item => `- ${item}`).join('\n') || '- No explicit criteria';
   const common = `WorkItem: ${workItem.title}\nGoal: ${workItem.goal}\nAcceptance criteria:\n${criteria}${renderContext(context)}`;
-  return `${common}\n\n${stage.instruction || defaultWorkCenterStageInstruction(stage.type)}`;
+  const policy = stage.instruction || defaultWorkCenterStageInstruction(stage.type);
+  const brief = normalizeActionBrief(stage.brief || stage, stage.type);
+  const contract = `Action type: ${stage.type}\nWhat to do:\n${brief.objective}\n\nHow to do it:\n${brief.approach}\n\nExpected result:\n${brief.expectedOutcome}`;
+  return `${common}\n\n${policy}\n\n${contract}`;
 }
 
 export function actionForStage(stage, workItem, context = []) {

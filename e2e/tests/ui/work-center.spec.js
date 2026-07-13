@@ -307,7 +307,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-main')).toBeVisible();
     await chatPage.locator('.work-center-header-create').click();
     const createModal = chatPage.locator('.work-center-modal');
-    const workDir = createModal.locator('input[placeholder="Project directory"]');
+    const workDir = createModal.getByRole('textbox', { name: /Working directory/ });
     await expect(workDir).toHaveValue('');
     await expect(createModal.getByRole('button', { name: 'Create', exact: true })).toBeDisabled();
 
@@ -345,7 +345,7 @@ test.describe('Work Center responsive UI', () => {
     await create.click();
     const createModal = chatPage.locator('.work-center-modal');
     await expect(createModal).toBeVisible();
-    await expect(createModal.locator('input[placeholder="Project directory"]')).toHaveValue('/tmp/test');
+    await expect(createModal.getByRole('textbox', { name: /Working directory/ })).toHaveValue('/tmp/test');
   });
 
   test('opens a fixed settings shell for Action prompts and Work Center model policy', async ({ chatPage, mockAgent }) => {
