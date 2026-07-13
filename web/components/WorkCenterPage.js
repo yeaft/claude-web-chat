@@ -116,7 +116,10 @@ export default {
       immediate: true,
       handler(id, previousId) {
         this.selectedId = null;
-        if (previousId && id !== previousId) this.resetCreateExecutionContext(id);
+        if (previousId && id !== previousId) {
+          this.closeFolderPicker();
+          this.resetCreateExecutionContext(id);
+        }
         if (id) {
           this.store.listWorkItems(id).catch(() => {});
           this.store.loadWorkCenterSettings(id).catch(() => {});
@@ -295,6 +298,7 @@ export default {
     },
     closeCreate() {
       if (this.saving) return;
+      this.closeFolderPicker();
       this.createOpen = false;
       this.store.workCenterCreateDraft = null;
     },

@@ -103,7 +103,7 @@ export async function handleWriteFile(msg) {
 }
 
 export async function handleListDirectory(msg) {
-  const { conversationId, dirPath, _requestUserId, _requestClientId } = msg;
+  const { conversationId, requestId, dirPath, _requestUserId, _requestClientId } = msg;
   const conv = ctx.conversations.get(conversationId);
   const workDir = msg.workDir || conv?.workDir || ctx.CONFIG.workDir;
 
@@ -121,6 +121,7 @@ export async function handleListDirectory(msg) {
         ctx.sendToServer({
           type: 'directory_listing',
           conversationId,
+          requestId,
           _requestUserId,
           _requestClientId,
           dirPath: '',
@@ -137,6 +138,7 @@ export async function handleListDirectory(msg) {
         ctx.sendToServer({
           type: 'directory_listing',
           conversationId,
+          requestId,
           _requestUserId,
           _requestClientId,
           dirPath: '/',
@@ -194,6 +196,7 @@ export async function handleListDirectory(msg) {
     ctx.sendToServer({
       type: 'directory_listing',
       conversationId,
+      requestId,
       _requestUserId,
       _requestClientId,
       dirPath: resolved,
@@ -203,6 +206,7 @@ export async function handleListDirectory(msg) {
     ctx.sendToServer({
       type: 'directory_listing',
       conversationId,
+      requestId,
       _requestUserId,
       _requestClientId,
       dirPath: dirPath || workDir,
