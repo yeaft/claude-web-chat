@@ -1185,6 +1185,7 @@ export class Engine {
       // Null in non-VP / test contexts — tools tolerate missing slots.
       getCurrentTodos: vpCtx?.getCurrentTodos || null,
       setCurrentTodos: vpCtx?.setCurrentTodos || null,
+      askUser: vpCtx?.askUser || null,
       // task-707: tool-callable end-turn signal. The engine threads this
       // setter when constructing toolCtx so a tool (e.g. route_forward)
       // can mark "after this batch, end the turn — do NOT call adapter
@@ -1649,7 +1650,7 @@ export class Engine {
    *   string-prompt shape (no regression for existing callers).
    * @yields {EngineEvent}
    */
-  async *query({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null } = {}) {
+  async *query({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null } = {}) {
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
       yield {
         type: 'error',
@@ -1717,7 +1718,7 @@ export class Engine {
 
     try {
       this.#currentThreadId = threadId || MAIN_THREAD_ID;
-      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName });
+      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName });
     } finally {
       if (signal) {
         try { signal.removeEventListener('abort', onExternalAbort); } catch { /* ignore */ }
@@ -1761,7 +1762,7 @@ export class Engine {
    * in a try/finally without indenting the whole loop.
    * @private
    */
-  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null, explicitSkillName = null }) {
+  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null, explicitSkillName = null }) {
 
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
@@ -3086,6 +3087,7 @@ export class Engine {
         contextWindow: currentContextWindow,
         getCurrentTodos,
         setCurrentTodos,
+        askUser,
         workDir,
         currentToolCall: () => currentToolCallForAsyncTask ? { ...currentToolCallForAsyncTask } : null,
         requestEndTurn: (reason) => {

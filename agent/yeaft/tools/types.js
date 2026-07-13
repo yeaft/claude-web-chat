@@ -32,6 +32,8 @@
  * @property {number} [contextWindow] — current model's context window in
  *   tokens (used by ToolRegistry.execute to cap a single tool result at a
  *   fraction of the window so one runaway grep can't blow the wire).
+ * @property {(input: {question:string, options?:string[]}) => Promise<object>} [askUser]
+ *   — host-provided interactive prompt. Resolves only after the user answers.
  * @property {(reason?: string|object) => void} [requestEndTurn]
  *   — tool-callable signal that the current engine turn should end after
  *   this batch of tool calls completes (no follow-up adapter.stream call).
