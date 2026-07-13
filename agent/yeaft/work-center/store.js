@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -75,6 +75,7 @@ function mapAction(row) {
     modelPolicy: parseJson(row.model_policy, null),
     requiredRole: row.required_role || '',
     instruction: row.instruction,
+    brief: parseJson(row.brief, null),
     context: parseJson(row.context, []),
     contractRevision: row.contract_revision,
     status: row.status,
@@ -202,6 +203,7 @@ export class WorkItemStore {
         assignment_policy TEXT,
         model_policy TEXT,
         instruction TEXT NOT NULL,
+        brief TEXT,
         context TEXT NOT NULL DEFAULT '[]',
         contract_revision INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL,
@@ -274,6 +276,9 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'work_items', 'reuse_memory')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN reuse_memory INTEGER NOT NULL DEFAULT 1');
+    }
+    if (!hasColumn(this.db, 'actions', 'brief')) {
+      this.db.exec('ALTER TABLE actions ADD COLUMN brief TEXT');
     }
     if (!hasColumn(this.db, 'actions', 'context')) {
       this.db.exec("ALTER TABLE actions ADD COLUMN context TEXT NOT NULL DEFAULT '[]'");
@@ -401,6 +406,7 @@ export class WorkItemStore {
       modelPolicy: input.modelPolicy || null,
       requiredRole: input.requiredRole || '',
       instruction: input.instruction || '',
+      brief: input.brief && typeof input.brief === 'object' ? input.brief : null,
       context: Array.isArray(input.context) ? input.context : [],
       contractRevision: Number.isInteger(input.contractRevision) ? input.contractRevision : 1,
       status: input.status || 'ready',
@@ -413,9 +419,9 @@ export class WorkItemStore {
     };
     this.db.prepare(`INSERT INTO actions
       (id, work_item_id, sequence, type, required_role, stage_id, assignment_policy, model_policy,
-       instruction, context, contract_revision, status, attempt, max_attempts, current_run_id,
+       instruction, brief, context, contract_revision, status, attempt, max_attempts, current_run_id,
        lease_epoch, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
       action.id,
       workItemId,
       action.sequence,
@@ -425,6 +431,7 @@ export class WorkItemStore {
       stringify(action.assignmentPolicy),
       stringify(action.modelPolicy),
       action.instruction,
+      stringify(action.brief),
       stringify(action.context),
       action.contractRevision,
       action.status,

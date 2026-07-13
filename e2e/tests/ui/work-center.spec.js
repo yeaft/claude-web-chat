@@ -40,6 +40,7 @@ const WORK_CENTER_SETTINGS = {
     primaryModel: 'provider/primary',
     fastModel: null,
     workItemAttachments: true,
+    workItemTypes: [{ id: 'software-change', name: 'Software change', actionCount: 3 }],
   },
 };
 
@@ -64,8 +65,15 @@ const OPEN_ITEM_DETAIL = {
     inputTokens: 1200, outputTokens: 300, cacheReadTokens: 200, cacheWriteTokens: 50,
     totalTokens: 1750,
   },
+  actionCount: 1,
+  actionSummary: 'implement',
   actions: [{
     id: 'action-1', sequence: 1, type: 'implement', requiredRole: 'developer', status: 'running',
+    brief: {
+      objective: 'Make the Work Center layout responsive',
+      approach: 'Update the existing layout styles and verify supported breakpoints',
+      expectedOutcome: 'The Work Center remains readable without horizontal overflow',
+    },
     executionStats: {
       llmRequestCount: 4, loopCount: 3, toolCount: 8,
       inputTokens: 1200, outputTokens: 300, cacheReadTokens: 200, cacheWriteTokens: 50,
@@ -73,6 +81,11 @@ const OPEN_ITEM_DETAIL = {
     },
     loopCount: 3, toolCount: 8, progressRevision: 4,
     response: 'Implemented the layout fix and verified the responsive breakpoints.',
+    messages: [{
+      id: 'action-1:1', status: 'running',
+      text: 'Implemented the layout fix and verified the responsive breakpoints.',
+      createdAt: Date.now(), updatedAt: Date.now(),
+    }],
   }],
 };
 
@@ -214,6 +227,9 @@ test.describe('Work Center responsive UI', () => {
     await select;
     expect(getRequest.op).toBe('get');
 
+    await expect(chatPage.locator('.work-center-action-list')).toHaveCount(0);
+    await expect(chatPage.locator('.work-center-action-list-heading')).toContainText('1 Actions');
+    await chatPage.getByRole('button', { name: 'Show Actions' }).click();
     const action = chatPage.locator('.work-center-action-card');
     await expect(action).toHaveCount(1);
     await expect(action).toContainText('Implement');
@@ -225,7 +241,10 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-detail-usage')).toContainText('1.8k tokens');
     await expect(action.locator('.work-center-action-body')).toHaveCount(0);
     await action.locator('.work-center-action-summary').click();
-    await expect(action.locator('.work-center-action-response')).toContainText('Implemented the layout fix');
+    await expect(action.locator('.work-center-action-brief')).toContainText('What to do');
+    await expect(action.locator('.work-center-action-brief')).toContainText('How to do it');
+    await expect(action.locator('.work-center-action-brief')).toContainText('Expected result');
+    await expect(action.locator('.work-center-action-message')).toContainText('Implemented the layout fix');
     await expect(action.locator('.work-center-run')).toHaveCount(0);
 
     await chatPage.locator('.work-center-guidance textarea').fill('Keep the public API unchanged');
@@ -247,6 +266,7 @@ test.describe('Work Center responsive UI', () => {
     const select = chatPage.locator('.work-center-card').click();
     await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
     await select;
+    await chatPage.getByRole('button', { name: 'Show Actions' }).click();
 
     await chatPage.evaluate(() => {
       document.documentElement.setAttribute('data-theme', 'dark');
@@ -298,11 +318,15 @@ test.describe('Work Center responsive UI', () => {
     await expect(workDir).toHaveValue('/tmp/test');
     await createModal.locator('input').first().fill('Visible directory');
     await createModal.locator('textarea').first().fill('Use the directory shown in the form');
+    await expect(createModal.locator('select').first()).toHaveValue('auto');
+    expect(await createModal.locator('select').first().locator('option').allTextContents())
+      .toContain('Software change · 3 Actions');
     const createRequest = respondToWorkCenterOp(mockAgent, 'create', OPEN_ITEM_DETAIL);
     await createModal.getByRole('button', { name: 'Create', exact: true }).click();
     const request = await createRequest;
     await respondToWorkCenterOp(mockAgent, 'list', { items: [OPEN_ITEM], watcher: { enabled: true } });
     expect(request.payload.workDir).toBe('/tmp/test');
+    expect(request.payload.workItemType).toBe('auto');
   });
 
   test('keeps a create action available on mobile with existing work items', async ({ chatPage, mockAgent }) => {

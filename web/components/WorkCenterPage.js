@@ -25,6 +25,7 @@ export default {
       resumeAnswer: '',
       actionGuidance: '',
       expandedActions: {},
+      actionsExpanded: false,
       workDirTouched: false,
       startTouched: false,
       createAttachments: [],
@@ -36,6 +37,7 @@ export default {
         title: '',
         goal: '',
         acceptanceCriteriaText: '',
+        workItemType: 'auto',
         workDir: '',
         reuseMemory: true,
         start: true,
@@ -50,6 +52,7 @@ export default {
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
     settings() { return this.store.workCenterSettingsByAgent[this.agentId] || null; },
     runtime() { return this.store.workCenterRuntimeByAgent[this.agentId] || null; },
+    workItemTypes() { return Array.isArray(this.runtime?.workItemTypes) ? this.runtime.workItemTypes : []; },
     workItemAttachmentsSupported() { return this.runtime?.workItemAttachments === true; },
     createDefaultWorkDir() {
       return this.settings?.defaultWorkDir || this.runtime?.defaultWorkDir || '';
@@ -144,6 +147,7 @@ export default {
       title: draft.title || '',
       goal: draft.goal || '',
       acceptanceCriteriaText: '',
+      workItemType: 'auto',
       workDir: draft.workDir || '',
       reuseMemory: true,
       start: this.settings?.startImmediately !== false,
@@ -189,16 +193,18 @@ export default {
       this.actionGuidance = '';
       this.guidanceAttachments = [];
       this.expandedActions = {};
+      this.actionsExpanded = false;
       try { await this.store.getWorkItem(item.id, this.agentId); } catch {}
     },
-    actionHasResponse(action) {
-      return !!String(action?.response || '').trim();
+    actionHasDetail(action) {
+      return !!action?.brief || (Array.isArray(action?.messages) && action.messages.length > 0)
+        || !!String(action?.response || '').trim();
     },
     actionExpanded(action) {
       return !!this.expandedActions[action?.id];
     },
     toggleAction(action) {
-      if (!this.actionHasResponse(action)) return;
+      if (!this.actionHasDetail(action)) return;
       this.expandedActions = {
         ...this.expandedActions,
         [action.id]: !this.expandedActions[action.id],
@@ -376,6 +382,7 @@ export default {
           goal: this.form.goal.trim(),
           acceptanceCriteria: this.form.acceptanceCriteriaText
             .split('\n').map(value => value.trim()).filter(Boolean),
+          workItemType: this.form.workItemType || 'auto',
           workDir: this.form.workDir.trim(),
           origin: draftOwnedByAgent ? (draft.origin || null) : null,
           linkedSessionIds: draftOwnedByAgent ? (draft.linkedSessionIds || []) : [],
@@ -395,6 +402,7 @@ export default {
           title: '',
           goal: '',
           acceptanceCriteriaText: '',
+          workItemType: 'auto',
           workDir: '',
           reuseMemory: true,
           start: this.settings?.startImmediately !== false,
@@ -607,11 +615,18 @@ export default {
                   </div>
                 </div>
                 <div class="work-center-section" v-if="selected.actions?.length">
-                  <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
-                  <div class="work-center-action-list">
+                  <div class="work-center-action-list-heading">
+                    <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
+                    <span>{{ $t('workCenter.actionCount', { count: selected.actionCount || selected.actions.length }) }}</span>
+                    <small>{{ selected.actionSummary }}</small>
+                    <button class="btn-ghost" type="button" @click="actionsExpanded = !actionsExpanded" :aria-expanded="actionsExpanded">
+                      {{ actionsExpanded ? tr('workCenter.collapseActions', 'Collapse') : tr('workCenter.expandActions', 'Show Actions') }}
+                    </button>
+                  </div>
+                  <div v-if="actionsExpanded" class="work-center-action-list">
                     <article v-for="action in selected.actions" :key="action.id" class="work-center-action-card" :data-status="action.status" :class="{ expanded: actionExpanded(action) }">
                       <button class="work-center-action-summary" type="button" @click="toggleAction(action)"
-                              :disabled="!actionHasResponse(action)" :aria-expanded="actionHasResponse(action) ? actionExpanded(action) : undefined">
+                              :disabled="!actionHasDetail(action)" :aria-expanded="actionHasDetail(action) ? actionExpanded(action) : undefined">
                         <span class="work-center-action-index">{{ action.sequence }}</span>
                         <span class="work-center-action-title">
                           <strong>{{ actionLabel(action.type) }}</strong>
@@ -624,10 +639,23 @@ export default {
                           <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(action).inputTokens), output: formatCount(executionStats(action).outputTokens), cache: formatCount((executionStats(action).cacheReadTokens || 0) + (executionStats(action).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) }) }}</span>
                         </span>
                         <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
-                        <span v-if="actionHasResponse(action)" class="work-center-action-chevron" aria-hidden="true"></span>
+                        <span v-if="actionHasDetail(action)" class="work-center-action-chevron" aria-hidden="true"></span>
                       </button>
                       <div v-if="actionExpanded(action)" class="work-center-action-body">
-                        <div class="work-center-action-response">{{ actionResponseText(action) }}</div>
+                        <dl v-if="action.brief" class="work-center-action-brief">
+                          <div><dt>{{ tr('workCenter.actionObjective', 'What to do') }}</dt><dd>{{ action.brief.objective }}</dd></div>
+                          <div><dt>{{ tr('workCenter.actionApproach', 'How to do it') }}</dt><dd>{{ action.brief.approach }}</dd></div>
+                          <div><dt>{{ tr('workCenter.actionExpectedOutcome', 'Expected result') }}</dt><dd>{{ action.brief.expectedOutcome }}</dd></div>
+                        </dl>
+                        <div class="work-center-action-messages">
+                          <strong>{{ tr('workCenter.actionMessages', 'Action messages') }}</strong>
+                          <div v-for="message in action.messages || []" :key="message.id" class="work-center-action-message" :data-status="message.status">
+                            <small>{{ statusLabel(message.status) }} · {{ time(message.updatedAt || message.createdAt) }}</small>
+                            <p>{{ message.text }}</p>
+                          </div>
+                          <div v-if="!action.messages?.length && actionResponseText(action)" class="work-center-action-response">{{ actionResponseText(action) }}</div>
+                          <p v-else-if="!action.messages?.length" class="work-center-muted">{{ tr('workCenter.noActionMessages', 'No execution messages yet.') }}</p>
+                        </div>
                       </div>
                     </article>
                   </div>
@@ -675,6 +703,13 @@ export default {
               <label>{{ tr('workCenter.titleField', 'Title') }}<input v-model="form.title" type="text" required autofocus :placeholder="tr('workCenter.titleHint', 'A short, specific outcome')"></label>
               <label>{{ tr('workCenter.goal', 'Goal') }}<textarea v-model="form.goal" rows="3" required :placeholder="tr('workCenter.goalHint', 'Describe the result the Agent must deliver')"></textarea></label>
               <label>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}<textarea v-model="form.acceptanceCriteriaText" rows="3" :placeholder="tr('workCenter.criteriaHint', 'One criterion per line')"></textarea></label>
+              <label>{{ tr('workCenter.workItemType', 'Type') }}
+                <select v-model="form.workItemType">
+                  <option value="auto">{{ tr('workCenter.typeAuto', 'Auto — let the LLM infer') }}</option>
+                  <option v-for="type in workItemTypes" :key="type.id" :value="type.id">{{ type.name }} · {{ $t('workCenter.actionCount', { count: type.actionCount }) }}</option>
+                </select>
+                <small class="work-center-field-help">{{ tr('workCenter.typeHelp', 'Choose a reusable type template or use Auto for LLM inference.') }}</small>
+              </label>
             </section>
             <section class="work-center-form-section work-center-create-attachments">
               <div class="work-center-form-section-heading">

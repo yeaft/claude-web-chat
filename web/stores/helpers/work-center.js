@@ -51,7 +51,7 @@ export function mergeWorkItemSummary(current, summary) {
       matchedStats = true;
       const nextProgress = numberOrNull(stats?.progressRevision);
       if (nextProgress == null) {
-        const { response, ...legacyStats } = stats;
+        const { response, messages, ...legacyStats } = stats;
         return { ...action, ...legacyStats };
       }
       if (isActionProgressStale(action, stats)) {

@@ -34,6 +34,38 @@ const DEFAULT_STAGE_INSTRUCTIONS = Object.freeze({
   custom: 'Complete the Action objective using repository facts and the WorkItem contract. State the approach, handle relevant risks and boundary conditions, produce the requested artifact or change, verify the result, and return concrete evidence plus any residual uncertainty.',
 });
 
+const DEFAULT_ACTION_BRIEFS = Object.freeze({
+  triage: ['Turn the request into a precise, executable Work Item contract and plan.', 'Inspect the relevant facts, resolve scope and risks, then select the smallest reliable Action sequence.', 'A frozen Work Item type, validated contract, and executable Action plan.'],
+  research: ['Resolve the question or uncertainty named by this Action with verifiable evidence.', 'Inspect repository facts and authoritative sources, separating observations from inference.', 'A concise evidence-backed conclusion that the next Action can use.'],
+  design: ['Define the smallest maintainable solution for this Action.', 'Inspect existing architecture, data flow, compatibility constraints, and failure boundaries.', 'Concrete implementation guidance with explicit trade-offs and risks.'],
+  diagnose: ['Establish the root cause of the reported behavior.', 'Reproduce the behavior, trace the responsible path, and distinguish evidence from hypotheses.', 'A proven root cause, minimal correction, and regression-test plan.'],
+  implement: ['Implement the required change with the smallest correct diff.', 'Follow repository conventions, handle relevant boundaries, and add focused tests while making the change.', 'A maintainable implementation with focused verification evidence.'],
+  migrate: ['Move existing data or behavior to the required shape without losing semantics.', 'Fence compatibility and rollback boundaries, then validate legacy and already-current states.', 'A repeatable or safely fenced migration with representative evidence.'],
+  test: ['Verify the current result against the Work Item acceptance criteria.', 'Run focused checks first, then broader risk-appropriate tests including failure and compatibility cases.', 'Reproducible pass/fail evidence for every applicable acceptance criterion.'],
+  review: ['Review the current result independently against the Work Item contract.', 'Prioritize correctness, security, data loss, compatibility, and missing tests over style preferences.', 'An approval or concrete change request supported by evidence.'],
+  document: ['Update the documentation required by this Action.', 'Align terminology and examples with actual behavior and verify links, commands, and language requirements.', 'Accurate, usable documentation that matches the delivered behavior.'],
+  operate: ['Perform the requested operational change safely.', 'Check preconditions, apply safety fences, preserve rollback options, and verify authoritative state.', 'A verified operational postcondition with handoff and rollback evidence.'],
+  deliver: ['Deliver the approved Work Item result using repository release policy.', 'Recheck immutable reviewed state, run final gates, and publish only the requested artifacts.', 'A traceable delivery with commit, artifact, deployment, and residual-risk evidence.'],
+  write: ['Produce the written deliverable requested by this Action.', 'Use available evidence, the intended audience, and the required terminology and structure.', 'A complete written artifact verified against the acceptance criteria.'],
+  custom: ['Complete the domain-specific objective defined for this Action.', 'Use repository facts, handle relevant risks and boundaries, and verify the produced result.', 'The requested artifact or change with concrete evidence and residual uncertainty.'],
+});
+
+function defaultActionBrief(type) {
+  const [objective, approach, expectedOutcome] = DEFAULT_ACTION_BRIEFS[STAGE_TYPES.has(type) ? type : 'custom'];
+  return { objective, approach, expectedOutcome };
+}
+
+export function normalizeActionBrief(value, type) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const defaults = defaultActionBrief(type);
+  return Object.fromEntries(Object.keys(defaults).map(key => [
+    key,
+    typeof source[key] === 'string' && source[key].trim()
+      ? source[key].trim().slice(0, 2_000)
+      : defaults[key],
+  ]));
+}
+
 const DEFAULT_SOFTWARE_CHANGE_STAGES = Object.freeze([
   {
     id: 'triage', name: 'Triage', type: 'triage',
@@ -145,6 +177,7 @@ export function normalizeWorkflowDefinition(value, index = 0) {
       id: stageId,
       name: String(source.name || stageId).trim() || stageId,
       type,
+      ...normalizeActionBrief(source, type),
       instruction: typeof source.instruction === 'string' && source.instruction.trim()
         ? source.instruction.trim()
         : defaultWorkCenterStageInstruction(type),
@@ -179,6 +212,9 @@ export function normalizeWorkflowDefinition(value, index = 0) {
     globalInstructions: normalizeGlobalInstructions(value.globalInstructions),
     modelPolicy: normalizeModelPolicy(value.modelPolicy),
     actionInstructions: normalizeActionInstructions(value.actionInstructions),
+    actionTemplates: Array.isArray(value.actionTemplates)
+      ? value.actionTemplates.map(template => normalizeWorkflowDefinition(template))
+      : [],
     stages,
   };
 }
@@ -243,20 +279,52 @@ export function normalizeWorkCenterSettings(value) {
   };
 }
 
-export function resolvePlanningWorkflowSnapshot(settings) {
+export function listWorkItemTypeTemplates(settings) {
   const normalized = normalizeWorkCenterSettings(settings);
-  const triageInstruction = `${normalized.actionInstructions.triage}\n\nChoose a specific workItemType and the smallest reliable sequence of 1 to 8 Actions for this WorkItem. Action types are extensible lowercase slugs: use a built-in type when its reusable policy fits, or define a precise domain type when it does not. For every Action, provide an objective that is independently executable and verifiable, plus the capability needed to select the right VP. Add research, design, diagnosis, migration, documentation, operations, testing, independent review, or delivery only when the task requires them. Do not copy a generic workflow.`;
+  return normalized.workflows.map(workflow => ({
+    id: workflow.workItemType || workflow.id,
+    name: workflow.name,
+    actionCount: workflow.stages.length,
+  }));
+}
+
+export function resolvePlanningWorkflowSnapshot(settings, requestedWorkItemType = null) {
+  const normalized = normalizeWorkCenterSettings(settings);
+  const requestedType = typeof requestedWorkItemType === 'string'
+    && requestedWorkItemType.trim()
+    && requestedWorkItemType.trim().toLowerCase() !== 'auto'
+    ? cleanId(requestedWorkItemType, '').slice(0, 64)
+    : '';
+  const actionTemplates = normalized.workflows.map(workflow => normalizeWorkflowDefinition({
+    ...workflow,
+    workItemType: workflow.workItemType || workflow.id,
+  }));
+  const matchingTemplate = requestedType
+    ? actionTemplates.find(template => template.workItemType === requestedType)
+    : null;
+  if (matchingTemplate) return matchingTemplate;
+
+  const catalog = actionTemplates
+    .map(template => `${template.workItemType}: ${template.name} (${template.stages.map(stage => stage.type).join(' -> ')})`)
+    .join('\n');
+  const typeInstruction = requestedType
+    ? `The user explicitly selected workItemType "${requestedType}". Keep that exact type.`
+    : 'Infer one specific workItemType from the contract.';
+  const triageInstruction = `${normalized.actionInstructions.triage}\n\n${typeInstruction}\nReusable Action templates:\n${catalog || '(none)'}\nIf the final type matches a reusable template, return its workItemType and omit actions so Work Center can apply that frozen template. Otherwise generate the smallest reliable sequence of 1 to 8 Actions. Action types are extensible lowercase slugs: use a built-in type when its reusable policy fits, or define a precise domain type when it does not. Every generated Action must state objective (what to do), approach (how to do it), expectedOutcome (the verifiable result), and capability. Add only Actions required by this task. Do not copy a generic workflow.`;
   return normalizeWorkflowDefinition({
     id: 'ai-planned',
     name: 'AI planned',
     planningMode: 'ai',
+    workItemType: requestedType || null,
     globalInstructions: normalized.globalInstructions,
     modelPolicy: normalized.modelPolicy,
     actionInstructions: normalized.actionInstructions,
+    actionTemplates,
     stages: [{
       id: 'triage',
       name: 'Triage',
       type: 'triage',
+      ...defaultActionBrief('triage'),
       instruction: triageInstruction,
       assignmentPolicy: {
         mode: 'auto', capability: 'triage', candidateVpIds: [], fixedVpId: null,
@@ -305,8 +373,24 @@ export function applyGeneratedPlan(workItem, rawPlan) {
   }
   const workItemType = cleanId(rawPlan.workItemType, '').slice(0, 64);
   if (!workItemType) throw new Error('AI-planned triage requires a valid workItemType');
+  if (source.workItemType && workItemType !== source.workItemType) {
+    throw new Error(`AI-planned triage must keep the selected workItemType "${source.workItemType}"`);
+  }
+  const reusableTemplate = source.actionTemplates.find(template => template.workItemType === workItemType);
+  if (reusableTemplate) {
+    const templateActions = reusableTemplate.stages.filter(stage => stage.type !== 'triage');
+    if (templateActions.length === 0) {
+      throw new Error(`Reusable Action template "${workItemType}" has no executable Actions`);
+    }
+    return normalizeWorkflowDefinition({
+      ...source,
+      workItemType,
+      actionTemplates: [],
+      stages: [source.stages[0], ...templateActions],
+    });
+  }
   if (!Array.isArray(rawPlan.actions) || rawPlan.actions.length < 1 || rawPlan.actions.length > 8) {
-    throw new Error('AI-planned triage requires between 1 and 8 Actions');
+    throw new Error('AI-planned triage requires between 1 and 8 Actions when no reusable template exists');
   }
   const seen = new Set(['triage']);
   const generated = rawPlan.actions.map((rawAction, index) => {
@@ -318,6 +402,13 @@ export function applyGeneratedPlan(workItem, rawPlan) {
     seen.add(id);
     const objective = typeof input.objective === 'string' ? input.objective.trim().slice(0, 2_000) : '';
     if (!objective) throw new Error(`AI-planned Action "${id}" requires an objective`);
+    const defaults = defaultActionBrief(type);
+    const approach = typeof input.approach === 'string' && input.approach.trim()
+      ? input.approach.trim().slice(0, 2_000)
+      : defaults.approach;
+    const expectedOutcome = typeof input.expectedOutcome === 'string' && input.expectedOutcome.trim()
+      ? input.expectedOutcome.trim().slice(0, 2_000)
+      : defaults.expectedOutcome;
     const actionInstruction = Object.hasOwn(source.actionInstructions, type)
       ? source.actionInstructions[type]
       : source.actionInstructions.custom;
@@ -325,7 +416,10 @@ export function applyGeneratedPlan(workItem, rawPlan) {
       id,
       name: String(input.name || id).trim().slice(0, 120) || id,
       type,
-      instruction: `${actionInstruction}\n\nAction type: ${type}\nAction objective for this WorkItem:\n${objective}`,
+      objective,
+      approach,
+      expectedOutcome,
+      instruction: `${actionInstruction}\n\nAction type: ${type}\nWhat to do:\n${objective}\n\nHow to do it:\n${approach}\n\nExpected result:\n${expectedOutcome}`,
       assignmentPolicy: {
         mode: 'auto',
         capability: cleanId(input.capability, type),
@@ -459,6 +553,7 @@ export function actionForStage(stage, workItem, context = []) {
     modelPolicy: stage.modelPolicy,
     // Storage compatibility for databases created before assignment policies.
     requiredRole: stage.assignmentPolicy.mode === 'fixed' ? stage.assignmentPolicy.fixedVpId : '',
+    brief: normalizeActionBrief(stage, stage.type),
     context,
     instruction: actionInstruction(stage, workItem, context),
     maxAttempts: stage.maxAttempts,

@@ -15,6 +15,7 @@ import { projectWorkItemDetail, projectWorkItemSummary } from './projection.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
 import {
   defaultWorkCenterStageInstructions,
+  listWorkItemTypeTemplates,
   resolvePlanningWorkflowSnapshot,
   resolveWorkflowSnapshot,
 } from './workflow.js';
@@ -45,10 +46,14 @@ export class WorkCenterService {
     this.runtimeInfoProvider = typeof options.runtimeInfoProvider === 'function'
       ? options.runtimeInfoProvider
       : async () => ({ vps: [], models: [], primaryModel: null, fastModel: null });
-    this.runtimeInfo = async () => ({
-      ...(await this.runtimeInfoProvider()),
-      defaultStageInstructions: defaultWorkCenterStageInstructions(),
-    });
+    this.runtimeInfo = async () => {
+      const settings = this.settingsReader(this.yeaftDir);
+      return {
+        ...(await this.runtimeInfoProvider()),
+        defaultStageInstructions: defaultWorkCenterStageInstructions(),
+        workItemTypes: listWorkItemTypeTemplates(settings),
+      };
+    };
     this.ownerBootId = options.ownerBootId || randomUUID();
     this.attachmentRoot = options.attachmentRoot || join(yeaftDir, 'work-center', 'attachments');
     this.store = options.store || new WorkItemStore(join(yeaftDir, 'work-center', 'work-center.db'));
@@ -92,7 +97,7 @@ export class WorkCenterService {
         const workflowTemplate = explicitWorkflow || 'ai-planned';
         const workflowSnapshot = explicitWorkflow
           ? resolveWorkflowSnapshot(settings, explicitWorkflow, payload.stageOverrides)
-          : resolvePlanningWorkflowSnapshot(settings);
+          : resolvePlanningWorkflowSnapshot(settings, payload.workItemType);
         const runtime = !Object.hasOwn(payload, 'workDir') && !settings.defaultWorkDir
           ? await this.runtimeInfo()
           : null;

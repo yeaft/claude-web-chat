@@ -663,6 +663,36 @@
   box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
+.work-center-action-list-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.work-center-action-list-heading h3 {
+  margin: 0;
+}
+
+.work-center-action-list-heading span,
+.work-center-action-list-heading small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.work-center-action-list-heading small {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-center-action-list-heading .btn-ghost {
+  flex: 0 0 auto;
+}
+
 .work-center-action-list {
   display: grid;
   gap: 8px;
@@ -774,6 +804,56 @@
   display: grid;
   gap: 12px;
   padding: 4px 46px 14px;
+}
+
+.work-center-action-brief {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.work-center-action-brief div {
+  display: grid;
+  gap: 3px;
+}
+
+.work-center-action-brief dt,
+.work-center-action-messages > strong {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.work-center-action-brief dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.work-center-action-messages {
+  display: grid;
+  gap: 8px;
+}
+
+.work-center-action-message {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+}
+
+.work-center-action-message small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.work-center-action-message p {
+  margin: 5px 0 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .work-center-action-response {

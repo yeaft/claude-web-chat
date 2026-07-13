@@ -195,6 +195,7 @@ export class WorkflowController {
         assignmentPolicy: previous.assignmentPolicy,
         modelPolicy: previous.modelPolicy,
         requiredRole: previous.requiredRole,
+        brief: previous.brief,
       };
       return {
         ...step,
@@ -220,6 +221,7 @@ export class WorkflowController {
             assignmentPolicy: previous.assignmentPolicy,
             modelPolicy: previous.modelPolicy,
             requiredRole: previous.requiredRole,
+            brief: previous.brief,
           }
         : initialActionFor(workItem);
       const context = Array.isArray(previous?.context) ? [...previous.context] : [];

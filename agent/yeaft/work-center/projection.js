@@ -1,3 +1,5 @@
+import { normalizeActionBrief } from './workflow.js';
+
 function currentAction(detail) {
   if (!detail?.currentActionId || !Array.isArray(detail.actions)) return null;
   return detail.actions.find(action => action.id === detail.currentActionId) || null;
@@ -43,6 +45,7 @@ function actionExecution(action, runs) {
       ...executionStats(action),
       response: '',
       progressRevision: 0,
+      messages: [],
     };
   }
   const stats = sumExecutionStats(matchingRuns);
@@ -50,10 +53,21 @@ function actionExecution(action, runs) {
     count(right.progressRevision) - count(left.progressRevision)
       || count(right.startedAt) - count(left.startedAt)
   ))[0];
+  const messages = [...matchingRuns]
+    .sort((left, right) => count(left.startedAt) - count(right.startedAt))
+    .map((run, index) => ({
+      id: `${action.id}:${index + 1}`,
+      status: run.status || 'running',
+      text: typeof run.response === 'string' ? run.response.trim().slice(0, 16_000) : '',
+      createdAt: count(run.startedAt),
+      updatedAt: count(run.endedAt || run.startedAt),
+    }))
+    .filter(message => message.text);
   return {
     ...stats,
     response: typeof latest?.response === 'string' ? latest.response : '',
     progressRevision: count(latest?.progressRevision),
+    messages,
   };
 }
 
@@ -87,12 +101,14 @@ function projectAction(action, runs) {
     stageId: action.stageId || action.type,
     assignmentPolicy: projectAssignmentPolicy(action.assignmentPolicy),
     requiredRole: action.requiredRole || '',
+    brief: normalizeActionBrief(action.brief, action.type),
     status: action.status,
     executionStats: executionStats(execution),
     loopCount: execution.loopCount,
     toolCount: execution.toolCount,
     response: execution.response,
     progressRevision: execution.progressRevision,
+    messages: execution.messages,
   };
 }
 
@@ -108,6 +124,7 @@ function projectActionStats(detail) {
       toolCount: projected.toolCount,
       response: projected.response,
       progressRevision: projected.progressRevision,
+      messages: projected.messages,
     };
   });
 }
@@ -145,6 +162,10 @@ export function projectWorkItemDetail(detail) {
     attachments: projectAttachments(detail.attachments),
     createdAt: detail.createdAt,
     updatedAt: detail.updatedAt,
+    actionCount: Array.isArray(detail.actions) ? detail.actions.length : 0,
+    actionSummary: Array.isArray(detail.actions)
+      ? detail.actions.map(action => action.type).filter(Boolean).join(' → ')
+      : '',
     actions: Array.isArray(detail.actions)
       ? detail.actions.map(action => projectAction(action, detail.runs))
       : [],
