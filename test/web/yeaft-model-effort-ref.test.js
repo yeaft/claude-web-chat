@@ -15,12 +15,14 @@ describe('Yeaft model effort provider-qualified refs', () => {
 
   it('groups each model into one UI row with selectable effort chips', () => {
     const gpt = { id: 'gpt-5.5', provider: 'github-copilot', effortOptions: ['minimal', 'low', 'medium', 'high', 'xhigh'] };
+    const gpt56 = { id: 'gpt-5.6-sol', provider: 'my-proxy', effortOptions: ['low', 'medium', 'high', 'xhigh', 'max'] };
     const claude = { id: 'claude-opus-4.8', provider: 'github-copilot', effortOptions: ['low', 'medium', 'high', 'xhigh', 'max'], effortProtocol: 'anthropic-adaptive' };
-    const rows = buildModelSelectionRows([gpt, claude]);
+    const rows = buildModelSelectionRows([gpt, gpt56, claude]);
 
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows[0]).toMatchObject({ modelRef: 'github-copilot/gpt-5.5', efforts: ['medium', 'high', 'xhigh'], defaultEffort: 'high' });
-    expect(rows[1]).toMatchObject({ modelRef: 'github-copilot/claude-opus-4.8', efforts: ['medium', 'high', 'xhigh', 'max'], defaultEffort: 'xhigh' });
+    expect(rows[1]).toMatchObject({ modelRef: 'my-proxy/gpt-5.6-sol', efforts: ['medium', 'high', 'xhigh', 'max'], defaultEffort: 'xhigh' });
+    expect(rows[2]).toMatchObject({ modelRef: 'github-copilot/claude-opus-4.8', efforts: ['medium', 'high', 'xhigh', 'max'], defaultEffort: 'xhigh' });
     expect(modelOptionMatchesRef(gpt, 'github-copilot/gpt-5.5')).toBe(true);
     expect(modelOptionMatchesRef(claude, 'github-copilot/claude-opus-4.8')).toBe(true);
   });

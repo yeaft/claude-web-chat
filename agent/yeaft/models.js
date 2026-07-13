@@ -34,7 +34,7 @@ import { lookupModelLimitSync } from './llm/models-dev.js';
  * @property {'anthropic' | 'anthropic-adaptive' | 'openai-reasoning' | 'none'} [thinkingProtocol] — task-327a:
  *   'anthropic' → thinking:{type:'enabled', budget_tokens:N}
  *   'anthropic-adaptive' → thinking:{type:'adaptive'} + output_config:{effort}
- *   'openai-reasoning' → reasoning:{effort:'minimal'|'low'|'medium'|'high'|'xhigh'}
+ *   'openai-reasoning' → reasoning:{effort:'minimal'|'low'|'medium'|'high'|'xhigh'|'max'}
  *   'none' (default) → parameter silently dropped by router
  * @property {'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null} [defaultEffort] — adapter-level default
  *   when caller doesn't specify effort (null = no default / decision-tree decides).
@@ -405,12 +405,12 @@ export const ANTHROPIC_THINKING_BUDGETS = {
 };
 
 /**
- * Map a Yeaft effort level to the OpenAI reasoning.effort enum. Current
- * OpenAI APIs expose xhigh, but not Anthropic's 'max'. Unsupported values are
- * dropped by returning null; the adapter MUST NOT error.
+ * Map a Yeaft effort level to the OpenAI reasoning.effort enum. Supported
+ * values are model-dependent; capability filtering happens before this wire
+ * translation. Unsupported values are dropped; the adapter MUST NOT error.
  *
  * @param {Effort} effort
- * @returns {'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null}
+ * @returns {'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null}
  */
 export function mapEffortToOpenAIReasoning(effort) {
   if (!effort) return null;
@@ -420,11 +420,13 @@ export function mapEffortToOpenAIReasoning(effort) {
     case 'medium': return 'medium';
     case 'high': return 'high';
     case 'xhigh': return 'xhigh';
+    case 'max': return 'max';
     default: return null;
   }
 }
 
 export const OPENAI_REASONING_EFFORT_OPTIONS = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+export const OPENAI_MAX_REASONING_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'];
 export const ANTHROPIC_MANUAL_EFFORT_OPTIONS = ['low', 'medium', 'high'];
 export const ANTHROPIC_ADAPTIVE_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'];
 export const ANTHROPIC_ADAPTIVE_MAX_EFFORT_OPTIONS = ['low', 'medium', 'high', 'max'];
@@ -453,6 +455,19 @@ export function normalizeEffortOptions(options) {
 function inferThinkingCapability(model) {
   const id = parseModelRef(model).modelId.toLowerCase();
   if (!id) return null;
+
+  // GPT-5.6 adds the model-specific `max` tier. Keep this ahead of the generic
+  // GPT inference so older OpenAI models do not advertise a value they reject.
+  // Provider suffixes such as gpt-5.6-sol are variants of the same model family.
+  if (/^gpt-5\.6($|[-.])/.test(id)) {
+    return {
+      supportsThinking: true,
+      thinkingProtocol: 'openai-reasoning',
+      defaultEffort: null,
+      maxBudgetTokens: null,
+      effortOptions: OPENAI_MAX_REASONING_EFFORT_OPTIONS,
+    };
+  }
 
   if (/^(gpt-5|o1|o3|o4|chatgpt-|codex-)/.test(id)) {
     return { supportsThinking: true, thinkingProtocol: 'openai-reasoning', defaultEffort: null, maxBudgetTokens: null };

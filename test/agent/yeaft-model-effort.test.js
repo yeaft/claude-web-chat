@@ -35,6 +35,8 @@ describe('Yeaft model effort metadata and config', () => {
   it('exposes effort options for OpenAI and Anthropic reasoning-capable models', () => {
     expect(getModelEffortOptions('gpt-5')).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh']);
     expect(getModelEffortOptions('gpt-5.5')).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh']);
+    expect(getModelEffortOptions('gpt-5.6')).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(getModelEffortOptions('my-proxy/gpt-5.6-sol')).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     expect(getModelEffortOptions('github-copilot/gpt-5.4')).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh']);
     expect(getModelEffortOptions('github-copilot/gpt-5.5')).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh']);
     expect(getModelEffortOptions('github-copilot/claude-opus-4.8')).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -163,6 +165,10 @@ describe('Yeaft adapter effort request mapping', () => {
       .toBeUndefined();
     expect(filterEffortForModel({ model: 'gpt-5', effort: 'xhigh', effortSource: 'user' }))
       .toMatchObject({ effort: 'xhigh', effortSource: 'user' });
+    expect(filterEffortForModel({ model: 'my-proxy/gpt-5.6-sol', effort: 'max', effortSource: 'user' }))
+      .toMatchObject({ effort: 'max', effortSource: 'user' });
+    expect(filterEffortForModel({ model: 'gpt-5.5', effort: 'max', effortSource: 'user' }).effort)
+      .toBeUndefined();
 
     // DeepSeek OpenAI-Responses-compatible models accept low/medium/high; minimal/max stay
     // filtered out because they are not on the published DeepSeek scale.
@@ -204,6 +210,29 @@ describe('Yeaft adapter effort request mapping', () => {
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body.reasoning).toEqual({ effort: 'xhigh' });
+  });
+
+  it('maps max only for GPT-5.6 variants in OpenAI Responses requests', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ output_text: 'ok', usage: {} }));
+    const adapter = new OpenAIResponsesAdapter({ apiKey: 'test', baseUrl: 'https://api.test/v1' });
+
+    await adapter.call({
+      model: 'gpt-5.6-sol',
+      system: 's',
+      messages: [{ role: 'user', content: 'hi' }],
+      effort: 'max',
+      effortSource: 'user',
+    });
+    await adapter.call({
+      model: 'gpt-5.5',
+      system: 's',
+      messages: [{ role: 'user', content: 'hi' }],
+      effort: 'max',
+      effortSource: 'user',
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).reasoning).toEqual({ effort: 'max' });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).reasoning).toBeUndefined();
   });
 
   it('maps explicit gpt-5.5 effort through provider-qualified OpenAI Responses routing', async () => {
