@@ -7,6 +7,12 @@ import {
   getAgentServiceCommand,
   getServerWsUrl,
 } from '../utils/agentSetup.js';
+import {
+  clearOverlayPointerGesture,
+  shouldDismissFromOverlayClick,
+  trackOverlayPointerDown,
+  trackOverlayPointerUp,
+} from '../utils/overlay-dismiss.js';
 import DashboardTab from './DashboardTab.js';
 import VpCrudPanel from './VpCrudPanel.js';
 import SearchSettingsTab from './SearchSettingsTab.js';
@@ -23,7 +29,14 @@ export default {
   },
   emits: ['close'],
   template: `
-    <div class="settings-overlay" v-if="visible" @click.self="$emit('close')">
+    <div
+      class="settings-overlay"
+      v-if="visible"
+      @pointerdown="trackOverlayPointerDown"
+      @pointerup="trackOverlayPointerUp"
+      @pointercancel="clearOverlayPointerGesture"
+      @click="onSettingsOverlayClick"
+    >
       <div class="settings-dialog">
         <!-- Left Navigation -->
         <div class="settings-nav">
@@ -382,7 +395,10 @@ export default {
       <div
         v-if="authStore.qrPanel && authStore.qrPanel.intent === 'bind'"
         class="settings-overlay sp-qr-overlay"
-        @click.self="cancelQrBind"
+        @pointerdown="trackOverlayPointerDown"
+        @pointerup="trackOverlayPointerUp"
+        @pointercancel="clearOverlayPointerGesture"
+        @click="onQrOverlayClick"
       >
         <div class="sp-qr-card">
           <p class="totp-title">{{ qrModalTitle }}</p>
@@ -627,6 +643,18 @@ export default {
     }
   },
   methods: {
+    trackOverlayPointerDown,
+    trackOverlayPointerUp,
+    clearOverlayPointerGesture,
+
+    onSettingsOverlayClick(event) {
+      if (shouldDismissFromOverlayClick(event)) this.$emit('close');
+    },
+
+    onQrOverlayClick(event) {
+      if (shouldDismissFromOverlayClick(event)) this.cancelQrBind();
+    },
+
     changeLanguage() {
       this.chatStore.changeLocale(this.selectedLocale);
     },

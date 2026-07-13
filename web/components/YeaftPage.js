@@ -14,6 +14,12 @@ import WorkCenterPage from './WorkCenterPage.js';
 import { parseMentions } from '../utils/parseMentions.js';
 import { buildTimelineRows, resolveTimelineSession, selectGroupRosterVpList } from '../stores/helpers/vp-timeline.js';
 import { buildModelSelectionRows, getDefaultModelEffort, getSelectableModelEfforts, modelOptionMatchesRef, modelOptionRef, resolveSessionModelEffort, resolveSessionModelRef } from '../utils/modelRefs.js';
+import {
+  clearOverlayPointerGesture,
+  shouldDismissFromOverlayClick,
+  trackOverlayPointerDown,
+  trackOverlayPointerUp,
+} from '../utils/overlay-dismiss.js';
 import { shouldShowYeaftOnboardingGuide } from '../utils/yeaftOnboarding.js';
 import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils/yeaftSessionSettings.js';
 
@@ -260,7 +266,14 @@ export default {
         <MessageList v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty" />
         </div>
 
-        <div v-if="showLlmConfig" class="modal-overlay yeaft-llm-config-overlay" @click.self="showLlmConfig = false">
+        <div
+          v-if="showLlmConfig"
+          class="modal-overlay yeaft-llm-config-overlay"
+          @pointerdown="trackOverlayPointerDown"
+          @pointerup="trackOverlayPointerUp"
+          @pointercancel="clearOverlayPointerGesture"
+          @click="closeLlmConfigFromOverlay"
+        >
           <div class="modal-card yeaft-llm-config-modal" role="dialog" aria-modal="true" :aria-label="$t('settings.llm.configureAgent')">
             <div class="modal-header">
               <h3>{{ $t('settings.llm.configureAgent') }}</h3>
@@ -907,6 +920,10 @@ export default {
       showLlmConfig.value = true;
     };
 
+    const closeLlmConfigFromOverlay = (event) => {
+      if (shouldDismissFromOverlayClick(event)) showLlmConfig.value = false;
+    };
+
     const loadAgentSecret = async () => {
       if (agentSecret.value || agentSecretLoading.value) return;
       agentSecretLoading.value = true;
@@ -1282,6 +1299,10 @@ export default {
       toggleModelDropdown,
       selectModel,
       openLlmConfig,
+      trackOverlayPointerDown,
+      trackOverlayPointerUp,
+      clearOverlayPointerGesture,
+      closeLlmConfigFromOverlay,
       openSessionCreate,
       onSessionCreated,
       copyOnboardingCommand,

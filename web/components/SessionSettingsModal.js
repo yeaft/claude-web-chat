@@ -21,6 +21,13 @@
  * changes (the modal re-derives state from the store on each render).
  */
 
+import {
+  clearOverlayPointerGesture,
+  shouldDismissFromOverlayClick,
+  trackOverlayPointerDown,
+  trackOverlayPointerUp,
+} from '../utils/overlay-dismiss.js';
+
 const SESSION_SETTINGS_SECTION = 'session';
 const LEGACY_SESSION_SETTINGS_SECTIONS = new Set(['announcement', 'rename', 'danger']);
 
@@ -200,13 +207,18 @@ export default {
     window.removeEventListener('keydown', this.onEsc);
   },
   methods: {
+    trackOverlayPointerDown,
+    trackOverlayPointerUp,
+    clearOverlayPointerGesture,
+
     onEsc(e) {
       if (e.key !== 'Escape') return;
       // Don't close mid-busy operation.
       if (this.announcementBusy || this.renameBusy || this.membersBusy || this.deleteBusy) return;
       this.requestClose();
     },
-    onOverlayClick() {
+    onOverlayClick(event) {
+      if (!shouldDismissFromOverlayClick(event)) return;
       if (this.announcementBusy || this.renameBusy || this.membersBusy || this.deleteBusy) return;
       this.requestClose();
     },
@@ -346,7 +358,10 @@ export default {
     <Teleport to="body">
     <div
       class="group-settings-overlay"
-      @click.self="onOverlayClick"
+      @pointerdown="trackOverlayPointerDown"
+      @pointerup="trackOverlayPointerUp"
+      @pointercancel="clearOverlayPointerGesture"
+      @click="onOverlayClick"
       role="dialog"
       aria-modal="true"
       :aria-label="$t('yeaft.session.settings.title', { name: groupDisplayName })"

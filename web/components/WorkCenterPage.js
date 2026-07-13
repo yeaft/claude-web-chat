@@ -1,6 +1,12 @@
 import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import LlmTab from './LlmTab.js';
 import folderPickerMixin from './mixins/folder-picker-mixin.js';
+import {
+  clearOverlayPointerGesture,
+  shouldDismissFromOverlayClick,
+  trackOverlayPointerDown,
+  trackOverlayPointerUp,
+} from '../utils/overlay-dismiss.js';
 
 export default {
   name: 'WorkCenterPage',
@@ -141,6 +147,14 @@ export default {
     this.applyCreateDefaults();
   },
   methods: {
+    trackOverlayPointerDown,
+    trackOverlayPointerUp,
+    clearOverlayPointerGesture,
+
+    closeLlmConfigFromOverlay(event) {
+      if (shouldDismissFromOverlayClick(event)) this.llmConfigOpen = false;
+    },
+
     tr(key, fallback) {
       const translated = this.$t ? this.$t(key) : key;
       return translated && translated !== key ? translated : fallback;
@@ -540,7 +554,14 @@ export default {
     </main>
 
       <WorkCenterSettingsModal v-if="settingsOpen" :key="agentId" :agent-id="agentId" @close="settingsOpen = false" @saved="refresh" @open-agent-models="settingsOpen = false; llmConfigOpen = true" />
-      <div v-if="llmConfigOpen" class="modal-overlay yeaft-llm-config-overlay" @click.self="llmConfigOpen = false">
+      <div
+        v-if="llmConfigOpen"
+        class="modal-overlay yeaft-llm-config-overlay"
+        @pointerdown="trackOverlayPointerDown"
+        @pointerup="trackOverlayPointerUp"
+        @pointercancel="clearOverlayPointerGesture"
+        @click="closeLlmConfigFromOverlay"
+      >
         <div class="modal-card yeaft-llm-config-modal" role="dialog" aria-modal="true" :aria-label="$t('settings.llm.configureAgent')">
           <div class="modal-header">
             <h3>{{ $t('settings.llm.configureAgent') }}</h3>

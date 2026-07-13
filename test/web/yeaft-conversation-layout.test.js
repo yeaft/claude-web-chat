@@ -13,7 +13,7 @@ describe('Yeaft conversation layout', () => {
     expect(source).toContain('<div class="yeaft-conversation-body">');
     const conversationBody = source.indexOf('<div class="yeaft-conversation-body">');
     const messageList = source.indexOf('<MessageList');
-    const llmConfig = source.indexOf('<div v-if="showLlmConfig"');
+    const llmConfig = source.indexOf('class="modal-overlay yeaft-llm-config-overlay"');
     const chatInput = source.indexOf('<ChatInput');
 
     expect(conversationBody).toBeLessThan(messageList);
