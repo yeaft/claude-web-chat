@@ -905,6 +905,61 @@
   line-height: 1.45;
 }
 
+.work-center-workdir-picker {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.work-center-workdir-picker input {
+  min-width: 0;
+  flex: 1;
+}
+
+.work-center-workdir-picker .btn-secondary {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.work-center-field-help {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.work-center-modal .folder-picker-overlay {
+  background: var(--modal-overlay-bg);
+}
+
+.work-center-modal .folder-picker-dialog {
+  width: min(520px, 88vw);
+  height: min(560px, 72vh);
+  max-height: none;
+  border-radius: 14px;
+  box-shadow: var(--modal-shadow);
+}
+
+.work-center-modal .folder-picker-list {
+  min-height: 0;
+  max-height: none;
+}
+
+.work-center-modal .folder-picker-item {
+  width: 100%;
+  border: 0;
+  text-align: left;
+}
+
+.work-center-modal .folder-picker-selected {
+  background: var(--session-active) !important;
+  color: var(--text-primary) !important;
+}
+
+.work-center-modal .folder-picker-footer {
+  gap: 8px;
+}
+
 .work-center-create-options {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
