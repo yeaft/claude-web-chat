@@ -1,3 +1,10 @@
+import {
+  clearOverlayPointerGesture,
+  shouldDismissFromOverlayClick,
+  trackOverlayPointerDown,
+  trackOverlayPointerUp,
+} from '../utils/overlay-dismiss.js';
+
 const ACTION_TYPES = ['triage', 'research', 'design', 'diagnose', 'implement', 'migrate', 'test', 'review', 'document', 'operate', 'deliver', 'write', 'custom'];
 
 function clone(value) {
@@ -179,6 +186,10 @@ export default {
     window.removeEventListener('keydown', this.onKeydown);
   },
   methods: {
+    trackOverlayPointerDown,
+    trackOverlayPointerUp,
+    clearOverlayPointerGesture,
+
     async load() {
       const target = this.agentId;
       const generation = ++this.loadGeneration;
@@ -211,6 +222,9 @@ export default {
     },
     onKeydown(event) {
       if (event.key === 'Escape' && !this.saving) this.$emit('close');
+    },
+    onOverlayClick(event) {
+      if (shouldDismissFromOverlayClick(event)) this.close();
     },
     close() {
       if (!this.saving) this.$emit('close');
@@ -389,7 +403,13 @@ export default {
   },
   template: `
     <Teleport to="body">
-      <div class="modal-overlay work-center-settings-overlay" @click.self="close">
+      <div
+        class="modal-overlay work-center-settings-overlay"
+        @pointerdown="trackOverlayPointerDown"
+        @pointerup="trackOverlayPointerUp"
+        @pointercancel="clearOverlayPointerGesture"
+        @click="onOverlayClick"
+      >
         <section class="modal-card work-center-settings-card" role="dialog" aria-modal="true" :aria-label="$t('workCenter.settings.title')">
           <header class="work-center-settings-header">
             <div>
