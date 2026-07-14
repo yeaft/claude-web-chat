@@ -1030,6 +1030,10 @@ export default {
       this.copyText(this.rawRequestForLoop(loop), 'raw request');
     },
     rawRequestForLoop(loop) {
+      // Live loop events already carry the exact auth-redacted adapter payload.
+      // Hydrated history stores the same payload as structural deltas, so only
+      // reconstruct when the direct per-loop capture is absent.
+      if (loop?.rawRequest != null) return loop.rawRequest;
       return reconstructDebugRawRequest(loop?.rawRequestBase ?? loop?.requestBase?.rawRequest ?? null, loop?.requestDelta || null);
     },
     copyToolOutput(turn, tool) {
