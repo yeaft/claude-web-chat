@@ -23,8 +23,7 @@ const BROWSER_DETAIL_OPS = new Set(['get', 'create', 'update', 'start', 'cancel'
 // client-supplied value and only emits files resolved from owned upload ids.
 const BROWSER_FILE_FIELDS = Object.freeze({
   create: [
-    'title', 'goal', 'acceptanceCriteria', 'workItemType', 'workDir', 'reuseMemory', 'origin',
-    'linkedSessionIds', 'files', 'start',
+    'title', 'goal', 'acceptanceCriteria', 'workItemType', 'workDir', 'reuseMemory', 'files', 'start',
   ],
   guide: ['id', 'guidance', 'actionId', 'revision', 'files'],
 });

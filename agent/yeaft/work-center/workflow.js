@@ -625,6 +625,7 @@ export function actionForStage(stage, workItem, context = []) {
     modelPolicy: stage.modelPolicy,
     dependsOnStageIds: stage.dependsOnStageIds || [],
     workspaceMode: stage.workspaceMode || 'shared',
+    changesRequestedStageId: stage.changesRequestedStageId || null,
     // Storage compatibility for databases created before assignment policies.
     requiredRole: stage.assignmentPolicy.mode === 'fixed' ? stage.assignmentPolicy.fixedVpId : '',
     brief: normalizeActionBrief(stage, stage.type),

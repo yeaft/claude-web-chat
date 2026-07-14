@@ -73,10 +73,23 @@ export class WorkItemWatcher {
     }
   }
 
+  #recoverExpiredRuns() {
+    const recovered = this.store.recoverInterruptedRuns?.(this.ownerBootId) || 0;
+    if (recovered > 0) {
+      for (const entry of this.activeRuns.values()) {
+        if (!this.store.isActiveRun(entry.runId, this.ownerBootId, entry.leaseEpoch)) {
+          entry.abortController.abort('work_item_lease_expired');
+        }
+      }
+    }
+    return recovered;
+  }
+
   async tick() {
     if (this.ticking || !this.runner) return;
     this.ticking = true;
     try {
+      this.#recoverExpiredRuns();
       const limit = Math.min(Math.max(Number(await this.concurrencyProvider()) || 3, 1), 12);
       while (this.activeRuns.size < limit) {
         let claim = this.store.claimReadyAction(this.ownerBootId, this.leaseMs);
@@ -84,6 +97,7 @@ export class WorkItemWatcher {
         try {
           claim = await this.runner.prepare?.(claim) || claim;
         } catch (error) {
+          try { this.runner.cleanup?.(claim.action); } catch {}
           this.controller.submit(claim.run.id, this.ownerBootId, claim.run.leaseEpoch, {
             outcome: 'failed', response: '', summary: '', evidence: [],
             error: error?.message || String(error),
@@ -104,7 +118,10 @@ export class WorkItemWatcher {
     const renewEvery = Math.max(1_000, Math.floor(this.leaseMs / 3));
     const renewal = setInterval(() => {
       const ok = this.store.renewLease(key, this.ownerBootId, claim.run.leaseEpoch, this.leaseMs);
-      if (!ok) abortController.abort('work_item_lease_lost');
+      if (!ok) {
+        this.#recoverExpiredRuns();
+        abortController.abort('work_item_lease_lost');
+      }
     }, renewEvery);
     renewal.unref?.();
     const entry = {
@@ -128,54 +145,56 @@ export class WorkItemWatcher {
   }
 
   async #execute(claim, signal, registerProgressReader) {
-    let result;
     try {
-      result = await this.runner.run({
-        ...claim,
-        signal,
-        ownerBootId: this.ownerBootId,
-        registerProgressReader,
-        onProgress: progress => {
-          const detail = this.store.updateRunProgress(
-            claim.run.id,
-            this.ownerBootId,
-            claim.run.leaseEpoch,
-            progress,
-          );
-          if (detail) this.onEvent({ type: 'run.progress', workItem: detail });
-          return !!detail;
-        },
-      });
-    } catch (err) {
+      let result;
+      try {
+        result = await this.runner.run({
+          ...claim,
+          signal,
+          ownerBootId: this.ownerBootId,
+          registerProgressReader,
+          onProgress: progress => {
+            const detail = this.store.updateRunProgress(
+              claim.run.id,
+              this.ownerBootId,
+              claim.run.leaseEpoch,
+              progress,
+            );
+            if (detail) this.onEvent({ type: 'run.progress', workItem: detail });
+            return !!detail;
+          },
+        });
+      } catch (err) {
+        if (signal.aborted) return;
+        result = {
+          outcome: err?.retryable === false ? 'failed' : 'retryable',
+          response: err?.workItemExecutionStats?.response || '',
+          summary: '',
+          evidence: [],
+          error: err?.message || String(err),
+          loopCount: err?.workItemExecutionStats?.loopCount || 0,
+          toolCount: err?.workItemExecutionStats?.toolCount || 0,
+          llmRequestCount: err?.workItemExecutionStats?.llmRequestCount || 0,
+          inputTokens: err?.workItemExecutionStats?.inputTokens || 0,
+          outputTokens: err?.workItemExecutionStats?.outputTokens || 0,
+          cacheReadTokens: err?.workItemExecutionStats?.cacheReadTokens || 0,
+          cacheWriteTokens: err?.workItemExecutionStats?.cacheWriteTokens || 0,
+          totalTokens: err?.workItemExecutionStats?.totalTokens || 0,
+          checkpoint: err?.workItemExecutionStats?.checkpoint || null,
+        };
+      }
       if (signal.aborted) return;
-      result = {
-        outcome: err?.retryable === false ? 'failed' : 'retryable',
-        response: err?.workItemExecutionStats?.response || '',
-        summary: '',
-        evidence: [],
-        error: err?.message || String(err),
-        loopCount: err?.workItemExecutionStats?.loopCount || 0,
-        toolCount: err?.workItemExecutionStats?.toolCount || 0,
-        llmRequestCount: err?.workItemExecutionStats?.llmRequestCount || 0,
-        inputTokens: err?.workItemExecutionStats?.inputTokens || 0,
-        outputTokens: err?.workItemExecutionStats?.outputTokens || 0,
-        cacheReadTokens: err?.workItemExecutionStats?.cacheReadTokens || 0,
-        cacheWriteTokens: err?.workItemExecutionStats?.cacheWriteTokens || 0,
-        totalTokens: err?.workItemExecutionStats?.totalTokens || 0,
-        checkpoint: err?.workItemExecutionStats?.checkpoint || null,
-      };
-    }
-    if (signal.aborted) return;
-    try {
-      const workItem = this.controller.submit(
-        claim.run.id,
-        this.ownerBootId,
-        claim.run.leaseEpoch,
-        result,
-      );
-      this.onEvent({ type: 'run.finished', workItem });
-    } catch (err) {
-      if (!/stale|cancelled|already finished/i.test(err?.message || '')) throw err;
+      try {
+        const workItem = this.controller.submit(
+          claim.run.id,
+          this.ownerBootId,
+          claim.run.leaseEpoch,
+          result,
+        );
+        this.onEvent({ type: 'run.finished', workItem });
+      } catch (err) {
+        if (!/stale|cancelled|already finished/i.test(err?.message || '')) throw err;
+      }
     } finally {
       try { this.runner.cleanup?.(claim.action); } catch {}
     }

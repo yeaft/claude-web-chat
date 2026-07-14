@@ -43,6 +43,43 @@ describe('WorkItemWatcher', () => {
     await watcher.stop();
   });
 
+  it('cleans a prepared workspace exactly once when an active Run is stopped', async () => {
+    const gate = deferred();
+    const claim = { workItem: { id: 'w1' }, action: { id: 'a1', workspace: { isolated: true } }, run: { id: 'r1', leaseEpoch: 1 } };
+    const cleanup = vi.fn();
+    const runner = {
+      prepare: vi.fn(value => value), cleanup,
+      run: vi.fn(({ signal }) => new Promise(resolve => signal.addEventListener('abort', () => resolve({ outcome: 'retryable' }), { once: true }))),
+    };
+    const store = {
+      recoverInterruptedRuns: vi.fn(() => 0),
+      claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
+      renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
+      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
+    };
+    const watcher = new WorkItemWatcher({ store, controller: { submit: vi.fn() }, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000 });
+    await watcher.tick();
+    await watcher.stop();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalledWith(claim.action);
+    gate.resolve?.();
+  });
+
+  it('cleans a prepared workspace after runner failure', async () => {
+    const claim = { workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 1 } };
+    const cleanup = vi.fn();
+    const store = {
+      recoverInterruptedRuns: vi.fn(() => 0),
+      claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
+      renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true), isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
+    };
+    const controller = { submit: vi.fn(() => ({ id: 'w1' })) };
+    const watcher = new WorkItemWatcher({ store, controller, runner: { run: vi.fn().mockRejectedValue(new Error('boom')), cleanup }, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000 });
+    await watcher.tick();
+    await watcher.activeRuns.get('r1').promise;
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
   it('persists and emits fenced live response progress', async () => {
     const claim = {
       workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 3 },
@@ -279,6 +316,32 @@ describe('WorkItemWatcher', () => {
       store.close();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('recovers an expired lease during a later tick without restarting the watcher', async () => {
+    const gate = deferred();
+    const claim = { workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 1 } };
+    let active = true;
+    const store = {
+      recoverInterruptedRuns: vi.fn().mockReturnValueOnce(0).mockImplementation(() => {
+        active = false;
+        return 1;
+      }),
+      claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
+      renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
+      isActiveRun: vi.fn(() => active), getWorkItemDetail: vi.fn(id => ({ id })),
+    };
+    const cleanup = vi.fn();
+    const runner = { cleanup, run: vi.fn(({ signal }) => new Promise(resolve => {
+      signal.addEventListener('abort', () => resolve({ outcome: 'retryable' }), { once: true });
+    })) };
+    const watcher = new WorkItemWatcher({ store, controller: { submit: vi.fn() }, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000 });
+    await watcher.tick();
+    const entry = watcher.activeRuns.get('r1');
+    await watcher.tick();
+    await entry.promise;
+    expect(entry.abortController.signal.reason).toBe('work_item_lease_expired');
+    expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
   it('does not abort a Run whose fenced DB state is still active', async () => {

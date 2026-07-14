@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 const HIDDEN_PROCESS_OPTIONS = { windowsHide: true };
@@ -71,17 +71,35 @@ export function integrateActionWorktrees({ workDir, dependencies }) {
   const commits = dependencies
     .filter(action => action.workspace?.isolated && action.workspace.changed)
     .map(action => action.workspace.commit);
-  for (const commit of commits) {
-    try {
-      git([
-        '-c', 'user.name=Yeaft Work Center',
-        '-c', 'user.email=work-center@yeaft.local',
-        'merge', '--no-ff', '--no-edit', commit,
-      ], { cwd: state.root });
-    } catch (error) {
-      try { git(['merge', '--abort'], { cwd: state.root }); } catch {}
-      throw new Error(`Work Center could not integrate Action commit ${commit}: ${error.message}`);
+  const temporaryRoot = resolve(join(dirname(state.root), '.yeaft-work-center-integration'));
+  mkdirSync(temporaryRoot, { recursive: true });
+  const temporaryPath = resolve(join(temporaryRoot, `integration-${process.pid}-${Date.now()}`));
+  const temporaryBranch = `yeaft-work/integration-${process.pid}-${Date.now()}`;
+  try {
+    git(['worktree', 'add', '-b', temporaryBranch, temporaryPath, state.head], { cwd: state.root });
+    for (const commit of commits) {
+      try {
+        git([
+          '-c', 'user.name=Yeaft Work Center',
+          '-c', 'user.email=work-center@yeaft.local',
+          'merge', '--no-ff', '--no-edit', commit,
+        ], { cwd: temporaryPath });
+      } catch (error) {
+        try { git(['merge', '--abort'], { cwd: temporaryPath }); } catch {}
+        throw new Error(`Work Center could not integrate Action commit ${commit}: ${error.message}`);
+      }
     }
+    const integratedHead = git(['rev-parse', 'HEAD'], { cwd: temporaryPath });
+    if (git(['rev-parse', 'HEAD'], { cwd: state.root }) !== state.head
+        || git(['status', '--porcelain', '--untracked-files=normal'], { cwd: state.root })) {
+      throw new Error('Work Center integration target changed while commits were being verified');
+    }
+    git(['merge', '--ff-only', integratedHead], { cwd: state.root });
+  } finally {
+    try { git(['worktree', 'remove', '--force', temporaryPath], { cwd: state.root }); } catch {
+      rmSync(temporaryPath, { recursive: true, force: true });
+    }
+    try { git(['branch', '-D', temporaryBranch], { cwd: state.root }); } catch {}
   }
   for (const dependency of dependencies) {
     if (!dependency.workspace?.changed || !dependency.workspace.branch) continue;

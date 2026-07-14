@@ -73,13 +73,16 @@ describe('Work Center store migration', () => {
       summary: 'Legacy reusable decision',
       sourceTitle: 'Legacy work',
     }));
-    expect(store.getWorkItemDetail('legacy-item').actions[0].brief).toBeNull();
+    expect(store.getWorkItemDetail('legacy-item').actions[0]).toMatchObject({
+      brief: null, changesRequestedStageId: null,
+    });
+    expect(store.listActionDependencies('legacy-item', ['triage'])).toHaveLength(1);
     expect(store.getRun('legacy-run')).toMatchObject({
       response: '', loopCount: 0, toolCount: 0, llmRequestCount: 0,
       inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0,
       progressRevision: 0, checkpoint: null,
     });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('10');
+      .toBe('11');
   });
 });

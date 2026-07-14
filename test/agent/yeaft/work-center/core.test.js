@@ -149,6 +149,104 @@ describe('Work Center core', () => {
     expect(store.getWorkItem(failed.id).status).toBe('needs_attention');
   });
 
+  it('returns graph review changes to the persisted target and fences sibling late submits', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'review-return', actions: [
+        { id: 'fix', type: 'implement', objective: 'Fix it', dependsOnActionIds: [], workspaceMode: 'read' },
+        { id: 'side', type: 'research', objective: 'Inspect it', dependsOnActionIds: [], workspaceMode: 'read' },
+        { id: 'review', type: 'review', objective: 'Review it', dependsOnActionIds: ['fix'], changesRequestedActionId: 'fix', workspaceMode: 'read' },
+        { id: 'deliver', type: 'deliver', objective: 'Deliver it', dependsOnActionIds: ['review'] },
+      ] },
+    }));
+    const fix = store.claimReadyAction('boot-a', 5_000);
+    const side = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(fix.run.id, 'boot-a', fix.run.leaseEpoch, completed('implement'));
+    const review = store.claimReadyAction('boot-a', 5_000);
+    expect(review.action.changesRequestedStageId).toBe('fix');
+    const detail = controller.submit(review.run.id, 'boot-a', review.run.leaseEpoch, completed('review', {
+      reviewDecision: 'changes_requested', summary: 'Fix the blocker', evidence: ['blocker'],
+    }));
+    expect(detail.actions.find(action => action.stageId === 'fix')).toMatchObject({ status: 'ready' });
+    expect(detail.actions.find(action => action.stageId === 'deliver')).toMatchObject({ status: 'ready' });
+    expect(detail.actions.find(action => action.stageId === 'side')).toMatchObject({ status: 'ready' });
+    expect(detail.runs.find(run => run.id === side.run.id).status).toBe('superseded');
+    expect(() => controller.submit(side.run.id, 'boot-a', side.run.leaseEpoch, completed('research')))
+      .toThrow(/stale|cancelled|finished/i);
+    expect(store.claimReadyAction('boot-a', 5_000).action.stageId).toBe('fix');
+  });
+
+  it('retries a failed graph Action in place with its dependency and workspace policy', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'retry-graph', actions: [
+        { id: 'inspect', type: 'research', objective: 'Inspect', dependsOnActionIds: [], workspaceMode: 'read' },
+        { id: 'fix', type: 'implement', objective: 'Fix', dependsOnActionIds: ['inspect'], workspaceMode: 'isolated-write' },
+        { id: 'integrate', type: 'integrate', objective: 'Integrate', dependsOnActionIds: ['fix'], workspaceMode: 'integrate' },
+      ] },
+    }));
+    const inspect = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(inspect.run.id, 'boot-a', inspect.run.leaseEpoch, completed('research'));
+    const fix = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(fix.run.id, 'boot-a', fix.run.leaseEpoch, { outcome: 'failed', error: 'failed', summary: '', evidence: [] });
+    const before = store.getWorkItemDetail(fix.workItem.id).actions.length;
+    const retried = controller.retry(fix.workItem.id);
+    const reset = retried.actions.find(action => action.stageId === 'fix');
+    expect(retried.actions).toHaveLength(before);
+    expect(reset).toMatchObject({
+      id: fix.action.id, status: 'ready', dependsOnStageIds: ['inspect'], workspaceMode: 'isolated-write',
+    });
+    const retryClaim = store.claimReadyAction('boot-a', 5_000);
+    expect(retryClaim.action.id).toBe(fix.action.id);
+    controller.submit(retryClaim.run.id, 'boot-a', retryClaim.run.leaseEpoch, completed('implement'));
+    expect(store.claimReadyAction('boot-a', 5_000).action.stageId).toBe('integrate');
+  });
+
+  it('serializes shared workspace writes across WorkItems by canonical identity', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const createGraph = title => {
+      controller.create(createInput({ title, workflowTemplate: 'ai-planned', workflowSnapshot }));
+      const triage = store.claimReadyAction('boot-a', 5_000);
+      controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+        plan: { workItemType: 'shared-write', actions: [
+          { id: 'write', type: 'implement', objective: 'Write', dependsOnActionIds: [], workspaceMode: 'shared' },
+        ] },
+      }));
+    };
+    createGraph('First shared writer');
+    createGraph('Second shared writer');
+    const first = store.claimReadyAction('boot-a', 5_000);
+    expect(first.action.stageId).toBe('write');
+    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+    controller.submit(first.run.id, 'boot-a', first.run.leaseEpoch, completed('implement'));
+    expect(store.claimReadyAction('boot-a', 5_000).action.stageId).toBe('write');
+  });
+
+  it('serializes a fallback shared Action across WorkItems after isolation fails', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const createGraph = title => {
+      controller.create(createInput({ title, workflowTemplate: 'ai-planned', workflowSnapshot }));
+      const triage = store.claimReadyAction('boot-a', 5_000);
+      controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+        plan: { workItemType: 'fallback-write', actions: [
+          { id: 'write', type: 'implement', objective: 'Write', dependsOnActionIds: [], workspaceMode: 'isolated-write' },
+          { id: 'integrate', type: 'integrate', objective: 'Integrate', dependsOnActionIds: ['write'], workspaceMode: 'integrate' },
+        ] },
+      }));
+    };
+    createGraph('First fallback writer');
+    createGraph('Second fallback writer');
+    const first = store.claimReadyAction('boot-a', 5_000);
+    expect(first.action.workspaceMode).toBe('isolated-write');
+    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+    store.setActionWorkspace(first.action.id, null, 'shared');
+    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+  });
+
   it('preserves a validated domain-specific Action type and applies the custom execution baseline', () => {
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({
       globalInstructions: 'Never publish deployment artifacts without explicit approval.',

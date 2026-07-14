@@ -61,4 +61,34 @@ describe('Work Center Action workspaces', () => {
     expect(readFileSync(join(root, 'result.txt'), 'utf8')).toBe('result\n');
     expect(() => git(['show-ref', '--verify', `refs/heads/${committed.branch}`], root)).toThrow();
   });
+
+  it('leaves the target repository unchanged when a later integration commit conflicts', () => {
+    const root = repository();
+    const rootDir = mkdtempSync(join(tmpdir(), 'work-center-action-worktrees-'));
+    dirs.push(rootDir);
+    const makeCommit = (id, value) => {
+      const workspace = createActionWorktree({
+        workItem: { id, workDir: root, workspaceKey: root },
+        action: { id, stageId: id }, rootDir,
+      });
+      writeFileSync(join(workspace.path, 'base.txt'), `${value}\n`);
+      return commitActionWorktree(workspace, { stageId: id });
+    };
+    const first = makeCommit('first', 'first');
+    const conflicting = makeCommit('conflict', 'conflict');
+    removeActionWorktree(first);
+    removeActionWorktree(conflicting);
+    const head = git(['rev-parse', 'HEAD'], root);
+    const status = git(['status', '--porcelain', '--untracked-files=normal'], root);
+    expect(() => integrateActionWorktrees({
+      workDir: root,
+      dependencies: [
+        { outcome: 'completed', workspace: first },
+        { outcome: 'completed', workspace: conflicting },
+      ],
+    })).toThrow(/could not integrate/i);
+    expect(git(['rev-parse', 'HEAD'], root)).toBe(head);
+    expect(git(['status', '--porcelain', '--untracked-files=normal'], root)).toBe(status);
+    expect(readFileSync(join(root, 'base.txt'), 'utf8')).toBe('base\n');
+  });
 });

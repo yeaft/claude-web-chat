@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -76,6 +76,7 @@ function mapAction(row) {
     modelPolicy: parseJson(row.model_policy, null),
     dependsOnStageIds: parseJson(row.depends_on_stage_ids, []),
     workspaceMode: row.workspace_mode || 'shared',
+    changesRequestedStageId: row.changes_requested_stage_id || null,
     workspace: parseJson(row.workspace, null),
     requiredRole: row.required_role || '',
     instruction: row.instruction,
@@ -210,6 +211,7 @@ export class WorkItemStore {
         model_policy TEXT,
         depends_on_stage_ids TEXT NOT NULL DEFAULT '[]',
         workspace_mode TEXT NOT NULL DEFAULT 'shared',
+        changes_requested_stage_id TEXT,
         workspace TEXT,
         instruction TEXT NOT NULL,
         brief TEXT,
@@ -355,6 +357,9 @@ export class WorkItemStore {
     if (!hasColumn(this.db, 'actions', 'workspace_mode')) {
       this.db.exec("ALTER TABLE actions ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'shared'");
     }
+    if (!hasColumn(this.db, 'actions', 'changes_requested_stage_id')) {
+      this.db.exec('ALTER TABLE actions ADD COLUMN changes_requested_stage_id TEXT');
+    }
     if (!hasColumn(this.db, 'actions', 'workspace')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN workspace TEXT');
     }
@@ -428,6 +433,7 @@ export class WorkItemStore {
       modelPolicy: input.modelPolicy || null,
       dependsOnStageIds: Array.isArray(input.dependsOnStageIds) ? input.dependsOnStageIds : [],
       workspaceMode: input.workspaceMode || 'shared',
+      changesRequestedStageId: input.changesRequestedStageId || null,
       workspace: input.workspace || null,
       requiredRole: input.requiredRole || '',
       instruction: input.instruction || '',
@@ -444,9 +450,9 @@ export class WorkItemStore {
     };
     this.db.prepare(`INSERT INTO actions
       (id, work_item_id, sequence, type, required_role, stage_id, assignment_policy, model_policy,
-       depends_on_stage_ids, workspace_mode, workspace, instruction, brief, context, contract_revision,
+       depends_on_stage_ids, workspace_mode, changes_requested_stage_id, workspace, instruction, brief, context, contract_revision,
        status, attempt, max_attempts, current_run_id, lease_epoch, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
       action.id,
       workItemId,
       action.sequence,
@@ -457,6 +463,7 @@ export class WorkItemStore {
       stringify(action.modelPolicy),
       stringify(action.dependsOnStageIds),
       action.workspaceMode,
+      action.changesRequestedStageId,
       stringify(action.workspace),
       action.instruction,
       stringify(action.brief),
@@ -474,6 +481,65 @@ export class WorkItemStore {
   #nextSequence(workItemId) {
     const row = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) AS seq FROM actions WHERE work_item_id = ?').get(workItemId);
     return Number(row.seq) + 1;
+  }
+
+  #resetGraphFromStage(workItemId, targetStageId, replacement, reason, now) {
+    const actions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+      AND status NOT IN ('superseded', 'cancelled') ORDER BY sequence`).all(workItemId).map(mapAction);
+    const target = actions.find(action => action.stageId === targetStageId);
+    if (!target) throw new Error('Work Center graph reset target is missing');
+    const affected = new Set([targetStageId]);
+    for (const action of actions) {
+      if (action.status === 'running') affected.add(action.stageId);
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const action of actions) {
+        if (affected.has(action.stageId)) continue;
+        if (action.dependsOnStageIds.some(stageId => affected.has(stageId))) {
+          affected.add(action.stageId);
+          changed = true;
+        }
+      }
+    }
+    const affectedActions = actions.filter(action => affected.has(action.stageId));
+    const ids = affectedActions.map(action => action.id);
+    const running = affectedActions.filter(action => action.status === 'running' && action.currentRunId);
+    const nextEpoch = new Map(actions.map(action => [action.id, action.leaseEpoch]));
+    for (const action of running) nextEpoch.set(action.id, action.leaseEpoch + 1);
+    const placeholders = ids.map(() => '?').join(',');
+    if (ids.length > 0) {
+      this.db.prepare(`UPDATE runs SET status = 'superseded', ended_at = ?, error = ?
+        WHERE action_id IN (${placeholders}) AND status = 'running'`).run(now, reason, ...ids);
+      for (const action of affectedActions) {
+        this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0, current_run_id = NULL,
+          lease_epoch = ?, workspace = NULL, updated_at = ? WHERE id = ?`).run(
+          nextEpoch.get(action.id), now, action.id,
+        );
+      }
+    }
+    if (replacement) {
+      this.db.prepare(`UPDATE actions SET type = ?, required_role = ?, assignment_policy = ?,
+        model_policy = ?, depends_on_stage_ids = ?, workspace_mode = ?, changes_requested_stage_id = ?,
+        instruction = ?, brief = ?, context = ?, max_attempts = ?, workspace = NULL, updated_at = ?
+        WHERE id = ?`).run(
+        replacement.type || target.type,
+        replacement.requiredRole || '',
+        stringify(replacement.assignmentPolicy || null),
+        stringify(replacement.modelPolicy || null),
+        stringify(Array.isArray(replacement.dependsOnStageIds) ? replacement.dependsOnStageIds : []),
+        replacement.workspaceMode || 'shared',
+        replacement.changesRequestedStageId || null,
+        replacement.instruction || '',
+        stringify(replacement.brief || null),
+        stringify(Array.isArray(replacement.context) ? replacement.context : []),
+        Number.isInteger(replacement.maxAttempts) ? replacement.maxAttempts : 2,
+        now,
+        target.id,
+      );
+    }
+    return this.getAction(target.id);
   }
 
   createNextAction(workItemId, input) {
@@ -495,9 +561,10 @@ export class WorkItemStore {
       r.evidence AS dependency_evidence, r.vp_snapshot AS dependency_vp_snapshot
       FROM actions a LEFT JOIN runs r ON r.id = (
         SELECT completed.id FROM runs completed WHERE completed.action_id = a.id
-          AND completed.status = 'completed' AND completed.outcome = 'completed'
+          AND completed.status = 'completed'
           ORDER BY completed.ended_at DESC LIMIT 1
-      ) WHERE a.work_item_id = ? AND a.stage_id IN (${placeholders})
+      ) WHERE a.work_item_id = ? AND COALESCE(a.stage_id, a.type) IN (${placeholders})
+        AND a.status != 'superseded'
       ORDER BY a.sequence`).all(workItemId, ...stageIds).map(row => ({
         ...mapAction(row),
         summary: row.dependency_summary || '',
@@ -758,8 +825,23 @@ export class WorkItemStore {
             AND status != 'running' ORDER BY ended_at DESC, started_at DESC LIMIT 1`).get(id, previous.id))
         : null;
       const now = this.now();
+      const replacement = makeAction(workItem, previous, previousRun);
+      if (workItem.workflowSnapshot?.executionMode === 'graph') {
+        if (!previous) throw new Error('WorkItem graph retry target is missing');
+        const action = this.#resetGraphFromStage(
+          id,
+          previous.stageId,
+          replacement,
+          'Superseded by manual graph retry',
+          now,
+        );
+        this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
+          current_run_id = NULL, updated_at = ? WHERE id = ?`).run(action.id, now, id);
+        this.appendEvent(id, 'work_item.retried', { targetStageId: action.stageId }, { actionId: action.id });
+        return this.getWorkItemDetail(id);
+      }
       const action = this.#insertAction(id, {
-        ...makeAction(workItem, previous, previousRun),
+        ...replacement,
         contractRevision: workItem.revision,
       }, this.#nextSequence(id), now);
       this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
@@ -788,9 +870,14 @@ export class WorkItemStore {
               )
               AND NOT EXISTS (
                 SELECT 1 FROM actions running
-                WHERE running.work_item_id = a.work_item_id AND running.status = 'running'
+                JOIN work_items running_item ON running_item.id = running.work_item_id
+                WHERE running.status = 'running'
+                  AND running_item.workspace_key != ''
+                  AND running_item.workspace_key = w.workspace_key
                   AND (a.workspace_mode IN ('shared', 'integrate')
-                    OR running.workspace_mode IN ('shared', 'integrate'))
+                    OR running.workspace_mode IN ('shared', 'integrate')
+                    OR (running.work_item_id != a.work_item_id
+                      AND a.workspace_mode != 'read' AND running.workspace_mode != 'read'))
               ))
           )
         ORDER BY a.updated_at ASC, a.sequence ASC LIMIT 1`).get();
@@ -1090,20 +1177,13 @@ export class WorkItemStore {
 
       let nextAction = null;
       if (transition.graphResetStageId) {
-        const target = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ? AND stage_id = ?`)
-          .get(workItem.id, transition.graphResetStageId);
-        if (!target) throw new Error('Work Center review return target is missing');
-        const resetIds = this.db.prepare(`SELECT id FROM actions WHERE work_item_id = ? AND sequence >= ?`)
-          .all(workItem.id, target.sequence).map(row => row.id);
-        const placeholders = resetIds.map(() => '?').join(',');
-        if (resetIds.length > 0) {
-          this.db.prepare(`UPDATE runs SET status = 'superseded', ended_at = ?, error = ?
-            WHERE action_id IN (${placeholders}) AND status = 'running'`).run(
-            now, 'Superseded by review changes request', ...resetIds,
-          );
-          this.db.prepare(`UPDATE actions SET status = 'ready', current_run_id = NULL, updated_at = ?
-            WHERE id IN (${placeholders})`).run(now, ...resetIds);
-        }
+        nextAction = this.#resetGraphFromStage(
+          workItem.id,
+          transition.graphResetStageId,
+          transition.graphResetAction,
+          'Superseded by review changes request',
+          now,
+        );
       }
       const nextActions = Array.isArray(transition.nextActions) ? transition.nextActions : [];
       for (const candidate of nextActions) {
@@ -1154,6 +1234,19 @@ export class WorkItemStore {
     });
   }
 
+  #refreshGraphWorkItem(workItemId, now) {
+    const remaining = this.db.prepare(`SELECT id, status FROM actions WHERE work_item_id = ?
+      AND status IN ('ready', 'running', 'waiting', 'failed') ORDER BY sequence`).all(workItemId);
+    const blocked = remaining.find(action => action.status === 'waiting' || action.status === 'failed');
+    const runnable = remaining.find(action => action.status === 'ready' || action.status === 'running');
+    const status = blocked ? (blocked.status === 'waiting' ? 'waiting' : 'needs_attention')
+      : runnable ? (remaining.some(action => action.status === 'running') ? 'running' : 'ready')
+        : 'done';
+    const currentActionId = blocked?.id || runnable?.id || null;
+    this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
+      updated_at = ? WHERE id = ?`).run(status, currentActionId, now, workItemId);
+  }
+
   recoverInterruptedRuns(ownerBootId) {
     return withTransaction(this.db, () => {
       const now = this.now();
@@ -1170,6 +1263,16 @@ export class WorkItemStore {
           && (graphMode || (workItem.currentActionId === action.id && workItem.currentRunId === row.id));
         if (!isCurrent) {
           const staleStatus = workItem?.status === 'cancelled' ? 'cancelled' : 'superseded';
+          const stillOwnsAction = action?.status === 'running'
+            && action.currentRunId === row.id
+            && action.leaseEpoch === row.lease_epoch;
+          if (stillOwnsAction) {
+            const retryable = action.type !== 'deliver' && action.attempt < action.maxAttempts;
+            this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL, updated_at = ?
+              WHERE id = ? AND status = 'running' AND current_run_id = ? AND lease_epoch = ?`).run(
+              retryable ? 'ready' : 'failed', now, action.id, row.id, row.lease_epoch,
+            );
+          }
           this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, error = ?
             WHERE id = ? AND status = 'running'`).run(
             staleStatus,
@@ -1181,6 +1284,7 @@ export class WorkItemStore {
             actionId: row.action_id,
             runId: row.id,
           });
+          if (graphMode && workItem) this.#refreshGraphWorkItem(workItem.id, now);
           continue;
         }
 
@@ -1190,13 +1294,17 @@ export class WorkItemStore {
         const retryable = action.type !== 'deliver' && action.attempt < action.maxAttempts;
         this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL, updated_at = ?
           WHERE id = ?`).run(retryable ? 'ready' : 'failed', now, action.id);
-        this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
-          current_run_id = NULL, updated_at = ? WHERE id = ?`).run(
-          retryable ? 'ready' : 'needs_attention',
-          action.id,
-          now,
-          workItem.id,
-        );
+        if (graphMode) {
+          this.#refreshGraphWorkItem(workItem.id, now);
+        } else {
+          this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
+            current_run_id = NULL, updated_at = ? WHERE id = ?`).run(
+            retryable ? 'ready' : 'needs_attention',
+            action.id,
+            now,
+            workItem.id,
+          );
+        }
         this.appendEvent(workItem.id, 'run.interrupted', { retryable }, {
           actionId: action.id,
           runId: row.id,

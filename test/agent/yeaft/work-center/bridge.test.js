@@ -274,6 +274,8 @@ describe('Work Center lifecycle bridge', () => {
         title: 'Browser task',
         goal: 'Let AI plan it',
         start: false,
+        origin: { sessionId: 'forged-session', createdBy: 'browser' },
+        linkedSessionIds: ['forged-session'],
         workflowTemplate: 'software-change',
         stageOverrides: {
           implement: {

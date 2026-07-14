@@ -228,6 +228,9 @@ export class WorkflowController {
             assignmentPolicy: previous.assignmentPolicy,
             modelPolicy: previous.modelPolicy,
             requiredRole: previous.requiredRole,
+            dependsOnStageIds: previous.dependsOnStageIds,
+            workspaceMode: previous.workspaceMode,
+            changesRequestedStageId: previous.changesRequestedStageId,
             brief: previous.brief,
           }
         : initialActionFor(workItem);
@@ -345,9 +348,13 @@ export class WorkflowController {
         const context = [...(action.context || []), contextEntry(action, result, activeRun)];
         if (plannedWorkItem.workflowSnapshot?.executionMode === 'graph') {
           if (action.type === 'review' && result.reviewDecision === 'changes_requested') {
+            const targetStage = plannedWorkItem.workflowSnapshot.stages
+              .find(stage => stage.id === action.changesRequestedStageId);
+            if (!targetStage) throw new Error('Work Center review return target is missing');
             return {
               actionStatus: 'completed', workItemStatus: 'ready', graphAdvance: true,
               graphResetStageId: action.changesRequestedStageId,
+              graphResetAction: actionForStage(targetStage, plannedWorkItem, context),
               eventType: 'review.changes_requested',
               eventData: { targetStageId: action.changesRequestedStageId },
             };
