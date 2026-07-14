@@ -114,12 +114,42 @@ describe('Yeaft sidebar session list', () => {
     expect(after.find(row => row.id === 's-old')).toMatchObject({ active: true });
   });
 
+  it('hides pinned and unpinned sessions owned by offline agents', () => {
+    const rows = buildYeaftSidebarSessionList({
+      sessions: [
+        { id: 'online-pinned', agentId: 'agent-online', pinned: true, updatedAt: 100 },
+        { id: 'online-free', agentId: 'agent-online', updatedAt: 90 },
+        { id: 'offline-pinned', agentId: 'agent-offline', pinned: true, updatedAt: 80 },
+        { id: 'offline-free', agentId: 'agent-offline', updatedAt: 70 },
+      ],
+      activeSessionId: 'offline-free',
+      pinnedSessionIds: ['offline-pinned'],
+      onlineAgentIds: ['agent-online'],
+    });
+
+    expect(ids(rows)).toEqual(['online-pinned', 'online-free']);
+    expect(rows.some(row => row.active)).toBe(false);
+  });
+
+  it('keeps legacy unstamped sessions while filtering known offline owners', () => {
+    const rows = buildYeaftSidebarSessionList({
+      sessions: [
+        { id: 'legacy', updatedAt: 100 },
+        { id: 'online', agentId: 'agent-online', updatedAt: 90 },
+        { id: 'offline', agentId: 'agent-offline', updatedAt: 80 },
+      ],
+      onlineAgentIds: ['agent-online'],
+    });
+
+    expect(ids(rows)).toEqual(['legacy', 'online']);
+  });
 
   it('wires pinned, active, and drag metadata into YeaftSidebar visual classes', () => {
     expect(YEAFT_SIDEBAR_SOURCE).toContain('class="session-pin-icon"');
     expect(YEAFT_SIDEBAR_SOURCE).toContain(':class="{ active: s.active, pinned: s.pinned');
     expect(YEAFT_SIDEBAR_SOURCE).toContain('draggable="true"');
     expect(YEAFT_SIDEBAR_SOURCE).toContain('@drop.prevent="onSessionDrop(s.raw, $event)"');
+    expect(YEAFT_SIDEBAR_SOURCE).toContain('onlineAgentIds: Array.isArray(this.onlineAgents)');
     expect(YEAFT_SIDEBAR_SOURCE).toContain("request.call(this.chatStore, 'reorder'");
   });
 });

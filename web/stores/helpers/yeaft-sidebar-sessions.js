@@ -16,11 +16,13 @@ import { sessionActivityTime } from './session-order.js';
  * @param {Array<object>} params.sessions
  * @param {string|null|undefined} params.activeSessionId
  * @param {Array<string>} params.pinnedSessionIds
+ * @param {Array<string>|undefined} params.onlineAgentIds
  * @returns {Array<{kind:string,id:string,raw:object,pinned:boolean,active:boolean}>}
  */
-export function buildYeaftSidebarSessionList({ sessions, activeSessionId, pinnedSessionIds } = {}) {
+export function buildYeaftSidebarSessionList({ sessions, activeSessionId, pinnedSessionIds, onlineAgentIds } = {}) {
   const activeId = activeSessionId || null;
   const pinnedOrder = Array.isArray(pinnedSessionIds) ? pinnedSessionIds : [];
+  const onlineAgents = Array.isArray(onlineAgentIds) ? new Set(onlineAgentIds.filter(Boolean)) : null;
   const pinnedIndex = new Map();
   pinnedOrder.forEach((id, index) => {
     if (typeof id === 'string' && id && !pinnedIndex.has(id)) pinnedIndex.set(id, index);
@@ -29,6 +31,7 @@ export function buildYeaftSidebarSessionList({ sessions, activeSessionId, pinned
   const rows = [];
   for (const session of Array.isArray(sessions) ? sessions : []) {
     if (!session || !session.id) continue;
+    if (onlineAgents && session.agentId && !onlineAgents.has(session.agentId)) continue;
     const id = String(session.id);
     rows.push({
       kind: 'session',
