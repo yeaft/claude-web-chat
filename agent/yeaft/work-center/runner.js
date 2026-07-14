@@ -418,23 +418,42 @@ export function workItemMemoryQuery(workItem, action) {
   return boundedRecallPart('Action', action?.instruction, 8_000);
 }
 
-function finalizeOwnedIntegration(store, action, integration) {
+function integrationFenceError(message) {
+  const error = new Error(message);
+  error.workItemPrepareRetryable = true;
+  return error;
+}
+
+function finalizeOwnedIntegration(store, action, run, ownerBootId) {
+  const acquired = store.acquireIntegrationFinalization(
+    action.id, run.id, ownerBootId, run.leaseEpoch,
+  );
+  if (!acquired) {
+    throw integrationFenceError('Work Center integration lost its Run lease before finalization');
+  }
+  const integration = acquired.action.workspace.integration;
   let finalized;
   try {
     finalized = finalizeActionIntegration(integration);
   } catch (error) {
     let rolledBack = false;
     try {
-      rolledBack = !!store.setActionWorkspace(action.id, null, 'integrate');
+      rolledBack = !!store.rollbackIntegrationFinalization(
+        action.id, run.id, ownerBootId, run.leaseEpoch, acquired.token,
+      );
       if (rolledBack) discardActionIntegration(integration);
     } catch {}
     if (!rolledBack) error.workItemPrepareRetryable = true;
     throw error;
   }
-  const finalizedWorkspace = { ...action.workspace, integration: finalized };
+  const finalizedWorkspace = { ...acquired.action.workspace, integration: finalized };
   try {
-    const persistedAction = store.setActionWorkspace(action.id, finalizedWorkspace, 'integrate');
-    if (!persistedAction) throw new Error('Work Center finalized integration lost its storage fence');
+    const persistedAction = store.finishIntegrationFinalization(
+      action.id, run.id, ownerBootId, run.leaseEpoch, acquired.token, finalizedWorkspace,
+    );
+    if (!persistedAction) {
+      throw integrationFenceError('Work Center finalized integration lost its Run lease fence');
+    }
     return persistedAction;
   } catch (error) {
     error.workItemPrepareRetryable = true;
@@ -484,14 +503,17 @@ export class WorkItemRunner {
   }
 
   async prepare(claim) {
-    const { workItem, action } = claim;
+    const { workItem, action, run, ownerBootId } = claim;
     if (action.workspaceMode === 'integrate') {
+      if (!run?.id || !ownerBootId || !Number.isInteger(run.leaseEpoch)) {
+        throw new Error('Work Center integration preparation requires an owned Run lease');
+      }
       const persistedIntegration = action.workspace?.integration;
       if (persistedIntegration?.status === 'finalized') return claim;
       if (persistedIntegration?.status === 'prepared') {
         return {
           ...claim,
-          action: finalizeOwnedIntegration(this.store, action, persistedIntegration),
+          action: finalizeOwnedIntegration(this.store, action, run, ownerBootId),
         };
       }
       const dependencies = this.store.listActionDependencies(workItem.id, action.dependsOnStageIds || []);
@@ -501,17 +523,23 @@ export class WorkItemRunner {
       });
       let persistedAction;
       try {
-        persistedAction = this.store.setActionWorkspace(action.id, {
-          path: workItem.workspaceKey || workItem.workDir, integration,
-        }, 'integrate');
-        if (!persistedAction) throw new Error('Work Center integration lost its storage fence');
+        persistedAction = this.store.setIntegrationWorkspaceForRun(
+          action.id,
+          run.id,
+          ownerBootId,
+          run.leaseEpoch,
+          { path: workItem.workspaceKey || workItem.workDir, integration },
+        );
+        if (!persistedAction) {
+          throw integrationFenceError('Work Center integration lost its Run lease before ownership transfer');
+        }
       } catch (error) {
         discardActionIntegration(integration);
         throw error;
       }
       return {
         ...claim,
-        action: finalizeOwnedIntegration(this.store, persistedAction, integration),
+        action: finalizeOwnedIntegration(this.store, persistedAction, run, ownerBootId),
       };
     }
     if (action.workspaceMode !== 'isolated-write') return claim;

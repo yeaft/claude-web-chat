@@ -482,6 +482,17 @@ export class WorkItemStore {
     return Number(row.seq) + 1;
   }
 
+  #hasActiveIntegrationReservation(action, now = this.now()) {
+    const reservation = action?.workspace?.integration?.reservation;
+    return !!reservation && Number(reservation.expiresAt) > now;
+  }
+
+  #assertNoIntegrationReservation(actions, now = this.now()) {
+    if (actions.some(action => this.#hasActiveIntegrationReservation(action, now))) {
+      throw new Error('Work Center integration finalization currently owns the Action lease');
+    }
+  }
+
   #resetGraphFromStage(workItemId, targetStageId, replacement, reason, now) {
     const actions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
       AND status NOT IN ('superseded', 'cancelled') ORDER BY sequence`).all(workItemId).map(mapAction);
@@ -503,6 +514,7 @@ export class WorkItemStore {
       }
     }
     const affectedActions = actions.filter(action => affected.has(action.stageId));
+    this.#assertNoIntegrationReservation(affectedActions, now);
     const preservedTargetWorkspace = target.workspaceMode === 'integrate'
       && ['prepared', 'finalized'].includes(target.workspace?.integration?.status)
       && (!replacement || replacement.workspaceMode === 'integrate')
@@ -558,6 +570,79 @@ export class WorkItemStore {
       stringify(workspace), workspaceMode, this.now(), actionId,
     );
     return Number(changed.changes) === 1 ? this.getAction(actionId) : null;
+  }
+
+  setIntegrationWorkspaceForRun(actionId, runId, ownerBootId, leaseEpoch, workspace) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
+      if (!active || active.action_id !== actionId) return null;
+      const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = 'integrate',
+        updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ? AND lease_epoch = ?`).run(
+        stringify(workspace), this.now(), actionId, runId, leaseEpoch,
+      );
+      return Number(changed.changes) === 1 ? this.getAction(actionId) : null;
+    });
+  }
+
+  acquireIntegrationFinalization(actionId, runId, ownerBootId, leaseEpoch, reservationMs = 300_000) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
+      if (!active || active.action_id !== actionId) return null;
+      const action = this.getAction(actionId);
+      if (action?.workspaceMode !== 'integrate' || action.workspace?.integration?.status !== 'prepared') return null;
+      const now = this.now();
+      const token = randomUUID();
+      const expiresAt = now + Math.max(10_000, Number(reservationMs) || 300_000);
+      const workspace = {
+        ...action.workspace,
+        integration: {
+          ...action.workspace.integration,
+          reservation: { token, runId, ownerBootId, leaseEpoch, expiresAt },
+        },
+      };
+      const changed = this.db.prepare(`UPDATE actions SET workspace = ?, updated_at = ?
+        WHERE id = ? AND status = 'running' AND current_run_id = ? AND lease_epoch = ?`).run(
+        stringify(workspace), now, actionId, runId, leaseEpoch,
+      );
+      if (Number(changed.changes) !== 1) return null;
+      this.db.prepare(`UPDATE runs SET expires_at = ? WHERE id = ? AND owner_boot_id = ?
+        AND lease_epoch = ? AND status = 'running'`).run(expiresAt, runId, ownerBootId, leaseEpoch);
+      return { action: this.getAction(actionId), token, expiresAt };
+    });
+  }
+
+  finishIntegrationFinalization(actionId, runId, ownerBootId, leaseEpoch, token, workspace) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, false);
+      if (!active || active.action_id !== actionId) return null;
+      const action = this.getAction(actionId);
+      const reservation = action?.workspace?.integration?.reservation;
+      if (!reservation || reservation.token !== token || reservation.runId !== runId
+          || reservation.ownerBootId !== ownerBootId || reservation.leaseEpoch !== leaseEpoch
+          || Number(reservation.expiresAt) <= this.now()) return null;
+      const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = 'integrate',
+        updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ? AND lease_epoch = ?`).run(
+        stringify(workspace), this.now(), actionId, runId, leaseEpoch,
+      );
+      return Number(changed.changes) === 1 ? this.getAction(actionId) : null;
+    });
+  }
+
+  rollbackIntegrationFinalization(actionId, runId, ownerBootId, leaseEpoch, token) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, false);
+      if (!active || active.action_id !== actionId) return null;
+      const action = this.getAction(actionId);
+      const reservation = action?.workspace?.integration?.reservation;
+      if (!reservation || reservation.token !== token || reservation.runId !== runId
+          || reservation.ownerBootId !== ownerBootId || reservation.leaseEpoch !== leaseEpoch
+          || Number(reservation.expiresAt) <= this.now()) return null;
+      const changed = this.db.prepare(`UPDATE actions SET workspace = NULL, workspace_mode = 'integrate',
+        updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ? AND lease_epoch = ?`).run(
+        this.now(), actionId, runId, leaseEpoch,
+      );
+      return Number(changed.changes) === 1 ? this.getAction(actionId) : null;
+    });
   }
 
   listActionDependencies(workItemId, stageIds) {
@@ -709,6 +794,9 @@ export class WorkItemStore {
   }
 
   #invalidateExecution(workItem, actionStatus, runStatus, reason, now) {
+    const openActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+      AND status IN (${OPEN_ACTION_STATUSES})`).all(workItem.id).map(mapAction);
+    this.#assertNoIntegrationReservation(openActions, now);
     if (workItem.currentRunId) {
       this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, error = ?
         WHERE id = ? AND status = 'running'`).run(runStatus, now, reason, workItem.currentRunId);
@@ -977,6 +1065,7 @@ export class WorkItemStore {
       if (!active) return false;
       const action = this.getAction(active.action_id);
       const now = this.now();
+      this.#assertNoIntegrationReservation([action], now);
       const retryable = action.type !== 'deliver' && action.attempt < action.maxAttempts;
       const hasFinalProgress = finalProgress && typeof finalProgress === 'object';
       const runChanged = hasFinalProgress
@@ -1259,8 +1348,10 @@ export class WorkItemStore {
       const now = this.now();
       const rows = this.db.prepare(`SELECT * FROM runs
         WHERE status = 'running' AND (owner_boot_id != ? OR expires_at <= ?)`).all(ownerBootId, now);
+      let recovered = 0;
       for (const row of rows) {
         const action = this.getAction(row.action_id);
+        if (this.#hasActiveIntegrationReservation(action, now)) continue;
         const workItem = this.getWorkItem(row.work_item_id);
         const graphMode = workItem?.workflowSnapshot?.executionMode === 'graph';
         const isCurrent = action?.status === 'running'
@@ -1292,6 +1383,7 @@ export class WorkItemStore {
             runId: row.id,
           });
           if (graphMode && workItem) this.#refreshGraphWorkItem(workItem.id, now);
+          recovered += 1;
           continue;
         }
 
@@ -1316,8 +1408,9 @@ export class WorkItemStore {
           actionId: action.id,
           runId: row.id,
         });
+        recovered += 1;
       }
-      return rows.length;
+      return recovered;
     });
   }
 }

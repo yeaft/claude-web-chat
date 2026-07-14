@@ -112,7 +112,7 @@ export class WorkItemWatcher {
           let claim = this.store.claimReadyAction(this.ownerBootId, this.leaseMs);
           if (!claim) break;
           try {
-            claim = await this.runner.prepare?.(claim) || claim;
+            claim = await this.runner.prepare?.({ ...claim, ownerBootId: this.ownerBootId }) || claim;
             if (this.lifecycle !== 'running') {
               try { this.runner.cleanup?.(claim.action); } catch {}
               this.store.interruptRun(

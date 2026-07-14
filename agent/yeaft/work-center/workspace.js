@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 const HIDDEN_PROCESS_OPTIONS = { windowsHide: true };
+const INTEGRATION_FINALIZE_TIMEOUT_MS = 45_000;
 
 function git(args, options = {}) {
   return execFileSync('git', args, {
@@ -141,8 +142,16 @@ export function finalizeActionIntegration(integration) {
   if (status || ![integration.baseHead, integration.integratedHead].includes(currentHead)) {
     throw new Error('Work Center integration target changed before finalization');
   }
+  const reservationExpiresAt = Number(integration.reservation?.expiresAt) || 0;
+  if (reservationExpiresAt && Date.now() + INTEGRATION_FINALIZE_TIMEOUT_MS >= reservationExpiresAt) {
+    throw new Error('Work Center integration reservation expires before finalization can complete');
+  }
   if (currentHead === integration.baseHead) {
-    git(['merge', '--ff-only', integration.integratedHead], { cwd: integration.repositoryRoot });
+    git(['merge', '--ff-only', integration.integratedHead], {
+      cwd: integration.repositoryRoot,
+      timeout: INTEGRATION_FINALIZE_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    });
   }
   const head = git(['rev-parse', 'HEAD'], { cwd: integration.repositoryRoot });
   if (head !== integration.integratedHead) {
