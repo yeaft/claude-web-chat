@@ -203,16 +203,54 @@ export class WorkflowController {
         instruction: actionInstruction(step, workItem, context),
         maxAttempts: previous.maxAttempts || 2,
       };
-    }, input.attachments);
+    }, input.attachments, input.addedAttachments);
     if (!detail) throw new Error(`WorkItem not found: ${id}`);
     return detail;
   }
 
+  input(id, input = {}) {
+    const text = typeof input.text === 'string' ? input.text.trim().slice(0, 8_000) : '';
+    const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
+    if (!text && addedAttachmentCount === 0) throw new Error('Action input or attachments are required');
+    const workItem = this.store.getWorkItem(id);
+    if (!workItem) throw new Error(`WorkItem not found: ${id}`);
+    if (['ready', 'running'].includes(workItem.status)) {
+      if (workItem.currentActionId !== input.actionId || workItem.revision !== input.revision) {
+        throw new Error('Action changed before input was applied; refresh and try again');
+      }
+      return this.guide(id, {
+        guidance: text,
+        actionId: input.actionId,
+        revision: input.revision,
+        addedAttachmentCount,
+        addedAttachments: input.addedAttachments,
+        attachments: input.attachments,
+      });
+    }
+    if (!['waiting', 'needs_attention'].includes(workItem.status)) {
+      throw new Error(`WorkItem in ${workItem.status} cannot accept Action input`);
+    }
+    if (workItem.currentActionId !== input.actionId || workItem.revision !== input.revision) {
+      throw new Error('Action changed before input was applied; refresh and try again');
+    }
+    return this.retry(id, {
+      answer: text,
+      addedAttachmentCount,
+      expected: { actionId: input.actionId, revision: input.revision },
+      attachments: input.attachments,
+      inputEvent: {
+        text: text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`,
+        attachments: input.addedAttachments,
+      },
+    });
+  }
+
   retry(id, input = {}) {
     const answer = typeof input.answer === 'string' ? input.answer.trim().slice(0, 8_000) : '';
+    const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
     const detail = this.store.retryWorkItemAtomic(id, (workItem, previous, previousRun) => {
-      if (workItem.status === 'waiting' && !answer) {
-        throw new Error('answer is required to resume a waiting WorkItem');
+      if (workItem.status === 'waiting' && !answer && addedAttachmentCount === 0) {
+        throw new Error('answer or attachments are required to resume a waiting WorkItem');
       }
       const step = previous
         ? {
@@ -234,7 +272,9 @@ export class WorkflowController {
           summary: previousRun.summary || '',
           evidence: normalizeEvidence(previousRun.evidence),
           waitingReason: previousRun.waitingReason || null,
-          answer: answer || null,
+          answer: answer || (addedAttachmentCount > 0
+            ? `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`
+            : null),
         });
       }
       return {
@@ -243,6 +283,10 @@ export class WorkflowController {
         instruction: actionInstruction(step, workItem, context),
         maxAttempts: previous?.maxAttempts || 2,
       };
+    }, {
+      expected: input.expected || null,
+      attachments: input.attachments,
+      inputEvent: input.inputEvent || null,
     });
     if (!detail) throw new Error(`WorkItem not found: ${id}`);
     return detail;

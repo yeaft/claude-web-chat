@@ -220,6 +220,58 @@ describe('Work Center settings service', () => {
     expect(emitted).toEqual([]);
   });
 
+  it('loads Action request indexes and details only through the owning WorkItem and Action', async () => {
+    const trace = {
+      fetchRecentDebugHistory: async options => {
+        if (options.indexOnly) {
+          return {
+            turns: [{
+              turnId: 'request-1', openedAt: 10, closedAt: 20, loopCount: 1,
+              totalMs: 10, totalTokens: 30, summaryInputTokens: 20, summaryOutputTokens: 10,
+            }],
+            loops: [],
+          };
+        }
+        return {
+          turns: [{
+            turnId: 'request-1', openedAt: 10, closedAt: 20, loopCount: 1,
+            totalMs: 10, totalTokens: 30, tools: [],
+          }],
+          loops: [{
+            loopInstanceId: 'loop-1', loopNumber: 1, model: 'provider/model',
+            systemPrompt: 'system', messages: [], response: 'done', usage: { totalTokens: 30 },
+            latencyMs: 10, toolCalls: [], requestBase: { rawRequest: { headers: { Authorization: 'secret' } } },
+          }],
+        };
+      },
+      close: async () => {},
+    };
+    const runner = { trace };
+    const service = await createService({ runner });
+    const item = await service.handle('create', {
+      title: 'Debug task', goal: 'Inspect requests', workDir: '/tmp', start: true,
+    });
+    const claim = service.store.claimReadyAction('boot', 5_000);
+    service.store.setRunExecutionSnapshots(claim.run.id, 'boot', claim.run.leaseEpoch, {
+      roleSnapshot: { id: 'triage' }, vpSnapshot: { id: 'omni', name: 'Omni' },
+      modelSnapshot: { id: 'provider/model' }, toolPolicySnapshot: {},
+    });
+
+    const index = await service.handle('get_action_requests', {
+      id: item.id, actionId: claim.action.id,
+    });
+    expect(index.requests).toEqual([expect.objectContaining({
+      id: 'request-1', runId: claim.run.id, model: 'provider/model', totalTokens: 30,
+    })]);
+    const detail = await service.handle('get_action_request', {
+      id: item.id, actionId: claim.action.id, runId: claim.run.id, requestId: 'request-1',
+    });
+    expect(detail.request.loops[0].rawRequest.headers.Authorization).toBe('***');
+    await expect(service.handle('get_action_request', {
+      id: item.id, actionId: 'missing', runId: claim.run.id, requestId: 'request-1',
+    })).rejects.toThrow(/Action not found/);
+  });
+
   it('returns the redacted browser detail DTO from the real get operation', async () => {
     const service = await createService();
     const item = await service.handle('create', {

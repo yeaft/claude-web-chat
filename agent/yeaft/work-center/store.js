@@ -543,7 +543,7 @@ export class WorkItemStore {
     });
   }
 
-  addActionGuidance(id, guidance, expected, makeAction, attachments = null) {
+  addActionGuidance(id, guidance, expected, makeAction, attachments = null, addedAttachments = []) {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
@@ -576,7 +576,16 @@ export class WorkItemStore {
         now,
         id,
       );
-      this.appendEvent(id, 'action.guidance_added', { guidance }, { actionId: action.id });
+      this.appendEvent(id, 'action.guidance_added', {
+        guidance,
+        attachments: (Array.isArray(addedAttachments) ? addedAttachments : []).map(attachment => ({
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          size: Math.max(0, Number(attachment.size) || 0),
+          isImage: attachment.isImage === true,
+        })),
+      }, { actionId: action.id });
       return this.getWorkItemDetail(id);
     });
   }
@@ -691,12 +700,17 @@ export class WorkItemStore {
     });
   }
 
-  retryWorkItemAtomic(id, makeAction) {
+  retryWorkItemAtomic(id, makeAction, options = {}) {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
       if (!['waiting', 'needs_attention'].includes(workItem.status)) {
         throw new Error(`WorkItem in ${workItem.status} does not need retry`);
+      }
+      if (options.expected) {
+        if (workItem.currentActionId !== options.expected.actionId || workItem.revision !== options.expected.revision) {
+          throw new Error('Action changed before input was applied; refresh and try again');
+        }
       }
       const previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
       const previousRun = previous
@@ -709,8 +723,20 @@ export class WorkItemStore {
         contractRevision: workItem.revision,
       }, this.#nextSequence(id), now);
       this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
-        current_run_id = NULL, updated_at = ? WHERE id = ?`).run(action.id, now, id);
-      this.appendEvent(id, 'work_item.retried', {}, { actionId: action.id });
+        current_run_id = NULL, attachments = ?, updated_at = ? WHERE id = ?`).run(
+        action.id,
+        stringify(Array.isArray(options.attachments) ? options.attachments : workItem.attachments),
+        now,
+        id,
+      );
+      const inputEvent = options.inputEvent && typeof options.inputEvent === 'object'
+        ? options.inputEvent
+        : null;
+      if (inputEvent) {
+        this.appendEvent(id, 'action.input_added', inputEvent, { actionId: action.id });
+      } else {
+        this.appendEvent(id, 'work_item.retried', {}, { actionId: action.id });
+      }
       return this.getWorkItemDetail(id);
     });
   }

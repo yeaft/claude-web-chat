@@ -3,7 +3,7 @@ import { ToolRegistry } from '../tools/registry.js';
 import { allTools } from '../tools/index.js';
 import { parsePatch } from '../tools/apply-patch.js';
 import { defaultRegistry } from '../vp/registry.js';
-import { NullTrace } from '../debug-trace.js';
+import { createTrace } from '../debug-trace.js';
 import { isPathInsideOrEqual } from '../tools/path-safety.js';
 import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
 import { approxTokens } from '../memory/budget.js';
@@ -408,6 +408,10 @@ export class WorkItemRunner {
     this.runtimeProvider = options.runtimeProvider;
     this.policyProvider = typeof options.policyProvider === 'function' ? options.policyProvider : null;
     this.attachmentRoot = options.attachmentRoot || null;
+    this.trace = options.trace || createTrace({
+      enabled: Boolean(options.yeaftDir),
+      dirPath: options.yeaftDir || null,
+    });
     this.store = options.store;
     this.registry = options.registry || defaultRegistry;
     this.progressIntervalMs = Number.isFinite(Number(options.progressIntervalMs))
@@ -541,7 +545,7 @@ export class WorkItemRunner {
     });
     const engine = new Engine({
       adapter,
-      trace: new NullTrace(),
+      trace: this.trace,
       config,
       conversationStore: null,
       memoryIndex: null,
@@ -567,6 +571,8 @@ export class WorkItemRunner {
         messages: [],
         signal,
         scenario: 'work-item',
+        sessionId: `work-item-${workItem.id}`,
+        threadId: run.id,
         vpPersona: personaFor(vp),
         workCenterInstructions: workItem?.workflowSnapshot?.globalInstructions || '',
         workDir,

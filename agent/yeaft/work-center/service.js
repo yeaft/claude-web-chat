@@ -11,7 +11,12 @@ import {
   removeWorkItemAttachmentFiles,
   removeWorkItemAttachments,
 } from './attachments.js';
-import { projectWorkItemDetail, projectWorkItemSummary } from './projection.js';
+import {
+  projectActionRequestDetail,
+  projectActionRequestIndex,
+  projectWorkItemDetail,
+  projectWorkItemSummary,
+} from './projection.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
 import {
   defaultWorkCenterStageInstructions,
@@ -80,6 +85,29 @@ export class WorkCenterService {
         };
       case 'get':
         return projectWorkItemDetail(this.#requiredItem(payload.id));
+      case 'get_action_requests': {
+        const detail = this.#requiredItem(payload.id);
+        const action = this.#requiredAction(detail, payload.actionId);
+        const entries = [];
+        for (const run of detail.runs.filter(item => item.actionId === action.id)) {
+          const history = await this.#debugHistory(run, { indexOnly: true });
+          for (const turn of Array.isArray(history?.turns) ? history.turns : []) {
+            entries.push({ run, turn });
+          }
+        }
+        return projectActionRequestIndex(action, entries);
+      }
+      case 'get_action_request': {
+        const detail = this.#requiredItem(payload.id);
+        const action = this.#requiredAction(detail, payload.actionId);
+        const requestId = requiredString(payload.requestId, 'requestId');
+        const run = detail.runs.find(item => item.actionId === action.id && item.id === payload.runId);
+        if (!run) throw new Error('Action request not found');
+        const history = await this.#debugHistory(run, { detailTurnId: requestId });
+        const projected = projectActionRequestDetail(action, run, history);
+        if (!projected) throw new Error('Action request detail is no longer available');
+        return projected;
+      }
       case 'get_settings': {
         const settings = this.settingsReader(this.yeaftDir);
         return { settings, runtime: await this.runtimeInfo() };
@@ -163,6 +191,38 @@ export class WorkCenterService {
         this.#emit({ type: 'work_item.cancelled', workItem: detail });
         return detail;
       }
+      case 'action_input': {
+        const id = requiredString(payload.id, 'id');
+        const workItem = this.#requiredItem(id);
+        let addedAttachments = [];
+        let detail;
+        try {
+          addedAttachments = appendWorkItemAttachments(workItem.attachments, payload.files, {
+            root: this.attachmentRoot,
+            workItemId: id,
+          });
+          detail = this.controller.input(id, {
+            text: typeof payload.text === 'string' ? payload.text : '',
+            actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
+            revision: payload.revision,
+            addedAttachmentCount: addedAttachments.length,
+            addedAttachments,
+            attachments: [...(workItem.attachments || []), ...addedAttachments],
+          });
+        } catch (error) {
+          try {
+            if ((workItem.attachments || []).length === 0 && addedAttachments.length > 0) {
+              removeWorkItemAttachments(this.attachmentRoot, id);
+            } else {
+              removeWorkItemAttachmentFiles(this.attachmentRoot, id, addedAttachments);
+            }
+          } catch {}
+          throw error;
+        }
+        this.watcher.abortInvalidWorkItemRuns(id);
+        this.#emit({ type: 'action.input_added', workItem: detail });
+        return detail;
+      }
       case 'guide': {
         const id = requiredString(payload.id, 'id');
         const workItem = this.#requiredItem(id);
@@ -178,6 +238,7 @@ export class WorkCenterService {
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
             addedAttachmentCount: addedAttachments.length,
+            addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
           });
         } catch (error) {
@@ -238,6 +299,28 @@ export class WorkCenterService {
     return item;
   }
 
+  #requiredAction(detail, actionId) {
+    const id = requiredString(actionId, 'actionId');
+    const action = detail.actions.find(item => item.id === id);
+    if (!action) throw new Error(`Action not found: ${id}`);
+    return action;
+  }
+
+  async #debugHistory(run, options = {}) {
+    const trace = this.watcher.runner?.trace;
+    if (!trace || typeof trace.fetchRecentDebugHistory !== 'function') {
+      return { turns: [], loops: [] };
+    }
+    return trace.fetchRecentDebugHistory({
+      limit: 5,
+      dreamLimit: 0,
+      sessionId: `work-item-${run.workItemId}`,
+      threadId: run.id,
+      indexOnly: options.indexOnly === true,
+      detailTurnId: options.detailTurnId || null,
+    });
+  }
+
   #emit(event) {
     try { this.onEvent(event); } catch {}
   }
@@ -248,6 +331,7 @@ export class WorkCenterService {
 
   async shutdown() {
     await this.watcher.stop();
+    try { await this.watcher.runner?.trace?.close?.(); } catch {}
     this.store.close();
   }
 }

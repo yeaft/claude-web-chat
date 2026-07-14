@@ -215,6 +215,10 @@ describe('Work Center Runner execution resolution', () => {
     expect(engineQueries[0].prompt).toContain('Edited src/current.js and started tests.');
     expect(engineQueries[0].prompt).toContain('FileEdit: completed (src/current.js)');
     expect(engineQueries[0].prompt).toContain('do not repeat a side effect until its postcondition has been checked');
+    expect(engineQueries[0]).toMatchObject({
+      sessionId: 'work-item-wi-resume',
+      threadId: 'run-resume',
+    });
     expect(result.checkpoint).toEqual({
       version: 1,
       toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],

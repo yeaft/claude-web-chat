@@ -107,6 +107,23 @@ describe('Work Center navigation', () => {
     expect(store.workCenterCreateDraft.linkedSessionIds).toEqual(['session-1']);
   });
 
+  it('keeps only the latest explicit WorkItem detail request', async () => {
+    const store = makeStore('yeaft');
+    const pending = {};
+    store.workCenterRequest = vi.fn((_op, payload) => new Promise(resolve => {
+      pending[payload.id] = resolve;
+    }));
+
+    const first = store.getWorkItem('wi-1', 'agent-1');
+    const second = store.getWorkItem('wi-2', 'agent-1');
+    pending['wi-2']({ id: 'wi-2', actions: [] });
+    await second;
+    pending['wi-1']({ id: 'wi-1', actions: [] });
+    await first;
+
+    expect(store.workCenterDetailByAgent['agent-1']).toEqual({ id: 'wi-2', actions: [] });
+  });
+
   it('refetches detail once when an event advances to an Action missing locally', async () => {
     const store = makeStore('yeaft');
     store.workCenterItemsByAgent = { 'agent-1': [] };

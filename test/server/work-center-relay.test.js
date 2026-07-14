@@ -191,15 +191,15 @@ describe('Work Center relay', () => {
     expect(pendingFiles.has('file-1')).toBe(false);
   });
 
-  it('resolves owned guidance attachments and consumes them only after Agent success', async () => {
+  it('resolves owned Action input attachments and consumes them only after Agent success', async () => {
     pendingFiles.set('guide-file', {
       name: 'follow-up.txt', mimeType: 'text/plain', buffer: Buffer.from('follow up'), userId: 'user-1',
     });
     const client = { currentAgent: 'agent-a', userId: 'user-1' };
     await handleClientWorkCenter(client, {
-      type: 'work_center_request', requestId: 'browser-guide', op: 'guide',
+      type: 'work_center_request', requestId: 'browser-input', op: 'action_input',
       payload: {
-        id: 'wi-1', guidance: '', actionId: 'action-1', revision: 2,
+        id: 'wi-1', text: '', actionId: 'action-1', revision: 2,
         attachments: [{ fileId: 'guide-file' }],
       },
     }, vi.fn().mockResolvedValue(true));
@@ -211,7 +211,7 @@ describe('Work Center relay', () => {
     });
     expect(pendingFiles.has('guide-file')).toBe(true);
     await deliverWorkCenterResponse('agent-a', {
-      type: 'work_center_response', requestId: request.requestId, op: 'guide', ok: true, data: { id: 'wi-1' },
+      type: 'work_center_response', requestId: request.requestId, op: 'action_input', ok: true, data: { id: 'wi-1' },
     });
     expect(pendingFiles.has('guide-file')).toBe(false);
   });

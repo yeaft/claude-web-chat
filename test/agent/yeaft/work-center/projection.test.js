@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { projectWorkCenterEvent, projectWorkItemDetail } from '../../../../agent/yeaft/work-center/projection.js';
+import {
+  projectActionRequestDetail,
+  projectActionRequestIndex,
+  projectWorkCenterEvent,
+  projectWorkItemDetail,
+} from '../../../../agent/yeaft/work-center/projection.js';
 
 function internalDetail() {
   return {
@@ -71,9 +76,11 @@ describe('Work Center event projection', () => {
       response: 'Reviewed the change and found one compatibility decision.',
       progressRevision: 4,
       messages: [{
-        id: 'a-1:1', status: 'retryable', text: 'Earlier retry response', createdAt: 1, updatedAt: 1,
+        id: 'run:r-1', role: 'assistant', kind: 'response', status: 'retryable',
+        text: 'Earlier retry response', attachments: [], createdAt: 1, updatedAt: 1,
       }, {
-        id: 'a-1:2', status: 'waiting', text: 'Reviewed the change and found one compatibility decision.', createdAt: 2, updatedAt: 2,
+        id: 'run:r-2', role: 'assistant', kind: 'response', status: 'waiting',
+        text: 'Reviewed the change and found one compatibility decision.', attachments: [], createdAt: 2, updatedAt: 2,
       }],
     }]);
     const wire = JSON.stringify(projected);
@@ -141,5 +148,72 @@ describe('Work Center event projection', () => {
     expect(projectWorkItemDetail(detail).actions[0]).toMatchObject({
       response: 'New retry response', progressRevision: 9, loopCount: 3, toolCount: 4,
     });
+  });
+
+  it('merges user Action input and assistant Run responses without exposing event data generally', () => {
+    const detail = internalDetail();
+    detail.events = [{
+      id: 9, actionId: 'a-1', type: 'action.guidance_added', createdAt: 0,
+      data: {
+        guidance: 'Keep the existing public API.',
+        attachments: [{
+          id: 'att-input', name: 'contract.md', mimeType: 'text/markdown', size: 12,
+          isImage: false, storageName: 'private.md', sha256: 'secret',
+        }],
+      },
+    }, {
+      id: 10, actionId: 'a-1', type: 'run.claimed', createdAt: 1,
+      data: { secret: 'do not project me' },
+    }];
+
+    const messages = projectWorkItemDetail(detail).actions[0].messages;
+    expect(messages[0]).toEqual({
+      id: 'event:9', role: 'user', kind: 'input', status: 'sent',
+      text: 'Keep the existing public API.',
+      attachments: [{ id: 'att-input', name: 'contract.md', mimeType: 'text/markdown', size: 12, isImage: false }],
+      createdAt: 0, updatedAt: 0,
+    });
+    expect(JSON.stringify(messages)).not.toContain('do not project me');
+    expect(JSON.stringify(messages)).not.toContain('private.md');
+    expect(JSON.stringify(messages)).not.toContain('secret');
+  });
+
+  it('projects request indexes and explicit request details with secrets and binary bodies removed', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const turn = {
+      turnId: 'request-1', openedAt: 100, closedAt: 200, loopCount: 1,
+      totalMs: 100, totalTokens: 20, summaryInputTokens: 12, summaryOutputTokens: 8,
+    };
+    expect(projectActionRequestIndex(action, [{ run, turn }])).toEqual({
+      actionId: 'a-1',
+      requests: [{
+        id: 'request-1', runId: 'r-2', status: 'waiting', model: 'provider/review',
+        vp: { id: 'martin', name: 'Martin' }, openedAt: 100, closedAt: 200,
+        loopCount: 1, totalMs: 100, inputTokens: 12, outputTokens: 8, totalTokens: 20,
+      }],
+    });
+
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ ...turn, tools: [{ loopNumber: 1, callId: 'tool-1', name: 'FileRead', toolOutput: 'ok' }] }],
+      loops: [{
+        loopInstanceId: 'loop-1', loopNumber: 1, model: 'provider/review',
+        systemPrompt: 'system', messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', data: 'secret-image' } }] }],
+        response: 'done', usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
+        latencyMs: 100, stopReason: 'tool_use', toolCalls: [{ id: 'tool-1', name: 'FileRead', input: { file_path: 'src/a.js' } }],
+        requestBase: { rawRequest: { headers: { Authorization: 'Bearer secret', Accept: 'application/json' } } },
+        rawResponse: { status: 200 },
+      }],
+    });
+    const wire = JSON.stringify(projected);
+    expect(projected.request.loops[0]).toMatchObject({
+      id: 'loop-1', loopNumber: 1, response: 'done',
+      tools: [{ name: 'FileRead', output: 'ok', isError: false }],
+      rawRequest: { headers: { Authorization: '***', Accept: 'application/json' } },
+    });
+    expect(wire).not.toContain('Bearer secret');
+    expect(wire).not.toContain('secret-image');
+    expect(wire).toContain('binary data omitted');
   });
 });

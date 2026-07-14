@@ -231,6 +231,26 @@ describe('Work Center lifecycle bridge', () => {
     },
   );
 
+  it('whitelists Action debug request identifiers before reaching the service', async () => {
+    const service = {
+      start: vi.fn(), shutdown: vi.fn(),
+      handle: vi.fn().mockResolvedValue({ actionId: 'a-1', requests: [] }),
+    };
+    __testSetWorkCenterService(service);
+
+    await handleWorkCenterRequest({
+      requestId: 'debug-index', op: 'get_action_requests',
+      payload: { id: 'wi-1', actionId: 'a-1', workDir: '/private', injected: true },
+    });
+
+    expect(service.handle).toHaveBeenCalledWith('get_action_requests', {
+      id: 'wi-1', actionId: 'a-1',
+    });
+    expect(sendToServer.mock.calls.at(-1)[0]).toMatchObject({
+      requestId: 'debug-index', ok: true, data: { actionId: 'a-1', requests: [] },
+    });
+  });
+
   it('keeps Producer create results internal and unprojected', async () => {
     const raw = internalDetail();
     const service = {

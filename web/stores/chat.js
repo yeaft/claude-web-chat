@@ -457,6 +457,10 @@ export const useChatStore = defineStore('chat', {
     workCenterAgentId: null,
     workCenterItemsByAgent: {},
     workCenterDetailByAgent: {},
+    workCenterActionRequests: {},
+    workCenterActionRequestDetails: {},
+    workCenterActionRequestsLoading: {},
+    workCenterActionRequestsError: {},
     workCenterLoadingByAgent: {},
     workCenterErrorByAgent: {},
     workCenterWatcherByAgent: {},
@@ -1142,9 +1146,47 @@ export const useChatStore = defineStore('chat', {
     },
     async getWorkItem(id, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = Number(this._workCenterDetailRefreshByAgent[target] || 0) + 1;
+      this._workCenterDetailRefreshByAgent = {
+        ...this._workCenterDetailRefreshByAgent,
+        [target]: generation,
+      };
       const detail = await this.workCenterRequest('get', { id }, target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      if (this._workCenterDetailRefreshByAgent[target] === generation) {
+        this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      }
       return detail;
+    },
+    async loadWorkItemActionRequests(id, actionId, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const key = `${target}:${id}:${actionId}`;
+      this.workCenterActionRequestsLoading = { ...this.workCenterActionRequestsLoading, [key]: true };
+      this.workCenterActionRequestsError = { ...this.workCenterActionRequestsError, [key]: null };
+      try {
+        const data = await this.workCenterRequest('get_action_requests', { id, actionId }, target);
+        this.workCenterActionRequests = { ...this.workCenterActionRequests, [key]: data?.requests || [] };
+        return data?.requests || [];
+      } catch (error) {
+        this.workCenterActionRequestsError = {
+          ...this.workCenterActionRequestsError,
+          [key]: error?.message || String(error),
+        };
+        throw error;
+      } finally {
+        this.workCenterActionRequestsLoading = { ...this.workCenterActionRequestsLoading, [key]: false };
+      }
+    },
+    async loadWorkItemActionRequest(id, actionId, runId, requestId, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const key = `${target}:${id}:${actionId}:${requestId}`;
+      const data = await this.workCenterRequest('get_action_request', {
+        id, actionId, runId, requestId,
+      }, target);
+      this.workCenterActionRequestDetails = {
+        ...this.workCenterActionRequestDetails,
+        [key]: data?.request || null,
+      };
+      return data?.request || null;
     },
     async loadWorkCenterSettings(agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
@@ -1252,6 +1294,15 @@ export const useChatStore = defineStore('chat', {
     async cancelWorkItem(id, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const detail = await this.workCenterRequest('cancel', { id }, target);
+      await this.listWorkItems(target);
+      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      return detail;
+    },
+    async sendWorkItemActionInput(id, text, actionId, revision, attachments = [], agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const detail = await this.workCenterRequest('action_input', {
+        id, text, actionId, revision, attachments,
+      }, target);
       await this.listWorkItems(target);
       this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
       return detail;
