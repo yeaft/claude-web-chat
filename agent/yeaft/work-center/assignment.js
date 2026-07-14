@@ -136,13 +136,21 @@ export function resolveWorkItemModel(config, vp, rawPolicy) {
     throw policyError(`Configured Work Center model is unavailable: ${model}`);
   }
   const effortOptions = Array.isArray(available?.effortOptions) ? available.effortOptions : [];
-  if (policy.effort && !effortOptions.includes(policy.effort)) {
-    throw policyError(`Configured Work Center effort is unsupported by ${model}: ${policy.effort}`);
-  }
+  const effortOrder = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const requestedIndex = effortOrder.indexOf(policy.effort);
+  const effort = !policy.effort || effortOptions.length === 0
+    ? null
+    : effortOptions.includes(policy.effort)
+      ? policy.effort
+      : effortOptions
+          .map(value => ({ value, distance: Math.abs(effortOrder.indexOf(value) - requestedIndex) }))
+          .filter(item => effortOrder.includes(item.value))
+          .sort((left, right) => left.distance - right.distance
+            || effortOrder.indexOf(right.value) - effortOrder.indexOf(left.value))[0]?.value || null;
   const parsed = parseModelRef(model);
   return {
     model,
-    effort: policy.effort || null,
+    effort,
     provider: available?.provider || parsed.providerName || null,
     source,
     policy,

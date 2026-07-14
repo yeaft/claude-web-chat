@@ -11,6 +11,7 @@ import {
   removeWorkItemAttachmentFiles,
   removeWorkItemAttachments,
 } from './attachments.js';
+import { normalizeSessionContextSnapshot } from './session-context.js';
 import { projectWorkItemDetail, projectWorkItemSummary } from './projection.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
 import {
@@ -67,6 +68,7 @@ export class WorkCenterService {
       onEvent: event => this.#emit(event),
       pollIntervalMs: options.pollIntervalMs,
       leaseMs: options.leaseMs,
+      concurrencyProvider: options.watcherOptions?.concurrencyProvider,
     });
     this.store.recoverInterruptedRuns(this.ownerBootId);
   }
@@ -132,6 +134,9 @@ export class WorkCenterService {
               : null,
             linkedSessionIds: Array.isArray(payload.linkedSessionIds)
               ? [...new Set(payload.linkedSessionIds.map(value => String(value).trim()).filter(Boolean))]
+              : [],
+            sessionContext: requestContext.trustedProducer === true
+              ? normalizeSessionContextSnapshot(payload.sessionContext)
               : [],
             attachments,
             start: payload.start === undefined ? settings.startImmediately : payload.start !== false,

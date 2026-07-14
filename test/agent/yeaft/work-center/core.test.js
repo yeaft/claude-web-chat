@@ -91,14 +91,62 @@ describe('Work Center core', () => {
     });
     expect(detail.workflowSnapshot.stages.map(stage => stage.id))
       .toEqual(['triage', 'diagnose', 'fix', 'verify', 'review']);
-    expect(detail.actions.at(-1)).toMatchObject({
+    expect(detail.actions[1]).toMatchObject({
       type: 'research', stageId: 'diagnose',
       assignmentPolicy: { mode: 'auto', capability: 'analysis' },
       modelPolicy: { mode: 'specific', model: 'provider/work-center', effort: 'high' },
       status: 'ready',
     });
-    expect(detail.actions.at(-1).instruction).toContain('Find the root cause');
+    expect(detail.actions[1].instruction).toContain('Find the root cause');
+    expect(detail.actions.slice(1)).toHaveLength(4);
     expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
+  it('claims independent graph Actions concurrently and waits for dependencies', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'parallel-analysis',
+        actions: [
+          { id: 'left', type: 'research', capability: 'research', objective: 'Inspect left', dependsOnActionIds: [], workspaceMode: 'read' },
+          { id: 'right', type: 'research', capability: 'research', objective: 'Inspect right', dependsOnActionIds: [], workspaceMode: 'read' },
+          { id: 'review', type: 'review', capability: 'review', objective: 'Review both', dependsOnActionIds: ['left', 'right'] },
+        ],
+      },
+    }));
+
+    const left = store.claimReadyAction('boot-a', 5_000);
+    const right = store.claimReadyAction('boot-a', 5_000);
+    expect(new Set([left.action.stageId, right.action.stageId])).toEqual(new Set(['left', 'right']));
+    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+    controller.submit(left.run.id, 'boot-a', left.run.leaseEpoch, completed('research'));
+    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+    controller.submit(right.run.id, 'boot-a', right.run.leaseEpoch, completed('research'));
+    expect(store.claimReadyAction('boot-a', 5_000).action.stageId).toBe('review');
+    expect(store.getWorkItem(item.id).status).toBe('running');
+  });
+
+  it('keeps a graph failed while another Action submits late success', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'parallel-failure', actions: [
+        { id: 'left', type: 'research', objective: 'Inspect left', dependsOnActionIds: [], workspaceMode: 'read' },
+        { id: 'right', type: 'research', objective: 'Inspect right', dependsOnActionIds: [], workspaceMode: 'read' },
+      ] },
+    }));
+    const left = store.claimReadyAction('boot-a', 5_000);
+    const right = store.claimReadyAction('boot-a', 5_000);
+    const failed = controller.submit(left.run.id, 'boot-a', left.run.leaseEpoch, {
+      outcome: 'failed', error: 'left failed', summary: '', evidence: [],
+    });
+    expect(failed.status).toBe('needs_attention');
+    expect(() => controller.submit(right.run.id, 'boot-a', right.run.leaseEpoch, completed('research')))
+      .toThrow(/stale|cancelled|finished/i);
+    expect(store.getWorkItem(failed.id).status).toBe('needs_attention');
   });
 
   it('preserves a validated domain-specific Action type and applies the custom execution baseline', () => {

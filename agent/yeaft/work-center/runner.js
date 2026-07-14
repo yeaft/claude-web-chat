@@ -14,6 +14,12 @@ import path from 'node:path';
 import { buildWorkItemAttachmentContext } from './attachments.js';
 import { withUsageAccounting } from '../llm/usage-accounting.js';
 import {
+  commitActionWorktree,
+  createActionWorktree,
+  integrateActionWorktrees,
+  removeActionWorktree,
+} from './workspace.js';
+import {
   appendCheckpointToolEvent,
   renderActionResumeBlock,
 } from './action-checkpoint.js';
@@ -315,7 +321,7 @@ function completionContract(action, workItem) {
     ? ',\n  "contractPatch": { "goal": "optional refined goal", "acceptanceCriteria": ["optional refined criterion"] }'
     : '';
   const planField = action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
-    ? ',\n  "plan": { "workItemType": "specific-lowercase-slug", "actions": [{ "id": "stable-id", "name": "User-facing name", "type": "extensible-lowercase-slug (built-ins include research|design|diagnose|implement|migrate|test|review|document|operate|deliver|write|custom)", "capability": "specific executor capability", "objective": "what this Action must do", "approach": "how this Action should do it", "expectedOutcome": "verifiable result this Action must produce", "separateFromActionTypes": ["optional prior Action type"], "changesRequestedActionId": "for review: optional earlier editable Action id; omit to use nearest", "maxAttempts": 2 }] }'
+    ? ',\n  "plan": { "workItemType": "specific-lowercase-slug", "actions": [{ "id": "stable-id", "name": "User-facing name", "type": "extensible-lowercase-slug (built-ins include research|design|diagnose|implement|migrate|test|review|document|operate|deliver|write|custom)", "capability": "specific executor capability", "objective": "what this Action must do", "approach": "how this Action should do it", "expectedOutcome": "verifiable result this Action must produce", "dependsOnActionIds": ["earlier Action id; [] means concurrent root"], "workspaceMode": "read|isolated-write|integrate|shared", "separateFromActionTypes": ["optional prior Action type"], "changesRequestedActionId": "for review: optional earlier editable Action id; omit to use nearest", "maxAttempts": 2 }] }'
     : '';
   const acceptanceChecks = (workItem?.acceptanceCriteria || []).map(criterion => ({
     criterion,
@@ -381,7 +387,14 @@ function workItemMemoryScopes(workItem, vpId) {
 
 function recallWorkItemMemory(runtime, workItem, action, vp) {
   if (workItem?.reuseMemory === false || !runtime?.memoryIndex) return '';
-  const query = String(action?.instruction || '').slice(0, 8_000);
+  const triageContext = Array.isArray(action?.context)
+    ? action.context
+        .filter(entry => entry?.type === 'triage')
+        .map(entry => entry.summary)
+        .filter(Boolean)
+        .join('\n')
+    : '';
+  const query = `${action?.instruction || ''}\n${triageContext}`.slice(0, 8_000);
   if (!query.trim()) return '';
   try {
     const scopes = workItemMemoryScopes(workItem, vp.id);
@@ -408,6 +421,7 @@ export class WorkItemRunner {
     this.runtimeProvider = options.runtimeProvider;
     this.policyProvider = typeof options.policyProvider === 'function' ? options.policyProvider : null;
     this.attachmentRoot = options.attachmentRoot || null;
+    this.actionWorktreeRoot = options.actionWorktreeRoot || null;
     this.store = options.store;
     this.registry = options.registry || defaultRegistry;
     this.progressIntervalMs = Number.isFinite(Number(options.progressIntervalMs))
@@ -415,17 +429,57 @@ export class WorkItemRunner {
       : DEFAULT_PROGRESS_INTERVAL_MS;
   }
 
+  cleanup(action) {
+    removeActionWorktree(action?.workspace);
+  }
+
+  async prepare(claim) {
+    const { workItem, action } = claim;
+    if (action.workspaceMode === 'integrate') {
+      const dependencies = this.store.listActionDependencies(workItem.id, action.dependsOnStageIds || []);
+      const integration = integrateActionWorktrees({
+        workDir: workItem.workspaceKey || workItem.workDir,
+        dependencies,
+      });
+      return { ...claim, action: this.store.setActionWorkspace(action.id, {
+        path: workItem.workspaceKey || workItem.workDir, integration,
+      }, 'shared') };
+    }
+    if (action.workspaceMode !== 'isolated-write') return claim;
+    if (!this.actionWorktreeRoot) {
+      return { ...claim, action: this.store.setActionWorkspace(action.id, null, 'shared') };
+    }
+    const workspace = createActionWorktree({
+      workItem, action, runId: claim.run.id, rootDir: this.actionWorktreeRoot,
+    });
+    return { ...claim, action: this.store.setActionWorkspace(
+      action.id, workspace.isolated ? workspace : null, workspace.isolated ? null : 'shared',
+    ) };
+  }
+
   async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader }) {
     const runtime = await this.runtimeProvider();
-    const currentModelPolicy = workItem?.workflowSnapshot?.planningMode === 'ai'
-      && this.policyProvider
-      ? (await this.policyProvider())?.modelPolicy
+    const currentSettings = workItem?.workflowSnapshot?.planningMode === 'ai' && this.policyProvider
+      ? await this.policyProvider()
       : null;
+    const currentModelPolicy = currentSettings?.actionModelPolicies?.[action.type]
+      || currentSettings?.actionModelPolicies?.custom
+      || currentSettings?.modelPolicy
+      || null;
     const executionAction = currentModelPolicy
       ? { ...action, modelPolicy: currentModelPolicy }
       : action;
-    const workDir = resolveWorkItemWorkDir(workItem, runtime.defaultWorkDir);
+    const workDir = action.workspace?.path
+      ? resolveWorkItemWorkDir({ workspaceKey: action.workspace.path }, runtime.defaultWorkDir)
+      : resolveWorkItemWorkDir(workItem, runtime.defaultWorkDir);
     const priorRuns = this.store.listCompletedRuns(workItem.id);
+    const dependencyContext = this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
+    const dependencyBlock = dependencyContext.length === 0 ? '' : `\n\nCompleted dependency results:\n${dependencyContext.map(dependency => {
+      const evidence = dependency.evidence?.length
+        ? `\nEvidence: ${dependency.evidence.map(item => item.label).join('; ')}`
+        : '';
+      return `### ${dependency.stageId} (${dependency.vpId || 'unknown VP'})\n${dependency.summary || '(no summary)'}${evidence}`;
+    }).join('\n\n')}`;
     const resumeBlock = renderActionResumeBlock(this.store.getActionResumeContext?.(action.id, run.id));
     const assignment = executionAction.assignmentPolicy
       ? selectWorkItemVp({
@@ -557,7 +611,7 @@ export class WorkItemRunner {
       vpId: vp.id,
     });
     try {
-      const prompt = `${executionAction.instruction}${resumeBlock}${attachmentContext.promptBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
+      const prompt = `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
       const promptParts = attachmentContext.promptParts.length > 0
         ? [{ type: 'text', text: prompt }, ...attachmentContext.promptParts]
         : null;
@@ -596,8 +650,14 @@ export class WorkItemRunner {
     }
     const response = publicWorkItemResponse(text);
     reportProgress(true);
+    const parsedResult = parseStructuredResult(text, executionAction.type);
+    if (parsedResult.outcome === 'completed' && action.workspace?.isolated) {
+      const workspace = commitActionWorktree(action.workspace, action);
+      this.store.setActionWorkspace(action.id, workspace);
+      action.workspace = workspace;
+    }
     return {
-      ...parseStructuredResult(text, executionAction.type),
+      ...parsedResult,
       response,
       ...executionStats(),
       checkpoint,

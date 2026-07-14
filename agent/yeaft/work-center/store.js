@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 10;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -47,6 +47,7 @@ function mapWorkItem(row) {
     reuseMemory: row.reuse_memory !== 0,
     origin: parseJson(row.origin, null),
     linkedSessionIds: parseJson(row.linked_session_ids, []),
+    sessionContext: parseJson(row.session_context, []),
     attachments: parseJson(row.attachments, []),
     executionStats: {
       llmRequestCount: Math.max(0, Number(row.usage_llm_request_count) || 0),
@@ -73,6 +74,9 @@ function mapAction(row) {
     stageId: row.stage_id || row.type,
     assignmentPolicy: parseJson(row.assignment_policy, null),
     modelPolicy: parseJson(row.model_policy, null),
+    dependsOnStageIds: parseJson(row.depends_on_stage_ids, []),
+    workspaceMode: row.workspace_mode || 'shared',
+    workspace: parseJson(row.workspace, null),
     requiredRole: row.required_role || '',
     instruction: row.instruction,
     brief: parseJson(row.brief, null),
@@ -110,6 +114,7 @@ function mapRun(row) {
     waitingReason: row.waiting_reason || null,
     error: row.error || null,
     reviewDecision: row.review_decision || null,
+    outcome: row.outcome || null,
     contractPatch: parseJson(row.contract_patch, null),
     loopCount: Math.max(0, Number(row.loop_count) || 0),
     toolCount: Math.max(0, Number(row.tool_count) || 0),
@@ -189,6 +194,7 @@ export class WorkItemStore {
         reuse_memory INTEGER NOT NULL DEFAULT 1,
         origin TEXT,
         linked_session_ids TEXT NOT NULL DEFAULT '[]',
+        session_context TEXT NOT NULL DEFAULT '[]',
         attachments TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -202,6 +208,9 @@ export class WorkItemStore {
         stage_id TEXT,
         assignment_policy TEXT,
         model_policy TEXT,
+        depends_on_stage_ids TEXT NOT NULL DEFAULT '[]',
+        workspace_mode TEXT NOT NULL DEFAULT 'shared',
+        workspace TEXT,
         instruction TEXT NOT NULL,
         brief TEXT,
         context TEXT NOT NULL DEFAULT '[]',
@@ -325,6 +334,9 @@ export class WorkItemStore {
     if (!hasColumn(this.db, 'work_items', 'workflow_snapshot')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN workflow_snapshot TEXT');
     }
+    if (!hasColumn(this.db, 'work_items', 'session_context')) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN session_context TEXT NOT NULL DEFAULT '[]'");
+    }
     if (!hasColumn(this.db, 'work_items', 'attachments')) {
       this.db.exec("ALTER TABLE work_items ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
     }
@@ -336,6 +348,15 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'actions', 'model_policy')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN model_policy TEXT');
+    }
+    if (!hasColumn(this.db, 'actions', 'depends_on_stage_ids')) {
+      this.db.exec("ALTER TABLE actions ADD COLUMN depends_on_stage_ids TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!hasColumn(this.db, 'actions', 'workspace_mode')) {
+      this.db.exec("ALTER TABLE actions ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'shared'");
+    }
+    if (!hasColumn(this.db, 'actions', 'workspace')) {
+      this.db.exec('ALTER TABLE actions ADD COLUMN workspace TEXT');
     }
     this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
@@ -367,8 +388,8 @@ export class WorkItemStore {
       this.db.prepare(`INSERT INTO work_items
         (id, revision, title, goal, acceptance_criteria, workflow_template, workflow_snapshot, status,
          current_action_id, current_run_id, work_dir, workspace_key, reuse_memory, origin, linked_session_ids,
-         attachments, created_at, updated_at)
-        VALUES (?, 1, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+         session_context, attachments, created_at, updated_at)
+        VALUES (?, 1, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         id,
         input.title,
         input.goal,
@@ -381,6 +402,7 @@ export class WorkItemStore {
         input.reuseMemory === false ? 0 : 1,
         stringify(input.origin || null),
         stringify(input.linkedSessionIds || []),
+        stringify(input.sessionContext || []),
         stringify(input.attachments || []),
         now,
         now,
@@ -404,6 +426,9 @@ export class WorkItemStore {
       stageId: input.stageId || input.type,
       assignmentPolicy: input.assignmentPolicy || null,
       modelPolicy: input.modelPolicy || null,
+      dependsOnStageIds: Array.isArray(input.dependsOnStageIds) ? input.dependsOnStageIds : [],
+      workspaceMode: input.workspaceMode || 'shared',
+      workspace: input.workspace || null,
       requiredRole: input.requiredRole || '',
       instruction: input.instruction || '',
       brief: input.brief && typeof input.brief === 'object' ? input.brief : null,
@@ -419,9 +444,9 @@ export class WorkItemStore {
     };
     this.db.prepare(`INSERT INTO actions
       (id, work_item_id, sequence, type, required_role, stage_id, assignment_policy, model_policy,
-       instruction, brief, context, contract_revision, status, attempt, max_attempts, current_run_id,
-       lease_epoch, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
+       depends_on_stage_ids, workspace_mode, workspace, instruction, brief, context, contract_revision,
+       status, attempt, max_attempts, current_run_id, lease_epoch, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
       action.id,
       workItemId,
       action.sequence,
@@ -430,6 +455,9 @@ export class WorkItemStore {
       action.stageId,
       stringify(action.assignmentPolicy),
       stringify(action.modelPolicy),
+      stringify(action.dependsOnStageIds),
+      action.workspaceMode,
+      stringify(action.workspace),
       action.instruction,
       stringify(action.brief),
       stringify(action.context),
@@ -450,6 +478,32 @@ export class WorkItemStore {
 
   createNextAction(workItemId, input) {
     return this.#insertAction(workItemId, input, this.#nextSequence(workItemId));
+  }
+
+  setActionWorkspace(actionId, workspace, workspaceMode = null) {
+    const changed = this.db.prepare(`UPDATE actions SET workspace = ?,
+      workspace_mode = COALESCE(?, workspace_mode), updated_at = ? WHERE id = ?`).run(
+      stringify(workspace), workspaceMode, this.now(), actionId,
+    );
+    return Number(changed.changes) === 1 ? this.getAction(actionId) : null;
+  }
+
+  listActionDependencies(workItemId, stageIds) {
+    if (!Array.isArray(stageIds) || stageIds.length === 0) return [];
+    const placeholders = stageIds.map(() => '?').join(',');
+    return this.db.prepare(`SELECT a.*, r.summary AS dependency_summary,
+      r.evidence AS dependency_evidence, r.vp_snapshot AS dependency_vp_snapshot
+      FROM actions a LEFT JOIN runs r ON r.id = (
+        SELECT completed.id FROM runs completed WHERE completed.action_id = a.id
+          AND completed.status = 'completed' AND completed.outcome = 'completed'
+          ORDER BY completed.ended_at DESC LIMIT 1
+      ) WHERE a.work_item_id = ? AND a.stage_id IN (${placeholders})
+      ORDER BY a.sequence`).all(workItemId, ...stageIds).map(row => ({
+        ...mapAction(row),
+        summary: row.dependency_summary || '',
+        evidence: normalizeEvidence(parseJson(row.dependency_evidence, [])),
+        vpId: parseJson(row.dependency_vp_snapshot, null)?.id || null,
+      }));
   }
 
   getWorkItem(id) {
@@ -720,7 +774,25 @@ export class WorkItemStore {
       const row = this.db.prepare(`SELECT a.* FROM actions a
         JOIN work_items w ON w.id = a.work_item_id
         WHERE a.status = 'ready' AND a.current_run_id IS NULL
-          AND w.status = 'ready' AND w.current_action_id = a.id AND w.current_run_id IS NULL
+          AND (
+            (COALESCE(json_extract(w.workflow_snapshot, '$.executionMode'), 'linear') != 'graph'
+              AND w.status = 'ready' AND w.current_action_id = a.id AND w.current_run_id IS NULL)
+            OR
+            (json_extract(w.workflow_snapshot, '$.executionMode') = 'graph'
+              AND w.status IN ('ready', 'running')
+              AND NOT EXISTS (
+                SELECT 1 FROM json_each(a.depends_on_stage_ids) dependency
+                LEFT JOIN actions required ON required.work_item_id = a.work_item_id
+                  AND required.stage_id = dependency.value
+                WHERE required.id IS NULL OR required.status != 'completed'
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM actions running
+                WHERE running.work_item_id = a.work_item_id AND running.status = 'running'
+                  AND (a.workspace_mode IN ('shared', 'integrate')
+                    OR running.workspace_mode IN ('shared', 'integrate'))
+              ))
+          )
         ORDER BY a.updated_at ASC, a.sequence ASC LIMIT 1`).get();
       if (!row) return null;
       const now = this.now();
@@ -732,35 +804,30 @@ export class WorkItemStore {
       const changedAction = this.db.prepare(`UPDATE actions SET status = 'running', attempt = attempt + 1,
         current_run_id = ?, lease_epoch = ?, updated_at = ?
         WHERE id = ? AND status = 'ready' AND current_run_id IS NULL`).run(
-        runId,
-        leaseEpoch,
-        now,
-        row.id,
+        runId, leaseEpoch, now, row.id,
       );
       if (Number(changedAction.changes) !== 1) return null;
-      const changedWorkItem = this.db.prepare(`UPDATE work_items SET status = 'running',
-        current_run_id = ?, updated_at = ? WHERE id = ? AND status = 'ready'
-        AND current_action_id = ? AND current_run_id IS NULL`).run(
-        runId,
-        now,
-        row.work_item_id,
-        row.id,
-      );
-      if (Number(changedWorkItem.changes) !== 1) throw new Error('WorkItem claim lost its current Action');
+      const workItem = this.getWorkItem(row.work_item_id);
+      const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
+      const changedWorkItem = graphMode
+        ? this.db.prepare(`UPDATE work_items SET status = 'running', current_action_id = ?,
+          current_run_id = NULL, updated_at = ? WHERE id = ? AND status IN ('ready', 'running')`).run(
+          row.id, now, row.work_item_id,
+        )
+        : this.db.prepare(`UPDATE work_items SET status = 'running', current_run_id = ?, updated_at = ?
+          WHERE id = ? AND status = 'ready' AND current_action_id = ? AND current_run_id IS NULL`).run(
+          runId, now, row.work_item_id, row.id,
+        );
+      if (Number(changedWorkItem.changes) !== 1) throw new Error('WorkItem claim lost its Action fence');
       this.db.prepare(`INSERT INTO runs
         (id, action_id, work_item_id, owner_boot_id, lease_epoch, status, started_at,
          expires_at, evidence, progress_revision)
         VALUES (?, ?, ?, ?, ?, 'running', ?, ?, '[]', ?)`).run(
-        runId,
-        row.id,
-        row.work_item_id,
-        ownerBootId,
-        leaseEpoch,
-        now,
-        now + leaseMs,
-        progressRevision,
+        runId, row.id, row.work_item_id, ownerBootId, leaseEpoch, now, now + leaseMs, progressRevision,
       );
-      this.appendEvent(row.work_item_id, 'run.claimed', { ownerBootId, leaseEpoch }, { actionId: row.id, runId });
+      this.appendEvent(row.work_item_id, 'run.claimed', { ownerBootId, leaseEpoch }, {
+        actionId: row.id, runId,
+      });
       return {
         workItem: this.getWorkItem(row.work_item_id),
         action: this.getAction(row.id),
@@ -770,18 +837,20 @@ export class WorkItemStore {
   }
 
   #activeRunRow(runId, ownerBootId, leaseEpoch, requireUnexpired = true) {
-    return this.db.prepare(`SELECT r.* FROM runs r
+    const row = this.db.prepare(`SELECT r.* FROM runs r
       JOIN actions a ON a.id = r.action_id
       JOIN work_items w ON w.id = r.work_item_id
       WHERE r.id = ? AND r.owner_boot_id = ? AND r.lease_epoch = ? AND r.status = 'running'
         AND a.status = 'running' AND a.current_run_id = r.id AND a.lease_epoch = r.lease_epoch
-        AND w.status = 'running' AND w.current_action_id = a.id AND w.current_run_id = r.id
+        AND w.status IN ('ready', 'running', 'waiting')
         ${requireUnexpired ? 'AND r.expires_at > ?' : ''}`).get(
-      runId,
-      ownerBootId,
-      leaseEpoch,
-      ...(requireUnexpired ? [this.now()] : []),
+      runId, ownerBootId, leaseEpoch, ...(requireUnexpired ? [this.now()] : []),
     );
+    if (!row) return null;
+    const workItem = this.getWorkItem(row.work_item_id);
+    if (workItem?.workflowSnapshot?.executionMode === 'graph') return row;
+    return workItem?.status === 'running' && workItem.currentActionId === row.action_id
+      && workItem.currentRunId === row.id ? row : null;
   }
 
   renewLease(runId, ownerBootId, leaseEpoch, leaseMs = 60_000) {
@@ -858,15 +927,17 @@ export class WorkItemStore {
         leaseEpoch,
       );
       if (Number(actionChanged.changes) !== 1) throw new Error('Run interruption lost the Action fence');
-      const itemChanged = this.db.prepare(`UPDATE work_items SET status = ?, current_run_id = NULL,
-        updated_at = ? WHERE id = ? AND status = 'running' AND current_action_id = ?
-        AND current_run_id = ?`).run(
-        retryable ? 'ready' : 'needs_attention',
-        now,
-        active.work_item_id,
-        action.id,
-        runId,
-      );
+      const graphMode = this.getWorkItem(active.work_item_id)?.workflowSnapshot?.executionMode === 'graph';
+      const itemChanged = graphMode
+        ? this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
+          updated_at = ? WHERE id = ? AND status = 'running'`).run(
+          retryable ? 'ready' : 'needs_attention', action.id, now, active.work_item_id,
+        )
+        : this.db.prepare(`UPDATE work_items SET status = ?, current_run_id = NULL,
+          updated_at = ? WHERE id = ? AND status = 'running' AND current_action_id = ?
+          AND current_run_id = ?`).run(
+          retryable ? 'ready' : 'needs_attention', now, active.work_item_id, action.id, runId,
+        );
       if (Number(itemChanged.changes) !== 1) throw new Error('Run interruption lost the WorkItem fence');
       this.appendEvent(active.work_item_id, 'run.interrupted', { retryable, reason }, {
         actionId: action.id,
@@ -1018,24 +1089,59 @@ export class WorkItemStore {
       }
 
       let nextAction = null;
+      if (transition.graphResetStageId) {
+        const target = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ? AND stage_id = ?`)
+          .get(workItem.id, transition.graphResetStageId);
+        if (!target) throw new Error('Work Center review return target is missing');
+        const resetIds = this.db.prepare(`SELECT id FROM actions WHERE work_item_id = ? AND sequence >= ?`)
+          .all(workItem.id, target.sequence).map(row => row.id);
+        const placeholders = resetIds.map(() => '?').join(',');
+        if (resetIds.length > 0) {
+          this.db.prepare(`UPDATE runs SET status = 'superseded', ended_at = ?, error = ?
+            WHERE action_id IN (${placeholders}) AND status = 'running'`).run(
+            now, 'Superseded by review changes request', ...resetIds,
+          );
+          this.db.prepare(`UPDATE actions SET status = 'ready', current_run_id = NULL, updated_at = ?
+            WHERE id IN (${placeholders})`).run(now, ...resetIds);
+        }
+      }
+      const nextActions = Array.isArray(transition.nextActions) ? transition.nextActions : [];
+      for (const candidate of nextActions) {
+        const inserted = this.#insertAction(workItem.id, {
+          ...candidate,
+          contractRevision: nextWorkItem.revision,
+        }, this.#nextSequence(workItem.id), now);
+        if (!nextAction) nextAction = inserted;
+      }
       if (transition.nextAction) {
         nextAction = this.#insertAction(workItem.id, {
           ...transition.nextAction,
           contractRevision: nextWorkItem.revision,
         }, this.#nextSequence(workItem.id), now);
       }
-      const currentActionId = nextAction?.id
-        ?? (transition.keepCurrentAction ? action.id : null);
-      const changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
-        current_run_id = NULL, updated_at = ? WHERE id = ? AND current_run_id = ?
-        AND current_action_id = ? AND status = 'running'`).run(
-        transition.workItemStatus,
-        currentActionId,
-        now,
-        workItem.id,
-        runId,
-        action.id,
-      );
+      let workItemStatus = transition.workItemStatus;
+      let currentActionId = nextAction?.id ?? (transition.keepCurrentAction ? action.id : null);
+      let changedWorkItem;
+      if (transition.graphAdvance) {
+        const remaining = this.db.prepare(`SELECT id, status FROM actions WHERE work_item_id = ?
+          AND status IN ('ready', 'running', 'waiting', 'failed') ORDER BY sequence`).all(workItem.id);
+        const blocked = remaining.find(candidate => candidate.status === 'waiting' || candidate.status === 'failed');
+        const runnable = remaining.find(candidate => candidate.status === 'ready' || candidate.status === 'running');
+        workItemStatus = blocked ? (blocked.status === 'waiting' ? 'waiting' : 'needs_attention')
+          : runnable ? (remaining.some(candidate => candidate.status === 'running') ? 'running' : 'ready')
+            : 'done';
+        currentActionId = blocked?.id || runnable?.id || null;
+        changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
+          current_run_id = NULL, updated_at = ? WHERE id = ? AND status IN ('ready', 'running')`).run(
+          workItemStatus, currentActionId, now, workItem.id,
+        );
+      } else {
+        changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
+          current_run_id = NULL, updated_at = ? WHERE id = ? AND current_run_id = ?
+          AND current_action_id = ? AND status = 'running'`).run(
+          workItemStatus, currentActionId, now, workItem.id, runId, action.id,
+        );
+      }
       if (Number(changedWorkItem.changes) !== 1) {
         throw new Error('Work Center terminal transition lost the current WorkItem fence');
       }
@@ -1056,12 +1162,12 @@ export class WorkItemStore {
       for (const row of rows) {
         const action = this.getAction(row.action_id);
         const workItem = this.getWorkItem(row.work_item_id);
+        const graphMode = workItem?.workflowSnapshot?.executionMode === 'graph';
         const isCurrent = action?.status === 'running'
           && action.currentRunId === row.id
           && action.leaseEpoch === row.lease_epoch
           && workItem?.status === 'running'
-          && workItem.currentActionId === action.id
-          && workItem.currentRunId === row.id;
+          && (graphMode || (workItem.currentActionId === action.id && workItem.currentRunId === row.id));
         if (!isCurrent) {
           const staleStatus = workItem?.status === 'cancelled' ? 'cancelled' : 'superseded';
           this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, error = ?

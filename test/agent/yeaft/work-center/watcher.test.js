@@ -13,40 +13,33 @@ function deferred() {
 }
 
 describe('WorkItemWatcher', () => {
-  it('runs only one Action at a time until workspace leases exist', async () => {
-    const gate = deferred();
-    const secondGate = deferred();
-    const claims = [
-      { workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 1 } },
-      { workItem: { id: 'w2' }, action: { id: 'a2' }, run: { id: 'r2', leaseEpoch: 1 } },
-    ];
+  it('starts ready Actions up to the configured concurrency limit', async () => {
+    const gates = [deferred(), deferred(), deferred(), deferred()];
+    const claims = gates.map((_, index) => ({
+      workItem: { id: `w${index + 1}` }, action: { id: `a${index + 1}` },
+      run: { id: `r${index + 1}`, leaseEpoch: 1 },
+    }));
     const store = {
       claimReadyAction: vi.fn(() => claims.shift() || null),
-      renewLease: vi.fn(() => true),
-      interruptRun: vi.fn(() => true),
-      isActiveRun: vi.fn(() => true),
-      getWorkItemDetail: vi.fn(id => ({ id })),
+      renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
+      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
     };
-    const controller = { submit: vi.fn(() => ({ id: 'w1', status: 'done' })) };
-    const runner = { run: vi.fn()
-      .mockImplementationOnce(() => gate.promise)
-      .mockImplementationOnce(() => secondGate.promise) };
+    const controller = { submit: vi.fn(({ id } = {}) => ({ id, status: 'done' })) };
+    const runner = { run: vi.fn((claim) => gates[Number(claim.run.id.slice(1)) - 1].promise) };
     const watcher = new WorkItemWatcher({
       store, controller, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+      concurrencyProvider: () => 3,
     });
 
     await watcher.tick();
-    await watcher.tick();
-    expect(store.claimReadyAction).toHaveBeenCalledTimes(1);
-    expect(runner.run).toHaveBeenCalledTimes(1);
-
-    gate.resolve({ outcome: 'completed', summary: '', evidence: [] });
+    expect(runner.run).toHaveBeenCalledTimes(3);
+    expect(watcher.activeRuns.size).toBe(3);
+    gates[0].resolve({ outcome: 'completed', summary: '', evidence: [] });
     await watcher.activeRuns.get('r1').promise;
-    await watcher.tick();
-    expect(store.claimReadyAction).toHaveBeenCalledTimes(2);
-    expect(runner.run).toHaveBeenCalledTimes(2);
-    secondGate.resolve({ outcome: 'completed', summary: '', evidence: [] });
-    await watcher.activeRuns.get('r2').promise;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(runner.run).toHaveBeenCalledTimes(4);
+    gates.slice(1).forEach(gate => gate.resolve({ outcome: 'completed', summary: '', evidence: [] }));
+    await Promise.all([...watcher.activeRuns.values()].map(entry => entry.promise));
     await watcher.stop();
   });
 

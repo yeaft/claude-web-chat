@@ -5,7 +5,7 @@ import {
   trackOverlayPointerUp,
 } from '../utils/overlay-dismiss.js';
 
-const ACTION_TYPES = ['triage', 'research', 'design', 'diagnose', 'implement', 'migrate', 'test', 'review', 'document', 'operate', 'deliver', 'write', 'custom'];
+const ACTION_TYPES = ['triage', 'research', 'design', 'diagnose', 'implement', 'migrate', 'test', 'review', 'integrate', 'document', 'operate', 'deliver', 'write', 'custom'];
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -40,9 +40,13 @@ function defaultSettingsDraft() {
     revision: 1,
     defaultWorkflowId: 'software-change',
     startImmediately: true,
+    maxConcurrentActions: 3,
     defaultWorkDir: '',
     globalInstructions: '',
     modelPolicy: { mode: 'inherit', model: null, effort: null },
+    actionModelPolicies: Object.fromEntries(ACTION_TYPES.map(type => [type, {
+      mode: 'inherit', model: null, effort: ['triage', 'research', 'design', 'diagnose', 'review'].includes(type) ? 'high' : 'medium',
+    }])),
     actionInstructions: Object.fromEntries(ACTION_TYPES.map(type => [type, ''])),
     workflows: [{
       version: 1,
@@ -66,6 +70,7 @@ export function supportsDynamicSettings(value) {
   if (!value.modelPolicy || typeof value.modelPolicy !== 'object' || Array.isArray(value.modelPolicy)) return false;
   if (typeof value.globalInstructions !== 'string') return false;
   if (!value.actionInstructions || typeof value.actionInstructions !== 'object' || Array.isArray(value.actionInstructions)) return false;
+  if (!value.actionModelPolicies || typeof value.actionModelPolicies !== 'object' || Array.isArray(value.actionModelPolicies)) return false;
   return ACTION_TYPES.every(type => typeof value.actionInstructions[type] === 'string');
 }
 
@@ -105,6 +110,10 @@ export function normalizeSettingsDraft(value, defaultStageInstructions = {}) {
       ...(migratedModelPolicy || {}),
       ...(source.modelPolicy || {}),
     },
+    actionModelPolicies: Object.fromEntries(ACTION_TYPES.map(type => [
+      type,
+      { ...defaultSettingsDraft().actionModelPolicies[type], ...(source.actionModelPolicies?.[type] || {}) },
+    ])),
     actionInstructions: Object.fromEntries(ACTION_TYPES.map(type => [
       type,
       typeof sourceInstructions[type] === 'string'
@@ -338,7 +347,13 @@ export default {
     },
     effortOptionsForStage(stage) {
       const model = this.modelForStage(stage);
-      return Array.isArray(model?.effortOptions) ? model.effortOptions : [];
+      if (model) return Array.isArray(model.effortOptions) ? model.effortOptions : [];
+      if (stage.modelPolicy.mode === 'inherit') {
+        return [...new Set(this.models.flatMap(item => (
+          Array.isArray(item.effortOptions) ? item.effortOptions : []
+        )))];
+      }
+      return [];
     },
     effortHelpKeyForStage(stage) {
       if (!this.modelRefForStage(stage)) return 'workCenter.settings.effortChooseModelHelp';
@@ -353,6 +368,9 @@ export default {
     normalizeDraftEffort() {
       if (!this.draft?.modelPolicy || !Array.isArray(this.runtime?.models)) return;
       this.normalizeStageEffort({ modelPolicy: this.draft.modelPolicy });
+      for (const policy of Object.values(this.draft.actionModelPolicies || {})) {
+        this.normalizeStageEffort({ modelPolicy: policy });
+      }
     },
     setModelMode(stage, mode) {
       stage.modelPolicy.mode = mode;
@@ -466,6 +484,34 @@ export default {
                   <div><h3>{{ $t('workCenter.settings.models') }}</h3><p>{{ $t('workCenter.settings.dynamicModelsHelp') }}</p></div>
                   <button class="btn-secondary" type="button" @click="$emit('open-agent-models')">{{ $t('workCenter.settings.manageProviders') }}</button>
                 </div>
+                <article class="work-center-model-stage">
+                  <label>{{ $t('workCenter.settings.maxConcurrentActions') }}
+                    <input v-model.number="draft.maxConcurrentActions" type="number" min="1" max="12" :disabled="settingsUnsupported">
+                    <small>{{ $t('workCenter.settings.maxConcurrentActionsHelp') }}</small>
+                  </label>
+                </article>
+                <article v-for="type in actionTypes" :key="type" class="work-center-model-stage">
+                  <strong>{{ $t('workCenter.action.' + type) }}</strong>
+                  <label>{{ $t('workCenter.settings.modelPolicy') }}
+                    <select :value="draft.actionModelPolicies[type].mode" :disabled="settingsUnsupported" @change="setModelMode({ modelPolicy: draft.actionModelPolicies[type] }, $event.target.value)">
+                      <option value="inherit">{{ $t('workCenter.settings.model.inherit') }}</option>
+                      <option value="primary">{{ $t('workCenter.settings.model.primary') }}</option>
+                      <option value="fast">{{ $t('workCenter.settings.model.fast') }}</option>
+                      <option value="specific">{{ $t('workCenter.settings.model.specific') }}</option>
+                    </select>
+                  </label>
+                  <label v-if="draft.actionModelPolicies[type].mode === 'specific'">{{ $t('workCenter.settings.model') }}
+                    <select :value="draft.actionModelPolicies[type].model" :disabled="settingsUnsupported" @change="setStageModel({ modelPolicy: draft.actionModelPolicies[type] }, $event.target.value)">
+                      <option v-for="model in models" :key="model.ref || model.id" :value="model.ref || model.id">{{ model.provider }} · {{ model.label || model.id }}</option>
+                    </select>
+                  </label>
+                  <label class="work-center-model-effort">{{ $t('workCenter.settings.effort') }}
+                    <select v-model="draft.actionModelPolicies[type].effort" :disabled="settingsUnsupported || effortOptionsForStage({ modelPolicy: draft.actionModelPolicies[type] }).length === 0">
+                      <option :value="null">{{ $t('workCenter.settings.effortDefault') }}</option>
+                      <option v-for="effort in effortOptionsForStage({ modelPolicy: draft.actionModelPolicies[type] })" :key="effort" :value="effort">{{ effort }}</option>
+                    </select>
+                  </label>
+                </article>
                 <article class="work-center-model-stage">
                   <strong>{{ $t('workCenter.settings.allActions') }}</strong>
                   <label>{{ $t('workCenter.settings.modelPolicy') }}

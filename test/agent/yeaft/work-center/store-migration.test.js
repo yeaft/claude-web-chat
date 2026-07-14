@@ -80,6 +80,6 @@ describe('Work Center store migration', () => {
       progressRevision: 0, checkpoint: null,
     });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('8');
+      .toBe('10');
   });
 });

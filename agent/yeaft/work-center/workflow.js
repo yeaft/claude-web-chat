@@ -1,3 +1,5 @@
+import { renderSessionContextSnapshot } from './session-context.js';
+
 export const BUILT_IN_ACTION_TYPES = Object.freeze([
   'triage',
   'research',
@@ -7,6 +9,7 @@ export const BUILT_IN_ACTION_TYPES = Object.freeze([
   'migrate',
   'test',
   'review',
+  'integrate',
   'document',
   'operate',
   'deliver',
@@ -17,6 +20,8 @@ const STAGE_TYPES = new Set(BUILT_IN_ACTION_TYPES);
 const ASSIGNMENT_MODES = new Set(['auto', 'pool', 'fixed']);
 const MODEL_MODES = new Set(['inherit', 'primary', 'fast', 'specific']);
 const MODEL_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const WORKSPACE_MODES = new Set(['shared', 'read', 'isolated-write', 'integrate']);
+const HIGH_EFFORT_ACTION_TYPES = new Set(['triage', 'research', 'design', 'diagnose', 'review']);
 
 const DEFAULT_STAGE_INSTRUCTIONS = Object.freeze({
   triage: 'Turn the request into an executable contract. Inspect relevant repository facts before deciding the flow. Classify the WorkItem, identify constraints, risks, dependencies, and missing acceptance criteria, then plan only the Actions needed for this task. Do not implement. If the goal or acceptance criteria must change, submit a contractPatch and explain why.',
@@ -27,6 +32,7 @@ const DEFAULT_STAGE_INSTRUCTIONS = Object.freeze({
   migrate: 'Execute the required migration without losing existing semantics or data. Define compatibility and rollback boundaries, make the operation repeatable or safely fenced, validate representative legacy data, and provide evidence for both upgraded and already-current states.',
   test: 'Verify the current result against every applicable acceptance criterion. Run focused tests first, then the broader checks justified by the risk. Cover failure, compatibility, and boundary cases, report exact reproducible evidence, and do not hide skipped or inconclusive checks.',
   review: 'Review the implementation and evidence independently against the WorkItem contract and repository rules. Prioritize correctness, security, data loss, compatibility, and missing tests over style preferences. Return approved or changes_requested with concrete, actionable findings and evidence.',
+  integrate: 'Integrate only completed isolated Action branches. Stop on any merge conflict instead of guessing, inspect the combined tree, run focused consistency checks, and leave a clean integrated result for downstream verification.',
   document: 'Update the user or maintainer documentation required by the Action objective. Keep terminology and examples consistent with actual behavior, cover compatibility or operational consequences, and verify links, commands, and bilingual requirements where applicable.',
   operate: 'Perform the operational change with explicit preconditions, safety fences, observability, and rollback handling. Verify the live or simulated postcondition from authoritative state, avoid destructive shortcuts, and record the exact evidence needed for handoff.',
   deliver: 'Deliver only an approved result using the repository release policy. Recheck the reviewed commit and remote state, run required final verification on the immutable delivery tree, publish only the requested artifacts, and report commit, tag, deployment, and residual-risk evidence.',
@@ -43,6 +49,7 @@ const DEFAULT_ACTION_BRIEFS = Object.freeze({
   migrate: ['Move existing data or behavior to the required shape without losing semantics.', 'Fence compatibility and rollback boundaries, then validate legacy and already-current states.', 'A repeatable or safely fenced migration with representative evidence.'],
   test: ['Verify the current result against the Work Item acceptance criteria.', 'Run focused checks first, then broader risk-appropriate tests including failure and compatibility cases.', 'Reproducible pass/fail evidence for every applicable acceptance criterion.'],
   review: ['Review the current result independently against the Work Item contract.', 'Prioritize correctness, security, data loss, compatibility, and missing tests over style preferences.', 'An approval or concrete change request supported by evidence.'],
+  integrate: ['Combine the completed isolated Action branches into one verified result.', 'Merge only declared dependency commits, stop on conflicts, and inspect the combined tree.', 'A clean integrated result ready for test and review.'],
   document: ['Update the documentation required by this Action.', 'Align terminology and examples with actual behavior and verify links, commands, and language requirements.', 'Accurate, usable documentation that matches the delivered behavior.'],
   operate: ['Perform the requested operational change safely.', 'Check preconditions, apply safety fences, preserve rollback options, and verify authoritative state.', 'A verified operational postcondition with handoff and rollback evidence.'],
   deliver: ['Deliver the approved Work Item result using repository release policy.', 'Recheck immutable reviewed state, run final gates, and publish only the requested artifacts.', 'A traceable delivery with commit, artifact, deployment, and residual-risk evidence.'],
@@ -138,6 +145,21 @@ export function normalizeModelPolicy(value) {
   return { mode, model, effort };
 }
 
+export function defaultActionModelPolicy(type, fallback = null) {
+  const base = normalizeModelPolicy(fallback);
+  return { ...base, effort: HIGH_EFFORT_ACTION_TYPES.has(type) ? 'high' : 'medium' };
+}
+
+export function normalizeActionModelPolicies(value, fallback = null) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries([...STAGE_TYPES].map(type => [
+    type,
+    normalizeModelPolicy(Object.hasOwn(source, type)
+      ? { ...defaultActionModelPolicy(type, fallback), ...source[type] }
+      : defaultActionModelPolicy(type, fallback)),
+  ]));
+}
+
 export function defaultWorkCenterStageInstruction(type) {
   return DEFAULT_STAGE_INSTRUCTIONS[STAGE_TYPES.has(type) ? type : 'custom'];
 }
@@ -164,6 +186,7 @@ export function normalizeWorkflowDefinition(value, index = 0) {
     throw new Error(`Work Center workflow "${id}" requires at least one stage`);
   }
   const planningMode = value.planningMode === 'ai' ? 'ai' : 'static';
+  const executionMode = value.executionMode === 'graph' ? 'graph' : 'linear';
   const seen = new Set();
   const stages = value.stages.map((rawStage, stageIndex) => {
     const source = rawStage && typeof rawStage === 'object' ? rawStage : {};
@@ -183,6 +206,8 @@ export function normalizeWorkflowDefinition(value, index = 0) {
         : defaultWorkCenterStageInstruction(type),
       assignmentPolicy: normalizeAssignmentPolicy(source.assignmentPolicy, type),
       modelPolicy: normalizeModelPolicy(source.modelPolicy),
+      dependsOnStageIds: uniqueStrings(source.dependsOnStageIds),
+      workspaceMode: WORKSPACE_MODES.has(source.workspaceMode) ? source.workspaceMode : 'shared',
       maxAttempts: Math.min(Math.max(Number(source.maxAttempts) || 2, 1), 5),
     };
     if (type === 'review') {
@@ -206,11 +231,13 @@ export function normalizeWorkflowDefinition(value, index = 0) {
     id,
     name,
     planningMode,
+    executionMode,
     workItemType: typeof value.workItemType === 'string' && value.workItemType.trim()
       ? cleanId(value.workItemType, 'general')
       : null,
     globalInstructions: normalizeGlobalInstructions(value.globalInstructions),
     modelPolicy: normalizeModelPolicy(value.modelPolicy),
+    actionModelPolicies: normalizeActionModelPolicies(value.actionModelPolicies, value.modelPolicy),
     actionInstructions: normalizeActionInstructions(value.actionInstructions),
     actionTemplates: Array.isArray(value.actionTemplates)
       ? value.actionTemplates.map(template => normalizeWorkflowDefinition(template))
@@ -235,9 +262,11 @@ export function defaultWorkCenterSettings() {
     revision: 1,
     defaultWorkflowId: 'software-change',
     startImmediately: true,
+    maxConcurrentActions: 3,
     defaultWorkDir: '',
     globalInstructions: '',
     modelPolicy: { mode: 'inherit', model: null, effort: null },
+    actionModelPolicies: normalizeActionModelPolicies(),
     actionInstructions: normalizeActionInstructions(),
     workflows: [normalizeWorkflowDefinition({
       id: 'software-change',
@@ -271,9 +300,11 @@ export function normalizeWorkCenterSettings(value) {
     revision,
     defaultWorkflowId,
     startImmediately: source.startImmediately !== false,
+    maxConcurrentActions: Math.min(Math.max(Number(source.maxConcurrentActions) || 3, 1), 12),
     defaultWorkDir: typeof source.defaultWorkDir === 'string' ? source.defaultWorkDir.trim() : '',
     globalInstructions: normalizeGlobalInstructions(source.globalInstructions),
     modelPolicy: normalizeModelPolicy(source.modelPolicy || migratedModelPolicy),
+    actionModelPolicies: normalizeActionModelPolicies(source.actionModelPolicies, source.modelPolicy || migratedModelPolicy),
     actionInstructions: normalizeActionInstructions(source.actionInstructions || migratedInstructions),
     workflows,
   };
@@ -310,7 +341,7 @@ export function resolvePlanningWorkflowSnapshot(settings, requestedWorkItemType 
   const typeInstruction = requestedType
     ? `The user explicitly selected workItemType "${requestedType}". Keep that exact type.`
     : 'Infer one specific workItemType from the contract.';
-  const triageInstruction = `${normalized.actionInstructions.triage}\n\n${typeInstruction}\nReusable Action templates:\n${catalog || '(none)'}\nIf the final type matches a reusable template, return its workItemType and omit actions so Work Center can apply that frozen template. Otherwise generate the smallest reliable sequence of 1 to 8 Actions. Action types are extensible lowercase slugs: use a built-in type when its reusable policy fits, or define a precise domain type when it does not. Every generated Action must state objective (what to do), approach (how to do it), expectedOutcome (the verifiable result), and capability. Add only Actions required by this task. Do not copy a generic workflow.`;
+  const triageInstruction = `${normalized.actionInstructions.triage}\n\n${typeInstruction}\nReusable Action templates:\n${catalog || '(none)'}\nIf the final type matches a reusable template, return its workItemType and omit actions so Work Center can apply that frozen template. Otherwise generate the smallest reliable graph of 1 to 8 Actions. Split independent work into separate Actions and declare dependsOnActionIds. Use workspaceMode read for analysis, isolated-write for independent Git changes, integrate for an integrate Action that combines isolated-write dependencies, and shared for serial side effects. Non-Git or dirty workspaces are serialized automatically. Every generated Action must state objective, approach, expectedOutcome, capability, dependencies, and workspaceMode. Add only Actions required by this task. Do not copy a generic workflow.`;
   return normalizeWorkflowDefinition({
     id: 'ai-planned',
     name: 'AI planned',
@@ -318,6 +349,7 @@ export function resolvePlanningWorkflowSnapshot(settings, requestedWorkItemType 
     workItemType: requestedType || null,
     globalInstructions: normalized.globalInstructions,
     modelPolicy: normalized.modelPolicy,
+    actionModelPolicies: normalized.actionModelPolicies,
     actionInstructions: normalized.actionInstructions,
     actionTemplates,
     stages: [{
@@ -330,7 +362,7 @@ export function resolvePlanningWorkflowSnapshot(settings, requestedWorkItemType 
         mode: 'auto', capability: 'triage', candidateVpIds: [], fixedVpId: null,
         separateFromStageTypes: [],
       },
-      modelPolicy: normalized.modelPolicy,
+      modelPolicy: normalized.actionModelPolicies.triage,
       maxAttempts: 2,
     }],
   });
@@ -393,6 +425,7 @@ export function applyGeneratedPlan(workItem, rawPlan) {
     throw new Error('AI-planned triage requires between 1 and 8 Actions when no reusable template exists');
   }
   const seen = new Set(['triage']);
+  let previousGeneratedId = null;
   const generated = rawPlan.actions.map((rawAction, index) => {
     const input = rawAction && typeof rawAction === 'object' && !Array.isArray(rawAction) ? rawAction : {};
     const type = generatedActionType(input.type);
@@ -427,9 +460,14 @@ export function applyGeneratedPlan(workItem, rawPlan) {
         fixedVpId: null,
         separateFromStageTypes: uniqueStrings(input.separateFromActionTypes),
       },
-      modelPolicy: source.modelPolicy,
+      modelPolicy: source.actionModelPolicies[type] || source.actionModelPolicies.custom,
+      dependsOnStageIds: Object.hasOwn(input, 'dependsOnActionIds')
+        ? uniqueStrings(input.dependsOnActionIds)
+        : (previousGeneratedId ? [previousGeneratedId] : []),
+      workspaceMode: WORKSPACE_MODES.has(input.workspaceMode) ? input.workspaceMode : 'shared',
       maxAttempts: Math.min(Math.max(Number(input.maxAttempts) || 2, 1), 5),
     };
+    previousGeneratedId = id;
     if (type === 'review' && Object.prototype.hasOwnProperty.call(input, 'changesRequestedActionId')) {
       stage.changesRequestedStageId = typeof input.changesRequestedActionId === 'string'
         ? cleanId(input.changesRequestedActionId, '')
@@ -454,8 +492,39 @@ export function applyGeneratedPlan(workItem, rawPlan) {
       throw new Error(`AI-planned review Action "${stage.id}" requires an earlier editable Action`);
     }
   }
+  const hasIsolatedWrites = generated.some(stage => stage.workspaceMode === 'isolated-write');
+  const integrationStages = generated.filter(stage => stage.workspaceMode === 'integrate');
+  if (hasIsolatedWrites && integrationStages.length !== 1) {
+    throw new Error('AI-planned isolated-write Actions require exactly one integration Action');
+  }
+  for (const [index, stage] of generated.entries()) {
+    for (const dependencyId of stage.dependsOnStageIds) {
+      if (!generated.slice(0, index).some(candidate => candidate.id === dependencyId)) {
+        throw new Error(`AI-planned Action "${stage.id}" has a missing, self, or future dependency "${dependencyId}"`);
+      }
+    }
+    const isolatedDependencies = stage.dependsOnStageIds
+      .map(id => generated.find(candidate => candidate.id === id))
+      .filter(candidate => candidate?.workspaceMode === 'isolated-write');
+    if (stage.workspaceMode === 'integrate' && (stage.type !== 'integrate' || isolatedDependencies.length === 0)) {
+      throw new Error(`AI-planned integration Action "${stage.id}" must depend on isolated-write Actions`);
+    }
+    if (stage.workspaceMode === 'integrate') {
+      const required = generated.filter(candidate => candidate.workspaceMode === 'isolated-write').map(candidate => candidate.id);
+      if (required.some(id => !stage.dependsOnStageIds.includes(id))) {
+        throw new Error(`AI-planned integration Action "${stage.id}" must depend on every isolated-write Action`);
+      }
+    }
+    if (stage.type === 'integrate' && stage.workspaceMode !== 'integrate') {
+      throw new Error(`AI-planned integrate Action "${stage.id}" requires integration workspace mode`);
+    }
+    if (stage.workspaceMode !== 'integrate' && isolatedDependencies.length > 0) {
+      throw new Error(`AI-planned Action "${stage.id}" must consume isolated writes through integration`);
+    }
+  }
   return normalizeWorkflowDefinition({
     ...source,
+    executionMode: 'graph',
     workItemType,
     stages: [source.stages[0], ...generated],
   });
@@ -539,9 +608,9 @@ function renderContext(context = []) {
   return `\n\nReusable Work Center context and prior Action results:\n${blocks.join('\n\n')}`;
 }
 
-export function actionInstruction(stage, workItem, context = []) {
+export function actionInstruction(stage, workItem, context = [], sessionContextBlock = renderSessionContextSnapshot(workItem?.sessionContext)) {
   const criteria = (workItem.acceptanceCriteria || []).map(item => `- ${item}`).join('\n') || '- No explicit criteria';
-  const common = `WorkItem: ${workItem.title}\nGoal: ${workItem.goal}\nAcceptance criteria:\n${criteria}${renderContext(context)}`;
+  const common = `WorkItem: ${workItem.title}\nGoal: ${workItem.goal}\nAcceptance criteria:\n${criteria}${sessionContextBlock}${renderContext(context)}`;
   const policy = stage.instruction || defaultWorkCenterStageInstruction(stage.type);
   const brief = normalizeActionBrief(stage.brief || stage, stage.type);
   const contract = `Action type: ${stage.type}\nWhat to do:\n${brief.objective}\n\nHow to do it:\n${brief.approach}\n\nExpected result:\n${brief.expectedOutcome}`;
@@ -554,6 +623,8 @@ export function actionForStage(stage, workItem, context = []) {
     stageId: stage.id,
     assignmentPolicy: stage.assignmentPolicy,
     modelPolicy: stage.modelPolicy,
+    dependsOnStageIds: stage.dependsOnStageIds || [],
+    workspaceMode: stage.workspaceMode || 'shared',
     // Storage compatibility for databases created before assignment policies.
     requiredRole: stage.assignmentPolicy.mode === 'fixed' ? stage.assignmentPolicy.fixedVpId : '',
     brief: normalizeActionBrief(stage, stage.type),
