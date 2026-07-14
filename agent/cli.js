@@ -29,7 +29,7 @@ import {
   discoverOpenAICompatibleModels,
   GITHUB_COPILOT_PROVIDER,
 } from './llm-model-discovery.js';
-import { getInstanceIdFromArgs, warnDeprecatedInstanceArg } from './service/config.js';
+import { applyAgentIdentityToEnv, warnDeprecatedInstanceArg } from './service/config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf-8'));
@@ -79,7 +79,7 @@ function printHelp() {
   Options:
     --instance <id>     Deprecated alias for the local service instance id
     --server <url>      WebSocket server URL (default: ws://localhost:3456)
-    --name <name>       Agent name and local service instance id
+    --name <name>       Agent name and instance id (letters, numbers, ._-)
     --secret <secret>   Agent secret for authentication
     --work-dir <dir>    Default working directory (default: cwd)
     --yeaft-dir <dir>   Yeaft data directory for this instance
@@ -404,25 +404,22 @@ async function handleDoctorCommand() {
 
 function parseAndStart(args) {
   warnDeprecatedInstanceArg(args);
-  const instanceId = getInstanceIdFromArgs(args);
-  if (instanceId !== 'default') {
-    process.env.YEAFT_AGENT_INSTANCE = instanceId;
-  }
+  applyAgentIdentityToEnv(args);
 
-  // Parse CLI flags → set environment variables (env vars take precedence over flags)
+  // Parse non-identity flags. Saved environment remains the fallback for these options.
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const next = args[i + 1];
 
     switch (arg) {
       case '--instance':
-        if (next) { process.env.YEAFT_AGENT_INSTANCE = process.env.YEAFT_AGENT_INSTANCE || next; i++; }
+        if (next) i++;
         break;
       case '--server':
         if (next) { process.env.SERVER_URL = process.env.SERVER_URL || next; i++; }
         break;
       case '--name':
-        if (next) { process.env.AGENT_NAME = process.env.AGENT_NAME || next; i++; }
+        if (next) i++;
         break;
       case '--secret':
         if (next) { process.env.AGENT_SECRET = process.env.AGENT_SECRET || next; i++; }

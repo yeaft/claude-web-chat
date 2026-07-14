@@ -107,6 +107,48 @@ describe('agent service instance config', () => {
     expect(configMod.getInstanceIdFromArgs(['--instance', 'fourth', '--name', 'third'])).toBe('fourth');
   });
 
+  it('applies explicit --name over stale foreground identity environment', () => {
+    const env = {
+      YEAFT_AGENT_INSTANCE: 'legacy-id',
+      AGENT_NAME: 'legacy-name',
+    };
+
+    expect(configMod.applyAgentIdentityToEnv(['--name', 'new-name'], env)).toBe('new-name');
+    expect(env).toMatchObject({
+      YEAFT_AGENT_INSTANCE: 'new-name',
+      AGENT_NAME: 'new-name',
+    });
+  });
+
+  it('allows explicit --name default to replace a stale foreground instance', () => {
+    const env = {
+      YEAFT_AGENT_INSTANCE: 'legacy-id',
+      AGENT_NAME: 'legacy-name',
+    };
+
+    expect(configMod.applyAgentIdentityToEnv(['--name', 'default'], env)).toBe('default');
+    expect(env).toMatchObject({
+      YEAFT_AGENT_INSTANCE: 'default',
+      AGENT_NAME: 'default',
+    });
+  });
+
+  it('preserves the deprecated instance plus display-name compatibility path', () => {
+    const env = {
+      YEAFT_AGENT_INSTANCE: 'legacy-id',
+      AGENT_NAME: 'legacy-name',
+    };
+
+    expect(configMod.applyAgentIdentityToEnv([
+      '--instance', 'safe-id',
+      '--name', 'Display Name',
+    ], env)).toBe('safe-id');
+    expect(env).toMatchObject({
+      YEAFT_AGENT_INSTANCE: 'safe-id',
+      AGENT_NAME: 'Display Name',
+    });
+  });
+
   it('rejects unsafe instance ids', () => {
     expect(() => configMod.validateInstanceId('../bad')).toThrow(/Instance id/);
     expect(() => configMod.validateInstanceId('bad/slash')).toThrow(/Instance id/);

@@ -81,6 +81,19 @@ export function getInstanceIdFromArgs(args = [], env = process.env) {
   );
 }
 
+export function applyAgentIdentityToEnv(args = [], env = process.env) {
+  env.YEAFT_AGENT_INSTANCE = getInstanceIdFromArgs(args, env);
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--name' && args[i + 1]) {
+      env.AGENT_NAME = args[i + 1];
+      i++;
+    }
+  }
+
+  return env.YEAFT_AGENT_INSTANCE;
+}
+
 export function warnDeprecatedInstanceArg(args = [], warn = console.warn) {
   if (args.includes('--instance')) {
     warn('Warning: --instance is deprecated; use --name instead. The instance id now defaults to the agent name.');
