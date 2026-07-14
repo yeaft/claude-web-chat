@@ -70,6 +70,19 @@ describe('Yeaft conversation header actions', () => {
     expect(yeaftCss).toContain('.yeaft-vp-timeline.mobile-session-status .yeaft-session-status-header {\n    display: flex;\n  }');
   });
 
+  it('places Session history search first and wires its accessible state', () => {
+    const block = actionComponentBlock();
+    const searchPos = block.indexOf('class="yeaft-search-btn"');
+    const reloadPos = block.indexOf('class="yeaft-reload-btn"');
+    expect(searchPos).toBeGreaterThan(-1);
+    expect(searchPos).toBeLessThan(reloadPos);
+    expect(sessionActionsSource).toContain("emits: ['toggle-search'");
+    expect(sessionActionsSource).toContain(':aria-expanded="searchOpen');
+    expect(sessionActionsSource).toContain('aria-controls="yeaft-transcript-search"');
+    expect(pageSource).toContain('@toggle-search="toggleHistorySearch"');
+    expect(pageSource).toContain('<YeaftTranscriptSearch');
+  });
+
   it('keeps message refresh as a session-history refresh action', () => {
     const block = actionComponentBlock();
 

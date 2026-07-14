@@ -180,6 +180,7 @@ export default {
         <div v-else-if="(store.loadingMoreMessages && store.currentView !== 'yeaft') || store.yeaftLoadingMoreHistory" class="loading-more">{{ $t('message.loadingMore') }}</div>
         <div v-else-if="(store.hasMoreMessages && store.currentView !== 'yeaft') || store.yeaftHasMoreHistory || store.hasHiddenYeaftMessages" class="load-more-hint" @click="onClickLoadMore">{{ $t('message.loadMore') }}</div>
         <VirtualTranscript
+          ref="virtualTranscriptRef"
           :items="messageBlocks"
           :estimate-height="estimateMessageBlockHeight"
           :overscan="1"
@@ -656,7 +657,7 @@ export default {
     </main>
   `,
   emits: ['new-conversation', 'resume-conversation', 'open-settings'],
-  setup() {
+  setup(_props, { expose }) {
     const store = Pinia.useChatStore();
     const authStore = useAuthStore();
     const vpStore = (typeof window !== 'undefined' && window.Pinia?.useVpStore)
@@ -664,6 +665,7 @@ export default {
       : null;
     const t = Vue.inject('t', null);
     const containerRef = Vue.ref(null);
+    const virtualTranscriptRef = Vue.ref(null);
     const assistantTurnActionStates = Vue.reactive({});
     const toolExpandStates = Vue.reactive({});
     const messageTurnCollapseStates = Vue.reactive({});
@@ -1973,11 +1975,38 @@ export default {
       }
     );
 
-    // H2.f.6: yeaftJumpTarget watcher removed (sidebar no longer emits
-    // jump-to-message events; message block navigation uses message ids). The
-    // flashMsgId ref is kept (currently unused) so any v-bind referencing
-    // it stays valid.
     const flashMsgId = Vue.ref(null);
+    let flashGeneration = 0;
+
+    const revealMessage = async (messageId) => {
+      if (!messageId) return false;
+      const block = (messageBlocks.value || []).find((candidate) => {
+        if (!candidate) return false;
+        if (candidate.id === messageId || candidate.messageId === messageId) return true;
+        return Array.isArray(candidate.items) && candidate.items.some((item) => {
+          const rowId = item?.id || item?.messageId || item?.atMessageId || item?.message?.id;
+          return rowId === messageId;
+        });
+      });
+      if (!block) return false;
+      resumeAutoFollow();
+      autoFollowPaused.value = true;
+      isAtBottom.value = false;
+      const moved = await virtualTranscriptRef.value?.scrollToKey?.(block.id, { align: 'center' });
+      if (!moved) return false;
+      await Vue.nextTick();
+      const rows = containerRef.value?.querySelectorAll?.('[data-msg-id]') || [];
+      const row = Array.from(rows).find(el => el?.dataset?.msgId === messageId);
+      row?.scrollIntoView?.({ block: 'center', inline: 'nearest' });
+      const generation = ++flashGeneration;
+      flashMsgId.value = messageId;
+      setTimeout(() => {
+        if (generation === flashGeneration) flashMsgId.value = null;
+      }, 1800);
+      return true;
+    };
+
+    expose({ revealMessage });
 
     Vue.onMounted(() => {
       scrollToBottom();
@@ -2012,6 +2041,7 @@ export default {
     return {
       store,
       containerRef,
+      virtualTranscriptRef,
       flashMsgId,
       hasStreamingMessage,
       nowMs,

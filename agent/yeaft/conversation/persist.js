@@ -1396,6 +1396,105 @@ export class ConversationStore {
   }
 
   /**
+   * Search user-visible messages inside one Session. The scan is newest-first
+   * and stops as soon as one page plus a `hasMore` sentinel is found, so a
+   * common recent hit does not materialize the full transcript.
+   *
+   * @param {string} sessionId
+   * @param {string} query
+   * @param {{ limit?: number, beforeSeq?: number|null }} [opts]
+   * @returns {{ results: object[], hasMore: boolean, nextBeforeSeq: number|null }}
+   */
+  searchVisibleBySession(sessionId, query, opts = {}) {
+    const needle = typeof query === 'string' ? query.trim().toLocaleLowerCase() : '';
+    if (!sessionId || needle.length < 2) return { results: [], hasMore: false, nextBeforeSeq: null };
+
+    const limit = Math.min(50, Math.max(1, Number.isFinite(opts.limit) ? Math.floor(opts.limit) : 20));
+    const beforeSeq = Number.isFinite(opts.beforeSeq) ? opts.beforeSeq : Infinity;
+    const results = [];
+    const seen = new Set();
+    let hasMore = false;
+
+    for (const message of this.#iterateSessionRows(sessionId, { beforeSeq, desc: true })) {
+      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) continue;
+      if (message.role !== 'user' && message.role !== 'assistant') continue;
+      if (!message.id || seen.has(message.id)) continue;
+      seen.add(message.id);
+
+      const text = this.#visibleSearchText(message.content);
+      const matchIndex = text.toLocaleLowerCase().indexOf(needle);
+      if (matchIndex < 0) continue;
+      if (results.length >= limit) {
+        hasMore = true;
+        break;
+      }
+
+      const seq = parseSeqFromId(message.id);
+      if (!Number.isFinite(seq)) continue;
+      results.push({
+        messageId: message.id,
+        turnId: message.turnId || message.threadId || message.id,
+        seq,
+        role: message.role,
+        speakerVpId: message.speakerVpId || null,
+        timestamp: message.ts || message.time || null,
+        snippet: this.#searchSnippet(text, matchIndex, needle.length),
+      });
+    }
+
+    return {
+      results,
+      hasMore,
+      nextBeforeSeq: hasMore && results.length > 0 ? results[results.length - 1].seq : null,
+    };
+  }
+
+  /**
+   * Load a bounded visible window around a search hit. This deliberately does
+   * not mutate normal older-history cursors: the web client merges the window
+   * into its cache solely to mount and focus the requested virtual-list item.
+   *
+   * @param {string} sessionId
+   * @param {number} anchorSeq
+   * @param {{ beforeTurns?: number, afterTurns?: number }} [opts]
+   * @returns {{ messages: object[], oldestSeq: number|null, hasMoreBefore: boolean }}
+   */
+  loadVisibleWindowBySession(sessionId, anchorSeq, opts = {}) {
+    if (!sessionId || !Number.isFinite(anchorSeq)) {
+      return { messages: [], oldestSeq: null, hasMoreBefore: false };
+    }
+
+    const beforeTurns = Math.min(10, Math.max(1, Number.isFinite(opts.beforeTurns) ? Math.floor(opts.beforeTurns) : 3));
+    const afterTurns = Math.min(10, Math.max(1, Number.isFinite(opts.afterTurns) ? Math.floor(opts.afterTurns) : 3));
+    const before = this.loadVisibleBySession(sessionId, anchorSeq + 1, beforeTurns + 1);
+    const messages = before.messages.slice();
+    const seen = new Set(messages.map(message => message?.id).filter(Boolean));
+    let followingUserTurns = 0;
+
+    for (const message of this.#iterateSessionRows(sessionId, { afterSeq: anchorSeq, desc: false })) {
+      if (!message || message.sessionId !== sessionId || isHiddenConversationRow(message)) continue;
+      if (message.role !== 'user' && message.role !== 'assistant') continue;
+      if (message.role === 'user') {
+        followingUserTurns += 1;
+        if (followingUserTurns > afterTurns) break;
+      }
+      if (message.id && seen.has(message.id)) continue;
+      const projected = this.#projectVisibleMessage(message);
+      if (!projected) continue;
+      if (projected.id) seen.add(projected.id);
+      messages.push(projected);
+    }
+
+    messages.sort(compareMessagesBySeq);
+    const oldestSeq = messages.length > 0 ? parseSeqFromId(messages[0].id) : null;
+    return {
+      messages,
+      oldestSeq: Number.isFinite(oldestSeq) ? oldestSeq : null,
+      hasMoreBefore: before.hasMore,
+    };
+  }
+
+  /**
    * Count hot messages.
    *
    * @returns {number}
@@ -2113,6 +2212,33 @@ export class ConversationStore {
       messages: turnsFromEnd > 0 ? sliceLastNTurns(kept, turnsLimit) : kept,
       truncated,
     };
+  }
+
+  #visibleSearchText(content) {
+    if (typeof content === 'string') return content.replace(/\s+/g, ' ').trim();
+    if (!Array.isArray(content)) return '';
+    return content
+      .filter(part => part && typeof part === 'object' && part.type === 'text')
+      .map(part => typeof part.text === 'string' ? part.text : '')
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  #searchSnippet(text, matchIndex, needleLength) {
+    const radius = 90;
+    const start = Math.max(0, matchIndex - radius);
+    const end = Math.min(text.length, matchIndex + needleLength + radius);
+    return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
+  }
+
+  #projectVisibleMessage(message) {
+    if (!message || (message.role !== 'user' && message.role !== 'assistant')) return null;
+    if (message.role !== 'assistant' || !Array.isArray(message.toolCalls) || message.toolCalls.length === 0) {
+      return message;
+    }
+    const { toolCalls, ...rest } = message;
+    return { ...rest, toolSummaryCount: toolCalls.length };
   }
 
   #readSegmentRows(conversationDir, opts = {}) {

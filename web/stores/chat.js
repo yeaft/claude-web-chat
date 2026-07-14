@@ -22,6 +22,7 @@ import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/
 import {
   getDefaultYeaftVisibleTurns,
   getYeaftWindowLoadStepTurns,
+  buildYeaftMessageTurnSpans,
   hasHiddenScopedYeaftMessageTurns,
   sliceScopedYeaftMessagesByRecentTurns,
 } from './helpers/yeaft-message-window.js';
@@ -322,6 +323,21 @@ export const useChatStore = defineStore('chat', {
     // yeaftSessionHistoryState[groupId].loading.
     yeaftBootstrapMetaLoadingKey: null,
     yeaftHistoryPerfTraceBySession: {},
+    // Session history search is request-scoped. Results are never derived from
+    // the bounded render cache, and the request id prevents stale debounce
+    // responses from one query/session replacing a newer panel state.
+    yeaftHistorySearchState: {
+      requestId: null,
+      agentId: null,
+      sessionId: null,
+      query: '',
+      loading: false,
+      results: [],
+      hasMore: false,
+      nextBeforeSeq: null,
+      error: null,
+    },
+    _yeaftHistoryWindowPending: null,
     // One-shot marker: set true by the websocket onclose handler on a real
     // disconnect, consumed by handleAgentList to run a single Yeaft history
     // catch-up after the socket comes back. Without this gate the catch-up
@@ -1824,6 +1840,133 @@ export const useChatStore = defineStore('chat', {
         ...this.yeaftMessageWindowState,
         [sessionKey]: { visibleTurns: next },
       };
+    },
+
+    revealYeaftMessage(sessionId, messageId) {
+      const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
+      const convId = resolveYeaftConversationIdForSession(this);
+      if (!convId || !messageId) return false;
+      const scoped = (this.messagesMap[convId] || []).filter((message) => {
+        if (!targetSessionId) return true;
+        return (message?.sessionId ?? message?.groupId ?? null) === targetSessionId;
+      });
+      const targetIndex = scoped.findIndex(message => (message?.id || message?.messageId) === messageId);
+      if (targetIndex < 0) return false;
+      const spans = buildYeaftMessageTurnSpans(scoped);
+      const targetSpan = spans.findIndex(span => targetIndex >= span.start && targetIndex < span.end);
+      if (targetSpan < 0) return false;
+      const visibleTurns = Math.max(getDefaultYeaftVisibleTurns(), spans.length - targetSpan);
+      const sessionKey = this.getYeaftMessageWindowKey(targetSessionId);
+      this.yeaftMessageWindowState = {
+        ...this.yeaftMessageWindowState,
+        [sessionKey]: { visibleTurns },
+      };
+      return true;
+    },
+
+    searchYeaftHistory(query, { append = false } = {}) {
+      if (this.currentView !== 'yeaft') return false;
+      const normalized = typeof query === 'string' ? query.trim() : '';
+      const sessionId = this.yeaftActiveSessionFilter || null;
+      const agentId = resolveAgentIdForSession(this, sessionId);
+      if (!sessionId || !agentId || normalized.length < 2) {
+        this.yeaftHistorySearchState = {
+          requestId: null,
+          agentId,
+          sessionId,
+          query: normalized,
+          loading: false,
+          results: [],
+          hasMore: false,
+          nextBeforeSeq: null,
+          error: null,
+        };
+        return false;
+      }
+
+      const previous = this.yeaftHistorySearchState || {};
+      const requestId = `history_search_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      this.yeaftHistorySearchState = {
+        requestId,
+        agentId,
+        sessionId,
+        query: normalized,
+        loading: true,
+        results: append && previous.query === normalized ? previous.results : [],
+        hasMore: false,
+        nextBeforeSeq: append && previous.query === normalized ? previous.nextBeforeSeq : null,
+        error: null,
+      };
+      this.sendWsMessage({
+        type: 'yeaft_search_history',
+        agentId,
+        sessionId,
+        requestId,
+        query: normalized,
+        limit: 20,
+        ...(append && Number.isFinite(previous.nextBeforeSeq) ? { beforeSeq: previous.nextBeforeSeq } : {}),
+      });
+      return true;
+    },
+
+    handleYeaftHistorySearchResult(msg) {
+      const state = this.yeaftHistorySearchState || {};
+      if (!msg || msg.requestId !== state.requestId) return false;
+      if (msg.agentId !== state.agentId || msg.sessionId !== state.sessionId || msg.query !== state.query) return false;
+      const incoming = Array.isArray(msg.results) ? msg.results : [];
+      const byId = new Map((state.results || []).map(result => [result.messageId, result]));
+      for (const result of incoming) if (result?.messageId) byId.set(result.messageId, result);
+      this.yeaftHistorySearchState = {
+        ...state,
+        loading: false,
+        results: Array.from(byId.values()),
+        hasMore: !!msg.hasMore,
+        nextBeforeSeq: Number.isFinite(msg.nextBeforeSeq) ? msg.nextBeforeSeq : null,
+        error: msg.error || null,
+      };
+      return true;
+    },
+
+    loadYeaftHistoryWindow(result) {
+      const sessionId = this.yeaftActiveSessionFilter || null;
+      const agentId = resolveAgentIdForSession(this, sessionId);
+      if (!sessionId || !agentId || !result?.messageId || !Number.isFinite(result.seq)) return Promise.resolve(false);
+      if (this.revealYeaftMessage(sessionId, result.messageId)) return Promise.resolve(true);
+      const requestId = `history_window_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const previousPending = this._yeaftHistoryWindowPending;
+      if (previousPending) {
+        clearTimeout(previousPending.timeout);
+        previousPending.resolve(false);
+        this._yeaftHistoryWindowPending = null;
+      }
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          if (this._yeaftHistoryWindowPending?.requestId === requestId) this._yeaftHistoryWindowPending = null;
+          resolve(false);
+        }, 10000);
+        this._yeaftHistoryWindowPending = { requestId, agentId, sessionId, messageId: result.messageId, resolve, timeout };
+        this.sendWsMessage({
+          type: 'yeaft_load_history_window',
+          agentId,
+          sessionId,
+          requestId,
+          anchorMessageId: result.messageId,
+          anchorSeq: result.seq,
+          beforeTurns: 3,
+          afterTurns: 3,
+        });
+      });
+    },
+
+    handleYeaftHistoryWindow(msg) {
+      const pending = this._yeaftHistoryWindowPending;
+      if (!pending || msg?.requestId !== pending.requestId) return false;
+      if (msg.agentId !== pending.agentId || msg.sessionId !== pending.sessionId) return false;
+      clearTimeout(pending.timeout);
+      this._yeaftHistoryWindowPending = null;
+      const revealed = !msg.error && this.revealYeaftMessage(pending.sessionId, pending.messageId);
+      pending.resolve(!!revealed);
+      return !!revealed;
     },
 
     // ─── Yeaft Session creation ────────────────────────────────

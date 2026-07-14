@@ -143,6 +143,20 @@ export function computeVirtualWindow(items, params = {}) {
   };
 }
 
+export function virtualScrollTopForIndex(items, index, heightCache = {}, options = {}) {
+  const list = Array.isArray(items) ? items : [];
+  const safeIndex = Math.max(0, Math.min(list.length - 1, Number.isFinite(index) ? Math.floor(index) : 0));
+  if (list.length === 0) return 0;
+  const { offsets, heights, totalHeight } = buildVirtualOffsets(list, heightCache, options);
+  const viewportHeight = Math.max(1, Number(options.viewportHeight || DEFAULT_VIEWPORT_HEIGHT));
+  const align = options.align === 'start' || options.align === 'end' ? options.align : 'center';
+  const top = offsets[safeIndex] || 0;
+  const height = heights[safeIndex] || DEFAULT_ITEM_HEIGHT;
+  if (align === 'start') return Math.max(0, Math.min(top, totalHeight - viewportHeight));
+  if (align === 'end') return Math.max(0, Math.min(top + height - viewportHeight, totalHeight - viewportHeight));
+  return Math.max(0, Math.min(top - (viewportHeight - height) / 2, totalHeight - viewportHeight));
+}
+
 export function shouldFollowTranscriptBottom({ scrollTop = 0, scrollHeight = 0, clientHeight = 0, threshold = DEFAULT_BOTTOM_THRESHOLD } = {}) {
   return Math.max(0, Number(scrollHeight) - Number(scrollTop) - Number(clientHeight)) <= Math.max(0, Number(threshold));
 }

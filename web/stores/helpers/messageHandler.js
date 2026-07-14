@@ -19,7 +19,8 @@ import {
   handleConversationRefresh,
   handleExecutionCancelled,
   handleSyncMessagesResult,
-  handleYeaftHistoryChunk
+  handleYeaftHistoryChunk,
+  handleYeaftHistoryWindow,
 } from './handlers/conversationHandler.js';
 
 
@@ -247,6 +248,15 @@ export function handleMessage(store, msg) {
 
     case 'yeaft_history_chunk':
       handleYeaftHistoryChunk(store, msg);
+      break;
+
+    case 'yeaft_history_search_result':
+      store.handleYeaftHistorySearchResult(msg);
+      break;
+
+    case 'yeaft_history_window':
+      handleYeaftHistoryWindow(store, msg);
+      store.handleYeaftHistoryWindow(msg);
       break;
 
     // 2026-05-16: tool-usage stats reply from the agent. The agent
