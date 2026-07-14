@@ -50,6 +50,7 @@ import {
   restoreSessionToRegistry,
   readWorkDirRegistry,
   migrateRegisteredWorkDirSessions,
+  resolveSessionYeaftDir,
 } from './sessions/session-crud.js';
 import { openSession, loadSessionMeta } from './sessions/session-store.js';
 import { loadSessionConfig, resolveSessionConfig, SessionConfigError } from './sessions/session-config.js';
@@ -5872,6 +5873,82 @@ export async function handleYeaftLoadHistory(msg) {
  *
  * @param {object} msg — { sessionId, beforeSeq, turns }
  */
+export async function handleYeaftSearchHistory(msg) {
+  const sessionId = typeof msg?.sessionId === 'string' ? msg.sessionId.trim() : '';
+  const query = typeof msg?.query === 'string' ? msg.query.trim().slice(0, 500) : '';
+  const requestId = typeof msg?.requestId === 'string' ? msg.requestId : null;
+  const beforeSeq = Number.isFinite(msg?.beforeSeq) ? msg.beforeSeq : null;
+  const limit = Math.min(50, Math.max(1, Number.isFinite(msg?.limit) ? Math.floor(msg.limit) : 20));
+  const response = {
+    type: 'yeaft_history_search_result',
+    requestId,
+    sessionId: sessionId || null,
+    query,
+    results: [],
+    hasMore: false,
+    nextBeforeSeq: null,
+    _requestClientId: msg?._requestClientId || null,
+  };
+
+  if (!sessionId || query.length < 2) {
+    sendToServer(response);
+    return;
+  }
+
+  try {
+    const defaultYeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
+    const storeDir = resolveSessionYeaftDir(defaultYeaftDir, sessionId);
+    const store = new ConversationStore(storeDir);
+    const result = store.searchVisibleBySession(sessionId, query, { limit, beforeSeq });
+    sendToServer({ ...response, ...result });
+  } catch (err) {
+    console.error('[Yeaft] Session history search failed:', err?.message || err);
+    sendToServer({ ...response, error: 'search_failed' });
+  }
+}
+
+export async function handleYeaftLoadHistoryWindow(msg) {
+  const sessionId = typeof msg?.sessionId === 'string' ? msg.sessionId.trim() : '';
+  const requestId = typeof msg?.requestId === 'string' ? msg.requestId : null;
+  const anchorSeq = Number(msg?.anchorSeq);
+  const anchorMessageId = typeof msg?.anchorMessageId === 'string' ? msg.anchorMessageId : null;
+  const response = {
+    type: 'yeaft_history_window',
+    requestId,
+    conversationId: ensureYeaftConversationId(),
+    sessionId: sessionId || null,
+    anchorMessageId,
+    anchorSeq: Number.isFinite(anchorSeq) ? anchorSeq : null,
+    messages: [],
+    oldestSeq: null,
+    hasMoreBefore: false,
+    _requestClientId: msg?._requestClientId || null,
+  };
+
+  if (!sessionId || !Number.isFinite(anchorSeq)) {
+    sendToServer({ ...response, error: 'invalid_anchor' });
+    return;
+  }
+
+  try {
+    const defaultYeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
+    const storeDir = resolveSessionYeaftDir(defaultYeaftDir, sessionId);
+    const store = new ConversationStore(storeDir);
+    const window = store.loadVisibleWindowBySession(sessionId, anchorSeq, {
+      beforeTurns: msg?.beforeTurns,
+      afterTurns: msg?.afterTurns,
+    });
+    sendToServer({
+      ...response,
+      ...window,
+      messages: projectVisibleHistoryChunkMessages(window.messages),
+    });
+  } catch (err) {
+    console.error('[Yeaft] Session history anchor load failed:', err?.message || err);
+    sendToServer({ ...response, error: 'window_load_failed' });
+  }
+}
+
 export async function handleYeaftLoadMoreHistory(msg) {
   const sessionId = (msg && typeof msg.sessionId === 'string' && msg.sessionId) || null;
   const perfTraceId = typeof msg?.perfTraceId === 'string' && msg.perfTraceId.trim() ? msg.perfTraceId.trim() : null;

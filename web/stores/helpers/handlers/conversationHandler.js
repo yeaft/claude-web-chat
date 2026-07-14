@@ -563,47 +563,22 @@ export function handleSyncMessagesResult(store, msg) {
  * chunk — so the spinner doesn't get stuck. Always overwrites
  * `yeaftHasMoreHistory` from the server's authoritative value.
  */
-export function handleYeaftHistoryChunk(store, msg) {
-  const msgSessionId = msg.sessionId != null ? msg.sessionId : msg.groupId;
-  const mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
-  const incomingMessages = Array.isArray(msg.messages) ? msg.messages : [];
-
-  if (msg.perfTraceId) {
-    recordPerfTrace(store, {
-      traceId: msg.perfTraceId,
-      phase: 'history.chunk_received',
-      agentId: msg.agentId || null,
-      sessionId: msgSessionId || null,
-      messageType: msg.type,
-      bytes: (() => { try { return JSON.stringify(msg).length; } catch { return null; } })(),
-      detail: { mode, rawCount: incomingMessages.length },
-    });
-  }
-  const sessionAgentId = msgSessionId && store.yeaftSessionAgentById
-    ? store.yeaftSessionAgentById[msgSessionId]
-    : null;
-  const agentConversationId = sessionAgentId && store.yeaftConversationIdsByAgent
-    ? store.yeaftConversationIdsByAgent[sessionAgentId]
-    : null;
-  const convId = msg.conversationId || agentConversationId || store.yeaftConversationId;
-  if (!convId) {
-    store.yeaftLoadingMoreHistory = false;
-    return;
-  }
-  // The chunk's sessionId is authoritative — it is stamped by the agent
-  // from the request sessionId, not inferred from the currently selected row.
-  // Accept chunks even when the user has switched to another Session: rows are
-  // session-stamped below, and the global spinner/cursor mirrors only the
-  // active Session at the end of this handler. Dropping inactive chunks loses
-  // active-turn messages when their history/delta replay races a sidebar click.
+export function handleYeaftHistoryWindow(store, msg) {
+  const sessionId = msg.sessionId ?? null;
+  const sessionAgentId = msg.agentId || (sessionId && store.yeaftSessionAgentById?.[sessionId]) || null;
+  const convId = msg.conversationId
+    || (sessionAgentId && store.yeaftConversationIdsByAgent?.[sessionAgentId])
+    || store.yeaftConversationId;
+  if (!convId || !sessionId || !Array.isArray(msg.messages)) return 0;
   if (!store.messagesMap[convId]) store.messagesMap[convId] = [];
 
-  // Same visible projection as handleYeaftLoadHistory's bootstrap replay:
-  // only user / assistant text rows. Reflection, internal, and system-only
-  // records may be persisted as role=user, but they are not user-authored UI
-  // messages and must never be prepended as user bubbles.
+  const { formatted } = formatYeaftHistoryMessages(msg.messages, sessionId, 'window', store.messagesMap[convId]);
+  return upsertYeaftHistoryRows(store.messagesMap[convId], formatted);
+}
+
+function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existingRows) {
   const existingIds = new Set(
-    (store.messagesMap[convId] || [])
+    (existingRows || [])
       .map(m => m && (m.messageId || m.id))
       .filter(Boolean)
   );
@@ -675,6 +650,49 @@ export function handleYeaftHistoryChunk(store, msg) {
       }
     }
   }
+  return { formatted, acceptedHistoryMessages };
+}
+
+export function handleYeaftHistoryChunk(store, msg) {
+  const msgSessionId = msg.sessionId != null ? msg.sessionId : msg.groupId;
+  const mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
+  const incomingMessages = Array.isArray(msg.messages) ? msg.messages : [];
+
+  if (msg.perfTraceId) {
+    recordPerfTrace(store, {
+      traceId: msg.perfTraceId,
+      phase: 'history.chunk_received',
+      agentId: msg.agentId || null,
+      sessionId: msgSessionId || null,
+      messageType: msg.type,
+      bytes: (() => { try { return JSON.stringify(msg).length; } catch { return null; } })(),
+      detail: { mode, rawCount: incomingMessages.length },
+    });
+  }
+  const sessionAgentId = msgSessionId && store.yeaftSessionAgentById
+    ? store.yeaftSessionAgentById[msgSessionId]
+    : null;
+  const agentConversationId = sessionAgentId && store.yeaftConversationIdsByAgent
+    ? store.yeaftConversationIdsByAgent[sessionAgentId]
+    : null;
+  const convId = msg.conversationId || agentConversationId || store.yeaftConversationId;
+  if (!convId) {
+    store.yeaftLoadingMoreHistory = false;
+    return;
+  }
+  // The chunk's sessionId is authoritative — it is stamped by the agent
+  // from the request sessionId, not inferred from the currently selected row.
+  // Accept chunks even when the user has switched to another Session: rows are
+  // session-stamped below, and the global spinner/cursor mirrors only the
+  // active Session at the end of this handler. Dropping inactive chunks loses
+  // active-turn messages when their history/delta replay races a sidebar click.
+  if (!store.messagesMap[convId]) store.messagesMap[convId] = [];
+
+  // Same visible projection as handleYeaftLoadHistory's bootstrap replay:
+  // only user / assistant text rows. Reflection, internal, and system-only
+  // records may be persisted as role=user, but they are not user-authored UI
+  // messages and must never be prepended as user bubbles.
+  const { formatted, acceptedHistoryMessages } = formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, store.messagesMap[convId]);
 
   let insertedRows = 0;
   if (mode === 'recent') {
