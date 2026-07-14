@@ -62,10 +62,10 @@ export function linuxInstall(config) {
   execSync(`systemctl --user start ${serviceName}`);
   console.log(`Service installed and started: ${serviceName}`);
   console.log(`\nManage with:`);
-  console.log(`  yeaft-agent status --instance ${config.instanceId}`);
-  console.log(`  yeaft-agent logs --instance ${config.instanceId}`);
-  console.log(`  yeaft-agent restart --instance ${config.instanceId}`);
-  console.log(`  yeaft-agent uninstall --instance ${config.instanceId}`);
+  console.log(`  yeaft-agent status --name ${config.instanceId}`);
+  console.log(`  yeaft-agent logs --name ${config.instanceId}`);
+  console.log(`  yeaft-agent restart --name ${config.instanceId}`);
+  console.log(`  yeaft-agent uninstall --name ${config.instanceId}`);
   console.log(`\nTo run when not logged in:`);
   console.log(`  sudo loginctl enable-linger $(whoami)`);
 }

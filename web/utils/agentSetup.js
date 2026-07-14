@@ -31,5 +31,5 @@ export function getAgentServiceCommand({
 } = {}) {
   if (!agentSecret) return '';
   const agentName = getAgentName(profile);
-  return `yeaft-agent install --instance ${agentName} --server ${serverWsUrl} --secret ${agentSecret} --name ${agentName}`;
+  return `yeaft-agent install --server ${serverWsUrl} --secret ${agentSecret} --name ${agentName}`;
 }
