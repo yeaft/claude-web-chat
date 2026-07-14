@@ -58,7 +58,8 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
 
     // Dynamic import avoids tools/index -> create-work-item -> bridge -> runner
     // -> tools/index becoming a static initialization cycle.
-    const { createWorkItemFromProducer } = await import('../work-center/bridge.js');
+    const { createWorkItemFromProducer, snapshotCurrentSessionContext } = await import('../work-center/bridge.js');
+    const sessionContext = await snapshotCurrentSessionContext(sessionId);
     const detail = await createWorkItemFromProducer({
       title,
       goal,
@@ -74,6 +75,7 @@ Use this when work must continue beyond the current turn, needs role handoffs, r
         createdBy: ctx.currentVpId || 'assistant',
       },
       linkedSessionIds: [sessionId],
+      sessionContext,
       start: input.start !== false,
     });
     return JSON.stringify({

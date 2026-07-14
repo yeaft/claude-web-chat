@@ -9,6 +9,7 @@ import { projectWorkCenterEvent, projectWorkItemDetail } from './projection.js';
 import { previewWorkCenterPlan } from './planner.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
 import { defaultWorkCenterStageInstructions } from './workflow.js';
+import { snapshotSessionContext } from './session-context.js';
 import { join } from 'node:path';
 
 let service = null;
@@ -22,8 +23,7 @@ const BROWSER_DETAIL_OPS = new Set(['get', 'create', 'update', 'start', 'cancel'
 // client-supplied value and only emits files resolved from owned upload ids.
 const BROWSER_FILE_FIELDS = Object.freeze({
   create: [
-    'title', 'goal', 'acceptanceCriteria', 'workItemType', 'workDir', 'reuseMemory', 'origin',
-    'linkedSessionIds', 'files', 'start',
+    'title', 'goal', 'acceptanceCriteria', 'workItemType', 'workDir', 'reuseMemory', 'files', 'start',
   ],
   guide: ['id', 'guidance', 'actionId', 'revision', 'files'],
 });
@@ -100,6 +100,7 @@ async function createDefaultService() {
     },
     policyProvider: async () => readWorkCenterSettings(yeaftDir),
     attachmentRoot: join(yeaftDir, 'work-center', 'attachments'),
+    actionWorktreeRoot: join(yeaftDir, 'work-center', 'worktrees'),
     registry: defaultRegistry,
     store: null,
   });
@@ -107,6 +108,9 @@ async function createDefaultService() {
     yeaftDir,
     runner,
     runtimeInfoProvider: getSettingsRuntime,
+    watcherOptions: {
+      concurrencyProvider: () => readWorkCenterSettings(yeaftDir).maxConcurrentActions,
+    },
     onEvent(event) {
       send({ type: 'work_center_event', event: projectWorkCenterEvent(event) });
     },
@@ -138,6 +142,11 @@ async function ensureWorkCenter() {
 
 export async function bootWorkCenter() {
   return ensureWorkCenter();
+}
+
+export async function snapshotCurrentSessionContext(sessionId) {
+  const runtime = await getRuntime();
+  return snapshotSessionContext(runtime?.conversationStore, sessionId);
 }
 
 export async function createWorkItemFromProducer(payload) {

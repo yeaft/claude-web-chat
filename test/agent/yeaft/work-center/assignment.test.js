@@ -98,9 +98,9 @@ describe('Work Center assignment and model policy', () => {
     expect(() => resolveWorkItemModel(config, vps[0], {
       mode: 'specific', model: 'missing/model',
     })).toThrow(/unavailable/);
-    expect(() => resolveWorkItemModel(config, vps[0], {
-      mode: 'specific', model: 'provider/primary', effort: 'high',
-    })).toThrow(/effort is unsupported/);
+    expect(resolveWorkItemModel(config, vps[0], {
+      mode: 'specific', model: 'provider/fast', effort: 'high',
+    }).effort).toBe('low');
   });
 
   it('previews the same full workflow policy used by execution', () => {
