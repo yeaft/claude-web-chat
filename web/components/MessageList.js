@@ -29,6 +29,7 @@ import {
   isResponseItem,
   visibleItemsForMessageBlock,
 } from '../utils/message-turn-collapse.js';
+import { navigateToPersistedMessage } from '../utils/message-search-navigation.js';
 // task-757: appendTypingPlaceholders removed from the pipeline.
 // The standalone typing card it produced (at the bottom of the
 // conversation) showed "[VP] is typing…" in a separate row that
@@ -195,8 +196,9 @@ export default {
             :data-message-id="block.messageId || ''"
           >
             <template v-for="item in visibleItemsForBlock(block)" :key="item.id">
-              <!-- task-312: wrapper carries data-msg-id so the Yeaft sidebar
-                   jump-to-message feature can scroll/flash a specific row. -->
+              <!-- The rendered row id is stable even when one assistant row
+                   aggregates several persisted messages. Search navigation maps
+                   persisted ids to this row before scrolling or flashing. -->
               <div class="msg-row" :data-msg-id="item.id" :class="{ 'msg-flash': item.id === flashMsgId }">
                 <!-- User message in Yeaft group view: render IM-style on the
                      right side via UserTurnBlock (mirror of VpTurnBlock).
@@ -1980,30 +1982,30 @@ export default {
 
     const revealMessage = async (messageId) => {
       if (!messageId) return false;
-      const block = (messageBlocks.value || []).find((candidate) => {
-        if (!candidate) return false;
-        if (candidate.id === messageId || candidate.messageId === messageId) return true;
-        return Array.isArray(candidate.items) && candidate.items.some((item) => {
-          const rowId = item?.id || item?.messageId || item?.atMessageId || item?.message?.id;
-          return rowId === messageId;
-        });
+      const revealed = await navigateToPersistedMessage({
+        blocks: messageBlocks.value,
+        messageId,
+        collapseStates: messageTurnCollapseStates,
+        nextTick: Vue.nextTick,
+        scrollToBlock: (blockId) => {
+          resumeAutoFollow();
+          autoFollowPaused.value = true;
+          isAtBottom.value = false;
+          return virtualTranscriptRef.value?.scrollToKey?.(blockId, { align: 'center' });
+        },
+        findRow: (rowId) => {
+          const rows = containerRef.value?.querySelectorAll?.('[data-msg-id]') || [];
+          return Array.from(rows).find(el => el?.dataset?.msgId === rowId) || null;
+        },
+        flashRow: (rowId) => {
+          const generation = ++flashGeneration;
+          flashMsgId.value = rowId;
+          setTimeout(() => {
+            if (generation === flashGeneration) flashMsgId.value = null;
+          }, 1800);
+        },
       });
-      if (!block) return false;
-      resumeAutoFollow();
-      autoFollowPaused.value = true;
-      isAtBottom.value = false;
-      const moved = await virtualTranscriptRef.value?.scrollToKey?.(block.id, { align: 'center' });
-      if (!moved) return false;
-      await Vue.nextTick();
-      const rows = containerRef.value?.querySelectorAll?.('[data-msg-id]') || [];
-      const row = Array.from(rows).find(el => el?.dataset?.msgId === messageId);
-      row?.scrollIntoView?.({ block: 'center', inline: 'nearest' });
-      const generation = ++flashGeneration;
-      flashMsgId.value = messageId;
-      setTimeout(() => {
-        if (generation === flashGeneration) flashMsgId.value = null;
-      }, 1800);
-      return true;
+      return revealed;
     };
 
     expose({ revealMessage });
