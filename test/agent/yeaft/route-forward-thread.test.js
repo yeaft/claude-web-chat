@@ -56,6 +56,28 @@ describe('route_forward thread ownership', () => {
     return { coordinator, stored, delivered };
   }
 
+  it('delivers user text with unknown @ tokens to the default VP', () => {
+    const { coordinator, stored, delivered } = makeCoordinator();
+
+    const result = coordinator.ingest({
+      from: 'user',
+      role: 'user',
+      text: 'send updates to example@company.com and keep @nobody in the sample',
+    });
+
+    expect(result).toMatchObject({
+      dispatched: ['vp-linus'],
+      fallback: 'vp-linus',
+      errors: [],
+    });
+    expect(stored[0].mentions).toEqual(['nobody']);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({
+      vpId: 'vp-linus',
+      envelope: { trigger: 'fallback' },
+    });
+  });
+
   it('stamps the sender thread on synthetic route_forward messages', () => {
     const { coordinator, stored, delivered } = makeCoordinator();
     const router = createRouter({ coordinator });

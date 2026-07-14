@@ -4,6 +4,7 @@ import {
   buildRelevantScopes,
   memoryScopeLabel,
   runMemoryPreflow,
+  selectRespondingVps,
 } from '../../../../agent/yeaft/sessions/pre-flow.js';
 
 function fakeIndex(rows) {
@@ -25,6 +26,53 @@ function fakeIndex(rows) {
     },
   };
 }
+
+describe('Yeaft VP selection pre-flow', () => {
+  const meta = {
+    roster: ['vp-linus', 'vp-martin'],
+    defaultVpId: 'vp-linus',
+  };
+
+  it('falls back to the default VP when every @ token is unknown', () => {
+    expect(selectRespondingVps({
+      meta,
+      fromUser: true,
+      mentions: ['example', 'missing-vp'],
+    })).toEqual({
+      dispatched: ['vp-linus'],
+      fallback: 'vp-linus',
+      errors: [],
+      reason: 'fallback',
+    });
+  });
+
+  it('routes valid mentions and silently ignores unknown @ tokens', () => {
+    expect(selectRespondingVps({
+      meta,
+      fromUser: true,
+      mentions: ['missing-vp', 'vp-martin'],
+    })).toEqual({
+      dispatched: ['vp-martin'],
+      fallback: null,
+      errors: [],
+      reason: 'mention',
+    });
+  });
+
+  it('keeps task membership errors for real VP mentions', () => {
+    expect(selectRespondingVps({
+      meta,
+      fromUser: true,
+      mentions: ['missing-vp', 'vp-martin'],
+      taskMembers: ['vp-linus'],
+    })).toEqual({
+      dispatched: [],
+      fallback: null,
+      errors: [{ vpId: 'vp-martin', error: 'not_in_task_members' }],
+      reason: 'mention',
+    });
+  });
+});
 
 describe('Yeaft memory pre-flow scopes', () => {
   it('renders compact model-facing labels without changing storage scopes', () => {

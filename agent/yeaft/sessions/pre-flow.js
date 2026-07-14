@@ -111,26 +111,29 @@ export function selectRespondingVps(input) {
     };
   }
 
-  // Explicit @-mentions
+  // Explicit @-mentions. Unknown tokens may be ordinary user text rather
+  // than VP routing, so ignore them. If none resolve to a roster member,
+  // continue to the normal default-VP fallback instead of rejecting the turn.
   if (mentions.length > 0) {
     const dispatched = [];
     const errors = [];
+    let hasRosterMention = false;
     for (const vpId of mentions) {
       const canonicalVpId = resolveMemberId(meta, vpId);
-      if (!canonicalVpId) {
-        errors.push({ vpId, error: 'not_in_roster' });
-        continue;
-      }
+      if (!canonicalVpId) continue;
+      hasRosterMention = true;
       if (taskMembers && !taskMembers.includes(canonicalVpId)) {
         errors.push({ vpId, error: 'not_in_task_members' });
         continue;
       }
       if (!dispatched.includes(canonicalVpId)) dispatched.push(canonicalVpId);
     }
-    return { dispatched, fallback: null, errors, reason: 'mention' };
+    if (hasRosterMention) {
+      return { dispatched, fallback: null, errors, reason: 'mention' };
+    }
   }
 
-  // No @-mention → fallback to defaultVpId (architecture G2)
+  // No valid @-mention → fallback to defaultVpId (architecture G2)
   const fallback = resolveFallbackVp(meta);
   if (!fallback) {
     return {
