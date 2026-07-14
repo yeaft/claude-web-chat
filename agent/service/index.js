@@ -29,6 +29,7 @@ export {
   isDefaultInstance,
   validateInstanceId,
   getInstanceIdFromArgs,
+  warnDeprecatedInstanceArg,
   getServiceName,
   getPm2AppName,
   getLaunchdLabel,

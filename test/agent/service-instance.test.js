@@ -61,30 +61,50 @@ describe('agent service instance config', () => {
     expect(configMod.getLaunchdLabel('worker-a')).toBe('com.yeaft.agent.worker-a');
   });
 
-  it('parses --instance while preserving old flags', () => {
+  it('derives the instance id from --name', () => {
     const config = configMod.parseServiceArgs([
-      '--instance', 'target-a',
       '--server', 'wss://server.example',
-      '--name', 'Desk Agent',
+      '--name', 'desk-agent',
       '--secret', 'secret',
       '--work-dir', '/repo',
       '--yeaft-dir', '/data/yeaft-target-a',
     ]);
 
     expect(config).toMatchObject({
-      instanceId: 'target-a',
+      instanceId: 'desk-agent',
       serverUrl: 'wss://server.example',
-      agentName: 'Desk Agent',
+      agentName: 'desk-agent',
       agentSecret: 'secret',
       workDir: '/repo',
       yeaftDir: '/data/yeaft-target-a',
     });
   });
 
-  it('supports instance id from environment for service management commands', () => {
+  it('keeps --instance as a deprecated override for old commands', () => {
+    const config = configMod.parseServiceArgs([
+      '--instance', 'target-a',
+      '--name', 'desk-agent',
+      '--server', 'wss://server.example',
+      '--secret', 'secret',
+    ]);
+    const warn = vi.fn();
+
+    configMod.warnDeprecatedInstanceArg(['--instance', 'target-a'], warn);
+
+    expect(config.instanceId).toBe('target-a');
+    expect(config.agentName).toBe('desk-agent');
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('--instance is deprecated'));
+  });
+
+  it('supports name and legacy instance id from environment for service commands', () => {
+    process.env.AGENT_NAME = 'desk-agent';
+    expect(configMod.getInstanceIdFromArgs([])).toBe('desk-agent');
+
     process.env.YEAFT_AGENT_INSTANCE = 'second';
     expect(configMod.getInstanceIdFromArgs([])).toBe('second');
-    expect(configMod.getInstanceIdFromArgs(['--instance', 'third'])).toBe('third');
+    expect(configMod.getInstanceIdFromArgs(['--name', 'third'])).toBe('third');
+    expect(configMod.getInstanceIdFromArgs(['--instance', 'fourth', '--name', 'third'])).toBe('fourth');
   });
 
   it('rejects unsafe instance ids', () => {
