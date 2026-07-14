@@ -16,7 +16,9 @@ import { withUsageAccounting } from '../llm/usage-accounting.js';
 import {
   commitActionWorktree,
   createActionWorktree,
-  integrateActionWorktrees,
+  discardActionIntegration,
+  finalizeActionIntegration,
+  prepareActionIntegration,
   removeActionWorktree,
 } from './workspace.js';
 import {
@@ -416,6 +418,30 @@ export function workItemMemoryQuery(workItem, action) {
   return boundedRecallPart('Action', action?.instruction, 8_000);
 }
 
+function finalizeOwnedIntegration(store, action, integration) {
+  let finalized;
+  try {
+    finalized = finalizeActionIntegration(integration);
+  } catch (error) {
+    let rolledBack = false;
+    try {
+      rolledBack = !!store.setActionWorkspace(action.id, null, 'integrate');
+      if (rolledBack) discardActionIntegration(integration);
+    } catch {}
+    if (!rolledBack) error.workItemPrepareRetryable = true;
+    throw error;
+  }
+  const finalizedWorkspace = { ...action.workspace, integration: finalized };
+  try {
+    const persistedAction = store.setActionWorkspace(action.id, finalizedWorkspace, 'integrate');
+    if (!persistedAction) throw new Error('Work Center finalized integration lost its storage fence');
+    return persistedAction;
+  } catch (error) {
+    error.workItemPrepareRetryable = true;
+    throw error;
+  }
+}
+
 function recallWorkItemMemory(runtime, workItem, action, vp) {
   if (workItem?.reuseMemory === false || !runtime?.memoryIndex) return '';
   const query = workItemMemoryQuery(workItem, action);
@@ -460,14 +486,33 @@ export class WorkItemRunner {
   async prepare(claim) {
     const { workItem, action } = claim;
     if (action.workspaceMode === 'integrate') {
+      const persistedIntegration = action.workspace?.integration;
+      if (persistedIntegration?.status === 'finalized') return claim;
+      if (persistedIntegration?.status === 'prepared') {
+        return {
+          ...claim,
+          action: finalizeOwnedIntegration(this.store, action, persistedIntegration),
+        };
+      }
       const dependencies = this.store.listActionDependencies(workItem.id, action.dependsOnStageIds || []);
-      const integration = integrateActionWorktrees({
+      const integration = prepareActionIntegration({
         workDir: workItem.workspaceKey || workItem.workDir,
         dependencies,
       });
-      return { ...claim, action: this.store.setActionWorkspace(action.id, {
-        path: workItem.workspaceKey || workItem.workDir, integration,
-      }, 'shared') };
+      let persistedAction;
+      try {
+        persistedAction = this.store.setActionWorkspace(action.id, {
+          path: workItem.workspaceKey || workItem.workDir, integration,
+        }, 'integrate');
+        if (!persistedAction) throw new Error('Work Center integration lost its storage fence');
+      } catch (error) {
+        discardActionIntegration(integration);
+        throw error;
+      }
+      return {
+        ...claim,
+        action: finalizeOwnedIntegration(this.store, persistedAction, integration),
+      };
     }
     if (action.workspaceMode !== 'isolated-write') return claim;
     if (!this.actionWorktreeRoot) {

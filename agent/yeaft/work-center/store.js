@@ -503,6 +503,11 @@ export class WorkItemStore {
       }
     }
     const affectedActions = actions.filter(action => affected.has(action.stageId));
+    const preservedTargetWorkspace = target.workspaceMode === 'integrate'
+      && ['prepared', 'finalized'].includes(target.workspace?.integration?.status)
+      && (!replacement || replacement.workspaceMode === 'integrate')
+      ? target.workspace
+      : null;
     const ids = affectedActions.map(action => action.id);
     const running = affectedActions.filter(action => action.status === 'running' && action.currentRunId);
     const nextEpoch = new Map(actions.map(action => [action.id, action.leaseEpoch]));
@@ -512,16 +517,17 @@ export class WorkItemStore {
       this.db.prepare(`UPDATE runs SET status = 'superseded', ended_at = ?, error = ?
         WHERE action_id IN (${placeholders}) AND status = 'running'`).run(now, reason, ...ids);
       for (const action of affectedActions) {
+        const workspace = action.id === target.id ? preservedTargetWorkspace : null;
         this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0, current_run_id = NULL,
-          lease_epoch = ?, workspace = NULL, updated_at = ? WHERE id = ?`).run(
-          nextEpoch.get(action.id), now, action.id,
+          lease_epoch = ?, workspace = ?, updated_at = ? WHERE id = ?`).run(
+          nextEpoch.get(action.id), stringify(workspace), now, action.id,
         );
       }
     }
     if (replacement) {
       this.db.prepare(`UPDATE actions SET type = ?, required_role = ?, assignment_policy = ?,
         model_policy = ?, depends_on_stage_ids = ?, workspace_mode = ?, changes_requested_stage_id = ?,
-        instruction = ?, brief = ?, context = ?, max_attempts = ?, workspace = NULL, updated_at = ?
+        instruction = ?, brief = ?, context = ?, max_attempts = ?, workspace = ?, updated_at = ?
         WHERE id = ?`).run(
         replacement.type || target.type,
         replacement.requiredRole || '',
@@ -534,6 +540,7 @@ export class WorkItemStore {
         stringify(replacement.brief || null),
         stringify(Array.isArray(replacement.context) ? replacement.context : []),
         Number.isInteger(replacement.maxAttempts) ? replacement.maxAttempts : 2,
+        stringify(preservedTargetWorkspace),
         now,
         target.id,
       );

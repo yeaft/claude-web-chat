@@ -62,7 +62,21 @@ export function commitActionWorktree(workspace, action) {
   return { ...workspace, commit: git(['rev-parse', 'HEAD'], { cwd: workspace.path }), changed: true };
 }
 
-export function integrateActionWorktrees({ workDir, dependencies }) {
+function removeIntegrationPreparation(integration) {
+  if (!integration?.repositoryRoot) return;
+  if (integration.temporaryPath) {
+    try {
+      git(['worktree', 'remove', '--force', integration.temporaryPath], { cwd: integration.repositoryRoot });
+    } catch {
+      rmSync(integration.temporaryPath, { recursive: true, force: true });
+    }
+  }
+  if (integration.temporaryBranch) {
+    try { git(['branch', '-D', integration.temporaryBranch], { cwd: integration.repositoryRoot }); } catch {}
+  }
+}
+
+export function prepareActionIntegration({ workDir, dependencies }) {
   const state = inspectGitWorkspace(workDir);
   if (!state.git || !state.clean) throw new Error(`Work Center integration requires a clean Git root: ${state.reason}`);
   if (dependencies.some(action => action.status !== 'completed')) {
@@ -71,41 +85,84 @@ export function integrateActionWorktrees({ workDir, dependencies }) {
   const commits = dependencies
     .filter(action => action.workspace?.isolated && action.workspace.changed)
     .map(action => action.workspace.commit);
+  const dependencyBranches = dependencies
+    .filter(action => action.workspace?.changed && action.workspace.branch)
+    .map(action => action.workspace.branch);
   const temporaryRoot = resolve(join(dirname(state.root), '.yeaft-work-center-integration'));
   mkdirSync(temporaryRoot, { recursive: true });
-  const temporaryPath = resolve(join(temporaryRoot, `integration-${process.pid}-${Date.now()}`));
-  const temporaryBranch = `yeaft-work/integration-${process.pid}-${Date.now()}`;
+  const suffix = `${process.pid}-${Date.now()}`;
+  const integration = {
+    status: 'prepared',
+    commits,
+    dependencyBranches,
+    baseHead: state.head,
+    integratedHead: null,
+    repositoryRoot: state.root,
+    temporaryPath: resolve(join(temporaryRoot, `integration-${suffix}`)),
+    temporaryBranch: `yeaft-work/integration-${suffix}`,
+  };
   try {
-    git(['worktree', 'add', '-b', temporaryBranch, temporaryPath, state.head], { cwd: state.root });
+    git([
+      'worktree', 'add', '-b', integration.temporaryBranch,
+      integration.temporaryPath, integration.baseHead,
+    ], { cwd: integration.repositoryRoot });
     for (const commit of commits) {
       try {
         git([
           '-c', 'user.name=Yeaft Work Center',
           '-c', 'user.email=work-center@yeaft.local',
           'merge', '--no-ff', '--no-edit', commit,
-        ], { cwd: temporaryPath });
+        ], { cwd: integration.temporaryPath });
       } catch (error) {
-        try { git(['merge', '--abort'], { cwd: temporaryPath }); } catch {}
+        try { git(['merge', '--abort'], { cwd: integration.temporaryPath }); } catch {}
         throw new Error(`Work Center could not integrate Action commit ${commit}: ${error.message}`);
       }
     }
-    const integratedHead = git(['rev-parse', 'HEAD'], { cwd: temporaryPath });
-    if (git(['rev-parse', 'HEAD'], { cwd: state.root }) !== state.head
-        || git(['status', '--porcelain', '--untracked-files=normal'], { cwd: state.root })) {
-      throw new Error('Work Center integration target changed while commits were being verified');
-    }
-    git(['merge', '--ff-only', integratedHead], { cwd: state.root });
-  } finally {
-    try { git(['worktree', 'remove', '--force', temporaryPath], { cwd: state.root }); } catch {
-      rmSync(temporaryPath, { recursive: true, force: true });
-    }
-    try { git(['branch', '-D', temporaryBranch], { cwd: state.root }); } catch {}
+    integration.integratedHead = git(['rev-parse', 'HEAD'], { cwd: integration.temporaryPath });
+    return integration;
+  } catch (error) {
+    removeIntegrationPreparation(integration);
+    throw error;
   }
-  for (const dependency of dependencies) {
-    if (!dependency.workspace?.changed || !dependency.workspace.branch) continue;
-    try { git(['branch', '-d', dependency.workspace.branch], { cwd: state.root }); } catch {}
+}
+
+export function discardActionIntegration(integration) {
+  removeIntegrationPreparation(integration);
+}
+
+export function finalizeActionIntegration(integration) {
+  if (!integration?.repositoryRoot || !integration.baseHead || !integration.integratedHead) {
+    throw new Error('Work Center integration preparation is incomplete');
   }
-  return { commits, head: git(['rev-parse', 'HEAD'], { cwd: state.root }) };
+  const currentHead = git(['rev-parse', 'HEAD'], { cwd: integration.repositoryRoot });
+  const status = git([
+    'status', '--porcelain', '--untracked-files=normal',
+  ], { cwd: integration.repositoryRoot });
+  if (status || ![integration.baseHead, integration.integratedHead].includes(currentHead)) {
+    throw new Error('Work Center integration target changed before finalization');
+  }
+  if (currentHead === integration.baseHead) {
+    git(['merge', '--ff-only', integration.integratedHead], { cwd: integration.repositoryRoot });
+  }
+  const head = git(['rev-parse', 'HEAD'], { cwd: integration.repositoryRoot });
+  if (head !== integration.integratedHead) {
+    throw new Error('Work Center integration target did not reach the prepared commit');
+  }
+  for (const branch of integration.dependencyBranches || []) {
+    try { git(['branch', '-d', branch], { cwd: integration.repositoryRoot }); } catch {}
+  }
+  removeIntegrationPreparation(integration);
+  return {
+    status: 'finalized',
+    commits: integration.commits,
+    baseHead: integration.baseHead,
+    integratedHead: integration.integratedHead,
+    head,
+  };
+}
+
+export function integrateActionWorktrees({ workDir, dependencies }) {
+  return finalizeActionIntegration(prepareActionIntegration({ workDir, dependencies }));
 }
 
 export function removeActionWorktree(workspace) {

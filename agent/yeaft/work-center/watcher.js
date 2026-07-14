@@ -137,7 +137,8 @@ export class WorkItemWatcher {
               break;
             }
             this.controller.submit(claim.run.id, this.ownerBootId, claim.run.leaseEpoch, {
-              outcome: 'failed', response: '', summary: '', evidence: [],
+              outcome: error?.workItemPrepareRetryable ? 'retryable' : 'failed',
+              response: '', summary: '', evidence: [],
               error: error?.message || String(error),
             });
             this.onEvent({ type: 'run.finished', workItem: this.store.getWorkItemDetail(claim.workItem.id) });

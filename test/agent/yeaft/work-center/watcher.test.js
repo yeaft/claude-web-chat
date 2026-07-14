@@ -79,6 +79,40 @@ describe('WorkItemWatcher', () => {
     await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
   });
 
+  it('submits retryable when integration preparation retains recoverable ownership', async () => {
+    const claim = {
+      workItem: { id: 'w1' },
+      action: { id: 'a1', workspaceMode: 'integrate' },
+      run: { id: 'r1', leaseEpoch: 3 },
+    };
+    const error = new Error('target changed before finalization');
+    error.workItemPrepareRetryable = true;
+    const cleanup = vi.fn();
+    const runner = {
+      prepare: vi.fn().mockRejectedValue(error),
+      cleanup,
+      run: vi.fn(),
+    };
+    const store = {
+      recoverInterruptedRuns: vi.fn(() => 0),
+      claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
+      getWorkItemDetail: vi.fn(id => ({ id })),
+    };
+    const controller = { submit: vi.fn(() => ({ id: 'w1', status: 'ready' })) };
+    const watcher = new WorkItemWatcher({
+      store, controller, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+
+    await watcher.tick();
+
+    expect(controller.submit).toHaveBeenCalledWith('r1', 'boot', 3, {
+      outcome: 'retryable', response: '', summary: '', evidence: [],
+      error: 'target changed before finalization',
+    });
+    expect(cleanup).toHaveBeenCalledWith(claim.action);
+    expect(runner.run).not.toHaveBeenCalled();
+  });
+
   it('persists and emits fenced live response progress', async () => {
     const claim = {
       workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 3 },
