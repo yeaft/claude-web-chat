@@ -115,7 +115,6 @@ function mapRun(row) {
     waitingReason: row.waiting_reason || null,
     error: row.error || null,
     reviewDecision: row.review_decision || null,
-    outcome: row.outcome || null,
     contractPatch: parseJson(row.contract_patch, null),
     loopCount: Math.max(0, Number(row.loop_count) || 0),
     toolCount: Math.max(0, Number(row.tool_count) || 0),
@@ -868,17 +867,18 @@ export class WorkItemStore {
                   AND required.stage_id = dependency.value
                 WHERE required.id IS NULL OR required.status != 'completed'
               )
-              AND NOT EXISTS (
-                SELECT 1 FROM actions running
-                JOIN work_items running_item ON running_item.id = running.work_item_id
-                WHERE running.status = 'running'
-                  AND running_item.workspace_key != ''
-                  AND running_item.workspace_key = w.workspace_key
-                  AND (a.workspace_mode IN ('shared', 'integrate')
-                    OR running.workspace_mode IN ('shared', 'integrate')
-                    OR (running.work_item_id != a.work_item_id
-                      AND a.workspace_mode != 'read' AND running.workspace_mode != 'read'))
-              ))
+              )
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM actions running
+            JOIN work_items running_item ON running_item.id = running.work_item_id
+            WHERE running.status = 'running'
+              AND running_item.workspace_key != ''
+              AND running_item.workspace_key = w.workspace_key
+              AND (a.workspace_mode IN ('shared', 'integrate')
+                OR running.workspace_mode IN ('shared', 'integrate')
+                OR (running.work_item_id != a.work_item_id
+                  AND a.workspace_mode != 'read' AND running.workspace_mode != 'read'))
           )
         ORDER BY a.updated_at ASC, a.sequence ASC LIMIT 1`).get();
       if (!row) return null;

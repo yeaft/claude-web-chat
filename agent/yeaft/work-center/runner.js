@@ -476,9 +476,16 @@ export class WorkItemRunner {
     const workspace = createActionWorktree({
       workItem, action, runId: claim.run.id, rootDir: this.actionWorktreeRoot,
     });
-    return { ...claim, action: this.store.setActionWorkspace(
-      action.id, workspace.isolated ? workspace : null, workspace.isolated ? null : 'shared',
-    ) };
+    try {
+      const persistedAction = this.store.setActionWorkspace(
+        action.id, workspace.isolated ? workspace : null, workspace.isolated ? null : 'shared',
+      );
+      if (!persistedAction) throw new Error('Work Center Action workspace lost its storage fence');
+      return { ...claim, action: persistedAction };
+    } catch (error) {
+      removeActionWorktree(workspace);
+      throw error;
+    }
   }
 
   async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader }) {

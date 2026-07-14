@@ -1,9 +1,11 @@
+import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
+import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
 import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
 
 function createInput(overrides = {}) {
@@ -206,6 +208,26 @@ describe('Work Center core', () => {
     expect(store.claimReadyAction('boot-a', 5_000).action.stageId).toBe('integrate');
   });
 
+  it('serializes linear shared workspace writes across WorkItems by canonical identity', () => {
+    const firstItem = controller.create(createInput({ title: 'First linear writer' }));
+    const secondItem = controller.create(createInput({ title: 'Second linear writer' }));
+    const first = store.claimReadyAction('boot-a', 5_000);
+    expect(first.workItem.id).toBe(firstItem.id);
+    expect(first.action.workspaceMode).toBe('shared');
+    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+    controller.submit(first.run.id, 'boot-a', first.run.leaseEpoch, completed('triage'));
+    expect(store.claimReadyAction('boot-a', 5_000).workItem.id).toBe(secondItem.id);
+  });
+
+  it('serializes linear and graph writes across the same canonical workspace', () => {
+    const linear = controller.create(createInput({ title: 'Linear writer' }));
+    const graphWorkflow = resolvePlanningWorkflowSnapshot({});
+    controller.create(createInput({ title: 'Graph writer', workflowTemplate: 'ai-planned', workflowSnapshot: graphWorkflow }));
+    const first = store.claimReadyAction('boot-a', 5_000);
+    expect(first.workItem.id).toBe(linear.id);
+    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+  });
+
   it('serializes shared workspace writes across WorkItems by canonical identity', () => {
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
     const createGraph = title => {
@@ -224,6 +246,51 @@ describe('Work Center core', () => {
     expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
     controller.submit(first.run.id, 'boot-a', first.run.leaseEpoch, completed('implement'));
     expect(store.claimReadyAction('boot-a', 5_000).action.stageId).toBe('write');
+  });
+
+  it('serializes integration against a linear writer in the same canonical workspace', () => {
+    const first = store.createWorkItem(createInput({ id: 'linear-writer' }), {
+      id: 'linear-action', type: 'implement', stageId: 'implement', workspaceMode: 'shared',
+    });
+    store.createWorkItem(createInput({ id: 'graph-integration' }), {
+      id: 'integration-action', type: 'integrate', stageId: 'integrate', workspaceMode: 'integrate',
+    });
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    expect(claim.workItem.id).toBe(first.id);
+    expect(claim.action.workspaceMode).toBe('shared');
+    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+  });
+
+  it.each([
+    ['dirty repository', true],
+    ['non-Git directory', false],
+  ])('keeps %s isolation fallback serialized across WorkItems', async (_label, initializeGit) => {
+    const workspace = mkdtempSync(join(tmpdir(), 'yeaft-workspace-fallback-'));
+    try {
+      if (initializeGit) {
+        const git = args => execFileSync('git', args, { cwd: workspace, encoding: 'utf8' });
+        git(['init']);
+        git(['config', 'user.name', 'Test']);
+        git(['config', 'user.email', 'test@example.com']);
+        writeFileSync(join(workspace, 'base.txt'), 'base\n');
+        git(['add', '.']);
+        git(['commit', '-m', 'base']);
+        writeFileSync(join(workspace, 'dirty.txt'), 'dirty\n');
+      }
+      const action = id => ({
+        id: `${id}-action`, type: 'implement', stageId: 'write', workspaceMode: 'isolated-write',
+      });
+      store.createWorkItem(createInput({ id: 'first-fallback', workDir: workspace }), action('first'));
+      store.createWorkItem(createInput({ id: 'second-fallback', workDir: workspace }), action('second'));
+      const first = store.claimReadyAction('boot-a', 5_000);
+      const runner = new WorkItemRunner({ store, actionWorktreeRoot: join(dir, 'worktrees') });
+      const prepared = await runner.prepare(first);
+      expect(prepared.action).toMatchObject({ workspaceMode: 'shared', workspace: null });
+      expect(store.getAction(first.action.id).workspaceMode).toBe('shared');
+      expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('serializes a fallback shared Action across WorkItems after isolation fails', () => {

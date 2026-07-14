@@ -76,8 +76,7 @@ describe('WorkItemWatcher', () => {
     const controller = { submit: vi.fn(() => ({ id: 'w1' })) };
     const watcher = new WorkItemWatcher({ store, controller, runner: { run: vi.fn().mockRejectedValue(new Error('boom')), cleanup }, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000 });
     await watcher.tick();
-    await watcher.activeRuns.get('r1').promise;
-    expect(cleanup).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
   });
 
   it('persists and emits fenced live response progress', async () => {
@@ -125,6 +124,128 @@ describe('WorkItemWatcher', () => {
     expect(onEvent).toHaveBeenCalledWith({ type: 'run.progress', workItem: detail });
     resolveRun({ outcome: 'completed', response: 'Done', summary: 'Done', evidence: [] });
     await watcher.activeRuns.get('r1').promise;
+  });
+
+  it('does not start a queued Run after stop settles an active Run', async () => {
+    const gate = deferred();
+    const claims = [
+      { workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 1 } },
+      { workItem: { id: 'w2' }, action: { id: 'a2' }, run: { id: 'r2', leaseEpoch: 1 } },
+    ];
+    const store = {
+      recoverInterruptedRuns: vi.fn(() => 0),
+      claimReadyAction: vi.fn(() => claims.shift() || null),
+      renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
+      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
+    };
+    const runner = { run: vi.fn(({ signal }) => new Promise(resolve => {
+      signal.addEventListener('abort', () => {
+        gate.resolve();
+        resolve({ outcome: 'retryable' });
+      }, { once: true });
+    })) };
+    const watcher = new WorkItemWatcher({
+      store, controller: { submit: vi.fn() }, runner, ownerBootId: 'boot',
+      pollIntervalMs: 60_000, leaseMs: 60_000, concurrencyProvider: () => 1,
+    });
+    await watcher.tick();
+    await watcher.stop();
+    await gate.promise;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(runner.run).toHaveBeenCalledTimes(1);
+    expect(watcher.status()).toMatchObject({ enabled: false, activeRuns: 0 });
+    expect(watcher.activeRuns.size).toBe(0);
+  });
+
+  it('interrupts a claimed Run when stop races with preparation', async () => {
+    const prepareGate = deferred();
+    const claim = { workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 4 } };
+    const prepared = { ...claim, action: { ...claim.action, workspace: { isolated: true } } };
+    const cleanup = vi.fn();
+    const store = {
+      recoverInterruptedRuns: vi.fn(() => 0),
+      claimReadyAction: vi.fn().mockReturnValueOnce(claim).mockReturnValue(null),
+      renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
+      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
+    };
+    const runner = {
+      prepare: vi.fn(() => prepareGate.promise), cleanup, run: vi.fn(),
+    };
+    const controller = { submit: vi.fn() };
+    const watcher = new WorkItemWatcher({
+      store, controller, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+    const tick = watcher.tick();
+    await vi.waitFor(() => expect(runner.prepare).toHaveBeenCalledTimes(1));
+    const stop = watcher.stop();
+    prepareGate.resolve(prepared);
+    await tick;
+    await expect(stop).resolves.toEqual([]);
+    expect(cleanup).toHaveBeenCalledWith(prepared.action);
+    expect(store.interruptRun).toHaveBeenCalledWith(
+      'r1', 'boot', 4, 'Work Center watcher stopped during Action preparation', null,
+    );
+    expect(runner.run).not.toHaveBeenCalled();
+    expect(controller.submit).not.toHaveBeenCalled();
+    expect(watcher.status()).toMatchObject({ enabled: false, activeRuns: 0 });
+  });
+
+  it('persists an active Run interrupted while stop waits for preparation to settle', async () => {
+    const activeGate = deferred();
+    const prepareGate = deferred();
+    const claims = [
+      { workItem: { id: 'w1' }, action: { id: 'a1' }, run: { id: 'r1', leaseEpoch: 1 } },
+      { workItem: { id: 'w2' }, action: { id: 'a2' }, run: { id: 'r2', leaseEpoch: 2 } },
+    ];
+    const store = {
+      recoverInterruptedRuns: vi.fn(() => 0), claimReadyAction: vi.fn(() => claims.shift() || null),
+      renewLease: vi.fn(() => true), interruptRun: vi.fn(() => true),
+      isActiveRun: vi.fn(() => true), getWorkItemDetail: vi.fn(id => ({ id })),
+    };
+    const runner = {
+      prepare: vi.fn(claim => claim.run.id === 'r2' ? prepareGate.promise : claim),
+      run: vi.fn(({ signal }) => new Promise(resolve => signal.addEventListener('abort', () => {
+        activeGate.resolve();
+        resolve({ outcome: 'retryable' });
+      }, { once: true }))),
+      cleanup: vi.fn(),
+    };
+    const watcher = new WorkItemWatcher({
+      store, controller: { submit: vi.fn() }, runner, ownerBootId: 'boot',
+      pollIntervalMs: 60_000, leaseMs: 60_000, concurrencyProvider: () => 2,
+    });
+    const tick = watcher.tick();
+    await vi.waitFor(() => expect(runner.prepare).toHaveBeenCalledTimes(2));
+    const stop = watcher.stop();
+    await activeGate.promise;
+    prepareGate.resolve(claims[1] || {
+      workItem: { id: 'w2' }, action: { id: 'a2' }, run: { id: 'r2', leaseEpoch: 2 },
+    });
+    await tick;
+    await stop;
+    expect(store.interruptRun).toHaveBeenCalledWith(
+      'r1', 'boot', 1, 'Work Center watcher stopped', null,
+    );
+  });
+
+  it('does not run a queued tick after stop changes the lifecycle', async () => {
+    const concurrencyGate = deferred();
+    const store = {
+      recoverInterruptedRuns: vi.fn(() => 0), claimReadyAction: vi.fn(),
+    };
+    const watcher = new WorkItemWatcher({
+      store, controller: { submit: vi.fn() }, runner: { run: vi.fn() },
+      ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+      concurrencyProvider: () => concurrencyGate.promise,
+    });
+    const firstTick = watcher.tick();
+    const queuedTick = watcher.tick();
+    const stop = watcher.stop();
+    concurrencyGate.resolve(1);
+    await Promise.all([firstTick, queuedTick, stop]);
+    await new Promise(resolve => queueMicrotask(resolve));
+    expect(store.claimReadyAction).not.toHaveBeenCalled();
+    expect(watcher.status()).toMatchObject({ enabled: false, activeRuns: 0 });
   });
 
   it('aborts and settles an active Run before closing its fence', async () => {

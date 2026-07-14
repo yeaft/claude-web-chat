@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { persistWorkItemAttachments } from '../../../../agent/yeaft/work-center/attachments.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -84,6 +85,32 @@ afterEach(() => {
 });
 
 describe('Work Center Runner execution resolution', () => {
+  it('rolls back an isolated worktree when persisting ownership fails', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-prepare-rollback-'));
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'work-center-prepare-worktrees-'));
+    const git = args => execFileSync('git', args, { cwd: workDir, encoding: 'utf8' }).trim();
+    git(['init']);
+    git(['config', 'user.name', 'Test']);
+    git(['config', 'user.email', 'test@example.com']);
+    writeFileSync(join(workDir, 'base.txt'), 'base\n');
+    git(['add', '.']);
+    git(['commit', '-m', 'base']);
+    const branch = 'yeaft-work/wi-implement-run';
+    const runner = new WorkItemRunner({
+      store: { setActionWorkspace: vi.fn(() => { throw new Error('sqlite busy'); }) },
+      actionWorktreeRoot: worktreeRoot,
+    });
+    await expect(runner.prepare({
+      workItem: { id: 'wi', workDir, workspaceKey: workDir },
+      action: { id: 'action', stageId: 'implement', workspaceMode: 'isolated-write' },
+      run: { id: 'run' },
+    })).rejects.toThrow('sqlite busy');
+    expect(existsSync(join(worktreeRoot, 'wi-implement-run'))).toBe(false);
+    expect(git(['worktree', 'list', '--porcelain'])).not.toContain('wi-implement-run');
+    expect(git(['branch', '--list', branch])).toBe('');
+    rmSync(worktreeRoot, { recursive: true, force: true });
+  });
+
   it('never exposes partial terminal JSON as the user-facing response', () => {
     expect(publicWorkItemResponse('Implemented the fix.\n\n```json\n{')).toBe('Implemented the fix.');
     expect(publicWorkItemResponse('Implemented the fix.\n\n{\n  "out')).toBe('Implemented the fix.');

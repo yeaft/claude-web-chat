@@ -65,7 +65,7 @@ export function commitActionWorktree(workspace, action) {
 export function integrateActionWorktrees({ workDir, dependencies }) {
   const state = inspectGitWorkspace(workDir);
   if (!state.git || !state.clean) throw new Error(`Work Center integration requires a clean Git root: ${state.reason}`);
-  if (dependencies.some(action => action.outcome !== 'completed')) {
+  if (dependencies.some(action => action.status !== 'completed')) {
     throw new Error('Work Center integration requires every dependency Action to complete successfully');
   }
   const commits = dependencies

@@ -18,6 +18,8 @@ export class WorkItemWatcher {
       : () => DEFAULT_MAX_CONCURRENT_ACTIONS;
     this.timer = null;
     this.ticking = false;
+    this.tickPromise = null;
+    this.lifecycle = 'running';
     this.activeRuns = new Map();
   }
 
@@ -31,18 +33,30 @@ export class WorkItemWatcher {
 
   start() {
     if (this.timer) return;
+    this.lifecycle = 'running';
     this.timer = setInterval(() => { this.tick().catch(() => {}); }, this.pollIntervalMs);
     this.timer.unref?.();
     this.tick().catch(() => {});
   }
 
   async stop() {
+    this.lifecycle = 'stopping';
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    const active = Array.from(this.activeRuns.values());
+    const failures = [];
+    const stoppingRuns = new Map(this.activeRuns);
+    for (const entry of stoppingRuns.values()) {
+      entry.abortController.abort('watcher_stopped');
+    }
+    try {
+      await this.tickPromise;
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const [runId, entry] of this.activeRuns) stoppingRuns.set(runId, entry);
+    const active = Array.from(stoppingRuns.values());
     for (const entry of active) entry.abortController.abort('watcher_stopped');
     await Promise.allSettled(active.map(entry => entry.promise));
-    const failures = [];
     for (const entry of active) {
       try {
         const finalProgress = entry.readFinalProgress?.() || null;
@@ -58,6 +72,7 @@ export class WorkItemWatcher {
         failures.push(error);
       }
     }
+    this.lifecycle = 'idle';
     if (failures.length > 0) {
       throw new AggregateError(failures, 'Could not persist one or more Work Center interruptions');
     }
@@ -86,30 +101,56 @@ export class WorkItemWatcher {
   }
 
   async tick() {
-    if (this.ticking || !this.runner) return;
+    if (this.lifecycle !== 'running' || !this.runner) return;
+    if (this.tickPromise) return this.tickPromise;
     this.ticking = true;
-    try {
-      this.#recoverExpiredRuns();
-      const limit = Math.min(Math.max(Number(await this.concurrencyProvider()) || 3, 1), 12);
-      while (this.activeRuns.size < limit) {
-        let claim = this.store.claimReadyAction(this.ownerBootId, this.leaseMs);
-        if (!claim) break;
-        try {
-          claim = await this.runner.prepare?.(claim) || claim;
-        } catch (error) {
-          try { this.runner.cleanup?.(claim.action); } catch {}
-          this.controller.submit(claim.run.id, this.ownerBootId, claim.run.leaseEpoch, {
-            outcome: 'failed', response: '', summary: '', evidence: [],
-            error: error?.message || String(error),
-          });
-          this.onEvent({ type: 'run.finished', workItem: this.store.getWorkItemDetail(claim.workItem.id) });
-          continue;
+    this.tickPromise = (async () => {
+      try {
+        this.#recoverExpiredRuns();
+        const limit = Math.min(Math.max(Number(await this.concurrencyProvider()) || 3, 1), 12);
+        while (this.lifecycle === 'running' && this.activeRuns.size < limit) {
+          let claim = this.store.claimReadyAction(this.ownerBootId, this.leaseMs);
+          if (!claim) break;
+          try {
+            claim = await this.runner.prepare?.(claim) || claim;
+            if (this.lifecycle !== 'running') {
+              try { this.runner.cleanup?.(claim.action); } catch {}
+              this.store.interruptRun(
+                claim.run.id,
+                this.ownerBootId,
+                claim.run.leaseEpoch,
+                'Work Center watcher stopped during Action preparation',
+                null,
+              );
+              break;
+            }
+          } catch (error) {
+            try { this.runner.cleanup?.(claim.action); } catch {}
+            if (this.lifecycle !== 'running') {
+              this.store.interruptRun(
+                claim.run.id,
+                this.ownerBootId,
+                claim.run.leaseEpoch,
+                'Work Center watcher stopped during Action preparation',
+                null,
+              );
+              break;
+            }
+            this.controller.submit(claim.run.id, this.ownerBootId, claim.run.leaseEpoch, {
+              outcome: 'failed', response: '', summary: '', evidence: [],
+              error: error?.message || String(error),
+            });
+            this.onEvent({ type: 'run.finished', workItem: this.store.getWorkItemDetail(claim.workItem.id) });
+            continue;
+          }
+          this.#startClaim(claim);
         }
-        this.#startClaim(claim);
+      } finally {
+        this.ticking = false;
+        this.tickPromise = null;
       }
-    } finally {
-      this.ticking = false;
-    }
+    })();
+    return this.tickPromise;
   }
 
   #startClaim(claim) {
@@ -138,7 +179,7 @@ export class WorkItemWatcher {
     }).finally(() => {
       clearInterval(renewal);
       this.activeRuns.delete(key);
-      queueMicrotask(() => { this.tick().catch(() => {}); });
+      if (this.lifecycle === 'running') queueMicrotask(() => { this.tick().catch(() => {}); });
     });
     this.activeRuns.set(key, entry);
     this.onEvent({ type: 'run.started', workItem: this.store.getWorkItemDetail(claim.workItem.id) });

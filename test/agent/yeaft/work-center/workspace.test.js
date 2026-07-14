@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -55,11 +55,79 @@ describe('Work Center Action workspaces', () => {
     removeActionWorktree(committed);
     const integration = integrateActionWorktrees({
       workDir: root,
-      dependencies: [{ outcome: 'completed', workspace: committed }],
+      dependencies: [{ status: 'completed', workspace: committed }],
     });
     expect(integration.commits).toEqual([committed.commit]);
     expect(readFileSync(join(root, 'result.txt'), 'utf8')).toBe('result\n');
-    expect(() => git(['show-ref', '--verify', `refs/heads/${committed.branch}`], root)).toThrow();
+    expect(git(['branch', '--list', committed.branch], root)).toBe('');
+  });
+
+  it('integrates the real dependency DTO returned by WorkItemStore', async () => {
+    const root = repository();
+    const rootDir = mkdtempSync(join(tmpdir(), 'work-center-action-worktrees-'));
+    dirs.push(rootDir);
+    const dbDir = mkdtempSync(join(tmpdir(), 'work-center-integration-store-'));
+    dirs.push(dbDir);
+    const { WorkItemStore } = await import('../../../../agent/yeaft/work-center/store.js');
+    const { WorkItemRunner } = await import('../../../../agent/yeaft/work-center/runner.js');
+    const store = new WorkItemStore(join(dbDir, 'work-center.db'));
+    try {
+      const item = store.createWorkItem({
+        id: 'integration-item', title: 'Integrate real DTO', goal: 'Integrate',
+        acceptanceCriteria: [], workDir: root, workflowSnapshot: { executionMode: 'graph' },
+      }, null);
+      const workspace = createActionWorktree({
+        workItem: item, action: { id: 'a', stageId: 'implement' }, runId: 'run', rootDir,
+      });
+      writeFileSync(join(workspace.path, 'result.txt'), 'result\n');
+      const committed = commitActionWorktree(workspace, { stageId: 'implement' });
+      removeActionWorktree(committed);
+      store.createNextAction(item.id, {
+        id: 'a', type: 'implement', stageId: 'implement', status: 'completed', workspace: committed,
+      });
+      store.createNextAction(item.id, {
+        id: 'b', type: 'test', stageId: 'test', status: 'completed', workspaceMode: 'read',
+      });
+      const dependencies = store.listActionDependencies(item.id, ['implement', 'test']);
+      expect(dependencies).toEqual([
+        expect.objectContaining({ stageId: 'implement', status: 'completed' }),
+        expect.objectContaining({ stageId: 'test', status: 'completed' }),
+      ]);
+      store.createNextAction(item.id, {
+        id: 'integrate', type: 'integrate', stageId: 'integrate', status: 'ready',
+        workspaceMode: 'integrate', dependsOnStageIds: ['implement', 'test'],
+      });
+      const runner = new WorkItemRunner({ store });
+      const prepared = await runner.prepare({
+        workItem: item,
+        action: store.getAction('integrate'),
+        run: { id: 'integration-run' },
+      });
+      expect(prepared.action.workspace.integration.commits).toEqual([committed.commit]);
+      expect(readFileSync(join(root, 'result.txt'), 'utf8')).toBe('result\n');
+      expect(existsSync(workspace.path)).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('rejects a real dependency DTO unless every Action completed', async () => {
+    const root = repository();
+    const dbDir = mkdtempSync(join(tmpdir(), 'work-center-integration-store-'));
+    dirs.push(dbDir);
+    const { WorkItemStore } = await import('../../../../agent/yeaft/work-center/store.js');
+    const store = new WorkItemStore(join(dbDir, 'work-center.db'));
+    try {
+      const item = store.createWorkItem({
+        id: 'incomplete-item', title: 'Reject incomplete DTO', goal: 'Reject',
+        acceptanceCriteria: [], workDir: root, workflowSnapshot: { executionMode: 'graph' },
+      }, null);
+      store.createNextAction(item.id, { id: 'a', type: 'implement', stageId: 'implement', status: 'ready' });
+      const dependencies = store.listActionDependencies(item.id, ['implement']);
+      expect(() => integrateActionWorktrees({ workDir: root, dependencies })).toThrow(/every dependency Action/i);
+    } finally {
+      store.close();
+    }
   });
 
   it('leaves the target repository unchanged when a later integration commit conflicts', () => {
@@ -83,8 +151,8 @@ describe('Work Center Action workspaces', () => {
     expect(() => integrateActionWorktrees({
       workDir: root,
       dependencies: [
-        { outcome: 'completed', workspace: first },
-        { outcome: 'completed', workspace: conflicting },
+        { status: 'completed', workspace: first },
+        { status: 'completed', workspace: conflicting },
       ],
     })).toThrow(/could not integrate/i);
     expect(git(['rev-parse', 'HEAD'], root)).toBe(head);
