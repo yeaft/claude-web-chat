@@ -3,6 +3,7 @@ import {
   estimateVirtualItemHeight,
   getVirtualItemKey,
   shouldFollowTranscriptBottom,
+  virtualScrollTopForIndex,
   virtualTranscriptDefaults,
 } from '../utils/virtual-transcript.js';
 
@@ -45,7 +46,7 @@ export default {
       ></div>
     </div>
   `,
-  setup(props, { emit }) {
+  setup(props, { emit, expose }) {
     const rootRef = Vue.ref(null);
     const scrollEl = Vue.ref(null);
     const scrollTop = Vue.ref(0);
@@ -189,6 +190,32 @@ export default {
       }
       observeItem(key, index, el);
     }
+
+    async function scrollToIndex(index, { align = 'center' } = {}) {
+      const safeIndex = Number.isFinite(index) ? Math.floor(index) : -1;
+      const scroller = scrollEl.value;
+      if (!scroller || safeIndex < 0 || safeIndex >= props.items.length) return false;
+      const key = getVirtualItemKey(props.items[safeIndex], safeIndex);
+      scroller.scrollTop = virtualScrollTopForIndex(props.items, safeIndex, heightCache, {
+        itemGap: props.itemGap,
+        estimateHeight: props.estimateHeight,
+        viewportHeight: scroller.clientHeight || viewportHeight.value,
+        align,
+      });
+      readScrollState();
+      await Vue.nextTick();
+      const target = itemEls.get(key);
+      if (target?.scrollIntoView) target.scrollIntoView({ block: align, inline: 'nearest' });
+      readScrollState();
+      return true;
+    }
+
+    function scrollToKey(key, options = {}) {
+      const index = itemIndexByKey.get(String(key));
+      return Number.isFinite(index) ? scrollToIndex(index, options) : Promise.resolve(false);
+    }
+
+    expose({ scrollToKey, scrollToIndex });
 
     Vue.watch(
       () => props.items.map((item, index) => getVirtualItemKey(item, index)).join('\n'),

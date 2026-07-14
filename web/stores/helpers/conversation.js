@@ -504,17 +504,29 @@ export function cancelExecution(store) {
 
 export function answerUserQuestion(store, requestId, answers, conversationId) {
   const convId = conversationId || store.currentConversation;
-  store.sendWsMessage({
+  // Find the AskUserQuestion tool-use message first: Yeaft needs its exact
+  // Session/VP/turn/thread envelope so parallel prompts cannot cross-resolve.
+  const chatMsgs = store.messagesMap[convId] || [];
+  const chatMsg = chatMsgs.find(m =>
+    m.type === 'tool-use' && m.toolName === 'AskUserQuestion' && m.askRequestId === requestId
+  );
+  const isYeaftPrompt = store.currentView === 'yeaft' || !!chatMsg?.sessionId;
+  store.sendWsMessage(isYeaftPrompt ? {
+    type: 'yeaft_ask_user_answer',
+    agentId: store.yeaftAgentId || store.currentAgent || null,
+    conversationId: convId,
+    requestId,
+    answers,
+    sessionId: chatMsg?.sessionId || store.yeaftActiveSessionFilter || null,
+    vpId: chatMsg?.vpId || chatMsg?.speakerVpId || null,
+    turnId: chatMsg?.turnId || null,
+    threadId: chatMsg?.threadId || 'main',
+  } : {
     type: 'ask_user_answer',
     conversationId: convId,
     requestId,
     answers
   });
-  // Find the AskUserQuestion tool-use message by askRequestId and mark it answered
-  const chatMsgs = store.messagesMap[convId] || [];
-  const chatMsg = chatMsgs.find(m =>
-    m.type === 'tool-use' && m.toolName === 'AskUserQuestion' && m.askRequestId === requestId
-  );
   if (chatMsg) {
     chatMsg.askAnswered = true;
     chatMsg.selectedAnswers = answers;

@@ -19,7 +19,7 @@ describe('agent setup helpers', () => {
       profile,
       agentSecret: 'secret-123',
       serverWsUrl: 'wss://yeaft.example.com',
-    })).toBe(`yeaft-agent install --instance ${name} --server wss://yeaft.example.com --secret secret-123 --name ${name}`);
+    })).toBe(`yeaft-agent install --server wss://yeaft.example.com --secret secret-123 --name ${name}`);
   });
 
   it('does not build the service command before a secret exists', () => {

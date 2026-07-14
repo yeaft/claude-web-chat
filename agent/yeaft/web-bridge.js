@@ -50,6 +50,7 @@ import {
   restoreSessionToRegistry,
   readWorkDirRegistry,
   migrateRegisteredWorkDirSessions,
+  resolveSessionYeaftDir,
 } from './sessions/session-crud.js';
 import { openSession, loadSessionMeta } from './sessions/session-store.js';
 import { loadSessionConfig, resolveSessionConfig, SessionConfigError } from './sessions/session-config.js';
@@ -78,6 +79,9 @@ const LEGACY_SKILL_COMMAND_PREFIX = 'skill:';
 const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
 const PROJECT_SKILL_TIERS = new Set(['project', 'project-claude', 'project-codex']);
 const BASE_RUNTIME_KEY = '__base__';
+
+/** @type {Map<string, {resolve:Function, sessionId:string, vpId:string, threadId:string, turnId:string, signal?:AbortSignal, onAbort?:Function}>} */
+const pendingUserPrompts = new Map();
 
 /** @type {import('./session.js').Session | null} */
 let session = null;
@@ -4361,6 +4365,44 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         // each write a copy of the user message, and history replay
         // would render the user's prompt N times.
         userAlreadyPersisted: true,
+        askUser: ({ question, options }) => new Promise((resolve, reject) => {
+          const requestId = `ask_${randomUUID()}`;
+          const signal = vpAbort.signal;
+          // User think time is not engine silence. Pause the query watchdog until
+          // the card is answered; the normal tool/LLM budget resumes afterward.
+          if (queryTimer) {
+            clearTimeout(queryTimer);
+            queryTimer = null;
+          }
+          const onAbort = () => {
+            pendingUserPrompts.delete(requestId);
+            reject(new Error('aborted'));
+          };
+          pendingUserPrompts.set(requestId, {
+            resolve: answers => {
+              resetQueryTimer();
+              resolve(answers);
+            },
+            sessionId,
+            vpId,
+            threadId,
+            turnId,
+            signal,
+            onAbort,
+          });
+          signal.addEventListener('abort', onAbort, { once: true });
+          sendSessionEvent({
+            type: 'ask_user_question',
+            requestId,
+            questions: [{
+              question,
+              options: Array.isArray(options)
+                ? options.map(label => ({ label, description: '' }))
+                : [],
+              multiSelect: false,
+            }],
+          }, envelope);
+        }),
         threadId,
         vpTurnId: turnId,
         drainPendingUserMessages: () => {
@@ -5387,6 +5429,24 @@ export async function handleYeaftFetchDebugHistory(msg = {}) {
   });
 }
 
+/** Resolve a pending Yeaft AskUser prompt from the web UI. */
+export function handleYeaftAskUserAnswer(msg) {
+  const requestId = typeof msg?.requestId === 'string' ? msg.requestId : '';
+  const pending = pendingUserPrompts.get(requestId);
+  if (!pending) return false;
+  if (msg.sessionId && msg.sessionId !== pending.sessionId) return false;
+  if (msg.vpId && msg.vpId !== pending.vpId) return false;
+  if (msg.turnId && msg.turnId !== pending.turnId) return false;
+  if (msg.threadId && msg.threadId !== pending.threadId) return false;
+
+  pendingUserPrompts.delete(requestId);
+  if (pending.signal && pending.onAbort) {
+    try { pending.signal.removeEventListener('abort', pending.onAbort); } catch { /* ignore */ }
+  }
+  pending.resolve(msg.answers || {});
+  return true;
+}
+
 export async function handleYeaftSessionSend(msg) {
   return runYeaftSessionSend(msg);
 }
@@ -5813,6 +5873,82 @@ export async function handleYeaftLoadHistory(msg) {
  *
  * @param {object} msg — { sessionId, beforeSeq, turns }
  */
+export async function handleYeaftSearchHistory(msg) {
+  const sessionId = typeof msg?.sessionId === 'string' ? msg.sessionId.trim() : '';
+  const query = typeof msg?.query === 'string' ? msg.query.trim().slice(0, 500) : '';
+  const requestId = typeof msg?.requestId === 'string' ? msg.requestId : null;
+  const beforeSeq = Number.isFinite(msg?.beforeSeq) ? msg.beforeSeq : null;
+  const limit = Math.min(50, Math.max(1, Number.isFinite(msg?.limit) ? Math.floor(msg.limit) : 20));
+  const response = {
+    type: 'yeaft_history_search_result',
+    requestId,
+    sessionId: sessionId || null,
+    query,
+    results: [],
+    hasMore: false,
+    nextBeforeSeq: null,
+    _requestClientId: msg?._requestClientId || null,
+  };
+
+  if (!sessionId || query.length < 2) {
+    sendToServer(response);
+    return;
+  }
+
+  try {
+    const defaultYeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
+    const storeDir = resolveSessionYeaftDir(defaultYeaftDir, sessionId);
+    const store = new ConversationStore(storeDir);
+    const result = store.searchVisibleBySession(sessionId, query, { limit, beforeSeq });
+    sendToServer({ ...response, ...result });
+  } catch (err) {
+    console.error('[Yeaft] Session history search failed:', err?.message || err);
+    sendToServer({ ...response, error: 'search_failed' });
+  }
+}
+
+export async function handleYeaftLoadHistoryWindow(msg) {
+  const sessionId = typeof msg?.sessionId === 'string' ? msg.sessionId.trim() : '';
+  const requestId = typeof msg?.requestId === 'string' ? msg.requestId : null;
+  const anchorSeq = Number(msg?.anchorSeq);
+  const anchorMessageId = typeof msg?.anchorMessageId === 'string' ? msg.anchorMessageId : null;
+  const response = {
+    type: 'yeaft_history_window',
+    requestId,
+    conversationId: ensureYeaftConversationId(),
+    sessionId: sessionId || null,
+    anchorMessageId,
+    anchorSeq: Number.isFinite(anchorSeq) ? anchorSeq : null,
+    messages: [],
+    oldestSeq: null,
+    hasMoreBefore: false,
+    _requestClientId: msg?._requestClientId || null,
+  };
+
+  if (!sessionId || !Number.isFinite(anchorSeq)) {
+    sendToServer({ ...response, error: 'invalid_anchor' });
+    return;
+  }
+
+  try {
+    const defaultYeaftDir = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
+    const storeDir = resolveSessionYeaftDir(defaultYeaftDir, sessionId);
+    const store = new ConversationStore(storeDir);
+    const window = store.loadVisibleWindowBySession(sessionId, anchorSeq, {
+      beforeTurns: msg?.beforeTurns,
+      afterTurns: msg?.afterTurns,
+    });
+    sendToServer({
+      ...response,
+      ...window,
+      messages: projectVisibleHistoryChunkMessages(window.messages),
+    });
+  } catch (err) {
+    console.error('[Yeaft] Session history anchor load failed:', err?.message || err);
+    sendToServer({ ...response, error: 'window_load_failed' });
+  }
+}
+
 export async function handleYeaftLoadMoreHistory(msg) {
   const sessionId = (msg && typeof msg.sessionId === 'string' && msg.sessionId) || null;
   const perfTraceId = typeof msg?.perfTraceId === 'string' && msg.perfTraceId.trim() ? msg.perfTraceId.trim() : null;
@@ -6206,6 +6342,15 @@ export const __testHooks = {
     turnAbortMeta.clear();
     vpAborts.clear();
     vpInboxes.clear();
+  },
+  seedPendingUserPrompt({ requestId = 'ask-test', sessionId = 'session-test', vpId = 'vp-test', threadId = 'main', turnId = 'turn-test' } = {}) {
+    let resolved;
+    const promise = new Promise(resolve => { resolved = resolve; });
+    pendingUserPrompts.set(requestId, { resolve: resolved, sessionId, vpId, threadId, turnId });
+    return promise;
+  },
+  resetPendingUserPrompts() {
+    pendingUserPrompts.clear();
   },
   resetVpStatusBroker() {
     if (vpStatusBroker) vpStatusBroker.reset();

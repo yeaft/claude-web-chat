@@ -9,6 +9,7 @@ import WorkbenchPanel from './WorkbenchPanel.js';
 import YeaftDebugPanel from './YeaftDebugPanel.js';
 import VpTimelinePane from './VpTimelinePane.js';
 import YeaftSessionActions from './YeaftSessionActions.js';
+import YeaftTranscriptSearch from './YeaftTranscriptSearch.js';
 import LlmTab from './LlmTab.js';
 import WorkCenterPage from './WorkCenterPage.js';
 import { parseMentions } from '../utils/parseMentions.js';
@@ -41,7 +42,7 @@ export function visibleSessionStatusTasks(taskMap) {
 
 export default {
   name: 'YeaftPage',
-  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, LlmTab },
+  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftTranscriptSearch, LlmTab },
   template: `
     <div class="yeaft-page" ref="pageRef">
       <!-- Mobile sidebar overlay -->
@@ -148,16 +149,30 @@ export default {
           <YeaftSessionActions
             v-if="!showOnboardingGuide"
             class="yeaft-topbar-right"
+            :search-open="historySearchOpen"
             :loading-more-history="store.yeaftLoadingMoreHistory"
             :session-status-visible="sessionStatusVisible"
             :debug-mode="debugMode"
             :show-page-reload="isMobile"
+            @toggle-search="toggleHistorySearch"
             @reload-messages="reloadMessages"
             @toggle-session-status="toggleSessionStatus"
             @toggle-debug="toggleDebug"
             @reload-page="reloadPage"
           />
         </div>
+
+        <YeaftTranscriptSearch
+          v-if="historySearchOpen && !showOnboardingGuide"
+          ref="historySearchRef"
+          :state="store.yeaftHistorySearchState"
+          :active-index="historySearchActiveIndex"
+          @query="onHistorySearchQuery"
+          @move="historySearchActiveIndex = $event"
+          @select="selectHistorySearchResult"
+          @load-more="loadMoreHistorySearchResults"
+          @close="closeHistorySearch"
+        />
 
         <div class="yeaft-conversation-body">
         <!-- H2.f.6: YeaftFeatureDetailView removed — cross-thread aggregation
@@ -263,7 +278,7 @@ export default {
             {{ $t('yeaft.session.empty.cta') }}
           </button>
         </div>
-        <MessageList v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty" />
+        <MessageList ref="messageListRef" v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty" />
         </div>
 
         <div
@@ -411,6 +426,11 @@ export default {
     // of ChatInput (review fix — Fowler C2, PR #763).
     const chatInputRef = Vue.ref(null);
     const pageRef = Vue.ref(null);
+    const messageListRef = Vue.ref(null);
+    const historySearchRef = Vue.ref(null);
+    const historySearchOpen = Vue.ref(false);
+    const historySearchActiveIndex = Vue.ref(0);
+    let historySearchTimer = null;
     const yeaftInputDraftKey = Vue.computed(() => {
       const agentId = store.currentAgent || 'agent';
       const gs = sessionsStore();
@@ -636,10 +656,45 @@ export default {
       else if (typeof media.removeListener === 'function') media.removeListener(onResize);
     };
 
+    const closeHistorySearch = () => {
+      historySearchOpen.value = false;
+      historySearchActiveIndex.value = 0;
+    };
+    const openHistorySearch = () => {
+      historySearchOpen.value = true;
+      Vue.nextTick(() => historySearchRef.value?.focus?.());
+    };
+    const toggleHistorySearch = () => {
+      if (historySearchOpen.value) closeHistorySearch();
+      else openHistorySearch();
+    };
+    const onHistorySearchQuery = (query) => {
+      if (historySearchTimer) clearTimeout(historySearchTimer);
+      historySearchActiveIndex.value = 0;
+      historySearchTimer = setTimeout(() => store.searchYeaftHistory(query), 220);
+    };
+    const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true });
+    const selectHistorySearchResult = async (result) => {
+      if (!result) return;
+      const loaded = await store.loadYeaftHistoryWindow(result);
+      if (!loaded) return;
+      await Vue.nextTick();
+      await messageListRef.value?.revealMessage?.(result.messageId);
+    };
+
     // Esc handling — close transient controls. Detail drill-down layers were
     // removed; the center pane always stays on the Session stream.
     const onKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && String(e.key).toLowerCase() === 'f') {
+        e.preventDefault();
+        openHistorySearch();
+        return;
+      }
       if (e.key !== 'Escape') return;
+      if (historySearchOpen.value) {
+        closeHistorySearch();
+        return;
+      }
       if (modelDropdownOpen.value) {
         closeModelDropdown();
         return;
@@ -667,6 +722,7 @@ export default {
       document.removeEventListener('keydown', onKeyDown);
       if (mobileViewportRaf != null) cancelAnimationFrame(mobileViewportRaf);
       if (mobileViewportRecoverTimer) clearTimeout(mobileViewportRecoverTimer);
+      if (historySearchTimer) clearTimeout(historySearchTimer);
     });
 
     // Watch for conversationId changes (session_ready migrates local -> agent ID)
@@ -674,6 +730,20 @@ export default {
       if (newId && store.activeConversations[0] !== newId) {
         store.activeConversations = [newId];
       }
+    });
+    Vue.watch(() => [store.currentAgent, store.yeaftActiveSessionFilter], () => {
+      closeHistorySearch();
+      store.yeaftHistorySearchState = {
+        requestId: null,
+        agentId: null,
+        sessionId: null,
+        query: '',
+        loading: false,
+        results: [],
+        hasMore: false,
+        nextBeforeSeq: null,
+        error: null,
+      };
     });
 
     const goBack = () => {
@@ -1278,6 +1348,15 @@ export default {
       settingsInitialTab,
       settingsInitialEditVpId,
       chatInputRef,
+      messageListRef,
+      historySearchRef,
+      historySearchOpen,
+      historySearchActiveIndex,
+      toggleHistorySearch,
+      closeHistorySearch,
+      onHistorySearchQuery,
+      loadMoreHistorySearchResults,
+      selectHistorySearchResult,
       yeaftInputDraftKey,
       openSettings,
       isMobile,

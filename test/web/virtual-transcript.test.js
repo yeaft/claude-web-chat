@@ -10,6 +10,7 @@ import {
   resolveTranscriptBottomFollow,
   shouldFollowTranscriptBottom,
   shouldMarkTranscriptKeyScroll,
+  virtualScrollTopForIndex,
   virtualTranscriptDefaults,
 } from '../../web/utils/virtual-transcript.js';
 
@@ -21,6 +22,18 @@ function turns(count) {
     toolMsgs: [],
   }));
 }
+
+describe('virtual transcript targeted navigation', () => {
+  it('computes a centered offset for an unmounted item from cached heights', () => {
+    const items = turns(10);
+    const heightCache = Object.fromEntries(items.map(item => [item.id, 100]));
+    expect(virtualScrollTopForIndex(items, 5, heightCache, {
+      viewportHeight: 300,
+      itemGap: 0,
+      align: 'center',
+    })).toBe(400);
+  });
+});
 
 describe('virtual transcript range calculation', () => {
   it('renders only viewport-adjacent turns from a large transcript', () => {

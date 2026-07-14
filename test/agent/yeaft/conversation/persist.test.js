@@ -312,6 +312,49 @@ legacy session`, { encoding: 'utf8' });
       expect(compatStore.loadRecentBySession('s_fun', 10).map(m => m.content)).toEqual([]);
     });
 
+  describe('Session visible history search', () => {
+    it('searches only visible rows in the requested Session, newest first', () => {
+      const first = store.append({ role: 'user', content: 'Needle in the first turn', sessionId: 'session_search' });
+      store.append({ role: 'assistant', content: 'irrelevant', sessionId: 'session_search' });
+      const latest = store.append({ role: 'assistant', content: 'Latest NEEDLE answer', sessionId: 'session_search', speakerVpId: 'maker' });
+      store.append({ role: 'user', content: 'needle from another session', sessionId: 'session_other' });
+      store.append({ role: 'system', content: 'needle in hidden metadata', sessionId: 'session_search' });
+
+      const page = store.searchVisibleBySession('session_search', 'needle', { limit: 10 });
+
+      expect(page.results.map(result => result.messageId)).toEqual([latest.id, first.id]);
+      expect(page.results[0]).toMatchObject({ role: 'assistant', speakerVpId: 'maker' });
+      expect(page.results[0].snippet).toContain('NEEDLE');
+      expect(page.hasMore).toBe(false);
+    });
+
+    it('supports an exclusive seq cursor and bounded anchor window', () => {
+      const ids = [];
+      for (let i = 0; i < 5; i += 1) {
+        ids.push(store.append({ role: 'user', content: `searchable turn ${i}`, sessionId: 'session_window' }));
+        store.append({ role: 'assistant', content: `answer ${i}`, sessionId: 'session_window' });
+      }
+      store.moveToCold(ids[0].id);
+      const coldPage = store.searchVisibleBySession('session_window', 'searchable turn 0', { limit: 2 });
+      expect(coldPage.results.map(result => result.messageId)).toContain(ids[0].id);
+
+      const firstPage = store.searchVisibleBySession('session_window', 'searchable', { limit: 2 });
+      const secondPage = store.searchVisibleBySession('session_window', 'searchable', { limit: 2, beforeSeq: firstPage.nextBeforeSeq });
+      expect(firstPage.results).toHaveLength(2);
+      expect(firstPage.hasMore).toBe(true);
+      expect(secondPage.results.every(result => result.seq < firstPage.nextBeforeSeq)).toBe(true);
+
+      const anchor = ids[2];
+      const window = store.loadVisibleWindowBySession('session_window', store.getMessageSeqById(anchor.id), {
+        beforeTurns: 1,
+        afterTurns: 1,
+      });
+      expect(window.messages.some(message => message.id === anchor.id)).toBe(true);
+      expect(window.messages.every(message => message.sessionId === 'session_window')).toBe(true);
+      expect(window.messages.length).toBeLessThan(10);
+    });
+  });
+
   describe('appendBatch', () => {
     it('should write multiple messages', () => {
       const messages = store.appendBatch([

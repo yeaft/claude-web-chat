@@ -305,6 +305,9 @@ export default {
         sessions: this.sessionsStore?.sessionList || [],
         activeSessionId: this.activeSessionId,
         pinnedSessionIds: this.chatStore?.pinnedSessions || [],
+        onlineAgentIds: Array.isArray(this.onlineAgents)
+          ? this.onlineAgents.map(agent => agent.id)
+          : undefined,
       });
     },
     chatStore() {

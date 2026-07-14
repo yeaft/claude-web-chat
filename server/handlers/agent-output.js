@@ -481,6 +481,45 @@ export async function handleAgentOutput(agentId, agent, msg) {
       break;
     }
 
+    case 'yeaft_history_search_result': {
+      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
+      if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
+        await sendToWebClient(targetClient, {
+          type: 'yeaft_history_search_result',
+          agentId,
+          requestId: msg.requestId ?? null,
+          sessionId: msg.sessionId ?? null,
+          query: msg.query || '',
+          results: Array.isArray(msg.results) ? msg.results : [],
+          hasMore: !!msg.hasMore,
+          nextBeforeSeq: msg.nextBeforeSeq ?? null,
+          ...(msg.error ? { error: msg.error } : {}),
+        });
+      }
+      break;
+    }
+
+    case 'yeaft_history_window': {
+      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
+      if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
+        const messages = Array.isArray(msg.messages) ? msg.messages.map(hydrateMessagePreviewData) : [];
+        await sendToWebClient(targetClient, {
+          type: 'yeaft_history_window',
+          agentId,
+          requestId: msg.requestId ?? null,
+          conversationId: msg.conversationId ?? null,
+          sessionId: msg.sessionId ?? null,
+          anchorMessageId: msg.anchorMessageId ?? null,
+          anchorSeq: msg.anchorSeq ?? null,
+          messages,
+          oldestSeq: msg.oldestSeq ?? null,
+          hasMoreBefore: !!msg.hasMoreBefore,
+          ...(msg.error ? { error: msg.error } : {}),
+        });
+      }
+      break;
+    }
+
     case 'yeaft_history_chunk': {
       const messages = Array.isArray(msg.messages)
         ? msg.messages.map(hydrateMessagePreviewData)

@@ -123,10 +123,10 @@ export function winInstall(config) {
   console.log(`  Ecosystem: ${ecoPath}`);
   console.log(`  Startup:   ${startupBat}`);
   console.log(`\nManage with:`);
-  console.log(`  yeaft-agent status --instance ${config.instanceId}`);
-  console.log(`  yeaft-agent logs --instance ${config.instanceId}`);
-  console.log(`  yeaft-agent restart --instance ${config.instanceId}`);
-  console.log(`  yeaft-agent uninstall --instance ${config.instanceId}`);
+  console.log(`  yeaft-agent status --name ${config.instanceId}`);
+  console.log(`  yeaft-agent logs --name ${config.instanceId}`);
+  console.log(`  yeaft-agent restart --name ${config.instanceId}`);
+  console.log(`  yeaft-agent uninstall --name ${config.instanceId}`);
 }
 
 export function winUninstall(instanceId = DEFAULT_INSTANCE_ID) {

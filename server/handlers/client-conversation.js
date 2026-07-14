@@ -33,6 +33,17 @@ async function broadcastSessionPin(userId, payload) {
   }
 }
 
+export function groupOnlineYeaftSessions(rows, agentRegistry = agents) {
+  const byAgent = {};
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row?.agentId) continue;
+    const agent = agentRegistry.get(row.agentId);
+    if (!agent || agent.ws?.readyState !== 1) continue;
+    (byAgent[row.agentId] ||= []).push(row);
+  }
+  return byAgent;
+}
+
 /**
  * Review C1 (Fowler): the frontend stamps a `clientMessageId` on
  * every `chat` payload (see web/stores/helpers/conversation.js#
@@ -147,19 +158,14 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         }
       }
       await broadcastAgentList();
-      // Yeaft sessions hydrate — send the user's full cross-agent
-      // yeaft session list before any agent comes online so the
-      // unified sidebar can render the list immediately on reload.
-      // Grouped by agentId so the web sessions store can apply each
-      // slice via its existing per-agent applySnapshot path.
+      // Yeaft session rows are only actionable while their owning Agent is
+      // connected. Keep offline rows in the DB for reconnect recovery, but do
+      // not hydrate them into the sidebar where remove/settings cannot work.
+      // Group by agentId so the web store can keep using per-agent snapshots.
       if (client.userId) {
         try {
           const allRows = yeaftSessionDb.getByUser(client.userId);
-          const byAgent = {};
-          for (const row of allRows) {
-            if (!row.agentId) continue;
-            (byAgent[row.agentId] ||= []).push(row);
-          }
+          const byAgent = groupOnlineYeaftSessions(allRows);
           for (const [agentId, sessions] of Object.entries(byAgent)) {
             await sendToWebClient(client, {
               type: 'yeaft_session_hydrate',
@@ -904,6 +910,43 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         });
       }
       await forwardToAgent(histAgentId, forwarded);
+      break;
+    }
+
+    case 'yeaft_search_history': {
+      const searchAgentId = msg.agentId;
+      const searchSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+      if (!searchAgentId || !searchSessionId) return;
+      if (!await checkAgentAccess(searchAgentId)) return;
+      if (!CONFIG.skipAuth && !yeaftSessionDb.getForAgent(client.userId, searchAgentId, searchSessionId)) return;
+      await forwardToAgent(searchAgentId, {
+        type: 'yeaft_search_history',
+        sessionId: searchSessionId,
+        requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+        query: typeof msg.query === 'string' ? msg.query.slice(0, 500) : '',
+        limit: typeof msg.limit === 'number' ? msg.limit : 20,
+        beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
+        _requestClientId: clientId,
+      });
+      break;
+    }
+
+    case 'yeaft_load_history_window': {
+      const windowAgentId = msg.agentId;
+      const windowSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+      if (!windowAgentId || !windowSessionId) return;
+      if (!await checkAgentAccess(windowAgentId)) return;
+      if (!CONFIG.skipAuth && !yeaftSessionDb.getForAgent(client.userId, windowAgentId, windowSessionId)) return;
+      await forwardToAgent(windowAgentId, {
+        type: 'yeaft_load_history_window',
+        sessionId: windowSessionId,
+        requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+        anchorMessageId: typeof msg.anchorMessageId === 'string' ? msg.anchorMessageId : null,
+        anchorSeq: typeof msg.anchorSeq === 'number' ? msg.anchorSeq : null,
+        beforeTurns: typeof msg.beforeTurns === 'number' ? msg.beforeTurns : 3,
+        afterTurns: typeof msg.afterTurns === 'number' ? msg.afterTurns : 3,
+        _requestClientId: clientId,
+      });
       break;
     }
 

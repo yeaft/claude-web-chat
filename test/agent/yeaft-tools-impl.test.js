@@ -5,7 +5,7 @@
  * execute functions (no placeholders), registered in index.js, and functional.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join, resolve } from 'path';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -160,18 +160,30 @@ describe('index.js tool registration', () => {
 // ──────────────────────────────────────────────
 
 describe('AskUser tool', () => {
-  it('returns structured question with options', async () => {
+  it('waits for the host card response and returns its answers', async () => {
     const mod = await import(`${TOOLS_DIR}/ask-user.js`);
     const tool = mod.default;
+    const askUser = vi.fn().mockResolvedValue({ 'Which language?': 'Chinese' });
     const result = JSON.parse(await tool.execute({
       question: 'Which language?',
       options: ['English', 'Chinese'],
-    }, {}));
+    }, { askUser }));
 
-    expect(result.type).toBe('ask_user');
-    expect(result.question).toBe('Which language?');
-    expect(result.options).toEqual(['English', 'Chinese']);
-    expect(result.requestId).toBeTruthy();
+    expect(tool.timeoutMs).toBe(0);
+    expect(askUser).toHaveBeenCalledWith({
+      question: 'Which language?',
+      options: ['English', 'Chinese'],
+    });
+    expect(result).toEqual({
+      question: 'Which language?',
+      answers: { 'Which language?': 'Chinese' },
+    });
+  });
+
+  it('returns a clear error outside an interactive host', async () => {
+    const mod = await import(`${TOOLS_DIR}/ask-user.js`);
+    const result = JSON.parse(await mod.default.execute({ question: 'Continue?' }, {}));
+    expect(result.error).toContain('unavailable');
   });
 
   it('returns error when question is missing', async () => {
