@@ -457,10 +457,15 @@ export const useChatStore = defineStore('chat', {
     workCenterAgentId: null,
     workCenterItemsByAgent: {},
     workCenterDetailByAgent: {},
+    workCenterActionMessages: {},
+    workCenterActionMessagesLoading: {},
+    workCenterActionMessagesError: {},
     workCenterActionRequests: {},
     workCenterActionRequestDetails: {},
     workCenterActionRequestsLoading: {},
     workCenterActionRequestsError: {},
+    workCenterActionRequestDetailsLoading: {},
+    workCenterActionRequestDetailsError: {},
     workCenterLoadingByAgent: {},
     workCenterErrorByAgent: {},
     workCenterWatcherByAgent: {},
@@ -469,7 +474,11 @@ export const useChatStore = defineStore('chat', {
     workCenterSettingsLoadingByAgent: {},
     workCenterSettingsErrorByAgent: {},
     _workCenterSettingsGenerationByAgent: {},
-    _workCenterDetailRefreshByAgent: {},
+    _workCenterDetailRequestGenerationByAgent: {},
+    _workCenterDetailEventRefreshByAgent: {},
+    _workCenterActionMessagesGeneration: {},
+    _workCenterActionRequestsGeneration: {},
+    _workCenterActionRequestDetailsGeneration: {},
     workCenterPending: {},
     workCenterCreateDraft: null,
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
@@ -1146,47 +1155,131 @@ export const useChatStore = defineStore('chat', {
     },
     async getWorkItem(id, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const generation = Number(this._workCenterDetailRefreshByAgent[target] || 0) + 1;
-      this._workCenterDetailRefreshByAgent = {
-        ...this._workCenterDetailRefreshByAgent,
+      const generation = Number(this._workCenterDetailRequestGenerationByAgent[target] || 0) + 1;
+      this._workCenterDetailRequestGenerationByAgent = {
+        ...this._workCenterDetailRequestGenerationByAgent,
         [target]: generation,
       };
       const detail = await this.workCenterRequest('get', { id }, target);
-      if (this._workCenterDetailRefreshByAgent[target] === generation) {
+      if (this._workCenterDetailRequestGenerationByAgent[target] === generation) {
         this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
       }
       return detail;
     },
+    async loadWorkItemActionMessages(id, actionId, cursor, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const key = `${target}:${id}:${actionId}`;
+      const generation = Number(this._workCenterActionMessagesGeneration[key] || 0) + 1;
+      this._workCenterActionMessagesGeneration = {
+        ...this._workCenterActionMessagesGeneration,
+        [key]: generation,
+      };
+      this.workCenterActionMessagesLoading = { ...this.workCenterActionMessagesLoading, [key]: true };
+      this.workCenterActionMessagesError = { ...this.workCenterActionMessagesError, [key]: null };
+      try {
+        const data = await this.workCenterRequest('get_action_messages', {
+          id, actionId, cursor, limit: 20,
+        }, target);
+        if (this._workCenterActionMessagesGeneration[key] === generation) {
+          const current = this.workCenterActionMessages[key]?.messages || [];
+          const byId = new Map([...(data?.messages || []), ...current].map(message => [message.id, message]));
+          this.workCenterActionMessages = {
+            ...this.workCenterActionMessages,
+            [key]: {
+              messages: [...byId.values()],
+              nextCursor: data?.nextCursor ?? null,
+              total: Number(data?.total) || byId.size,
+            },
+          };
+        }
+        return data;
+      } catch (error) {
+        if (this._workCenterActionMessagesGeneration[key] === generation) {
+          this.workCenterActionMessagesError = {
+            ...this.workCenterActionMessagesError,
+            [key]: error?.message || String(error),
+          };
+        }
+        throw error;
+      } finally {
+        if (this._workCenterActionMessagesGeneration[key] === generation) {
+          this.workCenterActionMessagesLoading = { ...this.workCenterActionMessagesLoading, [key]: false };
+        }
+      }
+    },
     async loadWorkItemActionRequests(id, actionId, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const key = `${target}:${id}:${actionId}`;
+      const generation = Number(this._workCenterActionRequestsGeneration[key] || 0) + 1;
+      this._workCenterActionRequestsGeneration = {
+        ...this._workCenterActionRequestsGeneration,
+        [key]: generation,
+      };
       this.workCenterActionRequestsLoading = { ...this.workCenterActionRequestsLoading, [key]: true };
       this.workCenterActionRequestsError = { ...this.workCenterActionRequestsError, [key]: null };
       try {
         const data = await this.workCenterRequest('get_action_requests', { id, actionId }, target);
-        this.workCenterActionRequests = { ...this.workCenterActionRequests, [key]: data?.requests || [] };
+        if (this._workCenterActionRequestsGeneration[key] === generation) {
+          this.workCenterActionRequests = { ...this.workCenterActionRequests, [key]: data?.requests || [] };
+        }
         return data?.requests || [];
       } catch (error) {
-        this.workCenterActionRequestsError = {
-          ...this.workCenterActionRequestsError,
-          [key]: error?.message || String(error),
-        };
+        if (this._workCenterActionRequestsGeneration[key] === generation) {
+          this.workCenterActionRequestsError = {
+            ...this.workCenterActionRequestsError,
+            [key]: error?.message || String(error),
+          };
+        }
         throw error;
       } finally {
-        this.workCenterActionRequestsLoading = { ...this.workCenterActionRequestsLoading, [key]: false };
+        if (this._workCenterActionRequestsGeneration[key] === generation) {
+          this.workCenterActionRequestsLoading = { ...this.workCenterActionRequestsLoading, [key]: false };
+        }
       }
     },
     async loadWorkItemActionRequest(id, actionId, runId, requestId, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const key = `${target}:${id}:${actionId}:${requestId}`;
-      const data = await this.workCenterRequest('get_action_request', {
-        id, actionId, runId, requestId,
-      }, target);
-      this.workCenterActionRequestDetails = {
-        ...this.workCenterActionRequestDetails,
-        [key]: data?.request || null,
+      const key = `${target}:${id}:${actionId}:${runId}:${requestId}`;
+      const generation = Number(this._workCenterActionRequestDetailsGeneration[key] || 0) + 1;
+      this._workCenterActionRequestDetailsGeneration = {
+        ...this._workCenterActionRequestDetailsGeneration,
+        [key]: generation,
       };
-      return data?.request || null;
+      this.workCenterActionRequestDetailsLoading = {
+        ...this.workCenterActionRequestDetailsLoading,
+        [key]: true,
+      };
+      this.workCenterActionRequestDetailsError = {
+        ...this.workCenterActionRequestDetailsError,
+        [key]: null,
+      };
+      try {
+        const data = await this.workCenterRequest('get_action_request', {
+          id, actionId, runId, requestId,
+        }, target);
+        if (this._workCenterActionRequestDetailsGeneration[key] === generation) {
+          this.workCenterActionRequestDetails = {
+            ...this.workCenterActionRequestDetails,
+            [key]: data?.request || null,
+          };
+        }
+        return data?.request || null;
+      } catch (error) {
+        if (this._workCenterActionRequestDetailsGeneration[key] === generation) {
+          this.workCenterActionRequestDetailsError = {
+            ...this.workCenterActionRequestDetailsError,
+            [key]: error?.message || String(error),
+          };
+        }
+        throw error;
+      } finally {
+        if (this._workCenterActionRequestDetailsGeneration[key] === generation) {
+          this.workCenterActionRequestDetailsLoading = {
+            ...this.workCenterActionRequestDetailsLoading,
+            [key]: false,
+          };
+        }
+      }
     },
     async loadWorkCenterSettings(agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
@@ -1347,9 +1440,9 @@ export const useChatStore = defineStore('chat', {
     },
     async refreshWorkItemDetailAfterActionChange(agentId, summary) {
       const key = `${summary.id}:${summary.currentActionId}`;
-      if (this._workCenterDetailRefreshByAgent[agentId] === key) return;
-      this._workCenterDetailRefreshByAgent = {
-        ...this._workCenterDetailRefreshByAgent,
+      if (this._workCenterDetailEventRefreshByAgent[agentId] === key) return;
+      this._workCenterDetailEventRefreshByAgent = {
+        ...this._workCenterDetailEventRefreshByAgent,
         [agentId]: key,
       };
       try {
@@ -1366,10 +1459,10 @@ export const useChatStore = defineStore('chat', {
       } catch {
         // The next event or explicit selection retries; event handling remains non-fatal.
       } finally {
-        if (this._workCenterDetailRefreshByAgent[agentId] === key) {
-          const next = { ...this._workCenterDetailRefreshByAgent };
+        if (this._workCenterDetailEventRefreshByAgent[agentId] === key) {
+          const next = { ...this._workCenterDetailEventRefreshByAgent };
           delete next[agentId];
-          this._workCenterDetailRefreshByAgent = next;
+          this._workCenterDetailEventRefreshByAgent = next;
         }
       }
     },

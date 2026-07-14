@@ -66,7 +66,8 @@ function internalDetail() {
       id: 'r-1', actionId: 'a-1', workItemId: 'wi-1', status: 'running', startedAt: 1, expiresAt: 2,
       response: 'Analyzed the request and prepared the contract.',
       summary: 'Contract prepared', evidence: [{ kind: 'test', label: 'passed' }],
-      loopCount: 3, toolCount: 8, progressRevision: 6,
+      loopCount: 3, toolCount: 8, llmRequestCount: 4,
+      inputTokens: 120, outputTokens: 30, totalTokens: 150, progressRevision: 6,
       roleSnapshot: { id: 'triage', actionType: 'triage', selectionReason: 'auto:triage', assignmentPolicy: { mode: 'auto' } },
       vpSnapshot: { id: 'omni', name: 'Omni', role: 'Lead', persona: 'private persona', personaHash: 'private-hash' },
       modelSnapshot: { id: 'provider/model', provider: 'provider', policy: { mode: 'specific' } },
@@ -214,6 +215,11 @@ describe('Work Center lifecycle bridge', () => {
           actions: [{
             id: 'a-1', assignmentPolicy: { mode: 'auto', fixedVpId: null },
             loopCount: 3, toolCount: 8, progressRevision: 6,
+            executionStats: {
+              llmRequestCount: 4, loopCount: 3, toolCount: 8,
+              inputTokens: 120, outputTokens: 30, cacheReadTokens: 0,
+              cacheWriteTokens: 0, totalTokens: 150,
+            },
             response: 'Analyzed the request and prepared the contract.',
           }],
         },
@@ -230,6 +236,23 @@ describe('Work Center lifecycle bridge', () => {
       }
     },
   );
+
+  it('whitelists Action message pagination before reaching the service', async () => {
+    const service = {
+      start: vi.fn(), shutdown: vi.fn(),
+      handle: vi.fn().mockResolvedValue({ actionId: 'a-1', messages: [], nextCursor: null }),
+    };
+    __testSetWorkCenterService(service);
+
+    await handleWorkCenterRequest({
+      requestId: 'message-page', op: 'get_action_messages',
+      payload: { id: 'wi-1', actionId: 'a-1', cursor: '80', limit: 20, injected: true },
+    });
+
+    expect(service.handle).toHaveBeenCalledWith('get_action_messages', {
+      id: 'wi-1', actionId: 'a-1', cursor: '80', limit: 20,
+    });
+  });
 
   it('whitelists Action debug request identifiers before reaching the service', async () => {
     const service = {

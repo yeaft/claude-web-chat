@@ -118,7 +118,14 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain("activeTab === 'messages'");
     expect(detail).toContain("activeTab === 'requests'");
     expect(detail).toContain('v-for="message in messages"');
+    expect(detail).toContain("$emit('load-earlier-messages')");
+    expect(store).toContain("workCenterRequest('get_action_messages'");
+    expect(page).toContain(':messages-next-cursor="actionMessagesNextCursor"');
     expect(detail).toContain('v-for="loop in requestDetail(request)?.loops || []"');
+    expect(detail).toContain('requestDetailsError[request.id]');
+    expect(detail).toContain('requestDetailsLoading[request.id]');
+    expect(detail).toContain("tr('workCenter.requestDetailUnavailable'");
+    expect(page).toContain('request.runId}:${request.id}');
     expect(detail).toContain("tr('workCenter.rawRequest'");
     expect(detail).toContain('class="work-center-action-composer"');
     expect(detail).toContain("$emit('attachment-input', $event)");

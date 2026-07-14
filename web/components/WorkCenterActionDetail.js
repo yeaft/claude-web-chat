@@ -5,8 +5,14 @@ export default {
   props: {
     action: { type: Object, default: null },
     selected: { type: Object, default: null },
+    messages: { type: Array, default: () => [] },
+    messagesNextCursor: { type: [String, Number], default: null },
+    messagesLoading: { type: Boolean, default: false },
+    messagesError: { type: String, default: '' },
     requests: { type: Array, default: () => [] },
     requestDetails: { type: Object, default: () => ({}) },
+    requestDetailsLoading: { type: Object, default: () => ({}) },
+    requestDetailsError: { type: Object, default: () => ({}) },
     requestsLoading: { type: Boolean, default: false },
     requestsError: { type: String, default: '' },
     composerText: { type: String, default: '' },
@@ -15,7 +21,7 @@ export default {
     sending: { type: Boolean, default: false },
     attachmentsSupported: { type: Boolean, default: false },
   },
-  emits: ['back', 'update:composerText', 'select-request', 'refresh-requests', 'attachment-input', 'remove-attachment', 'send'],
+  emits: ['back', 'update:composerText', 'load-earlier-messages', 'select-request', 'refresh-requests', 'attachment-input', 'remove-attachment', 'send'],
   data() {
     return {
       activeTab: 'messages',
@@ -24,9 +30,6 @@ export default {
     };
   },
   computed: {
-    messages() {
-      return Array.isArray(this.action?.messages) ? this.action.messages : [];
-    },
     canCompose() {
       return this.selected?.currentActionId === this.action?.id
         && ['ready', 'running', 'waiting', 'needs_attention'].includes(this.selected?.status);
@@ -147,6 +150,10 @@ export default {
 
       <div class="work-center-action-detail-scroll">
         <div v-if="activeTab === 'messages'" class="work-center-action-transcript">
+          <button v-if="messagesNextCursor != null" class="btn-ghost" type="button" @click="$emit('load-earlier-messages')" :disabled="messagesLoading">
+            {{ messagesLoading ? tr('workCenter.loadingEarlierMessages', 'Loading earlier messages…') : tr('workCenter.loadEarlierMessages', 'Load earlier messages') }}
+          </button>
+          <p v-if="messagesError" class="work-center-error">{{ messagesError }}</p>
           <dl v-if="action.brief" class="work-center-action-brief work-center-action-detail-brief">
             <div><dt>{{ tr('workCenter.actionObjective', 'What to do') }}</dt><dd>{{ action.brief.objective }}</dd></div>
             <div><dt>{{ tr('workCenter.actionApproach', 'How to do it') }}</dt><dd>{{ action.brief.approach }}</dd></div>
@@ -179,7 +186,9 @@ export default {
               <span class="work-center-action-chevron" aria-hidden="true"></span>
             </button>
             <div v-if="expandedRequestId === request.id" class="work-center-request-detail">
-              <p v-if="!requestDetail(request)" class="work-center-action-empty">{{ tr('workCenter.loadingRequestDetail', 'Loading request detail…') }}</p>
+              <p v-if="requestDetailsError[request.id]" class="work-center-error">{{ requestDetailsError[request.id] }}</p>
+              <p v-else-if="requestDetailsLoading[request.id]" class="work-center-action-empty">{{ tr('workCenter.loadingRequestDetail', 'Loading request detail…') }}</p>
+              <p v-else-if="!requestDetail(request)" class="work-center-action-empty">{{ tr('workCenter.requestDetailUnavailable', 'Request detail is unavailable. Try again.') }}</p>
               <article v-for="loop in requestDetail(request)?.loops || []" :key="loop.id" class="work-center-request-loop">
                 <button type="button" @click="toggleLoop(request.id, loop.loopNumber)" :aria-expanded="loopExpanded(request.id, loop.loopNumber)">
                   <strong>{{ tr('workCenter.loop', 'Loop') }} {{ loop.loopNumber }}</strong>

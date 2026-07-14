@@ -12,9 +12,9 @@ import {
   removeWorkItemAttachments,
 } from './attachments.js';
 import {
+  projectActionMessagePage,
   projectActionRequestDetail,
   projectActionRequestIndex,
-  projectWorkItemDetail,
   projectWorkItemSummary,
 } from './projection.js';
 import { readWorkCenterSettings, writeWorkCenterSettings } from './settings.js';
@@ -84,7 +84,15 @@ export class WorkCenterService {
           watcher: this.watcher.status(),
         };
       case 'get':
-        return projectWorkItemDetail(this.#requiredItem(payload.id));
+        return this.#requiredItem(payload.id);
+      case 'get_action_messages': {
+        const detail = this.#requiredItem(payload.id);
+        const action = this.#requiredAction(detail, payload.actionId);
+        return projectActionMessagePage(action, detail.runs, detail.events, {
+          cursor: payload.cursor,
+          limit: payload.limit,
+        });
+      }
       case 'get_action_requests': {
         const detail = this.#requiredItem(payload.id);
         const action = this.#requiredAction(detail, payload.actionId);

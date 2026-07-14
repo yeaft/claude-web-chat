@@ -1,9 +1,12 @@
 import { reconstructDebugRawRequest } from '../debug-trace.js';
+import {
+  enforceActionRequestDetailBudget,
+  sanitizeDebugValue,
+} from './debug-projection.js';
 import { normalizeActionBrief } from './workflow.js';
 
 const MAX_ACTION_MESSAGE_CHARS = 16_000;
-const MAX_DEBUG_TEXT_CHARS = 256_000;
-const SENSITIVE_HEADER = /^(authorization|proxy-authorization|x-api-key|api-key|cookie|set-cookie)$/i;
+const MAX_ACTION_MESSAGES = 20;
 
 function currentAction(detail) {
   if (!detail?.currentActionId || !Array.isArray(detail.actions)) return null;
@@ -76,26 +79,11 @@ function actionInputMessages(action, events) {
     .filter(Boolean);
 }
 
-function actionExecution(action, runs, events) {
+function actionMessages(action, runs, events) {
   const matchingRuns = Array.isArray(runs)
     ? runs.filter(run => run?.actionId === action?.id)
     : [];
-  if (matchingRuns.length === 0) {
-    return {
-      ...executionStats(action),
-      response: typeof action?.response === 'string' ? action.response : '',
-      progressRevision: count(action?.progressRevision),
-      messages: Array.isArray(action?.messages)
-        ? action.messages.map(normalizeProjectedMessage).filter(Boolean)
-        : actionInputMessages(action, events),
-    };
-  }
-  const stats = sumExecutionStats(matchingRuns);
-  const latest = [...matchingRuns].sort((left, right) => (
-    count(right.progressRevision) - count(left.progressRevision)
-      || count(right.startedAt) - count(left.startedAt)
-  ))[0];
-  const messages = [...actionInputMessages(action, events), ...matchingRuns
+  return [...actionInputMessages(action, events), ...matchingRuns
     .sort((left, right) => count(left.startedAt) - count(right.startedAt))
     .map(run => normalizeProjectedMessage({
       id: `run:${run.id}`,
@@ -110,11 +98,41 @@ function actionExecution(action, runs, events) {
     .sort((left, right) => left.createdAt - right.createdAt
       || (left.role === 'user' ? -1 : 1)
       || left.id.localeCompare(right.id));
+}
+
+function actionExecution(action, runs, events) {
+  const matchingRuns = Array.isArray(runs)
+    ? runs.filter(run => run?.actionId === action?.id)
+    : [];
+  if (matchingRuns.length === 0) {
+    const messages = Array.isArray(action?.messages)
+      ? action.messages.map(normalizeProjectedMessage).filter(Boolean)
+      : actionInputMessages(action, events);
+    return {
+      ...executionStats(action),
+      response: typeof action?.response === 'string' ? action.response : '',
+      progressRevision: count(action?.progressRevision),
+      messages,
+      messageCount: count(action?.messageCount) || messages.length,
+      messageCursor: action?.messageCursor == null ? null : String(action.messageCursor),
+    };
+  }
+  const stats = sumExecutionStats(matchingRuns);
+  const latest = [...matchingRuns].sort((left, right) => (
+    count(right.progressRevision) - count(left.progressRevision)
+      || count(right.startedAt) - count(left.startedAt)
+  ))[0];
+  const allMessages = actionMessages(action, matchingRuns, events);
+  const messages = allMessages.slice(-MAX_ACTION_MESSAGES);
   return {
     ...stats,
     response: typeof latest?.response === 'string' ? latest.response : '',
     progressRevision: count(latest?.progressRevision),
     messages,
+    messageCount: allMessages.length,
+    messageCursor: allMessages.length > messages.length
+      ? String(allMessages.length - messages.length)
+      : null,
   };
 }
 
@@ -159,6 +177,8 @@ function projectAction(action, runs, events) {
     response: execution.response,
     progressRevision: execution.progressRevision,
     messages: execution.messages,
+    messageCount: execution.messageCount,
+    messageCursor: execution.messageCursor,
   };
 }
 
@@ -174,7 +194,6 @@ function projectActionStats(detail) {
       toolCount: projected.toolCount,
       response: projected.response,
       progressRevision: projected.progressRevision,
-      messages: projected.messages,
     };
   });
 }
@@ -288,36 +307,6 @@ export function projectWorkCenterEvent(event) {
   };
 }
 
-function sanitizeDebugValue(value, parent = null) {
-  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
-  if (typeof value === 'string') {
-    if (value.startsWith('data:') && value.includes(';base64,')) {
-      return `[binary data omitted: ${value.length} chars]`;
-    }
-    if (parent?.type === 'base64' && (parent?.data === value || parent?.source?.data === value)) {
-      return `[binary data omitted: ${value.length} chars]`;
-    }
-    if (value.length > MAX_DEBUG_TEXT_CHARS) {
-      return `${value.slice(0, MAX_DEBUG_TEXT_CHARS)}\n[truncated ${value.length - MAX_DEBUG_TEXT_CHARS} chars]`;
-    }
-    return value;
-  }
-  if (Array.isArray(value)) return value.map(item => sanitizeDebugValue(item, value));
-  if (typeof value !== 'object') return String(value);
-  const out = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (key === 'headers' && item && typeof item === 'object' && !Array.isArray(item)) {
-      out.headers = Object.fromEntries(Object.entries(item).map(([name, headerValue]) => [
-        name,
-        SENSITIVE_HEADER.test(name) ? '***' : sanitizeDebugValue(headerValue, item),
-      ]));
-    } else {
-      out[key] = sanitizeDebugValue(item, value);
-    }
-  }
-  return out;
-}
-
 function projectDebugUsage(value) {
   return {
     inputTokens: count(value?.inputTokens),
@@ -326,6 +315,22 @@ function projectDebugUsage(value) {
     cacheWriteTokens: count(value?.cacheWriteTokens),
     totalInputTokens: count(value?.totalInputTokens),
     totalTokens: count(value?.totalTokens),
+  };
+}
+
+export function projectActionMessagePage(action, runs, events, options = {}) {
+  const messages = actionMessages(action, runs, events);
+  const requestedCursor = options.cursor == null ? messages.length : Number(options.cursor);
+  const end = Number.isFinite(requestedCursor)
+    ? Math.max(0, Math.min(messages.length, Math.floor(requestedCursor)))
+    : messages.length;
+  const limit = Math.max(1, Math.min(50, Number(options.limit) || MAX_ACTION_MESSAGES));
+  const start = Math.max(0, end - limit);
+  return {
+    actionId: action.id,
+    messages: messages.slice(start, end),
+    nextCursor: start > 0 ? String(start) : null,
+    total: messages.length,
   };
 }
 
@@ -385,7 +390,7 @@ export function projectActionRequestDetail(action, run, history) {
     )),
     rawResponse: sanitizeDebugValue(loop.rawResponse ?? null),
   }));
-  return {
+  return enforceActionRequestDetailBudget({
     actionId: action.id,
     request: {
       id: turn.turnId,
@@ -403,5 +408,5 @@ export function projectActionRequestDetail(action, run, history) {
       totalTokens: count(turn.totalTokens),
       loops,
     },
-  };
+  });
 }

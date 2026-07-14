@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  projectActionMessagePage,
   projectActionRequestDetail,
   projectActionRequestIndex,
   projectWorkCenterEvent,
   projectWorkItemDetail,
 } from '../../../../agent/yeaft/work-center/projection.js';
+import { MAX_ACTION_REQUEST_DETAIL_BYTES } from '../../../../agent/yeaft/work-center/debug-projection.js';
 
 function internalDetail() {
   return {
@@ -75,13 +77,6 @@ describe('Work Center event projection', () => {
       loopCount: 3, toolCount: 8,
       response: 'Reviewed the change and found one compatibility decision.',
       progressRevision: 4,
-      messages: [{
-        id: 'run:r-1', role: 'assistant', kind: 'response', status: 'retryable',
-        text: 'Earlier retry response', attachments: [], createdAt: 1, updatedAt: 1,
-      }, {
-        id: 'run:r-2', role: 'assistant', kind: 'response', status: 'waiting',
-        text: 'Reviewed the change and found one compatibility decision.', attachments: [], createdAt: 2, updatedAt: 2,
-      }],
     }]);
     const wire = JSON.stringify(projected);
     for (const secret of [
@@ -215,5 +210,92 @@ describe('Work Center event projection', () => {
     expect(wire).not.toContain('Bearer secret');
     expect(wire).not.toContain('secret-image');
     expect(wire).toContain('binary data omitted');
+  });
+
+  it('redacts URL credentials, secret query values, and binary data embedded in SSE', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const secretBlob = 'a'.repeat(4_096);
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-secret', tools: [] }],
+      loops: [{
+        loopNumber: 1, model: 'provider/review', messages: [], toolCalls: [],
+        requestBase: { rawRequest: {
+          url: 'https://alice:password@example.test/v1?api_key=query-secret&safe=yes',
+          headers: { Authorization: 'Bearer secret' },
+        } },
+        rawResponse: {
+          format: 'sse',
+          body: `data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'base64', data: secretBlob } })}\n\n`,
+        },
+      }],
+    });
+
+    const wire = JSON.stringify(projected);
+    expect(wire).not.toContain('alice');
+    expect(wire).not.toContain('password');
+    expect(wire).not.toContain('query-secret');
+    expect(wire).not.toContain(secretBlob);
+    expect(projected.request.loops[0].rawRequest.url).toContain('api_key=***');
+    expect(projected.request.loops[0].rawRequest.url).toContain('safe=yes');
+    expect(wire).toContain('binary data omitted');
+  });
+
+  it('enforces one UTF-8 byte budget for the complete Action request detail DTO', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const hugeUnicode = '界'.repeat(MAX_ACTION_REQUEST_DETAIL_BYTES);
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-large', tools: [] }],
+      loops: Array.from({ length: 6 }, (_, index) => ({
+        loopInstanceId: `loop-${index}`, loopNumber: index + 1,
+        model: 'provider/review', systemPrompt: hugeUnicode, messages: [],
+        response: hugeUnicode, toolCalls: [], rawResponse: { body: hugeUnicode },
+      })),
+    });
+
+    expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
+      .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
+    expect(projected.request.truncated).toBe(true);
+
+    action.id = hugeUnicode;
+    run.id = hugeUnicode;
+    run.status = hugeUnicode;
+    run.modelSnapshot.id = hugeUnicode;
+    run.vpSnapshot.id = hugeUnicode;
+    run.vpSnapshot.name = hugeUnicode;
+    const metadataHeavy = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: hugeUnicode, tools: [] }],
+      loops: [],
+    });
+    expect(Buffer.byteLength(JSON.stringify(metadataHeavy), 'utf8'))
+      .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
+    expect(metadataHeavy.request.truncated).toBe(true);
+  });
+
+  it('bounds full Action history while keeping live event payloads message-free', () => {
+    const detail = internalDetail();
+    detail.runs = Array.from({ length: 100 }, (_, index) => ({
+      id: `run-${index}`, actionId: 'a-1', startedAt: index,
+      response: `response-${index}-${'x'.repeat(16_000)}`,
+      progressRevision: index + 1,
+    }));
+
+    const full = projectWorkItemDetail(detail);
+    const live = projectWorkCenterEvent({ type: 'run.progress', workItem: detail });
+    expect(full.actions[0]).toMatchObject({ messageCount: 100, messageCursor: '80' });
+    expect(full.actions[0].messages).toHaveLength(20);
+    expect(projectActionMessagePage(detail.actions[0], detail.runs, detail.events, {
+      cursor: full.actions[0].messageCursor,
+      limit: 20,
+    })).toMatchObject({
+      messages: expect.arrayContaining([expect.objectContaining({ id: 'run:run-60' })]),
+      nextCursor: '60',
+      total: 100,
+    });
+    expect(live.workItem.actionStats[0]).not.toHaveProperty('messages');
+    expect(Buffer.byteLength(JSON.stringify(live), 'utf8')).toBeLessThan(20_000);
   });
 });

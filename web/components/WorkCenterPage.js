@@ -87,6 +87,21 @@ export default {
         ? `${this.agentId}:${this.selected.id}:${this.selectedAction.id}`
         : '';
     },
+    actionMessages() {
+      const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];
+      const earlier = this.store.workCenterActionMessages[this.actionRequestKey]?.messages || [];
+      return [...new Map([...earlier, ...current].map(message => [message.id, message])).values()];
+    },
+    actionMessagesNextCursor() {
+      const page = this.store.workCenterActionMessages[this.actionRequestKey];
+      return page ? page.nextCursor : this.selectedAction?.messageCursor;
+    },
+    actionMessagesLoading() {
+      return !!this.store.workCenterActionMessagesLoading[this.actionRequestKey];
+    },
+    actionMessagesError() {
+      return this.store.workCenterActionMessagesError[this.actionRequestKey] || '';
+    },
     actionRequests() {
       return this.store.workCenterActionRequests[this.actionRequestKey] || [];
     },
@@ -94,7 +109,21 @@ export default {
       if (!this.actionRequestKey) return {};
       return Object.fromEntries(this.actionRequests.map(request => [
         request.id,
-        this.store.workCenterActionRequestDetails[`${this.actionRequestKey}:${request.id}`] || null,
+        this.store.workCenterActionRequestDetails[`${this.actionRequestKey}:${request.runId}:${request.id}`] || null,
+      ]));
+    },
+    actionRequestDetailsLoading() {
+      if (!this.actionRequestKey) return {};
+      return Object.fromEntries(this.actionRequests.map(request => [
+        request.id,
+        !!this.store.workCenterActionRequestDetailsLoading[`${this.actionRequestKey}:${request.runId}:${request.id}`],
+      ]));
+    },
+    actionRequestDetailsError() {
+      if (!this.actionRequestKey) return {};
+      return Object.fromEntries(this.actionRequests.map(request => [
+        request.id,
+        this.store.workCenterActionRequestDetailsError[`${this.actionRequestKey}:${request.runId}:${request.id}`] || '',
       ]));
     },
     actionRequestsLoading() {
@@ -250,6 +279,15 @@ export default {
     },
     showActionsPane() {
       this.narrowPane = 'actions';
+    },
+    loadEarlierActionMessages() {
+      if (!this.selected?.id || !this.selectedAction?.id || this.actionMessagesNextCursor == null) return null;
+      return this.store.loadWorkItemActionMessages(
+        this.selected.id,
+        this.selectedAction.id,
+        this.actionMessagesNextCursor,
+        this.agentId,
+      ).catch(() => null);
     },
     async refreshActionRequests() {
       if (!this.selected?.id || !this.selectedAction?.id) return [];
@@ -702,8 +740,14 @@ export default {
             <WorkCenterActionDetail
               :action="selectedAction"
               :selected="selected"
+              :messages="actionMessages"
+              :messages-next-cursor="actionMessagesNextCursor"
+              :messages-loading="actionMessagesLoading"
+              :messages-error="actionMessagesError"
               :requests="actionRequests"
               :request-details="actionRequestDetails"
+              :request-details-loading="actionRequestDetailsLoading"
+              :request-details-error="actionRequestDetailsError"
               :requests-loading="actionRequestsLoading"
               :requests-error="actionRequestsError"
               :composer-text="actionGuidance"
@@ -713,6 +757,7 @@ export default {
               :attachments-supported="workItemAttachmentsSupported"
               @back="showActionsPane"
               @update:composer-text="actionGuidance = $event"
+              @load-earlier-messages="loadEarlierActionMessages"
               @refresh-requests="refreshActionRequests"
               @select-request="loadActionRequest"
               @attachment-input="onGuidanceAttachmentInput"

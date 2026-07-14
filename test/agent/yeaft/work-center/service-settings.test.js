@@ -272,7 +272,7 @@ describe('Work Center settings service', () => {
     })).rejects.toThrow(/Action not found/);
   });
 
-  it('returns the redacted browser detail DTO from the real get operation', async () => {
+  it('keeps the real get operation internal so the bridge projects it exactly once', async () => {
     const service = await createService();
     const item = await service.handle('create', {
       title: 'Redacted task', goal: 'Keep snapshots private', workDir: '/tmp', start: true,
@@ -288,13 +288,10 @@ describe('Work Center settings service', () => {
       },
     });
     const detail = await service.handle('get', { id: item.id });
-    expect(detail.actions[0]).toMatchObject({ loopCount: 0, toolCount: 0 });
-    expect(detail).not.toHaveProperty('runs');
-    expect(detail).not.toHaveProperty('events');
-    const wire = JSON.stringify(detail);
-    for (const secret of ['/tmp', 'secret persona', 'secret-hash', 'provider/model', 'allowedToolNames', '/private/read', '/private/write', '/private/cwd']) {
-      expect(wire).not.toContain(secret);
-    }
+    expect(detail).toHaveProperty('runs');
+    expect(detail).toHaveProperty('events');
+    expect(detail.workDir).toBe('/tmp');
+    expect(detail.runs[0].modelSnapshot.id).toBe('provider/model');
   });
 
   it('creates an AI-planned WorkItem without a caller-defined workflow', async () => {

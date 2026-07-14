@@ -124,6 +124,62 @@ describe('Work Center navigation', () => {
     expect(store.workCenterDetailByAgent['agent-1']).toEqual({ id: 'wi-2', actions: [] });
   });
 
+  it('keeps explicit detail requests numeric while event refresh is pending', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterItemsByAgent = { 'agent-1': [] };
+    store.workCenterDetailByAgent = {
+      'agent-1': { id: 'wi-1', revision: 1, currentActionId: 'action-1', actions: [{ id: 'action-1' }] },
+    };
+    const pending = [];
+    store.workCenterRequest = vi.fn((_op, payload) => new Promise(resolve => {
+      pending.push({ id: payload.id, resolve });
+    }));
+
+    store.applyWorkCenterEvent('agent-1', {
+      workItem: { id: 'wi-1', revision: 2, currentActionId: 'action-2' },
+    });
+    const explicit = store.getWorkItem('wi-2', 'agent-1');
+    expect(store._workCenterDetailEventRefreshByAgent['agent-1']).toBe('wi-1:action-2');
+    expect(store._workCenterDetailRequestGenerationByAgent['agent-1']).toBe(1);
+    pending.find(item => item.id === 'wi-2').resolve({ id: 'wi-2', actions: [] });
+    await explicit;
+    pending.find(item => item.id === 'wi-1').resolve({ id: 'wi-1', currentActionId: 'action-2', actions: [] });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({ id: 'wi-2' });
+  });
+
+  it('ignores stale Action index/detail responses and isolates request details by run', async () => {
+    const store = makeStore('yeaft');
+    const pending = [];
+    store.workCenterRequest = vi.fn((op, payload) => new Promise((resolve, reject) => {
+      pending.push({ op, payload, resolve, reject });
+    }));
+
+    const firstIndex = store.loadWorkItemActionRequests('wi-1', 'action-1', 'agent-1');
+    const secondIndex = store.loadWorkItemActionRequests('wi-1', 'action-1', 'agent-1');
+    pending[1].resolve({ requests: [{ id: 'request-new', runId: 'run-2' }] });
+    await secondIndex;
+    pending[0].resolve({ requests: [{ id: 'request-old', runId: 'run-1' }] });
+    await firstIndex;
+    expect(store.workCenterActionRequests['agent-1:wi-1:action-1'])
+      .toEqual([{ id: 'request-new', runId: 'run-2' }]);
+
+    const failed = store.loadWorkItemActionRequest('wi-1', 'action-1', 'run-1', 'shared', 'agent-1');
+    pending[2].reject(new Error('detail failed'));
+    await expect(failed).rejects.toThrow('detail failed');
+    const failedKey = 'agent-1:wi-1:action-1:run-1:shared';
+    expect(store.workCenterActionRequestDetailsLoading[failedKey]).toBe(false);
+    expect(store.workCenterActionRequestDetailsError[failedKey]).toBe('detail failed');
+
+    const otherRun = store.loadWorkItemActionRequest('wi-1', 'action-1', 'run-2', 'shared', 'agent-1');
+    pending[3].resolve({ request: { id: 'shared', runId: 'run-2' } });
+    await otherRun;
+    expect(store.workCenterActionRequestDetails['agent-1:wi-1:action-1:run-2:shared'])
+      .toMatchObject({ runId: 'run-2' });
+  });
+
   it('refetches detail once when an event advances to an Action missing locally', async () => {
     const store = makeStore('yeaft');
     store.workCenterItemsByAgent = { 'agent-1': [] };
