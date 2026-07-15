@@ -337,8 +337,87 @@ describe('Work Center event projection', () => {
     expect(projected.request.loops[0].rawRequest.body.nested).toEqual({
       access_token: '***', clientSecret: '***', 'x-api-key': '***', 'proxy-authorization': '***',
     });
-    expect(projected.request.loops[0].rawResponse.body).toContain('"secret":"***"');
-    expect(projected.request.loops[0].rawResponse.stream.body).toContain('secret=***');
+    expect(projected.request.loops[0].rawResponse.body)
+      .toBe('[redacted malformed JSON: sensitive data]');
+    expect(projected.request.loops[0].rawResponse.stream.body)
+      .toContain('[redacted SSE event: malformed sensitive data]');
+  });
+
+  it('redacts sensitive malformed JSON and multi-line SSE events from the final browser DTO', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-malformed-redaction', tools: [] }],
+      loops: [
+        {
+          loopNumber: 1, messages: [], toolCalls: [],
+          rawResponse: { body: '{"secret":"LEAK_JSON_TRUNCATED' },
+        },
+        {
+          loopNumber: 2, messages: [], toolCalls: [],
+          rawResponse: { body: '{"secret":"LEAK_JSON_NEWLINE\ncontinued"}' },
+        },
+        {
+          loopNumber: 3, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'data: {"secret":"\ndata: LEAK_SSE_MULTILINE"}\n\n',
+          },
+        },
+        {
+          loopNumber: 4, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'data: {"token":"LEAK_SSE_TRUNCATED\ndata: continued\n\n',
+          },
+        },
+      ],
+    });
+
+    const wire = JSON.stringify(projected);
+    for (const secret of [
+      'LEAK_JSON_TRUNCATED', 'LEAK_JSON_NEWLINE',
+      'LEAK_SSE_MULTILINE', 'LEAK_SSE_TRUNCATED',
+    ]) expect(wire).not.toContain(secret);
+    expect(wire).toContain('redacted malformed JSON');
+    expect(wire).toContain('redacted SSE event');
+  });
+
+  it('keeps non-sensitive malformed JSON and multi-line SSE diagnostics visible', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-safe-malformed', tools: [] }],
+      loops: [
+        {
+          loopNumber: 1, messages: [], toolCalls: [],
+          rawResponse: { body: '{"message":"upstream unavailable' },
+        },
+        {
+          loopNumber: 2, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'event: update\ndata: first line\ndata: second line\n\ndata: [DONE]\n\n',
+          },
+        },
+        {
+          loopNumber: 3, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'data: {"message":\ndata: "safe"}\n\n',
+          },
+        },
+      ],
+    });
+
+    const wire = JSON.stringify(projected);
+    expect(wire).toContain('upstream unavailable');
+    expect(wire).toContain('first line');
+    expect(wire).toContain('second line');
+    expect(wire).toContain('[DONE]');
+    expect(wire).toContain('safe');
   });
 
   it('enforces one UTF-8 byte budget for the complete Action request detail DTO', () => {

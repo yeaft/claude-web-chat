@@ -43,6 +43,16 @@ function isSensitiveName(name) {
   return SENSITIVE_NAMES.has(normalizeSensitiveName(name));
 }
 
+function containsSensitiveFieldSyntax(value) {
+  const text = String(value || '');
+  const fieldPattern = /(?:^|[,{;\s])["']?([a-z][a-z0-9_-]*)["']?\s*[:=]/gi;
+  let match;
+  while ((match = fieldPattern.exec(text))) {
+    if (isSensitiveName(match[1])) return true;
+  }
+  return false;
+}
+
 export function sanitizeDebugUrl(value) {
   const text = String(value || '');
   try {
@@ -90,16 +100,46 @@ function omittedBinary(value) {
   return `[binary data omitted: ${byteLength(value)} bytes]`;
 }
 
+function sanitizeSseEvent(event, seen) {
+  const lines = event.split(/\r?\n/);
+  const dataIndexes = [];
+  const dataParts = [];
+  for (const [index, line] of lines.entries()) {
+    const match = line.match(/^\s*data:\s?(.*)$/);
+    if (!match) continue;
+    dataIndexes.push(index);
+    dataParts.push(match[1]);
+  }
+  if (dataParts.length === 0) {
+    return lines.map(line => sanitizeDiagnosticText(line, MAX_DEBUG_STRING_BYTES)).join('\n');
+  }
+
+  const data = dataParts.join('\n');
+  if (data === '[DONE]') return event;
+  let sanitized;
+  try {
+    sanitized = JSON.stringify(sanitizeDebugValue(JSON.parse(data), null, '', seen));
+  } catch {
+    sanitized = containsSensitiveFieldSyntax(data)
+      ? '[redacted SSE event: malformed sensitive data]'
+      : sanitizeDiagnosticText(data, MAX_DEBUG_STRING_BYTES);
+  }
+
+  const firstDataIndex = dataIndexes[0];
+  const dataIndexSet = new Set(dataIndexes);
+  const sanitizedDataLines = String(sanitized).split('\n').map(line => `data: ${line}`).join('\n');
+  return lines
+    .filter((_line, index) => !dataIndexSet.has(index) || index === firstDataIndex)
+    .map((line, index) => (index === firstDataIndex ? sanitizedDataLines : line))
+    .join('\n');
+}
+
 function sanitizeSseBody(value, seen) {
-  return truncateUtf8(String(value || '').split(/\r?\n/).map(line => {
-    const match = line.match(/^(\s*data:\s*)(.*)$/);
-    if (!match || !match[2] || match[2] === '[DONE]') return line;
-    try {
-      return `${match[1]}${JSON.stringify(sanitizeDebugValue(match[2] ? JSON.parse(match[2]) : null, null, '', seen))}`;
-    } catch {
-      return `${match[1]}${sanitizeDiagnosticText(match[2], MAX_DEBUG_STRING_BYTES)}`;
-    }
-  }).join('\n'));
+  const text = String(value || '');
+  const trailingSeparator = /(?:\r?\n){2}$/.test(text) ? '\n\n' : '';
+  const events = text.split(/(?:\r?\n){2}/);
+  if (events.at(-1) === '') events.pop();
+  return truncateUtf8(`${events.map(event => sanitizeSseEvent(event, seen)).join('\n\n')}${trailingSeparator}`);
 }
 
 export function sanitizeDebugValue(value, parent = null, key = '', seen = new WeakSet()) {
@@ -114,7 +154,9 @@ export function sanitizeDebugValue(value, parent = null, key = '', seen = new We
       try {
         return truncateUtf8(JSON.stringify(sanitizeDebugValue(JSON.parse(value), null, '', seen)));
       } catch {
-        // Fall through to conservative text sanitization for malformed provider bodies.
+        if (containsSensitiveFieldSyntax(value)) {
+          return '[redacted malformed JSON: sensitive data]';
+        }
       }
     }
     return sanitizeDiagnosticText(value, MAX_DEBUG_STRING_BYTES);
