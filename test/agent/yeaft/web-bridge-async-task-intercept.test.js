@@ -14,12 +14,12 @@ import {
   installYeaftRuntimeBridge,
 } from '../../../agent/yeaft/web-bridge.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { LLMAbortError } from '../../../agent/yeaft/llm/adapter.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import ctx from '../../../agent/context.js';
 
 class IdleAdapter {
-  async *stream(params = {}) {
-    params.onRequestStart?.();
+  async *stream() {
     yield { type: 'text_delta', text: 'idle' };
     yield { type: 'stop', stopReason: 'end_turn' };
   }
@@ -137,7 +137,6 @@ describe('web-bridge — same-turn async task injection', () => {
     const streamInputs = [];
     adapter.stream = async function* (params) {
       streamInputs.push(JSON.parse(JSON.stringify(params.messages || [])));
-      params.onRequestStart?.();
       const events = responses[streamCallCount++];
       if (!events) throw new Error('adapter exhausted');
       for (const ev of events) yield ev;
@@ -225,7 +224,6 @@ describe('web-bridge — same-turn async task injection', () => {
     const adapter = {
       async *stream(params = {}) {
         streamInputs.push(JSON.parse(JSON.stringify(params.messages || [])));
-        params.onRequestStart?.();
         const events = responses.shift();
         if (!events) throw new Error('adapter exhausted');
         for (const event of events) yield event;
@@ -311,6 +309,121 @@ describe('web-bridge — same-turn async task injection', () => {
     expect(rescuedRows[0]).toMatchObject({ sessionId: 'sess-race', threadId: 'main' });
   });
 
+  it('rescues a task result once when its provider request stays pending and is aborted', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-bridge-fetch-pending-rescue-'));
+    const taskManager = makeTaskManagerStub();
+    const persisted = [];
+    const streamInputs = [];
+    let resolveThirdRequestStarted;
+    const thirdRequestStarted = new Promise(resolve => { resolveThirdRequestStarted = resolve; });
+    const responses = [
+      [
+        { type: 'tool_call', id: 'call-fetch-pending', name: 'spawnFetchPendingTask', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', text: 'parking' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+      async function* (params) {
+        resolveThirdRequestStarted();
+        await new Promise((_, reject) => {
+          const rejectAbort = () => reject(new LLMAbortError());
+          if (params.signal.aborted) rejectAbort();
+          else params.signal.addEventListener('abort', rejectAbort, { once: true });
+        });
+      },
+      [
+        { type: 'text_delta', text: 'rescued after pending fetch abort' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+    ];
+    const adapter = {
+      async *stream(params = {}) {
+        streamInputs.push(JSON.parse(JSON.stringify(params.messages || [])));
+        const response = responses.shift();
+        if (!response) throw new Error('adapter exhausted');
+        if (typeof response === 'function') {
+          for await (const event of response(params)) yield event;
+          return;
+        }
+        for (const event of response) yield event;
+      },
+      async call() { return { text: 'ok', usage: {} }; },
+    };
+    const sessionLike = {
+      adapter,
+      trace: new NullTrace(),
+      config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true, language: 'en' },
+      conversationStore: {
+        append(record) { persisted.push(record); return { id: `r-${persisted.length}`, ...record }; },
+        loadRecentBySession() { return []; },
+        readCompactSummary() { return ''; },
+      },
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: new ToolRegistry(),
+      skillManager: null,
+      mcpManager: null,
+      yeaftDir: tempDir,
+      taskManager,
+      toolStats: null,
+    };
+    sessionLike.toolRegistry.register({
+      name: 'spawnFetchPendingTask',
+      description: 'spawn task whose result request remains pending',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, toolCtx) => {
+        toolCtx.registerAsyncTask('task-fetch-pending-bridge');
+        return 'started';
+      },
+    });
+    __testSetSession(sessionLike);
+    installYeaftRuntimeBridge(sessionLike);
+    ctx.messageBuffer.length = 0;
+
+    const engine = __testGetOrCreateVpEngine('sess-fetch-pending', 'vp-fetch-pending', 'main');
+    const originalQuery = (async () => {
+      for await (const event of engine.query({
+        prompt: 'run fetch pending task',
+        messages: [],
+        sessionId: 'sess-fetch-pending',
+        threadId: 'main',
+        vpTurnId: 'turn-fetch-pending',
+      })) {
+        if (event.type !== 'async_task_wait_start') continue;
+        taskManager.emit({
+          type: 'yeaft_task_event',
+          event: 'completed',
+          task: {
+            id: 'task-fetch-pending-bridge',
+            sessionId: 'sess-fetch-pending',
+            ownerVpId: 'vp-fetch-pending',
+            kind: 'shell',
+            title: 'fetch pending task',
+            status: 'succeeded',
+            source: { threadId: 'main' },
+            runtime: { command: 'echo pending' },
+            result: { exitCode: 0, summary: 'fetch pending ok' },
+            log: { path: '/tmp/fetch-pending.log', preview: 'pending output' },
+          },
+        });
+      }
+    })();
+
+    await thirdRequestStarted;
+    expect(JSON.stringify(streamInputs[2])).toContain('summary: fetch pending ok');
+    expect(engine.abort('timeout')).toBe(true);
+    await originalQuery;
+    await waitFor(() => streamInputs.length === 4, 'fetch-pending result was not rescued');
+    await __testDrainVpDrivers();
+
+    expect(streamInputs.filter(input => JSON.stringify(input).includes('summary: fetch pending ok'))).toHaveLength(2);
+    const rescuedRows = persisted.filter(row => row.internal === true
+      && String(row.content).includes('summary: fetch pending ok'));
+    expect(rescuedRows).toHaveLength(1);
+  });
+
   it('does not let stale retirement delete a replacement Engine or its task owner', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'yeaft-bridge-stale-retire-'));
     const taskManager = makeTaskManagerStub();
@@ -332,7 +445,6 @@ describe('web-bridge — same-turn async task injection', () => {
     const adapter = {
       async *stream(params = {}) {
         streamInputs.push(JSON.parse(JSON.stringify(params.messages || [])));
-        params.onRequestStart?.();
         const events = responses.shift();
         if (!events) throw new Error('adapter exhausted');
         for (const event of events) yield event;

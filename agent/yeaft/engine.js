@@ -1624,11 +1624,10 @@ export class Engine {
     return applied;
   }
 
-  #confirmPendingAsyncTaskResults() {
-    if (this.#pendingAsyncTaskConfirmIds.size === 0) return;
-    const confirmed = Array.from(this.#pendingAsyncTaskConfirmIds);
-    this.#pendingAsyncTaskConfirmIds.clear();
-    for (const taskId of confirmed) {
+  #confirmAsyncTaskResults(taskIds) {
+    if (!Array.isArray(taskIds) || taskIds.length === 0) return;
+    for (const taskId of taskIds) {
+      this.#pendingAsyncTaskConfirmIds.delete(taskId);
       if (!this.#acceptedAsyncTaskResults.delete(taskId)) continue;
       try {
         if (typeof this.#asyncTaskCoordinator?.onConsumed === 'function') {
@@ -2418,9 +2417,12 @@ export class Engine {
           }
         }
 
-        // Stream from adapter. A task result is considered consumed only
-        // once the adapter request has actually started with it in the wire
-        // messages; queueing it in Engine memory is not delivery.
+        // Snapshot task results carried by this exact request. Request start
+        // is not delivery: fetch may remain pending and then be aborted before
+        // the provider processes anything. Ack only after a normal stream end
+        // that included the provider's terminal stop event.
+        const requestAsyncTaskIds = Array.from(this.#pendingAsyncTaskConfirmIds);
+        let sawProviderStop = false;
         for await (const event of this.#adapter.stream({
           model: currentModel,
           system: systemPrompt,
@@ -2430,7 +2432,6 @@ export class Engine {
           effort: resolvedEffort,
           effortSource: userEffort ? 'user' : 'auto',
           signal,
-          onRequestStart: () => this.#confirmPendingAsyncTaskResults(),
           onRawExchange: captureRawExchange,
         })) {
           // task-325a (abort-stop fix): per-event abort short-circuit.
@@ -2500,6 +2501,7 @@ export class Engine {
               break;
             }
             case 'stop':
+              sawProviderStop = true;
               stopReason = event.stopReason;
               yield event;
               break;
@@ -2531,6 +2533,13 @@ export class Engine {
         // model response or let it reach stop hooks/persistence.
         if (signal?.aborted) {
           throw new LLMAbortError();
+        }
+        // A provider terminal stop plus normal stream completion proves that
+        // the request containing these task results completed successfully.
+        // Retryable errors, aborts, idle timeouts, and truncated streams keep
+        // escrow so retry or final rescue can deliver the payload.
+        if (sawProviderStop) {
+          this.#confirmAsyncTaskResults(requestAsyncTaskIds);
         }
         traceRequest('llm.request_complete', {
           durationMs: perfNowMs() - requestPerfStart,

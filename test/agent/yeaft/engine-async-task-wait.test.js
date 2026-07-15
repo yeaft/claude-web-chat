@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Engine } from '../../../agent/yeaft/engine.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { LLMAbortError, LLMServerError } from '../../../agent/yeaft/llm/adapter.js';
 
 /**
  * Adapter that yields a queued response per stream() call. Tests push
@@ -16,10 +17,13 @@ class QueueAdapter {
     this.streamCalls.push({
       messages: JSON.parse(JSON.stringify(params.messages || [])),
     });
-    params.onRequestStart?.();
-    const events = this.responses.shift();
-    if (!events) throw new Error('QueueAdapter: no more responses queued');
-    for (const ev of events) yield ev;
+    const response = this.responses.shift();
+    if (!response) throw new Error('QueueAdapter: no more responses queued');
+    if (typeof response === 'function') {
+      for await (const event of response(params)) yield event;
+      return;
+    }
+    for (const event of response) yield event;
   }
   async call() { return { text: 'ok', usage: {} }; }
 }
@@ -31,12 +35,12 @@ function endTurn(text = 'done') {
   ];
 }
 
-function buildEngine() {
+function buildEngine(config = {}) {
   const adapter = new QueueAdapter();
   const engine = new Engine({
     adapter,
     trace: new NullTrace(),
-    config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true },
+    config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true, ...config },
   });
   return { engine, adapter };
 }
@@ -45,6 +49,33 @@ async function drainEvents(it) {
   const events = [];
   for await (const ev of it) events.push(ev);
   return events;
+}
+
+function registerPendingTask(engine, adapter, taskId, toolName = `tool-${taskId}`) {
+  engine.registerTool({
+    name: toolName,
+    description: 'launches a fake background task',
+    parameters: { type: 'object', properties: {} },
+    execute: async (_input, ctx) => {
+      ctx.registerAsyncTask(taskId);
+      return 'started';
+    },
+  });
+  adapter.pushResponse([
+    { type: 'tool_call', id: `call-${taskId}`, name: toolName, input: {} },
+    { type: 'stop', stopReason: 'tool_use' },
+  ]);
+  adapter.pushResponse(endTurn('parking'));
+}
+
+function trackTaskDelivery(engine) {
+  const consumed = [];
+  const undelivered = [];
+  engine.setAsyncTaskCoordinator({
+    onConsumed(taskId) { consumed.push(taskId); },
+    onUndelivered(taskId) { undelivered.push(taskId); },
+  });
+  return { consumed, undelivered };
 }
 
 describe('engine — same-turn background task wait', () => {
@@ -364,6 +395,131 @@ describe('engine — same-turn background task wait', () => {
     expect(consumed).toEqual([]);
     expect(undelivered).toEqual(['task-before-abort']);
     expect(events.filter(ev => ev.type === 'aborted')).toHaveLength(1);
+  });
+
+  it('keeps a fetch-pending task result undelivered when watchdog aborts before provider events', async () => {
+    const { engine: e, adapter: a } = buildEngine();
+    const delivery = trackTaskDelivery(e);
+    registerPendingTask(e, a, 'task-fetch-pending');
+
+    let markThirdRequestStarted;
+    const thirdRequestStarted = new Promise(resolve => { markThirdRequestStarted = resolve; });
+    a.pushResponse(async function* (params) {
+      markThirdRequestStarted();
+      await new Promise((_, reject) => {
+        const rejectAbort = () => reject(new LLMAbortError());
+        if (params.signal.aborted) rejectAbort();
+        else params.signal.addEventListener('abort', rejectAbort, { once: true });
+      });
+    });
+
+    const events = [];
+    const queryPromise = (async () => {
+      for await (const event of e.query({ prompt: 'do it', messages: [] })) {
+        events.push(event);
+        if (event.type === 'async_task_wait_start') {
+          expect(e.notifyAsyncTaskCompleted(
+            'task-fetch-pending',
+            '<task-result id="task-fetch-pending">done</task-result>',
+          )).toBe(true);
+        }
+      }
+    })();
+
+    await thirdRequestStarted;
+    expect(e.abort('timeout')).toBe(true);
+    await queryPromise;
+
+    expect(a.streamCalls).toHaveLength(3);
+    expect(JSON.stringify(a.streamCalls[2].messages)).toContain('task-fetch-pending');
+    expect(delivery.consumed).toEqual([]);
+    expect(delivery.undelivered).toEqual(['task-fetch-pending']);
+    expect(events.filter(event => event.type === 'aborted')).toHaveLength(1);
+  });
+
+  it('keeps task result escrow across a transient stream error and consumes it after retry success', async () => {
+    const { engine: e, adapter: a } = buildEngine({
+      llmRetry: { maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+    });
+    const delivery = trackTaskDelivery(e);
+    registerPendingTask(e, a, 'task-retry');
+    a.pushResponse(async function* () {
+      throw new LLMServerError('temporary gateway failure', 502);
+    });
+    a.pushResponse(endTurn('handled after retry'));
+
+    const events = [];
+    for await (const event of e.query({ prompt: 'do it', messages: [] })) {
+      events.push(event);
+      if (event.type === 'async_task_wait_start') {
+        expect(e.notifyAsyncTaskCompleted(
+          'task-retry',
+          '<task-result id="task-retry">done</task-result>',
+        )).toBe(true);
+      }
+    }
+
+    expect(a.streamCalls).toHaveLength(4);
+    expect(JSON.stringify(a.streamCalls[2].messages)).toContain('task-retry');
+    expect(JSON.stringify(a.streamCalls[3].messages)).toContain('task-retry');
+    expect(events.filter(event => event.type === 'llm_retry')).toHaveLength(1);
+    expect(delivery.consumed).toEqual(['task-retry']);
+    expect(delivery.undelivered).toEqual([]);
+  });
+
+  it('consumes a task result once after a successful provider terminal stop', async () => {
+    const { engine: e, adapter: a } = buildEngine();
+    const delivery = trackTaskDelivery(e);
+    registerPendingTask(e, a, 'task-success');
+    a.pushResponse(endTurn('handled successfully'));
+
+    for await (const event of e.query({ prompt: 'do it', messages: [] })) {
+      if (event.type === 'async_task_wait_start') {
+        expect(e.notifyAsyncTaskCompleted(
+          'task-success',
+          '<task-result id="task-success">done</task-result>',
+        )).toBe(true);
+      }
+    }
+
+    expect(a.streamCalls).toHaveLength(3);
+    expect(JSON.stringify(a.streamCalls[2].messages)).toContain('task-success');
+    expect(delivery.consumed).toEqual(['task-success']);
+    expect(delivery.undelivered).toEqual([]);
+  });
+
+  it('rescues task result when stream emits a nonterminal event and then aborts', async () => {
+    const { engine: e, adapter: a } = buildEngine();
+    const delivery = trackTaskDelivery(e);
+    registerPendingTask(e, a, 'task-partial-abort');
+    a.pushResponse(async function* (params) {
+      yield { type: 'text_delta', text: 'partial task handling' };
+      await new Promise((_, reject) => {
+        const rejectAbort = () => reject(new LLMAbortError());
+        if (params.signal.aborted) rejectAbort();
+        else params.signal.addEventListener('abort', rejectAbort, { once: true });
+      });
+    });
+
+    const events = [];
+    for await (const event of e.query({ prompt: 'do it', messages: [] })) {
+      events.push(event);
+      if (event.type === 'async_task_wait_start') {
+        expect(e.notifyAsyncTaskCompleted(
+          'task-partial-abort',
+          '<task-result id="task-partial-abort">done</task-result>',
+        )).toBe(true);
+      }
+      if (event.type === 'text_delta' && event.text === 'partial task handling') {
+        expect(e.abort('timeout')).toBe(true);
+      }
+    }
+
+    expect(a.streamCalls).toHaveLength(3);
+    expect(JSON.stringify(a.streamCalls[2].messages)).toContain('task-partial-abort');
+    expect(delivery.consumed).toEqual([]);
+    expect(delivery.undelivered).toEqual(['task-partial-abort']);
+    expect(events.filter(event => event.type === 'aborted')).toHaveLength(1);
   });
 
   it('end_turn with no pending async tasks finalizes immediately (legacy behaviour unchanged)', async () => {
