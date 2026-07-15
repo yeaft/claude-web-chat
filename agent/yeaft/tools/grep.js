@@ -109,43 +109,44 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
     args.push('--max-count', String(options.maxResults || 500));
 
     const proc = spawnProcess('rg', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    const stdoutDecoder = new StringDecoder('utf8');
-    const stderrDecoder = new StringDecoder('utf8');
     const stdoutChunks = [];
     const stderrChunks = [];
     let capturedBytes = 0;
     let truncatedStream = null;
     let settled = false;
 
-    function capture(streamName, chunk, decoder, chunks) {
+    function capture(streamName, chunk, chunks) {
       if (truncatedStream) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       const remaining = MAX_CAPTURE_BYTES - capturedBytes;
-      if (chunk.length > remaining) {
-        if (remaining > 0) chunks.push(decoder.write(chunk.subarray(0, remaining)));
+      if (buffer.length > remaining) {
+        if (remaining > 0) chunks.push(buffer.subarray(0, remaining));
         capturedBytes = MAX_CAPTURE_BYTES;
         truncatedStream = streamName;
         try { proc.kill(); } catch {}
         return;
       }
-      chunks.push(decoder.write(chunk));
-      capturedBytes += chunk.length;
+      chunks.push(buffer);
+      capturedBytes += buffer.length;
     }
 
-    proc.stdout.on('data', (chunk) => capture('stdout', chunk, stdoutDecoder, stdoutChunks));
-    proc.stderr.on('data', (chunk) => capture('stderr', chunk, stderrDecoder, stderrChunks));
+    function decodeCaptured(chunks, wasTruncated) {
+      // Buffer decoding normally expands each invalid byte to the three-byte
+      // U+FFFD replacement character. Use a one-byte replacement, then enforce
+      // the final encoded-byte boundary as a last line of defense.
+      const marker = wasTruncated ? OUTPUT_TRUNCATED_MARKER : '';
+      const maxTextBytes = MAX_OUTPUT_BYTES - Buffer.byteLength(marker, 'utf8');
+      const decoded = Buffer.concat(chunks).toString('utf8').replaceAll('\ufffd', '?').replace(/\r/g, '');
+      return truncateUtf8(decoded, maxTextBytes) + marker;
+    }
+
+    proc.stdout.on('data', (chunk) => capture('stdout', chunk, stdoutChunks));
+    proc.stderr.on('data', (chunk) => capture('stderr', chunk, stderrChunks));
     proc.on('close', (code) => {
       if (settled) return;
       settled = true;
-      // StringDecoder.end() replaces an incomplete trailing code point with
-      // U+FFFD. On truncation, discard pending bytes from both streams instead.
-      if (!truncatedStream) {
-        stdoutChunks.push(stdoutDecoder.end());
-        stderrChunks.push(stderrDecoder.end());
-      }
-      const stdout = stdoutChunks.join('').replace(/\r/g, '')
-        + (truncatedStream === 'stdout' ? OUTPUT_TRUNCATED_MARKER : '');
-      const stderr = stderrChunks.join('').replace(/\r/g, '')
-        + (truncatedStream === 'stderr' ? OUTPUT_TRUNCATED_MARKER : '');
+      const stdout = decodeCaptured(stdoutChunks, truncatedStream === 'stdout');
+      const stderr = decodeCaptured(stderrChunks, truncatedStream === 'stderr');
       if (code === 0 || code === 1 || truncatedStream === 'stdout') resolve(stdout);
       else reject(new Error(stderr || `rg exited with code ${code}`));
     });

@@ -82,6 +82,31 @@ describe('Grep tool output safety', () => {
     expect(error.message).not.toContain('\ufffd');
   });
 
+  it('bounds invalid ripgrep stderr after UTF-8 decoding', async () => {
+    const stderr = Buffer.alloc(512 * 1024, 0xff);
+
+    const error = await runRipgrep('needle', '.', {
+      maxResults: 500,
+    }, fakeRipgrepOutput('', { stderr, exitCode: 2 })).catch((err) => err);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(Buffer.byteLength(error.message, 'utf8')).toBeLessThanOrEqual(512 * 1024);
+    expect(error.message).toContain('[Output truncated]');
+    expect(error.message).not.toContain('\ufffd');
+  });
+
+  it('bounds invalid ripgrep stdout after UTF-8 decoding', async () => {
+    const stdout = Buffer.alloc(512 * 1024, 0xff);
+
+    const result = await runRipgrep('needle', '.', {
+      maxResults: 500,
+    }, fakeRipgrepOutput(stdout));
+
+    expect(Buffer.byteLength(result, 'utf8')).toBeLessThanOrEqual(512 * 1024);
+    expect(result).toContain('[Output truncated]');
+    expect(result).not.toContain('\ufffd');
+  });
+
   it('shares the ripgrep byte budget between stdout and stderr', async () => {
     const stdout = Buffer.alloc(300 * 1024, 0x6f);
     const stderr = Buffer.alloc(300 * 1024, 0x65);
