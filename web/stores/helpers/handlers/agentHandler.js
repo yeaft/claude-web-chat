@@ -427,7 +427,8 @@ export function handleAgentSelected(store, msg) {
     id: msg.agentId,
     name: msg.agentName,
     workDir: msg.workDir,
-    capabilities: msg.capabilities || ['terminal', 'file_editor', 'background_tasks']
+    capabilities: msg.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+    version: msg.version || null,
   };
 
   if (msg.slashCommands && msg.slashCommands.length > 0) {

@@ -210,6 +210,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           agentName: agent.name,
           workDir: agent.workDir,
           capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+          version: agent.version || null,
           conversations: filteredConvs,
           slashCommands: agent.slashCommands || [],
           slashCommandDescriptions: agent.slashCommandDescriptions || {}

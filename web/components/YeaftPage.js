@@ -657,6 +657,11 @@ export default {
     };
 
     const closeHistorySearch = () => {
+      if (historySearchTimer) {
+        clearTimeout(historySearchTimer);
+        historySearchTimer = null;
+      }
+      store.searchYeaftHistory('');
       historySearchOpen.value = false;
       historySearchActiveIndex.value = 0;
     };
