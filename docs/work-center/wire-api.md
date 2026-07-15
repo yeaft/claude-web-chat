@@ -1,6 +1,6 @@
 # Work Center Wire API
 
-Server 只做 owner 鉴权和 Agent/Web relay。所有请求必须带 `agentId`；所有 Agent 响应由 Server 盖上可信 `agentId` 后再发给 Web。
+Server 只做 owner 鉴权和 Agent/Web relay。所有请求必须带 `agentId`；所有 Agent 响应由 Server 盖上可信 `agentId` 后再发给 Web。支持该协议的 Agent 必须宣告 `work_center` capability；Server 不得把请求转发给未宣告该能力的旧 Agent。
 
 ## Web → Agent
 

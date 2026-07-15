@@ -52,12 +52,13 @@ describe('agent ctx defaults', () => {
 describe('agent advertises plaintext-ok capability', () => {
   it('includes plaintext-ok in agent capability list', async () => {
     // Mirror agent/index.js definition.
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok'];
+    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center'];
     expect(capabilities).toContain('plaintext-ok');
+    expect(capabilities).toContain('work_center');
   });
 
   it('serializes plaintext-ok into the auth-frame capabilities array', () => {
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok'];
+    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center'];
     const authFrame = {
       type: 'auth',
       tempId: 'temp_abc',
@@ -66,13 +67,15 @@ describe('agent advertises plaintext-ok capability', () => {
       version: '0.1.999'
     };
     expect(authFrame.capabilities).toContain('plaintext-ok');
+    expect(authFrame.capabilities).toContain('work_center');
   });
 
   it('serializes plaintext-ok into the URL ?capabilities= query', () => {
-    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok'];
+    const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center'];
     const params = new URLSearchParams({ capabilities: capabilities.join(',') });
-    expect(params.get('capabilities')).toBe('background_tasks,file_editor,ping_session,plaintext-ok');
+    expect(params.get('capabilities')).toBe('background_tasks,file_editor,ping_session,plaintext-ok,work_center');
     expect(params.get('capabilities').split(',')).toContain('plaintext-ok');
+    expect(params.get('capabilities').split(',')).toContain('work_center');
   });
 });
 

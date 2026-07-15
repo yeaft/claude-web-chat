@@ -2,6 +2,11 @@ import { expect } from '@playwright/test';
 import { test } from '../../fixtures/test-server.js';
 import { BUILT_IN_ACTION_TYPES } from '../../../agent/yeaft/work-center/workflow.js';
 
+const WORK_CENTER_ACTION_TYPES = [
+  'triage', 'research', 'design', 'diagnose', 'implement', 'migrate', 'test',
+  'review', 'integrate', 'document', 'operate', 'deliver', 'write', 'custom',
+];
+
 const WORK_CENTER_SETTINGS = {
   settings: {
     version: 1,
@@ -16,10 +21,14 @@ const WORK_CENTER_SETTINGS = {
     actionInstructions: {
       triage: 'Plan the task', research: 'Research the problem', design: 'Design the solution',
       diagnose: 'Diagnose the root cause', implement: 'Implement the change', migrate: 'Migrate safely',
-      test: 'Test the change', review: 'Review independently', integrate: 'Integrate the change', document: 'Document the result',
+      test: 'Test the change', review: 'Review independently', integrate: 'Integrate the changes',
+      document: 'Document the result',
       operate: 'Operate safely', deliver: 'Deliver the result', write: 'Write the content',
       custom: 'Complete the custom Action',
     },
+    actionModelPolicies: Object.fromEntries(WORK_CENTER_ACTION_TYPES.map(type => [
+      type, { mode: 'inherit', model: null, effort: null },
+    ])),
     workflows: [{
       version: 1,
       id: 'software-change',
@@ -508,6 +517,7 @@ test.describe('Work Center responsive UI', () => {
     await modelStage.locator('select').first().selectOption('inherit');
     await expect(effort).toBeVisible();
     await expect(effort.locator('select')).toBeEnabled();
+    await expect(effort.locator('option')).toContainText(['Model default', 'medium', 'high']);
     await expect(effort).toContainText('Select the Agent primary model');
     await expect(modal.getByRole('button', { name: 'General', exact: true })).toHaveCount(0);
   });
@@ -517,6 +527,7 @@ test.describe('Work Center responsive UI', () => {
     const legacySettings = structuredClone(WORK_CENTER_SETTINGS);
     delete legacySettings.settings.actionInstructions;
     delete legacySettings.settings.modelPolicy;
+    delete legacySettings.settings.actionModelPolicies;
     legacySettings.settings.workflows[0].stages[0].instruction = 'Legacy triage prompt.';
     legacySettings.settings.workflows[0].stages[0].modelPolicy = {
       mode: 'specific', model: 'provider/review', effort: 'high',

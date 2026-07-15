@@ -56,8 +56,10 @@ describe('Work Center UI contract', () => {
   it('keeps Agent-level Work Center state separate from Session background tasks', () => {
     const store = read('web/stores/chat.js');
     expect(store).toContain('workCenterItemsByAgent');
+    expect(store).toContain('workCenterLoadedByAgent');
     expect(store).toContain('workCenterDetailByAgent');
     expect(store).toContain("type: 'work_center_request'");
+    expect(store).toContain('[target]: true');
     expect(store).toContain('workCenterOpen: false');
     expect(store).toContain('this.workCenterOpen = true');
     expect(store).toContain('this.workCenterOpen = false');
@@ -91,9 +93,14 @@ describe('Work Center UI contract', () => {
 
     expect(sidebar).toContain('session-tab-bar sidebar-work-center-tab-bar');
     expect(sidebar).toContain('session-item sidebar-work-center-agent');
+    expect(sidebar).toContain("agent.capabilities.includes('work_center')");
+    expect(page).toContain("agent.capabilities.includes('work_center')");
+    expect(page).toContain("'is-empty': loaded && !loading");
+    expect(page).toContain('v-if="loaded && !loading && visibleItems.length === 0"');
     expect(css).toMatch(/\.sidebar-work-center-trigger:hover\s*\{[^}]*color: var\(--text-secondary\)/s);
     expect(css).toMatch(/\.sidebar-work-center-agent:hover\s*\{[^}]*color: var\(--text-secondary\)/s);
     expect(page).toContain('<main class="work-center-main"');
+
     expect(page).toContain('work-center-sidebar-toggle');
     expect(page).not.toContain('<aside');
     expect(page).not.toContain('SidebarModeToggle');

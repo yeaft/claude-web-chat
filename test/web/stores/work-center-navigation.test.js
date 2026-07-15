@@ -28,7 +28,7 @@ function makeStore(view) {
   const store = useChatStore();
   store.currentView = view;
   store.currentAgent = 'agent-1';
-  store.currentAgentInfo = { id: 'agent-1', online: true };
+  store.currentAgentInfo = { id: 'agent-1', online: true, capabilities: ['work_center'] };
   store.agents = [store.currentAgentInfo];
   store.listWorkItems = vi.fn().mockResolvedValue([]);
   return store;
@@ -84,7 +84,7 @@ describe('Work Center navigation', () => {
   it('switches Work Center Agents without changing the provider', () => {
     const store = makeStore('yeaft');
     store.enterWorkCenter('agent-1');
-    store.agents.push({ id: 'agent-2', online: true });
+    store.agents.push({ id: 'agent-2', online: true, capabilities: ['work_center'] });
     store.selectAgent = vi.fn();
 
     store.enterWorkCenter('agent-2');

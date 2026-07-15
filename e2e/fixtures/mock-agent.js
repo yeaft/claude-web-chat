@@ -12,7 +12,7 @@ export class MockAgent {
   }
 
   async connect() {
-    const wsUrl = `${this.serverUrl.replace('http', 'ws')}?type=agent&name=${this.agentName}&workDir=/tmp/test&capabilities=terminal,file_editor,work_item_attachments`;
+    const wsUrl = `${this.serverUrl.replace('http', 'ws')}?type=agent&name=${this.agentName}&workDir=/tmp/test&capabilities=terminal,file_editor,work_center,work_item_attachments`;
     this.ws = new WebSocket(wsUrl);
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('MockAgent connect timeout')), 5000);
