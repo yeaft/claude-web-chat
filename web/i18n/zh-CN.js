@@ -1395,6 +1395,7 @@ export default {
   'workCenter.subtitle': '由当前 Agent 持续推进的持久工作',
   'workCenter.agent': 'Agent',
   'workCenter.noOnlineAgents': '没有在线 Agent',
+  'workCenter.noAvailableAgents': '没有兼容工作中心的在线 Agent',
   'workCenter.new': '新建',
   'workCenter.newWorkItem': '新建工作项',
   'workCenter.workItem': '工作项',

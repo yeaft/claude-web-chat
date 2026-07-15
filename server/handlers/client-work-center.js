@@ -138,15 +138,37 @@ export async function handleClientWorkCenter(client, msg, checkAgentAccess) {
   if (!agentId) return true;
   if (!await checkAgentAccess(agentId)) return true;
 
-  prunePendingRequests();
-  const requestId = randomUUID();
   const op = typeof msg.op === 'string' ? msg.op : '';
   const sourcePayload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
+  if (['create', 'guide'].includes(op) && Object.hasOwn(sourcePayload, 'files')) {
+    await sendToWebClient(client, {
+      type: 'work_center_response',
+      requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+      agentId,
+      op,
+      ok: false,
+      error: 'WorkItem files are server-generated and cannot be supplied by the browser',
+    });
+    return true;
+  }
+
+  const capabilities = agents.get(agentId)?.capabilities;
+  if (!Array.isArray(capabilities) || !capabilities.includes('work_center')) {
+    await sendToWebClient(client, {
+      type: 'work_center_response',
+      requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+      agentId,
+      op,
+      ok: false,
+      error: 'The selected Agent does not support Work Center; upgrade and restart the Agent',
+    });
+    return true;
+  }
+
+  prunePendingRequests();
+  const requestId = randomUUID();
   let resolved = { payload: sourcePayload, consumedIds: [] };
   try {
-    if (['create', 'guide'].includes(op) && Object.hasOwn(sourcePayload, 'files')) {
-      throw new Error('WorkItem files are server-generated and cannot be supplied by the browser');
-    }
     const attachments = Array.isArray(sourcePayload.attachments) ? sourcePayload.attachments : [];
     if (['create', 'guide'].includes(op) && attachments.length > 0) {
       const capabilities = agents.get(agentId)?.capabilities;

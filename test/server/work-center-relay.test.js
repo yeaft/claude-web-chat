@@ -31,7 +31,7 @@ describe('Work Center relay', () => {
     forwardToClients.mockReset();
     sendToWebClient.mockReset();
     agents.clear();
-    agents.set('agent-a', { capabilities: ['work_item_attachments'] });
+    agents.set('agent-a', { capabilities: ['work_center', 'work_item_attachments'] });
     pendingFiles.clear();
     previewFiles.clear();
     __testResetWorkCenterRequests();
@@ -58,6 +58,27 @@ describe('Work Center relay', () => {
     });
     expect(request.requestId).not.toBe('browser-1');
     expect(request).not.toHaveProperty('_requestUserId');
+  });
+
+  it('rejects an online legacy Agent without Work Center capability immediately', async () => {
+    agents.set('agent-a', { capabilities: ['background_tasks', 'file_editor'] });
+    const checkAgentAccess = vi.fn().mockResolvedValue(true);
+    const client = { currentAgent: 'agent-a', userId: 'user-1' };
+
+    const handled = await handleClientWorkCenter(client, {
+      type: 'work_center_request', requestId: 'browser-legacy', op: 'list', payload: {},
+    }, checkAgentAccess);
+
+    expect(handled).toBe(true);
+    expect(forwardToAgent).not.toHaveBeenCalled();
+    expect(sendToWebClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      type: 'work_center_response',
+      requestId: 'browser-legacy',
+      agentId: 'agent-a',
+      op: 'list',
+      ok: false,
+      error: expect.stringMatching(/upgrade and restart/),
+    }));
   });
 
   it('correlates an immediate empty list response before forwarding resolves', async () => {
@@ -147,7 +168,7 @@ describe('Work Center relay', () => {
   });
 
   it('rejects attachments for an Agent without capability before reading or forwarding pending bytes', async () => {
-    agents.set('agent-a', { capabilities: [] });
+    agents.set('agent-a', { capabilities: ['work_center'] });
     let bufferRead = false;
     pendingFiles.set('file-unsupported', {
       name: 'evidence.txt', mimeType: 'text/plain', userId: 'user-1',

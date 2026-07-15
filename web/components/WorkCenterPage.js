@@ -48,7 +48,10 @@ export default {
     store() { return Pinia.useChatStore(); },
     agentId() { return this.store.workCenterAgentId || this.store.currentAgent; },
     agents() { return this.store.agents || []; },
-    onlineAgents() { return this.agents.filter(agent => agent?.online); },
+    onlineAgents() {
+      return this.agents.filter(agent => agent?.online
+        && Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
+    },
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
     settings() { return this.store.workCenterSettingsByAgent[this.agentId] || null; },
     runtime() { return this.store.workCenterRuntimeByAgent[this.agentId] || null; },
@@ -68,6 +71,7 @@ export default {
     },
     items() { return this.store.workCenterItemsByAgent[this.agentId] || []; },
     loading() { return !!this.store.workCenterLoadingByAgent[this.agentId]; },
+    loaded() { return !!this.store.workCenterLoadedByAgent[this.agentId]; },
     error() { return this.store.workCenterErrorByAgent[this.agentId] || null; },
     detail() { return this.store.workCenterDetailByAgent[this.agentId] || null; },
     selected() {
@@ -496,10 +500,10 @@ export default {
           </div>
 
           <p v-if="onlineAgents.length === 0" class="work-center-notice">
-            {{ tr('workCenter.noOnlineAgents', 'No online agents') }}
+            {{ tr('workCenter.noAvailableAgents', 'No compatible online Agents') }}
           </p>
           <p v-if="error" class="work-center-error">{{ error }}</p>
-          <div class="work-center-body" :class="{ 'is-empty': !loading && visibleItems.length === 0 }">
+          <div class="work-center-body" :class="{ 'is-empty': loaded && !loading && visibleItems.length === 0 }">
             <section class="work-center-list" :aria-busy="loading ? 'true' : 'false'">
               <div v-if="visibleItems.length > 0" class="work-center-list-heading">
                 <span>{{ listHeading }}</span>
@@ -520,7 +524,7 @@ export default {
                 </span>
               </button>
               <div v-if="loading" class="work-center-loading">{{ tr('workCenter.loading', 'Loading work items…') }}</div>
-              <div v-if="!loading && visibleItems.length === 0" class="work-center-empty-state">
+              <div v-if="loaded && !loading && visibleItems.length === 0" class="work-center-empty-state">
                 <h2>{{ emptyState.title }}</h2>
                 <p>{{ emptyState.body }}</p>
                 <button v-if="emptyState.canCreate" class="btn-ghost work-center-empty-create" type="button" @click="openCreate" :disabled="onlineAgents.length === 0">

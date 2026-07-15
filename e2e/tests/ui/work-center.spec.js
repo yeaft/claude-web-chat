@@ -1,6 +1,11 @@
 import { expect } from '@playwright/test';
 import { test } from '../../fixtures/test-server.js';
 
+const WORK_CENTER_ACTION_TYPES = [
+  'triage', 'research', 'design', 'diagnose', 'implement', 'migrate', 'test',
+  'review', 'integrate', 'document', 'operate', 'deliver', 'write', 'custom',
+];
+
 const WORK_CENTER_SETTINGS = {
   settings: {
     version: 1,
@@ -12,10 +17,14 @@ const WORK_CENTER_SETTINGS = {
     actionInstructions: {
       triage: 'Plan the task', research: 'Research the problem', design: 'Design the solution',
       diagnose: 'Diagnose the root cause', implement: 'Implement the change', migrate: 'Migrate safely',
-      test: 'Test the change', review: 'Review independently', document: 'Document the result',
+      test: 'Test the change', review: 'Review independently', integrate: 'Integrate the changes',
+      document: 'Document the result',
       operate: 'Operate safely', deliver: 'Deliver the result', write: 'Write the content',
       custom: 'Complete the custom Action',
     },
+    actionModelPolicies: Object.fromEntries(WORK_CENTER_ACTION_TYPES.map(type => [
+      type, { mode: 'inherit', model: null, effort: null },
+    ])),
     workflows: [{
       version: 1,
       id: 'software-change',
@@ -364,13 +373,14 @@ test.describe('Work Center responsive UI', () => {
     expect(box.width).toBeGreaterThan(850);
     expect(box.height).toBeGreaterThan(650);
 
-    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(14);
+    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(15);
     await expect(chatPage.locator('.work-center-global-policy textarea')).toHaveValue('Follow the Agent release policy for every Action.');
     await expect(chatPage.locator('.work-center-policy-stage textarea').nth(1)).toHaveValue('Plan the task');
     await chatPage.getByRole('button', { name: 'Models', exact: true }).click();
-    const modelStage = chatPage.locator('.work-center-model-stage');
-    await expect(modelStage).toHaveCount(1);
-    await expect(modelStage).toContainText('All Work Center Actions');
+    const modelStages = chatPage.locator('.work-center-model-stage');
+    await expect(modelStages).toHaveCount(16);
+    const modelStage = modelStages.last();
+    await expect(modelStage).toContainText('Fallback for all Actions');
     const effort = modelStage.locator('.work-center-model-effort');
     await expect(effort).toContainText('Reasoning effort');
     await expect(effort.locator('select')).toHaveValue('high');
@@ -379,7 +389,8 @@ test.describe('Work Center responsive UI', () => {
 
     await modelStage.locator('select').first().selectOption('inherit');
     await expect(effort).toBeVisible();
-    await expect(effort.locator('select')).toBeDisabled();
+    await expect(effort.locator('select')).toBeEnabled();
+    await expect(effort.locator('option')).toContainText(['Model default', 'medium', 'high']);
     await expect(effort).toContainText('Select the Agent primary model');
     await expect(modal.getByRole('button', { name: 'General', exact: true })).toHaveCount(0);
   });
@@ -389,6 +400,7 @@ test.describe('Work Center responsive UI', () => {
     const legacySettings = structuredClone(WORK_CENTER_SETTINGS);
     delete legacySettings.settings.actionInstructions;
     delete legacySettings.settings.modelPolicy;
+    delete legacySettings.settings.actionModelPolicies;
     legacySettings.settings.workflows[0].stages[0].instruction = 'Legacy triage prompt.';
     legacySettings.settings.workflows[0].stages[0].modelPolicy = {
       mode: 'specific', model: 'provider/review', effort: 'high',
@@ -407,16 +419,17 @@ test.describe('Work Center responsive UI', () => {
 
     const modal = chatPage.locator('.work-center-settings-card');
     await expect(modal).toBeVisible();
-    await expect(modal.locator('.work-center-policy-stage')).toHaveCount(14);
+    await expect(modal.locator('.work-center-policy-stage')).toHaveCount(15);
     const triagePrompt = modal.locator('.work-center-policy-stage textarea').nth(1);
     await expect(triagePrompt).toHaveValue('Legacy triage prompt.');
     await expect(triagePrompt).toBeDisabled();
     await expect(modal.getByText(/cannot save Work Center settings/)).toBeVisible();
     await expect(modal.locator('.work-center-settings-footer .btn-primary')).toBeDisabled();
     await modal.getByRole('button', { name: 'Models', exact: true }).click();
-    await expect(modal.locator('.work-center-model-stage select').first()).toHaveValue('specific');
-    await expect(modal.locator('.work-center-model-stage select').first()).toBeDisabled();
-    await expect(modal.locator('.work-center-model-stage select').last()).toHaveValue('high');
+    const globalModelStage = modal.locator('.work-center-model-stage').last();
+    await expect(globalModelStage.locator('select').first()).toHaveValue('specific');
+    await expect(globalModelStage.locator('select').first()).toBeDisabled();
+    await expect(globalModelStage.locator('select').last()).toHaveValue('high');
   });
 
   test('keeps settings usable in dark theme and mobile viewport', async ({ chatPage, mockAgent }) => {
@@ -435,7 +448,7 @@ test.describe('Work Center responsive UI', () => {
 
     const modal = chatPage.locator('.work-center-settings-card');
     await expect(modal).toBeVisible();
-    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(14);
+    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(15);
     const workflowMetrics = await modal.evaluate(element => {
       const rect = element.getBoundingClientRect();
       const pane = element.querySelector('.work-center-settings-pane');
@@ -470,7 +483,7 @@ test.describe('Work Center responsive UI', () => {
     expect(workflowMetrics.saveColor).not.toBe(workflowMetrics.saveBackground);
 
     await modal.getByRole('button', { name: 'Models', exact: true }).click();
-    const effort = modal.locator('.work-center-model-effort');
+    const effort = modal.locator('.work-center-model-stage').last().locator('.work-center-model-effort');
     await expect(effort).toBeVisible();
     await expect(effort.locator('select')).toHaveValue('high');
     const effortStyle = await effort.locator('select').evaluate(element => {

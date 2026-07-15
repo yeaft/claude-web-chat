@@ -457,6 +457,7 @@ export const useChatStore = defineStore('chat', {
     workCenterAgentId: null,
     workCenterItemsByAgent: {},
     workCenterDetailByAgent: {},
+    workCenterLoadedByAgent: {},
     workCenterLoadingByAgent: {},
     workCenterErrorByAgent: {},
     workCenterWatcherByAgent: {},
@@ -1132,6 +1133,7 @@ export const useChatStore = defineStore('chat', {
         const items = Array.isArray(data?.items) ? data.items : [];
         this.workCenterItemsByAgent = { ...this.workCenterItemsByAgent, [target]: items };
         this.workCenterWatcherByAgent = { ...this.workCenterWatcherByAgent, [target]: data?.watcher || null };
+        this.workCenterLoadedByAgent = { ...this.workCenterLoadedByAgent, [target]: true };
         return items;
       } catch (err) {
         this.workCenterErrorByAgent = { ...this.workCenterErrorByAgent, [target]: err?.message || String(err) };
