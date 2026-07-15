@@ -3007,7 +3007,10 @@ export function __testHandleEngineEvent(event, hctx) {
 }
 
 function handleEngineEvent(event, hctx) {
-  const managesQueryTimer = event.type === 'async_task_wait_start' || event.type === 'async_task_wait_end';
+  const terminalTurnEnd = event.type === 'turn_end' && event.terminal === true;
+  const managesQueryTimer = terminalTurnEnd
+    || event.type === 'async_task_wait_start'
+    || event.type === 'async_task_wait_end';
   if (!managesQueryTimer) hctx.resetQueryTimer();
   const envelope = {
     sessionId: hctx.sessionId,
@@ -3181,11 +3184,16 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'turn_end':
-      // Most engine turn_end events are internal loop boundaries. A normal
-      // tool_use stop means "run tools, then call the adapter again", so it
-      // must NOT end the VP's visible turn. An aborted turn is terminal too,
-      // but the outer runVpTurn boundary owns its single stopped result and
-      // vp_turn_end emission.
+      // Most engine turn_end events are internal loop boundaries. Only the
+      // explicit terminal event precedes post-turn persistence/maintenance;
+      // stop the user-query silence watchdog before that best-effort work.
+      if (event.terminal && typeof hctx.pauseQueryTimer === 'function') {
+        hctx.pauseQueryTimer();
+      }
+      // A normal tool_use stop means "run tools, then call the adapter again",
+      // so it must NOT end the VP's visible turn. An aborted turn is terminal
+      // too, but the outer runVpTurn boundary owns its single stopped result
+      // and vp_turn_end emission.
       if (event.stopReason === 'aborted') {
         if (typeof hctx.markEngineTerminal === 'function') {
           hctx.markEngineTerminal('aborted', event.detail || null);

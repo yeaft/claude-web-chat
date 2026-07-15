@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 
 const sent = [];
@@ -104,6 +105,112 @@ describe('Yeaft VP turn abort routing', () => {
     expect(terminalEvents[0].event.reason).toBe('aborted');
     expect(terminalEvents.some(msg => msg.event.reason === 'end_turn')).toBe(false);
     expect(__testGroupHistory('session-abort')).toEqual([]);
+  });
+
+  it('does not turn a completed answer into stopped when AMS maintenance stalls', async () => {
+    vi.useFakeTimers();
+    try {
+      const tempDir = mkdtempSync(join(tmpdir(), 'yeaft-bridge-ams-timeout-'));
+      tempDirs.push(tempDir);
+      let firstAdjustStarted;
+      let secondAdjustStarted;
+      const firstAdjustCallStarted = new Promise(resolve => { firstAdjustStarted = resolve; });
+      const secondAdjustCallStarted = new Promise(resolve => { secondAdjustStarted = resolve; });
+      const maintenanceSignals = [];
+      const adapter = {
+        async *stream() {
+          yield { type: 'text_delta', text: 'completed answer' };
+          yield { type: 'stop', stopReason: 'end_turn' };
+        },
+        async call(params) {
+          maintenanceSignals.push(params.signal || null);
+          if (maintenanceSignals.length === 1) firstAdjustStarted();
+          if (maintenanceSignals.length === 2) secondAdjustStarted();
+          // Deliberately ignore AbortSignal: the Engine's independent deadline
+          // must release the VP driver even when the maintenance provider does not.
+          return await new Promise(() => {});
+        },
+      };
+      const memoryIndex = {
+        search() { return []; },
+        listByScope() { return []; },
+        get() { return null; },
+      };
+      const sessionLike = {
+        adapter,
+        trace: new NullTrace(),
+        config: {
+          model: 'test-model',
+          maxOutputTokens: 1024,
+          _readOnly: true,
+          language: 'en',
+        },
+        conversationStore: {
+          append(record) { return { id: 'persisted', ...record }; },
+          loadRecentBySession() { return []; },
+          readCompactSummary() { return ''; },
+        },
+        memoryIndex,
+        amsRegistry: new AmsRegistry({ yeaftDir: tempDir, memoryIndex, config: {} }),
+        toolRegistry: new ToolRegistry(),
+        skillManager: null,
+        mcpManager: null,
+        yeaftDir: tempDir,
+        taskManager: null,
+        toolStats: null,
+      };
+
+      __testSetSession(sessionLike);
+      installYeaftRuntimeBridge(sessionLike);
+      __testEnqueueForVp('session-ams', 'vp-a', {
+        sessionId: 'session-ams',
+        trigger: 'mention',
+        msg: {
+          id: 'msg-ams',
+          from: 'user',
+          role: 'user',
+          text: 'finish normally',
+          meta: {},
+        },
+      });
+
+      await firstAdjustCallStarted;
+      expect(maintenanceSignals[0]).toBeTruthy();
+      expect(maintenanceSignals[0].aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await __testDrainVpDrivers();
+
+      // A timed-out maintenance call must not leave the per-VP driver wedged.
+      __testEnqueueForVp('session-ams', 'vp-a', {
+        sessionId: 'session-ams',
+        trigger: 'mention',
+        msg: {
+          id: 'msg-ams-2',
+          from: 'user',
+          role: 'user',
+          text: 'finish normally again',
+          meta: {},
+        },
+      });
+      await secondAdjustCallStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      await __testDrainVpDrivers();
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      const resultFrames = sent.filter(msg => msg.type === 'yeaft_output' && msg.data?.type === 'result');
+      expect(resultFrames).toHaveLength(2);
+      expect(resultFrames.every(msg => msg.data.stopped !== true)).toBe(true);
+      const terminalEvents = sent.filter(msg => msg.event?.type === 'vp_turn_end');
+      expect(terminalEvents).toHaveLength(2);
+      expect(terminalEvents.every(msg => msg.event.reason === 'end_turn')).toBe(true);
+      expect(maintenanceSignals).toHaveLength(2);
+      expect(maintenanceSignals.every(signal => signal?.aborted)).toBe(true);
+      expect(__testGroupHistory('session-ams').filter(row => row.role === 'assistant'
+        && row.content === 'completed answer')).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('removes a queued VP turn by turnId before an AbortController exists', () => {
@@ -250,6 +357,37 @@ describe('Yeaft VP turn abort routing', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('stops the LLM silence watchdog only at an explicit terminal turn boundary', () => {
+    const pauseQueryTimer = vi.fn();
+    const resetQueryTimer = vi.fn();
+    const hctx = {
+      pauseQueryTimer,
+      resetQueryTimer,
+      sessionId: 'session-1',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'main',
+    };
+
+    __testHandleEngineEvent({
+      type: 'turn_end',
+      stopReason: 'tool_use',
+      terminal: false,
+      threadId: 'main',
+    }, hctx);
+    expect(resetQueryTimer).toHaveBeenCalledTimes(1);
+    expect(pauseQueryTimer).not.toHaveBeenCalled();
+
+    __testHandleEngineEvent({
+      type: 'turn_end',
+      stopReason: 'end_turn',
+      terminal: true,
+      threadId: 'main',
+    }, hctx);
+    expect(resetQueryTimer).toHaveBeenCalledTimes(1);
+    expect(pauseQueryTimer).toHaveBeenCalledTimes(1);
   });
 
   it('pauses the LLM silence watchdog while the engine waits on a background task', () => {

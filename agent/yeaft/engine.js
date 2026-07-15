@@ -77,6 +77,9 @@ import {
 /** Maximum auto-continue turns when stopReason is 'max_tokens'. */
 const MAX_CONTINUE_TURNS = 3;
 
+/** Bound the best-effort post-turn AMS LLM call independently of the user turn. */
+const AMS_ADJUST_TIMEOUT_MS = 30_000;
+
 // ─── LLM retry policy defaults ──────────────────────────────────
 // Hard-coded floor / ceiling for retry behaviour. The engine reads the
 // effective policy from `config.llmRetry` so users can dial these via
@@ -343,7 +346,7 @@ export function shouldAllowGroupReflection({
 
 /**
  * @typedef {{ type: 'turn_start', turnNumber: number }} TurnStartEvent
- * @typedef {{ type: 'turn_end', turnNumber: number, stopReason: string }} TurnEndEvent
+ * @typedef {{ type: 'turn_end', turnNumber: number, stopReason: string, terminal?: boolean }} TurnEndEvent
  * @typedef {{ type: 'tool_start', id: string, name: string, input: object }} ToolStartEvent
  * @typedef {{ type: 'tool_end', id: string, name: string, output: string, isError: boolean }} ToolEndEvent
  * @typedef {{ type: 'consolidate', archivedCount: number, extractedCount: number }} ConsolidateEvent
@@ -961,15 +964,30 @@ export class Engine {
         userMsg: args.userMsg,
         assistantReply: args.assistantReply,
         runLLM: async (prompt) => {
-          const out = await this.#adapter.call({
-            model: this.#fastConfig.model,
-            system: (String(this.#config?.language || '').toLowerCase().startsWith('zh')
-          ? '你是记忆管理子程序。请按要求只回复一个 JSON 对象，不要输出额外说明。'
-          : 'You are a memory-management subroutine. Reply with a single JSON object as instructed.'),
-            messages: [{ role: 'user', content: prompt }],
-            maxTokens: 1024,
+          const maintenanceCtrl = new AbortController();
+          let timeout = null;
+          const timedOut = new Promise((_, reject) => {
+            timeout = setTimeout(() => {
+              maintenanceCtrl.abort('ams_adjust_timeout');
+              reject(new LLMAbortError());
+            }, AMS_ADJUST_TIMEOUT_MS);
+            if (timeout && typeof timeout.unref === 'function') timeout.unref();
           });
-          return out?.text || '';
+          try {
+            const request = this.#adapter.call({
+              model: this.#fastConfig.model,
+              system: (String(this.#config?.language || '').toLowerCase().startsWith('zh')
+            ? '你是记忆管理子程序。请按要求只回复一个 JSON 对象，不要输出额外说明。'
+            : 'You are a memory-management subroutine. Reply with a single JSON object as instructed.'),
+              messages: [{ role: 'user', content: prompt }],
+              maxTokens: 1024,
+              signal: maintenanceCtrl.signal,
+            });
+            const out = await Promise.race([request, timedOut]);
+            return out?.text || '';
+          } finally {
+            if (timeout) clearTimeout(timeout);
+          }
         },
       });
       if (result?.ran) {
@@ -2937,7 +2955,7 @@ export class Engine {
         if (pendingSubAgentNotifs.length > 0) {
           acknowledgePendingNotifications(notifScope, pendingSubAgentNotifs.map(n => n.id));
         }
-        yield { type: 'turn_end', turnNumber, stopReason, threadId };
+        yield { type: 'turn_end', turnNumber, stopReason, threadId, terminal: true };
 
         // ─── Post-query: StopHooks or Legacy ─────────────
         if (this.#config._readOnly) {
