@@ -52,6 +52,7 @@ function truncateUtf8(text, maxBytes) {
 
 function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
   const parts = [];
+  const contentBytes = Math.max(0, maxBytes - Buffer.byteLength(OUTPUT_TRUNCATED_MARKER, 'utf8'));
   let bytes = 0;
   let truncated = false;
   return {
@@ -61,7 +62,7 @@ function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
       const line = truncateUtf8(normalized, MAX_LINE_BYTES);
       const lineWasTruncated = Buffer.byteLength(normalized, 'utf8') > Buffer.byteLength(line, 'utf8');
       const separator = parts.length > 0 ? '\n' : '';
-      const remaining = maxBytes - bytes - Buffer.byteLength(separator, 'utf8');
+      const remaining = contentBytes - bytes - Buffer.byteLength(separator, 'utf8');
       if (remaining <= 0) { truncated = true; return false; }
       const bounded = truncateUtf8(line, remaining);
       parts.push(separator + bounded);
@@ -69,7 +70,7 @@ function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
       if (lineWasTruncated || bounded !== line) truncated = true;
       return !truncated;
     },
-    toString() { return parts.join('') + (truncated ? '\n\n[Output truncated]' : ''); },
+    toString() { return parts.join('') + (truncated ? OUTPUT_TRUNCATED_MARKER : ''); },
   };
 }
 

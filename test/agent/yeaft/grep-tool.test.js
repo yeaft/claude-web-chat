@@ -146,8 +146,21 @@ describe('Grep tool output safety', () => {
 
     const result = await runNodeGrep(dir);
 
-    expect(Buffer.byteLength(result, 'utf8')).toBeLessThan(600 * 1024);
+    expect(Buffer.byteLength(result, 'utf8')).toBeLessThanOrEqual(512 * 1024);
     expect(result).toContain('[Output truncated]');
+    expect(result).not.toContain('\ufffd');
+  });
+
+  it('includes the fallback truncation marker inside the UTF-8 byte budget', async () => {
+    const dir = makeTempDir();
+    const line = `needle ${'界'.repeat(5400)}`;
+    writeFileSync(join(dir, 'many-lines.txt'), `${Array(40).fill(line).join('\n')}\n`);
+
+    const result = await runNodeGrep(dir);
+
+    expect(Buffer.byteLength(result, 'utf8')).toBeLessThanOrEqual(512 * 1024);
+    expect(result).toContain('[Output truncated]');
+    expect(result).not.toContain('\ufffd');
   });
 
   it('normalizes CRLF output without leaking carriage returns', async () => {
