@@ -58,6 +58,22 @@ describe('Work Center summary state', () => {
     expect(merged.actions[0].executionStats.totalTokens).toBe(450);
   });
 
+  it('merges a stable live assistant message into the selected Action', () => {
+    const merged = mergeWorkItemSummary(detail, {
+      id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
+      actionStats: [{
+        id: 'action-1', status: 'running', progressRevision: 3,
+        liveMessage: {
+          id: 'run:run-live', role: 'assistant', status: 'running',
+          text: 'Live AI text', progressRevision: 3,
+        },
+      }],
+    });
+    expect(merged.actions[0].liveMessage).toMatchObject({
+      id: 'run:run-live', text: 'Live AI text', progressRevision: 3,
+    });
+  });
+
   it('does not let a legacy Action patch without a progress revision erase live response text', () => {
     const merged = mergeWorkItemSummary(detail, {
       id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,

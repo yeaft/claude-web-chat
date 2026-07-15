@@ -22,6 +22,7 @@ export default {
       actionDetailTab: 'messages',
       actionInputSending: false,
       actionInputError: '',
+      actionComposerGeneration: 0,
       createOpen: false,
       settingsOpen: false,
       saving: false,
@@ -92,10 +93,27 @@ export default {
         ? `${this.agentId}:${this.selected.id}:${this.selectedAction.id}`
         : '';
     },
+    actionComposerScope() {
+      return this.selected?.id && this.selectedAction?.id
+        ? `${this.agentId}:${this.selected.id}:${this.selectedAction.id}:${this.actionComposerGeneration}`
+        : '';
+    },
     actionMessages() {
       const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];
       const earlier = this.store.workCenterActionMessages[this.actionRequestKey]?.messages || [];
-      return [...new Map([...earlier, ...current].map(message => [message.id, message])).values()];
+      const byId = new Map([...earlier, ...current].map(message => [message.id, message]));
+      const live = this.selectedAction?.liveMessage;
+      if (live?.id) {
+        const durable = byId.get(live.id);
+        const durableRevision = Number(durable?.progressRevision ?? -1);
+        const liveRevision = Number(live.progressRevision ?? -1);
+        if (!durable || liveRevision > durableRevision
+          || (liveRevision === durableRevision && durable.status === 'running')) {
+          byId.set(live.id, live);
+        }
+      }
+      return [...byId.values()].sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0)
+        || String(left.id || '').localeCompare(String(right.id || '')));
     },
     actionMessagesNextCursor() {
       const page = this.store.workCenterActionMessages[this.actionRequestKey];
@@ -187,6 +205,7 @@ export default {
       handler(id, previousId) {
         this.selectedId = null;
         this.selectedActionId = null;
+        this.resetActionComposer?.();
         this.narrowPane = 'items';
         if (previousId && id !== previousId) {
           this.closeFolderPicker();
@@ -210,7 +229,9 @@ export default {
         if (!detail || detail.id !== this.selectedId) return;
         const actions = Array.isArray(detail.actions) ? detail.actions : [];
         if (!actions.some(action => action.id === this.selectedActionId)) {
-          this.selectedActionId = detail.currentActionId || actions[0]?.id || null;
+          const nextActionId = detail.currentActionId || actions[0]?.id || null;
+          if (nextActionId !== this.selectedActionId) this.resetActionComposer();
+          this.selectedActionId = nextActionId;
         }
       },
     },
@@ -262,13 +283,19 @@ export default {
     refresh() {
       return this.store.listWorkItems(this.agentId).catch(() => {});
     },
+    resetActionComposer() {
+      this.actionComposerGeneration += 1;
+      this.actionGuidance = '';
+      this.actionInputError = '';
+      this.guidanceAttachments = [];
+      this.guidanceAttachmentsUploading = false;
+      this.actionInputSending = false;
+    },
     async selectItem(item) {
       this.selectedId = item.id;
       this.selectedActionId = null;
       this.narrowPane = 'actions';
-      this.actionGuidance = '';
-      this.actionInputError = '';
-      this.guidanceAttachments = [];
+      this.resetActionComposer();
       try {
         const detail = await this.store.getWorkItem(item.id, this.agentId);
         if (this.selectedId === item.id) {
@@ -277,11 +304,7 @@ export default {
       } catch {}
     },
     selectAction(action) {
-      if (this.selectedActionId !== action.id) {
-        this.actionGuidance = '';
-        this.actionInputError = '';
-        this.guidanceAttachments = [];
-      }
+      if (this.selectedActionId !== action.id) this.resetActionComposer();
       this.selectedActionId = action.id;
       this.narrowPane = 'action';
     },
@@ -425,6 +448,8 @@ export default {
       const files = Array.from(event.target.files || []);
       event.target.value = '';
       if (files.length === 0) return;
+      const scope = this.actionComposerScope;
+      if (!scope) return;
       const existingCount = Array.isArray(this.selected?.attachments) ? this.selected.attachments.length : 0;
       const remaining = Math.max(0, 10 - existingCount - this.guidanceAttachments.length);
       const selected = files.slice(0, remaining);
@@ -443,14 +468,15 @@ export default {
         }
         if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
         const result = await response.json();
+        if (this.actionComposerScope !== scope) return;
         this.guidanceAttachments = [
           ...this.guidanceAttachments,
           ...(Array.isArray(result.files) ? result.files : []),
         ].slice(0, Math.max(0, 10 - existingCount));
       } catch (error) {
-        this.actionInputError = error?.message || String(error);
+        if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
       } finally {
-        this.guidanceAttachmentsUploading = false;
+        if (this.actionComposerScope === scope) this.guidanceAttachmentsUploading = false;
       }
     },
     removeGuidanceAttachment(index) {
@@ -548,29 +574,33 @@ export default {
     async guideSelectedAction() {
       if (!this.selected || !this.selectedAction || this.selected.currentActionId !== this.selectedAction.id
         || (!this.actionGuidance.trim() && this.guidanceAttachments.length === 0)) return;
+      const scope = this.actionComposerScope;
+      const itemId = this.selected.id;
+      const actionId = this.selected.currentActionId;
+      const revision = this.selected.revision;
+      const text = this.actionGuidance.trim();
+      const attachments = this.guidanceAttachments.map(attachment => ({
+        fileId: attachment.fileId,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+      }));
       this.actionInputSending = true;
       this.actionInputError = '';
       try {
         const next = await this.store.sendWorkItemActionInput(
-          this.selected.id,
-          this.actionGuidance.trim(),
-          this.selected.currentActionId,
-          this.selected.revision,
-          this.guidanceAttachments.map(attachment => ({
-            fileId: attachment.fileId,
-            name: attachment.name,
-            mimeType: attachment.mimeType,
-            size: attachment.size,
-          })),
-          this.agentId,
+          itemId, text, actionId, revision, attachments, this.agentId,
         );
+        if (this.actionComposerScope !== scope) return;
         this.actionGuidance = '';
         this.guidanceAttachments = [];
-        this.selectedActionId = next?.currentActionId || this.selectedActionId;
+        const nextActionId = next?.currentActionId || this.selectedActionId;
+        if (nextActionId !== this.selectedActionId) this.resetActionComposer();
+        this.selectedActionId = nextActionId;
       } catch (error) {
-        this.actionInputError = error?.message || String(error);
+        if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
       } finally {
-        this.actionInputSending = false;
+        if (this.actionComposerScope === scope) this.actionInputSending = false;
       }
     },
     async retrySelected() {

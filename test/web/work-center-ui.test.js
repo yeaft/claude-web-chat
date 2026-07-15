@@ -135,6 +135,9 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain('action.failure.error');
     expect(detail).toContain('role="tabpanel"');
     expect(detail).toContain('aria-controls="work-center-action-messages-panel"');
+    expect(detail).toContain('@keydown="onTabKeydown"');
+    expect(detail).toContain("event.key === 'Home'");
+    expect(detail).toContain("event.key === 'End'");
     expect(detail).toContain('v-if="composerError"');
     expect(detail).toContain("tr('workCenter.requestDetailUnavailable'");
     expect(page).toContain('request.runId}:${request.id}');

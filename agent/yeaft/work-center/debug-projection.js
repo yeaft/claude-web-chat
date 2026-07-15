@@ -7,6 +7,10 @@ const SENSITIVE_QUERY_NAMES = new Set([
   'secret', 'signature', 'sig', 'credential', 'password', 'passwd',
   'authorization', 'auth', 'code',
 ]);
+const SENSITIVE_FIELD_NAMES = new Set([
+  'apikey', 'token', 'accesstoken', 'refreshtoken', 'idtoken', 'clientsecret',
+  'secret', 'credential', 'password', 'passwd', 'authorization', 'cookie', 'setcookie',
+]);
 const BINARY_DATA_TYPES = new Set(['base64', 'redactedthinking', 'redacted_thinking']);
 
 function byteLength(value) {
@@ -36,8 +40,16 @@ function truncateUtf8(value, maxBytes = MAX_DEBUG_STRING_BYTES) {
   return `${text.slice(0, end)}${marker}`;
 }
 
+function normalizeSensitiveName(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 function isSensitiveQueryName(name) {
-  return SENSITIVE_QUERY_NAMES.has(String(name || '').toLowerCase().replace(/[^a-z0-9]/g, ''));
+  return SENSITIVE_QUERY_NAMES.has(normalizeSensitiveName(name));
+}
+
+function isSensitiveFieldName(name) {
+  return SENSITIVE_FIELD_NAMES.has(normalizeSensitiveName(name));
 }
 
 export function sanitizeDebugUrl(value) {
@@ -62,15 +74,24 @@ export function sanitizeDebugUrl(value) {
 export function sanitizeDiagnosticText(value, maxBytes = 8 * 1024) {
   let text = String(value || '');
   text = text.replace(/https?:\/\/[^\s"'<>]+/gi, match => sanitizeDebugUrl(match));
+  const names = 'api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|authorization';
+  text = text.replace(
+    new RegExp(`\\b(${names})\\b(["']?\\s*[:=]\\s*)"[^"\\r\\n]*"`, 'gi'),
+    '$1$2"***"',
+  );
+  text = text.replace(
+    new RegExp(`\\b(${names})\\b(["']?\\s*[:=]\\s*)'[^'\\r\\n]*'`, 'gi'),
+    "$1$2'***'",
+  );
   text = text.replace(
     /\b(authorization)\b(\s*[:=]\s*)(?:Bearer\s+)?[^\s,;]+/gi,
     '$1$2***',
   );
   text = text.replace(
-    /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd)\b(\s*[:=]\s*)[^\s,;]+/gi,
+    /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|passwd)\b(\s*[:=]\s*)[^\s,;]+/gi,
     '$1$2***',
   );
-  text = text.replace(/\b(Bearer)\s+[^\s,;]+/gi, '$1 ***');
+  text = text.replace(/\b(Bearer)\s+[^\s,;}\]]+/gi, '$1 ***');
   return truncateUtf8(text, maxBytes);
 }
 
@@ -85,19 +106,27 @@ function sanitizeSseBody(value, seen) {
     try {
       return `${match[1]}${JSON.stringify(sanitizeDebugValue(match[2] ? JSON.parse(match[2]) : null, null, '', seen))}`;
     } catch {
-      return line;
+      return `${match[1]}${sanitizeDiagnosticText(match[2], MAX_DEBUG_STRING_BYTES)}`;
     }
   }).join('\n'));
 }
 
 export function sanitizeDebugValue(value, parent = null, key = '', seen = new WeakSet()) {
+  if (key && isSensitiveFieldName(key)) return '***';
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'string') {
     if (key === 'url') return sanitizeDebugUrl(value);
     if (value.startsWith('data:') && value.includes(';base64,')) return omittedBinary(value);
     const parentType = String(parent?.type || '').toLowerCase().replace(/[^a-z0-9_]/g, '');
     if (key === 'data' && BINARY_DATA_TYPES.has(parentType)) return omittedBinary(value);
-    return truncateUtf8(value);
+    if (key === 'body' && /^[\s\r\n]*[\[{]/.test(value)) {
+      try {
+        return truncateUtf8(JSON.stringify(sanitizeDebugValue(JSON.parse(value), null, '', seen)));
+      } catch {
+        // Fall through to conservative text sanitization for malformed provider bodies.
+      }
+    }
+    return sanitizeDiagnosticText(value, MAX_DEBUG_STRING_BYTES);
   }
   if (typeof value !== 'object') return truncateUtf8(String(value));
   if (seen.has(value)) return '[circular value omitted]';
@@ -116,7 +145,7 @@ export function sanitizeDebugValue(value, parent = null, key = '', seen = new We
       if (childKey === 'headers' && item && typeof item === 'object' && !Array.isArray(item)) {
         out.headers = Object.fromEntries(Object.entries(item).map(([name, headerValue]) => [
           name,
-          SENSITIVE_HEADER.test(name)
+          SENSITIVE_HEADER.test(name) || isSensitiveFieldName(name)
             ? '***'
             : sanitizeDebugValue(headerValue, item, name, seen),
         ]));

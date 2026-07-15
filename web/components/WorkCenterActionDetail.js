@@ -122,6 +122,20 @@ export default {
       this.activeTab = tab;
       if (tab === 'requests') this.$emit('refresh-requests');
     },
+    onTabKeydown(event) {
+      const tabs = ['messages', 'requests'];
+      const current = tabs.indexOf(this.activeTab);
+      let next = current;
+      if (['ArrowRight', 'ArrowDown'].includes(event.key)) next = (current + 1) % tabs.length;
+      else if (['ArrowLeft', 'ArrowUp'].includes(event.key)) next = (current - 1 + tabs.length) % tabs.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      const tab = tabs[next];
+      this.switchTab(tab);
+      this.$nextTick(() => this.$refs[`${tab}Tab`]?.focus());
+    },
   },
   template: `
     <section class="work-center-action-detail-pane" v-if="action">
@@ -143,10 +157,10 @@ export default {
       </div>
 
       <nav class="work-center-action-tabs" role="tablist" :aria-label="tr('workCenter.actionDetails', 'Action details')">
-        <button id="work-center-action-messages-tab" type="button" role="tab" aria-controls="work-center-action-messages-panel" :tabindex="activeTab === 'messages' ? 0 : -1" :aria-selected="activeTab === 'messages'" :class="{ active: activeTab === 'messages' }" @click="switchTab('messages')">
+        <button ref="messagesTab" id="work-center-action-messages-tab" type="button" role="tab" aria-controls="work-center-action-messages-panel" :tabindex="activeTab === 'messages' ? 0 : -1" :aria-selected="activeTab === 'messages'" :class="{ active: activeTab === 'messages' }" @click="switchTab('messages')" @keydown="onTabKeydown">
           {{ tr('workCenter.actionMessages', 'Messages') }}
         </button>
-        <button id="work-center-action-requests-tab" type="button" role="tab" aria-controls="work-center-action-requests-panel" :tabindex="activeTab === 'requests' ? 0 : -1" :aria-selected="activeTab === 'requests'" :class="{ active: activeTab === 'requests' }" @click="switchTab('requests')">
+        <button ref="requestsTab" id="work-center-action-requests-tab" type="button" role="tab" aria-controls="work-center-action-requests-panel" :tabindex="activeTab === 'requests' ? 0 : -1" :aria-selected="activeTab === 'requests'" :class="{ active: activeTab === 'requests' }" @click="switchTab('requests')" @keydown="onTabKeydown">
           {{ tr('workCenter.requestDetails', 'Request details') }}
           <span v-if="requests.length">{{ requests.length }}</span>
         </button>

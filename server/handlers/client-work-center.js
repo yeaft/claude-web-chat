@@ -140,7 +140,7 @@ export async function handleClientWorkCenter(client, msg, checkAgentAccess) {
 
   const op = typeof msg.op === 'string' ? msg.op : '';
   const sourcePayload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
-  if (['create', 'guide'].includes(op) && Object.hasOwn(sourcePayload, 'files')) {
+  if (['create', 'action_input', 'guide'].includes(op) && Object.hasOwn(sourcePayload, 'files')) {
     await sendToWebClient(client, {
       type: 'work_center_response',
       requestId: typeof msg.requestId === 'string' ? msg.requestId : null,

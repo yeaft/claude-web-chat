@@ -1412,7 +1412,9 @@ export const useChatStore = defineStore('chat', {
         id, text, actionId, revision, attachments,
       }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      if (this.workCenterDetailByAgent[target]?.id === id) {
+        this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      }
       return detail;
     },
     async guideWorkItemAction(id, guidance, actionId, revision, attachments = [], agentId = null) {

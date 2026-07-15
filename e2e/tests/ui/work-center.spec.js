@@ -341,6 +341,28 @@ test.describe('Work Center responsive UI', () => {
     await expect(actionDetail.locator('.work-center-action-detail-brief')).toContainText('Expected result');
     await expect(actionDetail.locator('.work-center-action-message')).toContainText('Implemented the layout fix');
 
+    mockAgent.send({
+      type: 'work_center_event',
+      event: {
+        type: 'run.progress',
+        workItem: {
+          ...OPEN_ITEM,
+          revision: 1,
+          updatedAt: Number(OPEN_ITEM.updatedAt) + 1,
+          actionStats: [{
+            id: 'action-1', status: 'running', progressRevision: 5,
+            executionStats: OPEN_ITEM_DETAIL.actions[0].executionStats,
+            liveMessage: {
+              id: 'run:run-live', role: 'assistant', kind: 'response', status: 'running',
+              text: 'Live AI response from the active Run.', attachments: [],
+              createdAt: Date.now(), updatedAt: Date.now(), progressRevision: 5,
+            },
+          }],
+        },
+      },
+    });
+    await expect(actionDetail.locator('.work-center-action-message', { hasText: 'Live AI response from the active Run.' })).toHaveCount(1);
+
     await actionDetail.locator('.work-center-action-composer textarea').fill('Keep the public API unchanged');
     const guide = respondToWorkCenterOp(mockAgent, 'action_input', OPEN_ITEM_DETAIL);
     await actionDetail.getByRole('button', { name: 'Send input' }).click();
@@ -378,7 +400,12 @@ test.describe('Work Center responsive UI', () => {
     await chatPage.locator('.work-center-action-summary').click();
 
     const indexResponse = respondToWorkCenterOp(mockAgent, 'get_action_requests', ACTION_REQUEST_INDEX);
-    await chatPage.getByRole('tab', { name: 'Request details' }).click();
+    const messagesTab = chatPage.getByRole('tab', { name: 'Messages' });
+    await messagesTab.focus();
+    await messagesTab.press('ArrowRight');
+    const requestsTab = chatPage.getByRole('tab', { name: 'Request details' });
+    await expect(requestsTab).toHaveAttribute('aria-selected', 'true');
+    await expect(requestsTab).toBeFocused();
     const indexRequest = await indexResponse;
     expect(indexRequest.payload).toEqual({ id: OPEN_ITEM.id, actionId: 'action-1' });
     const card = chatPage.locator('.work-center-request-card');

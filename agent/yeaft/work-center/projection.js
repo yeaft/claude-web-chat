@@ -62,6 +62,7 @@ function normalizeProjectedMessage(message) {
     attachments,
     createdAt: count(message.createdAt),
     updatedAt: count(message.updatedAt || message.createdAt),
+    ...(message.progressRevision == null ? {} : { progressRevision: count(message.progressRevision) }),
   };
 }
 
@@ -81,21 +82,26 @@ function actionInputMessages(action, events) {
     .filter(Boolean);
 }
 
+function runResponseMessage(run) {
+  return normalizeProjectedMessage({
+    id: `run:${run.id}`,
+    role: 'assistant',
+    kind: 'response',
+    status: run.status || 'running',
+    text: typeof run.response === 'string' ? run.response : '',
+    createdAt: count(run.startedAt),
+    updatedAt: count(run.endedAt || run.startedAt),
+    progressRevision: count(run.progressRevision),
+  });
+}
+
 function actionMessages(action, runs, events) {
   const matchingRuns = Array.isArray(runs)
     ? runs.filter(run => run?.actionId === action?.id)
     : [];
   return [...actionInputMessages(action, events), ...matchingRuns
     .sort((left, right) => count(left.startedAt) - count(right.startedAt))
-    .map(run => normalizeProjectedMessage({
-      id: `run:${run.id}`,
-      role: 'assistant',
-      kind: 'response',
-      status: run.status || 'running',
-      text: typeof run.response === 'string' ? run.response : '',
-      createdAt: count(run.startedAt),
-      updatedAt: count(run.endedAt || run.startedAt),
-    }))
+    .map(run => runResponseMessage(run))
     .filter(Boolean)]
     .sort((left, right) => left.createdAt - right.createdAt
       || (left.role === 'user' ? -1 : 1)
@@ -122,6 +128,7 @@ function actionExecution(action, runs, events) {
         : null,
       progressRevision: count(action?.progressRevision),
       messages,
+      liveMessage: normalizeProjectedMessage(action?.liveMessage),
       messageCount: count(action?.messageCount) || messages.length,
       messageCursor: action?.messageCursor == null ? null : String(action.messageCursor),
     };
@@ -138,6 +145,7 @@ function actionExecution(action, runs, events) {
     : null;
   const allMessages = actionMessages(action, matchingRuns, events);
   const messages = allMessages.slice(-MAX_ACTION_MESSAGES);
+  const liveMessage = runResponseMessage(latest);
   return {
     ...stats,
     response: typeof latest?.response === 'string' ? latest.response : '',
@@ -148,6 +156,7 @@ function actionExecution(action, runs, events) {
     } : null,
     progressRevision: count(latest?.progressRevision),
     messages,
+    liveMessage,
     messageCount: allMessages.length,
     messageCursor: allMessages.length > messages.length
       ? String(allMessages.length - messages.length)
@@ -199,6 +208,7 @@ function projectAction(action, runs, events) {
     failure: execution.failure,
     progressRevision: execution.progressRevision,
     messages: execution.messages,
+    liveMessage: execution.liveMessage,
     messageCount: execution.messageCount,
     messageCursor: execution.messageCursor,
   };
@@ -217,6 +227,7 @@ function projectActionStats(detail) {
       response: projected.response,
       failure: projected.failure,
       progressRevision: projected.progressRevision,
+      ...(projected.liveMessage ? { liveMessage: projected.liveMessage } : {}),
     };
   });
 }

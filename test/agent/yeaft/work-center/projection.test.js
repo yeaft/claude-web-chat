@@ -78,6 +78,11 @@ describe('Work Center event projection', () => {
       response: 'Reviewed the change and found one compatibility decision.',
       failure: null,
       progressRevision: 4,
+      liveMessage: {
+        id: 'run:r-2', role: 'assistant', kind: 'response', status: 'waiting',
+        text: 'Reviewed the change and found one compatibility decision.', attachments: [],
+        createdAt: 2, updatedAt: 2, progressRevision: 4,
+      },
     }]);
     const wire = JSON.stringify(projected);
     for (const secret of [
@@ -294,6 +299,43 @@ describe('Work Center event projection', () => {
     expect(wire).toContain('binary data omitted');
   });
 
+  it('recursively redacts secret fields, JSON error bodies, and non-JSON SSE text', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-redaction', tools: [] }],
+      loops: [{
+        loopNumber: 1, messages: [], toolCalls: [],
+        requestBase: { rawRequest: {
+          body: {
+            apiKey: 'object-api-key',
+            nested: { access_token: 'object-access-token', clientSecret: 'object-client-secret' },
+          },
+        } },
+        rawResponse: {
+          status: 401,
+          body: JSON.stringify({ error: { password: 'json-password', id_token: 'json-id-token' } }),
+          stream: {
+            format: 'sse',
+            body: 'data: upstream access_token=plain-sse-token',
+          },
+        },
+      }],
+    });
+
+    const wire = JSON.stringify(projected);
+    for (const secret of [
+      'object-api-key', 'object-access-token', 'object-client-secret',
+      'json-password', 'json-id-token', 'plain-sse-token',
+    ]) expect(wire).not.toContain(secret);
+    expect(projected.request.loops[0].rawRequest.body.nested).toEqual({
+      access_token: '***', clientSecret: '***',
+    });
+    expect(projected.request.loops[0].rawResponse.body).toContain('***');
+    expect(projected.request.loops[0].rawResponse.stream.body).toContain('access_token=***');
+  });
+
   it('enforces one UTF-8 byte budget for the complete Action request detail DTO', () => {
     const detail = internalDetail();
     const action = detail.actions[0];
@@ -348,6 +390,37 @@ describe('Work Center event projection', () => {
       total: 100,
     });
     expect(live.workItem.actionStats[0]).not.toHaveProperty('messages');
-    expect(Buffer.byteLength(JSON.stringify(live), 'utf8')).toBeLessThan(20_000);
+    expect(live.workItem.actionStats[0].liveMessage).toMatchObject({
+      id: 'run:run-99',
+      text: expect.stringContaining('response-99'),
+      progressRevision: 100,
+    });
+    expect(Buffer.byteLength(JSON.stringify(live), 'utf8')).toBeLessThan(40_000);
+  });
+
+  it('keeps the live assistant message stable across progress and terminal detail projections', () => {
+    const detail = internalDetail();
+    detail.runs = [{
+      id: 'run-live', actionId: 'a-1', status: 'running', startedAt: 10,
+      response: 'Reading the relevant files', progressRevision: 12,
+    }];
+
+    const live = projectWorkCenterEvent({ type: 'run.progress', workItem: detail });
+    expect(live.workItem.actionStats[0].liveMessage).toEqual({
+      id: 'run:run-live', role: 'assistant', kind: 'response', status: 'running',
+      text: 'Reading the relevant files', attachments: [], createdAt: 10, updatedAt: 10,
+      progressRevision: 12,
+    });
+
+    detail.runs[0] = {
+      ...detail.runs[0], status: 'completed', endedAt: 20,
+      response: 'Implemented and verified the fix', progressRevision: 13,
+    };
+    const terminal = projectWorkItemDetail(detail).actions[0];
+    expect(terminal.liveMessage).toMatchObject({
+      id: 'run:run-live', status: 'completed', text: 'Implemented and verified the fix',
+      progressRevision: 13,
+    });
+    expect(terminal.messages.filter(message => message.id === terminal.liveMessage.id)).toHaveLength(1);
   });
 });

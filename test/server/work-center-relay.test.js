@@ -130,14 +130,15 @@ describe('Work Center relay', () => {
   });
 
   it.each([
-    ['without capability', []],
-    ['with capability', ['work_item_attachments']],
-  ])('rejects browser-supplied files %s', async (_label, capabilities) => {
+    ['create without capability', 'create', []],
+    ['create with capability', 'create', ['work_center', 'work_item_attachments']],
+    ['Action input with capability', 'action_input', ['work_center', 'work_item_attachments']],
+  ])('rejects browser-supplied files for %s', async (_label, op, capabilities) => {
     agents.set('agent-a', { capabilities });
     const client = { currentAgent: 'agent-a', userId: 'user-1' };
 
     await handleClientWorkCenter(client, {
-      type: 'work_center_request', requestId: 'browser-direct-files', op: 'create',
+      type: 'work_center_request', requestId: 'browser-direct-files', op,
       payload: {
         title: 'Bypass upload ownership',
         files: [{ name: 'notes.txt', mimeType: 'text/plain', data: 'YnlwYXNz' }],
@@ -157,8 +158,8 @@ describe('Work Center relay', () => {
     const data = 'A'.repeat(12 * 1024 * 1024);
 
     await handleClientWorkCenter(client, {
-      type: 'work_center_request', requestId: 'browser-direct-oversized', op: 'create',
-      payload: { files: [{ name: 'large.txt', mimeType: 'text/plain', data }] },
+      type: 'work_center_request', requestId: 'browser-direct-oversized', op: 'action_input',
+      payload: { id: 'wi-1', actionId: 'action-1', files: [{ name: 'large.txt', mimeType: 'text/plain', data }] },
     }, vi.fn().mockResolvedValue(true));
 
     expect(forwardToAgent).not.toHaveBeenCalled();
