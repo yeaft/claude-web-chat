@@ -13,7 +13,8 @@ export default {
   },
   computed: {
     onlineAgents() {
-      return this.agents.filter(agent => agent?.online);
+      return this.agents.filter(agent => agent?.online
+        && Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
     },
   },
   watch: {
@@ -63,7 +64,7 @@ export default {
             </span>
           </button>
           <p v-if="onlineAgents.length === 0" class="sidebar-work-center-empty">
-            {{ tr('workCenter.noOnlineAgents', 'No online agents') }}
+            {{ tr('workCenter.noAvailableAgents', 'No compatible online Agents') }}
           </p>
         </div>
       </div>

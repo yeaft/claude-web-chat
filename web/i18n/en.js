@@ -1399,6 +1399,7 @@ export default {
   'workCenter.subtitle': 'Persistent work owned by this Agent',
   'workCenter.agent': 'Agent',
   'workCenter.noOnlineAgents': 'No online agents',
+  'workCenter.noAvailableAgents': 'No compatible online Agents',
   'workCenter.new': 'New',
   'workCenter.newWorkItem': 'New work item',
   'workCenter.workItem': 'Work item',
