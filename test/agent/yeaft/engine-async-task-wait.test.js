@@ -273,6 +273,8 @@ describe('engine — same-turn background task wait', () => {
     const waitEnd = events.find(ev => ev.type === 'async_task_wait_end');
     expect(waitEnd).toBeTruthy();
     expect(waitEnd.aborted).toBe(true);
+    expect(events.filter(ev => ev.type === 'aborted')).toHaveLength(1);
+    expect(events.filter(ev => ev.type === 'turn_end').at(-1)?.stopReason).toBe('aborted');
 
     // After abort the engine should have cleared ownership.
     expect(e.hasPendingAsyncTasks()).toBe(false);

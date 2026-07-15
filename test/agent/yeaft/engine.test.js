@@ -1237,6 +1237,36 @@ describe('Engine', () => {
       expect(turnEnds.at(-1)?.stopReason).toBe('aborted');
     });
 
+    it('treats a clean stream end after abort as aborted', async () => {
+      let abortFn = null;
+      const noncoopAdapter = {
+        async *stream() {
+          yield { type: 'text_delta', text: 'partial ' };
+          if (abortFn) abortFn();
+          // Some proxies close the body cleanly on abort instead of throwing.
+          // No more events are yielded, so only the post-stream guard can
+          // prevent this truncated response from reaching persistence.
+        },
+      };
+
+      const ac = new AbortController();
+      abortFn = () => ac.abort('user');
+      const engine = new Engine({
+        adapter: noncoopAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'hi', signal: ac.signal })) {
+        events.push(event);
+      }
+
+      expect(events.filter(e => e.type === 'text_delta')).toHaveLength(1);
+      expect(events.filter(e => e.type === 'aborted')).toHaveLength(1);
+      expect(events.filter(e => e.type === 'turn_end').at(-1)?.stopReason).toBe('aborted');
+    });
+
     it('drops adapter chunks emitted after abort fires mid-stream', async () => {
       // Same as above but abort fires AFTER a few chunks were already
       // legitimately delivered. Everything emitted post-abort must be

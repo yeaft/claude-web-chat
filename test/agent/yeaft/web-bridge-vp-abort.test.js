@@ -6,7 +6,12 @@ vi.mock('../../../agent/connection/buffer.js', () => ({
   sendToServer: vi.fn((msg) => { sent.push(msg); }),
 }));
 
-const { handleYeaftAbortTurn, __testHandleEngineEvent, __testHooks } = await import('../../../agent/yeaft/web-bridge.js');
+const {
+  handleYeaftAbortTurn,
+  __testHandleEngineEvent,
+  __testHooks,
+  __testRaceWithEscalation,
+} = await import('../../../agent/yeaft/web-bridge.js');
 
 describe('Yeaft VP turn abort routing', () => {
   beforeEach(() => {
@@ -84,6 +89,113 @@ describe('Yeaft VP turn abort routing', () => {
     expect(sent.some((msg) => msg.event?.type === 'yeaft_turn_aborted'
       && msg.event.turnIds?.includes('turn-a')
       && msg.event.success === true)).toBe(true);
+  });
+
+  it('does not escalate a healthy long-running turn before abort', async () => {
+    vi.useFakeTimers();
+    try {
+      const ctrl = new AbortController();
+      let resolveInner;
+      const inner = new Promise(resolve => { resolveInner = resolve; });
+      const onEscalate = vi.fn();
+      const raced = __testRaceWithEscalation(inner, {
+        signal: ctrl.signal,
+        graceMs: 15_000,
+        onEscalate,
+      });
+
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(onEscalate).not.toHaveBeenCalled();
+
+      resolveInner('completed');
+      await expect(raced).resolves.toBe('completed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('escalates only after the abort grace period expires', async () => {
+    vi.useFakeTimers();
+    try {
+      const ctrl = new AbortController();
+      const onEscalate = vi.fn();
+      const raced = __testRaceWithEscalation(new Promise(() => {}), {
+        signal: ctrl.signal,
+        graceMs: 15_000,
+        onEscalate,
+      });
+
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(onEscalate).not.toHaveBeenCalled();
+
+      ctrl.abort();
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(onEscalate).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(raced).resolves.toBeUndefined();
+      expect(onEscalate).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels pending escalation when the turn settles during abort grace', async () => {
+    vi.useFakeTimers();
+    try {
+      const ctrl = new AbortController();
+      let resolveInner;
+      const inner = new Promise(resolve => { resolveInner = resolve; });
+      const onEscalate = vi.fn();
+      const raced = __testRaceWithEscalation(inner, {
+        signal: ctrl.signal,
+        graceMs: 15_000,
+        onEscalate,
+      });
+
+      ctrl.abort();
+      await vi.advanceTimersByTimeAsync(5_000);
+      resolveInner('aborted cleanly');
+      await expect(raced).resolves.toBe('aborted cleanly');
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(onEscalate).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pauses the LLM silence watchdog while the engine waits on a background task', () => {
+    const pauseQueryTimer = vi.fn();
+    const resetQueryTimer = vi.fn();
+    const hctx = {
+      pauseQueryTimer,
+      resetQueryTimer,
+      sessionId: 'session-1',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'main',
+    };
+
+    __testHandleEngineEvent({
+      type: 'async_task_wait_start',
+      turnId: 'turn-a',
+      threadId: 'main',
+      loopNumber: 1,
+      pendingTaskIds: ['task-1'],
+    }, hctx);
+    expect(pauseQueryTimer).toHaveBeenCalledTimes(1);
+    expect(resetQueryTimer).not.toHaveBeenCalled();
+
+    __testHandleEngineEvent({
+      type: 'async_task_wait_end',
+      turnId: 'turn-a',
+      threadId: 'main',
+      loopNumber: 1,
+      aborted: false,
+      remainingTaskIds: [],
+    }, hctx);
+    expect(resetQueryTimer).toHaveBeenCalledTimes(1);
   });
 
   it('forwards final stream idle error metadata as a structured session event', () => {

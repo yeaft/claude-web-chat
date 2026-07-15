@@ -2454,6 +2454,12 @@ export class Engine {
             }
           }
         }
+        // Some proxies resolve the SSE body cleanly after AbortSignal instead
+        // of throwing. Do not treat that truncated stream as a successful
+        // model response or let it reach stop hooks/persistence.
+        if (signal?.aborted) {
+          throw new LLMAbortError();
+        }
         traceRequest('llm.request_complete', {
           durationMs: perfNowMs() - requestPerfStart,
           ok: true,
@@ -2880,6 +2886,11 @@ export class Engine {
           aborted: Boolean(signal?.aborted),
           remainingTaskIds: Array.from(this.#pendingAsyncTaskIds),
         };
+        if (signal?.aborted) {
+          yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
+          yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
+          break;
+        }
         if (!signal?.aborted) {
           const taskResultUpdatesAfterAsyncWait = this.#drainPendingTaskResultUpdates(conversationMessages);
           if (taskResultUpdatesAfterAsyncWait.length > 0) {
@@ -2916,10 +2927,9 @@ export class Engine {
             continue;
           }
         }
-        // If we fall through here, either abort fired or the wait
-        // exited with no payload (all tasks released themselves via
-        // engine teardown / unregister with no notification). Drop into
-        // the regular end_turn path.
+        // If we fall through here, task ownership was released without a
+        // payload (engine teardown / unregister with no notification). Drop
+        // into the regular end_turn path.
       }
 
       // If no tool calls, we're done
