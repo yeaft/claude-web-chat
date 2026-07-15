@@ -17,6 +17,8 @@ const MAX_LINES = 250;
 
 /** Hard cap before Grep output reaches history, debug events, or WebSocket. */
 const MAX_OUTPUT_BYTES = 512 * 1024;
+const OUTPUT_TRUNCATED_MARKER = '\n\n[Output truncated]';
+const MAX_CAPTURE_BYTES = MAX_OUTPUT_BYTES - Buffer.byteLength(OUTPUT_TRUNCATED_MARKER, 'utf8');
 
 /** Keep one pathological source line from consuming the whole output budget. */
 const MAX_LINE_BYTES = 16 * 1024;
@@ -107,36 +109,44 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
     args.push('--max-count', String(options.maxResults || 500));
 
     const proc = spawnProcess('rg', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    const decoder = new StringDecoder('utf8');
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     const stdoutChunks = [];
-    let stdoutBytes = 0;
-    let outputTruncated = false;
-    let stderr = '';
+    const stderrChunks = [];
+    let capturedBytes = 0;
+    let truncatedStream = null;
     let settled = false;
 
-    proc.stdout.on('data', (chunk) => {
-      if (outputTruncated) return;
-      const remaining = MAX_OUTPUT_BYTES - stdoutBytes;
+    function capture(streamName, chunk, decoder, chunks) {
+      if (truncatedStream) return;
+      const remaining = MAX_CAPTURE_BYTES - capturedBytes;
       if (chunk.length > remaining) {
-        if (remaining > 0) stdoutChunks.push(decoder.write(chunk.subarray(0, remaining)));
-        stdoutBytes = MAX_OUTPUT_BYTES;
-        outputTruncated = true;
+        if (remaining > 0) chunks.push(decoder.write(chunk.subarray(0, remaining)));
+        capturedBytes = MAX_CAPTURE_BYTES;
+        truncatedStream = streamName;
         try { proc.kill(); } catch {}
         return;
       }
-      stdoutChunks.push(decoder.write(chunk));
-      stdoutBytes += chunk.length;
-    });
-    proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+      chunks.push(decoder.write(chunk));
+      capturedBytes += chunk.length;
+    }
+
+    proc.stdout.on('data', (chunk) => capture('stdout', chunk, stdoutDecoder, stdoutChunks));
+    proc.stderr.on('data', (chunk) => capture('stderr', chunk, stderrDecoder, stderrChunks));
     proc.on('close', (code) => {
       if (settled) return;
       settled = true;
       // StringDecoder.end() replaces an incomplete trailing code point with
-      // U+FFFD. On truncation, discard those pending bytes instead.
-      if (!outputTruncated) stdoutChunks.push(decoder.end());
+      // U+FFFD. On truncation, discard pending bytes from both streams instead.
+      if (!truncatedStream) {
+        stdoutChunks.push(stdoutDecoder.end());
+        stderrChunks.push(stderrDecoder.end());
+      }
       const stdout = stdoutChunks.join('').replace(/\r/g, '')
-        + (outputTruncated ? '\n\n[Output truncated]' : '');
-      if (code === 0 || code === 1 || outputTruncated) resolve(stdout);
+        + (truncatedStream === 'stdout' ? OUTPUT_TRUNCATED_MARKER : '');
+      const stderr = stderrChunks.join('').replace(/\r/g, '')
+        + (truncatedStream === 'stderr' ? OUTPUT_TRUNCATED_MARKER : '');
+      if (code === 0 || code === 1 || truncatedStream === 'stdout') resolve(stdout);
       else reject(new Error(stderr || `rg exited with code ${code}`));
     });
     proc.on('error', (err) => {

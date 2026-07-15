@@ -24,13 +24,22 @@ async function runNodeGrep(cwd) {
   });
 }
 
-function fakeRipgrepOutput(output) {
+function fakeRipgrepOutput(stdout, { stderr = '', exitCode = 0 } = {}) {
   return () => {
     const proc = new EventEmitter();
     proc.stdout = new PassThrough();
     proc.stderr = new PassThrough();
     proc.kill = () => queueMicrotask(() => proc.emit('close', null));
-    queueMicrotask(() => proc.stdout.write(output));
+    queueMicrotask(() => {
+      if (stdout) proc.stdout.write(stdout);
+      if (stderr) proc.stderr.write(stderr);
+      if (!proc.killed) proc.emit('close', exitCode);
+    });
+    const kill = proc.kill;
+    proc.kill = () => {
+      proc.killed = true;
+      kill();
+    };
     return proc;
   };
 }
@@ -52,8 +61,39 @@ describe('Grep tool output safety', () => {
       maxResults: 500,
     }, fakeRipgrepOutput(output));
 
+    expect(Buffer.byteLength(result, 'utf8')).toBeLessThanOrEqual(512 * 1024);
     expect(result).toContain('[Output truncated]');
     expect(result).not.toContain('\ufffd');
+  });
+
+  it('bounds invalid ripgrep stderr without breaking UTF-8', async () => {
+    const stderr = Buffer.concat([
+      Buffer.alloc(512 * 1024 - 1, 0x65),
+      Buffer.from('€', 'utf8'),
+    ]);
+
+    const error = await runRipgrep('needle', '.', {
+      maxResults: 500,
+    }, fakeRipgrepOutput('', { stderr, exitCode: 2 })).catch((err) => err);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(Buffer.byteLength(error.message, 'utf8')).toBeLessThanOrEqual(512 * 1024);
+    expect(error.message).toContain('[Output truncated]');
+    expect(error.message).not.toContain('\ufffd');
+  });
+
+  it('shares the ripgrep byte budget between stdout and stderr', async () => {
+    const stdout = Buffer.alloc(300 * 1024, 0x6f);
+    const stderr = Buffer.alloc(300 * 1024, 0x65);
+
+    const error = await runRipgrep('needle', '.', {
+      maxResults: 500,
+    }, fakeRipgrepOutput(stdout, { stderr, exitCode: 2 })).catch((err) => err);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(Buffer.byteLength(error.message, 'utf8')).toBeLessThan(300 * 1024);
+    expect(error.message).toContain('[Output truncated]');
+    expect(error.message).not.toContain('\ufffd');
   });
 
   it('skips binary files even when their extension is unknown', async () => {
