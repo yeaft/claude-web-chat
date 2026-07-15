@@ -8,11 +8,18 @@
 import { defineTool } from './types.js';
 import { spawn } from 'child_process';
 import { readdir, readFile, stat } from 'fs/promises';
+import { StringDecoder } from 'string_decoder';
 import { existsSync } from 'fs';
 import { resolve, join, relative, extname } from 'path';
 
 /** Max output lines. */
 const MAX_LINES = 250;
+
+/** Hard cap before Grep output reaches history, debug events, or WebSocket. */
+const MAX_OUTPUT_BYTES = 512 * 1024;
+
+/** Keep one pathological source line from consuming the whole output budget. */
+const MAX_LINE_BYTES = 16 * 1024;
 
 /** Binary extensions to skip. */
 const BINARY_EXTS = new Set([
@@ -24,6 +31,45 @@ const BINARY_EXTS = new Set([
   '.woff', '.woff2', '.ttf', '.otf',
   '.sqlite', '.db',
 ]);
+
+const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+
+function decodeTextFile(buffer) {
+  // Extension lists are only a fast path. Generated artifacts and renamed
+  // binaries commonly have no useful extension, especially on Windows.
+  if (buffer.includes(0)) return null;
+  try { return utf8Decoder.decode(buffer); } catch { return null; }
+}
+
+function truncateUtf8(text, maxBytes) {
+  if (maxBytes <= 0) return '';
+  const buffer = Buffer.from(text, 'utf8');
+  if (buffer.length <= maxBytes) return text;
+  return new StringDecoder('utf8').write(buffer.subarray(0, maxBytes));
+}
+
+function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
+  const parts = [];
+  let bytes = 0;
+  let truncated = false;
+  return {
+    add(value) {
+      if (truncated) return false;
+      const normalized = String(value).replace(/\r/g, '');
+      const line = truncateUtf8(normalized, MAX_LINE_BYTES);
+      const lineWasTruncated = Buffer.byteLength(normalized, 'utf8') > Buffer.byteLength(line, 'utf8');
+      const separator = parts.length > 0 ? '\n' : '';
+      const remaining = maxBytes - bytes - Buffer.byteLength(separator, 'utf8');
+      if (remaining <= 0) { truncated = true; return false; }
+      const bounded = truncateUtf8(line, remaining);
+      parts.push(separator + bounded);
+      bytes += Buffer.byteLength(separator + bounded, 'utf8');
+      if (lineWasTruncated || bounded !== line) truncated = true;
+      return !truncated;
+    },
+    toString() { return parts.join('') + (truncated ? '\n\n[Output truncated]' : ''); },
+  };
+}
 
 /**
  * Check if ripgrep is available.
@@ -61,25 +107,41 @@ function runRipgrep(pattern, searchPath, options) {
     args.push('--max-count', String(options.maxResults || 500));
 
     const proc = spawn('rg', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    let stdout = '';
+    const decoder = new StringDecoder('utf8');
+    const stdoutChunks = [];
+    let stdoutBytes = 0;
+    let outputTruncated = false;
     let stderr = '';
+    let settled = false;
 
     proc.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-      // Truncate early if way too large
-      if (stdout.length > 512 * 1024) {
+      if (outputTruncated) return;
+      const remaining = MAX_OUTPUT_BYTES - stdoutBytes;
+      if (chunk.length > remaining) {
+        if (remaining > 0) stdoutChunks.push(decoder.write(chunk.subarray(0, remaining)));
+        stdoutBytes = MAX_OUTPUT_BYTES;
+        outputTruncated = true;
         try { proc.kill(); } catch {}
+        return;
       }
+      stdoutChunks.push(decoder.write(chunk));
+      stdoutBytes += chunk.length;
     });
     proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     proc.on('close', (code) => {
-      if (code === 0 || code === 1) {
-        resolve(stdout);
-      } else {
-        reject(new Error(stderr || `rg exited with code ${code}`));
-      }
+      if (settled) return;
+      settled = true;
+      stdoutChunks.push(decoder.end());
+      const stdout = stdoutChunks.join('').replace(/\r/g, '')
+        + (outputTruncated ? '\n\n[Output truncated]' : '');
+      if (code === 0 || code === 1 || outputTruncated) resolve(stdout);
+      else reject(new Error(stderr || `rg exited with code ${code}`));
     });
-    proc.on('error', reject);
+    proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
   });
 }
 
@@ -88,16 +150,17 @@ function runRipgrep(pattern, searchPath, options) {
  */
 async function nodeGrep(pattern, searchPath, options) {
   const regex = new RegExp(pattern, options.caseInsensitive ? 'gi' : 'g');
-  const results = [];
+  const output = createOutputCollector();
+  let resultCount = 0;
   const SKIP = new Set(['node_modules', '.git', '__pycache__', '.next', 'dist', 'build', '.cache']);
 
   async function searchDir(dir) {
-    if (results.length >= (options.maxResults || 500)) return;
+    if (resultCount >= (options.maxResults || 500)) return;
     let entries;
     try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
 
     for (const entry of entries) {
-      if (results.length >= (options.maxResults || 500)) return;
+      if (resultCount >= (options.maxResults || 500)) return;
       const fullPath = join(dir, entry.name);
 
       if (entry.isDirectory()) {
@@ -111,22 +174,32 @@ async function nodeGrep(pattern, searchPath, options) {
           const fileStat = await stat(fullPath);
           if (fileStat.size > 1024 * 1024) continue; // skip files > 1MB
 
-          const content = await readFile(fullPath, 'utf-8');
+          const buffer = await readFile(fullPath);
+          const content = decodeTextFile(buffer);
+          if (content == null) continue;
           const relPath = relative(searchPath, fullPath);
 
           if (options.filesOnly) {
-            if (regex.test(content)) results.push(relPath);
+            if (regex.test(content)) {
+              resultCount += 1;
+              if (!output.add(relPath)) return;
+            }
             regex.lastIndex = 0;
           } else if (options.count) {
             const matches = content.match(regex);
-            if (matches) results.push(`${relPath}:${matches.length}`);
+            if (matches) {
+              resultCount += 1;
+              if (!output.add(`${relPath}:${matches.length}`)) return;
+            }
           } else {
             const lines = content.split('\n');
             for (let i = 0; i < lines.length; i++) {
               if (regex.test(lines[i])) {
-                results.push(`${relPath}:${i + 1}:${lines[i]}`);
+                resultCount += 1;
+                if (!output.add(`${relPath}:${i + 1}:${lines[i]}`)) return;
               }
               regex.lastIndex = 0;
+              if (resultCount >= (options.maxResults || 500)) return;
             }
           }
         } catch {
@@ -137,7 +210,7 @@ async function nodeGrep(pattern, searchPath, options) {
   }
 
   await searchDir(searchPath);
-  return results.join('\n');
+  return output.toString();
 }
 
 export default defineTool({
