@@ -9,6 +9,9 @@ const virtual = read('components/VirtualTranscript.js');
 const navigation = read('utils/message-search-navigation.js');
 const store = read('stores/chat.js');
 const css = read('styles/yeaft.css');
+const agent = read('../agent/index.js');
+const relay = read('../server/handlers/client-conversation.js');
+const agentHandler = read('stores/helpers/handlers/agentHandler.js');
 
 describe('Yeaft Session history search UI', () => {
   it('uses a debounced server-side query and rejects stale compound identities', () => {
@@ -17,6 +20,24 @@ describe('Yeaft Session history search UI', () => {
     expect(store).toContain('msg.requestId !== state.requestId');
     expect(store).toContain('msg.agentId !== state.agentId || msg.sessionId !== state.sessionId');
     expect(store).toContain("type: 'yeaft_load_history_window'");
+  });
+
+  it('floats over the conversation instead of consuming message layout space', () => {
+    expect(css).toMatch(/\.yeaft-main-center\s*\{[\s\S]*?position: relative;/);
+    expect(css).toMatch(/\.yeaft-transcript-search\s*\{[\s\S]*?position: absolute;/);
+    expect(css).toMatch(/\.yeaft-transcript-search\s*\{[\s\S]*?transform: translateX\(-50%\);/);
+    const searchRule = css.match(/\.yeaft-transcript-search\s*\{([^}]*)\}/)?.[1] || '';
+    expect(searchRule).not.toContain('flex: 0 0 auto');
+  });
+
+  it('negotiates search support and fails closed for Agents that would drop the request', () => {
+    expect(agent).toContain("'session_history_search'");
+    expect(relay).toContain('version: agent.version || null');
+    expect(agentHandler).toContain('version: msg.version || null');
+    expect(store).toContain("isAgentVersionAtLeast(agent?.version || selectedAgent?.version, '1.0.166')");
+    expect(store).toContain("error: 'unsupported'");
+    expect(store).toContain("error: 'timeout'");
+    expect(panel).toContain("state.error === 'unsupported'");
   });
 
   it('supports keyboard discovery and accessible result activation', () => {

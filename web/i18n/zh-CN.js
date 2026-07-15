@@ -283,6 +283,7 @@ export default {
   'yeaft.historySearch.minChars': '至少输入 2 个字符',
   'yeaft.historySearch.empty': '没有匹配的消息',
   'yeaft.historySearch.error': '搜索失败，请重试',
+  'yeaft.historySearch.unsupported': '请升级当前 Agent 后再搜索 Session 历史消息',
   'yeaft.historySearch.more': '加载更多结果',
   'yeaft.historySearch.you': '你',
   'yeaft.historySearch.assistant': '助手',
