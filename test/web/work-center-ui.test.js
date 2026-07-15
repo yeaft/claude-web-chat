@@ -124,6 +124,11 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain('v-for="loop in requestDetail(request)?.loops || []"');
     expect(detail).toContain('requestDetailsError[request.id]');
     expect(detail).toContain('requestDetailsLoading[request.id]');
+    expect(detail).toContain('class="work-center-action-failure"');
+    expect(detail).toContain('action.failure.error');
+    expect(detail).toContain('role="tabpanel"');
+    expect(detail).toContain('aria-controls="work-center-action-messages-panel"');
+    expect(detail).toContain('v-if="composerError"');
     expect(detail).toContain("tr('workCenter.requestDetailUnavailable'");
     expect(page).toContain('request.runId}:${request.id}');
     expect(detail).toContain("tr('workCenter.rawRequest'");

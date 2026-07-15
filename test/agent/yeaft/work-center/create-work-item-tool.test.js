@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const createWorkItemFromProducer = vi.fn();
-vi.mock('../../../../agent/yeaft/work-center/bridge.js', () => ({ createWorkItemFromProducer }));
+const snapshotCurrentSessionContext = vi.fn().mockResolvedValue([
+  { role: 'user', vpId: null, text: 'Keep the protocol compatible.' },
+]);
+vi.mock('../../../../agent/yeaft/work-center/bridge.js', () => ({
+  createWorkItemFromProducer, snapshotCurrentSessionContext,
+}));
 
 const { default: createWorkItem } = await import('../../../../agent/yeaft/tools/create-work-item.js');
 const { createFullRegistry } = await import('../../../../agent/yeaft/tools/index.js');
@@ -22,7 +27,9 @@ describe('CreateWorkItem tool', () => {
     expect(createWorkItemFromProducer).toHaveBeenCalledWith(expect.objectContaining({
       origin: { sessionId: 'session-real', messageId: 'msg-1', createdBy: 'linus' },
       linkedSessionIds: ['session-real'],
+      sessionContext: [{ role: 'user', vpId: null, text: 'Keep the protocol compatible.' }],
     }));
+    expect(snapshotCurrentSessionContext).toHaveBeenCalledWith('session-real');
     const payload = createWorkItemFromProducer.mock.calls.at(-1)[0];
     expect(payload).not.toHaveProperty('workflowTemplate');
     expect(payload).not.toHaveProperty('stageOverrides');

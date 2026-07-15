@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test';
 import { test } from '../../fixtures/test-server.js';
+import { BUILT_IN_ACTION_TYPES } from '../../../agent/yeaft/work-center/workflow.js';
 
 const WORK_CENTER_SETTINGS = {
   settings: {
@@ -9,10 +10,13 @@ const WORK_CENTER_SETTINGS = {
     defaultWorkDir: '/tmp/test',
     globalInstructions: 'Follow the Agent release policy for every Action.',
     modelPolicy: { mode: 'specific', model: 'provider/review', effort: 'high' },
+    actionModelPolicies: Object.fromEntries(BUILT_IN_ACTION_TYPES.map(type => [type, {
+      mode: 'inherit', model: null, effort: ['triage', 'research', 'design', 'diagnose', 'review'].includes(type) ? 'high' : 'medium',
+    }])),
     actionInstructions: {
       triage: 'Plan the task', research: 'Research the problem', design: 'Design the solution',
       diagnose: 'Diagnose the root cause', implement: 'Implement the change', migrate: 'Migrate safely',
-      test: 'Test the change', review: 'Review independently', document: 'Document the result',
+      test: 'Test the change', review: 'Review independently', integrate: 'Integrate the change', document: 'Document the result',
       operate: 'Operate safely', deliver: 'Deliver the result', write: 'Write the content',
       custom: 'Complete the custom Action',
     },
@@ -86,6 +90,27 @@ const OPEN_ITEM_DETAIL = {
       text: 'Implemented the layout fix and verified the responsive breakpoints.',
       createdAt: Date.now(), updatedAt: Date.now(),
     }],
+  }],
+};
+
+const FAILED_ITEM = {
+  ...OPEN_ITEM,
+  status: 'needs_attention',
+  title: 'Local run',
+};
+
+const FAILED_ITEM_DETAIL = {
+  ...OPEN_ITEM_DETAIL,
+  ...FAILED_ITEM,
+  status: 'needs_attention',
+  actions: [{
+    ...OPEN_ITEM_DETAIL.actions[0],
+    status: 'failed',
+    failure: {
+      error: 'The implementation produced an unsafe patch and validation could not load its configuration.',
+      summary: 'All unverified changes were reverted; the Action still needs implementation.',
+      failedAt: Date.now(),
+    },
   }],
 };
 
@@ -169,6 +194,14 @@ async function respondUntilOperation(mockAgent, targetOp, responses, limit = 8) 
     if (request.op === targetOp) return request;
   }
   throw new Error(`Work Center op ${targetOp} did not arrive within ${limit} requests`);
+}
+
+function expectedActionPolicyCount() {
+  return BUILT_IN_ACTION_TYPES.length + 1;
+}
+
+function expectedModelPolicyCount() {
+  return BUILT_IN_ACTION_TYPES.length + 2;
 }
 
 async function openWorkCenter(chatPage, mockAgent, items = [OPEN_ITEM]) {
@@ -313,6 +346,21 @@ test.describe('Work Center responsive UI', () => {
     });
   });
 
+  test('explains an Action failure and shows how to recover it', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent, [FAILED_ITEM]);
+    const select = chatPage.locator('.work-center-card').click();
+    await respondToWorkCenterOp(mockAgent, 'get', FAILED_ITEM_DETAIL, [FAILED_ITEM]);
+    await select;
+    await chatPage.locator('.work-center-action-summary').click();
+
+    const actionDetail = chatPage.locator('.work-center-action-detail-pane');
+    await expect(actionDetail.locator('.work-center-action-failure')).toContainText('Why this Action failed');
+    await expect(actionDetail.locator('.work-center-action-failure')).toContainText('unsafe patch');
+    await expect(actionDetail.locator('.work-center-action-failure')).toContainText('All unverified changes were reverted');
+    await expect(actionDetail.locator('.work-center-action-failure')).toContainText('Add corrected instructions or files below');
+    await expect(actionDetail.locator('.work-center-action-composer')).toContainText('rerun this Action');
+  });
+
   test('loads request debug lazily from the Action detail tab', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     const select = chatPage.locator('.work-center-card').click();
@@ -443,13 +491,14 @@ test.describe('Work Center responsive UI', () => {
     expect(box.width).toBeGreaterThan(850);
     expect(box.height).toBeGreaterThan(650);
 
-    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(14);
+    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(expectedActionPolicyCount());
     await expect(chatPage.locator('.work-center-global-policy textarea')).toHaveValue('Follow the Agent release policy for every Action.');
     await expect(chatPage.locator('.work-center-policy-stage textarea').nth(1)).toHaveValue('Plan the task');
     await chatPage.getByRole('button', { name: 'Models', exact: true }).click();
-    const modelStage = chatPage.locator('.work-center-model-stage');
-    await expect(modelStage).toHaveCount(1);
-    await expect(modelStage).toContainText('All Work Center Actions');
+    const modelStages = chatPage.locator('.work-center-model-stage');
+    await expect(modelStages).toHaveCount(expectedModelPolicyCount());
+    const modelStage = modelStages.last();
+    await expect(modelStage).toContainText('Fallback for all Actions');
     const effort = modelStage.locator('.work-center-model-effort');
     await expect(effort).toContainText('Reasoning effort');
     await expect(effort.locator('select')).toHaveValue('high');
@@ -458,7 +507,7 @@ test.describe('Work Center responsive UI', () => {
 
     await modelStage.locator('select').first().selectOption('inherit');
     await expect(effort).toBeVisible();
-    await expect(effort.locator('select')).toBeDisabled();
+    await expect(effort.locator('select')).toBeEnabled();
     await expect(effort).toContainText('Select the Agent primary model');
     await expect(modal.getByRole('button', { name: 'General', exact: true })).toHaveCount(0);
   });
@@ -486,16 +535,17 @@ test.describe('Work Center responsive UI', () => {
 
     const modal = chatPage.locator('.work-center-settings-card');
     await expect(modal).toBeVisible();
-    await expect(modal.locator('.work-center-policy-stage')).toHaveCount(14);
+    await expect(modal.locator('.work-center-policy-stage')).toHaveCount(expectedActionPolicyCount());
     const triagePrompt = modal.locator('.work-center-policy-stage textarea').nth(1);
     await expect(triagePrompt).toHaveValue('Legacy triage prompt.');
     await expect(triagePrompt).toBeDisabled();
     await expect(modal.getByText(/cannot save Work Center settings/)).toBeVisible();
     await expect(modal.locator('.work-center-settings-footer .btn-primary')).toBeDisabled();
     await modal.getByRole('button', { name: 'Models', exact: true }).click();
-    await expect(modal.locator('.work-center-model-stage select').first()).toHaveValue('specific');
-    await expect(modal.locator('.work-center-model-stage select').first()).toBeDisabled();
-    await expect(modal.locator('.work-center-model-stage select').last()).toHaveValue('high');
+    const globalModelStage = modal.locator('.work-center-model-stage').last();
+    await expect(globalModelStage.locator('select').first()).toHaveValue('specific');
+    await expect(globalModelStage.locator('select').first()).toBeDisabled();
+    await expect(globalModelStage.locator('select').last()).toHaveValue('high');
   });
 
   test('keeps settings usable in dark theme and mobile viewport', async ({ chatPage, mockAgent }) => {
@@ -514,7 +564,7 @@ test.describe('Work Center responsive UI', () => {
 
     const modal = chatPage.locator('.work-center-settings-card');
     await expect(modal).toBeVisible();
-    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(14);
+    await expect(chatPage.locator('.work-center-policy-stage')).toHaveCount(expectedActionPolicyCount());
     const workflowMetrics = await modal.evaluate(element => {
       const rect = element.getBoundingClientRect();
       const pane = element.querySelector('.work-center-settings-pane');
@@ -549,7 +599,7 @@ test.describe('Work Center responsive UI', () => {
     expect(workflowMetrics.saveColor).not.toBe(workflowMetrics.saveBackground);
 
     await modal.getByRole('button', { name: 'Models', exact: true }).click();
-    const effort = modal.locator('.work-center-model-effort');
+    const effort = modal.locator('.work-center-model-stage').last().locator('.work-center-model-effort');
     await expect(effort).toBeVisible();
     await expect(effort.locator('select')).toHaveValue('high');
     const effortStyle = await effort.locator('select').evaluate(element => {

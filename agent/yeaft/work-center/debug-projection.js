@@ -59,6 +59,21 @@ export function sanitizeDebugUrl(value) {
   }
 }
 
+export function sanitizeDiagnosticText(value, maxBytes = 8 * 1024) {
+  let text = String(value || '');
+  text = text.replace(/https?:\/\/[^\s"'<>]+/gi, match => sanitizeDebugUrl(match));
+  text = text.replace(
+    /\b(authorization)\b(\s*[:=]\s*)(?:Bearer\s+)?[^\s,;]+/gi,
+    '$1$2***',
+  );
+  text = text.replace(
+    /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd)\b(\s*[:=]\s*)[^\s,;]+/gi,
+    '$1$2***',
+  );
+  text = text.replace(/\b(Bearer)\s+[^\s,;]+/gi, '$1 ***');
+  return truncateUtf8(text, maxBytes);
+}
+
 function omittedBinary(value) {
   return `[binary data omitted: ${byteLength(value)} bytes]`;
 }

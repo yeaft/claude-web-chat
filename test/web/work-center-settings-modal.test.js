@@ -120,7 +120,7 @@ describe('Work Center settings modal ownership', () => {
 
     const stages = [...document.body.querySelectorAll('.work-center-policy-stage')];
     expect(errors).toEqual([]);
-    expect(stages).toHaveLength(14);
+    expect(stages).toHaveLength(15);
     expect(stages[0].querySelector('textarea').value).toBe('');
     expect(stages[0].querySelector('textarea').disabled).toBe(true);
     expect(stages[1].querySelector('textarea').value).toBe('Legacy triage prompt.');
@@ -386,8 +386,10 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.effortHelpKeyForStage(stage)).toBe('workCenter.settings.effortHelp');
 
     stage.modelPolicy.mode = 'inherit';
-    expect(vm.effortOptionsForStage(stage)).toEqual([]);
+    expect(vm.effortOptionsForStage(stage)).toEqual(['medium', 'high', 'low']);
     expect(vm.effortHelpKeyForStage(stage)).toBe('workCenter.settings.effortChooseModelHelp');
+    WorkCenterSettingsModal.methods.normalizeStageEffort.call(vm, stage);
+    expect(stage.modelPolicy.effort).toBe('low');
 
     stage.modelPolicy.mode = 'specific';
     stage.modelPolicy.model = 'provider/plain';

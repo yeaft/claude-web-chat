@@ -150,6 +150,72 @@ describe('Work Center navigation', () => {
     expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({ id: 'wi-2' });
   });
 
+  it('keeps a newer event-refreshed Action when an older explicit detail response finishes last', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterItemsByAgent = { 'agent-1': [] };
+    store.workCenterDetailByAgent = {
+      'agent-1': { id: 'wi-1', revision: 1, currentActionId: 'action-1', actions: [{ id: 'action-1' }] },
+    };
+    const pending = [];
+    store.workCenterRequest = vi.fn((_op, payload) => new Promise(resolve => {
+      pending.push({ id: payload.id, resolve });
+    }));
+
+    const explicit = store.getWorkItem('wi-1', 'agent-1');
+    store.applyWorkCenterEvent('agent-1', {
+      workItem: { id: 'wi-1', revision: 2, currentActionId: 'action-2', updatedAt: 2 },
+    });
+    pending[1].resolve({
+      id: 'wi-1', revision: 2, currentActionId: 'action-2', updatedAt: 2,
+      actions: [{ id: 'action-1' }, { id: 'action-2' }],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    pending[0].resolve({
+      id: 'wi-1', revision: 1, currentActionId: 'action-1', updatedAt: 1,
+      actions: [{ id: 'action-1' }],
+    });
+
+    expect(await explicit).toMatchObject({ revision: 2, currentActionId: 'action-2' });
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
+      revision: 2, currentActionId: 'action-2',
+    });
+  });
+
+  it('merges concurrent Action message pages without dropping a valid cursor page', async () => {
+    const store = makeStore('yeaft');
+    const pending = [];
+    store.workCenterRequest = vi.fn((_op, payload) => new Promise(resolve => {
+      pending.push({ payload, resolve });
+    }));
+
+    const page40 = store.loadWorkItemActionMessages('wi-1', 'action-1', '40', 'agent-1');
+    const page20 = store.loadWorkItemActionMessages('wi-1', 'action-1', '20', 'agent-1');
+    pending[1].resolve({ messages: [{ id: 'm-1', createdAt: 1 }], nextCursor: null, total: 3 });
+    await page20;
+    pending[0].resolve({ messages: [{ id: 'm-2', createdAt: 2 }], nextCursor: '20', total: 3 });
+    await page40;
+
+    expect(store.workCenterActionMessages['agent-1:wi-1:action-1']).toEqual({
+      messages: [{ id: 'm-1', createdAt: 1 }, { id: 'm-2', createdAt: 2 }],
+      nextCursor: null,
+      total: 3,
+    });
+    expect(store.workCenterActionMessagesLoading['agent-1:wi-1:action-1']).toBe(false);
+  });
+
+  it('deduplicates identical Action message page requests while one is pending', async () => {
+    const store = makeStore('yeaft');
+    let resolvePage;
+    store.workCenterRequest = vi.fn(() => new Promise(resolve => { resolvePage = resolve; }));
+
+    const first = store.loadWorkItemActionMessages('wi-1', 'action-1', '20', 'agent-1');
+    const second = store.loadWorkItemActionMessages('wi-1', 'action-1', '20', 'agent-1');
+    expect(store.workCenterRequest).toHaveBeenCalledTimes(1);
+    resolvePage({ messages: [], nextCursor: null, total: 0 });
+    await Promise.all([first, second]);
+  });
+
   it('ignores stale Action index/detail responses and isolates request details by run', async () => {
     const store = makeStore('yeaft');
     const pending = [];

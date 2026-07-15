@@ -971,6 +971,35 @@
   background: var(--bg-sidebar);
 }
 
+.work-center-action-failure {
+  display: grid;
+  gap: 7px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--error-bg);
+  color: var(--text-primary);
+}
+
+.work-center-action-failure strong {
+  color: var(--error-text);
+  font-size: 13px;
+}
+
+.work-center-action-failure p,
+.work-center-action-failure small {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.work-center-action-failure p {
+  font-size: 12px;
+}
+
+.work-center-action-failure small {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
 .work-center-action-message {
   display: grid;
   gap: 8px;
@@ -1207,9 +1236,14 @@
 }
 
 .work-center-action-composer-footer small {
-  color: var(--text-muted);
-  font-size: 10px;
+  color: var(--text-secondary);
+  font-size: 11px;
   line-height: 1.4;
+}
+
+.work-center-attachment-picker:focus-within {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
 }
 
 .work-center-empty-state,

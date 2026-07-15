@@ -31,6 +31,17 @@ export function isWorkItemSummaryStale(summary, current) {
   return summaryUpdatedAt != null && currentUpdatedAt != null && summaryUpdatedAt < currentUpdatedAt;
 }
 
+export function isWorkItemDetailResponseStale(detail, current) {
+  if (isWorkItemSummaryStale(detail, current)) return true;
+  if (!detail || !current || detail.id !== current.id) return false;
+  const detailRevision = numberOrNull(detail.revision);
+  const currentRevision = numberOrNull(current.revision);
+  return detail.currentActionId !== current.currentActionId
+    && detailRevision != null
+    && currentRevision != null
+    && detailRevision <= currentRevision;
+}
+
 function isActionProgressStale(currentStats, nextStats) {
   const currentProgress = numberOrNull(currentStats?.progressRevision);
   const nextProgress = numberOrNull(nextStats?.progressRevision);

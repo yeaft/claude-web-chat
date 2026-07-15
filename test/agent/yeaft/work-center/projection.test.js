@@ -76,6 +76,7 @@ describe('Work Center event projection', () => {
       },
       loopCount: 3, toolCount: 8,
       response: 'Reviewed the change and found one compatibility decision.',
+      failure: null,
       progressRevision: 4,
     }]);
     const wire = JSON.stringify(projected);
@@ -128,6 +129,57 @@ describe('Work Center event projection', () => {
     ]) {
       expect(wire).not.toContain(secret);
     }
+  });
+
+  it('projects a bounded, redacted failure diagnostic without exposing other Run internals', () => {
+    const detail = internalDetail();
+    detail.status = 'needs_attention';
+    detail.actions[0].status = 'failed';
+    detail.runs[0] = {
+      ...detail.runs[0],
+      status: 'failed',
+      endedAt: 5,
+      error: 'Gateway https://user:pass@example.com/v1?api_key=secret failed; Authorization: Bearer token-value',
+      summary: 'Unsafe patch was reverted. password=hunter2',
+    };
+
+    const projected = projectWorkItemDetail(detail).actions[0];
+    expect(projected.failure).toEqual({
+      error: 'Gateway https://example.com/v1?api_key=*** failed; Authorization: ***',
+      summary: 'Unsafe patch was reverted. password=***',
+      failedAt: 5,
+    });
+    expect(JSON.stringify(projected.failure)).not.toContain('token-value');
+    expect(JSON.stringify(projected.failure)).not.toContain('hunter2');
+    expect(projected).not.toHaveProperty('evidence');
+    const live = projectWorkCenterEvent({ type: 'action.failed', workItem: detail });
+    expect(live.workItem.actionStats[0].failure).toEqual(projected.failure);
+  });
+
+  it('does not retain an earlier failure after the Action starts a successful retry', () => {
+    const detail = internalDetail();
+    detail.actions[0].status = 'running';
+    detail.runs[0] = { ...detail.runs[0], status: 'running', error: null, summary: '' };
+    detail.runs[1] = { ...detail.runs[1], status: 'failed', error: 'Earlier failure', summary: 'Retry me' };
+
+    expect(projectWorkItemDetail(detail).actions[0].failure).toBeNull();
+    expect(projectWorkCenterEvent({ type: 'run.progress', workItem: detail }).workItem.actionStats[0].failure).toBeNull();
+  });
+
+  it('keeps projected Action stats and failure diagnostics through a second projection', () => {
+    const detail = internalDetail();
+    detail.status = 'needs_attention';
+    detail.actions[0].status = 'failed';
+    detail.runs[0] = {
+      ...detail.runs[0], status: 'failed', endedAt: 5, error: 'Safe failure', summary: 'Safe summary',
+    };
+
+    const once = projectWorkItemDetail(detail);
+    const twice = projectWorkItemDetail(once);
+    expect(twice.actions[0]).toMatchObject({
+      executionStats: once.actions[0].executionStats,
+      failure: { error: 'Safe failure', summary: 'Safe summary', failedAt: 5 },
+    });
   });
 
   it('uses the highest progress revision after retry even when the clock moves backward', () => {

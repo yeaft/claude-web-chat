@@ -19,6 +19,7 @@ export default {
     composerAttachments: { type: Array, default: () => [] },
     uploading: { type: Boolean, default: false },
     sending: { type: Boolean, default: false },
+    composerError: { type: String, default: '' },
     attachmentsSupported: { type: Boolean, default: false },
   },
   emits: ['back', 'update:composerText', 'load-earlier-messages', 'select-request', 'refresh-requests', 'attachment-input', 'remove-attachment', 'send'],
@@ -37,6 +38,9 @@ export default {
     composerHint() {
       if (this.selected?.status === 'waiting') {
         return this.tr('workCenter.actionInputResumeHint', 'Your input resumes this Action with the additional context.');
+      }
+      if (this.selected?.status === 'needs_attention') {
+        return this.tr('workCenter.actionInputRetryHint', 'Add instructions or files, then rerun this Action with the new context.');
       }
       return this.tr('workCenter.actionInputRestartHint', 'New input restarts the active Action so it can apply the updated context safely.');
     },
@@ -139,17 +143,24 @@ export default {
       </div>
 
       <nav class="work-center-action-tabs" role="tablist" :aria-label="tr('workCenter.actionDetails', 'Action details')">
-        <button type="button" role="tab" :aria-selected="activeTab === 'messages'" :class="{ active: activeTab === 'messages' }" @click="switchTab('messages')">
+        <button id="work-center-action-messages-tab" type="button" role="tab" aria-controls="work-center-action-messages-panel" :tabindex="activeTab === 'messages' ? 0 : -1" :aria-selected="activeTab === 'messages'" :class="{ active: activeTab === 'messages' }" @click="switchTab('messages')">
           {{ tr('workCenter.actionMessages', 'Messages') }}
         </button>
-        <button type="button" role="tab" :aria-selected="activeTab === 'requests'" :class="{ active: activeTab === 'requests' }" @click="switchTab('requests')">
+        <button id="work-center-action-requests-tab" type="button" role="tab" aria-controls="work-center-action-requests-panel" :tabindex="activeTab === 'requests' ? 0 : -1" :aria-selected="activeTab === 'requests'" :class="{ active: activeTab === 'requests' }" @click="switchTab('requests')">
           {{ tr('workCenter.requestDetails', 'Request details') }}
           <span v-if="requests.length">{{ requests.length }}</span>
         </button>
       </nav>
 
       <div class="work-center-action-detail-scroll">
-        <div v-if="activeTab === 'messages'" class="work-center-action-transcript">
+        <div v-if="activeTab === 'messages'" id="work-center-action-messages-panel" role="tabpanel" aria-labelledby="work-center-action-messages-tab" class="work-center-action-transcript">
+          <section v-if="action.failure" class="work-center-action-failure" role="alert">
+            <strong>{{ tr('workCenter.actionFailedTitle', 'Why this Action failed') }}</strong>
+            <p v-if="action.failure.error">{{ action.failure.error }}</p>
+            <p v-if="action.failure.summary && action.failure.summary !== action.failure.error">{{ action.failure.summary }}</p>
+            <small v-if="action.failure.failedAt">{{ tr('workCenter.failedAt', 'Failed at') }} · {{ time(action.failure.failedAt) }}</small>
+            <small v-if="canCompose">{{ tr('workCenter.actionFailureRecovery', 'Add corrected instructions or files below to rerun this Action. Request details contain the exact model and loop trace.') }}</small>
+          </section>
           <button v-if="messagesNextCursor != null" class="btn-ghost" type="button" @click="$emit('load-earlier-messages')" :disabled="messagesLoading">
             {{ messagesLoading ? tr('workCenter.loadingEarlierMessages', 'Loading earlier messages…') : tr('workCenter.loadEarlierMessages', 'Load earlier messages') }}
           </button>
@@ -174,7 +185,7 @@ export default {
           <p v-if="messages.length === 0" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No execution messages yet.') }}</p>
         </div>
 
-        <div v-else class="work-center-action-requests">
+        <div v-else id="work-center-action-requests-panel" role="tabpanel" aria-labelledby="work-center-action-requests-tab" class="work-center-action-requests">
           <p v-if="requestsError" class="work-center-error">{{ requestsError }}</p>
           <p v-if="requestsLoading && requests.length === 0" class="work-center-action-empty">{{ tr('workCenter.loadingRequests', 'Loading requests…') }}</p>
           <p v-else-if="requests.length === 0" class="work-center-action-empty">{{ tr('workCenter.noRequestDetails', 'No request details are available for this Action yet.') }}</p>
@@ -209,6 +220,7 @@ export default {
       </div>
 
       <footer v-if="canCompose" class="work-center-action-composer">
+        <p v-if="composerError" class="work-center-error" role="alert">{{ composerError }}</p>
         <textarea :value="composerText" rows="3" :placeholder="tr('workCenter.actionInputPlaceholder', 'Add context, answer a question, or redirect this Action')" @input="$emit('update:composerText', $event.target.value)"></textarea>
         <div v-if="composerAttachments.length" class="work-center-attachment-list">
           <span v-for="(attachment, index) in composerAttachments" :key="attachment.fileId" class="work-center-attachment-chip">

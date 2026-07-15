@@ -246,6 +246,12 @@ describe('Work Center settings service', () => {
       },
       close: async () => {},
     };
+    const historyOptions = [];
+    const fetchRecentDebugHistory = trace.fetchRecentDebugHistory;
+    trace.fetchRecentDebugHistory = async options => {
+      historyOptions.push(options);
+      return fetchRecentDebugHistory(options);
+    };
     const runner = { trace };
     const service = await createService({ runner });
     const item = await service.handle('create', {
@@ -260,6 +266,7 @@ describe('Work Center settings service', () => {
     const index = await service.handle('get_action_requests', {
       id: item.id, actionId: claim.action.id,
     });
+    expect(historyOptions[0]).toMatchObject({ limit: 10, indexOnly: true });
     expect(index.requests).toEqual([expect.objectContaining({
       id: 'request-1', runId: claim.run.id, model: 'provider/model', totalTokens: 30,
     })]);

@@ -21,6 +21,7 @@ export default {
       narrowPane: 'items',
       actionDetailTab: 'messages',
       actionInputSending: false,
+      actionInputError: '',
       createOpen: false,
       settingsOpen: false,
       saving: false,
@@ -262,6 +263,7 @@ export default {
       this.selectedActionId = null;
       this.narrowPane = 'actions';
       this.actionGuidance = '';
+      this.actionInputError = '';
       this.guidanceAttachments = [];
       try {
         const detail = await this.store.getWorkItem(item.id, this.agentId);
@@ -271,6 +273,11 @@ export default {
       } catch {}
     },
     selectAction(action) {
+      if (this.selectedActionId !== action.id) {
+        this.actionGuidance = '';
+        this.actionInputError = '';
+        this.guidanceAttachments = [];
+      }
       this.selectedActionId = action.id;
       this.narrowPane = 'action';
     },
@@ -419,6 +426,7 @@ export default {
       const selected = files.slice(0, remaining);
       if (selected.length === 0) return;
       this.guidanceAttachmentsUploading = true;
+      this.actionInputError = '';
       try {
         const formData = new FormData();
         for (const file of selected) formData.append('files', file, file.name || 'attachment');
@@ -435,6 +443,8 @@ export default {
           ...this.guidanceAttachments,
           ...(Array.isArray(result.files) ? result.files : []),
         ].slice(0, Math.max(0, 10 - existingCount));
+      } catch (error) {
+        this.actionInputError = error?.message || String(error);
       } finally {
         this.guidanceAttachmentsUploading = false;
       }
@@ -535,6 +545,7 @@ export default {
       if (!this.selected || !this.selectedAction || this.selected.currentActionId !== this.selectedAction.id
         || (!this.actionGuidance.trim() && this.guidanceAttachments.length === 0)) return;
       this.actionInputSending = true;
+      this.actionInputError = '';
       try {
         const next = await this.store.sendWorkItemActionInput(
           this.selected.id,
@@ -552,6 +563,8 @@ export default {
         this.actionGuidance = '';
         this.guidanceAttachments = [];
         this.selectedActionId = next?.currentActionId || this.selectedActionId;
+      } catch (error) {
+        this.actionInputError = error?.message || String(error);
       } finally {
         this.actionInputSending = false;
       }
@@ -754,6 +767,7 @@ export default {
               :composer-attachments="guidanceAttachments"
               :uploading="guidanceAttachmentsUploading"
               :sending="actionInputSending"
+              :composer-error="actionInputError"
               :attachments-supported="workItemAttachmentsSupported"
               @back="showActionsPane"
               @update:composer-text="actionGuidance = $event"

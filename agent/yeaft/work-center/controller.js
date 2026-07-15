@@ -6,6 +6,7 @@ import {
   initialActionFor,
   RUN_OUTCOMES,
 } from './workflow.js';
+import { renderSessionContextSnapshot } from './session-context.js';
 import { normalizeEvidence } from './evidence.js';
 
 function normalizeCriteria(value) {
@@ -132,12 +133,18 @@ export class WorkflowController {
       attachments: Array.isArray(input.attachments) ? input.attachments : [],
     };
     let firstAction = input.start !== false ? initialActionFor(draft) : null;
+    if (firstAction) {
+      firstAction = {
+        ...firstAction,
+        instruction: actionInstruction(firstAction, draft, [], renderSessionContextSnapshot(draft.sessionContext)),
+      };
+    }
     if (firstAction && draft.reuseMemory !== false) {
       const context = this.store.getReusableContext(draft.workDir, draft.id);
       firstAction = {
         ...firstAction,
         context,
-        instruction: actionInstruction(firstAction, draft, context),
+        instruction: actionInstruction(firstAction, draft, context, renderSessionContextSnapshot(draft.sessionContext)),
       };
     }
     return this.store.createWorkItem(draft, firstAction);
@@ -151,7 +158,7 @@ export class WorkflowController {
       return {
         ...action,
         context,
-        instruction: actionInstruction(action, workItem, context),
+        instruction: actionInstruction(action, workItem, context, renderSessionContextSnapshot(workItem.sessionContext)),
       };
     });
     if (!detail) throw new Error(`WorkItem not found: ${id}`);
@@ -200,7 +207,7 @@ export class WorkflowController {
       return {
         ...step,
         context,
-        instruction: actionInstruction(step, workItem, context),
+        instruction: actionInstruction(step, workItem, context, renderSessionContextSnapshot(workItem.sessionContext)),
         maxAttempts: previous.maxAttempts || 2,
       };
     }, input.attachments, input.addedAttachments);
@@ -259,6 +266,9 @@ export class WorkflowController {
             assignmentPolicy: previous.assignmentPolicy,
             modelPolicy: previous.modelPolicy,
             requiredRole: previous.requiredRole,
+            dependsOnStageIds: previous.dependsOnStageIds,
+            workspaceMode: previous.workspaceMode,
+            changesRequestedStageId: previous.changesRequestedStageId,
             brief: previous.brief,
           }
         : initialActionFor(workItem);
@@ -280,7 +290,7 @@ export class WorkflowController {
       return {
         ...step,
         context,
-        instruction: actionInstruction(step, workItem, context),
+        instruction: actionInstruction(step, workItem, context, renderSessionContextSnapshot(workItem.sessionContext)),
         maxAttempts: previous?.maxAttempts || 2,
       };
     }, {
@@ -331,6 +341,7 @@ export class WorkflowController {
             workItemStatus: 'waiting',
             keepCurrentAction: true,
             eventType: 'action.waiting',
+            graphAdvance: workItem.workflowSnapshot?.executionMode === 'graph',
             eventData: { reason: result.waitingReason },
           };
         }
@@ -342,6 +353,7 @@ export class WorkflowController {
             workItemStatus: retryable ? 'ready' : 'needs_attention',
             keepCurrentAction: true,
             eventType: retryable ? 'action.retry_scheduled' : 'action.retry_exhausted',
+            graphAdvance: workItem.workflowSnapshot?.executionMode === 'graph',
             eventData: {
               attempt: action.attempt,
               maxAttempts: action.maxAttempts,
@@ -356,6 +368,7 @@ export class WorkflowController {
             workItemStatus: 'needs_attention',
             keepCurrentAction: true,
             eventType: 'action.failed',
+            graphAdvance: workItem.workflowSnapshot?.executionMode === 'graph',
             eventData: { error: result.error },
           };
         }
@@ -376,6 +389,35 @@ export class WorkflowController {
         const plannedWorkItem = generatedWorkflow
           ? { ...effectiveWorkItem, workflowSnapshot: generatedWorkflow }
           : effectiveWorkItem;
+        const context = [...(action.context || []), contextEntry(action, result, activeRun)];
+        if (plannedWorkItem.workflowSnapshot?.executionMode === 'graph') {
+          if (action.type === 'review' && result.reviewDecision === 'changes_requested') {
+            const targetStage = plannedWorkItem.workflowSnapshot.stages
+              .find(stage => stage.id === action.changesRequestedStageId);
+            if (!targetStage) throw new Error('Work Center review return target is missing');
+            return {
+              actionStatus: 'completed', workItemStatus: 'ready', graphAdvance: true,
+              graphResetStageId: action.changesRequestedStageId,
+              graphResetAction: actionForStage(targetStage, plannedWorkItem, context),
+              eventType: 'review.changes_requested',
+              eventData: { targetStageId: action.changesRequestedStageId },
+            };
+          }
+          const nextActions = generatedWorkflow
+            ? generatedWorkflow.stages.slice(1).map(stage => actionForStage(stage, plannedWorkItem, context))
+            : [];
+          return {
+            actionStatus: 'completed',
+            workItemStatus: nextActions.length > 0 ? 'ready' : 'running',
+            contractPatch,
+            workflowSnapshot: generatedWorkflow,
+            nextActions,
+            graphAdvance: true,
+            eventType: 'action.completed',
+            eventData: { nextActionCount: nextActions.length, reviewDecision: result.reviewDecision },
+          };
+        }
+
         const nextStep = getNextStep(plannedWorkItem, action.stageId || action.type, result);
         if (!nextStep) {
           return {
@@ -388,7 +430,6 @@ export class WorkflowController {
           };
         }
 
-        const context = [...(action.context || []), contextEntry(action, result, activeRun)];
         return {
           actionStatus: 'completed',
           workItemStatus: 'ready',

@@ -2,10 +2,12 @@ import { reconstructDebugRawRequest } from '../debug-trace.js';
 import {
   enforceActionRequestDetailBudget,
   sanitizeDebugValue,
+  sanitizeDiagnosticText,
 } from './debug-projection.js';
 import { normalizeActionBrief } from './workflow.js';
 
 const MAX_ACTION_MESSAGE_CHARS = 16_000;
+const MAX_ACTION_DIAGNOSTIC_CHARS = 8_000;
 const MAX_ACTION_MESSAGES = 20;
 
 function currentAction(detail) {
@@ -109,8 +111,15 @@ function actionExecution(action, runs, events) {
       ? action.messages.map(normalizeProjectedMessage).filter(Boolean)
       : actionInputMessages(action, events);
     return {
-      ...executionStats(action),
+      ...executionStats(action?.executionStats || action),
       response: typeof action?.response === 'string' ? action.response : '',
+      failure: action?.failure && typeof action.failure === 'object'
+        ? {
+            error: sanitizeDiagnosticText(action.failure.error, MAX_ACTION_DIAGNOSTIC_CHARS),
+            summary: sanitizeDiagnosticText(action.failure.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
+            failedAt: count(action.failure.failedAt),
+          }
+        : null,
       progressRevision: count(action?.progressRevision),
       messages,
       messageCount: count(action?.messageCount) || messages.length,
@@ -122,11 +131,21 @@ function actionExecution(action, runs, events) {
     count(right.progressRevision) - count(left.progressRevision)
       || count(right.startedAt) - count(left.startedAt)
   ))[0];
+  const latestFailure = action?.status === 'failed'
+    ? [...matchingRuns]
+        .filter(run => run?.status === 'failed')
+        .sort((left, right) => count(right.endedAt || right.startedAt) - count(left.endedAt || left.startedAt))[0]
+    : null;
   const allMessages = actionMessages(action, matchingRuns, events);
   const messages = allMessages.slice(-MAX_ACTION_MESSAGES);
   return {
     ...stats,
     response: typeof latest?.response === 'string' ? latest.response : '',
+    failure: latestFailure ? {
+      error: sanitizeDiagnosticText(latestFailure.error, MAX_ACTION_DIAGNOSTIC_CHARS),
+      summary: sanitizeDiagnosticText(latestFailure.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
+      failedAt: count(latestFailure.endedAt || latestFailure.startedAt),
+    } : null,
     progressRevision: count(latest?.progressRevision),
     messages,
     messageCount: allMessages.length,
@@ -168,6 +187,8 @@ function projectAction(action, runs, events) {
     assignmentPolicy: alreadyProjected
       ? (action.assignmentPolicy || null)
       : projectAssignmentPolicy(action.assignmentPolicy),
+    dependsOnStageIds: Array.isArray(action.dependsOnStageIds) ? action.dependsOnStageIds : [],
+    workspaceMode: action.workspaceMode || 'shared',
     requiredRole: action.requiredRole || '',
     brief: alreadyProjected ? (action.brief || null) : normalizeActionBrief(action.brief, action.type),
     status: action.status,
@@ -175,6 +196,7 @@ function projectAction(action, runs, events) {
     loopCount: execution.loopCount,
     toolCount: execution.toolCount,
     response: execution.response,
+    failure: execution.failure,
     progressRevision: execution.progressRevision,
     messages: execution.messages,
     messageCount: execution.messageCount,
@@ -193,6 +215,7 @@ function projectActionStats(detail) {
       loopCount: projected.loopCount,
       toolCount: projected.toolCount,
       response: projected.response,
+      failure: projected.failure,
       progressRevision: projected.progressRevision,
     };
   });
@@ -221,6 +244,7 @@ export function projectWorkItemDetail(detail) {
     workflowTemplate: detail.workflowTemplate,
     workItemType: detail.workflowSnapshot?.workItemType || detail.workItemType || null,
     planningMode: detail.workflowSnapshot?.planningMode || detail.planningMode || 'static',
+    executionMode: detail.workflowSnapshot?.executionMode || detail.executionMode || 'linear',
     status: detail.status,
     currentActionId: detail.currentActionId || null,
     executionStats: Array.isArray(detail.runs)
@@ -277,6 +301,7 @@ export function projectWorkItemSummary(detail) {
     goal: detail.goal,
     workItemType: detail.workflowSnapshot?.workItemType || detail.workItemType || null,
     planningMode: detail.workflowSnapshot?.planningMode || detail.planningMode || 'static',
+    executionMode: detail.workflowSnapshot?.executionMode || detail.executionMode || 'linear',
     status: detail.status,
     currentActionId: detail.currentActionId || null,
     executionStats: Array.isArray(detail.runs)
