@@ -1,6 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 
 const sent = [];
+const tempDirs = [];
 
 vi.mock('../../../agent/connection/buffer.js', () => ({
   sendToServer: vi.fn((msg) => { sent.push(msg); }),
@@ -8,15 +14,96 @@ vi.mock('../../../agent/connection/buffer.js', () => ({
 
 const {
   handleYeaftAbortTurn,
+  __testDrainVpDrivers,
+  __testEnqueueForVp,
+  __testGroupHistory,
   __testHandleEngineEvent,
   __testHooks,
   __testRaceWithEscalation,
+  __testResetVpState,
+  __testSetSession,
+  installYeaftRuntimeBridge,
 } = await import('../../../agent/yeaft/web-bridge.js');
 
 describe('Yeaft VP turn abort routing', () => {
   beforeEach(() => {
     sent.length = 0;
     __testHooks.resetAbortState();
+  });
+
+  afterEach(async () => {
+    __testSetSession(null);
+    await __testResetVpState();
+    while (tempDirs.length > 0) {
+      rmSync(tempDirs.pop(), { recursive: true, force: true });
+    }
+  });
+
+  it('treats a cooperative clean-close abort as stopped without appending completion history', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'yeaft-bridge-abort-'));
+    tempDirs.push(tempDir);
+    let streamStarted;
+    const started = new Promise(resolve => { streamStarted = resolve; });
+    const adapter = {
+      async *stream(params) {
+        yield { type: 'text_delta', text: 'truncated assistant output' };
+        streamStarted();
+        await new Promise(resolve => params.signal.addEventListener('abort', resolve, { once: true }));
+        // Cooperative proxy behavior: close the SSE body without throwing.
+      },
+      async call() { return { text: 'ok', usage: {} }; },
+    };
+    const sessionLike = {
+      adapter,
+      trace: new NullTrace(),
+      config: {
+        model: 'test-model',
+        maxOutputTokens: 1024,
+        _readOnly: true,
+        language: 'en',
+      },
+      conversationStore: {
+        append(record) { return { id: 'persisted', ...record }; },
+        loadRecentBySession() { return []; },
+        readCompactSummary() { return ''; },
+      },
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: new ToolRegistry(),
+      skillManager: null,
+      mcpManager: null,
+      yeaftDir: tempDir,
+      taskManager: null,
+      toolStats: null,
+    };
+
+    __testSetSession(sessionLike);
+    installYeaftRuntimeBridge(sessionLike);
+    __testEnqueueForVp('session-abort', 'vp-a', {
+      sessionId: 'session-abort',
+      trigger: 'mention',
+      msg: {
+        id: 'msg-abort',
+        from: 'user',
+        role: 'user',
+        text: 'start then stop',
+        meta: {},
+      },
+    });
+
+    await started;
+    handleYeaftAbortTurn({ sessionId: 'session-abort', vpId: 'vp-a' });
+    await __testDrainVpDrivers();
+
+    const resultFrames = sent.filter(msg => msg.type === 'yeaft_output' && msg.data?.type === 'result');
+    expect(resultFrames).toHaveLength(1);
+    expect(resultFrames[0].data).toMatchObject({ stopped: true });
+
+    const terminalEvents = sent.filter(msg => msg.event?.type === 'vp_turn_end');
+    expect(terminalEvents).toHaveLength(1);
+    expect(terminalEvents[0].event.reason).toBe('aborted');
+    expect(terminalEvents.some(msg => msg.event.reason === 'end_turn')).toBe(false);
+    expect(__testGroupHistory('session-abort')).toEqual([]);
   });
 
   it('removes a queued VP turn by turnId before an AbortController exists', () => {

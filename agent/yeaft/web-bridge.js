@@ -3000,7 +3000,7 @@ function queueStreamTextDelta(hctx, text, envelope) {
  * todos, debug cards, and persistence all share the same boundary.
  *
  * @param {object} event — engine event (text_delta / tool_call / …)
- * @param {{assistantTextParts:string[], toolCallsAccum:Array, toolResultsAccum:Array, thinkingBlocksAccum?:Array, resetQueryTimer:Function, pauseQueryTimer?:Function, sessionId?:string, vpId?:string, turnId?:string}} hctx
+ * @param {{assistantTextParts:string[], toolCallsAccum:Array, toolResultsAccum:Array, thinkingBlocksAccum?:Array, resetQueryTimer:Function, pauseQueryTimer?:Function, markEngineTerminal?:Function, sessionId?:string, vpId?:string, turnId?:string}} hctx
  */
 export function __testHandleEngineEvent(event, hctx) {
   return handleEngineEvent(event, hctx);
@@ -3174,13 +3174,28 @@ function handleEngineEvent(event, hctx) {
       // No UI action needed; outer loop sends the final result.
       break;
 
+    case 'aborted':
+      if (typeof hctx.markEngineTerminal === 'function') {
+        hctx.markEngineTerminal('aborted', { reason: event.reason || 'external' });
+      }
+      break;
+
     case 'turn_end':
       // Most engine turn_end events are internal loop boundaries. A normal
       // tool_use stop means "run tools, then call the adapter again", so it
-      // must NOT end the VP's visible turn. route_forward is different: the
-      // tool has handed control to another VP and Engine.query will not
-      // stream more text for this VP. Settle the current VP immediately so
-      // the roster row does not sit on "thinking" until later result cleanup.
+      // must NOT end the VP's visible turn. An aborted turn is terminal too,
+      // but the outer runVpTurn boundary owns its single stopped result and
+      // vp_turn_end emission.
+      if (event.stopReason === 'aborted') {
+        if (typeof hctx.markEngineTerminal === 'function') {
+          hctx.markEngineTerminal('aborted', event.detail || null);
+        }
+        break;
+      }
+      // route_forward is different: the tool has handed control to another
+      // VP and Engine.query will not stream more text for this VP. Settle the
+      // current VP immediately so the roster row does not sit on "thinking"
+      // until later result cleanup.
       if (event.stopReason === 'tool_handoff' && event.detail?.kind === 'route_forward') {
         try {
           if (hctx.thread) {
@@ -4257,7 +4272,13 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
   let turnEndReason = 'end_turn';
   let turnEndEmitted = false;
   let turnEndDetail = null;
+  let engineTerminalReason = null;
+  let engineTerminalDetail = null;
   let handlerCtx = null;
+  const markEngineTerminal = (reason, detail = null) => {
+    engineTerminalReason = reason;
+    if (detail) engineTerminalDetail = detail;
+  };
   const markTurnEnd = (reason) => {
     turnEndEmitted = true;
     turnEndReason = reason;
@@ -4282,6 +4303,15 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
     } catch (err) {
       console.warn('[Yeaft] vp_turn_end emit failed:', err?.message || err);
     }
+  };
+  const finishAbortedTurn = (detail = null) => {
+    flushStreamTextBatch(handlerCtx, envelope, { resetImmediate: true });
+    sendSessionOutputFrame({
+      type: 'result',
+      result_text: '',
+      stopped: true,
+    }, envelope);
+    emitVpTurnEnd('aborted', detail);
   };
 
   try {
@@ -4378,6 +4408,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         prompt,
         includeInitialPrompt: !inboundIsInternal,
         skipPartialHistory: false,
+        markEngineTerminal,
         markTurnEnd,
       };
       // Always trim the snapshot before passing to engine.query. This is
@@ -4496,6 +4527,11 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
 
       if (escalationState?.escalated) return;
 
+      if (engineTerminalReason === 'aborted') {
+        finishAbortedTurn(engineTerminalDetail);
+        return;
+      }
+
       flushStreamTextBatch(handlerCtx, envelope, { resetImmediate: true });
 
       // Turn completed — atomically append this VP's output to shared history.
@@ -4544,15 +4580,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
     if (escalationState?.escalated) return;
     const isAbort = err && (err.name === 'AbortError' || err.name === 'LLMAbortError');
     if (isAbort) {
-      flushStreamTextBatch(handlerCtx, envelope, { resetImmediate: true });
-      if (!escalationState?.escalated) {
-        sendSessionOutputFrame({
-          type: 'result',
-          result_text: '',
-          stopped: true,
-        }, envelope);
-        emitVpTurnEnd('aborted');
-      }
+      if (!escalationState?.escalated) finishAbortedTurn();
       return;
     }
 
