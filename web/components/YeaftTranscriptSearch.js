@@ -31,6 +31,7 @@ export default {
         <button type="button" class="yeaft-transcript-search-close" @click="$emit('close')" :aria-label="$t('common.close')">×</button>
       </div>
       <div v-if="state.query.length === 1" class="yeaft-transcript-search-empty">{{ $t('yeaft.historySearch.minChars') }}</div>
+      <div v-else-if="state.error === 'unsupported'" class="yeaft-transcript-search-empty is-error">{{ $t('yeaft.historySearch.unsupported') }}</div>
       <div v-else-if="state.error" class="yeaft-transcript-search-empty is-error">{{ $t('yeaft.historySearch.error') }}</div>
       <div v-else-if="state.query.length >= 2 && !state.loading && !state.results.length" class="yeaft-transcript-search-empty">{{ $t('yeaft.historySearch.empty') }}</div>
       <div v-if="state.results.length" class="yeaft-transcript-search-results" role="listbox">

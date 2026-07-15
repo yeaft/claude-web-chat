@@ -24,7 +24,7 @@ describe('Yeaft conversation layout', () => {
   it('lets the message container consume remaining height instead of pushing the input upward', () => {
     const css = read('web/styles/yeaft.css');
 
-    expect(css).toContain('.yeaft-main-center {\n  flex: 1;\n  min-width: 0;\n  min-height: 0;');
+    expect(css).toMatch(/\.yeaft-main-center\s*\{[^}]*flex: 1;[^}]*min-width: 0;[^}]*min-height: 0;/);
     expect(css).toContain('.yeaft-conversation-body {\n  flex: 1 1 auto;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n}');
     expect(css).toContain('.yeaft-conversation-body > .chat-container {\n  flex: 1 1 auto;\n}');
   });

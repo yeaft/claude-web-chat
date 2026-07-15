@@ -131,6 +131,7 @@
    (settings | VP detail | empty hero | message list), and ChatInput.
    Reproduces the column flex that .yeaft-main itself used to be. */
 .yeaft-main-center {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -818,15 +819,18 @@
 }
 
 .yeaft-transcript-search {
+  position: absolute;
+  top: 44px;
+  left: 50%;
   width: min(720px, calc(100% - 32px));
   max-height: min(520px, 60vh);
-  margin: 4px auto 8px;
   border: 1px solid var(--border-color);
   border-radius: 12px;
   background: var(--bg-main);
+  box-shadow: var(--modal-shadow);
   overflow: hidden;
   z-index: 20;
-  flex: 0 0 auto;
+  transform: translateX(-50%);
 }
 
 .yeaft-transcript-search-bar {

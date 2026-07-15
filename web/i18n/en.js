@@ -283,6 +283,7 @@ export default {
   'yeaft.historySearch.minChars': 'Type at least 2 characters',
   'yeaft.historySearch.empty': 'No matching messages',
   'yeaft.historySearch.error': 'Search failed. Try again.',
+  'yeaft.historySearch.unsupported': 'Upgrade this Agent to search Session history.',
   'yeaft.historySearch.more': 'Load more results',
   'yeaft.historySearch.you': 'You',
   'yeaft.historySearch.assistant': 'Assistant',

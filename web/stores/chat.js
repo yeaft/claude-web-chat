@@ -117,6 +117,30 @@ function resolveAgentIdForSession(state, sessionId, explicitAgentId = null) {
   return state?.currentAgent || null;
 }
 
+function isAgentVersionAtLeast(version, minimum) {
+  const parse = value => String(value || '').replace(/^v/, '').split('.').slice(0, 3).map(part => Number.parseInt(part, 10));
+  const current = parse(version);
+  const required = parse(minimum);
+  if (current.length < 3 || required.length < 3 || [...current, ...required].some(part => !Number.isFinite(part))) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if (current[index] !== required[index]) return current[index] > required[index];
+  }
+  return true;
+}
+
+function agentHasCapability(state, agentId, capability) {
+  if (!agentId || !capability) return false;
+  const agent = Array.isArray(state?.agents) ? state.agents.find(candidate => candidate?.id === agentId) : null;
+  const selectedAgent = state?.currentAgentInfo?.id === agentId ? state.currentAgentInfo : null;
+  const capabilities = agent?.capabilities || selectedAgent?.capabilities || [];
+  if (capabilities.includes(capability)) return true;
+  // Session history search shipped before its explicit capability token. Keep
+  // those transitional Agents working while rejecting older builds that would
+  // silently drop the request and leave the panel spinning forever.
+  return capability === 'session_history_search'
+    && isAgentVersionAtLeast(agent?.version || selectedAgent?.version, '1.0.166');
+}
+
 function resolveActiveYeaftSessionId(state, { fallbackDefault = false } = {}) {
   if (state?.yeaftActiveSessionFilter) return state.yeaftActiveSessionFilter;
   const gs = getSessionsStore();
@@ -338,6 +362,7 @@ export const useChatStore = defineStore('chat', {
       nextBeforeSeq: null,
       error: null,
     },
+    _yeaftHistorySearchTimeout: null,
     _yeaftHistoryWindowPending: null,
     // One-shot marker: set true by the websocket onclose handler on a real
     // disconnect, consumed by handleAgentList to run a single Yeaft history
@@ -2030,6 +2055,10 @@ export const useChatStore = defineStore('chat', {
       const normalized = typeof query === 'string' ? query.trim() : '';
       const sessionId = this.yeaftActiveSessionFilter || null;
       const agentId = resolveAgentIdForSession(this, sessionId);
+      if (this._yeaftHistorySearchTimeout) {
+        clearTimeout(this._yeaftHistorySearchTimeout);
+        this._yeaftHistorySearchTimeout = null;
+      }
       if (!sessionId || !agentId || normalized.length < 2) {
         this.yeaftHistorySearchState = {
           requestId: null,
@@ -2046,6 +2075,21 @@ export const useChatStore = defineStore('chat', {
       }
 
       const previous = this.yeaftHistorySearchState || {};
+      if (!agentHasCapability(this, agentId, 'session_history_search')) {
+        this.yeaftHistorySearchState = {
+          requestId: null,
+          agentId,
+          sessionId,
+          query: normalized,
+          loading: false,
+          results: [],
+          hasMore: false,
+          nextBeforeSeq: null,
+          error: 'unsupported',
+        };
+        return false;
+      }
+
       const requestId = `history_search_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       this.yeaftHistorySearchState = {
         requestId,
@@ -2058,6 +2102,15 @@ export const useChatStore = defineStore('chat', {
         nextBeforeSeq: append && previous.query === normalized ? previous.nextBeforeSeq : null,
         error: null,
       };
+      this._yeaftHistorySearchTimeout = setTimeout(() => {
+        if (this.yeaftHistorySearchState?.requestId !== requestId) return;
+        this._yeaftHistorySearchTimeout = null;
+        this.yeaftHistorySearchState = {
+          ...this.yeaftHistorySearchState,
+          loading: false,
+          error: 'timeout',
+        };
+      }, 10000);
       this.sendWsMessage({
         type: 'yeaft_search_history',
         agentId,
@@ -2074,6 +2127,10 @@ export const useChatStore = defineStore('chat', {
       const state = this.yeaftHistorySearchState || {};
       if (!msg || msg.requestId !== state.requestId) return false;
       if (msg.agentId !== state.agentId || msg.sessionId !== state.sessionId || msg.query !== state.query) return false;
+      if (this._yeaftHistorySearchTimeout) {
+        clearTimeout(this._yeaftHistorySearchTimeout);
+        this._yeaftHistorySearchTimeout = null;
+      }
       const incoming = Array.isArray(msg.results) ? msg.results : [];
       const byId = new Map((state.results || []).map(result => [result.messageId, result]));
       for (const result of incoming) if (result?.messageId) byId.set(result.messageId, result);
