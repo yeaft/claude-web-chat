@@ -216,6 +216,41 @@ describe('Work Center navigation', () => {
     await Promise.all([first, second]);
   });
 
+  it('does not let an old Action input response overwrite a newer Action in the same Work Item', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 1, currentActionId: 'action-1',
+        actions: [{ id: 'action-1' }],
+      },
+    };
+    let resolveInput;
+    store.workCenterRequest = vi.fn((op) => {
+      if (op === 'action_input') return new Promise(resolve => { resolveInput = resolve; });
+      throw new Error(`Unexpected Work Center operation: ${op}`);
+    });
+
+    const input = store.sendWorkItemActionInput(
+      'wi-1', 'Keep the public API unchanged', 'action-1', 1, [], 'agent-1',
+    );
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 2, currentActionId: 'action-2',
+        actions: [{ id: 'action-1' }, { id: 'action-2' }],
+      },
+    };
+    resolveInput({
+      id: 'wi-1', revision: 2, currentActionId: 'action-1',
+      actions: [{ id: 'action-1' }],
+    });
+
+    const result = await input;
+    expect(result).toMatchObject({ revision: 2, currentActionId: 'action-2' });
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
+      revision: 2, currentActionId: 'action-2',
+    });
+  });
+
   it('ignores stale Action index/detail responses and isolates request details by run', async () => {
     const store = makeStore('yeaft');
     const pending = [];

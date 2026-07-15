@@ -3,6 +3,7 @@ import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import LlmTab from './LlmTab.js';
 import folderPickerMixin from './mixins/folder-picker-mixin.js';
 import { openImagePreview } from '../utils/imagePreview.js';
+import { mergeActionMessages } from '../stores/helpers/work-center.js';
 import {
   clearOverlayPointerGesture,
   shouldDismissFromOverlayClick,
@@ -101,19 +102,7 @@ export default {
     actionMessages() {
       const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];
       const earlier = this.store.workCenterActionMessages[this.actionRequestKey]?.messages || [];
-      const byId = new Map([...earlier, ...current].map(message => [message.id, message]));
-      const live = this.selectedAction?.liveMessage;
-      if (live?.id) {
-        const durable = byId.get(live.id);
-        const durableRevision = Number(durable?.progressRevision ?? -1);
-        const liveRevision = Number(live.progressRevision ?? -1);
-        if (!durable || liveRevision > durableRevision
-          || (liveRevision === durableRevision && durable.status === 'running')) {
-          byId.set(live.id, live);
-        }
-      }
-      return [...byId.values()].sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0)
-        || String(left.id || '').localeCompare(String(right.id || '')));
+      return mergeActionMessages(earlier, current, this.selectedAction?.liveMessage);
     },
     actionMessagesNextCursor() {
       const page = this.store.workCenterActionMessages[this.actionRequestKey];

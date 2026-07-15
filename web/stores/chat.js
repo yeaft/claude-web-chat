@@ -16,6 +16,7 @@ import { trimDebugRetention } from './helpers/debug-retention.js';
 import {
   applyWorkItemSummary,
   isWorkItemDetailResponseStale,
+  mergeActionMessages,
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
 } from './helpers/work-center.js';
@@ -503,6 +504,7 @@ export const useChatStore = defineStore('chat', {
     _workCenterSettingsGenerationByAgent: {},
     _workCenterDetailRequestGenerationByAgent: {},
     _workCenterDetailEventRefreshByAgent: {},
+    _workCenterActionInputGenerationByAgent: {},
     _workCenterActionMessageRequests: {},
     _workCenterActionRequestsGeneration: {},
     _workCenterActionRequestDetailsGeneration: {},
@@ -1209,7 +1211,7 @@ export const useChatStore = defineStore('chat', {
             id, actionId, cursor, limit: 20,
           }, target);
           const current = this.workCenterActionMessages[key]?.messages || [];
-          const byId = new Map([...current, ...(data?.messages || [])].map(message => [message.id, message]));
+          const messages = mergeActionMessages(current, data?.messages || []);
           const existingPage = this.workCenterActionMessages[key];
           const currentCursor = existingPage?.nextCursor;
           const requestedCursor = cursor == null ? null : Number(cursor);
@@ -1220,10 +1222,9 @@ export const useChatStore = defineStore('chat', {
           this.workCenterActionMessages = {
             ...this.workCenterActionMessages,
             [key]: {
-              messages: [...byId.values()].sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0)
-                || String(left.id || '').localeCompare(String(right.id || ''))),
+              messages,
               nextCursor: shouldAdvanceCursor ? (data?.nextCursor ?? null) : currentCursor,
-              total: Math.max(Number(data?.total) || 0, Number(existingPage?.total) || 0, byId.size),
+              total: Math.max(Number(data?.total) || 0, Number(existingPage?.total) || 0, messages.length),
             },
           };
           return data;
@@ -1433,14 +1434,26 @@ export const useChatStore = defineStore('chat', {
     },
     async sendWorkItemActionInput(id, text, actionId, revision, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = Number(this._workCenterActionInputGenerationByAgent[target] || 0) + 1;
+      this._workCenterActionInputGenerationByAgent = {
+        ...this._workCenterActionInputGenerationByAgent,
+        [target]: generation,
+      };
       const detail = await this.workCenterRequest('action_input', {
         id, text, actionId, revision, attachments,
       }, target);
       await this.listWorkItems(target);
-      if (this.workCenterDetailByAgent[target]?.id === id) {
+      const current = this.workCenterDetailByAgent[target];
+      const requestStillCurrent = current?.id === id
+        && current.currentActionId === actionId
+        && Number(current.revision) === Number(revision);
+      if (this._workCenterActionInputGenerationByAgent[target] === generation
+        && requestStillCurrent
+        && !isWorkItemDetailResponseStale(detail, current)) {
         this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+        return detail;
       }
-      return detail;
+      return current?.id === id ? current : detail;
     },
     async guideWorkItemAction(id, guidance, actionId, revision, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;

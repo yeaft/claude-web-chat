@@ -310,15 +310,20 @@ describe('Work Center event projection', () => {
         requestBase: { rawRequest: {
           body: {
             apiKey: 'object-api-key',
-            nested: { access_token: 'object-access-token', clientSecret: 'object-client-secret' },
+            nested: {
+              access_token: 'object-access-token',
+              clientSecret: 'object-client-secret',
+              'x-api-key': 'LEAK_X',
+              'proxy-authorization': 'LEAK_P',
+            },
           },
         } },
         rawResponse: {
           status: 401,
-          body: JSON.stringify({ error: { password: 'json-password', id_token: 'json-id-token' } }),
+          body: '{"secret":"LEAK_MALFORMED"',
           stream: {
             format: 'sse',
-            body: 'data: upstream access_token=plain-sse-token',
+            body: 'data: secret=LEAK_SSE',
           },
         },
       }],
@@ -327,13 +332,13 @@ describe('Work Center event projection', () => {
     const wire = JSON.stringify(projected);
     for (const secret of [
       'object-api-key', 'object-access-token', 'object-client-secret',
-      'json-password', 'json-id-token', 'plain-sse-token',
+      'LEAK_X', 'LEAK_P', 'LEAK_MALFORMED', 'LEAK_SSE',
     ]) expect(wire).not.toContain(secret);
     expect(projected.request.loops[0].rawRequest.body.nested).toEqual({
-      access_token: '***', clientSecret: '***',
+      access_token: '***', clientSecret: '***', 'x-api-key': '***', 'proxy-authorization': '***',
     });
-    expect(projected.request.loops[0].rawResponse.body).toContain('***');
-    expect(projected.request.loops[0].rawResponse.stream.body).toContain('access_token=***');
+    expect(projected.request.loops[0].rawResponse.body).toContain('"secret":"***"');
+    expect(projected.request.loops[0].rawResponse.stream.body).toContain('secret=***');
   });
 
   it('enforces one UTF-8 byte budget for the complete Action request detail DTO', () => {

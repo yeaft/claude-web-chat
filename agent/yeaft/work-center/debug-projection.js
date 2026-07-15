@@ -1,15 +1,10 @@
 const MAX_DEBUG_STRING_BYTES = 64 * 1024;
 export const MAX_ACTION_REQUEST_DETAIL_BYTES = 256 * 1024;
 const MAX_DEBUG_ARRAY_ITEMS = 128;
-const SENSITIVE_HEADER = /^(authorization|proxy-authorization|x-api-key|api-key|cookie|set-cookie)$/i;
-const SENSITIVE_QUERY_NAMES = new Set([
-  'apikey', 'token', 'accesstoken', 'refreshtoken', 'idtoken', 'clientsecret',
+const SENSITIVE_NAMES = new Set([
+  'apikey', 'xapikey', 'token', 'accesstoken', 'refreshtoken', 'idtoken', 'clientsecret',
   'secret', 'signature', 'sig', 'credential', 'password', 'passwd',
-  'authorization', 'auth', 'code',
-]);
-const SENSITIVE_FIELD_NAMES = new Set([
-  'apikey', 'token', 'accesstoken', 'refreshtoken', 'idtoken', 'clientsecret',
-  'secret', 'credential', 'password', 'passwd', 'authorization', 'cookie', 'setcookie',
+  'authorization', 'proxyauthorization', 'auth', 'code', 'cookie', 'setcookie',
 ]);
 const BINARY_DATA_TYPES = new Set(['base64', 'redactedthinking', 'redacted_thinking']);
 
@@ -44,12 +39,8 @@ function normalizeSensitiveName(name) {
   return String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-function isSensitiveQueryName(name) {
-  return SENSITIVE_QUERY_NAMES.has(normalizeSensitiveName(name));
-}
-
-function isSensitiveFieldName(name) {
-  return SENSITIVE_FIELD_NAMES.has(normalizeSensitiveName(name));
+function isSensitiveName(name) {
+  return SENSITIVE_NAMES.has(normalizeSensitiveName(name));
 }
 
 export function sanitizeDebugUrl(value) {
@@ -59,14 +50,14 @@ export function sanitizeDebugUrl(value) {
     url.username = '';
     url.password = '';
     for (const name of [...url.searchParams.keys()]) {
-      if (isSensitiveQueryName(name)) url.searchParams.set(name, '***');
+      if (isSensitiveName(name)) url.searchParams.set(name, '***');
     }
     return truncateUtf8(url.toString());
   } catch {
     const withoutUserInfo = text.replace(/\/\/[^/@\s]+@/g, '//');
     return truncateUtf8(withoutUserInfo.replace(
       /([?&])([^=&#]+)=([^&#]*)/g,
-      (match, prefix, name) => (isSensitiveQueryName(name) ? `${prefix}${name}=***` : match),
+      (match, prefix, name) => (isSensitiveName(name) ? `${prefix}${name}=***` : match),
     ));
   }
 }
@@ -74,7 +65,11 @@ export function sanitizeDebugUrl(value) {
 export function sanitizeDiagnosticText(value, maxBytes = 8 * 1024) {
   let text = String(value || '');
   text = text.replace(/https?:\/\/[^\s"'<>]+/gi, match => sanitizeDebugUrl(match));
-  const names = 'api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|authorization';
+  const names = [
+    'api[_-]?key', 'x[_-]?api[_-]?key', 'token', 'access[_-]?token', 'refresh[_-]?token',
+    'id[_-]?token', 'client[_-]?secret', 'secret', 'credential', 'password', 'passwd',
+    'authorization', 'proxy[_-]?authorization', 'cookie', 'set[_-]?cookie',
+  ].join('|');
   text = text.replace(
     new RegExp(`\\b(${names})\\b(["']?\\s*[:=]\\s*)"[^"\\r\\n]*"`, 'gi'),
     '$1$2"***"',
@@ -84,11 +79,7 @@ export function sanitizeDiagnosticText(value, maxBytes = 8 * 1024) {
     "$1$2'***'",
   );
   text = text.replace(
-    /\b(authorization)\b(\s*[:=]\s*)(?:Bearer\s+)?[^\s,;]+/gi,
-    '$1$2***',
-  );
-  text = text.replace(
-    /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|passwd)\b(\s*[:=]\s*)[^\s,;]+/gi,
+    new RegExp(`\\b(${names})\\b(\\s*[:=]\\s*)(?:Bearer\\s+)?[^\\s,;}\\]]+`, 'gi'),
     '$1$2***',
   );
   text = text.replace(/\b(Bearer)\s+[^\s,;}\]]+/gi, '$1 ***');
@@ -112,7 +103,7 @@ function sanitizeSseBody(value, seen) {
 }
 
 export function sanitizeDebugValue(value, parent = null, key = '', seen = new WeakSet()) {
-  if (key && isSensitiveFieldName(key)) return '***';
+  if (key && isSensitiveName(key)) return '***';
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'string') {
     if (key === 'url') return sanitizeDebugUrl(value);
@@ -145,7 +136,7 @@ export function sanitizeDebugValue(value, parent = null, key = '', seen = new We
       if (childKey === 'headers' && item && typeof item === 'object' && !Array.isArray(item)) {
         out.headers = Object.fromEntries(Object.entries(item).map(([name, headerValue]) => [
           name,
-          SENSITIVE_HEADER.test(name) || isSensitiveFieldName(name)
+          isSensitiveName(name)
             ? '***'
             : sanitizeDebugValue(headerValue, item, name, seen),
         ]));

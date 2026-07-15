@@ -19,6 +19,51 @@ function numberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+const TERMINAL_ACTION_MESSAGE_STATUSES = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+  'superseded',
+  'interrupted',
+]);
+
+function actionMessageStatusRank(status) {
+  return TERMINAL_ACTION_MESSAGE_STATUSES.has(status) ? 1 : 0;
+}
+
+export function pickFresherActionMessage(current, candidate) {
+  if (!current) return candidate || null;
+  if (!candidate) return current;
+  const currentRevision = numberOrNull(current.progressRevision);
+  const candidateRevision = numberOrNull(candidate.progressRevision);
+  if (currentRevision != null || candidateRevision != null) {
+    if (currentRevision == null) return candidate;
+    if (candidateRevision == null) return current;
+    if (currentRevision !== candidateRevision) {
+      return candidateRevision > currentRevision ? candidate : current;
+    }
+  }
+  const currentStatus = actionMessageStatusRank(current.status);
+  const candidateStatus = actionMessageStatusRank(candidate.status);
+  if (currentStatus !== candidateStatus) return candidateStatus > currentStatus ? candidate : current;
+  const currentUpdatedAt = numberOrNull(current.updatedAt) ?? numberOrNull(current.createdAt) ?? 0;
+  const candidateUpdatedAt = numberOrNull(candidate.updatedAt) ?? numberOrNull(candidate.createdAt) ?? 0;
+  return candidateUpdatedAt > currentUpdatedAt ? candidate : current;
+}
+
+export function mergeActionMessages(...sources) {
+  const byId = new Map();
+  for (const source of sources) {
+    const messages = Array.isArray(source) ? source : [source];
+    for (const message of messages) {
+      if (!message?.id) continue;
+      byId.set(message.id, pickFresherActionMessage(byId.get(message.id), message));
+    }
+  }
+  return [...byId.values()].sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0)
+    || String(left.id || '').localeCompare(String(right.id || '')));
+}
+
 export function isWorkItemSummaryStale(summary, current) {
   if (!summary || !current || summary.id !== current.id) return false;
   const summaryRevision = numberOrNull(summary.revision);
