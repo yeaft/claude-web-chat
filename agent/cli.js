@@ -30,6 +30,10 @@ import {
   GITHUB_COPILOT_PROVIDER,
 } from './llm-model-discovery.js';
 import { applyAgentIdentityToEnv, warnDeprecatedInstanceArg } from './service/config.js';
+import {
+  buildUpgradeInstallCommand,
+  buildUpgradeVersionCommand,
+} from './upgrade-command.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf-8'));
@@ -466,7 +470,7 @@ function upgrade() {
   console.log('Checking for updates...');
 
   try {
-    const latest = execSync(`npm view ${pkg.name} version`, { encoding: 'utf-8' }).trim();
+    const latest = execSync(buildUpgradeVersionCommand(pkg.name), { encoding: 'utf-8' }).trim();
     if (latest === pkg.version) {
       console.log('Already up to date.');
       return;
@@ -479,7 +483,7 @@ function upgrade() {
       // for us to exit, then runs npm install, then optionally restarts the service.
       upgradeWindows(latest);
     } else {
-      execSync(`npm install -g ${pkg.name}@latest`, { stdio: 'inherit' });
+      execSync(buildUpgradeInstallCommand(`${pkg.name}@latest`), { stdio: 'inherit' });
       console.log(`Successfully upgraded to ${latest}`);
 
       // If PM2 is managing yeaft-agent, restart it so the new version takes effect
@@ -561,7 +565,7 @@ function upgradeWindows(latestVersion) {
     'ping -n 5 127.0.0.1 >NUL',
     '',
     'echo [Upgrade] Running npm install -g %PKG%... >> "%LOGFILE%"',
-    'call npm install -g %PKG% >> "%LOGFILE%" 2>&1',
+    `call ${buildUpgradeInstallCommand('%PKG%')} >> "%LOGFILE%" 2>&1`,
     'if not "%errorlevel%"=="0" (',
     '  echo [Upgrade] npm install failed with exit code %errorlevel% at %time% >> "%LOGFILE%"',
     '  goto PM2_RESTART',
