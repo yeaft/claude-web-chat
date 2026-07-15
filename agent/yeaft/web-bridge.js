@@ -341,6 +341,54 @@ const vpAborts = new Map();
  */
 const asyncTaskOwners = new Map();
 
+function deleteAsyncTaskOwnerIfMatch(taskId, engine) {
+  if (typeof taskId !== 'string' || !taskId) return false;
+  if (asyncTaskOwners.get(taskId) !== engine) return false;
+  asyncTaskOwners.delete(taskId);
+  return true;
+}
+
+/**
+ * Retire one cached VP Engine without letting stale task ownership leak into
+ * its replacement. Non-destructive retirement rescues accepted-but-undrained
+ * terminal results; destructive Session/roster removal explicitly discards
+ * them so a deleted runtime is not recreated by a rescue turn.
+ */
+function retireCachedVpEngine(key, {
+  reason = 'engine_retired',
+  rescue = true,
+  expectedEngine = null,
+} = {}) {
+  const cachedEngine = vpEngines.get(key) || null;
+  const engine = expectedEngine || cachedEngine;
+  if (!engine) {
+    if (!vpEngines.has(key)) vpEngineConfigKeys.delete(key);
+    return null;
+  }
+
+  // Destructive removal must discard accepted payloads before abort(), whose
+  // default is to rescue. Config changes and watchdog retirement keep rescue.
+  if (!rescue) {
+    try { engine.retireAsyncTasks?.(reason, { rescue: false }); } catch { /* best-effort */ }
+  }
+  let aborted = false;
+  try { aborted = engine.abort?.(reason) === true; } catch { /* best-effort */ }
+  if (!aborted) {
+    try { engine.retireAsyncTasks?.(reason, { rescue }); } catch { /* best-effort */ }
+  }
+
+  // Identity guard: a stale promise may retire after a replacement Engine was
+  // cached under the same key. Never delete the replacement or its config.
+  if (vpEngines.get(key) === engine) {
+    vpEngines.delete(key);
+    vpEngineConfigKeys.delete(key);
+  }
+  for (const [taskId, ownerEngine] of asyncTaskOwners) {
+    if (ownerEngine === engine) deleteAsyncTaskOwnerIfMatch(taskId, engine);
+  }
+  return engine;
+}
+
 /**
  * Build a coordinator for a freshly-constructed engine. The coordinator
  * keeps `asyncTaskOwners` in sync so a `taskManager` `completed` event
@@ -351,17 +399,42 @@ const asyncTaskOwners = new Map();
  * inherit a coordinator that still associates their tasks with the
  * sub-engine, not the parent.
  *
- * @returns {{ onRegister: (taskId: string, engine: import('./engine.js').Engine) => void, onUnregister: (taskId: string) => void }}
+ * @returns {{
+ *   onRegister: (taskId: string, engine: import('./engine.js').Engine) => void,
+ *   onUnregister: (taskId: string, engine: import('./engine.js').Engine) => void,
+ *   onConsumed: (taskId: string, engine: import('./engine.js').Engine) => void,
+ *   onUndelivered: (taskId: string, delivery: object, engine: import('./engine.js').Engine) => void,
+ * }}
  */
 function buildAsyncTaskCoordinator() {
+  const deleteOwnerIfMatch = (taskId, engine) => {
+    if (typeof taskId !== 'string' || !taskId) return false;
+    if (asyncTaskOwners.get(taskId) !== engine) return false;
+    asyncTaskOwners.delete(taskId);
+    return true;
+  };
   return {
     onRegister(taskId, engine) {
       if (typeof taskId !== 'string' || !taskId) return;
       asyncTaskOwners.set(taskId, engine);
     },
-    onUnregister(taskId) {
-      if (typeof taskId !== 'string' || !taskId) return;
-      asyncTaskOwners.delete(taskId);
+    onUnregister(taskId, engine) {
+      deleteOwnerIfMatch(taskId, engine);
+    },
+    onConsumed(taskId, engine) {
+      deleteOwnerIfMatch(taskId, engine);
+    },
+    onUndelivered(taskId, delivery, engine) {
+      if (!deleteOwnerIfMatch(taskId, engine)) return;
+      scheduleTaskResultRescue({
+        taskId,
+        sessionId: delivery?.sessionId || engine?.sessionId || null,
+        vpId: delivery?.vpId || engine?.vpId || null,
+        threadId: delivery?.threadId || engine?.currentThreadId || 'main',
+        content: delivery?.content,
+        taskKind: delivery?.taskKind,
+        taskStatus: delivery?.taskStatus,
+      });
     },
   };
 }
@@ -1275,6 +1348,21 @@ export function __testGetOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
   return getOrCreateVpEngine(sessionId, vpId, threadId);
 }
 
+/** Test-only: retire one cached VP Engine through the production helper. */
+export function __testRetireVpEngine({
+  sessionId,
+  vpId,
+  threadId = 'main',
+  reason = 'test_retire',
+  rescue = true,
+  expectedEngine = null,
+}) {
+  return retireCachedVpEngine(threadKey(sessionId, vpId, threadId), {
+    reason,
+    rescue,
+    expectedEngine,
+  });
+}
 
 /** Test-only: inspect runtime thread rows for a VP. */
 export function __testGetVpThreads(sessionId, vpId) {
@@ -1344,11 +1432,7 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
   const configKey = engineConfigKey(effectiveConfig);
   let eng = vpEngines.get(key);
   if (eng && vpEngineConfigKeys.get(key) === configKey) return eng;
-  if (eng) {
-    try { eng.abort?.('config_changed'); } catch { /* best-effort */ }
-    vpEngines.delete(key);
-    vpEngineConfigKeys.delete(key);
-  }
+  if (eng) retireCachedVpEngine(key, { reason: 'config_changed', rescue: true, expectedEngine: eng });
   eng = new Engine({
     adapter: session.adapter,
     trace: session.trace,
@@ -1486,6 +1570,37 @@ function formatTaskResultForVp(task) {
   return lines.join('\n');
 }
 
+function scheduleTaskResultRescue({ taskId, sessionId, vpId, threadId = 'main', content, taskKind, taskStatus }) {
+  if (!sessionId || !vpId || !taskId) return false;
+  const text = typeof content === 'string'
+    ? content
+    : (() => { try { return JSON.stringify(content); } catch { return String(content); } })();
+  if (!text.trim()) return false;
+  const msgId = `task_result_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
+  queueMicrotask(() => {
+    enqueueForVp(sessionId, vpId, {
+      sessionId,
+      taskId,
+      trigger: 'task_result',
+      _promptSuffix: '',
+      msg: {
+        id: msgId,
+        from: 'tool',
+        role: 'assistant',
+        text,
+        meta: {
+          injectedBy: 'task_result',
+          taskId,
+          taskKind,
+          taskStatus,
+          sourceThreadId: threadId,
+        },
+      },
+    });
+  });
+  return true;
+}
+
 function scheduleTaskResultReentry(event) {
   if (!event || event.event !== 'completed' || !event.task) return;
   const task = event.task;
@@ -1512,38 +1627,27 @@ function scheduleTaskResultReentry(event) {
     try {
       const accepted = ownerEngine.notifyAsyncTaskCompleted(task.id, formatted, {
         preview: `task ${task.kind || 'tool'} ${task.status}`,
+        sessionId,
+        vpId,
+        threadId,
+        taskKind: task.kind,
+        taskStatus: task.status,
       });
-      if (accepted) {
-        asyncTaskOwners.delete(task.id);
-        return;
-      }
+      if (accepted) return;
     } catch {
       // Same-turn delivery is best-effort. Fall through to the legacy
       // rescue path so we never drop a terminal event on the floor.
     }
   }
 
-  const msgId = `task_result_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
-  queueMicrotask(() => {
-    enqueueForVp(sessionId, vpId, {
-      sessionId,
-      taskId: task.id,
-      trigger: 'task_result',
-      _promptSuffix: '',
-      msg: {
-        id: msgId,
-        from: 'tool',
-        role: 'assistant',
-        text: formatted,
-        meta: {
-          injectedBy: 'task_result',
-          taskId: task.id,
-          taskKind: task.kind,
-          taskStatus: task.status,
-          sourceThreadId: threadId,
-        },
-      },
-    });
+  scheduleTaskResultRescue({
+    taskId: task.id,
+    sessionId,
+    vpId,
+    threadId,
+    content: formatted,
+    taskKind: task.kind,
+    taskStatus: task.status,
   });
 }
 
@@ -2608,12 +2712,12 @@ export function handleYeaftUpdateSessionConfig(msg) {
     if (!partial) throw new SessionConfigError('invalid_patch', 'config object required');
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const savedConfig = updateSessionConfig(yeaftDir, sessionId, partial);
-    // Drop cached engines so the next VP turn rebuilds with the new model.
+    // Retire cached engines so accepted terminal task results are rescued
+    // before the next VP turn rebuilds with the new model.
     const prefix = `${sessionId}::`;
     for (const k of Array.from(vpEngines.keys())) {
       if (k.startsWith(prefix)) {
-        vpEngines.delete(k);
-        vpEngineConfigKeys.delete(k);
+        retireCachedVpEngine(k, { reason: 'session_config_changed', rescue: true });
       }
     }
     invalidateGroupContext(sessionId);
@@ -2672,8 +2776,7 @@ export function handleYeaftDeleteSession(msg) {
     const prefix = `${sessionId}::`;
     for (const k of Array.from(vpEngines.keys())) {
       if (k.startsWith(prefix)) {
-        vpEngines.delete(k);
-        vpEngineConfigKeys.delete(k);
+        retireCachedVpEngine(k, { reason: 'session_deleted', rescue: false });
       }
     }
     sendSessionCrudResult({
@@ -2720,8 +2823,7 @@ export function handleYeaftSessionRemoveMember(msg) {
     const removedPrefix = `${sessionId}::${vpId}::`;
     for (const key of Array.from(vpEngines.keys())) {
       if (key.startsWith(removedPrefix)) {
-        vpEngines.delete(key);
-        vpEngineConfigKeys.delete(key);
+        retireCachedVpEngine(key, { reason: 'session_member_removed', rescue: false });
       }
     }
     sendSessionCrudResult({ op: 'remove_member', requestId, ok: true, session: group });
@@ -4162,12 +4264,12 @@ async function runVpTurnWithEscalation(args) {
       }
       const staleEngine = escalationState.engine || null;
       const engineKey = escalationState.engineKey || threadKey(sessionId, vpId, threadId);
-      if (staleEngine && vpEngines.get(engineKey) === staleEngine) {
-        vpEngines.delete(engineKey);
-        vpEngineConfigKeys.delete(engineKey);
-      }
-      for (const [taskId, ownerEngine] of asyncTaskOwners) {
-        if (ownerEngine === staleEngine) asyncTaskOwners.delete(taskId);
+      if (staleEngine) {
+        retireCachedVpEngine(engineKey, {
+          reason: 'abort_escalation',
+          rescue: true,
+          expectedEngine: staleEngine,
+        });
       }
       if (thread?.engine === staleEngine) thread.engine = null;
       if (thread) {

@@ -16,6 +16,7 @@ class QueueAdapter {
     this.streamCalls.push({
       messages: JSON.parse(JSON.stringify(params.messages || [])),
     });
+    params.onRequestStart?.();
     const events = this.responses.shift();
     if (!events) throw new Error('QueueAdapter: no more responses queued');
     for (const ev of events) yield ev;
@@ -278,6 +279,91 @@ describe('engine — same-turn background task wait', () => {
 
     // After abort the engine should have cleared ownership.
     expect(e.hasPendingAsyncTasks()).toBe(false);
+  });
+
+  it('rejects task completion after abort so the bridge can rescue it in a new turn', async () => {
+    const e = engine;
+    const a = adapter;
+
+    e.registerTool({
+      name: 'fakeBgTool',
+      description: 'launches a fake background task',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, ctx) => {
+        ctx.registerAsyncTask('task-after-abort');
+        return 'started';
+      },
+    });
+
+    a.pushResponse([
+      { type: 'tool_call', id: 'call-1', name: 'fakeBgTool', input: {} },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    a.pushResponse(endTurn('parking'));
+
+    let accepted = null;
+    const events = [];
+    for await (const ev of e.query({ prompt: 'do it', messages: [] })) {
+      events.push(ev);
+      if (ev.type === 'async_task_wait_start') {
+        e.abort('timeout');
+        accepted = e.notifyAsyncTaskCompleted(
+          'task-after-abort',
+          '<task-result id="task-after-abort">done</task-result>',
+        );
+      }
+    }
+
+    expect(accepted).toBe(false);
+    expect(a.streamCalls).toHaveLength(2);
+    expect(events.filter(ev => ev.type === 'aborted')).toHaveLength(1);
+    expect(events.filter(ev => ev.type === 'turn_end').at(-1)?.stopReason).toBe('aborted');
+  });
+
+  it('hands accepted-but-undrained completion back when abort wins before continuation', async () => {
+    const e = engine;
+    const a = adapter;
+    const consumed = [];
+    const undelivered = [];
+    e.setAsyncTaskCoordinator({
+      onConsumed(taskId) { consumed.push(taskId); },
+      onUndelivered(taskId) { undelivered.push(taskId); },
+    });
+
+    e.registerTool({
+      name: 'fakeBgTool',
+      description: 'launches a fake background task',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, ctx) => {
+        ctx.registerAsyncTask('task-before-abort');
+        return 'started';
+      },
+    });
+
+    a.pushResponse([
+      { type: 'tool_call', id: 'call-1', name: 'fakeBgTool', input: {} },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    a.pushResponse(endTurn('parking'));
+
+    let accepted = null;
+    const events = [];
+    for await (const ev of e.query({ prompt: 'do it', messages: [] })) {
+      events.push(ev);
+      if (ev.type === 'async_task_wait_start') {
+        accepted = e.notifyAsyncTaskCompleted(
+          'task-before-abort',
+          '<task-result id="task-before-abort">done</task-result>',
+        );
+        e.abort('timeout');
+      }
+    }
+
+    expect(accepted).toBe(true);
+    expect(a.streamCalls).toHaveLength(2);
+    expect(consumed).toEqual([]);
+    expect(undelivered).toEqual(['task-before-abort']);
+    expect(events.filter(ev => ev.type === 'aborted')).toHaveLength(1);
   });
 
   it('end_turn with no pending async tasks finalizes immediately (legacy behaviour unchanged)', async () => {

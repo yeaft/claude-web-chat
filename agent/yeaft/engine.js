@@ -552,6 +552,21 @@ export class Engine {
   #pendingTaskResultUpdates = [];
 
   /**
+   * Terminal task results accepted by this Engine but not yet consumed by a
+   * successful adapter loop. Ownership stays with the Engine until delivery
+   * is acknowledged; abort/retirement hands these payloads back to the bridge
+   * for a new-turn rescue.
+   * @type {Map<string, {content:string|Array, preview:string, sessionId?:string, vpId?:string, threadId?:string, taskKind?:string, taskStatus?:string}>}
+   */
+  #acceptedAsyncTaskResults = new Map();
+
+  /** Task results already spliced into conversationMessages for the next request. */
+  #pendingAsyncTaskConfirmIds = new Set();
+
+  /** Reject new same-turn deliveries once the current query starts closing. */
+  #asyncTaskDeliveryClosed = true;
+
+  /**
    * Async task ownership metadata captured when a tool registers a
    * background task. Keyed by taskId so terminal events can update the
    * original tool_result instead of fabricating a separate turn.
@@ -579,7 +594,12 @@ export class Engine {
    * `toolCtx.registerAsyncTask` and the engine waits locally; web-bridge
    * fallback (legacy `scheduleTaskResultReentry` → new turn) handles the
    * post-run case.
-   * @type {{ onRegister?: (taskId:string, engine:Engine) => void, onUnregister?: (taskId:string) => void } | null}
+   * @type {{
+   *   onRegister?: (taskId:string, engine:Engine) => void,
+   *   onUnregister?: (taskId:string, engine:Engine) => void,
+   *   onConsumed?: (taskId:string, engine:Engine) => void,
+   *   onUndelivered?: (taskId:string, delivery:object, engine:Engine) => void,
+   * } | null}
    */
   #asyncTaskCoordinator = null;
 
@@ -693,6 +713,7 @@ export class Engine {
     if (!this.#currentAbortCtrl) return false;
     if (this.#currentAbortCtrl.signal.aborted) return false;
     this.#abortReason = reason || 'user';
+    this.retireAsyncTasks(`query_${this.#abortReason}`);
     try {
       this.#currentAbortCtrl.abort();
     } catch {
@@ -1596,8 +1617,40 @@ export class Engine {
         : this.#formatTaskResultUpdateContent(toolMsg.content);
       toolMsg.content = `${prior}\n\n${appendText}`;
       applied.push(update);
+      if (this.#acceptedAsyncTaskResults.has(update.taskId)) {
+        this.#pendingAsyncTaskConfirmIds.add(update.taskId);
+      }
     }
     return applied;
+  }
+
+  #confirmPendingAsyncTaskResults() {
+    if (this.#pendingAsyncTaskConfirmIds.size === 0) return;
+    const confirmed = Array.from(this.#pendingAsyncTaskConfirmIds);
+    this.#pendingAsyncTaskConfirmIds.clear();
+    for (const taskId of confirmed) {
+      if (!this.#acceptedAsyncTaskResults.delete(taskId)) continue;
+      try {
+        if (typeof this.#asyncTaskCoordinator?.onConsumed === 'function') {
+          this.#asyncTaskCoordinator.onConsumed(taskId, this);
+        } else {
+          this.#asyncTaskCoordinator?.onUnregister?.(taskId, this);
+        }
+      } catch { /* best-effort */ }
+    }
+  }
+
+  #releaseUndeliveredAsyncTaskResults(reason = 'query_closed') {
+    if (this.#acceptedAsyncTaskResults.size === 0) return 0;
+    const deliveries = Array.from(this.#acceptedAsyncTaskResults.entries());
+    this.#acceptedAsyncTaskResults.clear();
+    this.#pendingAsyncTaskConfirmIds.clear();
+    for (const [taskId, delivery] of deliveries) {
+      try {
+        this.#asyncTaskCoordinator?.onUndelivered?.(taskId, { ...delivery, reason }, this);
+      } catch { /* rescue plumbing must not break query teardown */ }
+    }
+    return deliveries.length;
   }
 
   #drainPendingUserMessages(drainPendingUserMessages) {
@@ -1629,11 +1682,15 @@ export class Engine {
         const preview = typeof item.preview === 'string'
           ? item.preview
           : (typeof content === 'string' ? content : '[content blocks]');
+        const taskId = typeof item.taskId === 'string' ? item.taskId : undefined;
+        if (taskId && this.#acceptedAsyncTaskResults.has(taskId)) {
+          this.#pendingAsyncTaskConfirmIds.add(taskId);
+        }
         return {
           content,
           preview,
           internal: Boolean(item.internal),
-          taskId: typeof item.taskId === 'string' ? item.taskId : undefined,
+          taskId,
         };
       })
       .filter(Boolean);
@@ -1713,6 +1770,9 @@ export class Engine {
     const abortCtrl = new AbortController();
     this.#currentAbortCtrl = abortCtrl;
     this.#abortReason = null;
+    this.#asyncTaskDeliveryClosed = false;
+    this.#acceptedAsyncTaskResults.clear();
+    this.#pendingAsyncTaskConfirmIds.clear();
 
     const onExternalAbort = () => {
       if (!abortCtrl.signal.aborted) {
@@ -1720,12 +1780,14 @@ export class Engine {
         // external trigger. Callers that pass a signal without invoking
         // engine.abort() get the neutral tag 'external'.
         if (!this.#abortReason) this.#abortReason = 'external';
+        this.retireAsyncTasks('query_external');
         try { abortCtrl.abort(); } catch { /* ignore */ }
       }
     };
     if (signal) {
       if (signal.aborted) {
         this.#abortReason = 'external';
+        this.retireAsyncTasks('query_external');
         try { abortCtrl.abort(); } catch { /* ignore */ }
       } else {
         signal.addEventListener('abort', onExternalAbort, { once: true });
@@ -1741,24 +1803,13 @@ export class Engine {
       if (signal) {
         try { signal.removeEventListener('abort', onExternalAbort); } catch { /* ignore */ }
       }
+      this.retireAsyncTasks(abortCtrl.signal.aborted ? 'query_aborted' : 'query_closed');
       // Clear current-run state so engine.isRunning flips back to false
       // and a subsequent query() starts with a clean slate.
       this.#currentAbortCtrl = null;
       this.#abortReason = null;
       this.#currentThreadId = MAIN_THREAD_ID;
       this.#pendingUserMessages.length = 0;
-      // Hand back any async tasks still on the books to the coordinator so
-      // a late terminal event falls through to the legacy rescue path
-      // (new turn) instead of being silently swallowed. The coordinator
-      // is responsible for keeping its owner map in sync.
-      if (this.#pendingAsyncTaskIds.size > 0) {
-        const leftover = Array.from(this.#pendingAsyncTaskIds);
-        this.#pendingAsyncTaskIds.clear();
-        for (const tid of leftover) {
-          this.#asyncTaskToolMeta.delete(tid);
-          try { this.#asyncTaskCoordinator?.onUnregister?.(tid); } catch { /* ignore */ }
-        }
-      }
       this.#asyncTaskToolMeta.clear();
       this.#pendingTaskResultMessages.length = 0;
       this.#pendingTaskResultUpdates.length = 0;
@@ -2367,7 +2418,9 @@ export class Engine {
           }
         }
 
-        // Stream from adapter
+        // Stream from adapter. A task result is considered consumed only
+        // once the adapter request has actually started with it in the wire
+        // messages; queueing it in Engine memory is not delivery.
         for await (const event of this.#adapter.stream({
           model: currentModel,
           system: systemPrompt,
@@ -2377,6 +2430,7 @@ export class Engine {
           effort: resolvedEffort,
           effortSource: userEffort ? 'user' : 'auto',
           signal,
+          onRequestStart: () => this.#confirmPendingAsyncTaskResults(),
           onRawExchange: captureRawExchange,
         })) {
           // task-325a (abort-stop fix): per-event abort short-circuit.
@@ -3621,10 +3675,42 @@ export class Engine {
    * Install the coordinator that lets an external dispatcher (web-bridge)
    * route a background task's terminal event back to THIS engine while
    * its query() is still running. Pass `null` to detach.
-   * @param {{ onRegister?: (taskId:string, engine:Engine) => void, onUnregister?: (taskId:string) => void } | null} coord
+   * @param {{ onRegister?: (taskId:string, engine:Engine) => void, onUnregister?: (taskId:string, engine:Engine) => void, onConsumed?: (taskId:string, engine:Engine) => void, onUndelivered?: (taskId:string, delivery:object, engine:Engine) => void } | null} coord
    */
   setAsyncTaskCoordinator(coord) {
     this.#asyncTaskCoordinator = (coord && typeof coord === 'object') ? coord : null;
+  }
+
+  /**
+   * Close same-turn task delivery for this Engine. Accepted-but-undrained
+   * results are handed to the coordinator for exactly-once rescue; tasks that
+   * have not completed are merely unregistered so a future terminal event
+   * falls through to the bridge rescue path.
+   *
+   * @param {string} [reason]
+   * @param {{ rescue?: boolean }} [opts]
+   * @returns {number} number of accepted results released or discarded
+   */
+  retireAsyncTasks(reason = 'engine_retired', { rescue = true } = {}) {
+    this.#asyncTaskDeliveryClosed = true;
+    const released = rescue
+      ? this.#releaseUndeliveredAsyncTaskResults(reason)
+      : (() => {
+        const dropped = this.#acceptedAsyncTaskResults.size;
+        this.#acceptedAsyncTaskResults.clear();
+        this.#pendingAsyncTaskConfirmIds.clear();
+        return dropped;
+      })();
+    if (this.#pendingAsyncTaskIds.size > 0) {
+      const pending = Array.from(this.#pendingAsyncTaskIds);
+      this.#pendingAsyncTaskIds.clear();
+      for (const taskId of pending) {
+        this.#asyncTaskToolMeta.delete(taskId);
+        try { this.#asyncTaskCoordinator?.onUnregister?.(taskId, this); } catch { /* best-effort */ }
+      }
+    }
+    this.#wakeAsyncTaskWaiters();
+    return released;
   }
 
   /**
@@ -3661,11 +3747,12 @@ export class Engine {
    *
    * @param {string} taskId
    * @param {string|Array} content — pre-formatted task result body
-   * @param {{ preview?: string }} [opts]
+   * @param {{ preview?: string, sessionId?: string, vpId?: string, threadId?: string, taskKind?: string, taskStatus?: string }} [opts]
    * @returns {boolean}
    */
   notifyAsyncTaskCompleted(taskId, content, opts = {}) {
     if (!this.ownsPendingAsyncTask(taskId)) return false;
+    if (this.#asyncTaskDeliveryClosed || !this.#currentAbortCtrl || this.#currentAbortCtrl.signal.aborted) return false;
     if (typeof content !== 'string' && !Array.isArray(content)) return false;
     if (typeof content === 'string' && !content.trim()) return false;
     // Defensive: an empty content-block array would splice as a wire-valid
@@ -3674,11 +3761,20 @@ export class Engine {
     // always emit a non-empty string today; this guards future refactors.
     if (Array.isArray(content) && content.length === 0) return false;
     this.#pendingAsyncTaskIds.delete(taskId);
-    try { this.#asyncTaskCoordinator?.onUnregister?.(taskId); } catch { /* coord must not throw into engine */ }
     const preview = typeof opts.preview === 'string'
       ? opts.preview
       : (typeof content === 'string' ? content.slice(0, 200) : '[task result]');
     const meta = this.#asyncTaskToolMeta.get(taskId) || {};
+    const delivery = {
+      content,
+      preview,
+      sessionId: opts.sessionId,
+      vpId: opts.vpId,
+      threadId: opts.threadId || meta.threadId,
+      taskKind: opts.taskKind,
+      taskStatus: opts.taskStatus,
+    };
+    this.#acceptedAsyncTaskResults.set(taskId, delivery);
     this.#asyncTaskToolMeta.delete(taskId);
     if (typeof meta.toolCallId === 'string' && meta.toolCallId) {
       this.#pendingTaskResultUpdates.push({
