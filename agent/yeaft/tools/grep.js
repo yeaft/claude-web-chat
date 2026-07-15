@@ -85,7 +85,7 @@ function hasRipgrep() {
 /**
  * Run ripgrep and return results.
  */
-function runRipgrep(pattern, searchPath, options) {
+export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
   return new Promise((resolve, reject) => {
     const args = [
       pattern,
@@ -106,7 +106,7 @@ function runRipgrep(pattern, searchPath, options) {
     if (options.multiline) args.push('-U', '--multiline-dotall');
     args.push('--max-count', String(options.maxResults || 500));
 
-    const proc = spawn('rg', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const proc = spawnProcess('rg', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     const decoder = new StringDecoder('utf8');
     const stdoutChunks = [];
     let stdoutBytes = 0;
@@ -131,7 +131,9 @@ function runRipgrep(pattern, searchPath, options) {
     proc.on('close', (code) => {
       if (settled) return;
       settled = true;
-      stdoutChunks.push(decoder.end());
+      // StringDecoder.end() replaces an incomplete trailing code point with
+      // U+FFFD. On truncation, discard those pending bytes instead.
+      if (!outputTruncated) stdoutChunks.push(decoder.end());
       const stdout = stdoutChunks.join('').replace(/\r/g, '')
         + (outputTruncated ? '\n\n[Output truncated]' : '');
       if (code === 0 || code === 1 || outputTruncated) resolve(stdout);
@@ -148,7 +150,7 @@ function runRipgrep(pattern, searchPath, options) {
 /**
  * Fallback: Node.js grep implementation.
  */
-async function nodeGrep(pattern, searchPath, options) {
+export async function nodeGrep(pattern, searchPath, options) {
   const regex = new RegExp(pattern, options.caseInsensitive ? 'gi' : 'g');
   const output = createOutputCollector();
   let resultCount = 0;

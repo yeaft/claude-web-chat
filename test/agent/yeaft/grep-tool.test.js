@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import grepTool from '../../../agent/yeaft/tools/grep.js';
+import { PassThrough } from 'node:stream';
+import { nodeGrep, runRipgrep } from '../../../agent/yeaft/tools/grep.js';
 
 const tempDirs = [];
 
@@ -12,12 +14,25 @@ function makeTempDir() {
   return dir;
 }
 
-async function runGrep(cwd, input = {}) {
-  return grepTool.execute({
-    pattern: 'needle',
-    output_mode: 'content',
-    ...input,
-  }, { cwd });
+async function runNodeGrep(cwd) {
+  return nodeGrep('needle', cwd, {
+    caseInsensitive: false,
+    filesOnly: false,
+    count: false,
+    multiline: false,
+    maxResults: 500,
+  });
+}
+
+function fakeRipgrepOutput(output) {
+  return () => {
+    const proc = new EventEmitter();
+    proc.stdout = new PassThrough();
+    proc.stderr = new PassThrough();
+    proc.kill = () => queueMicrotask(() => proc.emit('close', null));
+    queueMicrotask(() => proc.stdout.write(output));
+    return proc;
+  };
 }
 
 afterEach(() => {
@@ -27,6 +42,20 @@ afterEach(() => {
 });
 
 describe('Grep tool output safety', () => {
+  it('drops an incomplete UTF-8 code point when ripgrep output is truncated', async () => {
+    const output = Buffer.concat([
+      Buffer.alloc(512 * 1024 - 1, 0x61),
+      Buffer.from('€', 'utf8'),
+    ]);
+
+    const result = await runRipgrep('needle', '.', {
+      maxResults: 500,
+    }, fakeRipgrepOutput(output));
+
+    expect(result).toContain('[Output truncated]');
+    expect(result).not.toContain('\ufffd');
+  });
+
   it('skips binary files even when their extension is unknown', async () => {
     const dir = makeTempDir();
     writeFileSync(join(dir, 'payload-nul.data'), Buffer.from([
@@ -37,7 +66,7 @@ describe('Grep tool output safety', () => {
     ]));
     writeFileSync(join(dir, 'source.txt'), 'safe needle\n');
 
-    const result = await runGrep(dir);
+    const result = await runNodeGrep(dir);
 
     expect(result).toContain('source.txt:1:safe needle');
     expect(result).not.toContain('payload-nul.data');
@@ -50,7 +79,7 @@ describe('Grep tool output safety', () => {
     const dir = makeTempDir();
     writeFileSync(join(dir, 'large.txt'), `needle ${'x'.repeat(1024 * 1024 - 32)}\n`);
 
-    const result = await runGrep(dir);
+    const result = await runNodeGrep(dir);
 
     expect(Buffer.byteLength(result, 'utf8')).toBeLessThan(600 * 1024);
     expect(result).toContain('[Output truncated]');
@@ -60,7 +89,7 @@ describe('Grep tool output safety', () => {
     const dir = makeTempDir();
     writeFileSync(join(dir, 'windows.txt'), 'first needle\r\nsecond needle\r\n');
 
-    const result = await runGrep(dir);
+    const result = await runNodeGrep(dir);
 
     expect(result).toContain('windows.txt:1:first needle');
     expect(result).toContain('windows.txt:2:second needle');
