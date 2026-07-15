@@ -45,9 +45,19 @@ function isSensitiveName(name) {
 
 function containsSensitiveFieldSyntax(value) {
   const text = String(value || '');
-  const fieldPattern = /(?:^|[,{;\s])["']?([a-z][a-z0-9_-]*)["']?\s*[:=]/gi;
+  const quotedPatterns = [
+    /"((?:\\.|[^"\\])*)"\s*[:=]/g,
+    /'((?:\\.|[^'\\])*)'\s*[:=]/g,
+  ];
+  for (const fieldPattern of quotedPatterns) {
+    let match;
+    while ((match = fieldPattern.exec(text))) {
+      if (isSensitiveName(match[1])) return true;
+    }
+  }
+  const bareFieldPattern = /(?:^|[,{;\s])([a-z][a-z0-9_-]*)\s*[:=]/gi;
   let match;
-  while ((match = fieldPattern.exec(text))) {
+  while ((match = bareFieldPattern.exec(text))) {
     if (isSensitiveName(match[1])) return true;
   }
   return false;
@@ -115,23 +125,29 @@ function sanitizeSseEvent(event, seen) {
   }
 
   const data = dataParts.join('\n');
-  if (data === '[DONE]') return event;
-  let sanitized;
-  try {
-    sanitized = JSON.stringify(sanitizeDebugValue(JSON.parse(data), null, '', seen));
-  } catch {
-    sanitized = containsSensitiveFieldSyntax(data)
-      ? '[redacted SSE event: malformed sensitive data]'
-      : sanitizeDiagnosticText(data, MAX_DEBUG_STRING_BYTES);
+  let sanitized = data;
+  if (data !== '[DONE]') {
+    try {
+      sanitized = JSON.stringify(sanitizeDebugValue(JSON.parse(data), null, '', seen));
+    } catch {
+      sanitized = containsSensitiveFieldSyntax(data)
+        ? '[redacted SSE event: malformed sensitive data]'
+        : sanitizeDiagnosticText(data, MAX_DEBUG_STRING_BYTES);
+    }
   }
 
   const firstDataIndex = dataIndexes[0];
   const dataIndexSet = new Set(dataIndexes);
   const sanitizedDataLines = String(sanitized).split('\n').map(line => `data: ${line}`).join('\n');
-  return lines
-    .filter((_line, index) => !dataIndexSet.has(index) || index === firstDataIndex)
-    .map((line, index) => (index === firstDataIndex ? sanitizedDataLines : line))
-    .join('\n');
+  const sanitizedLines = [];
+  for (const [index, line] of lines.entries()) {
+    if (dataIndexSet.has(index)) {
+      if (index === firstDataIndex) sanitizedLines.push(sanitizedDataLines);
+      continue;
+    }
+    sanitizedLines.push(sanitizeDiagnosticText(line, MAX_DEBUG_STRING_BYTES));
+  }
+  return sanitizedLines.join('\n');
 }
 
 function sanitizeSseBody(value, seen) {

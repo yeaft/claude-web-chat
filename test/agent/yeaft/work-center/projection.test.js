@@ -384,6 +384,90 @@ describe('Work Center event projection', () => {
     expect(wire).toContain('redacted SSE event');
   });
 
+  it('redacts sensitive SSE metadata and comments even when an event has data', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-sse-metadata-redaction', tools: [] }],
+      loops: [
+        {
+          loopNumber: 1, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'event: secret=LEAK_EVENT\ndata: [DONE]\n\n',
+          },
+        },
+        {
+          loopNumber: 2, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'id: token=LEAK_ID\ndata: safe\n\n',
+          },
+        },
+        {
+          loopNumber: 3, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: ': authorization=Bearer LEAK_COMMENT\ndata: {"message":"safe"}\n\n',
+          },
+        },
+        {
+          loopNumber: 4, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'retry: credential=LEAK_RETRY\ndata: safe\n\n',
+          },
+        },
+      ],
+    });
+
+    const wire = JSON.stringify(projected);
+    for (const secret of ['LEAK_EVENT', 'LEAK_ID', 'LEAK_COMMENT', 'LEAK_RETRY']) {
+      expect(wire).not.toContain(secret);
+    }
+    expect(wire).toContain('event: secret=***');
+    expect(wire).toContain('id: token=***');
+    expect(wire).toContain(': authorization=***');
+    expect(wire).toContain('retry: credential=***');
+    expect(wire).toContain('[DONE]');
+  });
+
+  it('uses normalized sensitive-name semantics for malformed quoted JSON keys', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const malformedBodies = [
+      '{"api.key":"LEAK_API_DOT',
+      '{"x.api.key":"LEAK_X_API_DOT',
+      '{"api key":"LEAK_API_SPACE',
+      '{"x api key":"LEAK_X_API_SPACE',
+      '{"api$key":"LEAK_API_DOLLAR',
+    ];
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-normalized-key-redaction', tools: [] }],
+      loops: [
+        ...malformedBodies.map((body, index) => ({
+          loopNumber: index + 1, messages: [], toolCalls: [], rawResponse: { body },
+        })),
+        {
+          loopNumber: malformedBodies.length + 1, messages: [], toolCalls: [],
+          rawResponse: { body: '{"api.key":"LEAK_VALID"}' },
+        },
+      ],
+    });
+
+    const wire = JSON.stringify(projected);
+    for (const secret of [
+      'LEAK_API_DOT', 'LEAK_X_API_DOT', 'LEAK_API_SPACE',
+      'LEAK_X_API_SPACE', 'LEAK_API_DOLLAR', 'LEAK_VALID',
+    ]) expect(wire).not.toContain(secret);
+    for (const loop of projected.request.loops.slice(0, malformedBodies.length)) {
+      expect(loop.rawResponse.body).toBe('[redacted malformed JSON: sensitive data]');
+    }
+    expect(projected.request.loops.at(-1).rawResponse.body).toBe('{"api.key":"***"}');
+  });
+
   it('keeps non-sensitive malformed JSON and multi-line SSE diagnostics visible', () => {
     const detail = internalDetail();
     const action = detail.actions[0];
