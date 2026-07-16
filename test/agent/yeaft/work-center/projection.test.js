@@ -774,6 +774,18 @@ describe('Work Center event projection', () => {
             body: 'event:auth:required\nid:code:12345\n: token: LEAK_SSE_TOKEN\ndata: safe\n\n',
           },
         },
+        {
+          loopNumber: 8, messages: [], toolCalls: [],
+          rawResponse: {
+            body: 'GET https://[invalid]/?%2561pi%255Fkey=LEAK_DOUBLE_ENCODED&safe=yes',
+          },
+        },
+        {
+          loopNumber: 9, messages: [], toolCalls: [],
+          rawResponse: {
+            body: 'GET https://example.test/?%2561pi%255Fkey=LEAK_VALID_DOUBLE&safe=yes',
+          },
+        },
       ],
     });
     const elapsedMs = performance.now() - startedAt;
@@ -792,6 +804,12 @@ describe('Work Center event projection', () => {
     expect(projected.request.loops[5].rawResponse.body).toBe(colonDense);
     expect(projected.request.loops[6].rawResponse.body).toContain(': token: ***');
     expect(projected.request.loops[6].rawResponse.body).not.toContain('LEAK_SSE_TOKEN');
+    expect(projected.request.loops[7].rawResponse.body)
+      .toContain('%2561pi%255Fkey=***&safe=yes');
+    expect(projected.request.loops[8].rawResponse.body)
+      .toContain('%2561pi%255Fkey=***&safe=yes');
+    expect(wire).not.toContain('LEAK_DOUBLE_ENCODED');
+    expect(wire).not.toContain('LEAK_VALID_DOUBLE');
     expect(sanitizeDiagnosticText('foo=bar&token=LEAK_SECOND&safe=yes'))
       .toBe('foo=bar&token=***&safe=yes');
     expect(sanitizeDiagnosticText('foo=bar; api.key=LEAK_THIRD, safe=yes'))
@@ -803,18 +821,36 @@ describe('Work Center event projection', () => {
 
   it('sanitizes direct and current-Run waiting reasons at the browser boundary', () => {
     const detail = internalDetail();
-    detail.waitingReason = 'Need input token=LEAK_DIRECT_TOKEN and Authorization: Bearer LEAK_DIRECT_BEARER';
+    detail.waitingReason = [
+      'Need input token=LEAK_DIRECT_TOKEN',
+      'Authorization: Bearer LEAK_DIRECT_BEARER',
+      'password: LEAK_DIRECT_PASSWORD',
+      'token=LEAK_FIRST password: LEAK_DIRECT_SECOND',
+      'Need input token:LEAK_DIRECT_NOSPACE',
+      'provider note: status code: invalid',
+    ].join('; ');
     let projected = projectWorkItemDetail(detail);
     expect(projected.waitingReason).toContain('Need input token=***');
-    expect(projected.waitingReason).not.toContain('LEAK_DIRECT_TOKEN');
-    expect(projected.waitingReason).not.toContain('LEAK_DIRECT_BEARER');
+    expect(projected.waitingReason).toContain('password: ***');
+    expect(projected.waitingReason).toContain('Need input token:***');
+    expect(projected.waitingReason).toContain('provider note: status code: invalid');
+    for (const secret of [
+      'LEAK_DIRECT_TOKEN', 'LEAK_DIRECT_BEARER', 'LEAK_DIRECT_PASSWORD',
+      'LEAK_FIRST', 'LEAK_DIRECT_SECOND', 'LEAK_DIRECT_NOSPACE',
+    ]) expect(projected.waitingReason).not.toContain(secret);
 
     delete detail.waitingReason;
-    detail.runs[0].waitingReason = 'Need input token=LEAK_RUN_TOKEN and Authorization: Bearer LEAK_RUN_BEARER';
+    detail.runs[0].waitingReason = [
+      'Provider asks for client secret: LEAK_RUN_SECRET',
+      'Need input token=LEAK_RUN_TOKEN',
+      'Authorization: Bearer LEAK_RUN_BEARER',
+    ].join('; ');
     projected = projectWorkItemDetail(detail);
+    expect(projected.waitingReason).toContain('Provider asks for client secret: ***');
     expect(projected.waitingReason).toContain('Need input token=***');
-    expect(projected.waitingReason).not.toContain('LEAK_RUN_TOKEN');
-    expect(projected.waitingReason).not.toContain('LEAK_RUN_BEARER');
+    for (const secret of ['LEAK_RUN_SECRET', 'LEAK_RUN_TOKEN', 'LEAK_RUN_BEARER']) {
+      expect(projected.waitingReason).not.toContain(secret);
+    }
   });
 
   it('keeps non-sensitive malformed JSON and multi-line SSE diagnostics visible', () => {

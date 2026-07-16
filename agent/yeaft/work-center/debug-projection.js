@@ -10,6 +10,7 @@ const BINARY_DATA_TYPES = new Set(['base64', 'redactedthinking', 'redacted_think
 const MAX_SENSITIVE_NAME_LENGTH = Math.max(...[...SENSITIVE_NAMES].map(name => name.length));
 const MAX_SENSITIVE_NAME_SOURCE_CHARS = 256;
 const MAX_QUOTED_SECRET_VALUE_CHARS = 64 * 1024;
+const MAX_URL_NAME_DECODE_STEPS = 3;
 
 function byteLength(value) {
   return Buffer.byteLength(String(value || ''), 'utf8');
@@ -102,7 +103,9 @@ function assignmentHasSensitiveName(text, operatorIndex, operator) {
   if (quotedName !== undefined) return quotedName == null || isSensitiveName(quotedName);
   if (operator === '=') return hasSensitiveSuffix(text, 0, end);
   const start = candidateStart(text, end, true);
-  return isSensitiveName(text.slice(start, end).trim());
+  const candidate = text.slice(start, end).trim();
+  if (/(?:^|\s)status\s+code$/i.test(candidate)) return false;
+  return isSensitiveName(candidate) || hasSensitiveSuffix(text, start, end);
 }
 
 function sensitiveAssignmentOperators(value, allowColon = true) {
@@ -118,7 +121,13 @@ function sensitiveAssignmentOperators(value, allowColon = true) {
       while (valueStart < valueLimit && /[\t ]/.test(text[valueStart])) valueStart += 1;
       const quotedName = quotedNameBeforeOperator(text, index);
       const hasStructuredValue = valueStart > index + 1 || /["']/.test(text[valueStart] || '');
-      if (quotedName === undefined && !hasStructuredValue) continue;
+      if (quotedName === undefined && !hasStructuredValue) {
+        let end = index;
+        const earliest = Math.max(0, index - MAX_SENSITIVE_NAME_SOURCE_CHARS);
+        while (end > earliest && /\s/.test(text[end - 1])) end -= 1;
+        const start = candidateStart(text, end, true);
+        if (start > 0 && text[start - 1] === ':') continue;
+      }
     }
     if (assignmentHasSensitiveName(text, index, operator)) operators.push(index);
   }
@@ -168,35 +177,38 @@ function redactSensitiveAssignments(value, allowColon = true) {
   return text;
 }
 
-function decodedUrlName(name) {
-  try {
-    return decodeURIComponent(String(name || '').replace(/\+/g, ' '));
-  } catch {
-    return null;
+function isSensitiveUrlName(name) {
+  let decoded = String(name || '');
+  for (let step = 0; step < MAX_URL_NAME_DECODE_STEPS; step += 1) {
+    if (isSensitiveName(decoded)) return true;
+    let next;
+    try {
+      next = decodeURIComponent(decoded.replace(/\+/g, ' '));
+    } catch {
+      return true;
+    }
+    if (next === decoded) return false;
+    decoded = next;
   }
+  return isSensitiveName(decoded) || /%[0-9a-f]{2}/i.test(decoded);
 }
 
-function isSensitiveUrlName(name) {
-  const decoded = decodedUrlName(name);
-  return decoded == null || isSensitiveName(name) || isSensitiveName(decoded);
+function sanitizeUrlQueryNames(value) {
+  return String(value || '').replace(
+    /([?&])([^=&#]+)=([^&#]*)/g,
+    (match, prefix, name) => (isSensitiveUrlName(name) ? `${prefix}${name}=***` : match),
+  );
 }
 
 export function sanitizeDebugUrl(value) {
-  const text = truncateUtf8(value, MAX_DEBUG_STRING_BYTES);
+  const text = sanitizeUrlQueryNames(truncateUtf8(value, MAX_DEBUG_STRING_BYTES));
   try {
     const url = new URL(text);
     url.username = '';
     url.password = '';
-    for (const name of [...url.searchParams.keys()]) {
-      if (isSensitiveUrlName(name)) url.searchParams.set(name, '***');
-    }
     return truncateUtf8(url.toString());
   } catch {
-    const withoutUserInfo = text.replace(/\/\/[^/@\s]+@/g, '//');
-    return truncateUtf8(withoutUserInfo.replace(
-      /([?&])([^=&#]+)=([^&#]*)/g,
-      (match, prefix, name) => (isSensitiveUrlName(name) ? `${prefix}${name}=***` : match),
-    ));
+    return truncateUtf8(text.replace(/\/\/[^/@\s]+@/g, '//'));
   }
 }
 
