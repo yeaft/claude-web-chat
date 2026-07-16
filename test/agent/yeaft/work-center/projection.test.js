@@ -598,6 +598,78 @@ describe('Work Center event projection', () => {
       .toBe('status_code=429; upstream reason: capacity exhausted');
   });
 
+  it('redacts no-space SSE fields and prefixed bare diagnostics in the final browser DTO', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-no-space-sse-redaction', tools: [] }],
+      loops: [
+        {
+          loopNumber: 1, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'event:_api.key=LEAK_EVENT_NOSPACE\ndata: safe\n\n',
+          },
+        },
+        {
+          loopNumber: 2, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'id:_api.key=LEAK_ID_NOSPACE\ndata: first\ndata: second',
+          },
+        },
+        {
+          loopNumber: 3, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'retry:_token=LEAK_RETRY_NOSPACE\ndata: safe\n\n',
+          },
+        },
+        {
+          loopNumber: 4, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: ':_api.key=LEAK_COMMENT_NOSPACE\ndata: safe\n\n',
+          },
+        },
+        {
+          loopNumber: 5, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'event:_token=LEAK_CRLF\r\ndata: [DONE]\r\n\r\n',
+          },
+        },
+        {
+          loopNumber: 6, messages: [], toolCalls: [],
+          rawResponse: { body: 'provider:_api.key=LEAK_PROVIDER; status_code=429' },
+        },
+        {
+          loopNumber: 7, messages: [], toolCalls: [],
+          rawResponse: { body: 'https://example.test/v1?api_key=LEAK_URL&safe=yes' },
+        },
+      ],
+    });
+
+    const wire = JSON.stringify(projected);
+    for (const secret of [
+      'LEAK_EVENT_NOSPACE', 'LEAK_ID_NOSPACE', 'LEAK_RETRY_NOSPACE',
+      'LEAK_COMMENT_NOSPACE', 'LEAK_CRLF', 'LEAK_PROVIDER', 'LEAK_URL',
+    ]) expect(wire).not.toContain(secret);
+    expect(projected.request.loops[0].rawResponse.body).toContain('event:_api.key=***');
+    expect(projected.request.loops[1].rawResponse.body).toContain('id:_api.key=***');
+    expect(projected.request.loops[1].rawResponse.body).toContain('data: first\ndata: second');
+    expect(projected.request.loops[2].rawResponse.body).toContain('retry:_token=***');
+    expect(projected.request.loops[3].rawResponse.body).toContain(':_api.key=***');
+    expect(projected.request.loops[4].rawResponse.body).toContain('event:_token=***');
+    expect(projected.request.loops[4].rawResponse.body).toContain('data: [DONE]');
+    expect(projected.request.loops[5].rawResponse.body)
+      .toBe('provider:_api.key=***; status_code=429');
+    expect(projected.request.loops[6].rawResponse.body).toContain('api_key=***');
+    expect(projected.request.loops[6].rawResponse.body).toContain('safe=yes');
+    expect(sanitizeDiagnosticText('safe assignment: monkey=value')).toContain('monkey=value');
+  });
+
   it('keeps non-sensitive malformed JSON and multi-line SSE diagnostics visible', () => {
     const detail = internalDetail();
     const action = detail.actions[0];

@@ -78,7 +78,7 @@ function assignmentHasSensitiveName(text, operatorIndex) {
     return decoded == null || isSensitiveName(decoded);
   }
   let start = end;
-  while (start > 0 && !/[\r\n,=;{}\[\]()"']/.test(text[start - 1])) start -= 1;
+  while (start > 0 && !/[\r\n,:=;{}\[\]()"']/.test(text[start - 1])) start -= 1;
   return sensitiveNameSuffix(text.slice(start, end));
 }
 
