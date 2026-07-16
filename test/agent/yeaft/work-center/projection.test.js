@@ -537,6 +537,67 @@ describe('Work Center event projection', () => {
     expect(sanitizeDiagnosticText('safe assignment: monkey=value')).toContain('monkey=value');
   });
 
+  it('uses normalized sensitive-name semantics for SSE metadata and bare diagnostics', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const sensitiveCases = [
+      { prefix: 'event: ', name: '_api.key', secret: 'SECRET__api.key' },
+      { prefix: 'event: ', name: 'api.key_', secret: 'SECRET_api.key_' },
+      { prefix: 'event: ', name: '_token', secret: 'SECRET__token' },
+      { prefix: 'event: ', name: 'token_', secret: 'SECRET_token_' },
+    ];
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-normalized-diagnostic-redaction', tools: [] }],
+      loops: [
+        ...sensitiveCases.map(({ prefix, name, secret }, index) => ({
+          loopNumber: index + 1,
+          messages: [],
+          toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: `${prefix}${name}=${secret}\ndata: safe\n\n`,
+          },
+        })),
+        ...sensitiveCases.map(({ name, secret }, index) => ({
+          loopNumber: sensitiveCases.length + index + 1,
+          messages: [],
+          toolCalls: [],
+          rawResponse: { body: `${name}=${secret}` },
+        })),
+        ...sensitiveCases.map(({ name }, index) => ({
+          loopNumber: sensitiveCases.length * 2 + index + 1,
+          messages: [],
+          toolCalls: [],
+          rawResponse: { body: JSON.stringify({ [name]: 'SECRET' }) },
+        })),
+        {
+          loopNumber: sensitiveCases.length * 3 + 1,
+          messages: [],
+          toolCalls: [],
+          rawResponse: { body: 'status_code=429; upstream reason: capacity exhausted' },
+        },
+      ],
+    });
+
+    const wire = JSON.stringify(projected);
+    for (const { secret } of sensitiveCases) expect(wire).not.toContain(secret);
+    for (const [index, loop] of projected.request.loops.slice(0, sensitiveCases.length).entries()) {
+      expect(loop.rawResponse.body)
+        .toContain(`${sensitiveCases[index].prefix}${sensitiveCases[index].name}=***`);
+      expect(loop.rawResponse.body).toContain('data: safe');
+    }
+    for (const loop of projected.request.loops.slice(sensitiveCases.length, sensitiveCases.length * 2)) {
+      expect(loop.rawResponse.body).toContain('=***');
+    }
+    for (const [index, loop] of projected.request.loops
+      .slice(sensitiveCases.length * 2, sensitiveCases.length * 3).entries()) {
+      expect(loop.rawResponse.body).toBe(JSON.stringify({ [sensitiveCases[index].name]: '***' }));
+    }
+    expect(projected.request.loops.at(-1).rawResponse.body)
+      .toBe('status_code=429; upstream reason: capacity exhausted');
+  });
+
   it('keeps non-sensitive malformed JSON and multi-line SSE diagnostics visible', () => {
     const detail = internalDetail();
     const action = detail.actions[0];

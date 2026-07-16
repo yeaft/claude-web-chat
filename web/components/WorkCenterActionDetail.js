@@ -1,4 +1,5 @@
 import { renderMarkdown, renderMermaidIn } from '../utils/markdown.js';
+import { workCenterRequestKey, workCenterRequestLoopKey } from '../utils/work-center-request-key.js';
 
 export default {
   name: 'WorkCenterActionDetail',
@@ -26,7 +27,7 @@ export default {
   data() {
     return {
       activeTab: 'messages',
-      expandedRequestId: null,
+      expandedRequestKey: null,
       expandedLoops: {},
     };
   },
@@ -46,9 +47,9 @@ export default {
     },
   },
   watch: {
-    action() {
+    'action.id'() {
       this.activeTab = 'messages';
-      this.expandedRequestId = null;
+      this.expandedRequestKey = null;
       this.expandedLoops = {};
       this.$nextTick(() => renderMermaidIn(this.$el));
     },
@@ -100,23 +101,30 @@ export default {
       if (typeof value === 'string') return value;
       try { return JSON.stringify(value, null, 2); } catch { return String(value); }
     },
+    requestKey(request) {
+      return workCenterRequestKey(request);
+    },
+    requestLoopKey(request, loop) {
+      return workCenterRequestLoopKey(request, loop);
+    },
     requestDetail(request) {
-      return this.requestDetails[request.id] || null;
+      return this.requestDetails[this.requestKey(request)] || null;
     },
     async toggleRequest(request) {
-      if (this.expandedRequestId === request.id) {
-        this.expandedRequestId = null;
+      const key = this.requestKey(request);
+      if (this.expandedRequestKey === key) {
+        this.expandedRequestKey = null;
         return;
       }
-      this.expandedRequestId = request.id;
+      this.expandedRequestKey = key;
       if (!this.requestDetail(request)) this.$emit('select-request', request);
     },
-    toggleLoop(requestId, loopNumber) {
-      const key = `${requestId}:${loopNumber}`;
+    toggleLoop(request, loop) {
+      const key = this.requestLoopKey(request, loop);
       this.expandedLoops = { ...this.expandedLoops, [key]: !this.expandedLoops[key] };
     },
-    loopExpanded(requestId, loopNumber) {
-      return !!this.expandedLoops[`${requestId}:${loopNumber}`];
+    loopExpanded(request, loop) {
+      return !!this.expandedLoops[this.requestLoopKey(request, loop)];
     },
     switchTab(tab) {
       this.activeTab = tab;
@@ -203,23 +211,23 @@ export default {
           <p v-if="requestsError" class="work-center-error">{{ requestsError }}</p>
           <p v-if="requestsLoading && requests.length === 0" class="work-center-action-empty">{{ tr('workCenter.loadingRequests', 'Loading requests…') }}</p>
           <p v-else-if="requests.length === 0" class="work-center-action-empty">{{ tr('workCenter.noRequestDetails', 'No request details are available for this Action yet.') }}</p>
-          <article v-for="(request, index) in requests" :key="request.id" class="work-center-request-card" :class="{ expanded: expandedRequestId === request.id }">
-            <button type="button" class="work-center-request-summary" @click="toggleRequest(request)" :aria-expanded="expandedRequestId === request.id">
+          <article v-for="(request, index) in requests" :key="requestKey(request)" class="work-center-request-card" :class="{ expanded: expandedRequestKey === requestKey(request) }">
+            <button type="button" class="work-center-request-summary" @click="toggleRequest(request)" :aria-expanded="expandedRequestKey === requestKey(request)">
               <span class="work-center-request-index">{{ requests.length - index }}</span>
               <span class="work-center-request-title"><strong>{{ request.model || tr('workCenter.unknownModel', 'Unknown model') }}</strong><small>{{ request.vp?.name || request.vp?.id || '—' }} · {{ time(request.openedAt) }}</small></span>
               <span class="work-center-request-metrics"><span>{{ request.loopCount }}L</span><span>{{ formatTokens(request.totalTokens) }} tok</span><span>{{ formatDuration(request.totalMs) }}</span></span>
               <span class="work-center-action-chevron" aria-hidden="true"></span>
             </button>
-            <div v-if="expandedRequestId === request.id" class="work-center-request-detail">
-              <p v-if="requestDetailsError[request.id]" class="work-center-error">{{ requestDetailsError[request.id] }}</p>
-              <p v-else-if="requestDetailsLoading[request.id]" class="work-center-action-empty">{{ tr('workCenter.loadingRequestDetail', 'Loading request detail…') }}</p>
+            <div v-if="expandedRequestKey === requestKey(request)" class="work-center-request-detail">
+              <p v-if="requestDetailsError[requestKey(request)]" class="work-center-error">{{ requestDetailsError[requestKey(request)] }}</p>
+              <p v-else-if="requestDetailsLoading[requestKey(request)]" class="work-center-action-empty">{{ tr('workCenter.loadingRequestDetail', 'Loading request detail…') }}</p>
               <p v-else-if="!requestDetail(request)" class="work-center-action-empty">{{ tr('workCenter.requestDetailUnavailable', 'Request detail is unavailable. Try again.') }}</p>
-              <article v-for="loop in requestDetail(request)?.loops || []" :key="loop.id" class="work-center-request-loop">
-                <button type="button" @click="toggleLoop(request.id, loop.loopNumber)" :aria-expanded="loopExpanded(request.id, loop.loopNumber)">
+              <article v-for="loop in requestDetail(request)?.loops || []" :key="requestLoopKey(request, loop)" class="work-center-request-loop">
+                <button type="button" @click="toggleLoop(request, loop)" :aria-expanded="loopExpanded(request, loop)">
                   <strong>{{ tr('workCenter.loop', 'Loop') }} {{ loop.loopNumber }}</strong>
                   <span>{{ loop.model || request.model }} · {{ formatTokens(loop.usage?.totalTokens) }} tok · {{ formatDuration(loop.latencyMs) }}</span>
                 </button>
-                <div v-if="loopExpanded(request.id, loop.loopNumber)" class="work-center-request-loop-body">
+                <div v-if="loopExpanded(request, loop)" class="work-center-request-loop-body">
                   <details v-if="loop.systemPrompt"><summary>{{ tr('workCenter.systemPrompt', 'System prompt') }}</summary><pre>{{ loop.systemPrompt }}</pre></details>
                   <details v-if="loop.messages?.length"><summary>{{ tr('workCenter.requestMessages', 'Request messages') }}</summary><pre>{{ json(loop.messages) }}</pre></details>
                   <details v-if="loop.response"><summary>{{ tr('workCenter.aiResponse', 'AI response') }}</summary><pre>{{ loop.response }}</pre></details>

@@ -43,7 +43,8 @@ function isSensitiveName(name) {
   return SENSITIVE_NAMES.has(normalizeSensitiveName(name));
 }
 
-function decodeDoubleQuotedName(value) {
+function decodeQuotedName(value, quote) {
+  if (quote === "'") return value;
   try {
     return JSON.parse(`"${value}"`);
   } catch {
@@ -51,27 +52,86 @@ function decodeDoubleQuotedName(value) {
   }
 }
 
-function containsSensitiveFieldSyntax(value) {
-  const text = String(value || '');
-  const quotedPatterns = [
-    [/"((?:\\.|[^"\\])*)"\s*[:=]/g, name => {
-      const decoded = decodeDoubleQuotedName(name);
-      return decoded == null || isSensitiveName(decoded);
-    }],
-    [/'((?:\\.|[^'\\])*)'\s*[:=]/g, name => isSensitiveName(name)],
-  ];
-  for (const [fieldPattern, isSensitive] of quotedPatterns) {
-    let match;
-    while ((match = fieldPattern.exec(text))) {
-      if (isSensitive(match[1])) return true;
-    }
-  }
-  const bareFieldPattern = /(?:^|[,{;\s])([a-z][a-z0-9_-]*)\s*[:=]/gi;
-  let match;
-  while ((match = bareFieldPattern.exec(text))) {
-    if (isSensitiveName(match[1])) return true;
+function sensitiveNameSuffix(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  if (isSensitiveName(text)) return true;
+  for (const match of text.matchAll(/\s+/g)) {
+    if (isSensitiveName(text.slice(match.index + match[0].length))) return true;
   }
   return false;
+}
+
+function assignmentHasSensitiveName(text, operatorIndex) {
+  let end = operatorIndex;
+  while (end > 0 && /\s/.test(text[end - 1])) end -= 1;
+  if (end === 0) return false;
+  const quote = text[end - 1];
+  if (quote === '"' || quote === "'") {
+    let start = end - 2;
+    while (start >= 0) {
+      if (text[start] === quote && (start === 0 || text[start - 1] !== '\\')) break;
+      start -= 1;
+    }
+    if (start < 0) return false;
+    const decoded = decodeQuotedName(text.slice(start + 1, end - 1), quote);
+    return decoded == null || isSensitiveName(decoded);
+  }
+  let start = end;
+  while (start > 0 && !/[\r\n,=;{}\[\]()"']/.test(text[start - 1])) start -= 1;
+  return sensitiveNameSuffix(text.slice(start, end));
+}
+
+function sensitiveAssignmentOperators(value) {
+  const text = String(value || '');
+  const operators = [];
+  const pattern = /[:=]/g;
+  let match;
+  while ((match = pattern.exec(text))) {
+    if (assignmentHasSensitiveName(text, match.index)) operators.push(match.index);
+  }
+  return operators;
+}
+
+function containsSensitiveFieldSyntax(value) {
+  return sensitiveAssignmentOperators(value).length > 0;
+}
+
+function assignmentValueReplacement(text, operatorIndex) {
+  let start = operatorIndex + 1;
+  while (start < text.length && /[\t ]/.test(text[start])) start += 1;
+  if (start >= text.length || /[\r\n]/.test(text[start])) return null;
+  const quote = text[start];
+  if (quote === '"' || quote === "'") {
+    let end = start + 1;
+    while (end < text.length && !/[\r\n]/.test(text[end])) {
+      if (text[end] === quote && text[end - 1] !== '\\') {
+        return { start, end: end + 1, value: `${quote}***${quote}` };
+      }
+      end += 1;
+    }
+    return { start, end, value: `${quote}***${quote}` };
+  }
+  let end = start;
+  const bearer = text.slice(start).match(/^Bearer\s+/i);
+  if (bearer) end += bearer[0].length;
+  while (end < text.length && !/[\s,;}\]]/.test(text[end])) end += 1;
+  return end > start ? { start, end, value: '***' } : null;
+}
+
+function redactSensitiveAssignments(value) {
+  let text = String(value || '');
+  const replacements = sensitiveAssignmentOperators(text)
+    .map(index => assignmentValueReplacement(text, index))
+    .filter(Boolean)
+    .sort((left, right) => right.start - left.start);
+  let replacedFrom = text.length;
+  for (const replacement of replacements) {
+    if (replacement.end > replacedFrom) continue;
+    text = `${text.slice(0, replacement.start)}${replacement.value}${text.slice(replacement.end)}`;
+    replacedFrom = replacement.start;
+  }
+  return text;
 }
 
 export function sanitizeDebugUrl(value) {
@@ -93,31 +153,10 @@ export function sanitizeDebugUrl(value) {
   }
 }
 
-function sensitiveNamePattern() {
-  const gap = '[^a-z0-9\\r\\n:=]*';
-  return [...SENSITIVE_NAMES]
-    .sort((left, right) => right.length - left.length)
-    .map(name => [...name].join(gap))
-    .join('|');
-}
-
-const SENSITIVE_NAME_PATTERN = sensitiveNamePattern();
-
 export function sanitizeDiagnosticText(value, maxBytes = 8 * 1024) {
   let text = String(value || '');
   text = text.replace(/https?:\/\/[^\s"'<>]+/gi, match => sanitizeDebugUrl(match));
-  text = text.replace(
-    new RegExp(`\\b(${SENSITIVE_NAME_PATTERN})(["']?\\s*[:=]\\s*)"[^"\\r\\n]*"`, 'gi'),
-    '$1$2"***"',
-  );
-  text = text.replace(
-    new RegExp(`\\b(${SENSITIVE_NAME_PATTERN})(["']?\\s*[:=]\\s*)'[^'\\r\\n]*'`, 'gi'),
-    "$1$2'***'",
-  );
-  text = text.replace(
-    new RegExp(`\\b(${SENSITIVE_NAME_PATTERN})(\\s*[:=]\\s*)(?:Bearer\\s+)?[^\\s,;}\\]]+`, 'gi'),
-    '$1$2***',
-  );
+  text = redactSensitiveAssignments(text);
   text = text.replace(/\b(Bearer)\s+[^\s,;}\]]+/gi, '$1 ***');
   return truncateUtf8(text, maxBytes);
 }

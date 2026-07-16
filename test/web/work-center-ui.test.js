@@ -129,8 +129,8 @@ describe('Work Center UI contract', () => {
     expect(store).toContain("workCenterRequest('get_action_messages'");
     expect(page).toContain(':messages-next-cursor="actionMessagesNextCursor"');
     expect(detail).toContain('v-for="loop in requestDetail(request)?.loops || []"');
-    expect(detail).toContain('requestDetailsError[request.id]');
-    expect(detail).toContain('requestDetailsLoading[request.id]');
+    expect(detail).toContain('requestDetailsError[requestKey(request)]');
+    expect(detail).toContain('requestDetailsLoading[requestKey(request)]');
     expect(detail).toContain('class="work-center-action-failure"');
     expect(detail).toContain('action.failure.error');
     expect(detail).toContain('role="tabpanel"');
@@ -140,7 +140,8 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain("event.key === 'End'");
     expect(detail).toContain('v-if="composerError"');
     expect(detail).toContain("tr('workCenter.requestDetailUnavailable'");
-    expect(page).toContain('request.runId}:${request.id}');
+    expect(page).toContain('workCenterRequestKey(request)');
+    expect(detail).toContain(':key="requestKey(request)"');
     expect(detail).toContain("tr('workCenter.rawRequest'");
     expect(detail).toContain('class="work-center-action-composer"');
     expect(detail).toContain("$emit('attachment-input', $event)");

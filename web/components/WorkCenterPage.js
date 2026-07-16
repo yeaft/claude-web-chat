@@ -4,6 +4,7 @@ import LlmTab from './LlmTab.js';
 import folderPickerMixin from './mixins/folder-picker-mixin.js';
 import { openImagePreview } from '../utils/imagePreview.js';
 import { mergeActionMessages } from '../stores/helpers/work-center.js';
+import { workCenterRequestKey } from '../utils/work-center-request-key.js';
 import {
   clearOverlayPointerGesture,
   shouldDismissFromOverlayClick,
@@ -119,24 +120,27 @@ export default {
     },
     actionRequestDetails() {
       if (!this.actionRequestKey) return {};
-      return Object.fromEntries(this.actionRequests.map(request => [
-        request.id,
-        this.store.workCenterActionRequestDetails[`${this.actionRequestKey}:${request.runId}:${request.id}`] || null,
-      ]));
+      return Object.fromEntries(this.actionRequests.map(request => {
+        const requestKey = workCenterRequestKey(request);
+        return [requestKey,
+          this.store.workCenterActionRequestDetails[`${this.actionRequestKey}:${requestKey}`] || null];
+      }));
     },
     actionRequestDetailsLoading() {
       if (!this.actionRequestKey) return {};
-      return Object.fromEntries(this.actionRequests.map(request => [
-        request.id,
-        !!this.store.workCenterActionRequestDetailsLoading[`${this.actionRequestKey}:${request.runId}:${request.id}`],
-      ]));
+      return Object.fromEntries(this.actionRequests.map(request => {
+        const requestKey = workCenterRequestKey(request);
+        return [requestKey,
+          !!this.store.workCenterActionRequestDetailsLoading[`${this.actionRequestKey}:${requestKey}`]];
+      }));
     },
     actionRequestDetailsError() {
       if (!this.actionRequestKey) return {};
-      return Object.fromEntries(this.actionRequests.map(request => [
-        request.id,
-        this.store.workCenterActionRequestDetailsError[`${this.actionRequestKey}:${request.runId}:${request.id}`] || '',
-      ]));
+      return Object.fromEntries(this.actionRequests.map(request => {
+        const requestKey = workCenterRequestKey(request);
+        return [requestKey,
+          this.store.workCenterActionRequestDetailsError[`${this.actionRequestKey}:${requestKey}`] || ''];
+      }));
     },
     actionRequestsLoading() {
       return !!this.store.workCenterActionRequestsLoading[this.actionRequestKey];
