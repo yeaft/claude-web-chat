@@ -262,7 +262,7 @@ export function projectWorkItemDetail(detail) {
       ? sumExecutionStats(detail.runs)
       : executionStats(detail.executionStats),
     reuseMemory: detail.reuseMemory !== false,
-    waitingReason: waitingReason(detail),
+    waitingReason: sanitizeDiagnosticText(waitingReason(detail), MAX_ACTION_DIAGNOSTIC_CHARS),
     origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
     linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
     attachments: projectAttachments(detail.attachments),

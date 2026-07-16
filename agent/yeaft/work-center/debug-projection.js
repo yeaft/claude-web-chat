@@ -7,6 +7,9 @@ const SENSITIVE_NAMES = new Set([
   'authorization', 'proxyauthorization', 'auth', 'code', 'cookie', 'setcookie',
 ]);
 const BINARY_DATA_TYPES = new Set(['base64', 'redactedthinking', 'redacted_thinking']);
+const MAX_SENSITIVE_NAME_LENGTH = Math.max(...[...SENSITIVE_NAMES].map(name => name.length));
+const MAX_SENSITIVE_NAME_SOURCE_CHARS = 256;
+const MAX_QUOTED_SECRET_VALUE_CHARS = 64 * 1024;
 
 function byteLength(value) {
   return Buffer.byteLength(String(value || ''), 'utf8');
@@ -17,22 +20,13 @@ function jsonByteLength(value) {
 }
 
 function truncateUtf8(value, maxBytes = MAX_DEBUG_STRING_BYTES) {
-  const text = String(value || '');
-  if (byteLength(text) <= maxBytes) return text;
+  const bytes = Buffer.from(String(value || ''), 'utf8');
+  if (bytes.length <= maxBytes) return bytes.toString('utf8');
   const marker = '\n[truncated to browser debug budget]';
-  const markerBytes = byteLength(marker);
-  let low = 0;
-  let high = text.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    let end = middle;
-    if (end > 0 && /[\uD800-\uDBFF]/.test(text[end - 1])) end -= 1;
-    if (byteLength(text.slice(0, end)) + markerBytes <= maxBytes) low = middle;
-    else high = middle - 1;
-  }
-  let end = low;
-  if (end > 0 && /[\uD800-\uDBFF]/.test(text[end - 1])) end -= 1;
-  return `${text.slice(0, end)}${marker}`;
+  const contentBytes = Math.max(0, maxBytes - byteLength(marker));
+  let end = Math.min(contentBytes, bytes.length);
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return `${bytes.subarray(0, end).toString('utf8')}${marker}`;
 }
 
 function normalizeSensitiveName(name) {
@@ -52,43 +46,81 @@ function decodeQuotedName(value, quote) {
   }
 }
 
-function sensitiveNameSuffix(value) {
-  const text = String(value || '').trim();
-  if (!text) return false;
-  if (isSensitiveName(text)) return true;
-  for (const match of text.matchAll(/[\s:]+/g)) {
-    if (isSensitiveName(text.slice(match.index + match[0].length))) return true;
+function quotedNameBeforeOperator(text, operatorIndex) {
+  let end = operatorIndex;
+  while (end > 0 && /\s/.test(text[end - 1])) end -= 1;
+  const quote = text[end - 1];
+  if (quote !== '"' && quote !== "'") return undefined;
+  const earliest = Math.max(0, end - MAX_SENSITIVE_NAME_SOURCE_CHARS);
+  for (let start = end - 2; start >= earliest; start -= 1) {
+    if (text[start] !== quote) continue;
+    let slashCount = 0;
+    for (let cursor = start - 1; cursor >= earliest && text[cursor] === '\\'; cursor -= 1) {
+      slashCount += 1;
+    }
+    if (slashCount % 2 === 0) {
+      return decodeQuotedName(text.slice(start + 1, end - 1), quote);
+    }
   }
-  return false;
+  return null;
 }
 
-function assignmentHasSensitiveName(text, operatorIndex) {
+function candidateStart(text, end, colonOperator) {
+  let start = end;
+  const boundary = colonOperator
+    ? /[\r\n,:=;{}\[\]()"'?&]/
+    : /[\r\n,=;{}\[\]()"'?&]/;
+  while (start > 0 && !boundary.test(text[start - 1])) start -= 1;
+  return start;
+}
+
+function hasSensitiveSuffix(text, start, end) {
+  let reversed = '';
+  const earliest = Math.max(start, end - MAX_SENSITIVE_NAME_SOURCE_CHARS);
+  for (let index = end - 1; index >= earliest; index -= 1) {
+    const character = text[index].toLowerCase();
+    if (/[a-z0-9]/.test(character)) {
+      reversed += character;
+      if (reversed.length > MAX_SENSITIVE_NAME_LENGTH) return false;
+      continue;
+    }
+    if (!reversed) continue;
+    const normalized = [...reversed].reverse().join('');
+    if (/[\s:&?;,={}\[\]()"']/.test(character)) {
+      if (SENSITIVE_NAMES.has(normalized)) return true;
+      if (!/[\s:]/.test(character)) return false;
+    }
+  }
+  return SENSITIVE_NAMES.has([...reversed].reverse().join(''));
+}
+
+function assignmentHasSensitiveName(text, operatorIndex, operator) {
   let end = operatorIndex;
   while (end > 0 && /\s/.test(text[end - 1])) end -= 1;
   if (end === 0) return false;
-  const quote = text[end - 1];
-  if (quote === '"' || quote === "'") {
-    let start = end - 2;
-    while (start >= 0) {
-      if (text[start] === quote && (start === 0 || text[start - 1] !== '\\')) break;
-      start -= 1;
-    }
-    if (start < 0) return false;
-    const decoded = decodeQuotedName(text.slice(start + 1, end - 1), quote);
-    return decoded == null || isSensitiveName(decoded);
-  }
-  let start = end;
-  while (start > 0 && !/[\r\n,=;{}\[\]()"']/.test(text[start - 1])) start -= 1;
-  return sensitiveNameSuffix(text.slice(start, end));
+  const quotedName = quotedNameBeforeOperator(text, operatorIndex);
+  if (quotedName !== undefined) return quotedName == null || isSensitiveName(quotedName);
+  if (operator === '=') return hasSensitiveSuffix(text, 0, end);
+  const start = candidateStart(text, end, true);
+  return isSensitiveName(text.slice(start, end).trim());
 }
 
-function sensitiveAssignmentOperators(value) {
+function sensitiveAssignmentOperators(value, allowColon = true) {
   const text = String(value || '');
   const operators = [];
-  const pattern = /[:=]/g;
-  let match;
-  while ((match = pattern.exec(text))) {
-    if (assignmentHasSensitiveName(text, match.index)) operators.push(match.index);
+  for (let index = 0; index < text.length; index += 1) {
+    const operator = text[index];
+    if (operator !== '=' && operator !== ':') continue;
+    if (operator === ':') {
+      if (!allowColon) continue;
+      let valueStart = index + 1;
+      const valueLimit = Math.min(text.length, index + MAX_SENSITIVE_NAME_SOURCE_CHARS);
+      while (valueStart < valueLimit && /[\t ]/.test(text[valueStart])) valueStart += 1;
+      const quotedName = quotedNameBeforeOperator(text, index);
+      const hasStructuredValue = valueStart > index + 1 || /["']/.test(text[valueStart] || '');
+      if (quotedName === undefined && !hasStructuredValue) continue;
+    }
+    if (assignmentHasSensitiveName(text, index, operator)) operators.push(index);
   }
   return operators;
 }
@@ -99,12 +131,14 @@ function containsSensitiveFieldSyntax(value) {
 
 function assignmentValueReplacement(text, operatorIndex) {
   let start = operatorIndex + 1;
-  while (start < text.length && /[\t ]/.test(text[start])) start += 1;
+  const valueLimit = Math.min(text.length, operatorIndex + MAX_SENSITIVE_NAME_SOURCE_CHARS);
+  while (start < valueLimit && /[\t ]/.test(text[start])) start += 1;
   if (start >= text.length || /[\r\n]/.test(text[start])) return null;
   const quote = text[start];
   if (quote === '"' || quote === "'") {
     let end = start + 1;
-    while (end < text.length && !/[\r\n]/.test(text[end])) {
+    const quoteLimit = Math.min(text.length, start + MAX_QUOTED_SECRET_VALUE_CHARS);
+    while (end < quoteLimit && !/[\r\n]/.test(text[end])) {
       if (text[end] === quote && text[end - 1] !== '\\') {
         return { start, end: end + 1, value: `${quote}***${quote}` };
       }
@@ -113,18 +147,18 @@ function assignmentValueReplacement(text, operatorIndex) {
     return { start, end, value: `${quote}***${quote}` };
   }
   let end = start;
-  const bearer = text.slice(start).match(/^Bearer\s+/i);
+  const bearer = /^Bearer\s+/i.exec(text.slice(start, start + 32));
   if (bearer) end += bearer[0].length;
-  while (end < text.length && !/[\s,;}\]]/.test(text[end])) end += 1;
+  while (end < text.length && !/[\s,;=&}\]]/.test(text[end])) end += 1;
   return end > start ? { start, end, value: '***' } : null;
 }
 
-function redactSensitiveAssignments(value) {
+function redactSensitiveAssignments(value, allowColon = true) {
   let text = String(value || '');
-  const replacements = sensitiveAssignmentOperators(text)
+  const replacements = sensitiveAssignmentOperators(text, allowColon)
     .map(index => assignmentValueReplacement(text, index))
     .filter(Boolean)
-    .sort((left, right) => right.start - left.start);
+    .reverse();
   let replacedFrom = text.length;
   for (const replacement of replacements) {
     if (replacement.end > replacedFrom) continue;
@@ -134,27 +168,40 @@ function redactSensitiveAssignments(value) {
   return text;
 }
 
+function decodedUrlName(name) {
+  try {
+    return decodeURIComponent(String(name || '').replace(/\+/g, ' '));
+  } catch {
+    return null;
+  }
+}
+
+function isSensitiveUrlName(name) {
+  const decoded = decodedUrlName(name);
+  return decoded == null || isSensitiveName(name) || isSensitiveName(decoded);
+}
+
 export function sanitizeDebugUrl(value) {
-  const text = String(value || '');
+  const text = truncateUtf8(value, MAX_DEBUG_STRING_BYTES);
   try {
     const url = new URL(text);
     url.username = '';
     url.password = '';
     for (const name of [...url.searchParams.keys()]) {
-      if (isSensitiveName(name)) url.searchParams.set(name, '***');
+      if (isSensitiveUrlName(name)) url.searchParams.set(name, '***');
     }
     return truncateUtf8(url.toString());
   } catch {
     const withoutUserInfo = text.replace(/\/\/[^/@\s]+@/g, '//');
     return truncateUtf8(withoutUserInfo.replace(
       /([?&])([^=&#]+)=([^&#]*)/g,
-      (match, prefix, name) => (isSensitiveName(name) ? `${prefix}${name}=***` : match),
+      (match, prefix, name) => (isSensitiveUrlName(name) ? `${prefix}${name}=***` : match),
     ));
   }
 }
 
 export function sanitizeDiagnosticText(value, maxBytes = 8 * 1024) {
-  let text = String(value || '');
+  let text = truncateUtf8(value, maxBytes);
   text = text.replace(/https?:\/\/[^\s"'<>]+/gi, match => sanitizeDebugUrl(match));
   text = redactSensitiveAssignments(text);
   text = text.replace(/\b(Bearer)\s+[^\s,;}\]]+/gi, '$1 ***');
@@ -163,6 +210,20 @@ export function sanitizeDiagnosticText(value, maxBytes = 8 * 1024) {
 
 function omittedBinary(value) {
   return `[binary data omitted: ${byteLength(value)} bytes]`;
+}
+
+function sanitizeSseMetadataLine(line) {
+  const match = String(line || '').match(/^(\s*(?:event|id|retry)?\s*:)(.*)$/i);
+  if (!match) return sanitizeDiagnosticText(line, MAX_DEBUG_STRING_BYTES);
+  let value = truncateUtf8(match[2], MAX_DEBUG_STRING_BYTES);
+  value = value.replace(/https?:\/\/[^\s"'<>]+/gi, url => sanitizeDebugUrl(url));
+  value = redactSensitiveAssignments(value, false);
+  const colonValue = value.match(/^(\s*)([^:=\s]+)(\s+|\s*:\s+)(.+)$/);
+  if (colonValue && isSensitiveName(colonValue[2])) {
+    value = `${colonValue[1]}${colonValue[2]}${colonValue[3]}***`;
+  }
+  value = value.replace(/\b(Bearer)\s+[^\s,;}\]]+/gi, '$1 ***');
+  return truncateUtf8(`${match[1]}${value}`, MAX_DEBUG_STRING_BYTES);
 }
 
 function sanitizeSseEvent(event, seen) {
@@ -176,7 +237,7 @@ function sanitizeSseEvent(event, seen) {
     dataParts.push(match[1]);
   }
   if (dataParts.length === 0) {
-    return lines.map(line => sanitizeDiagnosticText(line, MAX_DEBUG_STRING_BYTES)).join('\n');
+    return lines.map(line => sanitizeSseMetadataLine(line)).join('\n');
   }
 
   const data = dataParts.join('\n');
@@ -200,13 +261,13 @@ function sanitizeSseEvent(event, seen) {
       if (index === firstDataIndex) sanitizedLines.push(sanitizedDataLines);
       continue;
     }
-    sanitizedLines.push(sanitizeDiagnosticText(line, MAX_DEBUG_STRING_BYTES));
+    sanitizedLines.push(sanitizeSseMetadataLine(line));
   }
   return sanitizedLines.join('\n');
 }
 
 function sanitizeSseBody(value, seen) {
-  const text = String(value || '');
+  const text = truncateUtf8(value, MAX_DEBUG_STRING_BYTES);
   const trailingSeparator = /(?:\r?\n){2}$/.test(text) ? '\n\n' : '';
   const events = text.split(/(?:\r?\n){2}/);
   if (events.at(-1) === '') events.pop();
@@ -217,20 +278,21 @@ export function sanitizeDebugValue(value, parent = null, key = '', seen = new We
   if (key && isSensitiveName(key)) return '***';
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'string') {
-    if (key === 'url') return sanitizeDebugUrl(value);
-    if (value.startsWith('data:') && value.includes(';base64,')) return omittedBinary(value);
+    const text = truncateUtf8(value, MAX_DEBUG_STRING_BYTES);
+    if (key === 'url') return sanitizeDebugUrl(text);
+    if (text.startsWith('data:') && text.includes(';base64,')) return omittedBinary(value);
     const parentType = String(parent?.type || '').toLowerCase().replace(/[^a-z0-9_]/g, '');
     if (key === 'data' && BINARY_DATA_TYPES.has(parentType)) return omittedBinary(value);
-    if (key === 'body' && /^[\s\r\n]*[\[{]/.test(value)) {
+    if (key === 'body' && /^[\s\r\n]*[\[{]/.test(text)) {
       try {
-        return truncateUtf8(JSON.stringify(sanitizeDebugValue(JSON.parse(value), null, '', seen)));
+        return truncateUtf8(JSON.stringify(sanitizeDebugValue(JSON.parse(text), null, '', seen)));
       } catch {
-        if (containsSensitiveFieldSyntax(value)) {
+        if (containsSensitiveFieldSyntax(text)) {
           return '[redacted malformed JSON: sensitive data]';
         }
       }
     }
-    return sanitizeDiagnosticText(value, MAX_DEBUG_STRING_BYTES);
+    return sanitizeDiagnosticText(text, MAX_DEBUG_STRING_BYTES);
   }
   if (typeof value !== 'object') return truncateUtf8(String(value));
   if (seen.has(value)) return '[circular value omitted]';

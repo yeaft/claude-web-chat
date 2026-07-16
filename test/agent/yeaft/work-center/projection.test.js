@@ -731,6 +731,92 @@ describe('Work Center event projection', () => {
     expect(projected.request.loops[6].rawResponse.body).toBe('{"x:api:key":"***"}');
   });
 
+  it('bounds sanitizer work while preserving URL, SSE, and diagnostic structure', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const colonDense = `${'safe:'.repeat(1_200)}status=ok`;
+    const startedAt = performance.now();
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-bounded-diagnostics', tools: [] }],
+      loops: [
+        {
+          loopNumber: 1, messages: [], toolCalls: [],
+          rawResponse: { body: 'GET https://[invalid]/?%61pi%5Fkey=LEAK_ENCODED_API&safe=yes' },
+        },
+        {
+          loopNumber: 2, messages: [], toolCalls: [],
+          rawResponse: { body: 'GET https://[invalid]/?%74oken=LEAK_ENCODED_TOKEN&safe=yes' },
+        },
+        {
+          loopNumber: 3, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'event:auth:required\nid:code:12345\ndata: safe\n\n',
+          },
+        },
+        {
+          loopNumber: 4, messages: [], toolCalls: [],
+          rawResponse: { body: 'endpoint http://auth:8080/health?safe=yes' },
+        },
+        {
+          loopNumber: 5, messages: [], toolCalls: [],
+          rawResponse: { body: 'provider note: status code: invalid' },
+        },
+        {
+          loopNumber: 6, messages: [], toolCalls: [],
+          rawResponse: { body: colonDense },
+        },
+        {
+          loopNumber: 7, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'event:auth:required\nid:code:12345\n: token: LEAK_SSE_TOKEN\ndata: safe\n\n',
+          },
+        },
+      ],
+    });
+    const elapsedMs = performance.now() - startedAt;
+    const wire = JSON.stringify(projected);
+
+    expect(wire).not.toContain('LEAK_ENCODED_API');
+    expect(wire).not.toContain('LEAK_ENCODED_TOKEN');
+    expect(projected.request.loops[0].rawResponse.body).toContain('%61pi%5Fkey=***&safe=yes');
+    expect(projected.request.loops[1].rawResponse.body).toContain('%74oken=***&safe=yes');
+    expect(projected.request.loops[2].rawResponse.body)
+      .toContain('event:auth:required\nid:code:12345\ndata: safe');
+    expect(projected.request.loops[3].rawResponse.body)
+      .toBe('endpoint http://auth:8080/health?safe=yes');
+    expect(projected.request.loops[4].rawResponse.body)
+      .toBe('provider note: status code: invalid');
+    expect(projected.request.loops[5].rawResponse.body).toBe(colonDense);
+    expect(projected.request.loops[6].rawResponse.body).toContain(': token: ***');
+    expect(projected.request.loops[6].rawResponse.body).not.toContain('LEAK_SSE_TOKEN');
+    expect(sanitizeDiagnosticText('foo=bar&token=LEAK_SECOND&safe=yes'))
+      .toBe('foo=bar&token=***&safe=yes');
+    expect(sanitizeDiagnosticText('foo=bar; api.key=LEAK_THIRD, safe=yes'))
+      .toBe('foo=bar; api.key=***, safe=yes');
+    expect(sanitizeDiagnosticText('token=LEAK_FIRST=token=LEAK_SECOND'))
+      .toBe('token=***=token=***');
+    expect(elapsedMs).toBeLessThan(1_000);
+  });
+
+  it('sanitizes direct and current-Run waiting reasons at the browser boundary', () => {
+    const detail = internalDetail();
+    detail.waitingReason = 'Need input token=LEAK_DIRECT_TOKEN and Authorization: Bearer LEAK_DIRECT_BEARER';
+    let projected = projectWorkItemDetail(detail);
+    expect(projected.waitingReason).toContain('Need input token=***');
+    expect(projected.waitingReason).not.toContain('LEAK_DIRECT_TOKEN');
+    expect(projected.waitingReason).not.toContain('LEAK_DIRECT_BEARER');
+
+    delete detail.waitingReason;
+    detail.runs[0].waitingReason = 'Need input token=LEAK_RUN_TOKEN and Authorization: Bearer LEAK_RUN_BEARER';
+    projected = projectWorkItemDetail(detail);
+    expect(projected.waitingReason).toContain('Need input token=***');
+    expect(projected.waitingReason).not.toContain('LEAK_RUN_TOKEN');
+    expect(projected.waitingReason).not.toContain('LEAK_RUN_BEARER');
+  });
+
   it('keeps non-sensitive malformed JSON and multi-line SSE diagnostics visible', () => {
     const detail = internalDetail();
     const action = detail.actions[0];
