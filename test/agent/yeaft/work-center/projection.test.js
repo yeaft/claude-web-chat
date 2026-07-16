@@ -670,6 +670,67 @@ describe('Work Center event projection', () => {
     expect(sanitizeDiagnosticText('safe assignment: monkey=value')).toContain('monkey=value');
   });
 
+  it('preserves colon-delimited normalized sensitive names across bare and SSE diagnostics', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-colon-name-redaction', tools: [] }],
+      loops: [
+        {
+          loopNumber: 1, messages: [], toolCalls: [],
+          rawResponse: { body: 'api:key=LEAK_API_KEY' },
+        },
+        {
+          loopNumber: 2, messages: [], toolCalls: [],
+          rawResponse: { body: 'x:api:key=LEAK_X_API_KEY' },
+        },
+        {
+          loopNumber: 3, messages: [], toolCalls: [],
+          rawResponse: { body: 'provider:api:key=LEAK_PREFIXED_API_KEY' },
+        },
+        {
+          loopNumber: 4, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'event:api:key=LEAK_SSE_API_KEY\ndata: safe\n\n',
+          },
+        },
+        {
+          loopNumber: 5, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'event:x:api:key=LEAK_SSE_X_API_KEY\ndata: [DONE]\n\n',
+          },
+        },
+        {
+          loopNumber: 6, messages: [], toolCalls: [],
+          rawResponse: { body: JSON.stringify({ 'api:key': 'LEAK_OBJECT_API_KEY' }) },
+        },
+        {
+          loopNumber: 7, messages: [], toolCalls: [],
+          rawResponse: { body: JSON.stringify({ 'x:api:key': 'LEAK_OBJECT_X_API_KEY' }) },
+        },
+      ],
+    });
+
+    const wire = JSON.stringify(projected);
+    for (const secret of [
+      'LEAK_API_KEY', 'LEAK_X_API_KEY', 'LEAK_PREFIXED_API_KEY',
+      'LEAK_SSE_API_KEY', 'LEAK_SSE_X_API_KEY',
+      'LEAK_OBJECT_API_KEY', 'LEAK_OBJECT_X_API_KEY',
+    ]) expect(wire).not.toContain(secret);
+    expect(projected.request.loops[0].rawResponse.body).toBe('api:key=***');
+    expect(projected.request.loops[1].rawResponse.body).toBe('x:api:key=***');
+    expect(projected.request.loops[2].rawResponse.body).toBe('provider:api:key=***');
+    expect(projected.request.loops[3].rawResponse.body).toContain('event:api:key=***');
+    expect(projected.request.loops[3].rawResponse.body).toContain('data: safe');
+    expect(projected.request.loops[4].rawResponse.body).toContain('event:x:api:key=***');
+    expect(projected.request.loops[4].rawResponse.body).toContain('data: [DONE]');
+    expect(projected.request.loops[5].rawResponse.body).toBe('{"api:key":"***"}');
+    expect(projected.request.loops[6].rawResponse.body).toBe('{"x:api:key":"***"}');
+  });
+
   it('keeps non-sensitive malformed JSON and multi-line SSE diagnostics visible', () => {
     const detail = internalDetail();
     const action = detail.actions[0];

@@ -56,7 +56,7 @@ function sensitiveNameSuffix(value) {
   const text = String(value || '').trim();
   if (!text) return false;
   if (isSensitiveName(text)) return true;
-  for (const match of text.matchAll(/\s+/g)) {
+  for (const match of text.matchAll(/[\s:]+/g)) {
     if (isSensitiveName(text.slice(match.index + match[0].length))) return true;
   }
   return false;
@@ -78,7 +78,7 @@ function assignmentHasSensitiveName(text, operatorIndex) {
     return decoded == null || isSensitiveName(decoded);
   }
   let start = end;
-  while (start > 0 && !/[\r\n,:=;{}\[\]()"']/.test(text[start - 1])) start -= 1;
+  while (start > 0 && !/[\r\n,=;{}\[\]()"']/.test(text[start - 1])) start -= 1;
   return sensitiveNameSuffix(text.slice(start, end));
 }
 
