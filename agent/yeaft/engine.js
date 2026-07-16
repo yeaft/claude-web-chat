@@ -77,6 +77,9 @@ import {
 /** Maximum auto-continue turns when stopReason is 'max_tokens'. */
 const MAX_CONTINUE_TURNS = 3;
 
+/** Bound the best-effort post-turn AMS LLM call independently of the user turn. */
+const AMS_ADJUST_TIMEOUT_MS = 30_000;
+
 // ─── LLM retry policy defaults ──────────────────────────────────
 // Hard-coded floor / ceiling for retry behaviour. The engine reads the
 // effective policy from `config.llmRetry` so users can dial these via
@@ -343,7 +346,7 @@ export function shouldAllowGroupReflection({
 
 /**
  * @typedef {{ type: 'turn_start', turnNumber: number }} TurnStartEvent
- * @typedef {{ type: 'turn_end', turnNumber: number, stopReason: string }} TurnEndEvent
+ * @typedef {{ type: 'turn_end', turnNumber: number, stopReason: string, terminal?: boolean }} TurnEndEvent
  * @typedef {{ type: 'tool_start', id: string, name: string, input: object }} ToolStartEvent
  * @typedef {{ type: 'tool_end', id: string, name: string, output: string, isError: boolean }} ToolEndEvent
  * @typedef {{ type: 'consolidate', archivedCount: number, extractedCount: number }} ConsolidateEvent
@@ -549,6 +552,21 @@ export class Engine {
   #pendingTaskResultUpdates = [];
 
   /**
+   * Terminal task results accepted by this Engine but not yet consumed by a
+   * successful adapter loop. Ownership stays with the Engine until delivery
+   * is acknowledged; abort/retirement hands these payloads back to the bridge
+   * for a new-turn rescue.
+   * @type {Map<string, {content:string|Array, preview:string, sessionId?:string, vpId?:string, threadId?:string, taskKind?:string, taskStatus?:string}>}
+   */
+  #acceptedAsyncTaskResults = new Map();
+
+  /** Task results already spliced into conversationMessages for the next request. */
+  #pendingAsyncTaskConfirmIds = new Set();
+
+  /** Reject new same-turn deliveries once the current query starts closing. */
+  #asyncTaskDeliveryClosed = true;
+
+  /**
    * Async task ownership metadata captured when a tool registers a
    * background task. Keyed by taskId so terminal events can update the
    * original tool_result instead of fabricating a separate turn.
@@ -576,7 +594,12 @@ export class Engine {
    * `toolCtx.registerAsyncTask` and the engine waits locally; web-bridge
    * fallback (legacy `scheduleTaskResultReentry` → new turn) handles the
    * post-run case.
-   * @type {{ onRegister?: (taskId:string, engine:Engine) => void, onUnregister?: (taskId:string) => void } | null}
+   * @type {{
+   *   onRegister?: (taskId:string, engine:Engine) => void,
+   *   onUnregister?: (taskId:string, engine:Engine) => void,
+   *   onConsumed?: (taskId:string, engine:Engine) => void,
+   *   onUndelivered?: (taskId:string, delivery:object, engine:Engine) => void,
+   * } | null}
    */
   #asyncTaskCoordinator = null;
 
@@ -690,6 +713,7 @@ export class Engine {
     if (!this.#currentAbortCtrl) return false;
     if (this.#currentAbortCtrl.signal.aborted) return false;
     this.#abortReason = reason || 'user';
+    this.retireAsyncTasks(`query_${this.#abortReason}`);
     try {
       this.#currentAbortCtrl.abort();
     } catch {
@@ -961,15 +985,30 @@ export class Engine {
         userMsg: args.userMsg,
         assistantReply: args.assistantReply,
         runLLM: async (prompt) => {
-          const out = await this.#adapter.call({
-            model: this.#fastConfig.model,
-            system: (String(this.#config?.language || '').toLowerCase().startsWith('zh')
-          ? '你是记忆管理子程序。请按要求只回复一个 JSON 对象，不要输出额外说明。'
-          : 'You are a memory-management subroutine. Reply with a single JSON object as instructed.'),
-            messages: [{ role: 'user', content: prompt }],
-            maxTokens: 1024,
+          const maintenanceCtrl = new AbortController();
+          let timeout = null;
+          const timedOut = new Promise((_, reject) => {
+            timeout = setTimeout(() => {
+              maintenanceCtrl.abort('ams_adjust_timeout');
+              reject(new LLMAbortError());
+            }, AMS_ADJUST_TIMEOUT_MS);
+            if (timeout && typeof timeout.unref === 'function') timeout.unref();
           });
-          return out?.text || '';
+          try {
+            const request = this.#adapter.call({
+              model: this.#fastConfig.model,
+              system: (String(this.#config?.language || '').toLowerCase().startsWith('zh')
+            ? '你是记忆管理子程序。请按要求只回复一个 JSON 对象，不要输出额外说明。'
+            : 'You are a memory-management subroutine. Reply with a single JSON object as instructed.'),
+              messages: [{ role: 'user', content: prompt }],
+              maxTokens: 1024,
+              signal: maintenanceCtrl.signal,
+            });
+            const out = await Promise.race([request, timedOut]);
+            return out?.text || '';
+          } finally {
+            if (timeout) clearTimeout(timeout);
+          }
         },
       });
       if (result?.ran) {
@@ -1578,8 +1617,39 @@ export class Engine {
         : this.#formatTaskResultUpdateContent(toolMsg.content);
       toolMsg.content = `${prior}\n\n${appendText}`;
       applied.push(update);
+      if (this.#acceptedAsyncTaskResults.has(update.taskId)) {
+        this.#pendingAsyncTaskConfirmIds.add(update.taskId);
+      }
     }
     return applied;
+  }
+
+  #confirmAsyncTaskResults(taskIds) {
+    if (!Array.isArray(taskIds) || taskIds.length === 0) return;
+    for (const taskId of taskIds) {
+      this.#pendingAsyncTaskConfirmIds.delete(taskId);
+      if (!this.#acceptedAsyncTaskResults.delete(taskId)) continue;
+      try {
+        if (typeof this.#asyncTaskCoordinator?.onConsumed === 'function') {
+          this.#asyncTaskCoordinator.onConsumed(taskId, this);
+        } else {
+          this.#asyncTaskCoordinator?.onUnregister?.(taskId, this);
+        }
+      } catch { /* best-effort */ }
+    }
+  }
+
+  #releaseUndeliveredAsyncTaskResults(reason = 'query_closed') {
+    if (this.#acceptedAsyncTaskResults.size === 0) return 0;
+    const deliveries = Array.from(this.#acceptedAsyncTaskResults.entries());
+    this.#acceptedAsyncTaskResults.clear();
+    this.#pendingAsyncTaskConfirmIds.clear();
+    for (const [taskId, delivery] of deliveries) {
+      try {
+        this.#asyncTaskCoordinator?.onUndelivered?.(taskId, { ...delivery, reason }, this);
+      } catch { /* rescue plumbing must not break query teardown */ }
+    }
+    return deliveries.length;
   }
 
   #drainPendingUserMessages(drainPendingUserMessages) {
@@ -1611,11 +1681,15 @@ export class Engine {
         const preview = typeof item.preview === 'string'
           ? item.preview
           : (typeof content === 'string' ? content : '[content blocks]');
+        const taskId = typeof item.taskId === 'string' ? item.taskId : undefined;
+        if (taskId && this.#acceptedAsyncTaskResults.has(taskId)) {
+          this.#pendingAsyncTaskConfirmIds.add(taskId);
+        }
         return {
           content,
           preview,
           internal: Boolean(item.internal),
-          taskId: typeof item.taskId === 'string' ? item.taskId : undefined,
+          taskId,
         };
       })
       .filter(Boolean);
@@ -1695,6 +1769,9 @@ export class Engine {
     const abortCtrl = new AbortController();
     this.#currentAbortCtrl = abortCtrl;
     this.#abortReason = null;
+    this.#asyncTaskDeliveryClosed = false;
+    this.#acceptedAsyncTaskResults.clear();
+    this.#pendingAsyncTaskConfirmIds.clear();
 
     const onExternalAbort = () => {
       if (!abortCtrl.signal.aborted) {
@@ -1702,12 +1779,14 @@ export class Engine {
         // external trigger. Callers that pass a signal without invoking
         // engine.abort() get the neutral tag 'external'.
         if (!this.#abortReason) this.#abortReason = 'external';
+        this.retireAsyncTasks('query_external');
         try { abortCtrl.abort(); } catch { /* ignore */ }
       }
     };
     if (signal) {
       if (signal.aborted) {
         this.#abortReason = 'external';
+        this.retireAsyncTasks('query_external');
         try { abortCtrl.abort(); } catch { /* ignore */ }
       } else {
         signal.addEventListener('abort', onExternalAbort, { once: true });
@@ -1723,24 +1802,13 @@ export class Engine {
       if (signal) {
         try { signal.removeEventListener('abort', onExternalAbort); } catch { /* ignore */ }
       }
+      this.retireAsyncTasks(abortCtrl.signal.aborted ? 'query_aborted' : 'query_closed');
       // Clear current-run state so engine.isRunning flips back to false
       // and a subsequent query() starts with a clean slate.
       this.#currentAbortCtrl = null;
       this.#abortReason = null;
       this.#currentThreadId = MAIN_THREAD_ID;
       this.#pendingUserMessages.length = 0;
-      // Hand back any async tasks still on the books to the coordinator so
-      // a late terminal event falls through to the legacy rescue path
-      // (new turn) instead of being silently swallowed. The coordinator
-      // is responsible for keeping its owner map in sync.
-      if (this.#pendingAsyncTaskIds.size > 0) {
-        const leftover = Array.from(this.#pendingAsyncTaskIds);
-        this.#pendingAsyncTaskIds.clear();
-        for (const tid of leftover) {
-          this.#asyncTaskToolMeta.delete(tid);
-          try { this.#asyncTaskCoordinator?.onUnregister?.(tid); } catch { /* ignore */ }
-        }
-      }
       this.#asyncTaskToolMeta.clear();
       this.#pendingTaskResultMessages.length = 0;
       this.#pendingTaskResultUpdates.length = 0;
@@ -2349,7 +2417,12 @@ export class Engine {
           }
         }
 
-        // Stream from adapter
+        // Snapshot task results carried by this exact request. Request start
+        // is not delivery: fetch may remain pending and then be aborted before
+        // the provider processes anything. Ack only after a normal stream end
+        // that included the provider's terminal stop event.
+        const requestAsyncTaskIds = Array.from(this.#pendingAsyncTaskConfirmIds);
+        let sawProviderStop = false;
         for await (const event of this.#adapter.stream({
           model: currentModel,
           system: systemPrompt,
@@ -2428,6 +2501,7 @@ export class Engine {
               break;
             }
             case 'stop':
+              sawProviderStop = true;
               stopReason = event.stopReason;
               yield event;
               break;
@@ -2453,6 +2527,19 @@ export class Engine {
               throw adapterError;
             }
           }
+        }
+        // Some proxies resolve the SSE body cleanly after AbortSignal instead
+        // of throwing. Do not treat that truncated stream as a successful
+        // model response or let it reach stop hooks/persistence.
+        if (signal?.aborted) {
+          throw new LLMAbortError();
+        }
+        // A provider terminal stop plus normal stream completion proves that
+        // the request containing these task results completed successfully.
+        // Retryable errors, aborts, idle timeouts, and truncated streams keep
+        // escrow so retry or final rescue can deliver the payload.
+        if (sawProviderStop) {
+          this.#confirmAsyncTaskResults(requestAsyncTaskIds);
         }
         traceRequest('llm.request_complete', {
           durationMs: perfNowMs() - requestPerfStart,
@@ -2880,6 +2967,11 @@ export class Engine {
           aborted: Boolean(signal?.aborted),
           remainingTaskIds: Array.from(this.#pendingAsyncTaskIds),
         };
+        if (signal?.aborted) {
+          yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
+          yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
+          break;
+        }
         if (!signal?.aborted) {
           const taskResultUpdatesAfterAsyncWait = this.#drainPendingTaskResultUpdates(conversationMessages);
           if (taskResultUpdatesAfterAsyncWait.length > 0) {
@@ -2916,10 +3008,9 @@ export class Engine {
             continue;
           }
         }
-        // If we fall through here, either abort fired or the wait
-        // exited with no payload (all tasks released themselves via
-        // engine teardown / unregister with no notification). Drop into
-        // the regular end_turn path.
+        // If we fall through here, task ownership was released without a
+        // payload (engine teardown / unregister with no notification). Drop
+        // into the regular end_turn path.
       }
 
       // If no tool calls, we're done
@@ -2927,7 +3018,7 @@ export class Engine {
         if (pendingSubAgentNotifs.length > 0) {
           acknowledgePendingNotifications(notifScope, pendingSubAgentNotifs.map(n => n.id));
         }
-        yield { type: 'turn_end', turnNumber, stopReason, threadId };
+        yield { type: 'turn_end', turnNumber, stopReason, threadId, terminal: true };
 
         // ─── Post-query: StopHooks or Legacy ─────────────
         if (this.#config._readOnly) {
@@ -3593,10 +3684,42 @@ export class Engine {
    * Install the coordinator that lets an external dispatcher (web-bridge)
    * route a background task's terminal event back to THIS engine while
    * its query() is still running. Pass `null` to detach.
-   * @param {{ onRegister?: (taskId:string, engine:Engine) => void, onUnregister?: (taskId:string) => void } | null} coord
+   * @param {{ onRegister?: (taskId:string, engine:Engine) => void, onUnregister?: (taskId:string, engine:Engine) => void, onConsumed?: (taskId:string, engine:Engine) => void, onUndelivered?: (taskId:string, delivery:object, engine:Engine) => void } | null} coord
    */
   setAsyncTaskCoordinator(coord) {
     this.#asyncTaskCoordinator = (coord && typeof coord === 'object') ? coord : null;
+  }
+
+  /**
+   * Close same-turn task delivery for this Engine. Accepted-but-undrained
+   * results are handed to the coordinator for exactly-once rescue; tasks that
+   * have not completed are merely unregistered so a future terminal event
+   * falls through to the bridge rescue path.
+   *
+   * @param {string} [reason]
+   * @param {{ rescue?: boolean }} [opts]
+   * @returns {number} number of accepted results released or discarded
+   */
+  retireAsyncTasks(reason = 'engine_retired', { rescue = true } = {}) {
+    this.#asyncTaskDeliveryClosed = true;
+    const released = rescue
+      ? this.#releaseUndeliveredAsyncTaskResults(reason)
+      : (() => {
+        const dropped = this.#acceptedAsyncTaskResults.size;
+        this.#acceptedAsyncTaskResults.clear();
+        this.#pendingAsyncTaskConfirmIds.clear();
+        return dropped;
+      })();
+    if (this.#pendingAsyncTaskIds.size > 0) {
+      const pending = Array.from(this.#pendingAsyncTaskIds);
+      this.#pendingAsyncTaskIds.clear();
+      for (const taskId of pending) {
+        this.#asyncTaskToolMeta.delete(taskId);
+        try { this.#asyncTaskCoordinator?.onUnregister?.(taskId, this); } catch { /* best-effort */ }
+      }
+    }
+    this.#wakeAsyncTaskWaiters();
+    return released;
   }
 
   /**
@@ -3633,11 +3756,12 @@ export class Engine {
    *
    * @param {string} taskId
    * @param {string|Array} content — pre-formatted task result body
-   * @param {{ preview?: string }} [opts]
+   * @param {{ preview?: string, sessionId?: string, vpId?: string, threadId?: string, taskKind?: string, taskStatus?: string }} [opts]
    * @returns {boolean}
    */
   notifyAsyncTaskCompleted(taskId, content, opts = {}) {
     if (!this.ownsPendingAsyncTask(taskId)) return false;
+    if (this.#asyncTaskDeliveryClosed || !this.#currentAbortCtrl || this.#currentAbortCtrl.signal.aborted) return false;
     if (typeof content !== 'string' && !Array.isArray(content)) return false;
     if (typeof content === 'string' && !content.trim()) return false;
     // Defensive: an empty content-block array would splice as a wire-valid
@@ -3646,11 +3770,20 @@ export class Engine {
     // always emit a non-empty string today; this guards future refactors.
     if (Array.isArray(content) && content.length === 0) return false;
     this.#pendingAsyncTaskIds.delete(taskId);
-    try { this.#asyncTaskCoordinator?.onUnregister?.(taskId); } catch { /* coord must not throw into engine */ }
     const preview = typeof opts.preview === 'string'
       ? opts.preview
       : (typeof content === 'string' ? content.slice(0, 200) : '[task result]');
     const meta = this.#asyncTaskToolMeta.get(taskId) || {};
+    const delivery = {
+      content,
+      preview,
+      sessionId: opts.sessionId,
+      vpId: opts.vpId,
+      threadId: opts.threadId || meta.threadId,
+      taskKind: opts.taskKind,
+      taskStatus: opts.taskStatus,
+    };
+    this.#acceptedAsyncTaskResults.set(taskId, delivery);
     this.#asyncTaskToolMeta.delete(taskId);
     if (typeof meta.toolCallId === 'string' && meta.toolCallId) {
       this.#pendingTaskResultUpdates.push({

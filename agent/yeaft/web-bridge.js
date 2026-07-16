@@ -341,6 +341,54 @@ const vpAborts = new Map();
  */
 const asyncTaskOwners = new Map();
 
+function deleteAsyncTaskOwnerIfMatch(taskId, engine) {
+  if (typeof taskId !== 'string' || !taskId) return false;
+  if (asyncTaskOwners.get(taskId) !== engine) return false;
+  asyncTaskOwners.delete(taskId);
+  return true;
+}
+
+/**
+ * Retire one cached VP Engine without letting stale task ownership leak into
+ * its replacement. Non-destructive retirement rescues accepted-but-undrained
+ * terminal results; destructive Session/roster removal explicitly discards
+ * them so a deleted runtime is not recreated by a rescue turn.
+ */
+function retireCachedVpEngine(key, {
+  reason = 'engine_retired',
+  rescue = true,
+  expectedEngine = null,
+} = {}) {
+  const cachedEngine = vpEngines.get(key) || null;
+  const engine = expectedEngine || cachedEngine;
+  if (!engine) {
+    if (!vpEngines.has(key)) vpEngineConfigKeys.delete(key);
+    return null;
+  }
+
+  // Destructive removal must discard accepted payloads before abort(), whose
+  // default is to rescue. Config changes and watchdog retirement keep rescue.
+  if (!rescue) {
+    try { engine.retireAsyncTasks?.(reason, { rescue: false }); } catch { /* best-effort */ }
+  }
+  let aborted = false;
+  try { aborted = engine.abort?.(reason) === true; } catch { /* best-effort */ }
+  if (!aborted) {
+    try { engine.retireAsyncTasks?.(reason, { rescue }); } catch { /* best-effort */ }
+  }
+
+  // Identity guard: a stale promise may retire after a replacement Engine was
+  // cached under the same key. Never delete the replacement or its config.
+  if (vpEngines.get(key) === engine) {
+    vpEngines.delete(key);
+    vpEngineConfigKeys.delete(key);
+  }
+  for (const [taskId, ownerEngine] of asyncTaskOwners) {
+    if (ownerEngine === engine) deleteAsyncTaskOwnerIfMatch(taskId, engine);
+  }
+  return engine;
+}
+
 /**
  * Build a coordinator for a freshly-constructed engine. The coordinator
  * keeps `asyncTaskOwners` in sync so a `taskManager` `completed` event
@@ -351,17 +399,42 @@ const asyncTaskOwners = new Map();
  * inherit a coordinator that still associates their tasks with the
  * sub-engine, not the parent.
  *
- * @returns {{ onRegister: (taskId: string, engine: import('./engine.js').Engine) => void, onUnregister: (taskId: string) => void }}
+ * @returns {{
+ *   onRegister: (taskId: string, engine: import('./engine.js').Engine) => void,
+ *   onUnregister: (taskId: string, engine: import('./engine.js').Engine) => void,
+ *   onConsumed: (taskId: string, engine: import('./engine.js').Engine) => void,
+ *   onUndelivered: (taskId: string, delivery: object, engine: import('./engine.js').Engine) => void,
+ * }}
  */
 function buildAsyncTaskCoordinator() {
+  const deleteOwnerIfMatch = (taskId, engine) => {
+    if (typeof taskId !== 'string' || !taskId) return false;
+    if (asyncTaskOwners.get(taskId) !== engine) return false;
+    asyncTaskOwners.delete(taskId);
+    return true;
+  };
   return {
     onRegister(taskId, engine) {
       if (typeof taskId !== 'string' || !taskId) return;
       asyncTaskOwners.set(taskId, engine);
     },
-    onUnregister(taskId) {
-      if (typeof taskId !== 'string' || !taskId) return;
-      asyncTaskOwners.delete(taskId);
+    onUnregister(taskId, engine) {
+      deleteOwnerIfMatch(taskId, engine);
+    },
+    onConsumed(taskId, engine) {
+      deleteOwnerIfMatch(taskId, engine);
+    },
+    onUndelivered(taskId, delivery, engine) {
+      if (!deleteOwnerIfMatch(taskId, engine)) return;
+      scheduleTaskResultRescue({
+        taskId,
+        sessionId: delivery?.sessionId || engine?.sessionId || null,
+        vpId: delivery?.vpId || engine?.vpId || null,
+        threadId: delivery?.threadId || engine?.currentThreadId || 'main',
+        content: delivery?.content,
+        taskKind: delivery?.taskKind,
+        taskStatus: delivery?.taskStatus,
+      });
     },
   };
 }
@@ -766,13 +839,15 @@ function queryTimeoutMsForSession(sessionId = null) {
  * Without a second-stage escalation the typing dots hang forever —
  * exactly the "halts mid-execution with no turn_end" symptom.
  *
- * The driver loop wraps `await runVpTurn(...)` in a Promise.race against
- * this grace-window timer. If runVpTurn doesn't return within
- * active query timeout + ESCALATE_AFTER_ABORT_MS, the driver forces its
- * `finally` block (vp_typing_end + group_message), emits a synthetic
- * `result{stopped:true}` so the frontend leaves its in-flight state,
- * and moves on. The hung tool promise leaks (JS lacks cooperative
- * promise cancellation) but the user-facing turn is closed.
+ * The driver starts this grace-window timer only after `vpAbort.signal`
+ * fires. Starting it when the turn is enqueued would turn the activity-based
+ * silence watchdog into a hard total-duration limit and kill healthy turns
+ * that keep producing LLM/tool events for several minutes.
+ *
+ * If runVpTurn still does not return within the grace period after abort,
+ * the driver emits a synthetic `result{stopped:true}`, closes the visible
+ * turn, and moves on. The hung tool promise remains observed in the
+ * background because JavaScript promises have no forced cancellation.
  *
  * 15s is wide enough that legitimate "abort took a moment to propagate"
  * paths (network teardown, finally cleanup) finish first; tight enough
@@ -1273,6 +1348,21 @@ export function __testGetOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
   return getOrCreateVpEngine(sessionId, vpId, threadId);
 }
 
+/** Test-only: retire one cached VP Engine through the production helper. */
+export function __testRetireVpEngine({
+  sessionId,
+  vpId,
+  threadId = 'main',
+  reason = 'test_retire',
+  rescue = true,
+  expectedEngine = null,
+}) {
+  return retireCachedVpEngine(threadKey(sessionId, vpId, threadId), {
+    reason,
+    rescue,
+    expectedEngine,
+  });
+}
 
 /** Test-only: inspect runtime thread rows for a VP. */
 export function __testGetVpThreads(sessionId, vpId) {
@@ -1342,11 +1432,7 @@ function getOrCreateVpEngine(sessionId, vpId, threadId = 'main') {
   const configKey = engineConfigKey(effectiveConfig);
   let eng = vpEngines.get(key);
   if (eng && vpEngineConfigKeys.get(key) === configKey) return eng;
-  if (eng) {
-    try { eng.abort?.('config_changed'); } catch { /* best-effort */ }
-    vpEngines.delete(key);
-    vpEngineConfigKeys.delete(key);
-  }
+  if (eng) retireCachedVpEngine(key, { reason: 'config_changed', rescue: true, expectedEngine: eng });
   eng = new Engine({
     adapter: session.adapter,
     trace: session.trace,
@@ -1484,6 +1570,37 @@ function formatTaskResultForVp(task) {
   return lines.join('\n');
 }
 
+function scheduleTaskResultRescue({ taskId, sessionId, vpId, threadId = 'main', content, taskKind, taskStatus }) {
+  if (!sessionId || !vpId || !taskId) return false;
+  const text = typeof content === 'string'
+    ? content
+    : (() => { try { return JSON.stringify(content); } catch { return String(content); } })();
+  if (!text.trim()) return false;
+  const msgId = `task_result_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
+  queueMicrotask(() => {
+    enqueueForVp(sessionId, vpId, {
+      sessionId,
+      taskId,
+      trigger: 'task_result',
+      _promptSuffix: '',
+      msg: {
+        id: msgId,
+        from: 'tool',
+        role: 'assistant',
+        text,
+        meta: {
+          injectedBy: 'task_result',
+          taskId,
+          taskKind,
+          taskStatus,
+          sourceThreadId: threadId,
+        },
+      },
+    });
+  });
+  return true;
+}
+
 function scheduleTaskResultReentry(event) {
   if (!event || event.event !== 'completed' || !event.task) return;
   const task = event.task;
@@ -1510,38 +1627,27 @@ function scheduleTaskResultReentry(event) {
     try {
       const accepted = ownerEngine.notifyAsyncTaskCompleted(task.id, formatted, {
         preview: `task ${task.kind || 'tool'} ${task.status}`,
+        sessionId,
+        vpId,
+        threadId,
+        taskKind: task.kind,
+        taskStatus: task.status,
       });
-      if (accepted) {
-        asyncTaskOwners.delete(task.id);
-        return;
-      }
+      if (accepted) return;
     } catch {
       // Same-turn delivery is best-effort. Fall through to the legacy
       // rescue path so we never drop a terminal event on the floor.
     }
   }
 
-  const msgId = `task_result_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
-  queueMicrotask(() => {
-    enqueueForVp(sessionId, vpId, {
-      sessionId,
-      taskId: task.id,
-      trigger: 'task_result',
-      _promptSuffix: '',
-      msg: {
-        id: msgId,
-        from: 'tool',
-        role: 'assistant',
-        text: formatted,
-        meta: {
-          injectedBy: 'task_result',
-          taskId: task.id,
-          taskKind: task.kind,
-          taskStatus: task.status,
-          sourceThreadId: threadId,
-        },
-      },
-    });
+  scheduleTaskResultRescue({
+    taskId: task.id,
+    sessionId,
+    vpId,
+    threadId,
+    content: formatted,
+    taskKind: task.kind,
+    taskStatus: task.status,
   });
 }
 
@@ -2606,12 +2712,12 @@ export function handleYeaftUpdateSessionConfig(msg) {
     if (!partial) throw new SessionConfigError('invalid_patch', 'config object required');
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const savedConfig = updateSessionConfig(yeaftDir, sessionId, partial);
-    // Drop cached engines so the next VP turn rebuilds with the new model.
+    // Retire cached engines so accepted terminal task results are rescued
+    // before the next VP turn rebuilds with the new model.
     const prefix = `${sessionId}::`;
     for (const k of Array.from(vpEngines.keys())) {
       if (k.startsWith(prefix)) {
-        vpEngines.delete(k);
-        vpEngineConfigKeys.delete(k);
+        retireCachedVpEngine(k, { reason: 'session_config_changed', rescue: true });
       }
     }
     invalidateGroupContext(sessionId);
@@ -2670,8 +2776,7 @@ export function handleYeaftDeleteSession(msg) {
     const prefix = `${sessionId}::`;
     for (const k of Array.from(vpEngines.keys())) {
       if (k.startsWith(prefix)) {
-        vpEngines.delete(k);
-        vpEngineConfigKeys.delete(k);
+        retireCachedVpEngine(k, { reason: 'session_deleted', rescue: false });
       }
     }
     sendSessionCrudResult({
@@ -2718,8 +2823,7 @@ export function handleYeaftSessionRemoveMember(msg) {
     const removedPrefix = `${sessionId}::${vpId}::`;
     for (const key of Array.from(vpEngines.keys())) {
       if (key.startsWith(removedPrefix)) {
-        vpEngines.delete(key);
-        vpEngineConfigKeys.delete(key);
+        retireCachedVpEngine(key, { reason: 'session_member_removed', rescue: false });
       }
     }
     sendSessionCrudResult({ op: 'remove_member', requestId, ok: true, session: group });
@@ -2998,14 +3102,18 @@ function queueStreamTextDelta(hctx, text, envelope) {
  * todos, debug cards, and persistence all share the same boundary.
  *
  * @param {object} event — engine event (text_delta / tool_call / …)
- * @param {{assistantTextParts:string[], toolCallsAccum:Array, toolResultsAccum:Array, thinkingBlocksAccum?:Array, resetQueryTimer:Function, sessionId?:string, vpId?:string, turnId?:string}} hctx
+ * @param {{assistantTextParts:string[], toolCallsAccum:Array, toolResultsAccum:Array, thinkingBlocksAccum?:Array, resetQueryTimer:Function, pauseQueryTimer?:Function, markEngineTerminal?:Function, sessionId?:string, vpId?:string, turnId?:string}} hctx
  */
 export function __testHandleEngineEvent(event, hctx) {
   return handleEngineEvent(event, hctx);
 }
 
 function handleEngineEvent(event, hctx) {
-  hctx.resetQueryTimer();
+  const terminalTurnEnd = event.type === 'turn_end' && event.terminal === true;
+  const managesQueryTimer = terminalTurnEnd
+    || event.type === 'async_task_wait_start'
+    || event.type === 'async_task_wait_end';
+  if (!managesQueryTimer) hctx.resetQueryTimer();
   const envelope = {
     sessionId: hctx.sessionId,
     vpId: hctx.vpId,
@@ -3171,13 +3279,33 @@ function handleEngineEvent(event, hctx) {
       // No UI action needed; outer loop sends the final result.
       break;
 
+    case 'aborted':
+      if (typeof hctx.markEngineTerminal === 'function') {
+        hctx.markEngineTerminal('aborted', { reason: event.reason || 'external' });
+      }
+      break;
+
     case 'turn_end':
-      // Most engine turn_end events are internal loop boundaries. A normal
-      // tool_use stop means "run tools, then call the adapter again", so it
-      // must NOT end the VP's visible turn. route_forward is different: the
-      // tool has handed control to another VP and Engine.query will not
-      // stream more text for this VP. Settle the current VP immediately so
-      // the roster row does not sit on "thinking" until later result cleanup.
+      // Most engine turn_end events are internal loop boundaries. Only the
+      // explicit terminal event precedes post-turn persistence/maintenance;
+      // stop the user-query silence watchdog before that best-effort work.
+      if (event.terminal && typeof hctx.pauseQueryTimer === 'function') {
+        hctx.pauseQueryTimer();
+      }
+      // A normal tool_use stop means "run tools, then call the adapter again",
+      // so it must NOT end the VP's visible turn. An aborted turn is terminal
+      // too, but the outer runVpTurn boundary owns its single stopped result
+      // and vp_turn_end emission.
+      if (event.stopReason === 'aborted') {
+        if (typeof hctx.markEngineTerminal === 'function') {
+          hctx.markEngineTerminal('aborted', event.detail || null);
+        }
+        break;
+      }
+      // route_forward is different: the tool has handed control to another
+      // VP and Engine.query will not stream more text for this VP. Settle the
+      // current VP immediately so the roster row does not sit on "thinking"
+      // until later result cleanup.
       if (event.stopReason === 'tool_handoff' && event.detail?.kind === 'route_forward') {
         try {
           if (hctx.thread) {
@@ -3374,6 +3502,10 @@ function handleEngineEvent(event, hctx) {
     // namespaced under `vp_async_task_*` to match the existing
     // `vp_thread_*` / `vp_typing_*` event family.
     case 'async_task_wait_start':
+      // The engine is intentionally parked on a tracked background task, not
+      // waiting on the LLM. Pause the LLM-silence watchdog until the task (or
+      // an explicit abort) wakes the turn.
+      if (typeof hctx.pauseQueryTimer === 'function') hctx.pauseQueryTimer();
       sendSessionEvent({
         type: 'vp_async_task_wait_start',
         turnId: event.turnId,
@@ -3385,6 +3517,7 @@ function handleEngineEvent(event, hctx) {
       break;
 
     case 'async_task_wait_end':
+      if (!event.aborted && typeof hctx.resetQueryTimer === 'function') hctx.resetQueryTimer();
       sendSessionEvent({
         type: 'vp_async_task_wait_end',
         turnId: event.turnId,
@@ -4065,41 +4198,34 @@ function startSessionLoadInBackground({ sessionId = null, sessionMeta = null, pe
 }
 
 /**
- * Wrap {@link runVpTurn} with a hard escalation deadline.
+ * Wrap {@link runVpTurn} with a second-stage abort escalation.
  *
- * The first-line defense is the in-turn watchdog inside runVpTurn: at
- * {@link QUERY_TIMEOUT_MS} of silence it calls `vpAbort.abort()`. When
- * adapters and tools cooperate with AbortSignal that's enough — the
- * engine throws AbortError, the catch handler emits `result{stopped:true}`,
- * and the driver's `finally` emits `vp_typing_end`.
+ * The in-turn watchdog is activity based: every engine event resets its
+ * silence timer, and only a genuinely silent turn calls `vpAbort.abort()`.
+ * This wrapper must therefore start its grace period from that abort signal,
+ * not from turn enqueue. A fixed enqueue deadline incorrectly terminates
+ * healthy long-running turns even while the LLM and tools keep making
+ * progress.
  *
- * This wrapper is the second-line defense for the "tool ignores signal"
- * failure mode. If runVpTurn doesn't return within
- * QUERY_TIMEOUT_MS + ESCALATE_AFTER_ABORT_MS we synthesize a clean exit:
- * emit a synthetic `result{stopped:true}` so the frontend leaves its
- * in-flight state, log loudly so operators know a tool is stuck, and
- * resolve. The hung promise leaks (the engine generator is permanently
- * blocked on a tool that ignores cancellation) but the user-facing turn
- * is closed and the next message can flow. Resolving the wrapper is
- * preferred over rejecting because the driver's catch already logs a
- * warning — we want a single, unambiguous "watchdog escalated" line in
- * the log instead of layered noise.
- *
- * Tool-level timeouts (see registry.js DEFAULT_TOOL_TIMEOUT_MS) are the
- * real cure: this wrapper should rarely fire because no tool should be
- * able to block longer than its budget. It exists as belt-and-suspenders
- * for tools that legitimately disable timeouts (long-running internal
- * helpers) or for adapter implementations that ignore signal.
+ * If an adapter or tool ignores AbortSignal and the turn still has not
+ * returned after {@link ESCALATE_AFTER_ABORT_MS}, emit one synthetic terminal
+ * result and unblock the per-VP driver. The dangling promise may eventually
+ * settle, so `escalationState` prevents it from emitting a second terminal
+ * result or overwriting the state of a newer turn.
  */
 async function runVpTurnWithEscalation(args) {
-  const { sessionId, vpId, turnId, threadId, thread } = args;
-  const queryTimeoutMs = queryTimeoutMsForSession(sessionId);
-  const deadlineMs = queryTimeoutMs + ESCALATE_AFTER_ABORT_MS;
-  await raceWithEscalation(runVpTurn(args), {
-    deadlineMs,
+  const { sessionId, vpId, turnId, threadId, thread, vpAbort } = args;
+  const escalationState = { escalated: false, terminalEmitted: false };
+
+  await raceWithEscalation(runVpTurn({ ...args, escalationState }), {
+    signal: vpAbort?.signal,
+    graceMs: ESCALATE_AFTER_ABORT_MS,
     onEscalate: () => {
+      if (escalationState.escalated) return;
+      escalationState.escalated = true;
+      escalationState.terminalEmitted = true;
       console.error(
-        `[Yeaft] runVpTurn watchdog escalation: VP ${vpId} did not return ${deadlineMs}ms after enqueue — emitting synthetic stop and unblocking driver`,
+        `[Yeaft] runVpTurn abort escalation: session=${sessionId || ''} vp=${vpId || ''} thread=${threadId || 'main'} turn=${turnId || ''} did not return ${ESCALATE_AFTER_ABORT_MS}ms after abort — emitting synthetic stop and unblocking driver`,
       );
       try {
         sendSessionOutputFrame(
@@ -4107,62 +4233,98 @@ async function runVpTurnWithEscalation(args) {
           { sessionId, vpId, turnId, threadId },
         );
       } catch { /* never crash WS pipeline */ }
-      // vp-status: when the watchdog escalates, `runVpTurn`'s inner
-      // promise is still dangling (the adapter is ignoring `signal`)
-      // and its outer `finally` won't run until the adapter eventually
-      // returns — which may be never. Settle the broker here so the
-      // row drops to idle in lockstep with the synthetic stop frame.
-      // This is the exact failure mode the watchdog exists for; not
-      // settling here would re-introduce the "stuck on streaming" bug
-      // the whole PR is meant to fix.
+      if (ctx.CONFIG) {
+        recordAgentPerfTrace(ctx.CONFIG, {
+          traceId: turnId || `abort-${Date.now()}`,
+          phase: 'vp.abort_escalation',
+          sessionId,
+          vpId,
+          turnId,
+          threadId: threadId || 'main',
+          ok: false,
+          detail: { graceMs: ESCALATE_AFTER_ABORT_MS },
+        });
+      }
+      try {
+        sendSessionEvent({
+          type: 'vp_turn_end',
+          sessionId,
+          vpId,
+          threadId: threadId || 'main',
+          turnId,
+          reason: 'aborted',
+          detail: { reason: 'abort_escalation', graceMs: ESCALATE_AFTER_ABORT_MS },
+          ts: Date.now(),
+        }, { sessionId, vpId, threadId: threadId || 'main', turnId });
+      } catch { /* never crash WS pipeline */ }
       try {
         getVpStatusBroker().settleIdle({ sessionId, vpId, threadId: threadId || 'main', title: thread?.title || '' });
       } catch (err) {
-        console.warn('[Yeaft] vp-status settleIdle (escalation) failed:', err?.message || err);
+        console.warn('[Yeaft] vp-status settleIdle (abort escalation) failed:', err?.message || err);
+      }
+      const staleEngine = escalationState.engine || null;
+      const engineKey = escalationState.engineKey || threadKey(sessionId, vpId, threadId);
+      if (staleEngine) {
+        retireCachedVpEngine(engineKey, {
+          reason: 'abort_escalation',
+          rescue: true,
+          expectedEngine: staleEngine,
+        });
+      }
+      if (thread?.engine === staleEngine) thread.engine = null;
+      if (thread) {
+        thread.status = 'idle';
+        thread.updatedAt = Date.now();
       }
     },
   });
 }
 
 /**
- * Race `inner` against a deadline timer. If `inner` resolves/rejects first,
- * the timer is cleared and the result of `inner` is returned. If the timer
- * wins, `onEscalate` is called and the wrapper resolves cleanly — the inner
- * promise is left dangling (JS has no promise cancellation) but the caller
- * is unblocked.
- *
- * `onEscalate` MUST be synchronous. We swallow synchronous throws so a
- * torn-down WS pipeline can't crash the watchdog, but a Promise rejection
- * from an async `onEscalate` would leak past this `catch`.
- *
- * Pure helper, no module-level state, exported as `__testRaceWithEscalation`
- * so the contract can be unit-tested in isolation. Inner errors propagate
- * (a tool that throws still surfaces through `runVpTurn`'s normal catch).
+ * Race `inner` against a grace timer that starts only after `signal` aborts.
+ * Resolving or rejecting `inner` first removes the abort listener and timer.
+ * If the grace timer wins, `onEscalate` is called synchronously and the
+ * wrapper resolves; the underlying promise remains observed by
+ * `Promise.race`, so a later rejection cannot become unhandled.
  *
  * @template T
  * @param {Promise<T>} inner
- * @param {{ deadlineMs: number, onEscalate: () => void }} opts
+ * @param {{ signal?: AbortSignal, graceMs: number, onEscalate: () => void }} opts
  * @returns {Promise<T|void>}
  */
-async function raceWithEscalation(inner, { deadlineMs, onEscalate }) {
-  let escalateTimer = null;
+async function raceWithEscalation(inner, { signal, graceMs, onEscalate }) {
+  let escalationTimer = null;
+  let settled = false;
+  let scheduleEscalation = null;
+
   const escalation = new Promise((resolve) => {
-    escalateTimer = setTimeout(() => {
-      try { onEscalate(); } catch { /* never throw out of the watchdog */ }
-      resolve();
-    }, deadlineMs);
-    // `unref()` lets a pending escalation timer not hold the Node event
-    // loop open (e.g. during graceful shutdown). Browsers / non-Node
-    // runtimes don't expose it, hence the typeof guard. Node's own
-    // `Timeout.unref()` does not throw, so no try/catch is needed.
-    if (escalateTimer && typeof escalateTimer.unref === 'function') {
-      escalateTimer.unref();
+    scheduleEscalation = () => {
+      if (settled || escalationTimer) return;
+      escalationTimer = setTimeout(() => {
+        escalationTimer = null;
+        try { onEscalate(); } catch { /* never throw out of the watchdog */ }
+        resolve();
+      }, Math.max(0, Number(graceMs) || 0));
+      if (escalationTimer && typeof escalationTimer.unref === 'function') {
+        escalationTimer.unref();
+      }
+    };
+
+    if (signal?.aborted) {
+      scheduleEscalation();
+    } else if (signal) {
+      signal.addEventListener('abort', scheduleEscalation, { once: true });
     }
   });
+
   try {
     return await Promise.race([inner, escalation]);
   } finally {
-    clearTimeout(escalateTimer);
+    settled = true;
+    if (escalationTimer) clearTimeout(escalationTimer);
+    if (signal && scheduleEscalation) {
+      signal.removeEventListener('abort', scheduleEscalation);
+    }
   }
 }
 
@@ -4187,7 +4349,7 @@ async function raceWithEscalation(inner, { deadlineMs, onEscalate }) {
  *
  * @param {{ prompt: string, sessionId: string, vpId: string, turnId: string, envelope: object, vpAbort: AbortController, baseSnapshot: Array }} args
  */
-async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId = 'main', thread = null, turnId, envelope: inboundEnvelope, vpAbort, baseSnapshot }) {
+async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId = 'main', thread = null, turnId, envelope: inboundEnvelope, vpAbort, baseSnapshot, escalationState = null }) {
   if (!prompt?.trim()) return;
 
   const perfTraceId = typeof inboundEnvelope?._perfTraceId === 'string' && inboundEnvelope._perfTraceId.trim()
@@ -4220,11 +4382,22 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
   let turnEndReason = 'end_turn';
   let turnEndEmitted = false;
   let turnEndDetail = null;
+  let engineTerminalReason = null;
+  let engineTerminalDetail = null;
   let handlerCtx = null;
-  const markTurnEnd = (reason) => { turnEndEmitted = true; turnEndReason = reason; };
-  const emitVpTurnEnd = (reason, detail = null) => {
-    if (turnEndEmitted) return;
+  const markEngineTerminal = (reason, detail = null) => {
+    engineTerminalReason = reason;
+    if (detail) engineTerminalDetail = detail;
+  };
+  const markTurnEnd = (reason) => {
     turnEndEmitted = true;
+    turnEndReason = reason;
+    if (escalationState) escalationState.terminalEmitted = true;
+  };
+  const emitVpTurnEnd = (reason, detail = null) => {
+    if (turnEndEmitted || escalationState?.terminalEmitted) return;
+    turnEndEmitted = true;
+    if (escalationState) escalationState.terminalEmitted = true;
     try {
       sendSessionEvent({
         type: 'vp_turn_end',
@@ -4241,6 +4414,15 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
       console.warn('[Yeaft] vp_turn_end emit failed:', err?.message || err);
     }
   };
+  const finishAbortedTurn = (detail = null) => {
+    flushStreamTextBatch(handlerCtx, envelope, { resetImmediate: true });
+    sendSessionOutputFrame({
+      type: 'result',
+      result_text: '',
+      stopped: true,
+    }, envelope);
+    emitVpTurnEnd('aborted', detail);
+  };
 
   try {
     if (session?.dreamScheduler) {
@@ -4249,8 +4431,12 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
 
     let queryTimer = null;
     const queryTimeoutMs = queryTimeoutMsForSession(sessionId);
-    const resetQueryTimer = () => {
+    const pauseQueryTimer = () => {
       if (queryTimer) clearTimeout(queryTimer);
+      queryTimer = null;
+    };
+    const resetQueryTimer = () => {
+      pauseQueryTimer();
       queryTimer = setTimeout(() => {
         if (!vpAbort.signal.aborted) {
           console.error(`[Yeaft] query timeout after ${queryTimeoutMs / 1000}s of silence — aborting VP ${vpId}`);
@@ -4296,6 +4482,10 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
       const projectRuntime = getProjectRuntimeForTurn(turnSessionMeta);
 
       vpEngine = getOrCreateVpEngine(sessionId, vpId, threadId);
+      if (escalationState) {
+        escalationState.engine = vpEngine;
+        escalationState.engineKey = threadKey(sessionId, vpId, threadId);
+      }
       if (projectRuntime) {
         vpEngine.setRuntimeManagers?.({
           skillManager: projectRuntime.skillManager,
@@ -4318,6 +4508,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         toolResultsAccum,
         thinkingBlocksAccum,
         resetQueryTimer,
+        pauseQueryTimer,
         sessionId,
         vpId,
         turnId,
@@ -4327,6 +4518,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         prompt,
         includeInitialPrompt: !inboundIsInternal,
         skipPartialHistory: false,
+        markEngineTerminal,
         markTurnEnd,
       };
       // Always trim the snapshot before passing to engine.query. This is
@@ -4411,6 +4603,10 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         },
         ...queryOpts,
       })) {
+        // An escalated turn is detached from the per-VP driver. Its stale
+        // promise may still resume if a provider/tool ignored AbortSignal;
+        // never let those late events mutate UI or runtime state.
+        if (escalationState?.escalated) continue;
         if (perfTraceId && !firstEngineEvent) {
           firstEngineEvent = true;
           recordAgentPerfTrace(ctx.CONFIG, {
@@ -4437,6 +4633,13 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
           turnId,
           threadId,
         });
+      }
+
+      if (escalationState?.escalated) return;
+
+      if (engineTerminalReason === 'aborted') {
+        finishAbortedTurn(engineTerminalDetail);
+        return;
       }
 
       flushStreamTextBatch(handlerCtx, envelope, { resetImmediate: true });
@@ -4466,31 +4669,28 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         });
       }
 
-      sendSessionOutputFrame({
-        type: 'assistant',
-        message: { content: [] },
-      }, envelope);
-      sendSessionOutputFrame({
-        type: 'result',
-        result_text: '',
-      }, envelope);
-      // Normal end-of-turn (no route_forward, no abort, no error). Emit
-      // the message-status terminal so the web client can flip the
-      // assistant message status from 'pending' → 'completed'.
-      emitVpTurnEnd('end_turn');
+      if (!escalationState?.escalated) {
+        sendSessionOutputFrame({
+          type: 'assistant',
+          message: { content: [] },
+        }, envelope);
+        sendSessionOutputFrame({
+          type: 'result',
+          result_text: '',
+        }, envelope);
+        // Normal end-of-turn (no route_forward, no abort, no error). Emit
+        // the message-status terminal so the web client can flip the
+        // assistant message status from 'pending' → 'completed'.
+        emitVpTurnEnd('end_turn');
+      }
     } finally {
       if (queryTimer) clearTimeout(queryTimer);
     }
   } catch (err) {
+    if (escalationState?.escalated) return;
     const isAbort = err && (err.name === 'AbortError' || err.name === 'LLMAbortError');
     if (isAbort) {
-      flushStreamTextBatch(handlerCtx, envelope, { resetImmediate: true });
-      sendSessionOutputFrame({
-        type: 'result',
-        result_text: '',
-        stopped: true,
-      }, envelope);
-      emitVpTurnEnd('aborted');
+      if (!escalationState?.escalated) finishAbortedTurn();
       return;
     }
 
@@ -4564,7 +4764,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
     // starts, so the user can see something failed instead of a silent
     // green-state turn end. Wrapped in its own try so a broker bug
     // can't mask the original error.
-    if (turnEndReason !== 'errored') {
+    if (!escalationState?.escalated && turnEndReason !== 'errored') {
       try {
         getVpStatusBroker().settleIdle({ sessionId, vpId, threadId: threadId || 'main', title: thread?.title || '' });
       } catch (err) {
@@ -4581,11 +4781,11 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
     // a live thread and route the new query as "related" — orphaning
     // the message in `pendingQueries` because no engine was running
     // to drain it. Always settle to 'idle' here.
-    if (thread) {
+    if (!escalationState?.escalated && thread) {
       thread.status = 'idle';
       thread.updatedAt = Date.now();
     }
-    if (perfTraceId) {
+    if (perfTraceId && !escalationState?.escalated) {
       recordAgentPerfTrace(ctx.CONFIG, {
         traceId: perfTraceId,
         phase: 'vp.turn_total',

@@ -5,13 +5,16 @@ import { tmpdir } from 'node:os';
 
 import {
   __testDrainVpDrivers,
+  __testEnqueueForVp,
   __testGetOrCreateVpEngine,
   __testHandleEngineEvent,
   __testResetVpState,
+  __testRetireVpEngine,
   __testSetSession,
   installYeaftRuntimeBridge,
 } from '../../../agent/yeaft/web-bridge.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { LLMAbortError } from '../../../agent/yeaft/llm/adapter.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import ctx from '../../../agent/context.js';
 
@@ -39,6 +42,15 @@ function makeTaskManagerStub() {
     listActiveTasks() { return []; },
     renderActiveTasksForPrompt() { return ''; },
   };
+}
+
+async function waitFor(predicate, message, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  throw new Error(message);
 }
 
 describe('web-bridge — same-turn async task injection', () => {
@@ -185,6 +197,343 @@ describe('web-bridge — same-turn async task injection', () => {
     await __testDrainVpDrivers();
     // After drain the engine must show no pending async tasks.
     expect(engine.hasPendingAsyncTasks()).toBe(false);
+  });
+
+  it.each([
+    'completion-before-abort',
+    'abort-before-completion',
+  ])('rescues task completion exactly once for %s ordering', async (ordering) => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-bridge-async-abort-race-'));
+    const taskManager = makeTaskManagerStub();
+    const persisted = [];
+    const streamInputs = [];
+    const responses = [
+      [
+        { type: 'tool_call', id: 'call-race', name: 'spawnRaceTask', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', text: 'parking' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+      [
+        { type: 'text_delta', text: 'rescued once' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+    ];
+    const adapter = {
+      async *stream(params = {}) {
+        streamInputs.push(JSON.parse(JSON.stringify(params.messages || [])));
+        const events = responses.shift();
+        if (!events) throw new Error('adapter exhausted');
+        for (const event of events) yield event;
+      },
+      async call() { return { text: 'ok', usage: {} }; },
+    };
+    const sessionLike = {
+      adapter,
+      trace: new NullTrace(),
+      config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true, language: 'en' },
+      conversationStore: {
+        append(record) { persisted.push(record); return { id: `r-${persisted.length}`, ...record }; },
+        loadRecentBySession() { return []; },
+        readCompactSummary() { return ''; },
+      },
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: new ToolRegistry(),
+      skillManager: null,
+      mcpManager: null,
+      yeaftDir: tempDir,
+      taskManager,
+      toolStats: null,
+    };
+    sessionLike.toolRegistry.register({
+      name: 'spawnRaceTask',
+      description: 'spawn task used by the abort/completion race',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, toolCtx) => {
+        toolCtx.registerAsyncTask('task-race');
+        return 'started';
+      },
+    });
+    __testSetSession(sessionLike);
+    installYeaftRuntimeBridge(sessionLike);
+    ctx.messageBuffer.length = 0;
+
+    const engine = __testGetOrCreateVpEngine('sess-race', 'vp-race', 'main');
+    const originalQuery = (async () => {
+      for await (const event of engine.query({
+        prompt: 'run race task',
+        messages: [],
+        sessionId: 'sess-race',
+        threadId: 'main',
+        vpTurnId: 'turn-race',
+      })) {
+        if (event.type !== 'async_task_wait_start') continue;
+        const emitCompletion = () => taskManager.emit({
+          type: 'yeaft_task_event',
+          event: 'completed',
+          task: {
+            id: 'task-race',
+            sessionId: 'sess-race',
+            ownerVpId: 'vp-race',
+            kind: 'shell',
+            title: 'race task',
+            status: 'succeeded',
+            source: { threadId: 'main' },
+            runtime: { command: 'echo race' },
+            result: { exitCode: 0, summary: 'race ok' },
+            log: { path: '/tmp/race.log', preview: 'race output' },
+          },
+        });
+        if (ordering === 'completion-before-abort') {
+          emitCompletion();
+          expect(engine.abort('timeout')).toBe(true);
+        } else {
+          expect(engine.abort('timeout')).toBe(true);
+          emitCompletion();
+        }
+      }
+    })();
+    await originalQuery;
+
+    await waitFor(() => streamInputs.length === 3, 'rescued task result did not open a new turn');
+    await __testDrainVpDrivers();
+
+    expect(streamInputs).toHaveLength(3);
+    expect(streamInputs.filter(input => JSON.stringify(input).includes('summary: race ok'))).toHaveLength(1);
+    const rescuedRows = persisted.filter(row => row.internal === true
+      && String(row.content).includes('summary: race ok'));
+    expect(rescuedRows).toHaveLength(1);
+    expect(rescuedRows[0]).toMatchObject({ sessionId: 'sess-race', threadId: 'main' });
+  });
+
+  it('rescues a task result once when its provider request stays pending and is aborted', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-bridge-fetch-pending-rescue-'));
+    const taskManager = makeTaskManagerStub();
+    const persisted = [];
+    const streamInputs = [];
+    let resolveThirdRequestStarted;
+    const thirdRequestStarted = new Promise(resolve => { resolveThirdRequestStarted = resolve; });
+    const responses = [
+      [
+        { type: 'tool_call', id: 'call-fetch-pending', name: 'spawnFetchPendingTask', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', text: 'parking' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+      async function* (params) {
+        resolveThirdRequestStarted();
+        await new Promise((_, reject) => {
+          const rejectAbort = () => reject(new LLMAbortError());
+          if (params.signal.aborted) rejectAbort();
+          else params.signal.addEventListener('abort', rejectAbort, { once: true });
+        });
+      },
+      [
+        { type: 'text_delta', text: 'rescued after pending fetch abort' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+    ];
+    const adapter = {
+      async *stream(params = {}) {
+        streamInputs.push(JSON.parse(JSON.stringify(params.messages || [])));
+        const response = responses.shift();
+        if (!response) throw new Error('adapter exhausted');
+        if (typeof response === 'function') {
+          for await (const event of response(params)) yield event;
+          return;
+        }
+        for (const event of response) yield event;
+      },
+      async call() { return { text: 'ok', usage: {} }; },
+    };
+    const sessionLike = {
+      adapter,
+      trace: new NullTrace(),
+      config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true, language: 'en' },
+      conversationStore: {
+        append(record) { persisted.push(record); return { id: `r-${persisted.length}`, ...record }; },
+        loadRecentBySession() { return []; },
+        readCompactSummary() { return ''; },
+      },
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: new ToolRegistry(),
+      skillManager: null,
+      mcpManager: null,
+      yeaftDir: tempDir,
+      taskManager,
+      toolStats: null,
+    };
+    sessionLike.toolRegistry.register({
+      name: 'spawnFetchPendingTask',
+      description: 'spawn task whose result request remains pending',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, toolCtx) => {
+        toolCtx.registerAsyncTask('task-fetch-pending-bridge');
+        return 'started';
+      },
+    });
+    __testSetSession(sessionLike);
+    installYeaftRuntimeBridge(sessionLike);
+    ctx.messageBuffer.length = 0;
+
+    const engine = __testGetOrCreateVpEngine('sess-fetch-pending', 'vp-fetch-pending', 'main');
+    const originalQuery = (async () => {
+      for await (const event of engine.query({
+        prompt: 'run fetch pending task',
+        messages: [],
+        sessionId: 'sess-fetch-pending',
+        threadId: 'main',
+        vpTurnId: 'turn-fetch-pending',
+      })) {
+        if (event.type !== 'async_task_wait_start') continue;
+        taskManager.emit({
+          type: 'yeaft_task_event',
+          event: 'completed',
+          task: {
+            id: 'task-fetch-pending-bridge',
+            sessionId: 'sess-fetch-pending',
+            ownerVpId: 'vp-fetch-pending',
+            kind: 'shell',
+            title: 'fetch pending task',
+            status: 'succeeded',
+            source: { threadId: 'main' },
+            runtime: { command: 'echo pending' },
+            result: { exitCode: 0, summary: 'fetch pending ok' },
+            log: { path: '/tmp/fetch-pending.log', preview: 'pending output' },
+          },
+        });
+      }
+    })();
+
+    await thirdRequestStarted;
+    expect(JSON.stringify(streamInputs[2])).toContain('summary: fetch pending ok');
+    expect(engine.abort('timeout')).toBe(true);
+    await originalQuery;
+    await waitFor(() => streamInputs.length === 4, 'fetch-pending result was not rescued');
+    await __testDrainVpDrivers();
+
+    expect(streamInputs.filter(input => JSON.stringify(input).includes('summary: fetch pending ok'))).toHaveLength(2);
+    const rescuedRows = persisted.filter(row => row.internal === true
+      && String(row.content).includes('summary: fetch pending ok'));
+    expect(rescuedRows).toHaveLength(1);
+  });
+
+  it('does not let stale retirement delete a replacement Engine or its task owner', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'yeaft-bridge-stale-retire-'));
+    const taskManager = makeTaskManagerStub();
+    const streamInputs = [];
+    const responses = [
+      [
+        { type: 'tool_call', id: 'call-new', name: 'spawnReplacementTask', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', text: 'parking replacement' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+      [
+        { type: 'text_delta', text: 'replacement consumed result' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ],
+    ];
+    const adapter = {
+      async *stream(params = {}) {
+        streamInputs.push(JSON.parse(JSON.stringify(params.messages || [])));
+        const events = responses.shift();
+        if (!events) throw new Error('adapter exhausted');
+        for (const event of events) yield event;
+      },
+      async call() { return { text: 'ok', usage: {} }; },
+    };
+    const sessionLike = {
+      adapter,
+      trace: new NullTrace(),
+      config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true, language: 'en' },
+      conversationStore: {
+        append(record) { return { id: 'id', ...record }; },
+        loadRecentBySession() { return []; },
+        readCompactSummary() { return ''; },
+      },
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: new ToolRegistry(),
+      skillManager: null,
+      mcpManager: null,
+      yeaftDir: tempDir,
+      taskManager,
+      toolStats: null,
+    };
+    sessionLike.toolRegistry.register({
+      name: 'spawnReplacementTask',
+      description: 'spawn task owned by replacement Engine',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, toolCtx) => {
+        toolCtx.registerAsyncTask('task-replacement');
+        return 'started';
+      },
+    });
+    __testSetSession(sessionLike);
+    installYeaftRuntimeBridge(sessionLike);
+    ctx.messageBuffer.length = 0;
+
+    const staleEngine = __testGetOrCreateVpEngine('sess-stale', 'vp-stale', 'main');
+    __testRetireVpEngine({
+      sessionId: 'sess-stale',
+      vpId: 'vp-stale',
+      expectedEngine: staleEngine,
+      rescue: false,
+    });
+    const replacementEngine = __testGetOrCreateVpEngine('sess-stale', 'vp-stale', 'main');
+    expect(replacementEngine).not.toBe(staleEngine);
+
+    const replacementQuery = (async () => {
+      for await (const event of replacementEngine.query({
+        prompt: 'run replacement task',
+        messages: [],
+        sessionId: 'sess-stale',
+        threadId: 'main',
+        vpTurnId: 'turn-stale',
+      })) {
+        if (event.type !== 'async_task_wait_start') continue;
+        expect(replacementEngine.ownsPendingAsyncTask('task-replacement')).toBe(true);
+        __testRetireVpEngine({
+          sessionId: 'sess-stale',
+          vpId: 'vp-stale',
+          expectedEngine: staleEngine,
+          reason: 'late_stale_retirement',
+        });
+        expect(__testGetOrCreateVpEngine('sess-stale', 'vp-stale', 'main')).toBe(replacementEngine);
+        expect(replacementEngine.ownsPendingAsyncTask('task-replacement')).toBe(true);
+
+        taskManager.emit({
+          type: 'yeaft_task_event',
+          event: 'completed',
+          task: {
+            id: 'task-replacement',
+            sessionId: 'sess-stale',
+            ownerVpId: 'vp-stale',
+            kind: 'shell',
+            title: 'replacement task',
+            status: 'succeeded',
+            source: { threadId: 'main' },
+            runtime: {},
+            result: { exitCode: 0, summary: 'replacement ok' },
+            log: { path: '/tmp/replacement.log', preview: '' },
+          },
+        });
+      }
+    })();
+    await replacementQuery;
+
+    expect(streamInputs).toHaveLength(3);
+    expect(JSON.stringify(streamInputs[2])).toContain('summary: replacement ok');
+    expect(__testGetOrCreateVpEngine('sess-stale', 'vp-stale', 'main')).toBe(replacementEngine);
   });
 
   it('falls back to the legacy enqueueForVp rescue path when the engine never registered the task', async () => {
