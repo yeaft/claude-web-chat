@@ -98,6 +98,13 @@ function isSameWorkItemVersion(current, summary) {
     && numberOrNull(current?.updatedAt) === numberOrNull(summary?.updatedAt);
 }
 
+export function isWorkItemDetailStale(detail, current) {
+  if (!detail || !current || detail.id !== current.id) return false;
+  if (isWorkItemSummaryStale(detail, current)) return true;
+  return isSameWorkItemVersion(current, detail)
+    && hasStaleActionProgress(current.actions, detail.actions);
+}
+
 export function applyWorkItemSummary(items, summary) {
   const current = Array.isArray(items) ? items : [];
   const existing = current.find(item => item.id === summary?.id) || null;

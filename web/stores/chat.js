@@ -15,6 +15,7 @@ import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
 import {
   applyWorkItemSummary,
+  isWorkItemDetailStale,
   isWorkItemSummaryStale,
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
@@ -1169,17 +1170,26 @@ export const useChatStore = defineStore('chat', {
         this.workCenterLoadingByAgent = { ...this.workCenterLoadingByAgent, [target]: false };
       }
     },
-    async getWorkItem(id, agentId = null) {
-      const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const generation = Number(this._workCenterDetailGenerationByAgent[target] || 0) + 1;
+    beginWorkCenterDetailWrite(agentId) {
+      const generation = Number(this._workCenterDetailGenerationByAgent[agentId] || 0) + 1;
       this._workCenterDetailGenerationByAgent = {
         ...this._workCenterDetailGenerationByAgent,
-        [target]: generation,
+        [agentId]: generation,
       };
+      return generation;
+    },
+    commitWorkCenterDetail(agentId, detail, generation) {
+      if (generation != null && this._workCenterDetailGenerationByAgent[agentId] !== generation) return false;
+      const current = this.workCenterDetailByAgent[agentId];
+      if (current?.id === detail?.id && isWorkItemDetailStale(detail, current)) return false;
+      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [agentId]: detail };
+      return true;
+    },
+    async getWorkItem(id, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('get', { id }, target);
-      if (this._workCenterDetailGenerationByAgent[target] === generation) {
-        this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
-      }
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async loadWorkCenterSettings(agentId = null) {
@@ -1266,39 +1276,44 @@ export const useChatStore = defineStore('chat', {
     },
     async createWorkItem(payload, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('create', payload, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async updateWorkItem(id, patch, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('update', { id, patch }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async startWorkItem(id, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('start', { id }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async cancelWorkItem(id, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('cancel', { id }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async guideWorkItemAction(id, guidance, actionId, revision, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('guide', {
         id, guidance, actionId, revision, attachments,
       }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     previewWorkItemAttachment(id, attachmentId, agentId = null) {
@@ -1307,9 +1322,10 @@ export const useChatStore = defineStore('chat', {
     },
     async retryWorkItem(id, answer = '', agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('retry', { id, answer }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     applyWorkCenterEvent(agentId, event) {

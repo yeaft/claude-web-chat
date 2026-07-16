@@ -117,6 +117,97 @@ describe('Work Center navigation', () => {
     expect(store.workCenterCreateDraft.linkedSessionIds).toEqual(['session-1']);
   });
 
+  it('does not let an older explicit detail response overwrite a newer same-item event', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterItemsByAgent = { 'agent-1': [] };
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 1, updatedAt: 10, status: 'running', failureReason: '',
+        currentActionId: 'action-1',
+        actions: [{ id: 'action-1', status: 'running', progressRevision: 1 }],
+      },
+    };
+    const pending = deferred();
+    store.workCenterRequest = vi.fn(() => pending.promise);
+
+    const load = store.getWorkItem('wi-1', 'agent-1');
+    store.applyWorkCenterEvent('agent-1', {
+      workItem: {
+        id: 'wi-1', revision: 2, updatedAt: 20, status: 'needs_attention',
+        currentActionId: 'action-1', failureReason: 'NEW failure',
+        actionStats: [{ id: 'action-1', status: 'failed', failureReason: 'NEW failure', progressRevision: 2 }],
+      },
+    });
+    pending.resolve({
+      id: 'wi-1', revision: 1, updatedAt: 10, status: 'running', failureReason: '',
+      currentActionId: 'action-1',
+      actions: [{ id: 'action-1', status: 'running', progressRevision: 1 }],
+    });
+    await load;
+
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
+      revision: 2, status: 'needs_attention', failureReason: 'NEW failure',
+      actions: [{ id: 'action-1', status: 'failed', failureReason: 'NEW failure', progressRevision: 2 }],
+    });
+  });
+
+  it('invalidates an older explicit detail response when a same-item mutation starts', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 1, updatedAt: 10, status: 'running',
+        currentActionId: 'action-1', actions: [{ id: 'action-1', progressRevision: 1 }],
+      },
+    };
+    const pendingGet = deferred();
+    store.workCenterRequest = vi.fn((operation) => {
+      if (operation === 'get') return pendingGet.promise;
+      if (operation === 'update') {
+        return Promise.resolve({
+          id: 'wi-1', revision: 2, updatedAt: 20, status: 'ready',
+          currentActionId: 'action-1', actions: [{ id: 'action-1', progressRevision: 2 }],
+        });
+      }
+      throw new Error(`Unexpected operation: ${operation}`);
+    });
+
+    const load = store.getWorkItem('wi-1', 'agent-1');
+    await store.updateWorkItem('wi-1', { title: 'Updated' }, 'agent-1');
+    pendingGet.resolve({
+      id: 'wi-1', revision: 1, updatedAt: 10, status: 'running',
+      currentActionId: 'action-1', actions: [{ id: 'action-1', progressRevision: 1 }],
+    });
+    await load;
+
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
+      revision: 2, updatedAt: 20, status: 'ready',
+      actions: [{ id: 'action-1', progressRevision: 2 }],
+    });
+  });
+
+  it('rejects an explicit detail response with stale same-version Action progress', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 2, updatedAt: 20, status: 'needs_attention', failureReason: 'NEW failure',
+        currentActionId: 'action-1',
+        actions: [{ id: 'action-1', status: 'failed', failureReason: 'NEW failure', progressRevision: 3 }],
+      },
+    };
+    store.workCenterRequest = vi.fn().mockResolvedValue({
+      id: 'wi-1', revision: 2, updatedAt: 20, status: 'running', failureReason: '',
+      currentActionId: 'action-1',
+      actions: [{ id: 'action-1', status: 'running', progressRevision: 2 }],
+    });
+
+    await store.getWorkItem('wi-1', 'agent-1');
+
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
+      status: 'needs_attention', failureReason: 'NEW failure',
+      actions: [{ id: 'action-1', status: 'failed', progressRevision: 3 }],
+    });
+  });
+
   it('ignores an older explicit detail response after a newer selection resolves', async () => {
     const store = makeStore('yeaft');
     const older = deferred();
