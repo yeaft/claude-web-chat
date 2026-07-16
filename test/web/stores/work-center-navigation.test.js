@@ -261,6 +261,110 @@ describe('Work Center navigation', () => {
       .toEqual(['action-1', 'action-2']);
   });
 
+  it('does not let a same-version Action refresh roll failed progress backwards', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterItemsByAgent = { 'agent-1': [] };
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 2, updatedAt: 20, currentActionId: 'action-2',
+        status: 'needs_attention', failureReason: 'NEW failure',
+        actions: [{
+          id: 'action-2', status: 'failed', failureReason: 'NEW failure', progressRevision: 3,
+        }],
+      },
+    };
+    const pending = deferred();
+    store.workCenterRequest = vi.fn(() => pending.promise);
+
+    const refresh = store.refreshWorkItemDetailAfterActionChange('agent-1', {
+      id: 'wi-1', revision: 2, updatedAt: 20, currentActionId: 'action-2',
+    });
+    pending.resolve({
+      id: 'wi-1', revision: 2, updatedAt: 20, currentActionId: 'action-2',
+      status: 'running', failureReason: '',
+      actions: [{ id: 'action-2', status: 'running', failureReason: '', progressRevision: 2 }],
+    });
+    await refresh;
+
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
+      status: 'needs_attention', failureReason: 'NEW failure',
+      actions: [{
+        id: 'action-2', status: 'failed', failureReason: 'NEW failure', progressRevision: 3,
+      }],
+    });
+  });
+
+  it('does not let a pending Action refresh overwrite a newer explicit detail write', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterItemsByAgent = { 'agent-1': [] };
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 1, updatedAt: 10, currentActionId: 'action-2',
+        status: 'running', actions: [{ id: 'action-2', progressRevision: 1 }],
+      },
+    };
+    const pendingRefresh = deferred();
+    store.workCenterRequest = vi.fn()
+      .mockReturnValueOnce(pendingRefresh.promise)
+      .mockResolvedValueOnce({
+        id: 'wi-1', revision: 3, updatedAt: 30, currentActionId: 'action-2',
+        status: 'needs_attention', failureReason: 'LATEST failure',
+        actions: [{ id: 'action-2', status: 'failed', failureReason: 'LATEST failure', progressRevision: 4 }],
+      });
+
+    const refresh = store.refreshWorkItemDetailAfterActionChange('agent-1', {
+      id: 'wi-1', revision: 2, updatedAt: 20, currentActionId: 'action-2',
+    });
+    await store.getWorkItem('wi-1', 'agent-1');
+    pendingRefresh.resolve({
+      id: 'wi-1', revision: 2, updatedAt: 20, currentActionId: 'action-2',
+      status: 'running', failureReason: '',
+      actions: [{ id: 'action-2', status: 'running', progressRevision: 2 }],
+    });
+    await refresh;
+
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
+      revision: 3, status: 'needs_attention', failureReason: 'LATEST failure',
+      actions: [{ id: 'action-2', status: 'failed', progressRevision: 4 }],
+    });
+  });
+
+  it('does not let a pending Action refresh overwrite a newer mutation response', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterItemsByAgent = { 'agent-1': [] };
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 1, updatedAt: 10, currentActionId: 'action-2',
+        status: 'running', actions: [{ id: 'action-2', progressRevision: 1 }],
+      },
+    };
+    const pendingRefresh = deferred();
+    store.workCenterRequest = vi.fn((operation) => {
+      if (operation === 'get') return pendingRefresh.promise;
+      if (operation === 'update') {
+        return Promise.resolve({
+          id: 'wi-1', revision: 3, updatedAt: 30, currentActionId: 'action-2',
+          status: 'ready', actions: [{ id: 'action-2', progressRevision: 4 }],
+        });
+      }
+      throw new Error(`Unexpected operation: ${operation}`);
+    });
+
+    const refresh = store.refreshWorkItemDetailAfterActionChange('agent-1', {
+      id: 'wi-1', revision: 2, updatedAt: 20, currentActionId: 'action-2',
+    });
+    await store.updateWorkItem('wi-1', { title: 'Updated' }, 'agent-1');
+    pendingRefresh.resolve({
+      id: 'wi-1', revision: 2, updatedAt: 20, currentActionId: 'action-2',
+      status: 'running', actions: [{ id: 'action-2', progressRevision: 2 }],
+    });
+    await refresh;
+
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
+      revision: 3, status: 'ready', actions: [{ id: 'action-2', progressRevision: 4 }],
+    });
+  });
+
   it('does not let a stale same-item Action refresh overwrite newer detail', async () => {
     const store = makeStore('yeaft');
     store.workCenterItemsByAgent = { 'agent-1': [] };

@@ -16,7 +16,6 @@ import { trimDebugRetention } from './helpers/debug-retention.js';
 import {
   applyWorkItemSummary,
   isWorkItemDetailStale,
-  isWorkItemSummaryStale,
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
 } from './helpers/work-center.js';
@@ -1179,7 +1178,8 @@ export const useChatStore = defineStore('chat', {
       return generation;
     },
     commitWorkCenterDetail(agentId, detail, generation) {
-      if (generation != null && this._workCenterDetailGenerationByAgent[agentId] !== generation) return false;
+      if (generation != null
+          && Number(this._workCenterDetailGenerationByAgent[agentId] || 0) !== generation) return false;
       const current = this.workCenterDetailByAgent[agentId];
       if (current?.id === detail?.id && isWorkItemDetailStale(detail, current)) return false;
       this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [agentId]: detail };
@@ -1349,6 +1349,7 @@ export const useChatStore = defineStore('chat', {
     async refreshWorkItemDetailAfterActionChange(agentId, summary) {
       const key = `${summary.id}:${summary.currentActionId}`;
       if (this._workCenterDetailRefreshByAgent[agentId] === key) return;
+      const generation = Number(this._workCenterDetailGenerationByAgent[agentId] || 0);
       this._workCenterDetailRefreshByAgent = {
         ...this._workCenterDetailRefreshByAgent,
         [agentId]: key,
@@ -1358,12 +1359,8 @@ export const useChatStore = defineStore('chat', {
         const selected = this.workCenterDetailByAgent[agentId];
         if (selected?.id === summary.id
             && selected.currentActionId === summary.currentActionId
-            && detail?.currentActionId === summary.currentActionId
-            && !isWorkItemSummaryStale(detail, selected)) {
-          this.workCenterDetailByAgent = {
-            ...this.workCenterDetailByAgent,
-            [agentId]: detail,
-          };
+            && detail?.currentActionId === summary.currentActionId) {
+          this.commitWorkCenterDetail(agentId, detail, generation);
         }
       } catch {
         // The next event or explicit selection retries; event handling remains non-fatal.
