@@ -36,6 +36,44 @@ function sumExecutionStats(values) {
   }, emptyExecutionStats());
 }
 
+const MAX_FAILURE_REASON_LENGTH = 2_000;
+const MAX_FAILURE_INSPECTION_LENGTH = 16_000;
+const SAFE_FAILURE_FALLBACK = 'The Action failed. Sensitive details were omitted.';
+const CREDENTIAL_ASSIGNMENT_PATTERN = /\b(?:[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)|api[_-]?key|access[_-]?token|authorization|password|secret|token)\s*[:=]/i;
+const PROVIDER_TOKEN_PATTERN = /\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{12,}|github_pat_[A-Za-z0-9_]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|AKIA[A-Z0-9]{12,})\b/i;
+const HIGH_ENTROPY_SECRET_PATTERN = /\b(?=[A-Za-z0-9_./+=-]{32,}\b)(?=[A-Za-z0-9_./+=-]*[A-Za-z])(?=[A-Za-z0-9_./+=-]*\d)[A-Za-z0-9_./+=-]+\b/;
+const LOCAL_PATH_ASSIGNMENT_PATTERN = /\b(?:path|cwd|file|filename|directory)\s*[:=]\s*(?:\/(?!\/)|[A-Za-z]:\\|\\\\)/i;
+const POSIX_ABSOLUTE_PATH_PATTERN = /(?:^|[\s("'`])\/(?!\/)[^\r\n]*/m;
+const WINDOWS_ABSOLUTE_PATH_PATTERN = /(?:^|[\s("'`])(?:[A-Za-z]:\\|\\\\)[^\r\n]*/m;
+
+function sanitizedUrl(raw) {
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol)) return '[redacted URL]';
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return '[redacted URL]';
+  }
+}
+
+function sanitizeFailureReason(value) {
+  const raw = typeof value === 'string'
+    ? value.trim().slice(0, MAX_FAILURE_INSPECTION_LENGTH)
+    : '';
+  if (!raw) return '';
+  const text = raw.replace(/https?:\/\/[^\s<>'"`]+/gi, sanitizedUrl);
+  if (CREDENTIAL_ASSIGNMENT_PATTERN.test(text) || PROVIDER_TOKEN_PATTERN.test(text)
+      || HIGH_ENTROPY_SECRET_PATTERN.test(text)) return SAFE_FAILURE_FALLBACK;
+  if (LOCAL_PATH_ASSIGNMENT_PATTERN.test(text) || POSIX_ABSOLUTE_PATH_PATTERN.test(text)
+      || WINDOWS_ABSOLUTE_PATH_PATTERN.test(text)) {
+    return SAFE_FAILURE_FALLBACK;
+  }
+  return text
+    .replace(/\b(?:Bearer|Basic)\s+[^\s,;]+/gi, '[redacted credential]')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .slice(0, MAX_FAILURE_REASON_LENGTH);
+}
+
 function actionExecution(action, runs) {
   const matchingRuns = Array.isArray(runs)
     ? runs.filter(run => run?.actionId === action?.id)
@@ -44,6 +82,7 @@ function actionExecution(action, runs) {
     return {
       ...executionStats(action),
       response: '',
+      failureReason: '',
       progressRevision: 0,
       messages: [],
     };
@@ -53,19 +92,29 @@ function actionExecution(action, runs) {
     count(right.progressRevision) - count(left.progressRevision)
       || count(right.startedAt) - count(left.startedAt)
   ))[0];
+  const runsByEnd = [...matchingRuns]
+    .sort((left, right) => count(right.endedAt || right.startedAt) - count(left.endedAt || left.startedAt));
+  const latestRun = runsByEnd[0];
+  const showCurrentFailure = action?.status === 'failed'
+    || ['failed', 'retryable', 'interrupted'].includes(latestRun?.status);
+  const latestFailure = showCurrentFailure
+    ? runsByEnd.find(run => sanitizeFailureReason(run?.error))
+    : null;
   const messages = [...matchingRuns]
     .sort((left, right) => count(left.startedAt) - count(right.startedAt))
     .map((run, index) => ({
       id: `${action.id}:${index + 1}`,
       status: run.status || 'running',
       text: typeof run.response === 'string' ? run.response.trim().slice(0, 16_000) : '',
+      failureReason: sanitizeFailureReason(run.error),
       createdAt: count(run.startedAt),
       updatedAt: count(run.endedAt || run.startedAt),
     }))
-    .filter(message => message.text);
+    .filter(message => message.text || message.failureReason);
   return {
     ...stats,
     response: typeof latest?.response === 'string' ? latest.response : '',
+    failureReason: sanitizeFailureReason(latestFailure?.error),
     progressRevision: count(latest?.progressRevision),
     messages,
   };
@@ -109,6 +158,7 @@ function projectAction(action, runs) {
     loopCount: execution.loopCount,
     toolCount: execution.toolCount,
     response: execution.response,
+    failureReason: execution.failureReason,
     progressRevision: execution.progressRevision,
     messages: execution.messages,
   };
@@ -125,8 +175,11 @@ function projectActionStats(detail) {
       loopCount: projected.loopCount,
       toolCount: projected.toolCount,
       response: projected.response,
+      failureReason: projected.failureReason,
       progressRevision: projected.progressRevision,
-      messages: projected.messages,
+      messages: projected.messages
+        .map(({ failureReason, ...message }) => message)
+        .filter(message => message.text),
     };
   });
 }
@@ -137,6 +190,15 @@ function waitingReason(detail) {
   return detail.runs.find(run => (
     run?.actionId === detail.currentActionId && typeof run.waitingReason === 'string'
   ))?.waitingReason || '';
+}
+
+function workItemFailureReason(detail) {
+  if (!['needs_attention', 'cancelled'].includes(detail?.status) || !Array.isArray(detail?.runs)) return '';
+  const ordered = [...detail.runs].sort((left, right) => (
+    count(right.endedAt || right.startedAt) - count(left.endedAt || left.startedAt)
+  ));
+  const current = ordered.find(run => run?.actionId === detail.currentActionId && sanitizeFailureReason(run.error));
+  return sanitizeFailureReason(current?.error || ordered.find(run => sanitizeFailureReason(run?.error))?.error);
 }
 
 /**
@@ -160,6 +222,7 @@ export function projectWorkItemDetail(detail) {
     executionStats: sumExecutionStats(Array.isArray(detail.runs) ? detail.runs : []),
     reuseMemory: detail.reuseMemory !== false,
     waitingReason: waitingReason(detail),
+    failureReason: workItemFailureReason(detail),
     origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
     linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
     attachments: projectAttachments(detail.attachments),
@@ -213,6 +276,7 @@ export function projectWorkItemSummary(detail) {
     status: detail.status,
     currentActionId: detail.currentActionId || null,
     executionStats: sumExecutionStats(Array.isArray(detail.runs) ? detail.runs : []),
+    failureReason: workItemFailureReason(detail),
     currentAction: projectedAction ? {
       id: projectedAction.id,
       type: projectedAction.type,

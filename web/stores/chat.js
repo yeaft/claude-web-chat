@@ -15,6 +15,7 @@ import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
 import {
   applyWorkItemSummary,
+  isWorkItemDetailStale,
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
 } from './helpers/work-center.js';
@@ -491,6 +492,7 @@ export const useChatStore = defineStore('chat', {
     workCenterSettingsLoadingByAgent: {},
     workCenterSettingsErrorByAgent: {},
     _workCenterSettingsGenerationByAgent: {},
+    _workCenterDetailGenerationByAgent: {},
     _workCenterDetailRefreshByAgent: {},
     workCenterPending: {},
     workCenterCreateDraft: null,
@@ -1167,10 +1169,27 @@ export const useChatStore = defineStore('chat', {
         this.workCenterLoadingByAgent = { ...this.workCenterLoadingByAgent, [target]: false };
       }
     },
+    beginWorkCenterDetailWrite(agentId) {
+      const generation = Number(this._workCenterDetailGenerationByAgent[agentId] || 0) + 1;
+      this._workCenterDetailGenerationByAgent = {
+        ...this._workCenterDetailGenerationByAgent,
+        [agentId]: generation,
+      };
+      return generation;
+    },
+    commitWorkCenterDetail(agentId, detail, generation) {
+      if (generation != null
+          && Number(this._workCenterDetailGenerationByAgent[agentId] || 0) !== generation) return false;
+      const current = this.workCenterDetailByAgent[agentId];
+      if (current?.id === detail?.id && isWorkItemDetailStale(detail, current)) return false;
+      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [agentId]: detail };
+      return true;
+    },
     async getWorkItem(id, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('get', { id }, target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async loadWorkCenterSettings(agentId = null) {
@@ -1257,39 +1276,44 @@ export const useChatStore = defineStore('chat', {
     },
     async createWorkItem(payload, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('create', payload, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async updateWorkItem(id, patch, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('update', { id, patch }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async startWorkItem(id, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('start', { id }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async cancelWorkItem(id, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('cancel', { id }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async guideWorkItemAction(id, guidance, actionId, revision, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('guide', {
         id, guidance, actionId, revision, attachments,
       }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     previewWorkItemAttachment(id, attachmentId, agentId = null) {
@@ -1298,9 +1322,10 @@ export const useChatStore = defineStore('chat', {
     },
     async retryWorkItem(id, answer = '', agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('retry', { id, answer }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     applyWorkCenterEvent(agentId, event) {
@@ -1324,6 +1349,7 @@ export const useChatStore = defineStore('chat', {
     async refreshWorkItemDetailAfterActionChange(agentId, summary) {
       const key = `${summary.id}:${summary.currentActionId}`;
       if (this._workCenterDetailRefreshByAgent[agentId] === key) return;
+      const generation = Number(this._workCenterDetailGenerationByAgent[agentId] || 0);
       this._workCenterDetailRefreshByAgent = {
         ...this._workCenterDetailRefreshByAgent,
         [agentId]: key,
@@ -1334,10 +1360,7 @@ export const useChatStore = defineStore('chat', {
         if (selected?.id === summary.id
             && selected.currentActionId === summary.currentActionId
             && detail?.currentActionId === summary.currentActionId) {
-          this.workCenterDetailByAgent = {
-            ...this.workCenterDetailByAgent,
-            [agentId]: detail,
-          };
+          this.commitWorkCenterDetail(agentId, detail, generation);
         }
       } catch {
         // The next event or explicit selection retries; event handling remains non-fatal.

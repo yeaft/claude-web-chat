@@ -341,7 +341,7 @@ export function resolvePlanningWorkflowSnapshot(settings, requestedWorkItemType 
   const typeInstruction = requestedType
     ? `The user explicitly selected workItemType "${requestedType}". Keep that exact type.`
     : 'Infer one specific workItemType from the contract.';
-  const triageInstruction = `${normalized.actionInstructions.triage}\n\n${typeInstruction}\nReusable Action templates:\n${catalog || '(none)'}\nIf the final type matches a reusable template, return its workItemType and omit actions so Work Center can apply that frozen template. Otherwise generate the smallest reliable graph of 1 to 8 Actions. Split independent work into separate Actions and declare dependsOnActionIds. Use workspaceMode read for analysis, isolated-write for independent Git changes, integrate for an integrate Action that combines isolated-write dependencies, and shared for serial side effects. Non-Git or dirty workspaces are serialized automatically. Every generated Action must state objective, approach, expectedOutcome, capability, dependencies, and workspaceMode. Add only Actions required by this task. Do not copy a generic workflow.`;
+  const triageInstruction = `${normalized.actionInstructions.triage}\n\n${typeInstruction}\nReusable Action templates:\n${catalog || '(none)'}\nIf the final type matches a reusable template, return its workItemType and omit actions so Work Center can apply that frozen template. Otherwise generate the smallest reliable graph of 1 to 8 Actions. Split independent work into separate Actions and declare dependsOnActionIds. Use workspaceMode read for analysis, isolated-write for independent Git changes, integrate for an integrate Action that combines isolated-write dependencies, and shared for serial side effects. Non-Git or dirty workspaces are serialized automatically. Every generated Action must state objective, approach, expectedOutcome, capability, dependencies, and workspaceMode. The objective, approach, and expectedOutcome must be specific to this WorkItem and that Action: describe the concrete work, the repository-aware execution method, and the verifiable result that will guide the executor. Generic Action-type boilerplate is invalid. Add only Actions required by this task. Do not copy a generic workflow.`;
   return normalizeWorkflowDefinition({
     id: 'ai-planned',
     name: 'AI planned',
@@ -434,14 +434,20 @@ export function applyGeneratedPlan(workItem, rawPlan) {
     if (seen.has(id)) throw new Error(`Duplicate AI-planned Action id: ${id}`);
     seen.add(id);
     const objective = typeof input.objective === 'string' ? input.objective.trim().slice(0, 2_000) : '';
-    if (!objective) throw new Error(`AI-planned Action "${id}" requires an objective`);
-    const defaults = defaultActionBrief(type);
-    const approach = typeof input.approach === 'string' && input.approach.trim()
-      ? input.approach.trim().slice(0, 2_000)
-      : defaults.approach;
-    const expectedOutcome = typeof input.expectedOutcome === 'string' && input.expectedOutcome.trim()
+    if (!objective) throw new Error(`AI-planned Action "${id}" requires a task-specific objective`);
+    const approach = typeof input.approach === 'string' ? input.approach.trim().slice(0, 2_000) : '';
+    if (!approach) throw new Error(`AI-planned Action "${id}" requires a task-specific approach`);
+    const expectedOutcome = typeof input.expectedOutcome === 'string'
       ? input.expectedOutcome.trim().slice(0, 2_000)
-      : defaults.expectedOutcome;
+      : '';
+    if (!expectedOutcome) {
+      throw new Error(`AI-planned Action "${id}" requires a task-specific expectedOutcome`);
+    }
+    const defaults = defaultActionBrief(type);
+    if (objective === defaults.objective || approach === defaults.approach
+      || expectedOutcome === defaults.expectedOutcome) {
+      throw new Error(`AI-planned Action "${id}" must not reuse generic Action-type brief text`);
+    }
     const actionInstruction = Object.hasOwn(source.actionInstructions, type)
       ? source.actionInstructions[type]
       : source.actionInstructions.custom;

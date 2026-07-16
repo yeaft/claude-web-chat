@@ -16,6 +16,8 @@ export default {
   data() {
     return {
       selectedId: null,
+      detailLoading: false,
+      detailError: '',
       createOpen: false,
       settingsOpen: false,
       saving: false,
@@ -198,11 +200,19 @@ export default {
       this.guidanceAttachments = [];
       this.expandedActions = {};
       this.actionsExpanded = false;
-      try { await this.store.getWorkItem(item.id, this.agentId); } catch {}
+      this.detailError = '';
+      this.detailLoading = true;
+      try {
+        await this.store.getWorkItem(item.id, this.agentId);
+      } catch (error) {
+        if (this.selectedId === item.id) this.detailError = error?.message || String(error);
+      } finally {
+        if (this.selectedId === item.id) this.detailLoading = false;
+      }
     },
     actionHasDetail(action) {
       return !!action?.brief || (Array.isArray(action?.messages) && action.messages.length > 0)
-        || !!String(action?.response || '').trim();
+        || !!String(action?.response || '').trim() || !!String(action?.failureReason || '').trim();
     },
     actionExpanded(action) {
       return !!this.expandedActions[action?.id];
@@ -536,6 +546,11 @@ export default {
 
             <section class="work-center-detail">
               <template v-if="selected">
+                <div v-if="detailLoading" class="work-center-detail-notice" aria-live="polite">{{ tr('workCenter.detailLoading', 'Loading full details…') }}</div>
+                <div v-else-if="detailError" class="work-center-detail-notice work-center-detail-error" role="alert">
+                  <strong>{{ tr('workCenter.detailLoadFailed', 'Could not load full details') }}</strong>
+                  <span>{{ detailError }}</span>
+                </div>
                 <div class="work-center-detail-heading">
                   <div>
                     <span class="work-center-status" :data-status="selected.status"><span aria-hidden="true"></span>{{ statusLabel(selected.status) }}</span>
@@ -559,6 +574,11 @@ export default {
                   <span>{{ $t('workCenter.loopCount', { count: formatCount(executionStats(selected).loopCount) }) }}</span>
                   <span>{{ $t('workCenter.toolCount', { count: formatCount(executionStats(selected).toolCount) }) }}</span>
                   <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(selected).inputTokens), output: formatCount(executionStats(selected).outputTokens), cache: formatCount((executionStats(selected).cacheReadTokens || 0) + (executionStats(selected).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(selected).totalTokens) }) }}</span>
+                </div>
+
+                <div v-if="selected.failureReason" class="work-center-section work-center-failure" role="alert">
+                  <h3>{{ tr('workCenter.failureReason', 'Failure reason') }}</h3>
+                  <p>{{ selected.failureReason }}</p>
                 </div>
 
                 <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
@@ -646,6 +666,10 @@ export default {
                         <span v-if="actionHasDetail(action)" class="work-center-action-chevron" aria-hidden="true"></span>
                       </button>
                       <div v-if="actionExpanded(action)" class="work-center-action-body">
+                        <div v-if="action.failureReason" class="work-center-action-failure" role="alert">
+                          <strong>{{ tr('workCenter.failureReason', 'Failure reason') }}</strong>
+                          <p>{{ action.failureReason }}</p>
+                        </div>
                         <dl v-if="action.brief" class="work-center-action-brief">
                           <div><dt>{{ tr('workCenter.actionObjective', 'What to do') }}</dt><dd>{{ action.brief.objective }}</dd></div>
                           <div><dt>{{ tr('workCenter.actionApproach', 'How to do it') }}</dt><dd>{{ action.brief.approach }}</dd></div>
@@ -655,7 +679,8 @@ export default {
                           <strong>{{ tr('workCenter.actionMessages', 'Action messages') }}</strong>
                           <div v-for="message in action.messages || []" :key="message.id" class="work-center-action-message" :data-status="message.status">
                             <small>{{ statusLabel(message.status) }} · {{ time(message.updatedAt || message.createdAt) }}</small>
-                            <p>{{ message.text }}</p>
+                            <p v-if="message.text">{{ message.text }}</p>
+                            <p v-if="message.failureReason" class="work-center-action-message-error"><strong>{{ tr('workCenter.failureReason', 'Failure reason') }}:</strong> {{ message.failureReason }}</p>
                           </div>
                           <div v-if="!action.messages?.length && actionResponseText(action)" class="work-center-action-response">{{ actionResponseText(action) }}</div>
                           <p v-else-if="!action.messages?.length" class="work-center-muted">{{ tr('workCenter.noActionMessages', 'No execution messages yet.') }}</p>

@@ -122,6 +122,14 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('@click="toggleAction(action)"');
     expect(page).toContain('class="work-center-action-body"');
     expect(page).toContain('class="work-center-action-brief"');
+    expect(page).toContain('v-if="detailLoading"');
+    expect(page).toContain('v-else-if="detailError"');
+    expect(page).toContain("if (this.selectedId === item.id) this.detailError = error?.message || String(error)");
+    expect(page).not.toContain('try { await this.store.getWorkItem(item.id, this.agentId); } catch {}');
+    expect(page).toContain('v-if="selected.failureReason"');
+    expect(page).toContain('v-if="action.failureReason"');
+    expect(page).toContain('message.failureReason');
+    expect(page).toContain("tr('workCenter.failureReason'");
     expect(page).toContain("tr('workCenter.actionObjective'");
     expect(page).toContain("tr('workCenter.actionApproach'");
     expect(page).toContain("tr('workCenter.actionExpectedOutcome'");
@@ -135,6 +143,7 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('.work-center-action-card');
     expect(css).toContain('.work-center-action-stats');
     expect(css).toContain('.work-center-action-response');
+    expect(css).toContain('.work-center-action-failure');
     expect(page).not.toContain('v-for="tool');
   });
 
