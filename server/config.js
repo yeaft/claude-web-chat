@@ -82,6 +82,7 @@ const DEFAULT_AGENT_SECRET = 'agent-shared-secret';
 export const CONFIG = {
   // Server settings
   port: parseInt(process.env.PORT, 10) || 3456,
+  host: process.env.SERVER_HOST || undefined,
 
   // Authentication
   skipAuth: process.env.SKIP_AUTH === 'true',

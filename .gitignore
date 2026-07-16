@@ -3,6 +3,7 @@ node_modules/
 
 # Build outputs
 web/dist/
+agent/local-runtime/
 build/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
