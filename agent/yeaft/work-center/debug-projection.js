@@ -1,5 +1,8 @@
 const MAX_DEBUG_STRING_BYTES = 64 * 1024;
 export const MAX_ACTION_REQUEST_DETAIL_BYTES = 256 * 1024;
+const MAX_ACTION_REQUEST_INPUT_BYTES = MAX_ACTION_REQUEST_DETAIL_BYTES;
+const MAX_ACTION_REQUEST_INPUT_LOOPS = 16;
+const MAX_ACTION_REQUEST_INPUT_TOOLS = MAX_ACTION_REQUEST_INPUT_LOOPS * 128;
 const MAX_DEBUG_ARRAY_ITEMS = 128;
 const SENSITIVE_NAMES = new Set([
   'apikey', 'xapikey', 'token', 'accesstoken', 'refreshtoken', 'idtoken', 'clientsecret',
@@ -142,6 +145,9 @@ function assignmentValueReplacement(text, operatorIndex) {
   let start = operatorIndex + 1;
   const valueLimit = Math.min(text.length, operatorIndex + MAX_SENSITIVE_NAME_SOURCE_CHARS);
   while (start < valueLimit && /[\t ]/.test(text[start])) start += 1;
+  if (start === valueLimit && start < text.length) {
+    return { start: operatorIndex + 1, end: text.length, value: '***' };
+  }
   if (start >= text.length || /[\r\n]/.test(text[start])) return null;
   const quote = text[start];
   if (quote === '"' || quote === "'") {
@@ -163,18 +169,30 @@ function assignmentValueReplacement(text, operatorIndex) {
 }
 
 function redactSensitiveAssignments(value, allowColon = true) {
-  let text = String(value || '');
+  const text = String(value || '');
   const replacements = sensitiveAssignmentOperators(text, allowColon)
     .map(index => assignmentValueReplacement(text, index))
-    .filter(Boolean)
-    .reverse();
-  let replacedFrom = text.length;
+    .filter(Boolean);
+  const merged = [];
   for (const replacement of replacements) {
-    if (replacement.end > replacedFrom) continue;
-    text = `${text.slice(0, replacement.start)}${replacement.value}${text.slice(replacement.end)}`;
-    replacedFrom = replacement.start;
+    const previous = merged.at(-1);
+    if (!previous || replacement.start >= previous.end) {
+      merged.push({ ...replacement });
+      continue;
+    }
+    if (replacement.end <= previous.end) continue;
+    previous.end = replacement.end;
+    previous.value = '***';
   }
-  return text;
+  if (merged.length === 0) return text;
+  const parts = [];
+  let cursor = 0;
+  for (const replacement of merged) {
+    parts.push(text.slice(cursor, replacement.start), replacement.value);
+    cursor = replacement.end;
+  }
+  parts.push(text.slice(cursor));
+  return parts.join('');
 }
 
 function isSensitiveUrlName(name) {
@@ -190,7 +208,77 @@ function isSensitiveUrlName(name) {
     if (next === decoded) return false;
     decoded = next;
   }
-  return isSensitiveName(decoded) || /%[0-9a-f]{2}/i.test(decoded);
+  return isSensitiveName(decoded) || decoded.includes('%');
+}
+
+function boundedDebugInputBytes(value, maxBytes) {
+  let bytes = 0;
+  const seen = new Set();
+  const stack = [value];
+  while (stack.length > 0 && bytes <= maxBytes) {
+    const item = stack.pop();
+    if (item == null) {
+      bytes += 4;
+      continue;
+    }
+    if (typeof item === 'string') {
+      if (item.length > maxBytes - bytes) return maxBytes + 1;
+      bytes += byteLength(item);
+      continue;
+    }
+    if (typeof item !== 'object') {
+      bytes += byteLength(item);
+      continue;
+    }
+    if (seen.has(item)) continue;
+    seen.add(item);
+    if (Array.isArray(item)) {
+      const length = Math.min(item.length, MAX_DEBUG_ARRAY_ITEMS);
+      if (item.length > length) bytes += 32;
+      for (let index = length - 1; index >= 0; index -= 1) stack.push(item[index]);
+      continue;
+    }
+    for (const key in item) {
+      if (!Object.hasOwn(item, key)) continue;
+      bytes += byteLength(key);
+      if (bytes > maxBytes) break;
+      stack.push(item[key]);
+    }
+  }
+  return bytes > maxBytes ? maxBytes + 1 : bytes;
+}
+
+export function limitActionRequestDebugInput(loopValues, toolValues) {
+  const sourceLoops = Array.isArray(loopValues) ? loopValues : [];
+  const sourceTools = Array.isArray(toolValues) ? toolValues : [];
+  const candidates = sourceLoops.slice(-MAX_ACTION_REQUEST_INPUT_LOOPS);
+  const candidateNumbers = new Set(candidates.map(loop => Number(loop?.loopNumber) || 0));
+  const toolsByLoop = new Map();
+  for (const tool of sourceTools.slice(-MAX_ACTION_REQUEST_INPUT_TOOLS)) {
+    const loopNumber = Number(tool?.loopNumber) || 0;
+    if (!candidateNumbers.has(loopNumber)) continue;
+    const tools = toolsByLoop.get(loopNumber) || [];
+    tools.push(tool);
+    toolsByLoop.set(loopNumber, tools);
+  }
+
+  let remainingBytes = MAX_ACTION_REQUEST_INPUT_BYTES;
+  const loops = [];
+  const tools = [];
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const loop = candidates[index];
+    const loopTools = toolsByLoop.get(Number(loop?.loopNumber) || 0) || [];
+    const inputBytes = boundedDebugInputBytes({ loop, tools: loopTools }, remainingBytes);
+    if (inputBytes > remainingBytes) continue;
+    loops.unshift(loop);
+    tools.unshift(...loopTools);
+    remainingBytes -= inputBytes;
+  }
+  return {
+    loops,
+    tools,
+    omittedLoopCount: sourceLoops.length - loops.length,
+  };
 }
 
 function sanitizeUrlQueryNames(value) {
@@ -339,7 +427,11 @@ export function sanitizeDebugValue(value, parent = null, key = '', seen = new We
   }
 }
 
-export function enforceActionRequestDetailBudget(detail) {
+export function enforceActionRequestDetailBudget(detail, omittedLoopCount = 0) {
+  if (omittedLoopCount > 0 && detail?.request) {
+    detail.request.truncated = true;
+    detail.request.omittedLoopCount = omittedLoopCount;
+  }
   if (!detail?.request || jsonByteLength(detail) <= MAX_ACTION_REQUEST_DETAIL_BYTES) return detail;
   detail.request.truncated = true;
   const loops = Array.isArray(detail.request.loops) ? detail.request.loops : [];

@@ -5,6 +5,7 @@ import {
   projectActionRequestIndex,
   projectWorkCenterEvent,
   projectWorkItemDetail,
+  MAX_WORK_ITEM_BROWSER_DTO_BYTES,
 } from '../../../../agent/yeaft/work-center/projection.js';
 import {
   MAX_ACTION_REQUEST_DETAIL_BYTES,
@@ -786,6 +787,18 @@ describe('Work Center event projection', () => {
             body: 'GET https://example.test/?%2561pi%255Fkey=LEAK_VALID_DOUBLE&safe=yes',
           },
         },
+        {
+          loopNumber: 10, messages: [], toolCalls: [],
+          rawResponse: {
+            body: 'GET https://example.test/?%252525zz=LEAK_RESIDUAL_PERCENT&safe=yes',
+          },
+        },
+        {
+          loopNumber: 11, messages: [], toolCalls: [],
+          rawResponse: {
+            body: 'GET https://example.test/?password%252525zz=LEAK_MIXED_PERCENT&safe=yes',
+          },
+        },
       ],
     });
     const elapsedMs = performance.now() - startedAt;
@@ -808,8 +821,14 @@ describe('Work Center event projection', () => {
       .toContain('%2561pi%255Fkey=***&safe=yes');
     expect(projected.request.loops[8].rawResponse.body)
       .toContain('%2561pi%255Fkey=***&safe=yes');
-    expect(wire).not.toContain('LEAK_DOUBLE_ENCODED');
-    expect(wire).not.toContain('LEAK_VALID_DOUBLE');
+    expect(projected.request.loops[9].rawResponse.body)
+      .toContain('%252525zz=***&safe=yes');
+    expect(projected.request.loops[10].rawResponse.body)
+      .toContain('password%252525zz=***&safe=yes');
+    for (const secret of [
+      'LEAK_DOUBLE_ENCODED', 'LEAK_VALID_DOUBLE',
+      'LEAK_RESIDUAL_PERCENT', 'LEAK_MIXED_PERCENT',
+    ]) expect(wire).not.toContain(secret);
     expect(sanitizeDiagnosticText('foo=bar&token=LEAK_SECOND&safe=yes'))
       .toBe('foo=bar&token=***&safe=yes');
     expect(sanitizeDiagnosticText('foo=bar; api.key=LEAK_THIRD, safe=yes'))
@@ -839,17 +858,28 @@ describe('Work Center event projection', () => {
       'LEAK_FIRST', 'LEAK_DIRECT_SECOND', 'LEAK_DIRECT_NOSPACE',
     ]) expect(projected.waitingReason).not.toContain(secret);
 
+    for (const [reason, secrets] of [
+      ['password="LEAK_DIRECT_QUOTED token=LEAK_DIRECT_INNER', ['LEAK_DIRECT_QUOTED', 'LEAK_DIRECT_INNER']],
+      [`password:${' '.repeat(255)}LEAK_DIRECT_255`, ['LEAK_DIRECT_255']],
+      [`password:${' '.repeat(256)}LEAK_DIRECT_256`, ['LEAK_DIRECT_256']],
+    ]) {
+      detail.waitingReason = reason;
+      projected = projectWorkItemDetail(detail);
+      for (const secret of secrets) expect(projected.waitingReason).not.toContain(secret);
+    }
+
     delete detail.waitingReason;
-    detail.runs[0].waitingReason = [
-      'Provider asks for client secret: LEAK_RUN_SECRET',
-      'Need input token=LEAK_RUN_TOKEN',
-      'Authorization: Bearer LEAK_RUN_BEARER',
-    ].join('; ');
-    projected = projectWorkItemDetail(detail);
-    expect(projected.waitingReason).toContain('Provider asks for client secret: ***');
-    expect(projected.waitingReason).toContain('Need input token=***');
-    for (const secret of ['LEAK_RUN_SECRET', 'LEAK_RUN_TOKEN', 'LEAK_RUN_BEARER']) {
-      expect(projected.waitingReason).not.toContain(secret);
+    for (const [reason, secrets] of [
+      [
+        'Provider asks for client secret: LEAK_RUN_SECRET; Need input token=LEAK_RUN_TOKEN; Authorization: Bearer LEAK_RUN_BEARER',
+        ['LEAK_RUN_SECRET', 'LEAK_RUN_TOKEN', 'LEAK_RUN_BEARER'],
+      ],
+      ['password="LEAK_RUN_QUOTED token=LEAK_RUN_INNER', ['LEAK_RUN_QUOTED', 'LEAK_RUN_INNER']],
+      [`password:${' '.repeat(256)}LEAK_RUN_256`, ['LEAK_RUN_256']],
+    ]) {
+      detail.runs[0].waitingReason = reason;
+      projected = projectWorkItemDetail(detail);
+      for (const secret of secrets) expect(projected.waitingReason).not.toContain(secret);
     }
   });
 
@@ -887,6 +917,33 @@ describe('Work Center event projection', () => {
     expect(wire).toContain('second line');
     expect(wire).toContain('[DONE]');
     expect(wire).toContain('safe');
+  });
+
+  it('bounds raw Action request inputs before sanitization', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const dense = 'token=x;'.repeat(8_192);
+    const startedAt = performance.now();
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-input-budget', tools: [] }],
+      loops: Array.from({ length: 128 }, (_, index) => ({
+        loopInstanceId: `budget-loop-${index}`,
+        loopNumber: index + 1,
+        messages: [],
+        toolCalls: [],
+        rawResponse: { body: dense },
+      })),
+    });
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(projected.request.loopCount).toBe(128);
+    expect(projected.request.truncated).toBe(true);
+    expect(projected.request.omittedLoopCount).toBeGreaterThanOrEqual(124);
+    expect(projected.request.loops.length).toBeLessThanOrEqual(4);
+    expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
+      .toBeLessThanOrEqual(MAX_ACTION_REQUEST_DETAIL_BYTES);
+    expect(elapsedMs).toBeLessThan(1_000);
   });
 
   it('enforces one UTF-8 byte budget for the complete Action request detail DTO', () => {
@@ -949,6 +1006,71 @@ describe('Work Center event projection', () => {
       progressRevision: 100,
     });
     expect(Buffer.byteLength(JSON.stringify(live), 'utf8')).toBeLessThan(40_000);
+  });
+
+  it('enforces one UTF-8 budget for large WorkItem detail and live event DTOs', () => {
+    const response = '界'.repeat(16_000);
+    const actions = Array.from({ length: 100 }, (_, index) => ({
+      id: `action-${index}`,
+      sequence: index + 1,
+      type: 'implement',
+      status: index === 99 ? 'running' : 'completed',
+      brief: {
+        objective: response,
+        approach: response,
+        expectedOutcome: response,
+      },
+    }));
+    const runs = actions.map((action, index) => ({
+      id: `run-${index}`,
+      actionId: action.id,
+      status: action.status,
+      response,
+      startedAt: index + 1,
+      progressRevision: index + 1,
+    }));
+    const detail = {
+      id: 'wi-large', revision: 1, title: 'Large', goal: 'Bound it', status: 'running',
+      currentActionId: 'action-99', actions, runs, events: [],
+    };
+    const projected = projectWorkItemDetail(detail);
+    const live = projectWorkCenterEvent({ type: 'run.progress', workItem: detail });
+
+    expect(Buffer.byteLength(JSON.stringify(projected), 'utf8'))
+      .toBeLessThanOrEqual(MAX_WORK_ITEM_BROWSER_DTO_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(live), 'utf8'))
+      .toBeLessThanOrEqual(MAX_WORK_ITEM_BROWSER_DTO_BYTES);
+    expect(projected.actions).toHaveLength(100);
+    expect(projected.actions[0]).not.toHaveProperty('messages');
+    expect(projected.actions[0]).not.toHaveProperty('response');
+    expect(projected.actions[0]).toMatchObject({ messageCount: 1, messageCursor: '1' });
+    expect(projected.actions[99].liveMessage.text).toHaveLength(16_000);
+    expect(live.workItem.actionStats).toHaveLength(100);
+    expect(live.workItem.actionStats[0]).not.toHaveProperty('liveMessage');
+    expect(live.workItem.actionStats[99].liveMessage.text).toHaveLength(16_000);
+
+    detail.events.push({
+      id: 'historical-input', actionId: 'action-0', type: 'action.input_added',
+      data: { text: 'historical guidance' }, createdAt: 200,
+    });
+    const withHistoricalInput = projectWorkItemDetail(detail);
+    expect(withHistoricalInput.actions[0]).toMatchObject({ messageCount: 2, messageCursor: '2' });
+
+    detail.currentActionId = null;
+    const latest = projectWorkItemDetail(detail);
+    expect(latest.actions[99].liveMessage.text).toHaveLength(16_000);
+    expect(latest.actions[0]).not.toHaveProperty('liveMessage');
+
+    detail.id = response.repeat(20);
+    detail.title = response.repeat(20);
+    detail.goal = response.repeat(20);
+    detail.linkedSessionIds = Array.from({ length: 100 }, () => response);
+    const minimal = projectWorkItemDetail(detail);
+    const minimalEvent = projectWorkCenterEvent({ type: response, workItem: detail });
+    expect(Buffer.byteLength(JSON.stringify(minimal), 'utf8'))
+      .toBeLessThanOrEqual(MAX_WORK_ITEM_BROWSER_DTO_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(minimalEvent), 'utf8'))
+      .toBeLessThanOrEqual(MAX_WORK_ITEM_BROWSER_DTO_BYTES);
   });
 
   it('keeps the live assistant message stable across progress and terminal detail projections', () => {

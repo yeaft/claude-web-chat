@@ -1,6 +1,7 @@
 import { reconstructDebugRawRequest } from '../debug-trace.js';
 import {
   enforceActionRequestDetailBudget,
+  limitActionRequestDebugInput,
   sanitizeDebugValue,
   sanitizeDiagnosticText,
 } from './debug-projection.js';
@@ -9,6 +10,21 @@ import { normalizeActionBrief } from './workflow.js';
 const MAX_ACTION_MESSAGE_CHARS = 16_000;
 const MAX_ACTION_DIAGNOSTIC_CHARS = 8_000;
 const MAX_ACTION_MESSAGES = 20;
+const MAX_ACTION_REQUEST_TOOL_CALLS = 128;
+const MAX_HISTORICAL_BRIEF_CHARS = 256;
+export const MAX_WORK_ITEM_BROWSER_DTO_BYTES = 512 * 1024;
+
+function jsonByteLength(value) {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function truncateUtf8(value, maxBytes) {
+  const bytes = Buffer.from(String(value || ''), 'utf8');
+  if (bytes.length <= maxBytes) return bytes.toString('utf8');
+  let end = Math.min(maxBytes, bytes.length);
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end).toString('utf8');
+}
 
 function currentAction(detail) {
   if (!detail?.currentActionId || !Array.isArray(detail.actions)) return null;
@@ -108,18 +124,25 @@ function actionMessages(action, runs, events) {
       || left.id.localeCompare(right.id));
 }
 
-function actionExecution(action, runs, events) {
+function actionExecution(action, runs, events, includeBody = true) {
   const matchingRuns = Array.isArray(runs)
     ? runs.filter(run => run?.actionId === action?.id)
     : [];
   if (matchingRuns.length === 0) {
-    const messages = Array.isArray(action?.messages)
-      ? action.messages.map(normalizeProjectedMessage).filter(Boolean)
-      : actionInputMessages(action, events);
+    const inputMessageCount = Array.isArray(events) ? events.filter(event => (
+      event?.actionId === action?.id
+        && ['action.guidance_added', 'action.input_added'].includes(event.type)
+    )).length : 0;
+    const messages = includeBody
+      ? (Array.isArray(action?.messages)
+          ? action.messages.slice(-MAX_ACTION_MESSAGES).map(normalizeProjectedMessage).filter(Boolean)
+          : actionInputMessages(action, events))
+      : [];
+    const messageCount = count(action?.messageCount) || (includeBody ? messages.length : inputMessageCount);
     return {
       ...executionStats(action?.executionStats || action),
-      response: typeof action?.response === 'string' ? action.response : '',
-      failure: action?.failure && typeof action.failure === 'object'
+      response: includeBody && typeof action?.response === 'string' ? action.response : '',
+      failure: includeBody && action?.failure && typeof action.failure === 'object'
         ? {
             error: sanitizeDiagnosticText(action.failure.error, MAX_ACTION_DIAGNOSTIC_CHARS),
             summary: sanitizeDiagnosticText(action.failure.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
@@ -128,9 +151,11 @@ function actionExecution(action, runs, events) {
         : null,
       progressRevision: count(action?.progressRevision),
       messages,
-      liveMessage: normalizeProjectedMessage(action?.liveMessage),
-      messageCount: count(action?.messageCount) || messages.length,
-      messageCursor: action?.messageCursor == null ? null : String(action.messageCursor),
+      liveMessage: includeBody ? normalizeProjectedMessage(action?.liveMessage) : null,
+      messageCount,
+      messageCursor: action?.messageCursor == null
+        ? (!includeBody && messageCount > 0 ? String(messageCount) : null)
+        : String(action.messageCursor),
     };
   }
   const stats = sumExecutionStats(matchingRuns);
@@ -143,13 +168,20 @@ function actionExecution(action, runs, events) {
         .filter(run => run?.status === 'failed')
         .sort((left, right) => count(right.endedAt || right.startedAt) - count(left.endedAt || left.startedAt))[0]
     : null;
-  const allMessages = actionMessages(action, matchingRuns, events);
+  const inputMessageCount = includeBody
+    ? 0
+    : (Array.isArray(events) ? events : []).filter(event => (
+        event?.actionId === action?.id
+          && ['action.guidance_added', 'action.input_added'].includes(event.type)
+      )).length;
+  const allMessages = includeBody ? actionMessages(action, matchingRuns, events) : [];
+  const totalMessageCount = includeBody ? allMessages.length : matchingRuns.length + inputMessageCount;
   const messages = allMessages.slice(-MAX_ACTION_MESSAGES);
-  const liveMessage = runResponseMessage(latest);
+  const liveMessage = includeBody ? runResponseMessage(latest) : null;
   return {
     ...stats,
-    response: typeof latest?.response === 'string' ? latest.response : '',
-    failure: latestFailure ? {
+    response: includeBody && typeof latest?.response === 'string' ? latest.response : '',
+    failure: includeBody && latestFailure ? {
       error: sanitizeDiagnosticText(latestFailure.error, MAX_ACTION_DIAGNOSTIC_CHARS),
       summary: sanitizeDiagnosticText(latestFailure.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
       failedAt: count(latestFailure.endedAt || latestFailure.startedAt),
@@ -157,10 +189,10 @@ function actionExecution(action, runs, events) {
     progressRevision: count(latest?.progressRevision),
     messages,
     liveMessage,
-    messageCount: allMessages.length,
-    messageCursor: allMessages.length > messages.length
-      ? String(allMessages.length - messages.length)
-      : null,
+    messageCount: totalMessageCount,
+    messageCursor: includeBody
+      ? (totalMessageCount > messages.length ? String(totalMessageCount - messages.length) : null)
+      : (totalMessageCount > 0 ? String(totalMessageCount) : null),
   };
 }
 
@@ -184,10 +216,17 @@ function projectAssignmentPolicy(policy) {
   };
 }
 
-function projectAction(action, runs, events) {
+function projectAction(action, runs, events, includeBody = true) {
   if (!action) return null;
-  const execution = actionExecution(action, runs, events);
+  const execution = actionExecution(action, runs, events, includeBody);
   const alreadyProjected = !Array.isArray(runs) && Array.isArray(action.messages);
+  const brief = alreadyProjected ? (action.brief || null) : normalizeActionBrief(action.brief, action.type);
+  const projectedBrief = includeBody || !brief
+    ? brief
+    : Object.fromEntries(Object.entries(brief).map(([key, value]) => [
+        key,
+        truncateUtf8(value, MAX_HISTORICAL_BRIEF_CHARS),
+      ]));
   return {
     id: action.id,
     sequence: action.sequence,
@@ -199,37 +238,140 @@ function projectAction(action, runs, events) {
     dependsOnStageIds: Array.isArray(action.dependsOnStageIds) ? action.dependsOnStageIds : [],
     workspaceMode: action.workspaceMode || 'shared',
     requiredRole: action.requiredRole || '',
-    brief: alreadyProjected ? (action.brief || null) : normalizeActionBrief(action.brief, action.type),
+    brief: projectedBrief,
     status: action.status,
     executionStats: executionStats(execution),
     loopCount: execution.loopCount,
     toolCount: execution.toolCount,
-    response: execution.response,
-    failure: execution.failure,
     progressRevision: execution.progressRevision,
-    messages: execution.messages,
-    liveMessage: execution.liveMessage,
     messageCount: execution.messageCount,
     messageCursor: execution.messageCursor,
+    ...(includeBody ? {
+      response: execution.response,
+      failure: execution.failure,
+      messages: execution.messages,
+      liveMessage: execution.liveMessage,
+    } : {}),
   };
+}
+
+function bodyActionId(detail) {
+  const actions = Array.isArray(detail?.actions) ? detail.actions : [];
+  if (detail?.currentActionId && actions.some(action => action?.id === detail.currentActionId)) {
+    return detail.currentActionId;
+  }
+  return [...actions].sort((left, right) => (
+    count(right?.sequence) - count(left?.sequence)
+      || String(right?.id || '').localeCompare(String(left?.id || ''))
+  ))[0]?.id || null;
+}
+
+function stripActionBody(action, keepFailure = false) {
+  if (!action) return action;
+  const projected = { ...action };
+  delete projected.response;
+  delete projected.messages;
+  delete projected.liveMessage;
+  if (!keepFailure) delete projected.failure;
+  if (projected.brief) {
+    projected.brief = Object.fromEntries(Object.entries(projected.brief).map(([key, value]) => [
+      key,
+      truncateUtf8(value, MAX_HISTORICAL_BRIEF_CHARS),
+    ]));
+  }
+  return projected;
 }
 
 function projectActionStats(detail) {
   if (!Array.isArray(detail?.actions)) return [];
+  const liveActionId = bodyActionId(detail);
   return detail.actions.map(action => {
-    const projected = projectAction(action, detail.runs, detail.events);
-    return {
+    const projected = projectAction(
+      action,
+      detail.runs,
+      detail.events,
+      action?.id === liveActionId,
+    );
+    const stats = {
       id: projected.id,
       status: projected.status,
       executionStats: projected.executionStats,
       loopCount: projected.loopCount,
       toolCount: projected.toolCount,
-      response: projected.response,
-      failure: projected.failure,
       progressRevision: projected.progressRevision,
-      ...(projected.liveMessage ? { liveMessage: projected.liveMessage } : {}),
     };
+    if (projected.id === liveActionId) {
+      stats.response = projected.response;
+      stats.failure = projected.failure;
+      if (projected.liveMessage) stats.liveMessage = projected.liveMessage;
+    }
+    return stats;
   });
+}
+
+function enforceWorkItemBrowserDtoBudget(value, options = {}) {
+  if (!value || jsonByteLength(value) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return value;
+  const dto = value;
+  const workItem = options.event === true ? dto.workItem : dto;
+  const actions = Array.isArray(workItem?.actions)
+    ? workItem.actions
+    : Array.isArray(workItem?.actionStats) ? workItem.actionStats : [];
+  const keepId = options.keepActionId || workItem?.currentActionId || actions.at(-1)?.id || null;
+  workItem.truncated = true;
+
+  for (let index = 0; index < actions.length; index += 1) {
+    if (actions[index]?.id === keepId) continue;
+    actions[index] = stripActionBody(actions[index]);
+  }
+  if (jsonByteLength(dto) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return dto;
+
+  const keep = actions.find(action => action?.id === keepId);
+  if (keep) {
+    delete keep.response;
+    delete keep.messages;
+    delete keep.liveMessage;
+  }
+  if (jsonByteLength(dto) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return dto;
+
+  const originalCount = actions.length;
+  const retained = keep ? [stripActionBody(keep, true)] : [];
+  if (Array.isArray(workItem.actions)) workItem.actions = retained;
+  else workItem.actionStats = retained;
+  workItem.omittedActionCount = originalCount - retained.length;
+  if (jsonByteLength(dto) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return dto;
+
+  if (retained[0]) {
+    delete retained[0].brief;
+    delete retained[0].failure;
+  }
+  workItem.title = truncateUtf8(workItem.title, 4 * 1024);
+  workItem.goal = truncateUtf8(workItem.goal, 4 * 1024);
+  workItem.waitingReason = truncateUtf8(workItem.waitingReason, 4 * 1024);
+  workItem.actionSummary = truncateUtf8(workItem.actionSummary, 4 * 1024);
+  if (Array.isArray(workItem.acceptanceCriteria)) workItem.acceptanceCriteria = [];
+  if (Array.isArray(workItem.linkedSessionIds)) workItem.linkedSessionIds = [];
+  if (Array.isArray(workItem.attachments)) workItem.attachments = [];
+  if (jsonByteLength(dto) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return dto;
+
+  const minimalWorkItem = {
+    id: truncateUtf8(workItem.id, 4 * 1024),
+    revision: count(workItem.revision),
+    title: truncateUtf8(workItem.title, 4 * 1024),
+    goal: truncateUtf8(workItem.goal, 4 * 1024),
+    status: truncateUtf8(workItem.status, 256),
+    currentActionId: truncateUtf8(workItem.currentActionId, 4 * 1024) || null,
+    executionStats: workItem.executionStats,
+    actionCount: count(workItem.actionCount),
+    actions: Array.isArray(workItem.actions) ? [] : undefined,
+    actionStats: Array.isArray(workItem.actionStats) ? [] : undefined,
+    truncated: true,
+    omittedActionCount: originalCount,
+    createdAt: count(workItem.createdAt),
+    updatedAt: count(workItem.updatedAt),
+  };
+  if (options.event === true) dto.workItem = minimalWorkItem;
+  else return minimalWorkItem;
+  return dto;
 }
 
 function waitingReason(detail) {
@@ -246,7 +388,8 @@ function waitingReason(detail) {
  */
 export function projectWorkItemDetail(detail) {
   if (!detail) return null;
-  return {
+  const liveActionId = bodyActionId(detail);
+  const projected = {
     id: detail.id,
     revision: detail.revision,
     title: detail.title,
@@ -273,9 +416,15 @@ export function projectWorkItemDetail(detail) {
       ? detail.actions.map(action => action.type).filter(Boolean).join(' → ')
       : String(detail.actionSummary || ''),
     actions: Array.isArray(detail.actions)
-      ? detail.actions.map(action => projectAction(action, detail.runs, detail.events))
+      ? detail.actions.map(action => projectAction(
+          action,
+          detail.runs,
+          detail.events,
+          action?.id === liveActionId,
+        ))
       : [],
   };
+  return enforceWorkItemBrowserDtoBudget(projected, { keepActionId: liveActionId });
 }
 
 /**
@@ -304,7 +453,7 @@ export function projectWorkItemSummary(detail) {
     };
   }
   const action = currentAction(detail);
-  const projectedAction = action ? projectAction(action, detail.runs, detail.events) : null;
+  const projectedAction = action ? projectAction(action, detail.runs, detail.events, false) : null;
   return {
     id: detail.id,
     revision: detail.revision,
@@ -334,13 +483,14 @@ export function projectWorkItemSummary(detail) {
 }
 
 export function projectWorkCenterEvent(event) {
-  return {
-    type: event?.type || 'work_item.updated',
+  const liveActionId = bodyActionId(event?.workItem);
+  return enforceWorkItemBrowserDtoBudget({
+    type: truncateUtf8(event?.type || 'work_item.updated', 256),
     workItem: {
       ...projectWorkItemSummary(event?.workItem),
       actionStats: projectActionStats(event?.workItem),
     },
-  };
+  }, { event: true, keepActionId: liveActionId });
 }
 
 function projectDebugUsage(value) {
@@ -396,8 +546,14 @@ export function projectActionRequestIndex(action, entries) {
 export function projectActionRequestDetail(action, run, history) {
   const turn = Array.isArray(history?.turns) ? history.turns[0] : null;
   if (!turn) return null;
-  const tools = Array.isArray(turn.tools) ? turn.tools : [];
-  const loops = (Array.isArray(history?.loops) ? history.loops : []).map(loop => ({
+  const sourceLoops = Array.isArray(history?.loops) ? history.loops : [];
+  const limited = limitActionRequestDebugInput(sourceLoops, turn.tools);
+  const tools = limited.tools;
+  const toolsByCall = new Map(tools.map(tool => [
+    `${count(tool.loopNumber)}:${tool.callId}`,
+    tool,
+  ]));
+  const loops = limited.loops.map(loop => ({
     id: loop.loopInstanceId || `${turn.turnId}:${loop.loopNumber}`,
     loopNumber: count(loop.loopNumber),
     model: loop.model || run.modelSnapshot?.id || null,
@@ -409,17 +565,19 @@ export function projectActionRequestDetail(action, run, history) {
     ttfbMs: loop.ttfbMs == null ? null : count(loop.ttfbMs),
     stopReason: loop.stopReason || null,
     at: count(loop.at),
-    tools: (Array.isArray(loop.toolCalls) ? loop.toolCalls : []).map(call => {
-      const result = tools.find(tool => tool.callId === call.id && count(tool.loopNumber) === count(loop.loopNumber));
-      return {
-        id: call.id || null,
-        name: call.name || result?.name || '?',
-        input: sanitizeDebugValue(call.input),
-        output: sanitizeDebugValue(result?.toolOutput ?? null),
-        durationMs: count(result?.durationMs),
-        isError: result?.isError === true,
-      };
-    }),
+    tools: (Array.isArray(loop.toolCalls) ? loop.toolCalls : [])
+      .slice(0, MAX_ACTION_REQUEST_TOOL_CALLS)
+      .map(call => {
+        const result = toolsByCall.get(`${count(loop.loopNumber)}:${call.id}`);
+        return {
+          id: call.id || null,
+          name: call.name || result?.name || '?',
+          input: sanitizeDebugValue(call.input),
+          output: sanitizeDebugValue(result?.toolOutput ?? null),
+          durationMs: count(result?.durationMs),
+          isError: result?.isError === true,
+        };
+      }),
     rawRequest: sanitizeDebugValue(reconstructDebugRawRequest(
       loop.rawRequestBase ?? loop.requestBase?.rawRequest ?? null,
       loop.requestDelta || null,
@@ -439,10 +597,10 @@ export function projectActionRequestDetail(action, run, history) {
       } : null,
       openedAt: count(turn.openedAt || run.startedAt),
       closedAt: count(turn.closedAt || run.endedAt),
-      loopCount: loops.length,
+      loopCount: sourceLoops.length,
       totalMs: count(turn.totalMs),
       totalTokens: count(turn.totalTokens),
       loops,
     },
-  });
+  }, limited.omittedLoopCount);
 }
