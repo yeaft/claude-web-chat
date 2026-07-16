@@ -25,11 +25,11 @@ describe('Work Center summary state', () => {
   it('merges a redacted summary without dropping loaded detail data', () => {
     const merged = mergeWorkItemSummary(detail, {
       id: 'wi-1', revision: 3, title: 'Updated title', status: 'waiting', updatedAt: 31,
-      workItemType: 'bug-fix', planningMode: 'ai',
+      workItemType: 'bug-fix', planningMode: 'ai', failureReason: 'Action failed safely',
     });
     expect(merged).toMatchObject({
       title: 'Updated title', status: 'waiting', updatedAt: 31,
-      workItemType: 'bug-fix', planningMode: 'ai',
+      workItemType: 'bug-fix', planningMode: 'ai', failureReason: 'Action failed safely',
     });
     expect(merged.actions).toEqual(detail.actions);
     expect(merged.workDir).toBe('/local/project');
@@ -47,13 +47,13 @@ describe('Work Center summary state', () => {
       actionStats: [{
         id: 'action-1', status: 'running', loopCount: 4, toolCount: 9,
         executionStats: { llmRequestCount: 5, loopCount: 4, toolCount: 9, totalTokens: 450 },
-        response: 'Implemented the fix', progressRevision: 3,
+        response: 'Implemented the fix', failureReason: 'Tests failed', progressRevision: 3,
       }],
     });
     expect(merged.actions).toEqual([{
       id: 'action-1', status: 'running', loopCount: 4, toolCount: 9,
       executionStats: { llmRequestCount: 5, loopCount: 4, toolCount: 9, totalTokens: 450 },
-      response: 'Implemented the fix', progressRevision: 3,
+      response: 'Implemented the fix', failureReason: 'Tests failed', progressRevision: 3,
     }]);
     expect(merged.actions[0].executionStats.totalTokens).toBe(450);
   });

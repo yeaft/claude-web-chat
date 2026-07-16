@@ -8,6 +8,7 @@ const DETAIL_SUMMARY_FIELDS = Object.freeze([
   'currentActionId',
   'currentAction',
   'executionStats',
+  'failureReason',
   'origin',
   'linkedSessionIds',
   'createdAt',

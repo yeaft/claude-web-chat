@@ -29,7 +29,8 @@ function internalDetail() {
       id: 'r-2', actionId: 'a-1', workItemId: 'wi-1', status: 'waiting', startedAt: 2,
       response: 'Reviewed the change and found one compatibility decision.',
       summary: 'Review needs a compatibility choice', evidence: [{ output: 'secret latest evidence' }],
-      waitingReason: 'Choose the compatibility behavior', error: 'private latest error',
+      waitingReason: 'Choose the compatibility behavior',
+      error: 'Request https://user:pass@example.com/private?token=secret failed in /home/alice/private/project with api_key=top-secret',
       loopCount: 2, toolCount: 5, llmRequestCount: 3,
       inputTokens: 200, outputTokens: 50, cacheReadTokens: 20, cacheWriteTokens: 10,
       totalTokens: 280, progressRevision: 4,
@@ -61,7 +62,7 @@ describe('Work Center event projection', () => {
       id: 'wi-1', status: 'waiting', workItemType: 'bug-fix', planningMode: 'ai',
     });
     expect(projected.workItem.actionStats).toEqual([{
-      id: 'a-1', status: 'completed',
+      id: 'a-1', status: 'completed', failureReason: '',
       executionStats: {
         llmRequestCount: 5, loopCount: 3, toolCount: 8,
         inputTokens: 300, outputTokens: 75, cacheReadTokens: 30, cacheWriteTokens: 15,
@@ -79,7 +80,8 @@ describe('Work Center event projection', () => {
     const wire = JSON.stringify(projected);
     for (const secret of [
       '/project', 'provider/review', 'Review needs a compatibility choice', 'secret latest evidence',
-      'private latest error', 'secret-message', 'linus', 'Choose the compatibility behavior',
+      'top-secret', 'user:pass', '?token=secret', '/home/alice/private/project',
+      'secret-message', 'linus', 'Choose the compatibility behavior',
     ]) {
       expect(wire).not.toContain(secret);
     }
@@ -121,11 +123,57 @@ describe('Work Center event projection', () => {
     const wire = JSON.stringify(projected);
     for (const secret of [
       '/project', 'provider/review', 'Review needs a compatibility choice', 'secret latest evidence',
-      'private latest error', 'secret persona', 'allowedToolNames', '/private/read',
+      'top-secret', 'user:pass', '?token=secret', '/home/alice/private/project',
+      'secret persona', 'allowedToolNames', '/private/read',
       'secret-message', 'candidateVpIds', 'private.png', 'secret-digest',
     ]) {
       expect(wire).not.toContain(secret);
     }
+  });
+
+  it('projects a bounded, sanitized failure reason for failed Work Item and Action detail', () => {
+    const detail = internalDetail();
+    detail.status = 'needs_attention';
+    detail.actions[0].status = 'failed';
+    detail.runs[0].status = 'failed';
+
+    const projected = projectWorkItemDetail(detail);
+
+    expect(projected.failureReason).toBe('Request https://example.com/private failed in [local path] with api_key=[redacted]');
+    expect(projected.actions[0].failureReason).toBe(projected.failureReason);
+    expect(projected.actions[0].messages.at(-1)).toMatchObject({
+      status: 'failed', failureReason: projected.failureReason,
+    });
+    expect(JSON.stringify(projected)).not.toMatch(/user:pass|token=secret|top-secret|\/home\/alice/);
+  });
+
+  it('projects sanitized failure reasons in live events without leaking raw Run detail', () => {
+    const detail = internalDetail();
+    detail.status = 'needs_attention';
+    detail.actions[0].status = 'failed';
+    detail.runs[0].status = 'failed';
+
+    const projected = projectWorkCenterEvent({ type: 'run.finished', workItem: detail });
+
+    expect(projected.workItem.failureReason).toBe('Request https://example.com/private failed in [local path] with api_key=[redacted]');
+    expect(projected.workItem.actionStats[0].failureReason).toBe(projected.workItem.failureReason);
+    expect(JSON.stringify(projected)).not.toMatch(/user:pass|token=secret|top-secret|\/home\/alice/);
+  });
+
+  it('keeps historical failed attempts without showing a stale current failure after success', () => {
+    const detail = internalDetail();
+    detail.status = 'done';
+    detail.actions[0].status = 'completed';
+    detail.runs[0].status = 'completed';
+    detail.runs[1].error = 'Earlier attempt failed';
+
+    const projected = projectWorkItemDetail(detail);
+
+    expect(projected.failureReason).toBe('');
+    expect(projected.actions[0].failureReason).toBe('');
+    expect(projected.actions[0].messages.find(message => message.status === 'retryable')).toMatchObject({
+      failureReason: 'Earlier attempt failed',
+    });
   });
 
   it('uses the highest progress revision after retry even when the clock moves backward', () => {
