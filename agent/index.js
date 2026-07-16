@@ -25,6 +25,7 @@ ctx.pkgName = pkg.name;
 
 // 配置文件路径（向后兼容：先查当前目录 .claude-agent.json）
 const LOCAL_CONFIG_FILE = join(process.cwd(), '.claude-agent.json');
+const IS_LOCAL_RUN = process.env.YEAFT_LOCAL_RUN === 'true';
 
 // 加载或创建配置
 function loadConfig() {
@@ -35,6 +36,10 @@ function loadConfig() {
     reconnectInterval: 5000,
     agentSecret: 'agent-shared-secret'
   };
+
+  // Local run receives its complete connection identity from the launcher and
+  // must not inherit a remote agent's persisted configuration.
+  if (IS_LOCAL_RUN) return defaults;
 
   // Priority 1: Local .claude-agent.json (backward compat)
   if (existsSync(LOCAL_CONFIG_FILE)) {
@@ -57,6 +62,7 @@ function loadConfig() {
 }
 
 function saveConfig(config) {
+  if (IS_LOCAL_RUN) return;
   writeFileSync(LOCAL_CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
@@ -336,8 +342,10 @@ process.on('SIGTERM', async () => {
 
 // 启动 - 先确保依赖，再检测能力，预热 models.dev 缓存，再连接
 (async () => {
-  await ensureDependencies();
-  await ensureYeaftSkills();
+  if (process.env.YEAFT_SKIP_STARTUP_INSTALLS !== 'true') {
+    await ensureDependencies();
+    await ensureYeaftSkills();
+  }
   ctx.agentCapabilities = await detectCapabilities();
   // Prime the models.dev community catalog so the Yeaft engine's *synchronous*
   // hot path (engine.js / config.js / cli.js all read context-window inline)
