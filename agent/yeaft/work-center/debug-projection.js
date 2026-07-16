@@ -43,16 +43,27 @@ function isSensitiveName(name) {
   return SENSITIVE_NAMES.has(normalizeSensitiveName(name));
 }
 
+function decodeDoubleQuotedName(value) {
+  try {
+    return JSON.parse(`"${value}"`);
+  } catch {
+    return null;
+  }
+}
+
 function containsSensitiveFieldSyntax(value) {
   const text = String(value || '');
   const quotedPatterns = [
-    /"((?:\\.|[^"\\])*)"\s*[:=]/g,
-    /'((?:\\.|[^'\\])*)'\s*[:=]/g,
+    [/"((?:\\.|[^"\\])*)"\s*[:=]/g, name => {
+      const decoded = decodeDoubleQuotedName(name);
+      return decoded == null || isSensitiveName(decoded);
+    }],
+    [/'((?:\\.|[^'\\])*)'\s*[:=]/g, name => isSensitiveName(name)],
   ];
-  for (const fieldPattern of quotedPatterns) {
+  for (const [fieldPattern, isSensitive] of quotedPatterns) {
     let match;
     while ((match = fieldPattern.exec(text))) {
-      if (isSensitiveName(match[1])) return true;
+      if (isSensitive(match[1])) return true;
     }
   }
   const bareFieldPattern = /(?:^|[,{;\s])([a-z][a-z0-9_-]*)\s*[:=]/gi;
@@ -82,24 +93,29 @@ export function sanitizeDebugUrl(value) {
   }
 }
 
+function sensitiveNamePattern() {
+  const gap = '[^a-z0-9\\r\\n:=]*';
+  return [...SENSITIVE_NAMES]
+    .sort((left, right) => right.length - left.length)
+    .map(name => [...name].join(gap))
+    .join('|');
+}
+
+const SENSITIVE_NAME_PATTERN = sensitiveNamePattern();
+
 export function sanitizeDiagnosticText(value, maxBytes = 8 * 1024) {
   let text = String(value || '');
   text = text.replace(/https?:\/\/[^\s"'<>]+/gi, match => sanitizeDebugUrl(match));
-  const names = [
-    'api[_-]?key', 'x[_-]?api[_-]?key', 'token', 'access[_-]?token', 'refresh[_-]?token',
-    'id[_-]?token', 'client[_-]?secret', 'secret', 'credential', 'password', 'passwd',
-    'authorization', 'proxy[_-]?authorization', 'cookie', 'set[_-]?cookie',
-  ].join('|');
   text = text.replace(
-    new RegExp(`\\b(${names})\\b(["']?\\s*[:=]\\s*)"[^"\\r\\n]*"`, 'gi'),
+    new RegExp(`\\b(${SENSITIVE_NAME_PATTERN})(["']?\\s*[:=]\\s*)"[^"\\r\\n]*"`, 'gi'),
     '$1$2"***"',
   );
   text = text.replace(
-    new RegExp(`\\b(${names})\\b(["']?\\s*[:=]\\s*)'[^'\\r\\n]*'`, 'gi'),
+    new RegExp(`\\b(${SENSITIVE_NAME_PATTERN})(["']?\\s*[:=]\\s*)'[^'\\r\\n]*'`, 'gi'),
     "$1$2'***'",
   );
   text = text.replace(
-    new RegExp(`\\b(${names})\\b(\\s*[:=]\\s*)(?:Bearer\\s+)?[^\\s,;}\\]]+`, 'gi'),
+    new RegExp(`\\b(${SENSITIVE_NAME_PATTERN})(\\s*[:=]\\s*)(?:Bearer\\s+)?[^\\s,;}\\]]+`, 'gi'),
     '$1$2***',
   );
   text = text.replace(/\b(Bearer)\s+[^\s,;}\]]+/gi, '$1 ***');

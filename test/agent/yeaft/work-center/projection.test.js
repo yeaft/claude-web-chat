@@ -6,7 +6,10 @@ import {
   projectWorkCenterEvent,
   projectWorkItemDetail,
 } from '../../../../agent/yeaft/work-center/projection.js';
-import { MAX_ACTION_REQUEST_DETAIL_BYTES } from '../../../../agent/yeaft/work-center/debug-projection.js';
+import {
+  MAX_ACTION_REQUEST_DETAIL_BYTES,
+  sanitizeDiagnosticText,
+} from '../../../../agent/yeaft/work-center/debug-projection.js';
 
 function internalDetail() {
   return {
@@ -466,6 +469,72 @@ describe('Work Center event projection', () => {
       expect(loop.rawResponse.body).toBe('[redacted malformed JSON: sensitive data]');
     }
     expect(projected.request.loops.at(-1).rawResponse.body).toBe('{"api.key":"***"}');
+  });
+
+  it('redacts normalized SSE metadata names and unicode-escaped malformed JSON keys', () => {
+    const detail = internalDetail();
+    const action = detail.actions[0];
+    const run = detail.runs[0];
+    const projected = projectActionRequestDetail(action, run, {
+      turns: [{ turnId: 'request-normalized-boundary-redaction', tools: [] }],
+      loops: [
+        {
+          loopNumber: 1, messages: [], toolCalls: [],
+          rawResponse: { format: 'sse', body: 'event: api.key=LEAK_META_DOT\ndata: safe\n\n' },
+        },
+        {
+          loopNumber: 2, messages: [], toolCalls: [],
+          rawResponse: { format: 'sse', body: 'id: x api key=LEAK_META_SPACE\ndata: [DONE]\n\n' },
+        },
+        {
+          loopNumber: 3, messages: [], toolCalls: [],
+          rawResponse: { format: 'sse', body: ': api$key=LEAK_META_DOLLAR\ndata: safe\n\n' },
+        },
+        {
+          loopNumber: 4, messages: [], toolCalls: [],
+          rawResponse: { body: '{"api\\u002ekey":"LEAK_UNICODE' },
+        },
+        {
+          loopNumber: 5, messages: [], toolCalls: [],
+          rawResponse: {
+            format: 'sse',
+            body: 'data: {"api\\u002ekey":"LEAK_SSE_UNICODE\n\n',
+          },
+        },
+        {
+          loopNumber: 6, messages: [], toolCalls: [],
+          rawResponse: { body: '{"api\\u002ekey":"LEAK_VALID_UNICODE"}' },
+        },
+      ],
+    });
+
+    const wire = JSON.stringify(projected);
+    for (const secret of [
+      'LEAK_META_DOT', 'LEAK_META_SPACE', 'LEAK_META_DOLLAR',
+      'LEAK_UNICODE', 'LEAK_SSE_UNICODE', 'LEAK_VALID_UNICODE',
+    ]) expect(wire).not.toContain(secret);
+    expect(projected.request.loops[0].rawResponse.body).toContain('event: api.key=***');
+    expect(projected.request.loops[1].rawResponse.body).toContain('id: x api key=***');
+    expect(projected.request.loops[2].rawResponse.body).toContain(': api$key=***');
+    expect(projected.request.loops[3].rawResponse.body)
+      .toBe('[redacted malformed JSON: sensitive data]');
+    expect(projected.request.loops[4].rawResponse.body)
+      .toContain('[redacted SSE event: malformed sensitive data]');
+    expect(projected.request.loops[5].rawResponse.body).toBe('{"api.key":"***"}');
+    const failureWire = JSON.stringify(projectWorkItemDetail({
+      ...detail,
+      actions: [{
+        ...action,
+        failure: {
+          error: '(password=LEAK_PAREN) and prefix x-api.key=LEAK_PREFIX',
+          summary: 'safe assignment: monkey=value',
+          failedAt: 10,
+        },
+      }],
+    }));
+    expect(failureWire).not.toContain('LEAK_PAREN');
+    expect(failureWire).not.toContain('LEAK_PREFIX');
+    expect(sanitizeDiagnosticText('safe assignment: monkey=value')).toContain('monkey=value');
   });
 
   it('keeps non-sensitive malformed JSON and multi-line SSE diagnostics visible', () => {
