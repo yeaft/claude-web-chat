@@ -44,6 +44,14 @@ export function workItemDetailNeedsRefresh(current, summary) {
     || !current.actions.some(action => action?.id === summary.currentActionId);
 }
 
+const PROGRESS_BOUND_SUMMARY_FIELDS = new Set([
+  'status',
+  'currentActionId',
+  'currentAction',
+  'executionStats',
+  'failureReason',
+]);
+
 export function mergeWorkItemSummary(current, summary) {
   if (!current || current.id !== summary?.id || isWorkItemSummaryStale(summary, current)) return current;
   const merged = { ...current };
@@ -70,7 +78,7 @@ export function mergeWorkItemSummary(current, summary) {
     if (!matchedStats) aggregateAccepted = false;
   }
   for (const field of DETAIL_SUMMARY_FIELDS) {
-    if (field === 'executionStats' && !aggregateAccepted) continue;
+    if (!aggregateAccepted && PROGRESS_BOUND_SUMMARY_FIELDS.has(field)) continue;
     if (Object.prototype.hasOwnProperty.call(summary, field)) merged[field] = summary[field];
   }
   return merged;
@@ -98,7 +106,11 @@ export function applyWorkItemSummary(items, summary) {
     && hasStaleActionProgress(existing.actionStats, summary.actionStats)) {
     nextSummary = {
       ...summary,
+      status: existing.status,
+      currentActionId: existing.currentActionId,
+      currentAction: existing.currentAction,
       executionStats: existing.executionStats,
+      failureReason: existing.failureReason,
       actionStats: existing.actionStats,
     };
   }

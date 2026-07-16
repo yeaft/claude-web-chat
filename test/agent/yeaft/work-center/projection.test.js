@@ -139,12 +139,49 @@ describe('Work Center event projection', () => {
 
     const projected = projectWorkItemDetail(detail);
 
-    expect(projected.failureReason).toBe('Request https://example.com/private failed in [local path] with api_key=[redacted]');
+    expect(projected.failureReason).toBe('The Action failed. Sensitive details were omitted.');
     expect(projected.actions[0].failureReason).toBe(projected.failureReason);
     expect(projected.actions[0].messages.at(-1)).toMatchObject({
       status: 'failed', failureReason: projected.failureReason,
     });
     expect(JSON.stringify(projected)).not.toMatch(/user:pass|token=secret|top-secret|\/home\/alice/);
+  });
+
+  it.each([
+    'Provider rejected sk-proj-abcdefghijklmnopqrstuvwxyz123456',
+    'Provider rejected github_pat_11AAABBBCCCDDDEEEFFF',
+    'AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz123456',
+    String.raw`Failed at \\server\private\project\file.js`,
+    'Failed at /home/alice/My Project/private.js',
+    String.raw`Failed at C:\Users\Alice\My Project\private.js`,
+  ])('fails closed when a Run error contains sensitive material: %s', error => {
+    const detail = internalDetail();
+    detail.status = 'needs_attention';
+    detail.actions[0].status = 'failed';
+    detail.runs[0] = { ...detail.runs[0], status: 'failed', error };
+
+    const wire = JSON.stringify(projectWorkItemDetail(detail));
+
+    expect(projectWorkItemDetail(detail).failureReason)
+      .toBe('The Action failed. Sensitive details were omitted.');
+    expect(wire).not.toContain(error);
+  });
+
+  it('keeps a safe multiline error bounded and strips URL credentials, query, and fragment', () => {
+    const detail = internalDetail();
+    detail.status = 'needs_attention';
+    detail.actions[0].status = 'failed';
+    detail.runs[0] = {
+      ...detail.runs[0],
+      status: 'failed',
+      error: `Upstream https://user:pass@example.com/v1/jobs?token=secret#private returned 503\n${'safe context '.repeat(300)}`,
+    };
+
+    const failure = projectWorkItemDetail(detail).failureReason;
+
+    expect(failure).toContain('Upstream https://example.com/v1/jobs returned 503\n');
+    expect(failure.length).toBe(2_000);
+    expect(failure).not.toMatch(/user:pass|token=secret|#private/);
   });
 
   it('projects sanitized failure reasons in live events without leaking raw Run detail', () => {
@@ -155,7 +192,7 @@ describe('Work Center event projection', () => {
 
     const projected = projectWorkCenterEvent({ type: 'run.finished', workItem: detail });
 
-    expect(projected.workItem.failureReason).toBe('Request https://example.com/private failed in [local path] with api_key=[redacted]');
+    expect(projected.workItem.failureReason).toBe('The Action failed. Sensitive details were omitted.');
     expect(projected.workItem.actionStats[0].failureReason).toBe(projected.workItem.failureReason);
     expect(JSON.stringify(projected)).not.toMatch(/user:pass|token=secret|top-secret|\/home\/alice/);
   });

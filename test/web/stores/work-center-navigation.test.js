@@ -24,6 +24,16 @@ globalThis.Vue = globalThis.Vue || {
 const { useChatStore } = await import('../../../web/stores/chat.js');
 const { default: ChatPage } = await import('../../../web/components/ChatPage.js');
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function makeStore(view) {
   const store = useChatStore();
   store.currentView = view;
@@ -107,6 +117,24 @@ describe('Work Center navigation', () => {
     expect(store.workCenterCreateDraft.linkedSessionIds).toEqual(['session-1']);
   });
 
+  it('ignores an older explicit detail response after a newer selection resolves', async () => {
+    const store = makeStore('yeaft');
+    const older = deferred();
+    const latest = deferred();
+    store.workCenterRequest = vi.fn()
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(latest.promise);
+
+    const olderLoad = store.getWorkItem('wi-1', 'agent-1');
+    const latestLoad = store.getWorkItem('wi-2', 'agent-1');
+    latest.resolve({ id: 'wi-2', revision: 2, updatedAt: 20, actions: [] });
+    await latestLoad;
+    older.resolve({ id: 'wi-1', revision: 1, updatedAt: 10, actions: [] });
+    await olderLoad;
+
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({ id: 'wi-2', revision: 2 });
+  });
+
   it('refetches detail once when an event advances to an Action missing locally', async () => {
     const store = makeStore('yeaft');
     store.workCenterItemsByAgent = { 'agent-1': [] };
@@ -140,6 +168,29 @@ describe('Work Center navigation', () => {
     });
     expect(store.workCenterDetailByAgent['agent-1'].actions.map(action => action.id))
       .toEqual(['action-1', 'action-2']);
+  });
+
+  it('does not let a stale same-item Action refresh overwrite newer detail', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterItemsByAgent = { 'agent-1': [] };
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 2, updatedAt: 20, currentActionId: 'action-2',
+        actions: [{ id: 'action-2' }],
+      },
+    };
+    let resolveDetail;
+    store.workCenterRequest = vi.fn(() => new Promise(resolve => { resolveDetail = resolve; }));
+
+    const refresh = store.refreshWorkItemDetailAfterActionChange('agent-1', {
+      id: 'wi-1', revision: 2, updatedAt: 20, currentActionId: 'action-2',
+    });
+    resolveDetail({
+      id: 'wi-1', revision: 1, updatedAt: 10, currentActionId: 'action-2', actions: [{ id: 'action-2' }],
+    });
+    await refresh;
+
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({ revision: 2, updatedAt: 20 });
   });
 
   it('does not let a delayed Action refresh overwrite a newly selected Work Item', async () => {

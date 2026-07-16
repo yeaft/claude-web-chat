@@ -15,6 +15,7 @@ import { selectActiveConversationId } from './helpers/active-conv.js';
 import { trimDebugRetention } from './helpers/debug-retention.js';
 import {
   applyWorkItemSummary,
+  isWorkItemSummaryStale,
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
 } from './helpers/work-center.js';
@@ -491,6 +492,7 @@ export const useChatStore = defineStore('chat', {
     workCenterSettingsLoadingByAgent: {},
     workCenterSettingsErrorByAgent: {},
     _workCenterSettingsGenerationByAgent: {},
+    _workCenterDetailGenerationByAgent: {},
     _workCenterDetailRefreshByAgent: {},
     workCenterPending: {},
     workCenterCreateDraft: null,
@@ -1169,8 +1171,15 @@ export const useChatStore = defineStore('chat', {
     },
     async getWorkItem(id, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = Number(this._workCenterDetailGenerationByAgent[target] || 0) + 1;
+      this._workCenterDetailGenerationByAgent = {
+        ...this._workCenterDetailGenerationByAgent,
+        [target]: generation,
+      };
       const detail = await this.workCenterRequest('get', { id }, target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      if (this._workCenterDetailGenerationByAgent[target] === generation) {
+        this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      }
       return detail;
     },
     async loadWorkCenterSettings(agentId = null) {
@@ -1333,7 +1342,8 @@ export const useChatStore = defineStore('chat', {
         const selected = this.workCenterDetailByAgent[agentId];
         if (selected?.id === summary.id
             && selected.currentActionId === summary.currentActionId
-            && detail?.currentActionId === summary.currentActionId) {
+            && detail?.currentActionId === summary.currentActionId
+            && !isWorkItemSummaryStale(detail, selected)) {
           this.workCenterDetailByAgent = {
             ...this.workCenterDetailByAgent,
             [agentId]: detail,
