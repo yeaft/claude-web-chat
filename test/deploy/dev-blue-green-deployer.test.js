@@ -190,15 +190,33 @@ function runDeploy(harness, args = []) {
   });
 }
 
-function installCrontabStub(harness, initialCrontab) {
+function installCrontabStub(harness, initialCrontab, {
+  readExit = '0',
+  readError = '',
+  firstReadExit = '0',
+  firstReadError = '',
+} = {}) {
   const crontabState = join(harness.root, 'crontab.txt');
   const crontabHistory = join(harness.root, 'crontab-history.txt');
+  const firstReadDone = join(harness.root, 'crontab-first-read-done');
 
   writeFileSync(crontabState, initialCrontab);
   writeFileSync(crontabHistory, '');
   writeExecutable(join(harness.root, 'bin', 'crontab'), `#!/usr/bin/env bash
 if [[ "\${1:-}" == '-l' ]]; then
+  if [[ ! -e "$CRONTAB_FIRST_READ_DONE" && "\${CRONTAB_FIRST_READ_EXIT:-0}" != 0 ]]; then
+    : > "$CRONTAB_FIRST_READ_DONE"
+    printf '%s\\n' "\${CRONTAB_FIRST_READ_ERROR:-crontab read failed}" >&2
+    exit "$CRONTAB_FIRST_READ_EXIT"
+  fi
+  if [[ "\${CRONTAB_READ_EXIT:-0}" != 0 ]]; then
+    printf '%s\\n' "\${CRONTAB_READ_ERROR:-crontab read failed}" >&2
+    exit "$CRONTAB_READ_EXIT"
+  fi
   cat "$CRONTAB_STATE"
+elif [[ "\${1:-}" == '-r' ]]; then
+  : > "$CRONTAB_STATE"
+  printf '%s\\n' '--- crontab remove ---' >> "$CRONTAB_HISTORY"
 else
   cat > "$CRONTAB_STATE"
   {
@@ -207,6 +225,13 @@ else
   } >> "$CRONTAB_HISTORY"
 fi
 `);
+  harness.env.CRONTAB_STATE = crontabState;
+  harness.env.CRONTAB_HISTORY = crontabHistory;
+  harness.env.CRONTAB_READ_EXIT = readExit;
+  harness.env.CRONTAB_READ_ERROR = readError;
+  harness.env.CRONTAB_FIRST_READ_EXIT = firstReadExit;
+  harness.env.CRONTAB_FIRST_READ_ERROR = firstReadError;
+  harness.env.CRONTAB_FIRST_READ_DONE = firstReadDone;
 
   return { crontabState, crontabHistory };
 }
@@ -415,6 +440,67 @@ describe('Yeaft dev blue-green deployer', () => {
     expect(installed).toContain('/usr/bin/logger -t yeaft-dev-deployer');
   });
 
+  it('fails without writing when the current crontab cannot be read', () => {
+    const harness = makeHarness();
+    roots.push(harness.root);
+    const originalCrontab = '0 0 * * * /usr/local/bin/backup\n';
+    const { crontabState, crontabHistory } = installCrontabStub(harness, originalCrontab, {
+      firstReadExit: '73',
+      firstReadError: 'permission denied',
+    });
+
+    const result = spawnSync('bash', [harness.installer], {
+      env: harness.env,
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(73);
+    expect(result.stderr).toContain('Failed to read current crontab (exit 73)');
+    expect(readFileSync(crontabState, 'utf8')).toBe(originalCrontab);
+    expect(readFileSync(crontabHistory, 'utf8')).toBe('');
+  });
+
+  it('installs from an explicit no-crontab state', () => {
+    const harness = makeHarness();
+    roots.push(harness.root);
+    const { crontabState, crontabHistory } = installCrontabStub(harness, '', {
+      firstReadExit: '1',
+      firstReadError: 'no crontab for test-user',
+    });
+
+    const result = spawnSync('bash', [harness.installer], {
+      env: harness.env,
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(crontabState, 'utf8')).toContain('yeaft-dev-blue-green-deploy');
+    expect(readFileSync(crontabHistory, 'utf8')).toContain('--- crontab write ---');
+  });
+
+  it('removes an exact legacy scheduler regardless of whitespace or command suffix', () => {
+    const harness = makeHarness();
+    roots.push(harness.root);
+    const originalCrontab = [
+      '0 0 * * * /usr/local/bin/backup',
+      `* * * * *\t${harness.legacyDeployCommand}\t\tdev\t--force >> old.log 2>&1`,
+      '',
+    ].join('\n');
+    const { crontabState, crontabHistory } = installCrontabStub(harness, originalCrontab);
+
+    const result = spawnSync('bash', [harness.installer], {
+      env: harness.env,
+      encoding: 'utf8',
+    });
+    const installed = readFileSync(crontabState, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(installed).toContain('/usr/local/bin/backup');
+    expect(installed).not.toContain(`${harness.legacyDeployCommand}\t\tdev`);
+    expect(installed.match(/yeaft-dev-blue-green-deploy/g)).toHaveLength(1);
+    expect(readFileSync(crontabHistory, 'utf8').match(/--- crontab write ---/g)).toHaveLength(2);
+  });
+
   it('rejects a legacy command that does not match the scheduler before changing crontab', () => {
     const harness = makeHarness();
     roots.push(harness.root);
@@ -434,6 +520,74 @@ describe('Yeaft dev blue-green deployer', () => {
     expect(result.stderr).toContain('does not match the scheduler being replaced');
     expect(readFileSync(crontabState, 'utf8')).toBe(originalCrontab);
     expect(readFileSync(crontabHistory, 'utf8')).toBe('');
+  });
+
+  it('does not overwrite a concurrent crontab edit before commit', async () => {
+    const harness = makeHarness();
+    roots.push(harness.root);
+    const originalCrontab = [
+      '0 0 * * * /usr/local/bin/backup',
+      `* * * * * ${harness.legacyDeployCommand} dev >> old.log 2>&1`,
+      '',
+    ].join('\n');
+    const concurrentCrontab = [
+      '0 0 * * * /usr/local/bin/backup',
+      '15 1 * * * /usr/local/bin/concurrent-backup',
+      '',
+    ].join('\n');
+    const { crontabState, crontabHistory } = installCrontabStub(harness, originalCrontab);
+    writeExecutable(harness.legacyDeployCommand, '#!/usr/bin/env bash\nwhile true; do /bin/sleep 1; done\n');
+
+    const legacy = spawn(harness.legacyDeployCommand, ['dev'], { stdio: 'ignore' });
+    const installer = spawn('bash', [harness.installer], {
+      env: harness.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    installer.stderr.on('data', chunk => { stderr += chunk; });
+
+    await waitUntil(() => readFileSync(crontabHistory, 'utf8').includes('--- crontab write ---'));
+    writeFileSync(crontabState, concurrentCrontab);
+    legacy.kill('SIGTERM');
+    await new Promise(resolvePromise => legacy.once('exit', resolvePromise));
+    const installerStatus = await new Promise(resolvePromise => installer.once('exit', resolvePromise));
+
+    expect(installerStatus).toBe(1);
+    expect(stderr).toContain('Crontab changed concurrently while committing the new scheduler');
+    expect(readFileSync(crontabState, 'utf8')).toBe(concurrentCrontab);
+    expect(readFileSync(crontabHistory, 'utf8').match(/--- crontab write ---/g)).toHaveLength(1);
+  });
+
+  it('does not overwrite a concurrent crontab edit during rollback', async () => {
+    const harness = makeHarness();
+    roots.push(harness.root);
+    const originalCrontab = `* * * * * ${harness.legacyDeployCommand} dev >> old.log 2>&1\n`;
+    const concurrentCrontab = '15 1 * * * /usr/local/bin/concurrent-backup\n';
+    const { crontabState, crontabHistory } = installCrontabStub(harness, originalCrontab);
+    const timeoutConfig = readFileSync(harness.configFile, 'utf8')
+      .replace(/^DEPLOY_HANDOFF_TIMEOUT=.*$/m, 'DEPLOY_HANDOFF_TIMEOUT=1');
+    writeFileSync(harness.configFile, timeoutConfig);
+    writeExecutable(harness.legacyDeployCommand, '#!/usr/bin/env bash\nwhile true; do /bin/sleep 1; done\n');
+
+    const legacy = spawn(harness.legacyDeployCommand, ['dev'], { stdio: 'ignore' });
+    const installer = spawn('bash', [harness.installer], {
+      env: harness.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    installer.stderr.on('data', chunk => { stderr += chunk; });
+
+    await waitUntil(() => readFileSync(crontabHistory, 'utf8').includes('--- crontab write ---'));
+    writeFileSync(crontabState, concurrentCrontab);
+    const installerStatus = await new Promise(resolvePromise => installer.once('exit', resolvePromise));
+    legacy.kill('SIGTERM');
+    await new Promise(resolvePromise => legacy.once('exit', resolvePromise));
+
+    expect(installerStatus).toBe(1);
+    expect(stderr).toContain('Crontab changed concurrently while restoring the scheduler');
+    expect(stderr).toContain('left the concurrently modified crontab untouched');
+    expect(readFileSync(crontabState, 'utf8')).toBe(concurrentCrontab);
+    expect(readFileSync(crontabHistory, 'utf8').match(/--- crontab write ---/g)).toHaveLength(1);
   });
 
   it('restores the original scheduler when legacy quiescence times out', async () => {

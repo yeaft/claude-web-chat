@@ -24,7 +24,7 @@ dev 蓝绿服务故意不交给 Watchtower。Watchtower 会原地替换容器，
 ./install-cron.sh
 ```
 
-先运行 `./deploy-blue-green.sh --check` 验证配置、Docker network、nginx 容器和 Compose 渲染。安装器会先确认 `LEGACY_DEPLOY_COMMAND` 与待替换 scheduler 精确匹配，再停用旧、新 scheduler，等待 legacy 事务退出并保持静默，随后获取固定的 `$HOME/.local/state/yeaft/dev-blue-green.lock`，最后安装新 scheduler；交接失败会恢复原 crontab。新 cron 会显式携带安装器预检过的绝对配置路径，不会退回另一份默认配置；配置与脚本路径可包含空格，但不能包含换行、`%` 或单引号。主机 secret 只存在 `WEBCHAT_ENV_FILE`，不得写入仓库。
+先运行 `./deploy-blue-green.sh --check` 验证配置、Docker network、nginx 容器和 Compose 渲染。安装器获取固定的 `$HOME/.local/state/yeaft/dev-blue-green.lock` 后读取 crontab；除明确的“尚无 crontab”外，任何读取错误都会在首次写入前失败。安装器用同一套命令 token 规则确认并删除 `LEGACY_DEPLOY_COMMAND dev` scheduler，停用旧、新 scheduler，再等待 legacy 事务退出并保持静默。提交新 scheduler 或失败回滚前会重读并比较 disabled 快照；若其他进程并发修改了 crontab，安装器会保留外部修改而不是用旧快照覆盖。新 cron 会显式携带安装器预检过的绝对配置路径，不会退回另一份默认配置；配置与脚本路径可包含空格，但不能包含换行、`%` 或单引号。主机 secret 只存在 `WEBCHAT_ENV_FILE`，不得写入仓库。
 
 ## 安全边界
 
