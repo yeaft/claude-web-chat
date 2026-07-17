@@ -390,7 +390,7 @@
 
 .work-center-body {
   display: grid;
-  grid-template-columns: clamp(230px, 17vw, 290px) clamp(330px, 25vw, 430px) minmax(480px, 1fr);
+  grid-template-columns: clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr);
   gap: 0;
   flex: 1;
   min-height: 0;
@@ -2122,7 +2122,7 @@
   flex: 1;
 }
 
-@container work-center (max-width: 1160px) {
+@container work-center (max-width: 1250px) {
   .work-center-shell {
     padding: 24px 20px 20px;
   }
