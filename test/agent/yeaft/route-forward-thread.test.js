@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoordinator } from '../../../agent/yeaft/sessions/coordinator.js';
 import { createRouter } from '../../../agent/yeaft/routing/router.js';
+import { createLoopGuard, MAX_CHAIN_DEPTH } from '../../../agent/yeaft/routing/loop-guard.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import routeForwardTool from '../../../agent/yeaft/tools/route-forward.js';
@@ -23,6 +24,30 @@ describe('route_forward thread ownership', () => {
     expect(routeForwardTool.description.en).toContain('VP-authored @mentions');
     expect(routeForwardTool.description.en).toContain('call RouteForward');
     expect(routeForwardTool.description.en).toContain('same session');
+  });
+
+  it('allows 30 causedBy hops and rejects the 31st', () => {
+    const guard = createLoopGuard();
+    const allowed = Array.from({ length: MAX_CHAIN_DEPTH }, (_, i) => `msg-${i}`);
+    const blocked = [...allowed, 'msg-overflow'];
+
+    expect(MAX_CHAIN_DEPTH).toBe(30);
+    expect(guard.check({
+      sessionId: 'session-route-depth',
+      targetVpId: 'vp-martin',
+      chain: allowed,
+    })).toEqual({ ok: true });
+    expect(guard.check({
+      sessionId: 'session-route-depth',
+      targetVpId: 'vp-martin',
+      chain: blocked,
+    })).toEqual({
+      ok: false,
+      reason: 'chain_depth_exceeded',
+      detail: { depth: 31, limit: 30 },
+    });
+    expect(routeForwardTool.description.en).toContain('deeper than 30 hops');
+    expect(routeForwardTool.description.zh).toContain('超过 30 跳');
   });
 
   afterEach(() => {

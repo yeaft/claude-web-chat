@@ -66,6 +66,20 @@ describe('Yeaft load-history first paint', () => {
     ]);
   });
 
+  it('preserves the canonical image asset anchor in the history wire projection', () => {
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([
+      { id: 'm0001', role: 'assistant', content: 'tool progress', sessionId: 'session-fast', turnId: 'turn-image' },
+      { id: 'm0002', role: 'assistant', content: 'final response', sessionId: 'session-fast', turnId: 'turn-image', imageAssetAnchor: true },
+    ]);
+
+    expect(projected[0]).not.toHaveProperty('imageAssetAnchor');
+    expect(projected[1]).toMatchObject({
+      id: 'm0002',
+      turnId: 'turn-image',
+      imageAssetAnchor: true,
+    });
+  });
+
   it('replays the recent message window before full session boot resolves', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-fast-history-'));
     try {

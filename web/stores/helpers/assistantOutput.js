@@ -117,6 +117,15 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
           turnId: store._currentYeaftTurnId || null,
           threadId: store._currentYeaftThreadId || null,
         });
+      } else if (block.type === 'image_asset' && block.image) {
+        store.addMessageToConversation(conversationId, {
+          type: 'chat-image', ...block.image,
+          sessionId: store._currentYeaftSessionId || null,
+          vpId: store._currentYeaftVpId || null,
+          speakerVpId: store._currentYeaftVpId || null,
+          turnId: store._currentYeaftTurnId || null,
+          threadId: store._currentYeaftThreadId || null,
+        });
       } else if (block.type === 'tool_summary') {
         store.addMessageToConversation(conversationId, {
           type: 'tool-summary',

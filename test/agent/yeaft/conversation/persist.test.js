@@ -113,6 +113,50 @@ Hello`;
     expect(msg.content).toBe('Hello');
   });
 
+  it('round-trips image asset metadata without embedding image bytes', () => {
+    const store = new ConversationStore(TEST_DIR);
+    const written = store.append({
+      role: 'assistant',
+      content: '',
+      sessionId: 'session_image',
+      turnId: 'turn_image',
+      images: [{ assetId: 'a'.repeat(64), mimeType: 'image/png', filename: 'result.png', size: 68 }],
+    });
+    const sessionConversationDir = join(TEST_DIR, 'sessions', 'session_image', 'conversation');
+    const persistedFiles = readdirSync(join(sessionConversationDir, 'segments'));
+    expect(persistedFiles.length).toBeGreaterThan(0);
+    const raw = persistedFiles
+      .map(file => readFileSync(join(sessionConversationDir, 'segments', file), 'utf8'))
+      .join('\n');
+    expect(raw).toContain('"images"');
+    expect(raw).toContain('"assetId":"' + 'a'.repeat(64) + '"');
+    expect(raw).not.toContain('data:image');
+
+    const [loaded] = store.loadAllBySession('session_image');
+    expect(loaded.images).toEqual([
+      { assetId: 'a'.repeat(64), mimeType: 'image/png', filename: 'result.png', size: 68 },
+    ]);
+  });
+
+  it('round-trips the canonical image asset anchor without image bytes', () => {
+    const store = new ConversationStore(TEST_DIR);
+    store.append({
+      role: 'assistant',
+      content: 'final response',
+      sessionId: 'session_anchor',
+      turnId: 'turn_anchor',
+      imageAssetAnchor: true,
+    });
+
+    const [loaded] = store.loadAllBySession('session_anchor');
+    expect(loaded).toMatchObject({
+      role: 'assistant',
+      turnId: 'turn_anchor',
+      imageAssetAnchor: true,
+    });
+    expect(loaded).not.toHaveProperty('images');
+  });
+
   it('should parse turnId for persisted Yeaft assistant rows', () => {
     const raw = `---
 id: m0043

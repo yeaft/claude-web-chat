@@ -37,6 +37,31 @@ describe('assistant/session output aliases', () => {
     }
   });
 
+  it('adds a ready Session asset once and keeps it scoped to its turn', () => {
+    const store = {
+      ...mkStore(),
+      yeaftConversationId: 'yeaft-1',
+      messagesMap: { 'yeaft-1': [] },
+      addMessageToConversation: vi.fn((conversationId, message) => store.messagesMap[conversationId].push(message)),
+    };
+    const msg = {
+      type: 'yeaft_asset_ready',
+      conversationId: 'yeaft-1',
+      sessionId: 'session-1',
+      vpId: 'maker',
+      turnId: 'turn-1',
+      image: { assetId: 'asset-1', mimeType: 'image/png', filename: 'result.png', src: '/api/yeaft/assets/scope/asset?token=secret' },
+    };
+
+    handleMessage(store, msg);
+    handleMessage(store, msg);
+
+    expect(store.addMessageToConversation).toHaveBeenCalledTimes(1);
+    expect(store.messagesMap['yeaft-1']).toEqual([
+      expect.objectContaining({ type: 'chat-image', assetId: 'asset-1', sessionId: 'session-1', vpId: 'maker', turnId: 'turn-1' }),
+    ]);
+  });
+
   it('hydrates persisted Yeaft Session pins from the top-level server replay', () => {
     const applySnapshot = vi.fn();
     globalThis.window = {

@@ -6,7 +6,7 @@
  *   1. Chain depth — a message's `causedBy` chain (A → @B → @C → @A …) must
  *      not exceed a max depth. Each route_forward call stamps the outbound
  *      envelope's `meta.causedBy` with a chain of msgIds, and the guard
- *      rejects when the chain length would exceed MAX_CHAIN_DEPTH (10).
+ *      rejects when the chain length would exceed MAX_CHAIN_DEPTH (30).
  *
  *   2. Rate throttle — within a sliding window (WINDOW_MS = 5000, default
  *      MAX_HITS_PER_WINDOW = 8), a single (sessionId, vpId) target may be
@@ -43,7 +43,7 @@
  *     advance the rate counter.
  */
 
-export const MAX_CHAIN_DEPTH = 10;
+export const MAX_CHAIN_DEPTH = 30;
 export const DEFAULT_WINDOW_MS = 5_000;
 export const DEFAULT_MAX_HITS_PER_WINDOW = 8;
 export const DEFAULT_MAX_KEYS = 1_000;
@@ -137,7 +137,7 @@ export function createLoopGuard(options = {}) {
       if (!sessionId || !targetVpId) {
         return { ok: false, reason: 'chain_depth_exceeded', detail: { missing: true } };
       }
-      if (Array.isArray(chain) && chain.length >= maxChainDepth) {
+      if (Array.isArray(chain) && chain.length > maxChainDepth) {
         return {
           ok: false,
           reason: 'chain_depth_exceeded',

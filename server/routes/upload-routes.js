@@ -3,6 +3,7 @@ import multer from 'multer';
 import { CONFIG } from '../config.js';
 import { userDb } from '../database.js';
 import { pendingFiles, previewFiles } from '../context.js';
+import { yeaftAssetStore } from '../yeaft-asset-store.js';
 
 // 文件上传配置 (存储在内存中)
 const upload = multer({
@@ -93,5 +94,16 @@ export function registerUploadRoutes(app, { requireAuth }) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'no-store');
     res.send(file.buffer);
+  });
+
+  app.get('/api/yeaft/assets/:scopeId/:assetId', (req, res) => {
+    const asset = yeaftAssetStore.read(req.params.scopeId, req.params.assetId, req.query.token);
+    if (!asset) return res.status(404).send('Image asset not found');
+    res.setHeader('Content-Type', asset.metadata.mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(asset.metadata.filename)}"`);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('ETag', `"${asset.metadata.assetId}"`);
+    res.send(asset.buffer);
   });
 }

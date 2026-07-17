@@ -23,6 +23,7 @@
  * `{ ok: false, error }` so the VP can pivot (apologise, retry, ...).
  */
 
+import { MAX_CHAIN_DEPTH } from '../routing/loop-guard.js';
 import { defineTool } from './types.js';
 
 export default defineTool({
@@ -50,7 +51,7 @@ Arguments:
 Rules:
   - Forwarding to yourself is rejected (self_forward_rejected).
   - Forwarding to a non-member is rejected (target_not_in_roster).
-  - Forwards carry a causedBy chain; chains deeper than 10 hops are blocked
+  - Forwards carry a causedBy chain; chains deeper than ${MAX_CHAIN_DEPTH} hops are blocked
     (chain_depth_exceeded).
   - A single target may be forwarded to at most 8 times per 5-second window
     per session (throttled).
@@ -69,7 +70,7 @@ Returns JSON: { ok, dispatched?, error?, detail? }.`,
 规则：
   - 转发给自己会被拒绝（self_forward_rejected）。
   - 转发给非成员会被拒绝（target_not_in_roster）。
-  - 转发带有 causedBy 链；超过 10 跳的链会被阻止（chain_depth_exceeded）。
+  - 转发带有 causedBy 链；超过 ${MAX_CHAIN_DEPTH} 跳的链会被阻止（chain_depth_exceeded）。
   - 同一目标在每 5 秒窗口内最多被转发 8 次（节流限制）。
 
 返回 JSON：{ ok, dispatched?, error?, detail? }。`

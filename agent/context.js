@@ -47,6 +47,7 @@ export default {
   lastHeartbeatStallMs: 0,
   outboundSendQueue: [],
   outboundSendQueueActive: false,
+  assetOutbox: null,
   // 断连期间的消息缓冲队列（重连后 flush）
   messageBuffer: [],
   messageBufferMaxSize: 5000, // 防止内存无限增长
