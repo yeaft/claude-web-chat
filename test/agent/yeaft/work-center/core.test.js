@@ -243,14 +243,17 @@ describe('Work Center core', () => {
     expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
 
     const attachments = [{ fileId: 'file-1', name: 'sample.txt', mimeType: 'text/plain', size: 12 }];
-    const resumed = controller.input(item.id, {
+    const input = {
       text: 'Use this sample', actionId: diagnose.action.id, revision: waiting.revision,
       addedAttachmentCount: 1,
       addedAttachments: [{ id: 'file-1', name: 'sample.txt', mimeType: 'text/plain', size: 12, isImage: false }],
       attachments,
-    });
+    };
+    const resumed = controller.input(item.id, input);
     const reset = resumed.actions.find(action => action.stageId === 'diagnose');
-    expect(resumed).toMatchObject({ status: 'ready', currentActionId: diagnose.action.id, attachments });
+    expect(resumed).toMatchObject({
+      status: 'ready', currentActionId: diagnose.action.id, revision: waiting.revision + 1, attachments,
+    });
     expect(reset).toMatchObject({ id: diagnose.action.id, status: 'ready' });
     expect(reset.context.at(-1)).toMatchObject({
       summary: 'Need the failing sample', waitingReason: 'Attach the sample', answer: 'Use this sample',
@@ -259,9 +262,33 @@ describe('Work Center core', () => {
       actionId: diagnose.action.id,
       data: { text: 'Use this sample', attachments: [{ id: 'file-1', name: 'sample.txt' }] },
     });
-    expect(() => controller.input(item.id, {
-      text: 'stale', actionId: diagnose.action.id, revision: waiting.revision - 1,
-    })).toThrow(/Action changed/);
+    expect(() => controller.input(item.id, input)).toThrow(/Action changed/);
+    const afterReplay = store.getWorkItemDetail(item.id);
+    expect(afterReplay.revision).toBe(resumed.revision);
+    expect(afterReplay.actions).toHaveLength(resumed.actions.length);
+    expect(afterReplay.events.filter(event => event.type === 'action.input_added')).toHaveLength(1);
+    expect(afterReplay.attachments).toEqual(attachments);
+
+    const guided = controller.input(item.id, {
+      text: 'Also inspect parser boundaries', actionId: diagnose.action.id, revision: resumed.revision,
+      addedAttachmentCount: 0, addedAttachments: [], attachments,
+    });
+    const guidedAction = guided.actions.find(action => action.stageId === 'diagnose');
+    expect(guided).toMatchObject({
+      status: 'ready', currentActionId: diagnose.action.id, revision: resumed.revision + 1,
+    });
+    expect(guided.actions).toHaveLength(resumed.actions.length);
+    expect(guidedAction).toMatchObject({
+      id: diagnose.action.id, status: 'ready', dependsOnStageIds: [], workspaceMode: 'read',
+      contractRevision: diagnose.action.contractRevision,
+    });
+    expect(guided.actions.find(action => action.stageId === 'verify')).toMatchObject({
+      status: 'ready', dependsOnStageIds: ['diagnose'],
+    });
+    expect(guided.events.find(event => event.type === 'action.guidance_added')).toMatchObject({
+      actionId: diagnose.action.id,
+      data: { guidance: 'Also inspect parser boundaries' },
+    });
   });
 
   it('retries a failed graph Action with attachment-only input and preserves its identity', () => {

@@ -202,6 +202,9 @@ export class WorkflowController {
         assignmentPolicy: previous.assignmentPolicy,
         modelPolicy: previous.modelPolicy,
         requiredRole: previous.requiredRole,
+        dependsOnStageIds: previous.dependsOnStageIds,
+        workspaceMode: previous.workspaceMode,
+        changesRequestedStageId: previous.changesRequestedStageId,
         brief: previous.brief,
       };
       return {
