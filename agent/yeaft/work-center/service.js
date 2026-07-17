@@ -338,6 +338,7 @@ export class WorkCenterService {
 
   async shutdown() {
     await this.watcher.stop();
+    try { await this.watcher.runner?.shutdown?.(); } catch {}
     try { await this.watcher.runner?.trace?.close?.(); } catch {}
     this.store.close();
   }

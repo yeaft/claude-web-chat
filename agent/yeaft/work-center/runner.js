@@ -25,6 +25,11 @@ import {
   appendCheckpointToolEvent,
   renderActionResumeBlock,
 } from './action-checkpoint.js';
+import { createSkillManager } from '../skills.js';
+import { loadMCPConfig } from '../config.js';
+import { MCPManager } from '../mcp.js';
+import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
+import { recallWorkspaceSessionContext } from './workspace-context.js';
 
 const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'FileRead',
@@ -38,6 +43,7 @@ const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'WebSearch',
   'WebFetch',
   'ViewImage',
+  'Skill',
 ]);
 const WORK_ITEM_TOOL_ALLOWLIST = new Set(WORK_ITEM_TOOL_NAMES);
 const DEFAULT_PROGRESS_INTERVAL_MS = 200;
@@ -229,21 +235,52 @@ function assertToolInput(toolName, input, workDir, attachmentFiles) {
   return next;
 }
 
-export function workItemToolPolicySnapshot(workDir, attachmentRefs = []) {
+export function workItemToolPolicySnapshot(workDir, attachmentRefs = [], mcpToolNames = []) {
   const hasAttachments = attachmentRefs.length > 0;
+  const builtInTools = WORK_ITEM_TOOL_NAMES.filter(name => !hasAttachments || name !== 'Bash');
   return {
     policyVersion: 1,
-    allowedToolNames: WORK_ITEM_TOOL_NAMES.filter(name => !hasAttachments || name !== 'Bash'),
+    allowedToolNames: [...builtInTools, ...mcpToolNames],
     readRoots: [workDir],
     attachmentRefs,
     writeRoots: [workDir],
     shell: { enabled: !hasAttachments, fixedCwd: workDir, background: false, sandboxed: false },
     async: false,
-    mcpTools: [],
+    mcpTools: [...mcpToolNames],
   };
 }
 
-export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRunActive }) {
+function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive) {
+  return {
+    ...tool,
+    async execute(input, ctx) {
+      if (!isRunActive()) throw new Error('Work Center Run lease is no longer active');
+      const checkedInput = tool.name.startsWith('mcp__')
+        ? input
+        : assertToolInput(tool.name, input, canonicalDir, canonicalAttachmentFiles);
+      const output = await tool.execute(checkedInput, {
+        ...ctx,
+        cwd: canonicalDir,
+        workDir: canonicalDir,
+        imageAllowlist: canonicalAttachmentFiles.map(file => file.root),
+      });
+      if (!isRunActive()) throw new Error('Work Center Run lease was lost during tool execution');
+      if (['FileRead', 'ViewImage'].includes(tool.name) && typeof output === 'string') {
+        const withoutFilePaths = canonicalAttachmentFiles.reduce(
+          (safeOutput, file) => safeOutput.split(file.path).join(file.ref),
+          output,
+        );
+        return [...new Set(canonicalAttachmentFiles.map(file => file.root))].reduce(
+          (safeOutput, root) => safeOutput.split(root).join('work-item-attachment://'),
+          withoutFilePaths,
+        );
+      }
+      return output;
+    },
+  };
+}
+
+export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRunActive, mcpTools = [] }) {
   const canonicalDir = canonicalWorkDir(path.resolve(workDir));
   const canonicalAttachmentFiles = attachmentFiles.map(file => ({
     ...file,
@@ -253,30 +290,11 @@ export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRu
   const hasAttachments = canonicalAttachmentFiles.length > 0;
   for (const tool of allTools) {
     if (!WORK_ITEM_TOOL_ALLOWLIST.has(tool.name) || (hasAttachments && tool.name === 'Bash')) continue;
-    registry.register({
-      ...tool,
-      async execute(input, ctx) {
-        if (!isRunActive()) throw new Error('Work Center Run lease is no longer active');
-        const output = await tool.execute(assertToolInput(tool.name, input, canonicalDir, canonicalAttachmentFiles), {
-          ...ctx,
-          cwd: canonicalDir,
-          workDir: canonicalDir,
-          imageAllowlist: canonicalAttachmentFiles.map(file => file.root),
-        });
-        if (!isRunActive()) throw new Error('Work Center Run lease was lost during tool execution');
-        if (['FileRead', 'ViewImage'].includes(tool.name) && typeof output === 'string') {
-          const withoutFilePaths = canonicalAttachmentFiles.reduce(
-            (safeOutput, file) => safeOutput.split(file.path).join(file.ref),
-            output,
-          );
-          return [...new Set(canonicalAttachmentFiles.map(file => file.root))].reduce(
-            (safeOutput, root) => safeOutput.split(root).join('work-item-attachment://'),
-            withoutFilePaths,
-          );
-        }
-        return output;
-      },
-    });
+    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+  }
+  for (const tool of mcpTools) {
+    if (!tool?.name?.startsWith('mcp__')) continue;
+    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
   }
   return registry;
 }
@@ -497,6 +515,9 @@ export class WorkItemRunner {
     this.actionWorktreeRoot = options.actionWorktreeRoot || null;
     this.store = options.store;
     this.registry = options.registry || defaultRegistry;
+    this.yeaftDir = options.yeaftDir || null;
+    this.workspaceRuntimes = new Map();
+    this.shuttingDown = false;
     this.progressIntervalMs = Number.isFinite(Number(options.progressIntervalMs))
       ? Math.max(0, Number(options.progressIntervalMs))
       : DEFAULT_PROGRESS_INTERVAL_MS;
@@ -504,6 +525,49 @@ export class WorkItemRunner {
 
   cleanup(action) {
     removeActionWorktree(action?.workspace);
+  }
+
+  async shutdown() {
+    this.shuttingDown = true;
+    const entries = [...this.workspaceRuntimes.values()];
+    const runtimes = await Promise.all(entries.map(async entry => {
+      try { return await entry; } catch { return null; }
+    }));
+    this.workspaceRuntimes.clear();
+    await Promise.all(runtimes.map(async runtime => {
+      try { await runtime?.mcpManager?.disconnectAll?.(); } catch {}
+    }));
+  }
+
+  async #workspaceRuntime(workDir, isRunActive) {
+    if (!this.yeaftDir) return { skillManager: null, mcpManager: null, mcpTools: [] };
+    if (this.shuttingDown) throw new Error('Work Center Runner is shutting down');
+    if (!isRunActive()) throw new Error('Work Center Run lease is no longer active');
+    const cached = this.workspaceRuntimes.get(workDir);
+    if (cached) return cached;
+    const pending = (async () => {
+      const skillManager = createSkillManager(this.yeaftDir, workDir);
+      const mcpManager = new MCPManager();
+      const mcpConfig = loadMCPConfig(this.yeaftDir, undefined, workDir);
+      if (!isRunActive()) throw new Error('Work Center Run lease is no longer active');
+      if (mcpConfig.servers.length > 0) await mcpManager.connectAll(mcpConfig.servers);
+      if (!isRunActive() || this.shuttingDown) {
+        try { await mcpManager.disconnectAll(); } catch {}
+        throw new Error(this.shuttingDown
+          ? 'Work Center Runner shut down while loading workspace tools'
+          : 'Work Center Run lease was lost while loading workspace tools');
+      }
+      return { skillManager, mcpManager, mcpTools: buildMcpFlattenedTools(mcpManager) };
+    })();
+    this.workspaceRuntimes.set(workDir, pending);
+    try {
+      const runtime = await pending;
+      this.workspaceRuntimes.set(workDir, runtime);
+      return runtime;
+    } catch (error) {
+      this.workspaceRuntimes.delete(workDir);
+      throw error;
+    }
   }
 
   async prepare(claim) {
@@ -577,9 +641,10 @@ export class WorkItemRunner {
     const executionAction = currentModelPolicy
       ? { ...action, modelPolicy: currentModelPolicy }
       : action;
+    const workspaceDir = resolveWorkItemWorkDir(workItem, runtime.defaultWorkDir);
     const workDir = action.workspace?.path
       ? resolveWorkItemWorkDir({ workspaceKey: action.workspace.path }, runtime.defaultWorkDir)
-      : resolveWorkItemWorkDir(workItem, runtime.defaultWorkDir);
+      : workspaceDir;
     const priorRuns = this.store.listCompletedRuns(workItem.id);
     const dependencyContext = this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
     const dependencyBlock = dependencyContext.length === 0 ? '' : `\n\nCompleted dependency results:\n${dependencyContext.map(dependency => {
@@ -609,17 +674,29 @@ export class WorkItemRunner {
     }
     const resolvedModel = resolveWorkItemModel(runtime.config, vp, executionAction.modelPolicy);
     const memoryBlock = recallWorkItemMemory(runtime, workItem, executionAction, vp);
+    const workspaceSessionBlock = recallWorkspaceSessionContext({
+      yeaftDir: this.yeaftDir,
+      conversationStore: runtime.conversationStore,
+      workspaceKey: workspaceDir,
+      query: workItemMemoryQuery(workItem, executionAction),
+      excludeSessionId: workItem?.origin?.trustedSession === true ? workItem.origin.sessionId : null,
+      reuseMemory: workItem.reuseMemory,
+    });
     const attachmentContext = buildWorkItemAttachmentContext(workItem, { root: this.attachmentRoot });
     const isRunActive = () => !signal.aborted
       && this.store.isActiveRun(run.id, ownerBootId, run.leaseEpoch);
+    const workspaceRuntime = await this.#workspaceRuntime(workspaceDir, isRunActive);
+    const mcpToolNames = workspaceRuntime.mcpTools.map(tool => tool.name);
     const toolPolicySnapshot = workItemToolPolicySnapshot(
       workDir,
       attachmentContext.files.map(file => file.ref),
+      mcpToolNames,
     );
     const toolRegistry = createWorkItemToolRegistry({
       workDir,
       attachmentFiles: attachmentContext.files,
       isRunActive,
+      mcpTools: workspaceRuntime.mcpTools,
     });
     const config = {
       ...runtime.config,
@@ -709,8 +786,8 @@ export class WorkItemRunner {
       memoryIndex: null,
       amsRegistry: null,
       toolRegistry,
-      skillManager: null,
-      mcpManager: null,
+      skillManager: workspaceRuntime.skillManager,
+      mcpManager: workspaceRuntime.mcpManager,
       // WorkItem execution has its own durable Run/Event record. Do not let
       // the Engine create Session exec logs, archives, or shared tool stats.
       yeaftDir: null,
@@ -719,7 +796,7 @@ export class WorkItemRunner {
       vpId: vp.id,
     });
     try {
-      const prompt = `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
+      const prompt = `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${workspaceSessionBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
       const promptParts = attachmentContext.promptParts.length > 0
         ? [{ type: 'text', text: prompt }, ...attachmentContext.promptParts]
         : null;
