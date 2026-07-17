@@ -65,13 +65,19 @@ function hydrateInlinePreviewData(data) {
   return message === data.message ? data : { ...data, message };
 }
 
-function projectConfirmedAssetImages(message, { ownerId, agentId, sessionId }) {
-  if (!message || message.role !== 'assistant') return message;
-  const { images: _pendingImages, ...rest } = message;
-  const turnId = message.turnId || message.threadId || null;
-  if (!turnId) return rest;
-  const images = yeaftAssetStore.describeTurn({ ownerId, agentId, sessionId, turnId });
-  return images.length > 0 ? { ...rest, images } : rest;
+function projectConfirmedAssetImages(messages, { ownerId, agentId, sessionId }) {
+  const turnIds = messages
+    .filter(message => message?.role === 'assistant')
+    .map(message => message.turnId || message.threadId || null)
+    .filter(Boolean);
+  const imagesByTurn = yeaftAssetStore.describeTurns({ ownerId, agentId, sessionId, turnIds });
+  return messages.map((message) => {
+    if (!message || message.role !== 'assistant') return message;
+    const { images: _pendingImages, ...rest } = message;
+    const turnId = message.turnId || message.threadId || null;
+    const images = turnId ? imagesByTurn.get(turnId) || [] : [];
+    return images.length > 0 ? { ...rest, images } : rest;
+  });
 }
 
 /**
@@ -557,13 +563,10 @@ export async function handleAgentOutput(agentId, agent, msg) {
     case 'yeaft_history_window': {
       const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
       if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
-        const messages = Array.isArray(msg.messages) ? msg.messages
-          .map(hydrateMessagePreviewData)
-          .map(message => projectConfirmedAssetImages(message, {
-            ownerId: agent.ownerId,
-            agentId,
-            sessionId: msg.sessionId,
-          })) : [];
+        const messages = Array.isArray(msg.messages) ? projectConfirmedAssetImages(
+          msg.messages.map(hydrateMessagePreviewData),
+          { ownerId: agent.ownerId, agentId, sessionId: msg.sessionId },
+        ) : [];
         await sendToWebClient(targetClient, {
           type: 'yeaft_history_window',
           agentId,
@@ -583,13 +586,10 @@ export async function handleAgentOutput(agentId, agent, msg) {
 
     case 'yeaft_history_chunk': {
       const messages = Array.isArray(msg.messages)
-        ? msg.messages
-          .map(hydrateMessagePreviewData)
-          .map(message => projectConfirmedAssetImages(message, {
-            ownerId: agent.ownerId,
-            agentId,
-            sessionId: msg.sessionId,
-          }))
+        ? projectConfirmedAssetImages(
+          msg.messages.map(hydrateMessagePreviewData),
+          { ownerId: agent.ownerId, agentId, sessionId: msg.sessionId },
+        )
         : [];
       // Forward a "load older messages" pagination chunk to the same
       // authenticated clients. Distinct from `yeaft_output` because the

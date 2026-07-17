@@ -99,32 +99,37 @@ export function createYeaftAssetStore({
     return { dir, data: join(dir, `${assetId}.bin`), meta: join(dir, `${assetId}.json`) };
   };
 
+  const scopeMetadataRows = (scopeId) => {
+    const rows = [];
+    if (!/^[a-f0-9]{32}$/.test(scopeId)) return rows;
+    const scopeDir = join(root, scopeId);
+    let prefixes;
+    try {
+      if (!statSync(scopeDir).isDirectory()) return rows;
+      prefixes = readdirSync(scopeDir);
+    } catch { return rows; }
+    for (const prefix of prefixes) {
+      const prefixDir = join(scopeDir, prefix);
+      let names;
+      try { names = readdirSync(prefixDir); } catch { continue; }
+      for (const name of names) {
+        if (!name.endsWith('.json')) continue;
+        const metaPath = join(prefixDir, name);
+        try {
+          const metadata = JSON.parse(readFileSync(metaPath, 'utf8'));
+          const paths = pathsFor(metadata.scopeId, metadata.assetId);
+          if (metadata.scopeId !== scopeId || !paths || paths.meta !== metaPath || !existsSync(paths.data)) continue;
+          rows.push({ metadata, paths });
+        } catch { /* malformed rows are handled as orphans */ }
+      }
+    }
+    return rows;
+  };
+
   const metadataRows = () => {
     const rows = [];
     if (!existsSync(root)) return rows;
-    for (const scopeId of readdirSync(root)) {
-      const scopeDir = join(root, scopeId);
-      let prefixes;
-      try {
-        if (!statSync(scopeDir).isDirectory()) continue;
-        prefixes = readdirSync(scopeDir);
-      } catch { continue; }
-      for (const prefix of prefixes) {
-        const prefixDir = join(scopeDir, prefix);
-        let names;
-        try { names = readdirSync(prefixDir); } catch { continue; }
-        for (const name of names) {
-          if (!name.endsWith('.json')) continue;
-          const metaPath = join(prefixDir, name);
-          try {
-            const metadata = JSON.parse(readFileSync(metaPath, 'utf8'));
-            const paths = pathsFor(metadata.scopeId, metadata.assetId);
-            if (!paths || paths.meta !== metaPath || !existsSync(paths.data)) continue;
-            rows.push({ metadata, paths });
-          } catch { /* malformed rows are handled as orphans */ }
-        }
-      }
-    }
+    for (const scopeId of readdirSync(root)) rows.push(...scopeMetadataRows(scopeId));
     return rows;
   };
 
@@ -288,22 +293,36 @@ export function createYeaftAssetStore({
       return { metadata, buffer: readFileSync(paths.data) };
     },
 
-    describeTurn({ ownerId, agentId, sessionId, turnId }) {
-      if (!ownerId || !agentId || !sessionId || !turnId) return [];
+    describeTurns({ ownerId, agentId, sessionId, turnIds }) {
+      const requested = new Set((Array.isArray(turnIds) ? turnIds : [])
+        .filter(turnId => typeof turnId === 'string' && turnId));
+      const result = new Map(Array.from(requested, turnId => [turnId, []]));
+      if (!ownerId || !agentId || !sessionId || requested.size === 0) return result;
       const scopeId = scopeIdFor(ownerId, agentId, sessionId, secret);
-      return metadataRows()
-        .filter(row => row.metadata.scopeId === scopeId && (
-          row.metadata.turnId === turnId || row.metadata.turnIds?.includes(turnId)
-        ))
-        .sort((a, b) => Number(a.metadata.createdAt) - Number(b.metadata.createdAt))
-        .map(row => this.describe({ ownerId, agentId, sessionId, assetId: row.metadata.assetId }))
-        .filter(Boolean);
+      const rows = scopeMetadataRows(scopeId)
+        .sort((a, b) => Number(a.metadata.createdAt) - Number(b.metadata.createdAt));
+      for (const row of rows) {
+        const associatedTurns = new Set([
+          ...(row.metadata.turnId ? [row.metadata.turnId] : []),
+          ...(Array.isArray(row.metadata.turnIds) ? row.metadata.turnIds : []),
+        ]);
+        const matches = Array.from(associatedTurns).filter(turnId => requested.has(turnId));
+        if (matches.length === 0) continue;
+        const image = this.describe({ ownerId, agentId, sessionId, assetId: row.metadata.assetId });
+        if (!image) continue;
+        for (const turnId of matches) result.get(turnId).push(image);
+      }
+      return result;
+    },
+
+    describeTurn({ ownerId, agentId, sessionId, turnId }) {
+      return this.describeTurns({ ownerId, agentId, sessionId, turnIds: [turnId] }).get(turnId) || [];
     },
 
     deleteScope({ ownerId, agentId, sessionId }) {
       if (!ownerId || !agentId || !sessionId) return 0;
       const scopeId = scopeIdFor(ownerId, agentId, sessionId, secret);
-      const removed = metadataRows().filter(row => row.metadata.scopeId === scopeId).length;
+      const removed = scopeMetadataRows(scopeId).length;
       rmSync(join(root, scopeId), { recursive: true, force: true });
       rebuildUsage();
       return removed;

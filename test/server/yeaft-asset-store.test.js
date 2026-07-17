@@ -88,13 +88,22 @@ describe('Yeaft asset store', () => {
     expect(replay.assetId).toBe(first.assetId);
     expect(laterTurn.assetId).toBe(first.assetId);
     expect(assets.usage()).toEqual({ bytes: PNG.length, assets: 1 });
-    expect(assets.describeTurn({ ownerId: 'u', agentId: 'a', sessionId: 's', turnId: 'turn-1' })).toEqual([
+    const otherScopeAsset = assets.put({
+      ownerId: 'other', agentId: 'a', sessionId: 'other-session', turnId: 'turn-1',
+      data: PNG_2, mimeType: 'image/png', filename: 'other.png',
+    });
+    const byTurn = assets.describeTurns({
+      ownerId: 'u', agentId: 'a', sessionId: 's', turnIds: ['turn-1', 'turn-2', 'missing', 'turn-1'],
+    });
+    expect(byTurn.get('turn-1')).toEqual([
       expect.objectContaining({ assetId: first.assetId, src: expect.stringMatching(/^\/api\/yeaft\/assets\//) }),
     ]);
-    expect(assets.describeTurn({ ownerId: 'u', agentId: 'a', sessionId: 's', turnId: 'turn-2' })).toEqual([
+    expect(byTurn.get('turn-2')).toEqual([
       expect.objectContaining({ assetId: first.assetId, src: expect.stringMatching(/^\/api\/yeaft\/assets\//) }),
     ]);
-    expect(assets.describeTurn({ ownerId: 'u', agentId: 'a', sessionId: 's', turnId: 'missing' })).toEqual([]);
+    expect(byTurn.get('missing')).toEqual([]);
+    expect(byTurn.get('turn-1').map(image => image.assetId)).not.toContain(otherScopeAsset.assetId);
+    expect(assets.describeTurn({ ownerId: 'u', agentId: 'a', sessionId: 's', turnId: 'turn-1' })).toEqual(byTurn.get('turn-1'));
   });
 
   it('deletes only the requested Session scope', () => {

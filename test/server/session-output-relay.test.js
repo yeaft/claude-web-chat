@@ -125,11 +125,22 @@ describe('Yeaft Session output relay aliases', () => {
       type: 'yeaft_asset_ack', deliveryId: 'delivery-permanent-1', ok: false, permanent: true,
     })]);
 
+    const batchLookup = vi.spyOn(yeaftAssetStore, 'describeTurns');
+    const historyMessages = [
+      { id: 'm0', role: 'user', turnId: 'turn-1', content: 'prompt' },
+      { id: 'm1', role: 'assistant', turnId: 'turn-1', images: [pendingImage] },
+      { id: 'm2', role: 'assistant', turnId: 'turn-2', images: [pendingImage] },
+    ];
     await handleAgentOutput('agent-1', agent, {
       type: 'yeaft_history_window', _requestClientId: 'owner-client', requestId: 'window-1',
-      sessionId, messages: [{ id: 'm1', role: 'assistant', turnId: 'turn-1', images: [pendingImage] }],
+      sessionId, messages: historyMessages,
     });
-    expect(client.sent.at(-1).messages[0]).not.toHaveProperty('images');
+    expect(batchLookup).toHaveBeenCalledTimes(1);
+    expect(batchLookup).toHaveBeenCalledWith({
+      ownerId: 'owner-1', agentId: 'agent-1', sessionId, turnIds: ['turn-1', 'turn-2'],
+    });
+    expect(client.sent.at(-1).messages[1]).not.toHaveProperty('images');
+    expect(client.sent.at(-1).messages[2]).not.toHaveProperty('images');
 
     quotaFailure.mockRestore();
     await handleAgentOutput('agent-1', agent, {
@@ -138,13 +149,31 @@ describe('Yeaft Session output relay aliases', () => {
       image: { mimeType: 'image/png', filename: 'pixel.png', previewData: { data: png, mimeType: 'image/png' } },
     });
     client.sent.length = 0;
+    batchLookup.mockClear();
     await handleAgentOutput('agent-1', agent, {
       type: 'yeaft_history_window', _requestClientId: 'owner-client', requestId: 'window-2',
-      sessionId, messages: [{ id: 'm1', role: 'assistant', turnId: 'turn-1', images: [pendingImage] }],
+      sessionId, messages: historyMessages,
     });
-    expect(client.sent[0].messages[0].images).toEqual([
+    expect(batchLookup).toHaveBeenCalledTimes(1);
+    expect(client.sent[0].messages[1].images).toEqual([
       expect.objectContaining({ mimeType: 'image/png', src: expect.stringMatching(/^\/api\/yeaft\/assets\//) }),
     ]);
+    expect(client.sent[0].messages[2]).not.toHaveProperty('images');
+
+    client.sent.length = 0;
+    batchLookup.mockClear();
+    await handleAgentOutput('agent-1', agent, {
+      type: 'yeaft_history_chunk', conversationId: 'yeaft-1', sessionId,
+      messages: historyMessages, mode: 'older',
+    });
+    expect(batchLookup).toHaveBeenCalledTimes(1);
+    expect(batchLookup).toHaveBeenCalledWith({
+      ownerId: 'owner-1', agentId: 'agent-1', sessionId, turnIds: ['turn-1', 'turn-2'],
+    });
+    expect(client.sent[0].messages[1].images).toEqual([
+      expect.objectContaining({ mimeType: 'image/png', src: expect.stringMatching(/^\/api\/yeaft\/assets\//) }),
+    ]);
+    expect(client.sent[0].messages[2]).not.toHaveProperty('images');
     yeaftAssetStore.deleteScope({ ownerId: 'owner-1', agentId: 'agent-1', sessionId });
   });
 
