@@ -291,13 +291,6 @@ export class WorkCenterService {
           },
         };
       }
-      case 'retry': {
-        const detail = this.controller.retry(requiredString(payload.id, 'id'), {
-          answer: typeof payload.answer === 'string' ? payload.answer : '',
-        });
-        this.#emit({ type: 'work_item.retried', workItem: detail });
-        return detail;
-      }
       case 'set_watcher':
         if (payload.enabled === false) await this.watcher.stop();
         else this.watcher.start();

@@ -160,8 +160,10 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('v-else-if="detailError"');
     expect(page).toContain("if (this.selectedId === item.id) this.detailError = error?.message || String(error)");
     expect(page).toContain('v-if="selected.failureReason"');
-    expect(page).toContain('v-model="resumeAnswer"');
-    expect(page).toContain("this.resumeAnswer = ''");
+    expect(page).not.toContain('v-model="resumeAnswer"');
+    expect(page).not.toContain('retrySelected');
+    expect(page).not.toContain("selected.status === 'cancelled'\" class=\"btn-primary");
+    expect(page).toContain("tr('workCenter.answerInActionDetail'");
     expect(page).toContain('this.selectedActionId = detail?.currentActionId || detail?.actions?.[0]?.id || null');
     expect(page).not.toContain('class="work-center-run"');
     expect(page).not.toContain('class="work-center-activity-toggle"');

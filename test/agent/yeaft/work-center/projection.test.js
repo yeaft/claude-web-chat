@@ -273,6 +273,43 @@ describe('Work Center event projection', () => {
     expect(wire).toContain('binary data omitted');
   });
 
+  it('redacts complete sensitive header values across browser DTO header shapes', () => {
+    const detail = internalDetail();
+    const projected = projectActionRequestDetail(detail.actions[0], detail.runs[0], {
+      turns: [{ turnId: 'request-header-shapes', tools: [] }],
+      loops: [
+        { loopNumber: 1, messages: [], toolCalls: [], requestBase: { rawRequest: { headers: {
+          Authorization: 'Basic LEAK_BASIC',
+          'Proxy-Authorization': 'Digest LEAK_DIGEST',
+          Cookie: 'session=LEAK_COOKIE',
+          Accept: 'application/json',
+        } } } },
+        { loopNumber: 2, messages: [], toolCalls: [], requestBase: { rawRequest: { headers: [
+          ['Authorization', 'Negotiate LEAK_NEGOTIATE'],
+          ['x-api-key', 'LEAK_TUPLE_API'],
+          ['Accept', 'text/plain'],
+        ] } } },
+        { loopNumber: 3, messages: [], toolCalls: [], requestBase: { rawRequest: { rawHeaders: [
+          'Authorization', 'Custom LEAK_CUSTOM', 'Set-Cookie', 'sid=LEAK_SET_COOKIE',
+          'Accept', 'text/event-stream',
+        ] } } },
+        { loopNumber: 4, messages: [], toolCalls: [], rawResponse: {
+          body: 'Authorization: Basic LEAK_TEXT\r\nX-Safe: visible',
+        } },
+      ],
+    });
+
+    const wire = JSON.stringify(projected);
+    for (const secret of [
+      'LEAK_BASIC', 'LEAK_DIGEST', 'LEAK_COOKIE', 'LEAK_NEGOTIATE',
+      'LEAK_TUPLE_API', 'LEAK_CUSTOM', 'LEAK_SET_COOKIE', 'LEAK_TEXT',
+    ]) expect(wire).not.toContain(secret);
+    expect(projected.request.loops[0].rawRequest.headers.Accept).toBe('application/json');
+    expect(projected.request.loops[1].rawRequest.headers[2]).toEqual(['Accept', 'text/plain']);
+    expect(projected.request.loops[2].rawRequest.rawHeaders.at(-1)).toBe('text/event-stream');
+    expect(projected.request.loops[3].rawResponse.body).toContain('X-Safe: visible');
+  });
+
   it('redacts URL credentials, secret query values, and binary data embedded in SSE', () => {
     const detail = internalDetail();
     const action = detail.actions[0];

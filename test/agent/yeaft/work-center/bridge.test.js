@@ -192,7 +192,7 @@ describe('Work Center lifecycle bridge', () => {
     });
   });
 
-  it.each(['get', 'create', 'update', 'start', 'cancel', 'guide', 'retry'])(
+  it.each(['get', 'create', 'update', 'start', 'cancel', 'guide'])(
     'projects the %s browser response through the safe detail DTO',
     async (op) => {
       const raw = internalDetail();

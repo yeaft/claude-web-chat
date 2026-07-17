@@ -1484,14 +1484,6 @@ export const useChatStore = defineStore('chat', {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       return this.workCenterRequest('preview_attachment', { id, attachmentId }, target);
     },
-    async retryWorkItem(id, answer = '', agentId = null) {
-      const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const generation = this.beginWorkCenterDetailWrite(target);
-      const detail = await this.workCenterRequest('retry', { id, answer }, target);
-      await this.listWorkItems(target);
-      this.commitWorkCenterDetail(target, detail, generation);
-      return detail;
-    },
     applyWorkCenterEvent(agentId, event) {
       if (!agentId || !event?.workItem) return;
       const summary = event.workItem;

@@ -141,6 +141,15 @@ function containsSensitiveFieldSyntax(value) {
   return sensitiveAssignmentOperators(value).length > 0;
 }
 
+function assignmentUsesWholeLogicalValue(text, operatorIndex) {
+  let end = operatorIndex;
+  while (end > 0 && /\s/.test(text[end - 1])) end -= 1;
+  const start = candidateStart(text, end, text[operatorIndex] === ':');
+  const normalized = normalizeSensitiveName(text.slice(start, end));
+  return ['authorization', 'proxyauthorization', 'cookie', 'setcookie']
+    .some(name => normalized.endsWith(name));
+}
+
 function assignmentValueReplacement(text, operatorIndex) {
   let start = operatorIndex + 1;
   const valueLimit = Math.min(text.length, operatorIndex + MAX_SENSITIVE_NAME_SOURCE_CHARS);
@@ -149,6 +158,11 @@ function assignmentValueReplacement(text, operatorIndex) {
     return { start: operatorIndex + 1, end: text.length, value: '***' };
   }
   if (start >= text.length || /[\r\n]/.test(text[start])) return null;
+  if (assignmentUsesWholeLogicalValue(text, operatorIndex)) {
+    let end = start;
+    while (end < text.length && !/[;\r\n]/.test(text[end])) end += 1;
+    return { start, end, value: '***' };
+  }
   const quote = text[start];
   if (quote === '"' || quote === "'") {
     let end = start + 1;
@@ -162,8 +176,6 @@ function assignmentValueReplacement(text, operatorIndex) {
     return { start, end, value: `${quote}***${quote}` };
   }
   let end = start;
-  const bearer = /^Bearer\s+/i.exec(text.slice(start, start + 32));
-  if (bearer) end += bearer[0].length;
   while (end < text.length && !/[\s,;=&}\]]/.test(text[end])) end += 1;
   return end > start ? { start, end, value: '***' } : null;
 }
@@ -374,6 +386,44 @@ function sanitizeSseBody(value, seen) {
   return truncateUtf8(`${events.map(event => sanitizeSseEvent(event, seen)).join('\n\n')}${trailingSeparator}`);
 }
 
+function sanitizeHeaderEntries(entries, seen) {
+  return entries.map(([name, headerValue]) => [
+    String(name || ''),
+    isSensitiveName(name) ? '***' : sanitizeDebugValue(headerValue, null, String(name || ''), seen),
+  ]);
+}
+
+function sanitizeHeaders(value, seen, raw = false) {
+  if (typeof value === 'string') return sanitizeDiagnosticText(value, MAX_DEBUG_STRING_BYTES);
+  if (!value || typeof value !== 'object') return sanitizeDebugValue(value, null, '', seen);
+  if (!Array.isArray(value)) {
+    return Object.fromEntries(sanitizeHeaderEntries(Object.entries(value), seen));
+  }
+  const items = value.slice(0, MAX_DEBUG_ARRAY_ITEMS);
+  if (raw || items.every(item => !Array.isArray(item))) {
+    const out = [];
+    for (let index = 0; index < items.length; index += 2) {
+      const name = items[index];
+      out.push(name);
+      if (index + 1 < items.length) {
+        out.push(isSensitiveName(name)
+          ? '***'
+          : sanitizeDebugValue(items[index + 1], null, String(name || ''), seen));
+      }
+    }
+    if (value.length > items.length) out.push(`[${value.length - items.length} additional items omitted]`);
+    return out;
+  }
+  const out = items.map(item => {
+    if (!Array.isArray(item) || item.length < 2) return sanitizeDebugValue(item, value, '', seen);
+    const [name, headerValue, ...rest] = item;
+    return [name, isSensitiveName(name) ? '***' : sanitizeDebugValue(headerValue, null, String(name || ''), seen),
+      ...rest.map(valueItem => sanitizeDebugValue(valueItem, item, '', seen))];
+  });
+  if (value.length > items.length) out.push(`[${value.length - items.length} additional items omitted]`);
+  return out;
+}
+
 export function sanitizeDebugValue(value, parent = null, key = '', seen = new WeakSet()) {
   if (key && isSensitiveName(key)) return '***';
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
@@ -408,13 +458,8 @@ export function sanitizeDebugValue(value, parent = null, key = '', seen = new We
     }
     const out = {};
     for (const [childKey, item] of Object.entries(value)) {
-      if (childKey === 'headers' && item && typeof item === 'object' && !Array.isArray(item)) {
-        out.headers = Object.fromEntries(Object.entries(item).map(([name, headerValue]) => [
-          name,
-          isSensitiveName(name)
-            ? '***'
-            : sanitizeDebugValue(headerValue, item, name, seen),
-        ]));
+      if (childKey === 'headers' || childKey === 'rawHeaders') {
+        out[childKey] = sanitizeHeaders(item, seen, childKey === 'rawHeaders');
       } else if (childKey === 'body' && value.format === 'sse' && typeof item === 'string') {
         out.body = sanitizeSseBody(item, seen);
       } else {

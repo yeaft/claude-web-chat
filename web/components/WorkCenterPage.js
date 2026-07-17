@@ -27,7 +27,6 @@ export default {
       actionComposerGeneration: 0,
       detailLoading: false,
       detailError: '',
-      resumeAnswer: '',
       createOpen: false,
       settingsOpen: false,
       saving: false,
@@ -291,7 +290,6 @@ export default {
       this.selectedId = item.id;
       this.selectedActionId = null;
       this.narrowPane = 'actions';
-      this.resumeAnswer = '';
       this.resetActionComposer();
       this.expandedActions = {};
       this.actionsExpanded = false;
@@ -608,11 +606,6 @@ export default {
         if (this.actionComposerScope === scope) this.actionInputSending = false;
       }
     },
-    async retrySelected() {
-      if (!this.selected) return;
-      await this.store.retryWorkItem(this.selected.id, this.resumeAnswer, this.agentId);
-      this.resumeAnswer = '';
-    },
     async cancelSelected() {
       if (!this.selected) return;
       await this.store.cancelWorkItem(this.selected.id, this.agentId);
@@ -716,9 +709,7 @@ export default {
                     <h2>{{ selected.title }}</h2>
                   </div>
                   <div class="work-center-detail-actions">
-                    <button v-if="selected.status === 'cancelled'" class="btn-primary" type="button" @click="retrySelected">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
-                    <button v-if="selected.status === 'waiting' || selected.status === 'needs_attention'" class="btn-primary" type="button" @click="retrySelected" :disabled="selected.status === 'waiting' && !resumeAnswer.trim()">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancel', 'Cancel') }}</button>
                   </div>
                 </div>
@@ -740,11 +731,10 @@ export default {
                   <p>{{ selected.failureReason }}</p>
                 </div>
 
-                <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
-                  <p v-if="selected.waitingReason">{{ selected.waitingReason }}</p>
-                  <label>{{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}
-                    <textarea v-model="resumeAnswer" rows="3" :placeholder="tr('workCenter.resumeAnswerHint', 'Provide the information required to continue')"></textarea>
-                  </label>
+                <div v-if="selected.status === 'waiting' && selected.waitingReason" class="work-center-section work-center-resume">
+                  <h3>{{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}</h3>
+                  <p>{{ selected.waitingReason }}</p>
+                  <small class="work-center-muted">{{ tr('workCenter.answerInActionDetail', 'Open the current Action and respond in the input below.') }}</small>
                 </div>
 
                 <div class="work-center-section">

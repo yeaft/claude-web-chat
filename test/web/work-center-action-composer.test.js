@@ -54,6 +54,21 @@ function makeContext() {
 }
 
 describe('Work Center Action composer scope', () => {
+  it('submits the visible Action identity, revision, Agent, and attachments atomically', async () => {
+    const context = makeContext();
+    context.store.sendWorkItemActionInput.mockResolvedValue({ currentActionId: 'action-1' });
+
+    await WorkCenterPage.methods.guideSelectedAction.call(context);
+
+    expect(context.store.sendWorkItemActionInput).toHaveBeenCalledWith(
+      'wi-1', 'old draft', 'action-1', 2,
+      [{ fileId: 'old-file', name: 'old.txt', mimeType: 'text/plain', size: 3 }],
+      'agent-1',
+    );
+    expect(context.actionGuidance).toBe('');
+    expect(context.guidanceAttachments).toEqual([]);
+  });
+
   it('does not let an old send completion clear or redirect the new Action composer', async () => {
     const context = makeContext();
     const pending = deferred();
