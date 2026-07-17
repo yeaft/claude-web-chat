@@ -83,29 +83,32 @@ Guidelines:
 
       const data = await response.json();
 
-      // If output_path specified, save the image
-      if (output_path && data.url) {
+      if (!data.url) return JSON.stringify({ error: 'Image API returned no image URL' });
+      const imgResponse = await fetch(data.url, { signal: ctx?.signal });
+      if (!imgResponse.ok) return JSON.stringify({ error: `Image download returned ${imgResponse.status}` });
+      const buffer = Buffer.from(await imgResponse.arrayBuffer());
+      if (!buffer.length || buffer.length > 20 * 1024 * 1024) {
+        return JSON.stringify({ error: 'Generated image is empty or exceeds 20 MiB' });
+      }
+      const mimeType = String(imgResponse.headers.get('content-type') || 'image/png').split(';')[0].toLowerCase();
+      if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mimeType)) {
+        return JSON.stringify({ error: `Unsupported generated image type: ${mimeType}` });
+      }
+      let savedPath = null;
+      if (output_path) {
         const { resolve: resolvePath } = await import('path');
         const { writeFile } = await import('fs/promises');
-
-        const imgResponse = await fetch(data.url);
-        const buffer = Buffer.from(await imgResponse.arrayBuffer());
-        const absPath = resolvePath(ctx?.cwd || process.cwd(), output_path);
-        await writeFile(absPath, buffer);
-
-        return JSON.stringify({
-          success: true,
-          path: absPath,
-          size,
-          prompt: prompt.slice(0, 100),
-        });
+        savedPath = resolvePath(ctx?.cwd || process.cwd(), output_path);
+        await writeFile(savedPath, buffer);
       }
-
       return JSON.stringify({
         success: true,
-        url: data.url,
+        ...(savedPath ? { path: savedPath } : {}),
         size,
         prompt: prompt.slice(0, 100),
+        image: `data:${mimeType};base64,${buffer.toString('base64')}`,
+        mimeType,
+        filename: savedPath ? savedPath.split(/[/\\]/).pop() : `generated-${Date.now()}`,
       });
     } catch (err) {
       if (err.name === 'AbortError') return JSON.stringify({ error: 'Generation cancelled' });

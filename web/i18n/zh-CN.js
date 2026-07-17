@@ -484,6 +484,8 @@ export default {
   'message.file': '文件',
   'message.attachImages': '{count} 张图片',
   'message.imageCount': '{count} 张图片',
+  'message.imagePreview': '图片预览',
+  'message.imageUnavailable': '图片无法加载',
   'message.attachFiles': '{count} 个文件',
   'message.fileCount': '{count} 个文件',
 

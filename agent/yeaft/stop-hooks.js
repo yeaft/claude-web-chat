@@ -74,6 +74,7 @@ export async function runStopHooks(context) {
     // row exactly once before fan-out. Each VP's stop-hook then skips
     // the user record but still writes its own assistant + tool rows.
     userAlreadyPersisted = false,
+    displayImages = [],
   } = context;
 
   // Model name for persisted messages: use primaryModel if provided, else config.model
@@ -125,6 +126,7 @@ export async function runStopHooks(context) {
         }
       }
       const recentMessages = messages.slice(turnStart);
+      let displayImagesAttached = false;
       for (const msg of recentMessages) {
         if (!msg || !msg.role) continue;
         // Skip the user row if the orchestrator already wrote it once for
@@ -149,6 +151,7 @@ export async function runStopHooks(context) {
           (typeof msg.content === 'string' && msg.content.length > 0) ||
           (msg.content && typeof msg.content !== 'string') ||
           (Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0) ||
+          (msg.role === 'assistant' && !displayImagesAttached && displayImages.length > 0) ||
           msg.role === 'tool';
         if (!hasContent) continue;
 
@@ -163,6 +166,10 @@ export async function runStopHooks(context) {
         if (msg.toolCallId) record.toolCallId = msg.toolCallId;
         if (Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0) {
           record.toolCalls = msg.toolCalls;
+        }
+        if (msg.role === 'assistant' && !displayImagesAttached && displayImages.length > 0) {
+          record.images = displayImages;
+          displayImagesAttached = true;
         }
         if (msg.isError) record.isError = true;
         // Bug 6: stamp sessionId / threadId so replay can re-route by group.

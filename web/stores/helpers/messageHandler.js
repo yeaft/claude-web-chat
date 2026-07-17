@@ -246,6 +246,23 @@ export function handleMessage(store, msg) {
       store.handleYeaftOutput(msg);
       break;
 
+    case 'yeaft_asset_ready': {
+      const conversationId = msg.conversationId || store.yeaftConversationId;
+      if (!conversationId || !msg.image) break;
+      if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
+      const duplicate = store.messagesMap[conversationId].some(row =>
+        row?.type === 'chat-image' && row.assetId === msg.image.assetId
+        && row.sessionId === msg.sessionId && row.turnId === msg.turnId
+      );
+      if (!duplicate) store.addMessageToConversation(conversationId, {
+        type: 'chat-image', ...msg.image,
+        sessionId: msg.sessionId || null, vpId: msg.vpId || null,
+        speakerVpId: msg.vpId || null, turnId: msg.turnId || null,
+        threadId: msg.threadId || null,
+      });
+      break;
+    }
+
     case 'yeaft_history_chunk':
       handleYeaftHistoryChunk(store, msg);
       break;

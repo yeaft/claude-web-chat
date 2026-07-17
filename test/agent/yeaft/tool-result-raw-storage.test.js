@@ -1,13 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rmSync, unlinkSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync, unlinkSync } from 'node:fs';
 import { Engine } from '../../../agent/yeaft/engine.js';
 import { DebugTrace, NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { trimSnapshotForBudget } from '../../../agent/yeaft/history-compact.js';
 import { __testAppendTurnToSessionHistory, __testGroupHistory } from '../../../agent/yeaft/web-bridge.js';
+import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import { defineTool } from '../../../agent/yeaft/tools/types.js';
+
+function readJsonl(dir) {
+  return readdirSync(dir)
+    .flatMap(file => readFileSync(join(dir, file), 'utf8').trim().split('\n'))
+    .filter(Boolean)
+    .map(line => JSON.parse(line));
+}
 
 globalThis.Pinia = globalThis.Pinia || { defineStore: () => () => ({}) };
 const { default: YeaftDebugPanel } = await import('../../../web/components/YeaftDebugPanel.js');
@@ -84,6 +92,54 @@ describe('tool result raw storage boundaries', () => {
     expect(secondCallToolMessage.content).not.toBe(raw);
     expect(secondCallToolMessage.content).toContain('[truncated: BigTool returned');
     expect(secondCallToolMessage.content.length).toBeLessThan(raw.length);
+  });
+
+  it('extracts display images before tool output reaches model context or debug storage', async () => {
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    const raw = JSON.stringify({ success: true, image: `data:image/png;base64,${png}`, filename: 'pixel.png' });
+    const adapter = new MockAdapter();
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'call_image', name: 'ViewImage', input: {} },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'text_delta', text: 'done' },
+      { type: 'stop', stopReason: 'end_turn' },
+    ]);
+    const trace = new CapturingTrace();
+    const dir = join(tmpdir(), `yeaft-image-persist-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const engine = new Engine({
+      adapter,
+      trace,
+      yeaftDir: dir,
+      conversationStore: new ConversationStore(dir),
+      config: { model: 'test-model', language: 'en' },
+    });
+    engine.registerTool({
+      name: 'ViewImage',
+      description: 'returns an image',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => raw,
+    });
+
+    const events = [];
+    for await (const event of engine.query({ prompt: 'show image', sessionId: 's1' })) events.push(event);
+
+    const toolEnd = events.find(event => event.type === 'tool_end');
+    expect(toolEnd.displayImages).toHaveLength(1);
+    expect(toolEnd.displayImages[0]).toMatchObject({ mimeType: 'image/png', filename: 'pixel.png' });
+    expect(toolEnd.output).not.toContain(png);
+    expect(JSON.parse(toolEnd.output).imageAssetIds).toEqual([toolEnd.displayImages[0].assetId]);
+    expect(events.find(event => event.type === 'tool_exec').toolOutput).not.toContain(png);
+    expect(trace.tools[0].toolOutput).not.toContain(png);
+    expect(adapter.callLog[1].messages.find(message => message.role === 'tool').content).not.toContain(png);
+    const persisted = readJsonl(join(dir, 'sessions', 's1', 'conversation', 'segments'));
+    const assistant = persisted.find(message => message.role === 'assistant' && Array.isArray(message.images));
+    expect(assistant.images).toEqual([
+      expect.objectContaining({ assetId: toolEnd.displayImages[0].assetId, mimeType: 'image/png', filename: 'pixel.png' }),
+    ]);
+    expect(JSON.stringify(persisted)).not.toContain(png);
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it('ToolRegistry.execute returns raw normalized text', async () => {

@@ -64,6 +64,36 @@ describe('Yeaft Session output relay aliases', () => {
     }]);
   });
 
+  it('stores a Session image and relays only stable asset metadata', async () => {
+    CONFIG.skipAuth = false;
+    webClients.set('owner-client', { authenticated: true, userId: 'owner-1', sent: [] });
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+    await expect(handleAgentOutput('agent-1', { ownerId: 'owner-1' }, {
+      type: 'yeaft_asset_put',
+      conversationId: 'yeaft-1',
+      sessionId: 'sess-1',
+      turnId: 'turn-1',
+      image: {
+        mimeType: 'image/png',
+        filename: 'pixel.png',
+        previewData: { data: png, mimeType: 'image/png' },
+      },
+    })).resolves.toBe(true);
+
+    const [message] = webClients.get('owner-client').sent;
+    expect(message).toMatchObject({
+      type: 'yeaft_asset_ready',
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      turnId: 'turn-1',
+      image: { mimeType: 'image/png', filename: 'pixel.png' },
+    });
+    expect(message.image.src).toMatch(/^\/api\/yeaft\/assets\//);
+    expect(message.image).not.toHaveProperty('previewData');
+    expect(JSON.stringify(message)).not.toContain(png);
+  });
+
   it('stamps agentId on per-conversation slash command updates', async () => {
     CONFIG.skipAuth = false;
     webClients.set('owner-client', {

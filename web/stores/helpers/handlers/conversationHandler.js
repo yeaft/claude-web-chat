@@ -632,6 +632,16 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           isHistory: true,
         });
       }
+      for (const image of Array.isArray(m.images) ? m.images : []) {
+        if (!image?.assetId) continue;
+        formatted.push({
+          id: `${stableId || messageId || turnId}:image:${image.assetId}`,
+          messageId: `${stableId || messageId || turnId}:image:${image.assetId}`,
+          type: 'chat-image', ...image, timestamp, sessionId: rowSessionId, turnId,
+          ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
+          isStreaming: false, isHistory: true,
+        });
+      }
       const toolSummaryCount = Number(m.toolSummaryCount || m.toolCalls?.length || 0) || 0;
       if (toolSummaryCount > 0) {
         formatted.push({

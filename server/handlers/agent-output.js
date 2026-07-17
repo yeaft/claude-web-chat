@@ -3,6 +3,7 @@ import { messageDb, yeaftSessionDb } from '../database.js';
 import { broadcastAgentList, forwardToClients, sendToWebClient } from '../ws-utils.js';
 import { webClients, previewFiles } from '../context.js';
 import { CONFIG } from '../config.js';
+import { yeaftAssetStore } from '../yeaft-asset-store.js';
 import { recordPerfTraceEvent } from '../perf-trace.js';
 
 
@@ -396,6 +397,31 @@ export async function handleAgentOutput(agentId, agent, msg) {
       break;
     }
 
+    case 'yeaft_asset_put': {
+      if (!agent.ownerId || !msg.sessionId || !msg.image?.previewData?.data) break;
+      try {
+        const image = yeaftAssetStore.put({
+          ownerId: agent.ownerId, agentId, sessionId: msg.sessionId,
+          assetId: msg.metadata?.assetId || msg.image.assetId, data: msg.image.previewData.data,
+          mimeType: msg.metadata?.mimeType || msg.image.mimeType || msg.image.previewData.mimeType,
+          filename: msg.metadata?.filename || msg.image.filename || msg.image.previewData.filename,
+          width: msg.metadata?.width ?? msg.image.width,
+          height: msg.metadata?.height ?? msg.image.height,
+        });
+        await forwardToClients(agentId, msg.conversationId, {
+          type: 'yeaft_asset_ready', conversationId: msg.conversationId,
+          agentId, sessionId: msg.sessionId,
+          ...(msg.vpId ? { vpId: msg.vpId } : {}),
+          ...(msg.turnId ? { turnId: msg.turnId } : {}),
+          ...(msg.threadId ? { threadId: msg.threadId } : {}),
+          image, _requestUserId: agent.ownerId,
+        });
+      } catch (err) {
+        console.warn(`[Server] Failed to store Yeaft asset: ${err?.message || err}`);
+      }
+      break;
+    }
+
     case 'yeaft_output':
     case 'yeaft_session_output':
     case 'session_output': {
@@ -502,7 +528,12 @@ export async function handleAgentOutput(agentId, agent, msg) {
     case 'yeaft_history_window': {
       const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
       if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
-        const messages = Array.isArray(msg.messages) ? msg.messages.map(hydrateMessagePreviewData) : [];
+        const messages = Array.isArray(msg.messages) ? msg.messages.map(hydrateMessagePreviewData).map((message) => ({
+          ...message,
+          ...(Array.isArray(message.images) ? { images: message.images.map(image => (
+            yeaftAssetStore.describe({ ownerId: agent.ownerId, agentId, sessionId: msg.sessionId, assetId: image?.assetId }) || image
+          )) } : {}),
+        })) : [];
         await sendToWebClient(targetClient, {
           type: 'yeaft_history_window',
           agentId,
@@ -522,7 +553,12 @@ export async function handleAgentOutput(agentId, agent, msg) {
 
     case 'yeaft_history_chunk': {
       const messages = Array.isArray(msg.messages)
-        ? msg.messages.map(hydrateMessagePreviewData)
+        ? msg.messages.map(hydrateMessagePreviewData).map((message) => ({
+          ...message,
+          ...(Array.isArray(message.images) ? { images: message.images.map(image => (
+            yeaftAssetStore.describe({ ownerId: agent.ownerId, agentId, sessionId: msg.sessionId, assetId: image?.assetId }) || image
+          )) } : {}),
+        }))
         : [];
       // Forward a "load older messages" pagination chunk to the same
       // authenticated clients. Distinct from `yeaft_output` because the

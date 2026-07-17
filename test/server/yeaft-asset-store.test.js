@@ -1,0 +1,45 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { createYeaftAssetStore } from '../../server/yeaft-asset-store.js';
+
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+const dirs = [];
+
+afterEach(() => {
+  while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true });
+});
+
+function store() {
+  const root = mkdtempSync(join(tmpdir(), 'yeaft-assets-'));
+  dirs.push(root);
+  return createYeaftAssetStore({ root, secret: 'test-secret' });
+}
+
+describe('Yeaft asset store', () => {
+  it('persists an image and returns a stable capability URL', () => {
+    const assets = store();
+    const image = assets.put({
+      ownerId: 'user-1', agentId: 'agent-1', sessionId: 'session-1',
+      data: PNG, mimeType: 'image/png', filename: 'pixel.png',
+    });
+    expect(image.src).toMatch(/^\/api\/yeaft\/assets\/[a-f0-9]{32}\/[a-f0-9]{64}\?token=/);
+    const url = new URL(image.src, 'http://localhost');
+    const [, , , , scopeId, assetId] = url.pathname.split('/');
+    const loaded = assets.read(scopeId, assetId, url.searchParams.get('token'));
+    expect(loaded.buffer).toEqual(PNG);
+    expect(loaded.metadata).toMatchObject({ ownerId: 'user-1', agentId: 'agent-1', sessionId: 'session-1' });
+  });
+
+  it('denies invalid tokens, MIME mismatch, SVG, and cross-Session lookup', () => {
+    const assets = store();
+    const image = assets.put({ ownerId: 'user-1', agentId: 'agent-1', sessionId: 'session-1', data: PNG, mimeType: 'image/png' });
+    const url = new URL(image.src, 'http://localhost');
+    const [, , , , scopeId, assetId] = url.pathname.split('/');
+    expect(assets.read(scopeId, assetId, 'wrong')).toBeNull();
+    expect(assets.describe({ ownerId: 'user-1', agentId: 'agent-1', sessionId: 'session-2', assetId })).toBeNull();
+    expect(() => assets.put({ ownerId: 'u', agentId: 'a', sessionId: 's', data: PNG, mimeType: 'image/jpeg' })).toThrow(/MIME/);
+    expect(() => assets.put({ ownerId: 'u', agentId: 'a', sessionId: 's', data: Buffer.from('<svg/>'), mimeType: 'image/svg+xml' })).toThrow(/Unsupported/);
+  });
+});

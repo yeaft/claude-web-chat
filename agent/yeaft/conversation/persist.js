@@ -285,6 +285,12 @@ function serializeMessage(msg) {
       fm.push(`attachmentsB64: ${b64}`);
     } catch { /* best-effort: attachments are UI metadata, not engine-critical */ }
   }
+  if (Array.isArray(msg.images) && msg.images.length > 0) {
+    try {
+      const b64 = Buffer.from(JSON.stringify(msg.images)).toString('base64');
+      fm.push(`imagesB64: ${b64}`);
+    } catch { /* best-effort: image display metadata is not engine-critical */ }
+  }
   // Internal/synthetic rows must round-trip so refresh/history replay can
   // keep them out of the user-visible conversation. Reflection folding uses
   // `_reflection`; other engine-only rows may use one of the explicit flags.
@@ -402,6 +408,12 @@ export function parseMessage(raw) {
           const parsed = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
           if (Array.isArray(parsed)) msg.attachments = parsed;
         } catch { /* best-effort: ignore malformed attachment metadata */ }
+        break;
+      case 'imagesB64':
+        try {
+          const parsed = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
+          if (Array.isArray(parsed)) msg.images = parsed;
+        } catch { /* best-effort: ignore malformed image metadata */ }
         break;
       case '_reflection': msg._reflection = value === 'true'; break;
       case 'internal': msg.internal = value === 'true'; break;
