@@ -24,8 +24,8 @@ export default {
       llmConfigOpen: false,
       filter: 'open',
       search: '',
-      resumeAnswer: '',
       actionGuidance: '',
+      guidanceSubmitting: false,
       expandedActions: {},
       actionsExpanded: false,
       workDirTouched: false,
@@ -195,7 +195,6 @@ export default {
     },
     async selectItem(item) {
       this.selectedId = item.id;
-      this.resumeAnswer = '';
       this.actionGuidance = '';
       this.guidanceAttachments = [];
       this.expandedActions = {};
@@ -434,28 +433,38 @@ export default {
       if (!this.selected) return;
       await this.store.startWorkItem(this.selected.id, this.agentId);
     },
-    async guideSelectedAction() {
-      if (!this.selected || (!this.actionGuidance.trim() && this.guidanceAttachments.length === 0)) return;
-      await this.store.guideWorkItemAction(
-        this.selected.id,
-        this.actionGuidance.trim(),
-        this.selected.currentActionId,
-        this.selected.revision,
-        this.guidanceAttachments.map(attachment => ({
-          fileId: attachment.fileId,
-          name: attachment.name,
-          mimeType: attachment.mimeType,
-          size: attachment.size,
-        })),
-        this.agentId,
-      );
-      this.actionGuidance = '';
-      this.guidanceAttachments = [];
+    async submitActionGuidance() {
+      if (!this.selected || this.guidanceSubmitting) return;
+      const guidance = this.actionGuidance.trim();
+      if (!guidance && this.guidanceAttachments.length === 0) return;
+      this.guidanceSubmitting = true;
+      try {
+        if (['waiting', 'needs_attention'].includes(this.selected.status)) {
+          await this.store.retryWorkItem(this.selected.id, guidance, this.agentId);
+        } else {
+          await this.store.guideWorkItemAction(
+            this.selected.id,
+            guidance,
+            this.selected.currentActionId,
+            this.selected.revision,
+            this.guidanceAttachments.map(attachment => ({
+              fileId: attachment.fileId,
+              name: attachment.name,
+              mimeType: attachment.mimeType,
+              size: attachment.size,
+            })),
+            this.agentId,
+          );
+        }
+        this.actionGuidance = '';
+        this.guidanceAttachments = [];
+      } finally {
+        this.guidanceSubmitting = false;
+      }
     },
     async retrySelected() {
       if (!this.selected) return;
-      await this.store.retryWorkItem(this.selected.id, this.resumeAnswer, this.agentId);
-      this.resumeAnswer = '';
+      await this.store.retryWorkItem(this.selected.id, '', this.agentId);
     },
     async cancelSelected() {
       if (!this.selected) return;
@@ -559,7 +568,6 @@ export default {
                   <div class="work-center-detail-actions">
                     <button v-if="selected.status === 'cancelled'" class="btn-primary" type="button" @click="retrySelected">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
-                    <button v-if="selected.status === 'waiting' || selected.status === 'needs_attention'" class="btn-primary" type="button" @click="retrySelected" :disabled="selected.status === 'waiting' && !resumeAnswer.trim()">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancel', 'Cancel') }}</button>
                   </div>
                 </div>
@@ -581,11 +589,9 @@ export default {
                   <p>{{ selected.failureReason }}</p>
                 </div>
 
-                <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
-                  <p v-if="selected.waitingReason">{{ selected.waitingReason }}</p>
-                  <label>{{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}
-                    <textarea v-model="resumeAnswer" rows="3" :placeholder="tr('workCenter.resumeAnswerHint', 'Provide the information required to continue')"></textarea>
-                  </label>
+                <div v-if="selected.status === 'waiting' && selected.waitingReason" class="work-center-section work-center-resume">
+                  <h3>{{ tr('workCenter.waitingReason', 'Waiting for information') }}</h3>
+                  <p>{{ selected.waitingReason }}</p>
                 </div>
 
                 <div class="work-center-section">
@@ -611,9 +617,14 @@ export default {
                     </button>
                   </div>
                 </div>
-                <div v-if="['ready','running'].includes(selected.status)" class="work-center-section work-center-guidance">
-                  <label>{{ tr('workCenter.guidance', 'Add guidance to the current Action') }}
-                    <textarea v-model="actionGuidance" rows="2" :placeholder="tr('workCenter.guidanceHint', 'Clarify constraints or redirect the current Action')"></textarea>
+                <div v-if="['ready','running','waiting','needs_attention'].includes(selected.status)" class="work-center-section work-center-guidance">
+                  <label>{{ ['waiting','needs_attention'].includes(selected.status)
+                    ? tr('workCenter.continueGuidance', 'Add information and continue')
+                    : tr('workCenter.guidance', 'Add guidance to the current Action') }}
+                    <textarea v-model="actionGuidance" rows="3"
+                              :placeholder="['waiting','needs_attention'].includes(selected.status)
+                                ? tr('workCenter.continueGuidanceHint', 'Explain what changed, answer the question, or provide the information needed to continue')
+                                : tr('workCenter.guidanceHint', 'Clarify constraints or redirect the current Action')"></textarea>
                   </label>
                   <div v-if="guidanceAttachments.length" class="work-center-attachment-list">
                     <span v-for="(attachment, index) in guidanceAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
@@ -624,17 +635,22 @@ export default {
                   </div>
                   <div class="work-center-guidance-actions">
                     <div>
-                      <label v-if="workItemAttachmentsSupported" class="btn-ghost work-center-attachment-picker">
+                      <label v-if="workItemAttachmentsSupported && ['ready','running'].includes(selected.status)" class="btn-ghost work-center-attachment-picker">
                         {{ tr('workCenter.addAttachments', 'Add files') }}
                         <input type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv"
                                @change="onGuidanceAttachmentInput">
                       </label>
                       <small v-if="guidanceAttachmentsUploading">{{ tr('workCenter.attachmentsUploading', 'Uploading…') }}</small>
+                      <small v-else-if="['waiting','needs_attention'].includes(selected.status)">{{ tr('workCenter.continueGuidanceRestartHint', 'Your information is added to the failed Action context before it runs again.') }}</small>
                       <small v-else>{{ tr('workCenter.guidanceRestartHint', 'This restarts the current Action with the new guidance.') }}</small>
                     </div>
-                    <button class="btn-secondary" type="button" @click="guideSelectedAction"
-                            :disabled="guidanceAttachmentsUploading || (!actionGuidance.trim() && guidanceAttachments.length === 0)">
-                      {{ tr('workCenter.sendGuidance', 'Send guidance') }}
+                    <button class="btn-primary" type="button" @click="submitActionGuidance"
+                            :disabled="guidanceSubmitting || guidanceAttachmentsUploading || (!actionGuidance.trim() && guidanceAttachments.length === 0)">
+                      {{ guidanceSubmitting
+                        ? tr('workCenter.continuing', 'Continuing…')
+                        : (['waiting','needs_attention'].includes(selected.status)
+                          ? tr('workCenter.continueAction', 'Continue Action')
+                          : tr('workCenter.sendGuidance', 'Send guidance')) }}
                     </button>
                   </div>
                 </div>

@@ -1025,12 +1025,16 @@ describe('Work Center core', () => {
     controller.submit(failedClaim.run.id, 'boot-a', failedClaim.run.leaseEpoch, {
       outcome: 'failed', summary: 'Permanent failure', evidence: [], error: 'Fix manually',
     });
-    const retried = controller.retry(failedItem.id);
+    const retried = controller.retry(failedItem.id, {
+      answer: 'The missing credential is configured now; rerun the failed checks',
+    });
     expect(retried.status).toBe('ready');
     expect(retried.actions.at(-1).context.at(-1)).toMatchObject({
       summary: 'Permanent failure',
-      answer: null,
+      answer: 'The missing credential is configured now; rerun the failed checks',
     });
+    expect(retried.actions.at(-1).instruction)
+      .toContain('User answer: The missing credential is configured now; rerun the failed checks');
   });
 
   it('cancels the Run atomically and rejects its late submit and recovery', () => {

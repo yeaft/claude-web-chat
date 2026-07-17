@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 
 const read = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
 
@@ -137,14 +138,59 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('class="work-center-action-response"');
     expect(page).not.toContain('class="work-center-run"');
     expect(page).not.toContain('class="work-center-activity-toggle"');
-    expect(page).toContain("['ready','running'].includes(selected.status)");
-    expect(page).toContain('@click="guideSelectedAction"');
+    expect(page).toContain("['ready','running','waiting','needs_attention'].includes(selected.status)");
+    expect(page).toContain("['waiting', 'needs_attention'].includes(this.selected.status)");
+    expect(page).toContain('@click="submitActionGuidance"');
+    expect(page).toContain("await this.store.retryWorkItem(this.selected.id, guidance, this.agentId)");
+    expect(page).toContain("tr('workCenter.continueAction'");
+    expect(page).not.toContain('resumeAnswer');
+    expect(page).not.toContain("selected.status === 'waiting' || selected.status === 'needs_attention'");
+    expect(page).toContain("selected.status === 'cancelled'");
     expect(store).toContain("workCenterRequest('guide'");
+    expect(store).toContain("workCenterRequest('retry'");
     expect(css).toContain('.work-center-action-card');
     expect(css).toContain('.work-center-action-stats');
     expect(css).toContain('.work-center-action-response');
     expect(css).toContain('.work-center-action-failure');
     expect(page).not.toContain('v-for="tool');
+  });
+
+  it.each(['waiting', 'needs_attention'])('submits blocked %s guidance through retry and clears it after success', async status => {
+    const retryWorkItem = vi.fn().mockResolvedValue({ status: 'ready' });
+    const guideWorkItemAction = vi.fn();
+    const state = {
+      selected: { id: 'work-1', status, currentActionId: 'action-1', revision: 3 },
+      actionGuidance: 'The credential is configured now',
+      guidanceAttachments: [],
+      guidanceSubmitting: false,
+      agentId: 'agent-1',
+      store: { retryWorkItem, guideWorkItemAction },
+    };
+
+    await WorkCenterPage.methods.submitActionGuidance.call(state);
+
+    expect(retryWorkItem).toHaveBeenCalledWith(
+      'work-1', 'The credential is configured now', 'agent-1',
+    );
+    expect(guideWorkItemAction).not.toHaveBeenCalled();
+    expect(state.actionGuidance).toBe('');
+    expect(state.guidanceSubmitting).toBe(false);
+  });
+
+  it('keeps blocked guidance when retry fails and unlocks the submit button', async () => {
+    const retryWorkItem = vi.fn().mockRejectedValue(new Error('stale action'));
+    const state = {
+      selected: { id: 'work-1', status: 'needs_attention' },
+      actionGuidance: 'Retry with the new configuration',
+      guidanceAttachments: [],
+      guidanceSubmitting: false,
+      agentId: 'agent-1',
+      store: { retryWorkItem, guideWorkItemAction: vi.fn() },
+    };
+
+    await expect(WorkCenterPage.methods.submitActionGuidance.call(state)).rejects.toThrow('stale action');
+    expect(state.actionGuidance).toBe('Retry with the new configuration');
+    expect(state.guidanceSubmitting).toBe(false);
   });
 
   it('creates Work Items with Auto or a reusable type and keeps Action creation out of the UI', () => {
@@ -291,7 +337,7 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('workItemAttachmentsSupported()');
     expect(page).toContain("this.runtime?.workItemAttachments === true");
     expect(page).toContain('v-if="workItemAttachmentsSupported" class="btn-secondary work-center-attachment-picker"');
-    expect(page).toContain('v-if="workItemAttachmentsSupported" class="btn-ghost work-center-attachment-picker"');
+    expect(page).toContain('v-if="workItemAttachmentsSupported && [\'ready\',\'running\'].includes(selected.status)" class="btn-ghost work-center-attachment-picker"');
     expect(page).toContain('@change="onGuidanceAttachmentInput"');
     expect(page).toContain('guidanceAttachments.map(attachment => ({');
     expect(page).toContain('@click="previewAttachment(attachment)"');
