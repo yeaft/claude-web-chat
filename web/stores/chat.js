@@ -2228,8 +2228,8 @@ export const useChatStore = defineStore('chat', {
             threadId: msg.threadId || event.threadId || 'main',
           };
           const matches = row => row?.type === 'tool-use'
-            && row.toolName === 'AskUser'
-            && !row.askRequestId
+            && (row.toolName === 'AskUser' || row.toolName === 'AskUserQuestion')
+            && (!row.askRequestId || row.askRequestId === event.requestId)
             && (!expected.sessionId || row.sessionId === expected.sessionId)
             && (!expected.vpId || (row.vpId || row.speakerVpId) === expected.vpId)
             && (!expected.turnId || row.turnId === expected.turnId)
@@ -2241,9 +2241,32 @@ export const useChatStore = defineStore('chat', {
               messages[i].toolName = 'AskUserQuestion';
               messages[i].askRequestId = event.requestId;
               messages[i].askQuestions = event.questions || [];
+              messages[i].askCreatedAt = event.createdAt || null;
+              messages[i].askExpiresAt = event.expiresAt || null;
+              messages[i].isHistory = false;
               return true;
             }
-            return false;
+            if (!event.replay) return false;
+            messages.push({
+              id: `ask-card-${event.requestId}`,
+              type: 'tool-use',
+              toolName: 'AskUserQuestion',
+              toolInput: { questions: event.questions || [] },
+              askRequestId: event.requestId,
+              askQuestions: event.questions || [],
+              askCreatedAt: event.createdAt || null,
+              askExpiresAt: event.expiresAt || null,
+              sessionId: expected.sessionId,
+              vpId: expected.vpId,
+              speakerVpId: expected.vpId,
+              turnId: expected.turnId,
+              threadId: expected.threadId,
+              hasResult: false,
+              isHistory: false,
+              timestamp: event.createdAt || Date.now(),
+            });
+            this.messagesMap = { ...this.messagesMap, [conversationId]: messages.slice() };
+            return true;
           };
           if (!linkPrompt()) {
             let retries = 0;
@@ -2252,6 +2275,24 @@ export const useChatStore = defineStore('chat', {
               if (linkPrompt() || retries >= 10) clearInterval(retryInterval);
             }, 200);
           }
+          break;
+        }
+
+        case 'ask_user_answered':
+        case 'ask_user_expired': {
+          const conversationId = msg.conversationId || this.yeaftConversationId;
+          const messages = conversationId ? (this.messagesMap[conversationId] || []) : [];
+          const askMsg = messages.find(row => row?.askRequestId === event.requestId);
+          if (!askMsg) break;
+          if (event.type === 'ask_user_answered') {
+            askMsg.askAnswered = true;
+            askMsg.selectedAnswers = event.answers || {};
+          } else {
+            askMsg.isHistory = true;
+            askMsg.askExpired = true;
+          }
+          askMsg.askRequestId = null;
+          this.messagesMap = { ...this.messagesMap, [conversationId]: messages.slice() };
           break;
         }
 

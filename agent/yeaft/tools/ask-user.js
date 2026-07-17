@@ -66,6 +66,13 @@ Guidelines:
     }
 
     const answers = await ctx.askUser({ question, options });
+    if (answers?.__yeaftTimedOut) {
+      return JSON.stringify({
+        question,
+        timedOut: true,
+        message: 'The user did not answer before the request expired. Continue without this input.',
+      });
+    }
     return JSON.stringify({ question, answers });
   },
 });

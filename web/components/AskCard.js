@@ -116,7 +116,8 @@ export default {
       if (!ask) return false;
       // Expired: no requestId, not answered, and has been loaded from history (isHistory flag)
       // or simply no requestId and not waiting (page already loaded)
-      return !ask.askRequestId && !ask.askAnswered && !ask.selectedAnswers && !!ask.isHistory;
+      return !!ask.askExpired
+        || (!ask.askRequestId && !ask.askAnswered && !ask.selectedAnswers && !!ask.isHistory);
     });
 
     const questions = Vue.computed(() => {

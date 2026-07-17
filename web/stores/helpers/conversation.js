@@ -527,7 +527,11 @@ export function answerUserQuestion(store, requestId, answers, conversationId) {
     requestId,
     answers
   });
-  if (chatMsg) {
+  // Yeaft prompts are shared across devices. Keep the card interactive until
+  // the agent broadcasts ask_user_answered; another device may have won the
+  // first-answer race or the request may already be expired. Chat-provider
+  // prompts retain their historical optimistic collapse behavior.
+  if (chatMsg && !isYeaftPrompt) {
     chatMsg.askAnswered = true;
     chatMsg.selectedAnswers = answers;
   }

@@ -92,6 +92,125 @@ describe('per-session running state', () => {
     expect(store.isYeaftSessionProcessing('session-b')).toBe(false);
   });
 
+  it('replays and settles the same AskUser card across devices', () => {
+    const store = freshStore();
+    store.currentView = 'yeaft';
+    store.yeaftConversationId = 'yeaft-conv';
+    store.yeaftActiveSessionFilter = 'session-a';
+    store.messagesMap['yeaft-conv'] = [{
+      type: 'tool-use',
+      toolName: 'AskUser',
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      isHistory: true,
+    }];
+
+    store.handleYeaftOutput({
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      event: {
+        type: 'ask_user_question',
+        requestId: 'ask-shared',
+        replay: true,
+        createdAt: 100,
+        expiresAt: 200,
+        questions: [{ question: 'Continue?', options: [] }],
+      },
+    });
+
+    expect(store.messagesMap['yeaft-conv'][0]).toMatchObject({
+      toolName: 'AskUserQuestion',
+      askRequestId: 'ask-shared',
+      askCreatedAt: 100,
+      askExpiresAt: 200,
+      isHistory: false,
+    });
+
+    store.handleYeaftOutput({
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      event: {
+        type: 'ask_user_answered',
+        requestId: 'ask-shared',
+        answers: { 'Continue?': 'Yes' },
+      },
+    });
+
+    expect(store.messagesMap['yeaft-conv'][0]).toMatchObject({
+      askRequestId: null,
+      askAnswered: true,
+      selectedAnswers: { 'Continue?': 'Yes' },
+    });
+  });
+
+  it('creates a replayed AskUser card when recent history omitted the tool row', () => {
+    const store = freshStore();
+    store.currentView = 'yeaft';
+    store.yeaftConversationId = 'yeaft-conv';
+    store.yeaftActiveSessionFilter = 'session-a';
+    store.messagesMap['yeaft-conv'] = [];
+
+    store.handleYeaftOutput({
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      event: {
+        type: 'ask_user_question',
+        requestId: 'ask-replay-only',
+        replay: true,
+        createdAt: 100,
+        expiresAt: 200,
+        questions: [{ question: 'Choose', options: [] }],
+      },
+    });
+
+    expect(store.messagesMap['yeaft-conv']).toEqual([
+      expect.objectContaining({
+        type: 'tool-use',
+        toolName: 'AskUserQuestion',
+        askRequestId: 'ask-replay-only',
+        sessionId: 'session-a',
+        vpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        isHistory: false,
+      }),
+    ]);
+  });
+
+  it('marks an expired AskUser card without moving the visible Session', () => {
+    const store = freshStore();
+    store.currentView = 'yeaft';
+    store.yeaftConversationId = 'yeaft-conv';
+    store.yeaftActiveSessionFilter = 'session-visible';
+    store.messagesMap['yeaft-conv'] = [{
+      type: 'tool-use',
+      toolName: 'AskUserQuestion',
+      askRequestId: 'ask-expire',
+      sessionId: 'session-background',
+    }];
+
+    store.handleYeaftOutput({
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-background',
+      event: { type: 'ask_user_expired', requestId: 'ask-expire' },
+    });
+
+    expect(store.yeaftActiveSessionFilter).toBe('session-visible');
+    expect(store.messagesMap['yeaft-conv'][0]).toMatchObject({
+      askRequestId: null,
+      askExpired: true,
+      isHistory: true,
+    });
+  });
+
   it('keeps Yeaft active while any VP turn in that session is unfinished', () => {
     const store = freshStore();
     store.currentView = 'yeaft';
