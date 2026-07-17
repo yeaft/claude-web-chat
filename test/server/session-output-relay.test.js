@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const sendToWebClient = vi.fn(async (client, msg) => {
   client.sent.push(msg);
@@ -31,6 +34,8 @@ const { webClients } = await import('../../server/context.js');
 const { yeaftSessionDb } = await import('../../server/database.js');
 const { yeaftAssetStore } = await import('../../server/yeaft-asset-store.js');
 const { handleAgentOutput } = await import('../../server/handlers/agent-output.js');
+const { ConversationStore } = await import('../../agent/yeaft/conversation/persist.js');
+const { __testHooks: webBridgeTestHooks } = await import('../../agent/yeaft/web-bridge.js');
 
 const originalSkipAuth = CONFIG.skipAuth;
 
@@ -135,13 +140,23 @@ describe('Yeaft Session output relay aliases', () => {
       },
       { id: 'm2', role: 'tool', turnId: 'turn-1', toolCallId: 'call-1', content: '{"success":true}' },
     ];
-    const finalPage = [{
-      id: 'm3', role: 'assistant', turnId: 'turn-1', content: 'Here is the image.',
-      imageAssetAnchor: true, images: [pendingImage],
-    }];
+    const historyDir = mkdtempSync(join(tmpdir(), 'yeaft-asset-history-wire-'));
+    const historyStore = new ConversationStore(historyDir);
+    historyStore.append({
+      role: 'assistant', sessionId, turnId: 'turn-1', content: 'Here is the image.',
+      imageAssetAnchor: true,
+    });
+    const persistedFinalPage = historyStore.loadAllBySession(sessionId);
+    const projectedToolPage = webBridgeTestHooks.projectVisibleHistoryChunkMessages(toolPage);
+    const projectedFinalPage = webBridgeTestHooks.projectVisibleHistoryChunkMessages(persistedFinalPage);
+    expect(projectedToolPage.every(message => message.imageAssetAnchor !== true)).toBe(true);
+    expect(projectedFinalPage).toEqual([
+      expect.objectContaining({ turnId: 'turn-1', imageAssetAnchor: true }),
+    ]);
+
     await handleAgentOutput('agent-1', agent, {
       type: 'yeaft_history_window', _requestClientId: 'owner-client', requestId: 'window-1',
-      sessionId, messages: [...toolPage, ...finalPage],
+      sessionId, messages: [...projectedToolPage, ...projectedFinalPage],
     });
     expect(batchLookup).toHaveBeenCalledTimes(1);
     expect(batchLookup).toHaveBeenCalledWith({
@@ -160,7 +175,7 @@ describe('Yeaft Session output relay aliases', () => {
     batchLookup.mockClear();
     await handleAgentOutput('agent-1', agent, {
       type: 'yeaft_history_window', _requestClientId: 'owner-client', requestId: 'window-2',
-      sessionId, messages: toolPage,
+      sessionId, messages: projectedToolPage,
     });
     expect(batchLookup).toHaveBeenCalledTimes(1);
     expect(batchLookup).toHaveBeenCalledWith({
@@ -172,7 +187,7 @@ describe('Yeaft Session output relay aliases', () => {
     batchLookup.mockClear();
     await handleAgentOutput('agent-1', agent, {
       type: 'yeaft_history_chunk', conversationId: 'yeaft-1', sessionId,
-      messages: finalPage, mode: 'older',
+      messages: projectedFinalPage, mode: 'older',
     });
     expect(batchLookup).toHaveBeenCalledTimes(1);
     expect(batchLookup).toHaveBeenCalledWith({
@@ -183,6 +198,7 @@ describe('Yeaft Session output relay aliases', () => {
       expect.objectContaining({ mimeType: 'image/png', src: expect.stringMatching(/^\/api\/yeaft\/assets\//) }),
     ]);
     yeaftAssetStore.deleteScope({ ownerId: 'owner-1', agentId: 'agent-1', sessionId });
+    rmSync(historyDir, { recursive: true, force: true });
   });
 
   it('cleans only the deleted Session asset scope after agent-confirmed deletion', async () => {

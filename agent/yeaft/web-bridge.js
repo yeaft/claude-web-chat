@@ -1109,6 +1109,7 @@ function projectVisibleHistoryChunkMessages(messages = []) {
       ...(m.clientMessageId ? { clientMessageId: m.clientMessageId } : {}),
       threadId: m.threadId || m.turnId || 'main',
       ...(m.turnId ? { turnId: m.turnId } : {}),
+      ...(m.imageAssetAnchor === true ? { imageAssetAnchor: true } : {}),
       ...(Array.isArray(m.attachments) && m.attachments.length > 0 ? { attachments: hydrateHistoryAttachmentPreviews(m.attachments) } : {}),
       ...(Array.isArray(m.images) && m.images.length > 0 ? { images: m.images } : {}),
       ...(m.speakerVpId ? { speakerVpId: m.speakerVpId } : {}),
@@ -6647,6 +6648,7 @@ export async function handleYeaftMcpReload(msg = {}) {
 
 export const __testHooks = {
   loadVisibleGroupHistoryPage,
+  projectVisibleHistoryChunkMessages,
   persistInboundMessageOnceByMsgId,
   buildPendingRescueEnvelope,
   runYeaftSessionSendForTest(msg) {
