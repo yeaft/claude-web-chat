@@ -102,6 +102,24 @@ const OPEN_ITEM_DETAIL = {
   }],
 };
 
+function detailWithActions(count) {
+  const actions = Array.from({ length: count }, (_, index) => ({
+    ...OPEN_ITEM_DETAIL.actions[0],
+    id: `action-${index + 1}`,
+    sequence: index + 1,
+    type: index % 2 ? 'review' : 'implement',
+    status: index === count - 1 ? 'ready' : 'completed',
+    response: `Action ${index + 1} response`,
+    messages: [],
+  }));
+  return {
+    ...OPEN_ITEM_DETAIL,
+    actionCount: count,
+    currentActionId: actions.at(-1).id,
+    actions,
+  };
+}
+
 const FAILED_ITEM = {
   ...OPEN_ITEM,
   status: 'needs_attention',
@@ -294,6 +312,50 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-detail')).toBeVisible();
     await chatPage.locator('.work-center-detail > .work-center-pane-back').click();
     await expect(chatPage.locator('.work-center-list')).toBeVisible();
+  });
+
+  test('switches to drilldown when the Workbench reduces the actual Work Center width', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent);
+    await chatPage.setViewportSize({ width: 1440, height: 900 });
+    const select = chatPage.locator('.work-center-card').click();
+    await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
+    await select;
+
+    await expect(chatPage.locator('.work-center-list')).toBeVisible();
+    await expect(chatPage.locator('.work-center-detail')).toBeVisible();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
+
+    await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Workbench"]').click();
+    await expect(chatPage.locator('.workbench-panel')).toHaveClass(/expanded/);
+    await expect(chatPage.locator('.work-center-list')).toBeHidden();
+    await expect(chatPage.locator('.work-center-detail')).toBeVisible();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeHidden();
+
+    const metrics = await layoutMetrics(chatPage);
+    expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
+    expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
+  });
+
+  test('keeps a long Action list reachable in a short workspace', async ({ chatPage, mockAgent }) => {
+    const detail = detailWithActions(24);
+    await openWorkCenter(chatPage, mockAgent);
+    await chatPage.setViewportSize({ width: 1440, height: 520 });
+    const select = chatPage.locator('.work-center-card').click();
+    await respondToWorkCenterOp(mockAgent, 'get', detail);
+    await select;
+
+    const actionList = chatPage.locator('.work-center-action-list');
+    const cards = actionList.locator('.work-center-action-card');
+    await expect(cards).toHaveCount(24);
+    await cards.last().scrollIntoViewIfNeeded();
+    await expect(cards.last()).toBeInViewport();
+    const scroll = await chatPage.locator('.work-center-detail').evaluate(element => ({
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+    }));
+    expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight);
+    expect(scroll.scrollTop).toBeGreaterThan(0);
   });
 
   test('maximizes and restores the Workbench without leaving the main area in the layout', async ({ chatPage, mockAgent }) => {

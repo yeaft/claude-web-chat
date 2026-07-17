@@ -50,6 +50,14 @@ describe('Work Center Action detail tabs', () => {
     expect(wrapper.get('textarea').element.style.height).toBe('auto');
   });
 
+  it('gives the attachment input a localized accessible name', () => {
+    const wrapper = mountDetail({ attachmentsSupported: true });
+    const input = wrapper.get('.work-center-attachment-picker input[type="file"]');
+
+    expect(input.attributes('aria-label')).toBe('Add files');
+    expect(wrapper.get('.work-center-attachment-picker svg').attributes('aria-hidden')).toBe('true');
+  });
+
   it('supports roving focus with arrow, Home, and End keys', async () => {
     const wrapper = mountDetail();
     const messages = wrapper.get('#work-center-action-messages-tab');

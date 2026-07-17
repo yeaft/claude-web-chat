@@ -130,6 +130,8 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  container-name: work-center;
+  container-type: inline-size;
 }
 
 .work-center-main.workbench-maximized {
@@ -1276,9 +1278,11 @@
 .work-center-action-composer {
   display: grid;
   flex: 0 0 auto;
+  max-height: min(45vh, 280px);
   gap: 8px;
   padding: 10px 20px 14px;
   background: var(--bg-main);
+  overflow-y: auto;
 }
 
 .work-center-action-input-wrapper {
@@ -2118,7 +2122,7 @@
   flex: 1;
 }
 
-@media (max-width: 1360px) {
+@container work-center (max-width: 1160px) {
   .work-center-shell {
     padding: 24px 20px 20px;
   }
