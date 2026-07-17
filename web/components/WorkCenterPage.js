@@ -763,7 +763,7 @@ export default {
                     </button>
                   </div>
                 </div>
-                <div class="work-center-section" v-if="selected.actions?.length">
+                <div class="work-center-section work-center-workflow" v-if="selected.actions?.length">
                   <div class="work-center-action-list-heading">
                     <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
                     <span>{{ $t('workCenter.actionCount', { count: selected.actionCount || selected.actions.length }) }}</span>
@@ -778,14 +778,14 @@ export default {
                           <strong>{{ actionLabel(action.type) }}</strong>
                           <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.capability || tr('workCenter.assignment.auto', 'Auto') }}</small>
                         </span>
-                        <span class="work-center-action-stats">
+                        <span class="work-center-action-stats" aria-label="Execution totals">
                           <span>{{ $t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) }) }}</span>
                           <span>{{ $t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) }) }}</span>
                           <span>{{ $t('workCenter.toolCount', { count: formatCount(executionStats(action).toolCount) }) }}</span>
                           <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(action).inputTokens), output: formatCount(executionStats(action).outputTokens), cache: formatCount((executionStats(action).cacheReadTokens || 0) + (executionStats(action).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) }) }}</span>
                         </span>
-                        <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
-                        <span class="work-center-action-chevron" aria-hidden="true"></span>
+                        <span class="work-center-action-state" :data-status="action.status" aria-hidden="true"></span>
+                        <span class="work-center-action-status-label">{{ statusLabel(action.status) }}</span>
                       </button>
 
                     </article>

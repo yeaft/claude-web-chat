@@ -268,7 +268,7 @@ test.describe('Work Center responsive UI', () => {
     }
   });
 
-  test('uses three desktop panes and single-pane drilldown below 1120px', async ({ chatPage, mockAgent }) => {
+  test('uses three wide-desktop panes and single-pane drilldown when sidebar space is constrained', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     await chatPage.setViewportSize({ width: 1440, height: 900 });
     const select = chatPage.locator('.work-center-card').click();
@@ -424,7 +424,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(card).toContainText('Tool calls');
   });
 
-  test('keeps Action guidance and cards visible without overflow in dark theme', async ({ chatPage, mockAgent }) => {
+  test('keeps Action guidance visible without overflow in dark theme', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     const select = chatPage.locator('.work-center-card').click();
     await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
@@ -436,19 +436,18 @@ test.describe('Work Center responsive UI', () => {
       localStorage.setItem('theme', 'dark');
     });
     await expect(chatPage.locator('html')).toHaveAttribute('data-theme', 'dark');
-    await expect(chatPage.locator('.work-center-action-card')).toBeVisible();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
     await expect(chatPage.locator('.work-center-action-composer textarea')).toBeVisible();
 
     const metrics = await layoutMetrics(chatPage);
     expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.viewportWidth);
     expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
-    const colors = await chatPage.locator('.work-center-action-card').evaluate(element => {
+    const colors = await chatPage.locator('.work-center-action-input-wrapper').evaluate(element => {
       const style = getComputedStyle(element);
-      return { background: style.backgroundColor, text: style.color, border: style.borderColor };
+      return { background: style.backgroundColor, text: style.color };
     });
     expect(colors.background).not.toBe('rgba(0, 0, 0, 0)');
     expect(colors.text).not.toBe(colors.background);
-    expect(colors.border).not.toBe(colors.background);
   });
 
   test('shows delayed directory defaults before sending the create request', async ({ chatPage, mockAgent }) => {

@@ -73,6 +73,35 @@ describe('Work Center Action composer scope', () => {
     })).toBe(false);
   });
 
+  it('matches the Session composer behavior for Enter, Shift+Enter, and disabled sends', () => {
+    const emits = [];
+    const context = { canSend: true, $emit: event => emits.push(event) };
+    const enter = { key: 'Enter', shiftKey: false, isComposing: false, preventDefault: vi.fn() };
+
+    WorkCenterActionDetail.methods.onComposerKeydown.call(context, enter);
+
+    expect(enter.preventDefault).toHaveBeenCalledOnce();
+    expect(emits).toEqual(['send']);
+
+    const shiftEnter = { key: 'Enter', shiftKey: true, isComposing: false, preventDefault: vi.fn() };
+    WorkCenterActionDetail.methods.onComposerKeydown.call(context, shiftEnter);
+    expect(shiftEnter.preventDefault).not.toHaveBeenCalled();
+
+    context.canSend = false;
+    WorkCenterActionDetail.methods.onComposerKeydown.call(context, enter);
+    expect(emits).toEqual(['send']);
+  });
+
+  it('auto-sizes composer input without exceeding the Session input height', () => {
+    const emits = [];
+    const target = { value: 'new context', scrollHeight: 240, style: { height: '40px' } };
+
+    WorkCenterActionDetail.methods.onComposerInput.call({ $emit: (...args) => emits.push(args) }, { target });
+
+    expect(emits).toEqual([['update:composerText', 'new context']]);
+    expect(target.style.height).toBe('120px');
+  });
+
   it('submits the visible Action identity, revision, Agent, and attachments atomically', async () => {
     const context = makeContext();
     context.store.sendWorkItemActionInput.mockResolvedValue({ currentActionId: 'action-1' });
