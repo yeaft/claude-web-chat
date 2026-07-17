@@ -11,6 +11,42 @@ function parseIpv4(address) {
   return parts.length === 4 && parts.every(part => Number.isInteger(part) && part >= 0 && part <= 255) ? parts : null;
 }
 
+function parseIpv6(address) {
+  const normalized = address.toLowerCase().split('%')[0];
+  if (!normalized || normalized.includes(':::')) return null;
+  const halves = normalized.split('::');
+  if (halves.length > 2) return null;
+  const parseHalf = (value) => {
+    if (!value) return [];
+    const groups = [];
+    for (const part of value.split(':')) {
+      if (part.includes('.')) {
+        const bytes = parseIpv4(part);
+        if (!bytes) return null;
+        groups.push((bytes[0] << 8) | bytes[1], (bytes[2] << 8) | bytes[3]);
+      } else if (!/^[0-9a-f]{1,4}$/.test(part)) {
+        return null;
+      } else {
+        groups.push(Number.parseInt(part, 16));
+      }
+    }
+    return groups;
+  };
+  const left = parseHalf(halves[0]);
+  const right = parseHalf(halves[1] || '');
+  if (!left || !right) return null;
+  if (halves.length === 1) return left.length === 8 ? left : null;
+  const zeros = 8 - left.length - right.length;
+  if (zeros < 1) return null;
+  return [...left, ...Array(zeros).fill(0), ...right];
+}
+
+function ipv4FromGroups(groups, index) {
+  const high = groups[index];
+  const low = groups[index + 1];
+  return `${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`;
+}
+
 export function isPublicNetworkAddress(address) {
   const version = isIP(address);
   if (version === 4) {
@@ -35,9 +71,18 @@ export function isPublicNetworkAddress(address) {
   if (normalized.startsWith('fc') || normalized.startsWith('fd')) return false;
   if (/^fe[89ab]/.test(normalized)) return false;
   if (normalized.startsWith('ff')) return false;
-  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped) return isPublicNetworkAddress(mapped[1]);
-  return !normalized.startsWith('2001:db8:');
+  const groups = parseIpv6(normalized);
+  if (!groups) return false;
+  const isMappedIpv4 = groups.slice(0, 5).every(group => group === 0) && groups[5] === 0xffff;
+  if (isMappedIpv4) return isPublicNetworkAddress(ipv4FromGroups(groups, 6));
+  const isCompatibleIpv4 = groups.slice(0, 6).every(group => group === 0);
+  const isNat64 = (groups[0] === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every(group => group === 0))
+    || (groups[0] === 0x0064 && groups[1] === 0xff9b && groups[2] === 0x0001);
+  const is6to4 = groups[0] === 0x2002;
+  const isTeredo = groups[0] === 0x2001 && groups[1] === 0;
+  const isIsatap = groups[5] === 0x5efe;
+  if (isCompatibleIpv4 || isNat64 || is6to4 || isTeredo || isIsatap) return false;
+  return !(groups[0] === 0x2001 && groups[1] === 0x0db8);
 }
 
 async function resolvePublicTarget(url, lookup = dnsLookup) {

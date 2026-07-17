@@ -25,11 +25,28 @@ const publicLookup = vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]
 
 describe('remote image download', () => {
   it('rejects local, private, reserved, and mapped addresses', () => {
-    for (const value of ['127.0.0.1', '10.0.0.1', '169.254.169.254', '192.168.1.1', '::1', 'fc00::1', '::ffff:127.0.0.1']) {
+    for (const value of [
+      '127.0.0.1', '10.0.0.1', '169.254.169.254', '192.168.1.1',
+      '::1', 'fc00::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '::ffff:a00:1',
+      '::7f00:1', '64:ff9b::7f00:1', '64:ff9b:1::a00:1',
+      '2002:7f00:1::', '2001:0:7f00:1::', '2606:4700:4700:0:0:5efe:7f00:1',
+    ]) {
       expect(isPublicNetworkAddress(value), value).toBe(false);
     }
     expect(isPublicNetworkAddress('93.184.216.34')).toBe(true);
+    expect(isPublicNetworkAddress('::ffff:808:808')).toBe(true);
     expect(isPublicNetworkAddress('2606:4700:4700::1111')).toBe(true);
+  });
+
+  it('blocks WHATWG-normalized and DNS-returned hex IPv4-mapped loopback addresses', async () => {
+    const requestImpl = vi.fn();
+    await expect(downloadRemoteImage('https://[::ffff:127.0.0.1]/pixel.png', { requestImpl }))
+      .rejects.toThrow(/private or reserved/);
+    await expect(downloadRemoteImage('https://mapped.example/pixel.png', {
+      lookup: vi.fn(async () => [{ address: '::ffff:7f00:1', family: 6 }]),
+      requestImpl,
+    })).rejects.toThrow(/private or reserved/);
+    expect(requestImpl).not.toHaveBeenCalled();
   });
 
   it('pins the validated DNS result into the socket lookup', async () => {

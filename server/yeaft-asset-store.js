@@ -191,7 +191,7 @@ export function createYeaftAssetStore({
   collectGarbage();
 
   return {
-    put({ ownerId, agentId, sessionId, assetId, data, mimeType, filename, width = null, height = null }) {
+    put({ ownerId, agentId, sessionId, assetId, data, mimeType, filename, width = null, height = null, turnId = null, vpId = null, threadId = null }) {
       if (!ownerId || !agentId || !sessionId) throw new Error('Asset owner, agent, and Session are required');
       const buffer = Buffer.isBuffer(data) ? data : Buffer.from(String(data || ''), 'base64');
       if (!buffer.length || buffer.length > MAX_ASSET_BYTES) throw new Error(`Image asset must be between 1 byte and ${MAX_ASSET_BYTES} bytes`);
@@ -228,6 +228,13 @@ export function createYeaftAssetStore({
         size: buffer.length,
         width: Number.isFinite(width) && width > 0 ? Math.floor(width) : null,
         height: Number.isFinite(height) && height > 0 ? Math.floor(height) : null,
+        turnIds: [...new Set([
+          ...(Array.isArray(existing?.turnIds) ? existing.turnIds : []),
+          ...(existing?.turnId ? [existing.turnId] : []),
+          ...(turnId ? [turnId] : []),
+        ])],
+        vpId: vpId || existing?.vpId || null,
+        threadId: threadId || existing?.threadId || null,
         createdAt: Number(existing?.createdAt) || now(),
         lastReferencedAt: now(),
       };
@@ -279,6 +286,18 @@ export function createYeaftAssetStore({
       try { metadata = JSON.parse(readFileSync(paths.meta, 'utf8')); } catch { return null; }
       if (metadata.scopeId !== scopeId || metadata.assetId !== assetId) return null;
       return { metadata, buffer: readFileSync(paths.data) };
+    },
+
+    describeTurn({ ownerId, agentId, sessionId, turnId }) {
+      if (!ownerId || !agentId || !sessionId || !turnId) return [];
+      const scopeId = scopeIdFor(ownerId, agentId, sessionId, secret);
+      return metadataRows()
+        .filter(row => row.metadata.scopeId === scopeId && (
+          row.metadata.turnId === turnId || row.metadata.turnIds?.includes(turnId)
+        ))
+        .sort((a, b) => Number(a.metadata.createdAt) - Number(b.metadata.createdAt))
+        .map(row => this.describe({ ownerId, agentId, sessionId, assetId: row.metadata.assetId }))
+        .filter(Boolean);
     },
 
     deleteScope({ ownerId, agentId, sessionId }) {

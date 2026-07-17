@@ -426,6 +426,28 @@ describe('Upgrade Install Mode Detection', () => {
 
 
 describe('Critical control frame flushes', () => {
+  it('removes permanent asset failures but keeps transient failures pending', async () => {
+    const ctx = (await import('../../agent/context.js')).default;
+    const { handleMessage } = await import('../../agent/connection/message-router.js');
+    const originalOutbox = ctx.assetOutbox;
+    const acknowledge = vi.fn(() => true);
+    const drain = vi.fn(async () => {});
+    try {
+      ctx.assetOutbox = { acknowledge, drain };
+      await handleMessage({ type: 'yeaft_asset_ack', deliveryId: 'delivery-permanent', ok: false, permanent: true });
+      expect(acknowledge).toHaveBeenCalledWith('delivery-permanent');
+      expect(drain).toHaveBeenCalledTimes(1);
+
+      acknowledge.mockClear();
+      drain.mockClear();
+      await handleMessage({ type: 'yeaft_asset_ack', deliveryId: 'delivery-transient', ok: false });
+      expect(acknowledge).not.toHaveBeenCalled();
+      expect(drain).not.toHaveBeenCalled();
+    } finally {
+      ctx.assetOutbox = originalOutbox;
+    }
+  });
+
   it('keeps restart acknowledgements awaitable before cleanup can close the socket', async () => {
     const ctx = (await import('../../agent/context.js')).default;
     const { handleMessage } = await import('../../agent/connection/message-router.js');

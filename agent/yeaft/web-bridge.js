@@ -3324,7 +3324,6 @@ function handleEngineEvent(event, hctx) {
             threadId: hctx.threadId || event.threadId,
             image,
           });
-          image.deliveryQueued = true;
           ctx.assetOutbox?.drain().catch(err => console.warn('[AssetOutbox] drain failed:', err?.message || err));
         } catch (err) {
           console.warn('[AssetOutbox] failed to queue image:', err?.message || err);

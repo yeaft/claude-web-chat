@@ -3289,16 +3289,6 @@ export class Engine {
               output = stripDisplayImageData(output, displayImages);
             }
             yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError: false, threadId: this.currentThreadId };
-            displayImagesForPersistence.push(...displayImages
-              .filter(image => image.deliveryQueued === true)
-              .map(image => ({
-                assetId: image.assetId,
-                mimeType: image.mimeType,
-                filename: image.filename || 'image',
-                size: Number(image.size) || null,
-                width: Number(image.width) || null,
-                height: Number(image.height) || null,
-              })));
           } catch (err) {
             output = `Error: ${err.message}`;
             isError = true;

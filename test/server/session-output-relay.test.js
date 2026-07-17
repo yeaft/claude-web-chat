@@ -103,6 +103,51 @@ describe('Yeaft Session output relay aliases', () => {
     expect(agent.sent).toEqual([{ type: 'yeaft_asset_ack', deliveryId: 'delivery-1234567890', ok: true }]);
   });
 
+  it('hides permanently rejected pending metadata and restores it after an idempotent replay succeeds', async () => {
+    CONFIG.skipAuth = false;
+    const client = { authenticated: true, userId: 'owner-1', sent: [] };
+    webClients.set('owner-client', client);
+    const agent = { ownerId: 'owner-1', sent: [] };
+    const sessionId = 'sess-permanent-reject-replay';
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    const pendingImage = { assetId: 'pending', mimeType: 'image/png', filename: 'pixel.png' };
+    yeaftAssetStore.deleteScope({ ownerId: 'owner-1', agentId: 'agent-1', sessionId });
+    const quotaFailure = vi.spyOn(yeaftAssetStore, 'put').mockImplementationOnce(() => {
+      throw new Error('Session image asset quota exceeded');
+    });
+
+    await handleAgentOutput('agent-1', agent, {
+      type: 'yeaft_asset_put', deliveryId: 'delivery-permanent-1', conversationId: 'yeaft-1',
+      sessionId, turnId: 'turn-1',
+      image: { mimeType: 'image/png', filename: 'pixel.png', previewData: { data: png, mimeType: 'image/png' } },
+    });
+    expect(agent.sent).toEqual([expect.objectContaining({
+      type: 'yeaft_asset_ack', deliveryId: 'delivery-permanent-1', ok: false, permanent: true,
+    })]);
+
+    await handleAgentOutput('agent-1', agent, {
+      type: 'yeaft_history_window', _requestClientId: 'owner-client', requestId: 'window-1',
+      sessionId, messages: [{ id: 'm1', role: 'assistant', turnId: 'turn-1', images: [pendingImage] }],
+    });
+    expect(client.sent.at(-1).messages[0]).not.toHaveProperty('images');
+
+    quotaFailure.mockRestore();
+    await handleAgentOutput('agent-1', agent, {
+      type: 'yeaft_asset_put', deliveryId: 'delivery-replay-123', conversationId: 'yeaft-1',
+      sessionId, turnId: 'turn-1',
+      image: { mimeType: 'image/png', filename: 'pixel.png', previewData: { data: png, mimeType: 'image/png' } },
+    });
+    client.sent.length = 0;
+    await handleAgentOutput('agent-1', agent, {
+      type: 'yeaft_history_window', _requestClientId: 'owner-client', requestId: 'window-2',
+      sessionId, messages: [{ id: 'm1', role: 'assistant', turnId: 'turn-1', images: [pendingImage] }],
+    });
+    expect(client.sent[0].messages[0].images).toEqual([
+      expect.objectContaining({ mimeType: 'image/png', src: expect.stringMatching(/^\/api\/yeaft\/assets\//) }),
+    ]);
+    yeaftAssetStore.deleteScope({ ownerId: 'owner-1', agentId: 'agent-1', sessionId });
+  });
+
   it('cleans only the deleted Session asset scope after agent-confirmed deletion', async () => {
     CONFIG.skipAuth = false;
     webClients.set('owner-client', { authenticated: true, userId: 'owner-1', sent: [] });

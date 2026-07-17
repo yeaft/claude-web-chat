@@ -71,6 +71,32 @@ describe('Yeaft asset store', () => {
     expect(() => countLimited.put({ ownerId: 'u', agentId: 'a', sessionId: 's', data: PNG_2 })).toThrow(/count quota/);
   });
 
+  it('projects only confirmed assets associated with a turn and keeps duplicate puts idempotent', () => {
+    const assets = store();
+    const first = assets.put({
+      ownerId: 'u', agentId: 'a', sessionId: 's', turnId: 'turn-1', vpId: 'vp-1',
+      data: PNG, mimeType: 'image/png', filename: 'pixel.png',
+    });
+    const replay = assets.put({
+      ownerId: 'u', agentId: 'a', sessionId: 's', turnId: 'turn-1', vpId: 'vp-1',
+      data: PNG, mimeType: 'image/png', filename: 'pixel.png',
+    });
+    const laterTurn = assets.put({
+      ownerId: 'u', agentId: 'a', sessionId: 's', turnId: 'turn-2', vpId: 'vp-1',
+      data: PNG, mimeType: 'image/png', filename: 'pixel.png',
+    });
+    expect(replay.assetId).toBe(first.assetId);
+    expect(laterTurn.assetId).toBe(first.assetId);
+    expect(assets.usage()).toEqual({ bytes: PNG.length, assets: 1 });
+    expect(assets.describeTurn({ ownerId: 'u', agentId: 'a', sessionId: 's', turnId: 'turn-1' })).toEqual([
+      expect.objectContaining({ assetId: first.assetId, src: expect.stringMatching(/^\/api\/yeaft\/assets\//) }),
+    ]);
+    expect(assets.describeTurn({ ownerId: 'u', agentId: 'a', sessionId: 's', turnId: 'turn-2' })).toEqual([
+      expect.objectContaining({ assetId: first.assetId, src: expect.stringMatching(/^\/api\/yeaft\/assets\//) }),
+    ]);
+    expect(assets.describeTurn({ ownerId: 'u', agentId: 'a', sessionId: 's', turnId: 'missing' })).toEqual([]);
+  });
+
   it('deletes only the requested Session scope', () => {
     const assets = store();
     const first = assets.put({ ownerId: 'u', agentId: 'a', sessionId: 's1', data: PNG });
