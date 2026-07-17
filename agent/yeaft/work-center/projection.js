@@ -1,4 +1,30 @@
+import { reconstructDebugRawRequest } from '../debug-trace.js';
+import {
+  enforceActionRequestDetailBudget,
+  limitActionRequestDebugInput,
+  sanitizeDebugValue,
+  sanitizeDiagnosticText,
+} from './debug-projection.js';
 import { normalizeActionBrief } from './workflow.js';
+
+const MAX_ACTION_MESSAGE_CHARS = 16_000;
+const MAX_ACTION_DIAGNOSTIC_CHARS = 8_000;
+const MAX_ACTION_MESSAGES = 20;
+const MAX_ACTION_REQUEST_TOOL_CALLS = 128;
+const MAX_HISTORICAL_BRIEF_CHARS = 256;
+export const MAX_WORK_ITEM_BROWSER_DTO_BYTES = 512 * 1024;
+
+function jsonByteLength(value) {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function truncateUtf8(value, maxBytes) {
+  const bytes = Buffer.from(String(value || ''), 'utf8');
+  if (bytes.length <= maxBytes) return bytes.toString('utf8');
+  let end = Math.min(maxBytes, bytes.length);
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end).toString('utf8');
+}
 
 function currentAction(detail) {
   if (!detail?.currentActionId || !Array.isArray(detail.actions)) return null;
@@ -36,6 +62,70 @@ function sumExecutionStats(values) {
   }, emptyExecutionStats());
 }
 
+function normalizeProjectedMessage(message) {
+  if (!message || typeof message !== 'object') return null;
+  const text = typeof message.text === 'string'
+    ? message.text.trim().slice(0, MAX_ACTION_MESSAGE_CHARS)
+    : '';
+  const attachments = projectAttachments(message.attachments);
+  if (!text && attachments.length === 0) return null;
+  return {
+    id: String(message.id || ''),
+    role: message.role === 'user' ? 'user' : 'assistant',
+    kind: message.kind === 'input' ? 'input' : 'response',
+    status: message.status || null,
+    text,
+    attachments,
+    createdAt: count(message.createdAt),
+    updatedAt: count(message.updatedAt || message.createdAt),
+    ...(message.progressRevision == null ? {} : { progressRevision: count(message.progressRevision) }),
+  };
+}
+
+function actionInputMessages(action, events) {
+  return (Array.isArray(events) ? events : [])
+    .filter(event => event?.actionId === action?.id
+      && ['action.guidance_added', 'action.input_added'].includes(event.type))
+    .map(event => normalizeProjectedMessage({
+      id: `event:${event.id}`,
+      role: 'user',
+      kind: 'input',
+      status: 'sent',
+      text: event.data?.text || event.data?.guidance || '',
+      attachments: event.data?.attachments,
+      createdAt: event.createdAt,
+    }))
+    .filter(Boolean);
+}
+
+function runResponseMessage(run) {
+  return normalizeProjectedMessage({
+    id: `run:${run.id}`,
+    role: 'assistant',
+    kind: 'response',
+    status: run.status || 'running',
+    text: typeof run.response === 'string' ? run.response : '',
+    createdAt: count(run.startedAt),
+    updatedAt: count(run.endedAt || run.startedAt),
+    progressRevision: count(run.progressRevision),
+  });
+}
+
+function actionMessages(action, runs, events) {
+  const matchingRuns = Array.isArray(runs)
+    ? runs.filter(run => run?.actionId === action?.id)
+    : [];
+  return [...actionInputMessages(action, events), ...matchingRuns
+    .sort((left, right) => count(left.startedAt) - count(right.startedAt))
+    .map(run => runResponseMessage(run))
+    .filter(Boolean)]
+    .sort((left, right) => left.createdAt - right.createdAt
+      || (left.role === 'user' ? -1 : 1)
+      || left.id.localeCompare(right.id));
+}
+
+
+
 const MAX_FAILURE_REASON_LENGTH = 2_000;
 const MAX_FAILURE_INSPECTION_LENGTH = 16_000;
 const SAFE_FAILURE_FALLBACK = 'The Action failed. Sensitive details were omitted.';
@@ -56,35 +146,71 @@ function sanitizedUrl(raw) {
   }
 }
 
+function unsafeFailureText(raw) {
+  return PROVIDER_TOKEN_PATTERN.test(raw) || HIGH_ENTROPY_SECRET_PATTERN.test(raw)
+    || LOCAL_PATH_ASSIGNMENT_PATTERN.test(raw) || POSIX_ABSOLUTE_PATH_PATTERN.test(raw)
+    || WINDOWS_ABSOLUTE_PATH_PATTERN.test(raw);
+}
+
+function sanitizeFailureDiagnostic(value) {
+  const raw = typeof value === 'string'
+    ? value.trim().slice(0, MAX_FAILURE_INSPECTION_LENGTH)
+    : '';
+  if (!raw) return '';
+  if (unsafeFailureText(raw)) return SAFE_FAILURE_FALLBACK;
+  return sanitizeDiagnosticText(raw, MAX_ACTION_DIAGNOSTIC_CHARS);
+}
+
 function sanitizeFailureReason(value) {
   const raw = typeof value === 'string'
     ? value.trim().slice(0, MAX_FAILURE_INSPECTION_LENGTH)
     : '';
   if (!raw) return '';
+  if (unsafeFailureText(raw)) return SAFE_FAILURE_FALLBACK;
   const text = raw.replace(/https?:\/\/[^\s<>'"`]+/gi, sanitizedUrl);
-  if (CREDENTIAL_ASSIGNMENT_PATTERN.test(text) || PROVIDER_TOKEN_PATTERN.test(text)
-      || HIGH_ENTROPY_SECRET_PATTERN.test(text)) return SAFE_FAILURE_FALLBACK;
-  if (LOCAL_PATH_ASSIGNMENT_PATTERN.test(text) || POSIX_ABSOLUTE_PATH_PATTERN.test(text)
-      || WINDOWS_ABSOLUTE_PATH_PATTERN.test(text)) {
-    return SAFE_FAILURE_FALLBACK;
-  }
+  if (CREDENTIAL_ASSIGNMENT_PATTERN.test(text)) return SAFE_FAILURE_FALLBACK;
   return text
     .replace(/\b(?:Bearer|Basic)\s+[^\s,;]+/gi, '[redacted credential]')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
     .slice(0, MAX_FAILURE_REASON_LENGTH);
 }
 
-function actionExecution(action, runs) {
+
+
+function actionExecution(action, runs, events, includeBody = true) {
   const matchingRuns = Array.isArray(runs)
     ? runs.filter(run => run?.actionId === action?.id)
     : [];
   if (matchingRuns.length === 0) {
+    const inputMessageCount = Array.isArray(events) ? events.filter(event => (
+      event?.actionId === action?.id
+        && ['action.guidance_added', 'action.input_added'].includes(event.type)
+    )).length : 0;
+    const messages = includeBody
+      ? (Array.isArray(action?.messages)
+          ? action.messages.slice(-MAX_ACTION_MESSAGES).map(normalizeProjectedMessage).filter(Boolean)
+          : actionInputMessages(action, events))
+      : [];
+    const messageCount = count(action?.messageCount) || (includeBody ? messages.length : inputMessageCount);
     return {
-      ...executionStats(action),
-      response: '',
-      failureReason: '',
-      progressRevision: 0,
-      messages: [],
+      ...executionStats(action?.executionStats || action),
+      response: includeBody && typeof action?.response === 'string' ? action.response : '',
+      failure: includeBody && action?.failure && typeof action.failure === 'object'
+        ? {
+            error: sanitizeFailureDiagnostic(action.failure.error),
+            summary: sanitizeFailureDiagnostic(action.failure.summary),
+            failedAt: count(action.failure.failedAt),
+          }
+        : null,
+      progressRevision: count(action?.progressRevision),
+      messages,
+      liveMessage: includeBody ? normalizeProjectedMessage(action?.liveMessage) : null,
+      messageCount,
+      messageCursor: action?.messageCursor == null
+        ? (!includeBody && messageCount > 0 ? String(messageCount) : null)
+        : String(action.messageCursor),
+      failureReason: sanitizeFailureReason(action?.failureReason),
+
     };
   }
   const stats = sumExecutionStats(matchingRuns);
@@ -92,31 +218,38 @@ function actionExecution(action, runs) {
     count(right.progressRevision) - count(left.progressRevision)
       || count(right.startedAt) - count(left.startedAt)
   ))[0];
-  const runsByEnd = [...matchingRuns]
-    .sort((left, right) => count(right.endedAt || right.startedAt) - count(left.endedAt || left.startedAt));
-  const latestRun = runsByEnd[0];
-  const showCurrentFailure = action?.status === 'failed'
-    || ['failed', 'retryable', 'interrupted'].includes(latestRun?.status);
-  const latestFailure = showCurrentFailure
-    ? runsByEnd.find(run => sanitizeFailureReason(run?.error))
+  const latestFailure = action?.status === 'failed'
+    ? [...matchingRuns]
+        .filter(run => run?.status === 'failed')
+        .sort((left, right) => count(right.endedAt || right.startedAt) - count(left.endedAt || left.startedAt))[0]
     : null;
-  const messages = [...matchingRuns]
-    .sort((left, right) => count(left.startedAt) - count(right.startedAt))
-    .map((run, index) => ({
-      id: `${action.id}:${index + 1}`,
-      status: run.status || 'running',
-      text: typeof run.response === 'string' ? run.response.trim().slice(0, 16_000) : '',
-      failureReason: sanitizeFailureReason(run.error),
-      createdAt: count(run.startedAt),
-      updatedAt: count(run.endedAt || run.startedAt),
-    }))
-    .filter(message => message.text || message.failureReason);
+  const inputMessageCount = includeBody
+    ? 0
+    : (Array.isArray(events) ? events : []).filter(event => (
+        event?.actionId === action?.id
+          && ['action.guidance_added', 'action.input_added'].includes(event.type)
+      )).length;
+  const allMessages = includeBody ? actionMessages(action, matchingRuns, events) : [];
+  const totalMessageCount = includeBody ? allMessages.length : matchingRuns.length + inputMessageCount;
+  const messages = allMessages.slice(-MAX_ACTION_MESSAGES);
+  const liveMessage = includeBody ? runResponseMessage(latest) : null;
   return {
     ...stats,
-    response: typeof latest?.response === 'string' ? latest.response : '',
+    response: includeBody && typeof latest?.response === 'string' ? latest.response : '',
+    failure: includeBody && latestFailure ? {
+      error: sanitizeFailureDiagnostic(latestFailure.error),
+      summary: sanitizeFailureDiagnostic(latestFailure.summary),
+      failedAt: count(latestFailure.endedAt || latestFailure.startedAt),
+    } : null,
     failureReason: sanitizeFailureReason(latestFailure?.error),
+
     progressRevision: count(latest?.progressRevision),
     messages,
+    liveMessage,
+    messageCount: totalMessageCount,
+    messageCursor: includeBody
+      ? (totalMessageCount > messages.length ? String(totalMessageCount - messages.length) : null)
+      : (totalMessageCount > 0 ? String(totalMessageCount) : null),
   };
 }
 
@@ -140,48 +273,167 @@ function projectAssignmentPolicy(policy) {
   };
 }
 
-function projectAction(action, runs) {
+function projectAction(action, runs, events, includeBody = true) {
   if (!action) return null;
-  const execution = actionExecution(action, runs);
+  const execution = actionExecution(action, runs, events, includeBody);
+  const alreadyProjected = !Array.isArray(runs) && Array.isArray(action.messages);
+  const brief = alreadyProjected ? (action.brief || null) : normalizeActionBrief(action.brief, action.type);
+  const projectedBrief = includeBody || !brief
+    ? brief
+    : Object.fromEntries(Object.entries(brief).map(([key, value]) => [
+        key,
+        truncateUtf8(value, MAX_HISTORICAL_BRIEF_CHARS),
+      ]));
   return {
     id: action.id,
     sequence: action.sequence,
     type: action.type,
     stageId: action.stageId || action.type,
-    assignmentPolicy: projectAssignmentPolicy(action.assignmentPolicy),
+    assignmentPolicy: alreadyProjected
+      ? (action.assignmentPolicy || null)
+      : projectAssignmentPolicy(action.assignmentPolicy),
     dependsOnStageIds: Array.isArray(action.dependsOnStageIds) ? action.dependsOnStageIds : [],
     workspaceMode: action.workspaceMode || 'shared',
     requiredRole: action.requiredRole || '',
-    brief: normalizeActionBrief(action.brief, action.type),
+    brief: projectedBrief,
     status: action.status,
     executionStats: executionStats(execution),
     loopCount: execution.loopCount,
     toolCount: execution.toolCount,
-    response: execution.response,
-    failureReason: execution.failureReason,
+    ...(includeBody ? {
+      response: execution.response,
+      failureReason: execution.failureReason,
+    } : {}),
     progressRevision: execution.progressRevision,
-    messages: execution.messages,
+    messageCount: execution.messageCount,
+    messageCursor: execution.messageCursor,
+    ...(includeBody ? {
+      response: execution.response,
+      failure: execution.failure,
+      messages: execution.messages,
+      liveMessage: execution.liveMessage,
+    } : {}),
   };
+}
+
+function bodyActionId(detail) {
+  const actions = Array.isArray(detail?.actions) ? detail.actions : [];
+  if (detail?.currentActionId && actions.some(action => action?.id === detail.currentActionId)) {
+    return detail.currentActionId;
+  }
+  return [...actions].sort((left, right) => (
+    count(right?.sequence) - count(left?.sequence)
+      || String(right?.id || '').localeCompare(String(left?.id || ''))
+  ))[0]?.id || null;
+}
+
+function stripActionBody(action, keepFailure = false) {
+  if (!action) return action;
+  const projected = { ...action };
+  delete projected.response;
+  delete projected.messages;
+  delete projected.liveMessage;
+  if (!keepFailure) delete projected.failure;
+  if (projected.brief) {
+    projected.brief = Object.fromEntries(Object.entries(projected.brief).map(([key, value]) => [
+      key,
+      truncateUtf8(value, MAX_HISTORICAL_BRIEF_CHARS),
+    ]));
+  }
+  return projected;
 }
 
 function projectActionStats(detail) {
   if (!Array.isArray(detail?.actions)) return [];
+  const liveActionId = bodyActionId(detail);
   return detail.actions.map(action => {
-    const projected = projectAction(action, detail.runs);
-    return {
+    const projected = projectAction(
+      action,
+      detail.runs,
+      detail.events,
+      action?.id === liveActionId,
+    );
+    const stats = {
       id: projected.id,
       status: projected.status,
       executionStats: projected.executionStats,
       loopCount: projected.loopCount,
       toolCount: projected.toolCount,
-      response: projected.response,
-      failureReason: projected.failureReason,
       progressRevision: projected.progressRevision,
-      messages: projected.messages
-        .map(({ failureReason, ...message }) => message)
-        .filter(message => message.text),
     };
+    if (projected.failureReason) stats.failureReason = projected.failureReason;
+    if (projected.id === liveActionId) {
+      stats.response = projected.response;
+      stats.failure = projected.failure;
+      if (projected.liveMessage) stats.liveMessage = projected.liveMessage;
+    }
+    return stats;
   });
+}
+
+function enforceWorkItemBrowserDtoBudget(value, options = {}) {
+  if (!value || jsonByteLength(value) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return value;
+  const dto = value;
+  const workItem = options.event === true ? dto.workItem : dto;
+  const actions = Array.isArray(workItem?.actions)
+    ? workItem.actions
+    : Array.isArray(workItem?.actionStats) ? workItem.actionStats : [];
+  const keepId = options.keepActionId || workItem?.currentActionId || actions.at(-1)?.id || null;
+  workItem.truncated = true;
+
+  for (let index = 0; index < actions.length; index += 1) {
+    if (actions[index]?.id === keepId) continue;
+    actions[index] = stripActionBody(actions[index]);
+  }
+  if (jsonByteLength(dto) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return dto;
+
+  const keep = actions.find(action => action?.id === keepId);
+  if (keep) {
+    delete keep.response;
+    delete keep.messages;
+    delete keep.liveMessage;
+  }
+  if (jsonByteLength(dto) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return dto;
+
+  const originalCount = actions.length;
+  const retained = keep ? [stripActionBody(keep, true)] : [];
+  if (Array.isArray(workItem.actions)) workItem.actions = retained;
+  else workItem.actionStats = retained;
+  workItem.omittedActionCount = originalCount - retained.length;
+  if (jsonByteLength(dto) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return dto;
+
+  if (retained[0]) {
+    delete retained[0].brief;
+    delete retained[0].failure;
+  }
+  workItem.title = truncateUtf8(workItem.title, 4 * 1024);
+  workItem.goal = truncateUtf8(workItem.goal, 4 * 1024);
+  workItem.waitingReason = truncateUtf8(workItem.waitingReason, 4 * 1024);
+  workItem.actionSummary = truncateUtf8(workItem.actionSummary, 4 * 1024);
+  if (Array.isArray(workItem.acceptanceCriteria)) workItem.acceptanceCriteria = [];
+  if (Array.isArray(workItem.linkedSessionIds)) workItem.linkedSessionIds = [];
+  if (Array.isArray(workItem.attachments)) workItem.attachments = [];
+  if (jsonByteLength(dto) <= MAX_WORK_ITEM_BROWSER_DTO_BYTES) return dto;
+
+  const minimalWorkItem = {
+    id: truncateUtf8(workItem.id, 4 * 1024),
+    revision: count(workItem.revision),
+    title: truncateUtf8(workItem.title, 4 * 1024),
+    goal: truncateUtf8(workItem.goal, 4 * 1024),
+    status: truncateUtf8(workItem.status, 256),
+    currentActionId: truncateUtf8(workItem.currentActionId, 4 * 1024) || null,
+    executionStats: workItem.executionStats,
+    actionCount: count(workItem.actionCount),
+    actions: Array.isArray(workItem.actions) ? [] : undefined,
+    actionStats: Array.isArray(workItem.actionStats) ? [] : undefined,
+    truncated: true,
+    omittedActionCount: originalCount,
+    createdAt: count(workItem.createdAt),
+    updatedAt: count(workItem.updatedAt),
+  };
+  if (options.event === true) dto.workItem = minimalWorkItem;
+  else return minimalWorkItem;
+  return dto;
 }
 
 function waitingReason(detail) {
@@ -207,35 +459,45 @@ function workItemFailureReason(detail) {
  */
 export function projectWorkItemDetail(detail) {
   if (!detail) return null;
-  return {
+  const liveActionId = bodyActionId(detail);
+  const projected = {
     id: detail.id,
     revision: detail.revision,
     title: detail.title,
     goal: detail.goal,
     acceptanceCriteria: Array.isArray(detail.acceptanceCriteria) ? detail.acceptanceCriteria : [],
     workflowTemplate: detail.workflowTemplate,
-    workItemType: detail.workflowSnapshot?.workItemType || null,
-    planningMode: detail.workflowSnapshot?.planningMode || 'static',
-    executionMode: detail.workflowSnapshot?.executionMode || 'linear',
+    workItemType: detail.workflowSnapshot?.workItemType || detail.workItemType || null,
+    planningMode: detail.workflowSnapshot?.planningMode || detail.planningMode || 'static',
+    executionMode: detail.workflowSnapshot?.executionMode || detail.executionMode || 'linear',
     status: detail.status,
     currentActionId: detail.currentActionId || null,
-    executionStats: sumExecutionStats(Array.isArray(detail.runs) ? detail.runs : []),
+    executionStats: Array.isArray(detail.runs)
+      ? sumExecutionStats(detail.runs)
+      : executionStats(detail.executionStats),
     reuseMemory: detail.reuseMemory !== false,
-    waitingReason: waitingReason(detail),
+    waitingReason: sanitizeDiagnosticText(waitingReason(detail), MAX_ACTION_DIAGNOSTIC_CHARS),
     failureReason: workItemFailureReason(detail),
+
     origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
     linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
     attachments: projectAttachments(detail.attachments),
     createdAt: detail.createdAt,
     updatedAt: detail.updatedAt,
-    actionCount: Array.isArray(detail.actions) ? detail.actions.length : 0,
+    actionCount: Array.isArray(detail.actions) ? detail.actions.length : count(detail.actionCount),
     actionSummary: Array.isArray(detail.actions)
       ? detail.actions.map(action => action.type).filter(Boolean).join(' → ')
-      : '',
+      : String(detail.actionSummary || ''),
     actions: Array.isArray(detail.actions)
-      ? detail.actions.map(action => projectAction(action, detail.runs))
+      ? detail.actions.map(action => projectAction(
+          action,
+          detail.runs,
+          detail.events,
+          action?.id === liveActionId,
+        ))
       : [],
   };
+  return enforceWorkItemBrowserDtoBudget(projected, { keepActionId: liveActionId });
 }
 
 /**
@@ -250,8 +512,8 @@ export function projectWorkItemSummary(detail) {
       revision: detail.revision,
       title: detail.title,
       goal: detail.goal,
-      workItemType: detail.workflowSnapshot?.workItemType || null,
-      planningMode: detail.workflowSnapshot?.planningMode || 'static',
+      workItemType: detail.workflowSnapshot?.workItemType || detail.workItemType || null,
+      planningMode: detail.workflowSnapshot?.planningMode || detail.planningMode || 'static',
       status: detail.status,
       currentActionId: detail.currentActionId || null,
       currentAction: null,
@@ -264,19 +526,22 @@ export function projectWorkItemSummary(detail) {
     };
   }
   const action = currentAction(detail);
-  const projectedAction = action ? projectAction(action, detail.runs) : null;
+  const projectedAction = action ? projectAction(action, detail.runs, detail.events, false) : null;
   return {
     id: detail.id,
     revision: detail.revision,
     title: detail.title,
     goal: detail.goal,
-    workItemType: detail.workflowSnapshot?.workItemType || null,
-    planningMode: detail.workflowSnapshot?.planningMode || 'static',
-    executionMode: detail.workflowSnapshot?.executionMode || 'linear',
+    workItemType: detail.workflowSnapshot?.workItemType || detail.workItemType || null,
+    planningMode: detail.workflowSnapshot?.planningMode || detail.planningMode || 'static',
+    executionMode: detail.workflowSnapshot?.executionMode || detail.executionMode || 'linear',
     status: detail.status,
     currentActionId: detail.currentActionId || null,
-    executionStats: sumExecutionStats(Array.isArray(detail.runs) ? detail.runs : []),
+    executionStats: Array.isArray(detail.runs)
+      ? sumExecutionStats(detail.runs)
+      : executionStats(detail.executionStats),
     failureReason: workItemFailureReason(detail),
+
     currentAction: projectedAction ? {
       id: projectedAction.id,
       type: projectedAction.type,
@@ -293,11 +558,124 @@ export function projectWorkItemSummary(detail) {
 }
 
 export function projectWorkCenterEvent(event) {
-  return {
-    type: event?.type || 'work_item.updated',
+  const liveActionId = bodyActionId(event?.workItem);
+  return enforceWorkItemBrowserDtoBudget({
+    type: truncateUtf8(event?.type || 'work_item.updated', 256),
     workItem: {
       ...projectWorkItemSummary(event?.workItem),
       actionStats: projectActionStats(event?.workItem),
     },
+  }, { event: true, keepActionId: liveActionId });
+}
+
+function projectDebugUsage(value) {
+  return {
+    inputTokens: count(value?.inputTokens),
+    outputTokens: count(value?.outputTokens),
+    cacheReadTokens: count(value?.cacheReadTokens),
+    cacheWriteTokens: count(value?.cacheWriteTokens),
+    totalInputTokens: count(value?.totalInputTokens),
+    totalTokens: count(value?.totalTokens),
   };
+}
+
+export function projectActionMessagePage(action, runs, events, options = {}) {
+  const messages = actionMessages(action, runs, events);
+  const requestedCursor = options.cursor == null ? messages.length : Number(options.cursor);
+  const end = Number.isFinite(requestedCursor)
+    ? Math.max(0, Math.min(messages.length, Math.floor(requestedCursor)))
+    : messages.length;
+  const limit = Math.max(1, Math.min(50, Number(options.limit) || MAX_ACTION_MESSAGES));
+  const start = Math.max(0, end - limit);
+  return {
+    actionId: action.id,
+    messages: messages.slice(start, end),
+    nextCursor: start > 0 ? String(start) : null,
+    total: messages.length,
+  };
+}
+
+export function projectActionRequestIndex(action, entries) {
+  return {
+    actionId: action.id,
+    requests: (Array.isArray(entries) ? entries : []).map(({ run, turn }) => ({
+      id: turn.turnId,
+      runId: run.id,
+      status: run.status || 'running',
+      model: run.modelSnapshot?.id || null,
+      vp: run.vpSnapshot ? {
+        id: run.vpSnapshot.id || null,
+        name: run.vpSnapshot.name || run.vpSnapshot.id || null,
+      } : null,
+      openedAt: count(turn.openedAt || run.startedAt),
+      closedAt: count(turn.closedAt || run.endedAt),
+      loopCount: count(turn.loopCount),
+      totalMs: count(turn.totalMs),
+      inputTokens: count(turn.summaryInputTokens),
+      outputTokens: count(turn.summaryOutputTokens),
+      totalTokens: count(turn.totalTokens),
+    })).sort((left, right) => right.openedAt - left.openedAt || right.id.localeCompare(left.id)),
+  };
+}
+
+export function projectActionRequestDetail(action, run, history) {
+  const turn = Array.isArray(history?.turns) ? history.turns[0] : null;
+  if (!turn) return null;
+  const sourceLoops = Array.isArray(history?.loops) ? history.loops : [];
+  const limited = limitActionRequestDebugInput(sourceLoops, turn.tools);
+  const tools = limited.tools;
+  const toolsByCall = new Map(tools.map(tool => [
+    `${count(tool.loopNumber)}:${tool.callId}`,
+    tool,
+  ]));
+  const loops = limited.loops.map(loop => ({
+    id: loop.loopInstanceId || `${turn.turnId}:${loop.loopNumber}`,
+    loopNumber: count(loop.loopNumber),
+    model: loop.model || run.modelSnapshot?.id || null,
+    systemPrompt: sanitizeDebugValue(typeof loop.systemPrompt === 'string' ? loop.systemPrompt : ''),
+    messages: sanitizeDebugValue(Array.isArray(loop.messages) ? loop.messages : []),
+    response: sanitizeDebugValue(typeof loop.response === 'string' ? loop.response : ''),
+    usage: projectDebugUsage(loop.usage),
+    latencyMs: count(loop.latencyMs),
+    ttfbMs: loop.ttfbMs == null ? null : count(loop.ttfbMs),
+    stopReason: loop.stopReason || null,
+    at: count(loop.at),
+    tools: (Array.isArray(loop.toolCalls) ? loop.toolCalls : [])
+      .slice(0, MAX_ACTION_REQUEST_TOOL_CALLS)
+      .map(call => {
+        const result = toolsByCall.get(`${count(loop.loopNumber)}:${call.id}`);
+        return {
+          id: call.id || null,
+          name: call.name || result?.name || '?',
+          input: sanitizeDebugValue(call.input),
+          output: sanitizeDebugValue(result?.toolOutput ?? null),
+          durationMs: count(result?.durationMs),
+          isError: result?.isError === true,
+        };
+      }),
+    rawRequest: sanitizeDebugValue(reconstructDebugRawRequest(
+      loop.rawRequestBase ?? loop.requestBase?.rawRequest ?? null,
+      loop.requestDelta || null,
+    )),
+    rawResponse: sanitizeDebugValue(loop.rawResponse ?? null),
+  }));
+  return enforceActionRequestDetailBudget({
+    actionId: action.id,
+    request: {
+      id: turn.turnId,
+      runId: run.id,
+      status: run.status || 'running',
+      model: run.modelSnapshot?.id || loops[0]?.model || null,
+      vp: run.vpSnapshot ? {
+        id: run.vpSnapshot.id || null,
+        name: run.vpSnapshot.name || run.vpSnapshot.id || null,
+      } : null,
+      openedAt: count(turn.openedAt || run.startedAt),
+      closedAt: count(turn.closedAt || run.endedAt),
+      loopCount: sourceLoops.length,
+      totalMs: count(turn.totalMs),
+      totalTokens: count(turn.totalTokens),
+      loops,
+    },
+  }, limited.omittedLoopCount);
 }

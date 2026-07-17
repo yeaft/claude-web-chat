@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyWorkItemSummary,
   isWorkItemSummaryStale,
+  mergeActionMessages,
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
 } from '../../../web/stores/helpers/work-center.js';
@@ -56,6 +57,70 @@ describe('Work Center summary state', () => {
       response: 'Implemented the fix', failureReason: 'Tests failed', progressRevision: 3,
     }]);
     expect(merged.actions[0].executionStats.totalTokens).toBe(450);
+  });
+
+  it('merges a stable live assistant message into the selected Action', () => {
+    const merged = mergeWorkItemSummary(detail, {
+      id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
+      actionStats: [{
+        id: 'action-1', status: 'running', progressRevision: 3,
+        liveMessage: {
+          id: 'run:run-live', role: 'assistant', status: 'running',
+          text: 'Live AI text', progressRevision: 3,
+        },
+      }],
+    });
+    expect(merged.actions[0].liveMessage).toMatchObject({
+      id: 'run:run-live', text: 'Live AI text', progressRevision: 3,
+    });
+  });
+
+  it('keeps a newer paged terminal message over stale current and live copies', () => {
+    const messageId = 'run:run-1';
+    const messages = mergeActionMessages(
+      [{ id: messageId, status: 'completed', text: 'Final result', progressRevision: 6, updatedAt: 60 }],
+      [{ id: messageId, status: 'running', text: 'Current stale text', progressRevision: 5, updatedAt: 50 }],
+      { id: messageId, status: 'running', text: 'Live stale text', progressRevision: 5, updatedAt: 55 },
+    );
+
+    expect(messages).toEqual([{
+      id: messageId, status: 'completed', text: 'Final result', progressRevision: 6, updatedAt: 60,
+    }]);
+  });
+
+  it('prefers a terminal message over running text at the same revision', () => {
+    const messageId = 'run:run-1';
+    const messages = mergeActionMessages(
+      [{ id: messageId, status: 'completed', text: 'Final result', progressRevision: 6, updatedAt: 60 }],
+      [{ id: messageId, status: 'running', text: 'Late running frame', progressRevision: 6, updatedAt: 70 }],
+    );
+
+    expect(messages[0]).toMatchObject({
+      id: messageId, status: 'completed', text: 'Final result', progressRevision: 6,
+    });
+  });
+
+  it('does not treat an intermediate status as terminal at the same revision', () => {
+    const messageId = 'run:run-1';
+    const messages = mergeActionMessages(
+      [{ id: messageId, status: 'waiting', text: 'Waiting for input', progressRevision: 6, updatedAt: 50 }],
+      [{ id: messageId, status: 'running', text: 'Work resumed', progressRevision: 6, updatedAt: 60 }],
+    );
+
+    expect(messages[0]).toMatchObject({
+      id: messageId, status: 'running', text: 'Work resumed', progressRevision: 6,
+    });
+  });
+
+  it('converges on the same fresh Action messages regardless of source order', () => {
+    const stale = { id: 'run:run-1', status: 'running', text: 'Working', progressRevision: 4, updatedAt: 40 };
+    const fresh = { id: 'run:run-1', status: 'failed', text: 'Provider rejected the request', progressRevision: 5, updatedAt: 50 };
+    const other = { id: 'event:input-1', status: 'sent', text: 'Retry with a smaller file', createdAt: 30 };
+
+    expect(mergeActionMessages([stale, other], fresh))
+      .toEqual(mergeActionMessages(fresh, [other, stale]));
+    expect(mergeActionMessages([stale, other], fresh).find(message => message.id === 'run:run-1'))
+      .toMatchObject({ id: 'run:run-1', status: 'failed', progressRevision: 5 });
   });
 
   it('does not let a legacy Action patch without a progress revision erase live response text', () => {
