@@ -653,12 +653,14 @@
   font-weight: 600;
 }
 
+.work-center-resume,
 .work-center-guidance {
   padding: 14px;
   border-radius: 10px;
   background: var(--bg-sidebar);
 }
 
+.work-center-resume-actions,
 .work-center-guidance-actions {
   display: flex;
   align-items: center;
@@ -666,6 +668,15 @@
   gap: 12px;
   margin-top: 8px;
   color: var(--text-muted);
+}
+
+.work-center-resume-actions small {
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.work-center-resume-actions > button {
+  flex: none;
 }
 
 .work-center-guidance-actions > div {

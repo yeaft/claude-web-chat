@@ -1009,7 +1009,7 @@ describe('Work Center core', () => {
     expect(JSON.stringify(nextAction)).not.toContain('hidden');
   });
 
-  it('bounds a waiting resume answer and does not require one for needs_attention', () => {
+  it('bounds a waiting answer and carries optional recovery guidance into a needs_attention retry', () => {
     const waitingItem = controller.create(createInput());
     const waitingClaim = store.claimReadyAction('boot-a', 5_000);
     controller.submit(waitingClaim.run.id, 'boot-a', waitingClaim.run.leaseEpoch, {
@@ -1025,12 +1025,13 @@ describe('Work Center core', () => {
     controller.submit(failedClaim.run.id, 'boot-a', failedClaim.run.leaseEpoch, {
       outcome: 'failed', summary: 'Permanent failure', evidence: [], error: 'Fix manually',
     });
-    const retried = controller.retry(failedItem.id);
+    const retried = controller.retry(failedItem.id, { answer: 'Use the fallback implementation' });
     expect(retried.status).toBe('ready');
     expect(retried.actions.at(-1).context.at(-1)).toMatchObject({
       summary: 'Permanent failure',
-      answer: null,
+      answer: 'Use the fallback implementation',
     });
+    expect(retried.actions.at(-1).instruction).toContain('User answer: Use the fallback implementation');
   });
 
   it('cancels the Run atomically and rejects its late submit and recovery', () => {

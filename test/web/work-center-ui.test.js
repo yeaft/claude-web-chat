@@ -138,8 +138,14 @@ describe('Work Center UI contract', () => {
     expect(page).not.toContain('class="work-center-run"');
     expect(page).not.toContain('class="work-center-activity-toggle"');
     expect(page).toContain("['ready','running'].includes(selected.status)");
+    expect(page).toContain("selected.status === 'waiting' || selected.status === 'needs_attention'");
+    expect(page).toContain("tr('workCenter.retryGuidance'");
+    expect(page).toContain('v-model="resumeAnswer"');
+    expect(page).toContain('@click="retrySelected"');
+    expect(page).toContain('await this.store.retryWorkItem(this.selected.id, this.resumeAnswer.trim(), this.agentId)');
     expect(page).toContain('@click="guideSelectedAction"');
     expect(store).toContain("workCenterRequest('guide'");
+    expect(store).toContain("workCenterRequest('retry', { id, answer }");
     expect(css).toContain('.work-center-action-card');
     expect(css).toContain('.work-center-action-stats');
     expect(css).toContain('.work-center-action-response');

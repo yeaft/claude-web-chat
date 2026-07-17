@@ -25,6 +25,7 @@ export default {
       filter: 'open',
       search: '',
       resumeAnswer: '',
+      resumeSubmitting: false,
       actionGuidance: '',
       expandedActions: {},
       actionsExpanded: false,
@@ -453,9 +454,14 @@ export default {
       this.guidanceAttachments = [];
     },
     async retrySelected() {
-      if (!this.selected) return;
-      await this.store.retryWorkItem(this.selected.id, this.resumeAnswer, this.agentId);
-      this.resumeAnswer = '';
+      if (!this.selected || this.resumeSubmitting) return;
+      this.resumeSubmitting = true;
+      try {
+        await this.store.retryWorkItem(this.selected.id, this.resumeAnswer.trim(), this.agentId);
+        this.resumeAnswer = '';
+      } finally {
+        this.resumeSubmitting = false;
+      }
     },
     async cancelSelected() {
       if (!this.selected) return;
@@ -559,7 +565,6 @@ export default {
                   <div class="work-center-detail-actions">
                     <button v-if="selected.status === 'cancelled'" class="btn-primary" type="button" @click="retrySelected">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
-                    <button v-if="selected.status === 'waiting' || selected.status === 'needs_attention'" class="btn-primary" type="button" @click="retrySelected" :disabled="selected.status === 'waiting' && !resumeAnswer.trim()">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancel', 'Cancel') }}</button>
                   </div>
                 </div>
@@ -581,11 +586,25 @@ export default {
                   <p>{{ selected.failureReason }}</p>
                 </div>
 
-                <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
-                  <p v-if="selected.waitingReason">{{ selected.waitingReason }}</p>
-                  <label>{{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}
-                    <textarea v-model="resumeAnswer" rows="3" :placeholder="tr('workCenter.resumeAnswerHint', 'Provide the information required to continue')"></textarea>
+                <div v-if="selected.status === 'waiting' || selected.status === 'needs_attention'" class="work-center-section work-center-resume">
+                  <p v-if="selected.status === 'waiting' && selected.waitingReason">{{ selected.waitingReason }}</p>
+                  <p v-else-if="selected.status === 'needs_attention'" class="work-center-muted">{{ tr('workCenter.retryGuidanceHelp', 'Add context or instructions for the next attempt, then retry this Action.') }}</p>
+                  <label>{{ selected.status === 'waiting'
+                    ? tr('workCenter.resumeAnswer', 'Answer the waiting question')
+                    : tr('workCenter.retryGuidance', 'Information for the next attempt') }}
+                    <textarea v-model="resumeAnswer" rows="3" :placeholder="selected.status === 'waiting'
+                      ? tr('workCenter.resumeAnswerHint', 'Provide the information required to continue')
+                      : tr('workCenter.retryGuidanceHint', 'Explain what to change, add missing context, or suggest how to recover')"></textarea>
                   </label>
+                  <div class="work-center-resume-actions">
+                    <small>{{ selected.status === 'waiting'
+                      ? tr('workCenter.resumeHint', 'Your answer is passed to the current Action so execution can continue.')
+                      : tr('workCenter.retryHint', 'Retry starts a new attempt of the failed Action with this information.') }}</small>
+                    <button class="btn-primary" type="button" @click="retrySelected"
+                            :disabled="resumeSubmitting || (selected.status === 'waiting' && !resumeAnswer.trim())">
+                      {{ selected.status === 'waiting' ? tr('workCenter.continue', 'Continue') : tr('workCenter.retry', 'Retry') }}
+                    </button>
+                  </div>
                 </div>
 
                 <div class="work-center-section">
