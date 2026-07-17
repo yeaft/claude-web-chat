@@ -19,6 +19,8 @@ agent/logs/
 .env
 .env.local
 .env.production
+deploy/dev/deployer.env
+deploy/dev/state/
 
 # User data (contains password hashes and TOTP secrets)
 server/users.json
