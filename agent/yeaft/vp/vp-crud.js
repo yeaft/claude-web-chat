@@ -97,7 +97,7 @@ function vpRolePathFor(libDir, vpId) {
  * Serialise a VP payload into role.md text with YAML frontmatter matching
  * the parser in vp-store.js.
  *
- * @param {{vpId:string, displayName?:string, role?:string, traits?:string[], modelHint?:string, persona?:string}} p
+ * @param {{vpId:string, displayName?:string, displayNameZh?:string, aliases?:string[], description?:string, descriptionZh?:string, role?:string, roleZh?:string, area?:string, traits?:string[], modelHint?:string, persona?:string, planInstruction?:string}} p
  * @returns {string}
  */
 export function buildRoleMd(p) {
@@ -105,6 +105,8 @@ export function buildRoleMd(p) {
   const name = p.displayName != null ? String(p.displayName) : id;
   const nameZh = p.displayNameZh != null ? String(p.displayNameZh) : '';
   const aliases = Array.isArray(p.aliases) ? p.aliases.map(a => String(a)).filter(Boolean) : [];
+  const description = p.description != null ? String(p.description) : '';
+  const descriptionZh = p.descriptionZh != null ? String(p.descriptionZh) : '';
   const role = p.role != null ? String(p.role) : '';
   const roleZh = p.roleZh != null ? String(p.roleZh) : '';
   // Taxonomy bucket. Optional + additive — written only when present so
@@ -116,10 +118,15 @@ export function buildRoleMd(p) {
 
   const lines = ['---', `id: ${id}`, `name: ${yamlScalar(name)}`];
   if (nameZh) lines.push(`nameZh: ${yamlScalar(nameZh)}`);
+  if (description) lines.push(`description: ${yamlScalar(description)}`);
+  if (descriptionZh) lines.push(`descriptionZh: ${yamlScalar(descriptionZh)}`);
   lines.push(`role: ${yamlScalar(role)}`);
   if (roleZh) lines.push(`roleZh: ${yamlScalar(roleZh)}`);
   if (area) lines.push(`area: ${yamlScalar(area)}`);
   if (modelHint) lines.push(`modelHint: ${modelHint}`);
+  if (p.planInstruction != null && String(p.planInstruction)) {
+    lines.push(`planInstruction: ${yamlScalar(String(p.planInstruction))}`);
+  }
   if (traits.length > 0) {
     lines.push('traits:');
     for (const t of traits) lines.push(`  - ${yamlScalar(t)}`);
@@ -134,12 +141,45 @@ export function buildRoleMd(p) {
 
 function yamlScalar(v) {
   const s = String(v);
-  // Quote anything that the minimal parser might mis-read: colons, leading
-  // dashes, or surrounding whitespace. Plain text passes through unquoted.
-  if (/^[\s]|[\s]$|^[-:]|[:#]/.test(s)) {
-    return `"${s.replace(/"/g, '\\"')}"`;
+  // YAML single-quoted scalars keep backslashes and double quotes literal.
+  // Doubling an apostrophe is the only escape, and parseYamlScalar reverses
+  // exactly that operation. This also avoids interpreting legacy Windows
+  // paths such as `C:\temp` as JSON/YAML control escapes.
+  if (/^[\s]|[\s]$|^[-:]|[:#'"\\\n\r\t]/.test(s)) {
+    return `'${s.replace(/'/g, "''")}'`;
   }
   return s;
+}
+
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+/**
+ * Merge an update payload with the persisted editable VP shape. Missing keys
+ * mean "old client does not know this field" and must be preserved; an
+ * explicitly supplied empty value remains a deliberate clear operation.
+ */
+function mergeVpUpdate(current, payload, vpId) {
+  const fields = [
+    'displayName',
+    'displayNameZh',
+    'aliases',
+    'description',
+    'descriptionZh',
+    'role',
+    'roleZh',
+    'area',
+    'traits',
+    'modelHint',
+    'persona',
+    'planInstruction',
+  ];
+  const merged = { vpId };
+  for (const field of fields) {
+    merged[field] = hasOwn(payload, field) ? payload[field] : current[field];
+  }
+  return merged;
 }
 
 /**
@@ -148,7 +188,11 @@ function yamlScalar(v) {
  * @param {object} payload
  * @param {string} payload.vpId
  * @param {string} [payload.displayName]
+ * @param {string} [payload.displayNameZh]
+ * @param {string} [payload.description]
+ * @param {string} [payload.descriptionZh]
  * @param {string} [payload.role]
+ * @param {string} [payload.roleZh]
  * @param {string[]} [payload.traits]
  * @param {'primary'|'fast'} [payload.modelHint]
  * @param {string} [payload.persona]
@@ -208,7 +252,10 @@ export function updateVp(payload, options = {}) {
   if (!existsSync(dir) || !existsSync(vpRolePathFor(libDir, vpId))) {
     throw new VpCrudError('not_found', vpId);
   }
-  writeFileSync(vpRolePathFor(libDir, vpId), buildRoleMd({ ...payload, vpId }), 'utf-8');
+  const current = readVp(vpId, { libDir });
+  if (!current) throw new VpCrudError('not_found', vpId);
+  const merged = mergeVpUpdate(current, payload || {}, vpId);
+  writeFileSync(vpRolePathFor(libDir, vpId), buildRoleMd(merged), 'utf-8');
   return { vpId, dir };
 }
 
@@ -258,7 +305,7 @@ export function deleteVp(vpId, options = {}) {
  *
  * @param {string} vpId
  * @param {object} [options]
- * @returns {?{vpId:string, displayName:string, role:string, traits:string[], modelHint:?string, persona:string}}
+ * @returns {?{vpId:string, displayName:string, displayNameZh:string, aliases:string[], description:string, descriptionZh:string, role:string, roleZh:string, area:string, traits:string[], modelHint:?string, persona:string, planInstruction:string}}
  */
 export function readVp(vpId, options = {}) {
   const libDir = options.libDir || DEFAULT_VP_LIB_DIR;
@@ -279,8 +326,11 @@ export function readVp(vpId, options = {}) {
     displayName: String(meta.name || id),
     displayNameZh: typeof meta.nameZh === 'string' ? String(meta.nameZh) : '',
     aliases: Array.isArray(meta.aliases) ? meta.aliases.map(String) : [],
+    description: typeof meta.description === 'string' ? String(meta.description) : '',
+    descriptionZh: typeof meta.descriptionZh === 'string' ? String(meta.descriptionZh) : '',
     role: String(meta.role || ''),
     roleZh: typeof meta.roleZh === 'string' ? String(meta.roleZh) : '',
+    area: typeof meta.area === 'string' ? String(meta.area).trim() : '',
     traits: Array.isArray(meta.traits) ? meta.traits.map(String) : [],
     modelHint,
     persona: body,

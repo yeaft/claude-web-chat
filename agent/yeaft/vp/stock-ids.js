@@ -25,7 +25,7 @@
 
 const STOCK_VP_ID_LIST = Object.freeze([
   // engineering
-  'steve', 'linus', 'martin', 'dieter', 'ada', 'grace', 'alice', 'ken',
+  'steve', 'linus', 'martin', 'anders', 'dieter', 'ada', 'grace', 'alice', 'ken',
   'margaret', 'shannon', 'alan', 'norman',
   // philosophy / psychology
   'kongzi', 'socrates', 'nietzsche', 'kahneman', 'jung',

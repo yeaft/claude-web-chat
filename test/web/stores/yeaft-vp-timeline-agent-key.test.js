@@ -19,11 +19,14 @@ describe('Yeaft VP timeline session lookup', () => {
     };
     const vpStore = {
       vpList: [
-        { vpId: 'linus', displayName: 'Linus' },
-        { vpId: 'martin', displayName: 'Martin' },
+        { vpId: 'linus', displayName: 'Linus', description: 'Implementation and debugging' },
+        { vpId: 'martin', displayName: 'Martin', description: 'Review and architecture' },
       ],
       vpLabel(id) {
         return this.vpList.find(vp => vp.vpId === id)?.displayName || id;
+      },
+      vpDescription(id) {
+        return this.vpList.find(vp => vp.vpId === id)?.description || '';
       },
     };
     const chatStore = {
@@ -47,8 +50,10 @@ describe('Yeaft VP timeline session lookup', () => {
       stoppingVpTurnIds: chatStore.stoppingVpTurnIds || {},
       connectionState: chatStore.connectionState,
       vpLabelOf: (id) => vpStore.vpLabel(id),
+      vpDescriptionOf: (id) => vpStore.vpDescription(id),
     });
 
     expect(rows.map(row => row.vpId)).toEqual(['linus', 'martin']);
+    expect(rows.map(row => row.description)).toEqual(['Implementation and debugging', 'Review and architecture']);
   });
 });

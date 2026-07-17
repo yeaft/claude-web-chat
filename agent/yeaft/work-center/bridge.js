@@ -66,6 +66,8 @@ async function getSettingsRuntime() {
       id: vp.id,
       name: vp.name || vp.id,
       nameZh: vp.nameZh || '',
+      description: vp.description || vp.role || '',
+      descriptionZh: vp.descriptionZh || vp.roleZh || vp.description || vp.role || '',
       role: vp.role || '',
       roleZh: vp.roleZh || '',
       area: vp.area || '',

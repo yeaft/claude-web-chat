@@ -27,8 +27,8 @@ export class Registry {
   /**
    * Replace a VP's persona fields in-place, preserving identity so any
    * downstream reference keeps its handle stable across hot-reload.
-   * Fields copied: name, role, traits, modelHint, persona, personaHash,
-   * mtimeMs.
+   * Fields copied: localized identity metadata, aliases, role, traits,
+   * modelHint, persona, personaHash, planInstruction, and mtimeMs.
    */
   updateVpInPlace(next) {
     const cur = this.vpMap.get(next.id);
@@ -37,11 +37,18 @@ export class Registry {
       return next;
     }
     cur.name = next.name;
+    cur.nameZh = next.nameZh;
+    cur.aliases = next.aliases;
+    cur.description = next.description;
+    cur.descriptionZh = next.descriptionZh;
     cur.role = next.role;
+    cur.roleZh = next.roleZh;
+    cur.area = next.area;
     cur.traits = next.traits;
     cur.modelHint = next.modelHint;
     cur.persona = next.persona;
     cur.personaHash = next.personaHash;
+    cur.planInstruction = next.planInstruction;
     cur.mtimeMs = next.mtimeMs;
     // dir / memoryDir / id stable
     return cur;

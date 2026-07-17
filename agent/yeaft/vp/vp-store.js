@@ -29,7 +29,11 @@ import { createHash } from 'crypto';
  * @typedef {Object} VP
  * @property {string} id              — VP id (default: dir name)
  * @property {string} name
+ * @property {string} nameZh          — optional Chinese display name; '' if absent.
+ * @property {string} description     — concise English capability summary for roster lists.
+ * @property {string} descriptionZh   — optional Chinese capability summary; '' if absent.
  * @property {string} role
+ * @property {string} roleZh          — optional Chinese role label; '' if absent.
  * @property {string} area            — taxonomy bucket (e.g. 'philosophy', 'investing'); '' if absent.
  *                                       Optional, additive: no consumer is required to dispatch on it.
  *                                       Sidebar grouping by area is intentionally a future PR.
@@ -70,6 +74,21 @@ export function personaHash(persona) {
  * @param {string} source
  * @returns {{ meta: Record<string, any>, body: string }}
  */
+function parseYamlScalar(raw) {
+  const value = String(raw || '').trim();
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    // Compatibility for files written by the old CRUD serializer. It escaped
+    // only double quotes, not backslashes, so JSON.parse would corrupt valid
+    // Windows paths (`C:\temp` -> a tab). Undo only the escape the old writer
+    // actually introduced and leave every other backslash literal.
+    return value.slice(1, -1).replace(/\\"/g, '"');
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+  return value;
+}
+
 export function parseRoleMd(source) {
   const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return { meta: {}, body: source };
@@ -84,7 +103,7 @@ export function parseRoleMd(source) {
     if (!line.trim()) continue;
     const listMatch = line.match(/^\s+-\s+(.+?)\s*$/);
     if (listMatch && currentList) {
-      currentList.push(listMatch[1].replace(/^['"]|['"]$/g, ''));
+      currentList.push(parseYamlScalar(listMatch[1]));
       continue;
     }
     const kvMatch = line.match(/^([\w-]+):\s*(.*)$/);
@@ -95,7 +114,7 @@ export function parseRoleMd(source) {
         currentList = [];
         meta[key] = currentList;
       } else {
-        meta[key] = value.replace(/^['"]|['"]$/g, '');
+        meta[key] = parseYamlScalar(value);
         currentList = null;
       }
     }
@@ -156,6 +175,8 @@ export function loadVpFromDir(dir) {
     aliases: Array.isArray(meta.aliases)
       ? meta.aliases.map(String).map(s => s.trim()).filter(Boolean)
       : [],
+    description: typeof meta.description === 'string' ? String(meta.description) : '',
+    descriptionZh: typeof meta.descriptionZh === 'string' ? String(meta.descriptionZh) : '',
     role: String(meta.role || ''),
     roleZh: typeof meta.roleZh === 'string' ? String(meta.roleZh) : '',
     // Taxonomy bucket for sidebar grouping / filtering. Absent for legacy

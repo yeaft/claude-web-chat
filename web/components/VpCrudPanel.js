@@ -42,7 +42,8 @@ export default {
                 <div class="vp-crud-card-meta">
                   <div class="vp-crud-card-title-row">
                     <div class="vp-crud-card-name">
-                      <span>{{ vp.displayName || vp.vpId }}</span>
+                      <span>{{ vpLabelFor(vp.vpId) }}</span>
+                      <small v-if="vpDescriptionFor(vp.vpId)" class="vp-crud-card-description">{{ vpDescriptionFor(vp.vpId) }}</small>
                     </div>
                     <span v-if="vp.isStock" class="vp-crud-stock-badge" :title="$t('yeaft.vp.crud.stockReadOnly')">
                       {{ $t('yeaft.vp.crud.stockBadge') }}
@@ -101,6 +102,18 @@ export default {
           <div class="vp-crud-field vp-crud-field-readonly">
             <span class="vp-crud-field-label">{{ $t('yeaft.vp.crud.form.displayName') }}</span>
             <div class="vp-crud-readonly-value">{{ detail.displayName || detail.vpId }}</div>
+          </div>
+          <div class="vp-crud-field vp-crud-field-readonly" v-if="detail.displayNameZh">
+            <span class="vp-crud-field-label">{{ $t('yeaft.vp.crud.form.displayNameZh') }}</span>
+            <div class="vp-crud-readonly-value">{{ detail.displayNameZh }}</div>
+          </div>
+          <div class="vp-crud-field vp-crud-field-readonly" v-if="detail.description">
+            <span class="vp-crud-field-label">{{ $t('yeaft.vp.crud.form.description') }}</span>
+            <div class="vp-crud-readonly-value">{{ detail.description }}</div>
+          </div>
+          <div class="vp-crud-field vp-crud-field-readonly" v-if="detail.descriptionZh">
+            <span class="vp-crud-field-label">{{ $t('yeaft.vp.crud.form.descriptionZh') }}</span>
+            <div class="vp-crud-readonly-value">{{ detail.descriptionZh }}</div>
           </div>
           <div class="vp-crud-field vp-crud-field-readonly" v-if="detail.role">
             <span class="vp-crud-field-label">{{ $t('yeaft.vp.crud.form.role') }}</span>
@@ -180,6 +193,33 @@ export default {
         </label>
 
         <label class="vp-crud-field">
+          <span class="vp-crud-field-label">{{ $t('yeaft.vp.crud.form.displayNameZh') }}</span>
+          <input type="text" v-model.trim="form.displayNameZh" class="vp-crud-input" maxlength="80" />
+        </label>
+
+        <label class="vp-crud-field">
+          <span class="vp-crud-field-label">{{ $t('yeaft.vp.crud.form.description') }}</span>
+          <input
+            type="text"
+            v-model.trim="form.description"
+            class="vp-crud-input"
+            :placeholder="$t('yeaft.vp.crud.form.descriptionPlaceholder')"
+            maxlength="180"
+          />
+        </label>
+
+        <label class="vp-crud-field">
+          <span class="vp-crud-field-label">{{ $t('yeaft.vp.crud.form.descriptionZh') }}</span>
+          <input
+            type="text"
+            v-model.trim="form.descriptionZh"
+            class="vp-crud-input"
+            :placeholder="$t('yeaft.vp.crud.form.descriptionZhPlaceholder')"
+            maxlength="180"
+          />
+        </label>
+
+        <label class="vp-crud-field">
           <span class="vp-crud-field-label">{{ $t('yeaft.vp.crud.form.role') }}</span>
           <input
             type="text"
@@ -243,7 +283,7 @@ export default {
       formError: '',
       form: this.blankForm(),
       // task-vp-customize: read-only "View prompt" mode.
-      detail: null,          // { vpId, displayName, role, traits, modelHint, persona, isStock }
+      detail: null,          // { vpId, localized names/descriptions, role, traits, modelHint, persona, isStock }
       detailLoading: false,
       detailError: '',
     };
@@ -262,7 +302,11 @@ export default {
       return {
         vpId: '',
         displayName: '',
+        displayNameZh: '',
+        description: '',
+        descriptionZh: '',
         role: '',
+        roleZh: '',
         traitsRaw: '',
         modelHint: '',
         persona: '',
@@ -277,7 +321,11 @@ export default {
       this.form = {
         vpId: src.vpId,
         displayName: src.displayName || '',
+        displayNameZh: src.displayNameZh || '',
+        description: src.description || '',
+        descriptionZh: src.descriptionZh || '',
         role: src.role || '',
+        roleZh: src.roleZh || '',
         traitsRaw: Array.isArray(src.traits) ? src.traits.join(', ') : '',
         modelHint: src.modelHint || '',
         persona: typeof src.persona === 'string' ? src.persona : '',
@@ -376,7 +424,11 @@ export default {
           this.detail = {
             vpId: res.vp.vpId,
             displayName: res.vp.displayName || '',
+            displayNameZh: res.vp.displayNameZh || '',
+            description: res.vp.description || '',
+            descriptionZh: res.vp.descriptionZh || '',
             role: res.vp.role || '',
+            roleZh: res.vp.roleZh || '',
             traits: Array.isArray(res.vp.traits) ? res.vp.traits : [],
             modelHint: res.vp.modelHint || '',
             persona: typeof res.vp.persona === 'string' ? res.vp.persona : '',
@@ -458,6 +510,15 @@ export default {
       }
     },
 
+    vpLabelFor(vpId) {
+      const fn = this.vpStore?.vpLabel;
+      return typeof fn === 'function' ? fn(vpId) : vpId;
+    },
+    vpDescriptionFor(vpId) {
+      const fn = this.vpStore?.vpDescription;
+      return typeof fn === 'function' ? fn(vpId) : '';
+    },
+
     parseTraits(raw) {
       if (!raw) return [];
       return String(raw)
@@ -478,7 +539,11 @@ export default {
       const payload = {
         vpId: this.form.vpId,
         displayName: this.form.displayName || this.form.vpId,
+        displayNameZh: this.form.displayNameZh,
+        description: this.form.description,
+        descriptionZh: this.form.descriptionZh,
         role: this.form.role,
+        roleZh: this.form.roleZh,
         traits: this.parseTraits(this.form.traitsRaw),
         modelHint: this.form.modelHint || null,
         persona: this.form.persona,

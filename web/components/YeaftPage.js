@@ -1291,6 +1291,7 @@ export default {
         stoppingVpTurnIds: store.stoppingVpTurnIds || {},
         connectionState: store.connectionState,
         vpLabelOf: (id) => vpStore.vpLabel(id),
+        vpDescriptionOf: (id) => vpStore.vpDescription(id),
       });
     });
 

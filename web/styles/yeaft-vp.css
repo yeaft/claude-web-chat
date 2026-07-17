@@ -411,7 +411,23 @@
   flex: 1;
   min-width: 0;
 }
-.vp-crud-card-name { font-weight: 600; color: var(--text-primary); }
+.vp-crud-card-name {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.vp-crud-card-description {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .vp-crud-card-id {
   font-size: 12px;
   color: var(--text-secondary);
@@ -567,10 +583,11 @@
 /* ─────────────────────────────────────────────────────────────
  * task-vp-customize: "Stock" badge + read-only detail view.
  * ───────────────────────────────────────────────────────────── */
-.vp-crud-card-name {
+.vp-crud-card-title-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 .vp-crud-stock-badge {
   display: inline-block;

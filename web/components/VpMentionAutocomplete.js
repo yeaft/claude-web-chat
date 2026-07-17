@@ -27,7 +27,7 @@ export const VP_MENTION_MAX_RESULTS = 12;
 
 /**
  * Pure filter: prefer vpId-prefix hits, then alias-prefix (pinyin), then
- * displayName / displayNameZh substring hits.
+ * displayName / displayNameZh / localized capability-description substring hits.
  *
  * task-fix (5-bugs): aliases typically include pinyin transliterations
  * (e.g. `qiaobusi` for 乔布斯). Typing "qi" or "qiao" picks up the seed
@@ -35,7 +35,7 @@ export const VP_MENTION_MAX_RESULTS = 12;
  *
  * Exported so the test suite can exercise without mounting Vue.
  *
- * @param {object[]} vps — store.vpList (each has {vpId, displayName, displayNameZh?, aliases?, role?})
+ * @param {object[]} vps — store.vpList (each has localized name/description fields plus aliases and role).
  * @param {string} query — raw query text (not yet lowercased)
  * @returns {object[]} up to VP_MENTION_MAX_RESULTS matches.
  */
@@ -71,7 +71,12 @@ export function filterVpMentions(vps, query) {
 
     const dn = String(vp.displayName || '').toLowerCase();
     const dnZh = String(vp.displayNameZh || ''); // Chinese — do not lowercase
-    if (dn.includes(q) || dnZh.includes(query || '')) {
+    const descriptions = [vp.description, vp.descriptionZh, vp.role, vp.roleZh]
+      .map(value => String(value || '').toLowerCase());
+    const rawQuery = typeof query === 'string' ? query : '';
+    const nameHit = dn.includes(q) || (rawQuery && dnZh.includes(rawQuery));
+    const descriptionHit = q && descriptions.some(value => value.includes(q));
+    if (nameHit || descriptionHit) {
       take(vp, nameSubstring);
     }
   }
@@ -149,9 +154,11 @@ export default {
         @mousedown.prevent="$emit('select', vp)"
         @mouseenter="$emit('hover-index', idx)"
       >
-        <span class="slash-cmd-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ displayNameFor(vp) }}</span>
+        <span class="vp-mention-copy">
+          <span class="slash-cmd-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ displayNameFor(vp) }}</span>
+          <span v-if="descriptionFor(vp)" class="vp-mention-description">{{ descriptionFor(vp) }}</span>
+        </span>
         <span class="slash-cmd-desc vp-mention-id">@{{ vp.vpId }}</span>
-        <span v-if="vp.role" class="vp-mention-role">{{ vp.role }}</span>
       </div>
     </div>
   `,
@@ -178,11 +185,21 @@ export default {
       if (locale.startsWith('zh') && vp.displayNameZh) return vp.displayNameZh;
       return vp.displayName || vp.vpId || '';
     }
+    function descriptionFor(vp) {
+      if (!vp) return '';
+      if (vpStore && typeof vpStore.vpDescription === 'function') {
+        return vpStore.vpDescription(vp.vpId);
+      }
+      const locale = (chatStore && typeof chatStore.locale === 'string') ? chatStore.locale : '';
+      return locale.startsWith('zh')
+        ? (vp.descriptionZh || vp.roleZh || vp.description || vp.role || '')
+        : (vp.description || vp.role || vp.descriptionZh || vp.roleZh || '');
+    }
     function vpTextColorFor(vpId) {
       return vpStore && typeof vpStore.vpTextColor === 'function'
         ? vpStore.vpTextColor(vpId)
         : 'var(--text-primary)';
     }
-    return { filteredList, displayNameFor, vpTextColorFor };
+    return { filteredList, displayNameFor, descriptionFor, vpTextColorFor };
   },
 };

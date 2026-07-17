@@ -271,6 +271,10 @@ export default {
       const fn = this.vpStore?.vpLabel;
       return typeof fn === 'function' ? fn(vpId) : vpId;
     },
+    vpDescriptionFor(vpId) {
+      const fn = this.vpStore?.vpDescription;
+      return typeof fn === 'function' ? fn(vpId) : '';
+    },
     vpTextColorFor(vpId) {
       const fn = this.vpStore?.vpTextColor;
       return typeof fn === 'function' ? fn(vpId) : 'var(--vp-avatar-rat-fg)';
@@ -499,7 +503,10 @@ export default {
                       :disabled="membersBusy"
                       @change="toggleMember(vp.vpId, $event.target.checked)"
                     />
-                    <span class="group-settings-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
+                    <span class="session-settings-roster-copy">
+                      <span class="session-settings-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
+                      <span v-if="vpDescriptionFor(vp.vpId)" class="session-settings-roster-description">{{ vpDescriptionFor(vp.vpId) }}</span>
+                    </span>
                   </label>
                   <button
                     v-if="isMember(vp.vpId)"
