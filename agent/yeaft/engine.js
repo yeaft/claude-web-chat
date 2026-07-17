@@ -32,6 +32,7 @@ import { archiveTurn } from './archive/turn-archive.js';
 import { archiveToolResults } from './archive/tool-results.js';
 import { readSummary as readScopeSummary } from './memory/store.js';
 import { runAdjust } from './memory/adjust.js';
+import { cleanMemoryPromptText } from './memory/prompt-cleanup.js';
 import { isVpSeedBackfillStub } from './memory/seed-backfill.js';
 import { runStopHooks } from './stop-hooks.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
@@ -389,13 +390,17 @@ export function shouldAllowGroupReflection({
 export function buildResidentEntries(args) {
   const summaries = (args && args.summaries) || {};
   const out = [];
-  if (summaries.user) out.push({ scope: 'user', summary: summaries.user });
-  if (args.sessionId && summaries.session) {
-    out.push({ scope: `sessions/${args.sessionId}`, summary: summaries.session });
+  const userSummary = cleanMemoryPromptText(summaries.user);
+  const sessionSummary = cleanMemoryPromptText(summaries.session);
+  const vpSummary = cleanMemoryPromptText(summaries.vp);
+  if (userSummary) out.push({ scope: 'user', summary: userSummary });
+  if (args.sessionId && sessionSummary) {
+    out.push({ scope: `sessions/${args.sessionId}`, summary: sessionSummary });
   }
   if (args.sessionId && Array.isArray(summaries.topics)) {
     for (const topic of summaries.topics) {
-      if (topic?.scope && topic?.summary) out.push({ scope: topic.scope, summary: topic.summary });
+      const summary = cleanMemoryPromptText(topic?.summary);
+      if (topic?.scope && summary) out.push({ scope: topic.scope, summary });
     }
   }
   // VP per-session isolation (2026-06-09): the VP summary scope MUST be
@@ -407,8 +412,8 @@ export function buildResidentEntries(args) {
   // by id rather than by full scope path. The session-qualified form
   // makes the per-session boundary explicit and matches the on-disk
   // layout 1:1.
-  if (args.sessionId && args.ownVpId && summaries.vp && !isVpSeedBackfillStub(summaries.vp)) {
-    out.push({ scope: `sessions/${args.sessionId}/vp/${args.ownVpId}`, summary: summaries.vp });
+  if (args.sessionId && args.ownVpId && vpSummary && !isVpSeedBackfillStub(vpSummary)) {
+    out.push({ scope: `sessions/${args.sessionId}/vp/${args.ownVpId}`, summary: vpSummary });
   }
   return out;
 }
@@ -1940,8 +1945,8 @@ export class Engine {
         ))
         .map(e => ({
           scope: e.scope,
-          summary: String(e.summary).slice(0, 4000),
-          truncated: String(e.summary).length > 4000,
+          summary: String(e.summary),
+          truncated: false,
           source: 'resident-summary',
         }))
       : [];

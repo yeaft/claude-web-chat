@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { stripDreamMarker, withDreamMarker, writeDreamError } from '../../../../agent/yeaft/dream/state.js';
 import { buildRunDreamOpts } from '../../../../agent/yeaft/dream/session-wiring.js';
 import { runDream } from '../../../../agent/yeaft/dream/runner.js';
 import { extractAndWriteMemorySegments } from '../../../../agent/yeaft/dream/segment-extract.js';
-import { writeDreamError } from '../../../../agent/yeaft/dream/state.js';
 import { readScope } from '../../../../agent/yeaft/memory/segment-store.js';
 import { readSummary } from '../../../../agent/yeaft/memory/store.js';
 import { buildDreamOutputSnapshot } from '../../../../agent/yeaft/dream/output-snapshot.js';
@@ -21,6 +21,24 @@ afterEach(() => {
   if (testDir && existsSync(testDir)) {
     rmSync(testDir, { recursive: true, force: true });
   }
+});
+
+describe('Dream state marker hygiene', () => {
+  it('keeps only one dream-state block when stamping memory repeatedly', () => {
+    const first = withDreamMarker('Memory body.', { lastDreamAt: '2026-07-17T00:00:00.000Z' });
+    const second = withDreamMarker(first, { lastDreamAt: '2026-07-17T01:00:00.000Z' });
+
+    expect((second.match(/<!-- dream-state -->/g) || []).length).toBe(1);
+    expect(second).toContain('lastDreamAt: 2026-07-17T01:00:00.000Z');
+    expect(second).not.toContain('lastDreamAt: 2026-07-17T00:00:00.000Z');
+    expect(stripDreamMarker(second)).toBe('Memory body.');
+  });
+
+  it('removes multiple legacy dream-state blocks from polluted memory text', () => {
+    const polluted = 'A\n<!-- dream-state -->\nlastDreamAt: one\n<!-- /dream-state -->\nB\n<!-- dream-state -->\nlastDreamAt: two\n<!-- /dream-state -->';
+
+    expect(stripDreamMarker(polluted)).toBe('A\n\nB');
+  });
 });
 
 describe('buildRunDreamOpts session conversation wiring', () => {

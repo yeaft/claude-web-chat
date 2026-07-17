@@ -19,6 +19,7 @@ import {
   readdirSync, statSync, renameSync,
 } from 'node:fs';
 import { join, dirname, relative, sep } from 'node:path';
+import { stripDreamStateBlocks } from './prompt-cleanup.js';
 import { parseSegments, serializeSegments } from './segment.js';
 
 /**
@@ -32,7 +33,7 @@ export function readScope(memoryRoot, scope) {
   const path = scopeFilePath(memoryRoot, scope);
   if (!existsSync(path)) return [];
   const text = readFileSync(path, 'utf8');
-  return parseSegments(text, { defaultScope: scope });
+  return parseSegments(stripDreamStateBlocks(text), { defaultScope: scope });
 }
 
 /**

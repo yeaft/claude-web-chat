@@ -16,7 +16,8 @@
  * vpId at construction.
  */
 
-import { approxTokens, packWithinBudget } from './budget.js';
+import { approxTokens } from './budget.js';
+import { cleanMemoryPromptText, isDuplicateMemoryText, rememberMemoryText } from './prompt-cleanup.js';
 import { isVpForeign } from './store.js';
 
 const RECENT_DEFAULT_CAPACITY = 64;
@@ -69,8 +70,9 @@ export class ActiveMemorySet {
     this._resident.clear();
     for (const e of entries) {
       if (this._isForeignVp(e.scope)) continue;
-      if (!e.summary) continue;
-      this._resident.set(e.scope, e.summary);
+      const summary = cleanMemoryPromptText(e.summary);
+      if (!summary) continue;
+      this._resident.set(e.scope, summary);
     }
   }
 
@@ -85,8 +87,10 @@ export class ActiveMemorySet {
   touchRecent(seg) {
     if (!seg || !seg.id) return;
     if (this._isForeignVp(seg.scope)) return;
+    const body = cleanMemoryPromptText(seg.body);
+    if (!body) return;
     if (this._recent.has(seg.id)) this._recent.delete(seg.id);
-    this._recent.set(seg.id, { seg, ts: Date.now() });
+    this._recent.set(seg.id, { seg: { ...seg, body }, ts: Date.now() });
     while (this._recent.size > this.recentCapacity) {
       const firstKey = this._recent.keys().next().value;
       this._recent.delete(firstKey);
@@ -104,7 +108,9 @@ export class ActiveMemorySet {
     this._onDemand.clear();
     for (const seg of segments) {
       if (this._isForeignVp(seg.scope)) continue;
-      this._onDemand.set(seg.id, seg);
+      const body = cleanMemoryPromptText(seg.body);
+      if (!body) continue;
+      this._onDemand.set(seg.id, { ...seg, body });
     }
   }
 
@@ -116,7 +122,9 @@ export class ActiveMemorySet {
   addOnDemand(segments) {
     for (const seg of segments) {
       if (this._isForeignVp(seg.scope)) continue;
-      this._onDemand.set(seg.id, seg);
+      const body = cleanMemoryPromptText(seg.body);
+      if (!body) continue;
+      this._onDemand.set(seg.id, { ...seg, body });
     }
   }
 
@@ -139,31 +147,40 @@ export class ActiveMemorySet {
    * @returns {AmsSnapshot}
    */
   snapshot() {
+    const seenPromptText = new Set();
+
     // Resident: pack scopes by priority order (caller provides via insert
     // order — current group's own vp first, then user, etc.).
-    const resEntries = [...this._resident.entries()].map(([scope, summary]) => ({
-      scope, summary,
-    }));
-    const { picked: resPicked, cost: resCost } = packWithinBudget(
-      resEntries, this.budget.resident,
-      e => approxTokens(e.summary),
-    );
+    const { picked: resPicked, cost: resCost } = pickMemoryItems({
+      items: [...this._resident.entries()].map(([scope, summary]) => ({
+        scope, summary: cleanMemoryPromptText(summary),
+      })),
+      budget: this.budget.resident,
+      seen: seenPromptText,
+      textOf: e => e.summary,
+      costOf: e => approxTokens(e.summary),
+    });
 
     // Recent: insertion order is oldest-first; we want newest first.
-    const recentArr = [...this._recent.values()]
-      .reverse()
-      .map(e => e.seg);
-    const { picked: recPicked, cost: recCost } = packWithinBudget(
-      recentArr, this.budget.recent,
-      seg => approxTokens(seg.body),
-    );
+    const { picked: recPicked, cost: recCost } = pickMemoryItems({
+      items: [...this._recent.values()]
+        .reverse()
+        .map(e => ({ ...e.seg, body: cleanMemoryPromptText(e.seg?.body) })),
+      budget: this.budget.recent,
+      seen: seenPromptText,
+      textOf: seg => seg.body,
+      costOf: seg => approxTokens(seg.body),
+    });
 
     // OnDemand: insertion order from caller (already FTS-ranked).
-    const odArr = [...this._onDemand.values()];
-    const { picked: odPicked, cost: odCost } = packWithinBudget(
-      odArr, this.budget.onDemand,
-      seg => approxTokens(seg.body),
-    );
+    const { picked: odPicked, cost: odCost } = pickMemoryItems({
+      items: [...this._onDemand.values()]
+        .map(seg => ({ ...seg, body: cleanMemoryPromptText(seg?.body) })),
+      budget: this.budget.onDemand,
+      seen: seenPromptText,
+      textOf: seg => seg.body,
+      costOf: seg => approxTokens(seg.body),
+    });
 
     return {
       resident: resPicked,
@@ -192,4 +209,19 @@ export class ActiveMemorySet {
   _isForeignVp(scope) {
     return isVpForeign(scope, this.ownVpId);
   }
+}
+
+function pickMemoryItems({ items, budget, seen, textOf, costOf }) {
+  const picked = [];
+  let cost = 0;
+  for (const item of items) {
+    const text = textOf(item);
+    if (!text || isDuplicateMemoryText(text, seen)) continue;
+    const itemCost = costOf(item);
+    if (cost + itemCost > budget) continue;
+    picked.push(item);
+    cost += itemCost;
+    rememberMemoryText(text, seen);
+  }
+  return { picked, cost };
 }
