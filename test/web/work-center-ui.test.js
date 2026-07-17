@@ -145,6 +145,10 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain(':key="requestKey(request)"');
     expect(detail).toContain("tr('workCenter.rawRequest'");
     expect(detail).toContain('class="work-center-action-composer"');
+    expect(detail).toContain('input-wrapper work-center-action-input-wrapper');
+    expect(detail).toContain('class="attach-btn work-center-attachment-picker"');
+    expect(detail).toContain('class="send-btn"');
+    expect(detail).toContain('@keydown="onComposerKeydown"');
     expect(detail).toContain("$emit('attachment-input', $event)");
     expect(store).toContain("workCenterRequest('action_input'");
     expect(store).toContain("workCenterRequest('get_action_requests'");
@@ -153,6 +157,9 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('.work-center-action-transcript');
     expect(css).toContain('.work-center-request-card');
     expect(css).toContain('.work-center-action-composer');
+    expect(css).toContain('grid-template-columns: clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr)');
+    expect(css).toContain('.work-center-action-state');
+    expect(css).toContain('.work-center-action-input-wrapper');
 
     expect(page).toContain('class="work-center-action-card"');
     expect(page).toContain('class="work-center-action-stats"');
@@ -194,8 +201,8 @@ describe('Work Center UI contract', () => {
     expect(page).not.toContain('class="work-center-empty-icon"');
     expect(page).not.toContain('class="work-center-detail-empty-icon"');
     expect(page).toContain("tr('workCenter.createFirst'");
-    expect(css).toContain('width: min(100%, 1520px)');
-    expect(css).toContain('grid-template-columns: minmax(220px, 280px) minmax(300px, 380px) minmax(360px, 1fr)');
+    expect(css).toContain('width: 100%');
+    expect(css).toContain('grid-template-columns: clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr)');
     expect(css).toContain('.work-center-body.is-empty .work-center-detail');
     expect(css).toContain('.work-center-body.is-empty .work-center-list');
     expect(css).not.toContain('.work-center-empty-icon');
@@ -216,6 +223,7 @@ describe('Work Center UI contract', () => {
     const page = read('web/components/WorkCenterPage.js');
     const css = read('web/styles/work-center.css');
 
+    expect(css).toContain('@container work-center (max-width: 1250px)');
     expect(css).toContain('@media (max-width: 960px)');
     expect(css).toContain('@media (max-width: 768px)');
     expect(css).not.toContain('@media (max-width: 760px)');
@@ -315,7 +323,7 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('workItemAttachmentsSupported()');
     expect(page).toContain("this.runtime?.workItemAttachments === true");
     expect(page).toContain('v-if="workItemAttachmentsSupported" class="btn-secondary work-center-attachment-picker"');
-    expect(read('web/components/WorkCenterActionDetail.js')).toContain('v-if="attachmentsSupported" class="btn-ghost work-center-attachment-picker"');
+    expect(read('web/components/WorkCenterActionDetail.js')).toContain('v-if="attachmentsSupported" class="attach-btn work-center-attachment-picker"');
     expect(page).toContain('@attachment-input="onGuidanceAttachmentInput"');
     expect(page).toContain('guidanceAttachments.map(attachment => ({');
     expect(page).toContain('@click="previewAttachment(attachment)"');

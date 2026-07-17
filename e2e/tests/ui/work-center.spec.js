@@ -102,6 +102,24 @@ const OPEN_ITEM_DETAIL = {
   }],
 };
 
+function detailWithActions(count) {
+  const actions = Array.from({ length: count }, (_, index) => ({
+    ...OPEN_ITEM_DETAIL.actions[0],
+    id: `action-${index + 1}`,
+    sequence: index + 1,
+    type: index % 2 ? 'review' : 'implement',
+    status: index === count - 1 ? 'ready' : 'completed',
+    response: `Action ${index + 1} response`,
+    messages: [],
+  }));
+  return {
+    ...OPEN_ITEM_DETAIL,
+    actionCount: count,
+    currentActionId: actions.at(-1).id,
+    actions,
+  };
+}
+
 const FAILED_ITEM = {
   ...OPEN_ITEM,
   status: 'needs_attention',
@@ -251,6 +269,24 @@ async function layoutMetrics(page) {
   });
 }
 
+async function resizeWorkbenchForMainWidth(page, targetWidth) {
+  await page.waitForTimeout(350);
+  const resized = await page.evaluate(width => {
+    const handle = document.querySelector('.workbench-panel .resize-handle');
+    const main = document.querySelector('.work-center-main');
+    if (!handle || !main) return false;
+    const handleBox = handle.getBoundingClientRect();
+    const startX = handleBox.x + handleBox.width / 2;
+    const targetX = startX + main.getBoundingClientRect().width - width;
+    handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: startX }));
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: targetX }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: targetX }));
+    return true;
+  }, targetWidth);
+  if (!resized) throw new Error('Workbench resize geometry is unavailable');
+  await page.waitForTimeout(350);
+}
+
 test.describe('Work Center responsive UI', () => {
   test('keeps sidebar and content inside tablet and compact desktop viewports', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
@@ -268,9 +304,9 @@ test.describe('Work Center responsive UI', () => {
     }
   });
 
-  test('uses three desktop panes and single-pane drilldown below 1120px', async ({ chatPage, mockAgent }) => {
+  test('uses three wide-desktop panes and single-pane drilldown when sidebar space is constrained', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
-    await chatPage.setViewportSize({ width: 1440, height: 900 });
+    await chatPage.setViewportSize({ width: 1600, height: 900 });
     const select = chatPage.locator('.work-center-card').click();
     await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
     await select;
@@ -294,6 +330,80 @@ test.describe('Work Center responsive UI', () => {
     await expect(chatPage.locator('.work-center-detail')).toBeVisible();
     await chatPage.locator('.work-center-detail > .work-center-pane-back').click();
     await expect(chatPage.locator('.work-center-list')).toBeVisible();
+  });
+
+  test('switches to drilldown when the Workbench reduces the actual Work Center width', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent);
+    await chatPage.setViewportSize({ width: 1600, height: 900 });
+    const select = chatPage.locator('.work-center-card').click();
+    await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
+    await select;
+
+    await expect(chatPage.locator('.work-center-list')).toBeVisible();
+    await expect(chatPage.locator('.work-center-detail')).toBeVisible();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
+
+    await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Workbench"]').click();
+    await expect(chatPage.locator('.workbench-panel')).toHaveClass(/expanded/);
+    await expect(chatPage.locator('.work-center-list')).toBeHidden();
+    await expect(chatPage.locator('.work-center-detail')).toBeVisible();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeHidden();
+
+    const metrics = await layoutMetrics(chatPage);
+    expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
+    expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
+  });
+
+  test('switches cleanly across the container breakpoint when the Workbench is dragged wider', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent);
+    await chatPage.setViewportSize({ width: 1920, height: 900 });
+    const select = chatPage.locator('.work-center-card').click();
+    await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
+    await select;
+
+    await chatPage.locator('.session-sidebar-shell .sidebar-icon-btn[title="Workbench"]').click();
+    await expect(chatPage.locator('.workbench-panel')).toHaveClass(/expanded/);
+
+    await resizeWorkbenchForMainWidth(chatPage, 1280);
+    let metrics = await layoutMetrics(chatPage);
+    expect(metrics.main.width).toBeGreaterThan(1250);
+    await expect(chatPage.locator('.work-center-list')).toBeVisible();
+    await expect(chatPage.locator('.work-center-detail')).toBeVisible();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
+    expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
+    expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
+
+    await resizeWorkbenchForMainWidth(chatPage, 1200);
+    metrics = await layoutMetrics(chatPage);
+    expect(metrics.main.width).toBeGreaterThan(1160);
+    expect(metrics.main.width).toBeLessThanOrEqual(1250);
+    await expect(chatPage.locator('.work-center-list')).toBeHidden();
+    await expect(chatPage.locator('.work-center-detail')).toBeVisible();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeHidden();
+    expect(metrics.mainScrollWidth).toBeLessThanOrEqual(metrics.mainClientWidth + 1);
+    expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
+  });
+
+  test('keeps a long Action list reachable in a short workspace', async ({ chatPage, mockAgent }) => {
+    const detail = detailWithActions(24);
+    await openWorkCenter(chatPage, mockAgent);
+    await chatPage.setViewportSize({ width: 1440, height: 520 });
+    const select = chatPage.locator('.work-center-card').click();
+    await respondToWorkCenterOp(mockAgent, 'get', detail);
+    await select;
+
+    const actionList = chatPage.locator('.work-center-action-list');
+    const cards = actionList.locator('.work-center-action-card');
+    await expect(cards).toHaveCount(24);
+    await cards.last().scrollIntoViewIfNeeded();
+    await expect(cards.last()).toBeInViewport();
+    const scroll = await chatPage.locator('.work-center-detail').evaluate(element => ({
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+    }));
+    expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight);
+    expect(scroll.scrollTop).toBeGreaterThan(0);
   });
 
   test('maximizes and restores the Workbench without leaving the main area in the layout', async ({ chatPage, mockAgent }) => {
@@ -424,7 +534,7 @@ test.describe('Work Center responsive UI', () => {
     await expect(card).toContainText('Tool calls');
   });
 
-  test('keeps Action guidance and cards visible without overflow in dark theme', async ({ chatPage, mockAgent }) => {
+  test('keeps Action guidance visible without overflow in dark theme', async ({ chatPage, mockAgent }) => {
     await openWorkCenter(chatPage, mockAgent);
     const select = chatPage.locator('.work-center-card').click();
     await respondToWorkCenterOp(mockAgent, 'get', OPEN_ITEM_DETAIL);
@@ -436,19 +546,18 @@ test.describe('Work Center responsive UI', () => {
       localStorage.setItem('theme', 'dark');
     });
     await expect(chatPage.locator('html')).toHaveAttribute('data-theme', 'dark');
-    await expect(chatPage.locator('.work-center-action-card')).toBeVisible();
+    await expect(chatPage.locator('.work-center-action-detail-pane')).toBeVisible();
     await expect(chatPage.locator('.work-center-action-composer textarea')).toBeVisible();
 
     const metrics = await layoutMetrics(chatPage);
     expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.viewportWidth);
     expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
-    const colors = await chatPage.locator('.work-center-action-card').evaluate(element => {
+    const colors = await chatPage.locator('.work-center-action-input-wrapper').evaluate(element => {
       const style = getComputedStyle(element);
-      return { background: style.backgroundColor, text: style.color, border: style.borderColor };
+      return { background: style.backgroundColor, text: style.color };
     });
     expect(colors.background).not.toBe('rgba(0, 0, 0, 0)');
     expect(colors.text).not.toBe(colors.background);
-    expect(colors.border).not.toBe(colors.background);
   });
 
   test('shows delayed directory defaults before sending the create request', async ({ chatPage, mockAgent }) => {

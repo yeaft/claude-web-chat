@@ -47,6 +47,10 @@ export default {
       }
       return this.tr('workCenter.actionInputRestartHint', 'New input restarts the active Action so it can apply the updated context safely.');
     },
+    canSend() {
+      return !this.uploading && !this.sending
+        && (!!this.composerText.trim() || this.composerAttachments.length > 0);
+    },
   },
   watch: {
     'action.id'() {
@@ -54,6 +58,10 @@ export default {
       this.expandedRequestKey = null;
       this.expandedLoops = {};
       this.$nextTick(() => renderMermaidIn(this.$el));
+    },
+    composerText(value) {
+      if (value) return;
+      this.$nextTick(() => this.resizeComposerInput(this.$refs.composerInput, true));
     },
     messages: {
       deep: true,
@@ -127,6 +135,20 @@ export default {
     },
     loopExpanded(request, loop) {
       return !!this.expandedLoops[this.requestLoopKey(request, loop)];
+    },
+    resizeComposerInput(input, reset = false) {
+      if (!input) return;
+      input.style.height = 'auto';
+      if (!reset) input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
+    },
+    onComposerInput(event) {
+      this.$emit('update:composerText', event.target.value);
+      this.resizeComposerInput(event.target, !event.target.value);
+    },
+    onComposerKeydown(event) {
+      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+      event.preventDefault();
+      if (this.canSend) this.$emit('send');
     },
     switchTab(tab) {
       this.activeTab = tab;
@@ -245,25 +267,26 @@ export default {
 
       <footer v-if="canCompose" class="work-center-action-composer">
         <p v-if="composerError" class="work-center-error" role="alert">{{ composerError }}</p>
-        <textarea :value="composerText" rows="3" :placeholder="tr('workCenter.actionInputPlaceholder', 'Add context, answer a question, or redirect this Action')" @input="$emit('update:composerText', $event.target.value)"></textarea>
         <div v-if="composerAttachments.length" class="work-center-attachment-list">
           <span v-for="(attachment, index) in composerAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
             <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
             <button type="button" @click="$emit('remove-attachment', index)" :aria-label="tr('workCenter.removeAttachment', 'Remove attachment')">×</button>
           </span>
         </div>
-        <div class="work-center-action-composer-footer">
-          <div>
-            <label v-if="attachmentsSupported" class="btn-ghost work-center-attachment-picker">
-              {{ tr('workCenter.addAttachments', 'Add files') }}
-              <input type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="$emit('attachment-input', $event)">
-            </label>
-            <small>{{ uploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : composerHint }}</small>
+        <div class="input-wrapper work-center-action-input-wrapper">
+          <label v-if="attachmentsSupported" class="attach-btn work-center-attachment-picker" :title="tr('workCenter.addAttachments', 'Add files')">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
+            <input type="file" multiple :aria-label="tr('workCenter.addAttachments', 'Add files')" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv" @change="$emit('attachment-input', $event)">
+          </label>
+          <div class="textarea-wrapper">
+            <textarea ref="composerInput" :value="composerText" rows="1" :placeholder="tr('workCenter.actionInputPlaceholder', 'Add context, answer a question, or redirect this Action')" @input="onComposerInput" @keydown="onComposerKeydown"></textarea>
           </div>
-          <button class="btn-primary" type="button" @click="$emit('send')" :disabled="uploading || sending || (!composerText.trim() && composerAttachments.length === 0)">
-            {{ sending ? tr('workCenter.sendingInput', 'Sending…') : tr('workCenter.sendInput', 'Send input') }}
+          <button class="send-btn" type="button" @click="$emit('send')" :disabled="!canSend" :title="sending ? tr('workCenter.sendingInput', 'Sending…') : tr('workCenter.sendInput', 'Send input')">
+            <svg v-if="!sending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
           </button>
         </div>
+        <small class="work-center-action-composer-hint">{{ uploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : composerHint }}</small>
       </footer>
     </section>
     <section v-else class="work-center-action-detail-pane work-center-detail-empty"><strong>{{ tr('workCenter.selectAction', 'Select an Action to inspect its execution') }}</strong></section>
