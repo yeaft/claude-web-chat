@@ -178,10 +178,11 @@ function insertFrontmatterLine(source, key, value) {
   const lines = yaml.split(/\r?\n/);
   const roleIdx = lines.findIndex(l => /^role:\s*/.test(l));
   // Quote the value when it contains characters YAML treats specially or
-  // non-ASCII bytes — the existing vp-crud writer does the same dance.
+  // non-ASCII bytes. Single quotes keep backslashes and double quotes literal;
+  // doubled apostrophes are reversed by vp-store's scalar parser.
   const needsQuote = /[:#"'\\\n]/.test(valTrim) || /[^\x20-\x7e]/.test(valTrim);
   const yamlVal = needsQuote
-    ? `"${valTrim.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+    ? `'${valTrim.replace(/'/g, "''")}'`
     : valTrim;
   const newLine = `${key}: ${yamlVal}`;
   if (roleIdx >= 0) {

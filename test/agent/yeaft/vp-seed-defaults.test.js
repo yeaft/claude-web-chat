@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest';
 import { buildWorkerPrompt } from '../../../agent/yeaft/prompts.js';
 import { buildRoleMd } from '../../../agent/yeaft/vp/vp-crud.js';
 import { DEFAULT_VPS } from '../../../agent/yeaft/vp/seed-defaults.js';
-import { personaHash } from '../../../agent/yeaft/vp/vp-store.js';
-import { topUpDefaultVps } from '../../../agent/yeaft/vp/seed-topup.js';
+import { parseRoleMd, personaHash } from '../../../agent/yeaft/vp/vp-store.js';
+import { insertDescriptionLine, topUpDefaultVps } from '../../../agent/yeaft/vp/seed-topup.js';
 
 function tempDir() {
   return mkdtempSync(join(tmpdir(), 'yeaft-vp-seed-'));
@@ -159,8 +159,8 @@ Core capabilities / 核心能力:
     expect(result.roleZhBackfilled).toContain('linus');
     expect(linusRole).toContain('<!-- lang:zh -->');
     expect(linusRole).toContain('description: Implementation, root-cause debugging, performance, and reliability');
-    expect(linusRole).toContain('descriptionZh: "代码实现、根因排查、性能与可靠性"');
-    expect(linusRole).toContain('roleZh: "系统工程师"');
+    expect(linusRole).toContain("descriptionZh: '代码实现、根因排查、性能与可靠性'");
+    expect(linusRole).toContain("roleZh: '系统工程师'");
     expect(linusRole).toContain('你是林纳斯·托瓦兹');
     expect(linusRole).not.toContain('人物特点');
     expect(adaRole).toContain('你是阿达·洛芙莱斯');
@@ -176,5 +176,16 @@ Core capabilities / 核心能力:
     expect(martinRole).toContain('description: Custom review description');
     expect(martinRole).toContain('descriptionZh: 自定义评审描述');
     expect(martinRole).toContain('User edit.');
+  });
+
+  it('writes top-up scalars with the same reversible quoting as VP CRUD', () => {
+    const description = String.raw`Review "v1:beta" and C:\services\api's contract`;
+    const source = `---\nid: reviewer\nname: Reviewer\nrole: Reviewer\n---\n\nPersona body.\n`;
+    const patched = insertDescriptionLine(source, description);
+
+    expect(patched).not.toBeNull();
+    const parsed = parseRoleMd(patched);
+    expect(parsed.meta.description).toBe(description);
+    expect(parsed.body).toBe('Persona body.');
   });
 });
