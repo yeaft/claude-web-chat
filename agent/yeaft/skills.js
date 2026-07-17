@@ -55,7 +55,7 @@
  * Reference: yeaft-yeaft-design.md §8, yeaft-yeaft-core-systems.md
  */
 
-import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdirSync, statSync, realpathSync } from 'fs';
 import { join, basename, sep, dirname, resolve, delimiter } from 'path';
 import { platform, homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -548,13 +548,21 @@ export class SkillManager {
       // sit under the skill root (separator-anchored so /foo-evil isn't seen
       // as a child of /foo). `path.join` alone collapses `..` but does not
       // detect symlink-escapes or absolute-path overrides.
-      const fullPath = resolve(skill._path, filePath);
-      const root = resolve(skill._path) + sep;
-      if (fullPath !== resolve(skill._path) && !fullPath.startsWith(root)) {
+      const lexicalRoot = resolve(skill._path);
+      const fullPath = resolve(lexicalRoot, filePath);
+      const rootPrefix = lexicalRoot + sep;
+      if (fullPath !== lexicalRoot && !fullPath.startsWith(rootPrefix)) {
         result.linkedContent = 'Error: path traversal not allowed';
       } else if (existsSync(fullPath)) {
         try {
-          result.linkedContent = readFileSync(fullPath, 'utf8');
+          const canonicalRoot = realpathSync(lexicalRoot);
+          const canonicalPath = realpathSync(fullPath);
+          const canonicalPrefix = canonicalRoot + sep;
+          if (canonicalPath !== canonicalRoot && !canonicalPath.startsWith(canonicalPrefix)) {
+            result.linkedContent = 'Error: linked file escapes skill root';
+          } else {
+            result.linkedContent = readFileSync(canonicalPath, 'utf8');
+          }
         } catch (err) {
           result.linkedContent = `Error reading file: ${err.message}`;
         }

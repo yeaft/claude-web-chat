@@ -44,6 +44,7 @@ import {
   readFileSync,
   writeFileSync,
   cpSync,
+  realpathSync,
 } from 'fs';
 import { randomBytes } from 'crypto';
 import { homedir } from 'os';
@@ -122,6 +123,12 @@ export function normalizeWorkDir(workDir) {
   return isAbsolute(raw) ? raw : resolve(raw);
 }
 
+function canonicalWorkspaceKey(workDir) {
+  const normalized = normalizeWorkDir(workDir);
+  if (!normalized) return '';
+  try { return realpathSync(normalized); } catch { return ''; }
+}
+
 export function yeaftDirForWorkDir(workDir) {
   const normalized = normalizeWorkDir(workDir);
   return normalized ? join(normalized, '.yeaft') : '';
@@ -166,7 +173,7 @@ export function unregisterSessionWorkDir(defaultYeaftDir, sessionId) {
 }
 
 function ensureSessionManifestReady(yeaftDir) {
-  return ensureSessionsManifest(yeaftDir, {
+  const result = ensureSessionsManifest(yeaftDir, {
     sessionsRoot: sessionsRoot(yeaftDir),
     registry: readWorkDirRegistry(yeaftDir),
     yeaftDirForWorkDir,
@@ -174,6 +181,20 @@ function ensureSessionManifestReady(yeaftDir) {
     copySessionExtras: (projectYeaftDir, sessionId) => copySessionExtras(projectYeaftDir, yeaftDir, sessionId),
     unregisterSessionWorkDir: (sessionId) => unregisterSessionWorkDir(yeaftDir, sessionId),
   });
+  for (const row of listManifestSessions(yeaftDir)) {
+    const normalized = normalizeWorkDir(row.meta.workDir);
+    const workspaceKey = canonicalWorkspaceKey(normalized);
+    if (row.meta.workspaceKey || !workspaceKey || workspaceKey !== normalized) continue;
+    const handle = openSession(sessionsRoot(yeaftDir), row.meta.id);
+    try {
+      const updated = { ...row.meta, workspaceKey };
+      handle.saveMeta(updated);
+      addOrUpdateManifestSession(yeaftDir, updated, row.dir);
+    } finally {
+      handle.close();
+    }
+  }
+  return result;
 }
 
 function copySessionExtras(sourceYeaftDir, destYeaftDir, sessionId) {
@@ -320,7 +341,11 @@ export function restoreSessionToRegistry(defaultYeaftDir, sessionId, workDir) {
 
   mkdirSync(root, { recursive: true });
   cpSync(sourceDir, destDir, { recursive: true, errorOnExist: true });
-  const importedMeta = { ...meta, workDir: normalized };
+  const importedMeta = {
+    ...meta,
+    workDir: normalized,
+    workspaceKey: canonicalWorkspaceKey(normalized),
+  };
   const handle = openSession(root, sessionId);
   try {
     handle.saveMeta(importedMeta);
@@ -435,6 +460,7 @@ export function ensureDefaultSessionIfEmpty(yeaftDir, options = {}) {
 export function createSessionFromSpec(yeaftDir, spec, options = {}) {
   const input = spec || {};
   const normalizedWorkDir = normalizeWorkDir(input.workDir);
+  const workspaceKey = canonicalWorkspaceKey(normalizedWorkDir);
   ensureSessionManifestReady(yeaftDir);
   const groupYeaftDir = yeaftDir;
   const memoryRoot = options.memoryRoot || (groupYeaftDir ? join(groupYeaftDir, 'memory') : DEFAULT_MEMORY_ROOT);
@@ -469,7 +495,9 @@ export function createSessionFromSpec(yeaftDir, spec, options = {}) {
     throw new SessionCrudError('duplicate', id);
   }
 
-  const handle = createSession(root, { id, name, roster, defaultVpId, workDir: normalizedWorkDir });
+  const handle = createSession(root, {
+    id, name, roster, defaultVpId, workDir: normalizedWorkDir, workspaceKey,
+  });
   const meta = handle.getMeta();
   handle.close();
   addOrUpdateManifestSession(yeaftDir, meta, join(root, id));

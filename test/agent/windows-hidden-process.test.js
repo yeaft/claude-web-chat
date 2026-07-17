@@ -135,6 +135,33 @@ describe('Windows hidden non-interactive process launches', () => {
     });
   });
 
+  it('starts MCP servers in the configured execution cwd', async () => {
+    const cwd = makeTempDir('yeaft-mcp-cwd-');
+    const manager = await createMCPManager({
+      mcp_servers: [{ name: 'fake', command: 'node', args: ['fake-mcp.js'], cwd }],
+    });
+
+    expect(manager.status()).toEqual([{ name: 'fake', ready: true, toolCount: 0 }]);
+    expect(spawns[0].options.cwd).toBe(cwd);
+  });
+
+  it('does not pool identical MCP configs across different execution roots', async () => {
+    const firstCwd = makeTempDir('yeaft-mcp-first-');
+    const secondCwd = makeTempDir('yeaft-mcp-second-');
+    const first = await createMCPManager({
+      mcp_servers: [{ name: 'fake', command: 'node', args: ['fake-mcp.js'], cwd: firstCwd }],
+    });
+    const second = await createMCPManager({
+      mcp_servers: [{ name: 'fake', command: 'node', args: ['fake-mcp.js'], cwd: secondCwd }],
+    });
+
+    expect(spawns).toHaveLength(2);
+    expect(spawns.map(child => child.options.cwd)).toEqual([firstCwd, secondCwd]);
+    expect(__mcpConnectionPoolSizeForTests()).toBe(2);
+    await first.disconnectAll();
+    await second.disconnectAll();
+  });
+
   it('reuses stdio MCP server processes for identical configs until the last manager disconnects', async () => {
     const config = { mcp_servers: [{ name: 'fake', command: 'node', args: ['fake-mcp.js'], env: { B: '2', A: '1' } }] };
     const first = await createMCPManager(config);

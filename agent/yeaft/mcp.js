@@ -53,6 +53,7 @@ function mcpConnectionKey(config) {
     command: config.command,
     args: Array.isArray(config.args) ? config.args : [],
     env: stableEnv(config.env),
+    cwd: config.cwd || '',
   });
 }
 
@@ -148,6 +149,7 @@ class MCPServerConnection extends EventEmitter {
         this.#process = spawn(this.config.command, this.config.args || [], {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: { ...process.env, ...this.config.env },
+          cwd: this.config.cwd || undefined,
           windowsHide: true,
         });
 

@@ -53,6 +53,7 @@ export function loadSessionsManifest(yeaftDir) {
           name: typeof row.name === 'string' ? row.name : row.id,
           createdAt: typeof row.createdAt === 'string' ? row.createdAt : '',
           workDir: typeof row.workDir === 'string' ? row.workDir : '',
+          workspaceKey: typeof row.workspaceKey === 'string' ? row.workspaceKey : '',
         })),
     };
   } catch {
@@ -194,6 +195,7 @@ function manifestRowFromMeta(meta, dir) {
     path: dir,
     createdAt: meta.createdAt || '',
     workDir: meta.workDir || '',
+    workspaceKey: meta.workspaceKey || '',
   };
 }
 
@@ -207,6 +209,7 @@ function dedupeSessions(sessions) {
       path: row.path,
       createdAt: row.createdAt || '',
       workDir: row.workDir || '',
+      workspaceKey: row.workspaceKey || '',
     });
   }
   return Array.from(byId.values());

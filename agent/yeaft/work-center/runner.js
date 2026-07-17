@@ -539,18 +539,20 @@ export class WorkItemRunner {
     }));
   }
 
-  async #workspaceRuntime(workDir, isRunActive) {
+  async #workspaceRuntime(workspaceDir, executionDir, isRunActive) {
     if (!this.yeaftDir) return { skillManager: null, mcpManager: null, mcpTools: [] };
     if (this.shuttingDown) throw new Error('Work Center Runner is shutting down');
     if (!isRunActive()) throw new Error('Work Center Run lease is no longer active');
-    const cached = this.workspaceRuntimes.get(workDir);
+    const runtimeKey = `${workspaceDir}\0${executionDir}`;
+    const cached = this.workspaceRuntimes.get(runtimeKey);
     if (cached) return cached;
     const pending = (async () => {
-      const skillManager = createSkillManager(this.yeaftDir, workDir);
+      const skillManager = createSkillManager(this.yeaftDir, executionDir);
       const mcpManager = new MCPManager();
-      const mcpConfig = loadMCPConfig(this.yeaftDir, undefined, workDir);
+      const mcpConfig = loadMCPConfig(this.yeaftDir, undefined, workspaceDir);
+      const servers = mcpConfig.servers.map(server => ({ ...server, cwd: executionDir }));
       if (!isRunActive()) throw new Error('Work Center Run lease is no longer active');
-      if (mcpConfig.servers.length > 0) await mcpManager.connectAll(mcpConfig.servers);
+      if (servers.length > 0) await mcpManager.connectAll(servers);
       if (!isRunActive() || this.shuttingDown) {
         try { await mcpManager.disconnectAll(); } catch {}
         throw new Error(this.shuttingDown
@@ -559,13 +561,13 @@ export class WorkItemRunner {
       }
       return { skillManager, mcpManager, mcpTools: buildMcpFlattenedTools(mcpManager) };
     })();
-    this.workspaceRuntimes.set(workDir, pending);
+    this.workspaceRuntimes.set(runtimeKey, pending);
     try {
       const runtime = await pending;
-      this.workspaceRuntimes.set(workDir, runtime);
+      this.workspaceRuntimes.set(runtimeKey, runtime);
       return runtime;
     } catch (error) {
-      this.workspaceRuntimes.delete(workDir);
+      this.workspaceRuntimes.delete(runtimeKey);
       throw error;
     }
   }
@@ -685,7 +687,7 @@ export class WorkItemRunner {
     const attachmentContext = buildWorkItemAttachmentContext(workItem, { root: this.attachmentRoot });
     const isRunActive = () => !signal.aborted
       && this.store.isActiveRun(run.id, ownerBootId, run.leaseEpoch);
-    const workspaceRuntime = await this.#workspaceRuntime(workspaceDir, isRunActive);
+    const workspaceRuntime = await this.#workspaceRuntime(workspaceDir, workDir, isRunActive);
     const mcpToolNames = workspaceRuntime.mcpTools.map(tool => tool.name);
     const toolPolicySnapshot = workItemToolPolicySnapshot(
       workDir,

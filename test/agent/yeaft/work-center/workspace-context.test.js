@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSession } from '../../../../agent/yeaft/sessions/session-store.js';
@@ -26,10 +26,12 @@ describe('Work Center workspace Session context', () => {
     mkdirSync(workspace);
     mkdirSync(otherWorkspace);
     const same = createSession(join(yeaftDir, 'sessions'), {
-      id: 'same', name: 'Same project', roster: [], defaultVpId: null, workDir: workspace,
+      id: 'same', name: 'Same project', roster: [], defaultVpId: null,
+      workDir: workspace, workspaceKey: workspace,
     });
     const other = createSession(join(yeaftDir, 'sessions'), {
-      id: 'other', name: 'Other project', roster: [], defaultVpId: null, workDir: otherWorkspace,
+      id: 'other', name: 'Other project', roster: [], defaultVpId: null,
+      workDir: otherWorkspace, workspaceKey: otherWorkspace,
     });
     writeSessionsManifest(yeaftDir, [
       { ...same.getMeta(), path: same.dir },
@@ -58,6 +60,52 @@ describe('Work Center workspace Session context', () => {
     expect(block.match(/<workspace_session_context>/g)).toHaveLength(1);
     expect(block.match(/<\/workspace_session_context>/g)).toHaveLength(1);
     expect(approxTokens(block)).toBeLessThanOrEqual(3_000);
+  });
+
+  it('does not follow a retargeted Session workDir alias into another workspace', () => {
+    const yeaftDir = temp('work-center-session-alias-');
+    const workspaceA = join(yeaftDir, 'workspace-a');
+    const workspaceB = join(yeaftDir, 'workspace-b');
+    const alias = join(yeaftDir, 'alias');
+    mkdirSync(workspaceA);
+    mkdirSync(workspaceB);
+    symlinkSync(workspaceA, alias, 'dir');
+    const session = createSession(join(yeaftDir, 'sessions'), {
+      id: 'session-a', name: 'Project A', roster: [], defaultVpId: null,
+      workDir: alias, workspaceKey: workspaceA,
+    });
+    writeSessionsManifest(yeaftDir, [{ ...session.getMeta(), path: session.dir }]);
+    rmSync(alias);
+    symlinkSync(workspaceB, alias, 'dir');
+    const searchVisibleBySession = vi.fn(() => ({
+      results: [{ messageId: 'leak', role: 'user', snippet: 'project A secret' }],
+    }));
+
+    expect(recallWorkspaceSessionContext({
+      yeaftDir,
+      conversationStore: { searchVisibleBySession },
+      workspaceKey: workspaceB,
+      query: 'secret',
+    })).toBe('');
+    expect(searchVisibleBySession).not.toHaveBeenCalled();
+  });
+
+  it('does not recall legacy Sessions without a canonical workspace identity', () => {
+    const yeaftDir = temp('work-center-session-legacy-');
+    const workspace = join(yeaftDir, 'workspace');
+    mkdirSync(workspace);
+    const session = createSession(join(yeaftDir, 'sessions'), {
+      id: 'legacy', name: 'Legacy', roster: [], defaultVpId: null, workDir: workspace,
+    });
+    writeSessionsManifest(yeaftDir, [{ ...session.getMeta(), path: session.dir }]);
+    const searchVisibleBySession = vi.fn();
+    expect(recallWorkspaceSessionContext({
+      yeaftDir,
+      conversationStore: { searchVisibleBySession },
+      workspaceKey: workspace,
+      query: 'secret',
+    })).toBe('');
+    expect(searchVisibleBySession).not.toHaveBeenCalled();
   });
 
   it('does not enumerate or search Sessions when memory reuse is disabled', () => {

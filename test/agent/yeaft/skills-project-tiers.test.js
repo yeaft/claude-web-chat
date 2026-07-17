@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { delimiter, join } from 'path';
 import { createSkillManager } from '../../../agent/yeaft/skills.js';
@@ -122,6 +122,36 @@ describe('createSkillManager — project .claude/skills tier', () => {
     expect(manager.list().find(s => s.name === 'claude-only').tier).toBe('project-claude');
     expect(manager.list().find(s => s.name === 'codex-only').tier).toBe('project-codex');
     expect(manager.list().find(s => s.name === 'yeaft-only').tier).toBe('project');
+  });
+
+  it('rejects linked files whose file or parent symlink escapes the skill root', () => {
+    writeSkill(workDir, '.yeaft/skills', 'safe', 'Safe project skill.');
+    const skillDir = join(workDir, '.yeaft/skills/safe');
+    const outside = mkdtempSync(join(tmpdir(), 'yeaft-skill-outside-'));
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'TOP-SECRET');
+      mkdirSync(join(skillDir, 'references'), { recursive: true });
+      symlinkSync(join(outside, 'secret.txt'), join(skillDir, 'references', 'file-link.txt'));
+      symlinkSync(outside, join(skillDir, 'linked-parent'), 'dir');
+      const manager = createSkillManager(yeaftDir, workDir);
+
+      expect(manager.view('safe', 'references/file-link.txt').linkedContent)
+        .toBe('Error: linked file escapes skill root');
+      expect(manager.view('safe', 'linked-parent/secret.txt').linkedContent)
+        .toBe('Error: linked file escapes skill root');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a dangling linked file without reading outside the skill root', () => {
+    writeSkill(workDir, '.yeaft/skills', 'safe', 'Safe project skill.');
+    const references = join(workDir, '.yeaft/skills/safe/references');
+    mkdirSync(references, { recursive: true });
+    symlinkSync(join(workDir, 'missing-secret'), join(references, 'dangling.txt'));
+    const manager = createSkillManager(yeaftDir, workDir);
+    expect(manager.view('safe', 'references/dangling.txt').linkedContent)
+      .toBe('File not found: references/dangling.txt');
   });
 
   it('loads project skills from multiple roots in priority order', () => {

@@ -16,9 +16,15 @@ function escapeContext(value) {
   return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
-function canonicalDirectory(value) {
+function verifiedCanonicalDirectory(value) {
   if (typeof value !== 'string' || !value.trim()) return '';
-  try { return realpathSync(value.trim()); } catch { return ''; }
+  const expected = value.trim();
+  try {
+    const actual = realpathSync(expected);
+    return actual === expected ? expected : '';
+  } catch {
+    return '';
+  }
 }
 
 function boundedBlock(body) {
@@ -64,7 +70,7 @@ export function recallWorkspaceSessionContext({
       || !yeaftDir
       || !conversationStore
       || typeof conversationStore.searchVisibleBySession !== 'function') return '';
-  const canonicalWorkspace = canonicalDirectory(workspaceKey);
+  const canonicalWorkspace = verifiedCanonicalDirectory(workspaceKey);
   if (!canonicalWorkspace) return '';
   const terms = searchTerms(query);
   if (terms.length === 0) return '';
@@ -73,7 +79,7 @@ export function recallWorkspaceSessionContext({
     .map(row => row.meta)
     .filter(meta => SESSION_ID_PATTERN.test(meta?.id || ''))
     .filter(meta => meta.id !== excludeSessionId)
-    .filter(meta => canonicalDirectory(meta.workDir) === canonicalWorkspace)
+    .filter(meta => verifiedCanonicalDirectory(meta.workspaceKey) === canonicalWorkspace)
     .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
     .slice(0, MAX_WORKSPACE_SESSIONS);
   const matches = [];
