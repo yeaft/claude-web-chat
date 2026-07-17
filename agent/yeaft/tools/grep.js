@@ -8,11 +8,20 @@
 import { defineTool } from './types.js';
 import { spawn } from 'child_process';
 import { readdir, readFile, stat } from 'fs/promises';
+import { StringDecoder } from 'string_decoder';
 import { existsSync } from 'fs';
 import { resolve, join, relative, extname } from 'path';
 
 /** Max output lines. */
 const MAX_LINES = 250;
+
+/** Hard cap before Grep output reaches history, debug events, or WebSocket. */
+const MAX_OUTPUT_BYTES = 512 * 1024;
+const OUTPUT_TRUNCATED_MARKER = '\n\n[Output truncated]';
+const MAX_CAPTURE_BYTES = MAX_OUTPUT_BYTES - Buffer.byteLength(OUTPUT_TRUNCATED_MARKER, 'utf8');
+
+/** Keep one pathological source line from consuming the whole output budget. */
+const MAX_LINE_BYTES = 16 * 1024;
 
 /** Binary extensions to skip. */
 const BINARY_EXTS = new Set([
@@ -24,6 +33,77 @@ const BINARY_EXTS = new Set([
   '.woff', '.woff2', '.ttf', '.otf',
   '.sqlite', '.db',
 ]);
+
+const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+
+function decodeTextFile(buffer) {
+  // Extension lists are only a fast path. Generated artifacts and renamed
+  // binaries commonly have no useful extension, especially on Windows.
+  if (buffer.includes(0)) return null;
+  try { return utf8Decoder.decode(buffer); } catch { return null; }
+}
+
+function truncateUtf8(text, maxBytes) {
+  if (maxBytes <= 0) return '';
+  const buffer = Buffer.from(text, 'utf8');
+  if (buffer.length <= maxBytes) return text;
+  return new StringDecoder('utf8').write(buffer.subarray(0, maxBytes));
+}
+
+function boundToolOutput(text) {
+  if (Buffer.byteLength(text, 'utf8') <= MAX_OUTPUT_BYTES) return text;
+  return truncateUtf8(text, MAX_CAPTURE_BYTES) + OUTPUT_TRUNCATED_MARKER;
+}
+
+function formatGrepError(message) {
+  const errorMessage = `Grep failed: ${message}`;
+  const serialized = JSON.stringify({ error: errorMessage });
+  if (Buffer.byteLength(serialized, 'utf8') <= MAX_OUTPUT_BYTES) return serialized;
+
+  const markerBytes = Buffer.byteLength(OUTPUT_TRUNCATED_MARKER, 'utf8');
+  let low = 0;
+  let high = Math.max(0, Buffer.byteLength(errorMessage, 'utf8') - markerBytes);
+  let result = JSON.stringify({ error: OUTPUT_TRUNCATED_MARKER });
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = JSON.stringify({
+      error: truncateUtf8(errorMessage, mid) + OUTPUT_TRUNCATED_MARKER,
+    });
+    if (Buffer.byteLength(candidate, 'utf8') <= MAX_OUTPUT_BYTES) {
+      result = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return result;
+}
+
+function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
+  const parts = [];
+  const contentBytes = Math.max(0, maxBytes - Buffer.byteLength(OUTPUT_TRUNCATED_MARKER, 'utf8'));
+  let bytes = 0;
+  let truncated = false;
+  return {
+    add(value) {
+      if (truncated) return false;
+      const normalized = String(value).replace(/\r/g, '');
+      const line = truncateUtf8(normalized, MAX_LINE_BYTES);
+      const lineWasTruncated = Buffer.byteLength(normalized, 'utf8') > Buffer.byteLength(line, 'utf8');
+      const separator = parts.length > 0 ? '\n' : '';
+      const remaining = contentBytes - bytes - Buffer.byteLength(separator, 'utf8');
+      if (remaining <= 0) { truncated = true; return false; }
+      const bounded = truncateUtf8(line, remaining);
+      parts.push(separator + bounded);
+      bytes += Buffer.byteLength(separator + bounded, 'utf8');
+      if (lineWasTruncated || bounded !== line) truncated = true;
+      return !truncated;
+    },
+    toString() { return parts.join('') + (truncated ? OUTPUT_TRUNCATED_MARKER : ''); },
+  };
+}
 
 /**
  * Check if ripgrep is available.
@@ -39,7 +119,7 @@ function hasRipgrep() {
 /**
  * Run ripgrep and return results.
  */
-function runRipgrep(pattern, searchPath, options) {
+export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
   return new Promise((resolve, reject) => {
     const args = [
       pattern,
@@ -60,44 +140,72 @@ function runRipgrep(pattern, searchPath, options) {
     if (options.multiline) args.push('-U', '--multiline-dotall');
     args.push('--max-count', String(options.maxResults || 500));
 
-    const proc = spawn('rg', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    let stdout = '';
-    let stderr = '';
+    const proc = spawnProcess('rg', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let capturedBytes = 0;
+    let truncatedStream = null;
+    let settled = false;
 
-    proc.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-      // Truncate early if way too large
-      if (stdout.length > 512 * 1024) {
+    function capture(streamName, chunk, chunks) {
+      if (truncatedStream) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const remaining = MAX_CAPTURE_BYTES - capturedBytes;
+      if (buffer.length > remaining) {
+        if (remaining > 0) chunks.push(buffer.subarray(0, remaining));
+        capturedBytes = MAX_CAPTURE_BYTES;
+        truncatedStream = streamName;
         try { proc.kill(); } catch {}
+        return;
       }
-    });
-    proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+      chunks.push(buffer);
+      capturedBytes += buffer.length;
+    }
+
+    function decodeCaptured(chunks, wasTruncated) {
+      // Buffer decoding normally expands each invalid byte to the three-byte
+      // U+FFFD replacement character. Use a one-byte replacement, then enforce
+      // the final encoded-byte boundary as a last line of defense.
+      const marker = wasTruncated ? OUTPUT_TRUNCATED_MARKER : '';
+      const maxTextBytes = MAX_OUTPUT_BYTES - Buffer.byteLength(marker, 'utf8');
+      const decoded = Buffer.concat(chunks).toString('utf8').replaceAll('\ufffd', '?').replace(/\r/g, '');
+      return truncateUtf8(decoded, maxTextBytes) + marker;
+    }
+
+    proc.stdout.on('data', (chunk) => capture('stdout', chunk, stdoutChunks));
+    proc.stderr.on('data', (chunk) => capture('stderr', chunk, stderrChunks));
     proc.on('close', (code) => {
-      if (code === 0 || code === 1) {
-        resolve(stdout);
-      } else {
-        reject(new Error(stderr || `rg exited with code ${code}`));
-      }
+      if (settled) return;
+      settled = true;
+      const stdout = decodeCaptured(stdoutChunks, truncatedStream === 'stdout');
+      const stderr = decodeCaptured(stderrChunks, truncatedStream === 'stderr');
+      if (code === 0 || code === 1 || truncatedStream === 'stdout') resolve(stdout);
+      else reject(new Error(stderr || `rg exited with code ${code}`));
     });
-    proc.on('error', reject);
+    proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
   });
 }
 
 /**
  * Fallback: Node.js grep implementation.
  */
-async function nodeGrep(pattern, searchPath, options) {
+export async function nodeGrep(pattern, searchPath, options) {
   const regex = new RegExp(pattern, options.caseInsensitive ? 'gi' : 'g');
-  const results = [];
+  const output = createOutputCollector();
+  let resultCount = 0;
   const SKIP = new Set(['node_modules', '.git', '__pycache__', '.next', 'dist', 'build', '.cache']);
 
   async function searchDir(dir) {
-    if (results.length >= (options.maxResults || 500)) return;
+    if (resultCount >= (options.maxResults || 500)) return;
     let entries;
     try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
 
     for (const entry of entries) {
-      if (results.length >= (options.maxResults || 500)) return;
+      if (resultCount >= (options.maxResults || 500)) return;
       const fullPath = join(dir, entry.name);
 
       if (entry.isDirectory()) {
@@ -111,22 +219,32 @@ async function nodeGrep(pattern, searchPath, options) {
           const fileStat = await stat(fullPath);
           if (fileStat.size > 1024 * 1024) continue; // skip files > 1MB
 
-          const content = await readFile(fullPath, 'utf-8');
+          const buffer = await readFile(fullPath);
+          const content = decodeTextFile(buffer);
+          if (content == null) continue;
           const relPath = relative(searchPath, fullPath);
 
           if (options.filesOnly) {
-            if (regex.test(content)) results.push(relPath);
+            if (regex.test(content)) {
+              resultCount += 1;
+              if (!output.add(relPath)) return;
+            }
             regex.lastIndex = 0;
           } else if (options.count) {
             const matches = content.match(regex);
-            if (matches) results.push(`${relPath}:${matches.length}`);
+            if (matches) {
+              resultCount += 1;
+              if (!output.add(`${relPath}:${matches.length}`)) return;
+            }
           } else {
             const lines = content.split('\n');
             for (let i = 0; i < lines.length; i++) {
               if (regex.test(lines[i])) {
-                results.push(`${relPath}:${i + 1}:${lines[i]}`);
+                resultCount += 1;
+                if (!output.add(`${relPath}:${i + 1}:${lines[i]}`)) return;
               }
               regex.lastIndex = 0;
+              if (resultCount >= (options.maxResults || 500)) return;
             }
           }
         } catch {
@@ -137,7 +255,7 @@ async function nodeGrep(pattern, searchPath, options) {
   }
 
   await searchDir(searchPath);
-  return results.join('\n');
+  return output.toString();
 }
 
 export default defineTool({
@@ -302,15 +420,18 @@ Guidelines:
         return '(no matches)';
       }
 
-      // Limit output lines
+      // Limit output lines, then enforce the byte budget at the actual tool
+      // boundary so prefixes, JSON escaping, and result markers are included.
       const lines = result.trim().split('\n');
       if (lines.length > head_limit) {
-        return lines.slice(0, head_limit).join('\n') + `\n\n... (${lines.length - head_limit} more results)`;
+        return boundToolOutput(
+          lines.slice(0, head_limit).join('\n') + `\n\n... (${lines.length - head_limit} more results)`,
+        );
       }
 
-      return result.trim();
+      return boundToolOutput(result.trim());
     } catch (err) {
-      return JSON.stringify({ error: `Grep failed: ${err.message}` });
+      return formatGrepError(err.message);
     }
   },
 });
