@@ -314,7 +314,7 @@ export function sanitizeDebugUrl(value) {
 
 function redactSensitiveHeaderLines(value) {
   return String(value || '').replace(
-    /(^|\r?\n)([\t ]*)([^:\r\n]{1,256})([\t ]*:[\t ]*)([^\r\n]*)/g,
+    /(^|\r\n|\r|\n)([\t ]*)([^:\r\n]{1,256})([\t ]*:[\t ]*)([^\r\n]*)/g,
     (match, boundary, whitespace, name, operator) => (isSensitiveName(name)
       ? `${boundary}${whitespace}${name}${operator}***`
       : match),
