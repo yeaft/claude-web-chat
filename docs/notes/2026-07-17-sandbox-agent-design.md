@@ -26,7 +26,7 @@ Yeaft 为有权限的用户提供一个托管 Sandbox Agent。每个用户最多
 1 vCPU / 2 GiB RAM / 20 GB disk
 ```
 
-Sandbox 默认允许访问公开互联网，满足下载依赖、Git 操作、包管理、网页访问和搜索等开发需求。网络层仍然阻止访问宿主机管理面、云 metadata、Docker API、私有网络和其他 Sandbox，并默认拒绝所有外部入站连接。
+Sandbox 默认允许访问公开互联网，满足下载依赖、Git 操作、用户级依赖安装、网页访问和搜索等开发需求。网络层仍然阻止访问宿主机管理面、云 metadata、Docker API、私有网络和其他 Sandbox，并默认拒绝所有外部入站连接。
 
 ## 2. 范围边界
 
@@ -160,15 +160,16 @@ Remove 是不可逆操作，UI 必须二次确认并明确说明 workspace 和 h
 3. 阻止 Agent 再次连接；
 4. 停止并删除容器；
 5. 删除持久目录、quota project 和网络身份；
-6. inspect 确认运行时及磁盘资源不存在；
-7. 释放 Host 资源账本和产品容量 reservation；
-8. 写入 `removedAt` 和 terminal result。
+6. inspect 确认容器与运行时对象、持久目录、quota project、网络身份及策略均不存在；
+7. 在同一个数据库事务中校验 operation/generation，清除 `reservationHeld`，扣减 Host 资源账本和产品容量 reservation，并写入 `observedState=removed`、`removedAt` 与 terminal result。
 
-任何一步失败都进入可重试的 `remove_failed`，由 reconciler 继续清理。在真实资源删除完成前不能提前释放容量。
+任何一步失败都进入可重试的 `remove_failed`，由 reconciler 继续清理。在所有真实资源经 inspect 确认不存在且步骤 7 的原子结算提交前，不能提前释放容量。
 
 ### 3.7 失败与恢复
 
-可重试错误展示当前阶段、稳定错误码和 Retry。不可自动恢复或状态不确定时显示 `Recovery required`，禁止继续执行破坏性操作，直到后台 inspect 或人工处理完成。
+可重试错误展示当前阶段、稳定错误码和 Retry。只要 `reservationHeld=true`，失败状态就继续占用容量。对于 inspect 已证明能够安全清理的创建或 provisioning 失败，页面除 Retry 外必须提供 Remove；Remove 复用 3.6 的清理与原子释放流程。
+
+不可自动恢复或资源状态不确定时显示 `Recovery required`，禁止用户继续执行破坏性操作，直到后台 inspect 或人工处理完成。reconciler 和运维 runbook 必须提供受控的强制清理路径；状态确认安全后继续 Remove。不存在“仍持有 reservation、但用户和后台都无法进入清理流程”的终态。
 
 页面不能无限显示 Setting up。每个阶段都有 deadline；超时后 operation 必须进入明确错误状态，但 desired state 仍由 reconciler 持续收敛。
 
@@ -194,7 +195,7 @@ Remove 是不可逆操作，UI 必须二次确认并明确说明 workspace 和 h
 maxReservedSandboxes = 2
 ```
 
-计入 reservation 的状态：
+正常状态映射中，以下状态通常持有 reservation：
 
 ```text
 reserving
@@ -204,11 +205,13 @@ waiting_for_agent
 running
 stopping
 stopped
+failed
+removing
 remove_failed
 recovery_required
 ```
 
-`removed` 不计入；`removing` 在清理成功前仍计入。
+容量判断的事实来源是持久化的 `reservationHeld`，不能仅由 `observedState` 推导。所有 `reservationHeld=true` 的记录都计入容量。只有 3.6 步骤 7 的原子结算可以将其清除；`removed` 必须同时满足 `reservationHeld=false` 才不计入。
 
 除了实例数限制，还必须同时检查资源账本：
 
@@ -445,6 +448,8 @@ Helper 使用 `SO_PEERCRED` 验证固定 Controller UID/GID，并校验调用进
   removedAt
 }
 ```
+
+`reservationHeld` 是容量归属的持久化事实。创建 reservation 的原子事务将其设为 `true`；状态转换、超时和失败不能隐式清除它，只有 3.6 定义的资源不存在性检查和原子结算可以设为 `false`。
 
 `instanceId` 在 Stop/Start 后保持不变，使现有 Agent identity 能稳定恢复。
 
@@ -754,12 +759,14 @@ Stop/Start 和容器重建后保留：
 Sandbox 默认允许访问公开互联网，不使用逐域名 allowlist。以下开发行为应无需用户额外配置即可工作：
 
 - `curl`、`wget` 和普通 HTTP/HTTPS 下载；
-- npm、pip、apt 等包管理；
+- 项目级 npm 依赖安装，以及 Python venv 中的 pip 依赖安装；
 - Git HTTPS/SSH；
 - GitHub CLI 和公开 API；
 - LLM provider API；
 - 网页访问、搜索和 DNS 查询；
 - Agent 到 Yeaft Server 的 HTTPS/WSS 连接。
+
+运行时不支持 `apt install` 或 `apt update`。Sandbox 使用非 root 用户和 read-only rootfs，系统包只能通过受控镜像构建加入，经签名的新 image digest 和新 generation 发布。用户依赖应安装到 `/workspace`、`/home/yeaft` 或其中的 Python venv，并随持久目录保留。
 
 网络策略在 Host network namespace/veth 边界实施透明出站 NAT，不要求每个 CLI 正确读取 `HTTP_PROXY`。应用层代理可用于可观测或缓存，但不能成为基本联网能力的唯一实现。
 
@@ -791,7 +798,7 @@ Yeaft Server 若只提供私有地址，必须由 Host policy 建立到“精确
 - DNS：使用受控 resolver，并在数据面再次按目的 IP 拒绝私网，避免 DNS rebinding；
 - redirect、CNAME 或重新解析后落入禁止网段：仍由数据面拒绝。
 
-为防止滥用，平台可统一阻断高风险出站端口，例如 SMTP 25，并应用连接数、带宽和 DNS query rate limit。这些限制不得破坏常规下载、搜索、Git 和包管理。
+为防止滥用，平台可统一阻断高风险出站端口，例如 SMTP 25，并应用连接数、带宽和 DNS query rate limit。这些限制不得破坏常规下载、搜索、Git 以及 npm/pip 用户依赖安装。
 
 ### 11.4 网络可观测与隐私
 
@@ -1153,6 +1160,8 @@ Sandbox 管理页位于用户 Settings，复用现有固定尺寸 Settings 外�
 
 Stop、Start 和 Remove 在请求发出后立即禁用冲突操作。重复点击复用相同 operation，不产生并发 lifecycle 操作。
 
+创建或 provisioning 失败且 `reservationHeld=true` 时，页面必须持续显示容量占用。inspect 已确认可安全清理时显示 Remove；状态不确定时显示 `Recovery required`，并由后台或运维清理流程继续收敛，不能让 reservation 失去可达的释放路径。
+
 ## 19. 验收测试
 
 ### 19.1 Ownership 与容量
@@ -1164,6 +1173,8 @@ Stop、Start 和 Remove 在请求发出后立即禁用冲突操作。重复点�
 - 不同规格同时创建仍遵守资源账本；
 - Stop 不释放 slot；
 - Remove 完成后才释放；
+- 创建或 provisioning 失败且 `reservationHeld=true` 时仍占用 slot；
+- 失败实例经 Remove/reconcile 清理，只有容器、数据、quota 和网络资源均确认不存在后，才在一次原子结算中清除 `reservationHeld` 并释放 slot；
 - disabled、unentitled、unqualified 和 no-capacity 返回不同稳定错误码。
 
 ### 19.2 生命周期
@@ -1190,7 +1201,8 @@ Stop、Start 和 Remove 在请求发出后立即禁用冲突操作。重复点�
 ### 19.4 网络
 
 - 任意公开 HTTPS 下载成功；
-- npm、pip、apt、Git HTTPS/SSH 和 GitHub CLI 成功；
+- 项目级 npm 安装、Python venv 中的 pip 安装、Git HTTPS/SSH 和 GitHub CLI 成功；
+- 运行时 `apt install/update` 不作为 Sandbox 能力；系统包只能通过签名镜像重建发布；
 - Web/Search 和 LLM provider 请求成功；
 - Agent HTTPS/WSS 连接成功；
 - Host gateway、loopback、RFC1918、link-local、metadata 和其他 Sandbox 访问失败；
