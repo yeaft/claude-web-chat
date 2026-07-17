@@ -3287,7 +3287,11 @@ export class Engine {
             displayImages = extractDisplayImages(tc.name, output);
             if (displayImages.length > 0) {
               output = stripDisplayImageData(output, displayImages);
-              displayImagesForPersistence.push(...displayImages.map(image => ({
+            }
+            yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError: false, threadId: this.currentThreadId };
+            displayImagesForPersistence.push(...displayImages
+              .filter(image => image.deliveryQueued === true)
+              .map(image => ({
                 assetId: image.assetId,
                 mimeType: image.mimeType,
                 filename: image.filename || 'image',
@@ -3295,8 +3299,6 @@ export class Engine {
                 width: Number(image.width) || null,
                 height: Number(image.height) || null,
               })));
-            }
-            yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError: false, threadId: this.currentThreadId };
           } catch (err) {
             output = `Error: ${err.message}`;
             isError = true;

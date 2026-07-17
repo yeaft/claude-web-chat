@@ -113,6 +113,7 @@ export async function handleMessage(msg) {
 
       // ★ Flush 断连期间缓冲的消息
       await flushMessageBuffer();
+      await ctx.assetOutbox?.drain();
 
       // ★ Phase 1: 通知 server 同步完成
       sendToServer({ type: 'agent_sync_complete' });
@@ -128,6 +129,12 @@ export async function handleMessage(msg) {
       preloadSlashCommands()
         .catch(() => {})
         .finally(() => { preloadYeaftSkillSlashCommands(); });
+      break;
+
+    case 'yeaft_asset_ack':
+      if ((msg.ok === true || msg.permanent === true) && ctx.assetOutbox?.acknowledge(msg.deliveryId)) {
+        ctx.assetOutbox.drain().catch(err => console.warn('[AssetOutbox] drain failed:', err?.message || err));
+      }
       break;
 
     case 'create_conversation':

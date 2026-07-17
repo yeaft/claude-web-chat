@@ -134,10 +134,7 @@ describe('tool result raw storage boundaries', () => {
     expect(trace.tools[0].toolOutput).not.toContain(png);
     expect(adapter.callLog[1].messages.find(message => message.role === 'tool').content).not.toContain(png);
     const persisted = readJsonl(join(dir, 'sessions', 's1', 'conversation', 'segments'));
-    const assistant = persisted.find(message => message.role === 'assistant' && Array.isArray(message.images));
-    expect(assistant.images).toEqual([
-      expect.objectContaining({ assetId: toolEnd.displayImages[0].assetId, mimeType: 'image/png', filename: 'pixel.png' }),
-    ]);
+    expect(persisted.some(message => Array.isArray(message.images))).toBe(false);
     expect(JSON.stringify(persisted)).not.toContain(png);
     rmSync(dir, { recursive: true, force: true });
   });

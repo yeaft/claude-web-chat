@@ -102,7 +102,7 @@ export function registerUploadRoutes(app, { requireAuth }) {
     res.setHeader('Content-Type', asset.metadata.mimeType);
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(asset.metadata.filename)}"`);
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
     res.setHeader('ETag', `"${asset.metadata.assetId}"`);
     res.send(asset.buffer);
   });

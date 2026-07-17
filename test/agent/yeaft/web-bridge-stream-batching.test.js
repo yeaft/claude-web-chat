@@ -45,6 +45,11 @@ function assistantTextFrames() {
 describe('Yeaft web bridge stream text batching', () => {
   beforeEach(() => {
     sent.length = 0;
+    ctx.assetOutbox = {
+      enqueue: vi.fn(),
+      drain: vi.fn(async () => {}),
+      removeSession: vi.fn(),
+    };
     ctx.agentMetrics = {
       chatTurns: 0,
       yeaftTurns: 0,
@@ -190,6 +195,27 @@ describe('Yeaft web bridge stream text batching', () => {
       'event:error',
       'text:⚠️ Error: provider exploded',
     ]);
+  });
+
+  it('queues display image bytes durably before emitting the tool result', () => {
+    const hctx = makeHandlerCtx();
+    const image = {
+      assetId: 'a'.repeat(64),
+      mimeType: 'image/png',
+      filename: 'pixel.png',
+      size: 68,
+      previewData: { data: 'base64', mimeType: 'image/png' },
+    };
+
+    __testHandleEngineEvent({ type: 'tool_end', id: 'tool-image', name: 'ImageGeneration', output: '{"success":true}', displayImages: [image] }, hctx);
+
+    expect(ctx.assetOutbox.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1',
+      turnId: 'turn-a',
+      image,
+    }));
+    expect(ctx.assetOutbox.drain).toHaveBeenCalledTimes(1);
+    expect(sent.some(message => message.type === 'yeaft_asset_put')).toBe(false);
   });
 
   it('records turn_close as a turn without double-counting adapter tokens', () => {

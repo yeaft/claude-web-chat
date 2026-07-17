@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { messageDb, yeaftSessionDb } from '../database.js';
-import { broadcastAgentList, forwardToClients, sendToWebClient } from '../ws-utils.js';
+import { broadcastAgentList, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
 import { webClients, previewFiles } from '../context.js';
 import { CONFIG } from '../config.js';
 import { yeaftAssetStore } from '../yeaft-asset-store.js';
@@ -398,8 +398,13 @@ export async function handleAgentOutput(agentId, agent, msg) {
     }
 
     case 'yeaft_asset_put': {
-      if (!agent.ownerId || !msg.sessionId || !msg.image?.previewData?.data) break;
+      let ok = false;
+      let stored = false;
+      let error = null;
       try {
+        if (!agent.ownerId || !msg.sessionId || !msg.image?.previewData?.data) {
+          throw new Error('Incomplete Yeaft asset payload');
+        }
         const image = yeaftAssetStore.put({
           ownerId: agent.ownerId, agentId, sessionId: msg.sessionId,
           assetId: msg.metadata?.assetId || msg.image.assetId, data: msg.image.previewData.data,
@@ -408,6 +413,7 @@ export async function handleAgentOutput(agentId, agent, msg) {
           width: msg.metadata?.width ?? msg.image.width,
           height: msg.metadata?.height ?? msg.image.height,
         });
+        stored = true;
         await forwardToClients(agentId, msg.conversationId, {
           type: 'yeaft_asset_ready', conversationId: msg.conversationId,
           agentId, sessionId: msg.sessionId,
@@ -416,8 +422,19 @@ export async function handleAgentOutput(agentId, agent, msg) {
           ...(msg.threadId ? { threadId: msg.threadId } : {}),
           image, _requestUserId: agent.ownerId,
         });
+        ok = true;
       } catch (err) {
-        console.warn(`[Server] Failed to store Yeaft asset: ${err?.message || err}`);
+        error = err?.message || String(err);
+        console.warn(`[Server] Failed to store Yeaft asset: ${error}`);
+      }
+      if (msg.deliveryId) {
+        await sendToAgent(agent, {
+          type: 'yeaft_asset_ack',
+          deliveryId: msg.deliveryId,
+          ok: ok || stored,
+          ...(!stored && /quota exceeded|invalid|unsupported|MIME|must be between|does not match|incomplete/i.test(error || '') ? { permanent: true } : {}),
+          ...(error ? { error } : {}),
+        });
       }
       break;
     }
@@ -762,8 +779,20 @@ export async function handleAgentOutput(agentId, agent, msg) {
           if (agent.ownerId) yeaftSessionDb.reconcileFromSnapshot(agent.ownerId, agentId, msg.sessions);
           outboundMsg = { ...msg, sessions: decorateYeaftSessionsWithPinned(agentId, msg.sessions) };
         } else if (msg.ok && sessionId && (op === 'delete' || op === 'archive')) {
-          if (op === 'archive') yeaftSessionDb.setArchivedForAgent(agent.ownerId, agentId, sessionId, true);
-          else yeaftSessionDb.deleteForAgent(agent.ownerId, agentId, sessionId);
+          if (op === 'archive') {
+            yeaftSessionDb.setArchivedForAgent(agent.ownerId, agentId, sessionId, true);
+          } else {
+            try {
+              yeaftSessionDb.deleteForAgent(agent.ownerId, agentId, sessionId);
+            } catch (e) {
+              console.warn('[Server] Yeaft Session metadata cleanup failed:', e?.message || e);
+            }
+            try {
+              yeaftAssetStore.deleteScope({ ownerId: agent.ownerId, agentId, sessionId });
+            } catch (e) {
+              console.warn('[Server] Yeaft asset cleanup failed:', e?.message || e);
+            }
+          }
         }
       } catch (e) {
         console.warn(`[Server] yeaft crud-result persist failed:`, e?.message || e);

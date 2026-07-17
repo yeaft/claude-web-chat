@@ -3,6 +3,7 @@ assertNodeVersion({ component: '@yeaft/webchat-agent' });
 
 import 'dotenv/config';
 import { platform, homedir } from 'os';
+import { createAssetOutbox } from './yeaft/asset-outbox.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, chmodSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { exec } from 'child_process';
@@ -107,6 +108,10 @@ const CONFIG = {
 // 初始化共享上下文
 ctx.CONFIG = CONFIG;
 ctx.saveConfig = saveConfig;
+ctx.assetOutbox = createAssetOutbox({
+  root: join(YEAFT_DIR, 'asset-outbox'),
+  send: message => ctx.sendToServer?.(message) || 'dropped',
+});
 
 // 初始加载 MCP servers（必须在 ctx.CONFIG 赋值之后）
 loadMcpServers();

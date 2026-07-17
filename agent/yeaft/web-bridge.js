@@ -2860,6 +2860,7 @@ export function handleYeaftDeleteSession(msg) {
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const result = deleteSession(yeaftDir, sessionId);
+    ctx.assetOutbox?.removeSession(sessionId);
     // Cascade: remove every persisted message stamped with this group id.
     // Hard delete (per user spec): no soft-archive, the bytes are gone.
     // Skipped silently if the session/store isn't initialized — the next
@@ -3313,16 +3314,21 @@ function handleEngineEvent(event, hctx) {
       const displayOutput = typeof event.output === 'string' ? event.output : JSON.stringify(event.output ?? '');
       for (const image of images) {
         const persistedImage = imageMetadataForPersistence(image);
-        sendToServer({
-          type: 'yeaft_asset_put',
-          conversationId: yeaftConversationId,
-          metadata: persistedImage,
-          sessionId: hctx.sessionId,
-          vpId: hctx.vpId,
-          turnId: hctx.turnId,
-          threadId: hctx.threadId || event.threadId,
-          image,
-        });
+        try {
+          ctx.assetOutbox?.enqueue({
+            conversationId: yeaftConversationId,
+            metadata: persistedImage,
+            sessionId: hctx.sessionId,
+            vpId: hctx.vpId,
+            turnId: hctx.turnId,
+            threadId: hctx.threadId || event.threadId,
+            image,
+          });
+          image.deliveryQueued = true;
+          ctx.assetOutbox?.drain().catch(err => console.warn('[AssetOutbox] drain failed:', err?.message || err));
+        } catch (err) {
+          console.warn('[AssetOutbox] failed to queue image:', err?.message || err);
+        }
       }
       if (hctx.toolResultsAccum) {
         hctx.toolResultsAccum.push({

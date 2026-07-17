@@ -5,6 +5,7 @@
  */
 
 import { defineTool } from './types.js';
+import { downloadRemoteImage } from '../remote-image-download.js';
 
 export default defineTool({
   name: 'ImageGeneration',
@@ -84,16 +85,10 @@ Guidelines:
       const data = await response.json();
 
       if (!data.url) return JSON.stringify({ error: 'Image API returned no image URL' });
-      const imgResponse = await fetch(data.url, { signal: ctx?.signal });
-      if (!imgResponse.ok) return JSON.stringify({ error: `Image download returned ${imgResponse.status}` });
-      const buffer = Buffer.from(await imgResponse.arrayBuffer());
-      if (!buffer.length || buffer.length > 20 * 1024 * 1024) {
-        return JSON.stringify({ error: 'Generated image is empty or exceeds 20 MiB' });
-      }
-      const mimeType = String(imgResponse.headers.get('content-type') || 'image/png').split(';')[0].toLowerCase();
-      if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mimeType)) {
-        return JSON.stringify({ error: `Unsupported generated image type: ${mimeType}` });
-      }
+      const { buffer, mimeType } = await downloadRemoteImage(data.url, {
+        signal: ctx?.signal,
+        ...(ctx?.remoteImageDownload || {}),
+      });
       let savedPath = null;
       if (output_path) {
         const { resolve: resolvePath } = await import('path');
