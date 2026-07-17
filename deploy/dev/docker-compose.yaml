@@ -1,0 +1,35 @@
+services:
+  claude-webchat-dev-blue:
+    image: ${IMAGE:-ghcr.io/yeaft/yeaft-web-code-agent:dev}
+    container_name: ${CONTAINER_BLUE:-claude-webchat-dev-blue}
+    env_file:
+      - ${WEBCHAT_ENV_FILE:?WEBCHAT_ENV_FILE must be set}
+    environment:
+      NODE_ENV: production
+    volumes:
+      - ${WEBCHAT_DATA_DIR:?WEBCHAT_DATA_DIR must be set}:/app/data
+    networks:
+      - webnet
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  claude-webchat-dev-green:
+    image: ${IMAGE:-ghcr.io/yeaft/yeaft-web-code-agent:dev}
+    container_name: ${CONTAINER_GREEN:-claude-webchat-dev-green}
+    env_file:
+      - ${WEBCHAT_ENV_FILE:?WEBCHAT_ENV_FILE must be set}
+    environment:
+      NODE_ENV: production
+    volumes:
+      - ${WEBCHAT_DATA_DIR:?WEBCHAT_DATA_DIR must be set}:/app/data
+    networks:
+      - webnet
+    restart: unless-stopped
+    stop_grace_period: 30s
+    profiles:
+      - green-dev
+
+networks:
+  webnet:
+    external: true
+    name: ${DOCKER_NETWORK:?DOCKER_NETWORK must be set}
