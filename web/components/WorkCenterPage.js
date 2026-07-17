@@ -1,7 +1,10 @@
+import WorkCenterActionDetail from './WorkCenterActionDetail.js';
 import WorkCenterSettingsModal from './WorkCenterSettingsModal.js';
 import LlmTab from './LlmTab.js';
 import folderPickerMixin from './mixins/folder-picker-mixin.js';
 import { openImagePreview } from '../utils/imagePreview.js';
+import { mergeActionMessages } from '../stores/helpers/work-center.js';
+import { workCenterRequestKey } from '../utils/work-center-request-key.js';
 import {
   clearOverlayPointerGesture,
   shouldDismissFromOverlayClick,
@@ -11,18 +14,25 @@ import {
 
 export default {
   name: 'WorkCenterPage',
-  components: { WorkCenterSettingsModal, LlmTab },
+  components: { WorkCenterActionDetail, WorkCenterSettingsModal, LlmTab },
   mixins: [folderPickerMixin],
   data() {
     return {
       selectedId: null,
+      selectedActionId: null,
+      narrowPane: 'items',
+      actionDetailTab: 'messages',
+      actionInputSending: false,
+      actionInputError: '',
+      actionComposerGeneration: 0,
+      detailLoading: false,
+      detailError: '',
       createOpen: false,
       settingsOpen: false,
       saving: false,
       llmConfigOpen: false,
       filter: 'open',
       search: '',
-      resumeAnswer: '',
       actionGuidance: '',
       expandedActions: {},
       actionsExpanded: false,
@@ -78,6 +88,68 @@ export default {
       if (this.detail?.id === this.selectedId) return this.detail;
       return this.items.find(item => item.id === this.selectedId) || null;
     },
+    selectedAction() {
+      const actions = Array.isArray(this.selected?.actions) ? this.selected.actions : [];
+      return actions.find(action => action.id === this.selectedActionId) || null;
+    },
+    actionRequestKey() {
+      return this.selected?.id && this.selectedAction?.id
+        ? `${this.agentId}:${this.selected.id}:${this.selectedAction.id}`
+        : '';
+    },
+    actionComposerScope() {
+      return this.selected?.id && this.selectedAction?.id
+        ? `${this.agentId}:${this.selected.id}:${this.selectedAction.id}:${this.actionComposerGeneration}`
+        : '';
+    },
+    actionMessages() {
+      const current = Array.isArray(this.selectedAction?.messages) ? this.selectedAction.messages : [];
+      const earlier = this.store.workCenterActionMessages[this.actionRequestKey]?.messages || [];
+      return mergeActionMessages(earlier, current, this.selectedAction?.liveMessage);
+    },
+    actionMessagesNextCursor() {
+      const page = this.store.workCenterActionMessages[this.actionRequestKey];
+      return page ? page.nextCursor : this.selectedAction?.messageCursor;
+    },
+    actionMessagesLoading() {
+      return !!this.store.workCenterActionMessagesLoading[this.actionRequestKey];
+    },
+    actionMessagesError() {
+      return this.store.workCenterActionMessagesError[this.actionRequestKey] || '';
+    },
+    actionRequests() {
+      return this.store.workCenterActionRequests[this.actionRequestKey] || [];
+    },
+    actionRequestDetails() {
+      if (!this.actionRequestKey) return {};
+      return Object.fromEntries(this.actionRequests.map(request => {
+        const requestKey = workCenterRequestKey(request);
+        return [requestKey,
+          this.store.workCenterActionRequestDetails[`${this.actionRequestKey}:${requestKey}`] || null];
+      }));
+    },
+    actionRequestDetailsLoading() {
+      if (!this.actionRequestKey) return {};
+      return Object.fromEntries(this.actionRequests.map(request => {
+        const requestKey = workCenterRequestKey(request);
+        return [requestKey,
+          !!this.store.workCenterActionRequestDetailsLoading[`${this.actionRequestKey}:${requestKey}`]];
+      }));
+    },
+    actionRequestDetailsError() {
+      if (!this.actionRequestKey) return {};
+      return Object.fromEntries(this.actionRequests.map(request => {
+        const requestKey = workCenterRequestKey(request);
+        return [requestKey,
+          this.store.workCenterActionRequestDetailsError[`${this.actionRequestKey}:${requestKey}`] || ''];
+      }));
+    },
+    actionRequestsLoading() {
+      return !!this.store.workCenterActionRequestsLoading[this.actionRequestKey];
+    },
+    actionRequestsError() {
+      return this.store.workCenterActionRequestsError[this.actionRequestKey] || '';
+    },
     visibleItems() {
       const q = this.search.trim().toLowerCase();
       return this.items.filter(item => {
@@ -127,6 +199,9 @@ export default {
       immediate: true,
       handler(id, previousId) {
         this.selectedId = null;
+        this.selectedActionId = null;
+        this.resetActionComposer?.();
+        this.narrowPane = 'items';
         if (previousId && id !== previousId) {
           this.closeFolderPicker();
           this.resetCreateExecutionContext(id);
@@ -142,6 +217,18 @@ export default {
     },
     createDefaultStart() {
       this.applyCreateDefaults();
+    },
+    detail: {
+      deep: true,
+      handler(detail) {
+        if (!detail || detail.id !== this.selectedId) return;
+        const actions = Array.isArray(detail.actions) ? detail.actions : [];
+        if (!actions.some(action => action.id === this.selectedActionId)) {
+          const nextActionId = detail.currentActionId || actions[0]?.id || null;
+          if (nextActionId !== this.selectedActionId) this.resetActionComposer();
+          this.selectedActionId = nextActionId;
+        }
+      },
     },
   },
   mounted() {
@@ -191,18 +278,75 @@ export default {
     refresh() {
       return this.store.listWorkItems(this.agentId).catch(() => {});
     },
+    resetActionComposer() {
+      this.actionComposerGeneration += 1;
+      this.actionGuidance = '';
+      this.actionInputError = '';
+      this.guidanceAttachments = [];
+      this.guidanceAttachmentsUploading = false;
+      this.actionInputSending = false;
+    },
     async selectItem(item) {
       this.selectedId = item.id;
-      this.resumeAnswer = '';
-      this.actionGuidance = '';
-      this.guidanceAttachments = [];
+      this.selectedActionId = null;
+      this.narrowPane = 'actions';
+      this.resetActionComposer();
       this.expandedActions = {};
       this.actionsExpanded = false;
-      try { await this.store.getWorkItem(item.id, this.agentId); } catch {}
+      this.detailError = '';
+      this.detailLoading = true;
+      try {
+        const detail = await this.store.getWorkItem(item.id, this.agentId);
+        if (this.selectedId === item.id) {
+          this.selectedActionId = detail?.currentActionId || detail?.actions?.[0]?.id || null;
+        }
+      } catch (error) {
+        if (this.selectedId === item.id) this.detailError = error?.message || String(error);
+      } finally {
+        if (this.selectedId === item.id) this.detailLoading = false;
+      }
+    },
+    selectAction(action) {
+      if (this.selectedActionId !== action.id) this.resetActionComposer();
+      this.selectedActionId = action.id;
+      this.narrowPane = 'action';
+    },
+    showItemsPane() {
+      this.narrowPane = 'items';
+    },
+    showActionsPane() {
+      this.narrowPane = 'actions';
+    },
+    loadEarlierActionMessages() {
+      if (!this.selected?.id || !this.selectedAction?.id || this.actionMessagesNextCursor == null) return null;
+      return this.store.loadWorkItemActionMessages(
+        this.selected.id,
+        this.selectedAction.id,
+        this.actionMessagesNextCursor,
+        this.agentId,
+      ).catch(() => null);
+    },
+    async refreshActionRequests() {
+      if (!this.selected?.id || !this.selectedAction?.id) return [];
+      return this.store.loadWorkItemActionRequests(
+        this.selected.id,
+        this.selectedAction.id,
+        this.agentId,
+      ).catch(() => []);
+    },
+    loadActionRequest(request) {
+      if (!this.selected?.id || !this.selectedAction?.id || !request?.id) return null;
+      return this.store.loadWorkItemActionRequest(
+        this.selected.id,
+        this.selectedAction.id,
+        request.runId,
+        request.id,
+        this.agentId,
+      ).catch(() => null);
     },
     actionHasDetail(action) {
       return !!action?.brief || (Array.isArray(action?.messages) && action.messages.length > 0)
-        || !!String(action?.response || '').trim();
+        || !!String(action?.response || '').trim() || !!String(action?.failureReason || '').trim();
     },
     actionExpanded(action) {
       return !!this.expandedActions[action?.id];
@@ -307,11 +451,14 @@ export default {
       const files = Array.from(event.target.files || []);
       event.target.value = '';
       if (files.length === 0) return;
+      const scope = this.actionComposerScope;
+      if (!scope) return;
       const existingCount = Array.isArray(this.selected?.attachments) ? this.selected.attachments.length : 0;
       const remaining = Math.max(0, 10 - existingCount - this.guidanceAttachments.length);
       const selected = files.slice(0, remaining);
       if (selected.length === 0) return;
       this.guidanceAttachmentsUploading = true;
+      this.actionInputError = '';
       try {
         const formData = new FormData();
         for (const file of selected) formData.append('files', file, file.name || 'attachment');
@@ -324,12 +471,15 @@ export default {
         }
         if (!response.ok) throw new Error(this.tr('workCenter.attachmentsUploadFailed', 'Attachment upload failed'));
         const result = await response.json();
+        if (this.actionComposerScope !== scope) return;
         this.guidanceAttachments = [
           ...this.guidanceAttachments,
           ...(Array.isArray(result.files) ? result.files : []),
         ].slice(0, Math.max(0, 10 - existingCount));
+      } catch (error) {
+        if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
       } finally {
-        this.guidanceAttachmentsUploading = false;
+        if (this.actionComposerScope === scope) this.guidanceAttachmentsUploading = false;
       }
     },
     removeGuidanceAttachment(index) {
@@ -425,27 +575,36 @@ export default {
       await this.store.startWorkItem(this.selected.id, this.agentId);
     },
     async guideSelectedAction() {
-      if (!this.selected || (!this.actionGuidance.trim() && this.guidanceAttachments.length === 0)) return;
-      await this.store.guideWorkItemAction(
-        this.selected.id,
-        this.actionGuidance.trim(),
-        this.selected.currentActionId,
-        this.selected.revision,
-        this.guidanceAttachments.map(attachment => ({
-          fileId: attachment.fileId,
-          name: attachment.name,
-          mimeType: attachment.mimeType,
-          size: attachment.size,
-        })),
-        this.agentId,
-      );
-      this.actionGuidance = '';
-      this.guidanceAttachments = [];
-    },
-    async retrySelected() {
-      if (!this.selected) return;
-      await this.store.retryWorkItem(this.selected.id, this.resumeAnswer, this.agentId);
-      this.resumeAnswer = '';
+      if (!this.selected || !this.selectedAction || this.selected.currentActionId !== this.selectedAction.id
+        || (!this.actionGuidance.trim() && this.guidanceAttachments.length === 0)) return;
+      const scope = this.actionComposerScope;
+      const itemId = this.selected.id;
+      const actionId = this.selected.currentActionId;
+      const revision = this.selected.revision;
+      const text = this.actionGuidance.trim();
+      const attachments = this.guidanceAttachments.map(attachment => ({
+        fileId: attachment.fileId,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+      }));
+      this.actionInputSending = true;
+      this.actionInputError = '';
+      try {
+        const next = await this.store.sendWorkItemActionInput(
+          itemId, text, actionId, revision, attachments, this.agentId,
+        );
+        if (this.actionComposerScope !== scope) return;
+        this.actionGuidance = '';
+        this.guidanceAttachments = [];
+        const nextActionId = next?.currentActionId || this.selectedActionId;
+        if (nextActionId !== this.selectedActionId) this.resetActionComposer();
+        this.selectedActionId = nextActionId;
+      } catch (error) {
+        if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
+      } finally {
+        if (this.actionComposerScope === scope) this.actionInputSending = false;
+      }
     },
     async cancelSelected() {
       if (!this.selected) return;
@@ -503,7 +662,7 @@ export default {
             {{ tr('workCenter.noAvailableAgents', 'No compatible online Agents') }}
           </p>
           <p v-if="error" class="work-center-error">{{ error }}</p>
-          <div class="work-center-body" :class="{ 'is-empty': loaded && !loading && visibleItems.length === 0 }">
+          <div class="work-center-body" :class="{ 'is-empty': loaded && !loading && visibleItems.length === 0 }" :data-pane="narrowPane">
             <section class="work-center-list" :aria-busy="loading ? 'true' : 'false'">
               <div v-if="visibleItems.length > 0" class="work-center-list-heading">
                 <span>{{ listHeading }}</span>
@@ -536,15 +695,21 @@ export default {
 
             <section class="work-center-detail">
               <template v-if="selected">
+                <button class="work-center-pane-back btn-ghost" type="button" @click="showItemsPane">
+                  <span aria-hidden="true">‹</span>{{ tr('workCenter.backToWorkItems', 'Work items') }}
+                </button>
+                <div v-if="detailLoading" class="work-center-detail-notice" aria-live="polite">{{ tr('workCenter.detailLoading', 'Loading full details…') }}</div>
+                <div v-else-if="detailError" class="work-center-detail-notice work-center-detail-error" role="alert">
+                  <strong>{{ tr('workCenter.detailLoadFailed', 'Could not load full details') }}</strong>
+                  <span>{{ detailError }}</span>
+                </div>
                 <div class="work-center-detail-heading">
                   <div>
                     <span class="work-center-status" :data-status="selected.status"><span aria-hidden="true"></span>{{ statusLabel(selected.status) }}</span>
                     <h2>{{ selected.title }}</h2>
                   </div>
                   <div class="work-center-detail-actions">
-                    <button v-if="selected.status === 'cancelled'" class="btn-primary" type="button" @click="retrySelected">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
-                    <button v-if="selected.status === 'waiting' || selected.status === 'needs_attention'" class="btn-primary" type="button" @click="retrySelected" :disabled="selected.status === 'waiting' && !resumeAnswer.trim()">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancel', 'Cancel') }}</button>
                   </div>
                 </div>
@@ -561,11 +726,15 @@ export default {
                   <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(selected).inputTokens), output: formatCount(executionStats(selected).outputTokens), cache: formatCount((executionStats(selected).cacheReadTokens || 0) + (executionStats(selected).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(selected).totalTokens) }) }}</span>
                 </div>
 
-                <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
-                  <p v-if="selected.waitingReason">{{ selected.waitingReason }}</p>
-                  <label>{{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}
-                    <textarea v-model="resumeAnswer" rows="3" :placeholder="tr('workCenter.resumeAnswerHint', 'Provide the information required to continue')"></textarea>
-                  </label>
+                <div v-if="selected.failureReason" class="work-center-section work-center-failure" role="alert">
+                  <h3>{{ tr('workCenter.failureReason', 'Failure reason') }}</h3>
+                  <p>{{ selected.failureReason }}</p>
+                </div>
+
+                <div v-if="selected.status === 'waiting' && selected.waitingReason" class="work-center-section work-center-resume">
+                  <h3>{{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}</h3>
+                  <p>{{ selected.waitingReason }}</p>
+                  <small class="work-center-muted">{{ tr('workCenter.answerInActionDetail', 'Open the current Action and respond in the input below.') }}</small>
                 </div>
 
                 <div class="work-center-section">
@@ -591,46 +760,16 @@ export default {
                     </button>
                   </div>
                 </div>
-                <div v-if="['ready','running'].includes(selected.status)" class="work-center-section work-center-guidance">
-                  <label>{{ tr('workCenter.guidance', 'Add guidance to the current Action') }}
-                    <textarea v-model="actionGuidance" rows="2" :placeholder="tr('workCenter.guidanceHint', 'Clarify constraints or redirect the current Action')"></textarea>
-                  </label>
-                  <div v-if="guidanceAttachments.length" class="work-center-attachment-list">
-                    <span v-for="(attachment, index) in guidanceAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
-                      <span>{{ attachment.name }}</span>
-                      <small>{{ formatAttachmentSize(attachment.size) }}</small>
-                      <button type="button" @click="removeGuidanceAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove attachment')">×</button>
-                    </span>
-                  </div>
-                  <div class="work-center-guidance-actions">
-                    <div>
-                      <label v-if="workItemAttachmentsSupported" class="btn-ghost work-center-attachment-picker">
-                        {{ tr('workCenter.addAttachments', 'Add files') }}
-                        <input type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.js,.ts,.css,.html,.py,.yaml,.yml,.xml,.csv"
-                               @change="onGuidanceAttachmentInput">
-                      </label>
-                      <small v-if="guidanceAttachmentsUploading">{{ tr('workCenter.attachmentsUploading', 'Uploading…') }}</small>
-                      <small v-else>{{ tr('workCenter.guidanceRestartHint', 'This restarts the current Action with the new guidance.') }}</small>
-                    </div>
-                    <button class="btn-secondary" type="button" @click="guideSelectedAction"
-                            :disabled="guidanceAttachmentsUploading || (!actionGuidance.trim() && guidanceAttachments.length === 0)">
-                      {{ tr('workCenter.sendGuidance', 'Send guidance') }}
-                    </button>
-                  </div>
-                </div>
                 <div class="work-center-section" v-if="selected.actions?.length">
                   <div class="work-center-action-list-heading">
                     <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
                     <span>{{ $t('workCenter.actionCount', { count: selected.actionCount || selected.actions.length }) }}</span>
                     <small>{{ selected.actionSummary }}</small>
-                    <button class="btn-ghost" type="button" @click="actionsExpanded = !actionsExpanded" :aria-expanded="actionsExpanded">
-                      {{ actionsExpanded ? tr('workCenter.collapseActions', 'Collapse') : tr('workCenter.expandActions', 'Show Actions') }}
-                    </button>
                   </div>
-                  <div v-if="actionsExpanded" class="work-center-action-list">
-                    <article v-for="action in selected.actions" :key="action.id" class="work-center-action-card" :data-status="action.status" :class="{ expanded: actionExpanded(action) }">
-                      <button class="work-center-action-summary" type="button" @click="toggleAction(action)"
-                              :disabled="!actionHasDetail(action)" :aria-expanded="actionHasDetail(action) ? actionExpanded(action) : undefined">
+                  <div class="work-center-action-list">
+                    <article v-for="action in selected.actions" :key="action.id" class="work-center-action-card" :data-status="action.status" :class="{ active: selectedActionId === action.id }">
+                      <button class="work-center-action-summary" type="button" @click="selectAction(action)"
+                              :aria-current="selectedActionId === action.id ? 'true' : undefined">
                         <span class="work-center-action-index">{{ action.sequence }}</span>
                         <span class="work-center-action-title">
                           <strong>{{ actionLabel(action.type) }}</strong>
@@ -643,24 +782,9 @@ export default {
                           <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(action).inputTokens), output: formatCount(executionStats(action).outputTokens), cache: formatCount((executionStats(action).cacheReadTokens || 0) + (executionStats(action).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) }) }}</span>
                         </span>
                         <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
-                        <span v-if="actionHasDetail(action)" class="work-center-action-chevron" aria-hidden="true"></span>
+                        <span class="work-center-action-chevron" aria-hidden="true"></span>
                       </button>
-                      <div v-if="actionExpanded(action)" class="work-center-action-body">
-                        <dl v-if="action.brief" class="work-center-action-brief">
-                          <div><dt>{{ tr('workCenter.actionObjective', 'What to do') }}</dt><dd>{{ action.brief.objective }}</dd></div>
-                          <div><dt>{{ tr('workCenter.actionApproach', 'How to do it') }}</dt><dd>{{ action.brief.approach }}</dd></div>
-                          <div><dt>{{ tr('workCenter.actionExpectedOutcome', 'Expected result') }}</dt><dd>{{ action.brief.expectedOutcome }}</dd></div>
-                        </dl>
-                        <div class="work-center-action-messages">
-                          <strong>{{ tr('workCenter.actionMessages', 'Action messages') }}</strong>
-                          <div v-for="message in action.messages || []" :key="message.id" class="work-center-action-message" :data-status="message.status">
-                            <small>{{ statusLabel(message.status) }} · {{ time(message.updatedAt || message.createdAt) }}</small>
-                            <p>{{ message.text }}</p>
-                          </div>
-                          <div v-if="!action.messages?.length && actionResponseText(action)" class="work-center-action-response">{{ actionResponseText(action) }}</div>
-                          <p v-else-if="!action.messages?.length" class="work-center-muted">{{ tr('workCenter.noActionMessages', 'No execution messages yet.') }}</p>
-                        </div>
-                      </div>
+
                     </article>
                   </div>
                 </div>
@@ -669,6 +793,35 @@ export default {
                 <strong>{{ tr('workCenter.selectTitle', 'Work item details') }}</strong>
               </div>
             </section>
+
+            <WorkCenterActionDetail
+              :action="selectedAction"
+              :selected="selected"
+              :messages="actionMessages"
+              :messages-next-cursor="actionMessagesNextCursor"
+              :messages-loading="actionMessagesLoading"
+              :messages-error="actionMessagesError"
+              :requests="actionRequests"
+              :request-details="actionRequestDetails"
+              :request-details-loading="actionRequestDetailsLoading"
+              :request-details-error="actionRequestDetailsError"
+              :requests-loading="actionRequestsLoading"
+              :requests-error="actionRequestsError"
+              :composer-text="actionGuidance"
+              :composer-attachments="guidanceAttachments"
+              :uploading="guidanceAttachmentsUploading"
+              :sending="actionInputSending"
+              :composer-error="actionInputError"
+              :attachments-supported="workItemAttachmentsSupported"
+              @back="showActionsPane"
+              @update:composer-text="actionGuidance = $event"
+              @load-earlier-messages="loadEarlierActionMessages"
+              @refresh-requests="refreshActionRequests"
+              @select-request="loadActionRequest"
+              @attachment-input="onGuidanceAttachmentInput"
+              @remove-attachment="removeGuidanceAttachment"
+              @send="guideSelectedAction"
+            />
           </div>
         </div>
     </main>

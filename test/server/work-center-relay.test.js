@@ -130,14 +130,15 @@ describe('Work Center relay', () => {
   });
 
   it.each([
-    ['without capability', []],
-    ['with capability', ['work_item_attachments']],
-  ])('rejects browser-supplied files %s', async (_label, capabilities) => {
+    ['create without capability', 'create', []],
+    ['create with capability', 'create', ['work_center', 'work_item_attachments']],
+    ['Action input with capability', 'action_input', ['work_center', 'work_item_attachments']],
+  ])('rejects browser-supplied files for %s', async (_label, op, capabilities) => {
     agents.set('agent-a', { capabilities });
     const client = { currentAgent: 'agent-a', userId: 'user-1' };
 
     await handleClientWorkCenter(client, {
-      type: 'work_center_request', requestId: 'browser-direct-files', op: 'create',
+      type: 'work_center_request', requestId: 'browser-direct-files', op,
       payload: {
         title: 'Bypass upload ownership',
         files: [{ name: 'notes.txt', mimeType: 'text/plain', data: 'YnlwYXNz' }],
@@ -157,8 +158,8 @@ describe('Work Center relay', () => {
     const data = 'A'.repeat(12 * 1024 * 1024);
 
     await handleClientWorkCenter(client, {
-      type: 'work_center_request', requestId: 'browser-direct-oversized', op: 'create',
-      payload: { files: [{ name: 'large.txt', mimeType: 'text/plain', data }] },
+      type: 'work_center_request', requestId: 'browser-direct-oversized', op: 'action_input',
+      payload: { id: 'wi-1', actionId: 'action-1', files: [{ name: 'large.txt', mimeType: 'text/plain', data }] },
     }, vi.fn().mockResolvedValue(true));
 
     expect(forwardToAgent).not.toHaveBeenCalled();
@@ -212,15 +213,15 @@ describe('Work Center relay', () => {
     expect(pendingFiles.has('file-1')).toBe(false);
   });
 
-  it('resolves owned guidance attachments and consumes them only after Agent success', async () => {
+  it('resolves owned Action input attachments and consumes them only after Agent success', async () => {
     pendingFiles.set('guide-file', {
       name: 'follow-up.txt', mimeType: 'text/plain', buffer: Buffer.from('follow up'), userId: 'user-1',
     });
     const client = { currentAgent: 'agent-a', userId: 'user-1' };
     await handleClientWorkCenter(client, {
-      type: 'work_center_request', requestId: 'browser-guide', op: 'guide',
+      type: 'work_center_request', requestId: 'browser-input', op: 'action_input',
       payload: {
-        id: 'wi-1', guidance: '', actionId: 'action-1', revision: 2,
+        id: 'wi-1', text: '', actionId: 'action-1', revision: 2,
         attachments: [{ fileId: 'guide-file' }],
       },
     }, vi.fn().mockResolvedValue(true));
@@ -232,7 +233,7 @@ describe('Work Center relay', () => {
     });
     expect(pendingFiles.has('guide-file')).toBe(true);
     await deliverWorkCenterResponse('agent-a', {
-      type: 'work_center_response', requestId: request.requestId, op: 'guide', ok: true, data: { id: 'wi-1' },
+      type: 'work_center_response', requestId: request.requestId, op: 'action_input', ok: true, data: { id: 'wi-1' },
     });
     expect(pendingFiles.has('guide-file')).toBe(false);
   });

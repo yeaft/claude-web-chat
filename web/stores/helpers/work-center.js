@@ -8,6 +8,7 @@ const DETAIL_SUMMARY_FIELDS = Object.freeze([
   'currentActionId',
   'currentAction',
   'executionStats',
+  'failureReason',
   'origin',
   'linkedSessionIds',
   'createdAt',
@@ -17,6 +18,51 @@ const DETAIL_SUMMARY_FIELDS = Object.freeze([
 function numberOrNull(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+const TERMINAL_ACTION_MESSAGE_STATUSES = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+  'superseded',
+  'interrupted',
+]);
+
+function actionMessageStatusRank(status) {
+  return TERMINAL_ACTION_MESSAGE_STATUSES.has(status) ? 1 : 0;
+}
+
+export function pickFresherActionMessage(current, candidate) {
+  if (!current) return candidate || null;
+  if (!candidate) return current;
+  const currentRevision = numberOrNull(current.progressRevision);
+  const candidateRevision = numberOrNull(candidate.progressRevision);
+  if (currentRevision != null || candidateRevision != null) {
+    if (currentRevision == null) return candidate;
+    if (candidateRevision == null) return current;
+    if (currentRevision !== candidateRevision) {
+      return candidateRevision > currentRevision ? candidate : current;
+    }
+  }
+  const currentStatus = actionMessageStatusRank(current.status);
+  const candidateStatus = actionMessageStatusRank(candidate.status);
+  if (currentStatus !== candidateStatus) return candidateStatus > currentStatus ? candidate : current;
+  const currentUpdatedAt = numberOrNull(current.updatedAt) ?? numberOrNull(current.createdAt) ?? 0;
+  const candidateUpdatedAt = numberOrNull(candidate.updatedAt) ?? numberOrNull(candidate.createdAt) ?? 0;
+  return candidateUpdatedAt > currentUpdatedAt ? candidate : current;
+}
+
+export function mergeActionMessages(...sources) {
+  const byId = new Map();
+  for (const source of sources) {
+    const messages = Array.isArray(source) ? source : [source];
+    for (const message of messages) {
+      if (!message?.id) continue;
+      byId.set(message.id, pickFresherActionMessage(byId.get(message.id), message));
+    }
+  }
+  return [...byId.values()].sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0)
+    || String(left.id || '').localeCompare(String(right.id || '')));
 }
 
 export function isWorkItemSummaryStale(summary, current) {
@@ -31,6 +77,17 @@ export function isWorkItemSummaryStale(summary, current) {
   return summaryUpdatedAt != null && currentUpdatedAt != null && summaryUpdatedAt < currentUpdatedAt;
 }
 
+export function isWorkItemDetailResponseStale(detail, current) {
+  if (isWorkItemSummaryStale(detail, current)) return true;
+  if (!detail || !current || detail.id !== current.id) return false;
+  const detailRevision = numberOrNull(detail.revision);
+  const currentRevision = numberOrNull(current.revision);
+  return detail.currentActionId !== current.currentActionId
+    && detailRevision != null
+    && currentRevision != null
+    && detailRevision <= currentRevision;
+}
+
 function isActionProgressStale(currentStats, nextStats) {
   const currentProgress = numberOrNull(currentStats?.progressRevision);
   const nextProgress = numberOrNull(nextStats?.progressRevision);
@@ -42,6 +99,14 @@ export function workItemDetailNeedsRefresh(current, summary) {
   return !Array.isArray(current.actions)
     || !current.actions.some(action => action?.id === summary.currentActionId);
 }
+
+const PROGRESS_BOUND_SUMMARY_FIELDS = new Set([
+  'status',
+  'currentActionId',
+  'currentAction',
+  'executionStats',
+  'failureReason',
+]);
 
 export function mergeWorkItemSummary(current, summary) {
   if (!current || current.id !== summary?.id || isWorkItemSummaryStale(summary, current)) return current;
@@ -69,7 +134,7 @@ export function mergeWorkItemSummary(current, summary) {
     if (!matchedStats) aggregateAccepted = false;
   }
   for (const field of DETAIL_SUMMARY_FIELDS) {
-    if (field === 'executionStats' && !aggregateAccepted) continue;
+    if (!aggregateAccepted && PROGRESS_BOUND_SUMMARY_FIELDS.has(field)) continue;
     if (Object.prototype.hasOwnProperty.call(summary, field)) merged[field] = summary[field];
   }
   return merged;
@@ -89,6 +154,13 @@ function isSameWorkItemVersion(current, summary) {
     && numberOrNull(current?.updatedAt) === numberOrNull(summary?.updatedAt);
 }
 
+export function isWorkItemDetailStale(detail, current) {
+  if (!detail || !current || detail.id !== current.id) return false;
+  if (isWorkItemSummaryStale(detail, current)) return true;
+  return isSameWorkItemVersion(current, detail)
+    && hasStaleActionProgress(current.actions, detail.actions);
+}
+
 export function applyWorkItemSummary(items, summary) {
   const current = Array.isArray(items) ? items : [];
   const existing = current.find(item => item.id === summary?.id) || null;
@@ -97,7 +169,11 @@ export function applyWorkItemSummary(items, summary) {
     && hasStaleActionProgress(existing.actionStats, summary.actionStats)) {
     nextSummary = {
       ...summary,
+      status: existing.status,
+      currentActionId: existing.currentActionId,
+      currentAction: existing.currentAction,
       executionStats: existing.executionStats,
+      failureReason: existing.failureReason,
       actionStats: existing.actionStats,
     };
   }

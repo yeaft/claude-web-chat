@@ -50,7 +50,7 @@ describe('Yeaft AskUser card routing', () => {
       turnId: 'turn-a',
       threadId: 'thread-a',
     });
-    expect(store.messagesMap['yeaft-a'][0].askAnswered).toBe(true);
+    expect(store.messagesMap['yeaft-a'][0].askAnswered).toBeUndefined();
   });
 
   it('keeps the Claude Code provider protocol unchanged', () => {
@@ -73,5 +73,35 @@ describe('Yeaft AskUser card routing', () => {
       requestId: 'ask-chat',
       answers: { Continue: 'Yes' },
     });
+  });
+
+  it('keeps a Yeaft card pending until the agent broadcasts the winning answer', () => {
+    const sendWsMessage = vi.fn();
+    const row = {
+      type: 'tool-use',
+      toolName: 'AskUserQuestion',
+      askRequestId: 'ask-shared',
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+    };
+    const store = {
+      currentView: 'yeaft',
+      currentAgent: 'agent-a',
+      yeaftAgentId: 'agent-a',
+      yeaftActiveSessionFilter: 'session-a',
+      messagesMap: { 'yeaft-a': [row] },
+      processingConversations: {},
+      _closedAt: {},
+      sendWsMessage,
+      getOrCreateExecutionStatus: vi.fn(),
+    };
+
+    answerUserQuestion(store, 'ask-shared', { Continue: 'Yes' }, 'yeaft-a');
+
+    expect(row.askAnswered).toBeUndefined();
+    expect(row.selectedAnswers).toBeUndefined();
+    expect(row.askRequestId).toBe('ask-shared');
   });
 });

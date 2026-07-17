@@ -21,6 +21,20 @@ function createInput(overrides = {}) {
 }
 
 function completed(type, overrides = {}) {
+  const plan = overrides.plan?.actions
+    ? {
+        ...overrides.plan,
+        actions: overrides.plan.actions.map(action => ({
+          ...action,
+          ...(!Object.hasOwn(action, 'approach')
+            ? { approach: `Use repository evidence to complete: ${action.objective}` }
+            : {}),
+          ...(!Object.hasOwn(action, 'expectedOutcome')
+            ? { expectedOutcome: `Verified result for: ${action.objective}` }
+            : {}),
+        })),
+      }
+    : overrides.plan;
   return {
     outcome: 'completed',
     summary: `${type} complete`,
@@ -32,6 +46,7 @@ function completed(type, overrides = {}) {
     })),
     ...(type === 'review' ? { reviewDecision: 'approved' } : {}),
     ...overrides,
+    ...(plan ? { plan } : {}),
   };
 }
 
@@ -381,6 +396,57 @@ describe('Work Center core', () => {
     },
   );
 
+  it.each([
+    ['approach', { expectedOutcome: 'A verified fix in the affected code path' }],
+    ['expectedOutcome', { approach: 'Inspect the affected path and implement the smallest compatible fix' }],
+  ])('rejects an AI-planned Action without a task-specific %s', (field, brief) => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned', workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'bug-fix',
+        actions: [{
+          id: 'fix', type: 'implement', objective: 'Fix the Work Center detail failure display',
+          ...brief,
+          [field]: '',
+        }],
+      },
+    }));
+
+    expect(detail).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
+    expect(store.getRun(triage.run.id)).toMatchObject({
+      status: 'failed', error: expect.stringContaining(`task-specific ${field}`),
+    });
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
+  it('rejects generic Action-type brief text in an AI-generated plan', () => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned', workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'bug-fix',
+        actions: [{
+          id: 'fix',
+          type: 'implement',
+          objective: 'Fix the Work Center detail failure display',
+          approach: 'Follow repository conventions, handle relevant boundaries, and add focused tests while making the change.',
+          expectedOutcome: 'The failed Work Item exposes its safe failure reason in detail.',
+        }],
+      },
+    }));
+
+    expect(detail).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
+    expect(store.getRun(triage.run.id)).toMatchObject({
+      status: 'failed', error: expect.stringMatching(/generic Action-type brief text/i),
+    });
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
   it('rejects an AI-planned triage result without a specific WorkItem type', () => {
     const item = controller.create(createInput({
       workflowTemplate: 'ai-planned', workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
@@ -577,8 +643,36 @@ describe('Work Center core', () => {
       expect(guided.actions[1].instruction).toContain(value);
     }
     expect(guided.actions[1].instruction).toContain('Keep the public API unchanged');
+    expect(guided.events.find(event => event.type === 'action.guidance_added')).toMatchObject({
+      actionId: guided.actions[1].id,
+      data: { guidance: 'Keep the public API unchanged', attachments: [] },
+    });
     expect(() => controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, completed('triage')))
       .toThrow(/stale|cancelled|expired|finished/i);
+  });
+
+  it('resumes a waiting Action through fenced input and records the user message', () => {
+    const item = controller.create(createInput());
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
+      outcome: 'waiting', response: 'Need a choice', summary: 'Waiting', evidence: [],
+      waitingReason: 'Choose A or B', acceptanceChecks: [],
+    });
+    const waiting = store.getWorkItemDetail(item.id);
+    const resumed = controller.input(item.id, {
+      text: 'Choose A', actionId: waiting.currentActionId, revision: waiting.revision,
+      addedAttachmentCount: 0, addedAttachments: [], attachments: waiting.attachments,
+    });
+
+    expect(resumed.status).toBe('ready');
+    expect(resumed.actions.at(-1)).toMatchObject({ type: 'triage', status: 'ready' });
+    expect(resumed.events.find(event => event.type === 'action.input_added')).toMatchObject({
+      actionId: resumed.currentActionId,
+      data: { text: 'Choose A', attachments: [] },
+    });
+    expect(() => controller.input(item.id, {
+      text: 'stale', actionId: waiting.currentActionId, revision: waiting.revision - 1,
+    })).toThrow(/Action changed/);
   });
 
   it('preserves the frozen assignment and model policies when guidance restarts an Action', () => {
@@ -917,7 +1011,7 @@ describe('Work Center core', () => {
     });
     expect(waiting).toMatchObject({ status: 'waiting', currentRunId: null });
     expect(waiting.runs[0].status).toBe('waiting');
-    expect(() => controller.retry(item.id)).toThrow(/answer is required/i);
+    expect(() => controller.retry(item.id)).toThrow(/answer or attachments are required/i);
 
     const resumed = controller.retry(item.id, { answer: 'Keep the current behavior' });
     const nextAction = resumed.actions.at(-1);

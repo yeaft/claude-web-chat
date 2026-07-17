@@ -11,6 +11,20 @@ import {
  *        git_status, git_diff, git_add, git_reset, git_restore, git_commit, git_push,
  *        file_search, create_file, delete_files, move_files, copy_files, upload_to_dir
  */
+/**
+ * Yeaft sessions use an agent-generated virtual conversationId
+ * ('yeaft-<timestamp>', see agent/yeaft/web-bridge.js) that exists neither in
+ * agent.conversations nor in the sessions DB table, so
+ * verifyConversationOwnership always falls through to "not found → deny".
+ * For these ids the ownership boundary is the Agent itself: by the time we
+ * get here the pro/admin workbench role gate (ws-client.js) and
+ * checkAgentAccess → verifyAgentOwnership have both passed — the same trust
+ * model already used by read_file and '_'-prefixed agent-level writes.
+ */
+function isYeaftVirtualConversation(conversationId) {
+  return typeof conversationId === 'string' && conversationId.startsWith('yeaft-');
+}
+
 export async function handleClientWorkbench(clientId, client, msg, checkAgentAccess) {
   switch (msg.type) {
     // Terminal messages (forward to agent)
@@ -23,7 +37,7 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
       if (!await checkAgentAccess(termAgentId)) return;
       const termConvId = msg.conversationId || client.currentConversation;
       if (!termConvId) return;
-      if (!CONFIG.skipAuth && !verifyConversationOwnership(termConvId, client.userId)) {
+      if (!CONFIG.skipAuth && !isYeaftVirtualConversation(termConvId) && !verifyConversationOwnership(termConvId, client.userId)) {
         console.warn(`[Security] User ${client.userId} terminal access denied for ${termConvId}`);
         await sendToWebClient(client, { type: 'error', message: 'Permission denied' });
         return;
@@ -47,7 +61,7 @@ export async function handleClientWorkbench(clientId, client, msg, checkAgentAcc
       if (!writeAgentId) return;
       if (!await checkAgentAccess(writeAgentId)) return;
       const writeConvId = msg.conversationId || client.currentConversation || '_explorer';
-      const isAgentLevelWrite = writeConvId.startsWith('_');
+      const isAgentLevelWrite = writeConvId.startsWith('_') || isYeaftVirtualConversation(writeConvId);
       if (!isAgentLevelWrite) {
         if (!CONFIG.skipAuth && !verifyConversationOwnership(writeConvId, client.userId)) {
           console.warn(`[Security] User ${client.userId} file write denied for ${writeConvId}`);

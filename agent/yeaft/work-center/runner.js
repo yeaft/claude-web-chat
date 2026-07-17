@@ -3,7 +3,7 @@ import { ToolRegistry } from '../tools/registry.js';
 import { allTools } from '../tools/index.js';
 import { parsePatch } from '../tools/apply-patch.js';
 import { defaultRegistry } from '../vp/registry.js';
-import { NullTrace } from '../debug-trace.js';
+import { createTrace } from '../debug-trace.js';
 import { isPathInsideOrEqual } from '../tools/path-safety.js';
 import { resolveWorkItemModel, selectWorkItemVp } from './assignment.js';
 import { approxTokens } from '../memory/budget.js';
@@ -327,7 +327,7 @@ function completionContract(action, workItem) {
     ? ',\n  "contractPatch": { "goal": "optional refined goal", "acceptanceCriteria": ["optional refined criterion"] }'
     : '';
   const planField = action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
-    ? ',\n  "plan": { "workItemType": "specific-lowercase-slug", "actions": [{ "id": "stable-id", "name": "User-facing name", "type": "extensible-lowercase-slug (built-ins include research|design|diagnose|implement|migrate|test|review|document|operate|deliver|integrate|write|custom)", "capability": "specific executor capability", "objective": "what this Action must do", "approach": "how this Action should do it", "expectedOutcome": "verifiable result this Action must produce", "dependsOnActionIds": ["earlier Action id; [] means concurrent root"], "workspaceMode": "read|isolated-write|integrate|shared", "separateFromActionTypes": ["optional prior Action type"], "changesRequestedActionId": "for review: optional earlier editable Action id; omit to use nearest", "maxAttempts": 2 }] }'
+    ? ',\n  "plan": { "workItemType": "specific-lowercase-slug", "actions": [{ "id": "stable-id", "name": "User-facing name", "type": "extensible-lowercase-slug (built-ins include research|design|diagnose|implement|migrate|test|review|document|operate|deliver|integrate|write|custom)", "capability": "specific executor capability", "objective": "task-specific concrete work this Action must do", "approach": "task-specific repository-aware method the executor must follow", "expectedOutcome": "task-specific verifiable result this Action must produce", "dependsOnActionIds": ["earlier Action id; [] means concurrent root"], "workspaceMode": "read|isolated-write|integrate|shared", "separateFromActionTypes": ["optional prior Action type"], "changesRequestedActionId": "for review: optional earlier editable Action id; omit to use nearest", "maxAttempts": 2 }] }'
     : '';
   const acceptanceChecks = (workItem?.acceptanceCriteria || []).map(criterion => ({
     criterion,
@@ -490,6 +490,10 @@ export class WorkItemRunner {
     this.runtimeProvider = options.runtimeProvider;
     this.policyProvider = typeof options.policyProvider === 'function' ? options.policyProvider : null;
     this.attachmentRoot = options.attachmentRoot || null;
+    this.trace = options.trace || createTrace({
+      enabled: Boolean(options.yeaftDir),
+      dirPath: options.yeaftDir || null,
+    });
     this.actionWorktreeRoot = options.actionWorktreeRoot || null;
     this.store = options.store;
     this.registry = options.registry || defaultRegistry;
@@ -699,7 +703,7 @@ export class WorkItemRunner {
     });
     const engine = new Engine({
       adapter,
-      trace: new NullTrace(),
+      trace: this.trace,
       config,
       conversationStore: null,
       memoryIndex: null,
@@ -725,6 +729,8 @@ export class WorkItemRunner {
         messages: [],
         signal,
         scenario: 'work-item',
+        sessionId: `work-item-${workItem.id}`,
+        threadId: run.id,
         vpPersona: personaFor(vp),
         workCenterInstructions: workItem?.workflowSnapshot?.globalInstructions || '',
         workDir,
