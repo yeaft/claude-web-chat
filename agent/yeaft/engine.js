@@ -1137,7 +1137,8 @@ export class Engine {
 
     // Step 1 — stat-only check. Cheap (two `statSync` calls) and lets
     // us short-circuit the read when the file hasn't moved.
-    const picked = pickProjectDocFile(workDir);
+    const secureWorkspace = this.#config?.secureProjectFiles === true;
+    const picked = pickProjectDocFile(workDir, { secureWorkspace });
     if (!picked) {
       this.#projectDocCache = null;
       return '';
@@ -1157,7 +1158,7 @@ export class Engine {
     }
 
     // Step 3 — cache miss. Read + decode, then refresh the cache.
-    const doc = readProjectDoc(workDir, { maxBytes });
+    const doc = readProjectDoc(workDir, { maxBytes, secureWorkspace });
     if (!doc) {
       this.#projectDocCache = null;
       return '';

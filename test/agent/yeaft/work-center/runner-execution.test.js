@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { persistWorkItemAttachments } from '../../../../agent/yeaft/work-center/attachments.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -251,6 +251,203 @@ describe('Work Center Runner execution resolution', () => {
       toolEvents: [{ name: 'FileRead', status: 'completed', resource: 'src/current.js' }],
     });
     expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ checkpoint: result.checkpoint }));
+  });
+
+  it('passes the shared Action workspace to Engine so project instructions are loaded from that root', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-project-doc-'));
+    writeFileSync(join(workDir, 'AGENTS.md'), '# Project instructions\nUse the repository conventions.\n');
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Follow project instructions', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    await runner.run({
+      workItem: { id: 'wi-doc', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+      action: { id: 'action-doc', type: 'implement', instruction: 'Follow project docs', requiredRole: 'omni' },
+      run: { id: 'run-doc', leaseEpoch: 1 }, ownerBootId: 'boot',
+      signal: new AbortController().signal,
+    });
+
+    expect(engineQueries.at(-1).workDir).toBe(workDir);
+    expect(existsSync(join(engineQueries.at(-1).workDir, 'AGENTS.md'))).toBe(true);
+    expect(engineOptions.at(-1).config.secureProjectFiles).toBe(true);
+  });
+
+  it('loads regular workspace and user skills but rejects symlinked project tiers', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-project-skills-'));
+    const yeaftDir = mkdtempSync(join(tmpdir(), 'work-center-user-skills-'));
+    const outside = mkdtempSync(join(tmpdir(), 'work-center-outside-skills-'));
+    const writeSkill = (root, relativeDir, name) => {
+      const dir = join(root, relativeDir, name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name}\n---\n${name}`);
+    };
+    writeSkill(yeaftDir, 'skills', 'user-safe');
+    writeSkill(workDir, '.yeaft/skills', 'project-safe');
+    writeSkill(outside, 'skills', 'escaped-skill');
+    mkdirSync(join(workDir, '.claude'), { recursive: true });
+    symlinkSync(join(outside, 'skills'), join(workDir, '.claude/skills'), 'dir');
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Use skills safely', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      yeaftDir,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    try {
+      await runner.run({
+        workItem: { id: 'wi-skills', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+        action: { id: 'action-skills', type: 'implement', instruction: 'Use skills', requiredRole: 'omni' },
+        run: { id: 'run-skills', leaseEpoch: 1 }, ownerBootId: 'boot',
+        signal: new AbortController().signal,
+      });
+      const manager = engineOptions.at(-1).skillManager;
+      expect(manager.has('user-safe')).toBe(true);
+      expect(manager.has('project-safe')).toBe(true);
+      expect(manager.has('escaped-skill')).toBe(false);
+    } finally {
+      await runner.shutdown();
+      rmSync(yeaftDir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('loads project MCP config from the canonical workspace but runs it in the isolated Action root', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-mcp-config-'));
+    const executionDir = mkdtempSync(join(tmpdir(), 'work-center-mcp-execution-'));
+    const yeaftDir = mkdtempSync(join(tmpdir(), 'work-center-mcp-yeaft-'));
+    const serverScript = join(workDir, 'cwd-mcp.mjs');
+    writeFileSync(serverScript, `
+      import readline from 'node:readline';
+      const lines = readline.createInterface({ input: process.stdin });
+      lines.on('line', line => {
+        const message = JSON.parse(line);
+        if (!message.id) return;
+        let result = {};
+        if (message.method === 'tools/list') result = { tools: [{ name: 'cwd', inputSchema: { type: 'object' } }] };
+        if (message.method === 'tools/call') result = { content: [{ type: 'text', text: process.cwd() }] };
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n');
+      });
+    `);
+    writeFileSync(join(workDir, '.mcp.json'), JSON.stringify({
+      mcpServers: { cwd: { command: process.execPath, args: [serverScript] } },
+    }));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Use MCP safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      yeaftDir,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    try {
+      await runner.run({
+        workItem: { id: 'wi-mcp', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+        action: {
+          id: 'action-mcp', type: 'implement', instruction: 'Use project MCP', requiredRole: 'omni',
+          workspace: { path: executionDir }, workspaceMode: 'isolated-write',
+        },
+        run: { id: 'run-mcp', leaseEpoch: 1 }, ownerBootId: 'boot',
+        signal: new AbortController().signal,
+      });
+      expect(await engineOptions.at(-1).mcpManager.callTool('cwd__cwd')).toEqual({
+        content: [{ type: 'text', text: executionDir }],
+      });
+    } finally {
+      await runner.shutdown();
+      rmSync(executionDir, { recursive: true, force: true });
+      rmSync(yeaftDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['a final .mcp.json symlink', (workspace, outside) => {
+      writeFileSync(join(outside, '.mcp.json'), JSON.stringify({
+        mcpServers: { external: { command: process.execPath, args: [join(outside, 'server.mjs')] } },
+      }));
+      symlinkSync(join(outside, '.mcp.json'), join(workspace, '.mcp.json'));
+    }],
+    ['a symlinked .codex parent', (workspace, outside) => {
+      mkdirSync(join(outside, '.codex'));
+      writeFileSync(join(outside, '.codex', 'config.toml'), [
+        '[mcp_servers.external]',
+        `command = "${process.execPath}"`,
+        `args = ["${join(outside, 'server.mjs')}"]`,
+      ].join('\n'));
+      symlinkSync(join(outside, '.codex'), join(workspace, '.codex'), 'dir');
+    }],
+  ])('does not start project MCP from %s', async (_label, installEscape) => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-mcp-escape-'));
+    const outside = mkdtempSync(join(tmpdir(), 'work-center-mcp-outside-'));
+    const yeaftDir = mkdtempSync(join(tmpdir(), 'work-center-mcp-yeaft-'));
+    installEscape(workDir, outside);
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Use MCP safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      yeaftDir,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    try {
+      await runner.run({
+        workItem: { id: 'wi-mcp-escape', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+        action: {
+          id: 'action-mcp-escape', type: 'implement', instruction: 'Do not load external MCP', requiredRole: 'omni',
+        },
+        run: { id: 'run-mcp-escape', leaseEpoch: 1 }, ownerBootId: 'boot',
+        signal: new AbortController().signal,
+      });
+      expect(engineOptions.at(-1).mcpManager.status()).toEqual([]);
+      expect(engineOptions.at(-1).mcpManager.listTools()).toEqual([]);
+    } finally {
+      await runner.shutdown();
+      rmSync(outside, { recursive: true, force: true });
+      rmSync(yeaftDir, { recursive: true, force: true });
+    }
   });
 
   it('removes URL credentials and query secrets from persisted checkpoint resources', async () => {

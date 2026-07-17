@@ -143,6 +143,7 @@ export function createSession(sessionsRoot, spec) {
     defaultVpId: spec.defaultVpId || null,
     announcement: typeof spec.announcement === 'string' ? spec.announcement : '',
     workDir: typeof spec.workDir === 'string' ? spec.workDir.trim() : '',
+    workspaceKey: typeof spec.workspaceKey === 'string' ? spec.workspaceKey.trim() : '',
     createdAt: spec.createdAt || new Date().toISOString(),
   };
   h.saveMeta(meta);
@@ -165,6 +166,7 @@ export function loadSessionMeta(dir) {
     // forward-compat: missing fields read back as safe empty strings.
     if (typeof parsed.announcement !== 'string') parsed.announcement = '';
     if (typeof parsed.workDir !== 'string') parsed.workDir = '';
+    if (typeof parsed.workspaceKey !== 'string') parsed.workspaceKey = '';
     return parsed;
   } catch {
     return null;

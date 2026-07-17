@@ -45,6 +45,30 @@ describe('Work Center tool policy', () => {
     expect(names).not.toContain('EnterWorktree');
   });
 
+  it('exposes layered Skills and lease-fenced MCP tools in the Work Center policy', async () => {
+    let active = true;
+    const mcpTool = {
+      name: 'mcp__project__lookup',
+      description: 'Lookup project data',
+      parameters: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'project result'),
+    };
+    const registry = createWorkItemToolRegistry({
+      workDir,
+      isRunActive: () => active,
+      mcpTools: [mcpTool, { ...mcpTool, name: 'not_mcp' }],
+    });
+    expect(registry.getToolNames()).toEqual(expect.arrayContaining(['Skill', 'mcp__project__lookup']));
+    expect(registry.getToolNames()).not.toContain('not_mcp');
+    expect(workItemToolPolicySnapshot(workDir, [], ['mcp__project__lookup'])).toMatchObject({
+      allowedToolNames: expect.arrayContaining(['Skill', 'mcp__project__lookup']),
+      mcpTools: ['mcp__project__lookup'],
+    });
+    await expect(registry.execute('mcp__project__lookup', {}, {})).resolves.toBe('project result');
+    active = false;
+    await expect(registry.execute('mcp__project__lookup', {}, {})).rejects.toThrow(/lease/);
+  });
+
   it('removes Bash from both registry and policy when attachments are present', async () => {
     const attachmentDir = join(outsideDir, 'attachments');
     mkdirSync(attachmentDir);
