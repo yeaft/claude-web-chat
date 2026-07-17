@@ -24,12 +24,12 @@ dev 蓝绿服务故意不交给 Watchtower。Watchtower 会原地替换容器，
 ./install-cron.sh
 ```
 
-先运行 `./deploy-blue-green.sh --check` 验证配置、Docker network、nginx 容器和 Compose 渲染。安装脚本会替换旧的 `deploy-blue-green.sh dev` cron 项，避免两个 scheduler 并存。主机 secret 只存在 `WEBCHAT_ENV_FILE`，不得写入仓库。
+先运行 `./deploy-blue-green.sh --check` 验证配置、Docker network、nginx 容器和 Compose 渲染。安装器会先确认 `LEGACY_DEPLOY_COMMAND` 与待替换 scheduler 精确匹配，再停用旧、新 scheduler，等待 legacy 事务退出并保持静默，随后获取固定的 `$HOME/.local/state/yeaft/dev-blue-green.lock`，最后安装新 scheduler；交接失败会恢复原 crontab。新 cron 会显式携带安装器预检过的绝对配置路径，不会退回另一份默认配置；配置与脚本路径可包含空格，但不能包含换行、`%` 或单引号。主机 secret 只存在 `WEBCHAT_ENV_FILE`，不得写入仓库。
 
 ## 安全边界
 
 - 所有 Compose 调用都显式指定本目录的 `docker-compose.yaml` 和 project name。
-- 使用 `flock` 原子排除重叠部署。
+- 使用不可配置、与 checkout 无关的 `$HOME/.local/state/yeaft/dev-blue-green.lock` + `flock` 原子排除重叠部署；安装交接也获取同一把锁。
 - nginx upstream 通过同目录临时文件 + `mv` 原子替换。
 - 只有 `nginx -t` 和 `nginx -s reload` 都成功后才停止旧容器。
 - 切换失败时恢复旧 upstream 并再次验证 reload；若无法验证恢复，两侧容器都保持运行。

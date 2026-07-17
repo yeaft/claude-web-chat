@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${YEAFT_DEV_DEPLOY_CONFIG:-$SCRIPT_DIR/deployer.env}"
+readonly HOST_DEPLOY_LOCK_FILE="${HOME:?HOME must be set}/.local/state/yeaft/dev-blue-green.lock"
 
 if [[ ! -r "$CONFIG_FILE" ]]; then
   echo "Missing readable deploy config: $CONFIG_FILE" >&2
@@ -34,7 +35,6 @@ LOG_MAX_BYTES="${LOG_MAX_BYTES:-1048576}"
 STATE_DIR="${STATE_DIR:-$SCRIPT_DIR/state}"
 STATE_FILE="$STATE_DIR/dev.state"
 LOG_FILE="$STATE_DIR/dev.log"
-LOCK_FILE="$STATE_DIR/dev.lock"
 FAILURE_FILE="$STATE_DIR/dev.failure"
 SWITCH_FILE="$STATE_DIR/dev.switch"
 
@@ -55,7 +55,7 @@ case "${1:-}" in
     ;;
 esac
 
-mkdir -p "$STATE_DIR"
+mkdir -p "$STATE_DIR" "$(dirname "$HOST_DEPLOY_LOCK_FILE")"
 
 for required_command in awk docker flock logger mktemp timeout; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
@@ -69,9 +69,9 @@ if [[ ! -r "$COMPOSE_FILE" ]]; then
   exit 2
 fi
 
-# The descriptor lock is atomic. The lock file remains as an inode anchor; the
-# kernel releases ownership automatically when this process exits.
-exec 9> "$LOCK_FILE"
+# This host-global lock is independent of the checkout/state directory. The
+# installer acquires the same lock while handing off from the legacy scheduler.
+exec 9> "$HOST_DEPLOY_LOCK_FILE"
 if ! flock -n 9; then
   if [[ "$CHECK_ONLY" == true ]]; then
     echo "A deployment is already running; configuration was not checked." >&2

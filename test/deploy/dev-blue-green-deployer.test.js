@@ -45,13 +45,24 @@ function makeHarness({
   const binDir = join(root, 'bin');
   const dataDir = join(root, 'data');
   const stateDir = join(root, 'state');
+  const homeDir = join(root, 'home');
   const callsFile = join(root, 'calls.tsv');
   const reloadCountFile = join(root, 'reload-count');
   const upstreamFile = join(root, 'dev-cc.conf');
   const envFile = join(root, 'webchat.env');
   const configFile = join(deployDir, 'deployer.env');
+  const deployLockFile = join(homeDir, '.local', 'state', 'yeaft', 'dev-blue-green.lock');
+  const legacyDeployCommand = join(root, 'legacy', 'deploy-blue-green.sh');
 
-  for (const directory of [deployDir, binDir, dataDir, stateDir]) {
+  for (const directory of [
+    deployDir,
+    binDir,
+    dataDir,
+    stateDir,
+    homeDir,
+    dirname(deployLockFile),
+    dirname(legacyDeployCommand),
+  ]) {
     mkdirSync(directory, { recursive: true });
   }
 
@@ -73,6 +84,9 @@ function makeHarness({
     `UPSTREAM_FILE=${upstreamFile}`,
     'UPSTREAM_NAME=dev_cc_backend',
     `STATE_DIR=${stateDir}`,
+    `LEGACY_DEPLOY_COMMAND=${legacyDeployCommand}`,
+    'DEPLOY_HANDOFF_TIMEOUT=3',
+    'DEPLOY_HANDOFF_QUIET_PERIOD=0',
     'HEALTH_TIMEOUT=1',
     'HEALTH_INTERVAL=1',
     'DRAIN_WAIT=0',
@@ -141,6 +155,7 @@ exit 0
 
   const env = {
     ...process.env,
+    HOME: homeDir,
     PATH: `${binDir}:${process.env.PATH}`,
     YEAFT_DEV_DEPLOY_CONFIG: configFile,
     CALLS_FILE: callsFile,
@@ -157,6 +172,8 @@ exit 0
     installer: join(deployDir, 'install-cron.sh'),
     composeFile: join(deployDir, 'docker-compose.yaml'),
     configFile,
+    deployLockFile,
+    legacyDeployCommand,
     callsFile,
     upstreamFile,
     stateFile: join(stateDir, 'dev.state'),
@@ -171,6 +188,37 @@ function runDeploy(harness, args = []) {
     env: harness.env,
     encoding: 'utf8',
   });
+}
+
+function installCrontabStub(harness, initialCrontab) {
+  const crontabState = join(harness.root, 'crontab.txt');
+  const crontabHistory = join(harness.root, 'crontab-history.txt');
+
+  writeFileSync(crontabState, initialCrontab);
+  writeFileSync(crontabHistory, '');
+  writeExecutable(join(harness.root, 'bin', 'crontab'), `#!/usr/bin/env bash
+if [[ "\${1:-}" == '-l' ]]; then
+  cat "$CRONTAB_STATE"
+else
+  cat > "$CRONTAB_STATE"
+  {
+    printf '%s\\n' '--- crontab write ---'
+    cat "$CRONTAB_STATE"
+  } >> "$CRONTAB_HISTORY"
+fi
+`);
+
+  return { crontabState, crontabHistory };
+}
+
+async function waitUntil(predicate, timeoutMs = 1500) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error('Timed out waiting for test condition');
+    }
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 10));
+  }
 }
 
 describe('Yeaft dev blue-green deployer', () => {
@@ -291,23 +339,24 @@ describe('Yeaft dev blue-green deployer', () => {
     expect(() => statSync(harness.failureFile)).toThrow();
   });
 
-  it('serializes overlapping invocations with flock', async () => {
-    const harness = makeHarness({ holdPullSeconds: '1' });
-    roots.push(harness.root);
+  it('serializes overlapping invocations from different checkouts with one host-global lock', async () => {
+    const firstHarness = makeHarness({ holdPullSeconds: '1' });
+    const secondHarness = makeHarness();
+    roots.push(firstHarness.root, secondHarness.root);
 
-    const first = spawn('bash', [harness.script], {
-      env: harness.env,
+    secondHarness.env.HOME = firstHarness.env.HOME;
+    secondHarness.env.CALLS_FILE = firstHarness.callsFile;
+
+    const first = spawn('bash', [firstHarness.script], {
+      env: firstHarness.env,
       stdio: 'ignore',
     });
 
-    const deadline = Date.now() + 1000;
-    while (!readFileSync(harness.callsFile, 'utf8').includes('pull') && Date.now() < deadline) {
-      await new Promise(resolvePromise => setTimeout(resolvePromise, 10));
-    }
+    await waitUntil(() => readFileSync(firstHarness.callsFile, 'utf8').includes('pull'));
 
-    const second = runDeploy(harness);
+    const second = runDeploy(secondHarness);
     const firstStatus = await new Promise(resolvePromise => first.once('exit', resolvePromise));
-    const calls = parseCalls(harness.callsFile);
+    const calls = parseCalls(firstHarness.callsFile);
 
     expect(second.status).toBe(0);
     expect(firstStatus).toBe(0);
@@ -327,40 +376,157 @@ describe('Yeaft dev blue-green deployer', () => {
     expect(getStopTargets(calls)).toEqual([]);
   });
 
-  it('installer replaces the legacy cron entry with one managed scheduler', () => {
+  it('installer quiesces a running legacy transaction before enabling the new scheduler', async () => {
     const harness = makeHarness();
     roots.push(harness.root);
-    const crontabState = join(harness.root, 'crontab.txt');
-
-    writeFileSync(crontabState, [
+    const { crontabState, crontabHistory } = installCrontabStub(harness, [
       '0 0 * * * /usr/local/bin/backup',
-      '* * * * * /home/azureuser/projects/termination/deploy-blue-green.sh dev >> old.log 2>&1',
+      `* * * * * ${harness.legacyDeployCommand} dev >> old.log 2>&1`,
       '',
     ].join('\n'));
-    writeExecutable(join(harness.root, 'bin', 'crontab'), `#!/usr/bin/env bash
-if [[ "\${1:-}" == '-l' ]]; then
-  cat "$CRONTAB_STATE"
-else
-  cat > "$CRONTAB_STATE"
-fi
-`);
 
-    const result = spawnSync('bash', [harness.installer], {
-      env: { ...harness.env, CRONTAB_STATE: crontabState },
-      encoding: 'utf8',
+    writeExecutable(harness.legacyDeployCommand, '#!/usr/bin/env bash\nwhile true; do /bin/sleep 1; done\n');
+    const legacy = spawn(harness.legacyDeployCommand, ['dev'], { stdio: 'ignore' });
+    const installer = spawn('bash', [harness.installer], {
+      env: {
+        ...harness.env,
+        CRONTAB_STATE: crontabState,
+        CRONTAB_HISTORY: crontabHistory,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
+
+    await waitUntil(() => readFileSync(crontabHistory, 'utf8').includes('--- crontab write ---'));
+    const disabled = readFileSync(crontabState, 'utf8');
+    expect(disabled).toContain('/usr/local/bin/backup');
+    expect(disabled).not.toContain('deploy-blue-green.sh dev');
+    expect(disabled).not.toContain('yeaft-dev-blue-green-deploy');
+    expect(installer.exitCode).toBeNull();
+
+    legacy.kill('SIGTERM');
+    await new Promise(resolvePromise => legacy.once('exit', resolvePromise));
+    const installerStatus = await new Promise(resolvePromise => installer.once('exit', resolvePromise));
     const installed = readFileSync(crontabState, 'utf8');
 
-    expect(result.status).toBe(0);
-    expect(installed).toContain('0 0 * * * /usr/local/bin/backup');
+    expect(installerStatus).toBe(0);
+    expect(installed).toContain('/usr/local/bin/backup');
     expect(installed).not.toContain('deploy-blue-green.sh dev');
     expect(installed.match(/yeaft-dev-blue-green-deploy/g)).toHaveLength(1);
     expect(installed).toContain('/usr/bin/logger -t yeaft-dev-deployer');
   });
 
-  it('compose contract defines only the two dev sides on an external network', () => {
-    const content = readFileSync(join(sourceDeployDir, 'docker-compose.yaml'), 'utf8');
+  it('rejects a legacy command that does not match the scheduler before changing crontab', () => {
+    const harness = makeHarness();
+    roots.push(harness.root);
+    const originalCrontab = '* * * * * /different/deploy-blue-green.sh dev >> old.log 2>&1\n';
+    const { crontabState, crontabHistory } = installCrontabStub(harness, originalCrontab);
 
+    const result = spawnSync('bash', [harness.installer], {
+      env: {
+        ...harness.env,
+        CRONTAB_STATE: crontabState,
+        CRONTAB_HISTORY: crontabHistory,
+      },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('does not match the scheduler being replaced');
+    expect(readFileSync(crontabState, 'utf8')).toBe(originalCrontab);
+    expect(readFileSync(crontabHistory, 'utf8')).toBe('');
+  });
+
+  it('restores the original scheduler when legacy quiescence times out', async () => {
+    const harness = makeHarness();
+    roots.push(harness.root);
+    const originalCrontab = `* * * * * ${harness.legacyDeployCommand} dev >> old.log 2>&1\n`;
+    const { crontabState, crontabHistory } = installCrontabStub(harness, originalCrontab);
+    const timeoutConfig = readFileSync(harness.configFile, 'utf8')
+      .replace(/^DEPLOY_HANDOFF_TIMEOUT=.*$/m, 'DEPLOY_HANDOFF_TIMEOUT=1');
+    writeFileSync(harness.configFile, timeoutConfig);
+    writeExecutable(harness.legacyDeployCommand, '#!/usr/bin/env bash\nwhile true; do /bin/sleep 1; done\n');
+
+    const legacy = spawn(harness.legacyDeployCommand, ['dev'], { stdio: 'ignore' });
+    const result = spawnSync('bash', [harness.installer], {
+      env: {
+        ...harness.env,
+        CRONTAB_STATE: crontabState,
+        CRONTAB_HISTORY: crontabHistory,
+      },
+      encoding: 'utf8',
+    });
+    legacy.kill('SIGTERM');
+    await new Promise(resolvePromise => legacy.once('exit', resolvePromise));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Timed out waiting for the legacy dev deployment');
+    expect(readFileSync(crontabState, 'utf8')).toBe(originalCrontab);
+  });
+
+  it('installs the same absolute alternate config used by preflight', () => {
+    const harness = makeHarness();
+    roots.push(harness.root);
+    const alternateDir = join(harness.root, 'alternate config');
+    const alternateConfig = join(alternateDir, 'deployer.env');
+    mkdirSync(alternateDir, { recursive: true });
+    copyFileSync(harness.configFile, alternateConfig);
+    rmSync(harness.configFile);
+
+    const { crontabState, crontabHistory } = installCrontabStub(
+      harness,
+      '0 0 * * * /usr/local/bin/backup\n',
+    );
+    const result = spawnSync('bash', [harness.installer], {
+      env: {
+        ...harness.env,
+        YEAFT_DEV_DEPLOY_CONFIG: alternateConfig,
+        CRONTAB_STATE: crontabState,
+        CRONTAB_HISTORY: crontabHistory,
+      },
+      encoding: 'utf8',
+    });
+    const installed = readFileSync(crontabState, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(installed).toContain(`YEAFT_DEV_DEPLOY_CONFIG='${alternateConfig}'`);
+    expect(installed).not.toContain(`${harness.deployDir}/deployer.env`);
+
+    writeFileSync(harness.callsFile, '');
+    const cronCommand = installed.split('\n').find(line => line.includes('yeaft-dev-blue-green-deploy'));
+    const cronResult = spawnSync('bash', ['-c', cronCommand.replace(/^\* \* \* \* \* /, '')], {
+      env: harness.env,
+      encoding: 'utf8',
+    });
+
+    expect(cronResult.status).toBe(0);
+    expect(parseCalls(harness.callsFile).some(call => call[0] === 'pull')).toBe(true);
+  });
+
+  it('rejects an alternate config path that cannot be represented safely in crontab', () => {
+    const harness = makeHarness();
+    roots.push(harness.root);
+    const unsupportedDir = join(harness.root, "quote'path");
+    const unsupportedConfig = join(unsupportedDir, 'deployer.env');
+    mkdirSync(unsupportedDir, { recursive: true });
+    copyFileSync(harness.configFile, unsupportedConfig);
+
+    const result = spawnSync('bash', [harness.installer], {
+      env: { ...harness.env, YEAFT_DEV_DEPLOY_CONFIG: unsupportedConfig },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('unsupported by crontab');
+  });
+
+  it('compose and example config define the complete dev host contract', () => {
+    const content = readFileSync(join(sourceDeployDir, 'docker-compose.yaml'), 'utf8');
+    const exampleConfig = readFileSync(join(sourceDeployDir, 'deployer.env.example'), 'utf8');
+
+    expect(exampleConfig).toContain('WEBCHAT_DATA_DIR=');
+    expect(exampleConfig).toContain('DOCKER_NETWORK=');
+    expect(exampleConfig).not.toContain('DEPLOY_LOCK_FILE=');
+    expect(exampleConfig).toContain('LEGACY_DEPLOY_COMMAND=');
     expect(content).toContain('claude-webchat-dev-blue:');
     expect(content).toContain('claude-webchat-dev-green:');
     expect(content).toContain('external: true');
