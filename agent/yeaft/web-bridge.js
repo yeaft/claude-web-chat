@@ -1000,6 +1000,7 @@ function projectPersistedToHistoryEntry(m) {
   if (m.id) entry.id = m.id;
   entry.threadId = m.threadId || m.turnId || 'main';
   if (m.turnId) entry.turnId = m.turnId;
+  if (m.imageAssetAnchor) entry.imageAssetAnchor = true;
   if (m.sessionId) entry.sessionId = m.sessionId;
   if (m.clientMessageId) entry.clientMessageId = m.clientMessageId;
   if (m.speakerVpId) entry.speakerVpId = m.speakerVpId;
@@ -3315,7 +3316,8 @@ function handleEngineEvent(event, hctx) {
       for (const image of images) {
         const persistedImage = imageMetadataForPersistence(image);
         try {
-          ctx.assetOutbox?.enqueue({
+          if (!ctx.assetOutbox) throw new Error('asset outbox is unavailable');
+          const deliveryId = ctx.assetOutbox.enqueue({
             conversationId: yeaftConversationId,
             metadata: persistedImage,
             sessionId: hctx.sessionId,
@@ -3324,7 +3326,9 @@ function handleEngineEvent(event, hctx) {
             threadId: hctx.threadId || event.threadId,
             image,
           });
-          ctx.assetOutbox?.drain().catch(err => console.warn('[AssetOutbox] drain failed:', err?.message || err));
+          if (!deliveryId) throw new Error('asset outbox did not persist the image');
+          image.deliveryQueued = true;
+          ctx.assetOutbox.drain().catch(err => console.warn('[AssetOutbox] drain failed:', err?.message || err));
         } catch (err) {
           console.warn('[AssetOutbox] failed to queue image:', err?.message || err);
         }

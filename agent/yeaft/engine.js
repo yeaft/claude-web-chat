@@ -2179,7 +2179,7 @@ export class Engine {
     let continueTurns = 0; // auto-continue counter
     let toolLoopTurns = 0; // task-327b: tool-use turns for long-loop auto-bump
     let fullResponseText = '';
-    const displayImagesForPersistence = [];
+    let hasDisplayImageAnchor = false;
     let currentModel = this.#config.model;
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
@@ -3065,7 +3065,7 @@ export class Engine {
             // for this turn. The hook still persists assistant + tool
             // rows for THIS VP's contribution.
             userAlreadyPersisted,
-            displayImages: displayImagesForPersistence,
+            hasDisplayImageAnchor,
           });
 
           if (hookResult.consolidated) {
@@ -3289,6 +3289,7 @@ export class Engine {
               output = stripDisplayImageData(output, displayImages);
             }
             yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError: false, threadId: this.currentThreadId };
+            if (displayImages.some(image => image.deliveryQueued === true)) hasDisplayImageAnchor = true;
           } catch (err) {
             output = `Error: ${err.message}`;
             isError = true;

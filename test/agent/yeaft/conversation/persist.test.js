@@ -138,6 +138,25 @@ Hello`;
     ]);
   });
 
+  it('round-trips the canonical image asset anchor without image bytes', () => {
+    const store = new ConversationStore(TEST_DIR);
+    store.append({
+      role: 'assistant',
+      content: 'final response',
+      sessionId: 'session_anchor',
+      turnId: 'turn_anchor',
+      imageAssetAnchor: true,
+    });
+
+    const [loaded] = store.loadAllBySession('session_anchor');
+    expect(loaded).toMatchObject({
+      role: 'assistant',
+      turnId: 'turn_anchor',
+      imageAssetAnchor: true,
+    });
+    expect(loaded).not.toHaveProperty('images');
+  });
+
   it('should parse turnId for persisted Yeaft assistant rows', () => {
     const raw = `---
 id: m0043

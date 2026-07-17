@@ -123,7 +123,15 @@ describe('tool result raw storage boundaries', () => {
     });
 
     const events = [];
-    for await (const event of engine.query({ prompt: 'show image', sessionId: 's1' })) events.push(event);
+    for await (const event of engine.query({ prompt: 'show image', sessionId: 's1' })) {
+      if (event.type === 'tool_end' && event.displayImages?.length > 0) {
+        // The Web Bridge durably enqueues the exact yielded image object before
+        // resuming the Engine generator. The Engine must observe that marker
+        // and request one canonical history anchor in its stop hook.
+        event.displayImages[0].deliveryQueued = true;
+      }
+      events.push(event);
+    }
 
     const toolEnd = events.find(event => event.type === 'tool_end');
     expect(toolEnd.displayImages).toHaveLength(1);
@@ -135,6 +143,9 @@ describe('tool result raw storage boundaries', () => {
     expect(adapter.callLog[1].messages.find(message => message.role === 'tool').content).not.toContain(png);
     const persisted = readJsonl(join(dir, 'sessions', 's1', 'conversation', 'segments'));
     expect(persisted.some(message => Array.isArray(message.images))).toBe(false);
+    expect(persisted.filter(message => message.imageAssetAnchor)).toEqual([
+      expect.objectContaining({ role: 'assistant', content: 'done' }),
+    ]);
     expect(JSON.stringify(persisted)).not.toContain(png);
     rmSync(dir, { recursive: true, force: true });
   });

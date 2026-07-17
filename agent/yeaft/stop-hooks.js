@@ -74,7 +74,7 @@ export async function runStopHooks(context) {
     // row exactly once before fan-out. Each VP's stop-hook then skips
     // the user record but still writes its own assistant + tool rows.
     userAlreadyPersisted = false,
-    displayImages = [],
+    hasDisplayImageAnchor = false,
   } = context;
 
   // Model name for persisted messages: use primaryModel if provided, else config.model
@@ -126,7 +126,15 @@ export async function runStopHooks(context) {
         }
       }
       const recentMessages = messages.slice(turnStart);
-      let displayImagesAttached = false;
+      const isPersistable = (msg) => Boolean(msg?.role) && (
+        (typeof msg.content === 'string' && msg.content.length > 0) ||
+        (msg.content && typeof msg.content !== 'string') ||
+        (Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0) ||
+        msg.role === 'tool'
+      );
+      const imageAnchorMessage = hasDisplayImageAnchor
+        ? recentMessages.findLast(msg => msg?.role === 'assistant' && isPersistable(msg)) || null
+        : null;
       for (const msg of recentMessages) {
         if (!msg || !msg.role) continue;
         // Skip the user row if the orchestrator already wrote it once for
@@ -147,13 +155,7 @@ export async function runStopHooks(context) {
         if (userAlreadyPersisted && msg.role === 'user' && msg === recentMessages[0]) continue;
         // Allow empty assistant content when toolCalls are present;
         // tool messages have content by construction.
-        const hasContent =
-          (typeof msg.content === 'string' && msg.content.length > 0) ||
-          (msg.content && typeof msg.content !== 'string') ||
-          (Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0) ||
-          (msg.role === 'assistant' && !displayImagesAttached && displayImages.length > 0) ||
-          msg.role === 'tool';
-        if (!hasContent) continue;
+        if (!isPersistable(msg)) continue;
 
         const record = {
           role: msg.role,
@@ -167,10 +169,7 @@ export async function runStopHooks(context) {
         if (Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0) {
           record.toolCalls = msg.toolCalls;
         }
-        if (msg.role === 'assistant' && !displayImagesAttached && displayImages.length > 0) {
-          record.images = displayImages;
-          displayImagesAttached = true;
-        }
+        if (msg === imageAnchorMessage) record.imageAssetAnchor = true;
         if (msg.isError) record.isError = true;
         // Bug 6: stamp sessionId / threadId so replay can re-route by group.
         if (sessionId) record.sessionId = sessionId;

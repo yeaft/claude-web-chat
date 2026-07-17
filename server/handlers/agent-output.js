@@ -67,13 +67,14 @@ function hydrateInlinePreviewData(data) {
 
 function projectConfirmedAssetImages(messages, { ownerId, agentId, sessionId }) {
   const turnIds = messages
-    .filter(message => message?.role === 'assistant')
+    .filter(message => message?.role === 'assistant' && message.imageAssetAnchor === true)
     .map(message => message.turnId || message.threadId || null)
     .filter(Boolean);
   const imagesByTurn = yeaftAssetStore.describeTurns({ ownerId, agentId, sessionId, turnIds });
   return messages.map((message) => {
     if (!message || message.role !== 'assistant') return message;
     const { images: _pendingImages, ...rest } = message;
+    if (message.imageAssetAnchor !== true) return rest;
     const turnId = message.turnId || message.threadId || null;
     const images = turnId ? imagesByTurn.get(turnId) || [] : [];
     return images.length > 0 ? { ...rest, images } : rest;
