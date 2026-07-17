@@ -43,4 +43,15 @@ describe('upload routes', () => {
     expect(res.send).toHaveBeenCalledWith(Buffer.from('<script>alert(1)</script>'));
     previewFiles.delete('preview-1');
   });
+
+  it('registers the stable Yeaft asset route without bearer middleware', () => {
+    const routes = new Map();
+    const app = {
+      post: vi.fn(),
+      get: vi.fn((path, handler) => routes.set(path, handler)),
+    };
+    registerUploadRoutes(app, { requireAuth: vi.fn() });
+    expect(routes.has('/api/yeaft/assets/:scopeId/:assetId')).toBe(true);
+    expect(app.get).toHaveBeenCalledWith('/api/yeaft/assets/:scopeId/:assetId', expect.any(Function));
+  });
 });

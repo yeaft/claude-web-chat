@@ -29,6 +29,7 @@ describe('agent connection buffer', () => {
   it('buffers Yeaft history and Work Center projection events while reconnecting', () => {
     expect(BUFFERABLE_TYPES.has('yeaft_history_chunk')).toBe(true);
     expect(BUFFERABLE_TYPES.has('work_center_event')).toBe(true);
+    expect(BUFFERABLE_TYPES.has('yeaft_asset_put')).toBe(false);
   });
 
   it('queues outbound websocket frames and yields between sends', async () => {

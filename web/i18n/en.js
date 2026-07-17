@@ -520,6 +520,8 @@ export default {
   'message.file': 'file',
   'message.attachImages': '{count} image(s)',
   'message.imageCount': '{count} image(s)',
+  'message.imagePreview': 'Image preview',
+  'message.imageUnavailable': 'Image unavailable',
   'message.attachFiles': '{count} file(s)',
   'message.fileCount': '{count} file(s)',
 

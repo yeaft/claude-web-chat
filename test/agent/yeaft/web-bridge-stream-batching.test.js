@@ -45,6 +45,11 @@ function assistantTextFrames() {
 describe('Yeaft web bridge stream text batching', () => {
   beforeEach(() => {
     sent.length = 0;
+    ctx.assetOutbox = {
+      enqueue: vi.fn(() => 'delivery-image-1234'),
+      drain: vi.fn(async () => {}),
+      removeSession: vi.fn(),
+    };
     ctx.agentMetrics = {
       chatTurns: 0,
       yeaftTurns: 0,
@@ -190,6 +195,45 @@ describe('Yeaft web bridge stream text batching', () => {
       'event:error',
       'text:⚠️ Error: provider exploded',
     ]);
+  });
+
+  it('queues display image bytes durably before emitting the tool result', () => {
+    const hctx = makeHandlerCtx();
+    const image = {
+      assetId: 'a'.repeat(64),
+      mimeType: 'image/png',
+      filename: 'pixel.png',
+      size: 68,
+      previewData: { data: 'base64', mimeType: 'image/png' },
+    };
+
+    __testHandleEngineEvent({ type: 'tool_end', id: 'tool-image', name: 'ImageGeneration', output: '{"success":true}', displayImages: [image] }, hctx);
+
+    expect(ctx.assetOutbox.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1',
+      turnId: 'turn-a',
+      image,
+    }));
+    expect(image.deliveryQueued).toBe(true);
+    expect(ctx.assetOutbox.drain).toHaveBeenCalledTimes(1);
+    expect(sent.some(message => message.type === 'yeaft_asset_put')).toBe(false);
+  });
+
+  it('does not request a history anchor when durable enqueue fails', () => {
+    const hctx = makeHandlerCtx();
+    const image = {
+      assetId: 'b'.repeat(64),
+      mimeType: 'image/png',
+      filename: 'pixel.png',
+      size: 68,
+      previewData: { data: 'base64', mimeType: 'image/png' },
+    };
+    ctx.assetOutbox.enqueue.mockReturnValueOnce(null);
+
+    __testHandleEngineEvent({ type: 'tool_end', id: 'tool-image-failed', name: 'ImageGeneration', output: '{}', displayImages: [image] }, hctx);
+
+    expect(image.deliveryQueued).toBeUndefined();
+    expect(ctx.assetOutbox.drain).not.toHaveBeenCalled();
   });
 
   it('records turn_close as a turn without double-counting adapter tokens', () => {

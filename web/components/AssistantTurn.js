@@ -5,6 +5,7 @@ import { normalizeTerminalOutput } from '../utils/terminal-output.js';
 import { normalizeRouteForwardDisplay } from '../utils/route-forward-display.js';
 import { getTodoDisplayState } from '../utils/todo-display-state.js';
 import { renderMermaidIn } from '../utils/markdown.js';
+import { openImagePreview } from '../utils/imagePreview.js';
 
 export default {
   name: 'AssistantTurn',
@@ -150,11 +151,17 @@ export default {
 
       <!-- 4. Images from Claude response (screenshots, etc.) -->
       <div v-if="turn.imageMsgs && turn.imageMsgs.length > 0" class="turn-images">
-        <div v-for="img in turn.imageMsgs" :key="img.id" class="turn-image-item">
-          <img v-if="img.fileId" :src="getImageUrl(img)" class="chat-screenshot"
-               @error="handleImageError($event)"
-               @click="openImagePreview(getImageUrl(img))" />
-        </div>
+        <button v-for="img in turn.imageMsgs" :key="img.assetId || img.id" type="button"
+                class="turn-image-item" @click="imageSrc(img) && openImagePreview(imageSrc(img))">
+          <img v-if="imageSrc(img) && !failedImages.has(img.assetId || img.id)"
+               :src="imageSrc(img)" :alt="img.filename || $t('message.imagePreview')"
+               class="chat-screenshot" loading="lazy" decoding="async"
+               @error="handleImageError(img)" />
+          <span v-else class="turn-image-fallback">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+            <span>{{ $t('message.imageUnavailable') }}</span>
+          </span>
+        </button>
       </div>
 
       <!-- 5. AskUserQuestion interactive card -->
@@ -227,6 +234,7 @@ export default {
     };
     const screenshotting = Vue.ref(false);
     const turnRef = Vue.ref(null);
+    const failedImages = Vue.reactive(new Set());
     const t = Vue.inject('t');
 
     // AskUserQuestion — delegate to AskCard component
@@ -504,18 +512,15 @@ export default {
     });
 
     // Image helpers
-    const getImageUrl = (msg) => {
-      if (!msg.fileId) return '';
+    const imageSrc = (msg) => {
+      if (msg?.src) return msg.src;
+      if (!msg?.fileId) return '';
       const token = msg.previewToken || '';
       return `/api/preview/${msg.fileId}?token=${token}`;
     };
 
-    const handleImageError = (event) => {
-      event.target.style.display = 'none';
-    };
-
-    const openImagePreview = (url) => {
-      window.open(url, '_blank');
+    const handleImageError = (image) => {
+      failedImages.add(image?.assetId || image?.id);
     };
 
 
@@ -579,7 +584,8 @@ export default {
       exportMarkdown,
       screenshotContent,
       onAskSubmit,
-      getImageUrl,
+      imageSrc,
+      failedImages,
       handleImageError,
       openImagePreview,
       displayedTodos

@@ -63,6 +63,7 @@ import {
 import { persistYeaftAttachments, attachmentsForPersistence, persistedAttachmentPreviewPayload } from './attachments.js';
 import { ConversationStore, parseSeqFromId } from './conversation/persist.js';
 import { isHiddenConversationRow } from './conversation/internal-control.js';
+import { imageMetadataForPersistence } from './image-assets.js';
 import { sliceLastNTurns } from './turn-utils.js';
 import { pairSanitize } from './pair-sanitize.js';
 import { filterSnapshotForVp } from './snapshot-filter.js';
@@ -999,6 +1000,7 @@ function projectPersistedToHistoryEntry(m) {
   if (m.id) entry.id = m.id;
   entry.threadId = m.threadId || m.turnId || 'main';
   if (m.turnId) entry.turnId = m.turnId;
+  if (m.imageAssetAnchor) entry.imageAssetAnchor = true;
   if (m.sessionId) entry.sessionId = m.sessionId;
   if (m.clientMessageId) entry.clientMessageId = m.clientMessageId;
   if (m.speakerVpId) entry.speakerVpId = m.speakerVpId;
@@ -1016,8 +1018,9 @@ function projectPersistedToHistoryEntry(m) {
   if (m.isError) entry.isError = true;
   if (m.ts) entry.ts = m.ts;
   else if (m.time) entry.ts = m.time;
+  if (Array.isArray(m.images) && m.images.length > 0) entry.images = m.images;
   if (Array.isArray(m.attachments) && m.attachments.length > 0) entry.attachments = m.attachments;
-  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.toolCalls && !entry.toolSummaryCount) return null;
+  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.images && !entry.toolCalls && !entry.toolSummaryCount) return null;
   return entry;
 }
 
@@ -1106,7 +1109,9 @@ function projectVisibleHistoryChunkMessages(messages = []) {
       ...(m.clientMessageId ? { clientMessageId: m.clientMessageId } : {}),
       threadId: m.threadId || m.turnId || 'main',
       ...(m.turnId ? { turnId: m.turnId } : {}),
+      ...(m.imageAssetAnchor === true ? { imageAssetAnchor: true } : {}),
       ...(Array.isArray(m.attachments) && m.attachments.length > 0 ? { attachments: hydrateHistoryAttachmentPreviews(m.attachments) } : {}),
+      ...(Array.isArray(m.images) && m.images.length > 0 ? { images: m.images } : {}),
       ...(m.speakerVpId ? { speakerVpId: m.speakerVpId } : {}),
       ...(Number.isFinite(m.toolSummaryCount) && m.toolSummaryCount > 0
         ? { toolSummaryCount: m.toolSummaryCount }
@@ -1156,7 +1161,13 @@ function emitLegacyHistoryOutputFrames(replayEntries) {
       if (entry.speakerVpId) envelopeOpts.vpId = entry.speakerVpId;
       sendSessionOutputFrame({
         type: 'assistant',
-        message: { id: entry.id || null, content: [{ type: 'text', text: entry.content }] },
+        message: {
+          id: entry.id || null,
+          content: [
+            ...(entry.content ? [{ type: 'text', text: entry.content }] : []),
+            ...((entry.images || []).map(image => ({ type: 'image_asset', image }))),
+          ],
+        },
         ts: entry.ts || null,
       }, envelopeOpts);
       if (Array.isArray(entry.toolCalls) && entry.toolCalls.length > 0) {
@@ -2851,6 +2862,7 @@ export function handleYeaftDeleteSession(msg) {
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const result = deleteSession(yeaftDir, sessionId);
+    ctx.assetOutbox?.removeSession(sessionId);
     // Cascade: remove every persisted message stamped with this group id.
     // Hard delete (per user spec): no soft-archive, the bytes are gone.
     // Skipped silently if the session/store isn't initialized — the next
@@ -3299,12 +3311,34 @@ function handleEngineEvent(event, hctx) {
       }, envelope);
       break;
 
-    case 'tool_end':
+    case 'tool_end': {
+      const images = Array.isArray(event.displayImages) ? event.displayImages : [];
+      const displayOutput = typeof event.output === 'string' ? event.output : JSON.stringify(event.output ?? '');
+      for (const image of images) {
+        const persistedImage = imageMetadataForPersistence(image);
+        try {
+          if (!ctx.assetOutbox) throw new Error('asset outbox is unavailable');
+          const deliveryId = ctx.assetOutbox.enqueue({
+            conversationId: yeaftConversationId,
+            metadata: persistedImage,
+            sessionId: hctx.sessionId,
+            vpId: hctx.vpId,
+            turnId: hctx.turnId,
+            threadId: hctx.threadId || event.threadId,
+            image,
+          });
+          if (!deliveryId) throw new Error('asset outbox did not persist the image');
+          image.deliveryQueued = true;
+          ctx.assetOutbox.drain().catch(err => console.warn('[AssetOutbox] drain failed:', err?.message || err));
+        } catch (err) {
+          console.warn('[AssetOutbox] failed to queue image:', err?.message || err);
+        }
+      }
       if (hctx.toolResultsAccum) {
         hctx.toolResultsAccum.push({
           role: 'tool',
           toolCallId: event.id,
-          content: typeof event.output === 'string' ? event.output : JSON.stringify(event.output ?? ''),
+          content: displayOutput,
           isError: !!event.isError,
         });
       }
@@ -3330,7 +3364,7 @@ function handleEngineEvent(event, hctx) {
         tool_use_result: [{
           type: 'tool_result',
           tool_use_id: event.id,
-          content: event.output || '',
+          content: displayOutput,
           is_error: event.isError || false,
         }],
       }, envelope);
@@ -3341,6 +3375,7 @@ function handleEngineEvent(event, hctx) {
       // streaming' flicker on every tool call. Hold the 'tool' state
       // until the next real event arrives.
       break;
+    }
 
     case 'tool_result_update': {
       const content = typeof event.content === 'string'
@@ -6613,6 +6648,7 @@ export async function handleYeaftMcpReload(msg = {}) {
 
 export const __testHooks = {
   loadVisibleGroupHistoryPage,
+  projectVisibleHistoryChunkMessages,
   persistInboundMessageOnceByMsgId,
   buildPendingRescueEnvelope,
   runYeaftSessionSendForTest(msg) {

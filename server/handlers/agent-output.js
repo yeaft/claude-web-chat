@@ -1,8 +1,9 @@
 import { randomUUID } from 'crypto';
 import { messageDb, yeaftSessionDb } from '../database.js';
-import { broadcastAgentList, forwardToClients, sendToWebClient } from '../ws-utils.js';
+import { broadcastAgentList, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
 import { webClients, previewFiles } from '../context.js';
 import { CONFIG } from '../config.js';
+import { yeaftAssetStore } from '../yeaft-asset-store.js';
 import { recordPerfTraceEvent } from '../perf-trace.js';
 
 
@@ -62,6 +63,22 @@ function hydrateInlinePreviewData(data) {
   if (!data?.message) return data;
   const message = hydrateMessagePreviewData(data.message);
   return message === data.message ? data : { ...data, message };
+}
+
+function projectConfirmedAssetImages(messages, { ownerId, agentId, sessionId }) {
+  const turnIds = messages
+    .filter(message => message?.role === 'assistant' && message.imageAssetAnchor === true)
+    .map(message => message.turnId || message.threadId || null)
+    .filter(Boolean);
+  const imagesByTurn = yeaftAssetStore.describeTurns({ ownerId, agentId, sessionId, turnIds });
+  return messages.map((message) => {
+    if (!message || message.role !== 'assistant') return message;
+    const { images: _pendingImages, ...rest } = message;
+    if (message.imageAssetAnchor !== true) return rest;
+    const turnId = message.turnId || message.threadId || null;
+    const images = turnId ? imagesByTurn.get(turnId) || [] : [];
+    return images.length > 0 ? { ...rest, images } : rest;
+  });
 }
 
 /**
@@ -396,6 +413,51 @@ export async function handleAgentOutput(agentId, agent, msg) {
       break;
     }
 
+    case 'yeaft_asset_put': {
+      let ok = false;
+      let stored = false;
+      let error = null;
+      try {
+        if (!agent.ownerId || !msg.sessionId || !msg.image?.previewData?.data) {
+          throw new Error('Incomplete Yeaft asset payload');
+        }
+        const image = yeaftAssetStore.put({
+          ownerId: agent.ownerId, agentId, sessionId: msg.sessionId,
+          assetId: msg.metadata?.assetId || msg.image.assetId, data: msg.image.previewData.data,
+          mimeType: msg.metadata?.mimeType || msg.image.mimeType || msg.image.previewData.mimeType,
+          filename: msg.metadata?.filename || msg.image.filename || msg.image.previewData.filename,
+          width: msg.metadata?.width ?? msg.image.width,
+          height: msg.metadata?.height ?? msg.image.height,
+          turnId: msg.turnId || null,
+          vpId: msg.vpId || null,
+          threadId: msg.threadId || null,
+        });
+        stored = true;
+        await forwardToClients(agentId, msg.conversationId, {
+          type: 'yeaft_asset_ready', conversationId: msg.conversationId,
+          agentId, sessionId: msg.sessionId,
+          ...(msg.vpId ? { vpId: msg.vpId } : {}),
+          ...(msg.turnId ? { turnId: msg.turnId } : {}),
+          ...(msg.threadId ? { threadId: msg.threadId } : {}),
+          image, _requestUserId: agent.ownerId,
+        });
+        ok = true;
+      } catch (err) {
+        error = err?.message || String(err);
+        console.warn(`[Server] Failed to store Yeaft asset: ${error}`);
+      }
+      if (msg.deliveryId) {
+        await sendToAgent(agent, {
+          type: 'yeaft_asset_ack',
+          deliveryId: msg.deliveryId,
+          ok: ok || stored,
+          ...(!stored && /quota exceeded|invalid|unsupported|MIME|must be between|does not match|incomplete/i.test(error || '') ? { permanent: true } : {}),
+          ...(error ? { error } : {}),
+        });
+      }
+      break;
+    }
+
     case 'yeaft_output':
     case 'yeaft_session_output':
     case 'session_output': {
@@ -502,7 +564,10 @@ export async function handleAgentOutput(agentId, agent, msg) {
     case 'yeaft_history_window': {
       const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
       if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
-        const messages = Array.isArray(msg.messages) ? msg.messages.map(hydrateMessagePreviewData) : [];
+        const messages = Array.isArray(msg.messages) ? projectConfirmedAssetImages(
+          msg.messages.map(hydrateMessagePreviewData),
+          { ownerId: agent.ownerId, agentId, sessionId: msg.sessionId },
+        ) : [];
         await sendToWebClient(targetClient, {
           type: 'yeaft_history_window',
           agentId,
@@ -522,7 +587,10 @@ export async function handleAgentOutput(agentId, agent, msg) {
 
     case 'yeaft_history_chunk': {
       const messages = Array.isArray(msg.messages)
-        ? msg.messages.map(hydrateMessagePreviewData)
+        ? projectConfirmedAssetImages(
+          msg.messages.map(hydrateMessagePreviewData),
+          { ownerId: agent.ownerId, agentId, sessionId: msg.sessionId },
+        )
         : [];
       // Forward a "load older messages" pagination chunk to the same
       // authenticated clients. Distinct from `yeaft_output` because the
@@ -726,8 +794,20 @@ export async function handleAgentOutput(agentId, agent, msg) {
           if (agent.ownerId) yeaftSessionDb.reconcileFromSnapshot(agent.ownerId, agentId, msg.sessions);
           outboundMsg = { ...msg, sessions: decorateYeaftSessionsWithPinned(agentId, msg.sessions) };
         } else if (msg.ok && sessionId && (op === 'delete' || op === 'archive')) {
-          if (op === 'archive') yeaftSessionDb.setArchivedForAgent(agent.ownerId, agentId, sessionId, true);
-          else yeaftSessionDb.deleteForAgent(agent.ownerId, agentId, sessionId);
+          if (op === 'archive') {
+            yeaftSessionDb.setArchivedForAgent(agent.ownerId, agentId, sessionId, true);
+          } else {
+            try {
+              yeaftSessionDb.deleteForAgent(agent.ownerId, agentId, sessionId);
+            } catch (e) {
+              console.warn('[Server] Yeaft Session metadata cleanup failed:', e?.message || e);
+            }
+            try {
+              yeaftAssetStore.deleteScope({ ownerId: agent.ownerId, agentId, sessionId });
+            } catch (e) {
+              console.warn('[Server] Yeaft asset cleanup failed:', e?.message || e);
+            }
+          }
         }
       } catch (e) {
         console.warn(`[Server] yeaft crud-result persist failed:`, e?.message || e);

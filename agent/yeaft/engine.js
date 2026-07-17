@@ -47,6 +47,7 @@ import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/c
 import { resolveThinking } from './router/thinking.js';
 import { approxTokens } from './memory/budget.js';
 import { COLLAB_TOOL_POLICY, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { extractDisplayImages, stripDisplayImageData } from './image-assets.js';
 import { acknowledgePendingNotifications, formatNotificationsForPrompt, peekPendingNotifications } from './sub-agent/notifications.js';
 import {
   TOOL_BATCH_SIZE,
@@ -2183,6 +2184,7 @@ export class Engine {
     let continueTurns = 0; // auto-continue counter
     let toolLoopTurns = 0; // task-327b: tool-use turns for long-loop auto-bump
     let fullResponseText = '';
+    let hasDisplayImageAnchor = false;
     let currentModel = this.#config.model;
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
@@ -3068,6 +3070,7 @@ export class Engine {
             // for this turn. The hook still persists assistant + tool
             // rows for THIS VP's contribution.
             userAlreadyPersisted,
+            hasDisplayImageAnchor,
           });
 
           if (hookResult.consolidated) {
@@ -3252,6 +3255,7 @@ export class Engine {
         }
 
         let output;
+        let displayImages = [];
         let isError = false;
         currentToolCallForAsyncTask = {
           id: tc.id,
@@ -3285,7 +3289,12 @@ export class Engine {
               const rawOutput = await tool.execute(tc.input, toolCtx);
               output = normalizeToolOutput(rawOutput);
             }
-            yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: false, threadId: this.currentThreadId };
+            displayImages = extractDisplayImages(tc.name, output);
+            if (displayImages.length > 0) {
+              output = stripDisplayImageData(output, displayImages);
+            }
+            yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError: false, threadId: this.currentThreadId };
+            if (displayImages.some(image => image.deliveryQueued === true)) hasDisplayImageAnchor = true;
           } catch (err) {
             output = `Error: ${err.message}`;
             isError = true;
@@ -3310,6 +3319,7 @@ export class Engine {
           durationMs: toolDurationMs,
           isError,
           toolOutput: output,
+          ...(displayImages.length > 0 ? { displayImageCount: displayImages.length } : {}),
         };
 
         // 2026-05-13: feed the per-tool counters. Stays best-effort — a
@@ -3334,7 +3344,6 @@ export class Engine {
           toolOutput: output,
           durationMs: toolDurationMs,
           isError,
-          toolOutput: output,
         });
 
         // Append only the bounded copy to the model message history. Raw
