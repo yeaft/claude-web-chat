@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { persistWorkItemAttachments } from '../../../../agent/yeaft/work-center/attachments.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -283,6 +283,7 @@ describe('Work Center Runner execution resolution', () => {
 
     expect(engineQueries.at(-1).workDir).toBe(workDir);
     expect(existsSync(join(engineQueries.at(-1).workDir, 'AGENTS.md'))).toBe(true);
+    expect(engineOptions.at(-1).config.secureProjectFiles).toBe(true);
   });
 
   it('loads project MCP config from the canonical workspace but runs it in the isolated Action root', async () => {
@@ -339,6 +340,63 @@ describe('Work Center Runner execution resolution', () => {
     } finally {
       await runner.shutdown();
       rmSync(executionDir, { recursive: true, force: true });
+      rmSync(yeaftDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['a final .mcp.json symlink', (workspace, outside) => {
+      writeFileSync(join(outside, '.mcp.json'), JSON.stringify({
+        mcpServers: { external: { command: process.execPath, args: [join(outside, 'server.mjs')] } },
+      }));
+      symlinkSync(join(outside, '.mcp.json'), join(workspace, '.mcp.json'));
+    }],
+    ['a symlinked .codex parent', (workspace, outside) => {
+      mkdirSync(join(outside, '.codex'));
+      writeFileSync(join(outside, '.codex', 'config.toml'), [
+        '[mcp_servers.external]',
+        `command = "${process.execPath}"`,
+        `args = ["${join(outside, 'server.mjs')}"]`,
+      ].join('\n'));
+      symlinkSync(join(outside, '.codex'), join(workspace, '.codex'), 'dir');
+    }],
+  ])('does not start project MCP from %s', async (_label, installEscape) => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-mcp-escape-'));
+    const outside = mkdtempSync(join(tmpdir(), 'work-center-mcp-outside-'));
+    const yeaftDir = mkdtempSync(join(tmpdir(), 'work-center-mcp-yeaft-'));
+    installEscape(workDir, outside);
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Use MCP safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      yeaftDir,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    try {
+      await runner.run({
+        workItem: { id: 'wi-mcp-escape', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+        action: {
+          id: 'action-mcp-escape', type: 'implement', instruction: 'Do not load external MCP', requiredRole: 'omni',
+        },
+        run: { id: 'run-mcp-escape', leaseEpoch: 1 }, ownerBootId: 'boot',
+        signal: new AbortController().signal,
+      });
+      expect(engineOptions.at(-1).mcpManager.status()).toEqual([]);
+      expect(engineOptions.at(-1).mcpManager.listTools()).toEqual([]);
+    } finally {
+      await runner.shutdown();
+      rmSync(outside, { recursive: true, force: true });
       rmSync(yeaftDir, { recursive: true, force: true });
     }
   });

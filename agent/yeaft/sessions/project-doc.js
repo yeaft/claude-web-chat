@@ -31,6 +31,7 @@
 
 import { statSync, openSync, readSync, closeSync } from 'fs';
 import { join } from 'path';
+import { readWorkspaceFile, statWorkspaceFile } from '../workspace-file.js';
 
 /** Filenames probed in `workDir`, in tie-break order (first wins on tie). */
 export const PROJECT_DOC_FILENAMES = ['CLAUDE.md', 'AGENTS.md'];
@@ -47,9 +48,10 @@ export const DEFAULT_PROJECT_DOC_MAX_BYTES = 32 * 1024;
  * deciding to re-read.
  *
  * @param {string} workDir
+ * @param {{ secureWorkspace?: boolean }} [opts]
  * @returns {{ path: string, mtimeMs: number } | null}
  */
-export function pickProjectDocFile(workDir) {
+export function pickProjectDocFile(workDir, opts = {}) {
   if (typeof workDir !== 'string' || !workDir.trim()) return null;
   try {
     const dirStat = statSync(workDir);
@@ -61,19 +63,23 @@ export function pickProjectDocFile(workDir) {
 
   let best = null;
   for (const name of PROJECT_DOC_FILENAMES) {
-    const path = join(workDir, name);
-    let s;
-    try {
-      s = statSync(path);
-    } catch {
-      // Missing or unreadable; try the next candidate.
-      continue;
+    let candidate;
+    if (opts.secureWorkspace === true) {
+      candidate = statWorkspaceFile(workDir, name);
+    } else {
+      const path = join(workDir, name);
+      let stat;
+      try {
+        stat = statSync(path);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      candidate = { path, mtimeMs: stat.mtimeMs };
     }
-    if (!s.isFile()) continue;
+    if (!candidate) continue;
     // Strict-greater so ties favor the order in PROJECT_DOC_FILENAMES.
-    if (!best || s.mtimeMs > best.mtimeMs) {
-      best = { path, mtimeMs: s.mtimeMs };
-    }
+    if (!best || candidate.mtimeMs > best.mtimeMs) best = candidate;
   }
   return best;
 }
@@ -93,7 +99,7 @@ export function pickProjectDocFile(workDir) {
  * text instead of a trailing `U+FFFD` replacement character.
  *
  * @param {string} workDir
- * @param {{ maxBytes?: number }} [opts]
+ * @param {{ maxBytes?: number, secureWorkspace?: boolean }} [opts]
  * @returns {{ path: string, mtimeMs: number, text: string } | null}
  */
 export function readProjectDoc(workDir, opts = {}) {
@@ -102,23 +108,32 @@ export function readProjectDoc(workDir, opts = {}) {
     : DEFAULT_PROJECT_DOC_MAX_BYTES;
   if (maxBytes === 0) return null;
 
-  const picked = pickProjectDocFile(workDir);
+  const picked = pickProjectDocFile(workDir, opts);
   if (!picked) return null;
 
   // Allocate one extra byte so a `bytesRead === maxBytes + 1` tells us
   // there's more content beyond the cap — i.e. the file was truncated.
   const cap = maxBytes + 1;
-  const buffer = Buffer.allocUnsafe(cap);
-  let fd;
-  let bytesRead = 0;
-  try {
-    fd = openSync(picked.path, 'r');
-    bytesRead = readSync(fd, buffer, 0, cap, 0);
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) {
-      try { closeSync(fd); } catch { /* ignore */ }
+  let buffer;
+  let bytesRead;
+  if (opts.secureWorkspace === true) {
+    const read = readWorkspaceFile(workDir, picked.path.slice(workDir.length + 1), { maxBytes });
+    if (!read || read.mtimeMs !== picked.mtimeMs) return null;
+    buffer = read.buffer;
+    bytesRead = buffer.length;
+  } else {
+    buffer = Buffer.allocUnsafe(cap);
+    let fd;
+    bytesRead = 0;
+    try {
+      fd = openSync(picked.path, 'r');
+      bytesRead = readSync(fd, buffer, 0, cap, 0);
+    } catch {
+      return null;
+    } finally {
+      if (fd !== undefined) {
+        try { closeSync(fd); } catch { /* ignore */ }
+      }
     }
   }
 

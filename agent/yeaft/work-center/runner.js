@@ -549,7 +549,9 @@ export class WorkItemRunner {
     const pending = (async () => {
       const skillManager = createSkillManager(this.yeaftDir, executionDir);
       const mcpManager = new MCPManager();
-      const mcpConfig = loadMCPConfig(this.yeaftDir, undefined, workspaceDir);
+      const mcpConfig = loadMCPConfig(this.yeaftDir, undefined, workspaceDir, {
+        secureWorkspace: true,
+      });
       const servers = mcpConfig.servers.map(server => ({ ...server, cwd: executionDir }));
       if (!isRunActive()) throw new Error('Work Center Run lease is no longer active');
       if (servers.length > 0) await mcpManager.connectAll(servers);
@@ -710,6 +712,7 @@ export class WorkItemRunner {
       modelEffort: resolvedModel.effort,
       _readOnly: true,
       serverMode: true,
+      secureProjectFiles: true,
       // WorkItem messages live in the Work Center DB. Never archive their
       // transient tool bodies into the user memory tree.
       archive: { ...(runtime.config.archive || {}), toolResults: false },
