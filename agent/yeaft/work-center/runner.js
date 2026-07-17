@@ -547,7 +547,9 @@ export class WorkItemRunner {
     const cached = this.workspaceRuntimes.get(runtimeKey);
     if (cached) return cached;
     const pending = (async () => {
-      const skillManager = createSkillManager(this.yeaftDir, executionDir);
+      const skillManager = createSkillManager(this.yeaftDir, workspaceDir, {
+        secureWorkspace: true,
+      });
       const mcpManager = new MCPManager();
       const mcpConfig = loadMCPConfig(this.yeaftDir, undefined, workspaceDir, {
         secureWorkspace: true,

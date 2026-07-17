@@ -4,6 +4,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  readdirSync,
   readSync,
   realpathSync,
 } from 'node:fs';
@@ -52,11 +53,11 @@ function relativeComponents(relativePath) {
   return components;
 }
 
-function withWorkspaceFile(workspaceRoot, relativePath, callback) {
+function withWorkspaceNode(workspaceRoot, relativePath, type, callback) {
   if (process.platform !== 'linux') return null;
   let rootState;
   const directoryStates = [];
-  let fileDescriptor;
+  let targetDescriptor;
   try {
     rootState = openWorkspaceRoot(workspaceRoot);
     let parentDescriptor = rootState.descriptor;
@@ -69,18 +70,20 @@ function withWorkspaceFile(workspaceRoot, relativePath, callback) {
         descriptorPath,
         constants.O_RDONLY | (constants.O_DIRECTORY || 0) | (constants.O_NOFOLLOW || 0),
       );
-      descriptorMatchesPath(descriptor, actualPath, 'directory');
       directoryStates.push({ descriptor, path: actualPath });
+      descriptorMatchesPath(descriptor, actualPath, 'directory');
       parentDescriptor = descriptor;
       actualParentPath = actualPath;
     }
-    const fileName = components.at(-1);
-    const descriptorPath = `/proc/self/fd/${parentDescriptor}/${fileName}`;
-    const actualPath = resolve(actualParentPath, fileName);
-    fileDescriptor = openSync(descriptorPath, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
-    const stat = descriptorMatchesPath(fileDescriptor, actualPath, 'file');
-    const result = callback(fileDescriptor, stat);
-    descriptorMatchesPath(fileDescriptor, actualPath, 'file');
+    const nodeName = components.at(-1);
+    const descriptorPath = `/proc/self/fd/${parentDescriptor}/${nodeName}`;
+    const actualPath = resolve(actualParentPath, nodeName);
+    const flags = constants.O_RDONLY | (type === 'directory' ? (constants.O_DIRECTORY || 0) : 0)
+      | (constants.O_NOFOLLOW || 0);
+    targetDescriptor = openSync(descriptorPath, flags);
+    const stat = descriptorMatchesPath(targetDescriptor, actualPath, type);
+    const result = callback(targetDescriptor, stat);
+    descriptorMatchesPath(targetDescriptor, actualPath, type);
     for (const state of directoryStates) {
       descriptorMatchesPath(state.descriptor, state.path, 'directory');
     }
@@ -89,10 +92,25 @@ function withWorkspaceFile(workspaceRoot, relativePath, callback) {
   } catch {
     return null;
   } finally {
-    if (fileDescriptor !== undefined) closeSync(fileDescriptor);
+    if (targetDescriptor !== undefined) closeSync(targetDescriptor);
     for (const state of directoryStates.reverse()) closeSync(state.descriptor);
     if (rootState?.descriptor !== undefined) closeSync(rootState.descriptor);
   }
+}
+
+function withWorkspaceFile(workspaceRoot, relativePath, callback) {
+  return withWorkspaceNode(workspaceRoot, relativePath, 'file', callback);
+}
+
+export function listWorkspaceDirectory(workspaceRoot, relativePath) {
+  return withWorkspaceNode(workspaceRoot, relativePath, 'directory', descriptor => (
+    readdirSync(`/proc/self/fd/${descriptor}`, { withFileTypes: true }).map(entry => ({
+      name: entry.name,
+      isFile: entry.isFile(),
+      isDirectory: entry.isDirectory(),
+      isSymbolicLink: entry.isSymbolicLink(),
+    }))
+  ));
 }
 
 export function statWorkspaceFile(workspaceRoot, relativePath) {

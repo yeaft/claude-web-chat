@@ -174,6 +174,62 @@ describe('createSkillManager — project .claude/skills tier', () => {
   });
 });
 
+describe('createSkillManager — secure project tiers', () => {
+  it('keeps regular project skills and user skills available', () => {
+    writeSkill(yeaftDir, 'skills', 'user-safe', 'User skill.');
+    writeSkill(workDir, '.claude/skills', 'project-safe', 'Project skill.');
+
+    const manager = createSkillManager(yeaftDir, workDir, { secureWorkspace: true });
+    expect(manager.list().map(skill => skill.name)).toEqual(expect.arrayContaining([
+      'user-safe', 'project-safe',
+    ]));
+  });
+
+  it.each(['.claude/skills', '.agents/skills', '.yeaft/skills'])(
+    'rejects a symlinked %s project tier root',
+    relativeRoot => {
+      const outside = mkdtempSync(join(tmpdir(), 'yeaft-skill-outside-'));
+      try {
+        writeSkill(outside, 'skills', 'escaped-skill', 'EXTERNAL PROMPT INSTRUCTIONS');
+        const parent = join(workDir, relativeRoot, '..');
+        mkdirSync(parent, { recursive: true });
+        symlinkSync(join(outside, 'skills'), join(workDir, relativeRoot), 'dir');
+
+        const manager = createSkillManager(yeaftDir, workDir, { secureWorkspace: true });
+        expect(manager.has('escaped-skill')).toBe(false);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('rejects nested directory, SKILL.md, and linked-file symlinks', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'yeaft-skill-outside-'));
+    try {
+      writeSkill(outside, 'nested', 'escaped-dir', 'EXTERNAL DIRECTORY');
+      mkdirSync(join(workDir, '.yeaft/skills'), { recursive: true });
+      symlinkSync(join(outside, 'nested'), join(workDir, '.yeaft/skills/linked-category'), 'dir');
+
+      const localDir = join(workDir, '.yeaft/skills/local');
+      mkdirSync(join(localDir, 'references'), { recursive: true });
+      writeFileSync(join(outside, 'SKILL.md'), '---\nname: escaped-file\n---\nEXTERNAL FILE');
+      writeFileSync(join(outside, 'secret.txt'), 'EXTERNAL LINKED FILE');
+      symlinkSync(join(outside, 'SKILL.md'), join(localDir, 'SKILL.md'));
+      writeSkill(workDir, '.yeaft/skills', 'safe', 'Safe local skill.');
+      mkdirSync(join(workDir, '.yeaft/skills/safe/references'));
+      symlinkSync(join(outside, 'secret.txt'), join(workDir, '.yeaft/skills/safe/references/secret.txt'));
+
+      const manager = createSkillManager(yeaftDir, workDir, { secureWorkspace: true });
+      expect(manager.has('escaped-dir')).toBe(false);
+      expect(manager.has('escaped-file')).toBe(false);
+      expect(manager.view('safe', 'references/secret.txt').linkedContent)
+        .toBe('Error reading file: secure workspace read failed');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('createSkillManager — tier priority (deterministic)', () => {
   it('.yeaft/skills overrides a same-named .claude/skills skill', () => {
     writeSkill(workDir, '.claude/skills', 'shared', 'Claude version.');

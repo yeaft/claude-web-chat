@@ -801,14 +801,17 @@ function loadExternalUserMCPServers() {
  */
 export function loadProjectMCPServers(workDir, options = {}) {
   const empty = { servers: [], skipped: [] };
+  const maxBytes = 1024 * 1024;
   if (!workDir || typeof workDir !== 'string') return empty;
 
   if (options.secureWorkspace === true) {
-    const claude = readWorkspaceFile(workDir, '.mcp.json');
-    const codex = readWorkspaceFile(workDir, '.codex/config.toml');
+    const claude = readWorkspaceFile(workDir, '.mcp.json', { maxBytes });
+    const codex = readWorkspaceFile(workDir, '.codex/config.toml', { maxBytes });
     return mergeMCPConfigResults([
-      claude ? loadClaudeMCPJsonFile(null, '.mcp.json', claude.buffer.toString('utf8')) : empty,
-      codex ? loadCodexMCPConfigFile(null, '.codex/config.toml', codex.buffer.toString('utf8')) : empty,
+      claude && !claude.truncated
+        ? loadClaudeMCPJsonFile(null, '.mcp.json', claude.buffer.toString('utf8')) : empty,
+      codex && !codex.truncated
+        ? loadCodexMCPConfigFile(null, '.codex/config.toml', codex.buffer.toString('utf8')) : empty,
     ]);
   }
 

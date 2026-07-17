@@ -286,6 +286,55 @@ describe('Work Center Runner execution resolution', () => {
     expect(engineOptions.at(-1).config.secureProjectFiles).toBe(true);
   });
 
+  it('loads regular workspace and user skills but rejects symlinked project tiers', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-project-skills-'));
+    const yeaftDir = mkdtempSync(join(tmpdir(), 'work-center-user-skills-'));
+    const outside = mkdtempSync(join(tmpdir(), 'work-center-outside-skills-'));
+    const writeSkill = (root, relativeDir, name) => {
+      const dir = join(root, relativeDir, name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name}\n---\n${name}`);
+    };
+    writeSkill(yeaftDir, 'skills', 'user-safe');
+    writeSkill(workDir, '.yeaft/skills', 'project-safe');
+    writeSkill(outside, 'skills', 'escaped-skill');
+    mkdirSync(join(workDir, '.claude'), { recursive: true });
+    symlinkSync(join(outside, 'skills'), join(workDir, '.claude/skills'), 'dir');
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Use skills safely', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      yeaftDir,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    try {
+      await runner.run({
+        workItem: { id: 'wi-skills', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+        action: { id: 'action-skills', type: 'implement', instruction: 'Use skills', requiredRole: 'omni' },
+        run: { id: 'run-skills', leaseEpoch: 1 }, ownerBootId: 'boot',
+        signal: new AbortController().signal,
+      });
+      const manager = engineOptions.at(-1).skillManager;
+      expect(manager.has('user-safe')).toBe(true);
+      expect(manager.has('project-safe')).toBe(true);
+      expect(manager.has('escaped-skill')).toBe(false);
+    } finally {
+      await runner.shutdown();
+      rmSync(yeaftDir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it('loads project MCP config from the canonical workspace but runs it in the isolated Action root', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-mcp-config-'));
     const executionDir = mkdtempSync(join(tmpdir(), 'work-center-mcp-execution-'));
