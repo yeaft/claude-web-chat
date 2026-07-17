@@ -50,6 +50,37 @@ function truncateUtf8(text, maxBytes) {
   return new StringDecoder('utf8').write(buffer.subarray(0, maxBytes));
 }
 
+function boundToolOutput(text) {
+  if (Buffer.byteLength(text, 'utf8') <= MAX_OUTPUT_BYTES) return text;
+  return truncateUtf8(text, MAX_CAPTURE_BYTES) + OUTPUT_TRUNCATED_MARKER;
+}
+
+function formatGrepError(message) {
+  const errorMessage = `Grep failed: ${message}`;
+  const serialized = JSON.stringify({ error: errorMessage });
+  if (Buffer.byteLength(serialized, 'utf8') <= MAX_OUTPUT_BYTES) return serialized;
+
+  const markerBytes = Buffer.byteLength(OUTPUT_TRUNCATED_MARKER, 'utf8');
+  let low = 0;
+  let high = Math.max(0, Buffer.byteLength(errorMessage, 'utf8') - markerBytes);
+  let result = JSON.stringify({ error: OUTPUT_TRUNCATED_MARKER });
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = JSON.stringify({
+      error: truncateUtf8(errorMessage, mid) + OUTPUT_TRUNCATED_MARKER,
+    });
+    if (Buffer.byteLength(candidate, 'utf8') <= MAX_OUTPUT_BYTES) {
+      result = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return result;
+}
+
 function createOutputCollector(maxBytes = MAX_OUTPUT_BYTES) {
   const parts = [];
   const contentBytes = Math.max(0, maxBytes - Buffer.byteLength(OUTPUT_TRUNCATED_MARKER, 'utf8'));
@@ -389,15 +420,18 @@ Guidelines:
         return '(no matches)';
       }
 
-      // Limit output lines
+      // Limit output lines, then enforce the byte budget at the actual tool
+      // boundary so prefixes, JSON escaping, and result markers are included.
       const lines = result.trim().split('\n');
       if (lines.length > head_limit) {
-        return lines.slice(0, head_limit).join('\n') + `\n\n... (${lines.length - head_limit} more results)`;
+        return boundToolOutput(
+          lines.slice(0, head_limit).join('\n') + `\n\n... (${lines.length - head_limit} more results)`,
+        );
       }
 
-      return result.trim();
+      return boundToolOutput(result.trim());
     } catch (err) {
-      return JSON.stringify({ error: `Grep failed: ${err.message}` });
+      return formatGrepError(err.message);
     }
   },
 });

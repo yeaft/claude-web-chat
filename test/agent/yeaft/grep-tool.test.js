@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { nodeGrep, runRipgrep } from '../../../agent/yeaft/tools/grep.js';
+import grepTool, { nodeGrep, runRipgrep } from '../../../agent/yeaft/tools/grep.js';
 
 const tempDirs = [];
+const originalPath = process.env.PATH;
 
 function makeTempDir() {
   const dir = mkdtempSync(join(tmpdir(), 'yeaft-grep-tool-'));
@@ -45,6 +46,7 @@ function fakeRipgrepOutput(stdout, { stderr = '', exitCode = 0 } = {}) {
 }
 
 afterEach(() => {
+  process.env.PATH = originalPath;
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -93,6 +95,27 @@ describe('Grep tool output safety', () => {
     expect(Buffer.byteLength(error.message, 'utf8')).toBeLessThanOrEqual(512 * 1024);
     expect(error.message).toContain('[Output truncated]');
     expect(error.message).not.toContain('\ufffd');
+  });
+
+  it('enforces the byte budget after the Grep error envelope is serialized', async () => {
+    const binDir = makeTempDir();
+    const searchDir = makeTempDir();
+    const rgPath = join(binDir, 'rg');
+    writeFileSync(rgPath, `#!/usr/bin/env node
+if (process.argv.includes('--version')) process.exit(0);
+process.stderr.write('e'.repeat(512 * 1024));
+process.exitCode = 2;
+`);
+    chmodSync(rgPath, 0o755);
+    process.env.PATH = `${binDir}:${originalPath}`;
+
+    const result = await grepTool.execute({ pattern: 'needle' }, { cwd: searchDir });
+    const payload = JSON.parse(result);
+
+    expect(Buffer.byteLength(result, 'utf8')).toBeLessThanOrEqual(512 * 1024);
+    expect(payload.error).toMatch(/^Grep failed: /);
+    expect(payload.error).toContain('[Output truncated]');
+    expect(payload.error).not.toContain('\ufffd');
   });
 
   it('bounds invalid ripgrep stdout after UTF-8 decoding', async () => {
