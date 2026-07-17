@@ -524,6 +524,9 @@ export class Engine {
   /** @type {Array<{content:string|Array, preview:string}>} */
   #pendingUserMessages = [];
 
+  /** True after the bridge queued input in its external per-thread buffer. */
+  #externalUserWakePending = false;
+
   /**
    * Tasks (background bash, sub-agent spawns) that were launched DURING
    * the currently-running query() and have NOT terminated yet. The query
@@ -1654,6 +1657,7 @@ export class Engine {
 
   #drainPendingUserMessages(drainPendingUserMessages) {
     const pending = [];
+    this.#externalUserWakePending = false;
     if (typeof drainPendingUserMessages === 'function') {
       try {
         const drained = drainPendingUserMessages();
@@ -1809,6 +1813,7 @@ export class Engine {
       this.#abortReason = null;
       this.#currentThreadId = MAIN_THREAD_ID;
       this.#pendingUserMessages.length = 0;
+      this.#externalUserWakePending = false;
       this.#asyncTaskToolMeta.clear();
       this.#pendingTaskResultMessages.length = 0;
       this.#pendingTaskResultUpdates.length = 0;
@@ -2955,7 +2960,8 @@ export class Engine {
         while (!signal?.aborted
                && this.#pendingTaskResultMessages.length === 0
                && this.#pendingTaskResultUpdates.length === 0
-               && this.#pendingUserMessages.length === 0) {
+               && this.#pendingUserMessages.length === 0
+               && !this.#externalUserWakePending) {
           if (this.#pendingAsyncTaskIds.size === 0) break;
           await this.#waitForAsyncWake(signal);
         }
@@ -3681,6 +3687,20 @@ export class Engine {
   }
 
   /**
+   * Wake a query whose external pending-message hook has received input.
+   * The bridge keeps the full message (attachments and provenance included)
+   * in its thread queue; this method only releases an async-task wait so the
+   * normal drain callback can consume it at the next safe adapter boundary.
+   * @returns {boolean}
+   */
+  wakeForPendingUserMessage() {
+    if (!this.isRunning) return false;
+    this.#externalUserWakePending = true;
+    this.#wakeAsyncTaskWaiters();
+    return true;
+  }
+
+  /**
    * Install the coordinator that lets an external dispatcher (web-bridge)
    * route a background task's terminal event back to THIS engine while
    * its query() is still running. Pass `null` to detach.
@@ -3851,6 +3871,7 @@ export class Engine {
       if (this.#pendingTaskResultMessages.length > 0) return resolve();
       if (this.#pendingTaskResultUpdates.length > 0) return resolve();
       if (this.#pendingUserMessages.length > 0) return resolve();
+      if (this.#externalUserWakePending) return resolve();
       if (signal?.aborted) return resolve();
       this.#asyncTaskWaiters.push(resolve);
       if (signal && typeof signal.addEventListener === 'function') {

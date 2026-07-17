@@ -80,7 +80,27 @@ const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
 const PROJECT_SKILL_TIERS = new Set(['project', 'project-claude', 'project-codex']);
 const BASE_RUNTIME_KEY = '__base__';
 
-/** @type {Map<string, {resolve:Function, sessionId:string, vpId:string, threadId:string, turnId:string, signal?:AbortSignal, onAbort?:Function}>} */
+/**
+ * Live AskUser requests. They are Session-scoped runtime state rather than a
+ * turn lock: every connected client may answer the same request, while the
+ * first valid answer wins. Pending requests are replayed when another device
+ * loads the Session.
+ * @type {Map<string, {
+ *   resolve:Function,
+ *   reject?:Function,
+ *   sessionId:string,
+ *   vpId:string,
+ *   threadId:string,
+ *   turnId:string,
+ *   question:string,
+ *   options:Array<string>,
+ *   createdAt:number,
+ *   expiresAt:number,
+ *   timer?:NodeJS.Timeout|null,
+ *   resumeQueryTimer?:Function,
+ *   signal?:AbortSignal,
+ *   onAbort?:Function,
+ * }>} */
 const pendingUserPrompts = new Map();
 
 /** @type {import('./session.js').Session | null} */
@@ -212,6 +232,7 @@ function scheduleYeaftLoadHistoryMetadataReplay(sessionId) {
         yeaftDir: ctx.CONFIG?.yeaftDir || null,
         tasks: replaySession.taskManager ? replaySession.taskManager.listActiveTasks() : [],
       }, { sessionId });
+      if (sessionId) replayPendingUserPrompts(sessionId);
       sendSessionSnapshotBroadcast();
       if (sessionId && session === replaySession) {
         sendDreamSnapshotForSession(sessionId, { trigger: 'load_history' }).catch(() => null);
@@ -796,6 +817,8 @@ export function broadcastLanguageChange(language) {
 /** Query timeout in ms — abort if LLM doesn't respond within this window */
 const QUERY_TIMEOUT_MS = 120_000;
 const HIGH_REASONING_QUERY_TIMEOUT_MS = 300_000;
+/** AskUser is human-paced but must never pin a VP turn forever. */
+const ASK_USER_TIMEOUT_MS = 10 * 60_000;
 
 function isHighReasoningEffort(effort) {
   const value = typeof effort === 'string' ? effort.trim().toLowerCase() : '';
@@ -1378,6 +1401,12 @@ export function __testGetVpThreads(sessionId, vpId) {
   }));
 }
 
+/** Test-only: attach an Engine-like wake target to a seeded VP thread. */
+export function __testSetVpThreadEngine({ sessionId, vpId, threadId, engine }) {
+  const thread = getOrCreateVpThread({ sessionId, vpId, threadId });
+  thread.engine = engine || null;
+}
+
 /** Test-only: seed a VP thread without starting its engine driver. */
 export function __testSeedVpThread({ sessionId, vpId, threadId, title = 'test thread', status = 'queued' }) {
   const thread = getOrCreateVpThread({ sessionId, vpId, threadId, title });
@@ -1725,31 +1754,43 @@ async function routeEnvelopeToVpThread(sessionId, vpId, envelope) {
       senderVpId: isInternalAppend ? (envelope?.msg?.meta?.senderVpId || envelope?.msg?.from || null) : null,
       sourceThreadId: isInternalAppend ? visibleInboundThreadId(envelope, thread.threadId) : null,
     });
-    persistInboundMessageOnceByMsgId({
-      msgId: envelope?.msg?.id,
-      text,
-      sessionId,
-      threadId: visibleInboundThreadId(envelope, thread.threadId),
-      role: isInternalAppend ? 'assistant' : 'user',
-      speakerVpId: envelope?.msg?.meta?.senderVpId || envelope?.msg?.from || null,
-      attachments: Array.isArray(envelope?.msg?.meta?.attachments) ? envelope.msg.meta.attachments : [],
-      internal: isInternalAppend,
-      ts: envelope?.msg?.ts || null,
-      clientMessageId: envelope?.msg?.meta?.clientMessageId || null,
-    });
-    thread.updatedAt = Date.now();
-    try {
-      sendSessionEvent({
-        type: 'vp_thread_user_appended',
+    // A thread parked on a background task has no adapter activity to poll this
+    // queue. Wake its Engine explicitly so the new user message is consumed
+    // immediately while the task remains tracked in TaskManager. If the Engine
+    // is not actually running, this was a stale classifier hit; remove the
+    // append and fall through to a normal queued turn instead of orphaning it.
+    let appendedToRunningThread = false;
+    try { appendedToRunningThread = thread.engine?.wakeForPendingUserMessage?.() === true; } catch { /* best-effort wake */ }
+    if (!appendedToRunningThread) {
+      thread.pendingQueries.pop();
+      related = false;
+    } else {
+      persistInboundMessageOnceByMsgId({
+        msgId: envelope?.msg?.id,
+        text,
         sessionId,
-        vpId,
-        threadId: thread.threadId,
-        title: thread.title,
-        turnId,
-        ts: Date.now(),
-      }, { sessionId, vpId, threadId: thread.threadId, turnId });
-    } catch { /* never crash WS pipeline */ }
-    return thread.threadId;
+        threadId: visibleInboundThreadId(envelope, thread.threadId),
+        role: isInternalAppend ? 'assistant' : 'user',
+        speakerVpId: envelope?.msg?.meta?.senderVpId || envelope?.msg?.from || null,
+        attachments: Array.isArray(envelope?.msg?.meta?.attachments) ? envelope.msg.meta.attachments : [],
+        internal: isInternalAppend,
+        ts: envelope?.msg?.ts || null,
+        clientMessageId: envelope?.msg?.meta?.clientMessageId || null,
+      });
+      thread.updatedAt = Date.now();
+      try {
+        sendSessionEvent({
+          type: 'vp_thread_user_appended',
+          sessionId,
+          vpId,
+          threadId: thread.threadId,
+          title: thread.title,
+          turnId,
+          ts: Date.now(),
+        }, { sessionId, vpId, threadId: thread.threadId, turnId });
+      } catch { /* never crash WS pipeline */ }
+      return thread.threadId;
+    }
   }
 
   const key = threadKey(sessionId, vpId, thread.threadId);
@@ -2333,6 +2374,60 @@ function sendSessionEvent(event, { sessionId, chatId, vpId, turnId, threadId, pe
     ...(threadId ? { threadId } : {}),
     event,
   });
+}
+
+function pendingUserPromptEvent(requestId, pending, extra = {}) {
+  return {
+    type: 'ask_user_question',
+    requestId,
+    questions: [{
+      question: pending.question,
+      options: pending.options.map(label => ({ label, description: '' })),
+      multiSelect: false,
+    }],
+    createdAt: pending.createdAt,
+    expiresAt: pending.expiresAt,
+    ...extra,
+  };
+}
+
+function sendPendingUserPrompt(requestId, pending, extra = {}) {
+  sendSessionEvent(pendingUserPromptEvent(requestId, pending, extra), {
+    sessionId: pending.sessionId,
+    vpId: pending.vpId,
+    threadId: pending.threadId,
+    turnId: pending.turnId,
+  });
+}
+
+function replayPendingUserPrompts(sessionId) {
+  const now = Date.now();
+  for (const [requestId, pending] of pendingUserPrompts) {
+    if (pending.sessionId !== sessionId || pending.expiresAt <= now) continue;
+    sendPendingUserPrompt(requestId, pending, { replay: true });
+  }
+}
+
+function settlePendingUserPrompt(requestId, pending, { answers = null, timedOut = false } = {}) {
+  if (pendingUserPrompts.get(requestId) !== pending) return false;
+  pendingUserPrompts.delete(requestId);
+  if (pending.timer) clearTimeout(pending.timer);
+  if (pending.signal && pending.onAbort) {
+    try { pending.signal.removeEventListener('abort', pending.onAbort); } catch { /* ignore */ }
+  }
+  try { pending.resumeQueryTimer?.(); } catch { /* best-effort */ }
+  sendSessionEvent({
+    type: timedOut ? 'ask_user_expired' : 'ask_user_answered',
+    requestId,
+    ...(timedOut ? { expiredAt: Date.now() } : { answers: answers || {} }),
+  }, {
+    sessionId: pending.sessionId,
+    vpId: pending.vpId,
+    threadId: pending.threadId,
+    turnId: pending.turnId,
+  });
+  pending.resolve(timedOut ? { __yeaftTimedOut: true } : (answers || {}));
+  return true;
 }
 
 function configuredVpPaths() {
@@ -4560,40 +4655,44 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         askUser: ({ question, options }) => new Promise((resolve, reject) => {
           const requestId = `ask_${randomUUID()}`;
           const signal = vpAbort.signal;
-          // User think time is not engine silence. Pause the query watchdog until
-          // the card is answered; the normal tool/LLM budget resumes afterward.
+          const createdAt = Date.now();
+          // Human think time is not engine silence. Pause the query watchdog,
+          // but keep a separate bounded AskUser lifetime so an abandoned card
+          // cannot pin the VP forever.
           if (queryTimer) {
             clearTimeout(queryTimer);
             queryTimer = null;
           }
-          const onAbort = () => {
-            pendingUserPrompts.delete(requestId);
-            reject(new Error('aborted'));
-          };
-          pendingUserPrompts.set(requestId, {
-            resolve: answers => {
-              resetQueryTimer();
-              resolve(answers);
-            },
+          const pending = {
+            resolve,
+            reject,
             sessionId,
             vpId,
             threadId,
             turnId,
+            question,
+            options: Array.isArray(options) ? options.filter(label => typeof label === 'string') : [],
+            createdAt,
+            expiresAt: createdAt + ASK_USER_TIMEOUT_MS,
+            timer: null,
+            resumeQueryTimer: resetQueryTimer,
             signal,
-            onAbort,
-          });
+            onAbort: null,
+          };
+          const onAbort = () => {
+            if (pendingUserPrompts.get(requestId) !== pending) return;
+            pendingUserPrompts.delete(requestId);
+            if (pending.timer) clearTimeout(pending.timer);
+            reject(new Error('aborted'));
+          };
+          pending.onAbort = onAbort;
+          pending.timer = setTimeout(() => {
+            settlePendingUserPrompt(requestId, pending, { timedOut: true });
+          }, ASK_USER_TIMEOUT_MS);
+          if (typeof pending.timer.unref === 'function') pending.timer.unref();
+          pendingUserPrompts.set(requestId, pending);
           signal.addEventListener('abort', onAbort, { once: true });
-          sendSessionEvent({
-            type: 'ask_user_question',
-            requestId,
-            questions: [{
-              question,
-              options: Array.isArray(options)
-                ? options.map(label => ({ label, description: '' }))
-                : [],
-              multiSelect: false,
-            }],
-          }, envelope);
+          sendPendingUserPrompt(requestId, pending);
         }),
         threadId,
         vpTurnId: turnId,
@@ -5639,12 +5738,7 @@ export function handleYeaftAskUserAnswer(msg) {
   if (msg.turnId && msg.turnId !== pending.turnId) return false;
   if (msg.threadId && msg.threadId !== pending.threadId) return false;
 
-  pendingUserPrompts.delete(requestId);
-  if (pending.signal && pending.onAbort) {
-    try { pending.signal.removeEventListener('abort', pending.onAbort); } catch { /* ignore */ }
-  }
-  pending.resolve(msg.answers || {});
-  return true;
+  return settlePendingUserPrompt(requestId, pending, { answers: msg.answers || {} });
 }
 
 export async function handleYeaftSessionSend(msg) {
@@ -6543,13 +6637,21 @@ export const __testHooks = {
     vpAborts.clear();
     vpInboxes.clear();
   },
-  seedPendingUserPrompt({ requestId = 'ask-test', sessionId = 'session-test', vpId = 'vp-test', threadId = 'main', turnId = 'turn-test' } = {}) {
+  seedPendingUserPrompt({ requestId = 'ask-test', sessionId = 'session-test', vpId = 'vp-test', threadId = 'main', turnId = 'turn-test', question = 'Continue?', options = [], createdAt = Date.now(), expiresAt = Date.now() + ASK_USER_TIMEOUT_MS } = {}) {
     let resolved;
     const promise = new Promise(resolve => { resolved = resolve; });
-    pendingUserPrompts.set(requestId, { resolve: resolved, sessionId, vpId, threadId, turnId });
+    pendingUserPrompts.set(requestId, { resolve: resolved, sessionId, vpId, threadId, turnId, question, options, createdAt, expiresAt, timer: null });
     return promise;
   },
+  replayPendingUserPrompts,
+  settlePendingUserPromptForTest(requestId, opts = {}) {
+    const pending = pendingUserPrompts.get(requestId);
+    return pending ? settlePendingUserPrompt(requestId, pending, opts) : false;
+  },
   resetPendingUserPrompts() {
+    for (const pending of pendingUserPrompts.values()) {
+      if (pending.timer) clearTimeout(pending.timer);
+    }
     pendingUserPrompts.clear();
   },
   resetVpStatusBroker() {

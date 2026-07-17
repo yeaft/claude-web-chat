@@ -170,6 +170,60 @@ describe('engine — same-turn background task wait', () => {
     expect(e.ownsPendingAsyncTask('task-xyz')).toBe(false);
   });
 
+  it('external thread-queue wake releases the wait and drains the user message without completing the task', async () => {
+    const e = engine;
+    const a = adapter;
+    let queued = [];
+
+    e.registerTool({
+      name: 'fakeExternalWakeTool',
+      description: 'launches a fake background task',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, ctx) => {
+        ctx.registerAsyncTask('task-external-wake');
+        return 'Started background task task-external-wake.';
+      },
+    });
+
+    a.pushResponse([
+      { type: 'tool_call', id: 'call-external', name: 'fakeExternalWakeTool', input: {} },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    a.pushResponse(endTurn('parked'));
+    a.pushResponse(endTurn('answered user while task remains active'));
+    a.pushResponse(endTurn('task finished'));
+
+    const events = [];
+    let wakeSent = false;
+    let completionSent = false;
+    for await (const ev of e.query({
+      prompt: 'start it',
+      messages: [],
+      drainPendingUserMessages: () => queued.splice(0),
+    })) {
+      events.push(ev);
+      if (ev.type === 'async_task_wait_start' && !wakeSent) {
+        wakeSent = true;
+        queued.push({ content: 'answer this now too', preview: 'answer this now too' });
+        expect(e.wakeForPendingUserMessage()).toBe(true);
+      } else if (ev.type === 'async_task_wait_start' && wakeSent && !completionSent) {
+        completionSent = true;
+        e.notifyAsyncTaskCompleted(
+          'task-external-wake',
+          '<task-result id="task-external-wake" status="succeeded">done</task-result>',
+          { preview: 'done' },
+        );
+      }
+    }
+
+    expect(a.streamCalls).toHaveLength(4);
+    expect(JSON.stringify(a.streamCalls[2].messages)).toContain('answer this now too');
+    expect(events.filter(ev => ev.type === 'user_append')).toEqual([
+      expect.objectContaining({ preview: 'answer this now too', internal: false }),
+    ]);
+    expect(e.hasPendingAsyncTasks()).toBe(false);
+  });
+
   it('user append during the wait splices the user message and continues without dropping the still-pending task', async () => {
     const e = engine;
     const a = adapter;
