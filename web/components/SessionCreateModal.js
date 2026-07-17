@@ -142,7 +142,10 @@ export default {
                         @change="toggleVp(vp.vpId, $event.target.checked)"
                       />
                       <VpAvatar :vp-id="vp.vpId" :size="20" :aria-label="vpLabelFor(vp.vpId)" />
-                      <span class="yeaft-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
+                      <span class="yeaft-roster-copy">
+                        <span class="yeaft-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
+                        <span v-if="vpDescriptionFor(vp.vpId)" class="yeaft-roster-description">{{ vpDescriptionFor(vp.vpId) }}</span>
+                      </span>
                     </label>
                     <button
                       v-if="form.vpIds.includes(vp.vpId)"
@@ -772,6 +775,10 @@ export default {
     vpLabelFor(vpId) {
       const fn = this.vpStore?.vpLabel;
       return typeof fn === 'function' ? fn(vpId) : vpId;
+    },
+    vpDescriptionFor(vpId) {
+      const fn = this.vpStore?.vpDescription;
+      return typeof fn === 'function' ? fn(vpId) : '';
     },
     vpTextColorFor(vpId) {
       const fn = this.vpStore?.vpTextColor;

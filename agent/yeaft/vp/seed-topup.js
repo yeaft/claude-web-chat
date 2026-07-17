@@ -3,8 +3,9 @@
  *
  * Problem: `seedDefaultVps` is first-run-only — once the library has any VP
  * in it, that function never runs again. When we expanded the default roster
- * from 12 to 33 (philosophy, psychology, strategy, history, investing,
- * business, writing, science, arts, Omni), existing installs would never see the
+ * beyond the original 12 (philosophy, psychology, strategy, history,
+ * investing, business, writing, science, arts, Omni, and later additions),
+ * existing installs would never see the
  * new VPs without either (a) the user manually deleting their library or
  * (b) a forced overwrite that would clobber their hand edits.
  *
@@ -15,7 +16,8 @@
  *      on disk, `createVp()` it. This keeps product-owned defaults such as
  *      Omni and the expanded role roster visible in session/member pickers.
  *
- *   2. **Backfill missing stock frontmatter** (`area`, `nameZh`, `roleZh`) on
+ *   2. **Backfill missing stock frontmatter** (`area`, `nameZh`, `description`,
+ *      `descriptionZh`, `roleZh`) on
  *      existing seeded VPs whose role.md predates those fields. The persona body
  *      is left BYTE-IDENTICAL for these metadata backfills. If the user has
  *      authored their own value, we keep theirs.
@@ -216,6 +218,16 @@ export function insertNameZhLine(source, nameZh) {
   return insertFrontmatterLine(source, 'nameZh', nameZh);
 }
 
+/** Backfill `description:` into role.md frontmatter. */
+export function insertDescriptionLine(source, description) {
+  return insertFrontmatterLine(source, 'description', description);
+}
+
+/** Backfill `descriptionZh:` into role.md frontmatter. */
+export function insertDescriptionZhLine(source, descriptionZh) {
+  return insertFrontmatterLine(source, 'descriptionZh', descriptionZh);
+}
+
 /**
  * Backfill `roleZh:` into role.md frontmatter.
  *
@@ -272,6 +284,8 @@ function isObsoleteOmniAssistantBody(vp, body) {
  *   added: string[],
  *   areaBackfilled: string[],
  *   nameZhBackfilled: string[],
+ *   descriptionBackfilled: string[],
+ *   descriptionZhBackfilled: string[],
  *   roleZhBackfilled: string[],
  *   personaBackfilled: string[],
  *   respectedDeletes: string[],
@@ -283,6 +297,8 @@ export function topUpDefaultVps(libDir = DEFAULT_VP_LIB_DIR) {
   const added = [];
   const areaBackfilled = [];
   const nameZhBackfilled = [];
+  const descriptionBackfilled = [];
+  const descriptionZhBackfilled = [];
   const roleZhBackfilled = [];
   const personaBackfilled = [];
   const respectedDeletes = [];
@@ -294,7 +310,7 @@ export function topUpDefaultVps(libDir = DEFAULT_VP_LIB_DIR) {
   // that case there's nothing to top up — seedDefaultVps will populate
   // everything. We still return cleanly.
   if (!existsSync(libDir)) {
-    return { added, areaBackfilled, nameZhBackfilled, roleZhBackfilled, personaBackfilled, respectedDeletes, skippedExisting, errors };
+    return { added, areaBackfilled, nameZhBackfilled, descriptionBackfilled, descriptionZhBackfilled, roleZhBackfilled, personaBackfilled, respectedDeletes, skippedExisting, errors };
   }
 
   let versions = readSeedVersions(libDir);
@@ -369,6 +385,44 @@ export function topUpDefaultVps(libDir = DEFAULT_VP_LIB_DIR) {
           errors.push({
             vpId,
             code: 'name_zh_backfill_failed',
+            message: String(err?.message || err),
+          });
+        }
+      }
+      if (vp.description) {
+        try {
+          const src = readRole();
+          if (src != null) {
+            const patched = insertDescriptionLine(src, vp.description);
+            if (patched != null && patched !== src) {
+              writeFileSync(rolePath, patched, 'utf-8');
+              currentSrc = patched;
+              descriptionBackfilled.push(vpId);
+            }
+          }
+        } catch (err) {
+          errors.push({
+            vpId,
+            code: 'description_backfill_failed',
+            message: String(err?.message || err),
+          });
+        }
+      }
+      if (vp.descriptionZh) {
+        try {
+          const src = readRole();
+          if (src != null) {
+            const patched = insertDescriptionZhLine(src, vp.descriptionZh);
+            if (patched != null && patched !== src) {
+              writeFileSync(rolePath, patched, 'utf-8');
+              currentSrc = patched;
+              descriptionZhBackfilled.push(vpId);
+            }
+          }
+        } catch (err) {
+          errors.push({
+            vpId,
+            code: 'description_zh_backfill_failed',
             message: String(err?.message || err),
           });
         }
@@ -452,5 +506,5 @@ export function topUpDefaultVps(libDir = DEFAULT_VP_LIB_DIR) {
   }
 
   writeSeedVersions(libDir, versions);
-  return { added, areaBackfilled, nameZhBackfilled, roleZhBackfilled, personaBackfilled, respectedDeletes, skippedExisting, errors };
+  return { added, areaBackfilled, nameZhBackfilled, descriptionBackfilled, descriptionZhBackfilled, roleZhBackfilled, personaBackfilled, respectedDeletes, skippedExisting, errors };
 }

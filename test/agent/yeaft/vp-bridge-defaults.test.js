@@ -26,5 +26,14 @@ describe('VP bridge default library seeding', () => {
     expect(snapshot.vps.length).toBeGreaterThan(20);
     expect(snapshot.vps.map(vp => vp.vpId)).toContain('omni');
     expect(snapshot.vps.map(vp => vp.vpId)).toContain('linus');
+    const anders = snapshot.vps.find(vp => vp.vpId === 'anders');
+    expect(anders).toMatchObject({
+      displayName: 'Anders Hejlsberg',
+      displayNameZh: '安德斯·海尔斯伯格',
+      description: 'Language design, API compatibility, and reliable cloud-scale evolution',
+      descriptionZh: '语言设计、API 兼容性与可靠的云规模演进',
+      roleZh: '语言与云系统架构师',
+      isStock: true,
+    });
   });
 });

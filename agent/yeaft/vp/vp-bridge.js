@@ -8,6 +8,7 @@
  *
  * Per ruling §2 (D2):
  *   • subtitle  → agent emits `vp.role` directly
+ *   • capability descriptions → additive localized wire fields
  *   • personaHash → agent emits `vp.personaHash`
  *   • color / avatar → web-derived, NOT emitted here
  *
@@ -194,8 +195,8 @@ function ensureLoader(registry = defaultRegistry, options = {}) {
  * Serialise a VP (entity layer shape) to the wire-format the web layer
  * expects (spec §2.1). Pure; no IO.
  *
- * @param {{id:string,name:string,role:string,nameZh?:string,aliases?:string[],traits?:string[],modelHint?:string,personaHash?:string}} vp
- * @returns {{vpId:string,displayName:string,displayNameZh:string,aliases:string[],subtitle:string,role:string,traits:string[],modelHint:?string,personaHash:?string,isStock:boolean}}
+ * @param {{id:string,name:string,role:string,nameZh?:string,description?:string,descriptionZh?:string,roleZh?:string,aliases?:string[],traits?:string[],modelHint?:string,personaHash?:string}} vp
+ * @returns {{vpId:string,displayName:string,displayNameZh:string,description:string,descriptionZh:string,aliases:string[],subtitle:string,role:string,roleZh:string,traits:string[],modelHint:?string,personaHash:?string,isStock:boolean}}
  */
 export function serializeVpForWire(vp) {
   return {
@@ -204,8 +205,11 @@ export function serializeVpForWire(vp) {
     // task-fix (5-bugs): carry bilingual name + aliases (incl. pinyin) to
     // the frontend so @ mention matching + localised rendering work.
     displayNameZh: typeof vp.nameZh === 'string' ? vp.nameZh : '',
+    description: typeof vp.description === 'string' ? vp.description : '',
+    descriptionZh: typeof vp.descriptionZh === 'string' ? vp.descriptionZh : '',
     aliases: Array.isArray(vp.aliases) ? vp.aliases.slice() : [],
     role: vp.role || '',
+    roleZh: typeof vp.roleZh === 'string' ? vp.roleZh : '',
     subtitle: vp.role || '',
     traits: Array.isArray(vp.traits) ? vp.traits.slice() : [],
     modelHint: vp.modelHint ?? null,

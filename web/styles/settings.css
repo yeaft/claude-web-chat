@@ -268,15 +268,14 @@
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 500;
   line-height: 1.2;
 }
 
-.settings-pane-yeaft .vp-crud-card-name span {
+.settings-pane-yeaft .vp-crud-card-name span,
+.settings-pane-yeaft .vp-crud-card-description {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;

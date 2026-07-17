@@ -29,7 +29,11 @@ import { createHash } from 'crypto';
  * @typedef {Object} VP
  * @property {string} id              — VP id (default: dir name)
  * @property {string} name
+ * @property {string} nameZh          — optional Chinese display name; '' if absent.
+ * @property {string} description     — concise English capability summary for roster lists.
+ * @property {string} descriptionZh   — optional Chinese capability summary; '' if absent.
  * @property {string} role
+ * @property {string} roleZh          — optional Chinese role label; '' if absent.
  * @property {string} area            — taxonomy bucket (e.g. 'philosophy', 'investing'); '' if absent.
  *                                       Optional, additive: no consumer is required to dispatch on it.
  *                                       Sidebar grouping by area is intentionally a future PR.
@@ -156,6 +160,8 @@ export function loadVpFromDir(dir) {
     aliases: Array.isArray(meta.aliases)
       ? meta.aliases.map(String).map(s => s.trim()).filter(Boolean)
       : [],
+    description: typeof meta.description === 'string' ? String(meta.description) : '',
+    descriptionZh: typeof meta.descriptionZh === 'string' ? String(meta.descriptionZh) : '',
     role: String(meta.role || ''),
     roleZh: typeof meta.roleZh === 'string' ? String(meta.roleZh) : '',
     // Taxonomy bucket for sidebar grouping / filtering. Absent for legacy

@@ -97,7 +97,7 @@ function vpRolePathFor(libDir, vpId) {
  * Serialise a VP payload into role.md text with YAML frontmatter matching
  * the parser in vp-store.js.
  *
- * @param {{vpId:string, displayName?:string, role?:string, traits?:string[], modelHint?:string, persona?:string}} p
+ * @param {{vpId:string, displayName?:string, displayNameZh?:string, description?:string, descriptionZh?:string, role?:string, roleZh?:string, traits?:string[], modelHint?:string, persona?:string}} p
  * @returns {string}
  */
 export function buildRoleMd(p) {
@@ -105,6 +105,8 @@ export function buildRoleMd(p) {
   const name = p.displayName != null ? String(p.displayName) : id;
   const nameZh = p.displayNameZh != null ? String(p.displayNameZh) : '';
   const aliases = Array.isArray(p.aliases) ? p.aliases.map(a => String(a)).filter(Boolean) : [];
+  const description = p.description != null ? String(p.description) : '';
+  const descriptionZh = p.descriptionZh != null ? String(p.descriptionZh) : '';
   const role = p.role != null ? String(p.role) : '';
   const roleZh = p.roleZh != null ? String(p.roleZh) : '';
   // Taxonomy bucket. Optional + additive — written only when present so
@@ -116,6 +118,8 @@ export function buildRoleMd(p) {
 
   const lines = ['---', `id: ${id}`, `name: ${yamlScalar(name)}`];
   if (nameZh) lines.push(`nameZh: ${yamlScalar(nameZh)}`);
+  if (description) lines.push(`description: ${yamlScalar(description)}`);
+  if (descriptionZh) lines.push(`descriptionZh: ${yamlScalar(descriptionZh)}`);
   lines.push(`role: ${yamlScalar(role)}`);
   if (roleZh) lines.push(`roleZh: ${yamlScalar(roleZh)}`);
   if (area) lines.push(`area: ${yamlScalar(area)}`);
@@ -148,7 +152,11 @@ function yamlScalar(v) {
  * @param {object} payload
  * @param {string} payload.vpId
  * @param {string} [payload.displayName]
+ * @param {string} [payload.displayNameZh]
+ * @param {string} [payload.description]
+ * @param {string} [payload.descriptionZh]
  * @param {string} [payload.role]
+ * @param {string} [payload.roleZh]
  * @param {string[]} [payload.traits]
  * @param {'primary'|'fast'} [payload.modelHint]
  * @param {string} [payload.persona]
@@ -258,7 +266,7 @@ export function deleteVp(vpId, options = {}) {
  *
  * @param {string} vpId
  * @param {object} [options]
- * @returns {?{vpId:string, displayName:string, role:string, traits:string[], modelHint:?string, persona:string}}
+ * @returns {?{vpId:string, displayName:string, displayNameZh:string, description:string, descriptionZh:string, role:string, roleZh:string, traits:string[], modelHint:?string, persona:string}}
  */
 export function readVp(vpId, options = {}) {
   const libDir = options.libDir || DEFAULT_VP_LIB_DIR;
@@ -279,6 +287,8 @@ export function readVp(vpId, options = {}) {
     displayName: String(meta.name || id),
     displayNameZh: typeof meta.nameZh === 'string' ? String(meta.nameZh) : '',
     aliases: Array.isArray(meta.aliases) ? meta.aliases.map(String) : [],
+    description: typeof meta.description === 'string' ? String(meta.description) : '',
+    descriptionZh: typeof meta.descriptionZh === 'string' ? String(meta.descriptionZh) : '',
     role: String(meta.role || ''),
     roleZh: typeof meta.roleZh === 'string' ? String(meta.roleZh) : '',
     traits: Array.isArray(meta.traits) ? meta.traits.map(String) : [],

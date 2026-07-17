@@ -28,9 +28,9 @@ import { useVpStore } from '../stores/vp.js';
 // the ENTRIES array in scripts/generate-avatars.mjs. Anything outside
 // this set falls back to the letter render — never hits a 404.
 const KNOWN_AVATAR_IDS = new Set([
-  // Original 12 (engineering / design / science / security / business).
+  // Core engineering / design / science / security / business roster.
   'ada', 'alan', 'alice', 'dieter', 'grace', 'ken',
-  'linus', 'margaret', 'martin', 'norman', 'shannon', 'steve',
+  'linus', 'margaret', 'martin', 'anders', 'norman', 'shannon', 'steve',
   // Expansion 20 (philosophy / psychology / strategy / history /
   // investing / business / writing / science / arts).
   'kongzi', 'socrates', 'nietzsche', 'kahneman', 'jung',

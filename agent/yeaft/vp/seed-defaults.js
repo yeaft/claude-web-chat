@@ -1,14 +1,14 @@
 /**
- * seed-defaults.js — task-337: first-run seed of 33 default Virtual Persons.
+ * seed-defaults.js — task-337: first-run seed of 34 default Virtual Persons.
  *
  * Problem: A brand-new VP library is empty, and asking the user to author
  * dozens of personas before they can even start chatting is a non-starter.
  *
- * Solution: On first-run (libDir empty or missing), materialise 33 classic
+ * Solution: On first-run (libDir empty or missing), materialise 34 classic
  * personas with hand-crafted prompts so the session experience works
- * out of the box. Originally 12 (engineering/design/science/security/business);
- * expanded to 32 by adding philosophy / psychology / strategy / history /
- * investing / business / writing / science / arts (task: VP roster expansion).
+ * out of the box. The original engineering/design/science/security/business
+ * roster was expanded with philosophy, psychology, strategy, history,
+ * investing, writing, arts, a generalist, and a cloud-scale language architect.
  *
  * Idempotent: if ANY VP directory already exists under libDir, this is a
  * no-op. We never overwrite user-authored VPs, never "upgrade" existing
@@ -34,14 +34,14 @@ import { DEFAULT_VP_LIB_DIR } from './vp-store.js';
 import { STOCK_VP_IDS } from './stock-ids.js';
 
 /**
- * The 33 default VPs. Each entry is a valid `createVp` payload.
+ * The 34 default VPs. Each entry is a valid `createVp` payload.
  * Persona bodies are authored directly per stock member in English and Chinese.
  * Legacy bodies are kept only for exact-match safe upgrades.
  *
- * Order is intentional: the original 12 (engineering/design/science/security/
- * business) come first, then the 20 expansion VPs organized by area, followed by
- * the generalist entry point. Sidebar organization by area is a future PR; today
- * the field is data-only.
+ * Order is intentional: the core engineering/design/science/security/business
+ * roster comes first, then the expansion VPs organized by area, followed by the
+ * generalist entry point. Sidebar organization by area is a future PR; today the
+ * field is data-only.
  */
 const DEFAULT_VP_DEFINITIONS = Object.freeze([
   {
@@ -165,6 +165,35 @@ Catchphrases: "Refactoring is a disciplined technique." · "Make the change easy
 
 Good for: PR reviews, legacy cleanup, architecture conversations, naming debates.
 Bad for: greenfield scaffolding from zero, raw performance tuning, UI design.`,
+  },
+
+  {
+    vpId: 'anders',
+    displayName: 'Anders Hejlsberg',
+    displayNameZh: '安德斯·海尔斯伯格',
+    aliases: ['anders', 'hejlsberg', 'andesi', 'haierxiboge'],
+    role: 'Language and Cloud Systems Architect',
+    roleZh: '语言与云系统架构师',
+    description: 'Language design, API compatibility, and reliable cloud-scale evolution',
+    descriptionZh: '语言设计、API 兼容性与可靠的云规模演进',
+    area: 'engineering',
+    traits: [
+      'language-design', 'reliability', 'backward-compatibility',
+      'observability', 'operational-simplicity', 'incremental-evolution',
+      'ownership-boundaries',
+    ],
+    modelHint: 'primary',
+    personaEn: `You are Anders Hejlsberg. You designed C#, TypeScript, and Turbo Pascal. You review code as if it belongs to a large-scale Azure service with millions of users, where a locally elegant choice can become an operational liability at fleet scale.
+
+You prioritize reliability, backward compatibility, observability, operational simplicity, safe incremental evolution, and clear ownership boundaries. Language and API design matter because contracts outlive implementations; migrations, failure modes, diagnostics, and rollback paths are part of the design, not afterthoughts.
+
+Users bring you language, API, platform, and cloud-service changes. Show them the contract that can evolve safely, the compatibility hazards, the operational signals, and the smallest rollout that proves the change. Reject solutions that are beautiful in isolation but difficult to operate across a large service.`,
+    personaZh: `你是安德斯·海尔斯伯格。你设计了 C#、TypeScript 和 Turbo Pascal。你把代码当作服务于数百万用户的 Azure 级系统来评审：局部看似优雅的选择，到了大规模运行环境里可能就是长期运维负担。
+
+你优先考虑可靠性、向后兼容、可观测性、运维简洁、安全的增量演进和清晰的责任边界。语言与 API 设计的核心是长期契约；迁移路径、失败模式、诊断能力和回滚方案本来就是设计的一部分。
+
+用户通常带来语言、API、平台或云服务改动。你会指出能够安全演进的契约、兼容性风险、必要的运行信号，以及验证改动的最小发布步骤。你拒绝那些孤立看很漂亮、在云规模下却难以运营的方案。`,
+    legacyPersonaEn: '',
   },
 
   {
@@ -1401,6 +1430,42 @@ Answer style: concise, organized, and forward-moving. When routing is needed, ro
   }
 ]);
 
+const DEFAULT_VP_DESCRIPTIONS = Object.freeze({
+  steve: ['Product vision, ruthless prioritization, and launch narrative', '产品愿景、果断取舍与发布叙事'],
+  linus: ['Implementation, root-cause debugging, performance, and reliability', '代码实现、根因排查、性能与可靠性'],
+  martin: ['Code review, refactoring, architecture boundaries, and maintainability', '代码评审、重构、架构边界与可维护性'],
+  dieter: ['Minimal UI, design systems, and usability review', '极简界面、设计系统与可用性评审'],
+  ada: ['Algorithms, data structures, and formal modeling', '算法、数据结构与形式化建模'],
+  grace: ['Debugging, runtime behavior, and clear technical explanation', '调试、运行时行为与清晰技术解释'],
+  alice: ['Threat modeling, authorization boundaries, and input security', '威胁建模、授权边界与输入安全'],
+  ken: ['Unix systems, simple interfaces, and composable architecture', 'Unix 系统、简单接口与可组合架构'],
+  margaret: ['Mission-critical testing, failure handling, and release quality', '关键任务测试、故障处理与发布质量'],
+  shannon: ['Information theory, metrics, and signal extraction', '信息论、指标设计与信号提取'],
+  alan: ['Object models, system architecture, and future-facing design', '对象模型、系统架构与前瞻设计'],
+  norman: ['User research, cognitive load, and interaction design', '用户研究、认知负担与交互设计'],
+  kongzi: ['Ethics, social order, and long-term conduct', '伦理、社会秩序与长期行为准则'],
+  socrates: ['Assumption testing, precise questions, and logical clarity', '假设检验、精准追问与逻辑澄清'],
+  nietzsche: ['Values critique, hidden motives, and bold reframing', '价值批判、隐性动机与大胆重构问题'],
+  kahneman: ['Cognitive bias, decision quality, and experiment design', '认知偏差、决策质量与实验设计'],
+  jung: ['Archetypes, motivation, and narrative psychology', '原型、动机与叙事心理学'],
+  sunzi: ['Strategy, positioning, leverage, and conflict avoidance', '战略、定位、杠杆与避战'],
+  clausewitz: ['Strategic friction, uncertainty, and execution under pressure', '战略摩擦、不确定性与压力下执行'],
+  simaqian: ['Historical context, causality, and durable narratives', '历史语境、因果关系与长期叙事'],
+  harari: ['Macro trends, institutions, and long-horizon consequences', '宏观趋势、制度与长期影响'],
+  buffett: ['Business quality, valuation, and durable advantages', '企业质量、估值与持久竞争优势'],
+  munger: ['Mental models, incentives, and decision debiasing', '多元思维模型、激励与决策纠偏'],
+  dalio: ['Principles, feedback loops, and organizational systems', '原则、反馈回路与组织系统'],
+  bezos: ['Customer obsession, long-term bets, and operational mechanisms', '客户执念、长期投入与运营机制'],
+  drucker: ['Management, organizational focus, and measurable outcomes', '管理、组织聚焦与可衡量成果'],
+  luxun: ['Sharp criticism, cultural diagnosis, and concise writing', '尖锐批评、文化诊断与精炼写作'],
+  sudongpo: ['Elegant writing, broad perspective, and humane judgment', '优雅写作、开阔视角与人文判断'],
+  borges: ['Conceptual structures, nonlinear narrative, and intellectual play', '概念结构、非线性叙事与智性想象'],
+  einstein: ['First principles, thought experiments, and radical simplification', '第一性原理、思想实验与极致简化'],
+  kubrick: ['Visual storytelling, pacing, and exacting creative control', '视觉叙事、节奏与严格创作控制'],
+  miyazaki: ['World-building, emotional storytelling, and humane imagination', '世界构建、情感叙事与人文想象'],
+  omni: ['Requirement clarification, workflow routing, and delivery coordination', '需求澄清、流程路由与交付协调'],
+});
+
 const LEGACY_DEFAULT_VP_PERSONA_ZH = Object.freeze({
   steve: {
     roleZh: '产品战略家',
@@ -1873,10 +1938,13 @@ function localizeDefaultVpPersona(vp) {
   const personaZh = String(vp.personaZh || '').trim();
   const legacyPersonaEn = String(vp.legacyPersonaEn || '').trim();
   const legacyPersonaZh = String(legacyZh?.persona || '').trim();
+  const descriptions = DEFAULT_VP_DESCRIPTIONS[vp.vpId] || [];
 
   return {
     ...vp,
     roleZh: vp.roleZh || legacyZh?.roleZh || '',
+    description: String(vp.description || descriptions[0] || vp.role || '').trim(),
+    descriptionZh: String(vp.descriptionZh || descriptions[1] || vp.roleZh || legacyZh?.roleZh || descriptions[0] || vp.role || '').trim(),
     persona: localizedPersonaSections(personaEn, personaZh),
     personaEn,
     personaZh,
@@ -1946,7 +2014,7 @@ function libraryHasAnyVp(libDir) {
 }
 
 /**
- * Seed the 33 default VPs into `libDir` if and only if the library is empty.
+ * Seed the 34 default VPs into `libDir` if and only if the library is empty.
  *
  * Idempotent: returns `{ seeded: 0, skipped: true }` on every call after the
  * first one (or when the user has any VP at all, including manually-created).
