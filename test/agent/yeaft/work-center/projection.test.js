@@ -296,6 +296,12 @@ describe('Work Center event projection', () => {
         { loopNumber: 4, messages: [], toolCalls: [], rawResponse: {
           body: 'Authorization: Basic LEAK_TEXT\r\nX-Safe: visible',
         } },
+        { loopNumber: 5, messages: [], toolCalls: [], requestBase: { rawRequest: {
+          headers: 'Cookie: a=LEAK_COOKIE_A; b=LEAK_COOKIE_B\r\nX-Safe: visible',
+        } } },
+        { loopNumber: 6, messages: [], toolCalls: [], rawResponse: {
+          body: 'Set-Cookie: a=LEAK_SET_COOKIE_A; Path=/; note=LEAK_SET_COOKIE_B\r\nX-Safe: visible',
+        } },
       ],
     });
 
@@ -303,11 +309,14 @@ describe('Work Center event projection', () => {
     for (const secret of [
       'LEAK_BASIC', 'LEAK_DIGEST', 'LEAK_COOKIE', 'LEAK_NEGOTIATE',
       'LEAK_TUPLE_API', 'LEAK_CUSTOM', 'LEAK_SET_COOKIE', 'LEAK_TEXT',
+      'LEAK_COOKIE_A', 'LEAK_COOKIE_B', 'LEAK_SET_COOKIE_A', 'LEAK_SET_COOKIE_B',
     ]) expect(wire).not.toContain(secret);
     expect(projected.request.loops[0].rawRequest.headers.Accept).toBe('application/json');
     expect(projected.request.loops[1].rawRequest.headers[2]).toEqual(['Accept', 'text/plain']);
     expect(projected.request.loops[2].rawRequest.rawHeaders.at(-1)).toBe('text/event-stream');
     expect(projected.request.loops[3].rawResponse.body).toContain('X-Safe: visible');
+    expect(projected.request.loops[4].rawRequest.headers).toBe('Cookie: ***\r\nX-Safe: visible');
+    expect(projected.request.loops[5].rawResponse.body).toBe('Set-Cookie: ***\r\nX-Safe: visible');
   });
 
   it('redacts URL credentials, secret query values, and binary data embedded in SSE', () => {

@@ -312,9 +312,19 @@ export function sanitizeDebugUrl(value) {
   }
 }
 
+function redactSensitiveHeaderLines(value) {
+  return String(value || '').replace(
+    /(^|\r?\n)([\t ]*)([^:\r\n]{1,256})([\t ]*:[\t ]*)([^\r\n]*)/g,
+    (match, boundary, whitespace, name, operator) => (isSensitiveName(name)
+      ? `${boundary}${whitespace}${name}${operator}***`
+      : match),
+  );
+}
+
 export function sanitizeDiagnosticText(value, maxBytes = 8 * 1024) {
   let text = truncateUtf8(value, maxBytes);
   text = text.replace(/https?:\/\/[^\s"'<>]+/gi, match => sanitizeDebugUrl(match));
+  text = redactSensitiveHeaderLines(text);
   text = redactSensitiveAssignments(text);
   text = text.replace(/\b(Bearer)\s+[^\s,;}\]]+/gi, '$1 ***');
   return truncateUtf8(text, maxBytes);
