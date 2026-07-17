@@ -96,7 +96,10 @@ describe('Work Center Action composer scope', () => {
     const emits = [];
     const target = { value: 'new context', scrollHeight: 240, style: { height: '40px' } };
 
-    WorkCenterActionDetail.methods.onComposerInput.call({ $emit: (...args) => emits.push(args) }, { target });
+    WorkCenterActionDetail.methods.onComposerInput.call({
+      $emit: (...args) => emits.push(args),
+      resizeComposerInput: WorkCenterActionDetail.methods.resizeComposerInput,
+    }, { target });
 
     expect(emits).toEqual([['update:composerText', 'new context']]);
     expect(target.style.height).toBe('120px');

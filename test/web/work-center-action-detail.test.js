@@ -25,6 +25,31 @@ function mountDetail(props = {}) {
 describe('Work Center Action detail tabs', () => {
   afterEach(() => document.body.replaceChildren());
 
+  it('resets the composer height when a send or Action switch clears its text', async () => {
+    const wrapper = mountDetail({ composerText: 'line one\nline two' });
+    const input = wrapper.get('textarea');
+    Object.defineProperty(input.element, 'scrollHeight', { configurable: true, value: 240 });
+
+    await input.trigger('input');
+    expect(input.element.style.height).toBe('120px');
+
+    await wrapper.setProps({ composerText: '' });
+    await wrapper.vm.$nextTick();
+    expect(input.element.style.height).toBe('auto');
+
+    await wrapper.setProps({ composerText: 'another long draft' });
+    await input.trigger('input');
+    expect(input.element.style.height).toBe('120px');
+
+    await wrapper.setProps({
+      action: { id: 'action-2', type: 'review', status: 'running', executionStats: {}, messages: [] },
+      selected: { id: 'wi-1', status: 'running', currentActionId: 'action-2' },
+      composerText: '',
+    });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('textarea').element.style.height).toBe('auto');
+  });
+
   it('supports roving focus with arrow, Home, and End keys', async () => {
     const wrapper = mountDetail();
     const messages = wrapper.get('#work-center-action-messages-tab');

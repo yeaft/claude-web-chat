@@ -59,6 +59,10 @@ export default {
       this.expandedLoops = {};
       this.$nextTick(() => renderMermaidIn(this.$el));
     },
+    composerText(value) {
+      if (value) return;
+      this.$nextTick(() => this.resizeComposerInput(this.$refs.composerInput, true));
+    },
     messages: {
       deep: true,
       handler() { this.$nextTick(() => renderMermaidIn(this.$el)); },
@@ -132,10 +136,14 @@ export default {
     loopExpanded(request, loop) {
       return !!this.expandedLoops[this.requestLoopKey(request, loop)];
     },
+    resizeComposerInput(input, reset = false) {
+      if (!input) return;
+      input.style.height = 'auto';
+      if (!reset) input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
+    },
     onComposerInput(event) {
       this.$emit('update:composerText', event.target.value);
-      event.target.style.height = 'auto';
-      event.target.style.height = `${Math.min(event.target.scrollHeight, 120)}px`;
+      this.resizeComposerInput(event.target, !event.target.value);
     },
     onComposerKeydown(event) {
       if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
