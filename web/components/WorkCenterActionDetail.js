@@ -33,8 +33,10 @@ export default {
   },
   computed: {
     canCompose() {
-      return this.selected?.currentActionId === this.action?.id
-        && ['ready', 'running', 'waiting', 'needs_attention'].includes(this.selected?.status);
+      if (!this.action || !['ready', 'running', 'waiting', 'needs_attention'].includes(this.selected?.status)) return false;
+      if (this.selected?.currentActionId === this.action.id) return true;
+      return this.selected?.workflowSnapshot?.executionMode === 'graph'
+        && ['waiting', 'failed'].includes(this.action.status);
     },
     composerHint() {
       if (this.selected?.status === 'waiting') {

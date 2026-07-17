@@ -575,11 +575,14 @@ export default {
       await this.store.startWorkItem(this.selected.id, this.agentId);
     },
     async guideSelectedAction() {
-      if (!this.selected || !this.selectedAction || this.selected.currentActionId !== this.selectedAction.id
+      if (!this.selected || !this.selectedAction
         || (!this.actionGuidance.trim() && this.guidanceAttachments.length === 0)) return;
+      const graphBlockedAction = this.selected.workflowSnapshot?.executionMode === 'graph'
+        && ['waiting', 'failed'].includes(this.selectedAction.status);
+      if (this.selected.currentActionId !== this.selectedAction.id && !graphBlockedAction) return;
       const scope = this.actionComposerScope;
       const itemId = this.selected.id;
-      const actionId = this.selected.currentActionId;
+      const actionId = this.selectedAction.id;
       const revision = this.selected.revision;
       const text = this.actionGuidance.trim();
       const attachments = this.guidanceAttachments.map(attachment => ({

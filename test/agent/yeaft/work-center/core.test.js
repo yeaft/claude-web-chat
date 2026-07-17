@@ -223,6 +223,105 @@ describe('Work Center core', () => {
     expect(store.claimReadyAction('boot-a', 5_000).action.stageId).toBe('integrate');
   });
 
+  it('keeps a waiting graph Action blocked and resumes that exact Action with text and attachments', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'blocked-graph', actions: [
+        { id: 'diagnose', type: 'research', objective: 'Diagnose', dependsOnActionIds: [], workspaceMode: 'read' },
+        { id: 'verify', type: 'test', objective: 'Verify', dependsOnActionIds: ['diagnose'], workspaceMode: 'read' },
+      ] },
+    }));
+    const diagnose = store.claimReadyAction('boot-a', 5_000);
+    const waiting = controller.submit(diagnose.run.id, 'boot-a', diagnose.run.leaseEpoch, {
+      outcome: 'waiting', summary: 'Need the failing sample', evidence: [], waitingReason: 'Attach the sample',
+    });
+
+    expect(waiting).toMatchObject({ status: 'waiting', currentActionId: diagnose.action.id });
+    expect(waiting.actions.find(action => action.stageId === 'diagnose')).toMatchObject({ status: 'waiting' });
+    expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
+
+    const attachments = [{ fileId: 'file-1', name: 'sample.txt', mimeType: 'text/plain', size: 12 }];
+    const input = {
+      text: 'Use this sample', actionId: diagnose.action.id, revision: waiting.revision,
+      addedAttachmentCount: 1,
+      addedAttachments: [{ id: 'file-1', name: 'sample.txt', mimeType: 'text/plain', size: 12, isImage: false }],
+      attachments,
+    };
+    const resumed = controller.input(item.id, input);
+    const reset = resumed.actions.find(action => action.stageId === 'diagnose');
+    expect(resumed).toMatchObject({
+      status: 'ready', currentActionId: diagnose.action.id, revision: waiting.revision + 1, attachments,
+    });
+    expect(reset).toMatchObject({ id: diagnose.action.id, status: 'ready' });
+    expect(reset.context.at(-1)).toMatchObject({
+      summary: 'Need the failing sample', waitingReason: 'Attach the sample', answer: 'Use this sample',
+    });
+    expect(resumed.events.find(event => event.type === 'action.input_added')).toMatchObject({
+      actionId: diagnose.action.id,
+      data: { text: 'Use this sample', attachments: [{ id: 'file-1', name: 'sample.txt' }] },
+    });
+    expect(() => controller.input(item.id, input)).toThrow(/Action changed/);
+    const afterReplay = store.getWorkItemDetail(item.id);
+    expect(afterReplay.revision).toBe(resumed.revision);
+    expect(afterReplay.actions).toHaveLength(resumed.actions.length);
+    expect(afterReplay.events.filter(event => event.type === 'action.input_added')).toHaveLength(1);
+    expect(afterReplay.attachments).toEqual(attachments);
+
+    const guided = controller.input(item.id, {
+      text: 'Also inspect parser boundaries', actionId: diagnose.action.id, revision: resumed.revision,
+      addedAttachmentCount: 0, addedAttachments: [], attachments,
+    });
+    const guidedAction = guided.actions.find(action => action.stageId === 'diagnose');
+    expect(guided).toMatchObject({
+      status: 'ready', currentActionId: diagnose.action.id, revision: resumed.revision + 1,
+    });
+    expect(guided.actions).toHaveLength(resumed.actions.length);
+    expect(guidedAction).toMatchObject({
+      id: diagnose.action.id, status: 'ready', dependsOnStageIds: [], workspaceMode: 'read',
+      contractRevision: diagnose.action.contractRevision,
+    });
+    expect(guided.actions.find(action => action.stageId === 'verify')).toMatchObject({
+      status: 'ready', dependsOnStageIds: ['diagnose'],
+    });
+    expect(guided.events.find(event => event.type === 'action.guidance_added')).toMatchObject({
+      actionId: diagnose.action.id,
+      data: { guidance: 'Also inspect parser boundaries' },
+    });
+  });
+
+  it('retries a failed graph Action with attachment-only input and preserves its identity', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'failed-graph', actions: [
+        { id: 'implement', type: 'implement', objective: 'Implement', dependsOnActionIds: [], workspaceMode: 'read' },
+      ] },
+    }));
+    const implement = store.claimReadyAction('boot-a', 5_000);
+    const failed = controller.submit(implement.run.id, 'boot-a', implement.run.leaseEpoch, {
+      outcome: 'failed', error: 'Missing reproduction', summary: 'Cannot reproduce', evidence: [],
+    });
+    const attachments = [{ fileId: 'file-2', name: 'repro.md', mimeType: 'text/markdown', size: 8 }];
+    const retried = controller.input(item.id, {
+      text: '', actionId: implement.action.id, revision: failed.revision,
+      addedAttachmentCount: 1,
+      addedAttachments: [{ id: 'file-2', name: 'repro.md', mimeType: 'text/markdown', size: 8, isImage: false }],
+      attachments,
+    });
+
+    expect(retried).toMatchObject({ status: 'ready', currentActionId: implement.action.id, attachments });
+    expect(retried.actions.find(action => action.stageId === 'implement')).toMatchObject({
+      id: implement.action.id, status: 'ready',
+    });
+    expect(retried.events.find(event => event.type === 'action.input_added')).toMatchObject({
+      actionId: implement.action.id,
+      data: { text: 'The user added 1 attachment(s) as additional context for this Action.' },
+    });
+  });
+
   it('serializes linear shared workspace writes across WorkItems by canonical identity', () => {
     const firstItem = controller.create(createInput({ title: 'First linear writer' }));
     const secondItem = controller.create(createInput({ title: 'Second linear writer' }));

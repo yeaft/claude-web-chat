@@ -16,6 +16,7 @@ globalThis.Pinia = {
 globalThis.window.Pinia = globalThis.Pinia;
 
 const { default: WorkCenterPage } = await import('../../web/components/WorkCenterPage.js');
+const { default: WorkCenterActionDetail } = await import('../../web/components/WorkCenterActionDetail.js');
 
 function deferred() {
   let resolve;
@@ -54,6 +55,24 @@ function makeContext() {
 }
 
 describe('Work Center Action composer scope', () => {
+  it('shows the composer for a selected blocked graph Action even when currentActionId points elsewhere', () => {
+    const canCompose = WorkCenterActionDetail.computed.canCompose;
+    expect(canCompose.call({
+      selected: {
+        status: 'needs_attention', currentActionId: 'action-2',
+        workflowSnapshot: { executionMode: 'graph' },
+      },
+      action: { id: 'action-1', status: 'failed' },
+    })).toBe(true);
+    expect(canCompose.call({
+      selected: {
+        status: 'ready', currentActionId: 'action-2',
+        workflowSnapshot: { executionMode: 'graph' },
+      },
+      action: { id: 'action-1', status: 'completed' },
+    })).toBe(false);
+  });
+
   it('submits the visible Action identity, revision, Agent, and attachments atomically', async () => {
     const context = makeContext();
     context.store.sendWorkItemActionInput.mockResolvedValue({ currentActionId: 'action-1' });
@@ -67,6 +86,38 @@ describe('Work Center Action composer scope', () => {
     );
     expect(context.actionGuidance).toBe('');
     expect(context.guidanceAttachments).toEqual([]);
+  });
+
+  it('submits the selected blocked graph Action instead of a different current Action', async () => {
+    const context = makeContext();
+    context.selected.workflowSnapshot = { executionMode: 'graph' };
+    context.selected.status = 'needs_attention';
+    context.selected.currentActionId = 'action-2';
+    context.selectedAction = { id: 'action-1', status: 'failed' };
+    context.store.sendWorkItemActionInput.mockResolvedValue({ currentActionId: 'action-1' });
+
+    await WorkCenterPage.methods.guideSelectedAction.call(context);
+
+    expect(context.store.sendWorkItemActionInput).toHaveBeenCalledWith(
+      'wi-1', 'old draft', 'action-1', 2,
+      [{ fileId: 'old-file', name: 'old.txt', mimeType: 'text/plain', size: 3 }],
+      'agent-1',
+    );
+  });
+
+  it('preserves blocked graph composer input when the send fails', async () => {
+    const context = makeContext();
+    context.selected.workflowSnapshot = { executionMode: 'graph' };
+    context.selected.status = 'waiting';
+    context.selected.currentActionId = 'action-2';
+    context.selectedAction = { id: 'action-1', status: 'waiting' };
+    context.store.sendWorkItemActionInput.mockRejectedValue(new Error('stale revision'));
+
+    await WorkCenterPage.methods.guideSelectedAction.call(context);
+
+    expect(context.actionGuidance).toBe('old draft');
+    expect(context.guidanceAttachments).toHaveLength(1);
+    expect(context.actionInputError).toBe('stale revision');
   });
 
   it('does not let an old send completion clear or redirect the new Action composer', async () => {
