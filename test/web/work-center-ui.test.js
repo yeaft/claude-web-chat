@@ -157,7 +157,7 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('.work-center-action-transcript');
     expect(css).toContain('.work-center-request-card');
     expect(css).toContain('.work-center-action-composer');
-    expect(css).toContain('grid-template-columns: clamp(230px, 17vw, 290px) clamp(330px, 25vw, 430px) minmax(480px, 1fr)');
+    expect(css).toContain('grid-template-columns: clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr)');
     expect(css).toContain('.work-center-action-state');
     expect(css).toContain('.work-center-action-input-wrapper');
 
@@ -202,7 +202,7 @@ describe('Work Center UI contract', () => {
     expect(page).not.toContain('class="work-center-detail-empty-icon"');
     expect(page).toContain("tr('workCenter.createFirst'");
     expect(css).toContain('width: 100%');
-    expect(css).toContain('grid-template-columns: clamp(230px, 17vw, 290px) clamp(330px, 25vw, 430px) minmax(480px, 1fr)');
+    expect(css).toContain('grid-template-columns: clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr)');
     expect(css).toContain('.work-center-body.is-empty .work-center-detail');
     expect(css).toContain('.work-center-body.is-empty .work-center-list');
     expect(css).not.toContain('.work-center-empty-icon');
@@ -223,6 +223,7 @@ describe('Work Center UI contract', () => {
     const page = read('web/components/WorkCenterPage.js');
     const css = read('web/styles/work-center.css');
 
+    expect(css).toContain('@container work-center (max-width: 1250px)');
     expect(css).toContain('@media (max-width: 960px)');
     expect(css).toContain('@media (max-width: 768px)');
     expect(css).not.toContain('@media (max-width: 760px)');
