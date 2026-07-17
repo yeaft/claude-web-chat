@@ -118,6 +118,7 @@ describe('Work Center UI contract', () => {
     const store = read('web/stores/chat.js');
     const css = read('web/styles/work-center.css');
 
+
     expect(page).toContain('WorkCenterActionDetail');
     expect(page).toContain('@click="selectAction(action)"');
     expect(page).toContain(':data-pane="narrowPane"');
@@ -152,6 +153,20 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('.work-center-action-transcript');
     expect(css).toContain('.work-center-request-card');
     expect(css).toContain('.work-center-action-composer');
+
+    expect(page).toContain('class="work-center-action-card"');
+    expect(page).toContain('class="work-center-action-stats"');
+    expect(page).toContain('v-if="detailLoading"');
+    expect(page).toContain('v-else-if="detailError"');
+    expect(page).toContain("if (this.selectedId === item.id) this.detailError = error?.message || String(error)");
+    expect(page).toContain('v-if="selected.failureReason"');
+    expect(page).toContain('v-model="resumeAnswer"');
+    expect(page).toContain("this.resumeAnswer = ''");
+    expect(page).toContain('this.selectedActionId = detail?.currentActionId || detail?.actions?.[0]?.id || null');
+    expect(page).not.toContain('class="work-center-run"');
+    expect(page).not.toContain('class="work-center-activity-toggle"');
+    expect(page).not.toContain('v-for="tool');
+
   });
 
   it('creates Work Items with Auto or a reusable type and keeps Action creation out of the UI', () => {

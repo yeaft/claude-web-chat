@@ -180,6 +180,19 @@ describe('AskUser tool', () => {
     });
   });
 
+  it('returns a timeout result that tells the model to continue', async () => {
+    const mod = await import(`${TOOLS_DIR}/ask-user.js`);
+    const result = JSON.parse(await mod.default.execute(
+      { question: 'Continue?' },
+      { askUser: async () => ({ __yeaftTimedOut: true }) },
+    ));
+    expect(result).toMatchObject({
+      question: 'Continue?',
+      timedOut: true,
+    });
+    expect(result.message).toContain('Continue without this input');
+  });
+
   it('returns a clear error outside an interactive host', async () => {
     const mod = await import(`${TOOLS_DIR}/ask-user.js`);
     const result = JSON.parse(await mod.default.execute({ question: 'Continue?' }, {}));

@@ -26,11 +26,11 @@ describe('Work Center summary state', () => {
   it('merges a redacted summary without dropping loaded detail data', () => {
     const merged = mergeWorkItemSummary(detail, {
       id: 'wi-1', revision: 3, title: 'Updated title', status: 'waiting', updatedAt: 31,
-      workItemType: 'bug-fix', planningMode: 'ai',
+      workItemType: 'bug-fix', planningMode: 'ai', failureReason: 'Action failed safely',
     });
     expect(merged).toMatchObject({
       title: 'Updated title', status: 'waiting', updatedAt: 31,
-      workItemType: 'bug-fix', planningMode: 'ai',
+      workItemType: 'bug-fix', planningMode: 'ai', failureReason: 'Action failed safely',
     });
     expect(merged.actions).toEqual(detail.actions);
     expect(merged.workDir).toBe('/local/project');
@@ -48,13 +48,13 @@ describe('Work Center summary state', () => {
       actionStats: [{
         id: 'action-1', status: 'running', loopCount: 4, toolCount: 9,
         executionStats: { llmRequestCount: 5, loopCount: 4, toolCount: 9, totalTokens: 450 },
-        response: 'Implemented the fix', progressRevision: 3,
+        response: 'Implemented the fix', failureReason: 'Tests failed', progressRevision: 3,
       }],
     });
     expect(merged.actions).toEqual([{
       id: 'action-1', status: 'running', loopCount: 4, toolCount: 9,
       executionStats: { llmRequestCount: 5, loopCount: 4, toolCount: 9, totalTokens: 450 },
-      response: 'Implemented the fix', progressRevision: 3,
+      response: 'Implemented the fix', failureReason: 'Tests failed', progressRevision: 3,
     }]);
     expect(merged.actions[0].executionStats.totalTokens).toBe(450);
   });
@@ -156,6 +156,28 @@ describe('Work Center summary state', () => {
     expect(merged.executionStats.totalTokens).toBe(500);
   });
 
+  it('keeps detail status and failure reason behind the same stale Action progress fence', () => {
+    const current = {
+      ...detail,
+      status: 'needs_attention',
+      currentAction: { id: 'action-1', status: 'failed' },
+      failureReason: 'NEW failure',
+      updatedAt: 31,
+      actions: [{ ...detail.actions[0], status: 'failed', failureReason: 'NEW failure', progressRevision: 9 }],
+    };
+    const merged = mergeWorkItemSummary(current, {
+      id: 'wi-1', revision: 3, updatedAt: 31, status: 'running',
+      currentActionId: 'action-1', currentAction: { id: 'action-1', status: 'running' },
+      failureReason: 'OLD failure',
+      actionStats: [{ id: 'action-1', status: 'running', failureReason: 'OLD failure', progressRevision: 8 }],
+    });
+
+    expect(merged).toMatchObject({
+      status: 'needs_attention', currentAction: { status: 'failed' }, failureReason: 'NEW failure',
+    });
+    expect(merged.actions[0]).toMatchObject({ status: 'failed', failureReason: 'NEW failure', progressRevision: 9 });
+  });
+
   it('does not let an out-of-order list event roll aggregate usage backwards', () => {
     const fresh = {
       id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,
@@ -177,6 +199,23 @@ describe('Work Center summary state', () => {
     const items = applyWorkItemSummary(applyWorkItemSummary([], fresh), stale);
     expect(items[0].executionStats.totalTokens).toBe(500);
     expect(items[0].actionStats[0].progressRevision).toBe(5);
+  });
+
+  it('keeps list status and failure reason behind the same stale Action progress fence', () => {
+    const current = {
+      id: 'wi-1', revision: 3, updatedAt: 31, status: 'needs_attention',
+      currentActionId: 'action-1', currentAction: { id: 'action-1', status: 'failed' },
+      failureReason: 'NEW failure', executionStats: { totalTokens: 500 },
+      actionStats: [{ id: 'action-1', status: 'failed', failureReason: 'NEW failure', progressRevision: 9 }],
+    };
+    const stale = {
+      id: 'wi-1', revision: 3, updatedAt: 31, status: 'running',
+      currentActionId: 'action-1', currentAction: { id: 'action-1', status: 'running' },
+      failureReason: 'OLD failure', executionStats: { totalTokens: 400 },
+      actionStats: [{ id: 'action-1', status: 'running', failureReason: 'OLD failure', progressRevision: 8 }],
+    };
+
+    expect(applyWorkItemSummary([current], stale)[0]).toEqual(current);
   });
 
   it('keeps aggregate usage when any Action in a list event is stale', () => {

@@ -25,6 +25,9 @@ export default {
       actionInputSending: false,
       actionInputError: '',
       actionComposerGeneration: 0,
+      detailLoading: false,
+      detailError: '',
+      resumeAnswer: '',
       createOpen: false,
       settingsOpen: false,
       saving: false,
@@ -288,13 +291,22 @@ export default {
       this.selectedId = item.id;
       this.selectedActionId = null;
       this.narrowPane = 'actions';
+      this.resumeAnswer = '';
       this.resetActionComposer();
+      this.expandedActions = {};
+      this.actionsExpanded = false;
+      this.detailError = '';
+      this.detailLoading = true;
       try {
         const detail = await this.store.getWorkItem(item.id, this.agentId);
         if (this.selectedId === item.id) {
           this.selectedActionId = detail?.currentActionId || detail?.actions?.[0]?.id || null;
         }
-      } catch {}
+      } catch (error) {
+        if (this.selectedId === item.id) this.detailError = error?.message || String(error);
+      } finally {
+        if (this.selectedId === item.id) this.detailLoading = false;
+      }
     },
     selectAction(action) {
       if (this.selectedActionId !== action.id) this.resetActionComposer();
@@ -336,7 +348,7 @@ export default {
     },
     actionHasDetail(action) {
       return !!action?.brief || (Array.isArray(action?.messages) && action.messages.length > 0)
-        || !!String(action?.response || '').trim();
+        || !!String(action?.response || '').trim() || !!String(action?.failureReason || '').trim();
     },
     actionExpanded(action) {
       return !!this.expandedActions[action?.id];
@@ -598,7 +610,8 @@ export default {
     },
     async retrySelected() {
       if (!this.selected) return;
-      await this.store.retryWorkItem(this.selected.id, '', this.agentId);
+      await this.store.retryWorkItem(this.selected.id, this.resumeAnswer, this.agentId);
+      this.resumeAnswer = '';
     },
     async cancelSelected() {
       if (!this.selected) return;
@@ -692,6 +705,11 @@ export default {
                 <button class="work-center-pane-back btn-ghost" type="button" @click="showItemsPane">
                   <span aria-hidden="true">‹</span>{{ tr('workCenter.backToWorkItems', 'Work items') }}
                 </button>
+                <div v-if="detailLoading" class="work-center-detail-notice" aria-live="polite">{{ tr('workCenter.detailLoading', 'Loading full details…') }}</div>
+                <div v-else-if="detailError" class="work-center-detail-notice work-center-detail-error" role="alert">
+                  <strong>{{ tr('workCenter.detailLoadFailed', 'Could not load full details') }}</strong>
+                  <span>{{ detailError }}</span>
+                </div>
                 <div class="work-center-detail-heading">
                   <div>
                     <span class="work-center-status" :data-status="selected.status"><span aria-hidden="true"></span>{{ statusLabel(selected.status) }}</span>
@@ -700,6 +718,7 @@ export default {
                   <div class="work-center-detail-actions">
                     <button v-if="selected.status === 'cancelled'" class="btn-primary" type="button" @click="retrySelected">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="selected.status === 'draft'" class="btn-primary" type="button" @click="startSelected">{{ tr('workCenter.start', 'Start') }}</button>
+                    <button v-if="selected.status === 'waiting' || selected.status === 'needs_attention'" class="btn-primary" type="button" @click="retrySelected" :disabled="selected.status === 'waiting' && !resumeAnswer.trim()">{{ tr('workCenter.retry', 'Retry') }}</button>
                     <button v-if="!['done','cancelled'].includes(selected.status)" class="btn-secondary" type="button" @click="cancelSelected">{{ tr('workCenter.cancel', 'Cancel') }}</button>
                   </div>
                 </div>
@@ -716,9 +735,16 @@ export default {
                   <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(selected).inputTokens), output: formatCount(executionStats(selected).outputTokens), cache: formatCount((executionStats(selected).cacheReadTokens || 0) + (executionStats(selected).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(selected).totalTokens) }) }}</span>
                 </div>
 
-                <div v-if="selected.status === 'waiting' && selected.waitingReason" class="work-center-section work-center-resume">
-                  <p>{{ selected.waitingReason }}</p>
-                  <small>{{ tr('workCenter.answerInActionDetail', 'Open the current Action and respond in the input below.') }}</small>
+                <div v-if="selected.failureReason" class="work-center-section work-center-failure" role="alert">
+                  <h3>{{ tr('workCenter.failureReason', 'Failure reason') }}</h3>
+                  <p>{{ selected.failureReason }}</p>
+                </div>
+
+                <div v-if="selected.status === 'waiting'" class="work-center-section work-center-resume">
+                  <p v-if="selected.waitingReason">{{ selected.waitingReason }}</p>
+                  <label>{{ tr('workCenter.resumeAnswer', 'Answer the waiting question') }}
+                    <textarea v-model="resumeAnswer" rows="3" :placeholder="tr('workCenter.resumeAnswerHint', 'Provide the information required to continue')"></textarea>
+                  </label>
                 </div>
 
                 <div class="work-center-section">
@@ -768,6 +794,7 @@ export default {
                         <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
                         <span class="work-center-action-chevron" aria-hidden="true"></span>
                       </button>
+
                     </article>
                   </div>
                 </div>

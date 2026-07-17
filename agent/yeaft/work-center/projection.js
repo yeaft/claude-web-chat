@@ -124,6 +124,59 @@ function actionMessages(action, runs, events) {
       || left.id.localeCompare(right.id));
 }
 
+
+
+const MAX_FAILURE_REASON_LENGTH = 2_000;
+const MAX_FAILURE_INSPECTION_LENGTH = 16_000;
+const SAFE_FAILURE_FALLBACK = 'The Action failed. Sensitive details were omitted.';
+const CREDENTIAL_ASSIGNMENT_PATTERN = /\b(?:[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)|api[_-]?key|access[_-]?token|authorization|password|secret|token)\s*[:=]/i;
+const PROVIDER_TOKEN_PATTERN = /\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{12,}|github_pat_[A-Za-z0-9_]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|AKIA[A-Z0-9]{12,})\b/i;
+const HIGH_ENTROPY_SECRET_PATTERN = /\b(?=[A-Za-z0-9_./+=-]{32,}\b)(?=[A-Za-z0-9_./+=-]*[A-Za-z])(?=[A-Za-z0-9_./+=-]*\d)[A-Za-z0-9_./+=-]+\b/;
+const LOCAL_PATH_ASSIGNMENT_PATTERN = /\b(?:path|cwd|file|filename|directory)\s*[:=]\s*(?:\/(?!\/)|[A-Za-z]:\\|\\\\)/i;
+const POSIX_ABSOLUTE_PATH_PATTERN = /(?:^|[\s("'`])\/(?!\/)[^\r\n]*/m;
+const WINDOWS_ABSOLUTE_PATH_PATTERN = /(?:^|[\s("'`])(?:[A-Za-z]:\\|\\\\)[^\r\n]*/m;
+
+function sanitizedUrl(raw) {
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol)) return '[redacted URL]';
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return '[redacted URL]';
+  }
+}
+
+function unsafeFailureText(raw) {
+  return PROVIDER_TOKEN_PATTERN.test(raw) || HIGH_ENTROPY_SECRET_PATTERN.test(raw)
+    || LOCAL_PATH_ASSIGNMENT_PATTERN.test(raw) || POSIX_ABSOLUTE_PATH_PATTERN.test(raw)
+    || WINDOWS_ABSOLUTE_PATH_PATTERN.test(raw);
+}
+
+function sanitizeFailureDiagnostic(value) {
+  const raw = typeof value === 'string'
+    ? value.trim().slice(0, MAX_FAILURE_INSPECTION_LENGTH)
+    : '';
+  if (!raw) return '';
+  if (unsafeFailureText(raw)) return SAFE_FAILURE_FALLBACK;
+  return sanitizeDiagnosticText(raw, MAX_ACTION_DIAGNOSTIC_CHARS);
+}
+
+function sanitizeFailureReason(value) {
+  const raw = typeof value === 'string'
+    ? value.trim().slice(0, MAX_FAILURE_INSPECTION_LENGTH)
+    : '';
+  if (!raw) return '';
+  if (unsafeFailureText(raw)) return SAFE_FAILURE_FALLBACK;
+  const text = raw.replace(/https?:\/\/[^\s<>'"`]+/gi, sanitizedUrl);
+  if (CREDENTIAL_ASSIGNMENT_PATTERN.test(text)) return SAFE_FAILURE_FALLBACK;
+  return text
+    .replace(/\b(?:Bearer|Basic)\s+[^\s,;]+/gi, '[redacted credential]')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .slice(0, MAX_FAILURE_REASON_LENGTH);
+}
+
+
+
 function actionExecution(action, runs, events, includeBody = true) {
   const matchingRuns = Array.isArray(runs)
     ? runs.filter(run => run?.actionId === action?.id)
@@ -144,8 +197,8 @@ function actionExecution(action, runs, events, includeBody = true) {
       response: includeBody && typeof action?.response === 'string' ? action.response : '',
       failure: includeBody && action?.failure && typeof action.failure === 'object'
         ? {
-            error: sanitizeDiagnosticText(action.failure.error, MAX_ACTION_DIAGNOSTIC_CHARS),
-            summary: sanitizeDiagnosticText(action.failure.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
+            error: sanitizeFailureDiagnostic(action.failure.error),
+            summary: sanitizeFailureDiagnostic(action.failure.summary),
             failedAt: count(action.failure.failedAt),
           }
         : null,
@@ -156,6 +209,8 @@ function actionExecution(action, runs, events, includeBody = true) {
       messageCursor: action?.messageCursor == null
         ? (!includeBody && messageCount > 0 ? String(messageCount) : null)
         : String(action.messageCursor),
+      failureReason: sanitizeFailureReason(action?.failureReason),
+
     };
   }
   const stats = sumExecutionStats(matchingRuns);
@@ -182,10 +237,12 @@ function actionExecution(action, runs, events, includeBody = true) {
     ...stats,
     response: includeBody && typeof latest?.response === 'string' ? latest.response : '',
     failure: includeBody && latestFailure ? {
-      error: sanitizeDiagnosticText(latestFailure.error, MAX_ACTION_DIAGNOSTIC_CHARS),
-      summary: sanitizeDiagnosticText(latestFailure.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
+      error: sanitizeFailureDiagnostic(latestFailure.error),
+      summary: sanitizeFailureDiagnostic(latestFailure.summary),
       failedAt: count(latestFailure.endedAt || latestFailure.startedAt),
     } : null,
+    failureReason: sanitizeFailureReason(latestFailure?.error),
+
     progressRevision: count(latest?.progressRevision),
     messages,
     liveMessage,
@@ -243,6 +300,10 @@ function projectAction(action, runs, events, includeBody = true) {
     executionStats: executionStats(execution),
     loopCount: execution.loopCount,
     toolCount: execution.toolCount,
+    ...(includeBody ? {
+      response: execution.response,
+      failureReason: execution.failureReason,
+    } : {}),
     progressRevision: execution.progressRevision,
     messageCount: execution.messageCount,
     messageCursor: execution.messageCursor,
@@ -300,6 +361,7 @@ function projectActionStats(detail) {
       toolCount: projected.toolCount,
       progressRevision: projected.progressRevision,
     };
+    if (projected.failureReason) stats.failureReason = projected.failureReason;
     if (projected.id === liveActionId) {
       stats.response = projected.response;
       stats.failure = projected.failure;
@@ -382,6 +444,15 @@ function waitingReason(detail) {
   ))?.waitingReason || '';
 }
 
+function workItemFailureReason(detail) {
+  if (!['needs_attention', 'cancelled'].includes(detail?.status) || !Array.isArray(detail?.runs)) return '';
+  const ordered = [...detail.runs].sort((left, right) => (
+    count(right.endedAt || right.startedAt) - count(left.endedAt || left.startedAt)
+  ));
+  const current = ordered.find(run => run?.actionId === detail.currentActionId && sanitizeFailureReason(run.error));
+  return sanitizeFailureReason(current?.error || ordered.find(run => sanitizeFailureReason(run?.error))?.error);
+}
+
 /**
  * Authenticated browser detail DTO. Raw execution records stay Agent-local;
  * the browser receives only aggregate execution stats plus the explicit user-facing response.
@@ -406,6 +477,8 @@ export function projectWorkItemDetail(detail) {
       : executionStats(detail.executionStats),
     reuseMemory: detail.reuseMemory !== false,
     waitingReason: sanitizeDiagnosticText(waitingReason(detail), MAX_ACTION_DIAGNOSTIC_CHARS),
+    failureReason: workItemFailureReason(detail),
+
     origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
     linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
     attachments: projectAttachments(detail.attachments),
@@ -467,6 +540,8 @@ export function projectWorkItemSummary(detail) {
     executionStats: Array.isArray(detail.runs)
       ? sumExecutionStats(detail.runs)
       : executionStats(detail.executionStats),
+    failureReason: workItemFailureReason(detail),
+
     currentAction: projectedAction ? {
       id: projectedAction.id,
       type: projectedAction.type,

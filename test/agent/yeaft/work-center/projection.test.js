@@ -1098,4 +1098,62 @@ describe('Work Center event projection', () => {
     });
     expect(terminal.messages.filter(message => message.id === terminal.liveMessage.id)).toHaveLength(1);
   });
+
+  it('projects a bounded, sanitized failure reason for failed Work Item and Action detail', () => {
+    const detail = internalDetail();
+    detail.status = 'needs_attention';
+    detail.actions[0].status = 'failed';
+    detail.runs[0] = {
+      ...detail.runs[0], status: 'failed',
+      error: 'Request https://user:pass@example.com/private?token=secret failed in /home/alice/private/project with api_key=top-secret',
+    };
+
+    const projected = projectWorkItemDetail(detail);
+    expect(projected.failureReason).toBe('The Action failed. Sensitive details were omitted.');
+    expect(projected.actions[0].failureReason).toBe(projected.failureReason);
+    expect(JSON.stringify(projected)).not.toMatch(/user:pass|token=secret|top-secret|\/home\/alice/);
+  });
+
+  it.each([
+    'Provider rejected sk-proj-abcdefghijklmnopqrstuvwxyz123456',
+    'Provider rejected github_pat_11AAABBBCCCDDDEEEFFF',
+    'AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz123456',
+    String.raw`Failed at \\server\private\project\file.js`,
+    'Failed at /home/alice/My Project/private.js',
+    String.raw`Failed at C:\Users\Alice\My Project\private.js`,
+  ])('fails closed when a Run error contains sensitive material: %s', error => {
+    const detail = internalDetail();
+    detail.status = 'needs_attention';
+    detail.actions[0].status = 'failed';
+    detail.runs[0] = { ...detail.runs[0], status: 'failed', error };
+    const projected = projectWorkItemDetail(detail);
+    expect(projected.failureReason).toBe('The Action failed. Sensitive details were omitted.');
+    expect(JSON.stringify(projected)).not.toContain(error);
+  });
+
+  it('keeps a safe multiline failure reason bounded and strips URL credentials, query, and fragment', () => {
+    const detail = internalDetail();
+    detail.status = 'needs_attention';
+    detail.actions[0].status = 'failed';
+    detail.runs[0] = {
+      ...detail.runs[0], status: 'failed',
+      error: `Upstream https://user:pass@example.com/v1/jobs?token=secret#private returned 503\n${'safe context '.repeat(300)}`,
+    };
+    const failure = projectWorkItemDetail(detail).failureReason;
+    expect(failure).toContain('Upstream https://example.com/v1/jobs returned 503\n');
+    expect(failure.length).toBe(2_000);
+    expect(failure).not.toMatch(/user:pass|token=secret|#private/);
+  });
+
+  it('does not expose a stale work-item failure reason after success', () => {
+    const detail = internalDetail();
+    detail.status = 'done';
+    detail.actions[0].status = 'completed';
+    detail.runs[0].status = 'completed';
+    detail.runs[1].error = 'Earlier attempt failed';
+    const projected = projectWorkItemDetail(detail);
+    expect(projected.failureReason).toBe('');
+    expect(projected.actions[0].failureReason).toBe('');
+  });
+
 });

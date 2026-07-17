@@ -578,6 +578,23 @@
   background: var(--error);
 }
 
+.work-center-detail-notice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.work-center-detail-error {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
 .work-center-detail-heading {
   display: flex;
   align-items: flex-start;
@@ -612,6 +629,26 @@
 .work-center-section ul {
   margin: 0;
   line-height: 1.6;
+}
+
+.work-center-failure,
+.work-center-action-failure {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.work-center-failure h3,
+.work-center-action-failure > strong {
+  color: var(--error);
+}
+
+.work-center-failure p,
+.work-center-action-failure p {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .work-center-resume label,
@@ -866,6 +903,10 @@
   line-height: 1.6;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.work-center-action-message .work-center-action-message-error {
+  color: var(--error);
 }
 
 .work-center-action-response {

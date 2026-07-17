@@ -16,7 +16,9 @@ import { trimDebugRetention } from './helpers/debug-retention.js';
 import {
   applyWorkItemSummary,
   isWorkItemDetailResponseStale,
+  isWorkItemDetailStale,
   mergeActionMessages,
+
   mergeWorkItemSummary,
   workItemDetailNeedsRefresh,
 } from './helpers/work-center.js';
@@ -508,6 +510,7 @@ export const useChatStore = defineStore('chat', {
     _workCenterActionMessageRequests: {},
     _workCenterActionRequestsGeneration: {},
     _workCenterActionRequestDetailsGeneration: {},
+
     workCenterPending: {},
     workCenterCreateDraft: null,
     yeaftConversationId: null,     // 当前 Yeaft agent 的虚拟 conversationId（从 agent session_ready 获取）
@@ -1183,20 +1186,28 @@ export const useChatStore = defineStore('chat', {
         this.workCenterLoadingByAgent = { ...this.workCenterLoadingByAgent, [target]: false };
       }
     },
-    async getWorkItem(id, agentId = null) {
-      const target = agentId || this.workCenterAgentId || this.currentAgent;
-      const generation = Number(this._workCenterDetailRequestGenerationByAgent[target] || 0) + 1;
+    beginWorkCenterDetailWrite(agentId) {
+      const generation = Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0) + 1;
       this._workCenterDetailRequestGenerationByAgent = {
         ...this._workCenterDetailRequestGenerationByAgent,
-        [target]: generation,
+        [agentId]: generation,
       };
+      return generation;
+    },
+    commitWorkCenterDetail(agentId, detail, generation) {
+      if (generation != null
+          && Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0) !== generation) return false;
+      const current = this.workCenterDetailByAgent[agentId];
+      if (current?.id === detail?.id && isWorkItemDetailStale(detail, current)) return false;
+      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [agentId]: detail };
+      return true;
+    },
+    async getWorkItem(id, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('get', { id }, target);
-      if (this._workCenterDetailRequestGenerationByAgent[target] === generation) {
-        const current = this.workCenterDetailByAgent[target];
-        if (current?.id === detail?.id && isWorkItemDetailResponseStale(detail, current)) return current;
-        this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
-      }
-      return detail;
+      this.commitWorkCenterDetail(target, detail, generation);
+      return this.workCenterDetailByAgent[target] || detail;
     },
     async loadWorkItemActionMessages(id, actionId, cursor, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
@@ -1406,30 +1417,34 @@ export const useChatStore = defineStore('chat', {
     },
     async createWorkItem(payload, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('create', payload, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async updateWorkItem(id, patch, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('update', { id, patch }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async startWorkItem(id, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('start', { id }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async cancelWorkItem(id, agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('cancel', { id }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     async sendWorkItemActionInput(id, text, actionId, revision, attachments = [], agentId = null) {
@@ -1457,11 +1472,12 @@ export const useChatStore = defineStore('chat', {
     },
     async guideWorkItemAction(id, guidance, actionId, revision, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('guide', {
         id, guidance, actionId, revision, attachments,
       }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     previewWorkItemAttachment(id, attachmentId, agentId = null) {
@@ -1470,9 +1486,10 @@ export const useChatStore = defineStore('chat', {
     },
     async retryWorkItem(id, answer = '', agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('retry', { id, answer }, target);
       await this.listWorkItems(target);
-      this.workCenterDetailByAgent = { ...this.workCenterDetailByAgent, [target]: detail };
+      this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
     applyWorkCenterEvent(agentId, event) {
@@ -1496,6 +1513,7 @@ export const useChatStore = defineStore('chat', {
     async refreshWorkItemDetailAfterActionChange(agentId, summary) {
       const key = `${summary.id}:${summary.currentActionId}`;
       if (this._workCenterDetailEventRefreshByAgent[agentId] === key) return;
+      const generation = Number(this._workCenterDetailRequestGenerationByAgent[agentId] || 0);
       this._workCenterDetailEventRefreshByAgent = {
         ...this._workCenterDetailEventRefreshByAgent,
         [agentId]: key,
@@ -1506,10 +1524,7 @@ export const useChatStore = defineStore('chat', {
         if (selected?.id === summary.id
             && selected.currentActionId === summary.currentActionId
             && detail?.currentActionId === summary.currentActionId) {
-          this.workCenterDetailByAgent = {
-            ...this.workCenterDetailByAgent,
-            [agentId]: detail,
-          };
+          this.commitWorkCenterDetail(agentId, detail, generation);
         }
       } catch {
         // The next event or explicit selection retries; event handling remains non-fatal.
@@ -2377,8 +2392,8 @@ export const useChatStore = defineStore('chat', {
             threadId: msg.threadId || event.threadId || 'main',
           };
           const matches = row => row?.type === 'tool-use'
-            && row.toolName === 'AskUser'
-            && !row.askRequestId
+            && (row.toolName === 'AskUser' || row.toolName === 'AskUserQuestion')
+            && (!row.askRequestId || row.askRequestId === event.requestId)
             && (!expected.sessionId || row.sessionId === expected.sessionId)
             && (!expected.vpId || (row.vpId || row.speakerVpId) === expected.vpId)
             && (!expected.turnId || row.turnId === expected.turnId)
@@ -2390,9 +2405,32 @@ export const useChatStore = defineStore('chat', {
               messages[i].toolName = 'AskUserQuestion';
               messages[i].askRequestId = event.requestId;
               messages[i].askQuestions = event.questions || [];
+              messages[i].askCreatedAt = event.createdAt || null;
+              messages[i].askExpiresAt = event.expiresAt || null;
+              messages[i].isHistory = false;
               return true;
             }
-            return false;
+            if (!event.replay) return false;
+            messages.push({
+              id: `ask-card-${event.requestId}`,
+              type: 'tool-use',
+              toolName: 'AskUserQuestion',
+              toolInput: { questions: event.questions || [] },
+              askRequestId: event.requestId,
+              askQuestions: event.questions || [],
+              askCreatedAt: event.createdAt || null,
+              askExpiresAt: event.expiresAt || null,
+              sessionId: expected.sessionId,
+              vpId: expected.vpId,
+              speakerVpId: expected.vpId,
+              turnId: expected.turnId,
+              threadId: expected.threadId,
+              hasResult: false,
+              isHistory: false,
+              timestamp: event.createdAt || Date.now(),
+            });
+            this.messagesMap = { ...this.messagesMap, [conversationId]: messages.slice() };
+            return true;
           };
           if (!linkPrompt()) {
             let retries = 0;
@@ -2401,6 +2439,24 @@ export const useChatStore = defineStore('chat', {
               if (linkPrompt() || retries >= 10) clearInterval(retryInterval);
             }, 200);
           }
+          break;
+        }
+
+        case 'ask_user_answered':
+        case 'ask_user_expired': {
+          const conversationId = msg.conversationId || this.yeaftConversationId;
+          const messages = conversationId ? (this.messagesMap[conversationId] || []) : [];
+          const askMsg = messages.find(row => row?.askRequestId === event.requestId);
+          if (!askMsg) break;
+          if (event.type === 'ask_user_answered') {
+            askMsg.askAnswered = true;
+            askMsg.selectedAnswers = event.answers || {};
+          } else {
+            askMsg.isHistory = true;
+            askMsg.askExpired = true;
+          }
+          askMsg.askRequestId = null;
+          this.messagesMap = { ...this.messagesMap, [conversationId]: messages.slice() };
           break;
         }
 
