@@ -24,7 +24,7 @@ V1 操作：
 - `update`：修改 title、goal、acceptance criteria、workDir。
 - `start`：把 draft/waiting 工作项推进到 ready。
 - `cancel`：取消非终态工作项并 abort 当前 Run。
-- `guide`：给当前 ready/running Action 补充提示；请求必须携带用户看到的 `actionId` 和 WorkItem `revision`，匹配后才原子终止旧执行并重启同类型 Action。
+- `guide`：给当前 ready/running Action 补充提示；请求必须携带用户看到的 `actionId` 和 WorkItem `revision`，匹配后才原子终止旧执行并重启同类型 Action。成功后 WorkItem `revision` 在同一事务中递增，因此相同请求不可重放；图流程原地 reset 目标 Action 及受影响下游，不得走线性 Action 替换。
 - `retry`：人工把 needs_attention/waiting 创建为新 ready Action。
 - `set_watcher`：启停当前 Agent 的 Watcher。
 - `get_settings`：读取当前 Agent 的 Work Center workflow / VP assignment / model policy 设置及可用 VP、模型目录。

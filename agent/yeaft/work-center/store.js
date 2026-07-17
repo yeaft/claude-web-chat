@@ -770,21 +770,35 @@ export class WorkItemStore {
         throw new Error('WorkItem has no active Action for guidance');
       }
       const now = this.now();
-      this.#invalidateExecution(
-        workItem,
-        'superseded',
-        'superseded',
-        'Action restarted after user guidance',
-        now,
-      );
-      const action = this.#insertAction(id, {
+      const revision = workItem.revision + 1;
+      const replacement = {
         ...makeAction(workItem, previous),
-        contractRevision: workItem.revision,
-      }, this.#nextSequence(id), now);
+        contractRevision: previous.contractRevision,
+      };
+      let action;
+      if (workItem.workflowSnapshot?.executionMode === 'graph') {
+        action = this.#resetGraphFromStage(
+          id,
+          previous.stageId,
+          replacement,
+          'Action restarted after user guidance',
+          now,
+        );
+      } else {
+        this.#invalidateExecution(
+          workItem,
+          'superseded',
+          'superseded',
+          'Action restarted after user guidance',
+          now,
+        );
+        action = this.#insertAction(id, replacement, this.#nextSequence(id), now);
+      }
       this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
-        current_run_id = NULL, attachments = ?, updated_at = ? WHERE id = ?`).run(
+        current_run_id = NULL, attachments = ?, revision = ?, updated_at = ? WHERE id = ?`).run(
         action.id,
         stringify(Array.isArray(attachments) ? attachments : workItem.attachments),
+        revision,
         now,
         id,
       );
@@ -922,19 +936,29 @@ export class WorkItemStore {
       if (!['waiting', 'needs_attention'].includes(workItem.status)) {
         throw new Error(`WorkItem in ${workItem.status} does not need retry`);
       }
+      const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
+      let previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
       if (options.expected) {
-        if (workItem.currentActionId !== options.expected.actionId || workItem.revision !== options.expected.revision) {
+        const expectedAction = this.getAction(options.expected.actionId);
+        const expectedMatches = graphMode
+          ? expectedAction?.workItemId === id && ['waiting', 'failed'].includes(expectedAction.status)
+          : workItem.currentActionId === options.expected.actionId;
+        if (!expectedMatches || workItem.revision !== options.expected.revision) {
           throw new Error('Action changed before input was applied; refresh and try again');
         }
+        previous = expectedAction;
       }
-      const previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
       const previousRun = previous
         ? mapRun(this.db.prepare(`SELECT * FROM runs WHERE work_item_id = ? AND action_id = ?
             AND status != 'running' ORDER BY ended_at DESC, started_at DESC LIMIT 1`).get(id, previous.id))
         : null;
       const now = this.now();
-      const replacement = makeAction(workItem, previous, previousRun);
-      if (workItem.workflowSnapshot?.executionMode === 'graph') {
+      const revision = options.expected ? workItem.revision + 1 : workItem.revision;
+      const replacement = {
+        ...makeAction(workItem, previous, previousRun),
+        contractRevision: previous?.contractRevision ?? workItem.revision,
+      };
+      if (graphMode) {
         if (!previous) throw new Error('WorkItem graph retry target is missing');
         const action = this.#resetGraphFromStage(
           id,
@@ -944,18 +968,29 @@ export class WorkItemStore {
           now,
         );
         this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
-          current_run_id = NULL, updated_at = ? WHERE id = ?`).run(action.id, now, id);
-        this.appendEvent(id, 'work_item.retried', { targetStageId: action.stageId }, { actionId: action.id });
+          current_run_id = NULL, attachments = ?, revision = ?, updated_at = ? WHERE id = ?`).run(
+          action.id,
+          stringify(Array.isArray(options.attachments) ? options.attachments : workItem.attachments),
+          revision,
+          now,
+          id,
+        );
+        const inputEvent = options.inputEvent && typeof options.inputEvent === 'object'
+          ? options.inputEvent
+          : null;
+        if (inputEvent) {
+          this.appendEvent(id, 'action.input_added', inputEvent, { actionId: action.id });
+        } else {
+          this.appendEvent(id, 'work_item.retried', { targetStageId: action.stageId }, { actionId: action.id });
+        }
         return this.getWorkItemDetail(id);
       }
-      const action = this.#insertAction(id, {
-        ...replacement,
-        contractRevision: workItem.revision,
-      }, this.#nextSequence(id), now);
+      const action = this.#insertAction(id, replacement, this.#nextSequence(id), now);
       this.db.prepare(`UPDATE work_items SET status = 'ready', current_action_id = ?,
-        current_run_id = NULL, attachments = ?, updated_at = ? WHERE id = ?`).run(
+        current_run_id = NULL, attachments = ?, revision = ?, updated_at = ? WHERE id = ?`).run(
         action.id,
         stringify(Array.isArray(options.attachments) ? options.attachments : workItem.attachments),
+        revision,
         now,
         id,
       );

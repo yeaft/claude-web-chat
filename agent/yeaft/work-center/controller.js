@@ -202,6 +202,9 @@ export class WorkflowController {
         assignmentPolicy: previous.assignmentPolicy,
         modelPolicy: previous.modelPolicy,
         requiredRole: previous.requiredRole,
+        dependsOnStageIds: previous.dependsOnStageIds,
+        workspaceMode: previous.workspaceMode,
+        changesRequestedStageId: previous.changesRequestedStageId,
         brief: previous.brief,
       };
       return {
@@ -237,7 +240,12 @@ export class WorkflowController {
     if (!['waiting', 'needs_attention'].includes(workItem.status)) {
       throw new Error(`WorkItem in ${workItem.status} cannot accept Action input`);
     }
-    if (workItem.currentActionId !== input.actionId || workItem.revision !== input.revision) {
+    const targetAction = this.store.getAction(input.actionId);
+    const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
+    const targetMatches = graphMode
+      ? targetAction?.workItemId === id && ['waiting', 'failed'].includes(targetAction.status)
+      : workItem.currentActionId === input.actionId;
+    if (!targetMatches || workItem.revision !== input.revision) {
       throw new Error('Action changed before input was applied; refresh and try again');
     }
     return this.retry(id, {
@@ -337,7 +345,7 @@ export class WorkflowController {
       ({ action, workItem }) => {
         if (result.outcome === 'waiting') {
           return {
-            actionStatus: 'completed',
+            actionStatus: 'waiting',
             workItemStatus: 'waiting',
             keepCurrentAction: true,
             eventType: 'action.waiting',

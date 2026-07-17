@@ -248,18 +248,24 @@ export async function readScopeDreamMarker(memoryMdAbsPath) {
  */
 export function withDreamMarker(memoryMd, fields) {
   const block = renderDreamBlock(fields);
-  const body = String(memoryMd || '');
-  if (body.includes(DREAM_BLOCK_OPEN) && body.includes(DREAM_BLOCK_CLOSE)) {
-    // Replace existing block.
-    return body.replace(
-      new RegExp(`${escapeRe(DREAM_BLOCK_OPEN)}[\\s\\S]*?${escapeRe(DREAM_BLOCK_CLOSE)}`),
-      block,
-    );
-  }
+  const body = stripDreamMarker(memoryMd);
   // Append. Ensure exactly one newline before the block.
   const trimmed = body.replace(/\s+$/, '');
   const sep = trimmed.length === 0 ? '' : '\n\n';
   return `${trimmed}${sep}${block}\n`;
+}
+
+/**
+ * Remove all per-scope dream-state blocks from a markdown blob.
+ *
+ * @param {string} body
+ * @returns {string}
+ */
+export function stripDreamMarker(body) {
+  return String(body || '').replace(
+    new RegExp(`${escapeRe(DREAM_BLOCK_OPEN)}[\\s\\S]*?${escapeRe(DREAM_BLOCK_CLOSE)}`, 'g'),
+    '',
+  ).trim();
 }
 
 /**
