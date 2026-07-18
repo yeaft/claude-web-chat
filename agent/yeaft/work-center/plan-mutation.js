@@ -1,4 +1,4 @@
-import { actionForStage, applyGeneratedPlan } from './workflow.js';
+import { actionForStage, applyGeneratedPlan, canonicalActionId } from './workflow.js';
 
 function cleanProposalId(value) {
   const id = typeof value === 'string' ? value.trim().slice(0, 128) : '';
@@ -70,14 +70,19 @@ function validateDependencyPatches(actions, patches, addedIds) {
     .filter(action => !['superseded', 'cancelled'].includes(action.status))
     .map(action => [action.stageId, action]));
   const normalized = [];
+  const patchedActionIds = new Set();
   for (const raw of Array.isArray(patches) ? patches : []) {
     const actionId = typeof raw?.actionId === 'string' ? raw.actionId.trim() : '';
     const action = actions.find(candidate => candidate.id === actionId);
     if (!action || action.status !== 'ready' || action.attempt !== 0) {
       throw new Error(`Work Center dependency patch target must be an unattempted ready Action: ${actionId || '(missing)'}`);
     }
+    if (patchedActionIds.has(action.id)) {
+      throw new Error(`Work Center dependency patch target is duplicated: ${action.id}`);
+    }
+    patchedActionIds.add(action.id);
     const addDependsOnActionIds = [...new Set((raw.addDependsOnActionIds || [])
-      .map(id => String(id || '').trim()).filter(Boolean))];
+      .map(id => canonicalActionId(id)).filter(Boolean))];
     if (addDependsOnActionIds.length === 0) throw new Error('Work Center dependency patch must add at least one dependency');
     for (const dependencyId of addDependsOnActionIds) {
       if (!active.has(dependencyId) && !addedIds.has(dependencyId)) {
@@ -108,13 +113,22 @@ export function applyAdditivePlanProposal({ workItem, actions, proposal, availab
   const activeStages = workItem.workflowSnapshot.stages || [];
   const existingIds = new Set(activeStages.map(stage => stage.id));
   const addedIds = new Set();
-  for (const raw of proposal.actions) {
-    const id = typeof raw?.id === 'string' ? raw.id.trim().toLowerCase() : '';
+  const canonicalActions = proposal.actions.map(raw => {
+    const id = canonicalActionId(raw?.id);
     if (!id || existingIds.has(id) || addedIds.has(id)) {
       throw new Error(`Work Center additive Action id is missing or already exists: ${id || '(missing)'}`);
     }
     addedIds.add(id);
-  }
+    return {
+      ...raw,
+      id,
+      dependsOnActionIds: [...new Set((raw.dependsOnActionIds || [])
+        .map(dependencyId => canonicalActionId(dependencyId)).filter(Boolean))],
+      changesRequestedActionId: raw.changesRequestedActionId
+        ? canonicalActionId(raw.changesRequestedActionId)
+        : raw.changesRequestedActionId,
+    };
+  });
   const dependencyPatches = validateDependencyPatches(actions, proposal.dependencyPatches, addedIds);
   const synthetic = {
     ...workItem,
@@ -139,7 +153,7 @@ export function applyAdditivePlanProposal({ workItem, actions, proposal, availab
         ])],
       };
     }),
-    ...proposal.actions,
+    ...canonicalActions,
   ];
   const rawPlan = {
     workItemType: workItem.workflowSnapshot.workItemType,

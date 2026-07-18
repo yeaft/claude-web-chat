@@ -168,6 +168,75 @@ describe('Work Center additive plan mutation', () => {
     expect(detail.actions.find(action => action.stageId === 'implement').status).toBe('completed');
   });
 
+  it('canonicalizes additive Action identities before persistence and dependency matching', () => {
+    let detail = createGraph();
+    const implement = store.claimReadyAction('boot', 5_000);
+    detail = controller.submit(implement.run.id, 'boot', implement.run.leaseEpoch, completed({
+      planProposal: {
+        proposalId: 'canonical-action', basePlanRevision: 1,
+        actions: [plannedAction('Extra Work', 'test', ['IMPLEMENT'])],
+      },
+    }));
+    expect(detail.planRevision, detail.runs[0]?.error).toBe(2);
+    expect(detail.workflowSnapshot.stages.map(stage => stage.id))
+      .toEqual(['triage', 'implement', 'review', 'extra-work']);
+    expect(detail.actions.filter(action => action.stageId === 'extra-work')).toHaveLength(1);
+    expect(detail.actions.find(action => action.stageId === 'extra-work')).toMatchObject({
+      status: 'ready', dependsOnStageIds: ['implement'],
+    });
+    const review = store.claimReadyAction('boot', 5_000);
+    expect(review.action.stageId).toBe('review');
+    controller.submit(review.run.id, 'boot', review.run.leaseEpoch, completed({ reviewDecision: 'approved' }));
+    expect(store.claimReadyAction('boot', 5_000)?.action.stageId).toBe('extra-work');
+  });
+
+  it('atomically rejects additive Action identities that collide after canonicalization', () => {
+    const detail = createGraph();
+    const implement = store.claimReadyAction('boot', 5_000);
+    const rejected = controller.submit(implement.run.id, 'boot', implement.run.leaseEpoch, completed({
+      planProposal: {
+        proposalId: 'canonical-collision', basePlanRevision: 1,
+        actions: [
+          plannedAction('Extra Work', 'test', ['implement']),
+          plannedAction('extra@work', 'document', ['implement']),
+        ],
+      },
+    }));
+    expect(rejected.status).toBe('needs_attention');
+    expect(rejected.planRevision).toBe(1);
+    expect(rejected.actions.some(action => action.stageId === 'extra-work')).toBe(false);
+    expect(rejected.runs[0].error).toMatch(/already exists: extra-work/);
+    expect(store.db.prepare("SELECT COUNT(*) AS count FROM plan_audits WHERE proposal_id = 'canonical-collision'").get().count)
+      .toBe(0);
+    expect(detail.actions).toHaveLength(3);
+  });
+
+  it('atomically rejects duplicate dependency patch targets', () => {
+    const detail = createGraph();
+    const implement = store.claimReadyAction('boot', 5_000);
+    const reviewId = detail.actions.find(action => action.stageId === 'review').id;
+    const rejected = controller.submit(implement.run.id, 'boot', implement.run.leaseEpoch, completed({
+      planProposal: {
+        proposalId: 'duplicate-patch', basePlanRevision: 1,
+        actions: [
+          plannedAction('migration', 'migrate', ['implement']),
+          plannedAction('verification', 'test', ['implement']),
+        ],
+        dependencyPatches: [
+          { actionId: reviewId, addDependsOnActionIds: ['migration'] },
+          { actionId: reviewId, addDependsOnActionIds: ['verification'] },
+        ],
+      },
+    }));
+    expect(rejected.status).toBe('needs_attention');
+    expect(rejected.planRevision).toBe(1);
+    expect(rejected.actions.some(action => ['migration', 'verification'].includes(action.stageId))).toBe(false);
+    expect(rejected.actions.find(action => action.stageId === 'review').dependsOnStageIds).toEqual(['implement']);
+    expect(rejected.runs[0].error).toMatch(/dependency patch target is duplicated/);
+    expect(store.db.prepare("SELECT COUNT(*) AS count FROM plan_audits WHERE proposal_id = 'duplicate-patch'").get().count)
+      .toBe(0);
+  });
+
   it('rejects stale revisions without applying any expansion', () => {
     const detail = createGraph();
     const implement = store.claimReadyAction('boot', 5_000);

@@ -108,7 +108,7 @@ export const RUN_OUTCOMES = Object.freeze([
   'failed',
 ]);
 
-function cleanId(value, fallback) {
+export function canonicalActionId(value, fallback = '') {
   const normalized = String(value || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
   return normalized || fallback;
 }
@@ -131,7 +131,7 @@ export function normalizeAssignmentPolicy(value, stageType = 'custom') {
   }
   return {
     mode,
-    capability: cleanId(source.capability, stageType),
+    capability: canonicalActionId(source.capability, stageType),
     candidateVpIds,
     fixedVpId,
     assignmentReason: typeof source.assignmentReason === 'string'
@@ -178,14 +178,14 @@ function normalizeGlobalInstructions(value) {
 }
 
 function generatedActionType(value) {
-  return cleanId(value, 'custom').slice(0, 64);
+  return canonicalActionId(value, 'custom').slice(0, 64);
 }
 
 export function normalizeWorkflowDefinition(value, index = 0) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Work Center workflow must be an object');
   }
-  const id = cleanId(value.id, `workflow-${index + 1}`);
+  const id = canonicalActionId(value.id, `workflow-${index + 1}`);
   const name = String(value.name || id).trim() || id;
   if (!Array.isArray(value.stages) || value.stages.length === 0) {
     throw new Error(`Work Center workflow "${id}" requires at least one stage`);
@@ -198,7 +198,7 @@ export function normalizeWorkflowDefinition(value, index = 0) {
     const type = planningMode === 'ai'
       ? generatedActionType(source.type)
       : (STAGE_TYPES.has(source.type) ? source.type : 'custom');
-    const stageId = cleanId(source.id, `${type}-${stageIndex + 1}`);
+    const stageId = canonicalActionId(source.id, `${type}-${stageIndex + 1}`);
     if (seen.has(stageId)) throw new Error(`Duplicate Work Center stage id: ${stageId}`);
     seen.add(stageId);
     const stage = {
@@ -216,7 +216,7 @@ export function normalizeWorkflowDefinition(value, index = 0) {
       maxAttempts: Math.min(Math.max(Number(source.maxAttempts) || 2, 1), 5),
     };
     if (type === 'review') {
-      stage.changesRequestedStageId = cleanId(source.changesRequestedStageId, 'implement');
+      stage.changesRequestedStageId = canonicalActionId(source.changesRequestedStageId, 'implement');
     }
     return stage;
   });
@@ -238,7 +238,7 @@ export function normalizeWorkflowDefinition(value, index = 0) {
     planningMode,
     executionMode,
     workItemType: typeof value.workItemType === 'string' && value.workItemType.trim()
-      ? cleanId(value.workItemType, 'general')
+      ? canonicalActionId(value.workItemType, 'general')
       : null,
     globalInstructions: normalizeGlobalInstructions(value.globalInstructions),
     modelPolicy: normalizeModelPolicy(value.modelPolicy),
@@ -329,7 +329,7 @@ export function resolvePlanningWorkflowSnapshot(settings, requestedWorkItemType 
   const requestedType = typeof requestedWorkItemType === 'string'
     && requestedWorkItemType.trim()
     && requestedWorkItemType.trim().toLowerCase() !== 'auto'
-    ? cleanId(requestedWorkItemType, '').slice(0, 64)
+    ? canonicalActionId(requestedWorkItemType, '').slice(0, 64)
     : '';
   const actionTemplates = normalized.workflows.map(workflow => normalizeWorkflowDefinition({
     ...workflow,
@@ -409,7 +409,7 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
   if (typeof rawPlan.workItemType !== 'string' || !rawPlan.workItemType.trim()) {
     throw new Error('AI-planned triage requires a specific workItemType');
   }
-  const workItemType = cleanId(rawPlan.workItemType, '').slice(0, 64);
+  const workItemType = canonicalActionId(rawPlan.workItemType, '').slice(0, 64);
   if (!workItemType) throw new Error('AI-planned triage requires a valid workItemType');
   if (source.workItemType && workItemType !== source.workItemType) {
     throw new Error(`AI-planned triage must keep the selected workItemType "${source.workItemType}"`);
@@ -445,7 +445,7 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
     const input = rawAction && typeof rawAction === 'object' && !Array.isArray(rawAction) ? rawAction : {};
     const type = generatedActionType(input.type);
     if (type === 'triage') throw new Error('AI-planned Actions cannot add another triage Action');
-    const id = cleanId(input.id, `${type}-${index + 1}`);
+    const id = canonicalActionId(input.id, `${type}-${index + 1}`);
     if (seen.has(id)) throw new Error(`Duplicate AI-planned Action id: ${id}`);
     if (reservedStageIds.has(id)) {
       throw new Error(`AI-planned Action id reuses historical stage identity: ${id}`);
@@ -490,14 +490,14 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
       instruction: actionInstruction,
       assignmentPolicy: candidateVpIds.length > 0 ? {
         mode: 'planned',
-        capability: cleanId(input.capability, type),
+        capability: canonicalActionId(input.capability, type),
         candidateVpIds,
         fixedVpId: null,
         assignmentReason,
         separateFromStageTypes: uniqueStrings(input.separateFromActionTypes),
       } : {
         mode: 'auto',
-        capability: cleanId(input.capability, type),
+        capability: canonicalActionId(input.capability, type),
         candidateVpIds: [],
         fixedVpId: null,
         assignmentReason: '',
@@ -513,7 +513,7 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
     previousGeneratedId = id;
     if (type === 'review' && Object.prototype.hasOwnProperty.call(input, 'changesRequestedActionId')) {
       stage.changesRequestedStageId = typeof input.changesRequestedActionId === 'string'
-        ? cleanId(input.changesRequestedActionId, '')
+        ? canonicalActionId(input.changesRequestedActionId, '')
         : '';
     }
     return stage;
