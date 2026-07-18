@@ -17,7 +17,7 @@ export const BUILT_IN_ACTION_TYPES = Object.freeze([
   'custom',
 ]);
 const STAGE_TYPES = new Set(BUILT_IN_ACTION_TYPES);
-const ASSIGNMENT_MODES = new Set(['auto', 'pool', 'fixed']);
+const ASSIGNMENT_MODES = new Set(['auto', 'pool', 'fixed', 'planned']);
 const MODEL_MODES = new Set(['inherit', 'primary', 'fast', 'specific']);
 const MODEL_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const WORKSPACE_MODES = new Set(['shared', 'read', 'isolated-write', 'integrate']);
@@ -108,9 +108,27 @@ export const RUN_OUTCOMES = Object.freeze([
   'failed',
 ]);
 
-function cleanId(value, fallback) {
+export function canonicalActionId(value, fallback = '') {
   const normalized = String(value || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
   return normalized || fallback;
+}
+
+export function canonicalExplicitActionId(value, field) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Work Center ${field} contains an empty Action reference`);
+  }
+  const id = canonicalActionId(value);
+  if (!id) {
+    throw new Error(`Work Center ${field} contains an invalid Action reference: ${value}`);
+  }
+  return id;
+}
+
+export function canonicalExplicitActionIds(value, field) {
+  if (!Array.isArray(value)) {
+    throw new Error(`Work Center ${field} must be an array of Action references`);
+  }
+  return [...new Set(value.map(item => canonicalExplicitActionId(item, field)))];
 }
 
 function uniqueStrings(value) {
@@ -126,12 +144,17 @@ export function normalizeAssignmentPolicy(value, stageType = 'custom') {
     : null;
   const candidateVpIds = uniqueStrings(source.candidateVpIds);
   if (mode === 'fixed' && !fixedVpId) throw new Error('Fixed Work Center assignment requires fixedVpId');
-  if (mode === 'pool' && candidateVpIds.length === 0) throw new Error('Work Center VP pool cannot be empty');
+  if (['pool', 'planned'].includes(mode) && candidateVpIds.length === 0) {
+    throw new Error('Work Center VP candidate list cannot be empty');
+  }
   return {
     mode,
-    capability: cleanId(source.capability, stageType),
+    capability: canonicalActionId(source.capability, stageType),
     candidateVpIds,
     fixedVpId,
+    assignmentReason: typeof source.assignmentReason === 'string'
+      ? source.assignmentReason.trim().slice(0, 1_000)
+      : '',
     separateFromStageTypes: uniqueStrings(source.separateFromStageTypes),
   };
 }
@@ -173,14 +196,14 @@ function normalizeGlobalInstructions(value) {
 }
 
 function generatedActionType(value) {
-  return cleanId(value, 'custom').slice(0, 64);
+  return canonicalActionId(value, 'custom').slice(0, 64);
 }
 
 export function normalizeWorkflowDefinition(value, index = 0) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Work Center workflow must be an object');
   }
-  const id = cleanId(value.id, `workflow-${index + 1}`);
+  const id = canonicalActionId(value.id, `workflow-${index + 1}`);
   const name = String(value.name || id).trim() || id;
   if (!Array.isArray(value.stages) || value.stages.length === 0) {
     throw new Error(`Work Center workflow "${id}" requires at least one stage`);
@@ -193,7 +216,7 @@ export function normalizeWorkflowDefinition(value, index = 0) {
     const type = planningMode === 'ai'
       ? generatedActionType(source.type)
       : (STAGE_TYPES.has(source.type) ? source.type : 'custom');
-    const stageId = cleanId(source.id, `${type}-${stageIndex + 1}`);
+    const stageId = canonicalActionId(source.id, `${type}-${stageIndex + 1}`);
     if (seen.has(stageId)) throw new Error(`Duplicate Work Center stage id: ${stageId}`);
     seen.add(stageId);
     const stage = {
@@ -211,7 +234,7 @@ export function normalizeWorkflowDefinition(value, index = 0) {
       maxAttempts: Math.min(Math.max(Number(source.maxAttempts) || 2, 1), 5),
     };
     if (type === 'review') {
-      stage.changesRequestedStageId = cleanId(source.changesRequestedStageId, 'implement');
+      stage.changesRequestedStageId = canonicalActionId(source.changesRequestedStageId, 'implement');
     }
     return stage;
   });
@@ -233,7 +256,7 @@ export function normalizeWorkflowDefinition(value, index = 0) {
     planningMode,
     executionMode,
     workItemType: typeof value.workItemType === 'string' && value.workItemType.trim()
-      ? cleanId(value.workItemType, 'general')
+      ? canonicalActionId(value.workItemType, 'general')
       : null,
     globalInstructions: normalizeGlobalInstructions(value.globalInstructions),
     modelPolicy: normalizeModelPolicy(value.modelPolicy),
@@ -324,7 +347,7 @@ export function resolvePlanningWorkflowSnapshot(settings, requestedWorkItemType 
   const requestedType = typeof requestedWorkItemType === 'string'
     && requestedWorkItemType.trim()
     && requestedWorkItemType.trim().toLowerCase() !== 'auto'
-    ? cleanId(requestedWorkItemType, '').slice(0, 64)
+    ? canonicalActionId(requestedWorkItemType, '').slice(0, 64)
     : '';
   const actionTemplates = normalized.workflows.map(workflow => normalizeWorkflowDefinition({
     ...workflow,
@@ -394,8 +417,9 @@ export function resolveWorkflowSnapshot(settings, workflowId, stageOverrides = {
   });
 }
 
-export function applyGeneratedPlan(workItem, rawPlan) {
+export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
   const source = workflowFrom(workItem);
+  const forceGraph = options.forceGraph !== false;
   if (source.planningMode !== 'ai') return source;
   if (!rawPlan || typeof rawPlan !== 'object' || Array.isArray(rawPlan)) {
     throw new Error('AI-planned triage requires a structured plan');
@@ -403,16 +427,22 @@ export function applyGeneratedPlan(workItem, rawPlan) {
   if (typeof rawPlan.workItemType !== 'string' || !rawPlan.workItemType.trim()) {
     throw new Error('AI-planned triage requires a specific workItemType');
   }
-  const workItemType = cleanId(rawPlan.workItemType, '').slice(0, 64);
+  const workItemType = canonicalActionId(rawPlan.workItemType, '').slice(0, 64);
   if (!workItemType) throw new Error('AI-planned triage requires a valid workItemType');
   if (source.workItemType && workItemType !== source.workItemType) {
     throw new Error(`AI-planned triage must keep the selected workItemType "${source.workItemType}"`);
   }
+  const reservedStageIds = new Set((options.reservedStageIds || [])
+    .map(id => String(id || '').trim()).filter(Boolean));
   const reusableTemplate = source.actionTemplates.find(template => template.workItemType === workItemType);
   if (reusableTemplate) {
     const templateActions = reusableTemplate.stages.filter(stage => stage.type !== 'triage');
     if (templateActions.length === 0) {
       throw new Error(`Reusable Action template "${workItemType}" has no executable Actions`);
+    }
+    const reusedStageId = templateActions.find(stage => reservedStageIds.has(stage.id))?.id;
+    if (reusedStageId) {
+      throw new Error(`AI-planned Action id reuses historical stage identity: ${reusedStageId}`);
     }
     return normalizeWorkflowDefinition({
       ...source,
@@ -424,14 +454,20 @@ export function applyGeneratedPlan(workItem, rawPlan) {
   if (!Array.isArray(rawPlan.actions) || rawPlan.actions.length < 1 || rawPlan.actions.length > 8) {
     throw new Error('AI-planned triage requires between 1 and 8 Actions when no reusable template exists');
   }
+  const availableVpIds = Array.isArray(options.availableVpIds)
+    ? new Set(options.availableVpIds.map(id => String(id || '').trim()).filter(Boolean))
+    : null;
   const seen = new Set(['triage']);
   let previousGeneratedId = null;
   const generated = rawPlan.actions.map((rawAction, index) => {
     const input = rawAction && typeof rawAction === 'object' && !Array.isArray(rawAction) ? rawAction : {};
     const type = generatedActionType(input.type);
     if (type === 'triage') throw new Error('AI-planned Actions cannot add another triage Action');
-    const id = cleanId(input.id, `${type}-${index + 1}`);
+    const id = canonicalActionId(input.id, `${type}-${index + 1}`);
     if (seen.has(id)) throw new Error(`Duplicate AI-planned Action id: ${id}`);
+    if (reservedStageIds.has(id)) {
+      throw new Error(`AI-planned Action id reuses historical stage identity: ${id}`);
+    }
     seen.add(id);
     const objective = typeof input.objective === 'string' ? input.objective.trim().slice(0, 2_000) : '';
     if (!objective) throw new Error(`AI-planned Action "${id}" requires a task-specific objective`);
@@ -451,6 +487,17 @@ export function applyGeneratedPlan(workItem, rawPlan) {
     const actionInstruction = Object.hasOwn(source.actionInstructions, type)
       ? source.actionInstructions[type]
       : source.actionInstructions.custom;
+    const candidateVpIds = uniqueStrings(input.candidateVpIds);
+    if (candidateVpIds.length > 0 && availableVpIds) {
+      const unavailable = candidateVpIds.find(vpId => !availableVpIds.has(vpId));
+      if (unavailable) throw new Error(`AI-planned Action "${id}" references unavailable VP "${unavailable}"`);
+    }
+    const assignmentReason = typeof input.assignmentReason === 'string'
+      ? input.assignmentReason.trim().slice(0, 1_000)
+      : '';
+    if (candidateVpIds.length > 0 && !assignmentReason) {
+      throw new Error(`AI-planned Action "${id}" requires an assignmentReason`);
+    }
     const stage = {
       id,
       name: String(input.name || id).trim().slice(0, 120) || id,
@@ -459,25 +506,37 @@ export function applyGeneratedPlan(workItem, rawPlan) {
       approach,
       expectedOutcome,
       instruction: actionInstruction,
-      assignmentPolicy: {
+      assignmentPolicy: candidateVpIds.length > 0 ? {
+        mode: 'planned',
+        capability: canonicalActionId(input.capability, type),
+        candidateVpIds,
+        fixedVpId: null,
+        assignmentReason,
+        separateFromStageTypes: uniqueStrings(input.separateFromActionTypes),
+      } : {
         mode: 'auto',
-        capability: cleanId(input.capability, type),
+        capability: canonicalActionId(input.capability, type),
         candidateVpIds: [],
         fixedVpId: null,
+        assignmentReason: '',
         separateFromStageTypes: uniqueStrings(input.separateFromActionTypes),
       },
       modelPolicy: source.actionModelPolicies[type] || source.actionModelPolicies.custom,
       dependsOnStageIds: Object.hasOwn(input, 'dependsOnActionIds')
-        ? uniqueStrings(input.dependsOnActionIds)
+        ? canonicalExplicitActionIds(
+          input.dependsOnActionIds,
+          `Action "${id}" dependencies`,
+        )
         : (previousGeneratedId ? [previousGeneratedId] : []),
       workspaceMode: WORKSPACE_MODES.has(input.workspaceMode) ? input.workspaceMode : 'shared',
       maxAttempts: Math.min(Math.max(Number(input.maxAttempts) || 2, 1), 5),
     };
     previousGeneratedId = id;
-    if (type === 'review' && Object.prototype.hasOwnProperty.call(input, 'changesRequestedActionId')) {
-      stage.changesRequestedStageId = typeof input.changesRequestedActionId === 'string'
-        ? cleanId(input.changesRequestedActionId, '')
-        : '';
+    if (type === 'review' && Object.hasOwn(input, 'changesRequestedActionId')) {
+      stage.changesRequestedStageId = canonicalExplicitActionId(
+        input.changesRequestedActionId,
+        `Action "${id}" review target`,
+      );
     }
     return stage;
   });
@@ -497,6 +556,14 @@ export function applyGeneratedPlan(workItem, rawPlan) {
     if (!stage.changesRequestedStageId) {
       throw new Error(`AI-planned review Action "${stage.id}" requires an earlier editable Action`);
     }
+    const returnTarget = candidates.find(candidate => candidate.id === stage.changesRequestedStageId);
+    stage.assignmentPolicy = {
+      ...stage.assignmentPolicy,
+      separateFromStageTypes: uniqueStrings([
+        ...(stage.assignmentPolicy.separateFromStageTypes || []),
+        returnTarget.type,
+      ]),
+    };
   }
   const hasIsolatedWrites = generated.some(stage => stage.workspaceMode === 'isolated-write');
   const integrationStages = generated.filter(stage => stage.workspaceMode === 'integrate');
@@ -530,7 +597,7 @@ export function applyGeneratedPlan(workItem, rawPlan) {
   }
   return normalizeWorkflowDefinition({
     ...source,
-    executionMode: 'graph',
+    executionMode: forceGraph ? 'graph' : source.executionMode,
     workItemType,
     stages: [source.stages[0], ...generated],
   });

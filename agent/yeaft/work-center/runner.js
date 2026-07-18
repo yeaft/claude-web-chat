@@ -1,5 +1,6 @@
 import { Engine } from '../engine.js';
 import { ToolRegistry } from '../tools/registry.js';
+import { defineTool } from '../tools/types.js';
 import { allTools } from '../tools/index.js';
 import { parsePatch } from '../tools/apply-patch.js';
 import { defaultRegistry } from '../vp/registry.js';
@@ -30,6 +31,7 @@ import { loadMCPConfig } from '../config.js';
 import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
+import { BUILT_IN_ACTION_TYPES } from './workflow.js';
 
 const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'FileRead',
@@ -280,7 +282,126 @@ function wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunAct
   };
 }
 
-export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRunActive, mcpTools = [] }) {
+export function planningVpCatalog(vps) {
+  return vps.map(vp => ({
+    id: vp.id,
+    name: vp.name || vp.id,
+    nameZh: vp.nameZh || '',
+    role: vp.role || '',
+    roleZh: vp.roleZh || '',
+    area: vp.area || '',
+    traits: Array.isArray(vp.traits) ? vp.traits.slice(0, 20) : [],
+  }));
+}
+
+export function createSubmitWorkItemPlanTool({ vps, collector, isRunActive }) {
+  const vpCatalog = planningVpCatalog(vps);
+  const vpIds = vpCatalog.map(vp => vp.id);
+  const actionTypes = BUILT_IN_ACTION_TYPES.filter(type => type !== 'triage');
+  const catalogDescription = `Action types: ${actionTypes.join(', ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'}; ${vp.traits.join(', ') || 'no traits'})`).join('; ')}.`;
+  return defineTool({
+    name: 'SubmitWorkItemPlan',
+    description: `Submit the complete initial WorkItem contract and executable Action DAG. This tool records a Run-local proposal only; Work Center validates and persists it in the current Run finalization transaction. ${catalogDescription}`,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['summary', 'evidence', 'acceptanceChecks', 'workItemType', 'actions'],
+      properties: {
+        summary: { type: 'string', minLength: 1, maxLength: 2_000 },
+        evidence: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 1_000 } },
+        acceptanceChecks: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['criterion', 'status', 'evidence'], properties: { criterion: { type: 'string' }, status: { type: 'string', enum: ['passed', 'deferred', 'not_applicable'] }, evidence: { type: 'string', minLength: 1, maxLength: 1_000 } } } },
+        contractPatch: { type: 'object', additionalProperties: false, properties: { goal: { type: 'string', minLength: 1, maxLength: 8_000 }, acceptanceCriteria: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 2_000 } } } },
+        workItemType: { type: 'string', minLength: 1, maxLength: 64 },
+        actions: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'object', additionalProperties: false, required: ['id', 'name', 'type', 'objective', 'approach', 'expectedOutcome', 'candidateVpIds', 'assignmentReason', 'dependsOnActionIds', 'workspaceMode'], properties: {
+          id: { type: 'string', minLength: 1, maxLength: 64 }, name: { type: 'string', minLength: 1, maxLength: 120 },
+          type: { type: 'string', enum: actionTypes }, capability: { type: 'string', maxLength: 64 },
+          objective: { type: 'string', minLength: 1, maxLength: 2_000 }, approach: { type: 'string', minLength: 1, maxLength: 2_000 }, expectedOutcome: { type: 'string', minLength: 1, maxLength: 2_000 },
+          candidateVpIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', enum: vpIds } }, assignmentReason: { type: 'string', minLength: 1, maxLength: 1_000 },
+          dependsOnActionIds: { type: 'array', uniqueItems: true, items: { type: 'string' } }, workspaceMode: { type: 'string', enum: ['read', 'isolated-write', 'integrate', 'shared'] },
+          separateFromActionTypes: { type: 'array', uniqueItems: true, items: { type: 'string' } }, changesRequestedActionId: { type: 'string' }, maxAttempts: { type: 'integer', minimum: 1, maximum: 5 },
+        } } },
+      },
+    },
+    async execute(input, ctx = {}) {
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
+      if (collector.value) throw new Error('WorkItem plan was already submitted for this Run');
+      collector.value = structuredClone(input);
+      ctx.requestEndTurn?.({ kind: 'work_item_plan_submitted' });
+      return JSON.stringify({ submitted: true, actionCount: input.actions.length });
+    },
+    isConcurrencySafe: () => false,
+    isReadOnly: () => false,
+  });
+}
+
+function terminalPlanningFields() {
+  return {
+    summary: { type: 'string', minLength: 1, maxLength: 2_000 },
+    evidence: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 1_000 } },
+    acceptanceChecks: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['criterion', 'status', 'evidence'], properties: { criterion: { type: 'string' }, status: { type: 'string', enum: ['passed', 'deferred', 'not_applicable'] }, evidence: { type: 'string', minLength: 1, maxLength: 1_000 } } } },
+  };
+}
+
+function plannedActionSchema(vpIds, { requireCandidates = true } = {}) {
+  const required = ['id', 'name', 'type', 'objective', 'approach', 'expectedOutcome', 'dependsOnActionIds', 'workspaceMode'];
+  if (requireCandidates) required.push('candidateVpIds', 'assignmentReason');
+  return { type: 'object', additionalProperties: false, required, properties: {
+    id: { type: 'string', minLength: 1, maxLength: 64 }, name: { type: 'string', minLength: 1, maxLength: 120 },
+    type: { type: 'string', enum: BUILT_IN_ACTION_TYPES.filter(type => type !== 'triage') }, capability: { type: 'string', maxLength: 64 },
+    objective: { type: 'string', minLength: 1, maxLength: 2_000 }, approach: { type: 'string', minLength: 1, maxLength: 2_000 }, expectedOutcome: { type: 'string', minLength: 1, maxLength: 2_000 },
+    candidateVpIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', enum: vpIds } }, assignmentReason: { type: 'string', minLength: 1, maxLength: 1_000 },
+    dependsOnActionIds: { type: 'array', uniqueItems: true, items: { type: 'string' } }, workspaceMode: { type: 'string', enum: ['read', 'isolated-write', 'integrate', 'shared'] },
+    separateFromActionTypes: { type: 'array', uniqueItems: true, items: { type: 'string' } }, changesRequestedActionId: { type: 'string' }, maxAttempts: { type: 'integer', minimum: 1, maximum: 5 },
+  } };
+}
+
+export function createProposeWorkItemActionsTool({ vps, workItem, actions, collector, isRunActive }) {
+  const vpCatalog = planningVpCatalog(vps);
+  const vpIds = vpCatalog.map(vp => vp.id);
+  const existing = actions.filter(action => !['superseded', 'cancelled'].includes(action.status));
+  return defineTool({
+    name: 'ProposeWorkItemActions',
+    description: `Propose an additive change to the current WorkItem DAG. It is applied only if this Action completes and its Run lease plus basePlanRevision remain valid. Existing Actions: ${existing.map(action => `${action.id}/${action.stageId} (${action.status}, attempt ${action.attempt})`).join('; ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'})`).join('; ')}. Only add new Actions and optionally add dependencies to attempt=0 ready Actions.`,
+    parameters: { type: 'object', additionalProperties: false,
+      required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'actions'],
+      properties: {
+        ...terminalPlanningFields(), proposalId: { type: 'string', minLength: 1, maxLength: 128 },
+        basePlanRevision: { type: 'integer', const: workItem.planRevision },
+        actions: { type: 'array', minItems: 1, maxItems: 8, items: plannedActionSchema(vpIds) },
+        dependencyPatches: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false, required: ['actionId', 'addDependsOnActionIds'], properties: { actionId: { type: 'string', enum: existing.filter(action => action.status === 'ready' && action.attempt === 0).map(action => action.id) }, addDependsOnActionIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string' } } } } },
+      } },
+    async execute(input, ctx = {}) {
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
+      if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
+      collector.value = { kind: 'expand', input: structuredClone(input) };
+      ctx.requestEndTurn?.({ kind: 'work_item_actions_proposed', proposalId: input.proposalId });
+      return JSON.stringify({ submitted: true, proposalId: input.proposalId, actionCount: input.actions.length });
+    },
+  });
+}
+
+export function createRequestWorkItemReplanTool({ workItem, collector, isRunActive }) {
+  return defineTool({
+    name: 'RequestWorkItemReplan',
+    description: 'Request an explicit replan barrier when additive Actions are insufficient because the contract or existing future topology must change. The current Action must still complete. Work Center will preserve completed history, fence sibling Runs, supersede only unfinished Actions, and insert a new triage/replan Action. Active integration finalization prevents the barrier.',
+    parameters: { type: 'object', additionalProperties: false,
+      required: ['summary', 'evidence', 'acceptanceChecks', 'proposalId', 'basePlanRevision', 'reason'],
+      properties: {
+        ...terminalPlanningFields(), proposalId: { type: 'string', minLength: 1, maxLength: 128 },
+        basePlanRevision: { type: 'integer', const: workItem.planRevision },
+        reason: { type: 'string', minLength: 1, maxLength: 4_000 },
+      } },
+    async execute(input, ctx = {}) {
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
+      if (collector.value) throw new Error('A WorkItem plan mutation was already submitted for this Run');
+      collector.value = { kind: 'replan', input: structuredClone(input) };
+      ctx.requestEndTurn?.({ kind: 'work_item_replan_requested', proposalId: input.proposalId });
+      return JSON.stringify({ submitted: true, proposalId: input.proposalId });
+    },
+  });
+}
+
+export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRunActive, mcpTools = [], runTools = [] }) {
   const canonicalDir = canonicalWorkDir(path.resolve(workDir));
   const canonicalAttachmentFiles = attachmentFiles.map(file => ({
     ...file,
@@ -294,6 +415,9 @@ export function createWorkItemToolRegistry({ workDir, attachmentFiles = [], isRu
   }
   for (const tool of mcpTools) {
     if (!tool?.name?.startsWith('mcp__')) continue;
+    registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
+  }
+  for (const tool of runTools) {
     registry.register(wrapWorkItemTool(tool, canonicalDir, canonicalAttachmentFiles, isRunActive));
   }
   return registry;
@@ -347,12 +471,17 @@ function completionContract(action, workItem) {
   const planField = action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
     ? ',\n  "plan": { "workItemType": "specific-lowercase-slug", "actions": [{ "id": "stable-id", "name": "User-facing name", "type": "extensible-lowercase-slug (built-ins include research|design|diagnose|implement|migrate|test|review|document|operate|deliver|integrate|write|custom)", "capability": "specific executor capability", "objective": "task-specific concrete work this Action must do", "approach": "task-specific repository-aware method the executor must follow", "expectedOutcome": "task-specific verifiable result this Action must produce", "dependsOnActionIds": ["earlier Action id; [] means concurrent root"], "workspaceMode": "read|isolated-write|integrate|shared", "separateFromActionTypes": ["optional prior Action type"], "changesRequestedActionId": "for review: optional earlier editable Action id; omit to use nearest", "maxAttempts": 2 }] }'
     : '';
+  const toolSubmission = action.type === 'triage' && workItem?.workflowSnapshot?.planningMode === 'ai'
+    ? '\nSubmit the initial plan with SubmitWorkItemPlan. The legacy terminal JSON plan below exists only for compatibility; do not use it when the tool is available.'
+    : workItem?.workflowSnapshot?.executionMode === 'graph'
+      ? '\nIf execution discovered strictly additive work, use ProposeWorkItemActions. If the contract or existing unfinished topology must change, use RequestWorkItemReplan. Both tools submit the completed Action and end the turn; do not emit terminal JSON after calling one.'
+      : '';
   const acceptanceChecks = (workItem?.acceptanceCriteria || []).map(criterion => ({
     criterion,
     status: 'passed|deferred|not_applicable',
     evidence: 'specific evidence reference',
   }));
-  return `\n\nYou are executing one Work Center Action. Before the terminal JSON, write a concise user-facing response describing what you did and the result. Do not include raw tool output or secrets. End your response with exactly one JSON object, preferably in a json code fence:\n{
+  return `${toolSubmission}\n\nYou are executing one Work Center Action. Before the terminal JSON, write a concise user-facing response describing what you did and the result. Do not include raw tool output or secrets. End your response with exactly one JSON object, preferably in a json code fence:\n{
   "outcome": "completed|waiting|retryable|failed",
   "summary": "short result",
   "evidence": ["test, PR, file, or other verifiable evidence"],
@@ -693,16 +822,34 @@ export class WorkItemRunner {
       && this.store.isActiveRun(run.id, ownerBootId, run.leaseEpoch);
     const workspaceRuntime = await this.#workspaceRuntime(workspaceDir, workDir, isRunActive);
     const mcpToolNames = workspaceRuntime.mcpTools.map(tool => tool.name);
+    const planCollector = { value: null };
+    const mutationCollector = { value: null };
+    const planToolEnabled = executionAction.type === 'triage'
+      && workItem?.workflowSnapshot?.planningMode === 'ai';
+    const runTools = [];
+    if (planToolEnabled) runTools.push(createSubmitWorkItemPlanTool({
+      vps: this.registry.listVps(), collector: planCollector, isRunActive,
+    }));
+    if (!planToolEnabled && workItem?.workflowSnapshot?.executionMode === 'graph') {
+      runTools.push(createProposeWorkItemActionsTool({
+        vps: this.registry.listVps(), workItem,
+        actions: this.store.getWorkItemDetail(workItem.id).actions,
+        collector: mutationCollector, isRunActive,
+      }));
+      runTools.push(createRequestWorkItemReplanTool({ workItem, collector: mutationCollector, isRunActive }));
+    }
+    const runToolNames = runTools.map(tool => tool.name);
     const toolPolicySnapshot = workItemToolPolicySnapshot(
       workDir,
       attachmentContext.files.map(file => file.ref),
-      mcpToolNames,
+      [...mcpToolNames, ...runToolNames],
     );
     const toolRegistry = createWorkItemToolRegistry({
       workDir,
       attachmentFiles: attachmentContext.files,
       isRunActive,
       mcpTools: workspaceRuntime.mcpTools,
+      runTools,
     });
     const config = {
       ...runtime.config,
@@ -844,7 +991,36 @@ export class WorkItemRunner {
     }
     const response = publicWorkItemResponse(text);
     reportProgress(true);
-    const parsedResult = parseStructuredResult(text, executionAction.type);
+    const submittedPlan = planCollector.value;
+    const submittedExpansion = mutationCollector.value?.kind === 'expand'
+      ? mutationCollector.value.input : null;
+    const submittedReplan = mutationCollector.value?.kind === 'replan'
+      ? mutationCollector.value.input : null;
+    const parsedResult = submittedPlan ? {
+      outcome: 'completed',
+      summary: submittedPlan.summary,
+      evidence: submittedPlan.evidence,
+      contractPatch: submittedPlan.contractPatch || null,
+      plan: { workItemType: submittedPlan.workItemType, actions: submittedPlan.actions },
+      acceptanceChecks: submittedPlan.acceptanceChecks,
+    } : submittedExpansion ? {
+      outcome: 'completed', summary: submittedExpansion.summary,
+      evidence: submittedExpansion.evidence, acceptanceChecks: submittedExpansion.acceptanceChecks,
+      planProposal: {
+        proposalId: submittedExpansion.proposalId,
+        basePlanRevision: submittedExpansion.basePlanRevision,
+        actions: submittedExpansion.actions,
+        dependencyPatches: submittedExpansion.dependencyPatches || [],
+      },
+    } : submittedReplan ? {
+      outcome: 'completed', summary: submittedReplan.summary,
+      evidence: submittedReplan.evidence, acceptanceChecks: submittedReplan.acceptanceChecks,
+      replanRequest: {
+        proposalId: submittedReplan.proposalId,
+        basePlanRevision: submittedReplan.basePlanRevision,
+        reason: submittedReplan.reason,
+      },
+    } : parseStructuredResult(text, executionAction.type);
     if (parsedResult.outcome === 'completed' && action.workspace?.isolated) {
       const workspace = commitActionWorktree(action.workspace, action);
       this.store.setActionWorkspace(action.id, workspace);

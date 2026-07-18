@@ -64,6 +64,7 @@ vi.mock('../../../../agent/yeaft/engine.js', () => ({
 }));
 
 const {
+  createSubmitWorkItemPlanTool,
   parseStructuredResult,
   publicWorkItemResponse,
   WorkItemRunner,
@@ -85,6 +86,42 @@ afterEach(() => {
 });
 
 describe('Work Center Runner execution resolution', () => {
+  it('builds a Run-local planning tool from the current VP and Action catalogs', async () => {
+    const collector = { value: null };
+    const requestEndTurn = vi.fn();
+    const tool = createSubmitWorkItemPlanTool({
+      vps: [
+        { id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implementation'] },
+        { id: 'martin', name: 'Martin', role: 'Reviewer', traits: ['review'] },
+      ],
+      collector,
+      isRunActive: () => true,
+    });
+    expect(tool.parameters.properties.actions.items.properties.type.enum).toContain('implement');
+    expect(tool.parameters.properties.actions.items.properties.type.enum).not.toContain('triage');
+    expect(tool.parameters.properties.actions.items.properties.candidateVpIds.items.enum).toEqual(['linus', 'martin']);
+    expect(tool.description).toContain('linus (Systems Engineer; implementation)');
+
+    const input = {
+      summary: 'Planned the work', evidence: ['Inspected the current implementation'], acceptanceChecks: [],
+      workItemType: 'software-change', actions: [{
+        id: 'implement-fix', name: 'Implement fix', type: 'implement',
+        objective: 'Implement the concrete fix', approach: 'Modify the existing path and add tests',
+        expectedOutcome: 'Focused tests pass', candidateVpIds: ['linus'],
+        assignmentReason: 'Best implementation fit', dependsOnActionIds: [], workspaceMode: 'shared',
+      }],
+    };
+    await expect(tool.execute(input, { requestEndTurn })).resolves.toContain('"submitted":true');
+    expect(collector.value).toEqual(input);
+    expect(requestEndTurn).toHaveBeenCalledWith({ kind: 'work_item_plan_submitted' });
+    await expect(tool.execute(input, { requestEndTurn })).rejects.toThrow(/already submitted/);
+  });
+
+  it('rejects a planning tool submission after the Run lease is lost', async () => {
+    const tool = createSubmitWorkItemPlanTool({ vps: [], collector: { value: null }, isRunActive: () => false });
+    await expect(tool.execute({ actions: [] }, {})).rejects.toThrow(/no longer active/);
+  });
+
   it('rolls back an isolated worktree when persisting ownership fails', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-prepare-rollback-'));
     const worktreeRoot = mkdtempSync(join(tmpdir(), 'work-center-prepare-worktrees-'));
