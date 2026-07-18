@@ -30,6 +30,7 @@
  */
 import VpAvatar from './VpAvatar.js';
 import { getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
+import { buildVpDomainSections } from '../utils/vp-domains.js';
 import { folderPickerData, folderPickerMethods } from './mixins/folder-picker-mixin.js';
 
 const OMNI_VP_ID = 'omni';
@@ -41,7 +42,7 @@ export default {
   template: `
     <Teleport to="body">
     <div class="modal-overlay" @click.self="onOverlayClick" role="dialog" aria-modal="true" :aria-label="$t('yeaft.session.create.title')">
-      <div class="modal resume-modal">
+      <div class="modal resume-modal yeaft-session-create-modal">
         <div class="resume-modal-controls">
           <button class="resume-close-btn" type="button" @click="requestClose" :aria-label="$t('yeaft.session.create.close')">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
@@ -126,40 +127,45 @@ export default {
                   role="listbox"
                   aria-multiselectable="true"
                 >
-                  <li
-                    v-for="vp in vpList"
-                    :key="vp.vpId"
-                    class="yeaft-roster-item"
-                    :class="{ 'is-selected': form.vpIds.includes(vp.vpId), 'is-default': form.defaultVpId === vp.vpId }"
-                    role="option"
-                    :aria-selected="form.vpIds.includes(vp.vpId)"
-                  >
-                    <label class="yeaft-roster-row">
-                      <input
-                        type="checkbox"
-                        :value="vp.vpId"
-                        :checked="form.vpIds.includes(vp.vpId)"
-                        @change="toggleVp(vp.vpId, $event.target.checked)"
-                      />
-                      <VpAvatar :vp-id="vp.vpId" :size="20" :aria-label="vpLabelFor(vp.vpId)" />
-                      <span class="yeaft-roster-copy">
-                        <span class="yeaft-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
-                        <span v-if="vpDescriptionFor(vp.vpId)" class="yeaft-roster-description">{{ vpDescriptionFor(vp.vpId) }}</span>
-                      </span>
-                    </label>
-                    <button
-                      v-if="form.vpIds.includes(vp.vpId)"
-                      type="button"
-                      class="yeaft-roster-default-star"
-                      :class="{ 'is-on': form.defaultVpId === vp.vpId }"
-                      :aria-label="$t('yeaft.session.create.defaultVpHint')"
-                      :aria-pressed="form.defaultVpId === vp.vpId"
-                      :title="$t('yeaft.session.create.defaultVpHint')"
-                      @click.stop="form.defaultVpId = vp.vpId"
+                  <template v-for="domain in vpDomainSections" :key="domain.id">
+                    <li class="vp-domain-heading yeaft-roster-domain" role="separator">
+                      <span>{{ $t(domain.labelKey) }}</span>
+                    </li>
+                    <li
+                      v-for="vp in domain.vps"
+                      :key="vp.vpId"
+                      class="yeaft-roster-item"
+                      :class="{ 'is-selected': form.vpIds.includes(vp.vpId), 'is-default': form.defaultVpId === vp.vpId }"
+                      role="option"
+                      :aria-selected="form.vpIds.includes(vp.vpId)"
                     >
-                      <span aria-hidden="true">{{ form.defaultVpId === vp.vpId ? '★' : '☆' }}</span>
-                    </button>
-                  </li>
+                      <label class="yeaft-roster-row">
+                        <input
+                          type="checkbox"
+                          :value="vp.vpId"
+                          :checked="form.vpIds.includes(vp.vpId)"
+                          @change="toggleVp(vp.vpId, $event.target.checked)"
+                        />
+                        <VpAvatar :vp-id="vp.vpId" :size="20" :aria-label="vpLabelFor(vp.vpId)" />
+                        <span class="yeaft-roster-copy">
+                          <span class="yeaft-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
+                          <span v-if="vpDescriptionFor(vp.vpId)" class="yeaft-roster-description">{{ vpDescriptionFor(vp.vpId) }}</span>
+                        </span>
+                      </label>
+                      <button
+                        v-if="form.vpIds.includes(vp.vpId)"
+                        type="button"
+                        class="yeaft-roster-default-star"
+                        :class="{ 'is-on': form.defaultVpId === vp.vpId }"
+                        :aria-label="$t('yeaft.session.create.defaultVpHint')"
+                        :aria-pressed="form.defaultVpId === vp.vpId"
+                        :title="$t('yeaft.session.create.defaultVpHint')"
+                        @click.stop="form.defaultVpId = vp.vpId"
+                      >
+                        <span aria-hidden="true">{{ form.defaultVpId === vp.vpId ? '★' : '☆' }}</span>
+                      </button>
+                    </li>
+                  </template>
                 </ul>
               </template>
             </div>
@@ -362,6 +368,7 @@ export default {
       return null;
     },
     vpList() { return this.vpStore?.vpList || []; },
+    vpDomainSections() { return buildVpDomainSections(this.vpList); },
     vpListSignature() {
       return (this.vpList || []).map(vp => vp && vp.vpId).filter(Boolean).join(',');
     },

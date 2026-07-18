@@ -16,7 +16,15 @@
    pulled from design tokens in variables.css.
    =========================================================================== */
 
-.resume-control-row-vp { align-items: flex-start; }
+.yeaft-session-create-modal {
+  width: min(720px, calc(100vw - 32px));
+  max-width: 720px;
+}
+
+.resume-control-row-vp {
+  position: relative;
+  align-items: flex-start;
+}
 
 .yeaft-roster {
   flex: 1 1 auto;
@@ -40,9 +48,15 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 168px;
+  max-height: min(360px, 46vh);
   overflow-y: auto;
 }
+
+.yeaft-roster-domain {
+  margin: 8px 8px 2px;
+}
+
+.yeaft-roster-domain:first-child { margin-top: 2px; }
 
 .yeaft-roster-item {
   display: flex;
@@ -86,18 +100,16 @@
   font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .yeaft-roster-description {
   font-size: 11px;
   line-height: 1.35;
   color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .yeaft-roster-default-star {
@@ -145,7 +157,7 @@
 
 .yeaft-roster-trigger.is-open {
   border-color: var(--accent-blue);
-  box-shadow: 0 0 0 2px rgba(74, 158, 255, 0.12);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .yeaft-roster-trigger-summary {
@@ -167,15 +179,21 @@
 
 .yeaft-roster-trigger.is-open .yeaft-roster-caret { transform: rotate(180deg); }
 
-/* Popup overlay below the trigger. Stays inside the controls section so
-   it doesn't extend past the modal frame. */
+/* Wide desktop popover anchored to the whole VP row. It overlays the content
+   area instead of growing the controls section, while `100%` keeps tablet
+   widths inside the row and modal rather than relying on viewport offsets. */
 .yeaft-roster-popup {
-  margin-top: 4px;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  width: min(640px, 100%);
+  margin-top: 0;
   padding: 4px;
   background: var(--bg-input);
   border: 1px solid var(--border-color);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--modal-shadow);
 }
 
 .resume-modal .resume-modal-error {
@@ -201,8 +219,22 @@
 /* Mobile: the chat modal shell already becomes full-screen; keep Yeaft-specific
    roster rows and footer controls usable at 360-430px widths. */
 @media (max-width: 640px) {
+  .yeaft-session-create-modal {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+  }
+
   .resume-control-row-vp {
     align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .resume-control-row-vp .resume-control-label {
+    width: auto;
   }
 
   .yeaft-roster-item {
@@ -214,12 +246,24 @@
     padding: 7px 8px;
   }
 
-  .yeaft-roster-copy,
+  .yeaft-roster-copy {
+    min-width: 0;
+  }
+
   .yeaft-roster-name,
   .yeaft-roster-description {
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .yeaft-roster-popup {
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-height: min(50dvh, 420px);
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .yeaft-roster-default-star {
