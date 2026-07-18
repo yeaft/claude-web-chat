@@ -237,6 +237,61 @@ describe('Work Center additive plan mutation', () => {
       .toBe(0);
   });
 
+  it.each([
+    {
+      name: 'Action dependency',
+      proposalId: 'invalid-dependency-ref',
+      actions: [plannedAction('dangerous followup', 'operate', ['@@@'])],
+      dependencyPatches: [],
+      error: /dependencies contains an invalid Action reference/,
+    },
+    {
+      name: 'review target',
+      proposalId: 'invalid-review-ref',
+      actions: [{
+        ...plannedAction('followup review', 'review', ['implement']),
+        changesRequestedActionId: '   ',
+      }],
+      dependencyPatches: [],
+      error: /review target contains an (?:empty|invalid) Action reference/,
+    },
+    {
+      name: 'dependency patch reference',
+      proposalId: 'invalid-patch-ref',
+      actions: [plannedAction('followup test', 'test', ['implement'])],
+      dependencyPatches: 'invalid',
+      error: /dependency patch contains an (?:empty|invalid) Action reference/,
+    },
+  ])('atomically rejects a canonical-empty $name', ({ proposalId, actions, dependencyPatches, error }) => {
+    const before = createGraph();
+    const implement = store.claimReadyAction('boot', 5_000);
+    const reviewId = before.actions.find(action => action.stageId === 'review').id;
+    const rejected = controller.submit(implement.run.id, 'boot', implement.run.leaseEpoch, completed({
+      planProposal: {
+        proposalId,
+        basePlanRevision: 1,
+        actions,
+        dependencyPatches: dependencyPatches === 'invalid'
+          ? [{ actionId: reviewId, addDependsOnActionIds: [''] }]
+          : dependencyPatches,
+      },
+    }));
+    expect(rejected.status).toBe('needs_attention');
+    expect(rejected.planRevision).toBe(1);
+    expect(rejected.workflowSnapshot).toEqual(before.workflowSnapshot);
+    expect(rejected.actions.map(action => ({
+      stageId: action.stageId,
+      dependsOnStageIds: action.dependsOnStageIds,
+    }))).toEqual(before.actions.map(action => ({
+      stageId: action.stageId,
+      dependsOnStageIds: action.dependsOnStageIds,
+    })));
+    expect(rejected.actions.find(action => action.stageId === 'implement').status).toBe('failed');
+    expect(rejected.runs[0].error).toMatch(error);
+    expect(store.db.prepare('SELECT COUNT(*) AS count FROM plan_audits WHERE proposal_id = ?').get(proposalId).count)
+      .toBe(0);
+  });
+
   it('rejects stale revisions without applying any expansion', () => {
     const detail = createGraph();
     const implement = store.claimReadyAction('boot', 5_000);

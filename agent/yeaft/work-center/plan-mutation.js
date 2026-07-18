@@ -65,6 +65,22 @@ function stableTopologicalActions(actions) {
   return ordered;
 }
 
+function canonicalExplicitActionId(value, field) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Work Center ${field} contains an empty Action reference`);
+  }
+  const id = canonicalActionId(value);
+  if (!id) {
+    throw new Error(`Work Center ${field} contains an invalid Action reference: ${value}`);
+  }
+  return id;
+}
+
+function canonicalExplicitActionIds(value, field) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(item => canonicalExplicitActionId(item, field)))];
+}
+
 function validateDependencyPatches(actions, patches, addedIds) {
   const active = new Map(actions
     .filter(action => !['superseded', 'cancelled'].includes(action.status))
@@ -81,8 +97,10 @@ function validateDependencyPatches(actions, patches, addedIds) {
       throw new Error(`Work Center dependency patch target is duplicated: ${action.id}`);
     }
     patchedActionIds.add(action.id);
-    const addDependsOnActionIds = [...new Set((raw.addDependsOnActionIds || [])
-      .map(id => canonicalActionId(id)).filter(Boolean))];
+    const addDependsOnActionIds = canonicalExplicitActionIds(
+      raw.addDependsOnActionIds,
+      'dependency patch',
+    );
     if (addDependsOnActionIds.length === 0) throw new Error('Work Center dependency patch must add at least one dependency');
     for (const dependencyId of addDependsOnActionIds) {
       if (!active.has(dependencyId) && !addedIds.has(dependencyId)) {
@@ -119,14 +137,20 @@ export function applyAdditivePlanProposal({ workItem, actions, proposal, availab
       throw new Error(`Work Center additive Action id is missing or already exists: ${id || '(missing)'}`);
     }
     addedIds.add(id);
+    const hasReturnTarget = Object.hasOwn(raw, 'changesRequestedActionId');
     return {
       ...raw,
       id,
-      dependsOnActionIds: [...new Set((raw.dependsOnActionIds || [])
-        .map(dependencyId => canonicalActionId(dependencyId)).filter(Boolean))],
-      changesRequestedActionId: raw.changesRequestedActionId
-        ? canonicalActionId(raw.changesRequestedActionId)
-        : raw.changesRequestedActionId,
+      dependsOnActionIds: canonicalExplicitActionIds(
+        raw.dependsOnActionIds,
+        `Action "${id}" dependencies`,
+      ),
+      changesRequestedActionId: hasReturnTarget
+        ? canonicalExplicitActionId(
+          raw.changesRequestedActionId,
+          `Action "${id}" review target`,
+        )
+        : undefined,
     };
   });
   const dependencyPatches = validateDependencyPatches(actions, proposal.dependencyPatches, addedIds);
