@@ -113,6 +113,24 @@ export function canonicalActionId(value, fallback = '') {
   return normalized || fallback;
 }
 
+export function canonicalExplicitActionId(value, field) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Work Center ${field} contains an empty Action reference`);
+  }
+  const id = canonicalActionId(value);
+  if (!id) {
+    throw new Error(`Work Center ${field} contains an invalid Action reference: ${value}`);
+  }
+  return id;
+}
+
+export function canonicalExplicitActionIds(value, field) {
+  if (!Array.isArray(value)) {
+    throw new Error(`Work Center ${field} must be an array of Action references`);
+  }
+  return [...new Set(value.map(item => canonicalExplicitActionId(item, field)))];
+}
+
 function uniqueStrings(value) {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map(item => String(item || '').trim()).filter(Boolean))];
@@ -505,16 +523,20 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
       },
       modelPolicy: source.actionModelPolicies[type] || source.actionModelPolicies.custom,
       dependsOnStageIds: Object.hasOwn(input, 'dependsOnActionIds')
-        ? uniqueStrings(input.dependsOnActionIds)
+        ? canonicalExplicitActionIds(
+          input.dependsOnActionIds,
+          `Action "${id}" dependencies`,
+        )
         : (previousGeneratedId ? [previousGeneratedId] : []),
       workspaceMode: WORKSPACE_MODES.has(input.workspaceMode) ? input.workspaceMode : 'shared',
       maxAttempts: Math.min(Math.max(Number(input.maxAttempts) || 2, 1), 5),
     };
     previousGeneratedId = id;
-    if (type === 'review' && Object.prototype.hasOwnProperty.call(input, 'changesRequestedActionId')) {
-      stage.changesRequestedStageId = typeof input.changesRequestedActionId === 'string'
-        ? canonicalActionId(input.changesRequestedActionId, '')
-        : '';
+    if (type === 'review' && Object.hasOwn(input, 'changesRequestedActionId')) {
+      stage.changesRequestedStageId = canonicalExplicitActionId(
+        input.changesRequestedActionId,
+        `Action "${id}" review target`,
+      );
     }
     return stage;
   });

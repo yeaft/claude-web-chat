@@ -455,6 +455,69 @@ describe('Work Center core', () => {
     expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
   });
 
+  it.each([
+    {
+      name: 'dependency',
+      actions: [
+        { id: 'dangerous operation', type: 'operate', objective: 'Perform the dangerous operation', dependsOnActionIds: ['   '] },
+        { id: 'verification', type: 'test', objective: 'Verify the dangerous operation', dependsOnActionIds: ['dangerous-operation'] },
+      ],
+      error: /dependencies contains an empty Action reference/,
+    },
+    {
+      name: 'review target',
+      actions: [
+        { id: 'implement fix', type: 'implement', objective: 'Implement the concrete fix', dependsOnActionIds: [] },
+        { id: 'review fix', type: 'review', objective: 'Review the concrete fix', dependsOnActionIds: ['implement-fix'], changesRequestedActionId: '@@@' },
+      ],
+      error: /review target contains an invalid Action reference/,
+    },
+  ])('atomically rejects an initial plan with an invalid explicit $name', ({ actions, error }) => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned', workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'dangerous-change', actions },
+    }));
+
+    expect(detail).toMatchObject({ status: 'needs_attention', planRevision: 0 });
+    expect(detail.workflowSnapshot.stages.map(stage => stage.id)).toEqual(['triage']);
+    expect(detail.actions).toHaveLength(1);
+    expect(detail.actions[0]).toMatchObject({ id: triage.action.id, status: 'failed' });
+    expect(detail.runs[0].error).toMatch(error);
+    expect(store.db.prepare('SELECT COUNT(*) AS count FROM plan_audits WHERE work_item_id = ?').get(item.id).count)
+      .toBe(0);
+  });
+
+  it('canonicalizes valid initial plan dependencies and explicit review targets', () => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned', workflowSnapshot: resolvePlanningWorkflowSnapshot({}),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: {
+        workItemType: 'canonical-plan',
+        actions: [
+          { id: 'Initial Analysis', type: 'research', objective: 'Analyze the affected implementation', dependsOnActionIds: [] },
+          { id: 'Implement Fix', type: 'implement', objective: 'Implement the concrete fix', dependsOnActionIds: ['INITIAL ANALYSIS'] },
+          { id: 'Review Fix', type: 'review', objective: 'Review the concrete fix', dependsOnActionIds: ['Implement Fix'], changesRequestedActionId: 'IMPLEMENT FIX' },
+        ],
+      },
+    }));
+
+    expect(detail).toMatchObject({ status: 'ready', planRevision: 1 });
+    expect(detail.workflowSnapshot.stages.map(stage => stage.id))
+      .toEqual(['triage', 'initial-analysis', 'implement-fix', 'review-fix']);
+    expect(detail.workflowSnapshot.stages.find(stage => stage.id === 'implement-fix').dependsOnStageIds)
+      .toEqual(['initial-analysis']);
+    expect(detail.workflowSnapshot.stages.find(stage => stage.id === 'review-fix')).toMatchObject({
+      dependsOnStageIds: ['implement-fix'], changesRequestedStageId: 'implement-fix',
+    });
+    expect(store.db.prepare('SELECT COUNT(*) AS count FROM plan_audits WHERE work_item_id = ?').get(item.id).count)
+      .toBe(1);
+  });
+
   it('preserves a validated domain-specific Action type and applies the custom execution baseline', () => {
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({
       globalInstructions: 'Never publish deployment artifacts without explicit approval.',

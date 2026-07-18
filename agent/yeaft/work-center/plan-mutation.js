@@ -1,4 +1,10 @@
-import { actionForStage, applyGeneratedPlan, canonicalActionId } from './workflow.js';
+import {
+  actionForStage,
+  applyGeneratedPlan,
+  canonicalActionId,
+  canonicalExplicitActionId,
+  canonicalExplicitActionIds,
+} from './workflow.js';
 
 function cleanProposalId(value) {
   const id = typeof value === 'string' ? value.trim().slice(0, 128) : '';
@@ -63,22 +69,6 @@ function stableTopologicalActions(actions) {
     throw new Error('Work Center additive plan contains a dependency cycle');
   }
   return ordered;
-}
-
-function canonicalExplicitActionId(value, field) {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`Work Center ${field} contains an empty Action reference`);
-  }
-  const id = canonicalActionId(value);
-  if (!id) {
-    throw new Error(`Work Center ${field} contains an invalid Action reference: ${value}`);
-  }
-  return id;
-}
-
-function canonicalExplicitActionIds(value, field) {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.map(item => canonicalExplicitActionId(item, field)))];
 }
 
 function validateDependencyPatches(actions, patches, addedIds) {
