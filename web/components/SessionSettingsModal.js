@@ -475,7 +475,7 @@ export default {
             <!-- Members -->
             <div v-else-if="section === 'members'" class="group-settings-section">
               <div class="group-settings-section-header">
-                <h3 class="group-settings-heading">{{ $t('yeaft.session.settings.members.heading') }}</h3>
+                <h3 class="group-settings-heading" id="session-settings-members-heading">{{ $t('yeaft.session.settings.members.heading') }}</h3>
                 <button
                   type="button"
                   class="group-settings-link-btn"
@@ -490,45 +490,54 @@ export default {
               <div v-else-if="vpList.length === 0" class="group-settings-empty">
                 {{ $t('yeaft.session.members.loading') }}
               </div>
-              <ul v-else class="group-settings-roster" role="listbox" aria-multiselectable="true">
-                <template v-for="domain in vpDomainSections" :key="domain.id">
-                  <li class="vp-domain-heading session-settings-roster-domain" role="separator">
-                    <span>{{ $t(domain.labelKey) }}</span>
-                  </li>
-                  <li
-                    v-for="vp in domain.vps"
-                    :key="vp.vpId"
-                    class="group-settings-roster-item"
-                    :class="{ 'is-selected': isMember(vp.vpId), 'is-default': defaultVpId === vp.vpId, 'is-edit-target': highlightedVpId === vp.vpId }"
-                    role="option"
-                    :aria-selected="isMember(vp.vpId)"
+              <div v-else class="group-settings-roster" role="group" aria-labelledby="session-settings-members-heading">
+                <section
+                  v-for="domain in vpDomainSections"
+                  :key="domain.id"
+                  class="session-settings-roster-domain-section"
+                  :aria-labelledby="'session-settings-vp-domain-' + domain.id"
+                >
+                  <h4
+                    class="vp-domain-heading session-settings-roster-domain"
+                    :id="'session-settings-vp-domain-' + domain.id"
                   >
-                    <label class="group-settings-roster-row">
-                      <input
-                        type="checkbox"
-                        :value="vp.vpId"
-                        :checked="isMember(vp.vpId)"
-                        :disabled="membersBusy"
-                        @change="toggleMember(vp.vpId, $event.target.checked)"
-                      />
-                      <span class="session-settings-roster-copy">
-                        <span class="session-settings-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
-                        <span v-if="vpDescriptionFor(vp.vpId)" class="session-settings-roster-description">{{ vpDescriptionFor(vp.vpId) }}</span>
-                      </span>
-                    </label>
-                    <button
-                      v-if="isMember(vp.vpId)"
-                      type="button"
-                      class="group-settings-default-star"
-                      :class="{ 'is-on': defaultVpId === vp.vpId }"
-                      :title="$t('yeaft.session.create.defaultVpHint')"
-                      :aria-pressed="defaultVpId === vp.vpId"
-                      :disabled="membersBusy || defaultVpId === vp.vpId"
-                      @click.stop="setDefault(vp.vpId)"
-                    ><span aria-hidden="true">{{ defaultVpId === vp.vpId ? '★' : '☆' }}</span></button>
-                  </li>
-                </template>
-              </ul>
+                    <span>{{ $t(domain.labelKey) }}</span>
+                  </h4>
+                  <ul class="session-settings-roster-domain-list">
+                    <li
+                      v-for="vp in domain.vps"
+                      :key="vp.vpId"
+                      class="group-settings-roster-item"
+                      :class="{ 'is-selected': isMember(vp.vpId), 'is-default': defaultVpId === vp.vpId, 'is-edit-target': highlightedVpId === vp.vpId }"
+                    >
+                      <label class="group-settings-roster-row">
+                        <input
+                          type="checkbox"
+                          :value="vp.vpId"
+                          :checked="isMember(vp.vpId)"
+                          :disabled="membersBusy"
+                          @change="toggleMember(vp.vpId, $event.target.checked)"
+                        />
+                        <span class="session-settings-roster-copy">
+                          <span class="session-settings-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
+                          <span v-if="vpDescriptionFor(vp.vpId)" class="session-settings-roster-description">{{ vpDescriptionFor(vp.vpId) }}</span>
+                        </span>
+                      </label>
+                      <button
+                        v-if="isMember(vp.vpId)"
+                        type="button"
+                        class="group-settings-default-star"
+                        :class="{ 'is-on': defaultVpId === vp.vpId }"
+                        :title="$t('yeaft.session.create.defaultVpHint')"
+                        :aria-label="$t('yeaft.session.create.defaultVpHint')"
+                        :aria-pressed="defaultVpId === vp.vpId"
+                        :disabled="membersBusy || defaultVpId === vp.vpId"
+                        @click.stop="setDefault(vp.vpId)"
+                      ><span aria-hidden="true">{{ defaultVpId === vp.vpId ? '★' : '☆' }}</span></button>
+                    </li>
+                  </ul>
+                </section>
+              </div>
               <p v-if="membersError" class="group-settings-error" role="alert">{{ membersError }}</p>
             </div>
 

@@ -42,21 +42,27 @@
 }
 
 .yeaft-roster-list {
-  list-style: none;
   margin: 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: min(360px, 46vh);
+  overflow-x: hidden;
   overflow-y: auto;
 }
+
+.yeaft-roster-domain-section,
+.yeaft-roster-domain-list {
+  margin: 0;
+  padding: 0;
+}
+
+.yeaft-roster-domain-list { list-style: none; }
 
 .yeaft-roster-domain {
   margin: 8px 8px 2px;
 }
 
-.yeaft-roster-domain:first-child { margin-top: 2px; }
+.yeaft-roster-domain-section:first-child .yeaft-roster-domain { margin-top: 2px; }
 
 .yeaft-roster-item {
   display: flex;
@@ -83,7 +89,7 @@
 
 .yeaft-roster-row input[type="checkbox"] {
   flex: 0 0 auto;
-  accent-color: var(--accent-blue, #4a9eff);
+  accent-color: var(--accent-blue);
   width: 14px;
   height: 14px;
 }
@@ -188,12 +194,18 @@
   right: 0;
   z-index: 20;
   width: min(640px, 100%);
+  max-height: min(360px, var(--vp-roster-available-height, 46vh));
   margin-top: 0;
   padding: 4px;
   background: var(--bg-input);
   border: 1px solid var(--border-color);
   border-radius: 10px;
   box-shadow: var(--modal-shadow);
+}
+
+.yeaft-roster-popup.opens-up {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 
 .resume-modal .resume-modal-error {
@@ -237,6 +249,10 @@
     width: auto;
   }
 
+  .yeaft-roster {
+    position: relative;
+  }
+
   .yeaft-roster-item {
     align-items: stretch;
   }
@@ -261,9 +277,7 @@
     left: 0;
     right: 0;
     width: 100%;
-    max-height: min(50dvh, 420px);
-    overflow-x: hidden;
-    overflow-y: auto;
+    max-height: min(420px, var(--vp-roster-available-height, 50dvh));
   }
 
   .yeaft-roster-default-star {

@@ -160,6 +160,8 @@ describe('Yeaft mobile layout CSS', () => {
     expect(createMobile).toContain('flex-direction: column');
     expect(createMobile).toContain('.resume-control-row-vp .resume-control-label');
     expect(createMobile).toContain('width: auto');
+    expect(createMobile).toContain('.yeaft-roster');
+    expect(createMobile).toContain('position: relative');
     expect(createMobile).toContain('.yeaft-session-create-modal');
     expect(createMobile).toContain('width: 100%');
     expect(createMobile).toContain('.yeaft-roster-name');
@@ -169,8 +171,11 @@ describe('Yeaft mobile layout CSS', () => {
     expect(createMobile).toContain('left: 0');
     expect(createMobile).toContain('right: 0');
     expect(createMobile).toContain('width: 100%');
-    expect(createMobile).toContain('max-height: min(50dvh, 420px)');
-    expect(createMobile).toContain('overflow-y: auto');
+    expect(createMobile).toContain('max-height: min(420px, var(--vp-roster-available-height, 50dvh))');
+    expect(createCss).toContain('max-height: min(360px, var(--vp-roster-available-height, 46vh))');
+    expect(createCss).toContain('.yeaft-roster-popup.opens-up');
+    expect(createCss).toContain('bottom: calc(100% + 4px)');
+    expect(createCss).toContain('overflow-y: auto');
     expect(createMobile).toContain('.yeaft-roster-default-star');
 
     const yeaftCss = read('styles/yeaft.css');

@@ -2114,6 +2114,8 @@
   max-height: min(420px, 56vh);
 }
 
+.vp-mention-domain-group { margin: 0; }
+
 .vp-mention-domain {
   margin: 8px 8px 2px;
 }
@@ -2827,13 +2829,20 @@
    * scrolling layer; an inner scroller produced a nested scrollbar
    * inside the Members tab and wasted the empty vertical space the
    * fixed shell now reserves. */
-  list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
+
+.session-settings-roster-domain-section,
+.session-settings-roster-domain-list {
+  margin: 0;
+  padding: 0;
+}
+
+.session-settings-roster-domain-list { list-style: none; }
 
 .session-settings-roster-domain {
   margin: 10px 8px 2px;

@@ -1,7 +1,13 @@
 import { DEFAULT_SLASH_COMMANDS, getCommandDescription, buildGroupedCommands, mergeSlashCommands, resolveDynamicSlashCommands } from '../utils/slash-commands.js';
 import { buildAutocompleteItems as buildExpertAutocomplete, getSelectionLabel, EXPERT_ROLES, MAX_SELECTIONS } from '../utils/expert-roles.js';
 import { parseMentions } from '../utils/parseMentions.js';
-import VpMentionAutocomplete, { filterVpMentions, applyMentionSelection, selectMentionCandidates } from './VpMentionAutocomplete.js';
+import VpMentionAutocomplete, {
+  filterVpMentions,
+  applyMentionSelection,
+  selectMentionCandidates,
+  vpMentionListboxId,
+  vpMentionOptionId,
+} from './VpMentionAutocomplete.js';
 
 export default {
   name: 'ChatInput',
@@ -106,10 +112,11 @@ export default {
           </div>
           <!-- task-334j: VP @ autocomplete (mutually exclusive with expert) -->
           <VpMentionAutocomplete
-            v-if="!store.btwMode && showVpAutocomplete && !showExpertAutocomplete"
+            v-if="vpMentionPopupOpen"
             :vps="mentionVpCandidates"
             :query="vpMentionQuery"
             :selected-index="vpSelectedIndex"
+            :input-id="inputElementId"
             @select="selectVpMention"
             @hover-index="vpSelectedIndex = $event"
           />
@@ -120,6 +127,12 @@ export default {
             @keydown="handleKeydown"
             @paste="handlePaste"
             @blur="onBlur"
+            :id="inputElementId"
+            role="combobox"
+            aria-autocomplete="list"
+            :aria-expanded="vpMentionPopupOpen"
+            :aria-controls="vpMentionPopupOpen ? vpMentionPopupId : null"
+            :aria-activedescendant="vpMentionActiveOptionId"
             :placeholder="store.btwMode ? $t('btw.placeholder') : (isCompacting ? $t('chatHeader.compacting') : $t(effectivePlaceholderKey))"
             :disabled="isCompacting"
             rows="1"
@@ -152,6 +165,8 @@ export default {
     const sessionsStore = (Pinia.useSessionsStore ? Pinia.useSessionsStore() : null);
     const inputText = Vue.ref('');
     const inputRef = Vue.ref(null);
+    const componentUid = Vue.getCurrentInstance()?.uid ?? 0;
+    const inputElementId = `chat-input-${componentUid}`;
     const fileInput = Vue.ref(null);
     const attachments = Vue.ref([]); // { file, name, preview?, uploading, fileId? }
     const uploading = Vue.ref(false);
@@ -261,6 +276,21 @@ export default {
         : sessionsStore.sessions?.[activeSessionId];
       return selectMentionCandidates(vpStore.vpList, activeSession);
     });
+    const filteredVpMentions = Vue.computed(() => (
+      filterVpMentions(mentionVpCandidates.value, vpMentionQuery.value)
+    ));
+    const vpMentionPopupOpen = Vue.computed(() => (
+      !store.btwMode
+      && showVpAutocomplete.value
+      && !showExpertAutocomplete.value
+      && filteredVpMentions.value.length > 0
+    ));
+    const vpMentionPopupId = vpMentionListboxId(inputElementId);
+    const vpMentionActiveOptionId = Vue.computed(() => {
+      if (!vpMentionPopupOpen.value) return null;
+      const activeVp = filteredVpMentions.value[vpSelectedIndex.value];
+      return activeVp ? vpMentionOptionId(inputElementId, activeVp.vpId) : null;
+    });
 
     const selectVpMention = (vp) => {
       if (!vp || !vp.vpId) return;
@@ -289,6 +319,13 @@ export default {
           delete store.inputDrafts[key];
         }
       }
+    });
+    Vue.watch(filteredVpMentions, (list) => {
+      if (list.length === 0) {
+        vpSelectedIndex.value = 0;
+        return;
+      }
+      if (vpSelectedIndex.value >= list.length) vpSelectedIndex.value = list.length - 1;
     });
 
     // 切换会话时恢复/保存草稿
@@ -703,7 +740,7 @@ export default {
       }
       // ★ task-334j: VP autocomplete keyboard nav (before expert, same contract)
       if (showVpAutocomplete.value) {
-        const vpList = filterVpMentions(mentionVpCandidates.value, vpMentionQuery.value);
+        const vpList = filteredVpMentions.value;
         if (vpList.length > 0) {
           if (e.key === 'ArrowDown') {
             e.preventDefault();
@@ -831,7 +868,11 @@ export default {
       cancelExecution,
       // task-334j: VP autocomplete + reply-to
       vpStore,
+      inputElementId,
       showVpAutocomplete,
+      vpMentionPopupOpen,
+      vpMentionPopupId,
+      vpMentionActiveOptionId,
       vpSelectedIndex,
       vpMentionQuery,
       mentionVpCandidates,
