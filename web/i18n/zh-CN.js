@@ -1471,6 +1471,7 @@ export default {
   'workCenter.loadingRequests': '正在加载请求…',
   'workCenter.loadingRequestDetail': '正在加载请求详情…',
   'workCenter.requestDetailUnavailable': '请求详情暂不可用，请重试。',
+  'workCenter.noRequestLoops': '这个请求没有保留下可展示的 Loop 详情。',
   'workCenter.loadEarlierMessages': '加载更早消息',
   'workCenter.loadingEarlierMessages': '正在加载更早消息…',
   'workCenter.unknownModel': '未知模型',
