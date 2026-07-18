@@ -349,8 +349,12 @@ export class WorkflowController {
           }
         : current;
       try {
+        const reservedStageIds = activeAction.stageId?.startsWith('replan-')
+          ? this.store.getWorkItemDetail(activeWorkItem.id).actions.map(action => action.stageId)
+          : [];
         validatedGeneratedWorkflow = applyGeneratedPlan(effective, result.plan, {
           availableVpIds: this.listAvailableVpIds?.(),
+          reservedStageIds,
         });
       } catch (error) {
         result.outcome = 'failed';

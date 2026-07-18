@@ -56,6 +56,8 @@ describe('Work Center additive plan mutation', () => {
     expect(detail.planRevision).toBe(1);
     expect(detail.workflowSnapshot.executionMode).toBe('graph');
     expect(detail.actions.map(action => action.stageId)).toEqual(['triage', 'implement', 'review']);
+    expect(detail.actions.find(action => action.stageId === 'review').assignmentPolicy)
+      .toMatchObject({ separateFromStageTypes: ['implement'] });
     const implement = store.claimReadyAction('boot', 5_000);
     detail = controller.submit(implement.run.id, 'boot', implement.run.leaseEpoch, completed({
       planProposal: {
@@ -94,6 +96,29 @@ describe('Work Center additive plan mutation', () => {
     expect(detail.events[0]).toMatchObject({ type: 'workflow.replan_requested', data: {
       proposalId: 'replan-1', previousPlanRevision: 1, planRevision: 2,
     } });
+  });
+
+  it('rejects replan Actions that reuse any historical stage identity', () => {
+    let detail = createGraph();
+    const implement = store.claimReadyAction('boot', 5_000);
+    detail = controller.submit(implement.run.id, 'boot', implement.run.leaseEpoch, completed({
+      replanRequest: {
+        proposalId: 'replan-reuse', basePlanRevision: 1,
+        reason: 'Replace unfinished work without rewriting completed history',
+      },
+    }));
+    const replan = store.claimReadyAction('boot', 5_000);
+    const rejected = controller.submit(replan.run.id, 'boot', replan.run.leaseEpoch, completed({
+      plan: { workItemType: 'bug-fix', actions: [
+        plannedAction('implement', 'implement'),
+        plannedAction('review-next', 'review', ['implement']),
+      ] },
+    }));
+    expect(rejected.status).toBe('needs_attention');
+    expect(rejected.runs[0].error).toMatch(/reuses historical stage identity: implement/);
+    expect(rejected.actions.find(action => action.stageId === 'implement').status).toBe('completed');
+    expect(rejected.actions.filter(action => action.stageId === 'implement')).toHaveLength(1);
+    expect(detail.actions.find(action => action.stageId === 'implement').status).toBe('completed');
   });
 
   it('rejects stale revisions without applying any expansion', () => {

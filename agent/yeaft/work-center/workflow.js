@@ -414,11 +414,17 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
   if (source.workItemType && workItemType !== source.workItemType) {
     throw new Error(`AI-planned triage must keep the selected workItemType "${source.workItemType}"`);
   }
+  const reservedStageIds = new Set((options.reservedStageIds || [])
+    .map(id => String(id || '').trim()).filter(Boolean));
   const reusableTemplate = source.actionTemplates.find(template => template.workItemType === workItemType);
   if (reusableTemplate) {
     const templateActions = reusableTemplate.stages.filter(stage => stage.type !== 'triage');
     if (templateActions.length === 0) {
       throw new Error(`Reusable Action template "${workItemType}" has no executable Actions`);
+    }
+    const reusedStageId = templateActions.find(stage => reservedStageIds.has(stage.id))?.id;
+    if (reusedStageId) {
+      throw new Error(`AI-planned Action id reuses historical stage identity: ${reusedStageId}`);
     }
     return normalizeWorkflowDefinition({
       ...source,
@@ -441,6 +447,9 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
     if (type === 'triage') throw new Error('AI-planned Actions cannot add another triage Action');
     const id = cleanId(input.id, `${type}-${index + 1}`);
     if (seen.has(id)) throw new Error(`Duplicate AI-planned Action id: ${id}`);
+    if (reservedStageIds.has(id)) {
+      throw new Error(`AI-planned Action id reuses historical stage identity: ${id}`);
+    }
     seen.add(id);
     const objective = typeof input.objective === 'string' ? input.objective.trim().slice(0, 2_000) : '';
     if (!objective) throw new Error(`AI-planned Action "${id}" requires a task-specific objective`);
@@ -525,6 +534,14 @@ export function applyGeneratedPlan(workItem, rawPlan, options = {}) {
     if (!stage.changesRequestedStageId) {
       throw new Error(`AI-planned review Action "${stage.id}" requires an earlier editable Action`);
     }
+    const returnTarget = candidates.find(candidate => candidate.id === stage.changesRequestedStageId);
+    stage.assignmentPolicy = {
+      ...stage.assignmentPolicy,
+      separateFromStageTypes: uniqueStrings([
+        ...(stage.assignmentPolicy.separateFromStageTypes || []),
+        returnTarget.type,
+      ]),
+    };
   }
   const hasIsolatedWrites = generated.some(stage => stage.workspaceMode === 'isolated-write');
   const integrationStages = generated.filter(stage => stage.workspaceMode === 'integrate');
