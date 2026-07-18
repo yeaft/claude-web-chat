@@ -72,6 +72,28 @@ describe('Work Center assignment and model policy', () => {
     })).toThrow(/unavailable/);
   });
 
+  it('uses AI-planned VP order as a strict fallback list', () => {
+    const selected = selectWorkItemVp({
+      policy: {
+        mode: 'planned', candidateVpIds: ['martin', 'linus'],
+        assignmentReason: 'Prefer the reviewer for this research task',
+      },
+      stageType: 'research', vps,
+    });
+    expect(selected.vp.id).toBe('martin');
+    expect(selected.reason).toContain('planned:martin');
+
+    const separated = selectWorkItemVp({
+      policy: {
+        mode: 'planned', candidateVpIds: ['linus', 'martin'],
+        assignmentReason: 'Independent review fallback', separateFromStageTypes: ['implement'],
+      },
+      stageType: 'review', vps,
+      priorRuns: [{ actionType: 'implement', vpSnapshot: { id: 'linus' } }],
+    });
+    expect(separated.vp.id).toBe('martin');
+  });
+
   it('enforces reviewer separation from the actual implementation VP', () => {
     const selected = selectWorkItemVp({
       policy: { mode: 'auto', capability: 'review', separateFromStageTypes: ['implement'] },

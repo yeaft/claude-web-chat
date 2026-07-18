@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -34,6 +34,7 @@ function mapWorkItem(row) {
   return {
     id: row.id,
     revision: row.revision,
+    planRevision: Math.max(0, Number(row.plan_revision) || 0),
     title: row.title,
     goal: row.goal,
     acceptanceCriteria: parseJson(row.acceptance_criteria, []),
@@ -181,6 +182,7 @@ export class WorkItemStore {
       CREATE TABLE IF NOT EXISTS work_items (
         id TEXT PRIMARY KEY,
         revision INTEGER NOT NULL DEFAULT 1,
+        plan_revision INTEGER NOT NULL DEFAULT 0,
         title TEXT NOT NULL,
         goal TEXT NOT NULL,
         acceptance_criteria TEXT NOT NULL,
@@ -265,6 +267,19 @@ export class WorkItemStore {
         type TEXT NOT NULL,
         data TEXT NOT NULL,
         created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS plan_audits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+        proposal_id TEXT NOT NULL,
+        base_plan_revision INTEGER NOT NULL,
+        plan_revision INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        action_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(work_item_id, proposal_id)
       );
       CREATE INDEX IF NOT EXISTS idx_work_items_status_updated ON work_items(status, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_actions_ready ON actions(status, updated_at, sequence);
@@ -361,6 +376,9 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'actions', 'workspace')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN workspace TEXT');
+    }
+    if (!hasColumn(this.db, 'work_items', 'plan_revision')) {
+      this.db.exec('ALTER TABLE work_items ADD COLUMN plan_revision INTEGER NOT NULL DEFAULT 0');
     }
     this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
@@ -1322,17 +1340,76 @@ export class WorkItemStore {
         nextWorkItem = this.getWorkItem(workItem.id);
       }
       if (transition.workflowSnapshot) {
-        this.db.prepare(`UPDATE work_items SET workflow_template = ?, workflow_snapshot = ?, updated_at = ?
-          WHERE id = ?`).run(
+        const expectedPlanRevision = Number.isInteger(transition.expectedPlanRevision)
+          ? transition.expectedPlanRevision
+          : workItem.planRevision;
+        const changedPlan = this.db.prepare(`UPDATE work_items SET workflow_template = ?, workflow_snapshot = ?,
+          plan_revision = plan_revision + 1, updated_at = ? WHERE id = ? AND plan_revision = ?`).run(
           transition.workflowSnapshot.id,
           stringify(transition.workflowSnapshot),
           now,
           workItem.id,
+          expectedPlanRevision,
         );
+        if (Number(changedPlan.changes) !== 1) {
+          throw new Error('Work Center plan revision changed before finalization');
+        }
         nextWorkItem = this.getWorkItem(workItem.id);
       }
 
+      for (const patch of Array.isArray(transition.dependencyPatches) ? transition.dependencyPatches : []) {
+        const actionPatch = patch.action;
+        const dependencies = [...new Set([
+          ...(actionPatch.dependsOnStageIds || []),
+          ...(patch.addDependsOnActionIds || []),
+        ])];
+        const changed = this.db.prepare(`UPDATE actions SET depends_on_stage_ids = ?, updated_at = ?
+          WHERE id = ? AND work_item_id = ? AND status = 'ready' AND attempt = 0 AND current_run_id IS NULL`).run(
+          stringify(dependencies), now, actionPatch.id, workItem.id,
+        );
+        if (Number(changed.changes) !== 1) {
+          throw new Error('Work Center dependency patch lost its unattempted Action fence');
+        }
+      }
+
       let nextAction = null;
+      if (transition.replanBarrier) {
+        const barrier = transition.replanBarrier;
+        if (barrier.basePlanRevision !== workItem.planRevision) {
+          throw new Error('Work Center replan request has a stale basePlanRevision');
+        }
+        const activeActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+          AND status NOT IN ('superseded', 'cancelled') ORDER BY sequence`).all(workItem.id).map(mapAction);
+        this.#assertNoIntegrationReservation(activeActions, now);
+        const unfinished = activeActions.filter(candidate => candidate.id !== action.id && candidate.status !== 'completed');
+        for (const candidate of unfinished) {
+          if (candidate.status === 'running' && candidate.currentRunId) {
+            this.db.prepare(`UPDATE runs SET status = 'superseded', ended_at = ?, error = ?
+              WHERE id = ? AND status = 'running'`).run(now, 'Superseded by Work Center replan barrier', candidate.currentRunId);
+          }
+          this.db.prepare(`UPDATE actions SET status = 'superseded', current_run_id = NULL,
+            lease_epoch = lease_epoch + 1, updated_at = ? WHERE id = ? AND status != 'completed'`).run(now, candidate.id);
+        }
+        const replanWorkflow = {
+          ...nextWorkItem.workflowSnapshot,
+          stages: [
+            ...(nextWorkItem.workflowSnapshot?.stages || []).filter(stage => activeActions
+              .some(candidate => candidate.stageId === stage.id && candidate.status === 'completed')),
+            { ...(nextWorkItem.workflowSnapshot?.stages?.[0] || {}), id: barrier.action.stageId, type: 'triage', name: 'Replan' },
+          ],
+        };
+        const changedPlan = this.db.prepare(`UPDATE work_items SET workflow_snapshot = ?, plan_revision = plan_revision + 1,
+          updated_at = ? WHERE id = ? AND plan_revision = ?`).run(
+          stringify(replanWorkflow), now, workItem.id, barrier.basePlanRevision,
+        );
+        if (Number(changedPlan.changes) !== 1) throw new Error('Work Center replan barrier lost its plan revision fence');
+        nextWorkItem = this.getWorkItem(workItem.id);
+        nextAction = this.#insertAction(workItem.id, {
+          ...barrier.action,
+          contractRevision: nextWorkItem.revision,
+          status: 'ready',
+        }, this.#nextSequence(workItem.id), now);
+      }
       if (transition.graphResetStageId) {
         nextAction = this.#resetGraphFromStage(
           workItem.id,
@@ -1382,8 +1459,33 @@ export class WorkItemStore {
       if (Number(changedWorkItem.changes) !== 1) {
         throw new Error('Work Center terminal transition lost the current WorkItem fence');
       }
+      if (transition.workflowSnapshot || transition.replanBarrier) {
+        const proposalId = transition.proposalId || transition.replanBarrier?.proposalId;
+        if (!proposalId) throw new Error('Work Center plan mutation requires proposalId');
+        try {
+          this.db.prepare(`INSERT INTO plan_audits
+            (work_item_id, proposal_id, base_plan_revision, plan_revision, kind, action_id, run_id, data, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+            workItem.id, proposalId, workItem.planRevision, nextWorkItem.planRevision,
+            transition.replanBarrier ? 'replan' : (workItem.planRevision === 0 ? 'initial' : 'expand'),
+            action.id, runId, stringify(transition.eventData || {}), now,
+          );
+        } catch (error) {
+          if (String(error?.message || '').includes('UNIQUE constraint failed')) {
+            throw new Error(`Work Center plan proposal was already applied: ${proposalId}`);
+          }
+          throw error;
+        }
+      }
       this.onTransitionStep?.('before_event');
-      this.appendEvent(workItem.id, transition.eventType, transition.eventData || {}, {
+      this.appendEvent(workItem.id, transition.eventType, {
+        ...(transition.eventData || {}),
+        ...((transition.workflowSnapshot || transition.replanBarrier) ? {
+          proposalId: transition.proposalId || transition.replanBarrier?.proposalId || null,
+          previousPlanRevision: workItem.planRevision,
+          planRevision: nextWorkItem.planRevision,
+        } : {}),
+      }, {
         actionId: action.id,
         runId,
       });

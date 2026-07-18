@@ -8,6 +8,7 @@ import {
 } from './workflow.js';
 import { renderSessionContextSnapshot } from './session-context.js';
 import { normalizeEvidence } from './evidence.js';
+import { applyAdditivePlanProposal } from './plan-mutation.js';
 
 function normalizeCriteria(value) {
   if (!Array.isArray(value)) return null;
@@ -92,6 +93,10 @@ function normalizeTerminalResult(result, action) {
     acceptanceChecks: Array.isArray(result.acceptanceChecks) ? result.acceptanceChecks : [],
     checkpoint: result.checkpoint && typeof result.checkpoint === 'object'
       ? result.checkpoint : null,
+    planProposal: result.planProposal && typeof result.planProposal === 'object'
+      && !Array.isArray(result.planProposal) ? result.planProposal : null,
+    replanRequest: result.replanRequest && typeof result.replanRequest === 'object'
+      && !Array.isArray(result.replanRequest) ? result.replanRequest : null,
   };
   if (normalized.outcome === 'waiting' && !normalized.waitingReason) {
     throw new Error('waiting outcome requires waitingReason');
@@ -100,6 +105,16 @@ function normalizeTerminalResult(result, action) {
     normalized.outcome = 'failed';
     normalized.error = 'Only triage may submit a WorkItem contractPatch';
     normalized.contractPatch = null;
+  }
+  if (normalized.outcome !== 'completed') {
+    normalized.planProposal = null;
+    normalized.replanRequest = null;
+  }
+  if (normalized.planProposal && normalized.replanRequest) {
+    normalized.outcome = 'failed';
+    normalized.error = 'An Action cannot expand and replan the WorkItem in the same completion';
+    normalized.planProposal = null;
+    normalized.replanRequest = null;
   }
   if (action.type === 'review' && normalized.outcome === 'completed' && !normalized.reviewDecision) {
     normalized.outcome = 'failed';
@@ -121,8 +136,11 @@ function contextEntry(action, result, run) {
 }
 
 export class WorkflowController {
-  constructor(store) {
+  constructor(store, options = {}) {
     this.store = store;
+    this.listAvailableVpIds = typeof options.listAvailableVpIds === 'function'
+      ? options.listAvailableVpIds
+      : null;
   }
 
   create(input) {
@@ -331,10 +349,39 @@ export class WorkflowController {
           }
         : current;
       try {
-        validatedGeneratedWorkflow = applyGeneratedPlan(effective, result.plan);
+        validatedGeneratedWorkflow = applyGeneratedPlan(effective, result.plan, {
+          availableVpIds: this.listAvailableVpIds?.(),
+        });
       } catch (error) {
         result.outcome = 'failed';
         result.error = error?.message || String(error);
+      }
+    }
+    let validatedPlanProposal = null;
+    if (result.outcome === 'completed' && result.planProposal) {
+      try {
+        validatedPlanProposal = applyAdditivePlanProposal({
+          workItem: activeWorkItem,
+          actions: this.store.getWorkItemDetail(activeWorkItem.id).actions,
+          proposal: result.planProposal,
+          availableVpIds: this.listAvailableVpIds?.(),
+        });
+      } catch (error) {
+        result.outcome = 'failed';
+        result.error = error?.message || String(error);
+      }
+    }
+    if (result.outcome === 'completed' && result.replanRequest) {
+      const basePlanRevision = Number(result.replanRequest.basePlanRevision);
+      const proposalId = typeof result.replanRequest.proposalId === 'string'
+        ? result.replanRequest.proposalId.trim().slice(0, 128) : '';
+      const reason = typeof result.replanRequest.reason === 'string'
+        ? result.replanRequest.reason.trim().slice(0, 4_000) : '';
+      if (!proposalId || !reason || basePlanRevision !== activeWorkItem.planRevision) {
+        result.outcome = 'failed';
+        result.error = 'Work Center replan request is missing fields or has a stale basePlanRevision';
+      } else {
+        result.replanRequest = { proposalId, reason, basePlanRevision };
       }
     }
     const detail = this.store.finalizeRun(
@@ -394,11 +441,40 @@ export class WorkflowController {
           && workItem.workflowSnapshot?.planningMode === 'ai'
           ? validatedGeneratedWorkflow
           : null;
+        const planProposal = workItem.planRevision === activeWorkItem.planRevision
+          ? validatedPlanProposal
+          : null;
+        if (validatedPlanProposal && !planProposal) {
+          throw new Error('Work Center plan revision changed before finalization');
+        }
         const plannedWorkItem = generatedWorkflow
           ? { ...effectiveWorkItem, workflowSnapshot: generatedWorkflow }
-          : effectiveWorkItem;
+          : planProposal
+            ? { ...effectiveWorkItem, workflowSnapshot: planProposal.workflowSnapshot }
+            : effectiveWorkItem;
         const context = [...(action.context || []), contextEntry(action, result, activeRun)];
         if (plannedWorkItem.workflowSnapshot?.executionMode === 'graph') {
+          if (result.replanRequest) {
+            const replanStage = {
+              ...plannedWorkItem.workflowSnapshot.stages[0],
+              id: `replan-${workItem.planRevision + 1}`,
+              name: 'Replan',
+              type: 'triage',
+              objective: 'Replan the unfinished WorkItem graph without changing completed history.',
+              approach: `Inspect completed evidence and this replan reason: ${result.replanRequest.reason}`,
+              expectedOutcome: 'A validated replacement plan for all unfinished work.',
+              dependsOnStageIds: [],
+            };
+            return {
+              actionStatus: 'completed', workItemStatus: 'ready', graphAdvance: true,
+              replanBarrier: {
+                ...result.replanRequest,
+                action: actionForStage(replanStage, plannedWorkItem, context),
+              },
+              eventType: 'workflow.replan_requested',
+              eventData: { reason: result.replanRequest.reason },
+            };
+          }
           if (action.type === 'review' && result.reviewDecision === 'changes_requested') {
             const targetStage = plannedWorkItem.workflowSnapshot.stages
               .find(stage => stage.id === action.changesRequestedStageId);
@@ -413,15 +489,19 @@ export class WorkflowController {
           }
           const nextActions = generatedWorkflow
             ? generatedWorkflow.stages.slice(1).map(stage => actionForStage(stage, plannedWorkItem, context))
-            : [];
+            : (planProposal?.nextActions || []);
+          const workflowSnapshot = generatedWorkflow || planProposal?.workflowSnapshot || null;
           return {
             actionStatus: 'completed',
             workItemStatus: nextActions.length > 0 ? 'ready' : 'running',
             contractPatch,
-            workflowSnapshot: generatedWorkflow,
+            workflowSnapshot,
+            expectedPlanRevision: generatedWorkflow ? workItem.planRevision : planProposal?.basePlanRevision,
+            proposalId: generatedWorkflow ? `initial:${runId}` : planProposal?.proposalId,
+            dependencyPatches: planProposal?.dependencyPatches || [],
             nextActions,
             graphAdvance: true,
-            eventType: 'action.completed',
+            eventType: planProposal ? 'workflow.plan_expanded' : 'action.completed',
             eventData: { nextActionCount: nextActions.length, reviewDecision: result.reviewDecision },
           };
         }
@@ -433,6 +513,8 @@ export class WorkflowController {
             workItemStatus: 'done',
             contractPatch,
             workflowSnapshot: generatedWorkflow,
+            expectedPlanRevision: generatedWorkflow ? workItem.planRevision : undefined,
+            proposalId: generatedWorkflow ? `initial:${runId}` : undefined,
             eventType: 'work_item.completed',
             eventData: { summary: result.summary },
           };
@@ -443,6 +525,8 @@ export class WorkflowController {
           workItemStatus: 'ready',
           contractPatch,
           workflowSnapshot: generatedWorkflow,
+          expectedPlanRevision: generatedWorkflow ? workItem.planRevision : undefined,
+          proposalId: generatedWorkflow ? `initial:${runId}` : undefined,
           nextAction: actionForStage(nextStep, plannedWorkItem, context),
           eventType: 'action.completed',
           eventData: {

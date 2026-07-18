@@ -83,6 +83,33 @@ describe('Work Center core', () => {
     expect(store.listWorkItems({ sessionId: 'session-1' }).map(row => row.id)).toEqual([item.id]);
   });
 
+  it('freezes an AI-planned ordered VP assignment and rejects unavailable candidates', () => {
+    controller = new WorkflowController(store, { listAvailableVpIds: () => ['linus', 'martin'] });
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'bug-fix', actions: [{
+        id: 'fix', type: 'implement', objective: 'Implement the concrete fix',
+        candidateVpIds: ['linus', 'martin'], assignmentReason: 'Linus is the primary implementer',
+      }] },
+    }));
+    expect(detail.actions.at(-1).assignmentPolicy).toMatchObject({
+      mode: 'planned', candidateVpIds: ['linus', 'martin'], assignmentReason: 'Linus is the primary implementer',
+    });
+
+    controller.create(createInput({ id: 'invalid-vp-plan', workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const invalid = store.claimReadyAction('boot-a', 5_000);
+    const rejected = controller.submit(invalid.run.id, 'boot-a', invalid.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'bug-fix', actions: [{
+        id: 'fix', type: 'implement', objective: 'Implement the concrete fix',
+        candidateVpIds: ['missing'], assignmentReason: 'Unknown candidate',
+      }] },
+    }));
+    expect(rejected.status).toBe('needs_attention');
+    expect(rejected.runs[0].error).toMatch(/unavailable VP/);
+  });
+
   it('freezes an AI-generated WorkItem type and task-specific Action flow after triage', () => {
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({
       modelPolicy: { mode: 'specific', model: 'provider/work-center', effort: 'high' },
