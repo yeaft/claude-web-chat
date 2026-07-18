@@ -158,11 +158,16 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('.work-center-request-card');
     expect(css).toContain('.work-center-action-composer');
     expect(css).toContain('grid-template-columns: clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr)');
-    expect(css).toContain('.work-center-action-state');
+    expect(page).toContain('class="work-center-status" :data-status="action.status"');
     expect(css).toContain('.work-center-action-input-wrapper');
 
     expect(page).toContain('class="work-center-action-card"');
+    expect(page).toContain('class="work-center-action-content"');
+    expect(page).toContain('class="work-center-action-primary"');
+    expect(page).toContain('class="work-center-action-secondary"');
     expect(page).toContain('class="work-center-action-stats"');
+    expect(page).toContain('this.loadLatestActionMessages(action)');
+    expect(css).toMatch(/\.work-center-action-summary\s*\{[^}]*grid-template-columns: 26px minmax\(0, 1fr\) 14px/s);
     expect(page).toContain('v-if="detailLoading"');
     expect(page).toContain('v-else-if="detailError"');
     expect(page).toContain("if (this.selectedId === item.id) this.detailError = error?.message || String(error)");

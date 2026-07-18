@@ -148,6 +148,40 @@ describe('Work Center Action detail tabs', () => {
     expect(wrapper.get('.work-center-request-loop-body').text()).toContain('run two');
   });
 
+  it('unwraps the request detail envelope returned by the service', async () => {
+    const request = { id: 'request-1', runId: 'run-1', model: 'model-1' };
+    const wrapper = mountDetail({
+      requests: [request],
+      requestDetails: {
+        'run-1:request-1': {
+          actionId: 'action-1',
+          request: { id: 'request-1', runId: 'run-1', loops: [{ id: 'loop-1', loopNumber: 1, response: 'visible response' }] },
+        },
+      },
+    });
+
+    await wrapper.get('#work-center-action-requests-tab').trigger('click');
+    await wrapper.get('.work-center-request-summary').trigger('click');
+
+    expect(wrapper.findAll('.work-center-request-loop')).toHaveLength(1);
+    expect(wrapper.get('.work-center-request-loop').text()).toContain('Loop 1');
+  });
+
+  it('shows an explicit empty state when retained request details contain no loops', async () => {
+    const request = { id: 'request-1', runId: 'run-1', model: 'model-1' };
+    const wrapper = mountDetail({
+      requests: [request],
+      requestDetails: {
+        'run-1:request-1': { request: { id: 'request-1', runId: 'run-1', loops: [] } },
+      },
+    });
+
+    await wrapper.get('#work-center-action-requests-tab').trigger('click');
+    await wrapper.get('.work-center-request-summary').trigger('click');
+
+    expect(wrapper.get('.work-center-request-detail').text()).toContain('This request has no retained loop details.');
+  });
+
   it('projects page request caches with the same run-scoped identity as the detail pane', () => {
     const context = {
       actionRequestKey: 'agent-1:wi-1:action-1',

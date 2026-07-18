@@ -404,6 +404,24 @@ test.describe('Work Center responsive UI', () => {
     }));
     expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight);
     expect(scroll.scrollTop).toBeGreaterThan(0);
+
+    const firstCard = cards.first();
+    const cardLayout = await firstCard.evaluate(element => {
+      const title = element.querySelector('.work-center-action-primary strong');
+      const stats = element.querySelector('.work-center-action-stats');
+      const titleStyle = title ? getComputedStyle(title) : null;
+      return {
+        cardWidth: element.getBoundingClientRect().width,
+        scrollWidth: element.scrollWidth,
+        titleWidth: title?.getBoundingClientRect().width || 0,
+        statsWidth: stats?.getBoundingClientRect().width || 0,
+        titleWritingMode: titleStyle?.writingMode || '',
+      };
+    });
+    expect(cardLayout.scrollWidth).toBeLessThanOrEqual(cardLayout.cardWidth + 1);
+    expect(cardLayout.titleWidth).toBeGreaterThan(100);
+    expect(cardLayout.statsWidth).toBeGreaterThan(180);
+    expect(cardLayout.titleWritingMode).toBe('horizontal-tb');
   });
 
   test('maximizes and restores the Workbench without leaving the main area in the layout', async ({ chatPage, mockAgent }) => {
@@ -485,6 +503,36 @@ test.describe('Work Center responsive UI', () => {
       actionId: 'action-1',
       revision: 1,
     });
+  });
+
+  test('loads retained messages when a historical Action is selected', async ({ chatPage, mockAgent }) => {
+    const detail = detailWithActions(2);
+    delete detail.actions[0].messages;
+    delete detail.actions[0].response;
+    detail.actions[0].messageCount = 1;
+    detail.actions[0].messageCursor = '1';
+    await openWorkCenter(chatPage, mockAgent);
+    const select = chatPage.locator('.work-center-card').click();
+    await respondToWorkCenterOp(mockAgent, 'get', detail);
+    await select;
+
+    const messagesResponse = respondToWorkCenterOp(mockAgent, 'get_action_messages', {
+      actionId: detail.actions[0].id,
+      messages: [{
+        id: 'run:historical-run', role: 'assistant', kind: 'response', status: 'completed',
+        text: 'Historical AI response loaded on selection.', attachments: [],
+        createdAt: Date.now(), updatedAt: Date.now(), progressRevision: 2,
+      }],
+      nextCursor: null,
+      total: 1,
+    });
+    await chatPage.locator('.work-center-action-card').first().click();
+    const request = await messagesResponse;
+
+    expect(request.payload).toEqual({
+      id: OPEN_ITEM.id, actionId: detail.actions[0].id, cursor: null, limit: 20,
+    });
+    await expect(chatPage.locator('.work-center-action-message')).toContainText('Historical AI response loaded on selection.');
   });
 
   test('explains an Action failure and shows how to recover it', async ({ chatPage, mockAgent }) => {
