@@ -310,6 +310,18 @@ export default {
       if (this.selectedActionId !== action.id) this.resetActionComposer();
       this.selectedActionId = action.id;
       this.narrowPane = 'action';
+      this.loadLatestActionMessages(action);
+    },
+    loadLatestActionMessages(action = this.selectedAction) {
+      if (!this.selected?.id || !action?.id || Array.isArray(action.messages)) return null;
+      const key = `${this.agentId}:${this.selected.id}:${action.id}`;
+      if (this.store.workCenterActionMessages[key]) return null;
+      return this.store.loadWorkItemActionMessages(
+        this.selected.id,
+        action.id,
+        null,
+        this.agentId,
+      ).catch(() => null);
     },
     showItemsPane() {
       this.narrowPane = 'items';
@@ -774,18 +786,22 @@ export default {
                       <button class="work-center-action-summary" type="button" @click="selectAction(action)"
                               :aria-current="selectedActionId === action.id ? 'true' : undefined">
                         <span class="work-center-action-index">{{ action.sequence }}</span>
-                        <span class="work-center-action-title">
-                          <strong>{{ actionLabel(action.type) }}</strong>
-                          <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.capability || tr('workCenter.assignment.auto', 'Auto') }}</small>
+                        <span class="work-center-action-content">
+                          <span class="work-center-action-primary">
+                            <strong>{{ actionLabel(action.type) }}</strong>
+                            <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
+                          </span>
+                          <span class="work-center-action-secondary">
+                            <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.capability || tr('workCenter.assignment.auto', 'Auto') }}</small>
+                            <span class="work-center-action-stats" aria-label="Execution totals">
+                              <span>{{ $t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) }) }}</span>
+                              <span>{{ $t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) }) }}</span>
+                              <span>{{ $t('workCenter.toolCount', { count: formatCount(executionStats(action).toolCount) }) }}</span>
+                              <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(action).inputTokens), output: formatCount(executionStats(action).outputTokens), cache: formatCount((executionStats(action).cacheReadTokens || 0) + (executionStats(action).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) }) }}</span>
+                            </span>
+                          </span>
                         </span>
-                        <span class="work-center-action-stats" aria-label="Execution totals">
-                          <span>{{ $t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) }) }}</span>
-                          <span>{{ $t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) }) }}</span>
-                          <span>{{ $t('workCenter.toolCount', { count: formatCount(executionStats(action).toolCount) }) }}</span>
-                          <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(action).inputTokens), output: formatCount(executionStats(action).outputTokens), cache: formatCount((executionStats(action).cacheReadTokens || 0) + (executionStats(action).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) }) }}</span>
-                        </span>
-                        <span class="work-center-action-state" :data-status="action.status" aria-hidden="true"></span>
-                        <span class="work-center-action-status-label">{{ statusLabel(action.status) }}</span>
+                        <span class="work-center-action-chevron" aria-hidden="true"></span>
                       </button>
 
                     </article>

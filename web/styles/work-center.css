@@ -758,12 +758,13 @@
 }
 
 .work-center-action-summary {
-  display: flex;
+  display: grid;
   width: 100%;
   min-width: 0;
   align-items: center;
-  gap: 9px;
-  padding: 9px 10px;
+  grid-template-columns: 26px minmax(0, 1fr) 14px;
+  gap: 10px;
+  padding: 10px;
   border: 0;
   background: transparent;
   color: var(--text-primary);
@@ -808,25 +809,42 @@
   font-weight: 600;
 }
 
-.work-center-action-title {
+.work-center-action-content {
   display: grid;
   min-width: 0;
-  flex: 1;
-  gap: 2px;
+  gap: 5px;
 }
 
-.work-center-action-title strong {
+.work-center-action-primary,
+.work-center-action-secondary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.work-center-action-primary {
+  justify-content: space-between;
+}
+
+.work-center-action-primary strong {
+  min-width: 0;
   overflow: hidden;
-  font-size: 13px;
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.work-center-action-title small {
+.work-center-action-secondary small {
+  min-width: 0;
   overflow: hidden;
-  color: var(--text-muted);
+  flex: 1;
+  color: var(--text-secondary);
   font-size: 11px;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -834,40 +852,9 @@
 .work-center-action-stats {
   display: flex;
   flex: 0 0 auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px 8px;
+  gap: 8px;
   color: var(--text-muted);
   font-size: 10px;
-  white-space: nowrap;
-}
-
-.work-center-action-state {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--text-muted);
-}
-
-.work-center-action-state[data-status="running"],
-.work-center-action-state[data-status="ready"],
-.work-center-action-state[data-status="completed"] {
-  background: var(--success);
-}
-
-.work-center-action-state[data-status="failed"],
-.work-center-action-state[data-status="waiting"],
-.work-center-action-state[data-status="needs_attention"] {
-  background: var(--error);
-}
-
-.work-center-action-status-label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
   white-space: nowrap;
 }
 

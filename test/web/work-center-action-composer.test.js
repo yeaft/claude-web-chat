@@ -55,6 +55,59 @@ function makeContext() {
 }
 
 describe('Work Center Action composer scope', () => {
+  it('loads the latest public message page when an Action is selected', async () => {
+    const loadWorkItemActionMessages = vi.fn().mockResolvedValue({ messages: [] });
+    const context = {
+      selectedActionId: 'action-1',
+      selected: { id: 'wi-1' },
+      agentId: 'agent-1',
+      narrowPane: 'actions',
+      store: { workCenterActionMessages: {}, loadWorkItemActionMessages },
+      resetActionComposer: vi.fn(),
+      loadLatestActionMessages: WorkCenterPage.methods.loadLatestActionMessages,
+    };
+
+    WorkCenterPage.methods.selectAction.call(context, { id: 'action-2' });
+    await Promise.resolve();
+
+    expect(context.selectedActionId).toBe('action-2');
+    expect(context.narrowPane).toBe('action');
+    expect(loadWorkItemActionMessages).toHaveBeenCalledWith('wi-1', 'action-2', null, 'agent-1');
+  });
+
+  it('does not refetch a cached Action message page', () => {
+    const loadWorkItemActionMessages = vi.fn();
+    const context = {
+      selected: { id: 'wi-1' },
+      agentId: 'agent-1',
+      store: {
+        workCenterActionMessages: { 'agent-1:wi-1:action-1': { messages: [] } },
+        loadWorkItemActionMessages,
+      },
+    };
+
+    const result = WorkCenterPage.methods.loadLatestActionMessages.call(context, { id: 'action-1' });
+
+    expect(result).toBeNull();
+    expect(loadWorkItemActionMessages).not.toHaveBeenCalled();
+  });
+
+  it('uses the embedded current Action messages without issuing another request', () => {
+    const loadWorkItemActionMessages = vi.fn();
+    const context = {
+      selected: { id: 'wi-1' },
+      agentId: 'agent-1',
+      store: { workCenterActionMessages: {}, loadWorkItemActionMessages },
+    };
+
+    const result = WorkCenterPage.methods.loadLatestActionMessages.call(context, {
+      id: 'action-1', messages: [{ id: 'run:current', text: 'live' }],
+    });
+
+    expect(result).toBeNull();
+    expect(loadWorkItemActionMessages).not.toHaveBeenCalled();
+  });
+
   it('shows the composer for a selected blocked graph Action even when currentActionId points elsewhere', () => {
     const canCompose = WorkCenterActionDetail.computed.canCompose;
     expect(canCompose.call({
