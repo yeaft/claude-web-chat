@@ -150,7 +150,6 @@ export default {
                   class="yeaft-roster-trigger"
                   :class="{ 'is-open': vpRosterOpen }"
                   :aria-expanded="vpRosterOpen"
-                  aria-haspopup="true"
                   aria-controls="yeaft-session-create-vp-picker"
                   ref="vpRosterTrigger"
                   @click="toggleVpRoster"

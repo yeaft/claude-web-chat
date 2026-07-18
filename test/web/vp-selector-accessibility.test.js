@@ -64,6 +64,10 @@ describe('VP selector accessibility and popup layout', () => {
       expect(template).toContain('aria-pressed');
     }
 
+    const createTrigger = openTag(SessionCreateModal.template, 'class="yeaft-roster-trigger"');
+    expect(createTrigger).toContain(':aria-expanded="vpRosterOpen"');
+    expect(createTrigger).toContain('aria-controls="yeaft-session-create-vp-picker"');
+    expect(createTrigger).not.toContain('aria-haspopup');
     expect(openTag(SessionCreateModal.template, 'class="yeaft-roster-list yeaft-roster-popup"'))
       .toContain('role="group"');
     expect(openTag(SessionSettingsModal.template, 'class="group-settings-roster"'))
@@ -76,9 +80,10 @@ describe('VP selector accessibility and popup layout', () => {
     expect(vpMentionOptionId(inputId, 'custom vp')).toBe('chat-input-17-vp-mention-option-custom-vp');
 
     const textarea = openTag(ChatInput.template, '<textarea');
-    expect(textarea).toContain('role="combobox"');
+    expect(textarea).not.toContain('role=');
+    expect(textarea).not.toContain('aria-expanded');
     expect(textarea).toContain('aria-autocomplete="list"');
-    expect(textarea).toContain(':aria-expanded="vpMentionPopupOpen"');
+    expect(textarea).toContain('aria-haspopup="listbox"');
     expect(textarea).toContain(':aria-controls="vpMentionPopupOpen ? vpMentionPopupId : null"');
     expect(textarea).toContain(':aria-activedescendant="vpMentionActiveOptionId"');
 
