@@ -22,6 +22,8 @@
  *   select (vp) — the VP record the user chose.
  *   hover-index (idx) — on mouseenter; parent mirrors into selectedIndex.
  */
+import { orderVpsByDomain, segmentVpsByDomain } from '../utils/vp-domains.js';
+
 /** Max results shown in the dropdown (aligned with existing expert autocomplete). */
 export const VP_MENTION_MAX_RESULTS = 12;
 
@@ -43,9 +45,8 @@ export function filterVpMentions(vps, query) {
   const list = Array.isArray(vps) ? vps : [];
   const q = typeof query === 'string' ? query.toLowerCase() : '';
   if (!q) {
-    return list
-      .filter(v => v && v.vpId && v.vpId !== 'user')
-      .slice(0, VP_MENTION_MAX_RESULTS);
+    const candidates = list.filter(v => v && v.vpId && v.vpId !== 'user');
+    return orderVpsByDomain(candidates).slice(0, VP_MENTION_MAX_RESULTS);
   }
   const idPrefix = [];
   const aliasPrefix = [];
@@ -80,7 +81,28 @@ export function filterVpMentions(vps, query) {
       take(vp, nameSubstring);
     }
   }
-  return [...idPrefix, ...aliasPrefix, ...nameSubstring].slice(0, VP_MENTION_MAX_RESULTS);
+  return [
+    ...orderVpsByDomain(idPrefix),
+    ...orderVpsByDomain(aliasPrefix),
+    ...orderVpsByDomain(nameSubstring),
+  ].slice(0, VP_MENTION_MAX_RESULTS);
+}
+
+export function vpMentionListboxId(inputId = 'chat-input') {
+  return `${inputId}-vp-mention-listbox`;
+}
+
+export function vpMentionOptionId(inputId, vpId) {
+  const safeVpId = String(vpId || '').replace(/[^A-Za-z0-9_.:-]/g, '-');
+  return `${inputId}-vp-mention-option-${safeVpId}`;
+}
+
+export function buildVpMentionSections(vps) {
+  let flatIndex = 0;
+  return segmentVpsByDomain(vps).map(domain => ({
+    ...domain,
+    items: domain.vps.map(vp => ({ vp, flatIndex: flatIndex++ })),
+  }));
 }
 
 /**
@@ -142,28 +164,52 @@ export default {
     vps: { type: Array, default: () => [] },
     query: { type: String, default: '' },
     selectedIndex: { type: Number, default: 0 },
+    inputId: { type: String, required: true },
   },
   template: `
-    <div class="slash-autocomplete vp-mention-autocomplete" v-if="filteredList.length > 0">
-      <div class="slash-group-label">{{ $t('yeaft.vp.mention.placeholder') }}</div>
+    <div
+      class="slash-autocomplete vp-mention-autocomplete"
+      v-if="filteredList.length > 0"
+      role="listbox"
+      :id="listboxId"
+      :aria-label="$t('yeaft.vp.mention.placeholder')"
+    >
       <div
-        v-for="(vp, idx) in filteredList"
-        :key="vp.vpId"
-        class="slash-autocomplete-item"
-        :class="{ active: idx === selectedIndex }"
-        @mousedown.prevent="$emit('select', vp)"
-        @mouseenter="$emit('hover-index', idx)"
+        v-for="domain in domainSections"
+        :key="domain.key"
+        role="group"
+        :aria-labelledby="domainLabelId(domain.key)"
+        class="vp-mention-domain-group"
       >
-        <span class="vp-mention-copy">
-          <span class="slash-cmd-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ displayNameFor(vp) }}</span>
-          <span v-if="descriptionFor(vp)" class="vp-mention-description">{{ descriptionFor(vp) }}</span>
-        </span>
-        <span class="slash-cmd-desc vp-mention-id">@{{ vp.vpId }}</span>
+        <div class="vp-domain-heading vp-mention-domain" :id="domainLabelId(domain.key)">
+          <span>{{ $t(domain.labelKey) }}</span>
+        </div>
+        <div
+          v-for="item in domain.items"
+          :key="item.vp.vpId"
+          class="slash-autocomplete-item"
+          :class="{ active: item.flatIndex === selectedIndex }"
+          role="option"
+          :id="optionId(item.vp.vpId)"
+          :aria-selected="item.flatIndex === selectedIndex"
+          @mousedown.prevent="$emit('select', item.vp)"
+          @mouseenter="$emit('hover-index', item.flatIndex)"
+        >
+          <span class="vp-mention-copy">
+            <span class="slash-cmd-name" :style="{ color: vpTextColorFor(item.vp.vpId) }">{{ displayNameFor(item.vp) }}</span>
+            <span v-if="descriptionFor(item.vp)" class="vp-mention-description">{{ descriptionFor(item.vp) }}</span>
+          </span>
+          <span class="slash-cmd-desc vp-mention-id">@{{ item.vp.vpId }}</span>
+        </div>
       </div>
     </div>
   `,
   setup(props) {
     const filteredList = Vue.computed(() => filterVpMentions(props.vps, props.query));
+    const domainSections = Vue.computed(() => buildVpMentionSections(filteredList.value));
+    const listboxId = Vue.computed(() => vpMentionListboxId(props.inputId));
+    const optionId = (vpId) => vpMentionOptionId(props.inputId, vpId);
+    const domainLabelId = (domainKey) => `${listboxId.value}-domain-${domainKey}`;
     // task-fix (5-bugs): locale-aware display name. zh-* prefers displayNameZh.
     //
     // Locale must be read reactively: previously this read
@@ -200,6 +246,15 @@ export default {
         ? vpStore.vpTextColor(vpId)
         : 'var(--text-primary)';
     }
-    return { filteredList, displayNameFor, descriptionFor, vpTextColorFor };
+    return {
+      filteredList,
+      domainSections,
+      listboxId,
+      optionId,
+      domainLabelId,
+      displayNameFor,
+      descriptionFor,
+      vpTextColorFor,
+    };
   },
 };

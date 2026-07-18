@@ -30,9 +30,44 @@
  */
 import VpAvatar from './VpAvatar.js';
 import { getLastPathSegment, formatResumeDate } from '../utils/path-segments.js';
+import { buildVpDomainSections } from '../utils/vp-domains.js';
 import { folderPickerData, folderPickerMethods } from './mixins/folder-picker-mixin.js';
 
 const OMNI_VP_ID = 'omni';
+
+const VP_ROSTER_POPUP_GAP_PX = 4;
+
+/**
+ * Pick a popup direction and the exact height available inside both its modal
+ * clipping boundary and the current visual viewport.
+ *
+ * Prefer opening down when the popup already fits there. Otherwise use the
+ * upper side when it fits, falling back to whichever side exposes more room.
+ * The returned height is consumed as a CSS max-height, so the last checklist
+ * item remains reachable through the popup's own scroller.
+ *
+ * @param {{top: number, bottom: number}} anchorRect
+ * @param {{top: number, bottom: number}} boundaryRect
+ * @param {{top: number, bottom: number}} viewportRect
+ * @param {number} desiredHeight
+ * @returns {{placement: 'up'|'down', availableHeight: number}}
+ */
+export function resolveVpRosterPopupLayout(anchorRect, boundaryRect, viewportRect, desiredHeight = 0) {
+  const clipTop = Math.max(boundaryRect.top, viewportRect.top);
+  const clipBottom = Math.min(boundaryRect.bottom, viewportRect.bottom);
+  const above = Math.max(0, anchorRect.top - clipTop - VP_ROSTER_POPUP_GAP_PX);
+  const below = Math.max(0, clipBottom - anchorRect.bottom - VP_ROSTER_POPUP_GAP_PX);
+  const target = Math.max(0, Number(desiredHeight) || 0);
+
+  let placement = 'down';
+  if (below < target && above >= target) placement = 'up';
+  else if (below < target && above > below) placement = 'up';
+
+  return {
+    placement,
+    availableHeight: Math.floor(placement === 'up' ? above : below),
+  };
+}
 
 export default {
   name: 'SessionCreateModal',
@@ -41,7 +76,7 @@ export default {
   template: `
     <Teleport to="body">
     <div class="modal-overlay" @click.self="onOverlayClick" role="dialog" aria-modal="true" :aria-label="$t('yeaft.session.create.title')">
-      <div class="modal resume-modal">
+      <div class="modal resume-modal yeaft-session-create-modal">
         <div class="resume-modal-controls">
           <button class="resume-close-btn" type="button" @click="requestClose" :aria-label="$t('yeaft.session.create.close')">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
@@ -115,52 +150,71 @@ export default {
                   class="yeaft-roster-trigger"
                   :class="{ 'is-open': vpRosterOpen }"
                   :aria-expanded="vpRosterOpen"
-                  @click="vpRosterOpen = !vpRosterOpen"
+                  aria-controls="yeaft-session-create-vp-picker"
+                  ref="vpRosterTrigger"
+                  @click="toggleVpRoster"
                 >
                   <span class="yeaft-roster-trigger-summary">{{ vpRosterSummary }}</span>
                   <span class="yeaft-roster-caret" aria-hidden="true">▾</span>
                 </button>
-                <ul
+                <div
                   v-if="vpRosterOpen"
                   class="yeaft-roster-list yeaft-roster-popup"
-                  role="listbox"
-                  aria-multiselectable="true"
+                  :class="{ 'opens-up': vpRosterPlacement === 'up' }"
+                  :style="vpRosterPopupStyle"
+                  id="yeaft-session-create-vp-picker"
+                  role="group"
+                  :aria-label="$t('yeaft.session.create.vpPicker')"
+                  ref="vpRosterPopup"
                 >
-                  <li
-                    v-for="vp in vpList"
-                    :key="vp.vpId"
-                    class="yeaft-roster-item"
-                    :class="{ 'is-selected': form.vpIds.includes(vp.vpId), 'is-default': form.defaultVpId === vp.vpId }"
-                    role="option"
-                    :aria-selected="form.vpIds.includes(vp.vpId)"
+                  <section
+                    v-for="domain in vpDomainSections"
+                    :key="domain.id"
+                    class="yeaft-roster-domain-section"
+                    :aria-labelledby="'yeaft-create-vp-domain-' + domain.id"
                   >
-                    <label class="yeaft-roster-row">
-                      <input
-                        type="checkbox"
-                        :value="vp.vpId"
-                        :checked="form.vpIds.includes(vp.vpId)"
-                        @change="toggleVp(vp.vpId, $event.target.checked)"
-                      />
-                      <VpAvatar :vp-id="vp.vpId" :size="20" :aria-label="vpLabelFor(vp.vpId)" />
-                      <span class="yeaft-roster-copy">
-                        <span class="yeaft-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
-                        <span v-if="vpDescriptionFor(vp.vpId)" class="yeaft-roster-description">{{ vpDescriptionFor(vp.vpId) }}</span>
-                      </span>
-                    </label>
-                    <button
-                      v-if="form.vpIds.includes(vp.vpId)"
-                      type="button"
-                      class="yeaft-roster-default-star"
-                      :class="{ 'is-on': form.defaultVpId === vp.vpId }"
-                      :aria-label="$t('yeaft.session.create.defaultVpHint')"
-                      :aria-pressed="form.defaultVpId === vp.vpId"
-                      :title="$t('yeaft.session.create.defaultVpHint')"
-                      @click.stop="form.defaultVpId = vp.vpId"
+                    <h3
+                      class="vp-domain-heading yeaft-roster-domain"
+                      :id="'yeaft-create-vp-domain-' + domain.id"
                     >
-                      <span aria-hidden="true">{{ form.defaultVpId === vp.vpId ? '★' : '☆' }}</span>
-                    </button>
-                  </li>
-                </ul>
+                      <span>{{ $t(domain.labelKey) }}</span>
+                    </h3>
+                    <ul class="yeaft-roster-domain-list">
+                      <li
+                        v-for="vp in domain.vps"
+                        :key="vp.vpId"
+                        class="yeaft-roster-item"
+                        :class="{ 'is-selected': form.vpIds.includes(vp.vpId), 'is-default': form.defaultVpId === vp.vpId }"
+                      >
+                        <label class="yeaft-roster-row">
+                          <input
+                            type="checkbox"
+                            :value="vp.vpId"
+                            :checked="form.vpIds.includes(vp.vpId)"
+                            @change="toggleVp(vp.vpId, $event.target.checked)"
+                          />
+                          <VpAvatar :vp-id="vp.vpId" :size="20" :aria-label="vpLabelFor(vp.vpId)" />
+                          <span class="yeaft-roster-copy">
+                            <span class="yeaft-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
+                            <span v-if="vpDescriptionFor(vp.vpId)" class="yeaft-roster-description">{{ vpDescriptionFor(vp.vpId) }}</span>
+                          </span>
+                        </label>
+                        <button
+                          v-if="form.vpIds.includes(vp.vpId)"
+                          type="button"
+                          class="yeaft-roster-default-star"
+                          :class="{ 'is-on': form.defaultVpId === vp.vpId }"
+                          :aria-label="$t('yeaft.session.create.defaultVpHint')"
+                          :aria-pressed="form.defaultVpId === vp.vpId"
+                          :title="$t('yeaft.session.create.defaultVpHint')"
+                          @click.stop="form.defaultVpId = vp.vpId"
+                        >
+                          <span aria-hidden="true">{{ form.defaultVpId === vp.vpId ? '★' : '☆' }}</span>
+                        </button>
+                      </li>
+                    </ul>
+                  </section>
+                </div>
               </template>
             </div>
           </div>
@@ -323,6 +377,8 @@ export default {
       // hide the list behind a trigger and only open it when the user
       // wants to multi-select (mirrors the Copilot model picker pattern).
       vpRosterOpen: false,
+      vpRosterPlacement: 'down',
+      vpRosterAvailableHeight: null,
       // Disk-scanned session list for the currently chosen workDir.
       // `scannedSessions` is the raw list the agent returns from
       // scan_workdir; the `sessionsInDir` computed annotates each row
@@ -362,6 +418,7 @@ export default {
       return null;
     },
     vpList() { return this.vpStore?.vpList || []; },
+    vpDomainSections() { return buildVpDomainSections(this.vpList); },
     vpListSignature() {
       return (this.vpList || []).map(vp => vp && vp.vpId).filter(Boolean).join(',');
     },
@@ -462,9 +519,16 @@ export default {
       }
       return this.$t('yeaft.session.create.vpCount', { n: ids.length });
     },
+    vpRosterPopupStyle() {
+      if (!Number.isFinite(this.vpRosterAvailableHeight)) return {};
+      return { '--vp-roster-available-height': `${this.vpRosterAvailableHeight}px` };
+    },
   },
   mounted() {
     window.addEventListener('keydown', this.onEsc);
+    window.addEventListener('resize', this.scheduleVpRosterLayout);
+    window.visualViewport?.addEventListener('resize', this.scheduleVpRosterLayout);
+    window.visualViewport?.addEventListener('scroll', this.scheduleVpRosterLayout);
     window.addEventListener('workbench-message', this.handleFolderPickerMessage);
     document.addEventListener('click', this.handleOutsideRosterClick, true);
     // Name input is optional — do NOT auto-focus it. Focusing an
@@ -487,7 +551,10 @@ export default {
     // Watch the VP identity signature, not only length: switching agents can
     // return the same number of VPs in a different library. The create UI must
     // still prefer the generalist Omni VP whenever that target library has it.
-    vpListSignature() { this.applyDefaultSelection(); },
+    vpListSignature() {
+      this.applyDefaultSelection();
+      this.scheduleVpRosterLayout();
+    },
     // The agent list arrives over the WebSocket, so on a cold page load it
     // can be empty at mount() — leaving form.agentId null. A <select>
     // bound to a null model still *visually* shows its first <option>
@@ -499,7 +566,10 @@ export default {
     // signature changes (NOT just its length — offline agents stay in the
     // list, so length alone misses an agent going offline) so the bound
     // value always matches a real, online option the user can see.
-    agentSignature() { this.seedAgentDefault(); },
+    agentSignature() {
+      this.seedAgentDefault();
+      this.scheduleVpRosterLayout();
+    },
     // fix-session-restore-modal-unify: re-subscribe when the user picks
     // a different agent from the dropdown, since the VP library is
     // per-agent (one agent's VPs are not the other's). Also re-scan
@@ -541,11 +611,61 @@ export default {
   },
   beforeUnmount() {
     window.removeEventListener('keydown', this.onEsc);
+    window.removeEventListener('resize', this.scheduleVpRosterLayout);
+    window.visualViewport?.removeEventListener('resize', this.scheduleVpRosterLayout);
+    window.visualViewport?.removeEventListener('scroll', this.scheduleVpRosterLayout);
     window.removeEventListener('workbench-message', this.handleFolderPickerMessage);
     document.removeEventListener('click', this.handleOutsideRosterClick, true);
+    if (this._vpRosterLayoutFrame) cancelAnimationFrame(this._vpRosterLayoutFrame);
     if (this._folderPickerTimer) clearTimeout(this._folderPickerTimer);
   },
   methods: {
+    toggleVpRoster() {
+      if (this.vpRosterOpen) {
+        this.closeVpRoster();
+        return;
+      }
+      this.vpRosterPlacement = 'down';
+      this.vpRosterAvailableHeight = null;
+      this.vpRosterOpen = true;
+      this.$nextTick(this.scheduleVpRosterLayout);
+    },
+    closeVpRoster() {
+      this.vpRosterOpen = false;
+      this.vpRosterAvailableHeight = null;
+    },
+    scheduleVpRosterLayout() {
+      if (!this.vpRosterOpen || this._vpRosterLayoutFrame) return;
+      this._vpRosterLayoutFrame = requestAnimationFrame(() => {
+        this._vpRosterLayoutFrame = null;
+        this.updateVpRosterLayout();
+      });
+    },
+    updateVpRosterLayout() {
+      if (!this.vpRosterOpen) return;
+      const trigger = this.$refs.vpRosterTrigger;
+      const popup = this.$refs.vpRosterPopup;
+      const modal = trigger?.closest?.('.resume-modal');
+      if (!trigger || !popup || !modal) return;
+
+      const previousMaxHeight = popup.style.maxHeight;
+      popup.style.maxHeight = 'none';
+      const desiredHeight = popup.scrollHeight;
+      popup.style.maxHeight = previousMaxHeight;
+      const viewport = window.visualViewport;
+      const viewportTop = viewport ? viewport.offsetTop : 0;
+      const viewportHeight = viewport ? viewport.height : window.innerHeight;
+      const viewportRect = { top: viewportTop, bottom: viewportTop + viewportHeight };
+      const boundaryRect = modal.getBoundingClientRect();
+      const layout = resolveVpRosterPopupLayout(
+        trigger.getBoundingClientRect(),
+        boundaryRect,
+        viewportRect,
+        desiredHeight,
+      );
+      this.vpRosterPlacement = layout.placement;
+      this.vpRosterAvailableHeight = layout.availableHeight;
+    },
     /**
      * Seed (or re-seed) form.agentId to a real, online agent.
      *
@@ -834,13 +954,17 @@ export default {
       const root = this.$refs.vpRosterRoot;
       if (!root) return;
       if (root.contains(e.target)) return;
-      this.vpRosterOpen = false;
+      this.closeVpRoster();
     },
     getLastPathSegment(p) { return getLastPathSegment(p); },
     formatDate(iso) { return formatResumeDate(iso, this.$t.bind(this)); },
     onEsc(e) {
       if (e.key !== 'Escape') return;
       if (this.folderPickerOpen) return;
+      if (this.vpRosterOpen) {
+        this.closeVpRoster();
+        return;
+      }
       if (!this.busy) this.requestClose();
     },
     onOverlayClick() { if (!this.busy) this.requestClose(); },
