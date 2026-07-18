@@ -6,6 +6,65 @@ function cleanProposalId(value) {
   return id;
 }
 
+function planActionFromStage(stage) {
+  return {
+    id: stage.id,
+    name: stage.name,
+    type: stage.type,
+    objective: stage.objective,
+    approach: stage.approach,
+    expectedOutcome: stage.expectedOutcome,
+    capability: stage.assignmentPolicy?.capability,
+    candidateVpIds: stage.assignmentPolicy?.mode === 'planned'
+      ? stage.assignmentPolicy.candidateVpIds
+      : undefined,
+    assignmentReason: stage.assignmentPolicy?.assignmentReason,
+    separateFromActionTypes: stage.assignmentPolicy?.separateFromStageTypes,
+    dependsOnActionIds: stage.dependsOnStageIds || [],
+    workspaceMode: stage.workspaceMode,
+    changesRequestedActionId: stage.changesRequestedStageId,
+    maxAttempts: stage.maxAttempts,
+  };
+}
+
+function stableTopologicalActions(actions) {
+  const byId = new Map(actions.map((action, index) => [action.id, { action, index }]));
+  const incoming = new Map(actions.map(action => [action.id, 0]));
+  const outgoing = new Map(actions.map(action => [action.id, []]));
+  for (const action of actions) {
+    const orderingDependencies = new Set([
+      ...(action.dependsOnActionIds || []),
+      ...(action.changesRequestedActionId ? [action.changesRequestedActionId] : []),
+    ]);
+    for (const dependencyId of orderingDependencies) {
+      if (!byId.has(dependencyId) || dependencyId === action.id) {
+        throw new Error(`Work Center additive Action "${action.id}" has an invalid dependency "${dependencyId}"`);
+      }
+      incoming.set(action.id, incoming.get(action.id) + 1);
+      outgoing.get(dependencyId).push(action.id);
+    }
+  }
+  const ready = actions.filter(action => incoming.get(action.id) === 0)
+    .sort((left, right) => byId.get(left.id).index - byId.get(right.id).index);
+  const ordered = [];
+  while (ready.length > 0) {
+    const action = ready.shift();
+    ordered.push(action);
+    for (const dependentId of outgoing.get(action.id)) {
+      const count = incoming.get(dependentId) - 1;
+      incoming.set(dependentId, count);
+      if (count === 0) {
+        ready.push(byId.get(dependentId).action);
+        ready.sort((left, right) => byId.get(left.id).index - byId.get(right.id).index);
+      }
+    }
+  }
+  if (ordered.length !== actions.length) {
+    throw new Error('Work Center additive plan contains a dependency cycle');
+  }
+  return ordered;
+}
+
 function validateDependencyPatches(actions, patches, addedIds) {
   const active = new Map(actions
     .filter(action => !['superseded', 'cancelled'].includes(action.status))
@@ -66,42 +125,25 @@ export function applyAdditivePlanProposal({ workItem, actions, proposal, availab
       stages: [workItem.workflowSnapshot.stages[0]],
     },
   };
+  const patchByStageId = new Map(dependencyPatches.map(patch => [patch.action.stageId, patch]));
+  const mergedActions = [
+    ...activeStages.slice(1).map(stage => {
+      const action = planActionFromStage(stage);
+      const patch = patchByStageId.get(stage.id);
+      if (!patch) return action;
+      return {
+        ...action,
+        dependsOnActionIds: [...new Set([
+          ...(action.dependsOnActionIds || []),
+          ...patch.addDependsOnActionIds,
+        ])],
+      };
+    }),
+    ...proposal.actions,
+  ];
   const rawPlan = {
     workItemType: workItem.workflowSnapshot.workItemType,
-    actions: [
-      ...activeStages.slice(1)
-        .filter(stage => !dependencyPatches.some(patch => patch.action.stageId === stage.id))
-        .map(stage => ({
-          id: stage.id, name: stage.name, type: stage.type,
-          objective: stage.objective, approach: stage.approach, expectedOutcome: stage.expectedOutcome,
-          capability: stage.assignmentPolicy?.capability,
-          candidateVpIds: stage.assignmentPolicy?.mode === 'planned' ? stage.assignmentPolicy.candidateVpIds : undefined,
-          assignmentReason: stage.assignmentPolicy?.assignmentReason,
-          separateFromActionTypes: stage.assignmentPolicy?.separateFromStageTypes,
-          dependsOnActionIds: stage.dependsOnStageIds || [],
-          workspaceMode: stage.workspaceMode,
-          changesRequestedActionId: stage.changesRequestedStageId,
-          maxAttempts: stage.maxAttempts,
-        })),
-      ...proposal.actions,
-      ...activeStages.slice(1)
-        .filter(stage => dependencyPatches.some(patch => patch.action.stageId === stage.id))
-        .map(stage => ({
-          id: stage.id, name: stage.name, type: stage.type,
-          objective: stage.objective, approach: stage.approach, expectedOutcome: stage.expectedOutcome,
-          capability: stage.assignmentPolicy?.capability,
-          candidateVpIds: stage.assignmentPolicy?.mode === 'planned' ? stage.assignmentPolicy.candidateVpIds : undefined,
-          assignmentReason: stage.assignmentPolicy?.assignmentReason,
-          separateFromActionTypes: stage.assignmentPolicy?.separateFromStageTypes,
-          dependsOnActionIds: [
-            ...(stage.dependsOnStageIds || []),
-            ...(dependencyPatches.find(patch => patch.action.stageId === stage.id)?.addDependsOnActionIds || []),
-          ],
-          workspaceMode: stage.workspaceMode,
-          changesRequestedActionId: stage.changesRequestedStageId,
-          maxAttempts: stage.maxAttempts,
-        })),
-    ],
+    actions: stableTopologicalActions(mergedActions),
   };
   const workflowSnapshot = applyGeneratedPlan(synthetic, rawPlan, { availableVpIds });
   const addedStages = workflowSnapshot.stages.filter(stage => addedIds.has(stage.id));

@@ -37,16 +37,37 @@ describe('Work Center additive plan mutation', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  function createGraph() {
+  function createGraph(actions = [
+    plannedAction('implement', 'implement'),
+    plannedAction('review', 'review', ['implement']),
+  ]) {
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
     const item = controller.create({ title: 'Plan task', goal: 'Plan safely', acceptanceCriteria: criteria,
       workflowTemplate: 'ai-planned', workflowSnapshot, workDir: '/tmp', start: true });
     const triage = store.claimReadyAction('boot', 5_000);
     const detail = controller.submit(triage.run.id, 'boot', triage.run.leaseEpoch, completed({
-      plan: { workItemType: 'bug-fix', actions: [
-        plannedAction('implement', 'implement'),
-        plannedAction('review', 'review', ['implement']),
-      ] },
+      plan: { workItemType: 'bug-fix', actions },
+    }));
+    return detail;
+  }
+
+  function expandBeforeExistingDownstream(downstreamAction) {
+    let detail = createGraph([
+      plannedAction('discover', 'research'),
+      plannedAction('implement', 'implement', ['discover']),
+      downstreamAction,
+    ]);
+    const discover = store.claimReadyAction('boot', 5_000);
+    detail = controller.submit(discover.run.id, 'boot', discover.run.leaseEpoch, completed({
+      planProposal: {
+        proposalId: `insert-before-${downstreamAction.id}`,
+        basePlanRevision: 1,
+        actions: [plannedAction('extra', 'diagnose', ['discover'])],
+        dependencyPatches: [{
+          actionId: detail.actions.find(action => action.stageId === 'implement').id,
+          addDependsOnActionIds: ['extra'],
+        }],
+      },
     }));
     return detail;
   }
@@ -78,6 +99,32 @@ describe('Work Center additive plan mutation', () => {
       .toEqual(expect.arrayContaining([expect.objectContaining({
         proposal_id: 'proposal-1', base_plan_revision: 1, plan_revision: 2, kind: 'expand',
       })]));
+  });
+
+  it('stably inserts a new dependency before a patched Action with a review downstream', () => {
+    const detail = expandBeforeExistingDownstream(
+      plannedAction('review', 'review', ['implement']),
+    );
+    expect(detail.status).toBe('ready');
+    expect(detail.planRevision, detail.runs[0]?.error).toBe(2);
+    expect(detail.workflowSnapshot.stages.map(stage => stage.id))
+      .toEqual(['triage', 'discover', 'extra', 'implement', 'review']);
+    expect(detail.actions.find(action => action.stageId === 'implement').dependsOnStageIds)
+      .toEqual(['discover', 'extra']);
+    expect(detail.actions.find(action => action.stageId === 'review').status).toBe('ready');
+  });
+
+  it('stably inserts a new dependency before a patched Action with a normal downstream', () => {
+    const detail = expandBeforeExistingDownstream(
+      plannedAction('verify', 'test', ['implement']),
+    );
+    expect(detail.status).toBe('ready');
+    expect(detail.planRevision, detail.runs[0]?.error).toBe(2);
+    expect(detail.workflowSnapshot.stages.map(stage => stage.id))
+      .toEqual(['triage', 'discover', 'extra', 'implement', 'verify']);
+    expect(detail.actions.find(action => action.stageId === 'implement').dependsOnStageIds)
+      .toEqual(['discover', 'extra']);
+    expect(detail.actions.find(action => action.stageId === 'verify').status).toBe('ready');
   });
 
   it('inserts a replan barrier, preserves completed history, and fences unfinished siblings', () => {
