@@ -71,12 +71,19 @@ export function selectWorkItemVp({ policy: rawPolicy, stageType, vps, priorRuns 
     return { vp: fixed, reason: `fixed:${fixed.id}`, policy };
   }
 
-  const pool = policy.mode === 'pool'
+  const pool = ['pool', 'planned'].includes(policy.mode)
     ? policy.candidateVpIds.map(id => byId.get(id)).filter(Boolean)
     : all;
   if (pool.length === 0) throw policyError('No configured Work Center VP candidates are available');
   const eligible = pool.filter(vp => !excluded.has(vp.id));
   if (eligible.length === 0) throw policyError('No Work Center VP satisfies the stage separation policy');
+  if (policy.mode === 'planned') {
+    return {
+      vp: eligible[0],
+      reason: `planned:${eligible[0].id}:${policy.assignmentReason || stageType}`,
+      policy,
+    };
+  }
 
   const ranked = eligible
     .map(vp => ({ vp, score: capabilityScore(vp, policy.capability || stageType) }))

@@ -116,6 +116,7 @@ async function createDefaultService() {
     yeaftDir,
     runner,
     runtimeInfoProvider: getSettingsRuntime,
+    listAvailableVpIds: () => defaultRegistry.listVps().map(vp => vp.id),
     watcherOptions: {
       concurrencyProvider: () => readWorkCenterSettings(yeaftDir).maxConcurrentActions,
     },

@@ -64,7 +64,9 @@ export class WorkCenterService {
     this.ownerBootId = options.ownerBootId || randomUUID();
     this.attachmentRoot = options.attachmentRoot || join(yeaftDir, 'work-center', 'attachments');
     this.store = options.store || new WorkItemStore(join(yeaftDir, 'work-center', 'work-center.db'));
-    this.controller = options.controller || new WorkflowController(this.store);
+    this.controller = options.controller || new WorkflowController(this.store, {
+      listAvailableVpIds: options.listAvailableVpIds,
+    });
     this.onEvent = typeof options.onEvent === 'function' ? options.onEvent : () => {};
     this.watcher = new WorkItemWatcher({
       store: this.store,
