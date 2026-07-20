@@ -56,6 +56,7 @@ export default {
   },
   computed: {
     store() { return Pinia.useChatStore(); },
+    chat() { return this.store; },
     agentId() { return this.store.workCenterAgentId || this.store.currentAgent; },
     agents() { return this.store.agents || []; },
     onlineAgents() {
@@ -415,6 +416,9 @@ export default {
     },
     folderPickerSetWorkDir(path) {
       this.form.workDir = path;
+      this.workDirTouched = true;
+    },
+    onCreateWorkDirInput() {
       this.workDirTouched = true;
     },
     onCreateStartInput() {
@@ -912,7 +916,7 @@ export default {
               </div>
               <label>{{ tr('workCenter.workDir', 'Working directory') }}
                 <div class="work-center-workdir-picker">
-                  <input v-model="form.workDir" type="text" required readonly :placeholder="tr('workCenter.workDirHint', 'Choose an existing project directory')">
+                  <input v-model="form.workDir" type="text" required @input="onCreateWorkDirInput" :placeholder="tr('workCenter.workDirHint', 'Choose an existing project directory')">
                   <button class="btn-secondary" type="button" @click="openFolderPicker" :disabled="!folderPickerAgentId">
                     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2Z"/></svg>
                     {{ tr('workCenter.chooseFolder', 'Choose folder') }}

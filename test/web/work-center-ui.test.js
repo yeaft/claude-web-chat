@@ -250,11 +250,13 @@ describe('Work Center UI contract', () => {
     expect(page).toContain("tr('workCenter.startImmediatelyHint'");
     expect(page).toContain("mixins: [folderPickerMixin]");
     expect(page).toContain('class="work-center-workdir-picker"');
-    expect(page).toContain('v-model="form.workDir" type="text" required readonly');
+    expect(page).toContain('v-model="form.workDir" type="text" required @input="onCreateWorkDirInput"');
+    expect(page).not.toContain('v-model="form.workDir" type="text" required readonly');
     expect(page).toContain('@click="openFolderPicker"');
     expect(page).toContain('class="folder-picker-dialog"');
+    expect(page).toContain('chat() { return this.store; }');
     expect(page).toContain('folderPickerSetWorkDir(path)');
-    expect(page).not.toContain('@input="onCreateWorkDirInput"');
+    expect(page).toContain('onCreateWorkDirInput()');
     expect(css).toMatch(/\.work-center-modal\s*\{[^}]*height: min\(660px, 86vh\)[^}]*overflow: hidden/s);
     expect(css).toMatch(/\.work-center-modal-body\s*\{[^}]*overflow-y: auto/s);
     expect(css).toContain('.work-center-modal .btn-primary');
