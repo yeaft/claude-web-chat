@@ -157,9 +157,34 @@ describe('Yeaft mobile layout CSS', () => {
     const createCss = read('styles/yeaft-session-create.css');
     const createMobile = mediaBlock(createCss, '(max-width: 640px)', '.resume-control-row-vp');
     expect(createMobile).toContain('.resume-control-row-vp');
+    expect(createMobile).toContain('flex-direction: column');
+    expect(createMobile).toContain('.resume-control-row-vp .resume-control-label');
+    expect(createMobile).toContain('width: auto');
+    expect(createMobile).toContain('.yeaft-roster');
+    expect(createMobile).toContain('position: relative');
+    expect(createMobile).toContain('.yeaft-session-create-modal');
+    expect(createMobile).toContain('width: 100%');
     expect(createMobile).toContain('.yeaft-roster-name');
-    expect(createMobile).toContain('text-overflow: ellipsis');
+    expect(createMobile).toContain('white-space: normal');
+    expect(createMobile).toContain('overflow-wrap: anywhere');
+    expect(createMobile).toContain('.yeaft-roster-popup');
+    expect(createMobile).toContain('left: 0');
+    expect(createMobile).toContain('right: 0');
+    expect(createMobile).toContain('width: 100%');
+    expect(createMobile).toContain('max-height: min(420px, var(--vp-roster-available-height, 50dvh))');
+    expect(createCss).toContain('max-height: min(360px, var(--vp-roster-available-height, 46vh))');
+    expect(createCss).toContain('.yeaft-roster-popup.opens-up');
+    expect(createCss).toContain('bottom: calc(100% + 4px)');
+    expect(createCss).toContain('overflow-y: auto');
     expect(createMobile).toContain('.yeaft-roster-default-star');
+
+    const yeaftCss = read('styles/yeaft.css');
+    const mentionMobile = mediaBlock(yeaftCss, '(max-width: 640px)', '.vp-mention-autocomplete');
+    expect(mentionMobile).toContain('max-height: min(52dvh, 420px)');
+    expect(mentionMobile).toContain('.slash-autocomplete-item');
+    expect(mentionMobile).toContain('align-items: flex-start');
+    expect(mentionMobile).toContain('.vp-mention-id');
+    expect(mentionMobile).toContain('max-width: 35%');
 
     const vpCss = read('styles/yeaft-vp.css');
     const vpMobile = mediaBlock(vpCss, '(max-width: 640px)', '.vp-turn-block-main-header');

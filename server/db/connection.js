@@ -7,8 +7,10 @@ import { existsSync, mkdirSync } from 'fs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // 数据库文件位置
-const DATA_DIR = process.env.TEST_DB_DIR || join(__dirname, '../../data');
-const DB_PATH = process.env.TEST_DB_PATH || join(DATA_DIR, 'webchat.db');
+const DATA_DIR = process.env.SERVER_DATA_DIR || process.env.TEST_DB_DIR || join(__dirname, '../../data');
+const DB_PATH = process.env.SERVER_DATA_DIR
+  ? join(DATA_DIR, 'webchat.db')
+  : (process.env.TEST_DB_PATH || join(DATA_DIR, 'webchat.db'));
 
 // 确保数据目录存在
 if (!existsSync(DATA_DIR)) {
@@ -921,8 +923,11 @@ export const stmts = {
 };
 
 // 关闭数据库连接（用于优雅退出）
+let dbClosed = false;
 export function closeDb() {
+  if (dbClosed) return;
   db.close();
+  dbClosed = true;
 }
 
 /**

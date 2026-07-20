@@ -360,6 +360,30 @@
   margin-top: 2px;
 }
 
+/* Shared VP domain heading. The label names the section while the trailing
+ * token-colored rule provides separation without adding another card layer. */
+.vp-domain-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 10px 0 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vp-domain-heading::after {
+  content: '';
+  flex: 1 1 auto;
+  min-width: 20px;
+  height: 1px;
+  background: var(--border-light);
+}
+
 /* ================================================================== * VpCrudPanel — task-343 (was VpCrudModal)
  * The panel lives inside YeaftSettings's .settings-pane; the overlay /
  * dialog chrome moved to .settings-overlay / .settings-dialog. Only the
@@ -372,6 +396,19 @@
 }
 
 /* ---------- List view ---------- */
+.vp-crud-domain-list,
+.vp-crud-domain-section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vp-crud-domain-list { gap: 10px; }
+
+.vp-crud-domain-heading {
+  margin: 0 0 4px;
+}
+
 .vp-crud-list-toolbar {
   display: flex;
   justify-content: flex-end;
@@ -424,9 +461,9 @@
   font-weight: 400;
   line-height: 1.35;
   color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 .vp-crud-card-id {
   font-size: 12px;

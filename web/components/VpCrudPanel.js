@@ -12,6 +12,7 @@
  *   Host may pass initialEditVpId to jump directly into the edit form.
  */
 import { useVpStore } from '../stores/vp.js';
+import { buildVpDomainSections } from '../utils/vp-domains.js';
 import { validateVpId, i18nKeyForReason, isIdReasonCode } from '../utils/vp-id-validator.js';
 
 export default {
@@ -36,50 +37,57 @@ export default {
               {{ $t('yeaft.vp.crud.addNew') }}
             </button>
           </div>
-          <div class="vp-crud-card-grid">
-            <div class="vp-crud-card" v-for="vp in vpList" :key="vp.vpId">
-              <div class="vp-crud-card-main">
-                <div class="vp-crud-card-meta">
-                  <div class="vp-crud-card-title-row">
-                    <div class="vp-crud-card-name">
-                      <span>{{ vpLabelFor(vp.vpId) }}</span>
-                      <small v-if="vpDescriptionFor(vp.vpId)" class="vp-crud-card-description">{{ vpDescriptionFor(vp.vpId) }}</small>
+          <div class="vp-crud-domain-list">
+            <section v-for="domain in vpDomainSections" :key="domain.id" class="vp-crud-domain-section">
+              <h3 class="vp-domain-heading vp-crud-domain-heading">
+                <span>{{ $t(domain.labelKey) }}</span>
+              </h3>
+              <div class="vp-crud-card-grid">
+                <div class="vp-crud-card" v-for="vp in domain.vps" :key="vp.vpId">
+                  <div class="vp-crud-card-main">
+                    <div class="vp-crud-card-meta">
+                      <div class="vp-crud-card-title-row">
+                        <div class="vp-crud-card-name">
+                          <span>{{ vpLabelFor(vp.vpId) }}</span>
+                          <small v-if="vpDescriptionFor(vp.vpId)" class="vp-crud-card-description">{{ vpDescriptionFor(vp.vpId) }}</small>
+                        </div>
+                        <span v-if="vp.isStock" class="vp-crud-stock-badge" :title="$t('yeaft.vp.crud.stockReadOnly')">
+                          {{ $t('yeaft.vp.crud.stockBadge') }}
+                        </span>
+                      </div>
                     </div>
-                    <span v-if="vp.isStock" class="vp-crud-stock-badge" :title="$t('yeaft.vp.crud.stockReadOnly')">
-                      {{ $t('yeaft.vp.crud.stockBadge') }}
-                    </span>
+                  </div>
+                  <div class="vp-crud-card-actions">
+                    <button
+                      class="vp-crud-link-btn"
+                      type="button"
+                      @click="startView(vp)"
+                      :disabled="busy"
+                    >
+                      {{ $t('yeaft.vp.crud.viewPrompt') }}
+                    </button>
+                    <button
+                      class="vp-crud-link-btn"
+                      type="button"
+                      @click="startEdit(vp)"
+                      :disabled="busy || vp.isStock"
+                      :title="vp.isStock ? $t('yeaft.vp.crud.stockReadOnly') : ''"
+                    >
+                      {{ $t('yeaft.vp.crud.edit') }}
+                    </button>
+                    <button
+                      class="vp-crud-link-btn is-danger"
+                      type="button"
+                      @click="confirmDelete(vp)"
+                      :disabled="busy || vp.isStock"
+                      :title="vp.isStock ? $t('yeaft.vp.crud.stockReadOnly') : ''"
+                    >
+                      {{ $t('yeaft.vp.crud.delete') }}
+                    </button>
                   </div>
                 </div>
               </div>
-              <div class="vp-crud-card-actions">
-                <button
-                  class="vp-crud-link-btn"
-                  type="button"
-                  @click="startView(vp)"
-                  :disabled="busy"
-                >
-                  {{ $t('yeaft.vp.crud.viewPrompt') }}
-                </button>
-                <button
-                  class="vp-crud-link-btn"
-                  type="button"
-                  @click="startEdit(vp)"
-                  :disabled="busy || vp.isStock"
-                  :title="vp.isStock ? $t('yeaft.vp.crud.stockReadOnly') : ''"
-                >
-                  {{ $t('yeaft.vp.crud.edit') }}
-                </button>
-                <button
-                  class="vp-crud-link-btn is-danger"
-                  type="button"
-                  @click="confirmDelete(vp)"
-                  :disabled="busy || vp.isStock"
-                  :title="vp.isStock ? $t('yeaft.vp.crud.stockReadOnly') : ''"
-                >
-                  {{ $t('yeaft.vp.crud.delete') }}
-                </button>
-              </div>
-            </div>
+            </section>
           </div>
         </template>
       </div>
@@ -291,6 +299,7 @@ export default {
   computed: {
     vpStore() { return useVpStore(); },
     vpList() { return this.vpStore.vpList; },
+    vpDomainSections() { return buildVpDomainSections(this.vpList); },
     canSubmit() {
       if (this.busy) return false;
       if (this.editing) return true;
