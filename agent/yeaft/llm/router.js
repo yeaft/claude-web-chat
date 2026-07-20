@@ -27,6 +27,7 @@ import {
   GITHUB_COPILOT_BASE_URL,
   GITHUB_COPILOT_CREDENTIAL_PROVIDER,
   GITHUB_COPILOT_PROVIDER_NAME,
+  isGitHubCopilotProvider,
   normalizeKnownProviderForRuntime,
 } from './known-providers.js';
 import { pairSanitize } from '../pair-sanitize.js';
@@ -238,8 +239,11 @@ export class AdapterRouter extends LLMAdapter {
   /** @type {Map<string, LLMAdapter>} providerName::protocol → cached adapter */
   #adapterCache;
 
-  /** @type {object[]} raw providers array */
+  /** @type {object[]} normalized providers array */
   #providers;
+
+  /** @type {Set<string>} managed providers backed by an explicit model catalog */
+  #authoritativeManagedProviders;
 
   /** @type {number} per-SSE-chunk silence budget; <= 0 disables the guard */
   #streamIdleTimeoutMs;
@@ -267,8 +271,13 @@ export class AdapterRouter extends LLMAdapter {
    * @param {object[]} providers
    */
   refreshProviders(providers) {
-    this.#providers = (Array.isArray(providers) ? providers : [])
-      .map(provider => normalizeKnownProviderForRuntime(provider));
+    const rawProviders = Array.isArray(providers) ? providers : [];
+    this.#authoritativeManagedProviders = new Set(rawProviders
+      .filter(provider => isGitHubCopilotProvider(provider)
+        && Array.isArray(provider.models)
+        && provider.models.length > 0)
+      .map(provider => provider.name || GITHUB_COPILOT_PROVIDER_NAME));
+    this.#providers = rawProviders.map(provider => normalizeKnownProviderForRuntime(provider));
     this.#modelToProvider = new Map();
     this.#adapterCache = new Map();
 
@@ -306,6 +315,10 @@ export class AdapterRouter extends LLMAdapter {
 
     const candidates = this.#providers.filter(p => p && p.name === parsed.providerName);
     if (candidates.length === 0) return null;
+    // An explicit managed catalog is authoritative. A qualified ref is not
+    // permission to resurrect a model that catalog just removed. Legacy rows
+    // with no models still use the bundled fallback catalog above.
+    if (this.#authoritativeManagedProviders.has(parsed.providerName)) return null;
 
     const inferred = inferProtocolFromModelId(parsed.modelId);
     if (!inferred) return null;

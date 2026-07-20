@@ -23,6 +23,7 @@ import {
   workItemDetailNeedsRefresh,
 } from './helpers/work-center.js';
 import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/perfTrace.js';
+import { yeaftHistoryIdentityKey } from './helpers/yeaft-history-identity.js';
 import {
   getDefaultYeaftVisibleTurns,
   getYeaftWindowLoadStepTurns,
@@ -1770,8 +1771,12 @@ export const useChatStore = defineStore('chat', {
     requestYeaftSessionBootstrap({ forceSessionReady = false, catchUpHistory = false, forceHistoryReplay = false } = {}) {
       if (!this.currentAgent) return;
       const activeSessionId = resolveActiveYeaftSessionId(this);
+      const targetAgentId = activeSessionId
+        ? resolveAgentIdForSession(this, activeSessionId)
+        : this.currentAgent;
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, activeSessionId);
       const sessionState = activeSessionId
-        ? this.yeaftSessionHistoryState[activeSessionId]
+        ? this.yeaftSessionHistoryState[sessionKey]
         : null;
       const needSessionReady = forceSessionReady || !this.yeaftSessionReady || !this.yeaftModel || !this.yeaftStatus;
       const latestSeq = Number.isFinite(sessionState?.latestSeq) ? sessionState.latestSeq : null;
@@ -1795,9 +1800,6 @@ export const useChatStore = defineStore('chat', {
       // the authoritative sessionById lookup, so in the cold/cross-agent window
       // it could ship yeaft_load_history to an agent that doesn't own the
       // session — the exact misroute this refactor removes.
-      const targetAgentId = activeSessionId
-        ? resolveAgentIdForSession(this, activeSessionId)
-        : this.currentAgent;
       const metaKey = `${targetAgentId}:${activeSessionId || '__none__'}`;
       const metadataOnly = needSessionReady && !needHistoryReplay && !needHistoryCatchUp;
       if (metadataOnly && this.yeaftBootstrapMetaLoadingKey === metaKey) return false;
@@ -1805,13 +1807,13 @@ export const useChatStore = defineStore('chat', {
       if (activeSessionId && needHistoryReplay) {
         this.yeaftSessionHistoryState = {
           ...this.yeaftSessionHistoryState,
-          [activeSessionId]: { loaded: false, loading: true, hasMore: false, oldestSeq: null, count: 0 },
+          [sessionKey]: { loaded: false, loading: true, hasMore: false, oldestSeq: null, count: 0 },
         };
         this.yeaftLoadingMoreHistory = true;
       } else if (activeSessionId && hasCachedSessionRows && !sessionState?.loaded) {
         this.yeaftSessionHistoryState = {
           ...this.yeaftSessionHistoryState,
-          [activeSessionId]: {
+          [sessionKey]: {
             ...(sessionState || {}),
             loaded: true,
             loading: false,
@@ -1825,7 +1827,7 @@ export const useChatStore = defineStore('chat', {
       } else if (activeSessionId && needHistoryCatchUp) {
         this.yeaftSessionHistoryState = {
           ...this.yeaftSessionHistoryState,
-          [activeSessionId]: { ...sessionState, loaded: true, loading: true, latestSeq },
+          [sessionKey]: { ...sessionState, loaded: true, loading: true, latestSeq },
         };
         this.yeaftLoadingMoreHistory = true;
       }
@@ -1842,7 +1844,7 @@ export const useChatStore = defineStore('chat', {
       if (activeSessionId) {
         this.yeaftHistoryPerfTraceBySession = {
           ...(this.yeaftHistoryPerfTraceBySession || {}),
-          [activeSessionId]: perfTraceId,
+          [sessionKey]: perfTraceId,
         };
       }
       recordPerfTrace(this, {
@@ -2428,7 +2430,7 @@ export const useChatStore = defineStore('chat', {
             const liveId = data?.message?.id || data?.id || null;
             const seq = parseYeaftMessageSeq(liveId);
             if (seq !== null && msgSessionId) {
-              const sessionKey = msgSessionId;
+              const sessionKey = yeaftHistoryIdentityKey(msg.agentId || null, msgSessionId);
               const prevState = this.yeaftSessionHistoryState[sessionKey] || {};
               const prevLatest = Number.isFinite(prevState.latestSeq) ? prevState.latestSeq : -1;
               if (seq > prevLatest) {
@@ -3052,8 +3054,12 @@ export const useChatStore = defineStore('chat', {
         }
 
         case 'history_loaded':
-          if (msg.perfTraceId || (event.sessionId && this.yeaftHistoryPerfTraceBySession?.[event.sessionId])) {
-            const traceId = msg.perfTraceId || this.yeaftHistoryPerfTraceBySession[event.sessionId];
+          {
+            const responseAgentId = msg.agentId || null;
+            const responseSessionId = event.sessionId ?? null;
+            const sessionKey = yeaftHistoryIdentityKey(responseAgentId, responseSessionId);
+            const traceId = msg.perfTraceId || this.yeaftHistoryPerfTraceBySession?.[sessionKey];
+            if (traceId) {
             recordPerfTrace(this, {
               traceId,
               phase: 'history.loaded_event',
@@ -3062,7 +3068,7 @@ export const useChatStore = defineStore('chat', {
               messageType: event.type,
               detail: { mode: event.mode || 'recent', count: event.count || 0, hasMore: !!event.hasMore },
             });
-          }
+            }
           // History messages already rendered via assistant output frame data path.
           // This event just signals completion + carries cursors:
           //   mode:'recent' (default) — full pane replay; stamp oldestSeq /
@@ -3071,8 +3077,6 @@ export const useChatStore = defineStore('chat', {
           //   mode:'delta' — incremental append; only latestSeq is meaningful.
           //     Don't touch hasMore / oldestSeq (those describe the older
           //     end and don't change on a delta tail-load).
-          {
-            const sessionKey = event.sessionId || '__all__';
             const mode = event.mode === 'delta' ? 'delta' : 'recent';
             const prevState = this.yeaftSessionHistoryState[sessionKey] || {};
             const nextLatest = (Number.isFinite(event.latestSeq) ? event.latestSeq
@@ -3099,13 +3103,19 @@ export const useChatStore = defineStore('chat', {
               ...this.yeaftSessionHistoryState,
               [sessionKey]: nextState,
             };
-            const activeKey = this.yeaftActiveSessionFilter || '__all__';
+            const activeKey = yeaftHistoryIdentityKey(
+              responseAgentId ? this.currentAgent : null,
+              this.yeaftActiveSessionFilter ?? null,
+            );
             if (sessionKey === activeKey) {
               if (mode === 'recent') {
                 this.yeaftHasMoreHistory = nextState.hasMore;
                 this.yeaftOldestLoadedSeq = nextState.oldestSeq;
               }
               this.yeaftLoadingMoreHistory = false;
+            } else if (this.yeaftLoadingMoreHistory) {
+              const activeState = this.yeaftSessionHistoryState[activeKey] || null;
+              this.yeaftLoadingMoreHistory = !!activeState?.loading;
             }
           }
           break;
@@ -3178,8 +3188,11 @@ export const useChatStore = defineStore('chat', {
           // initial history load (which happened with groupId:null), so
           // reload history for the correct group when activeGroupId changes.
           if (this.currentView === 'yeaft' && newGroupId) {
-            const sessionState = this.yeaftSessionHistoryState[newGroupId] || null;
+            const targetAgentId = resolveAgentIdForSession(this, newGroupId, msg.agentId || null);
+            const sessionKey = yeaftHistoryIdentityKey(targetAgentId, newGroupId);
+            const sessionState = this.yeaftSessionHistoryState[sessionKey] || null;
             this.setActiveSessionFilter(newGroupId, {
+              agentId: targetAgentId,
               force: msgHelpers.shouldForceHydrateActiveYeaftSession(newGroupId, prevGroupId, sessionState),
             });
           }
@@ -3946,8 +3959,8 @@ export const useChatStore = defineStore('chat', {
       }
       if (!force && next === prev) return;
 
-      const sessionKey = next || '__all__';
-      const savedState = ownerChanged ? null : (this.yeaftSessionHistoryState[sessionKey] || null);
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, next);
+      const savedState = this.yeaftSessionHistoryState[sessionKey] || null;
       this.yeaftHasMoreHistory = !!savedState?.hasMore;
       this.yeaftLoadingMoreHistory = !!savedState?.loading;
       this.yeaftOldestLoadedSeq = (typeof savedState?.oldestSeq === 'number') ? savedState.oldestSeq : null;
@@ -4928,7 +4941,7 @@ export const useChatStore = defineStore('chat', {
       const sessionId = resolveActiveYeaftSessionId(this);
       const targetAgentId = resolveAgentIdForSession(this, sessionId);
       if (!targetAgentId) return false;
-      const sessionKey = sessionId || '__all__';
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, sessionId);
       const convId = this.yeaftConversationId;
 
       // Manual reload means "show me the persisted pane again", not a delta.
@@ -4983,7 +4996,7 @@ export const useChatStore = defineStore('chat', {
       if (!targetAgentId) return;
 
       this.yeaftLoadingMoreHistory = true;
-      const sessionKey = sessionId || '__all__';
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, sessionId);
       this.yeaftSessionHistoryState = {
         ...this.yeaftSessionHistoryState,
         [sessionKey]: {

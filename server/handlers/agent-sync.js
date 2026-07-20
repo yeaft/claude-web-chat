@@ -301,6 +301,7 @@ export async function handleAgentSync(agentId, agent, msg) {
           await sendToWebClient(client, {
             type: 'llm_config_updated',
             agentId,
+            requestId: msg.requestId,
             providers: msg.providers,
             primaryModel: msg.primaryModel,
             fastModel: msg.fastModel,

@@ -254,7 +254,7 @@ describe('Yeaft Session model catalog refresh', () => {
 
   it('does not reset the Yeaft runtime after an LLM config save', () => {
     const source = readFileSync(new URL('../../../web/components/YeaftPage.js', import.meta.url), 'utf8');
-    const handler = source.match(/const onLlmConfigSaved = \(\) => \{([\s\S]*?)\n    \};/);
+    const handler = source.match(/const onLlmConfigSaved = \([^)]*\) => \{([\s\S]*?)\n    \};/);
 
     expect(handler).not.toBeNull();
     expect(handler[1]).not.toContain("type: 'yeaft_reset'");

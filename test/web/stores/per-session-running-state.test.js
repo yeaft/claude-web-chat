@@ -35,6 +35,7 @@ globalThis.document = globalThis.document || { addEventListener: vi.fn(), remove
 
 const { useChatStore } = await import('../../../web/stores/chat.js');
 const { visibleSessionStatusTasks } = await import('../../../web/components/YeaftPage.js');
+const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
 
 function freshStore() {
   const store = useChatStore();
@@ -286,6 +287,46 @@ describe('per-session running state', () => {
 
     expect(store.isYeaftSessionProcessing('session-a')).toBe(false);
     expect(store.isProcessing).toBe(false);
+  });
+
+  it('keeps the active Agent history cursor intact when history_loaded arrives late for a same-id Session', () => {
+    const store = freshStore();
+    const sessionId = 'session_default';
+    const agentAKey = yeaftHistoryIdentityKey('agent-a', sessionId);
+    const agentBKey = yeaftHistoryIdentityKey('agent-b', sessionId);
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-b';
+    store.yeaftActiveSessionFilter = sessionId;
+    store.yeaftLoadingMoreHistory = true;
+    store.yeaftHasMoreHistory = true;
+    store.yeaftOldestLoadedSeq = 10;
+    store.yeaftSessionHistoryState = {
+      [agentAKey]: { loaded: true, loading: true, latestSeq: 7, hasMore: true, oldestSeq: 3 },
+      [agentBKey]: { loaded: true, loading: true, latestSeq: 20, hasMore: true, oldestSeq: 10 },
+    };
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      event: {
+        type: 'history_loaded',
+        sessionId,
+        mode: 'recent',
+        latestSeq: 1,
+        oldestSeq: 1,
+        hasMore: false,
+        count: 1,
+      },
+    });
+
+    expect(store.yeaftSessionHistoryState[agentAKey]).toEqual(expect.objectContaining({
+      loading: false, latestSeq: 1, hasMore: false, oldestSeq: 1,
+    }));
+    expect(store.yeaftSessionHistoryState[agentBKey]).toEqual({
+      loaded: true, loading: true, latestSeq: 20, hasMore: true, oldestSeq: 10,
+    });
+    expect(store.yeaftHasMoreHistory).toBe(true);
+    expect(store.yeaftOldestLoadedSeq).toBe(10);
+    expect(store.yeaftLoadingMoreHistory).toBe(true);
   });
 
   it('clears Yeaft session running state on terminal result when metadata end is missed', () => {

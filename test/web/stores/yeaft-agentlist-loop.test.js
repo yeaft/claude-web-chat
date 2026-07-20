@@ -38,9 +38,11 @@ globalThis.localStorage = globalThis.localStorage || {
 const { useChatStore } = await import('../../../web/stores/chat.js');
 const { selectActiveConversationId } = await import('../../../web/stores/helpers/active-conv.js');
 const { handleAgentList, detectYeaftAgentRestart } = await import('../../../web/stores/helpers/handlers/agentHandler.js');
+const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
 
 const AGENT_ID = 'user_1:C1';
 const SESSION_ID = 'sess-1';
+const HISTORY_KEY = yeaftHistoryIdentityKey(AGENT_ID, SESSION_ID);
 
 function makeStore() {
   const schema = useChatStore();
@@ -64,7 +66,7 @@ function makeStore() {
   store.yeaftModel = 'sonnet';
   store.yeaftStatus = { skills: [], mcpServers: [], tools: [] };
   store.yeaftSessionHistoryState = {
-    [SESSION_ID]: { loaded: true, loading: false, hasMore: false, oldestSeq: 1, count: 3, latestSeq: 42 },
+    [HISTORY_KEY]: { loaded: true, loading: false, hasMore: false, oldestSeq: 1, count: 3, latestSeq: 42 },
   };
   store.messagesMap = {
     'yeaft-1': [{ id: 'm0042', messageId: 'm0042', type: 'user', content: 'cached', sessionId: SESSION_ID }],
@@ -424,7 +426,7 @@ describe('Yeaft agent_list does not loop history catch-up', () => {
     expect(loads).toHaveLength(1);
     expect(loads[0].afterSeq).toBeUndefined();
     expect(loads[0].limit).toBe(0);
-    expect(store.yeaftSessionHistoryState[SESSION_ID]).toEqual(expect.objectContaining({
+    expect(store.yeaftSessionHistoryState[HISTORY_KEY]).toEqual(expect.objectContaining({
       loaded: true,
       loading: false,
     }));

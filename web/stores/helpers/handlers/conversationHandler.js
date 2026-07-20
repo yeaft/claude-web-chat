@@ -9,6 +9,7 @@ import { maxDbMessageId } from '../messages.js';
 import { summarizeHistoricalToolMessages } from '../tool-window.js';
 import { t } from '../../../utils/i18n.js';
 import { recordPerfTrace, measureNextPaint } from '../perfTrace.js';
+import { yeaftHistoryIdentityKey } from '../yeaft-history-identity.js';
 
 /** Filter out empty user messages — tool_result artifacts stored as empty user records in DB */
 function filterEmptyUserMessages(messages) {
@@ -679,9 +680,9 @@ export function handleYeaftHistoryChunk(store, msg) {
       detail: { mode, rawCount: incomingMessages.length },
     });
   }
-  const sessionAgentId = msgSessionId && store.yeaftSessionAgentById
+  const sessionAgentId = msg.agentId || (msgSessionId && store.yeaftSessionAgentById
     ? store.yeaftSessionAgentById[msgSessionId]
-    : null;
+    : null);
   const agentConversationId = sessionAgentId && store.yeaftConversationIdsByAgent
     ? store.yeaftConversationIdsByAgent[sessionAgentId]
     : null;
@@ -722,7 +723,7 @@ export function handleYeaftHistoryChunk(store, msg) {
     }
   }
 
-  const sessionKey = msgSessionId ?? '__all__';
+  const sessionKey = yeaftHistoryIdentityKey(msg.agentId || null, msgSessionId);
   const prevState = store.yeaftSessionHistoryState?.[sessionKey] || {};
   const nextLatest = (typeof msg.latestSeq === 'number') ? msg.latestSeq : (prevState.latestSeq ?? null);
   const nextState = mode === 'delta'
@@ -749,7 +750,8 @@ export function handleYeaftHistoryChunk(store, msg) {
       [sessionKey]: nextState,
     };
   }
-  const activeKey = store.yeaftActiveSessionFilter ?? '__all__';
+  const activeSessionId = store.yeaftActiveSessionFilter ?? null;
+  const activeKey = yeaftHistoryIdentityKey(msg.agentId ? store.currentAgent : null, activeSessionId);
   if (msg.perfTraceId) {
     recordPerfTrace(store, {
       traceId: msg.perfTraceId,

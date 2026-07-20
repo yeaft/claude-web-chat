@@ -614,6 +614,7 @@ export async function handleAgentOutput(agentId, agent, msg) {
         if (c.authenticated && (CONFIG.skipAuth || c.userId === agent.ownerId)) {
           await sendToWebClient(c, {
             type: 'yeaft_history_chunk',
+            agentId,
             conversationId: msg.conversationId,
             ...(msg.perfTraceId != null ? { perfTraceId: msg.perfTraceId } : {}),
             ...(msg.sessionId != null ? { sessionId: msg.sessionId } : {}),

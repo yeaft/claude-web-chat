@@ -6,8 +6,13 @@ function dependencies(overrides = {}) {
     loadConfig: vi.fn(() => ({
       model: 'github-copilot/gpt-old',
       primaryModel: 'github-copilot/gpt-old',
+      fastModel: 'github-copilot/gpt-old',
     })),
-    updateLlmConfig: vi.fn(() => ({ primaryModel: 'github-copilot/gpt-new', language: 'en' })),
+    updateLlmConfig: vi.fn(() => ({
+      primaryModel: 'github-copilot/gpt-new',
+      fastModel: 'github-copilot/gpt-new',
+      language: 'en',
+    })),
     broadcastLanguageChange: vi.fn(),
     forceRefreshYeaftStatus: vi.fn(async () => ({ refreshError: null })),
     refreshLiveSessionConfig: vi.fn(async () => ({ model: 'github-copilot/gpt-new' })),
@@ -23,6 +28,8 @@ describe('LLM config update', () => {
 
     const response = await applyLlmConfigUpdate({
       type: 'update_llm_config',
+      agentId: 'agent-1',
+      requestId: 'request-1',
       config: { primaryModel: 'github-copilot/gpt-new' },
     }, deps);
 
@@ -36,6 +43,9 @@ describe('LLM config update', () => {
     expect(response).toMatchObject({
       type: 'llm_config_updated',
       primaryModel: 'github-copilot/gpt-new',
+      fastModel: 'github-copilot/gpt-new',
+      agentId: 'agent-1',
+      requestId: 'request-1',
       statusRefreshError: null,
     });
   });

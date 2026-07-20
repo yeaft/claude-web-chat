@@ -29,6 +29,7 @@ describe('agent sync LLM model discovery relay', () => {
 
     await expect(handleAgentSync('agent-1', { ownerId: 'owner-1' }, {
       type: 'llm_config_updated',
+      requestId: 'request-warning',
       providers: [{ name: 'github-copilot', credentialProvider: 'github-copilot', models: ['gpt-new'] }],
       primaryModel: 'github-copilot/gpt-new',
       statusRefreshError: 'disk read failed',
@@ -37,6 +38,7 @@ describe('agent sync LLM model discovery relay', () => {
     expect(client.sent).toEqual([expect.objectContaining({
       type: 'llm_config_updated',
       agentId: 'agent-1',
+      requestId: 'request-warning',
       primaryModel: 'github-copilot/gpt-new',
       statusRefreshError: 'disk read failed',
     })]);

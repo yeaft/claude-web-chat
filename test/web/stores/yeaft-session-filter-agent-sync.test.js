@@ -56,6 +56,7 @@ globalThis.document = { addEventListener: vi.fn(), removeEventListener: vi.fn(),
 
 const { useChatStore } = await import('../../../web/stores/chat.js');
 const { handleAgentSelected } = await import('../../../web/stores/helpers/handlers/agentHandler.js');
+const { yeaftHistoryIdentityKey } = await import('../../../web/stores/helpers/yeaft-history-identity.js');
 
 function primeStore() {
   const store = useChatStore();
@@ -112,7 +113,7 @@ describe('setActiveSessionFilter self-heals currentAgent to the session owner', 
       'agent-b': { model: modelsB[0].ref, availableModels: modelsB },
     };
     store.applyCachedYeaftStatus('agent-a');
-    store.yeaftSessionHistoryState['session-b'] = { loading: true };
+    store.yeaftSessionHistoryState[yeaftHistoryIdentityKey('agent-b', 'session-b')] = { loading: true };
 
     store.setActiveSessionFilter('session-b', { force: true });
 
@@ -135,7 +136,11 @@ describe('setActiveSessionFilter self-heals currentAgent to the session owner', 
     store.applyCachedYeaftStatus('agent-a');
     // A's in-flight state uses the same bare Session id. Selecting B must not
     // let this state trigger the same-session or loading early returns.
-    store.yeaftSessionHistoryState[duplicateId] = { loading: true, loaded: true, latestSeq: 42 };
+    store.yeaftSessionHistoryState[yeaftHistoryIdentityKey('agent-a', duplicateId)] = {
+      loading: true,
+      loaded: true,
+      latestSeq: 42,
+    };
 
     store.setActiveSessionFilter(duplicateId, { agentId: 'agent-b' });
 

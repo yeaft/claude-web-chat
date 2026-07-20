@@ -23,6 +23,7 @@ import {
 } from '../utils/overlay-dismiss.js';
 import { shouldShowYeaftOnboardingGuide } from '../utils/yeaftOnboarding.js';
 import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils/yeaftSessionSettings.js';
+import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
 
 function sessionTaskSortTime(task) {
   const raw = task?.updatedAt || task?.endedAt || task?.createdAt;
@@ -1057,10 +1058,10 @@ export default {
       else console.log('[Yeaft] LLM config:', msg);
     };
 
-    const onLlmConfigSaved = () => {
+    const onLlmConfigSaved = (result = {}) => {
       // The Agent installs the persisted catalog before acknowledging the save.
-      // A reset here would tear down active turns and can replay stale metadata.
-      showLlmConfig.value = false;
+      // Keep the modal open on partial success so the warning remains visible.
+      if (shouldCloseLlmConfigAfterSave(result)) showLlmConfig.value = false;
     };
 
     // task-334m: Group invite modal wiring. The modal is shown whenever

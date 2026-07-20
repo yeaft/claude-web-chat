@@ -68,7 +68,13 @@ export async function applyLlmConfigUpdate(msg, dependencies = {}) {
     }
   }
 
-  const response = { type: 'llm_config_updated', ...result, statusRefreshError };
+  const response = {
+    type: 'llm_config_updated',
+    ...result,
+    agentId: msg.agentId ?? null,
+    requestId: msg.requestId ?? null,
+    statusRefreshError,
+  };
   send(response);
   return response;
 }

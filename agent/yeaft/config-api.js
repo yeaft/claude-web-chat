@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { DEFAULT_YEAFT_DIR } from './init.js';
-import { normalizeProviderModels, serializeModelForPersistence } from './models.js';
+import { normalizeProviderModels, parseModelRef, serializeModelForPersistence } from './models.js';
 import { normaliseYeaftSection } from './config.js';
 import { isGitHubCopilotProvider, serializeKnownProviderForPersistence } from './llm/known-providers.js';
 
@@ -109,12 +109,32 @@ export function updateLlmConfig(update, dir) {
     });
   }
 
-  // Update model selections
+  // Update model selections. A managed provider catalog is authoritative:
+  // when it drops the old Agent default, keep no hidden reference to that
+  // model in primaryModel or fastModel.
   if (update.primaryModel !== undefined) {
     existing.primaryModel = update.primaryModel || null;
   }
   if (update.fastModel !== undefined) {
     existing.fastModel = update.fastModel || null;
+  }
+  if (update.providers !== undefined) {
+    for (const provider of existing.providers) {
+      if (!isGitHubCopilotProvider(provider)) continue;
+      const modelIds = new Set(normalizeProviderModels(provider).map(model => model.id));
+      const fallbackRef = existing.primaryModel
+        && parseModelRef(existing.primaryModel).providerName === provider.name
+        && modelIds.has(parseModelRef(existing.primaryModel).modelId)
+        ? existing.primaryModel
+        : (modelIds.size ? `${provider.name}/${modelIds.values().next().value}` : null);
+      for (const field of ['primaryModel', 'fastModel']) {
+        const current = existing[field];
+        const parsed = parseModelRef(current);
+        if (parsed.providerName === provider.name && !modelIds.has(parsed.modelId)) {
+          existing[field] = fallbackRef;
+        }
+      }
+    }
   }
   if (update.language !== undefined) {
     existing.language = update.language;
