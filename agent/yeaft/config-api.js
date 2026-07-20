@@ -54,6 +54,58 @@ export function getLlmConfig(dir) {
   }
 }
 
+function providerModelIds(provider) {
+  return new Set(normalizeProviderModels(provider).map(model => model.id));
+}
+
+function bareModelOwners(providers, modelId) {
+  const owners = new Set();
+  for (const provider of providers) {
+    if (provider?.name && providerModelIds(provider).has(modelId)) owners.add(provider.name);
+  }
+  return owners;
+}
+
+function modelSelectionIsValid(selection, providers, authoritativeManagedNames) {
+  if (!selection) return false;
+  const parsed = parseModelRef(selection);
+  if (!parsed.modelId) return false;
+  if (!parsed.providerName) return bareModelOwners(providers, parsed.modelId).size === 1;
+  if (!authoritativeManagedNames.has(parsed.providerName)) return true;
+  const provider = providers.find(item => item?.name === parsed.providerName);
+  return !!provider && providerModelIds(provider).has(parsed.modelId);
+}
+
+function normalizeManagedModelDefaults(config) {
+  const providers = Array.isArray(config.providers) ? config.providers : [];
+  const authoritativeManagedProviders = providers.filter(provider =>
+    isGitHubCopilotProvider(provider)
+      && Array.isArray(provider.models)
+      && provider.models.length > 0);
+  if (authoritativeManagedProviders.length === 0) return;
+
+  const authoritativeManagedNames = new Set(authoritativeManagedProviders.map(provider => provider.name));
+  const fallbackProvider = authoritativeManagedProviders.find(provider => providerModelIds(provider).size > 0);
+  const fallbackModelId = fallbackProvider
+    ? providerModelIds(fallbackProvider).values().next().value
+    : null;
+  const managedFallback = fallbackProvider && fallbackModelId
+    ? `${fallbackProvider.name}/${fallbackModelId}`
+    : null;
+
+  if (config.primaryModel
+    && !modelSelectionIsValid(config.primaryModel, providers, authoritativeManagedNames)) {
+    config.primaryModel = managedFallback;
+  }
+  const validPrimary = modelSelectionIsValid(config.primaryModel, providers, authoritativeManagedNames)
+    ? config.primaryModel
+    : managedFallback;
+  if (config.fastModel
+    && !modelSelectionIsValid(config.fastModel, providers, authoritativeManagedNames)) {
+    config.fastModel = validPrimary;
+  }
+}
+
 /**
  * Update the LLM-relevant portion of config.json.
  * Merges into existing config — preserves fields like debug, maxContextTokens, etc.
@@ -118,24 +170,7 @@ export function updateLlmConfig(update, dir) {
   if (update.fastModel !== undefined) {
     existing.fastModel = update.fastModel || null;
   }
-  if (update.providers !== undefined) {
-    for (const provider of existing.providers) {
-      if (!isGitHubCopilotProvider(provider)) continue;
-      const modelIds = new Set(normalizeProviderModels(provider).map(model => model.id));
-      const fallbackRef = existing.primaryModel
-        && parseModelRef(existing.primaryModel).providerName === provider.name
-        && modelIds.has(parseModelRef(existing.primaryModel).modelId)
-        ? existing.primaryModel
-        : (modelIds.size ? `${provider.name}/${modelIds.values().next().value}` : null);
-      for (const field of ['primaryModel', 'fastModel']) {
-        const current = existing[field];
-        const parsed = parseModelRef(current);
-        if (parsed.providerName === provider.name && !modelIds.has(parsed.modelId)) {
-          existing[field] = fallbackRef;
-        }
-      }
-    }
-  }
+  if (update.providers !== undefined) normalizeManagedModelDefaults(existing);
   if (update.language !== undefined) {
     existing.language = update.language;
   }
