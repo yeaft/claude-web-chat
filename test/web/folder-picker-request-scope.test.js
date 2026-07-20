@@ -19,6 +19,37 @@ function createPicker(agentId = 'agent-a') {
 }
 
 describe('folder picker request scoping', () => {
+  it('lets Work Center use the chat store to open the picker and request a directory', () => {
+    const sent = [];
+    const store = { sendWsMessage: message => sent.push(message) };
+    const vm = {
+      ...folderPickerData(),
+      store,
+      folderPickerAgentId: 'agent-a',
+      defaultWorkDir: '/workspace',
+      folderPickerInitialDir: () => '/workspace/project',
+      folderPickerSetWorkDir: vi.fn(),
+    };
+    vm.chat = WorkCenterPage.computed.chat.call(vm);
+    for (const [name, method] of Object.entries(folderPickerMethods)) {
+      vm[name] = method.bind(vm);
+    }
+
+    vm.openFolderPicker();
+
+    expect(vm.folderPickerOpen).toBe(true);
+    expect(vm.folderPickerPath).toBe('/workspace/project');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: 'list_directory',
+      conversationId: '_workdir_picker',
+      agentId: 'agent-a',
+      dirPath: '/workspace/project',
+      workDir: '/workspace',
+    });
+    vm.closeFolderPicker();
+  });
+
   it('accepts only the current request for the current Agent', () => {
     const { vm, sent } = createPicker();
     vm.openFolderPicker();
