@@ -27,6 +27,7 @@ import { sendAgentMetricsSnapshot } from '../metrics.js';
 import { handleRestartAgent, handleUpgradeAgent } from './upgrade.js';
 import { loadMcpServers, updateMcpConfig } from '../mcp.js';
 import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, getSearchSettings, updateSearchSettings, fetchTavilyUsage } from '../yeaft/config-api.js';
+import { loadConfig } from '../yeaft/config.js';
 import { discoverLlmModels } from '../llm-model-discovery.js';
 import { fetchModelsDev } from '../yeaft/llm/models-dev.js';
 import { handleYeaftSessionSend, handleYeaftAskUserAnswer, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, refreshLiveSessionConfig, handleYeaftLoadHistory, handleYeaftSearchHistory, handleYeaftLoadHistoryWindow, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
@@ -38,18 +39,24 @@ export async function applyLlmConfigUpdate(msg, dependencies = {}) {
   const broadcastLanguage = dependencies.broadcastLanguageChange || broadcastLanguageChange;
   const forceStatusRefresh = dependencies.forceRefreshYeaftStatus || forceRefreshYeaftStatus;
   const refreshRuntimeConfig = dependencies.refreshLiveSessionConfig || refreshLiveSessionConfig;
+  const readConfig = dependencies.loadConfig || loadConfig;
   const send = dependencies.sendToServer || sendToServer;
   const yeaftDir = dependencies.yeaftDir ?? ctx.CONFIG?.yeaftDir;
   const incomingLanguage = typeof msg.config?.language === 'string' && msg.config.language
     ? msg.config.language
     : null;
+  let previousDefaultModel = null;
+  try {
+    const previousConfig = readConfig({ dir: yeaftDir });
+    previousDefaultModel = previousConfig?.primaryModel || previousConfig?.model || null;
+  } catch { /* updateLlmConfig will report the actual config error */ }
   const result = updateConfig(msg.config || {}, yeaftDir);
   if (!result.error && incomingLanguage) broadcastLanguage(result.language);
 
   let statusRefreshError = null;
   if (!result.error) {
     try {
-      await refreshRuntimeConfig();
+      await refreshRuntimeConfig({ previousDefaultModel });
     } catch (err) {
       statusRefreshError = err?.message || String(err);
     }

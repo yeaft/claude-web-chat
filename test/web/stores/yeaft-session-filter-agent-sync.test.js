@@ -55,6 +55,7 @@ globalThis.window = {
 globalThis.document = { addEventListener: vi.fn(), removeEventListener: vi.fn(), documentElement: { setAttribute() {}, classList: { toggle() {} } } };
 
 const { useChatStore } = await import('../../../web/stores/chat.js');
+const { handleAgentSelected } = await import('../../../web/stores/helpers/handlers/agentHandler.js');
 
 function primeStore() {
   const store = useChatStore();
@@ -68,6 +69,13 @@ function primeStore() {
   store.yeaftConversationIdsByAgent = {};
   store.yeaftConversationId = null;
   store.yeaftSessionHistoryState = {};
+  store.yeaftStatusByAgent = {};
+  store.yeaftModel = null;
+  store.yeaftAvailableModels = [];
+  store.yeaftModelsRefreshing = false;
+  store.yeaftModelRefreshError = null;
+  store.yeaftYeaftDir = null;
+  store.yeaftStatus = null;
   store.messagesMap = {};
   store.activeConversations = [];
   store.agentSwitching = false;
@@ -93,6 +101,47 @@ describe('setActiveSessionFilter self-heals currentAgent to the session owner', 
     expect(hist.agentId).toBe('agent-b');
     // Per-session owner cache recorded for downstream sends/aborts.
     expect(store.yeaftSessionAgentById['session-b']).toBe('agent-b');
+  });
+
+  it('projects the target Agent catalog before an already-loaded Session returns early', () => {
+    const store = primeStore();
+    const modelsA = [{ id: 'model-a', ref: 'provider-a/model-a', provider: 'provider-a' }];
+    const modelsB = [{ id: 'model-b', ref: 'provider-b/model-b', provider: 'provider-b' }];
+    store.yeaftStatusByAgent = {
+      'agent-a': { model: modelsA[0].ref, availableModels: modelsA },
+      'agent-b': { model: modelsB[0].ref, availableModels: modelsB },
+    };
+    store.applyCachedYeaftStatus('agent-a');
+    store.yeaftSessionHistoryState['session-b'] = { loading: true };
+
+    store.setActiveSessionFilter('session-b', { force: true });
+
+    expect(store.currentAgent).toBe('agent-b');
+    expect(store.yeaftModel).toBe(modelsB[0].ref);
+    expect(store.yeaftAvailableModels).toEqual(modelsB);
+    expect(store._sent.some(m => m.type === 'yeaft_load_history' && m.sessionId === 'session-b')).toBe(false);
+  });
+
+  it('clears the old catalog when agent_selected targets an Agent without a cache', () => {
+    const store = primeStore();
+    const modelsA = [{ id: 'model-a', ref: 'provider-a/model-a', provider: 'provider-a' }];
+    store.yeaftStatusByAgent = {
+      'agent-a': { model: modelsA[0].ref, availableModels: modelsA, yeaftDir: '/agent-a/.yeaft' },
+    };
+    store.applyCachedYeaftStatus('agent-a');
+
+    handleAgentSelected(store, {
+      agentId: 'agent-b',
+      agentName: 'B',
+      workDir: '/work/b',
+      capabilities: ['terminal'],
+    });
+
+    expect(store.currentAgent).toBe('agent-b');
+    expect(store.yeaftModel).toBeNull();
+    expect(store.yeaftAvailableModels).toEqual([]);
+    expect(store.yeaftYeaftDir).toBeNull();
+    expect(store.yeaftStatus).toBeNull();
   });
 
   it('does not emit a redundant select_agent when the owner is already current', () => {

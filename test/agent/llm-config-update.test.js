@@ -3,6 +3,10 @@ import { applyLlmConfigUpdate } from '../../agent/connection/message-router.js';
 
 function dependencies(overrides = {}) {
   return {
+    loadConfig: vi.fn(() => ({
+      model: 'github-copilot/gpt-old',
+      primaryModel: 'github-copilot/gpt-old',
+    })),
     updateLlmConfig: vi.fn(() => ({ primaryModel: 'github-copilot/gpt-new', language: 'en' })),
     broadcastLanguageChange: vi.fn(),
     forceRefreshYeaftStatus: vi.fn(async () => ({ refreshError: null })),
@@ -22,8 +26,11 @@ describe('LLM config update', () => {
       config: { primaryModel: 'github-copilot/gpt-new' },
     }, deps);
 
+    expect(deps.loadConfig).toHaveBeenCalledWith({ dir: '/tmp/yeaft-test' });
     expect(deps.updateLlmConfig).toHaveBeenCalledTimes(1);
-    expect(deps.refreshLiveSessionConfig).toHaveBeenCalledTimes(1);
+    expect(deps.refreshLiveSessionConfig).toHaveBeenCalledWith({
+      previousDefaultModel: 'github-copilot/gpt-old',
+    });
     expect(deps.forceRefreshYeaftStatus).toHaveBeenCalledTimes(1);
     expect(deps.sendToServer).toHaveBeenCalledTimes(1);
     expect(response).toMatchObject({

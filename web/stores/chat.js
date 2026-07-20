@@ -1553,12 +1553,20 @@ export const useChatStore = defineStore('chat', {
     },
     applyCachedYeaftStatus(agentId = this.currentAgent) {
       const cached = agentId ? this.yeaftStatusByAgent[agentId] : null;
-      if (!cached) return false;
-      if (cached.model) this.yeaftModel = cached.model;
-      if (Array.isArray(cached.availableModels)) this.yeaftAvailableModels = cached.availableModels;
+      if (!cached) {
+        this.yeaftModel = null;
+        this.yeaftAvailableModels = [];
+        this.yeaftModelsRefreshing = false;
+        this.yeaftModelRefreshError = null;
+        this.yeaftYeaftDir = null;
+        this.yeaftStatus = null;
+        return false;
+      }
+      this.yeaftModel = cached.model || null;
+      this.yeaftAvailableModels = Array.isArray(cached.availableModels) ? cached.availableModels : [];
       this.yeaftModelsRefreshing = !!cached.refreshing;
       this.yeaftModelRefreshError = cached.refreshError || null;
-      if (cached.yeaftDir) this.yeaftYeaftDir = cached.yeaftDir;
+      this.yeaftYeaftDir = cached.yeaftDir || null;
       this.yeaftStatus = {
         skills: cached.skills,
         mcpServers: cached.mcpServers,
@@ -1566,6 +1574,12 @@ export const useChatStore = defineStore('chat', {
         multiVp: !!cached.multiVp,
       };
       return true;
+    },
+    activateYeaftAgent(agentId, agentInfo = null) {
+      if (!agentId) return false;
+      this.currentAgent = agentId;
+      if (agentInfo) this.currentAgentInfo = agentInfo;
+      return this.applyCachedYeaftStatus(agentId);
     },
     enterYeaft(agentId = null) {
       const previousAgentId = this.currentAgent;
@@ -3860,6 +3874,18 @@ export const useChatStore = defineStore('chat', {
         if (next) localStorage.setItem('lastViewedYeaftSession', next);
         else localStorage.removeItem('lastViewedYeaftSession');
       } catch (_) {}
+
+      // Agent selection and catalog projection are one operation. Do this
+      // before every history early-return so an already-loaded Session cannot
+      // keep rendering the previous Agent's model catalog.
+      const targetAgentId = next ? resolveAgentIdForSession(this, next) : this.currentAgent;
+      if (targetAgentId && next && this.currentAgent !== targetAgentId) {
+        this.selectAgent(targetAgentId);
+        const info = this.agents.find(a => a.id === targetAgentId);
+        this.activateYeaftAgent(targetAgentId, info || null);
+      } else if (targetAgentId && next) {
+        this.activateYeaftAgent(targetAgentId);
+      }
       if (!force && next === prev) return;
 
       const sessionKey = next || '__all__';
@@ -3900,13 +3926,6 @@ export const useChatStore = defineStore('chat', {
       // round-trip while currentAgent is still old so its same-agent guard
       // doesn't swallow the frame; the assignment then makes same-tick reads
       // see the new owner).
-      const targetAgentId = next ? resolveAgentIdForSession(this, next) : this.currentAgent;
-      if (targetAgentId && next && this.currentAgent !== targetAgentId) {
-        this.selectAgent(targetAgentId);
-        this.currentAgent = targetAgentId;
-        const info = this.agents.find(a => a.id === targetAgentId);
-        if (info) this.currentAgentInfo = info;
-      }
       if (targetAgentId && next) {
         this.yeaftSessionAgentById = {
           ...(this.yeaftSessionAgentById || {}),
