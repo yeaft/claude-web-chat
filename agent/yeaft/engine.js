@@ -683,14 +683,7 @@ export class Engine {
       conversationId: this.#traceId,
     });
 
-    // Build fast config: uses fastModelId for internal tasks (recall, consolidation, dream)
-    // Falls back to primary model if no fastModel configured
-    const fastModelId = config.fastModelId || config.model;
-    if (fastModelId !== config.model) {
-      this.#fastConfig = { ...config, model: fastModelId };
-    } else {
-      this.#fastConfig = config;
-    }
+    this.refreshConfig(config);
   }
 
   /**
@@ -757,6 +750,21 @@ export class Engine {
   setLanguage(lang) {
     if (typeof lang !== 'string' || !lang) return;
     this.#config.language = lang;
+  }
+
+  /**
+   * Replace the effective runtime config for subsequent queries without
+   * interrupting a turn that already captured its model.
+   *
+   * @param {object} config
+   */
+  refreshConfig(config) {
+    if (!config || typeof config !== 'object') return;
+    this.#config = config;
+    const fastModelId = config.fastModelId || config.model;
+    this.#fastConfig = fastModelId !== config.model
+      ? { ...config, model: fastModelId }
+      : config;
   }
 
   /**

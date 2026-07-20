@@ -1542,6 +1542,9 @@ export const useChatStore = defineStore('chat', {
         ...previous,
         ...status,
         availableModels,
+        catalogFromConfig: status.type === 'yeaft_status' && Array.isArray(status.availableModels)
+          ? true
+          : !!previous.catalogFromConfig,
       };
       this.yeaftStatusByAgent = { ...this.yeaftStatusByAgent, [agentId]: next };
       if (this.currentAgent === agentId) {
@@ -2505,13 +2508,24 @@ export const useChatStore = defineStore('chat', {
               ...(this.yeaftConversationIdsByAgent || {}),
               [statusAgentId]: agentConvId,
             };
-            this.cacheYeaftAgentStatus(statusAgentId, event);
+            const cached = this.yeaftStatusByAgent[statusAgentId];
+            if (cached?.catalogFromConfig) {
+              const { model: _model, availableModels: _models, ...runtimeStatus } = event;
+              this.cacheYeaftAgentStatus(statusAgentId, runtimeStatus);
+            } else {
+              this.cacheYeaftAgentStatus(statusAgentId, event);
+            }
           }
-          this.yeaftModel = event.model;
-          this.yeaftModelEffort = event.modelEffort || null;
-          this.yeaftSessionReady = true;
-          this.yeaftBootstrapMetaLoadingKey = null;
-          this.yeaftAvailableModels = event.availableModels || [];
+          const configCatalog = statusAgentId && this.yeaftStatusByAgent[statusAgentId]?.catalogFromConfig;
+          if (readyIsVisible) {
+            if (!configCatalog) {
+              this.yeaftModel = event.model;
+              this.yeaftAvailableModels = event.availableModels || [];
+            }
+            this.yeaftModelEffort = event.modelEffort || null;
+            this.yeaftSessionReady = true;
+            this.yeaftBootstrapMetaLoadingKey = null;
+          }
           const readyTasks = Array.isArray(event.tasks) ? event.tasks : [];
           const nextTasks = {};
           for (const task of readyTasks) {
@@ -2519,20 +2533,21 @@ export const useChatStore = defineStore('chat', {
             nextTasks[task.sessionId] = { ...(nextTasks[task.sessionId] || {}), [task.id]: task };
           }
           this.yeaftActiveTasksBySession = nextTasks;
-          // Surface agent's yeaft home dir so Yeaft workbench (Files/Git tabs)
-          // can default to a sensible folder instead of leaking through
-          // currentAgentInfo.workDir (which is Chat's cwd, not the group's).
-          if (event.yeaftDir) this.yeaftYeaftDir = event.yeaftDir;
-          this.yeaftStatus = {
-            skills: event.skills,
-            mcpServers: event.mcpServers,
-            tools: event.tools,
-            // task-334-ui-b: expose multi-VP feature flag surface so
-            // MessageList can decide whether to render VP speaker headers.
-            // Agent side (334c + feature-flag.js) determines the boolean;
-            // web just mirrors it. Absent → falsy → legacy 1:1 UI.
-            multiVp: !!event.multiVp,
-          };
+          // Background Session replay only updates its own cached metadata.
+          // The visible Session owns page-level runtime status and workbench root.
+          if (readyIsVisible) {
+            if (event.yeaftDir) this.yeaftYeaftDir = event.yeaftDir;
+            this.yeaftStatus = {
+              skills: event.skills,
+              mcpServers: event.mcpServers,
+              tools: event.tools,
+              // task-334-ui-b: expose multi-VP feature flag surface so
+              // MessageList can decide whether to render VP speaker headers.
+              // Agent side (334c + feature-flag.js) determines the boolean;
+              // web just mirrors it. Absent → falsy → legacy 1:1 UI.
+              multiVp: !!event.multiVp,
+            };
+          }
 
           if (readyIsVisible || !this.yeaftConversationId) {
             this.yeaftConversationId = agentConvId;

@@ -131,27 +131,74 @@ function applyLiveLanguage(language) {
   try { session?.engine?.setLanguage?.(language); } catch { /* best-effort */ }
 }
 
-function refreshLiveSessionConfig() {
-  if (!session) return;
-  try {
-    const freshConfig = loadConfig({ dir: liveConfigRoot() });
-    const freshModels = Array.isArray(freshConfig.availableModels) ? freshConfig.availableModels : [];
-    session.config.availableModels = freshModels;
-    if (freshConfig.language) {
-      applyLiveLanguage(freshConfig.language);
-    }
-    if (freshConfig.model && !freshModels.some(m => modelRefMatchesAvailable(m, session.config.model))) {
-      session.config.model = freshConfig.primaryModel || freshConfig.model;
-    }
-    if (freshConfig.providers) {
-      session.config.providers = freshConfig.providers;
-      if (typeof session.adapter?.refreshProviders === 'function') {
-        session.adapter.refreshProviders(freshConfig.providers);
-      }
-    }
-  } catch (err) {
-    console.warn('[Yeaft] refresh live session config failed:', err?.message || err);
+function modelRefIdentity(value) {
+  const text = String(value || '');
+  const slash = text.indexOf('/');
+  return slash < 0
+    ? { provider: '', modelId: text }
+    : { provider: text.slice(0, slash), modelId: text.slice(slash + 1) };
+}
+
+function modelRefsEquivalent(left, right) {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const a = modelRefIdentity(left);
+  const b = modelRefIdentity(right);
+  if (a.modelId !== b.modelId) return false;
+  return !a.provider || !b.provider || a.provider === b.provider;
+}
+
+let sessionConfigRefreshRevision = 0;
+
+/** Reload the Agent-owned config and install it into every live Engine. */
+export async function refreshLiveSessionConfig() {
+  sessionConfigRefreshRevision += 1;
+  if (!session && sessionLoadPromise) {
+    const loading = sessionLoadPromise;
+    await loading;
+    // ensureSessionLoaded observes the revision and refreshes before resolving.
+    return session?.config || null;
   }
+  if (!session) return null;
+
+  const liveSession = session;
+  const currentConfig = liveSession.config || {};
+  const freshConfig = loadConfig({ dir: liveConfigRoot() });
+  const runtimeOnly = {};
+  for (const key of ['serverMode', '_readOnly', 'modelEffort']) {
+    if (Object.prototype.hasOwnProperty.call(currentConfig, key)) runtimeOnly[key] = currentConfig[key];
+  }
+  const inheritedAgentDefault = !currentConfig.model
+    || modelRefsEquivalent(currentConfig.model, currentConfig.primaryModel);
+  const nextModel = inheritedAgentDefault
+    ? (freshConfig.primaryModel || freshConfig.model)
+    : currentConfig.model;
+  const nextConfig = { ...freshConfig, ...runtimeOnly, model: nextModel };
+  const configRoot = nextConfig.dir || liveSession.yeaftDir || ctx.CONFIG?.yeaftDir;
+  const vpConfigSnapshots = [];
+  for (const [key, engine] of vpEngines) {
+    const separator = key.indexOf('::');
+    if (separator < 1) continue;
+    const sessionId = key.slice(0, separator);
+    vpConfigSnapshots.push({
+      key,
+      engine,
+      config: resolveSessionConfig(nextConfig, loadSessionConfig(configRoot, sessionId)),
+    });
+  }
+
+  if (typeof liveSession.adapter?.refreshProviders === 'function') {
+    liveSession.adapter.refreshProviders(freshConfig.providers || []);
+  }
+  for (const key of Object.keys(currentConfig)) delete currentConfig[key];
+  Object.assign(currentConfig, nextConfig);
+  liveSession.engine?.refreshConfig?.(currentConfig);
+  for (const { key, engine, config } of vpConfigSnapshots) {
+    engine.refreshConfig?.(config);
+    vpEngineConfigKeys.set(key, engineConfigKey(config));
+  }
+  if (freshConfig.language) applyLiveLanguage(freshConfig.language);
+  return currentConfig;
 }
 
 function defaultSessionModelConfig(baseConfig) {
@@ -210,7 +257,7 @@ function scheduleYeaftLoadHistoryMetadataReplay(sessionId) {
   setTimeout(async () => {
     try {
       if (!replaySession) return;
-      refreshLiveSessionConfig();
+      await refreshLiveSessionConfig();
       let projectRuntime = null;
       if (sessionId) {
         try {
@@ -517,6 +564,7 @@ function engineConfigKey(config) {
     fastModel: config?.fastModel || '',
     fastModelId: config?.fastModelId || '',
     fallbackModel: config?.fallbackModel || '',
+    providers: Array.isArray(config?.providers) ? config.providers : [],
   });
 }
 
@@ -4212,6 +4260,7 @@ export async function ensureSessionLoaded(opts = {}) {
   if (sessionLoadPromise) return sessionLoadPromise;
 
   sessionLoadPromise = (async () => {
+    const bootConfigRevision = sessionConfigRefreshRevision;
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const normalizedWorkDir = normalizeSessionWorkDir(opts?.workDir || opts?.sessionMeta?.workDir);
     session = await loadSession({
@@ -4223,6 +4272,11 @@ export async function ensureSessionLoaded(opts = {}) {
     });
 
     installYeaftRuntimeBridge(session);
+    // A save may complete after loadSession read config.json but before this
+    // runtime became visible. Refresh before any status/session_ready emit.
+    if (sessionConfigRefreshRevision !== bootConfigRevision) {
+      await refreshLiveSessionConfig();
+    }
 
     try {
       if (session.engine && typeof session.engine.setSubAgentEventSink === 'function') {

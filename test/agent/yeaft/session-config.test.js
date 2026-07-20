@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import ctx from '../../../agent/context.js';
 import { loadConfig } from '../../../agent/yeaft/config.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
-import { __testGetOrCreateVpEngine, __testHooks, __testResolveVpEffectiveConfig, __testSetSession } from '../../../agent/yeaft/web-bridge.js';
+import { __testGetOrCreateVpEngine, __testHooks, __testResolveVpEffectiveConfig, __testSetSession, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
 import { loadSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { registerSessionWorkDir, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
@@ -160,6 +160,155 @@ describe('Yeaft session-scoped model config', () => {
     expect(effective.model).toBe('agent/gpt-5');
     expect(effective.primaryModel).toBe('agent/gpt-5');
     expect(effective.modelEffort).toBe('low');
+  });
+
+  it('hot-reloads the Agent provider catalog without copying it into Session config', async () => {
+    const root = makeDir();
+    const sessionId = 'session-catalog-refresh';
+    mkdirSync(join(root, 'sessions', sessionId), { recursive: true });
+    saveSessionConfig(root, sessionId, { model: 'github-copilot/gpt-new' });
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({
+      providers: [{
+        name: 'github-copilot',
+        credentialProvider: 'github-copilot',
+        managed: 'github-copilot',
+        models: [{ id: 'gpt-new', protocol: 'openai-responses' }],
+      }],
+      primaryModel: 'github-copilot/gpt-new',
+    }, null, 2)}\n`);
+    ctx.CONFIG = { yeaftDir: root };
+    const refreshProviders = vi.fn();
+    __testSetSession({
+      yeaftDir: root,
+      config: {
+        dir: root,
+        model: 'github-copilot/gpt-default',
+        primaryModel: 'github-copilot/gpt-default',
+        availableModels: [{ id: 'gpt-default', ref: 'github-copilot/gpt-default', provider: 'github-copilot' }],
+        providers: [],
+      },
+      adapter: { refreshProviders },
+    });
+
+    const fresh = await refreshLiveSessionConfig();
+    const effective = __testResolveVpEffectiveConfig(sessionId);
+
+    expect(fresh.availableModels.map(model => model.ref)).toEqual(['github-copilot/gpt-new']);
+    expect(effective.availableModels.map(model => model.ref)).toEqual(['github-copilot/gpt-new']);
+    expect(effective.model).toBe('github-copilot/gpt-new');
+    expect(refreshProviders).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ name: 'github-copilot' }),
+    ]));
+    expect(loadSessionConfig(root, sessionId)).toEqual({ model: 'github-copilot/gpt-new' });
+  });
+
+  it('adopts a new Agent default even when the previous default remains available', async () => {
+    const root = makeDir();
+    ctx.CONFIG = { yeaftDir: root };
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({
+      providers: [{ name: 'github-copilot', credentialProvider: 'github-copilot', models: ['gpt-default', 'gpt-new'] }],
+      primaryModel: 'github-copilot/gpt-default',
+    }, null, 2)}\n`);
+    const previousConfig = loadConfig({ dir: root });
+    expect(previousConfig).toMatchObject({
+      model: 'gpt-default',
+      primaryModel: 'github-copilot/gpt-default',
+    });
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({
+      providers: [{ name: 'github-copilot', credentialProvider: 'github-copilot', models: ['gpt-default', 'gpt-new'] }],
+      primaryModel: 'github-copilot/gpt-new',
+    }, null, 2)}\n`);
+    __testSetSession({
+      yeaftDir: root,
+      config: previousConfig,
+      adapter: { refreshProviders() {} },
+    });
+
+    await refreshLiveSessionConfig();
+    const effective = __testResolveVpEffectiveConfig('session-without-override');
+
+    expect(effective.model).toBe('github-copilot/gpt-new');
+    expect(effective.primaryModel).toBe('github-copilot/gpt-new');
+  });
+
+  it('preserves an explicit Session override that remains in the refreshed catalog', async () => {
+    const root = makeDir();
+    const sessionId = 'session-explicit-override';
+    mkdirSync(join(root, 'sessions', sessionId), { recursive: true });
+    saveSessionConfig(root, sessionId, { model: 'github-copilot/gpt-override' });
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({
+      providers: [{ name: 'github-copilot', credentialProvider: 'github-copilot', models: ['gpt-default', 'gpt-override'] }],
+      primaryModel: 'github-copilot/gpt-default',
+    }, null, 2)}\n`);
+    ctx.CONFIG = { yeaftDir: root };
+    __testSetSession({
+      yeaftDir: root,
+      config: {
+        dir: root,
+        model: 'gpt-old-default',
+        primaryModel: 'github-copilot/gpt-old-default',
+        availableModels: [{ id: 'gpt-old-default', ref: 'github-copilot/gpt-old-default', provider: 'github-copilot' }],
+      },
+      adapter: { refreshProviders() {} },
+    });
+
+    await refreshLiveSessionConfig();
+
+    expect(__testResolveVpEffectiveConfig(sessionId).model).toBe('github-copilot/gpt-override');
+    expect(loadSessionConfig(root, sessionId)).toEqual({ model: 'github-copilot/gpt-override' });
+  });
+
+  it('uses the latest Agent default in the actual adapter request', async () => {
+    const root = makeDir();
+    const sessionId = 'session-live-request';
+    mkdirSync(join(root, 'sessions', sessionId), { recursive: true });
+    writeFileSync(join(root, 'config.json'), `${JSON.stringify({
+      providers: [{ name: 'github-copilot', credentialProvider: 'github-copilot', models: ['gpt-old', 'gpt-new'] }],
+      primaryModel: 'github-copilot/gpt-new',
+    }, null, 2)}\n`);
+    ctx.CONFIG = { yeaftDir: root };
+    const streamCalls = [];
+    const adapter = {
+      refreshProviders() {},
+      async *stream(params) {
+        streamCalls.push(params);
+        yield { type: 'text_delta', text: 'ok' };
+        yield { type: 'stop', stopReason: 'end_turn' };
+      },
+      async call() { return { text: '', usage: {} }; },
+    };
+    __testSetSession({
+      yeaftDir: root,
+      adapter,
+      trace: new NullTrace(),
+      config: {
+        dir: root,
+        model: 'gpt-old',
+        primaryModel: 'github-copilot/gpt-old',
+        fastModel: 'github-copilot/gpt-old',
+        fastModelId: 'gpt-old',
+        providers: [{ name: 'github-copilot', models: ['gpt-old'] }],
+        availableModels: [{ id: 'gpt-old', ref: 'github-copilot/gpt-old', provider: 'github-copilot' }],
+        _readOnly: true,
+      },
+      engine: { refreshConfig: vi.fn() },
+      conversationStore: { loadRecentBySession: () => [], readCompactSummary: () => '' },
+      memoryIndex: null,
+      amsRegistry: null,
+      toolRegistry: null,
+      skillManager: null,
+      mcpManager: null,
+      taskManager: { renderActiveTasksForPrompt: () => '' },
+      toolStats: null,
+    });
+
+    await refreshLiveSessionConfig();
+    const engine = __testGetOrCreateVpEngine(sessionId, 'vp-a', 'main');
+    for await (const _event of engine.query({ prompt: 'use the new model', sessionId })) {}
+
+    expect(streamCalls).toHaveLength(1);
+    expect(streamCalls[0].model).toBe('github-copilot/gpt-new');
+    expect(engine.fastConfig.model).toBe('gpt-new');
   });
 
   it('rebuilds a cached VP engine when the session model config changes on disk', () => {

@@ -54,6 +54,9 @@ export function createYeaftStatusCache(options = {}) {
   let timer = null;
   let inFlight = null;
   let generation = 0;
+  let forceTail = Promise.resolve();
+  let pendingForceRefreshes = 0;
+  let hasConfigCatalog = false;
 
   function current() {
     return snapshot ? { ...snapshot, availableModels: normalizeAvailableModels(snapshot.availableModels) } : null;
@@ -80,6 +83,7 @@ export function createYeaftStatusCache(options = {}) {
         const config = await load({ ...(yeaftDir && { dir: yeaftDir }) });
         if (refreshGeneration !== generation) return current();
         const previous = snapshot || {};
+        hasConfigCatalog = true;
         snapshot = {
           ...previous,
           model: config.primaryModel || config.model || previous.model || null,
@@ -118,26 +122,40 @@ export function createYeaftStatusCache(options = {}) {
     return refreshPromise;
   }
 
-  async function forceRefresh(options = {}) {
-    // Invalidate any disk read that started before the config write, wait for it
-    // to drain, then start a new read. A plain refresh() intentionally dedupes
-    // concurrent callers, which is wrong after a successful config update.
+  function forceRefresh(options = {}) {
+    // Every config write invalidates reads that started before it. Serialize
+    // post-save reads so concurrent saves cannot dedupe against stale work.
     generation += 1;
-    if (inFlight) await inFlight;
-    return refresh({ ...options, emitRefreshing: options.emitRefreshing ?? false });
+    pendingForceRefreshes += 1;
+    const run = async () => {
+      try {
+        if (inFlight) await inFlight;
+        return await refresh({ ...options, emitRefreshing: options.emitRefreshing ?? false });
+      } finally {
+        pendingForceRefreshes -= 1;
+      }
+    };
+    const result = forceTail.then(run, run);
+    forceTail = result.catch(() => null);
+    return result;
   }
 
   function hydrateFromSession(sessionLike, { reason = 'session_ready', emitEvent = true } = {}) {
     if (!sessionLike) return null;
-    // Session hydration is authoritative. Any refresh that started before this
-    // point loaded an older disk snapshot and must not overwrite it when it
-    // resolves later.
-    generation += 1;
+    // config.json owns the provider/model catalog once it has been loaded.
+    // Before the first config read completes, Session hydration is the best
+    // available snapshot and invalidates that older background read.
+    if (!hasConfigCatalog && pendingForceRefreshes === 0) generation += 1;
     const previous = snapshot || {};
+    const sessionModels = normalizeAvailableModels(sessionLike.config?.availableModels);
     snapshot = {
       ...previous,
-      model: sessionLike.config?.model || previous.model || null,
-      availableModels: normalizeAvailableModels(sessionLike.config?.availableModels || previous.availableModels),
+      model: hasConfigCatalog
+        ? (previous.model || sessionLike.config?.model || null)
+        : (sessionLike.config?.model || previous.model || null),
+      availableModels: hasConfigCatalog
+        ? normalizeAvailableModels(previous.availableModels)
+        : (sessionModels.length > 0 ? sessionModels : normalizeAvailableModels(previous.availableModels)),
       yeaftDir: sessionLike.yeaftDir || sessionLike.config?.dir || previous.yeaftDir || null,
       skills: sessionLike.status?.skills ?? previous.skills,
       mcpServers: sessionLike.status?.mcpServers ?? previous.mcpServers,
@@ -145,8 +163,8 @@ export function createYeaftStatusCache(options = {}) {
       refreshedAt: now(),
       refreshStartedAt: previous.refreshStartedAt || null,
       refreshReason: reason,
-      refreshError: null,
-      refreshing: false,
+      refreshError: previous.refreshError || null,
+      refreshing: pendingForceRefreshes > 0 || !!previous.refreshing,
     };
     return emitEvent ? emitSnapshot() : buildEvent(snapshot);
   }

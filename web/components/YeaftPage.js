@@ -1058,9 +1058,9 @@ export default {
     };
 
     const onLlmConfigSaved = () => {
+      // The Agent installs the persisted catalog before acknowledging the save.
+      // A reset here would tear down active turns and can replay stale metadata.
       showLlmConfig.value = false;
-      const agentId = store.currentAgent;
-      if (agentId) store.sendWsMessage({ type: 'yeaft_reset', agentId });
     };
 
     // task-334m: Group invite modal wiring. The modal is shown whenever

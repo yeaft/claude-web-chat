@@ -49,6 +49,35 @@ describe('Yeaft status cache', () => {
     ]);
   });
 
+  it('keeps config refresh authoritative when Session hydration races it', async () => {
+    const pendingLoad = deferred();
+    const cache = createYeaftStatusCache({
+      loadConfig: () => pendingLoad.promise,
+      emit: vi.fn(),
+      now: () => 125,
+    });
+
+    const refresh = cache.forceRefresh({ reason: 'llm_config_updated' });
+    cache.hydrateFromSession({
+      config: {
+        model: 'github-copilot/gpt-old',
+        availableModels: [{ id: 'gpt-old', provider: 'github-copilot' }],
+      },
+      status: {},
+    });
+    pendingLoad.resolve({
+      primaryModel: 'github-copilot/gpt-new',
+      availableModels: [{ id: 'gpt-new', provider: 'github-copilot' }],
+    });
+    await refresh;
+
+    expect(cache.current()).toMatchObject({
+      model: 'github-copilot/gpt-new',
+      availableModels: [{ id: 'gpt-new', provider: 'github-copilot' }],
+      refreshReason: 'llm_config_updated',
+    });
+  });
+
   it('forces a fresh disk read after an older refresh drains', async () => {
     const oldLoad = deferred();
     const loadConfig = vi.fn()
@@ -77,6 +106,31 @@ describe('Yeaft status cache', () => {
       refreshReason: 'llm_config_updated',
     });
     expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('serializes concurrent forced refreshes instead of collapsing the newer save', async () => {
+    const firstLoad = deferred();
+    const loadConfig = vi.fn()
+      .mockReturnValueOnce(firstLoad.promise)
+      .mockResolvedValueOnce({
+        primaryModel: 'github-copilot/gpt-second',
+        availableModels: [{ id: 'gpt-second', provider: 'github-copilot' }],
+      });
+    const cache = createYeaftStatusCache({ loadConfig, emit: vi.fn(), now: () => 160 });
+
+    const first = cache.forceRefresh({ reason: 'llm_config_updated' });
+    const second = cache.forceRefresh({ reason: 'llm_config_updated' });
+    firstLoad.resolve({
+      primaryModel: 'github-copilot/gpt-first',
+      availableModels: [{ id: 'gpt-first', provider: 'github-copilot' }],
+    });
+    await Promise.all([first, second]);
+
+    expect(loadConfig).toHaveBeenCalledTimes(2);
+    expect(cache.current()).toMatchObject({
+      model: 'github-copilot/gpt-second',
+      availableModels: [{ id: 'gpt-second', provider: 'github-copilot' }],
+    });
   });
 
   it('returns an error event from a forced refresh without discarding the last good snapshot', async () => {
