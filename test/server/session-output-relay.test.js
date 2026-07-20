@@ -193,6 +193,12 @@ describe('Yeaft Session output relay aliases', () => {
     expect(batchLookup).toHaveBeenCalledWith({
       ownerId: 'owner-1', agentId: 'agent-1', sessionId, turnIds: ['turn-1'],
     });
+    expect(client.sent[0]).toMatchObject({
+      type: 'yeaft_history_chunk',
+      agentId: 'agent-1',
+      conversationId: 'yeaft-1',
+      sessionId,
+    });
     expect(client.sent[0].messages).toHaveLength(1);
     expect(client.sent[0].messages[0].images).toEqual([
       expect.objectContaining({ mimeType: 'image/png', src: expect.stringMatching(/^\/api\/yeaft\/assets\//) }),

@@ -23,6 +23,7 @@ import {
   workItemDetailNeedsRefresh,
 } from './helpers/work-center.js';
 import { createPerfTraceId, recordPerfTrace, measureNextPaint } from './helpers/perfTrace.js';
+import { yeaftHistoryIdentityKey } from './helpers/yeaft-history-identity.js';
 import {
   getDefaultYeaftVisibleTurns,
   getYeaftWindowLoadStepTurns,
@@ -52,6 +53,20 @@ const YEAFT_RECENT_TURNS = 5;
 const YEAFT_RECENT_TERMINAL_TASK_LIMIT = 8;
 const YEAFT_TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'orphaned']);
 const YEAFT_RUNNING_VP_STATES = new Set(['typing', 'thinking', 'streaming', 'tool']);
+const YEAFT_CATALOG_STATUS_FIELDS = Object.freeze([
+  'model',
+  'availableModels',
+  'refreshedAt',
+  'catalogRefreshedAt',
+  'catalogEpoch',
+  'catalogRevision',
+  'catalogDigest',
+  'refreshStartedAt',
+  'refreshReason',
+  'refreshError',
+  'refreshing',
+]);
+const YEAFT_RETIRED_CATALOG_EPOCH_LIMIT = 8;
 
 // Yeaft message ids are `NNNNNN-…` where NNNNNN is the zero-padded seq.
 // Pull the seq out so the store can stamp / advance its delta cursor on
@@ -522,6 +537,7 @@ export const useChatStore = defineStore('chat', {
     yeaftStatus: null,            // { skills, mcpServers, tools } 从 session_ready 获取
     yeaftAvailableModels: [],     // 可用模型列表 [{ id, provider, label }]
     yeaftStatusByAgent: {},       // { [agentId]: cached yeaft_status/session_ready payload }
+    _yeaftRetiredCatalogEpochsByAgent: {}, // { [agentId]: string[] }, bounded restart fence
     yeaftModelsRefreshing: false, // 当前 agent 的 model/status 后台刷新状态
     yeaftModelRefreshError: null, // 当前 agent 最近一次 refresh 错误（保留旧模型列表）
     yeaftYeaftDir: null,          // agent 的 ~/.yeaft 绝对路径（session_ready 携带）— Yeaft workbench 的默认 workDir
@@ -1532,30 +1548,74 @@ export const useChatStore = defineStore('chat', {
     // =====================
     // Yeaft 页面
     // =====================
-    cacheYeaftAgentStatus(agentId, status) {
+    cacheYeaftAgentStatus(agentId, status, { allowBootstrapCatalog = false } = {}) {
       if (!agentId || !status) return;
       const previous = this.yeaftStatusByAgent[agentId] || {};
-      const availableModels = Array.isArray(status.availableModels)
-        ? status.availableModels
-        : (previous.availableModels || []);
-      const next = {
-        ...previous,
-        ...status,
-        availableModels,
-      };
-      this.yeaftStatusByAgent = { ...this.yeaftStatusByAgent, [agentId]: next };
-      if (this.currentAgent === agentId) {
-        this.applyCachedYeaftStatus(agentId);
+      const previousRevision = Number(previous.catalogRevision) || 0;
+      const incomingRevision = Number(status.catalogRevision) || 0;
+      const previousEpoch = typeof previous.catalogEpoch === 'string' ? previous.catalogEpoch : '';
+      const incomingEpoch = typeof status.catalogEpoch === 'string' ? status.catalogEpoch : '';
+      const previousCatalogAt = Number(previous.catalogRefreshedAt) || 0;
+      const incomingCatalogAt = Number(status.catalogRefreshedAt) || 0;
+      const statusHasCatalog = Array.isArray(status.availableModels);
+      const statusIsConfigCatalog = status.type === 'yeaft_status'
+        && statusHasCatalog
+        && (incomingRevision > 0 || incomingCatalogAt > 0);
+      const retiredEpochs = Array.isArray(this._yeaftRetiredCatalogEpochsByAgent?.[agentId])
+        ? this._yeaftRetiredCatalogEpochsByAgent[agentId]
+        : [];
+      const incomingEpochRetired = !!incomingEpoch && retiredEpochs.includes(incomingEpoch);
+      const sameEpoch = !!incomingEpoch && incomingEpoch === previousEpoch;
+      const sameVersion = incomingRevision > 0
+        ? sameEpoch && incomingRevision === previousRevision
+        : incomingCatalogAt > 0 && incomingCatalogAt === previousCatalogAt;
+      const newerVersion = incomingRevision > 0
+        ? (!!incomingEpoch && (incomingEpoch !== previousEpoch || incomingRevision > previousRevision))
+        : previousRevision === 0 && incomingCatalogAt > previousCatalogAt;
+      const sameDigest = incomingRevision > 0
+        ? !!status.catalogDigest && !!previous.catalogDigest && status.catalogDigest === previous.catalogDigest
+        : status.catalogDigest === previous.catalogDigest;
+      const acceptConfigCatalog = statusIsConfigCatalog
+        && !incomingEpochRetired
+        && (newerVersion || (sameVersion && sameDigest));
+      const acceptBootstrapCatalog = allowBootstrapCatalog
+        && previousRevision === 0
+        && previousCatalogAt === 0
+        && !statusIsConfigCatalog
+        && statusHasCatalog;
+      const acceptedCatalog = acceptConfigCatalog || acceptBootstrapCatalog;
+      const nextStatus = { ...status };
+      if (!acceptedCatalog) {
+        for (const field of YEAFT_CATALOG_STATUS_FIELDS) delete nextStatus[field];
       }
+      const next = { ...previous, ...nextStatus };
+      if (acceptedCatalog) {
+        if (acceptConfigCatalog && previousEpoch && incomingEpoch && previousEpoch !== incomingEpoch) {
+          const nextRetiredEpochs = [...retiredEpochs.filter(epoch => epoch !== previousEpoch), previousEpoch]
+            .slice(-YEAFT_RETIRED_CATALOG_EPOCH_LIMIT);
+          this._yeaftRetiredCatalogEpochsByAgent = {
+            ...(this._yeaftRetiredCatalogEpochsByAgent || {}),
+            [agentId]: nextRetiredEpochs,
+          };
+        }
+        next.availableModels = status.availableModels;
+        next.catalogRefreshedAt = acceptConfigCatalog ? incomingCatalogAt : null;
+        next.catalogEpoch = acceptConfigCatalog ? incomingEpoch || null : null;
+        next.catalogRevision = acceptConfigCatalog ? incomingRevision || null : null;
+        next.catalogDigest = acceptConfigCatalog ? status.catalogDigest || null : null;
+      }
+      this.yeaftStatusByAgent = { ...this.yeaftStatusByAgent, [agentId]: next };
+      if (this.currentAgent === agentId) this.applyCachedYeaftStatus(agentId);
     },
     applyCachedYeaftStatus(agentId = this.currentAgent) {
       const cached = agentId ? this.yeaftStatusByAgent[agentId] : null;
       if (!cached) return false;
-      if (cached.model) this.yeaftModel = cached.model;
-      if (Array.isArray(cached.availableModels)) this.yeaftAvailableModels = cached.availableModels;
+      this.yeaftModel = cached.model || null;
+      this.yeaftModelEffort = cached.modelEffort || null;
+      this.yeaftAvailableModels = Array.isArray(cached.availableModels) ? cached.availableModels : [];
       this.yeaftModelsRefreshing = !!cached.refreshing;
       this.yeaftModelRefreshError = cached.refreshError || null;
-      if (cached.yeaftDir) this.yeaftYeaftDir = cached.yeaftDir;
+      this.yeaftYeaftDir = cached.yeaftDir || null;
       this.yeaftStatus = {
         skills: cached.skills,
         mcpServers: cached.mcpServers,
@@ -1563,6 +1623,26 @@ export const useChatStore = defineStore('chat', {
         multiVp: !!cached.multiVp,
       };
       return true;
+    },
+    activateYeaftAgentCatalog(targetAgentId, previousAgentId = this.currentAgent) {
+      const cached = targetAgentId ? this.yeaftStatusByAgent[targetAgentId] : null;
+      if (cached) this.applyCachedYeaftStatus(targetAgentId);
+      if (Array.isArray(cached?.availableModels)) return true;
+      this.yeaftModel = null;
+      this.yeaftModelEffort = null;
+      this.yeaftAvailableModels = [];
+      if (!cached) this.yeaftStatus = null;
+      this.yeaftModelsRefreshing = !!targetAgentId && !cached?.refreshError;
+      this.yeaftModelRefreshError = cached?.refreshError || null;
+      if (previousAgentId !== targetAgentId) this.yeaftYeaftDir = null;
+      return false;
+    },
+    activateYeaftAgent(agentId, agentInfo = null) {
+      if (!agentId) return false;
+      const previousAgentId = this.currentAgent;
+      this.currentAgent = agentId;
+      if (agentInfo) this.currentAgentInfo = agentInfo;
+      return this.activateYeaftAgentCatalog(agentId, previousAgentId);
     },
     enterYeaft(agentId = null) {
       const previousAgentId = this.currentAgent;
@@ -1691,8 +1771,12 @@ export const useChatStore = defineStore('chat', {
     requestYeaftSessionBootstrap({ forceSessionReady = false, catchUpHistory = false, forceHistoryReplay = false } = {}) {
       if (!this.currentAgent) return;
       const activeSessionId = resolveActiveYeaftSessionId(this);
+      const targetAgentId = activeSessionId
+        ? resolveAgentIdForSession(this, activeSessionId)
+        : this.currentAgent;
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, activeSessionId);
       const sessionState = activeSessionId
-        ? this.yeaftSessionHistoryState[activeSessionId]
+        ? this.yeaftSessionHistoryState[sessionKey]
         : null;
       const needSessionReady = forceSessionReady || !this.yeaftSessionReady || !this.yeaftModel || !this.yeaftStatus;
       const latestSeq = Number.isFinite(sessionState?.latestSeq) ? sessionState.latestSeq : null;
@@ -1716,9 +1800,6 @@ export const useChatStore = defineStore('chat', {
       // the authoritative sessionById lookup, so in the cold/cross-agent window
       // it could ship yeaft_load_history to an agent that doesn't own the
       // session — the exact misroute this refactor removes.
-      const targetAgentId = activeSessionId
-        ? resolveAgentIdForSession(this, activeSessionId)
-        : this.currentAgent;
       const metaKey = `${targetAgentId}:${activeSessionId || '__none__'}`;
       const metadataOnly = needSessionReady && !needHistoryReplay && !needHistoryCatchUp;
       if (metadataOnly && this.yeaftBootstrapMetaLoadingKey === metaKey) return false;
@@ -1726,13 +1807,13 @@ export const useChatStore = defineStore('chat', {
       if (activeSessionId && needHistoryReplay) {
         this.yeaftSessionHistoryState = {
           ...this.yeaftSessionHistoryState,
-          [activeSessionId]: { loaded: false, loading: true, hasMore: false, oldestSeq: null, count: 0 },
+          [sessionKey]: { loaded: false, loading: true, hasMore: false, oldestSeq: null, count: 0 },
         };
         this.yeaftLoadingMoreHistory = true;
       } else if (activeSessionId && hasCachedSessionRows && !sessionState?.loaded) {
         this.yeaftSessionHistoryState = {
           ...this.yeaftSessionHistoryState,
-          [activeSessionId]: {
+          [sessionKey]: {
             ...(sessionState || {}),
             loaded: true,
             loading: false,
@@ -1746,7 +1827,7 @@ export const useChatStore = defineStore('chat', {
       } else if (activeSessionId && needHistoryCatchUp) {
         this.yeaftSessionHistoryState = {
           ...this.yeaftSessionHistoryState,
-          [activeSessionId]: { ...sessionState, loaded: true, loading: true, latestSeq },
+          [sessionKey]: { ...sessionState, loaded: true, loading: true, latestSeq },
         };
         this.yeaftLoadingMoreHistory = true;
       }
@@ -1763,7 +1844,7 @@ export const useChatStore = defineStore('chat', {
       if (activeSessionId) {
         this.yeaftHistoryPerfTraceBySession = {
           ...(this.yeaftHistoryPerfTraceBySession || {}),
-          [activeSessionId]: perfTraceId,
+          [sessionKey]: perfTraceId,
         };
       }
       recordPerfTrace(this, {
@@ -2349,7 +2430,7 @@ export const useChatStore = defineStore('chat', {
             const liveId = data?.message?.id || data?.id || null;
             const seq = parseYeaftMessageSeq(liveId);
             if (seq !== null && msgSessionId) {
-              const sessionKey = msgSessionId;
+              const sessionKey = yeaftHistoryIdentityKey(msg.agentId || null, msgSessionId);
               const prevState = this.yeaftSessionHistoryState[sessionKey] || {};
               const prevLatest = Number.isFinite(prevState.latestSeq) ? prevState.latestSeq : -1;
               if (seq > prevLatest) {
@@ -2505,13 +2586,16 @@ export const useChatStore = defineStore('chat', {
               ...(this.yeaftConversationIdsByAgent || {}),
               [statusAgentId]: agentConvId,
             };
-            this.cacheYeaftAgentStatus(statusAgentId, event);
+            this.cacheYeaftAgentStatus(statusAgentId, event, { allowBootstrapCatalog: readyIsVisible });
           }
-          this.yeaftModel = event.model;
-          this.yeaftModelEffort = event.modelEffort || null;
-          this.yeaftSessionReady = true;
-          this.yeaftBootstrapMetaLoadingKey = null;
-          this.yeaftAvailableModels = event.availableModels || [];
+          if (readyIsVisible) {
+            this.yeaftModel = event.model;
+            this.yeaftModelEffort = event.modelEffort || null;
+            this.yeaftSessionReady = true;
+            this.yeaftBootstrapMetaLoadingKey = null;
+            if (statusAgentId) this.applyCachedYeaftStatus(statusAgentId);
+            else this.yeaftAvailableModels = event.availableModels || [];
+          }
           const readyTasks = Array.isArray(event.tasks) ? event.tasks : [];
           const nextTasks = {};
           for (const task of readyTasks) {
@@ -2519,20 +2603,21 @@ export const useChatStore = defineStore('chat', {
             nextTasks[task.sessionId] = { ...(nextTasks[task.sessionId] || {}), [task.id]: task };
           }
           this.yeaftActiveTasksBySession = nextTasks;
-          // Surface agent's yeaft home dir so Yeaft workbench (Files/Git tabs)
-          // can default to a sensible folder instead of leaking through
-          // currentAgentInfo.workDir (which is Chat's cwd, not the group's).
-          if (event.yeaftDir) this.yeaftYeaftDir = event.yeaftDir;
-          this.yeaftStatus = {
-            skills: event.skills,
-            mcpServers: event.mcpServers,
-            tools: event.tools,
-            // task-334-ui-b: expose multi-VP feature flag surface so
-            // MessageList can decide whether to render VP speaker headers.
-            // Agent side (334c + feature-flag.js) determines the boolean;
-            // web just mirrors it. Absent → falsy → legacy 1:1 UI.
-            multiVp: !!event.multiVp,
-          };
+          // Background Session replay only updates its own cached metadata.
+          // The visible Session owns page-level runtime status and workbench root.
+          if (readyIsVisible) {
+            if (event.yeaftDir) this.yeaftYeaftDir = event.yeaftDir;
+            this.yeaftStatus = {
+              skills: event.skills,
+              mcpServers: event.mcpServers,
+              tools: event.tools,
+              // task-334-ui-b: expose multi-VP feature flag surface so
+              // MessageList can decide whether to render VP speaker headers.
+              // Agent side (334c + feature-flag.js) determines the boolean;
+              // web just mirrors it. Absent → falsy → legacy 1:1 UI.
+              multiVp: !!event.multiVp,
+            };
+          }
 
           if (readyIsVisible || !this.yeaftConversationId) {
             this.yeaftConversationId = agentConvId;
@@ -2969,8 +3054,12 @@ export const useChatStore = defineStore('chat', {
         }
 
         case 'history_loaded':
-          if (msg.perfTraceId || (event.sessionId && this.yeaftHistoryPerfTraceBySession?.[event.sessionId])) {
-            const traceId = msg.perfTraceId || this.yeaftHistoryPerfTraceBySession[event.sessionId];
+          {
+            const responseAgentId = msg.agentId || null;
+            const responseSessionId = event.sessionId ?? null;
+            const sessionKey = yeaftHistoryIdentityKey(responseAgentId, responseSessionId);
+            const traceId = msg.perfTraceId || this.yeaftHistoryPerfTraceBySession?.[sessionKey];
+            if (traceId) {
             recordPerfTrace(this, {
               traceId,
               phase: 'history.loaded_event',
@@ -2979,7 +3068,7 @@ export const useChatStore = defineStore('chat', {
               messageType: event.type,
               detail: { mode: event.mode || 'recent', count: event.count || 0, hasMore: !!event.hasMore },
             });
-          }
+            }
           // History messages already rendered via assistant output frame data path.
           // This event just signals completion + carries cursors:
           //   mode:'recent' (default) — full pane replay; stamp oldestSeq /
@@ -2988,8 +3077,6 @@ export const useChatStore = defineStore('chat', {
           //   mode:'delta' — incremental append; only latestSeq is meaningful.
           //     Don't touch hasMore / oldestSeq (those describe the older
           //     end and don't change on a delta tail-load).
-          {
-            const sessionKey = event.sessionId || '__all__';
             const mode = event.mode === 'delta' ? 'delta' : 'recent';
             const prevState = this.yeaftSessionHistoryState[sessionKey] || {};
             const nextLatest = (Number.isFinite(event.latestSeq) ? event.latestSeq
@@ -3016,13 +3103,19 @@ export const useChatStore = defineStore('chat', {
               ...this.yeaftSessionHistoryState,
               [sessionKey]: nextState,
             };
-            const activeKey = this.yeaftActiveSessionFilter || '__all__';
+            const activeKey = yeaftHistoryIdentityKey(
+              responseAgentId ? this.currentAgent : null,
+              this.yeaftActiveSessionFilter ?? null,
+            );
             if (sessionKey === activeKey) {
               if (mode === 'recent') {
                 this.yeaftHasMoreHistory = nextState.hasMore;
                 this.yeaftOldestLoadedSeq = nextState.oldestSeq;
               }
               this.yeaftLoadingMoreHistory = false;
+            } else if (this.yeaftLoadingMoreHistory) {
+              const activeState = this.yeaftSessionHistoryState[activeKey] || null;
+              this.yeaftLoadingMoreHistory = !!activeState?.loading;
             }
           }
           break;
@@ -3095,8 +3188,11 @@ export const useChatStore = defineStore('chat', {
           // initial history load (which happened with groupId:null), so
           // reload history for the correct group when activeGroupId changes.
           if (this.currentView === 'yeaft' && newGroupId) {
-            const sessionState = this.yeaftSessionHistoryState[newGroupId] || null;
+            const targetAgentId = resolveAgentIdForSession(this, newGroupId, msg.agentId || null);
+            const sessionKey = yeaftHistoryIdentityKey(targetAgentId, newGroupId);
+            const sessionState = this.yeaftSessionHistoryState[sessionKey] || null;
             this.setActiveSessionFilter(newGroupId, {
+              agentId: targetAgentId,
               force: msgHelpers.shouldForceHydrateActiveYeaftSession(newGroupId, prevGroupId, sessionState),
             });
           }
@@ -3833,7 +3929,12 @@ export const useChatStore = defineStore('chat', {
     setActiveSessionFilter(groupId, opts = {}) {
       const prev = this.yeaftActiveSessionFilter || null;
       const next = groupId || null;
-      const force = !!opts.force;
+      const targetAgentId = next
+        ? resolveAgentIdForSession(this, next, opts.agentId || null)
+        : this.currentAgent;
+      const ownerChanged = !!next && next === prev && !!targetAgentId
+        && !!this.currentAgent && targetAgentId !== this.currentAgent;
+      const force = !!opts.force || ownerChanged;
       this.yeaftActiveSessionFilter = next;
       // fix-yeaft-session-server-persistence: remember the
       // last-viewed yeaft session so reload + cross-agent switch
@@ -3845,9 +3946,20 @@ export const useChatStore = defineStore('chat', {
         if (next) localStorage.setItem('lastViewedYeaftSession', next);
         else localStorage.removeItem('lastViewedYeaftSession');
       } catch (_) {}
+
+      // Agent selection and catalog projection are one operation. Do this
+      // before every history early-return so an already-loaded Session cannot
+      // keep rendering the previous Agent's model catalog.
+      if (targetAgentId && next && this.currentAgent !== targetAgentId) {
+        this.selectAgent(targetAgentId);
+        const info = this.agents.find(a => a.id === targetAgentId);
+        this.activateYeaftAgent(targetAgentId, info || null);
+      } else if (targetAgentId && next) {
+        this.activateYeaftAgent(targetAgentId);
+      }
       if (!force && next === prev) return;
 
-      const sessionKey = next || '__all__';
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, next);
       const savedState = this.yeaftSessionHistoryState[sessionKey] || null;
       this.yeaftHasMoreHistory = !!savedState?.hasMore;
       this.yeaftLoadingMoreHistory = !!savedState?.loading;
@@ -3885,13 +3997,6 @@ export const useChatStore = defineStore('chat', {
       // round-trip while currentAgent is still old so its same-agent guard
       // doesn't swallow the frame; the assignment then makes same-tick reads
       // see the new owner).
-      const targetAgentId = next ? resolveAgentIdForSession(this, next) : this.currentAgent;
-      if (targetAgentId && next && this.currentAgent !== targetAgentId) {
-        this.selectAgent(targetAgentId);
-        this.currentAgent = targetAgentId;
-        const info = this.agents.find(a => a.id === targetAgentId);
-        if (info) this.currentAgentInfo = info;
-      }
       if (targetAgentId && next) {
         this.yeaftSessionAgentById = {
           ...(this.yeaftSessionAgentById || {}),
@@ -4836,7 +4941,7 @@ export const useChatStore = defineStore('chat', {
       const sessionId = resolveActiveYeaftSessionId(this);
       const targetAgentId = resolveAgentIdForSession(this, sessionId);
       if (!targetAgentId) return false;
-      const sessionKey = sessionId || '__all__';
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, sessionId);
       const convId = this.yeaftConversationId;
 
       // Manual reload means "show me the persisted pane again", not a delta.
@@ -4891,7 +4996,7 @@ export const useChatStore = defineStore('chat', {
       if (!targetAgentId) return;
 
       this.yeaftLoadingMoreHistory = true;
-      const sessionKey = sessionId || '__all__';
+      const sessionKey = yeaftHistoryIdentityKey(targetAgentId, sessionId);
       this.yeaftSessionHistoryState = {
         ...this.yeaftSessionHistoryState,
         [sessionKey]: {
@@ -5217,6 +5322,8 @@ export const useChatStore = defineStore('chat', {
       this.agents = [];
       this.currentAgent = null;
       this.currentAgentInfo = null;
+      this.yeaftStatusByAgent = {};
+      this._yeaftRetiredCatalogEpochsByAgent = {};
       this.conversations = [];
       this.activeConversations = [];
       this.messagesMap = {};
