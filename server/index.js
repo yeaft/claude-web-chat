@@ -135,9 +135,9 @@ app.use(compression({
 }));
 
 // 静态文件服务
-const webDir = process.env.SERVE_DIST === 'true'
+const webDir = process.env.WEB_DIR || (process.env.SERVE_DIST === 'true'
   ? join(__dirname, '../web/dist')
-  : join(__dirname, '../web');
+  : join(__dirname, '../web'));
 app.use(express.static(webDir, {
   maxAge: process.env.SERVE_DIST === 'true' ? '1y' : 0,
   etag: true,
@@ -221,8 +221,8 @@ if (configValidation.warnings) {
   console.warn('');
 }
 
-server.listen(CONFIG.port, () => {
-  console.log(`Server running on http://0.0.0.0:${CONFIG.port}`);
+server.listen(CONFIG.port, CONFIG.host, () => {
+  console.log(`Server running on http://${CONFIG.host || '0.0.0.0'}:${CONFIG.port}`);
   console.log(`Auth mode: ${CONFIG.skipAuth ? 'SKIP (development)' : 'ENABLED'}`);
   if (!CONFIG.skipAuth) {
     console.log(`Users configured: ${CONFIG.users.length}`);

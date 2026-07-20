@@ -49,6 +49,14 @@ if (command === 'doctor') {
   await handleDoctorCommand();
 } else if (command === 'llm') {
   await handleLlmCommand(subArgs);
+} else if (command === 'local') {
+  try {
+    const { runLocal } = await import('./local-run.js');
+    await runLocal(subArgs);
+  } catch (error) {
+    console.error(`Local run failed: ${error.message}`);
+    process.exit(1);
+  }
 } else if (command === 'upgrade') {
   upgrade();
 } else if (command === '--version' || command === '-v') {
@@ -68,6 +76,7 @@ function printHelp() {
 
   Usage:
     yeaft-agent [options]              Run agent in foreground
+    yeaft-agent local --name <name>    Run local Web UI, server, and agent
     yeaft-agent install [options]      Install as system service
     yeaft-agent uninstall [options]    Remove system service
     yeaft-agent start [options]        Start installed service
@@ -84,6 +93,7 @@ function printHelp() {
     --instance <id>     Deprecated alias for the local service instance id
     --server <url>      WebSocket server URL (default: ws://localhost:3456)
     --name <name>       Agent name and instance id (letters, numbers, ._-)
+    --port <port>       Local server port (local command only; default: 6868)
     --secret <secret>   Agent secret for authentication
     --work-dir <dir>    Default working directory (default: cwd)
     --yeaft-dir <dir>   Yeaft data directory for this instance
@@ -98,6 +108,8 @@ function printHelp() {
     YEAFT_DIR           Yeaft data directory
 
   Examples:
+    yeaft-agent local --name my-worker
+    yeaft-agent local --name my-worker --port 7000
     yeaft-agent --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker-2 --secret xxx
