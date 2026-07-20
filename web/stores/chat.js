@@ -52,6 +52,20 @@ const YEAFT_RECENT_TURNS = 5;
 const YEAFT_RECENT_TERMINAL_TASK_LIMIT = 8;
 const YEAFT_TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'orphaned']);
 const YEAFT_RUNNING_VP_STATES = new Set(['typing', 'thinking', 'streaming', 'tool']);
+const YEAFT_CATALOG_STATUS_FIELDS = Object.freeze([
+  'model',
+  'availableModels',
+  'refreshedAt',
+  'catalogRefreshedAt',
+  'catalogEpoch',
+  'catalogRevision',
+  'catalogDigest',
+  'refreshStartedAt',
+  'refreshReason',
+  'refreshError',
+  'refreshing',
+]);
+const YEAFT_RETIRED_CATALOG_EPOCH_LIMIT = 8;
 
 // Yeaft message ids are `NNNNNN-…` where NNNNNN is the zero-padded seq.
 // Pull the seq out so the store can stamp / advance its delta cursor on
@@ -522,6 +536,7 @@ export const useChatStore = defineStore('chat', {
     yeaftStatus: null,            // { skills, mcpServers, tools } 从 session_ready 获取
     yeaftAvailableModels: [],     // 可用模型列表 [{ id, provider, label }]
     yeaftStatusByAgent: {},       // { [agentId]: cached yeaft_status/session_ready payload }
+    _yeaftRetiredCatalogEpochsByAgent: {}, // { [agentId]: string[] }, bounded restart fence
     yeaftModelsRefreshing: false, // 当前 agent 的 model/status 后台刷新状态
     yeaftModelRefreshError: null, // 当前 agent 最近一次 refresh 错误（保留旧模型列表）
     yeaftYeaftDir: null,          // agent 的 ~/.yeaft 绝对路径（session_ready 携带）— Yeaft workbench 的默认 workDir
@@ -1532,37 +1547,70 @@ export const useChatStore = defineStore('chat', {
     // =====================
     // Yeaft 页面
     // =====================
-    cacheYeaftAgentStatus(agentId, status) {
+    cacheYeaftAgentStatus(agentId, status, { allowBootstrapCatalog = false } = {}) {
       if (!agentId || !status) return;
       const previous = this.yeaftStatusByAgent[agentId] || {};
-      const availableModels = Array.isArray(status.availableModels)
-        ? status.availableModels
-        : (previous.availableModels || []);
-      const next = {
-        ...previous,
-        ...status,
-        availableModels,
-        catalogFromConfig: status.type === 'yeaft_status' && Array.isArray(status.availableModels)
-          ? true
-          : !!previous.catalogFromConfig,
-      };
-      this.yeaftStatusByAgent = { ...this.yeaftStatusByAgent, [agentId]: next };
-      if (this.currentAgent === agentId) {
-        this.applyCachedYeaftStatus(agentId);
+      const previousRevision = Number(previous.catalogRevision) || 0;
+      const incomingRevision = Number(status.catalogRevision) || 0;
+      const previousEpoch = typeof previous.catalogEpoch === 'string' ? previous.catalogEpoch : '';
+      const incomingEpoch = typeof status.catalogEpoch === 'string' ? status.catalogEpoch : '';
+      const previousCatalogAt = Number(previous.catalogRefreshedAt) || 0;
+      const incomingCatalogAt = Number(status.catalogRefreshedAt) || 0;
+      const statusHasCatalog = Array.isArray(status.availableModels);
+      const statusIsConfigCatalog = status.type === 'yeaft_status'
+        && statusHasCatalog
+        && (incomingRevision > 0 || incomingCatalogAt > 0);
+      const retiredEpochs = Array.isArray(this._yeaftRetiredCatalogEpochsByAgent?.[agentId])
+        ? this._yeaftRetiredCatalogEpochsByAgent[agentId]
+        : [];
+      const incomingEpochRetired = !!incomingEpoch && retiredEpochs.includes(incomingEpoch);
+      const sameEpoch = !!incomingEpoch && incomingEpoch === previousEpoch;
+      const sameVersion = incomingRevision > 0
+        ? sameEpoch && incomingRevision === previousRevision
+        : incomingCatalogAt > 0 && incomingCatalogAt === previousCatalogAt;
+      const newerVersion = incomingRevision > 0
+        ? (!!incomingEpoch && (incomingEpoch !== previousEpoch || incomingRevision > previousRevision))
+        : previousRevision === 0 && incomingCatalogAt > previousCatalogAt;
+      const sameDigest = incomingRevision > 0
+        ? !!status.catalogDigest && !!previous.catalogDigest && status.catalogDigest === previous.catalogDigest
+        : status.catalogDigest === previous.catalogDigest;
+      const acceptConfigCatalog = statusIsConfigCatalog
+        && !incomingEpochRetired
+        && (newerVersion || (sameVersion && sameDigest));
+      const acceptBootstrapCatalog = allowBootstrapCatalog
+        && previousRevision === 0
+        && previousCatalogAt === 0
+        && !statusIsConfigCatalog
+        && statusHasCatalog;
+      const acceptedCatalog = acceptConfigCatalog || acceptBootstrapCatalog;
+      const nextStatus = { ...status };
+      if (!acceptedCatalog) {
+        for (const field of YEAFT_CATALOG_STATUS_FIELDS) delete nextStatus[field];
       }
+      const next = { ...previous, ...nextStatus };
+      if (acceptedCatalog) {
+        if (acceptConfigCatalog && previousEpoch && incomingEpoch && previousEpoch !== incomingEpoch) {
+          const nextRetiredEpochs = [...retiredEpochs.filter(epoch => epoch !== previousEpoch), previousEpoch]
+            .slice(-YEAFT_RETIRED_CATALOG_EPOCH_LIMIT);
+          this._yeaftRetiredCatalogEpochsByAgent = {
+            ...(this._yeaftRetiredCatalogEpochsByAgent || {}),
+            [agentId]: nextRetiredEpochs,
+          };
+        }
+        next.availableModels = status.availableModels;
+        next.catalogRefreshedAt = acceptConfigCatalog ? incomingCatalogAt : null;
+        next.catalogEpoch = acceptConfigCatalog ? incomingEpoch || null : null;
+        next.catalogRevision = acceptConfigCatalog ? incomingRevision || null : null;
+        next.catalogDigest = acceptConfigCatalog ? status.catalogDigest || null : null;
+      }
+      this.yeaftStatusByAgent = { ...this.yeaftStatusByAgent, [agentId]: next };
+      if (this.currentAgent === agentId) this.applyCachedYeaftStatus(agentId);
     },
     applyCachedYeaftStatus(agentId = this.currentAgent) {
       const cached = agentId ? this.yeaftStatusByAgent[agentId] : null;
-      if (!cached) {
-        this.yeaftModel = null;
-        this.yeaftAvailableModels = [];
-        this.yeaftModelsRefreshing = false;
-        this.yeaftModelRefreshError = null;
-        this.yeaftYeaftDir = null;
-        this.yeaftStatus = null;
-        return false;
-      }
+      if (!cached) return false;
       this.yeaftModel = cached.model || null;
+      this.yeaftModelEffort = cached.modelEffort || null;
       this.yeaftAvailableModels = Array.isArray(cached.availableModels) ? cached.availableModels : [];
       this.yeaftModelsRefreshing = !!cached.refreshing;
       this.yeaftModelRefreshError = cached.refreshError || null;
@@ -1575,11 +1623,25 @@ export const useChatStore = defineStore('chat', {
       };
       return true;
     },
+    activateYeaftAgentCatalog(targetAgentId, previousAgentId = this.currentAgent) {
+      const cached = targetAgentId ? this.yeaftStatusByAgent[targetAgentId] : null;
+      if (cached) this.applyCachedYeaftStatus(targetAgentId);
+      if (Array.isArray(cached?.availableModels)) return true;
+      this.yeaftModel = null;
+      this.yeaftModelEffort = null;
+      this.yeaftAvailableModels = [];
+      if (!cached) this.yeaftStatus = null;
+      this.yeaftModelsRefreshing = !!targetAgentId && !cached?.refreshError;
+      this.yeaftModelRefreshError = cached?.refreshError || null;
+      if (previousAgentId !== targetAgentId) this.yeaftYeaftDir = null;
+      return false;
+    },
     activateYeaftAgent(agentId, agentInfo = null) {
       if (!agentId) return false;
+      const previousAgentId = this.currentAgent;
       this.currentAgent = agentId;
       if (agentInfo) this.currentAgentInfo = agentInfo;
-      return this.applyCachedYeaftStatus(agentId);
+      return this.activateYeaftAgentCatalog(agentId, previousAgentId);
     },
     enterYeaft(agentId = null) {
       const previousAgentId = this.currentAgent;
@@ -2522,23 +2584,15 @@ export const useChatStore = defineStore('chat', {
               ...(this.yeaftConversationIdsByAgent || {}),
               [statusAgentId]: agentConvId,
             };
-            const cached = this.yeaftStatusByAgent[statusAgentId];
-            if (cached?.catalogFromConfig) {
-              const { model: _model, availableModels: _models, ...runtimeStatus } = event;
-              this.cacheYeaftAgentStatus(statusAgentId, runtimeStatus);
-            } else {
-              this.cacheYeaftAgentStatus(statusAgentId, event);
-            }
+            this.cacheYeaftAgentStatus(statusAgentId, event, { allowBootstrapCatalog: readyIsVisible });
           }
-          const configCatalog = statusAgentId && this.yeaftStatusByAgent[statusAgentId]?.catalogFromConfig;
           if (readyIsVisible) {
-            if (!configCatalog) {
-              this.yeaftModel = event.model;
-              this.yeaftAvailableModels = event.availableModels || [];
-            }
+            this.yeaftModel = event.model;
             this.yeaftModelEffort = event.modelEffort || null;
             this.yeaftSessionReady = true;
             this.yeaftBootstrapMetaLoadingKey = null;
+            if (statusAgentId) this.applyCachedYeaftStatus(statusAgentId);
+            else this.yeaftAvailableModels = event.availableModels || [];
           }
           const readyTasks = Array.isArray(event.tasks) ? event.tasks : [];
           const nextTasks = {};
@@ -3862,7 +3916,12 @@ export const useChatStore = defineStore('chat', {
     setActiveSessionFilter(groupId, opts = {}) {
       const prev = this.yeaftActiveSessionFilter || null;
       const next = groupId || null;
-      const force = !!opts.force;
+      const targetAgentId = next
+        ? resolveAgentIdForSession(this, next, opts.agentId || null)
+        : this.currentAgent;
+      const ownerChanged = !!next && next === prev && !!targetAgentId
+        && !!this.currentAgent && targetAgentId !== this.currentAgent;
+      const force = !!opts.force || ownerChanged;
       this.yeaftActiveSessionFilter = next;
       // fix-yeaft-session-server-persistence: remember the
       // last-viewed yeaft session so reload + cross-agent switch
@@ -3878,7 +3937,6 @@ export const useChatStore = defineStore('chat', {
       // Agent selection and catalog projection are one operation. Do this
       // before every history early-return so an already-loaded Session cannot
       // keep rendering the previous Agent's model catalog.
-      const targetAgentId = next ? resolveAgentIdForSession(this, next) : this.currentAgent;
       if (targetAgentId && next && this.currentAgent !== targetAgentId) {
         this.selectAgent(targetAgentId);
         const info = this.agents.find(a => a.id === targetAgentId);
@@ -3889,7 +3947,7 @@ export const useChatStore = defineStore('chat', {
       if (!force && next === prev) return;
 
       const sessionKey = next || '__all__';
-      const savedState = this.yeaftSessionHistoryState[sessionKey] || null;
+      const savedState = ownerChanged ? null : (this.yeaftSessionHistoryState[sessionKey] || null);
       this.yeaftHasMoreHistory = !!savedState?.hasMore;
       this.yeaftLoadingMoreHistory = !!savedState?.loading;
       this.yeaftOldestLoadedSeq = (typeof savedState?.oldestSeq === 'number') ? savedState.oldestSeq : null;
@@ -5251,6 +5309,8 @@ export const useChatStore = defineStore('chat', {
       this.agents = [];
       this.currentAgent = null;
       this.currentAgentInfo = null;
+      this.yeaftStatusByAgent = {};
+      this._yeaftRetiredCatalogEpochsByAgent = {};
       this.conversations = [];
       this.activeConversations = [];
       this.messagesMap = {};

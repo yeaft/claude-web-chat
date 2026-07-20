@@ -500,7 +500,7 @@ export default {
     const onSelectGroupV2 = (g) => {
       const id = g && g.id ? g.id : null;
       if (!id) return;
-      store.setActiveSessionFilter(id);
+      store.setActiveSessionFilter(id, { agentId: g.agentId || null });
       if (isMobile.value) store.closeSessionSidebar();
     };
 

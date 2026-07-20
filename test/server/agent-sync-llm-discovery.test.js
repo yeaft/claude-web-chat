@@ -22,6 +22,26 @@ afterEach(() => {
 });
 
 describe('agent sync LLM model discovery relay', () => {
+  it('relays a partial-success config refresh warning to the owning web client', async () => {
+    CONFIG.skipAuth = false;
+    const client = { authenticated: true, userId: 'owner-1', sent: [] };
+    webClients.set('owner-client', client);
+
+    await expect(handleAgentSync('agent-1', { ownerId: 'owner-1' }, {
+      type: 'llm_config_updated',
+      providers: [{ name: 'github-copilot', credentialProvider: 'github-copilot', models: ['gpt-new'] }],
+      primaryModel: 'github-copilot/gpt-new',
+      statusRefreshError: 'disk read failed',
+    })).resolves.toBe(true);
+
+    expect(client.sent).toEqual([expect.objectContaining({
+      type: 'llm_config_updated',
+      agentId: 'agent-1',
+      primaryModel: 'github-copilot/gpt-new',
+      statusRefreshError: 'disk read failed',
+    })]);
+  });
+
   it('relays discovered models to the owning web client without throwing', async () => {
     CONFIG.skipAuth = false;
     webClients.set('owner-client', {

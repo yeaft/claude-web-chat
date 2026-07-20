@@ -46,8 +46,8 @@ export default {
           </button>
         </section>
 
-        <div v-if="modelDiscoveryWarning || modelDiscoveryError" class="llm-inline-status" :class="modelDiscoveryError ? 'is-error' : 'is-warning'">
-          {{ modelDiscoveryError || modelDiscoveryWarning }}
+        <div v-if="modelDiscoveryWarning || modelDiscoveryError || saveRefreshWarning" class="llm-inline-status" :class="modelDiscoveryError ? 'is-error' : 'is-warning'">
+          {{ modelDiscoveryError || modelDiscoveryWarning || saveRefreshWarning }}
         </div>
 
         <!-- Providers Section -->
@@ -244,6 +244,7 @@ export default {
       discoveringModels: false,
       modelDiscoveryWarning: null,
       modelDiscoveryError: null,
+      saveRefreshWarning: null,
     };
   },
   computed: {
@@ -374,8 +375,17 @@ export default {
       else providers.push(provider);
       this.localProviders = providers;
       this.refreshProviderModelsText();
-      const firstModel = this.parseModelsFromProvider(provider)[0];
-      if (firstModel && !this.localPrimaryModel) this.localPrimaryModel = `${provider.name}/${firstModel}`;
+      const modelRefs = new Set(this.parseModelsFromProvider(provider)
+        .map(modelId => `${provider.name}/${modelId}`));
+      const firstModelRef = modelRefs.values().next().value || null;
+      if (firstModelRef && !modelRefs.has(this.localPrimaryModel)) {
+        this.localPrimaryModel = firstModelRef;
+      }
+      if (firstModelRef
+        && this.localFastModel?.startsWith(`${provider.name}/`)
+        && !modelRefs.has(this.localFastModel)) {
+        this.localFastModel = firstModelRef;
+      }
       this.markDirty();
     },
 
@@ -609,6 +619,7 @@ export default {
       if (!agentId || this.saving) return;
 
       this.saving = true;
+      this.saveRefreshWarning = null;
 
       // Build providers for saving (clean up empty entries)
       const providers = this.editableProviders
@@ -693,7 +704,10 @@ export default {
             this.$emit('message', config.error, true);
           } else {
             this.isDirty = false;
-            this.$emit('message', this.$t('settings.llm.saved'), false);
+            this.saveRefreshWarning = config.statusRefreshError
+              ? this.$t('settings.llm.savedRefreshWarning', { error: config.statusRefreshError })
+              : null;
+            this.$emit('message', this.saveRefreshWarning || this.$t('settings.llm.saved'), !!config.statusRefreshError);
             // task-343: notify host (e.g. YeaftSettings) to dispatch
             // yeaft_reset so the Engine picks up new provider config.
             this.$emit('saved');

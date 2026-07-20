@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import LlmTab from '../../web/components/LlmTab.js';
 import en from '../../web/i18n/en.js';
 import zhCN from '../../web/i18n/zh-CN.js';
@@ -53,6 +53,47 @@ describe('LlmTab editable model refs', () => {
     expect(LlmTab.template).not.toContain('toggleAutoAuth');
   });
 
+  it('replaces a removed Copilot Agent default with the discovered catalog default', () => {
+    const ctx = {
+      localProviders: [{ name: 'github-copilot', credentialProvider: 'github-copilot', models: ['gpt-old'] }],
+      localPrimaryModel: 'github-copilot/gpt-old',
+      localFastModel: 'github-copilot/gpt-old',
+      refreshProviderModelsText() {},
+      parseModelsFromProvider: LlmTab.methods.parseModelsFromProvider,
+      isManagedProvider: LlmTab.methods.isManagedProvider,
+      _modelId: LlmTab.methods._modelId,
+      markDirty() { this.isDirty = true; },
+      isDirty: false,
+    };
+
+    LlmTab.methods.applyDiscoveredProvider.call(ctx, {
+      provider: { name: 'github-copilot', credentialProvider: 'github-copilot' },
+      providerModels: [{ id: 'gpt-new', protocol: 'openai-responses' }],
+    });
+
+    expect(ctx.localPrimaryModel).toBe('github-copilot/gpt-new');
+    expect(ctx.localFastModel).toBe('github-copilot/gpt-new');
+    expect(ctx.isDirty).toBe(true);
+
+    const sent = [];
+    Object.assign(ctx, {
+      effectiveAgentId: 'agent-1',
+      saving: false,
+      context: 'yeaft',
+      editableProviders: ctx.localProviders,
+      currentConfig: { effectiveConfig: { language: 'en' } },
+      chatStore: { sendWsMessage: msg => sent.push(msg) },
+      $watch: () => () => {},
+      $emit: () => {},
+    });
+    LlmTab.methods.saveConfig.call(ctx);
+
+    expect(sent[0].config.primaryModel).toBe('github-copilot/gpt-new');
+    expect(sent[0].config.providers[0].models).toEqual([
+      { id: 'gpt-new', protocol: 'openai-responses' },
+    ]);
+  });
+
   it('saves the GitHub Copilot catalog for the Session model menu', () => {
     const sent = [];
     const ctx = {
@@ -85,6 +126,51 @@ describe('LlmTab editable model refs', () => {
         { id: 'gpt-5', protocol: 'openai-responses' },
       ],
     }]);
+  });
+
+  it('reports a live refresh warning as a partial save success', () => {
+    vi.useFakeTimers();
+    try {
+      const sent = [];
+      const emitted = [];
+      let configWatcher = null;
+      const ctx = {
+        effectiveAgentId: 'agent-warning',
+        saving: false,
+        saveRefreshWarning: null,
+        isDirty: true,
+        context: 'yeaft',
+        editableProviders: [{ name: 'p1', baseUrl: 'http://p1/v1', models: ['gpt-new'] }],
+        localPrimaryModel: 'p1/gpt-new',
+        localFastModel: null,
+        currentConfig: { loaded: false },
+        chatStore: { sendWsMessage: msg => sent.push(msg) },
+        isManagedProvider: LlmTab.methods.isManagedProvider,
+        _modelId: LlmTab.methods._modelId,
+        $t(key, params = {}) {
+          if (key === 'settings.llm.savedRefreshWarning') return `saved with warning: ${params.error}`;
+          return key;
+        },
+        $emit: (...args) => emitted.push(args),
+        $watch(_key, callback) {
+          configWatcher = callback;
+          return () => {};
+        },
+      };
+
+      LlmTab.methods.saveConfig.call(ctx);
+      configWatcher({ loaded: true, error: null, statusRefreshError: 'runtime refresh failed' });
+
+      expect(sent).toHaveLength(1);
+      expect(ctx.saving).toBe(false);
+      expect(ctx.isDirty).toBe(false);
+      expect(ctx.saveRefreshWarning).toBe('saved with warning: runtime refresh failed');
+      expect(emitted).toContainEqual(['message', 'saved with warning: runtime refresh failed', true]);
+      expect(emitted).toContainEqual(['saved']);
+      expect(emitted.some(args => args[1] === 'settings.llm.saveFailed')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('offers Claude Opus 4.8 in Anthropic presets', () => {

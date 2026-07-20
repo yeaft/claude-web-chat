@@ -122,6 +122,37 @@ describe('setActiveSessionFilter self-heals currentAgent to the session owner', 
     expect(store._sent.some(m => m.type === 'yeaft_load_history' && m.sessionId === 'session-b')).toBe(false);
   });
 
+  it('treats duplicate Session ids on different Agents as distinct selections', () => {
+    const store = primeStore();
+    const duplicateId = 'session_default';
+    const modelsA = [{ id: 'model-a', ref: 'provider-a/model-a', provider: 'provider-a' }];
+    const modelsB = [{ id: 'model-b', ref: 'provider-b/model-b', provider: 'provider-b' }];
+    store.yeaftActiveSessionFilter = duplicateId;
+    store.yeaftStatusByAgent = {
+      'agent-a': { model: modelsA[0].ref, availableModels: modelsA },
+      'agent-b': { model: modelsB[0].ref, availableModels: modelsB },
+    };
+    store.applyCachedYeaftStatus('agent-a');
+    // A's in-flight state uses the same bare Session id. Selecting B must not
+    // let this state trigger the same-session or loading early returns.
+    store.yeaftSessionHistoryState[duplicateId] = { loading: true, loaded: true, latestSeq: 42 };
+
+    store.setActiveSessionFilter(duplicateId, { agentId: 'agent-b' });
+
+    expect(store.currentAgent).toBe('agent-b');
+    expect(store.yeaftModel).toBe(modelsB[0].ref);
+    expect(store.yeaftAvailableModels).toEqual(modelsB);
+    expect(store._sent).toContainEqual({ type: 'select_agent', agentId: 'agent-b' });
+    expect(store._sent).toContainEqual(expect.objectContaining({
+      type: 'yeaft_load_history',
+      agentId: 'agent-b',
+      sessionId: duplicateId,
+      limit: 5,
+    }));
+    expect(store._sent.some(message => message.type === 'yeaft_load_history'
+      && message.agentId === 'agent-a')).toBe(false);
+  });
+
   it('clears the old catalog when agent_selected targets an Agent without a cache', () => {
     const store = primeStore();
     const modelsA = [{ id: 'model-a', ref: 'provider-a/model-a', provider: 'provider-a' }];

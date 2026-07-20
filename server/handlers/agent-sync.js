@@ -307,6 +307,7 @@ export async function handleAgentSync(agentId, agent, msg) {
             language: msg.language,
             agentConfig: msg.agentConfig,
             effectiveConfig: msg.effectiveConfig,
+            statusRefreshError: msg.statusRefreshError,
             error: msg.error
           });
         }

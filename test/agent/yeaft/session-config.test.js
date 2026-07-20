@@ -7,7 +7,7 @@ import { loadConfig } from '../../../agent/yeaft/config.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
 import { loadSession } from '../../../agent/yeaft/session.js';
 import { __testGetOrCreateVpEngine, __testHooks, __testResolveVpEffectiveConfig, __testSetSession, handleYeaftCreateSession, refreshLiveSessionConfig } from '../../../agent/yeaft/web-bridge.js';
-import { loadSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
+import { loadSessionConfig, normalizeSessionConfig, resolveSessionConfig, saveSessionConfig } from '../../../agent/yeaft/sessions/session-config.js';
 import { createSession } from '../../../agent/yeaft/sessions/session-store.js';
 import { registerSessionWorkDir, sessionsRoot, snapshotSessions, updateSessionConfig } from '../../../agent/yeaft/sessions/session-crud.js';
 
@@ -327,6 +327,57 @@ describe('Yeaft session-scoped model config', () => {
 
     expect(__testResolveVpEffectiveConfig(sessionId).model).toBe('github-copilot/gpt-override');
     expect(loadSessionConfig(root, sessionId)).toEqual({ model: 'github-copilot/gpt-override' });
+  });
+
+  it('canonicalizes a uniquely owned bare managed model and rejects stale or ambiguous bare refs', () => {
+    const managed = {
+      providers: [{ name: 'github-copilot', credentialProvider: 'github-copilot', models: ['gpt-new'] }],
+      primaryModel: 'github-copilot/gpt-new',
+      model: 'gpt-new',
+      availableModels: [{ id: 'gpt-new', ref: 'github-copilot/gpt-new', provider: 'github-copilot' }],
+    };
+
+    expect(resolveSessionConfig(managed, { model: 'gpt-new' }).primaryModel)
+      .toBe('github-copilot/gpt-new');
+    expect(resolveSessionConfig(managed, { model: 'gpt-old' }).primaryModel)
+      .toBe('github-copilot/gpt-new');
+
+    const ambiguous = {
+      ...managed,
+      model: 'gpt-default',
+      primaryModel: 'github-copilot/gpt-default',
+      providers: [
+        { ...managed.providers[0], models: ['gpt-default', 'gpt-new'] },
+        { name: 'custom', baseUrl: 'http://custom/v1', models: ['gpt-new', 'custom-only'] },
+      ],
+      availableModels: [
+        { id: 'gpt-default', ref: 'github-copilot/gpt-default', provider: 'github-copilot' },
+        ...managed.availableModels,
+        { id: 'gpt-new', ref: 'custom/gpt-new', provider: 'custom' },
+        { id: 'custom-only', ref: 'custom/custom-only', provider: 'custom' },
+      ],
+    };
+    expect(resolveSessionConfig(ambiguous, { model: 'gpt-new' }).primaryModel)
+      .toBe('github-copilot/gpt-default');
+    expect(resolveSessionConfig(ambiguous, { model: 'custom-only' }).primaryModel)
+      .toBe('custom/custom-only');
+    expect(resolveSessionConfig(ambiguous, { model: 'custom/gpt-new' }).primaryModel)
+      .toBe('custom/gpt-new');
+  });
+
+  it('removes a stale bare managed override from persisted Session config', () => {
+    const root = makeDir();
+    const sessionId = 'session-stale-bare';
+    mkdirSync(join(root, 'sessions', sessionId), { recursive: true });
+    saveSessionConfig(root, sessionId, { model: 'gpt-old' });
+    const currentConfig = {
+      providers: [{ name: 'github-copilot', credentialProvider: 'github-copilot', models: ['gpt-new'] }],
+      primaryModel: 'github-copilot/gpt-new',
+      availableModels: [{ id: 'gpt-new', ref: 'github-copilot/gpt-new', provider: 'github-copilot' }],
+    };
+
+    expect(normalizeSessionConfig(root, sessionId, currentConfig)).toEqual({});
+    expect(loadSessionConfig(root, sessionId)).toEqual({});
   });
 
   it('never sends a removed managed-catalog override on the next turn', async () => {

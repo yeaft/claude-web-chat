@@ -162,17 +162,36 @@ function hasAuthoritativeCatalog(provider) {
   return isGitHubCopilotProvider(provider);
 }
 
-function isAllowedManagedModel(config, modelRef) {
+function resolveAllowedModelRef(config, modelRef) {
   const identity = modelRefIdentity(modelRef);
-  if (!identity.provider) return true;
-  const provider = Array.isArray(config?.providers)
-    ? config.providers.find(item => item?.name === identity.provider)
-    : null;
-  if (!hasAuthoritativeCatalog(provider)) return true;
-  return Array.isArray(config?.availableModels) && config.availableModels.some(model => {
-    if (model?.ref === modelRef) return true;
-    return model?.provider === identity.provider && model?.id === identity.modelId;
-  });
+  const providers = Array.isArray(config?.providers) ? config.providers : [];
+  const availableModels = Array.isArray(config?.availableModels) ? config.availableModels : [];
+
+  if (identity.provider) {
+    const provider = providers.find(item => item?.name === identity.provider);
+    if (!hasAuthoritativeCatalog(provider)) return modelRef;
+    const match = availableModels.find(model => model?.ref === modelRef
+      || (model?.provider === identity.provider && model?.id === identity.modelId));
+    return match?.ref || (match ? `${identity.provider}/${identity.modelId}` : null);
+  }
+
+  const authoritativeProviderNames = new Set(providers
+    .filter(hasAuthoritativeCatalog)
+    .map(provider => provider.name)
+    .filter(Boolean));
+  if (authoritativeProviderNames.size === 0) return modelRef;
+
+  const candidates = new Map();
+  for (const model of availableModels) {
+    const candidateIdentity = modelRefIdentity(model?.ref || '');
+    const candidateId = model?.id || candidateIdentity.modelId;
+    const providerName = model?.provider || candidateIdentity.provider;
+    if (candidateId !== identity.modelId || !providerName) continue;
+    candidates.set(model?.ref || `${providerName}/${candidateId}`, providerName);
+  }
+  if (candidates.size !== 1) return null;
+  const [[ref]] = candidates;
+  return ref;
 }
 
 /**
@@ -193,21 +212,28 @@ export function normalizeSessionConfig(
   const stored = loadStoredSessionConfig(yeaftDir, sessionId);
   if (!stored.model || typeof stored.model !== 'string') return publicConfig(stored);
 
-  const invalidManagedModel = !isAllowedManagedModel(userConfig, stored.model);
+  const allowedModel = resolveAllowedModelRef(userConfig, stored.model);
   // The retired create path wrote the then-current Agent default without a
   // source bit. New explicit writes always carry modelSource, so this is the
   // only deterministic compatibility rule available for legacy rows.
   const legacyAutoSeed = stored.modelSource !== MODEL_SOURCE_EXPLICIT
     && modelRefsEquivalent(stored.model, previousDefaultModel);
-  if (!invalidManagedModel && !legacyAutoSeed) {
+  if (allowedModel && !legacyAutoSeed) {
+    const next = { ...stored };
+    let changed = false;
+    if (next.model !== allowedModel) {
+      next.model = allowedModel;
+      changed = true;
+    }
     // Resolve every legacy row once while the old Agent default is known. A
     // different value could only have come from an explicit Session choice;
     // backfill provenance so a later default change cannot misclassify it.
-    if (previousDefaultModel && stored.modelSource !== MODEL_SOURCE_EXPLICIT) {
-      const next = { ...stored, modelSource: MODEL_SOURCE_EXPLICIT };
-      persistStoredSessionConfig(yeaftDir, sessionId, next);
+    if (previousDefaultModel && next.modelSource !== MODEL_SOURCE_EXPLICIT) {
+      next.modelSource = MODEL_SOURCE_EXPLICIT;
+      changed = true;
     }
-    return publicConfig(stored);
+    if (changed) persistStoredSessionConfig(yeaftDir, sessionId, next);
+    return publicConfig(next);
   }
 
   const next = { ...stored };
@@ -222,8 +248,8 @@ export function resolveSessionConfig(userConfig, sessionConfig) {
   const base = userConfig ? { ...userConfig } : {};
   const overrides = sessionConfig && typeof sessionConfig === 'object' ? sessionConfig : {};
   if (overrides.model && typeof overrides.model === 'string' && overrides.model.trim()) {
-    const model = overrides.model.trim();
-    if (isAllowedManagedModel(base, model)) {
+    const model = resolveAllowedModelRef(base, overrides.model.trim());
+    if (model) {
       base.model = model;
       base.primaryModel = model;
     }

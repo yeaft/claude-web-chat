@@ -847,6 +847,7 @@ export function handleMessage(store, msg) {
           needsSetup: msg.needsSetup ?? effectiveConfig.needsSetup ?? false,
           agentConfig,
           effectiveConfig,
+          statusRefreshError: msg.statusRefreshError || null,
           error: msg.error || null,
           loaded: true
         };
