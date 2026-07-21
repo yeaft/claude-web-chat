@@ -159,6 +159,7 @@ describe('Work Center event projection', () => {
       contextSnapshot: { secret: 'large internal snapshot' },
     });
     Object.assign(detail.runs[0], {
+      executionManifest: { schemaVersion: 2, actionGeneration: 3, actionSpecHash: '' },
       reviewDecision: 'changes_requested',
       evidence: [{ kind: 'test', label: 'Focused tests', ref: 'projection.test.js', stdout: 'raw output' }],
       debug: { secret: true },
@@ -188,6 +189,24 @@ describe('Work Center event projection', () => {
     for (const forbidden of ['runs', 'events', 'debug', 'path', 'contextSnapshot', 'raw output', '/private/result', 'runId']) {
       expect(wire).not.toContain(forbidden);
     }
+  });
+
+  it('redacts canonical Mainline result diagnostics before browser projection', () => {
+    const detail = internalDetail();
+    detail.executionSchemaVersion = 2;
+    Object.assign(detail.actions[0], { generation: 1, specHash: 'review-v1', resultRunId: 'r-2' });
+    Object.assign(detail.runs[0], {
+      status: 'completed',
+      summary: 'Saved /home/user/private.txt with token=secret-value',
+      evidence: [{ kind: 'file', label: '/home/user/private.txt api_key=secret', ref: 'https://user:pass@example.com/x?token=secret' }],
+      executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: 'review-v1' },
+    });
+
+    const wire = JSON.stringify(projectWorkItemDetail(detail).mainline);
+    for (const secret of ['/home/user/private.txt', 'secret-value', 'api_key=secret', 'user:pass', 'token=secret']) {
+      expect(wire).not.toContain(secret);
+    }
+    expect(wire).toContain('***');
   });
 
   it('does not project generic Action-type fallback text as AI planning', () => {

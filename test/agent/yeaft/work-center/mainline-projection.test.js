@@ -4,6 +4,7 @@ import {
   buildMainlineContextSnapshot,
   buildMainlineProjection,
   hashMainlineSnapshot,
+  renderMainlineContextSnapshot,
   validateMainlineContextBudget,
 } from '../../../../agent/yeaft/work-center/mainline-projection.js';
 
@@ -46,9 +47,9 @@ describe('Mainline projection', () => {
         },
       ],
       runs: [
-        { id: 'run-newer', actionId: 'implement', status: 'failed', summary: 'newer fallback', endedAt: 30 },
-        { id: 'run-selected', actionId: 'implement', status: 'completed', summary: 'canonical', evidence: ['ok'], endedAt: 20 },
-        { id: 'triage-run', actionId: 'triage', status: 'completed', summary: 'triaged', endedAt: 10 },
+        { id: 'run-newer', actionId: 'implement', status: 'failed', summary: 'newer fallback', endedAt: 30, executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: 'implement-v1' } },
+        { id: 'run-selected', actionId: 'implement', status: 'completed', summary: 'canonical', evidence: ['ok'], endedAt: 20, executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: 'implement-v1' } },
+        { id: 'triage-run', actionId: 'triage', status: 'completed', summary: 'triaged', endedAt: 10, executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: 'triage-v1' } },
         { id: 'running-review', actionId: 'review', status: 'running', summary: 'not canonical', startedAt: 40 },
       ],
       planConflicts: [
@@ -81,15 +82,27 @@ describe('Mainline projection', () => {
 
   it('selects the latest terminal Run deterministically when resultRunId is absent', () => {
     const projection = buildMainlineProjection(detail({
-      actions: [{ id: 'action', sequence: 1, stageId: 'action', type: 'test', status: 'completed' }],
+      actions: [{ id: 'action', sequence: 1, stageId: 'action', type: 'test', status: 'completed', generation: 1, specHash: 'test-v1' }],
       runs: [
-        { id: 'run-a', actionId: 'action', status: 'failed', endedAt: 20 },
-        { id: 'run-z', actionId: 'action', status: 'completed', endedAt: 20 },
+        { id: 'run-a', actionId: 'action', status: 'failed', endedAt: 20, executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: 'test-v1' } },
+        { id: 'run-z', actionId: 'action', status: 'completed', endedAt: 20, executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: 'test-v1' } },
         { id: 'run-running', actionId: 'action', status: 'running', startedAt: 30 },
       ],
     }));
 
     expect(projection.canonicalActionResults.action.runId).toBe('run-z');
+  });
+
+  it('never reuses a terminal Run from an older Action generation or spec', () => {
+    const projection = buildMainlineProjection(detail({
+      actions: [{ id: 'action', sequence: 1, stageId: 'action', type: 'test', status: 'ready', generation: 2, specHash: 'test-v2', resultRunId: null }],
+      runs: [
+        { id: 'old-generation', actionId: 'action', status: 'completed', endedAt: 30, executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: 'test-v1' } },
+        { id: 'wrong-spec', actionId: 'action', status: 'failed', endedAt: 40, executionManifest: { schemaVersion: 2, actionGeneration: 2, actionSpecHash: 'other' } },
+      ],
+    }));
+
+    expect(projection.canonicalActionResults.action).toBeUndefined();
   });
 
   it('enforces the fixed context budget model', () => {
@@ -122,12 +135,13 @@ describe('Mainline projection', () => {
       runs: [{
         id: 'dep-run', actionId: 'dependency', status: 'completed',
         summary: '完成'.repeat(100), response: '证据'.repeat(200), endedAt: 10,
+        executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: 'dep-hash' },
       }],
     });
     const before = structuredClone(input);
 
     const built = buildMainlineContextSnapshot(input, action);
-    const encodedBytes = new TextEncoder().encode(JSON.stringify(built.contextSnapshot)).byteLength;
+    const encodedBytes = new TextEncoder().encode(renderMainlineContextSnapshot(built.contextSnapshot)).byteLength;
 
     expect(input).toEqual(before);
     expect(built.budget.bytes).toBe(encodedBytes);
@@ -155,13 +169,15 @@ describe('Mainline projection', () => {
     };
     const siblings = Array.from({ length: 12 }, (_, index) => ({
       id: `sibling-${index}`, sequence: index, stageId: `sibling-${index}`,
-      type: 'implement', status: 'completed', dependsOnStageIds: [], resultRunId: `run-${index}`,
+      type: 'implement', status: 'completed', generation: 1, specHash: `sibling-${index}`,
+      dependsOnStageIds: [], resultRunId: `run-${index}`,
     }));
     const built = buildMainlineContextSnapshot(detail({
       actions: [...siblings, action],
       runs: siblings.map((sibling, index) => ({
         id: `run-${index}`, actionId: sibling.id, status: 'completed', endedAt: index,
         summary: 'summary'.repeat(500), response: 'response'.repeat(1_000),
+        executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: `sibling-${index}` },
       })),
     }), action);
 

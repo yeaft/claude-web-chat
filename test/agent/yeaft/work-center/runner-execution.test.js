@@ -184,6 +184,29 @@ describe('Work Center Runner execution resolution', () => {
     }
   });
 
+  it('advances the Action generation and spec when isolated execution falls back to shared', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-shared-fallback-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    try {
+      const item = controller.create({
+        title: 'Fallback item', goal: 'Preserve frozen spec', acceptanceCriteria: [], workDir, start: true,
+      });
+      const action = store.getWorkItemDetail(item.id).actions[0];
+      store.db.prepare("UPDATE actions SET workspace_mode = 'isolated-write', spec_hash = '' WHERE id = ?").run(action.id);
+      const claimed = store.claimReadyAction('boot-fallback', 5_000);
+      const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
+
+      const prepared = await runner.prepare(claimed);
+
+      expect(prepared.action).toMatchObject({ workspaceMode: 'shared', generation: claimed.action.generation + 1 });
+      expect(prepared.action.specHash).not.toBe(claimed.action.specHash);
+      expect(prepared.action.resultRunId).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   it('rolls back an isolated worktree when persisting ownership fails', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-prepare-rollback-'));
     const worktreeRoot = mkdtempSync(join(tmpdir(), 'work-center-prepare-worktrees-'));

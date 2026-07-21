@@ -93,9 +93,12 @@ function mapWorkItem(row) {
   };
 }
 
+function isGraphWorkItem(workItem) {
+  return workItem?.workflowSnapshot?.executionMode === 'graph';
+}
+
 function graphExecutionState(workItem, actions) {
-  if (workItem?.executionSchemaVersion !== 2
-      || workItem?.workflowSnapshot?.executionMode !== 'graph') return workItem;
+  if (!isGraphWorkItem(workItem)) return workItem;
   const current = (Array.isArray(actions) ? actions : [])
     .filter(action => !['superseded', 'cancelled'].includes(action.status));
   const activeActionIds = current
@@ -761,11 +764,26 @@ export class WorkItemStore {
   }
 
   setActionWorkspace(actionId, workspace, workspaceMode = null) {
-    const changed = this.db.prepare(`UPDATE actions SET workspace = ?,
-      workspace_mode = COALESCE(?, workspace_mode), updated_at = ? WHERE id = ?`).run(
-      stringify(workspace), workspaceMode, this.now(), actionId,
-    );
-    return Number(changed.changes) === 1 ? this.getAction(actionId) : null;
+    return withTransaction(this.db, () => {
+      const action = this.getAction(actionId);
+      if (!action) return null;
+      const nextWorkspaceMode = workspaceMode || action.workspaceMode;
+      const specChanged = nextWorkspaceMode !== action.workspaceMode;
+      const nextAction = { ...action, workspaceMode: nextWorkspaceMode };
+      const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?,
+        generation = generation + ?, spec_hash = ?, result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
+        updated_at = ? WHERE id = ? AND generation = ?`).run(
+        stringify(workspace),
+        nextWorkspaceMode,
+        specChanged ? 1 : 0,
+        specChanged ? actionSpecHash(nextAction) : action.specHash,
+        specChanged ? 1 : 0,
+        this.now(),
+        actionId,
+        action.generation,
+      );
+      return Number(changed.changes) === 1 ? this.getAction(actionId) : null;
+    });
   }
 
   setIntegrationWorkspaceForRun(actionId, runId, ownerBootId, leaseEpoch, workspace) {
@@ -862,8 +880,7 @@ export class WorkItemStore {
 
   getWorkItem(id) {
     const workItem = mapWorkItem(this.db.prepare('SELECT * FROM work_items WHERE id = ?').get(id));
-    if (workItem?.executionSchemaVersion !== 2
-        || workItem?.workflowSnapshot?.executionMode !== 'graph') return workItem;
+    if (!isGraphWorkItem(workItem)) return workItem;
     const actions = this.db.prepare('SELECT * FROM actions WHERE work_item_id = ? ORDER BY sequence')
       .all(id).map(mapAction);
     return graphExecutionState(workItem, actions);
@@ -918,8 +935,7 @@ export class WorkItemStore {
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       GROUP BY w.id ORDER BY w.updated_at DESC LIMIT ?`;
     return this.db.prepare(sql).all(...values, limit).map(mapWorkItem).map(workItem => {
-      if (workItem.executionSchemaVersion !== 2
-          || workItem.workflowSnapshot?.executionMode !== 'graph') return workItem;
+      if (!isGraphWorkItem(workItem)) return workItem;
       const actions = this.db.prepare('SELECT * FROM actions WHERE work_item_id = ? ORDER BY sequence')
         .all(workItem.id).map(mapAction);
       return graphExecutionState(workItem, actions);
@@ -968,8 +984,7 @@ export class WorkItemStore {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
-      const graphMode = workItem.executionSchemaVersion === 2
-        && workItem.workflowSnapshot?.executionMode === 'graph';
+      const graphMode = workItem.executionSchemaVersion === 2 && isGraphWorkItem(workItem);
       const expectedAction = this.getAction(expected.actionId);
       const expectedMatches = graphMode
         ? expectedAction?.workItemId === id && expectedAction.generation === expected.generation
@@ -1155,8 +1170,7 @@ export class WorkItemStore {
       if (!['waiting', 'needs_attention'].includes(workItem.status)) {
         throw new Error(`WorkItem in ${workItem.status} does not need retry`);
       }
-      const graphMode = workItem.executionSchemaVersion === 2
-        && workItem.workflowSnapshot?.executionMode === 'graph';
+      const graphMode = workItem.executionSchemaVersion === 2 && isGraphWorkItem(workItem);
       let previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
       if (options.expected) {
         const expectedAction = this.getAction(options.expected.actionId);
@@ -1236,8 +1250,7 @@ export class WorkItemStore {
             (COALESCE(json_extract(w.workflow_snapshot, '$.executionMode'), 'linear') != 'graph'
               AND w.status = 'ready' AND w.current_action_id = a.id AND w.current_run_id IS NULL)
             OR
-            (w.execution_schema_version = 2
-              AND json_extract(w.workflow_snapshot, '$.executionMode') = 'graph'
+            (json_extract(w.workflow_snapshot, '$.executionMode') = 'graph'
               AND w.status IN ('ready', 'running', 'waiting', 'needs_attention')
               AND NOT EXISTS (
                 SELECT 1 FROM json_each(a.depends_on_stage_ids) dependency
@@ -1273,8 +1286,7 @@ export class WorkItemStore {
       );
       if (Number(changedAction.changes) !== 1) return null;
       const workItem = this.getWorkItem(row.work_item_id);
-      const graphMode = workItem.executionSchemaVersion === 2
-        && workItem.workflowSnapshot?.executionMode === 'graph';
+      const graphMode = isGraphWorkItem(workItem);
       const changedWorkItem = graphMode
         ? this.db.prepare(`UPDATE work_items SET status = 'running', current_action_id = ?,
           current_run_id = NULL, updated_at = ? WHERE id = ?
@@ -1315,8 +1327,7 @@ export class WorkItemStore {
     );
     if (!row) return null;
     const workItem = this.getWorkItem(row.work_item_id);
-    if (workItem?.executionSchemaVersion === 2
-        && workItem?.workflowSnapshot?.executionMode === 'graph') return row;
+    if (isGraphWorkItem(workItem)) return row;
     return workItem?.status === 'running' && workItem.currentActionId === row.action_id
       && workItem.currentRunId === row.id ? row : null;
   }
@@ -1397,8 +1408,7 @@ export class WorkItemStore {
       );
       if (Number(actionChanged.changes) !== 1) throw new Error('Run interruption lost the Action fence');
       const activeWorkItem = this.getWorkItem(active.work_item_id);
-      const graphMode = activeWorkItem?.executionSchemaVersion === 2
-        && activeWorkItem?.workflowSnapshot?.executionMode === 'graph';
+      const graphMode = isGraphWorkItem(activeWorkItem);
       const itemChanged = graphMode
         ? this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
           updated_at = ? WHERE id = ? AND status = 'running'`).run(
@@ -1736,8 +1746,7 @@ export class WorkItemStore {
         const action = this.getAction(row.action_id);
         if (this.#hasActiveIntegrationReservation(action, now)) continue;
         const workItem = this.getWorkItem(row.work_item_id);
-        const graphMode = workItem?.executionSchemaVersion === 2
-        && workItem?.workflowSnapshot?.executionMode === 'graph';
+        const graphMode = isGraphWorkItem(workItem);
         const isCurrent = action?.status === 'running'
           && action.currentRunId === row.id
           && action.leaseEpoch === row.lease_epoch

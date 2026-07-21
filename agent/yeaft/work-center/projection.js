@@ -437,14 +437,20 @@ function enforceWorkItemBrowserDtoBudget(value, options = {}) {
   return dto;
 }
 
+function sanitizeMainlineDiagnostic(value, maxBytes) {
+  return sanitizeDiagnosticText(value, maxBytes)
+    .replace(/(?<![:/])\/(?:[^/\s"'<>]+\/)*[^/\s"'<>]+/g, '[path redacted]')
+    .replace(/\b[A-Za-z]:\\(?:[^\\\s"'<>]+\\)*[^\\\s"'<>]+/g, '[path redacted]');
+}
+
 function projectCanonicalEvidence(value) {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 20).map(item => {
-    if (typeof item === 'string') return truncateUtf8(item, 1_000);
+    if (typeof item === 'string') return sanitizeMainlineDiagnostic(item, 1_000);
     if (!item || typeof item !== 'object') return null;
     const projected = {};
     for (const key of ['kind', 'label', 'ref', 'status']) {
-      if (typeof item[key] === 'string') projected[key] = truncateUtf8(item[key], 1_000);
+      if (typeof item[key] === 'string') projected[key] = sanitizeMainlineDiagnostic(item[key], 1_000);
     }
     return Object.keys(projected).length > 0 ? projected : null;
   }).filter(Boolean);
@@ -491,7 +497,7 @@ function projectMainlineBrowser(detail) {
         dependencies: [...node.dependsOnStageIds],
         canonicalResult: result ? {
           status: result.status,
-          summary: truncateUtf8(result.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
+          summary: sanitizeMainlineDiagnostic(result.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
           evidence: projectCanonicalEvidence(result.evidence),
           waitingReason: sanitizeDiagnosticText(result.waitingReason, MAX_ACTION_DIAGNOSTIC_CHARS) || null,
           reviewDecision: typeof result.reviewDecision === 'string'
