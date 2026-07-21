@@ -33,6 +33,55 @@ export function decorateYeaftSessionsWithPinned(agentId, sessions) {
   });
 }
 
+function syncYeaftSessionMetadata(agentId, agent, event) {
+  if (!event || typeof event !== 'object') return event;
+  const ownerId = agent?.ownerId || null;
+
+  if (event.type === 'session_list_updated') {
+    const rows = Array.isArray(event.sessions) ? event.sessions : [];
+    try {
+      if (ownerId) yeaftSessionDb.reconcileFromSnapshot(ownerId, agentId, rows);
+    } catch (e) {
+      console.warn(`[Server] yeaft session persist failed for agent ${agentId}:`, e?.message || e);
+    }
+    return { ...event, sessions: decorateYeaftSessionsWithPinned(agentId, rows) };
+  }
+
+  if (event.type !== 'session_crud_result') return event;
+  const op = event.op;
+  const sessionId = event.sessionId;
+  if (event.ok && op === 'list' && Array.isArray(event.sessions)) {
+    try {
+      if (ownerId) yeaftSessionDb.reconcileFromSnapshot(ownerId, agentId, event.sessions);
+    } catch (e) {
+      console.warn(`[Server] yeaft session list persist failed for agent ${agentId}:`, e?.message || e);
+    }
+    return { ...event, sessions: decorateYeaftSessionsWithPinned(agentId, event.sessions) };
+  }
+  if (!event.ok || !ownerId || !sessionId || (op !== 'archive' && op !== 'delete')) return event;
+
+  if (op === 'archive') {
+    try {
+      yeaftSessionDb.setArchivedForAgent(ownerId, agentId, sessionId, true);
+    } catch (e) {
+      console.warn('[Server] Yeaft Session metadata archive failed:', e?.message || e);
+    }
+    return event;
+  }
+
+  try {
+    yeaftSessionDb.deleteForAgent(ownerId, agentId, sessionId);
+  } catch (e) {
+    console.warn('[Server] Yeaft Session metadata cleanup failed:', e?.message || e);
+  }
+  try {
+    yeaftAssetStore.deleteScope({ ownerId, agentId, sessionId });
+  } catch (e) {
+    console.warn('[Server] Yeaft asset cleanup failed:', e?.message || e);
+  }
+  return event;
+}
+
 function hydrateMessagePreviewData(message) {
   const attachments = message?.attachments;
   if (!Array.isArray(attachments) || attachments.length === 0) return message;
@@ -462,8 +511,9 @@ export async function handleAgentOutput(agentId, agent, msg) {
     case 'yeaft_session_output':
     case 'session_output': {
       const data = hydrateInlinePreviewData(msg.data);
-      if (msg.event?.type === 'yeaft_status') {
-        agent.yeaftStatus = msg.event;
+      const event = syncYeaftSessionMetadata(agentId, agent, msg.event);
+      if (event?.type === 'yeaft_status') {
+        agent.yeaftStatus = event;
         await broadcastAgentList();
       }
       if (msg.perfTraceId) {
@@ -521,7 +571,7 @@ export async function handleAgentOutput(agentId, agent, msg) {
             ...(msg.turnId != null ? { turnId: msg.turnId } : {}),
             ...(msg.threadId != null ? { threadId: msg.threadId } : {}),
             data,
-            event: msg.event,
+            event,
           });
           if (msg.perfTraceId) {
             recordPerfTraceEvent({
@@ -705,14 +755,6 @@ export async function handleAgentOutput(agentId, agent, msg) {
       // their agents (online or not) and survive reload. Pure shadow
       // store — agent's on-disk `~/.yeaft/sessions/` remains canonical.
       // Forwarding to the web continues unchanged below.
-      try {
-        const rows = Array.isArray(msg.sessions) ? msg.sessions : [];
-        if (agent.ownerId) {
-          yeaftSessionDb.reconcileFromSnapshot(agent.ownerId, agentId, rows);
-        }
-      } catch (e) {
-        console.warn(`[Server] yeaft session persist failed for agent ${agentId}:`, e?.message || e);
-      }
       // fix-yeaft-session-list-and-menu: decorate the outgoing snapshot
       // with the server-side pin state. The agent has no notion of
       // pinning (pin is UI metadata that lives in the `yeaft_sessions`
@@ -723,7 +765,8 @@ export async function handleAgentOutput(agentId, agent, msg) {
       // Use one batch read (`getByAgent`) and a Set lookup instead of an
       // N+1 `get(id)` per row — relays this size hot path on every
       // snapshot per connected client.
-      const decoratedSessions = decorateYeaftSessionsWithPinned(agentId, msg.sessions);
+      const syncedEvent = syncYeaftSessionMetadata(agentId, agent, msg);
+      const decoratedSessions = syncedEvent.sessions;
       // Relay verbatim to web (agentId stamped so the web sessions store
       // can merge per-agent rosters).
       for (const [, c] of webClients) {
@@ -787,32 +830,7 @@ export async function handleAgentOutput(agentId, agent, msg) {
       // probes too: entering Yeaft asks each connected agent for its opened
       // sessions, and that response must carry persisted server-side pin
       // state before it hits the web store.
-      let outboundMsg = msg;
-      try {
-        const op = msg.op;
-        const sessionId = msg.sessionId;
-        if (msg.ok && op === 'list' && Array.isArray(msg.sessions)) {
-          if (agent.ownerId) yeaftSessionDb.reconcileFromSnapshot(agent.ownerId, agentId, msg.sessions);
-          outboundMsg = { ...msg, sessions: decorateYeaftSessionsWithPinned(agentId, msg.sessions) };
-        } else if (msg.ok && sessionId && (op === 'delete' || op === 'archive')) {
-          if (op === 'archive') {
-            yeaftSessionDb.setArchivedForAgent(agent.ownerId, agentId, sessionId, true);
-          } else {
-            try {
-              yeaftSessionDb.deleteForAgent(agent.ownerId, agentId, sessionId);
-            } catch (e) {
-              console.warn('[Server] Yeaft Session metadata cleanup failed:', e?.message || e);
-            }
-            try {
-              yeaftAssetStore.deleteScope({ ownerId: agent.ownerId, agentId, sessionId });
-            } catch (e) {
-              console.warn('[Server] Yeaft asset cleanup failed:', e?.message || e);
-            }
-          }
-        }
-      } catch (e) {
-        console.warn(`[Server] yeaft crud-result persist failed:`, e?.message || e);
-      }
+      const outboundMsg = syncYeaftSessionMetadata(agentId, agent, msg);
       for (const [, c] of webClients) {
         if (c.authenticated && (CONFIG.skipAuth || c.userId === agent.ownerId)) {
           await sendToWebClient(c, { ...outboundMsg, agentId: agentId });

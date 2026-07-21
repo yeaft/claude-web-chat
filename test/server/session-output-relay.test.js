@@ -75,6 +75,48 @@ describe('Yeaft Session output relay aliases', () => {
     }]);
   });
 
+  it('persists nested Session archive results so removed rows stay out of DB hydration', async () => {
+    CONFIG.skipAuth = false;
+    webClients.set('owner-client', { authenticated: true, userId: 'owner-1', sent: [] });
+
+    await handleAgentOutput('agent-1', { ownerId: 'owner-1' }, {
+      type: 'yeaft_output',
+      conversationId: 'yeaft-1',
+      event: {
+        type: 'session_crud_result',
+        op: 'archive',
+        ok: true,
+        requestId: 'archive-1',
+        sessionId: 'sess-1',
+      },
+    });
+
+    expect(yeaftSessionDb.setArchivedForAgent).toHaveBeenCalledWith('owner-1', 'agent-1', 'sess-1', true);
+    expect(webClients.get('owner-client').sent).toEqual([expect.objectContaining({
+      type: 'yeaft_output',
+      agentId: 'agent-1',
+      event: expect.objectContaining({ type: 'session_crud_result', op: 'archive', sessionId: 'sess-1' }),
+    })]);
+  });
+
+  it('reconciles and decorates nested Session snapshots before relaying them', async () => {
+    CONFIG.skipAuth = false;
+    webClients.set('owner-client', { authenticated: true, userId: 'owner-1', sent: [] });
+    yeaftSessionDb.getByAgent.mockReturnValueOnce([{ id: 'sess-1', isPinned: true, sortOrder: 3 }]);
+    const sessions = [{ id: 'sess-1', name: 'Session 1' }];
+
+    await handleAgentOutput('agent-1', { ownerId: 'owner-1' }, {
+      type: 'yeaft_output',
+      conversationId: 'yeaft-1',
+      event: { type: 'session_list_updated', sessions },
+    });
+
+    expect(yeaftSessionDb.reconcileFromSnapshot).toHaveBeenCalledWith('owner-1', 'agent-1', sessions);
+    expect(webClients.get('owner-client').sent[0].event.sessions).toEqual([
+      expect.objectContaining({ id: 'sess-1', pinned: true, isPinned: true, sortOrder: 3 }),
+    ]);
+  });
+
   it('stores a Session image and relays only stable asset metadata', async () => {
     CONFIG.skipAuth = false;
     webClients.set('owner-client', { authenticated: true, userId: 'owner-1', sent: [] });
