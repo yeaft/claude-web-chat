@@ -1040,6 +1040,9 @@ export class WorkItemRunner {
         workDir,
         userAlreadyPersisted: true,
         drainPendingUserMessages,
+        closePendingUserInput: () => this.store.closeRunInput(
+          run.id, ownerBootId, run.leaseEpoch,
+        ),
         collabToolPolicy: 'single-vp',
       })) {
         if (event?.type === 'loop') {

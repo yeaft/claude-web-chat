@@ -33,6 +33,7 @@ let engineToolName = 'FileRead';
 let engineToolInput = { file_path: 'src/current.js' };
 let engineAfterToolGate = null;
 let notifyEngineToolEnd = null;
+let engineTerminalInputRaceHook = null;
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
   Engine: class {
     constructor(options) { engineOptions.push(options); }
@@ -53,6 +54,16 @@ vi.mock('../../../../agent/yeaft/engine.js', () => ({
       }
       if (engineThinking) yield { type: 'thinking_delta', text: engineThinking };
       if (engineResponsePrefix) yield { type: 'text_delta', text: engineResponsePrefix };
+      if (engineTerminalInputRaceHook) {
+        await engineTerminalInputRaceHook(input);
+        if (!input.closePendingUserInput()) {
+          const appended = input.drainPendingUserMessages();
+          if (appended.length === 0 || !input.closePendingUserInput()) {
+            throw new Error('terminal input handshake failed');
+          }
+          yield { type: 'loop', loopNumber: 3, response: `Continued with: ${appended[0].content}` };
+        }
+      }
       yield { type: 'text_delta', text: JSON.stringify({
         outcome: 'completed',
         summary: 'done',
@@ -85,6 +96,7 @@ afterEach(() => {
   engineToolInput = { file_path: 'src/current.js' };
   engineAfterToolGate = null;
   notifyEngineToolEnd = null;
+  engineTerminalInputRaceHook = null;
 });
 
 describe('Work Center Runner execution resolution', () => {
@@ -729,6 +741,7 @@ describe('Work Center Runner execution resolution', () => {
       setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
       listPendingActionInputs: vi.fn().mockReturnValue([{ id: '7', text: 'Keep the API stable', attachments: [] }]),
       acknowledgeActionInput: vi.fn().mockReturnValue(true),
+      closeRunInput: vi.fn().mockReturnValue(true),
       appendRunLoop: vi.fn(),
     };
     const runner = new WorkItemRunner({
@@ -754,10 +767,72 @@ describe('Work Center Runner execution resolution', () => {
     expect(store.acknowledgeActionInput).toHaveBeenCalledWith(
       '7', 'action-loop', 'run-loop', 'boot', 1,
     );
+    expect(engineQueries[0].closePendingUserInput()).toBe(true);
+    expect(store.closeRunInput).toHaveBeenCalledWith('run-loop', 'boot', 1);
     expect(store.appendRunLoop).toHaveBeenNthCalledWith(1, 'run-loop', 'boot', 1,
       expect.objectContaining({ loopNumber: 1, response: 'Inspected the current implementation.' }));
     expect(store.appendRunLoop).toHaveBeenNthCalledWith(2, 'run-loop', 'boot', 1,
       expect.objectContaining({ loopNumber: 2, response: 'Verified the final result.' }));
+  });
+
+  it('consumes input inserted at terminal completion in the same Run without lease recovery', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-terminal-input-race-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      title: 'Keep the loop alive', goal: 'Consume terminal-race input', acceptanceCriteria: [],
+      workflowTemplate: 'software-change', workDir, start: true,
+    });
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['triage'], modelHint: 'primary',
+      persona: 'Continue safely', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const watcher = new WorkItemWatcher({
+      store, controller, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+    let inserted = false;
+    engineTerminalInputRaceHook = input => {
+      if (inserted) return;
+      inserted = true;
+      const detail = store.getWorkItemDetail(created.id);
+      controller.input(created.id, {
+        text: 'Use the new requirement',
+        actionId: detail.actions[0].id,
+        generation: detail.actions[0].generation,
+        revision: detail.revision,
+      });
+    };
+
+    try {
+      await watcher.tick();
+      const activeEntry = [...watcher.activeRuns.values()][0];
+      await activeEntry.promise;
+      const detail = store.getWorkItemDetail(created.id);
+      const racedRun = detail.runs.find(item => item.id === activeEntry.runId);
+      expect(racedRun).toMatchObject({ status: 'completed', loopCount: 3 });
+      expect(detail.runs.filter(item => item.actionId === racedRun.actionId)).toHaveLength(1);
+      expect(detail.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'action.input_added' }),
+        expect.objectContaining({
+          type: 'run.loop_output',
+          data: expect.objectContaining({ response: 'Continued with: Use the new requirement' }),
+        }),
+      ]));
+      expect(store.db.prepare(`SELECT COUNT(*) AS count FROM pending_action_inputs
+        WHERE consumed_at IS NULL`).get()).toEqual({ count: 0 });
+      expect(store.getRun(racedRun.id).status).toBe('completed');
+    } finally {
+      await watcher.stop();
+      store.close();
+    }
   });
 
   it('flushes a just-completed tool checkpoint before watcher interruption', async () => {
