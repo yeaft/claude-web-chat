@@ -254,7 +254,7 @@ function scheduleYeaftLoadHistoryMetadataReplay(sessionId) {
   const replayConversationId = yeaftConversationId;
   setTimeout(async () => {
     try {
-      if (!replaySession) return;
+      if (!replaySession || session !== replaySession) return;
       try {
         await refreshLiveSessionConfig();
       } catch (err) {
@@ -265,10 +265,19 @@ function scheduleYeaftLoadHistoryMetadataReplay(sessionId) {
         try {
           const metaRoot = ctx.CONFIG?.yeaftDir || DEFAULT_YEAFT_DIR;
           const meta = loadSessionMeta(join(sessionsRoot(metaRoot), sessionId));
-          projectRuntime = await ensureProjectRuntimeForSessionMeta(meta);
+          const workDir = normalizeSessionWorkDir(meta?.workDir);
+          if (workDir) {
+            const scheduled = scheduleProjectRuntimeLoad(workDir);
+            projectRuntime = scheduled && typeof scheduled.then === 'function'
+              ? await scheduled
+              : scheduled;
+          } else {
+            activateBaseRuntime(captureRuntimeOwner(replaySession));
+          }
         } catch { /* best-effort project metadata */ }
       }
-      const status = mergedStatusForProjectRuntime(projectRuntime);
+      if (session !== replaySession) return;
+      const status = mergedStatusForProjectRuntime(projectRuntime, replaySession);
       hydrateYeaftStatusFromSession({ ...replaySession, status }, { reason: 'history_load', emitEvent: true });
       sendSessionEvent({
         type: 'session_ready',
@@ -591,16 +600,73 @@ const routePromisesByMsgId = new Map();
 const projectRuntimes = new Map();
 /** @type {Map<string, Promise<any>>} */
 const baseRuntimeLoadPromises = new Map();
+let baseRuntime = null;
 let activeRuntimeKey = BASE_RUNTIME_KEY;
 let skillReloadTimer = null;
 let skillReloadRunning = false;
+let skillReloadOwner = null;
+let runtimeGeneration = 0;
+/** @type {import('./session.js').Session | null} */
+let runtimeOwnerSession = null;
+const disconnectedRuntimeMcpManagers = new WeakSet();
 
-function replaceSessionMcpTools(mcpManager) {
-  if (!session?.toolRegistry || typeof session.toolRegistry.replaceMcpTools !== 'function') {
+let createRuntimeSkillManager = createSkillManager;
+let createRuntimeMcpManager = () => new MCPManager();
+let loadRuntimeMcpConfig = loadMCPConfig;
+let loadRuntimeSession = loadSession;
+const runtimeLoaderOwners = new WeakMap();
+
+function loaderBelongsToOwner(promise, owner) {
+  const tracked = promise ? runtimeLoaderOwners.get(promise) : null;
+  return !!tracked
+    && tracked.generation === owner?.generation
+    && tracked.ownerSession === owner?.ownerSession;
+}
+
+function claimRuntimeOwnership(ownerSession) {
+  if (!ownerSession) return null;
+  runtimeOwnerSession = ownerSession;
+  return { generation: runtimeGeneration, ownerSession };
+}
+
+function captureRuntimeOwner(ownerSession = session) {
+  if (!ownerSession || ownerSession !== session || ownerSession !== runtimeOwnerSession) return null;
+  return { generation: runtimeGeneration, ownerSession };
+}
+
+function isCurrentRuntimeOwner(owner) {
+  return !!owner
+    && owner.generation === runtimeGeneration
+    && owner.ownerSession === runtimeOwnerSession
+    && owner.ownerSession === session;
+}
+
+function invalidateRuntimeOwnership() {
+  runtimeGeneration += 1;
+  runtimeOwnerSession = null;
+}
+
+function runtimeBelongsToOwner(runtime, owner) {
+  return isCurrentRuntimeOwner(owner)
+    && runtime?.generation === owner.generation
+    && runtime?.ownerSession === owner.ownerSession;
+}
+
+async function disconnectRuntimeMcpManager(mcpManager) {
+  if (!mcpManager || typeof mcpManager.disconnectAll !== 'function') return;
+  if (disconnectedRuntimeMcpManagers.has(mcpManager)) return;
+  disconnectedRuntimeMcpManagers.add(mcpManager);
+  try { await mcpManager.disconnectAll(); } catch { /* best-effort shutdown */ }
+}
+
+function replaceSessionMcpTools(owner, mcpManager) {
+  if (!isCurrentRuntimeOwner(owner)) return { removed: 0, added: 0, skipped: true };
+  const ownerSession = owner.ownerSession;
+  if (!ownerSession.toolRegistry || typeof ownerSession.toolRegistry.replaceMcpTools !== 'function') {
     return { removed: 0, added: 0, skipped: true };
   }
   try {
-    const result = session.toolRegistry.replaceMcpTools(mcpManager, buildMcpFlattenedTools);
+    const result = ownerSession.toolRegistry.replaceMcpTools(mcpManager, buildMcpFlattenedTools);
     return { ...result, skipped: false };
   } catch (err) {
     console.warn('[Yeaft] hot-swap MCP tools failed:', err?.message || err);
@@ -608,9 +674,10 @@ function replaceSessionMcpTools(mcpManager) {
   }
 }
 
-function retargetVpEngines({ skillManager, mcpManager }) {
+function retargetVpEngines(owner, { skillManager, mcpManager }) {
+  if (!isCurrentRuntimeOwner(owner)) return;
   try {
-    session?.engine?.setRuntimeManagers?.({ skillManager, mcpManager });
+    owner.ownerSession.engine?.setRuntimeManagers?.({ skillManager, mcpManager });
   } catch { /* best-effort default-engine retarget */ }
   for (const eng of vpEngines.values()) {
     try {
@@ -619,49 +686,113 @@ function retargetVpEngines({ skillManager, mcpManager }) {
   }
 }
 
-function activateBaseRuntime() {
+function reloadRuntimeSkillManager(owner, skillManager, status) {
+  if (!isCurrentRuntimeOwner(owner) || typeof skillManager?.load !== 'function') {
+    return { changed: false, loaded: 0, errors: [] };
+  }
+  let result;
+  try {
+    result = skillManager.load() || {};
+  } catch (err) {
+    result = { changed: false, loaded: 0, errors: [err?.message || String(err)] };
+  }
+  if (isCurrentRuntimeOwner(owner) && status) status.skills = skillManager.size || 0;
+  return {
+    changed: !!result.changed,
+    loaded: Number(result.loaded) || 0,
+    errors: result.errors || [],
+  };
+}
+
+function activateBaseRuntime(owner = captureRuntimeOwner(), { reloadSkills = true } = {}) {
+  if (!isCurrentRuntimeOwner(owner)) return { removed: 0, added: 0, skipped: true };
+  const ownerSession = owner.ownerSession;
+  const runtime = baseRuntime && runtimeBelongsToOwner(baseRuntime, owner) ? baseRuntime : null;
+  const skillManager = runtime?.skillManager || ownerSession.skillManager;
+  const mcpManager = runtime?.mcpManager || ownerSession.mcpManager;
+  const status = ownerSession.status || runtime?.status;
+  const switchingRuntime = activeRuntimeKey !== BASE_RUNTIME_KEY;
+  const reload = reloadSkills && switchingRuntime
+    ? reloadRuntimeSkillManager(owner, skillManager, status)
+    : { changed: false, loaded: 0, errors: [] };
+  if (!isCurrentRuntimeOwner(owner)) return { removed: 0, added: 0, skipped: true };
   activeRuntimeKey = BASE_RUNTIME_KEY;
-  const swap = replaceSessionMcpTools(session?.mcpManager);
-  retargetVpEngines({
-    skillManager: session?.skillManager || null,
-    mcpManager: session?.mcpManager || null,
-  });
-  const status = session?.status || null;
+  const swap = replaceSessionMcpTools(owner, mcpManager);
+  retargetVpEngines(owner, { skillManager: skillManager || null, mcpManager: mcpManager || null });
   if (status) {
-    status.skills = session?.skillManager?.size || 0;
+    status.skills = skillManager?.size || 0;
     status.mcpServers = Array.isArray(status.mcpServers) ? status.mcpServers : [];
     status.mcpFailed = Array.isArray(status.mcpFailed) ? status.mcpFailed : [];
-    status.tools = session?.toolRegistry?.size || status.tools || 0;
+    status.tools = ownerSession.toolRegistry?.size || status.tools || 0;
   }
-  broadcastSkillSlashCommands(session);
+  if (!isCurrentRuntimeOwner(owner)) return { removed: 0, added: 0, skipped: true };
+  broadcastSkillSlashCommands({ skillManager });
+  if (switchingRuntime || reload.changed) {
+    hydrateYeaftStatusFromSession({ ...ownerSession, status }, { reason: 'skills_runtime_activate', emitEvent: true });
+  }
+  startSkillHotReload(owner);
   return swap;
 }
 
-function activateProjectRuntime(runtime) {
-  if (!runtime) return activateBaseRuntime();
-  activeRuntimeKey = projectRuntimeKey(runtime.workDir);
-  const swap = replaceSessionMcpTools(runtime.mcpManager);
-  retargetVpEngines({
+function activateProjectRuntime(runtime, owner = captureRuntimeOwner(), { reloadSkills = true } = {}) {
+  if (!runtime) return activateBaseRuntime(owner, { reloadSkills });
+  if (!runtimeBelongsToOwner(runtime, owner)) return { removed: 0, added: 0, skipped: true };
+  const runtimeKey = projectRuntimeKey(runtime.workDir);
+  const switchingRuntime = activeRuntimeKey !== runtimeKey;
+  const reload = reloadSkills && switchingRuntime
+    ? reloadRuntimeSkillManager(owner, runtime.skillManager, runtime.status)
+    : { changed: false, loaded: 0, errors: [] };
+  if (!runtimeBelongsToOwner(runtime, owner)) return { removed: 0, added: 0, skipped: true };
+  activeRuntimeKey = runtimeKey;
+  const swap = replaceSessionMcpTools(owner, runtime.mcpManager);
+  retargetVpEngines(owner, {
     skillManager: runtime.skillManager,
     mcpManager: runtime.mcpManager,
   });
   runtime.status = {
     ...runtime.status,
-    tools: session?.toolRegistry?.size || runtime.status?.tools || 0,
+    skills: runtime.skillManager?.size || 0,
+    tools: owner.ownerSession.toolRegistry?.size || runtime.status?.tools || 0,
   };
-  broadcastSkillSlashCommands(session, [runtime.skillManager]);
+  if (!runtimeBelongsToOwner(runtime, owner)) return { removed: 0, added: 0, skipped: true };
+  // A project manager already contains bundled, user, and project tiers.
+  broadcastSkillSlashCommands({ skillManager: runtime.skillManager });
+  if (switchingRuntime || reload.changed) {
+    const status = mergedStatusForProjectRuntime(runtime, owner.ownerSession);
+    hydrateYeaftStatusFromSession({ ...owner.ownerSession, status }, { reason: 'skills_runtime_activate', emitEvent: true });
+  }
+  startSkillHotReload(owner);
   return swap;
 }
 
 async function shutdownProjectRuntimes() {
+  // Invalidate before the first await so every old continuation is cleanup-only.
+  invalidateRuntimeOwnership();
   stopSkillHotReload();
-  const runtimes = Array.from(projectRuntimes.values());
+  const runtimes = [baseRuntime, ...projectRuntimes.values()].filter(Boolean);
+  const loaderPromises = [
+    ...baseRuntimeLoadPromises.values(),
+    ...projectRuntimeLoadPromises.values(),
+  ];
+  for (const runtime of runtimes) {
+    if (runtime?.previousSkillManager && runtime.ownerSession?.skillManager === runtime.skillManager) {
+      runtime.ownerSession.skillManager = runtime.previousSkillManager;
+    }
+    if (runtime?.previousMcpManager && runtime.ownerSession?.mcpManager === runtime.mcpManager) {
+      runtime.ownerSession.mcpManager = runtime.previousMcpManager;
+    }
+  }
+  baseRuntime = null;
   projectRuntimes.clear();
   projectRuntimeLoadPromises.clear();
   baseRuntimeLoadPromises.clear();
-  await Promise.all(runtimes.map(async (runtime) => {
-    try { await runtime?.mcpManager?.disconnectAll?.(); } catch { /* best-effort shutdown */ }
-  }));
+  activeRuntimeKey = BASE_RUNTIME_KEY;
+  const disconnects = runtimes
+    // A loading manager may acquire its first connection after an early
+    // disconnect; the stale loader performs the reliable post-connect cleanup.
+    .filter(runtime => !runtime?.loading)
+    .map(runtime => disconnectRuntimeMcpManager(runtime?.mcpManager));
+  await Promise.allSettled([...disconnects, ...loaderPromises]);
 }
 
 function getVpThreadMap(sessionId, vpId) {
@@ -1404,9 +1535,12 @@ export function __testResolveVpEffectiveConfig(sessionId) {
  * @param {{ conversationStore: object } | null} sessionLike
  */
 export function __testSetSession(sessionLike) {
+  invalidateRuntimeOwnership();
+  stopSkillHotReload();
   session = sessionLike;
   sessionLoadPromise = null;
-  if (!sessionLike) yeaftConversationId = null;
+  if (sessionLike) claimRuntimeOwnership(sessionLike);
+  else yeaftConversationId = null;
 }
 
 /**
@@ -2237,53 +2371,49 @@ function broadcastSkillSlashCommands(sessionLike, extraSkillManagers = []) {
   });
 }
 
-function skillManagersForHotReload() {
-  const managers = new Set();
-  if (session?.skillManager) managers.add(session.skillManager);
-  for (const runtime of projectRuntimes.values()) {
-    if (runtime?.skillManager) managers.add(runtime.skillManager);
+function activeSkillRuntime(owner) {
+  if (!isCurrentRuntimeOwner(owner)) return null;
+  if (activeRuntimeKey === BASE_RUNTIME_KEY) {
+    if (baseRuntime && runtimeBelongsToOwner(baseRuntime, owner)) return baseRuntime;
+    return {
+      generation: owner.generation,
+      ownerSession: owner.ownerSession,
+      skillManager: owner.ownerSession.skillManager,
+      status: owner.ownerSession.status,
+    };
   }
-  return [...managers];
+  const runtime = projectRuntimes.get(activeRuntimeKey) || null;
+  return runtimeBelongsToOwner(runtime, owner) ? runtime : null;
 }
 
-function reloadActiveSkills() {
+function reloadActiveSkills(owner = skillReloadOwner || captureRuntimeOwner()) {
+  if (!isCurrentRuntimeOwner(owner)) return { changed: false, loaded: 0, errors: [] };
   if (skillReloadRunning) return { changed: false, loaded: 0, errors: [] };
+  const runtime = activeSkillRuntime(owner);
+  const manager = runtime?.skillManager;
+  if (typeof manager?.load !== 'function') return { changed: false, loaded: 0, errors: [] };
+
   skillReloadRunning = true;
   try {
-    let changed = false;
-    let loaded = 0;
-    const errors = [];
-    const changedManagers = new Set();
-    const managers = skillManagersForHotReload();
-    for (const manager of managers) {
-      if (typeof manager?.load !== 'function') continue;
-      const result = manager.load();
-      if (result?.changed) {
-        changed = true;
-        changedManagers.add(manager);
-      }
-      loaded += Number(result?.loaded) || 0;
-      errors.push(...(result?.errors || []));
+    const result = manager.load() || {};
+    const currentRuntime = activeSkillRuntime(owner);
+    if (!isCurrentRuntimeOwner(owner) || currentRuntime?.skillManager !== manager) {
+      return { changed: false, loaded: 0, errors: [] };
+    }
+    const changed = !!result.changed;
+    const loaded = Number(result.loaded) || 0;
+    const errors = result.errors || [];
+    if (runtime.status) runtime.status.skills = manager.size || 0;
+    if (activeRuntimeKey === BASE_RUNTIME_KEY && owner.ownerSession.status) {
+      owner.ownerSession.status.skills = manager.size || 0;
     }
     if (changed) {
-      if (session?.status && changedManagers.has(session.skillManager)) {
-        session.status.skills = session.skillManager?.size || 0;
-      }
-      for (const runtime of projectRuntimes.values()) {
-        if (runtime?.status && changedManagers.has(runtime.skillManager)) {
-          runtime.status.skills = runtime.skillManager?.size || 0;
-        }
-      }
-      if (activeRuntimeKey === BASE_RUNTIME_KEY) {
-        broadcastSkillSlashCommands(session);
-      } else {
-        const runtime = projectRuntimes.get(activeRuntimeKey);
-        broadcastSkillSlashCommands(session, runtime?.skillManager ? [runtime.skillManager] : []);
-      }
-      const activeRuntime = activeRuntimeKey === BASE_RUNTIME_KEY ? null : projectRuntimes.get(activeRuntimeKey);
-      const activeStatus = activeRuntime ? mergedStatusForProjectRuntime(activeRuntime) : session?.status;
+      broadcastSkillSlashCommands({ skillManager: manager });
+      const activeStatus = activeRuntimeKey === BASE_RUNTIME_KEY
+        ? runtime.status
+        : mergedStatusForProjectRuntime(runtime, owner.ownerSession);
       hydrateYeaftStatusFromSession(
-        activeStatus && session ? { ...session, status: activeStatus } : session,
+        activeStatus ? { ...owner.ownerSession, status: activeStatus } : owner.ownerSession,
         { reason: 'skills_hot_reload', emitEvent: true },
       );
     }
@@ -2296,195 +2426,277 @@ function reloadActiveSkills() {
   }
 }
 
-function startSkillHotReload() {
-  if (skillReloadTimer) return;
-  skillReloadTimer = setInterval(() => {
-    try { reloadActiveSkills(); }
+function startSkillHotReload(owner = captureRuntimeOwner()) {
+  if (!isCurrentRuntimeOwner(owner)) return false;
+  if (skillReloadTimer && skillReloadOwner
+      && skillReloadOwner.generation === owner.generation
+      && skillReloadOwner.ownerSession === owner.ownerSession) {
+    return false;
+  }
+  stopSkillHotReload();
+  skillReloadOwner = owner;
+  const timer = setInterval(() => {
+    if (!isCurrentRuntimeOwner(owner)) {
+      if (skillReloadTimer === timer) stopSkillHotReload(owner);
+      return;
+    }
+    try { reloadActiveSkills(owner); }
     catch (err) { console.warn('[Yeaft] skill hot reload failed:', err?.message || err); }
   }, SKILL_RELOAD_INTERVAL_MS);
-  skillReloadTimer.unref?.();
+  skillReloadTimer = timer;
+  timer.unref?.();
+  return true;
 }
 
-function stopSkillHotReload() {
-  if (!skillReloadTimer) return;
-  clearInterval(skillReloadTimer);
+function stopSkillHotReload(owner = null) {
+  if (owner && skillReloadOwner
+      && (skillReloadOwner.generation !== owner.generation
+        || skillReloadOwner.ownerSession !== owner.ownerSession)) {
+    return false;
+  }
+  if (skillReloadTimer) clearInterval(skillReloadTimer);
   skillReloadTimer = null;
+  skillReloadOwner = null;
   skillReloadRunning = false;
+  return true;
 }
 
-async function loadBaseRuntime() {
-  if (!session) return null;
-  const yeaftDir = ctx.CONFIG?.yeaftDir || session.yeaftDir || DEFAULT_YEAFT_DIR;
-  const skillManager = createSkillManager(yeaftDir, process.cwd());
-  session.skillManager = skillManager;
-
-  const mcpConfig = loadMCPConfig(yeaftDir, undefined, process.cwd());
-  const mcpManager = new MCPManager();
-  session.mcpManager = mcpManager;
-  let mcpStatus = { connected: [], failed: [] };
-
-  if (session.status) {
-    session.status.skills = skillManager.size;
-    session.status.mcpServers = [];
-    session.status.mcpFailed = [];
-    session.status.mcpSkipped = mcpConfig.skipped || [];
-    session.status.tools = session.toolRegistry?.size || session.status.tools || 0;
-  }
-  if (activeRuntimeKey === BASE_RUNTIME_KEY) {
-    activateBaseRuntime();
-  } else {
-    broadcastSkillSlashCommands(session);
-  }
-  startSkillHotReload();
-  hydrateYeaftStatusFromSession(session, { reason: 'base_runtime_skills', emitEvent: true });
-
-  if (mcpConfig.servers.length > 0) {
-    mcpStatus = await mcpManager.connectAll(mcpConfig.servers);
-    session.mcpManager = mcpManager;
-    if (session.status) {
-      session.status.mcpServers = mcpStatus.connected;
-      session.status.mcpFailed = mcpStatus.failed;
-      session.status.mcpSkipped = mcpConfig.skipped || [];
-    }
-    if (activeRuntimeKey === BASE_RUNTIME_KEY) {
-      activateBaseRuntime();
-    }
-    hydrateYeaftStatusFromSession(session, { reason: 'base_runtime_mcp', emitEvent: true });
-    try { broadcastMcpUpdated({ reason: 'base-runtime-load' }); } catch { /* best-effort */ }
-  }
-
-  return { skillManager, mcpManager, mcpStatus, mcpConfig };
-}
-
-function scheduleBaseRuntimeLoad() {
-  if (!session) return null;
-  if (baseRuntimeLoadPromises.has(BASE_RUNTIME_KEY)) return baseRuntimeLoadPromises.get(BASE_RUNTIME_KEY);
-  const promise = new Promise(resolve => setTimeout(resolve, 0))
-    .then(() => loadBaseRuntime())
-    .catch((err) => {
-      console.warn('[Yeaft] async base runtime load failed:', err?.message || err);
-      return null;
-    })
-    .finally(() => { baseRuntimeLoadPromises.delete(BASE_RUNTIME_KEY); });
-  baseRuntimeLoadPromises.set(BASE_RUNTIME_KEY, promise);
-  return promise;
-}
-
-async function loadProjectRuntime(workDir) {
-  if (!session) return null;
-  const normalizedWorkDir = normalizeSessionWorkDir(workDir);
-  if (!normalizedWorkDir) {
-    activateBaseRuntime();
-    return null;
-  }
-  const key = projectRuntimeKey(normalizedWorkDir);
-  const cached = projectRuntimes.get(key);
-  if (cached) {
-    activateProjectRuntime(cached);
-    return cached;
-  }
-
-  const yeaftDir = ctx.CONFIG?.yeaftDir || session.yeaftDir || DEFAULT_YEAFT_DIR;
-  const skillRoots = normalizedWorkDir && normalizedWorkDir !== process.cwd()
-    ? `${process.cwd()}${delimiter}${normalizedWorkDir}`
-    : normalizedWorkDir;
-  const skillManager = createSkillManager(yeaftDir, skillRoots);
-  const mcpConfig = loadMCPConfig(yeaftDir, undefined, normalizedWorkDir);
-  const mcpManager = new MCPManager();
+async function loadBaseRuntime(owner = captureRuntimeOwner()) {
+  if (!isCurrentRuntimeOwner(owner)) return null;
+  const ownerSession = owner.ownerSession;
+  const yeaftDir = ctx.CONFIG?.yeaftDir || ownerSession.yeaftDir || DEFAULT_YEAFT_DIR;
+  const previousSkillManager = ownerSession.skillManager;
+  const previousMcpManager = ownerSession.mcpManager;
+  const skillManager = createRuntimeSkillManager(yeaftDir, process.cwd());
+  const mcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, process.cwd());
+  const mcpManager = createRuntimeMcpManager();
   let mcpStatus = { connected: [], failed: [] };
   const runtime = {
-    workDir: normalizedWorkDir,
+    generation: owner.generation,
+    ownerSession,
+    workDir: '',
+    previousSkillManager,
+    previousMcpManager,
     skillManager,
     mcpManager,
     mcpStatus,
     mcpConfig,
+    loading: mcpConfig.servers.length > 0,
     status: {
       skills: skillManager.size,
-      mcpServers: mcpStatus.connected,
-      mcpFailed: mcpStatus.failed,
+      mcpServers: [],
+      mcpFailed: [],
       mcpSkipped: mcpConfig.skipped || [],
-      tools: session.toolRegistry?.size || 0,
+      tools: ownerSession.toolRegistry?.size || 0,
     },
   };
-  projectRuntimes.set(key, runtime);
-  // Skill metadata is available after the filesystem scan; publish it before
-  // any MCP server startup so autocomplete does not wait on external processes.
-  activateProjectRuntime(runtime);
-  startSkillHotReload();
+
+  if (!isCurrentRuntimeOwner(owner)) {
+    await disconnectRuntimeMcpManager(mcpManager);
+    return null;
+  }
+  baseRuntime = runtime;
+  ownerSession.skillManager = skillManager;
+  ownerSession.mcpManager = mcpManager;
+  ownerSession.status = { ...ownerSession.status, ...runtime.status };
+  if (activeRuntimeKey === BASE_RUNTIME_KEY) {
+    activateBaseRuntime(owner, { reloadSkills: false });
+    hydrateYeaftStatusFromSession(ownerSession, { reason: 'base_runtime_skills', emitEvent: true });
+  }
+
   if (mcpConfig.servers.length > 0) {
-    mcpStatus = await mcpManager.connectAll(mcpConfig.servers);
+    try {
+      mcpStatus = await mcpManager.connectAll(mcpConfig.servers);
+    } catch (err) {
+      runtime.loading = false;
+      if (ownerSession.skillManager === skillManager) ownerSession.skillManager = previousSkillManager;
+      if (ownerSession.mcpManager === mcpManager) ownerSession.mcpManager = previousMcpManager;
+      await disconnectRuntimeMcpManager(mcpManager);
+      if (baseRuntime === runtime) baseRuntime = null;
+      throw err;
+    }
+    runtime.loading = false;
+    if (!isCurrentRuntimeOwner(owner) || baseRuntime !== runtime) {
+      if (ownerSession.skillManager === skillManager) ownerSession.skillManager = previousSkillManager;
+      if (ownerSession.mcpManager === mcpManager) ownerSession.mcpManager = previousMcpManager;
+      await disconnectRuntimeMcpManager(mcpManager);
+      return null;
+    }
     runtime.mcpStatus = mcpStatus;
     runtime.status = {
       ...runtime.status,
       mcpServers: mcpStatus.connected,
       mcpFailed: mcpStatus.failed,
       mcpSkipped: mcpConfig.skipped || [],
-      tools: session.toolRegistry?.size || 0,
+      tools: ownerSession.toolRegistry?.size || 0,
     };
-    activateProjectRuntime(runtime);
+    ownerSession.mcpManager = mcpManager;
+    ownerSession.status = { ...ownerSession.status, ...runtime.status };
+    if (activeRuntimeKey === BASE_RUNTIME_KEY) {
+      activateBaseRuntime(owner, { reloadSkills: false });
+      hydrateYeaftStatusFromSession(ownerSession, { reason: 'base_runtime_mcp', emitEvent: true });
+      if (isCurrentRuntimeOwner(owner)) {
+        try { broadcastMcpUpdated({ reason: 'base-runtime-load' }); } catch { /* best-effort */ }
+      }
+    }
   }
-  return runtime;
+
+  return isCurrentRuntimeOwner(owner) && baseRuntime === runtime ? runtime : null;
 }
 
+function scheduleBaseRuntimeLoad() {
+  const owner = captureRuntimeOwner();
+  if (!owner) return null;
+  const current = baseRuntimeLoadPromises.get(BASE_RUNTIME_KEY);
+  if (current && loaderBelongsToOwner(current, owner)) return current;
+  let promise;
+  promise = new Promise(resolve => setTimeout(resolve, 0))
+    .then(() => loadBaseRuntime(owner))
+    .catch((err) => {
+      console.warn('[Yeaft] async base runtime load failed:', err?.message || err);
+      return null;
+    })
+    .finally(() => {
+      if (owner.generation === runtimeGeneration
+          && baseRuntimeLoadPromises.get(BASE_RUNTIME_KEY) === promise) {
+        baseRuntimeLoadPromises.delete(BASE_RUNTIME_KEY);
+      }
+    });
+  runtimeLoaderOwners.set(promise, owner);
+  baseRuntimeLoadPromises.set(BASE_RUNTIME_KEY, promise);
+  return promise;
+}
+
+async function loadProjectRuntime(workDir, owner = captureRuntimeOwner()) {
+  if (!isCurrentRuntimeOwner(owner)) return null;
+  const ownerSession = owner.ownerSession;
+  const normalizedWorkDir = normalizeSessionWorkDir(workDir);
+  if (!normalizedWorkDir) {
+    activateBaseRuntime(owner);
+    return null;
+  }
+  const key = projectRuntimeKey(normalizedWorkDir);
+  const cached = projectRuntimes.get(key);
+  if (runtimeBelongsToOwner(cached, owner)) {
+    activateProjectRuntime(cached, owner);
+    return cached;
+  }
+
+  const yeaftDir = ctx.CONFIG?.yeaftDir || ownerSession.yeaftDir || DEFAULT_YEAFT_DIR;
+  const skillRoots = normalizedWorkDir !== process.cwd()
+    ? `${process.cwd()}${delimiter}${normalizedWorkDir}`
+    : normalizedWorkDir;
+  const skillManager = createRuntimeSkillManager(yeaftDir, skillRoots);
+  const mcpConfig = loadRuntimeMcpConfig(yeaftDir, undefined, normalizedWorkDir);
+  const mcpManager = createRuntimeMcpManager();
+  let mcpStatus = { connected: [], failed: [] };
+  const runtime = {
+    generation: owner.generation,
+    ownerSession,
+    workDir: normalizedWorkDir,
+    skillManager,
+    mcpManager,
+    mcpStatus,
+    mcpConfig,
+    loading: mcpConfig.servers.length > 0,
+    status: {
+      skills: skillManager.size,
+      mcpServers: [],
+      mcpFailed: [],
+      mcpSkipped: mcpConfig.skipped || [],
+      tools: ownerSession.toolRegistry?.size || 0,
+    },
+  };
+  if (!isCurrentRuntimeOwner(owner)) {
+    await disconnectRuntimeMcpManager(mcpManager);
+    return null;
+  }
+  projectRuntimes.set(key, runtime);
+  // Skill metadata is ready before external MCP startup. Activation is still
+  // owner-gated so reset cannot publish this runtime into a replacement session.
+  activateProjectRuntime(runtime, owner, { reloadSkills: false });
+  if (mcpConfig.servers.length > 0) {
+    try {
+      mcpStatus = await mcpManager.connectAll(mcpConfig.servers);
+    } catch (err) {
+      runtime.loading = false;
+      await disconnectRuntimeMcpManager(mcpManager);
+      if (projectRuntimes.get(key) === runtime) projectRuntimes.delete(key);
+      throw err;
+    }
+    runtime.loading = false;
+    if (!runtimeBelongsToOwner(runtime, owner) || projectRuntimes.get(key) !== runtime) {
+      await disconnectRuntimeMcpManager(mcpManager);
+      return null;
+    }
+    runtime.mcpStatus = mcpStatus;
+    runtime.status = {
+      ...runtime.status,
+      mcpServers: mcpStatus.connected,
+      mcpFailed: mcpStatus.failed,
+      mcpSkipped: mcpConfig.skipped || [],
+      tools: ownerSession.toolRegistry?.size || 0,
+    };
+    if (activeRuntimeKey === key) activateProjectRuntime(runtime, owner, { reloadSkills: false });
+  }
+  return runtimeBelongsToOwner(runtime, owner) && projectRuntimes.get(key) === runtime ? runtime : null;
+}
 
 function scheduleProjectRuntimeLoad(workDir) {
+  const owner = captureRuntimeOwner();
   const normalizedWorkDir = normalizeSessionWorkDir(workDir);
-  if (!normalizedWorkDir || !session) return null;
+  if (!normalizedWorkDir || !owner) return null;
   const key = projectRuntimeKey(normalizedWorkDir);
-  if (projectRuntimes.has(key)) return projectRuntimes.get(key);
-  if (projectRuntimeLoadPromises.has(key)) return projectRuntimeLoadPromises.get(key);
-  const promise = loadProjectRuntime(normalizedWorkDir)
+  const cached = projectRuntimes.get(key);
+  if (runtimeBelongsToOwner(cached, owner)) return cached;
+  const current = projectRuntimeLoadPromises.get(key);
+  if (current && loaderBelongsToOwner(current, owner)) return current;
+  let promise;
+  promise = loadProjectRuntime(normalizedWorkDir, owner)
     .catch((err) => {
       console.warn('[Yeaft] async project runtime load failed for %s: %s', normalizedWorkDir, err?.message || err);
       return null;
     })
-    .finally(() => { projectRuntimeLoadPromises.delete(key); });
+    .finally(() => {
+      if (owner.generation === runtimeGeneration
+          && projectRuntimeLoadPromises.get(key) === promise) {
+        projectRuntimeLoadPromises.delete(key);
+      }
+    });
+  runtimeLoaderOwners.set(promise, owner);
   projectRuntimeLoadPromises.set(key, promise);
   return promise;
 }
 
-async function ensureProjectRuntimeForSessionMeta(sessionMeta) {
-  const workDir = normalizeSessionWorkDir(sessionMeta?.workDir);
-  if (!workDir) {
-    activateBaseRuntime();
-    return null;
-  }
-  try {
-    return await loadProjectRuntime(workDir);
-  } catch (err) {
-    console.warn('[Yeaft] project runtime load failed for %s: %s', workDir, err?.message || err);
-    activateBaseRuntime();
-    return null;
-  }
-}
-
 function getProjectRuntimeForTurn(sessionMeta) {
+  const owner = captureRuntimeOwner();
+  if (!owner) return null;
   const workDir = normalizeSessionWorkDir(sessionMeta?.workDir);
   if (!workDir) {
-    activateBaseRuntime();
+    activateBaseRuntime(owner);
     return null;
   }
   const cached = projectRuntimes.get(projectRuntimeKey(workDir)) || null;
-  if (cached) {
-    activateProjectRuntime(cached);
+  if (runtimeBelongsToOwner(cached, owner)) {
+    activateProjectRuntime(cached, owner);
     return cached;
   }
   scheduleProjectRuntimeLoad(workDir);
   // Do not let a previous workDir's MCP tools leak into this turn while the
   // requested project runtime is still loading in the background.
-  activateBaseRuntime();
+  activateBaseRuntime(owner);
   return null;
 }
 
-function mergedStatusForProjectRuntime(runtime) {
-  if (!session?.status || !runtime?.status) return session?.status || { skills: 0, mcpServers: [], tools: 0 };
+function mergedStatusForProjectRuntime(runtime, ownerSession = session) {
+  if (!ownerSession?.status || !runtime?.status) return ownerSession?.status || { skills: 0, mcpServers: [], tools: 0 };
   return {
-    ...session.status,
-    skills: Math.max(Number(session.status.skills) || 0, Number(runtime.status.skills) || 0),
-    mcpServers: [...new Set([...(session.status.mcpServers || []), ...(runtime.status.mcpServers || [])])],
-    mcpFailed: [...(session.status.mcpFailed || []), ...(runtime.status.mcpFailed || [])],
-    mcpSkipped: [...(session.status.mcpSkipped || []), ...(runtime.status.mcpSkipped || [])],
-    tools: Math.max(Number(session.status.tools) || 0, Number(runtime.status.tools) || 0),
+    ...ownerSession.status,
+    skills: Math.max(Number(ownerSession.status.skills) || 0, Number(runtime.status.skills) || 0),
+    mcpServers: [...new Set([...(ownerSession.status.mcpServers || []), ...(runtime.status.mcpServers || [])])],
+    mcpFailed: [...(ownerSession.status.mcpFailed || []), ...(runtime.status.mcpFailed || [])],
+    mcpSkipped: [...(ownerSession.status.mcpSkipped || []), ...(runtime.status.mcpSkipped || [])],
+    tools: Math.max(Number(ownerSession.status.tools) || 0, Number(runtime.status.tools) || 0),
   };
 }
 
@@ -4331,13 +4543,14 @@ export async function ensureSessionLoaded(opts = {}) {
     const bootConfigRevision = sessionConfigRefreshRevision;
     const yeaftDir = ctx.CONFIG?.yeaftDir;
     const normalizedWorkDir = normalizeSessionWorkDir(opts?.workDir || opts?.sessionMeta?.workDir);
-    session = await loadSession({
+    session = await loadRuntimeSession({
       ...(yeaftDir && { dir: yeaftDir }),
       ...(normalizedWorkDir && { workDir: normalizedWorkDir }),
       skipMCP: true,
       skipSkills: true,
       serverMode: true,
     });
+    claimRuntimeOwnership(session);
 
     installYeaftRuntimeBridge(session);
     // A save may complete after loadSession read config.json but before this
@@ -4372,13 +4585,15 @@ export async function ensureSessionLoaded(opts = {}) {
 
     ensureYeaftConversationId();
     scheduleBaseRuntimeLoad();
-    const bootProjectRuntime = normalizedWorkDir ? projectRuntimes.get(projectRuntimeKey(normalizedWorkDir)) || null : null;
+    let bootProjectRuntime = normalizedWorkDir ? projectRuntimes.get(projectRuntimeKey(normalizedWorkDir)) || null : null;
     if (normalizedWorkDir && !bootProjectRuntime) {
       scheduleProjectRuntimeLoad(normalizedWorkDir);
+      bootProjectRuntime = projectRuntimes.get(projectRuntimeKey(normalizedWorkDir)) || null;
     }
     const bootStatus = mergedStatusForProjectRuntime(bootProjectRuntime);
     hydrateYeaftStatusFromSession({ ...session, status: bootStatus }, { reason: 'session_ready', emitEvent: true });
-    broadcastSkillSlashCommands(session, bootProjectRuntime ? [bootProjectRuntime.skillManager] : []);
+    if (bootProjectRuntime) broadcastSkillSlashCommands({ skillManager: bootProjectRuntime.skillManager });
+    else broadcastSkillSlashCommands(session);
 
     // Per-group history is hydrated lazily on first `getOrCreateSessionHistory`
     // — there's no global "all conversations" tape any more.
@@ -4415,6 +4630,7 @@ export async function ensureSessionLoaded(opts = {}) {
   try {
     return await sessionLoadPromise;
   } catch (err) {
+    await shutdownProjectRuntimes();
     session = null;
     throw err;
   } finally {
@@ -6453,7 +6669,10 @@ export async function handleYeaftLoadMoreHistory(msg) {
  * session, then re-initialises so the frontend gets fresh config.
  */
 export async function resetYeaftSession() {
-  await shutdownProjectRuntimes();
+  // Runtime ownership must be revoked before reset reaches its first await.
+  const oldSession = session;
+  const oldRuntimesShutdown = shutdownProjectRuntimes();
+  await oldRuntimesShutdown;
   if (currentAbortCtrl && !currentAbortCtrl.signal.aborted) {
     try { currentAbortCtrl.abort(); } catch { /* ignore */ }
   }
@@ -6462,9 +6681,9 @@ export async function resetYeaftSession() {
     try { _vpUnsubscribe(); } catch { /* ignore */ }
     _vpUnsubscribe = null;
   }
-  if (session) {
-    await session.shutdown();
-    session = null;
+  if (oldSession) {
+    await oldSession.shutdown();
+    if (session === oldSession) session = null;
   }
   yeaftConversationId = null;
   // Per-group histories live on sessionContexts entries — clearing the
@@ -6508,12 +6727,13 @@ export async function resetYeaftSession() {
 
   try {
     const yeaftDir = ctx.CONFIG?.yeaftDir;
-    session = await loadSession({
+    session = await loadRuntimeSession({
       ...(yeaftDir && { dir: yeaftDir }),
       skipMCP: true,
       skipSkills: true,
       serverMode: true,
     });
+    claimRuntimeOwnership(session);
     installYeaftRuntimeBridge(session);
 
     yeaftConversationId = `yeaft-${Date.now()}`;
@@ -6600,7 +6820,7 @@ function mcpRuntimeSnapshot() {
  * pick up the change.
  */
 function hotSwapMcpTools() {
-  return replaceSessionMcpTools(session?.mcpManager);
+  return replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
 }
 
 /**
@@ -6659,7 +6879,7 @@ export async function handleYeaftMcpAdd(msg = {}) {
     }
   }
 
-  const swap = replaceSessionMcpTools(session?.mcpManager);
+  const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
 
   sendToServer({
     type: 'yeaft_mcp_add_result',
@@ -6696,7 +6916,7 @@ export async function handleYeaftMcpRemove(msg = {}) {
     }
   }
 
-  const swap = replaceSessionMcpTools(session?.mcpManager);
+  const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
 
   sendToServer({
     type: 'yeaft_mcp_remove_result',
@@ -6754,7 +6974,7 @@ export async function handleYeaftMcpReload(msg = {}) {
     console.warn('[Yeaft] MCP reload failed:', err?.message || err);
   }
 
-  const swap = replaceSessionMcpTools(session?.mcpManager);
+  const swap = replaceSessionMcpTools(captureRuntimeOwner(), session?.mcpManager);
 
   sendToServer({
     type: 'yeaft_mcp_reload_result',
@@ -6777,8 +6997,56 @@ export const __testHooks = {
     return runYeaftSessionSend(msg);
   },
   setSessionForTest(nextSession) {
-    session = nextSession || null;
-    sessionLoadPromise = null;
+    __testSetSession(nextSession || null);
+  },
+  setRuntimeFactoriesForTest({
+    createSkillManager: nextCreateSkillManager,
+    createMcpManager: nextCreateMcpManager,
+    loadMcpConfig: nextLoadMcpConfig,
+    loadSession: nextLoadSession,
+  } = {}) {
+    if (typeof nextCreateSkillManager === 'function') createRuntimeSkillManager = nextCreateSkillManager;
+    if (typeof nextCreateMcpManager === 'function') createRuntimeMcpManager = nextCreateMcpManager;
+    if (typeof nextLoadMcpConfig === 'function') loadRuntimeMcpConfig = nextLoadMcpConfig;
+    if (typeof nextLoadSession === 'function') loadRuntimeSession = nextLoadSession;
+  },
+  resetRuntimeFactoriesForTest() {
+    createRuntimeSkillManager = createSkillManager;
+    createRuntimeMcpManager = () => new MCPManager();
+    loadRuntimeMcpConfig = loadMCPConfig;
+    loadRuntimeSession = loadSession;
+  },
+  scheduleBaseRuntimeLoadForTest() {
+    return scheduleBaseRuntimeLoad();
+  },
+  scheduleProjectRuntimeLoadForTest(workDir) {
+    return scheduleProjectRuntimeLoad(workDir);
+  },
+  activateBaseRuntimeForTest() {
+    return activateBaseRuntime();
+  },
+  activateProjectRuntimeForTest(workDir) {
+    const runtime = projectRuntimes.get(projectRuntimeKey(workDir)) || null;
+    return activateProjectRuntime(runtime);
+  },
+  startSkillHotReloadForTest() {
+    return startSkillHotReload();
+  },
+  runtimeLifecycleSnapshotForTest(workDir = '') {
+    const key = workDir ? projectRuntimeKey(workDir) : null;
+    const owner = captureRuntimeOwner();
+    return {
+      generation: runtimeGeneration,
+      ownerSession: runtimeOwnerSession,
+      activeRuntimeKey,
+      timerActive: !!skillReloadTimer,
+      timerOwnerGeneration: skillReloadOwner?.generation ?? null,
+      timerOwnerSession: skillReloadOwner?.ownerSession || null,
+      basePromise: baseRuntimeLoadPromises.get(BASE_RUNTIME_KEY) || null,
+      projectPromise: key ? projectRuntimeLoadPromises.get(key) || null : null,
+      projectRuntime: key ? projectRuntimes.get(key) || null : null,
+      activeSkillManager: activeSkillRuntime(owner)?.skillManager || null,
+    };
   },
   ensureYeaftConversationIdForTest() {
     return ensureYeaftConversationId();
@@ -6852,7 +7120,10 @@ export const __testHooks = {
   },
   seedProjectRuntime(workDir, runtime) {
     const normalizedWorkDir = normalizeSessionWorkDir(workDir);
+    const owner = captureRuntimeOwner();
     const seeded = {
+      generation: owner?.generation ?? runtimeGeneration,
+      ownerSession: owner?.ownerSession || session,
       workDir: normalizedWorkDir,
       skillManager: runtime?.skillManager || { list: () => [] },
       mcpManager: runtime?.mcpManager || { listTools: () => [], disconnectAll: async () => {} },
