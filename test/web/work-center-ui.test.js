@@ -183,13 +183,14 @@ describe('Work Center UI contract', () => {
 
   });
 
-  it('creates Work Items with Auto or a reusable type and keeps Action creation out of the UI', () => {
+  it('creates Work Items with Auto or a task category and keeps Action creation out of the UI', () => {
     const page = read('web/components/WorkCenterPage.js');
     expect(page).toContain('v-model="form.workItemType"');
     expect(page).toContain('<option value="auto">');
     expect(page).toContain('v-for="type in workItemTypes"');
     expect(page).toContain("workItemType: this.form.workItemType || 'auto'");
-    expect(page).toContain("$t('workCenter.actionCount'");
+    expect(page).toContain('<option v-for="type in workItemTypes" :key="type.id" :value="type.id">{{ type.name }}</option>');
+    expect(page).not.toContain("type.name }} · {{ $t('workCenter.actionCount'");
     expect(page).toContain('class="work-center-action-list"');
     expect(page).toContain('@click="selectAction(action)"');
     expect(page).not.toContain('addAction');
@@ -253,7 +254,9 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('v-model="form.workDir" type="text" required @input="onCreateWorkDirInput"');
     expect(page).not.toContain('v-model="form.workDir" type="text" required readonly');
     expect(page).toContain('@click="openFolderPicker"');
-    expect(page).toContain('class="folder-picker-dialog"');
+    expect(page).toContain('class="work-center-directory-dialog"');
+    expect(page).toContain('class="work-center-directory-item"');
+    expect(page).not.toContain('class="tree-item tree-dir folder-picker-item"');
     expect(page).toContain('chat() { return this.store; }');
     expect(page).toContain('folderPickerSetWorkDir(path)');
     expect(page).toContain('onCreateWorkDirInput()');
@@ -261,9 +264,10 @@ describe('Work Center UI contract', () => {
     expect(css).toMatch(/\.work-center-modal-body\s*\{[^}]*overflow-y: auto/s);
     expect(css).toContain('.work-center-modal .btn-primary');
     expect(css).toContain('.work-center-modal .btn-secondary');
-    expect(css).toContain('.work-center-modal .folder-picker-dialog');
+    expect(css).toContain('.work-center-directory-dialog');
+    expect(css).toContain('.work-center-directory-item.selected');
     expect(css).toContain('background: var(--modal-overlay-bg)');
-    expect(css).toContain('background: var(--session-active) !important');
+    expect(css).toContain('background: var(--session-active)');
     expect(css).toContain('width: calc(100vw - 16px)');
     expect(css).toContain('height: calc(100dvh - 16px)');
   });

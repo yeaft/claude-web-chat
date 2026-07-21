@@ -301,7 +301,7 @@ export function createSubmitWorkItemPlanTool({ vps, collector, isRunActive }) {
   const catalogDescription = `Action types: ${actionTypes.join(', ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'}; ${vp.traits.join(', ') || 'no traits'})`).join('; ')}.`;
   return defineTool({
     name: 'SubmitWorkItemPlan',
-    description: `Submit the complete initial WorkItem contract and executable Action DAG. This tool records a Run-local proposal only; Work Center validates and persists it in the current Run finalization transaction. ${catalogDescription}`,
+    description: `Submit the complete initial WorkItem contract and executable Action DAG. Every Action must describe this WorkItem's concrete objective, repository-aware approach, and verifiable expected outcome; never copy generic Action-type text. The reference workflow catalog does not replace this Action list. This tool records a Run-local proposal only; Work Center validates and persists it in the current Run finalization transaction. ${catalogDescription}`,
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -1028,7 +1028,7 @@ export class WorkItemRunner {
     }
     return {
       ...parsedResult,
-      response,
+      response: response || parsedResult.summary,
       ...executionStats(),
       checkpoint,
     };
