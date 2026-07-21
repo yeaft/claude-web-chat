@@ -214,6 +214,8 @@ export class WorkItemWatcher {
           summary: '',
           evidence: [],
           error: err?.message || String(err),
+          failureKind: err?.workItemFailureKind || null,
+          failureCode: err?.workItemFailureCode || null,
           loopCount: err?.workItemExecutionStats?.loopCount || 0,
           toolCount: err?.workItemExecutionStats?.toolCount || 0,
           llmRequestCount: err?.workItemExecutionStats?.llmRequestCount || 0,

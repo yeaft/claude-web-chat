@@ -15,6 +15,23 @@ const MAINLINE_CONTEXT_PREFIX = 'Execute this Work Center Action using only the 
 const MAINLINE_CONTEXT_SUFFIX = '\n</work-center-mainline-context>';
 const encoder = new TextEncoder();
 
+export const MAINLINE_CONTEXT_BLOCKED_KIND = 'system_blocked';
+export const MAINLINE_CONTEXT_BLOCKED_CODE = 'mainline_context_too_large';
+
+export class MainlineContextBlockedError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'MainlineContextBlockedError';
+    this.retryable = false;
+    this.workItemFailureKind = MAINLINE_CONTEXT_BLOCKED_KIND;
+    this.workItemFailureCode = MAINLINE_CONTEXT_BLOCKED_CODE;
+  }
+}
+
+function mainlineContextBlocked(message) {
+  return new MainlineContextBlockedError(message);
+}
+
 function count(value) {
   return Math.max(0, Number(value) || 0);
 }
@@ -159,7 +176,7 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
   const reservedBytes = Math.max(0, Number(budgetInput.reservedBytes) || 0);
   const effectiveHardLimitBytes = budget.hardLimitBytes - reservedBytes;
   if (effectiveHardLimitBytes <= 0) {
-    throw new Error(`Mainline fixed prompt content exceeds 64 KiB (${reservedBytes} rendered UTF-8 bytes)`);
+    throw mainlineContextBlocked(`Mainline fixed prompt content exceeds 64 KiB (${reservedBytes} rendered UTF-8 bytes)`);
   }
   const projection = buildMainlineProjection(detail);
   const dependencyIds = new Set(action.dependsOnStageIds || []);
@@ -214,7 +231,7 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
   };
   const pinnedBytes = renderedContextBytes(snapshot);
   if (pinnedBytes > effectiveHardLimitBytes) {
-    throw new Error(`Mainline pinned context exceeds 64 KiB prompt budget (${pinnedBytes + reservedBytes} rendered UTF-8 bytes)`);
+    throw mainlineContextBlocked(`Mainline pinned context exceeds 64 KiB prompt budget (${pinnedBytes + reservedBytes} rendered UTF-8 bytes)`);
   }
 
   const availableDynamicBytes = Math.max(0, effectiveHardLimitBytes - pinnedBytes);

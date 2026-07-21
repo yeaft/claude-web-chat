@@ -8,6 +8,7 @@ import { Registry } from '../../../../agent/yeaft/vp/registry.js';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { WorkItemWatcher } from '../../../../agent/yeaft/work-center/watcher.js';
+import { projectWorkItemDetail } from '../../../../agent/yeaft/work-center/projection.js';
 import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
 
 const engineOptions = [];
@@ -182,6 +183,72 @@ describe('Work Center Runner execution resolution', () => {
       expect(engineQueries.at(-1).prompt).toContain(v1Claim.action.instruction);
       expect(store.getRun(v1Claim.run.id)).toMatchObject({ contextSnapshot: null, executionManifest: null });
     } finally {
+      store.close();
+    }
+  });
+
+  it('persists oversized pinned Mainline context as one stable system block without retrying', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-mainline-blocked-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Triage Lead', traits: ['triage'], modelHint: 'primary',
+      persona: 'Triage', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const watcher = new WorkItemWatcher({
+      store, controller, runner, ownerBootId: 'blocked-boot',
+      pollIntervalMs: 60_000, leaseMs: 60_000, concurrencyProvider: () => 1,
+    });
+    try {
+      const item = controller.create({
+        title: 'Oversized context', goal: 'Block deterministically', acceptanceCriteria: [], workDir, start: true,
+      });
+      const action = store.getWorkItemDetail(item.id).actions[0];
+      store.db.prepare('UPDATE actions SET brief = ? WHERE id = ?').run(JSON.stringify({
+        objective: 'x'.repeat(70 * 1024),
+        approach: 'Inspect safely',
+        expectedOutcome: 'Stable system block',
+      }), action.id);
+
+      await watcher.tick();
+      await vi.waitFor(() => expect(watcher.activeRuns.size).toBe(0));
+      const detail = store.getWorkItemDetail(item.id);
+      const run = detail.runs[0];
+      expect(detail.actions[0]).toMatchObject({ status: 'failed', attempt: 1 });
+      expect(detail.runs).toHaveLength(1);
+      expect(run).toMatchObject({
+        status: 'failed',
+        failureKind: 'system_blocked',
+        failureCode: 'mainline_context_too_large',
+        llmRequestCount: 0,
+      });
+      expect(detail.events.some(event => event.type === 'action.retry_scheduled')).toBe(false);
+      expect(detail.events.some(event => event.type === 'action.system_blocked')).toBe(true);
+      expect(engineQueries).toHaveLength(0);
+
+      await watcher.tick();
+      expect(store.getWorkItemDetail(item.id).runs).toHaveLength(1);
+      const dto = projectWorkItemDetail(detail);
+      expect(dto.actions[0].failure).toMatchObject({
+        kind: 'system_blocked',
+        code: 'mainline_context_too_large',
+        error: expect.stringMatching(/Mainline pinned context exceeds 64 KiB/),
+      });
+      expect(Buffer.byteLength(JSON.stringify(dto.actions[0].failure), 'utf8')).toBeLessThan(4 * 1024);
+      expect(Buffer.byteLength(dto.actions[0].brief.objective, 'utf8')).toBeLessThanOrEqual(8 * 1024);
+      expect(Buffer.byteLength(JSON.stringify(dto), 'utf8')).toBeLessThan(32 * 1024);
+      expect(JSON.stringify(dto)).not.toContain('contextSnapshot');
+      expect(JSON.stringify(dto)).not.toContain('executionManifest');
+    } finally {
+      await watcher.stop();
       store.close();
     }
   });

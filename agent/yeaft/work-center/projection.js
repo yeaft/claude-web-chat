@@ -13,6 +13,7 @@ const MAX_ACTION_DIAGNOSTIC_CHARS = 8_000;
 const MAX_ACTION_MESSAGES = 20;
 const MAX_ACTION_REQUEST_TOOL_CALLS = 128;
 const MAX_HISTORICAL_BRIEF_CHARS = 256;
+const MAX_CURRENT_BRIEF_BYTES = 8 * 1024;
 export const MAX_WORK_ITEM_BROWSER_DTO_BYTES = 512 * 1024;
 
 function jsonByteLength(value) {
@@ -198,6 +199,10 @@ function actionExecution(action, runs, events, includeBody = true) {
       response: includeBody && typeof action?.response === 'string' ? action.response : '',
       failure: includeBody && action?.failure && typeof action.failure === 'object'
         ? {
+            ...(action.failure.kind === 'system_blocked' ? {
+              kind: 'system_blocked',
+              code: typeof action.failure.code === 'string' ? truncateUtf8(action.failure.code, 128) : null,
+            } : {}),
             error: sanitizeFailureDiagnostic(action.failure.error),
             summary: sanitizeFailureDiagnostic(action.failure.summary),
             failedAt: count(action.failure.failedAt),
@@ -238,6 +243,10 @@ function actionExecution(action, runs, events, includeBody = true) {
     ...stats,
     response: includeBody && typeof latest?.response === 'string' ? latest.response : '',
     failure: includeBody && latestFailure ? {
+      ...(latestFailure.failureKind === 'system_blocked' ? {
+        kind: 'system_blocked',
+        code: typeof latestFailure.failureCode === 'string' ? truncateUtf8(latestFailure.failureCode, 128) : null,
+      } : {}),
       error: sanitizeFailureDiagnostic(latestFailure.error),
       summary: sanitizeFailureDiagnostic(latestFailure.summary),
       failedAt: count(latestFailure.endedAt || latestFailure.startedAt),
@@ -279,11 +288,11 @@ function projectAction(action, runs, events, includeBody = true) {
   const execution = actionExecution(action, runs, events, includeBody);
   const alreadyProjected = !Array.isArray(runs) && Array.isArray(action.messages);
   const brief = taskSpecificActionBrief(action.brief, action.type);
-  const projectedBrief = includeBody || !brief
+  const projectedBrief = !brief
     ? brief
     : Object.fromEntries(Object.entries(brief).map(([key, value]) => [
         key,
-        truncateUtf8(value, MAX_HISTORICAL_BRIEF_CHARS),
+        truncateUtf8(value, includeBody ? MAX_CURRENT_BRIEF_BYTES : MAX_HISTORICAL_BRIEF_CHARS),
       ]));
   return {
     id: action.id,
@@ -495,7 +504,12 @@ function projectMainlineBrowser(detail) {
         type: node.type,
         status: node.status,
         generation: node.generation,
-        brief: taskSpecificActionBrief(action.brief, action.type),
+        brief: taskSpecificActionBrief(action.brief, action.type)
+          ? Object.fromEntries(Object.entries(taskSpecificActionBrief(action.brief, action.type)).map(([key, value]) => [
+              key,
+              truncateUtf8(value, MAX_CURRENT_BRIEF_BYTES),
+            ]))
+          : null,
         dependencies: [...node.dependsOnStageIds],
         canonicalResult: result ? {
           status: result.status,

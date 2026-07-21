@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -181,6 +181,8 @@ function mapRun(row) {
     evidence: normalizeEvidence(parseJson(row.evidence, [])),
     waitingReason: row.waiting_reason || null,
     error: row.error || null,
+    failureKind: row.failure_kind || null,
+    failureCode: row.failure_code || null,
     reviewDecision: row.review_decision || null,
     contractPatch: parseJson(row.contract_patch, null),
     loopCount: Math.max(0, Number(row.loop_count) || 0),
@@ -334,6 +336,8 @@ export class WorkItemStore {
         evidence TEXT NOT NULL DEFAULT '[]',
         waiting_reason TEXT,
         error TEXT,
+        failure_kind TEXT,
+        failure_code TEXT,
         review_decision TEXT,
         contract_patch TEXT,
         response TEXT NOT NULL DEFAULT '',
@@ -421,6 +425,12 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'runs', 'contract_patch')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN contract_patch TEXT');
+    }
+    if (!hasColumn(this.db, 'runs', 'failure_kind')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN failure_kind TEXT');
+    }
+    if (!hasColumn(this.db, 'runs', 'failure_code')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN failure_code TEXT');
     }
     if (!hasColumn(this.db, 'runs', 'loop_count')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN loop_count INTEGER NOT NULL DEFAULT 0');
@@ -1551,7 +1561,7 @@ export class WorkItemStore {
       const ledgerIncrement = workItem.executionSchemaVersion === 2
         && ['completed', 'failed', 'waiting'].includes(result.outcome) ? 1 : 0;
       this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, response = ?, summary = ?, evidence = ?,
-        waiting_reason = ?, error = ?, review_decision = ?, contract_patch = ?, checkpoint = ?,
+        waiting_reason = ?, error = ?, failure_kind = ?, failure_code = ?, review_decision = ?, contract_patch = ?, checkpoint = ?,
         loop_count = ?, tool_count = ?, llm_request_count = ?, input_tokens = ?, output_tokens = ?,
         cache_read_tokens = ?, cache_write_tokens = ?, total_tokens = ?,
         progress_revision = progress_revision + 1 WHERE id = ?`).run(
@@ -1562,6 +1572,8 @@ export class WorkItemStore {
         stringify(normalizeEvidence(result.evidence)),
         result.waitingReason || null,
         result.error || null,
+        result.failureKind || null,
+        result.failureCode || null,
         result.reviewDecision || null,
         stringify(result.contractPatch || null),
         stringify(normalizeActionCheckpoint(result.checkpoint)),

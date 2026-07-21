@@ -173,8 +173,19 @@ describe('Mainline projection', () => {
       generation: 1, specHash: 'hash', dependsOnStageIds: [],
       brief: { objective: 'x'.repeat(70 * 1024), approach: 'Implement safely', expectedOutcome: 'Verified result' },
     };
-    expect(() => buildMainlineContextSnapshot(detail({ actions: [action] }), action))
-      .toThrow(/pinned context exceeds 64 KiB/);
+    let blocked;
+    try {
+      buildMainlineContextSnapshot(detail({ actions: [action] }), action);
+    } catch (error) {
+      blocked = error;
+    }
+    expect(blocked).toMatchObject({
+      name: 'MainlineContextBlockedError',
+      retryable: false,
+      workItemFailureKind: 'system_blocked',
+      workItemFailureCode: 'mainline_context_too_large',
+    });
+    expect(blocked.message).toMatch(/pinned context exceeds 64 KiB/);
   });
 
   it('degrades non-critical sibling results within the selected dynamic budget', () => {

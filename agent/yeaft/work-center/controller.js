@@ -75,6 +75,8 @@ function normalizeTerminalResult(result, action) {
     evidence: normalizeEvidence(result.evidence),
     waitingReason: result.waitingReason ? String(result.waitingReason) : null,
     error: result.error ? String(result.error) : null,
+    failureKind: result.failureKind === 'system_blocked' ? 'system_blocked' : null,
+    failureCode: typeof result.failureCode === 'string' ? result.failureCode.slice(0, 128) : null,
     reviewDecision: ['approved', 'changes_requested'].includes(result.reviewDecision)
       ? result.reviewDecision
       : null,
@@ -432,9 +434,13 @@ export class WorkflowController {
             actionStatus: 'failed',
             workItemStatus: 'needs_attention',
             keepCurrentAction: true,
-            eventType: 'action.failed',
+            eventType: result.failureKind === 'system_blocked' ? 'action.system_blocked' : 'action.failed',
             graphAdvance: workItem.workflowSnapshot?.executionMode === 'graph',
-            eventData: { error: result.error },
+            eventData: {
+              error: result.error,
+              failureKind: result.failureKind,
+              failureCode: result.failureCode,
+            },
           };
         }
 
