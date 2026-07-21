@@ -467,7 +467,7 @@ describe('Yeaft load-history first paint', () => {
     }
   });
 
-  it('does not emit an empty delta chunk when no rows changed after the cursor', async () => {
+  it('emits an empty delta acknowledgement when no visible rows changed after the cursor', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-empty-delta-'));
     try {
       ctx.CONFIG = { yeaftDir: dir };
@@ -488,7 +488,12 @@ describe('Yeaft load-history first paint', () => {
       const pending = handleYeaftLoadHistory({ sessionId: 'session-fast', afterSeq: Number(anchor.id.slice(1)) });
       await flushMicrotasks();
 
-      expect(sent.some(m => m.type === 'yeaft_history_chunk' && m.mode === 'delta')).toBe(false);
+      expect(sent.find(m => m.type === 'yeaft_history_chunk' && m.mode === 'delta')).toMatchObject({
+        sessionId: 'session-fast',
+        messages: [],
+        latestSeq: Number(hidden.id.slice(1)),
+        afterSeq: Number(anchor.id.slice(1)),
+      });
       const event = sent.find(m => m.event?.type === 'history_loaded')?.event;
       expect(event).toMatchObject({
         mode: 'delta',

@@ -57,6 +57,10 @@ let DEFAULT_RECENT_TURNS = 20;
 const RECENT_SESSION_SCAN_BASE_CAP = 64;
 const RECENT_SESSION_SCAN_PER_TURN_CAP = 4;
 const RECENT_SESSION_SCAN_MAX_CAP = 256;
+// A normal Engine loop executes at most 30 tools, but parallel VPs can append
+// many rows between a call and its result. One extra normal delta page keeps the
+// scan bounded while leaving enough room to close a legitimate interleaved arc.
+const DELTA_TOOL_PAIR_EXTENSION_CAP = 500;
 
 
 const SEGMENT_INDEX_FILE = 'index.json';
@@ -1453,8 +1457,8 @@ export class ConversationStore {
    * cursor. When no visible rows changed after `afterSeq`, keep the cursor at
    * least at `afterSeq` so an empty delta still completes the in-flight sync
    * without downgrading the client to a cursor-less loaded state. Hidden rows
-   * are also allowed to advance this cursor because they were scanned and
-   * intentionally omitted from UI replay.
+   * advance the cursor only at pair-safe boundaries; a cursor must never cross
+   * an assistant tool call before all of that call's result rows are included.
    *
    * @param {string} sessionId
    * @param {number|null} afterSeq — exclusive lower bound
@@ -1467,19 +1471,81 @@ export class ConversationStore {
     const cutoff = Number.isFinite(afterSeq) && afterSeq >= 0 ? afterSeq : null;
     if (cutoff === null) return { messages: [], latestSeq: null };
     const after = [];
-    let newestScannedSeq = cutoff;
+    const pendingToolResultIds = new Set();
+    const completedBeforeCursor = new Set();
+    const boundaryAssistants = [];
+    let boundaryLookbackRows = 0;
+    for (const previous of this.#iterateSessionRows(sessionId, { beforeSeq: cutoff + 1, desc: true })) {
+      if (!previous || previous.sessionId !== sessionId) continue;
+      boundaryLookbackRows += 1;
+      if (boundaryLookbackRows > DELTA_TOOL_PAIR_EXTENSION_CAP) break;
+      if (isHiddenConversationRow(previous)) continue;
+      if (previous.role === 'tool' && typeof previous.toolCallId === 'string') {
+        completedBeforeCursor.add(previous.toolCallId);
+        continue;
+      }
+      if (previous.role === 'assistant' && Array.isArray(previous.toolCalls) && previous.toolCalls.length > 0) {
+        const pendingIds = previous.toolCalls
+          .map(toolCall => toolCall?.id)
+          .filter(toolCallId => typeof toolCallId === 'string'
+            && toolCallId
+            && !completedBeforeCursor.has(toolCallId));
+        if (pendingIds.length > 0) boundaryAssistants.push({ message: previous, pendingIds });
+        continue;
+      }
+      if (previous.role === 'user') break;
+    }
+    boundaryAssistants.sort((a, b) => compareMessagesBySeq(a.message, b.message));
+    for (const boundary of boundaryAssistants) {
+      after.push(boundary.message);
+      for (const toolCallId of boundary.pendingIds) pendingToolResultIds.add(toolCallId);
+    }
+    const earliestBoundarySeq = boundaryAssistants.length > 0
+      ? parseSeqFromId(boundaryAssistants[0].message.id)
+      : null;
+    let safeCursorSeq = Number.isFinite(earliestBoundarySeq)
+      ? Math.max(0, earliestBoundarySeq - 1)
+      : cutoff;
+    let visibleRows = after.length;
+    let extensionRows = 0;
     for (const m of this.#iterateSessionRows(sessionId, { afterSeq: cutoff, desc: false })) {
       if (!m || m.sessionId !== sessionId) continue;
       const seq = parseSeqFromId(m.id);
-      if (Number.isFinite(seq) && seq > newestScannedSeq) newestScannedSeq = seq;
-      if (isHiddenConversationRow(m)) continue;
-      after.push(m);
-      if (after.length >= limit) break;
+      const hidden = isHiddenConversationRow(m);
+      if (!hidden) {
+        // Keep every outstanding call open across interleaved VP rows. Session
+        // persistence is globally sequenced, so a sibling VP may append visible
+        // messages between an assistant call and that call's result.
+        after.push(m);
+        visibleRows += 1;
+        if (m.role === 'assistant' && Array.isArray(m.toolCalls)) {
+          for (const toolCall of m.toolCalls) {
+            if (typeof toolCall?.id === 'string' && toolCall.id) pendingToolResultIds.add(toolCall.id);
+          }
+        } else if (m.role === 'tool' && typeof m.toolCallId === 'string') {
+          pendingToolResultIds.delete(m.toolCallId);
+        }
+      }
+      if (pendingToolResultIds.size === 0 && Number.isFinite(seq)) safeCursorSeq = seq;
+      if (visibleRows < limit) continue;
+      if (pendingToolResultIds.size === 0) break;
+      extensionRows += 1;
+      if (extensionRows >= DELTA_TOOL_PAIR_EXTENSION_CAP) break;
     }
-    const sliced = pairSanitize(after.slice(0, limit));
-    const lastSeq = sliced.length ? parseSeqFromId(sliced[sliced.length - 1].id) : null;
-    const latestSeq = Number.isFinite(lastSeq) ? Math.max(lastSeq, newestScannedSeq) : newestScannedSeq;
-    return { messages: projectVisibleSessionMessages(sliced), latestSeq };
+    // If the extension cap stopped inside a malformed arc, return only the
+    // prefix covered by the safe cursor. Returning later rows with an earlier
+    // cursor would make the next delta repeat visible messages unnecessarily.
+    const pairSafeRows = pendingToolResultIds.size === 0
+      ? after
+      : after.filter(message => {
+          const seq = parseSeqFromId(message?.id);
+          return Number.isFinite(seq) && seq <= safeCursorSeq;
+        });
+    const sliced = pairSanitize(pairSafeRows);
+    // Never advance past a row the sanitizer had to drop. A malformed or
+    // over-cap tool arc must be retried from its assistant call rather than
+    // turning the following result into a permanent orphan on the next page.
+    return { messages: projectVisibleSessionMessages(sliced), latestSeq: safeCursorSeq };
   }
 
   /**

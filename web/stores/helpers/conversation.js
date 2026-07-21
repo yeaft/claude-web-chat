@@ -8,6 +8,9 @@ import { maxDbMessageId } from './messages.js';
 import { t } from '../../utils/i18n.js';
 import { EXPERT_ROLES, buildClientExpertMessage } from '../../utils/expert-roles.js';
 
+const YEAFT_ASK_SUBMIT_TIMEOUT_MS = 10_000;
+let yeaftAskSubmitGeneration = 0;
+
 /**
  * fix-usermsg-dup: opaque client-side id stamped on optimistic user
  * messages and forwarded to the server in the `chat` payload. The
@@ -512,14 +515,18 @@ export function answerUserQuestion(store, requestId, answers, conversationId) {
   );
   const isYeaftPrompt = store.currentView === 'yeaft' || !!chatMsg?.sessionId;
   if (isYeaftPrompt && chatMsg?.askPending) return;
+  const sessionId = chatMsg?.sessionId || store.yeaftActiveSessionFilter || null;
+  const ownerAgentId = isYeaftPrompt && typeof store.agentIdForSession === 'function'
+    ? store.agentIdForSession(sessionId)
+    : null;
   const sent = store.sendWsMessage(isYeaftPrompt ? {
     type: 'yeaft_ask_user_answer',
-    agentId: store.yeaftAgentId || store.currentAgent || null,
+    agentId: ownerAgentId || store.yeaftAgentId || store.currentAgent || null,
     conversationId: convId,
     requestId,
     toolCallId: chatMsg?.toolId || null,
     answers,
-    sessionId: chatMsg?.sessionId || store.yeaftActiveSessionFilter || null,
+    sessionId,
     vpId: chatMsg?.vpId || chatMsg?.speakerVpId || null,
     turnId: chatMsg?.turnId || null,
     threadId: chatMsg?.threadId || 'main',
@@ -537,8 +544,17 @@ export function answerUserQuestion(store, requestId, answers, conversationId) {
     chatMsg.askAnswered = true;
     chatMsg.selectedAnswers = answers;
   } else if (chatMsg && sent !== false) {
+    const submitGeneration = ++yeaftAskSubmitGeneration;
     chatMsg.askPending = true;
     chatMsg.pendingAnswers = answers;
+    chatMsg.askSubmitGeneration = submitGeneration;
+    const timer = setTimeout(() => {
+      if (chatMsg.askSubmitGeneration !== submitGeneration || chatMsg.askPending !== true) return;
+      chatMsg.askPending = false;
+      chatMsg.pendingAnswers = null;
+      chatMsg.askSubmitGeneration = null;
+    }, YEAFT_ASK_SUBMIT_TIMEOUT_MS);
+    if (typeof timer?.unref === 'function') timer.unref();
   }
 
   // 立刻进入 processing 状态，显示"思考中"指示器

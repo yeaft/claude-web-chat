@@ -192,6 +192,134 @@ describe('per-session running state', () => {
     });
   });
 
+  it('restores an unconfirmed local submission when the Agent replays the pending prompt', () => {
+    const store = freshStore();
+    store.currentView = 'yeaft';
+    store.yeaftConversationId = 'yeaft-conv';
+    store.messagesMap['yeaft-conv'] = [{
+      type: 'tool-use',
+      toolId: 'call-retry',
+      toolName: 'AskUserQuestion',
+      askRequestId: 'ask-retry',
+      askPending: true,
+      pendingAnswers: { 'Continue?': 'Yes' },
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+    }];
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      event: {
+        type: 'ask_user_question',
+        requestId: 'ask-retry',
+        toolCallId: 'call-retry',
+        replay: true,
+        questions: [{ question: 'Continue?', options: [] }],
+      },
+    });
+
+    expect(store.messagesMap['yeaft-conv'][0]).toMatchObject({
+      askRequestId: 'ask-retry',
+      askPending: false,
+      pendingAnswers: null,
+      agentId: 'agent-a',
+    });
+  });
+
+  it('settles only the AskUser row matching the complete terminal identity', () => {
+    const store = freshStore();
+    store.currentView = 'yeaft';
+    store.yeaftConversationId = 'yeaft-conv';
+    store.messagesMap['yeaft-conv'] = [
+      {
+        type: 'tool-use', toolName: 'AskUserQuestion', toolId: 'call-shared', askRequestId: 'ask-shared',
+        agentId: 'agent-a', sessionId: 'session-a', vpId: 'vp-a', turnId: 'turn-a', threadId: 'thread-a',
+      },
+      {
+        type: 'tool-use', toolName: 'AskUserQuestion', toolId: 'call-shared', askRequestId: 'ask-shared',
+        agentId: 'agent-a', sessionId: 'session-a', vpId: 'vp-b', turnId: 'turn-b', threadId: 'thread-b',
+      },
+    ];
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      vpId: 'vp-b',
+      turnId: 'turn-b',
+      threadId: 'thread-b',
+      event: {
+        type: 'ask_user_answered',
+        requestId: 'ask-shared',
+        toolCallId: 'call-shared',
+        answers: { Choice: 'B' },
+      },
+    });
+
+    expect(store.messagesMap['yeaft-conv'][0].askAnswered).toBeUndefined();
+    expect(store.messagesMap['yeaft-conv'][1]).toMatchObject({
+      askRequestId: null,
+      askAnswered: true,
+      selectedAnswers: { Choice: 'B' },
+    });
+  });
+
+  it('applies a terminal AskUser event that arrives before its replayed row', () => {
+    const store = freshStore();
+    store.currentView = 'yeaft';
+    store.yeaftConversationId = 'yeaft-conv';
+    store.messagesMap['yeaft-conv'] = [];
+    const envelope = {
+      agentId: 'agent-a',
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+    };
+
+    store.handleYeaftOutput({
+      ...envelope,
+      event: {
+        type: 'ask_user_answered',
+        requestId: 'ask-early-terminal',
+        toolCallId: 'call-early-terminal',
+        answers: { Continue: 'Yes' },
+      },
+    });
+    store.handleYeaftOutput({
+      ...envelope,
+      event: {
+        type: 'ask_user_question',
+        requestId: 'ask-early-terminal',
+        toolCallId: 'call-early-terminal',
+        replay: true,
+        questions: [{ question: 'Continue?', options: [] }],
+      },
+    });
+
+    expect(store.messagesMap['yeaft-conv']).toEqual([
+      expect.objectContaining({
+        toolId: 'call-early-terminal',
+        askRequestId: null,
+        askAnswered: true,
+        selectedAnswers: { Continue: 'Yes' },
+        agentId: 'agent-a',
+        sessionId: 'session-a',
+        vpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+      }),
+    ]);
+  });
+
   it('creates a replayed AskUser card when recent history omitted the tool row', () => {
     const store = freshStore();
     store.currentView = 'yeaft';
@@ -229,6 +357,113 @@ describe('per-session running state', () => {
     ]);
   });
 
+  it('does not advance the durable cursor past a pending AskUser on later live text', () => {
+    const store = freshStore();
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-a';
+    store.yeaftConversationId = 'yeaft-conv';
+    store.yeaftActiveSessionFilter = 'session-a';
+    store.yeaftSessionHistoryState = {
+      'agent-a\u001fsession-a': { loaded: true, latestSeq: 40 },
+    };
+    store.messagesMap['yeaft-conv'] = [{
+      type: 'tool-use',
+      toolName: 'AskUserQuestion',
+      toolId: 'call-pending',
+      askRequestId: 'ask-pending',
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      hasResult: false,
+    }];
+    const originalOutputHandler = store.handleAssistantOutputFrame;
+    store.handleAssistantOutputFrame = vi.fn();
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      vpId: 'vp-b',
+      turnId: 'turn-b',
+      threadId: 'thread-b',
+      data: {
+        type: 'assistant',
+        message: { id: '000042-assistant', content: [{ type: 'text', text: 'sibling output' }] },
+      },
+    });
+
+    expect(store.yeaftSessionHistoryState['agent-a\u001fsession-a'].latestSeq).toBe(40);
+    store.handleAssistantOutputFrame = originalOutputHandler;
+  });
+
+  it('leaves the durable cursor at the last pair-safe row when a tool result arrives', () => {
+    const store = freshStore();
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-a';
+    store.yeaftConversationId = 'yeaft-conv';
+    store.yeaftActiveSessionFilter = 'session-a';
+    store.yeaftSessionHistoryState = {
+      'agent-a\u001fsession-a': { loaded: true, latestSeq: 40 },
+    };
+    store.messagesMap['yeaft-conv'] = [
+      {
+        type: 'tool-use',
+        id: '000041-tool-use',
+        messageId: '000041-tool-use',
+        toolName: 'AskUserQuestion',
+        toolId: 'call-result',
+        askRequestId: 'ask-result',
+        sessionId: 'session-a',
+        hasResult: false,
+      },
+      {
+        type: 'assistant',
+        id: '000042-assistant',
+        messageId: '000042-assistant',
+        sessionId: 'session-a',
+        content: 'sibling output',
+      },
+    ];
+    const originalOutputHandler = store.handleAssistantOutputFrame;
+    store.handleAssistantOutputFrame = vi.fn();
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      data: {
+        type: 'user',
+        message: {
+          id: '000043-tool',
+          content: [{ type: 'tool_result', tool_use_id: 'call-result', content: '{"answers":{"Continue?":"Yes"}}' }],
+        },
+      },
+    });
+
+    expect(store.yeaftSessionHistoryState['agent-a\u001fsession-a'].latestSeq).toBe(40);
+    store.handleAssistantOutputFrame = originalOutputHandler;
+  });
+
+  it('does not settle an ambiguous legacy terminal event', () => {
+    const store = freshStore();
+    store.currentView = 'yeaft';
+    store.yeaftConversationId = 'yeaft-conv';
+    store.messagesMap['yeaft-conv'] = [
+      { type: 'tool-use', toolName: 'AskUserQuestion', askRequestId: 'ask-legacy', sessionId: 'session-a', vpId: 'vp-a' },
+      { type: 'tool-use', toolName: 'AskUserQuestion', askRequestId: 'ask-legacy', sessionId: 'session-a', vpId: 'vp-b' },
+    ];
+
+    store.handleYeaftOutput({
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      event: { type: 'ask_user_answered', requestId: 'ask-legacy', answers: { Continue: 'Yes' } },
+    });
+
+    expect(store.messagesMap['yeaft-conv'].every(row => !row.askAnswered)).toBe(true);
+    expect(Object.keys(store._yeaftAskTerminalEvents)).toHaveLength(1);
+  });
+
   it('marks an expired AskUser card without moving the visible Session', () => {
     const store = freshStore();
     store.currentView = 'yeaft';
@@ -253,6 +488,35 @@ describe('per-session running state', () => {
       askExpired: true,
       isHistory: true,
     });
+  });
+
+  it('does not advance the durable delta cursor on a live tool-use row', () => {
+    const store = freshStore();
+    store.currentView = 'yeaft';
+    store.currentAgent = 'agent-a';
+    store.yeaftConversationId = 'yeaft-conv';
+    store.yeaftActiveSessionFilter = 'session-a';
+    store.yeaftSessionHistoryState = {
+      'agent-a\u001fsession-a': { loaded: true, latestSeq: 40 },
+    };
+
+    store.handleYeaftOutput({
+      agentId: 'agent-a',
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      data: {
+        type: 'assistant',
+        message: {
+          id: '000041-assistant',
+          content: [{ type: 'tool_use', id: 'call-41', name: 'AskUser', input: {} }],
+        },
+      },
+    });
+
+    expect(store.yeaftSessionHistoryState['agent-a\u001fsession-a'].latestSeq).toBe(40);
   });
 
   it('keeps Yeaft active while any VP turn in that session is unfinished', () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 globalThis.Pinia = globalThis.Pinia || {
   defineStore: () => () => ({}),
@@ -10,6 +10,10 @@ globalThis.localStorage = globalThis.localStorage || {
 };
 
 const { answerUserQuestion } = await import('../../web/stores/helpers/conversation.js');
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('Yeaft AskUser card routing', () => {
   it('submits the answer with the exact Session and VP turn context', () => {
@@ -53,6 +57,41 @@ describe('Yeaft AskUser card routing', () => {
       threadId: 'thread-a',
     });
     expect(store.messagesMap['yeaft-a'][0].askAnswered).toBeUndefined();
+  });
+
+  it('routes a Session card through its owning Agent after the page switches Agents', () => {
+    const sendWsMessage = vi.fn(() => true);
+    const row = {
+      type: 'tool-use',
+      toolName: 'AskUserQuestion',
+      toolId: 'call-owned',
+      askRequestId: 'ask-owned',
+      sessionId: 'session-owned',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+    };
+    const store = {
+      currentView: 'yeaft',
+      currentAgent: 'agent-visible',
+      yeaftAgentId: 'agent-visible',
+      yeaftActiveSessionFilter: 'session-visible',
+      messagesMap: { 'yeaft-owner': [row] },
+      processingConversations: {},
+      _closedAt: {},
+      agentIdForSession: vi.fn(() => 'agent-owner'),
+      sendWsMessage,
+      getOrCreateExecutionStatus: vi.fn(),
+    };
+
+    answerUserQuestion(store, 'ask-owned', { Continue: 'Yes' }, 'yeaft-owner');
+
+    expect(store.agentIdForSession).toHaveBeenCalledWith('session-owned');
+    expect(sendWsMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'yeaft_ask_user_answer',
+      agentId: 'agent-owner',
+      sessionId: 'session-owned',
+    }));
   });
 
   it('keeps the Claude Code provider protocol unchanged', () => {
@@ -139,6 +178,7 @@ describe('Yeaft AskUser card routing', () => {
       pendingAnswers: { Continue: 'Yes' },
       askRequestId: 'ask-pending',
     });
+    expect(Number.isFinite(row.askSubmitGeneration)).toBe(true);
 
     answerUserQuestion(store, 'ask-pending', { Continue: 'No' }, 'yeaft-a');
     expect(sendWsMessage).toHaveBeenCalledTimes(1);
@@ -168,5 +208,36 @@ describe('Yeaft AskUser card routing', () => {
 
     expect(row.askPending).toBeUndefined();
     expect(row.pendingAnswers).toBeUndefined();
+  });
+
+  it('rolls back an unconfirmed submission after the acknowledgement window', () => {
+    vi.useFakeTimers();
+    const row = {
+      type: 'tool-use',
+      toolName: 'AskUserQuestion',
+      toolId: 'call-timeout',
+      askRequestId: 'ask-timeout',
+      sessionId: 'session-a',
+    };
+    const store = {
+      currentView: 'yeaft',
+      currentAgent: 'agent-a',
+      messagesMap: { 'yeaft-a': [row] },
+      processingConversations: {},
+      _closedAt: {},
+      agentIdForSession: vi.fn(() => 'agent-a'),
+      sendWsMessage: vi.fn(() => true),
+      getOrCreateExecutionStatus: vi.fn(),
+    };
+
+    answerUserQuestion(store, 'ask-timeout', { Continue: 'Yes' }, 'yeaft-a');
+    expect(row.askPending).toBe(true);
+
+    vi.advanceTimersByTime(10_000);
+
+    expect(row.askPending).toBe(false);
+    expect(row.pendingAnswers).toBeNull();
+    expect(row.askSubmitGeneration).toBeNull();
+    expect(row.askRequestId).toBe('ask-timeout');
   });
 });

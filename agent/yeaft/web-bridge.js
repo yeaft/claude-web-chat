@@ -1175,9 +1175,9 @@ function projectVisibleHistoryChunkMessages(messages = []) {
 
 function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = null, hasMore = false, latestSeq = null, afterSeq = null, turns = null, perfTraceId = null }) {
   const projectedMessages = projectVisibleHistoryChunkMessages(messages);
-  if (mode === 'delta' && projectedMessages.length === 0) {
-    return projectedMessages;
-  }
+  // Empty deltas still carry the authoritative safe cursor and clear the
+  // browser's syncingAfterSeq fence. Dropping this envelope leaves Session
+  // switching stuck after hidden-only or pair-unsafe rows.
   sendToServer({
     type: 'yeaft_history_chunk',
     conversationId: yeaftConversationId,

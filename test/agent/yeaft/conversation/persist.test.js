@@ -562,6 +562,150 @@ legacy session`, { encoding: 'utf8' });
       expect(page.messages.map(m => m.content)).toEqual(['target response']);
     });
 
+    it('keeps an AskUser call and result atomic at the default delta limit', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_ask' });
+      store.appendBatch(Array.from({ length: 499 }, (_, index) => ({
+        role: 'assistant',
+        content: `filler-${index}`,
+        sessionId: 'grp_delta_ask',
+      })));
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_ask',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCalls: [{ id: 'ask_boundary', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      const result = store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_delta_ask',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCallId: 'ask_boundary',
+      });
+      const trailing = store.append({ role: 'assistant', content: 'after pair', sessionId: 'grp_delta_ask' });
+
+      const firstPage = store.loadAfterSeqByGroup('grp_delta_ask', store.getMessageSeqById(cursor.id));
+      expect(firstPage.messages.find(message => message.id === call.id)?.askUserResults).toEqual([
+        expect.objectContaining({
+          toolCallId: 'ask_boundary',
+          status: 'answered',
+          answers: { 'Continue?': 'Yes' },
+        }),
+      ]);
+      expect(firstPage.latestSeq).toBe(store.getMessageSeqById(result.id));
+
+      const secondPage = store.loadAfterSeqByGroup('grp_delta_ask', firstPage.latestSeq);
+      expect(secondPage.messages.map(message => message.id)).toEqual([trailing.id]);
+    });
+
+    it('recovers an AskUser result when the incoming cursor already points at its call', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_cursor' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCalls: [{ id: 'ask_cursor', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.appendBatch(Array.from({ length: 499 }, (_, index) => ({
+        role: 'assistant',
+        content: `sibling output ${index}`,
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-b',
+        turnId: `turn-b-${index}`,
+        threadId: `thread-b-${index}`,
+      })));
+      const result = store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCallId: 'ask_cursor',
+      });
+
+      const siblingCursor = store.getMessageSeqById(result.id) - 1;
+      const page = store.loadAfterSeqByGroup('grp_delta_cursor', siblingCursor);
+
+      expect(store.getMessageSeqById(cursor.id)).toBeLessThan(store.getMessageSeqById(call.id));
+      expect(page.messages.find(message => message.id === call.id)?.askUserResults).toEqual([
+        expect.objectContaining({ toolCallId: 'ask_cursor', status: 'answered' }),
+      ]);
+      expect(page.latestSeq).toBe(store.getMessageSeqById(result.id));
+    });
+
+    it('keeps a tool pair atomic across interleaved visible Session rows', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_interleaved' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        toolCalls: [{ id: 'tool_interleaved', name: 'FileRead', input: {} }],
+      });
+      store.append({
+        role: 'assistant',
+        content: 'sibling output',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-b',
+        turnId: 'turn-b',
+      });
+      const result = store.append({
+        role: 'tool',
+        content: 'done',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        toolCallId: 'tool_interleaved',
+      });
+
+      const page = store.loadAfterSeqByGroup(
+        'grp_delta_interleaved',
+        store.getMessageSeqById(cursor.id),
+        { limit: 1 },
+      );
+
+      expect(page.messages.find(message => message.id === call.id)).toMatchObject({ toolSummaryCount: 1 });
+      expect(page.latestSeq).toBe(store.getMessageSeqById(result.id));
+    });
+
+    it('keeps every result in an ordinary multi-tool arc at a delta boundary', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_tools' });
+      store.append({ role: 'assistant', content: 'filler', sessionId: 'grp_delta_tools' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_tools',
+        toolCalls: [
+          { id: 'tool_a', name: 'FileRead', input: {} },
+          { id: 'tool_b', name: 'Grep', input: {} },
+        ],
+      });
+      store.append({ role: 'tool', content: 'a', sessionId: 'grp_delta_tools', toolCallId: 'tool_a' });
+      const lastResult = store.append({ role: 'tool', content: 'b', sessionId: 'grp_delta_tools', toolCallId: 'tool_b' });
+      const trailing = store.append({ role: 'assistant', content: 'after pair', sessionId: 'grp_delta_tools' });
+
+      const firstPage = store.loadAfterSeqByGroup(
+        'grp_delta_tools',
+        store.getMessageSeqById(cursor.id),
+        { limit: 3 },
+      );
+      expect(firstPage.messages.find(message => message.id === call.id)).toMatchObject({ toolSummaryCount: 2 });
+      expect(firstPage.latestSeq).toBe(store.getMessageSeqById(lastResult.id));
+
+      const secondPage = store.loadAfterSeqByGroup('grp_delta_tools', firstPage.latestSeq, { limit: 3 });
+      expect(secondPage.messages.map(message => message.id)).toEqual([trailing.id]);
+    });
+
     it('hides legacy unstamped task-result and system-note rows from session history', () => {
       const first = store.append({ role: 'user', content: 'real user', sessionId: 'grp_a' });
       store.append({

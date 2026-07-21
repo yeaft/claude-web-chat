@@ -598,6 +598,7 @@ function applyAskUserHistoryResult(row, result, questions) {
   row.askRequestId = null;
   row.askPending = false;
   row.pendingAnswers = null;
+  row.askSubmitGeneration = null;
   row.hasResult = true;
   row.isHistory = true;
   if (result.status === 'answered') {
