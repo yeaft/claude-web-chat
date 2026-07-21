@@ -140,6 +140,30 @@ describe('Work Center event projection', () => {
     }
   });
 
+  it('does not project generic Action-type fallback text as AI planning', () => {
+    const detail = internalDetail();
+    detail.actions[0].type = 'triage';
+    detail.actions[0].brief = {
+      objective: 'Turn the request into a precise, executable Work Item contract and plan.',
+      approach: 'Inspect the relevant facts, resolve scope and risks, then select the smallest reliable Action sequence.',
+      expectedOutcome: 'A frozen Work Item type, validated contract, and executable Action plan.',
+    };
+
+    expect(projectWorkItemDetail(detail).actions[0].brief).toBeNull();
+  });
+
+  it('does not project a partially generic brief as AI planning', () => {
+    const detail = internalDetail();
+    detail.actions[0].type = 'review';
+    detail.actions[0].brief = {
+      objective: 'Review this exact Work Center picker change',
+      approach: 'Prioritize correctness, security, data loss, compatibility, and missing tests over style preferences.',
+      expectedOutcome: 'A task-specific decision for the picker change',
+    };
+
+    expect(projectWorkItemDetail(detail).actions[0].brief).toBeNull();
+  });
+
   it('projects a bounded, redacted failure diagnostic without exposing other Run internals', () => {
     const detail = internalDetail();
     detail.status = 'needs_attention';

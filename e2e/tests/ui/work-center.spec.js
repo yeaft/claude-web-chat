@@ -640,13 +640,54 @@ test.describe('Work Center responsive UI', () => {
     await createModal.locator('textarea').first().fill('Use the directory shown in the form');
     await expect(createModal.locator('select').first()).toHaveValue('auto');
     expect(await createModal.locator('select').first().locator('option').allTextContents())
-      .toContain('Software change · 3 Actions');
+      .toContain('Software change');
     const createRequest = respondToWorkCenterOp(mockAgent, 'create', OPEN_ITEM_DETAIL);
     await createModal.getByRole('button', { name: 'Create', exact: true }).click();
     const request = await createRequest;
     await respondToWorkCenterOp(mockAgent, 'list', { items: [OPEN_ITEM], watcher: { enabled: true } });
     expect(request.payload.workDir).toBe('/tmp/test');
     expect(request.payload.workItemType).toBe('auto');
+  });
+
+  test('uses the Work Center design system for directory selection', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent);
+    await chatPage.locator('.work-center-header-create').click();
+    const createModal = chatPage.locator('.work-center-modal');
+
+    const directoryRequestPromise = mockAgent.waitForMessage('list_directory');
+    await createModal.getByRole('button', { name: 'Choose folder' }).click();
+    const directoryRequest = await directoryRequestPromise;
+    mockAgent.send({
+      type: 'directory_listing',
+      conversationId: directoryRequest.conversationId,
+      requestId: directoryRequest.requestId,
+      dirPath: '/tmp/test',
+      entries: [
+        { name: 'project-alpha', type: 'directory' },
+        { name: 'project-beta', type: 'directory' },
+      ],
+    });
+
+    const picker = chatPage.locator('.work-center-directory-dialog');
+    await expect(picker).toBeVisible();
+    await expect(picker.getByText('Choose the project folder this Work Item can read and modify.')).toBeVisible();
+    await expect(picker.locator('.work-center-directory-current')).toHaveText('/tmp/test');
+    await expect(picker.getByRole('option')).toHaveCount(2);
+    await expect(picker.locator('.tree-item')).toHaveCount(0);
+
+    const firstFolder = picker.getByRole('option', { name: 'project-alpha' });
+    await firstFolder.click();
+    await expect(firstFolder).toHaveAttribute('aria-selected', 'true');
+    const colors = await firstFolder.evaluate(element => {
+      const style = getComputedStyle(element);
+      return { background: style.backgroundColor, color: style.color };
+    });
+    expect(colors.background).not.toBe('rgba(0, 0, 0, 0)');
+    expect(colors.background).not.toBe('rgb(255, 255, 255)');
+
+    await picker.getByRole('button', { name: 'OK' }).click();
+    await expect(createModal.getByRole('textbox', { name: /Working directory/ }))
+      .toHaveValue('/tmp/test/project-alpha');
   });
 
   test('keeps a create action available on mobile with existing work items', async ({ chatPage, mockAgent }) => {

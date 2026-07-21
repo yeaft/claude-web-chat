@@ -5,7 +5,7 @@ import {
   sanitizeDebugValue,
   sanitizeDiagnosticText,
 } from './debug-projection.js';
-import { normalizeActionBrief } from './workflow.js';
+import { taskSpecificActionBrief } from './workflow.js';
 
 const MAX_ACTION_MESSAGE_CHARS = 16_000;
 const MAX_ACTION_DIAGNOSTIC_CHARS = 8_000;
@@ -277,7 +277,7 @@ function projectAction(action, runs, events, includeBody = true) {
   if (!action) return null;
   const execution = actionExecution(action, runs, events, includeBody);
   const alreadyProjected = !Array.isArray(runs) && Array.isArray(action.messages);
-  const brief = alreadyProjected ? (action.brief || null) : normalizeActionBrief(action.brief, action.type);
+  const brief = taskSpecificActionBrief(action.brief, action.type);
   const projectedBrief = includeBody || !brief
     ? brief
     : Object.fromEntries(Object.entries(brief).map(([key, value]) => [

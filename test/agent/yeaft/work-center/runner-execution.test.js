@@ -1077,6 +1077,35 @@ describe('Work Center Runner execution resolution', () => {
     expect(engineQueries[0].prompt).not.toContain('This content must not be injected.');
   });
 
+  it('uses the structured AI summary when a tool-driven Run has no free-text response', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-summary-response-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Developer', traits: ['implement'], modelHint: 'primary',
+      persona: 'Implement', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    const result = await runner.run({
+      workItem: { id: 'wi-1', workDir, workspaceKey: workDir },
+      action: { type: 'implement', requiredRole: 'linus', instruction: 'Implement it' },
+      run: { id: 'run-1', leaseEpoch: 1 },
+      ownerBootId: 'boot-1', signal: new AbortController().signal,
+    });
+
+    expect(result).toMatchObject({ outcome: 'completed', summary: 'done', response: 'done' });
+  });
+
   it('reports public text while filtering hidden thinking from progress and the result', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-thinking-filter-'));
     engineThinking = '{"outcome":"failed","summary":"private reasoning","evidence":[]}';

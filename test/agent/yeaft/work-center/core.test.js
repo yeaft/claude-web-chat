@@ -666,24 +666,51 @@ describe('Work Center core', () => {
     expect(item.workflowSnapshot.stages).toHaveLength(1);
   });
 
-  it('reuses a matching Work Item type Action template without accepting an LLM Action list', () => {
+  it('requires task-specific Actions even when the inferred type matches a reference workflow', () => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}, 'auto'),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const rejected = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'software-change' },
+    }));
+
+    expect(rejected).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
+    expect(store.getRun(triage.run.id)).toMatchObject({
+      status: 'failed', error: expect.stringMatching(/between 1 and 8 task-specific Actions/i),
+    });
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
+  it('persists AI-generated briefs when the inferred type matches a reference workflow', () => {
     const item = controller.create(createInput({
       workflowTemplate: 'ai-planned',
       workflowSnapshot: resolvePlanningWorkflowSnapshot({}, 'auto'),
     }));
     const triage = store.claimReadyAction('boot-a', 5_000);
     const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
-      plan: { workItemType: 'software-change' },
+      plan: {
+        workItemType: 'software-change',
+        actions: [{
+          id: 'fix-folder-picker', type: 'implement',
+          objective: 'Restyle the Work Center directory picker and preserve project selection',
+          approach: 'Reuse Work Center modal tokens, remove tree-item styling, and add browser coverage',
+          expectedOutcome: 'The picker matches the Work Center in both themes and still selects a valid project path',
+          dependsOnActionIds: [], workspaceMode: 'shared',
+        }],
+      },
     }));
 
-    expect(detail.workflowSnapshot).toMatchObject({ workItemType: 'software-change' });
-    expect(detail.workflowSnapshot.stages.map(stage => stage.type))
-      .toEqual(['triage', 'implement', 'review', 'deliver']);
-    expect(detail.actions.at(-1)).toMatchObject({ type: 'implement', status: 'ready' });
-    expect(detail.actions.at(-1).brief).toMatchObject({
-      objective: expect.stringContaining('Implement'),
-      approach: expect.any(String),
-      expectedOutcome: expect.any(String),
+    expect(detail.workflowSnapshot).toMatchObject({ workItemType: 'software-change', planningMode: 'ai' });
+    expect(detail.workflowSnapshot.stages.map(stage => stage.id)).toEqual(['triage', 'fix-folder-picker']);
+    expect(detail.actions.at(-1)).toMatchObject({
+      type: 'implement', status: 'ready',
+      brief: {
+        objective: 'Restyle the Work Center directory picker and preserve project selection',
+        approach: 'Reuse Work Center modal tokens, remove tree-item styling, and add browser coverage',
+        expectedOutcome: 'The picker matches the Work Center in both themes and still selects a valid project path',
+      },
     });
     expect(item.workflowSnapshot.stages).toHaveLength(1);
   });

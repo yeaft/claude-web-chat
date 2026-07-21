@@ -886,9 +886,9 @@ export default {
               <label>{{ tr('workCenter.workItemType', 'Type') }}
                 <select v-model="form.workItemType">
                   <option value="auto">{{ tr('workCenter.typeAuto', 'Auto — let the LLM infer') }}</option>
-                  <option v-for="type in workItemTypes" :key="type.id" :value="type.id">{{ type.name }} · {{ $t('workCenter.actionCount', { count: type.actionCount }) }}</option>
+                  <option v-for="type in workItemTypes" :key="type.id" :value="type.id">{{ type.name }}</option>
                 </select>
-                <small class="work-center-field-help">{{ tr('workCenter.typeHelp', 'Choose a reusable type template or use Auto for LLM inference.') }}</small>
+                <small class="work-center-field-help">{{ tr('workCenter.typeHelp', 'Choose a task category, or use Auto for AI inference. AI still plans the concrete Actions.') }}</small>
               </label>
             </section>
             <section class="work-center-form-section work-center-create-attachments">
@@ -943,40 +943,48 @@ export default {
             </button>
           </footer>
 
-          <div class="folder-picker-overlay" v-if="folderPickerOpen" @click.self="closeFolderPicker">
-            <div class="folder-picker-dialog" role="dialog" aria-modal="true" :aria-label="tr('modal.folderPicker.title', 'Select work directory')">
-              <div class="folder-picker-header">
-                <span>{{ tr('modal.folderPicker.title', 'Select work directory') }}</span>
-                <button class="wb-btn-sm" type="button" @click="closeFolderPicker" :aria-label="tr('common.close', 'Close')">×</button>
-              </div>
-              <div class="folder-picker-path">
-                <button class="wb-btn-sm" type="button" @click="folderPickerNavigateUp" :disabled="!folderPickerPath" :title="tr('modal.folderPicker.parentDir', 'Parent directory')">
-                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2Z"/></svg>
+          <div class="work-center-directory-overlay" v-if="folderPickerOpen" @click.self="closeFolderPicker">
+            <div class="work-center-directory-dialog" role="dialog" aria-modal="true" aria-labelledby="work-center-directory-title">
+              <header class="work-center-directory-header">
+                <div>
+                  <h3 id="work-center-directory-title">{{ tr('modal.folderPicker.title', 'Select work directory') }}</h3>
+                  <p>{{ tr('workCenter.folderPickerHint', 'Choose the project folder this Work Item can read and modify.') }}</p>
+                </div>
+                <button class="modal-close" type="button" @click="closeFolderPicker" :aria-label="tr('common.close', 'Close')">×</button>
+              </header>
+              <div class="work-center-directory-path">
+                <button class="btn-ghost work-center-directory-up" type="button" @click="folderPickerNavigateUp" :disabled="!folderPickerPath" :aria-label="tr('modal.folderPicker.parentDir', 'Parent directory')">
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2Z"/></svg>
                 </button>
-                <span class="folder-picker-current">{{ folderPickerPath || tr('common.rootDir', 'Root') }}</span>
+                <span class="work-center-directory-current" :title="folderPickerPath">{{ folderPickerPath || tr('common.rootDir', 'Root') }}</span>
               </div>
-              <div class="folder-picker-list">
-                <div class="git-loading" v-if="folderPickerLoading"><span class="spinner-mini"></span> {{ tr('common.loading', 'Loading') }}</div>
+              <div class="work-center-directory-list" role="listbox" :aria-busy="folderPickerLoading">
+                <div class="work-center-directory-state" v-if="folderPickerLoading"><span class="spinner-mini"></span><span>{{ tr('common.loading', 'Loading') }}</span></div>
                 <template v-else>
                   <button
                     v-for="entry in folderPickerEntries"
                     :key="entry.name"
-                    class="tree-item tree-dir folder-picker-item"
-                    :class="{ 'folder-picker-selected': folderPickerSelected === entry.name }"
+                    class="work-center-directory-item"
+                    :class="{ selected: folderPickerSelected === entry.name }"
                     type="button"
+                    role="option"
+                    :aria-selected="folderPickerSelected === entry.name"
                     @click="folderPickerSelectItem(entry)"
                     @dblclick="folderPickerEnter(entry)"
                   >
-                    <span class="tree-icon"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2Z"/></svg></span>
-                    <span class="tree-name">{{ entry.name }}</span>
+                    <span class="work-center-directory-icon"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2Z"/></svg></span>
+                    <span>{{ entry.name }}</span>
                   </button>
-                  <div class="tree-empty" v-if="folderPickerEntries.length === 0">{{ tr('common.noSubdirectories', 'No subdirectories') }}</div>
+                  <div class="work-center-directory-state" v-if="folderPickerEntries.length === 0">{{ tr('common.noSubdirectories', 'No subdirectories') }}</div>
                 </template>
               </div>
-              <div class="folder-picker-footer">
-                <button class="btn-secondary" type="button" @click="closeFolderPicker">{{ tr('common.cancel', 'Cancel') }}</button>
-                <button class="btn-primary" type="button" @click="confirmFolderPicker" :disabled="!folderPickerPath">{{ tr('common.confirm', 'Confirm') }}</button>
-              </div>
+              <footer class="work-center-directory-footer">
+                <span>{{ tr('workCenter.folderPickerSelectionHint', 'Double-click to open a folder, or select it and confirm.') }}</span>
+                <div>
+                  <button class="btn-secondary" type="button" @click="closeFolderPicker">{{ tr('common.cancel', 'Cancel') }}</button>
+                  <button class="btn-primary" type="button" @click="confirmFolderPicker" :disabled="!folderPickerPath">{{ tr('common.confirm', 'Confirm') }}</button>
+                </div>
+              </footer>
             </div>
           </div>
         </form>
