@@ -153,6 +153,8 @@ describe('Work Center Runner execution resolution', () => {
       expect(v2Prompt).toContain('<work-center-mainline-context>');
       expect(v2Prompt.match(/controlled session fact/g)).toHaveLength(1);
       expect(frozen.contextSnapshot).toBeTruthy();
+      expect(Buffer.byteLength(v2Prompt, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+      expect(frozen.executionManifest.contextBytes).toBe(Buffer.byteLength(v2Prompt, 'utf8'));
       expect(frozen.executionManifest).toMatchObject({
         schemaVersion: 2,
         ledgerRevision: 0,
@@ -197,11 +199,46 @@ describe('Work Center Runner execution resolution', () => {
       const claimed = store.claimReadyAction('boot-fallback', 5_000);
       const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
 
-      const prepared = await runner.prepare(claimed);
+      const prepared = await runner.prepare({ ...claimed, ownerBootId: 'boot-fallback' });
 
       expect(prepared.action).toMatchObject({ workspaceMode: 'shared', generation: claimed.action.generation + 1 });
       expect(prepared.action.specHash).not.toBe(claimed.action.specHash);
       expect(prepared.action.resultRunId).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it('rejects an expired runner workspace fallback after a new Run claims the Action', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-stale-fallback-'));
+    let now = 1_000;
+    const store = new WorkItemStore(join(workDir, 'work-center.db'), { now: () => now });
+    const controller = new WorkflowController(store);
+    try {
+      const item = controller.create({
+        title: 'Stale fallback', goal: 'Fence workspace mutation to the Run', acceptanceCriteria: [], workDir, start: true,
+      });
+      const action = store.getWorkItemDetail(item.id).actions[0];
+      store.db.prepare("UPDATE actions SET workspace_mode = 'isolated-write', spec_hash = '' WHERE id = ?").run(action.id);
+      const staleClaim = store.claimReadyAction('old-boot', 10);
+      now += 20;
+      expect(store.recoverInterruptedRuns('new-boot')).toBe(1);
+      const currentClaim = store.claimReadyAction('new-boot', 5_000);
+      const before = store.getAction(action.id);
+      const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
+
+      await expect(runner.prepare({ ...staleClaim, ownerBootId: 'old-boot' }))
+        .rejects.toThrow(/lost its Run lease/);
+
+      expect(store.getAction(action.id)).toMatchObject({
+        generation: before.generation,
+        specHash: before.specHash,
+        resultRunId: before.resultRunId,
+        workspaceMode: before.workspaceMode,
+        currentRunId: currentClaim.run.id,
+        leaseEpoch: currentClaim.run.leaseEpoch,
+      });
+      expect(store.isActiveRun(currentClaim.run.id, 'new-boot', currentClaim.run.leaseEpoch)).toBe(true);
     } finally {
       store.close();
     }
@@ -219,13 +256,14 @@ describe('Work Center Runner execution resolution', () => {
     git(['commit', '-m', 'base']);
     const branch = 'yeaft-work/wi-implement-run';
     const runner = new WorkItemRunner({
-      store: { setActionWorkspace: vi.fn(() => { throw new Error('sqlite busy'); }) },
+      store: { setActionWorkspaceForRun: vi.fn(() => { throw new Error('sqlite busy'); }) },
       actionWorktreeRoot: worktreeRoot,
     });
     await expect(runner.prepare({
       workItem: { id: 'wi', workDir, workspaceKey: workDir },
-      action: { id: 'action', stageId: 'implement', workspaceMode: 'isolated-write' },
-      run: { id: 'run' },
+      action: { id: 'action', stageId: 'implement', workspaceMode: 'isolated-write', generation: 1 },
+      run: { id: 'run', leaseEpoch: 1 },
+      ownerBootId: 'boot',
     })).rejects.toThrow('sqlite busy');
     expect(existsSync(join(worktreeRoot, 'wi-implement-run'))).toBe(false);
     expect(git(['worktree', 'list', '--porcelain'])).not.toContain('wi-implement-run');

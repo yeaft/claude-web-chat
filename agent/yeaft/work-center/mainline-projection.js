@@ -156,6 +156,11 @@ export function buildMainlineProjection(detail) {
  */
 export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
   const budget = validateMainlineContextBudget(budgetInput);
+  const reservedBytes = Math.max(0, Number(budgetInput.reservedBytes) || 0);
+  const effectiveHardLimitBytes = budget.hardLimitBytes - reservedBytes;
+  if (effectiveHardLimitBytes <= 0) {
+    throw new Error(`Mainline fixed prompt content exceeds 64 KiB (${reservedBytes} rendered UTF-8 bytes)`);
+  }
   const projection = buildMainlineProjection(detail);
   const dependencyIds = new Set(action.dependsOnStageIds || []);
   const actionByStage = new Map((detail.actions || []).filter(candidate => candidate.status !== 'superseded')
@@ -208,16 +213,17 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     siblingResults: {},
   };
   const pinnedBytes = renderedContextBytes(snapshot);
-  if (pinnedBytes > budget.hardLimitBytes) {
-    throw new Error(`Mainline pinned context exceeds 64 KiB (${pinnedBytes} rendered UTF-8 bytes)`);
+  if (pinnedBytes > effectiveHardLimitBytes) {
+    throw new Error(`Mainline pinned context exceeds 64 KiB prompt budget (${pinnedBytes + reservedBytes} rendered UTF-8 bytes)`);
   }
 
-  const dynamicBudgetBytes = clamp(
+  const availableDynamicBytes = Math.max(0, effectiveHardLimitBytes - pinnedBytes);
+  const dynamicBudgetBytes = Math.min(availableDynamicBytes, clamp(
     budget.targetMaxBytes - pinnedBytes,
     budget.dynamicMinBytes,
     budget.dynamicMaxBytes,
-  );
-  const selectedLimit = Math.min(budget.hardLimitBytes, pinnedBytes + dynamicBudgetBytes);
+  ));
+  const selectedLimit = Math.min(effectiveHardLimitBytes, pinnedBytes + dynamicBudgetBytes);
   const trySet = (key, value) => {
     const previous = snapshot[key];
     snapshot[key] = value;
@@ -236,12 +242,11 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
       ...snapshot.userContext,
       [entry.kind]: [...snapshot.userContext[entry.kind], entry.value],
       includedCount: snapshot.userContext.includedCount + 1,
-      omittedCount: userEntries.length - snapshot.userContext.includedCount - 1,
+      omittedCount: 0,
     };
-    if (!trySet('userContext', next)) {
-      snapshot.userContext.omittedCount += 1;
-    }
+    trySet('userContext', next);
   }
+  snapshot.userContext.omittedCount = userEntries.length - snapshot.userContext.includedCount;
 
   const siblingEntries = Object.entries(projection.canonicalActionResults)
     .filter(([actionId]) => actionId !== action.id && !dependencies.some(item => item.actionId === actionId))
@@ -268,7 +273,8 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
       pinnedBytes,
       dynamicBudgetBytes,
       hardLimitBytes: budget.hardLimitBytes,
-      selectionReason: `target-max:${budget.targetMaxBytes};dynamic:${dynamicBudgetBytes};siblings:${siblingDetail}`,
+      reservedBytes,
+      selectionReason: `target-max:${budget.targetMaxBytes};dynamic:${dynamicBudgetBytes};reserved:${reservedBytes};siblings:${siblingDetail}`,
     },
   };
 }

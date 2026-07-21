@@ -197,16 +197,16 @@ describe('Work Center event projection', () => {
     Object.assign(detail.actions[0], { generation: 1, specHash: 'review-v1', resultRunId: 'r-2' });
     Object.assign(detail.runs[0], {
       status: 'completed',
-      summary: 'Saved /home/user/private.txt with token=secret-value',
-      evidence: [{ kind: 'file', label: '/home/user/private.txt api_key=secret', ref: 'https://user:pass@example.com/x?token=secret' }],
+      summary: 'Saved /home/user/private.txt and \\\\server\\private share and \\\\?\\C:\\secret dir and file://server/private/path with token=secret-value',
+      evidence: [{ kind: 'file://server/private/kind', label: '\\\\server\\private\\label api_key=secret', ref: 'file://server/private/ref', status: '\\\\?\\C:\\private\\status' }],
       executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: 'review-v1' },
     });
 
     const wire = JSON.stringify(projectWorkItemDetail(detail).mainline);
-    for (const secret of ['/home/user/private.txt', 'secret-value', 'api_key=secret', 'user:pass', 'token=secret']) {
+    for (const secret of ['/home/user/private.txt', 'secret-value', 'api_key=secret', '\\\\server\\private', '\\\\?\\C:\\private', 'file://server/private']) {
       expect(wire).not.toContain(secret);
     }
-    expect(wire).toContain('***');
+    expect(wire).toContain('[path redacted]');
   });
 
   it('does not project generic Action-type fallback text as AI planning', () => {

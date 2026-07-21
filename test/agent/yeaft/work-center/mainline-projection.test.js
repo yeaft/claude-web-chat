@@ -152,6 +152,21 @@ describe('Mainline projection', () => {
     expect(hashMainlineSnapshot(structuredClone(built.contextSnapshot))).toBe(hashMainlineSnapshot(built.contextSnapshot));
   });
 
+  it('reserves final prompt wrapper bytes inside the 64 KiB hard limit', () => {
+    const action = { id: 'current', sequence: 1, stageId: 'implement', type: 'implement', status: 'running' };
+    const reservedBytes = 12 * 1024;
+    const built = buildMainlineContextSnapshot(detail({
+      actions: [action],
+      sessionContext: Array.from({ length: 20 }, (_, index) => ({ role: 'user', content: `路径\\${index}😀中文`.repeat(500) })),
+    }), action, { reservedBytes });
+
+    expect(built.budget.bytes + reservedBytes).toBeLessThanOrEqual(MAINLINE_CONTEXT_HARD_LIMIT_BYTES);
+    expect(built.budget.reservedBytes).toBe(reservedBytes);
+    expect(built.contextSnapshot.userContext.includedCount + built.contextSnapshot.userContext.omittedCount)
+      .toBeLessThanOrEqual(20);
+    expect(built.contextSnapshot.userContext.omittedCount).toBeGreaterThanOrEqual(0);
+  });
+
   it('fails explicitly instead of trimming pinned contract or Action data', () => {
     const action = {
       id: 'current', sequence: 1, stageId: 'current', type: 'implement', status: 'running',

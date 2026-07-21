@@ -786,6 +786,42 @@ export class WorkItemStore {
     });
   }
 
+  setActionWorkspaceForRun(
+    actionId,
+    runId,
+    ownerBootId,
+    leaseEpoch,
+    expectedGeneration,
+    workspace,
+    workspaceMode = null,
+  ) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
+      if (!active || active.action_id !== actionId) return null;
+      const action = this.getAction(actionId);
+      if (!action || action.generation !== expectedGeneration) return null;
+      const nextWorkspaceMode = workspaceMode || action.workspaceMode;
+      const specChanged = nextWorkspaceMode !== action.workspaceMode;
+      const nextAction = { ...action, workspaceMode: nextWorkspaceMode };
+      const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?,
+        generation = generation + ?, spec_hash = ?, result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
+        updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
+        AND lease_epoch = ? AND generation = ?`).run(
+        stringify(workspace),
+        nextWorkspaceMode,
+        specChanged ? 1 : 0,
+        specChanged ? actionSpecHash(nextAction) : action.specHash,
+        specChanged ? 1 : 0,
+        this.now(),
+        actionId,
+        runId,
+        leaseEpoch,
+        expectedGeneration,
+      );
+      return Number(changed.changes) === 1 ? this.getAction(actionId) : null;
+    });
+  }
+
   setIntegrationWorkspaceForRun(actionId, runId, ownerBootId, leaseEpoch, workspace) {
     return withTransaction(this.db, () => {
       const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
@@ -984,7 +1020,7 @@ export class WorkItemStore {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
-      const graphMode = workItem.executionSchemaVersion === 2 && isGraphWorkItem(workItem);
+      const graphMode = isGraphWorkItem(workItem);
       const expectedAction = this.getAction(expected.actionId);
       const expectedMatches = graphMode
         ? expectedAction?.workItemId === id && expectedAction.generation === expected.generation
@@ -1000,7 +1036,10 @@ export class WorkItemStore {
       }
       const previous = graphMode ? expectedAction
         : (workItem.currentActionId ? this.getAction(workItem.currentActionId) : null);
-      if (!previous || !['ready', 'running'].includes(previous.status)) {
+      const actionableStatuses = graphMode
+        ? ['ready', 'running', 'waiting', 'needs_attention']
+        : ['ready', 'running'];
+      if (!previous || !actionableStatuses.includes(previous.status)) {
         throw new Error('WorkItem has no active Action for guidance');
       }
       const now = this.now();
@@ -1170,7 +1209,7 @@ export class WorkItemStore {
       if (!['waiting', 'needs_attention'].includes(workItem.status)) {
         throw new Error(`WorkItem in ${workItem.status} does not need retry`);
       }
-      const graphMode = workItem.executionSchemaVersion === 2 && isGraphWorkItem(workItem);
+      const graphMode = isGraphWorkItem(workItem);
       let previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
       if (options.expected) {
         const expectedAction = this.getAction(options.expected.actionId);

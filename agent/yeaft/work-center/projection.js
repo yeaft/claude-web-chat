@@ -439,8 +439,10 @@ function enforceWorkItemBrowserDtoBudget(value, options = {}) {
 
 function sanitizeMainlineDiagnostic(value, maxBytes) {
   return sanitizeDiagnosticText(value, maxBytes)
-    .replace(/(?<![:/])\/(?:[^/\s"'<>]+\/)*[^/\s"'<>]+/g, '[path redacted]')
-    .replace(/\b[A-Za-z]:\\(?:[^\\\s"'<>]+\\)*[^\\\s"'<>]+/g, '[path redacted]');
+    .replace(/\bfile:\/\/[^\r\n"'<>]+/gi, '[path redacted]')
+    .replace(/\\\\(?:\?\\)?[^\\\r\n"'<>]+(?:\\[^\\\r\n"'<>]+)+/g, '[path redacted]')
+    .replace(/\b[A-Za-z]:\\[^\r\n"'<>]+/g, '[path redacted]')
+    .replace(/(?<![:/])\/(?:[^/\s"'<>]+\/)*[^/\s"'<>]+/g, '[path redacted]');
 }
 
 function projectCanonicalEvidence(value) {

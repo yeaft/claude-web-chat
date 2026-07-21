@@ -206,8 +206,7 @@ export class WorkflowController {
       revision: Number(input.revision),
     };
     const current = this.store.getWorkItem(id);
-    const graphMode = current?.executionSchemaVersion === 2
-      && current?.workflowSnapshot?.executionMode === 'graph';
+    const graphMode = current?.workflowSnapshot?.executionMode === 'graph';
     if (!expected.actionId || !Number.isInteger(expected.revision)
         || (graphMode && !Number.isInteger(expected.generation))) {
       throw new Error(`actionId, revision${graphMode ? ', and generation' : ''} are required for guidance`);
@@ -265,8 +264,7 @@ export class WorkflowController {
       throw new Error(`WorkItem in ${workItem.status} cannot accept Action input`);
     }
     const targetAction = this.store.getAction(input.actionId);
-    const graphMode = workItem.executionSchemaVersion === 2
-      && workItem.workflowSnapshot?.executionMode === 'graph';
+    const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
     const targetMatches = graphMode
       ? targetAction?.workItemId === id && targetAction.generation === input.generation
         && ['waiting', 'failed'].includes(targetAction.status)

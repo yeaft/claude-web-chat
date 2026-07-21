@@ -465,7 +465,7 @@ describe('Work Center core', () => {
       store.createWorkItem(createInput({ id: 'second-fallback', workDir: workspace }), action('second'));
       const first = store.claimReadyAction('boot-a', 5_000);
       const runner = new WorkItemRunner({ store, actionWorktreeRoot: join(dir, 'worktrees') });
-      const prepared = await runner.prepare(first);
+      const prepared = await runner.prepare({ ...first, ownerBootId: 'boot-a' });
       expect(prepared.action).toMatchObject({ workspaceMode: 'shared', workspace: null });
       expect(store.getAction(first.action.id).workspaceMode).toBe('shared');
       expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();

@@ -159,5 +159,43 @@ describe('Work Center store migration', () => {
     const claim = store.claimReadyAction('legacy-boot', 5_000);
     expect(claim).toMatchObject({ workItem: { id: 'graph-item', executionSchemaVersion: 1 }, action: { id: 'graph-action' } });
     expect(store.isActiveRun(claim.run.id, 'legacy-boot', claim.run.leaseEpoch)).toBe(true);
+
+    store.finalizeRun(claim.run.id, 'legacy-boot', claim.run.leaseEpoch, {
+      outcome: 'waiting', summary: 'Need input', waitingReason: 'Choose safely', evidence: [],
+    }, () => ({
+      actionStatus: 'waiting', workItemStatus: 'waiting', graphAdvance: true, eventType: 'action.waiting',
+    }));
+    const waiting = store.getWorkItemDetail('graph-item');
+    const waitingAction = waiting.actions.find(action => action.id === 'graph-action');
+    expect(waiting).toMatchObject({ status: 'waiting', currentActionId: 'graph-action' });
+
+    const retried = store.retryWorkItemAtomic('graph-item', (_workItem, previous) => ({
+      type: previous.type,
+      stageId: previous.stageId,
+      requiredRole: previous.requiredRole,
+      assignmentPolicy: previous.assignmentPolicy,
+      modelPolicy: previous.modelPolicy,
+      dependsOnStageIds: previous.dependsOnStageIds,
+      workspaceMode: previous.workspaceMode,
+      changesRequestedStageId: previous.changesRequestedStageId,
+      instruction: 'Continue with user input',
+      brief: previous.brief,
+      context: [...previous.context, { type: 'input', summary: 'Proceed safely' }],
+      maxAttempts: previous.maxAttempts,
+    }), {
+      expected: { actionId: waitingAction.id, generation: waitingAction.generation, revision: waiting.revision },
+    });
+    const replacement = retried.actions.find(action => action.id === 'graph-action');
+    expect(replacement).toMatchObject({ status: 'ready', generation: waitingAction.generation + 1 });
+    expect(retried.actions.filter(action => action.status === 'waiting')).toHaveLength(0);
+
+    const replacementClaim = store.claimReadyAction('legacy-boot', 5_000);
+    expect(replacementClaim.action.id).toBe('graph-action');
+    store.finalizeRun(replacementClaim.run.id, 'legacy-boot', replacementClaim.run.leaseEpoch, {
+      outcome: 'completed', summary: 'Done', evidence: [],
+    }, () => ({
+      actionStatus: 'completed', workItemStatus: 'ready', graphAdvance: true, eventType: 'action.completed',
+    }));
+    expect(store.getWorkItemDetail('graph-item')).toMatchObject({ status: 'done', currentActionId: null });
   });
 });
