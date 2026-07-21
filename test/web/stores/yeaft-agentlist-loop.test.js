@@ -61,6 +61,7 @@ function makeStore() {
   store.currentView = 'yeaft';
   store.currentAgent = AGENT_ID;
   store.yeaftConversationId = 'yeaft-1';
+  store.yeaftConversationIdsByAgent = { [AGENT_ID]: 'yeaft-1' };
   store.yeaftActiveSessionFilter = SESSION_ID;
   store.yeaftSessionReady = true;
   store.yeaftModel = 'sonnet';
@@ -432,7 +433,7 @@ describe('Yeaft agent_list does not loop history catch-up', () => {
     }));
   });
 
-  it('mirrors only authoritative Yeaft skill snapshots onto the active conversation', () => {
+  it('mirrors only authoritative Yeaft skill snapshots onto the active Agent conversation', () => {
     const store = makeStore();
     store.handleMessage({
       type: 'slash_commands_update',
@@ -443,7 +444,7 @@ describe('Yeaft agent_list does not loop history catch-up', () => {
       slashCommandDescriptions: { 'yeaft-skills:project-review': 'Review this project' },
     });
 
-    expect(store.slashCommandsMap['__preload__']).toEqual(['yeaft-skills:project-review']);
+    expect(store.slashCommandsMap['__preload__']).toBeUndefined();
     expect(store.slashCommandsMap[`agent:${AGENT_ID}`]).toBeUndefined();
     expect(store.slashCommandsMap['yeaft-1']).toEqual(['yeaft-skills:project-review']);
     expect(store.slashCommandDescriptions['yeaft-skills:project-review']).toBe('Review this project');
@@ -457,6 +458,41 @@ describe('Yeaft agent_list does not loop history catch-up', () => {
       slashCommandDescriptions: {},
     });
     expect(store.slashCommandsMap['yeaft-1']).toEqual([]);
+  });
+
+  it('keeps inactive Agent Yeaft snapshots isolated, including empty authoritative snapshots', () => {
+    const store = makeStore();
+    const otherAgentId = 'user_1:C2';
+    store.yeaftConversationIdsByAgent = {
+      [AGENT_ID]: 'yeaft-1',
+      [otherAgentId]: 'yeaft-2',
+    };
+    store.slashCommandsMap['yeaft-1'] = ['agent-a-skill'];
+
+    store.handleMessage({
+      type: 'slash_commands_update',
+      commandSet: 'yeaft',
+      conversationId: 'yeaft-2',
+      agentId: otherAgentId,
+      slashCommands: ['agent-b-skill'],
+      slashCommandDescriptions: { 'agent-b-skill': 'Agent B skill' },
+    });
+
+    expect(store.slashCommandsMap['yeaft-1']).toEqual(['agent-a-skill']);
+    expect(store.slashCommandsMap['yeaft-2']).toEqual(['agent-b-skill']);
+
+    store.handleMessage({
+      type: 'slash_commands_update',
+      commandSet: 'yeaft',
+      conversationId: '__preload__',
+      agentId: otherAgentId,
+      slashCommands: [],
+      slashCommandDescriptions: {},
+    });
+
+    expect(store.slashCommandsMap['yeaft-1']).toEqual(['agent-a-skill']);
+    expect(store.slashCommandsMap['yeaft-2']).toEqual([]);
+    expect(store.slashCommandsMap['__preload__']).toBeUndefined();
   });
 
   it('keeps cached rows when metadata-only bootstrap returns session_ready only', () => {

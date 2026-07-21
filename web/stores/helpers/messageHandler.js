@@ -643,20 +643,39 @@ export function handleMessage(store, msg) {
     case 'slash_commands_update':
       if (Array.isArray(msg.slashCommands)) {
         const slashCommands = [...new Set(msg.slashCommands)];
-        if (msg.conversationId) {
-          store.slashCommandsMap[msg.conversationId] = slashCommands;
-        }
         if (msg.commandSet === 'yeaft') {
-          // Yeaft publishes an authoritative hot-reload snapshot. Keep it on
-          // the virtual Yeaft conversation, including an empty list after the
-          // final skill is removed.
-          if (store.yeaftConversationId) {
-            store.slashCommandsMap[store.yeaftConversationId] = slashCommands;
+          // Route an authoritative Yeaft snapshot only to the sending Agent's
+          // canonical conversation. `__preload__` is shared transport state,
+          // not a cache key: using it or the global visible pointer lets Agent B
+          // overwrite (or clear) Agent A's autocomplete catalogue.
+          const frameConversationId = msg.conversationId && msg.conversationId !== '__preload__'
+            ? msg.conversationId
+            : null;
+          const agentConversationId = msg.agentId
+            ? store.yeaftConversationIdsByAgent?.[msg.agentId] || null
+            : null;
+          const canonicalConversationId = frameConversationId || agentConversationId;
+          if (canonicalConversationId) {
+            store.slashCommandsMap[canonicalConversationId] = slashCommands;
           }
-        } else if (msg.agentId) {
-          // Claude Chat commands remain an agent-level fallback, but must not
-          // overwrite Yeaft's isolated command catalogue while that view is open.
-          store.slashCommandsMap[`agent:${msg.agentId}`] = slashCommands;
+
+          const visibleConversationId = store.yeaftConversationId || null;
+          const visibleBelongsToSender = msg.agentId
+            ? store.currentAgent === msg.agentId
+              && (agentConversationId === visibleConversationId || frameConversationId === visibleConversationId)
+            : frameConversationId === visibleConversationId;
+          if (visibleConversationId && visibleBelongsToSender) {
+            store.slashCommandsMap[visibleConversationId] = slashCommands;
+          }
+        } else {
+          if (msg.conversationId) {
+            store.slashCommandsMap[msg.conversationId] = slashCommands;
+          }
+          if (msg.agentId) {
+            // Claude Chat commands remain an agent-level fallback, but must not
+            // overwrite Yeaft's isolated command catalogue while that view is open.
+            store.slashCommandsMap[`agent:${msg.agentId}`] = slashCommands;
+          }
         }
       }
       // Descriptions are harmless when their command is not in the active list;
