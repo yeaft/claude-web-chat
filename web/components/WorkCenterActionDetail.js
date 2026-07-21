@@ -216,7 +216,16 @@ export default {
             <div><dt>{{ tr('workCenter.actionObjective', 'What to do') }}</dt><dd>{{ action.brief.objective }}</dd></div>
             <div><dt>{{ tr('workCenter.actionApproach', 'How to do it') }}</dt><dd>{{ action.brief.approach }}</dd></div>
             <div><dt>{{ tr('workCenter.actionExpectedOutcome', 'Expected result') }}</dt><dd>{{ action.brief.expectedOutcome }}</dd></div>
+            <div v-if="action.dependencies?.length"><dt>{{ tr('workCenter.dependencies', 'Dependencies') }}</dt><dd>{{ action.dependencies.join(', ') }}</dd></div>
           </dl>
+          <section v-if="action.canonicalResult" class="work-center-action-result">
+            <strong>{{ tr('workCenter.actionResult', 'Latest result') }}</strong>
+            <p v-if="action.canonicalResult.summary">{{ action.canonicalResult.summary }}</p>
+            <p v-if="action.canonicalResult.waitingReason" class="work-center-muted">{{ action.canonicalResult.waitingReason }}</p>
+            <ul v-if="action.canonicalResult.evidence?.length">
+              <li v-for="(evidence, index) in action.canonicalResult.evidence" :key="index">{{ typeof evidence === 'string' ? evidence : (evidence.label || evidence.ref || evidence.kind) }}</li>
+            </ul>
+          </section>
           <article v-for="message in messages" :key="message.id" class="work-center-action-message" :class="'role-' + message.role" :data-status="message.status">
             <header>
               <strong>{{ message.role === 'user' ? tr('workCenter.you', 'You') : tr('workCenter.aiResponse', 'AI response') }}</strong>

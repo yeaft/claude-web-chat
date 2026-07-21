@@ -32,6 +32,12 @@ import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
 import { BUILT_IN_ACTION_TYPES } from './workflow.js';
+import {
+  MAINLINE_CONTEXT_HARD_LIMIT_BYTES,
+  buildMainlineContextSnapshot,
+  hashMainlineSnapshot,
+  renderMainlineContextSnapshot,
+} from './mainline-projection.js';
 
 const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'FileRead',
@@ -746,17 +752,30 @@ export class WorkItemRunner {
       };
     }
     if (action.workspaceMode !== 'isolated-write') return claim;
+    if (!run?.id || !ownerBootId || !Number.isInteger(run.leaseEpoch)) {
+      throw new Error('Work Center workspace preparation requires an owned Run lease');
+    }
     if (!this.actionWorktreeRoot) {
-      return { ...claim, action: this.store.setActionWorkspace(action.id, null, 'shared') };
+      const persistedAction = this.store.setActionWorkspaceForRun(
+        action.id, run.id, ownerBootId, run.leaseEpoch, action.generation, null, 'shared',
+      );
+      if (!persistedAction) throw new Error('Work Center Action workspace lost its Run lease');
+      return { ...claim, action: persistedAction };
     }
     const workspace = createActionWorktree({
       workItem, action, runId: claim.run.id, rootDir: this.actionWorktreeRoot,
     });
     try {
-      const persistedAction = this.store.setActionWorkspace(
-        action.id, workspace.isolated ? workspace : null, workspace.isolated ? null : 'shared',
+      const persistedAction = this.store.setActionWorkspaceForRun(
+        action.id,
+        run.id,
+        ownerBootId,
+        run.leaseEpoch,
+        action.generation,
+        workspace.isolated ? workspace : null,
+        workspace.isolated ? null : 'shared',
       );
-      if (!persistedAction) throw new Error('Work Center Action workspace lost its storage fence');
+      if (!persistedAction) throw new Error('Work Center Action workspace lost its Run lease');
       return { ...claim, action: persistedAction };
     } catch (error) {
       removeActionWorktree(workspace);
@@ -781,7 +800,10 @@ export class WorkItemRunner {
       ? resolveWorkItemWorkDir({ workspaceKey: action.workspace.path }, runtime.defaultWorkDir)
       : workspaceDir;
     const priorRuns = this.store.listCompletedRuns(workItem.id);
-    const dependencyContext = this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
+    const v2Execution = Number(workItem.executionSchemaVersion) === 2;
+    const dependencyContext = v2Execution
+      ? []
+      : this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
     const dependencyBlock = dependencyContext.length === 0 ? '' : `\n\nCompleted dependency results:\n${dependencyContext.map(dependency => {
       const evidence = dependency.evidence?.length
         ? `\nEvidence: ${dependency.evidence.map(item => item.label).join('; ')}`
@@ -818,6 +840,15 @@ export class WorkItemRunner {
       reuseMemory: workItem.reuseMemory,
     });
     const attachmentContext = buildWorkItemAttachmentContext(workItem, { root: this.attachmentRoot });
+    const fixedPromptSuffix = `${resumeBlock}${attachmentContext.promptBlock}${completionContract(executionAction, workItem)}`;
+    const reservedPromptBytes = Buffer.byteLength(fixedPromptSuffix, 'utf8');
+    const mainline = v2Execution
+      ? buildMainlineContextSnapshot(
+          this.store.getWorkItemDetail(workItem.id),
+          executionAction,
+          { reservedBytes: reservedPromptBytes },
+        )
+      : null;
     const isRunActive = () => !signal.aborted
       && this.store.isActiveRun(run.id, ownerBootId, run.leaseEpoch);
     const workspaceRuntime = await this.#workspaceRuntime(workspaceDir, workDir, isRunActive);
@@ -889,6 +920,18 @@ export class WorkItemRunner {
           policy: resolvedModel.policy,
         },
         toolPolicySnapshot,
+        contextSnapshot: mainline?.contextSnapshot || null,
+        executionManifest: mainline ? {
+          schemaVersion: 2,
+          ledgerRevision: mainline.contextSnapshot.ledgerRevision,
+          planRevision: mainline.contextSnapshot.graph.planRevision,
+          contractRevision: mainline.contextSnapshot.contract.revision,
+          actionGeneration: mainline.contextSnapshot.action.generation,
+          actionSpecHash: mainline.contextSnapshot.action.specHash,
+          contextBytes: mainline.budget.bytes + mainline.budget.reservedBytes,
+          contextHash: hashMainlineSnapshot(mainline.contextSnapshot),
+          selectionReason: mainline.budget.selectionReason,
+        } : null,
       },
     );
     if (!snapshotsWritten) throw new Error('Work Center Run lost its lease before execution');
@@ -950,7 +993,13 @@ export class WorkItemRunner {
       vpId: vp.id,
     });
     try {
-      const prompt = `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${workspaceSessionBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
+      const prompt = v2Execution
+        ? `${renderMainlineContextSnapshot(mainline.contextSnapshot)}${fixedPromptSuffix}`
+        : `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${workspaceSessionBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
+      const promptBytes = Buffer.byteLength(prompt, 'utf8');
+      if (v2Execution && promptBytes > MAINLINE_CONTEXT_HARD_LIMIT_BYTES) {
+        throw new Error(`Work Center Mainline prompt exceeds 64 KiB (${promptBytes} rendered UTF-8 bytes)`);
+      }
       const promptParts = attachmentContext.promptParts.length > 0
         ? [{ type: 'text', text: prompt }, ...attachmentContext.promptParts]
         : null;
@@ -1023,7 +1072,10 @@ export class WorkItemRunner {
     } : parseStructuredResult(text, executionAction.type);
     if (parsedResult.outcome === 'completed' && action.workspace?.isolated) {
       const workspace = commitActionWorktree(action.workspace, action);
-      this.store.setActionWorkspace(action.id, workspace);
+      const persistedAction = this.store.setActionWorkspaceForRun(
+        action.id, run.id, ownerBootId, run.leaseEpoch, action.generation, workspace,
+      );
+      if (!persistedAction) throw new Error('Work Center Action workspace lost its Run lease');
       action.workspace = workspace;
     }
     return {

@@ -140,6 +140,75 @@ describe('Work Center event projection', () => {
     }
   });
 
+  it('projects a bounded Mainline browser view without execution internals', () => {
+    const detail = internalDetail();
+    Object.assign(detail, {
+      executionSchemaVersion: 2,
+      lifecycle: 'active',
+      attentionState: 'waiting',
+      activeActionIds: [],
+      attentionActionIds: ['a-1'],
+      planRevision: 4,
+      ledgerRevision: 9,
+    });
+    Object.assign(detail.actions[0], {
+      generation: 3,
+      dependsOnStageIds: ['implement'],
+      status: 'waiting',
+      resultRunId: 'r-2',
+      contextSnapshot: { secret: 'large internal snapshot' },
+    });
+    Object.assign(detail.runs[0], {
+      executionManifest: { schemaVersion: 2, actionGeneration: 3, actionSpecHash: '' },
+      reviewDecision: 'changes_requested',
+      evidence: [{ kind: 'test', label: 'Focused tests', ref: 'projection.test.js', stdout: 'raw output' }],
+      debug: { secret: true },
+      path: '/private/result',
+    });
+
+    const projected = projectWorkItemDetail(detail);
+    expect(projected.mainline).toEqual({
+      contract: { title: 'Fix', goal: 'Goal', acceptanceCriteria: ['Safe detail'] },
+      progress: {
+        lifecycle: 'active', attentionState: 'waiting', activeActionIds: [],
+        attentionActionIds: ['a-1'], frontierActionIds: [],
+        counts: { completed: 0, running: 0, ready: 0, waiting: 1, failed: 0 },
+      },
+      actions: [{
+        id: 'a-1', stageId: 'review', type: 'review', status: 'waiting', generation: 3,
+        brief: detail.actions[0].brief, dependencies: ['implement'],
+        canonicalResult: {
+          status: 'waiting', summary: 'Review needs a compatibility choice',
+          evidence: [{ kind: 'test', label: 'Focused tests', ref: 'projection.test.js' }],
+          waitingReason: 'Choose the compatibility behavior', reviewDecision: 'changes_requested',
+        },
+      }],
+    });
+    expect(projected.actions[0]).toMatchObject(projected.mainline.actions[0]);
+    const wire = JSON.stringify(projected.mainline);
+    for (const forbidden of ['runs', 'events', 'debug', 'path', 'contextSnapshot', 'raw output', '/private/result', 'runId']) {
+      expect(wire).not.toContain(forbidden);
+    }
+  });
+
+  it('redacts canonical Mainline result diagnostics before browser projection', () => {
+    const detail = internalDetail();
+    detail.executionSchemaVersion = 2;
+    Object.assign(detail.actions[0], { generation: 1, specHash: 'review-v1', resultRunId: 'r-2' });
+    Object.assign(detail.runs[0], {
+      status: 'completed',
+      summary: 'Saved /home/user/private.txt and \\\\server\\private share and \\\\?\\C:\\secret dir and file://server/private/path with token=secret-value',
+      evidence: [{ kind: 'file://server/private/kind', label: '\\\\server\\private\\label api_key=secret', ref: 'file://server/private/ref', status: '\\\\?\\C:\\private\\status' }],
+      executionManifest: { schemaVersion: 2, actionGeneration: 1, actionSpecHash: 'review-v1' },
+    });
+
+    const wire = JSON.stringify(projectWorkItemDetail(detail).mainline);
+    for (const secret of ['/home/user/private.txt', 'secret-value', 'api_key=secret', '\\\\server\\private', '\\\\?\\C:\\private', 'file://server/private']) {
+      expect(wire).not.toContain(secret);
+    }
+    expect(wire).toContain('[path redacted]');
+  });
+
   it('does not project generic Action-type fallback text as AI planning', () => {
     const detail = internalDetail();
     detail.actions[0].type = 'triage';

@@ -1463,7 +1463,7 @@ export const useChatStore = defineStore('chat', {
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
-    async sendWorkItemActionInput(id, text, actionId, revision, attachments = [], agentId = null) {
+    async sendWorkItemActionInput(id, text, actionId, revision, actionGeneration, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = Number(this._workCenterActionInputGenerationByAgent[target] || 0) + 1;
       this._workCenterActionInputGenerationByAgent = {
@@ -1471,7 +1471,7 @@ export const useChatStore = defineStore('chat', {
         [target]: generation,
       };
       const detail = await this.workCenterRequest('action_input', {
-        id, text, actionId, revision, attachments,
+        id, text, actionId, revision, generation: actionGeneration, attachments,
       }, target);
       await this.listWorkItems(target);
       const current = this.workCenterDetailByAgent[target];
@@ -1486,11 +1486,11 @@ export const useChatStore = defineStore('chat', {
       }
       return current?.id === id ? current : detail;
     },
-    async guideWorkItemAction(id, guidance, actionId, revision, attachments = [], agentId = null) {
+    async guideWorkItemAction(id, guidance, actionId, revision, actionGeneration, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = this.beginWorkCenterDetailWrite(target);
       const detail = await this.workCenterRequest('guide', {
-        id, guidance, actionId, revision, attachments,
+        id, guidance, actionId, revision, generation: actionGeneration, attachments,
       }, target);
       await this.listWorkItems(target);
       this.commitWorkCenterDetail(target, detail, generation);

@@ -74,13 +74,44 @@ describe('Work Center core', () => {
       linkedSessionIds: ['session-1'],
     }));
     const detail = store.getWorkItemDetail(item.id);
-    expect(detail.status).toBe('ready');
+    expect(detail).toMatchObject({ status: 'ready', executionSchemaVersion: 2, ledgerRevision: 0 });
     expect(detail.actions[0]).toMatchObject({
       type: 'triage', requiredRole: 'omni', status: 'ready', contractRevision: 1,
+      generation: 1, specHash: expect.stringMatching(/^[a-f0-9]{64}$/), resultRunId: null,
     });
     expect(detail.origin).toEqual({ sessionId: 'session-1', messageId: 'message-1', createdBy: 'user' });
     expect(detail.linkedSessionIds).toEqual(['session-1']);
     expect(store.listWorkItems({ sessionId: 'session-1' }).map(row => row.id)).toEqual([item.id]);
+  });
+
+  it('persists, filters, resolves, and deletes plan conflicts', () => {
+    const item = controller.create(createInput());
+    const action = store.getWorkItemDetail(item.id).actions[0];
+    const conflict = store.createPlanConflict(item.id, {
+      id: 'conflict-1',
+      actionId: action.id,
+      generation: 2,
+      kind: 'stale-spec',
+      details: { expectedSpecHash: 'new', actualSpecHash: 'old' },
+    });
+
+    expect(conflict).toMatchObject({
+      id: 'conflict-1', actionId: action.id, generation: 2, kind: 'stale-spec', status: 'open',
+      details: { expectedSpecHash: 'new', actualSpecHash: 'old' },
+      resolvedAt: null,
+    });
+    expect(store.listPlanConflicts(item.id, { status: 'open' })).toEqual([conflict]);
+    expect(store.getWorkItemDetail(item.id).planConflicts).toEqual([conflict]);
+
+    now = 2_000;
+    const resolved = store.resolvePlanConflict(conflict.id, { resolution: 'regenerated' });
+    expect(resolved).toMatchObject({
+      status: 'resolved', details: { resolution: 'regenerated' }, updatedAt: 2_000, resolvedAt: 2_000,
+    });
+    expect(store.resolvePlanConflict(conflict.id)).toBeNull();
+    expect(store.listPlanConflicts(item.id, { status: 'open' })).toEqual([]);
+    expect(store.deletePlanConflict(conflict.id)).toBe(true);
+    expect(store.getPlanConflict(conflict.id)).toBeNull();
   });
 
   it('freezes an AI-planned ordered VP assignment and rejects unavailable candidates', () => {
@@ -188,9 +219,13 @@ describe('Work Center core', () => {
       outcome: 'failed', error: 'left failed', summary: '', evidence: [],
     });
     expect(failed.status).toBe('needs_attention');
-    expect(() => controller.submit(right.run.id, 'boot-a', right.run.leaseEpoch, completed('research')))
-      .toThrow(/stale|cancelled|finished/i);
-    expect(store.getWorkItem(failed.id).status).toBe('needs_attention');
+    const progressed = controller.submit(
+      right.run.id, 'boot-a', right.run.leaseEpoch, completed('research'),
+    );
+    expect(progressed.actions.find(action => action.stageId === 'right')).toMatchObject({ status: 'completed' });
+    expect(store.getWorkItem(failed.id)).toMatchObject({
+      status: 'needs_attention', lifecycle: 'active', attentionState: 'failed',
+    });
   });
 
   it('returns graph review changes to the persisted target and fences sibling late submits', () => {
@@ -215,10 +250,12 @@ describe('Work Center core', () => {
     }));
     expect(detail.actions.find(action => action.stageId === 'fix')).toMatchObject({ status: 'ready' });
     expect(detail.actions.find(action => action.stageId === 'deliver')).toMatchObject({ status: 'ready' });
-    expect(detail.actions.find(action => action.stageId === 'side')).toMatchObject({ status: 'ready' });
-    expect(detail.runs.find(run => run.id === side.run.id).status).toBe('superseded');
-    expect(() => controller.submit(side.run.id, 'boot-a', side.run.leaseEpoch, completed('research')))
-      .toThrow(/stale|cancelled|finished/i);
+    expect(detail.actions.find(action => action.stageId === 'side')).toMatchObject({ status: 'running' });
+    expect(detail.runs.find(run => run.id === side.run.id).status).toBe('running');
+    const sideCompleted = controller.submit(
+      side.run.id, 'boot-a', side.run.leaseEpoch, completed('research'),
+    );
+    expect(sideCompleted.actions.find(action => action.stageId === 'side')).toMatchObject({ status: 'completed' });
     expect(store.claimReadyAction('boot-a', 5_000).action.stageId).toBe('fix');
   });
 
@@ -272,6 +309,7 @@ describe('Work Center core', () => {
     const attachments = [{ fileId: 'file-1', name: 'sample.txt', mimeType: 'text/plain', size: 12 }];
     const input = {
       text: 'Use this sample', actionId: diagnose.action.id, revision: waiting.revision,
+      generation: diagnose.action.generation,
       addedAttachmentCount: 1,
       addedAttachments: [{ id: 'file-1', name: 'sample.txt', mimeType: 'text/plain', size: 12, isImage: false }],
       attachments,
@@ -298,6 +336,7 @@ describe('Work Center core', () => {
 
     const guided = controller.input(item.id, {
       text: 'Also inspect parser boundaries', actionId: diagnose.action.id, revision: resumed.revision,
+      generation: reset.generation,
       addedAttachmentCount: 0, addedAttachments: [], attachments,
     });
     const guidedAction = guided.actions.find(action => action.stageId === 'diagnose');
@@ -334,6 +373,7 @@ describe('Work Center core', () => {
     const attachments = [{ fileId: 'file-2', name: 'repro.md', mimeType: 'text/markdown', size: 8 }];
     const retried = controller.input(item.id, {
       text: '', actionId: implement.action.id, revision: failed.revision,
+      generation: implement.action.generation,
       addedAttachmentCount: 1,
       addedAttachments: [{ id: 'file-2', name: 'repro.md', mimeType: 'text/markdown', size: 8, isImage: false }],
       attachments,
@@ -425,7 +465,7 @@ describe('Work Center core', () => {
       store.createWorkItem(createInput({ id: 'second-fallback', workDir: workspace }), action('second'));
       const first = store.claimReadyAction('boot-a', 5_000);
       const runner = new WorkItemRunner({ store, actionWorktreeRoot: join(dir, 'worktrees') });
-      const prepared = await runner.prepare(first);
+      const prepared = await runner.prepare({ ...first, ownerBootId: 'boot-a' });
       expect(prepared.action).toMatchObject({ workspaceMode: 'shared', workspace: null });
       expect(store.getAction(first.action.id).workspaceMode).toBe('shared');
       expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
@@ -1139,6 +1179,29 @@ describe('Work Center core', () => {
     });
   });
 
+  it.each([
+    ['completed', completed('triage')],
+    ['waiting', { outcome: 'waiting', summary: 'Need input', evidence: [], waitingReason: 'Provide input' }],
+    ['failed', { outcome: 'failed', summary: 'Failed', evidence: [], error: 'broken' }],
+  ])('increments the v2 ledger for a %s terminal Run and fences the canonical result', (_outcome, result) => {
+    const item = controller.create(createInput());
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    const generation = claim.action.generation;
+
+    controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, result);
+
+    const detail = store.getWorkItemDetail(item.id);
+    expect(detail.ledgerRevision).toBe(1);
+    expect(store.getAction(claim.action.id)).toMatchObject({
+      generation,
+      resultRunId: result.outcome === 'completed' ? claim.run.id : null,
+    });
+    expect(store.finalizeRun(claim.run.id, 'boot-a', claim.run.leaseEpoch, result, () => {
+      throw new Error('stale terminal callback must not run');
+    })).toBeNull();
+    expect(store.getWorkItem(item.id).ledgerRevision).toBe(1);
+  });
+
   it('persists immutable execution snapshots only for the fenced Run', () => {
     controller.create(createInput());
     const claim = store.claimReadyAction('boot-a', 5_000);
@@ -1147,6 +1210,8 @@ describe('Work Center core', () => {
       vpSnapshot: { id: 'omni', name: 'Omni' },
       modelSnapshot: { id: 'provider/model' },
       toolPolicySnapshot: { policyVersion: 1, allowedToolNames: ['FileRead'] },
+      contextSnapshot: { contract: { revision: 1 }, dynamic: ['prior result'] },
+      executionManifest: { schemaVersion: 2, actionGeneration: 1 },
     })).toBe(true);
     expect(store.setRunExecutionSnapshots(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
       roleSnapshot: { id: 'tampered' },
@@ -1156,6 +1221,8 @@ describe('Work Center core', () => {
       vpSnapshot: { id: 'omni', name: 'Omni' },
       modelSnapshot: { id: 'provider/model' },
       toolPolicySnapshot: { policyVersion: 1, allowedToolNames: ['FileRead'] },
+      contextSnapshot: { contract: { revision: 1 }, dynamic: ['prior result'] },
+      executionManifest: { schemaVersion: 2, actionGeneration: 1 },
     });
   });
 

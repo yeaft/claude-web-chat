@@ -8,6 +8,7 @@ import { Registry } from '../../../../agent/yeaft/vp/registry.js';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { WorkItemWatcher } from '../../../../agent/yeaft/work-center/watcher.js';
+import { projectWorkItemDetail } from '../../../../agent/yeaft/work-center/projection.js';
 import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
 
 const engineOptions = [];
@@ -122,6 +123,194 @@ describe('Work Center Runner execution resolution', () => {
     await expect(tool.execute({ actions: [] }, {})).rejects.toThrow(/no longer active/);
   });
 
+  it('uses one frozen Mainline context for v2 while preserving the v1 legacy prompt', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-mainline-runner-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Triage Lead', traits: ['triage'], modelHint: 'primary',
+      persona: 'Triage', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    try {
+      const v2Item = controller.create({
+        title: 'V2 item', goal: 'Use Mainline', acceptanceCriteria: [], workDir, start: true,
+        sessionContext: [{ role: 'user', content: 'controlled session fact' }],
+      });
+      const v2Claim = store.claimReadyAction('boot-v2', 5_000);
+      const v2Result = await runner.run({
+        workItem: store.getWorkItem(v2Item.id), action: v2Claim.action, run: v2Claim.run,
+        ownerBootId: 'boot-v2', signal: new AbortController().signal,
+      });
+      const v2Prompt = engineQueries.at(-1).prompt;
+      const frozen = store.getRun(v2Claim.run.id);
+      expect(v2Prompt).toContain('<work-center-mainline-context>');
+      expect(v2Prompt.match(/controlled session fact/g)).toHaveLength(1);
+      expect(frozen.contextSnapshot).toBeTruthy();
+      expect(Buffer.byteLength(v2Prompt, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+      expect(frozen.executionManifest.contextBytes).toBe(Buffer.byteLength(v2Prompt, 'utf8'));
+      expect(frozen.executionManifest).toMatchObject({
+        schemaVersion: 2,
+        ledgerRevision: 0,
+        planRevision: 0,
+        contractRevision: 1,
+        actionGeneration: v2Claim.action.generation,
+        actionSpecHash: v2Claim.action.specHash,
+        contextBytes: expect.any(Number),
+        contextHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        selectionReason: expect.any(String),
+      });
+      controller.submit(v2Claim.run.id, 'boot-v2', v2Claim.run.leaseEpoch, v2Result);
+      controller.cancel(v2Item.id);
+
+      const v1Item = controller.create({
+        title: 'V1 item', goal: 'Use legacy', acceptanceCriteria: [], workDir, start: true,
+      });
+      store.db.prepare('UPDATE work_items SET execution_schema_version = 1 WHERE id = ?').run(v1Item.id);
+      const v1Claim = store.claimReadyAction('boot-v1', 5_000);
+      await runner.run({
+        workItem: store.getWorkItem(v1Item.id), action: v1Claim.action, run: v1Claim.run,
+        ownerBootId: 'boot-v1', signal: new AbortController().signal,
+      });
+      expect(engineQueries.at(-1).prompt).not.toContain('<work-center-mainline-context>');
+      expect(engineQueries.at(-1).prompt).toContain(v1Claim.action.instruction);
+      expect(store.getRun(v1Claim.run.id)).toMatchObject({ contextSnapshot: null, executionManifest: null });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('persists oversized pinned Mainline context as one stable system block without retrying', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-mainline-blocked-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Triage Lead', traits: ['triage'], modelHint: 'primary',
+      persona: 'Triage', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const watcher = new WorkItemWatcher({
+      store, controller, runner, ownerBootId: 'blocked-boot',
+      pollIntervalMs: 60_000, leaseMs: 60_000, concurrencyProvider: () => 1,
+    });
+    try {
+      const item = controller.create({
+        title: 'Oversized context', goal: 'Block deterministically', acceptanceCriteria: [], workDir, start: true,
+      });
+      const action = store.getWorkItemDetail(item.id).actions[0];
+      store.db.prepare('UPDATE actions SET brief = ? WHERE id = ?').run(JSON.stringify({
+        objective: 'x'.repeat(70 * 1024),
+        approach: 'Inspect safely',
+        expectedOutcome: 'Stable system block',
+      }), action.id);
+
+      await watcher.tick();
+      await vi.waitFor(() => expect(watcher.activeRuns.size).toBe(0));
+      const detail = store.getWorkItemDetail(item.id);
+      const run = detail.runs[0];
+      expect(detail.actions[0]).toMatchObject({ status: 'failed', attempt: 1 });
+      expect(detail.runs).toHaveLength(1);
+      expect(run).toMatchObject({
+        status: 'failed',
+        failureKind: 'system_blocked',
+        failureCode: 'mainline_context_too_large',
+        llmRequestCount: 0,
+      });
+      expect(detail.events.some(event => event.type === 'action.retry_scheduled')).toBe(false);
+      expect(detail.events.some(event => event.type === 'action.system_blocked')).toBe(true);
+      expect(engineQueries).toHaveLength(0);
+
+      await watcher.tick();
+      expect(store.getWorkItemDetail(item.id).runs).toHaveLength(1);
+      const dto = projectWorkItemDetail(detail);
+      expect(dto.actions[0].failure).toMatchObject({
+        kind: 'system_blocked',
+        code: 'mainline_context_too_large',
+        error: expect.stringMatching(/Mainline pinned context exceeds 64 KiB/),
+      });
+      expect(Buffer.byteLength(JSON.stringify(dto.actions[0].failure), 'utf8')).toBeLessThan(4 * 1024);
+      expect(Buffer.byteLength(dto.actions[0].brief.objective, 'utf8')).toBeLessThanOrEqual(8 * 1024);
+      expect(Buffer.byteLength(JSON.stringify(dto), 'utf8')).toBeLessThan(32 * 1024);
+      expect(JSON.stringify(dto)).not.toContain('contextSnapshot');
+      expect(JSON.stringify(dto)).not.toContain('executionManifest');
+    } finally {
+      await watcher.stop();
+      store.close();
+    }
+  });
+
+  it('advances the Action generation and spec when isolated execution falls back to shared', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-shared-fallback-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    try {
+      const item = controller.create({
+        title: 'Fallback item', goal: 'Preserve frozen spec', acceptanceCriteria: [], workDir, start: true,
+      });
+      const action = store.getWorkItemDetail(item.id).actions[0];
+      store.db.prepare("UPDATE actions SET workspace_mode = 'isolated-write', spec_hash = '' WHERE id = ?").run(action.id);
+      const claimed = store.claimReadyAction('boot-fallback', 5_000);
+      const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
+
+      const prepared = await runner.prepare({ ...claimed, ownerBootId: 'boot-fallback' });
+
+      expect(prepared.action).toMatchObject({ workspaceMode: 'shared', generation: claimed.action.generation + 1 });
+      expect(prepared.action.specHash).not.toBe(claimed.action.specHash);
+      expect(prepared.action.resultRunId).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it('rejects an expired runner workspace fallback after a new Run claims the Action', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-stale-fallback-'));
+    let now = 1_000;
+    const store = new WorkItemStore(join(workDir, 'work-center.db'), { now: () => now });
+    const controller = new WorkflowController(store);
+    try {
+      const item = controller.create({
+        title: 'Stale fallback', goal: 'Fence workspace mutation to the Run', acceptanceCriteria: [], workDir, start: true,
+      });
+      const action = store.getWorkItemDetail(item.id).actions[0];
+      store.db.prepare("UPDATE actions SET workspace_mode = 'isolated-write', spec_hash = '' WHERE id = ?").run(action.id);
+      const staleClaim = store.claimReadyAction('old-boot', 10);
+      now += 20;
+      expect(store.recoverInterruptedRuns('new-boot')).toBe(1);
+      const currentClaim = store.claimReadyAction('new-boot', 5_000);
+      const before = store.getAction(action.id);
+      const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
+
+      await expect(runner.prepare({ ...staleClaim, ownerBootId: 'old-boot' }))
+        .rejects.toThrow(/lost its Run lease/);
+
+      expect(store.getAction(action.id)).toMatchObject({
+        generation: before.generation,
+        specHash: before.specHash,
+        resultRunId: before.resultRunId,
+        workspaceMode: before.workspaceMode,
+        currentRunId: currentClaim.run.id,
+        leaseEpoch: currentClaim.run.leaseEpoch,
+      });
+      expect(store.isActiveRun(currentClaim.run.id, 'new-boot', currentClaim.run.leaseEpoch)).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
   it('rolls back an isolated worktree when persisting ownership fails', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-prepare-rollback-'));
     const worktreeRoot = mkdtempSync(join(tmpdir(), 'work-center-prepare-worktrees-'));
@@ -134,13 +323,14 @@ describe('Work Center Runner execution resolution', () => {
     git(['commit', '-m', 'base']);
     const branch = 'yeaft-work/wi-implement-run';
     const runner = new WorkItemRunner({
-      store: { setActionWorkspace: vi.fn(() => { throw new Error('sqlite busy'); }) },
+      store: { setActionWorkspaceForRun: vi.fn(() => { throw new Error('sqlite busy'); }) },
       actionWorktreeRoot: worktreeRoot,
     });
     await expect(runner.prepare({
       workItem: { id: 'wi', workDir, workspaceKey: workDir },
-      action: { id: 'action', stageId: 'implement', workspaceMode: 'isolated-write' },
-      run: { id: 'run' },
+      action: { id: 'action', stageId: 'implement', workspaceMode: 'isolated-write', generation: 1 },
+      run: { id: 'run', leaseEpoch: 1 },
+      ownerBootId: 'boot',
     })).rejects.toThrow('sqlite busy');
     expect(existsSync(join(worktreeRoot, 'wi-implement-run'))).toBe(false);
     expect(git(['worktree', 'list', '--porcelain'])).not.toContain('wi-implement-run');
