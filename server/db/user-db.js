@@ -150,6 +150,15 @@ export const userDb = {
     // rolls back. A partial delete (e.g. users row gone but daily_stats
     // orphaned) is worse than the operation failing outright.
     const run = transaction((id) => {
+      if (stmts.getReservedSandboxForUser.get(id)) {
+        const error = new Error('SANDBOX_REMOVE_REQUIRED');
+        error.code = 'SANDBOX_REMOVE_REQUIRED';
+        throw error;
+      }
+      // Released Sandbox history no longer owns runtime resources. Delete it
+      // before the user so the restrictive ownership FK remains fail closed
+      // for every reservation that has not completed Remove settlement.
+      stmts.deleteReleasedSandboxesForUser.run(id);
       stmts.deleteIdentitiesForUser.run(id);
       stmts.deleteUserSessionsByUser.run(id);
       stmts.deleteUserStats.run(id);

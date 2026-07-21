@@ -26,6 +26,10 @@ ctx.pkgName = pkg.name;
 // 配置文件路径（向后兼容：先查当前目录 .claude-agent.json）
 const LOCAL_CONFIG_FILE = join(process.cwd(), '.claude-agent.json');
 const IS_LOCAL_RUN = process.env.YEAFT_LOCAL_RUN === 'true';
+const MANAGED_SANDBOX_IDENTITY = (() => {
+  if (!process.env.YEAFT_MANAGED_SANDBOX_IDENTITY) return null;
+  try { return JSON.parse(process.env.YEAFT_MANAGED_SANDBOX_IDENTITY); } catch { return null; }
+})();
 
 // 加载或创建配置
 function loadConfig() {
@@ -93,6 +97,7 @@ const CONFIG = {
   yeaftDir: YEAFT_DIR,
   reconnectInterval: fileConfig.reconnectInterval,
   agentSecret: process.env.AGENT_SECRET || fileConfig.agentSecret,
+  managedSandboxIdentity: MANAGED_SANDBOX_IDENTITY,
   // 显式禁用的工具（非 MCP 相关）
   explicitDisallowedTools: (() => {
     const raw = process.env.DISALLOWED_TOOLS || fileConfig.disallowedTools || '';
@@ -129,6 +134,7 @@ async function detectCapabilities() {
   // flip `agent.encryptOutbound = false`, stopping outbound encryption
   // to this peer. Old servers ignore the unknown capability token.
   const capabilities = ['background_tasks', 'file_editor', 'ping_session', 'plaintext-ok', 'work_center', 'session_history_search'];
+  if (MANAGED_SANDBOX_IDENTITY) capabilities.push('managed-sandbox');
   if (process.platform === 'linux') capabilities.push('work_item_attachments');
   const pty = await loadNodePty();
   if (pty) capabilities.push('terminal');

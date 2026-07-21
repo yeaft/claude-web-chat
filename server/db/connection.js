@@ -140,6 +140,146 @@ db.exec(`
   -- concurrent reads continue during the build; writers will block briefly.
   CREATE INDEX IF NOT EXISTS idx_messages_session_role_id ON messages(session_id, role, id DESC);
   CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date);
+
+  -- Managed Sandbox control-plane state. Runtime resources are deliberately
+  -- not created on this mixed-use Server Host; qualified Controllers report
+  -- Host capacity separately.
+  CREATE TABLE IF NOT EXISTS sandbox_hosts (
+    id TEXT PRIMARY KEY,
+    epoch TEXT NOT NULL,
+    qualified INTEGER NOT NULL DEFAULT 0,
+    controller_healthy INTEGER NOT NULL DEFAULT 0,
+    helper_healthy INTEGER NOT NULL DEFAULT 0,
+    runtime_healthy INTEGER NOT NULL DEFAULT 0,
+    quota_healthy INTEGER NOT NULL DEFAULT 0,
+    network_healthy INTEGER NOT NULL DEFAULT 0,
+    image_digest TEXT NOT NULL,
+    cpu_millis_total INTEGER NOT NULL,
+    memory_mib_total INTEGER NOT NULL,
+    disk_gib_total INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sandbox_host_attestations (
+    nonce TEXT PRIMARY KEY,
+    host_id TEXT NOT NULL REFERENCES sandbox_hosts(id) ON DELETE CASCADE,
+    epoch TEXT NOT NULL,
+    observed_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sandbox_host_attestations_host
+    ON sandbox_host_attestations(host_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS sandbox_host_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id TEXT NOT NULL,
+    epoch TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    error_code TEXT,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sandbox_host_audit_created
+    ON sandbox_host_audit_events(host_id, created_at DESC, id DESC);
+
+  CREATE TABLE IF NOT EXISTS sandbox_entitlements (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sandbox_entitlement_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    actor_username TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sandbox_entitlement_audit_user_created
+    ON sandbox_entitlement_audit_events(user_id, created_at DESC, id DESC);
+
+  CREATE TABLE IF NOT EXISTS sandboxes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    host_id TEXT NOT NULL REFERENCES sandbox_hosts(id) ON DELETE RESTRICT,
+    host_epoch TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    size_id TEXT NOT NULL,
+    cpu_millis INTEGER NOT NULL,
+    memory_mib INTEGER NOT NULL,
+    disk_gib INTEGER NOT NULL,
+    desired_state TEXT NOT NULL,
+    observed_state TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 1,
+    instance_id TEXT NOT NULL,
+    image_digest TEXT NOT NULL,
+    reservation_held INTEGER NOT NULL DEFAULT 1,
+    last_error_code TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    removed_at INTEGER
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_sandboxes_active_user
+    ON sandboxes(user_id) WHERE reservation_held = 1;
+  CREATE INDEX IF NOT EXISTS idx_sandboxes_host_reservation
+    ON sandboxes(host_id, reservation_held);
+
+  CREATE TABLE IF NOT EXISTS sandbox_operations (
+    id TEXT PRIMARY KEY,
+    sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    host_epoch TEXT NOT NULL,
+    deadline_at INTEGER NOT NULL,
+    error_code TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(user_id, idempotency_key)
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_sandbox_operations_active
+    ON sandbox_operations(sandbox_id)
+    WHERE status IN ('pending', 'running');
+
+  CREATE TABLE IF NOT EXISTS sandbox_credentials (
+    id TEXT PRIMARY KEY,
+    sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    image_digest TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    secret_hash TEXT NOT NULL,
+    expires_at INTEGER,
+    consumed_at INTEGER,
+    revoked_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sandbox_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    operation_id TEXT,
+    event_type TEXT NOT NULL,
+    actor_kind TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    host_epoch TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    error_code TEXT,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sandbox_audit_sandbox_created
+    ON sandbox_audit_events(sandbox_id, created_at, id);
 `);
 
 // 数据库迁移 - 添加缺失的列
@@ -825,6 +965,12 @@ export const stmts = {
   `),
   clearInvitationUsedBy: db.prepare(`
     UPDATE invitations SET used_by = NULL WHERE used_by = ?
+  `),
+  getReservedSandboxForUser: db.prepare(`
+    SELECT id FROM sandboxes WHERE user_id = ? AND reservation_held = 1 LIMIT 1
+  `),
+  deleteReleasedSandboxesForUser: db.prepare(`
+    DELETE FROM sandboxes WHERE user_id = ? AND reservation_held = 0
   `),
   deleteUserById: db.prepare(`
     DELETE FROM users WHERE id = ?

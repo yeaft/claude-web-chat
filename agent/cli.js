@@ -57,6 +57,14 @@ if (command === 'doctor') {
     console.error(`Local run failed: ${error.message}`);
     process.exit(1);
   }
+} else if (command === 'managed-sandbox') {
+  try {
+    const { runManagedSandboxAgent } = await import('./managed-sandbox/agent-runtime.js');
+    await runManagedSandboxAgent(subArgs);
+  } catch (error) {
+    console.error(`Managed Sandbox Agent failed: ${error.message}`);
+    process.exit(1);
+  }
 } else if (command === 'upgrade') {
   upgrade();
 } else if (command === '--version' || command === '-v') {

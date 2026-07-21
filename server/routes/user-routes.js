@@ -164,6 +164,12 @@ export function registerUserRoutes(app, { requireAuth, requireAdmin }) {
 
       res.json({ success: true });
     } catch (err) {
+      if (err?.code === 'SANDBOX_REMOVE_REQUIRED') {
+        return res.status(409).json({
+          error: 'Remove the managed Sandbox before deleting the account',
+          code: err.code
+        });
+      }
       console.error('Delete user error:', err);
       res.status(500).json({ error: 'Failed to delete account' });
     }

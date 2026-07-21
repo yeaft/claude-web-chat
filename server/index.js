@@ -16,6 +16,7 @@ import { handleAgentConnection } from './ws-agent.js';
 import { handleWebConnection } from './ws-client.js';
 import { sendToWebClient } from './ws-utils.js';
 import { markAgentHeartbeatPing, markAgentHeartbeatStall, shouldTerminateAgentHeartbeat } from './heartbeat-policy.js';
+import { createSandboxReconciler } from './sandbox-reconciler.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -221,6 +222,8 @@ if (configValidation.warnings) {
   console.warn('');
 }
 
+const sandboxReconcileTimer = createSandboxReconciler({ config: CONFIG.sandbox }).start();
+
 server.listen(CONFIG.port, CONFIG.host, () => {
   console.log(`Server running on http://${CONFIG.host || '0.0.0.0'}:${CONFIG.port}`);
   console.log(`Auth mode: ${CONFIG.skipAuth ? 'SKIP (development)' : 'ENABLED'}`);
@@ -235,6 +238,7 @@ server.listen(CONFIG.port, CONFIG.host, () => {
 // =====================
 async function gracefulShutdown(signal) {
   console.log(`\n[Shutdown] Received ${signal}, starting graceful shutdown...`);
+  if (sandboxReconcileTimer) clearInterval(sandboxReconcileTimer);
 
   // 1. 通知所有 web client 服务即将更新
   const updateMsg = { type: 'server_updating' };

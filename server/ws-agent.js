@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { WebSocket } from 'ws';
 import { CONFIG } from './config.js';
 import { verifyAgent } from './auth.js';
+import { authenticateSandboxAgent, canForceReadyAfterSyncTimeout } from './sandbox-agent-auth.js';
 import { encodeKey } from './encryption.js';
 import { agents, pendingAgentConnections } from './context.js';
 import {
@@ -114,8 +115,10 @@ export function handleAgentConnection(ws, url) {
           clearTimeout(pending.timeout);
           pendingAgentConnections.delete(tempId);
 
-          const authResult = verifyAgent(msg.secret);
-          if (!authResult.valid) {
+          const sandboxAuth = authenticateSandboxAgent(msg, pending);
+          const authResult = sandboxAuth || (msg.authKind ? { valid: false } : verifyAgent(msg.secret));
+          const valid = sandboxAuth || authResult.valid;
+          if (!valid) {
             console.log(`Agent auth failed: ${agentName}`);
             ws.close(1008, 'Invalid agent secret');
             return;
@@ -123,11 +126,27 @@ export function handleAgentConnection(ws, url) {
 
           const capabilities = msg.capabilities || [];
           const agentVersion = msg.version || null;
+          if (sandboxAuth && !capabilities.includes('managed-sandbox')) {
+            ws.close(1008, 'Invalid Sandbox Agent capability');
+            return;
+          }
           // Build owner-scoped key to prevent cross-user collision. New agents
           // identify local service instances separately from display names;
           // old agents keep using their name as the stable id.
-          resolvedAgentId = buildAgentMapKey(authResult.userId, pending.instanceId || pending.agentId || pending.agentName);
-          completeAgentRegistration(ws, resolvedAgentId, pending.agentName, pending.workDir, authResult.sessionKey, capabilities, authResult.userId, authResult.username, agentVersion, pending.instanceId || pending.agentId || pending.agentName);
+          const ownerId = sandboxAuth?.userId || authResult.userId;
+          const registeredInstanceId = sandboxAuth?.instanceId
+            || pending.instanceId || pending.agentId || pending.agentName;
+          resolvedAgentId = buildAgentMapKey(ownerId, registeredInstanceId);
+          completeAgentRegistration(
+            ws, resolvedAgentId, pending.agentName, pending.workDir,
+            sandboxAuth?.sessionKey || authResult.sessionKey, capabilities,
+            ownerId, authResult.username || null, agentVersion, registeredInstanceId,
+            sandboxAuth ? {
+              sandboxId: sandboxAuth.sandboxId,
+              generation: sandboxAuth.generation,
+              imageDigest: sandboxAuth.imageDigest
+            } : null
+          );
         }
       } catch (e) {
         console.error('Failed to parse agent auth message:', e.message);
@@ -203,7 +222,7 @@ function handleAgentDisconnect(agentId, agentName, ws) {
   broadcastAgentList();
 }
 
-function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null, instanceId = null) {
+function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, capabilities = [], ownerId = null, ownerUsername = null, agentVersion = null, instanceId = null, sandboxIdentity = null) {
   // 如果是重连，保留 conversations；否则（server 重启）创建空 Map
   const existingAgent = agents.get(agentId);
   const conversations = existingAgent?.conversations || new Map();
@@ -240,13 +259,13 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
     ownerId,
     ownerUsername,
     version: agentVersion,
-    encryptOutbound
+    encryptOutbound,
+    sandboxIdentity
   });
 
-  // 同步超时保护：30 秒后强制 ready
   const syncTimeout = setTimeout(() => {
     const ag = agents.get(agentId);
-    if (ag?.ws === ws && ag.status === 'syncing') {
+    if (ag?.ws === ws && ag.status === 'syncing' && canForceReadyAfterSyncTimeout(ag)) {
       console.warn(`[Sync] Agent ${agentName} sync timeout, forcing ready`);
       ag.status = 'ready';
       broadcastAgentList();
