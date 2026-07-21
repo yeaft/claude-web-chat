@@ -436,14 +436,11 @@ export function handleAgentSelected(store, msg) {
     store.currentAgentInfo = agentInfo;
   }
 
-  if (msg.slashCommands && msg.slashCommands.length > 0) {
-    // Store as agent-level default, used as fallback when a conversation
-    // hasn't reported its own slashCommands yet
+  if (Array.isArray(msg.slashCommands)) {
+    // Store as the Claude Chat agent-level fallback. Yeaft command snapshots
+    // are delivered separately and must not be overwritten during selection.
     const slashCommands = [...new Set(msg.slashCommands)];
     store.slashCommandsMap[`agent:${msg.agentId}`] = slashCommands;
-    if (store.currentView === 'yeaft' && store.yeaftConversationId) {
-      store.slashCommandsMap[store.yeaftConversationId] = slashCommands;
-    }
   }
   // Merge command descriptions
   if (msg.slashCommandDescriptions) {

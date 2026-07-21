@@ -285,37 +285,53 @@ export async function handleAgentOutput(agentId, agent, msg) {
       await forwardToClients(agentId, msg.conversationId, msg);
       break;
 
-    case 'slash_commands_update':
-      // 缓存到 agent 对象上，供 web 端选择 agent 时立即获取
-      agent.slashCommands = msg.slashCommands || [];
-      if (msg.slashCommandDescriptions) {
-        agent.slashCommandDescriptions = { ...agent.slashCommandDescriptions, ...msg.slashCommandDescriptions };
+    case 'slash_commands_update': {
+      const isYeaftCommandSet = msg.commandSet === 'yeaft';
+      let slashCommandDescriptions;
+      if (isYeaftCommandSet) {
+        // Yeaft publishes an authoritative hot-reload snapshot. Keep it out of
+        // the Claude cache used by agent_selected and clear removed descriptions.
+        agent.yeaftSlashCommands = msg.slashCommands || [];
+        if (msg.slashCommandDescriptions) {
+          agent.yeaftSlashCommandDescriptions = { ...msg.slashCommandDescriptions };
+        }
+        slashCommandDescriptions = agent.yeaftSlashCommandDescriptions || {};
+      } else {
+        // Claude Chat remains the legacy/default command set selected clients receive.
+        agent.slashCommands = msg.slashCommands || [];
+        if (msg.slashCommandDescriptions) {
+          agent.slashCommandDescriptions = { ...agent.slashCommandDescriptions, ...msg.slashCommandDescriptions };
+        }
+        slashCommandDescriptions = agent.slashCommandDescriptions || {};
       }
+      const commandSet = msg.commandSet ? { commandSet: msg.commandSet } : {};
       if (msg.conversationId === '__preload__') {
-        // Agent-level preload: broadcast to all owner clients with agentId
+        // Agent-level preload: broadcast to all owner clients with agentId.
         for (const [, client] of webClients) {
           if (client.authenticated && (CONFIG.skipAuth || agent.ownerId === client.userId)) {
             await sendToWebClient(client, {
               type: 'slash_commands_update',
               agentId,
+              ...commandSet,
               slashCommands: msg.slashCommands,
-              slashCommandDescriptions: agent.slashCommandDescriptions || {}
+              slashCommandDescriptions,
             });
           }
         }
       } else {
-        // Per-conversation update. Stamp agentId too so
-        // Yeaft's temporary/local conversation id cannot hide the agent-level
-        // fallback command list in the web store.
+        // Per-conversation update. Preserve commandSet so the web store can
+        // isolate Yeaft snapshots from the Claude agent-level fallback.
         await forwardToClients(agentId, msg.conversationId, {
           type: 'slash_commands_update',
           agentId,
           conversationId: msg.conversationId,
+          ...commandSet,
           slashCommands: msg.slashCommands,
-          slashCommandDescriptions: agent.slashCommandDescriptions || {}
+          slashCommandDescriptions,
         });
       }
       break;
+    }
 
     case 'compact_status':
       console.log(`[Compact] Status: ${msg.status} for conversation ${msg.conversationId}`);
