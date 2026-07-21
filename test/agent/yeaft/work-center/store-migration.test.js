@@ -80,10 +80,10 @@ describe('Work Center store migration', () => {
     expect(store.getRun('legacy-run')).toMatchObject({
       response: '', loopCount: 0, toolCount: 0, llmRequestCount: 0,
       inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0,
-      progressRevision: 0, checkpoint: null,
+      progressRevision: 0, checkpoint: null, acceptingInput: true,
     });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('14');
+      .toBe('15');
     expect(store.getWorkItem('legacy-item')).toMatchObject({
       planRevision: 0,
       executionSchemaVersion: 1,
@@ -100,6 +100,8 @@ describe('Work Center store migration', () => {
     });
     expect(store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plan_conflicts'").get())
       .toEqual({ name: 'plan_conflicts' });
+    expect(store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_action_inputs'").get())
+      .toEqual({ name: 'pending_action_inputs' });
   });
 
   it('keeps a schema-12 graph WorkItem claimable on the legacy prompt path', () => {
@@ -160,6 +162,7 @@ describe('Work Center store migration', () => {
     expect(claim).toMatchObject({ workItem: { id: 'graph-item', executionSchemaVersion: 1 }, action: { id: 'graph-action' } });
     expect(store.isActiveRun(claim.run.id, 'legacy-boot', claim.run.leaseEpoch)).toBe(true);
 
+    expect(store.closeRunInput(claim.run.id, 'legacy-boot', claim.run.leaseEpoch)).toBe(true);
     store.finalizeRun(claim.run.id, 'legacy-boot', claim.run.leaseEpoch, {
       outcome: 'waiting', summary: 'Need input', waitingReason: 'Choose safely', evidence: [],
     }, () => ({
@@ -191,6 +194,7 @@ describe('Work Center store migration', () => {
 
     const replacementClaim = store.claimReadyAction('legacy-boot', 5_000);
     expect(replacementClaim.action.id).toBe('graph-action');
+    expect(store.closeRunInput(replacementClaim.run.id, 'legacy-boot', replacementClaim.run.leaseEpoch)).toBe(true);
     store.finalizeRun(replacementClaim.run.id, 'legacy-boot', replacementClaim.run.leaseEpoch, {
       outcome: 'completed', summary: 'Done', evidence: [],
     }, () => ({

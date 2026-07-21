@@ -1488,7 +1488,7 @@ export default {
   'workCenter.actionInputPlaceholder': '补充上下文、回答问题或调整这个 Action',
   'workCenter.actionInputResumeHint': '你的输入会带着新增上下文继续这个 Action。',
   'workCenter.actionInputRetryHint': '补充修正说明或文件后，使用新上下文重新执行这个 Action。',
-  'workCenter.actionInputRestartHint': '新输入会安全重启当前 Action，以应用更新后的上下文。',
+  'workCenter.actionInputContinueHint': '新输入会追加到当前 Action，并在下一个安全的执行 Loop 中应用。',
   'workCenter.actionFailedTitle': '这个 Action 为什么失败',
   'workCenter.failedAt': '失败时间',
   'workCenter.actionFailureRecovery': '在下方补充修正说明或文件即可重新执行。请求详情中可以查看具体模型和 Loop 轨迹。',

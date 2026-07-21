@@ -374,6 +374,14 @@ export default {
     actionResponseText(action) {
       return String(action?.response || '').trim();
     },
+    actionExecutor(action) {
+      return action?.assignedVp?.name || action?.assignedVp?.id
+        || action?.requiredRole || action?.assignmentPolicy?.fixedVpId
+        || action?.assignmentPolicy?.capability || this.tr('workCenter.assignment.auto', 'Auto');
+    },
+    actionContentSummary(action) {
+      return String(action?.contentSummary || action?.response || action?.brief?.objective || '').trim();
+    },
     executionStats(value) {
       return value?.executionStats || {};
     },
@@ -808,13 +816,8 @@ export default {
                             {{ action.canonicalResult?.summary || action.brief?.approach }}
                           </span>
                           <span class="work-center-action-secondary">
-                            <small>{{ actionLabel(action.type) }} · {{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.capability || tr('workCenter.assignment.auto', 'Auto') }}</small>
-                            <span class="work-center-action-stats" aria-label="Execution totals">
-                              <span>{{ $t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) }) }}</span>
-                              <span>{{ $t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) }) }}</span>
-                              <span>{{ $t('workCenter.toolCount', { count: formatCount(executionStats(action).toolCount) }) }}</span>
-                              <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(action).inputTokens), output: formatCount(executionStats(action).outputTokens), cache: formatCount((executionStats(action).cacheReadTokens || 0) + (executionStats(action).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) }) }}</span>
-                            </span>
+                            <small class="work-center-action-vp">{{ actionExecutor(action) }}</small>
+                            <span v-if="actionContentSummary(action)" class="work-center-action-content-summary" :title="actionContentSummary(action)">{{ actionContentSummary(action) }}</span>
                           </span>
                         </span>
                         <span class="work-center-action-chevron" aria-hidden="true"></span>

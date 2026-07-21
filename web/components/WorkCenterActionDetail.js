@@ -45,7 +45,7 @@ export default {
       if (this.selected?.status === 'needs_attention') {
         return this.tr('workCenter.actionInputRetryHint', 'Add instructions or files, then rerun this Action with the new context.');
       }
-      return this.tr('workCenter.actionInputRestartHint', 'New input restarts the active Action so it can apply the updated context safely.');
+      return this.tr('workCenter.actionInputContinueHint', 'New input joins this Action and is applied at the next safe execution loop.');
     },
     canSend() {
       return !this.uploading && !this.sending

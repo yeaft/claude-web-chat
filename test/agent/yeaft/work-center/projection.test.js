@@ -73,6 +73,8 @@ describe('Work Center event projection', () => {
     });
     expect(projected.workItem.actionStats).toEqual([{
       id: 'a-1', status: 'completed',
+      assignedVp: { id: 'martin', name: 'Martin' },
+      contentSummary: 'Reviewed the change and found one compatibility decision.',
       executionStats: {
         llmRequestCount: 5, loopCount: 3, toolCount: 8,
         inputTokens: 300, outputTokens: 75, cacheReadTokens: 30, cacheWriteTokens: 15,
@@ -116,6 +118,8 @@ describe('Work Center event projection', () => {
         id: 'a-1', sequence: 1, type: 'review', stageId: 'review',
         assignmentPolicy: { mode: 'auto', capability: 'review', fixedVpId: null },
         status: 'completed',
+        assignedVp: { id: 'martin', name: 'Martin' },
+        contentSummary: 'Reviewed the change and found one compatibility decision.',
         executionStats: {
           llmRequestCount: 5, loopCount: 3, toolCount: 8,
           inputTokens: 300, outputTokens: 75, cacheReadTokens: 30, cacheWriteTokens: 15,
@@ -325,6 +329,25 @@ describe('Work Center event projection', () => {
     expect(JSON.stringify(messages)).not.toContain('do not project me');
     expect(JSON.stringify(messages)).not.toContain('private.md');
     expect(JSON.stringify(messages)).not.toContain('secret');
+  });
+
+  it('projects every persisted Loop response as a durable Action transcript message', () => {
+    const detail = internalDetail();
+    detail.events.push({
+      id: 11, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
+      type: 'run.loop_output', data: { loopNumber: 1, response: 'Inspected the controller path.' }, createdAt: 3,
+    }, {
+      id: 12, workItemId: 'wi-1', actionId: 'a-1', runId: 'r-2',
+      type: 'run.loop_output', data: { loopNumber: 2, response: 'Implemented the continuation fence.' }, createdAt: 4,
+    });
+
+    const messages = projectWorkItemDetail(detail).actions[0].messages;
+    expect(messages.filter(message => message.role === 'assistant')).toEqual([
+      expect.objectContaining({ id: 'run:r-1', text: 'Earlier retry response' }),
+      expect.objectContaining({ id: 'event:11', text: 'Inspected the controller path.' }),
+      expect.objectContaining({ id: 'event:12', text: 'Implemented the continuation fence.' }),
+    ]);
+    expect(messages).not.toContainEqual(expect.objectContaining({ id: 'run:r-2' }));
   });
 
   it('projects request indexes and explicit request details with secrets and binary bodies removed', () => {

@@ -113,12 +113,30 @@ function runResponseMessage(run) {
   });
 }
 
+function loopOutputMessages(action, events) {
+  return (Array.isArray(events) ? events : [])
+    .filter(event => event?.actionId === action?.id && event.type === 'run.loop_output')
+    .map(event => normalizeProjectedMessage({
+      id: `event:${event.id}`,
+      role: 'assistant',
+      kind: 'response',
+      status: 'completed',
+      text: event.data?.response || '',
+      createdAt: event.createdAt,
+    }))
+    .filter(Boolean);
+}
+
 function actionMessages(action, runs, events) {
   const matchingRuns = Array.isArray(runs)
     ? runs.filter(run => run?.actionId === action?.id)
     : [];
-  return [...actionInputMessages(action, events), ...matchingRuns
+  const runsWithLoopOutput = new Set((Array.isArray(events) ? events : [])
+    .filter(event => event?.actionId === action?.id && event.type === 'run.loop_output' && event.runId)
+    .map(event => event.runId));
+  return [...actionInputMessages(action, events), ...loopOutputMessages(action, events), ...matchingRuns
     .sort((left, right) => count(left.startedAt) - count(right.startedAt))
+    .filter(run => !runsWithLoopOutput.has(run.id))
     .map(run => runResponseMessage(run))
     .filter(Boolean)]
     .sort((left, right) => left.createdAt - right.createdAt
@@ -294,6 +312,18 @@ function projectAction(action, runs, events, includeBody = true) {
         key,
         truncateUtf8(value, includeBody ? MAX_CURRENT_BRIEF_BYTES : MAX_HISTORICAL_BRIEF_CHARS),
       ]));
+  const matchingRuns = Array.isArray(runs) ? runs.filter(run => run?.actionId === action.id) : [];
+  const latestRun = [...matchingRuns].sort((left, right) => (
+    count(right.startedAt) - count(left.startedAt) || count(right.progressRevision) - count(left.progressRevision)
+  ))[0];
+  const assignedVp = latestRun?.vpSnapshot ? {
+    id: latestRun.vpSnapshot.id || null,
+    name: latestRun.vpSnapshot.name || latestRun.vpSnapshot.id || null,
+  } : null;
+  const contentSummary = truncateUtf8(
+    execution.response || latestRun?.summary || brief?.objective || brief?.expectedOutcome || '',
+    MAX_HISTORICAL_BRIEF_CHARS,
+  );
   return {
     id: action.id,
     sequence: action.sequence,
@@ -307,6 +337,8 @@ function projectAction(action, runs, events, includeBody = true) {
     requiredRole: action.requiredRole || '',
     brief: projectedBrief,
     status: action.status,
+    assignedVp,
+    contentSummary,
     executionStats: executionStats(execution),
     loopCount: execution.loopCount,
     toolCount: execution.toolCount,
@@ -366,6 +398,8 @@ function projectActionStats(detail) {
     const stats = {
       id: projected.id,
       status: projected.status,
+      assignedVp: projected.assignedVp,
+      contentSummary: projected.contentSummary,
       executionStats: projected.executionStats,
       loopCount: projected.loopCount,
       toolCount: projected.toolCount,

@@ -307,6 +307,7 @@ describe('Work Center tool policy', () => {
       store: {
         listCompletedRuns: () => [],
         isActiveRun: () => true,
+        closeRunInput: () => true,
         setRunExecutionSnapshots: (_runId, _ownerBootId, _leaseEpoch, value) => {
           snapshots = value;
           return true;

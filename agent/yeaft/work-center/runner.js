@@ -783,7 +783,7 @@ export class WorkItemRunner {
     }
   }
 
-  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader }) {
+  async run({ workItem, action, run, signal, ownerBootId, onProgress, registerProgressReader, registerInputWake }) {
     const runtime = await this.runtimeProvider();
     const currentSettings = workItem?.workflowSnapshot?.planningMode === 'ai' && this.policyProvider
       ? await this.policyProvider()
@@ -840,6 +840,7 @@ export class WorkItemRunner {
       reuseMemory: workItem.reuseMemory,
     });
     const attachmentContext = buildWorkItemAttachmentContext(workItem, { root: this.attachmentRoot });
+    const attachmentFileById = new Map(attachmentContext.files.map(file => [file.id, file]));
     const fixedPromptSuffix = `${resumeBlock}${attachmentContext.promptBlock}${completionContract(executionAction, workItem)}`;
     const reservedPromptBytes = Buffer.byteLength(fixedPromptSuffix, 'utf8');
     const mainline = v2Execution
@@ -992,6 +993,29 @@ export class WorkItemRunner {
       taskManager: null,
       vpId: vp.id,
     });
+    if (typeof registerInputWake === 'function') {
+      registerInputWake(() => engine.wakeForPendingUserMessage?.());
+    }
+    const drainPendingUserMessages = () => {
+      const pending = this.store.listPendingActionInputs?.(
+        action.id, run.id, ownerBootId, run.leaseEpoch,
+      ) || [];
+      const accepted = [];
+      for (const item of pending) {
+        const attachmentLines = item.attachments.map(attachment => {
+          const file = attachmentFileById.get(attachment.id);
+          return file ? `- ${attachment.name}: ${file.ref}` : `- ${attachment.name}`;
+        });
+        const content = [item.text, attachmentLines.length > 0
+          ? `Additional WorkItem attachments:\n${attachmentLines.join('\n')}` : '']
+          .filter(Boolean).join('\n\n');
+        if (!content || !this.store.acknowledgeActionInput?.(
+          item.id, action.id, run.id, ownerBootId, run.leaseEpoch,
+        )) continue;
+        accepted.push({ content, preview: item.text || '[attachments]' });
+      }
+      return accepted;
+    };
     try {
       const prompt = v2Execution
         ? `${renderMainlineContextSnapshot(mainline.contextSnapshot)}${fixedPromptSuffix}`
@@ -1015,9 +1039,19 @@ export class WorkItemRunner {
         workCenterInstructions: workItem?.workflowSnapshot?.globalInstructions || '',
         workDir,
         userAlreadyPersisted: true,
+        drainPendingUserMessages,
+        closePendingUserInput: () => this.store.closeRunInput(
+          run.id, ownerBootId, run.leaseEpoch,
+        ),
         collabToolPolicy: 'single-vp',
       })) {
-        if (event?.type === 'loop') loopCount += 1;
+        if (event?.type === 'loop') {
+          loopCount += 1;
+          this.store.appendRunLoop?.(run.id, ownerBootId, run.leaseEpoch, {
+            ...event,
+            response: publicWorkItemResponse(event.response),
+          });
+        }
         else if (event?.type === 'tool_start') toolInputs.set(event.id, event.input);
         else if (event?.type === 'tool_end') {
           toolCount += 1;

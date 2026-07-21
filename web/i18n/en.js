@@ -1492,7 +1492,7 @@ export default {
   'workCenter.actionInputPlaceholder': 'Add context, answer a question, or redirect this Action',
   'workCenter.actionInputResumeHint': 'Your input resumes this Action with the additional context.',
   'workCenter.actionInputRetryHint': 'Add instructions or files, then rerun this Action with the new context.',
-  'workCenter.actionInputRestartHint': 'New input restarts the active Action so it can apply the updated context safely.',
+  'workCenter.actionInputContinueHint': 'New input joins this Action and is applied at the next safe execution loop.',
   'workCenter.actionFailedTitle': 'Why this Action failed',
   'workCenter.failedAt': 'Failed at',
   'workCenter.actionFailureRecovery': 'Add corrected instructions or files below to rerun this Action. Request details contain the exact model and loop trace.',

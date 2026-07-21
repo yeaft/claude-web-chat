@@ -82,6 +82,8 @@ const OPEN_ITEM_DETAIL = {
   actionSummary: 'implement',
   actions: [{
     id: 'action-1', sequence: 1, type: 'implement', requiredRole: 'developer', status: 'running',
+    assignedVp: { id: 'linus', name: 'Linus' },
+    contentSummary: 'Implemented the layout fix and verified the responsive breakpoints.',
     brief: {
       objective: 'Make the Work Center layout responsive',
       approach: 'Update the existing layout styles and verify supported breakpoints',
@@ -408,19 +410,19 @@ test.describe('Work Center responsive UI', () => {
     const firstCard = cards.first();
     const cardLayout = await firstCard.evaluate(element => {
       const title = element.querySelector('.work-center-action-primary strong');
-      const stats = element.querySelector('.work-center-action-stats');
+      const summary = element.querySelector('.work-center-action-content-summary');
       const titleStyle = title ? getComputedStyle(title) : null;
       return {
         cardWidth: element.getBoundingClientRect().width,
         scrollWidth: element.scrollWidth,
         titleWidth: title?.getBoundingClientRect().width || 0,
-        statsWidth: stats?.getBoundingClientRect().width || 0,
+        summaryWidth: summary?.getBoundingClientRect().width || 0,
         titleWritingMode: titleStyle?.writingMode || '',
       };
     });
     expect(cardLayout.scrollWidth).toBeLessThanOrEqual(cardLayout.cardWidth + 1);
     expect(cardLayout.titleWidth).toBeGreaterThan(100);
-    expect(cardLayout.statsWidth).toBeGreaterThan(180);
+    expect(cardLayout.summaryWidth).toBeGreaterThan(100);
     expect(cardLayout.titleWritingMode).toBe('horizontal-tb');
   });
 
@@ -456,10 +458,12 @@ test.describe('Work Center responsive UI', () => {
     const action = chatPage.locator('.work-center-action-card');
     await expect(action).toHaveCount(1);
     await expect(action).toContainText('Implement');
-    await expect(action).toContainText('4 LLM requests');
-    await expect(action).toContainText('3 loops');
-    await expect(action).toContainText('8 tools');
-    await expect(action).toContainText('1.8k tokens');
+    await expect(action).toContainText('Linus');
+    await expect(action).toContainText('Implemented the layout fix');
+    await expect(action).not.toContainText('LLM requests');
+    await expect(action).not.toContainText('loops');
+    await expect(action).not.toContainText('tools');
+    await expect(action).not.toContainText('tokens');
     await expect(chatPage.locator('.work-center-detail-usage')).toContainText('4 LLM requests');
     await expect(chatPage.locator('.work-center-detail-usage')).toContainText('1.8k tokens');
     await action.locator('.work-center-action-summary').click();

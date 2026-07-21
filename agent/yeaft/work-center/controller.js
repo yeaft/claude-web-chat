@@ -249,18 +249,35 @@ export class WorkflowController {
     const workItem = this.store.getWorkItem(id);
     if (!workItem) throw new Error(`WorkItem not found: ${id}`);
     if (['ready', 'running'].includes(workItem.status)) {
-      if (workItem.currentActionId !== input.actionId || workItem.revision !== input.revision) {
-        throw new Error('Action changed before input was applied; refresh and try again');
+      const activeAction = this.store.getAction(input.actionId);
+      if (activeAction?.status === 'running' && addedAttachmentCount > 0) {
+        throw new Error('Files cannot be added while an Action is running; send text now or wait for the next Action boundary');
       }
-      return this.guide(id, {
-        guidance: text,
+      const inputSummary = text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`;
+      return this.store.addActionInput(id, inputSummary, {
         actionId: input.actionId,
         generation: input.generation,
         revision: input.revision,
-        addedAttachmentCount,
-        addedAttachments: input.addedAttachments,
-        attachments: input.attachments,
-      });
+      }, (current, action) => {
+        const context = [...(action.context || []), {
+          type: 'input', role: 'user', summary: inputSummary, evidence: [],
+        }];
+        const step = {
+          type: action.type,
+          stageId: action.stageId || action.type,
+          assignmentPolicy: action.assignmentPolicy,
+          modelPolicy: action.modelPolicy,
+          requiredRole: action.requiredRole,
+          dependsOnStageIds: action.dependsOnStageIds,
+          workspaceMode: action.workspaceMode,
+          changesRequestedStageId: action.changesRequestedStageId,
+          brief: action.brief,
+        };
+        return {
+          context,
+          instruction: actionInstruction(step, current, context, renderSessionContextSnapshot(current.sessionContext)),
+        };
+      }, input.attachments, input.addedAttachments);
     }
     if (!['waiting', 'needs_attention'].includes(workItem.status)) {
       throw new Error(`WorkItem in ${workItem.status} cannot accept Action input`);
@@ -341,6 +358,13 @@ export class WorkflowController {
     const activeAction = activeRun ? this.store.getAction(activeRun.actionId) : null;
     if (!activeRun || !activeAction) throw new Error('Run is stale, cancelled, or already finished');
     const activeWorkItem = this.store.getWorkItem(activeRun.workItemId);
+    if (activeRun.acceptingInput !== false
+        && !this.store.closeRunInput(runId, ownerBootId, leaseEpoch)) {
+      if (!this.store.isActiveRun(runId, ownerBootId, leaseEpoch)) {
+        throw new Error('Run is stale, cancelled, expired, or already finished');
+      }
+      throw new Error('Run has unconsumed Action input and cannot finish yet');
+    }
     const result = normalizeTerminalResult(rawResult, activeAction);
     validateCompletedResult(result, activeAction, activeWorkItem);
     let validatedGeneratedWorkflow = null;
