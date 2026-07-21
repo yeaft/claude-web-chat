@@ -11,6 +11,14 @@ import { EXPERT_ROLES, buildClientExpertMessage } from '../../utils/expert-roles
 const YEAFT_ASK_SUBMIT_TIMEOUT_MS = 10_000;
 let yeaftAskSubmitGeneration = 0;
 
+function agentIdsForYeaftConversation(store, conversationId) {
+  if (!conversationId || !store?.yeaftConversationIdsByAgent) return [];
+  return Object.entries(store.yeaftConversationIdsByAgent)
+    .filter(([, candidateConversationId]) => candidateConversationId === conversationId)
+    .map(([agentId]) => agentId)
+    .filter(Boolean);
+}
+
 /**
  * fix-usermsg-dup: opaque client-side id stamped on optimistic user
  * messages and forwarded to the server in the `chat` payload. The
@@ -516,12 +524,28 @@ export function answerUserQuestion(store, requestId, answers, conversationId) {
   const isYeaftPrompt = store.currentView === 'yeaft' || !!chatMsg?.sessionId;
   if (isYeaftPrompt && chatMsg?.askPending) return;
   const sessionId = chatMsg?.sessionId || store.yeaftActiveSessionFilter || null;
-  const ownerAgentId = isYeaftPrompt && typeof store.agentIdForSession === 'function'
+  const cardAgentId = typeof chatMsg?.agentId === 'string' && chatMsg.agentId
+    ? chatMsg.agentId
+    : null;
+  const conversationAgentIds = isYeaftPrompt
+    ? agentIdsForYeaftConversation(store, convId)
+    : [];
+  const conversationAgentId = conversationAgentIds.length === 1
+    ? conversationAgentIds[0]
+    : null;
+  // The card identity came from the Agent event that created the prompt. Do
+  // not replace it with a Session resolver that can fall back to the page's
+  // current Agent while ownership is still hydrating. A unique conversation
+  // mapping is also authoritative; if it conflicts with the card, fail closed
+  // before mutating local state. Ambiguous mappings cannot disprove the card.
+  if (cardAgentId && conversationAgentId && cardAgentId !== conversationAgentId) return false;
+  const legacyOwnerAgentId = isYeaftPrompt && !cardAgentId && !conversationAgentId
+    && typeof store.agentIdForSession === 'function'
     ? store.agentIdForSession(sessionId)
     : null;
   const sent = store.sendWsMessage(isYeaftPrompt ? {
     type: 'yeaft_ask_user_answer',
-    agentId: ownerAgentId || store.yeaftAgentId || store.currentAgent || null,
+    agentId: cardAgentId || conversationAgentId || legacyOwnerAgentId || store.yeaftAgentId || store.currentAgent || null,
     conversationId: convId,
     requestId,
     toolCallId: chatMsg?.toolId || null,

@@ -94,6 +94,112 @@ describe('Yeaft AskUser card routing', () => {
     }));
   });
 
+  it('uses the card Agent while Session ownership is still hydrating', () => {
+    const sendWsMessage = vi.fn(() => true);
+    const row = {
+      type: 'tool-use',
+      toolName: 'AskUserQuestion',
+      toolId: 'call-cold-owner',
+      askRequestId: 'ask-cold-owner',
+      agentId: 'agent-owner',
+      sessionId: 'session-shared',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+    };
+    const store = {
+      currentView: 'yeaft',
+      currentAgent: 'agent-visible',
+      yeaftAgentId: 'agent-visible',
+      yeaftActiveSessionFilter: 'session-visible',
+      messagesMap: { 'yeaft-owner': [row] },
+      processingConversations: {},
+      _closedAt: {},
+      yeaftConversationIdsByAgent: {},
+      agentIdForSession: vi.fn(() => 'agent-visible'),
+      sendWsMessage,
+      getOrCreateExecutionStatus: vi.fn(),
+    };
+
+    answerUserQuestion(store, 'ask-cold-owner', { Continue: 'Yes' }, 'yeaft-owner');
+
+    expect(store.agentIdForSession).not.toHaveBeenCalled();
+    expect(sendWsMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'yeaft_ask_user_answer',
+      agentId: 'agent-owner',
+      sessionId: 'session-shared',
+    }));
+  });
+
+  it('fails closed when the card Agent conflicts with unique conversation ownership', () => {
+    const sendWsMessage = vi.fn(() => true);
+    const row = {
+      type: 'tool-use',
+      toolName: 'AskUserQuestion',
+      toolId: 'call-conflict',
+      askRequestId: 'ask-conflict',
+      agentId: 'agent-a',
+      sessionId: 'session-shared',
+    };
+    const store = {
+      currentView: 'yeaft',
+      currentAgent: 'agent-b',
+      yeaftAgentId: 'agent-b',
+      messagesMap: { 'yeaft-a': [row] },
+      processingConversations: {},
+      _closedAt: {},
+      yeaftConversationIdsByAgent: { 'agent-b': 'yeaft-a' },
+      agentIdForSession: vi.fn(() => 'agent-b'),
+      sendWsMessage,
+      getOrCreateExecutionStatus: vi.fn(),
+    };
+
+    const sent = answerUserQuestion(store, 'ask-conflict', { Continue: 'Yes' }, 'yeaft-a');
+
+    expect(sent).toBe(false);
+    expect(sendWsMessage).not.toHaveBeenCalled();
+    expect(store.agentIdForSession).not.toHaveBeenCalled();
+    expect(row.askPending).toBeUndefined();
+    expect(row.pendingAnswers).toBeUndefined();
+    expect(store.processingConversations).toEqual({});
+  });
+
+  it('trusts the card Agent when conversation ownership is ambiguous', () => {
+    const sendWsMessage = vi.fn(() => true);
+    const row = {
+      type: 'tool-use',
+      toolName: 'AskUserQuestion',
+      toolId: 'call-ambiguous',
+      askRequestId: 'ask-ambiguous',
+      agentId: 'agent-a',
+      sessionId: 'session-shared',
+    };
+    const store = {
+      currentView: 'yeaft',
+      currentAgent: 'agent-b',
+      yeaftAgentId: 'agent-b',
+      messagesMap: { 'yeaft-shared': [row] },
+      processingConversations: {},
+      _closedAt: {},
+      yeaftConversationIdsByAgent: {
+        'agent-a': 'yeaft-shared',
+        'agent-b': 'yeaft-shared',
+      },
+      agentIdForSession: vi.fn(() => 'agent-b'),
+      sendWsMessage,
+      getOrCreateExecutionStatus: vi.fn(),
+    };
+
+    answerUserQuestion(store, 'ask-ambiguous', { Continue: 'Yes' }, 'yeaft-shared');
+
+    expect(store.agentIdForSession).not.toHaveBeenCalled();
+    expect(sendWsMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'yeaft_ask_user_answer',
+      agentId: 'agent-a',
+      sessionId: 'session-shared',
+    }));
+  });
+
   it('keeps the Claude Code provider protocol unchanged', () => {
     const sendWsMessage = vi.fn();
     const store = {
