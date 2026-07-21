@@ -176,11 +176,23 @@ describe('markdown Mermaid rendering', () => {
 
       expect(window.htmlToImage.toPng).toHaveBeenCalledWith(
         container.querySelector('.mermaid-rendered svg'),
-        expect.objectContaining({ backgroundColor: expect.any(String), height: 100, pixelRatio: expect.any(Number), width: 200 })
+        expect.objectContaining({
+          backgroundColor: expect.any(String),
+          height: 100,
+          pixelRatio: expect.any(Number),
+          style: { margin: '0' },
+          width: 200,
+        })
       );
       expect(window.htmlToImage.toJpeg).toHaveBeenCalledWith(
         container.querySelector('.mermaid-rendered svg'),
-        expect.objectContaining({ backgroundColor: expect.any(String), height: 100, quality: 0.92, width: 200 })
+        expect.objectContaining({
+          backgroundColor: expect.any(String),
+          height: 100,
+          quality: 0.92,
+          style: { margin: '0' },
+          width: 200,
+        })
       );
       expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(2);
     } finally {
