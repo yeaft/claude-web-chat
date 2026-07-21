@@ -10,7 +10,10 @@ const sendToWebClient = vi.fn(async (client, msg) => {
 vi.mock('../../server/ws-utils.js', () => ({
   sendToWebClient,
   sendToAgent: vi.fn(async (agent, msg) => { (agent.sent ||= []).push(msg); }),
+  forwardToAgent: vi.fn(),
   broadcastAgentList: vi.fn(),
+  verifyConversationOwnership: vi.fn(() => true),
+  verifyAgentOwnership: vi.fn(() => true),
   forwardToClients: vi.fn(async (_agentId, _conversationId, msg) => {
     for (const [, client] of webClients) {
       if (client.authenticated) await sendToWebClient(client, msg);
@@ -19,7 +22,9 @@ vi.mock('../../server/ws-utils.js', () => ({
 }));
 
 vi.mock('../../server/database.js', () => ({
+  sessionDb: { get: vi.fn(() => null) },
   messageDb: {},
+  userDb: {},
   yeaftSessionDb: {
     reconcileFromSnapshot: vi.fn(),
     getByAgent: vi.fn(() => []),
@@ -30,10 +35,11 @@ vi.mock('../../server/database.js', () => ({
 }));
 
 const { CONFIG } = await import('../../server/config.js');
-const { webClients } = await import('../../server/context.js');
+const { agents, webClients } = await import('../../server/context.js');
 const { yeaftSessionDb } = await import('../../server/database.js');
 const { yeaftAssetStore } = await import('../../server/yeaft-asset-store.js');
 const { handleAgentOutput } = await import('../../server/handlers/agent-output.js');
+const { handleClientConversation } = await import('../../server/handlers/client-conversation.js');
 const { ConversationStore } = await import('../../agent/yeaft/conversation/persist.js');
 const { __testHooks: webBridgeTestHooks } = await import('../../agent/yeaft/web-bridge.js');
 
@@ -41,6 +47,7 @@ const originalSkipAuth = CONFIG.skipAuth;
 
 afterEach(() => {
   CONFIG.skipAuth = originalSkipAuth;
+  agents.clear();
   webClients.clear();
   sendToWebClient.mockClear();
   vi.restoreAllMocks();
@@ -273,7 +280,7 @@ describe('Yeaft Session output relay aliases', () => {
     expect(cleanup).not.toHaveBeenCalled();
   });
 
-  it('stamps agentId on per-conversation slash command updates', async () => {
+  it('preserves authoritative Yeaft preload snapshots without overwriting the Claude cache', async () => {
     CONFIG.skipAuth = false;
     webClients.set('owner-client', {
       authenticated: true,
@@ -284,18 +291,96 @@ describe('Yeaft Session output relay aliases', () => {
 
     await handleAgentOutput('agent-1', agent, {
       type: 'slash_commands_update',
-      conversationId: 'yeaft-1',
-      slashCommands: ['yeaft-skills:code-review'],
-      slashCommandDescriptions: { 'yeaft-skills:code-review': 'Code review' },
+      conversationId: '__preload__',
+      slashCommands: ['/compact'],
+      slashCommandDescriptions: { '/compact': 'Compact context' },
+    });
+    await handleAgentOutput('agent-1', agent, {
+      type: 'slash_commands_update',
+      commandSet: 'yeaft',
+      conversationId: '__preload__',
+      slashCommands: ['project-review'],
+      slashCommandDescriptions: { 'project-review': 'Review this project' },
+    });
+    await handleAgentOutput('agent-1', agent, {
+      type: 'slash_commands_update',
+      commandSet: 'yeaft',
+      conversationId: '__preload__',
+      slashCommands: [],
+      slashCommandDescriptions: {},
     });
 
-    expect(agent.slashCommands).toEqual(['yeaft-skills:code-review']);
+    expect(agent.slashCommands).toEqual(['/compact']);
+    expect(agent.slashCommandDescriptions).toEqual({ '/compact': 'Compact context' });
+    expect(agent.yeaftSlashCommands).toEqual([]);
+    expect(agent.yeaftSlashCommandDescriptions).toEqual({});
+
+    const client = webClients.get('owner-client');
+    const [claudeUpdate, yeaftUpdate, emptyYeaftUpdate] = client.sent;
+    expect(claudeUpdate).toEqual({
+      type: 'slash_commands_update',
+      agentId: 'agent-1',
+      slashCommands: ['/compact'],
+      slashCommandDescriptions: { '/compact': 'Compact context' },
+    });
+    expect(claudeUpdate).not.toHaveProperty('commandSet');
+    expect(yeaftUpdate).toEqual({
+      type: 'slash_commands_update',
+      agentId: 'agent-1',
+      commandSet: 'yeaft',
+      slashCommands: ['project-review'],
+      slashCommandDescriptions: { 'project-review': 'Review this project' },
+    });
+    expect(emptyYeaftUpdate).toEqual({
+      type: 'slash_commands_update',
+      agentId: 'agent-1',
+      commandSet: 'yeaft',
+      slashCommands: [],
+      slashCommandDescriptions: {},
+    });
+
+    agents.set('agent-1', {
+      ...agent,
+      ws: { readyState: 1 },
+      name: 'Agent 1',
+      workDir: '/work',
+      conversations: new Map(),
+    });
+    await handleClientConversation('owner-client', client, {
+      type: 'select_agent',
+      agentId: 'agent-1',
+    }, async () => true);
+    expect(client.sent.at(-1)).toMatchObject({
+      type: 'agent_selected',
+      slashCommands: ['/compact'],
+      slashCommandDescriptions: { '/compact': 'Compact context' },
+    });
+  });
+
+  it('preserves commandSet on per-conversation Yeaft slash command updates', async () => {
+    CONFIG.skipAuth = false;
+    webClients.set('owner-client', {
+      authenticated: true,
+      userId: 'owner-1',
+      sent: [],
+    });
+    const agent = { ownerId: 'owner-1', slashCommandDescriptions: {} };
+
+    await handleAgentOutput('agent-1', agent, {
+      type: 'slash_commands_update',
+      commandSet: 'yeaft',
+      conversationId: 'yeaft-1',
+      slashCommands: ['code-review'],
+      slashCommandDescriptions: { 'code-review': 'Code review' },
+    });
+
     expect(webClients.get('owner-client').sent).toEqual([{
       type: 'slash_commands_update',
       agentId: 'agent-1',
       conversationId: 'yeaft-1',
-      slashCommands: ['yeaft-skills:code-review'],
-      slashCommandDescriptions: { 'yeaft-skills:code-review': 'Code review' },
+      commandSet: 'yeaft',
+      slashCommands: ['code-review'],
+      slashCommandDescriptions: { 'code-review': 'Code review' },
     }]);
   });
 });
