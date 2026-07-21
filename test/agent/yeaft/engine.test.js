@@ -554,6 +554,39 @@ describe('Engine', () => {
       expect(secondCall.messages[2].toolCallId).toBe('call_1');
     });
 
+    it('passes the active tool call identity to interactive AskUser hosts', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_ask', name: 'ask_test', input: { question: 'Continue?' } },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'Continuing.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const askUser = async (_input, toolCall) => JSON.stringify(toolCall);
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+      });
+      engine.registerTool({
+        name: 'ask_test',
+        description: 'Ask through the host',
+        parameters: {},
+        execute: async (input, ctx) => ctx.askUser(input),
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'ask me', askUser })) events.push(event);
+
+      const toolEnd = events.find(event => event.type === 'tool_end');
+      expect(JSON.parse(toolEnd.output)).toMatchObject({
+        id: 'call_ask',
+        name: 'ask_test',
+      });
+    });
+
     it('should handle tool execution errors gracefully', async () => {
       mockAdapter.pushResponse([
         { type: 'tool_call', id: 'call_1', name: 'failing_tool', input: {} },

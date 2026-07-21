@@ -149,6 +149,49 @@ describe('per-session running state', () => {
     });
   });
 
+  it('does not reactivate a persisted answered card during pending replay', () => {
+    const store = freshStore();
+    store.currentView = 'yeaft';
+    store.yeaftConversationId = 'yeaft-conv';
+    store.yeaftActiveSessionFilter = 'session-a';
+    store.messagesMap['yeaft-conv'] = [{
+      type: 'tool-use',
+      toolId: 'call-1',
+      toolName: 'AskUserQuestion',
+      askRequestId: null,
+      askAnswered: true,
+      selectedAnswers: { 'Continue?': 'Yes' },
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      isHistory: true,
+    }];
+
+    store.handleYeaftOutput({
+      conversationId: 'yeaft-conv',
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+      event: {
+        type: 'ask_user_question',
+        requestId: 'ask-replayed-late',
+        toolCallId: 'call-1',
+        replay: true,
+        questions: [{ question: 'Continue?', options: [] }],
+      },
+    });
+
+    expect(store.messagesMap['yeaft-conv']).toHaveLength(1);
+    expect(store.messagesMap['yeaft-conv'][0]).toMatchObject({
+      askRequestId: null,
+      askAnswered: true,
+      selectedAnswers: { 'Continue?': 'Yes' },
+      isHistory: true,
+    });
+  });
+
   it('creates a replayed AskUser card when recent history omitted the tool row', () => {
     const store = freshStore();
     store.currentView = 'yeaft';

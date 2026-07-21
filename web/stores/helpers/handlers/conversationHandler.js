@@ -144,6 +144,8 @@ function replaceYeaftRecentHistoryRows(existingRows, incomingRows, sessionId) {
     if (!row) return false;
     if (sessionId != null && rowSessionId(row) !== sessionId) return true;
     if (row.isStreaming) return true;
+    if (row.type === 'tool-use' && row.toolName === 'AskUserQuestion'
+        && (row.askAnswered || row.askPending || row.askExpired)) return true;
     // A recent-history reply can race a just-sent optimistic user row. Do not
     // delete that accepted input merely because the persisted window has not
     // flushed it yet or the server clock is ahead of the browser clock.
@@ -577,6 +579,49 @@ export function handleYeaftHistoryWindow(store, msg) {
   return upsertYeaftHistoryRows(store.messagesMap[convId], formatted);
 }
 
+function askUserHistoryIdentity(row) {
+  if (!row?.toolId) return null;
+  return [
+    rowSessionId(row) ?? '',
+    row.vpId || row.speakerVpId || '',
+    row.turnId || '',
+    row.threadId || 'main',
+    row.toolId,
+  ].join('\u0000');
+}
+
+function applyAskUserHistoryResult(row, result, questions) {
+  row.toolName = 'AskUserQuestion';
+  row.toolId = result.toolCallId;
+  row.toolInput = { questions };
+  row.askQuestions = questions;
+  row.askRequestId = null;
+  row.askPending = false;
+  row.pendingAnswers = null;
+  row.hasResult = true;
+  row.isHistory = true;
+  if (result.status === 'answered') {
+    row.askAnswered = true;
+    row.selectedAnswers = result.answers;
+    row.askExpired = false;
+  } else {
+    row.askAnswered = false;
+    row.selectedAnswers = null;
+    row.askExpired = true;
+  }
+  return row;
+}
+
+function existingAskUserRow(existingRows, scope) {
+  return (existingRows || []).find(row => row?.type === 'tool-use'
+    && (row.toolName === 'AskUser' || row.toolName === 'AskUserQuestion')
+    && row.toolId === scope.toolCallId
+    && rowSessionId(row) === scope.sessionId
+    && (row.vpId || row.speakerVpId || '') === (scope.vpId || '')
+    && (row.turnId || '') === (scope.turnId || '')
+    && (row.threadId || 'main') === (scope.threadId || 'main')) || null;
+}
+
 function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existingRows) {
   const existingIds = new Set(
     (existingRows || [])
@@ -642,6 +687,41 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
           ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
           isStreaming: false, isHistory: true,
         });
+      }
+      for (const result of Array.isArray(m.askUserResults) ? m.askUserResults : []) {
+        if (!result?.toolCallId || (result.status !== 'answered' && result.status !== 'expired')) continue;
+        const questions = [{
+          question: typeof result.question === 'string' ? result.question : '',
+          options: (Array.isArray(result.options) ? result.options : [])
+            .filter(label => typeof label === 'string')
+            .map(label => ({ label, description: '' })),
+          multiSelect: false,
+        }];
+        const scope = {
+          toolCallId: result.toolCallId,
+          sessionId: rowSessionId,
+          vpId: speakerVpId || '',
+          turnId: turnId || '',
+          threadId: m.threadId || 'main',
+        };
+        const existing = existingAskUserRow(existingRows, scope);
+        if (existing) {
+          applyAskUserHistoryResult(existing, result, questions);
+          continue;
+        }
+        const askRow = applyAskUserHistoryResult({
+          id: `${stableId || messageId || turnId}:ask:${result.toolCallId}`,
+          messageId: `${stableId || messageId || turnId}:ask:${result.toolCallId}`,
+          type: 'tool-use',
+          timestamp,
+          sessionId: rowSessionId,
+          turnId,
+          threadId: scope.threadId,
+          ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
+          isStreaming: false,
+        }, result, questions);
+        const identity = askUserHistoryIdentity(askRow);
+        if (!identity || !formatted.some(row => askUserHistoryIdentity(row) === identity)) formatted.push(askRow);
       }
       const toolSummaryCount = Number(m.toolSummaryCount || m.toolCalls?.length || 0) || 0;
       if (toolSummaryCount > 0) {

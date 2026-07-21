@@ -397,6 +397,43 @@ legacy session`, { encoding: 'utf8' });
       expect(window.messages.every(message => message.sessionId === 'session_window')).toBe(true);
       expect(window.messages.length).toBeLessThan(10);
     });
+
+    it('restores AskUser answers inside a bounded search window', () => {
+      store.append({ role: 'user', content: 'searchable AskUser turn', sessionId: 'session_window_ask' });
+      const assistant = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'session_window_ask',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'ask_window', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'session_window_ask',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_window',
+      });
+      store.append({ role: 'assistant', content: 'done', sessionId: 'session_window_ask' });
+
+      const window = store.loadVisibleWindowBySession(
+        'session_window_ask',
+        store.getMessageSeqById(assistant.id),
+        { beforeTurns: 1, afterTurns: 1 },
+      );
+
+      expect(window.messages.find(message => message.id === assistant.id)?.askUserResults).toEqual([
+        expect.objectContaining({
+          toolCallId: 'ask_window',
+          status: 'answered',
+          answers: { 'Continue?': 'Yes' },
+        }),
+      ]);
+    });
   });
 
   describe('appendBatch', () => {
@@ -669,6 +706,136 @@ legacy session`, { encoding: 'utf8' });
       expect(recent[1].toolCalls).toHaveLength(1);
       expect(recent[2].toolCallId).toBe('toolu_1');
       expect(readCounts.count).toBeLessThan(10);
+    });
+
+    it('projects persisted AskUser answers without exposing ordinary tool results', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [
+          { id: 'ask_1', name: 'AskUser', input: { question: 'Continue?', options: ['Yes', 'No'] } },
+          { id: 'bash_1', name: 'Bash', input: { command: 'echo ok' } },
+        ],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_1',
+      });
+      store.append({
+        role: 'tool',
+        content: 'ok',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'bash_1',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages.map(m => m.role)).toEqual(['user', 'assistant']);
+      expect(page.messages[1]).toMatchObject({
+        toolSummaryCount: 1,
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes', 'No'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+      });
+      expect(page.messages[1]).not.toHaveProperty('toolCalls');
+      expect(page.messages.some(m => m.role === 'tool')).toBe(false);
+    });
+
+    it('does not misclassify legacy pending AskUser output as an answer', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        toolCalls: [{ id: 'ask_legacy', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ type: 'ask_user', requestId: 'ask_old', question: 'Continue?', options: ['Yes'], message: 'Question sent to user' }),
+        sessionId: 'grp_a',
+        toolCallId: 'ask_legacy',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1]).toMatchObject({ toolSummaryCount: 1 });
+      expect(page.messages[1].askUserResults).toBeUndefined();
+    });
+
+    it('keeps same-id AskUser results isolated by Session turn identity', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'shared_call', name: 'AskUser', input: { question: 'Continue?' } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Wrong' } }),
+        sessionId: 'grp_b',
+        threadId: 'thread-b',
+        turnId: 'turn-b',
+        speakerVpId: 'vp-b',
+        toolCallId: 'shared_call',
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Right' } }),
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'shared_call',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1].askUserResults).toEqual([
+        expect.objectContaining({ answers: { 'Continue?': 'Right' } }),
+      ]);
+    });
+
+    it('restores timed-out AskUser calls as expired history state', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        toolCalls: [{ id: 'ask_timeout', name: 'AskUser', input: { question: 'Continue?' } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', timedOut: true }),
+        sessionId: 'grp_a',
+        toolCallId: 'ask_timeout',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1].askUserResults).toEqual([
+        expect.objectContaining({ toolCallId: 'ask_timeout', status: 'expired' }),
+      ]);
     });
 
     it('loadVisibleBySession stops on dense hidden rows after the requested turn', () => {

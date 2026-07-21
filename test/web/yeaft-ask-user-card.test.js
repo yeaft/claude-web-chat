@@ -24,6 +24,7 @@ describe('Yeaft AskUser card routing', () => {
         'yeaft-a': [{
           type: 'tool-use',
           toolName: 'AskUserQuestion',
+          toolId: 'call-1',
           askRequestId: 'ask-1',
           sessionId: 'session-a',
           vpId: 'vp-a',
@@ -44,6 +45,7 @@ describe('Yeaft AskUser card routing', () => {
       agentId: 'agent-a',
       conversationId: 'yeaft-a',
       requestId: 'ask-1',
+      toolCallId: 'call-1',
       answers: { Continue: 'Yes' },
       sessionId: 'session-a',
       vpId: 'vp-a',
@@ -80,6 +82,7 @@ describe('Yeaft AskUser card routing', () => {
     const row = {
       type: 'tool-use',
       toolName: 'AskUserQuestion',
+      toolId: 'call-shared',
       askRequestId: 'ask-shared',
       sessionId: 'session-a',
       vpId: 'vp-a',
@@ -103,5 +106,67 @@ describe('Yeaft AskUser card routing', () => {
     expect(row.askAnswered).toBeUndefined();
     expect(row.selectedAnswers).toBeUndefined();
     expect(row.askRequestId).toBe('ask-shared');
+  });
+
+  it('keeps the submitted answer on the message row while the agent confirms it', () => {
+    const sendWsMessage = vi.fn(() => true);
+    const row = {
+      type: 'tool-use',
+      toolName: 'AskUserQuestion',
+      toolId: 'call-pending',
+      askRequestId: 'ask-pending',
+      sessionId: 'session-a',
+      vpId: 'vp-a',
+      turnId: 'turn-a',
+      threadId: 'thread-a',
+    };
+    const store = {
+      currentView: 'yeaft',
+      currentAgent: 'agent-a',
+      yeaftAgentId: 'agent-a',
+      yeaftActiveSessionFilter: 'session-a',
+      messagesMap: { 'yeaft-a': [row] },
+      processingConversations: {},
+      _closedAt: {},
+      sendWsMessage,
+      getOrCreateExecutionStatus: vi.fn(),
+    };
+
+    answerUserQuestion(store, 'ask-pending', { Continue: 'Yes' }, 'yeaft-a');
+
+    expect(row).toMatchObject({
+      askPending: true,
+      pendingAnswers: { Continue: 'Yes' },
+      askRequestId: 'ask-pending',
+    });
+
+    answerUserQuestion(store, 'ask-pending', { Continue: 'No' }, 'yeaft-a');
+    expect(sendWsMessage).toHaveBeenCalledTimes(1);
+    expect(row.pendingAnswers).toEqual({ Continue: 'Yes' });
+  });
+
+  it('keeps the card interactive when the answer could not be sent', () => {
+    const row = {
+      type: 'tool-use',
+      toolName: 'AskUserQuestion',
+      toolId: 'call-unsent',
+      askRequestId: 'ask-unsent',
+      sessionId: 'session-a',
+    };
+    const store = {
+      currentView: 'yeaft',
+      currentAgent: 'agent-a',
+      yeaftActiveSessionFilter: 'session-a',
+      messagesMap: { 'yeaft-a': [row] },
+      processingConversations: {},
+      _closedAt: {},
+      sendWsMessage: vi.fn(() => false),
+      getOrCreateExecutionStatus: vi.fn(),
+    };
+
+    answerUserQuestion(store, 'ask-unsent', { Continue: 'Yes' }, 'yeaft-a');
+
+    expect(row.askPending).toBeUndefined();
+    expect(row.pendingAnswers).toBeUndefined();
   });
 });

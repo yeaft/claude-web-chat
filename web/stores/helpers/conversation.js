@@ -511,11 +511,13 @@ export function answerUserQuestion(store, requestId, answers, conversationId) {
     m.type === 'tool-use' && m.toolName === 'AskUserQuestion' && m.askRequestId === requestId
   );
   const isYeaftPrompt = store.currentView === 'yeaft' || !!chatMsg?.sessionId;
-  store.sendWsMessage(isYeaftPrompt ? {
+  if (isYeaftPrompt && chatMsg?.askPending) return;
+  const sent = store.sendWsMessage(isYeaftPrompt ? {
     type: 'yeaft_ask_user_answer',
     agentId: store.yeaftAgentId || store.currentAgent || null,
     conversationId: convId,
     requestId,
+    toolCallId: chatMsg?.toolId || null,
     answers,
     sessionId: chatMsg?.sessionId || store.yeaftActiveSessionFilter || null,
     vpId: chatMsg?.vpId || chatMsg?.speakerVpId || null,
@@ -527,17 +529,20 @@ export function answerUserQuestion(store, requestId, answers, conversationId) {
     requestId,
     answers
   });
-  // Yeaft prompts are shared across devices. Keep the card interactive until
-  // the agent broadcasts ask_user_answered; another device may have won the
-  // first-answer race or the request may already be expired. Chat-provider
-  // prompts retain their historical optimistic collapse behavior.
+  // Yeaft prompts are shared across devices. Record a submitted answer on the
+  // message row so a component/session remount cannot reopen the card, but wait
+  // for the agent event or persisted tool result before marking it confirmed.
+  // Chat-provider prompts retain their historical optimistic collapse behavior.
   if (chatMsg && !isYeaftPrompt) {
     chatMsg.askAnswered = true;
     chatMsg.selectedAnswers = answers;
+  } else if (chatMsg && sent !== false) {
+    chatMsg.askPending = true;
+    chatMsg.pendingAnswers = answers;
   }
 
   // 立刻进入 processing 状态，显示"思考中"指示器
-  if (convId && !store.processingConversations[convId]) {
+  if (sent !== false && convId && !store.processingConversations[convId]) {
     store.processingConversations[convId] = true;
     if (store._closedAt?.[convId]) {
       delete store._closedAt[convId];

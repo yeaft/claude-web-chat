@@ -1242,7 +1242,9 @@ export class Engine {
       // Null in non-VP / test contexts — tools tolerate missing slots.
       getCurrentTodos: vpCtx?.getCurrentTodos || null,
       setCurrentTodos: vpCtx?.setCurrentTodos || null,
-      askUser: vpCtx?.askUser || null,
+      askUser: typeof vpCtx?.askUser === 'function'
+        ? input => vpCtx.askUser(input, typeof vpCtx?.currentToolCall === 'function' ? vpCtx.currentToolCall() : null)
+        : null,
       // task-707: tool-callable end-turn signal. The engine threads this
       // setter when constructing toolCtx so a tool (e.g. route_forward)
       // can mark "after this batch, end the turn — do NOT call adapter

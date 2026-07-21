@@ -2466,6 +2466,7 @@ export const useChatStore = defineStore('chat', {
           };
           const matches = row => row?.type === 'tool-use'
             && (row.toolName === 'AskUser' || row.toolName === 'AskUserQuestion')
+            && (!event.toolCallId || !row.toolId || row.toolId === event.toolCallId)
             && (!row.askRequestId || row.askRequestId === event.requestId)
             && (!expected.sessionId || row.sessionId === expected.sessionId)
             && (!expected.vpId || (row.vpId || row.speakerVpId) === expected.vpId)
@@ -2475,7 +2476,9 @@ export const useChatStore = defineStore('chat', {
             const messages = this.messagesMap[conversationId] || [];
             for (let i = messages.length - 1; i >= 0; i--) {
               if (!matches(messages[i])) continue;
+              if (messages[i].askAnswered || messages[i].askExpired || messages[i].askPending) return true;
               messages[i].toolName = 'AskUserQuestion';
+              if (event.toolCallId && !messages[i].toolId) messages[i].toolId = event.toolCallId;
               messages[i].askRequestId = event.requestId;
               messages[i].askQuestions = event.questions || [];
               messages[i].askCreatedAt = event.createdAt || null;
@@ -2488,6 +2491,7 @@ export const useChatStore = defineStore('chat', {
               id: `ask-card-${event.requestId}`,
               type: 'tool-use',
               toolName: 'AskUserQuestion',
+              toolId: event.toolCallId || null,
               toolInput: { questions: event.questions || [] },
               askRequestId: event.requestId,
               askQuestions: event.questions || [],
@@ -2519,7 +2523,8 @@ export const useChatStore = defineStore('chat', {
         case 'ask_user_expired': {
           const conversationId = msg.conversationId || this.yeaftConversationId;
           const messages = conversationId ? (this.messagesMap[conversationId] || []) : [];
-          const askMsg = messages.find(row => row?.askRequestId === event.requestId);
+          const askMsg = messages.find(row => row?.askRequestId === event.requestId
+            && (!event.toolCallId || !row.toolId || row.toolId === event.toolCallId));
           if (!askMsg) break;
           if (event.type === 'ask_user_answered') {
             askMsg.askAnswered = true;
@@ -2528,6 +2533,8 @@ export const useChatStore = defineStore('chat', {
             askMsg.isHistory = true;
             askMsg.askExpired = true;
           }
+          askMsg.askPending = false;
+          askMsg.pendingAnswers = null;
           askMsg.askRequestId = null;
           this.messagesMap = { ...this.messagesMap, [conversationId]: messages.slice() };
           break;
