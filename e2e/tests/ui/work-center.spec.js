@@ -82,6 +82,8 @@ const OPEN_ITEM_DETAIL = {
   actionSummary: 'implement',
   actions: [{
     id: 'action-1', sequence: 1, type: 'implement', requiredRole: 'developer', status: 'running',
+    assignedVp: { id: 'linus', name: 'Linus' },
+    contentSummary: 'Implemented the layout fix and verified the responsive breakpoints.',
     brief: {
       objective: 'Make the Work Center layout responsive',
       approach: 'Update the existing layout styles and verify supported breakpoints',
@@ -408,19 +410,19 @@ test.describe('Work Center responsive UI', () => {
     const firstCard = cards.first();
     const cardLayout = await firstCard.evaluate(element => {
       const title = element.querySelector('.work-center-action-primary strong');
-      const stats = element.querySelector('.work-center-action-stats');
+      const summary = element.querySelector('.work-center-action-content-summary');
       const titleStyle = title ? getComputedStyle(title) : null;
       return {
         cardWidth: element.getBoundingClientRect().width,
         scrollWidth: element.scrollWidth,
         titleWidth: title?.getBoundingClientRect().width || 0,
-        statsWidth: stats?.getBoundingClientRect().width || 0,
+        summaryWidth: summary?.getBoundingClientRect().width || 0,
         titleWritingMode: titleStyle?.writingMode || '',
       };
     });
     expect(cardLayout.scrollWidth).toBeLessThanOrEqual(cardLayout.cardWidth + 1);
     expect(cardLayout.titleWidth).toBeGreaterThan(100);
-    expect(cardLayout.statsWidth).toBeGreaterThan(180);
+    expect(cardLayout.summaryWidth).toBeGreaterThan(100);
     expect(cardLayout.titleWritingMode).toBe('horizontal-tb');
   });
 
@@ -456,10 +458,12 @@ test.describe('Work Center responsive UI', () => {
     const action = chatPage.locator('.work-center-action-card');
     await expect(action).toHaveCount(1);
     await expect(action).toContainText('Implement');
-    await expect(action).toContainText('4 LLM requests');
-    await expect(action).toContainText('3 loops');
-    await expect(action).toContainText('8 tools');
-    await expect(action).toContainText('1.8k tokens');
+    await expect(action).toContainText('Linus');
+    await expect(action).toContainText('Implemented the layout fix');
+    await expect(action).not.toContainText('LLM requests');
+    await expect(action).not.toContainText('loops');
+    await expect(action).not.toContainText('tools');
+    await expect(action).not.toContainText('tokens');
     await expect(chatPage.locator('.work-center-detail-usage')).toContainText('4 LLM requests');
     await expect(chatPage.locator('.work-center-detail-usage')).toContainText('1.8k tokens');
     await action.locator('.work-center-action-summary').click();
@@ -640,13 +644,54 @@ test.describe('Work Center responsive UI', () => {
     await createModal.locator('textarea').first().fill('Use the directory shown in the form');
     await expect(createModal.locator('select').first()).toHaveValue('auto');
     expect(await createModal.locator('select').first().locator('option').allTextContents())
-      .toContain('Software change · 3 Actions');
+      .toContain('Software change');
     const createRequest = respondToWorkCenterOp(mockAgent, 'create', OPEN_ITEM_DETAIL);
     await createModal.getByRole('button', { name: 'Create', exact: true }).click();
     const request = await createRequest;
     await respondToWorkCenterOp(mockAgent, 'list', { items: [OPEN_ITEM], watcher: { enabled: true } });
     expect(request.payload.workDir).toBe('/tmp/test');
     expect(request.payload.workItemType).toBe('auto');
+  });
+
+  test('uses the Work Center design system for directory selection', async ({ chatPage, mockAgent }) => {
+    await openWorkCenter(chatPage, mockAgent);
+    await chatPage.locator('.work-center-header-create').click();
+    const createModal = chatPage.locator('.work-center-modal');
+
+    const directoryRequestPromise = mockAgent.waitForMessage('list_directory');
+    await createModal.getByRole('button', { name: 'Choose folder' }).click();
+    const directoryRequest = await directoryRequestPromise;
+    mockAgent.send({
+      type: 'directory_listing',
+      conversationId: directoryRequest.conversationId,
+      requestId: directoryRequest.requestId,
+      dirPath: '/tmp/test',
+      entries: [
+        { name: 'project-alpha', type: 'directory' },
+        { name: 'project-beta', type: 'directory' },
+      ],
+    });
+
+    const picker = chatPage.locator('.work-center-directory-dialog');
+    await expect(picker).toBeVisible();
+    await expect(picker.getByText('Choose the project folder this Work Item can read and modify.')).toBeVisible();
+    await expect(picker.locator('.work-center-directory-current')).toHaveText('/tmp/test');
+    await expect(picker.getByRole('option')).toHaveCount(2);
+    await expect(picker.locator('.tree-item')).toHaveCount(0);
+
+    const firstFolder = picker.getByRole('option', { name: 'project-alpha' });
+    await firstFolder.click();
+    await expect(firstFolder).toHaveAttribute('aria-selected', 'true');
+    const colors = await firstFolder.evaluate(element => {
+      const style = getComputedStyle(element);
+      return { background: style.backgroundColor, color: style.color };
+    });
+    expect(colors.background).not.toBe('rgba(0, 0, 0, 0)');
+    expect(colors.background).not.toBe('rgb(255, 255, 255)');
+
+    await picker.getByRole('button', { name: 'OK' }).click();
+    await expect(createModal.getByRole('textbox', { name: /Working directory/ }))
+      .toHaveValue('/tmp/test/project-alpha');
   });
 
   test('keeps a create action available on mobile with existing work items', async ({ chatPage, mockAgent }) => {

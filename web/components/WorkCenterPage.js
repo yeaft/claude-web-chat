@@ -56,6 +56,7 @@ export default {
   },
   computed: {
     store() { return Pinia.useChatStore(); },
+    chat() { return this.store; },
     agentId() { return this.store.workCenterAgentId || this.store.currentAgent; },
     agents() { return this.store.agents || []; },
     onlineAgents() {
@@ -373,6 +374,14 @@ export default {
     actionResponseText(action) {
       return String(action?.response || '').trim();
     },
+    actionExecutor(action) {
+      return action?.assignedVp?.name || action?.assignedVp?.id
+        || action?.requiredRole || action?.assignmentPolicy?.fixedVpId
+        || action?.assignmentPolicy?.capability || this.tr('workCenter.assignment.auto', 'Auto');
+    },
+    actionContentSummary(action) {
+      return String(action?.contentSummary || action?.response || action?.brief?.objective || '').trim();
+    },
     executionStats(value) {
       return value?.executionStats || {};
     },
@@ -415,6 +424,9 @@ export default {
     },
     folderPickerSetWorkDir(path) {
       this.form.workDir = path;
+      this.workDirTouched = true;
+    },
+    onCreateWorkDirInput() {
       this.workDirTouched = true;
     },
     onCreateStartInput() {
@@ -607,7 +619,7 @@ export default {
       this.actionInputError = '';
       try {
         const next = await this.store.sendWorkItemActionInput(
-          itemId, text, actionId, revision, attachments, this.agentId,
+          itemId, text, actionId, revision, this.selectedAction.generation, attachments, this.agentId,
         );
         if (this.actionComposerScope !== scope) return;
         this.actionGuidance = '';
@@ -776,6 +788,15 @@ export default {
                   </div>
                 </div>
                 <div class="work-center-section work-center-workflow" v-if="selected.actions?.length">
+                  <div v-if="selected.mainline?.progress" class="work-center-mainline-progress" :data-attention="selected.mainline.progress.attentionState">
+                    <strong>{{ tr('workCenter.currentProgress', 'Current progress') }}</strong>
+                    <span>{{ statusLabel(selected.mainline.progress.lifecycle) }}</span>
+                    <span>{{ selected.mainline.progress.counts.completed }} {{ tr('workCenter.status.completed', 'Completed') }}</span>
+                    <span v-if="selected.mainline.progress.counts.running">{{ selected.mainline.progress.counts.running }} {{ tr('workCenter.status.running', 'Running') }}</span>
+                    <span v-if="selected.mainline.progress.counts.ready">{{ selected.mainline.progress.counts.ready }} {{ tr('workCenter.status.ready', 'Ready') }}</span>
+                    <span v-if="selected.mainline.progress.counts.waiting">{{ selected.mainline.progress.counts.waiting }} {{ tr('workCenter.status.waiting', 'Waiting') }}</span>
+                    <span v-if="selected.mainline.progress.counts.failed">{{ selected.mainline.progress.counts.failed }} {{ tr('workCenter.status.failed', 'Failed') }}</span>
+                  </div>
                   <div class="work-center-action-list-heading">
                     <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
                     <span>{{ $t('workCenter.actionCount', { count: selected.actionCount || selected.actions.length }) }}</span>
@@ -788,17 +809,15 @@ export default {
                         <span class="work-center-action-index">{{ action.sequence }}</span>
                         <span class="work-center-action-content">
                           <span class="work-center-action-primary">
-                            <strong>{{ actionLabel(action.type) }}</strong>
+                            <strong>{{ action.brief?.objective || actionLabel(action.type) }}</strong>
                             <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
                           </span>
+                          <span v-if="action.brief?.approach || action.canonicalResult?.summary" class="work-center-action-description">
+                            {{ action.canonicalResult?.summary || action.brief?.approach }}
+                          </span>
                           <span class="work-center-action-secondary">
-                            <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.capability || tr('workCenter.assignment.auto', 'Auto') }}</small>
-                            <span class="work-center-action-stats" aria-label="Execution totals">
-                              <span>{{ $t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) }) }}</span>
-                              <span>{{ $t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) }) }}</span>
-                              <span>{{ $t('workCenter.toolCount', { count: formatCount(executionStats(action).toolCount) }) }}</span>
-                              <span :title="$t('workCenter.tokenBreakdown', { input: formatCount(executionStats(action).inputTokens), output: formatCount(executionStats(action).outputTokens), cache: formatCount((executionStats(action).cacheReadTokens || 0) + (executionStats(action).cacheWriteTokens || 0)) })">{{ $t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) }) }}</span>
-                            </span>
+                            <small class="work-center-action-vp">{{ actionExecutor(action) }}</small>
+                            <span v-if="actionContentSummary(action)" class="work-center-action-content-summary" :title="actionContentSummary(action)">{{ actionContentSummary(action) }}</span>
                           </span>
                         </span>
                         <span class="work-center-action-chevron" aria-hidden="true"></span>
@@ -882,9 +901,9 @@ export default {
               <label>{{ tr('workCenter.workItemType', 'Type') }}
                 <select v-model="form.workItemType">
                   <option value="auto">{{ tr('workCenter.typeAuto', 'Auto — let the LLM infer') }}</option>
-                  <option v-for="type in workItemTypes" :key="type.id" :value="type.id">{{ type.name }} · {{ $t('workCenter.actionCount', { count: type.actionCount }) }}</option>
+                  <option v-for="type in workItemTypes" :key="type.id" :value="type.id">{{ type.name }}</option>
                 </select>
-                <small class="work-center-field-help">{{ tr('workCenter.typeHelp', 'Choose a reusable type template or use Auto for LLM inference.') }}</small>
+                <small class="work-center-field-help">{{ tr('workCenter.typeHelp', 'Choose a task category, or use Auto for AI inference. AI still plans the concrete Actions.') }}</small>
               </label>
             </section>
             <section class="work-center-form-section work-center-create-attachments">
@@ -912,7 +931,7 @@ export default {
               </div>
               <label>{{ tr('workCenter.workDir', 'Working directory') }}
                 <div class="work-center-workdir-picker">
-                  <input v-model="form.workDir" type="text" required readonly :placeholder="tr('workCenter.workDirHint', 'Choose an existing project directory')">
+                  <input v-model="form.workDir" type="text" required @input="onCreateWorkDirInput" :placeholder="tr('workCenter.workDirHint', 'Choose an existing project directory')">
                   <button class="btn-secondary" type="button" @click="openFolderPicker" :disabled="!folderPickerAgentId">
                     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2Z"/></svg>
                     {{ tr('workCenter.chooseFolder', 'Choose folder') }}
@@ -939,40 +958,48 @@ export default {
             </button>
           </footer>
 
-          <div class="folder-picker-overlay" v-if="folderPickerOpen" @click.self="closeFolderPicker">
-            <div class="folder-picker-dialog" role="dialog" aria-modal="true" :aria-label="tr('modal.folderPicker.title', 'Select work directory')">
-              <div class="folder-picker-header">
-                <span>{{ tr('modal.folderPicker.title', 'Select work directory') }}</span>
-                <button class="wb-btn-sm" type="button" @click="closeFolderPicker" :aria-label="tr('common.close', 'Close')">×</button>
-              </div>
-              <div class="folder-picker-path">
-                <button class="wb-btn-sm" type="button" @click="folderPickerNavigateUp" :disabled="!folderPickerPath" :title="tr('modal.folderPicker.parentDir', 'Parent directory')">
-                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2Z"/></svg>
+          <div class="work-center-directory-overlay" v-if="folderPickerOpen" @click.self="closeFolderPicker">
+            <div class="work-center-directory-dialog" role="dialog" aria-modal="true" aria-labelledby="work-center-directory-title">
+              <header class="work-center-directory-header">
+                <div>
+                  <h3 id="work-center-directory-title">{{ tr('modal.folderPicker.title', 'Select work directory') }}</h3>
+                  <p>{{ tr('workCenter.folderPickerHint', 'Choose the project folder this Work Item can read and modify.') }}</p>
+                </div>
+                <button class="modal-close" type="button" @click="closeFolderPicker" :aria-label="tr('common.close', 'Close')">×</button>
+              </header>
+              <div class="work-center-directory-path">
+                <button class="btn-ghost work-center-directory-up" type="button" @click="folderPickerNavigateUp" :disabled="!folderPickerPath" :aria-label="tr('modal.folderPicker.parentDir', 'Parent directory')">
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2Z"/></svg>
                 </button>
-                <span class="folder-picker-current">{{ folderPickerPath || tr('common.rootDir', 'Root') }}</span>
+                <span class="work-center-directory-current" :title="folderPickerPath">{{ folderPickerPath || tr('common.rootDir', 'Root') }}</span>
               </div>
-              <div class="folder-picker-list">
-                <div class="git-loading" v-if="folderPickerLoading"><span class="spinner-mini"></span> {{ tr('common.loading', 'Loading') }}</div>
+              <div class="work-center-directory-list" role="listbox" :aria-busy="folderPickerLoading">
+                <div class="work-center-directory-state" v-if="folderPickerLoading"><span class="spinner-mini"></span><span>{{ tr('common.loading', 'Loading') }}</span></div>
                 <template v-else>
                   <button
                     v-for="entry in folderPickerEntries"
                     :key="entry.name"
-                    class="tree-item tree-dir folder-picker-item"
-                    :class="{ 'folder-picker-selected': folderPickerSelected === entry.name }"
+                    class="work-center-directory-item"
+                    :class="{ selected: folderPickerSelected === entry.name }"
                     type="button"
+                    role="option"
+                    :aria-selected="folderPickerSelected === entry.name"
                     @click="folderPickerSelectItem(entry)"
                     @dblclick="folderPickerEnter(entry)"
                   >
-                    <span class="tree-icon"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2Z"/></svg></span>
-                    <span class="tree-name">{{ entry.name }}</span>
+                    <span class="work-center-directory-icon"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2Z"/></svg></span>
+                    <span>{{ entry.name }}</span>
                   </button>
-                  <div class="tree-empty" v-if="folderPickerEntries.length === 0">{{ tr('common.noSubdirectories', 'No subdirectories') }}</div>
+                  <div class="work-center-directory-state" v-if="folderPickerEntries.length === 0">{{ tr('common.noSubdirectories', 'No subdirectories') }}</div>
                 </template>
               </div>
-              <div class="folder-picker-footer">
-                <button class="btn-secondary" type="button" @click="closeFolderPicker">{{ tr('common.cancel', 'Cancel') }}</button>
-                <button class="btn-primary" type="button" @click="confirmFolderPicker" :disabled="!folderPickerPath">{{ tr('common.confirm', 'Confirm') }}</button>
-              </div>
+              <footer class="work-center-directory-footer">
+                <span>{{ tr('workCenter.folderPickerSelectionHint', 'Double-click to open a folder, or select it and confirm.') }}</span>
+                <div>
+                  <button class="btn-secondary" type="button" @click="closeFolderPicker">{{ tr('common.cancel', 'Cancel') }}</button>
+                  <button class="btn-primary" type="button" @click="confirmFolderPicker" :disabled="!folderPickerPath">{{ tr('common.confirm', 'Confirm') }}</button>
+                </div>
+              </footer>
             </div>
           </div>
         </form>

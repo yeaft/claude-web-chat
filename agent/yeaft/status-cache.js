@@ -6,6 +6,7 @@
  * never clear the model list just because a refresh failed.
  */
 
+import { createHash } from 'node:crypto';
 import ctx from '../context.js';
 import { sendToServer } from '../connection/buffer.js';
 import { loadConfig } from './config.js';
@@ -23,6 +24,16 @@ function normalizeAvailableModels(models) {
     .filter(Boolean);
 }
 
+function catalogDigest(model, availableModels) {
+  return createHash('sha256')
+    .update(JSON.stringify({ model: model || null, availableModels: normalizeAvailableModels(availableModels) }))
+    .digest('hex');
+}
+
+function createCatalogEpoch(now) {
+  return `${process.pid}-${now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function buildEvent(snapshot) {
   return {
     type: 'yeaft_status',
@@ -33,7 +44,12 @@ function buildEvent(snapshot) {
     tools: snapshot.tools,
     yeaftDir: snapshot.yeaftDir || null,
     refreshedAt: snapshot.refreshedAt || null,
+    catalogRefreshedAt: snapshot.catalogRefreshedAt || null,
+    catalogEpoch: snapshot.catalogEpoch || null,
+    catalogRevision: snapshot.catalogRevision || null,
+    catalogDigest: snapshot.catalogDigest || null,
     refreshStartedAt: snapshot.refreshStartedAt || null,
+    refreshReason: snapshot.refreshReason || null,
     refreshError: snapshot.refreshError || null,
     refreshing: !!snapshot.refreshing,
   };
@@ -54,6 +70,13 @@ export function createYeaftStatusCache(options = {}) {
   let timer = null;
   let inFlight = null;
   let generation = 0;
+  let forceTail = Promise.resolve();
+  let pendingForceRefreshes = 0;
+  let hasConfigCatalog = false;
+  let lastCatalogRefreshedAt = 0;
+  let catalogEpoch = createCatalogEpoch(now);
+  let catalogRevision = 0;
+  let lastCatalogDigest = null;
 
   function current() {
     return snapshot ? { ...snapshot, availableModels: normalizeAvailableModels(snapshot.availableModels) } : null;
@@ -80,15 +103,26 @@ export function createYeaftStatusCache(options = {}) {
         const config = await load({ ...(yeaftDir && { dir: yeaftDir }) });
         if (refreshGeneration !== generation) return current();
         const previous = snapshot || {};
+        const nextModel = config.primaryModel || config.model || previous.model || null;
+        const nextModels = normalizeAvailableModels(config.availableModels);
+        const nextDigest = catalogDigest(nextModel, nextModels);
+        hasConfigCatalog = true;
+        lastCatalogRefreshedAt = now();
+        if (nextDigest !== lastCatalogDigest) catalogRevision += 1;
+        lastCatalogDigest = nextDigest;
         snapshot = {
           ...previous,
-          model: config.primaryModel || config.model || previous.model || null,
-          availableModels: normalizeAvailableModels(config.availableModels),
+          model: nextModel,
+          availableModels: nextModels,
           yeaftDir: config.dir || yeaftDir || previous.yeaftDir || null,
           skills: sessionStatus?.skills ?? previous.skills,
           mcpServers: sessionStatus?.mcpServers ?? previous.mcpServers,
           tools: sessionStatus?.tools ?? previous.tools,
-          refreshedAt: now(),
+          refreshedAt: lastCatalogRefreshedAt,
+          catalogRefreshedAt: lastCatalogRefreshedAt,
+          catalogEpoch,
+          catalogRevision,
+          catalogDigest: lastCatalogDigest,
           refreshStartedAt: startedAt,
           refreshReason: reason,
           refreshError: null,
@@ -104,6 +138,10 @@ export function createYeaftStatusCache(options = {}) {
           ...previous,
           availableModels: normalizeAvailableModels(previous.availableModels),
           refreshedAt: previous.refreshedAt || null,
+          catalogRefreshedAt: previous.catalogRefreshedAt || null,
+          catalogEpoch: previous.catalogEpoch || null,
+          catalogRevision: previous.catalogRevision || null,
+          catalogDigest: previous.catalogDigest || null,
           refreshStartedAt: startedAt,
           refreshReason: reason,
           refreshError: message,
@@ -118,35 +156,54 @@ export function createYeaftStatusCache(options = {}) {
     return refreshPromise;
   }
 
-  async function forceRefresh(options = {}) {
-    // Invalidate any disk read that started before the config write, wait for it
-    // to drain, then start a new read. A plain refresh() intentionally dedupes
-    // concurrent callers, which is wrong after a successful config update.
+  function forceRefresh(options = {}) {
+    // Serialize post-save reads. Every caller invalidates work that started
+    // before its config write, then reads only after earlier forced refreshes
+    // have drained. A counter keeps Session hydration from cancelling the
+    // newest refresh when an older caller finishes first.
     generation += 1;
-    if (inFlight) await inFlight;
-    return refresh({ ...options, emitRefreshing: options.emitRefreshing ?? false });
+    pendingForceRefreshes += 1;
+    const run = async () => {
+      try {
+        if (inFlight) await inFlight;
+        return await refresh({ ...options, emitRefreshing: options.emitRefreshing ?? false });
+      } finally {
+        pendingForceRefreshes -= 1;
+      }
+    };
+    const result = forceTail.then(run, run);
+    forceTail = result.catch(() => null);
+    return result;
   }
 
   function hydrateFromSession(sessionLike, { reason = 'session_ready', emitEvent = true } = {}) {
     if (!sessionLike) return null;
-    // Session hydration is authoritative. Any refresh that started before this
-    // point loaded an older disk snapshot and must not overwrite it when it
-    // resolves later.
-    generation += 1;
+    // Session hydration fills runtime status only. The provider/model catalog
+    // is owned by config.json, so hydration never invalidates a config read.
+    // A config write invalidates stale reads through forceRefresh() instead.
     const previous = snapshot || {};
+    const sessionModels = normalizeAvailableModels(sessionLike.config?.availableModels);
     snapshot = {
       ...previous,
-      model: sessionLike.config?.model || previous.model || null,
-      availableModels: normalizeAvailableModels(sessionLike.config?.availableModels || previous.availableModels),
+      model: hasConfigCatalog
+        ? (previous.model || sessionLike.config?.model || null)
+        : (sessionLike.config?.model || previous.model || null),
+      availableModels: hasConfigCatalog
+        ? normalizeAvailableModels(previous.availableModels)
+        : (sessionModels.length > 0 ? sessionModels : normalizeAvailableModels(previous.availableModels)),
       yeaftDir: sessionLike.yeaftDir || sessionLike.config?.dir || previous.yeaftDir || null,
       skills: sessionLike.status?.skills ?? previous.skills,
       mcpServers: sessionLike.status?.mcpServers ?? previous.mcpServers,
       tools: sessionLike.status?.tools ?? previous.tools,
       refreshedAt: now(),
+      catalogRefreshedAt: hasConfigCatalog ? lastCatalogRefreshedAt : null,
+      catalogEpoch: hasConfigCatalog ? catalogEpoch : null,
+      catalogRevision: hasConfigCatalog ? catalogRevision : null,
+      catalogDigest: hasConfigCatalog ? lastCatalogDigest : null,
       refreshStartedAt: previous.refreshStartedAt || null,
       refreshReason: reason,
-      refreshError: null,
-      refreshing: false,
+      refreshError: previous.refreshError || null,
+      refreshing: pendingForceRefreshes > 0 || !!previous.refreshing,
     };
     return emitEvent ? emitSnapshot() : buildEvent(snapshot);
   }

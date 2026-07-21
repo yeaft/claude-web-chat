@@ -3,9 +3,19 @@ import { applyLlmConfigUpdate } from '../../agent/connection/message-router.js';
 
 function dependencies(overrides = {}) {
   return {
-    updateLlmConfig: vi.fn(() => ({ primaryModel: 'github-copilot/gpt-new', language: 'en' })),
+    loadConfig: vi.fn(() => ({
+      model: 'github-copilot/gpt-old',
+      primaryModel: 'github-copilot/gpt-old',
+      fastModel: 'github-copilot/gpt-old',
+    })),
+    updateLlmConfig: vi.fn(() => ({
+      primaryModel: 'github-copilot/gpt-new',
+      fastModel: 'github-copilot/gpt-new',
+      language: 'en',
+    })),
     broadcastLanguageChange: vi.fn(),
     forceRefreshYeaftStatus: vi.fn(async () => ({ refreshError: null })),
+    refreshLiveSessionConfig: vi.fn(async () => ({ model: 'github-copilot/gpt-new' })),
     sendToServer: vi.fn(),
     yeaftDir: '/tmp/yeaft-test',
     ...overrides,
@@ -18,17 +28,53 @@ describe('LLM config update', () => {
 
     const response = await applyLlmConfigUpdate({
       type: 'update_llm_config',
+      agentId: 'agent-1',
+      requestId: 'request-1',
       config: { primaryModel: 'github-copilot/gpt-new' },
     }, deps);
 
+    expect(deps.loadConfig).toHaveBeenCalledWith({ dir: '/tmp/yeaft-test' });
     expect(deps.updateLlmConfig).toHaveBeenCalledTimes(1);
+    expect(deps.refreshLiveSessionConfig).toHaveBeenCalledWith({
+      previousDefaultModel: 'github-copilot/gpt-old',
+    });
     expect(deps.forceRefreshYeaftStatus).toHaveBeenCalledTimes(1);
     expect(deps.sendToServer).toHaveBeenCalledTimes(1);
     expect(response).toMatchObject({
       type: 'llm_config_updated',
       primaryModel: 'github-copilot/gpt-new',
+      fastModel: 'github-copilot/gpt-new',
+      agentId: 'agent-1',
+      requestId: 'request-1',
       statusRefreshError: null,
     });
+  });
+
+  it('waits for the live runtime refresh before publishing status and acknowledging', async () => {
+    let releaseRuntime;
+    const runtimeRefresh = new Promise(resolve => { releaseRuntime = resolve; });
+    const order = [];
+    const deps = dependencies({
+      refreshLiveSessionConfig: vi.fn(async () => {
+        order.push('runtime-start');
+        await runtimeRefresh;
+        order.push('runtime-done');
+        return { model: 'github-copilot/gpt-new' };
+      }),
+      forceRefreshYeaftStatus: vi.fn(async () => {
+        order.push('status');
+        return { refreshError: null };
+      }),
+      sendToServer: vi.fn(() => order.push('ack')),
+    });
+
+    const pending = applyLlmConfigUpdate({ config: { primaryModel: 'github-copilot/gpt-new' } }, deps);
+    await Promise.resolve();
+    expect(order).toEqual(['runtime-start']);
+    releaseRuntime();
+    await pending;
+
+    expect(order).toEqual(['runtime-start', 'runtime-done', 'status', 'ack']);
   });
 
   it('still acknowledges the saved config when the forced status refresh fails', async () => {

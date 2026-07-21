@@ -422,14 +422,19 @@ export function handleAgentSelected(store, msg) {
   console.log('[agent_selected] Switching to agent:', msg.agentId);
   store.agentSwitching = false;
   const isSameAgent = store.currentAgent === msg.agentId;
-  store.currentAgent = msg.agentId;
-  store.currentAgentInfo = {
+  const agentInfo = {
     id: msg.agentId,
     name: msg.agentName,
     workDir: msg.workDir,
     capabilities: msg.capabilities || ['terminal', 'file_editor', 'background_tasks'],
     version: msg.version || null,
   };
+  if (typeof store.activateYeaftAgent === 'function') {
+    store.activateYeaftAgent(msg.agentId, agentInfo);
+  } else {
+    store.currentAgent = msg.agentId;
+    store.currentAgentInfo = agentInfo;
+  }
 
   if (Array.isArray(msg.slashCommands)) {
     // Store as the Claude Chat agent-level fallback. Yeaft command snapshots

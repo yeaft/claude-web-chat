@@ -8,6 +8,7 @@ import { Registry } from '../../../../agent/yeaft/vp/registry.js';
 import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { WorkItemWatcher } from '../../../../agent/yeaft/work-center/watcher.js';
+import { projectWorkItemDetail } from '../../../../agent/yeaft/work-center/projection.js';
 import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
 
 const engineOptions = [];
@@ -32,25 +33,37 @@ let engineToolName = 'FileRead';
 let engineToolInput = { file_path: 'src/current.js' };
 let engineAfterToolGate = null;
 let notifyEngineToolEnd = null;
+let engineTerminalInputRaceHook = null;
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
   Engine: class {
     constructor(options) { engineOptions.push(options); }
+    wakeForPendingUserMessage() { return true; }
     async *query(input) {
       engineQueries.push(input);
       const adapter = engineOptions.at(-1).adapter;
       for await (const event of adapter.stream({ scenario: 'work-item' })) yield event;
-      yield { type: 'loop', loopNumber: 1 };
+      yield { type: 'loop', loopNumber: 1, response: 'Inspected the current implementation.' };
       yield { type: 'tool_start', id: 'tool-1', name: engineToolName, input: engineToolInput };
       yield { type: 'tool_end', id: 'tool-1', name: engineToolName, output: 'ok', isError: false };
       notifyEngineToolEnd?.();
       if (engineAfterToolGate) await engineAfterToolGate;
-      yield { type: 'loop', loopNumber: 2 };
+      yield { type: 'loop', loopNumber: 2, response: 'Verified the final result.' };
       if (invalidEngineResult) {
         yield { type: 'text_delta', text: 'not-json' };
         return;
       }
       if (engineThinking) yield { type: 'thinking_delta', text: engineThinking };
       if (engineResponsePrefix) yield { type: 'text_delta', text: engineResponsePrefix };
+      if (engineTerminalInputRaceHook) {
+        await engineTerminalInputRaceHook(input);
+        if (!input.closePendingUserInput()) {
+          const appended = input.drainPendingUserMessages();
+          if (appended.length === 0 || !input.closePendingUserInput()) {
+            throw new Error('terminal input handshake failed');
+          }
+          yield { type: 'loop', loopNumber: 3, response: `Continued with: ${appended[0].content}` };
+        }
+      }
       yield { type: 'text_delta', text: JSON.stringify({
         outcome: 'completed',
         summary: 'done',
@@ -83,6 +96,7 @@ afterEach(() => {
   engineToolInput = { file_path: 'src/current.js' };
   engineAfterToolGate = null;
   notifyEngineToolEnd = null;
+  engineTerminalInputRaceHook = null;
 });
 
 describe('Work Center Runner execution resolution', () => {
@@ -122,6 +136,194 @@ describe('Work Center Runner execution resolution', () => {
     await expect(tool.execute({ actions: [] }, {})).rejects.toThrow(/no longer active/);
   });
 
+  it('uses one frozen Mainline context for v2 while preserving the v1 legacy prompt', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-mainline-runner-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Triage Lead', traits: ['triage'], modelHint: 'primary',
+      persona: 'Triage', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    try {
+      const v2Item = controller.create({
+        title: 'V2 item', goal: 'Use Mainline', acceptanceCriteria: [], workDir, start: true,
+        sessionContext: [{ role: 'user', content: 'controlled session fact' }],
+      });
+      const v2Claim = store.claimReadyAction('boot-v2', 5_000);
+      const v2Result = await runner.run({
+        workItem: store.getWorkItem(v2Item.id), action: v2Claim.action, run: v2Claim.run,
+        ownerBootId: 'boot-v2', signal: new AbortController().signal,
+      });
+      const v2Prompt = engineQueries.at(-1).prompt;
+      const frozen = store.getRun(v2Claim.run.id);
+      expect(v2Prompt).toContain('<work-center-mainline-context>');
+      expect(v2Prompt.match(/controlled session fact/g)).toHaveLength(1);
+      expect(frozen.contextSnapshot).toBeTruthy();
+      expect(Buffer.byteLength(v2Prompt, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+      expect(frozen.executionManifest.contextBytes).toBe(Buffer.byteLength(v2Prompt, 'utf8'));
+      expect(frozen.executionManifest).toMatchObject({
+        schemaVersion: 2,
+        ledgerRevision: 0,
+        planRevision: 0,
+        contractRevision: 1,
+        actionGeneration: v2Claim.action.generation,
+        actionSpecHash: v2Claim.action.specHash,
+        contextBytes: expect.any(Number),
+        contextHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        selectionReason: expect.any(String),
+      });
+      controller.submit(v2Claim.run.id, 'boot-v2', v2Claim.run.leaseEpoch, v2Result);
+      controller.cancel(v2Item.id);
+
+      const v1Item = controller.create({
+        title: 'V1 item', goal: 'Use legacy', acceptanceCriteria: [], workDir, start: true,
+      });
+      store.db.prepare('UPDATE work_items SET execution_schema_version = 1 WHERE id = ?').run(v1Item.id);
+      const v1Claim = store.claimReadyAction('boot-v1', 5_000);
+      await runner.run({
+        workItem: store.getWorkItem(v1Item.id), action: v1Claim.action, run: v1Claim.run,
+        ownerBootId: 'boot-v1', signal: new AbortController().signal,
+      });
+      expect(engineQueries.at(-1).prompt).not.toContain('<work-center-mainline-context>');
+      expect(engineQueries.at(-1).prompt).toContain(v1Claim.action.instruction);
+      expect(store.getRun(v1Claim.run.id)).toMatchObject({ contextSnapshot: null, executionManifest: null });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('persists oversized pinned Mainline context as one stable system block without retrying', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-mainline-blocked-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Triage Lead', traits: ['triage'], modelHint: 'primary',
+      persona: 'Triage', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const watcher = new WorkItemWatcher({
+      store, controller, runner, ownerBootId: 'blocked-boot',
+      pollIntervalMs: 60_000, leaseMs: 60_000, concurrencyProvider: () => 1,
+    });
+    try {
+      const item = controller.create({
+        title: 'Oversized context', goal: 'Block deterministically', acceptanceCriteria: [], workDir, start: true,
+      });
+      const action = store.getWorkItemDetail(item.id).actions[0];
+      store.db.prepare('UPDATE actions SET brief = ? WHERE id = ?').run(JSON.stringify({
+        objective: 'x'.repeat(70 * 1024),
+        approach: 'Inspect safely',
+        expectedOutcome: 'Stable system block',
+      }), action.id);
+
+      await watcher.tick();
+      await vi.waitFor(() => expect(watcher.activeRuns.size).toBe(0));
+      const detail = store.getWorkItemDetail(item.id);
+      const run = detail.runs[0];
+      expect(detail.actions[0]).toMatchObject({ status: 'failed', attempt: 1 });
+      expect(detail.runs).toHaveLength(1);
+      expect(run).toMatchObject({
+        status: 'failed',
+        failureKind: 'system_blocked',
+        failureCode: 'mainline_context_too_large',
+        llmRequestCount: 0,
+      });
+      expect(detail.events.some(event => event.type === 'action.retry_scheduled')).toBe(false);
+      expect(detail.events.some(event => event.type === 'action.system_blocked')).toBe(true);
+      expect(engineQueries).toHaveLength(0);
+
+      await watcher.tick();
+      expect(store.getWorkItemDetail(item.id).runs).toHaveLength(1);
+      const dto = projectWorkItemDetail(detail);
+      expect(dto.actions[0].failure).toMatchObject({
+        kind: 'system_blocked',
+        code: 'mainline_context_too_large',
+        error: expect.stringMatching(/Mainline pinned context exceeds 64 KiB/),
+      });
+      expect(Buffer.byteLength(JSON.stringify(dto.actions[0].failure), 'utf8')).toBeLessThan(4 * 1024);
+      expect(Buffer.byteLength(dto.actions[0].brief.objective, 'utf8')).toBeLessThanOrEqual(8 * 1024);
+      expect(Buffer.byteLength(JSON.stringify(dto), 'utf8')).toBeLessThan(32 * 1024);
+      expect(JSON.stringify(dto)).not.toContain('contextSnapshot');
+      expect(JSON.stringify(dto)).not.toContain('executionManifest');
+    } finally {
+      await watcher.stop();
+      store.close();
+    }
+  });
+
+  it('advances the Action generation and spec when isolated execution falls back to shared', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-shared-fallback-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    try {
+      const item = controller.create({
+        title: 'Fallback item', goal: 'Preserve frozen spec', acceptanceCriteria: [], workDir, start: true,
+      });
+      const action = store.getWorkItemDetail(item.id).actions[0];
+      store.db.prepare("UPDATE actions SET workspace_mode = 'isolated-write', spec_hash = '' WHERE id = ?").run(action.id);
+      const claimed = store.claimReadyAction('boot-fallback', 5_000);
+      const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
+
+      const prepared = await runner.prepare({ ...claimed, ownerBootId: 'boot-fallback' });
+
+      expect(prepared.action).toMatchObject({ workspaceMode: 'shared', generation: claimed.action.generation + 1 });
+      expect(prepared.action.specHash).not.toBe(claimed.action.specHash);
+      expect(prepared.action.resultRunId).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it('rejects an expired runner workspace fallback after a new Run claims the Action', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-stale-fallback-'));
+    let now = 1_000;
+    const store = new WorkItemStore(join(workDir, 'work-center.db'), { now: () => now });
+    const controller = new WorkflowController(store);
+    try {
+      const item = controller.create({
+        title: 'Stale fallback', goal: 'Fence workspace mutation to the Run', acceptanceCriteria: [], workDir, start: true,
+      });
+      const action = store.getWorkItemDetail(item.id).actions[0];
+      store.db.prepare("UPDATE actions SET workspace_mode = 'isolated-write', spec_hash = '' WHERE id = ?").run(action.id);
+      const staleClaim = store.claimReadyAction('old-boot', 10);
+      now += 20;
+      expect(store.recoverInterruptedRuns('new-boot')).toBe(1);
+      const currentClaim = store.claimReadyAction('new-boot', 5_000);
+      const before = store.getAction(action.id);
+      const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
+
+      await expect(runner.prepare({ ...staleClaim, ownerBootId: 'old-boot' }))
+        .rejects.toThrow(/lost its Run lease/);
+
+      expect(store.getAction(action.id)).toMatchObject({
+        generation: before.generation,
+        specHash: before.specHash,
+        resultRunId: before.resultRunId,
+        workspaceMode: before.workspaceMode,
+        currentRunId: currentClaim.run.id,
+        leaseEpoch: currentClaim.run.leaseEpoch,
+      });
+      expect(store.isActiveRun(currentClaim.run.id, 'new-boot', currentClaim.run.leaseEpoch)).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
   it('rolls back an isolated worktree when persisting ownership fails', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-prepare-rollback-'));
     const worktreeRoot = mkdtempSync(join(tmpdir(), 'work-center-prepare-worktrees-'));
@@ -134,13 +336,14 @@ describe('Work Center Runner execution resolution', () => {
     git(['commit', '-m', 'base']);
     const branch = 'yeaft-work/wi-implement-run';
     const runner = new WorkItemRunner({
-      store: { setActionWorkspace: vi.fn(() => { throw new Error('sqlite busy'); }) },
+      store: { setActionWorkspaceForRun: vi.fn(() => { throw new Error('sqlite busy'); }) },
       actionWorktreeRoot: worktreeRoot,
     });
     await expect(runner.prepare({
       workItem: { id: 'wi', workDir, workspaceKey: workDir },
-      action: { id: 'action', stageId: 'implement', workspaceMode: 'isolated-write' },
-      run: { id: 'run' },
+      action: { id: 'action', stageId: 'implement', workspaceMode: 'isolated-write', generation: 1 },
+      run: { id: 'run', leaseEpoch: 1 },
+      ownerBootId: 'boot',
     })).rejects.toThrow('sqlite busy');
     expect(existsSync(join(worktreeRoot, 'wi-implement-run'))).toBe(false);
     expect(git(['worktree', 'list', '--porcelain'])).not.toContain('wi-implement-run');
@@ -523,6 +726,113 @@ describe('Work Center Runner execution resolution', () => {
     expect(result.checkpoint.toolEvents[0].resource).toBe('https://example.com/api/data');
     expect(JSON.stringify(progress)).not.toContain('ghp_SUPER_SECRET_TOKEN');
     expect(JSON.stringify(result)).not.toContain('password');
+  });
+
+  it('wires the persistent input drain and records every Loop response', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-loop-transcript-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Continue safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      listPendingActionInputs: vi.fn().mockReturnValue([{ id: '7', text: 'Keep the API stable', attachments: [] }]),
+      acknowledgeActionInput: vi.fn().mockReturnValue(true),
+      closeRunInput: vi.fn().mockReturnValue(true),
+      appendRunLoop: vi.fn(),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const registerInputWake = vi.fn();
+
+    await runner.run({
+      workItem: { id: 'wi-loop', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+      action: { id: 'action-loop', type: 'implement', instruction: 'Implement safely', requiredRole: 'omni' },
+      run: { id: 'run-loop', leaseEpoch: 1 }, ownerBootId: 'boot',
+      signal: new AbortController().signal, registerInputWake,
+    });
+
+    expect(registerInputWake).toHaveBeenCalledWith(expect.any(Function));
+    expect(engineQueries[0].drainPendingUserMessages()).toEqual([{
+      content: 'Keep the API stable', preview: 'Keep the API stable',
+    }]);
+    expect(store.acknowledgeActionInput).toHaveBeenCalledWith(
+      '7', 'action-loop', 'run-loop', 'boot', 1,
+    );
+    expect(engineQueries[0].closePendingUserInput()).toBe(true);
+    expect(store.closeRunInput).toHaveBeenCalledWith('run-loop', 'boot', 1);
+    expect(store.appendRunLoop).toHaveBeenNthCalledWith(1, 'run-loop', 'boot', 1,
+      expect.objectContaining({ loopNumber: 1, response: 'Inspected the current implementation.' }));
+    expect(store.appendRunLoop).toHaveBeenNthCalledWith(2, 'run-loop', 'boot', 1,
+      expect.objectContaining({ loopNumber: 2, response: 'Verified the final result.' }));
+  });
+
+  it('consumes input inserted at terminal completion in the same Run without lease recovery', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-terminal-input-race-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const created = controller.create({
+      title: 'Keep the loop alive', goal: 'Consume terminal-race input', acceptanceCriteria: [],
+      workflowTemplate: 'software-change', workDir, start: true,
+    });
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['triage'], modelHint: 'primary',
+      persona: 'Continue safely', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const watcher = new WorkItemWatcher({
+      store, controller, runner, ownerBootId: 'boot', pollIntervalMs: 60_000, leaseMs: 60_000,
+    });
+    let inserted = false;
+    engineTerminalInputRaceHook = input => {
+      if (inserted) return;
+      inserted = true;
+      const detail = store.getWorkItemDetail(created.id);
+      controller.input(created.id, {
+        text: 'Use the new requirement',
+        actionId: detail.actions[0].id,
+        generation: detail.actions[0].generation,
+        revision: detail.revision,
+      });
+    };
+
+    try {
+      await watcher.tick();
+      const activeEntry = [...watcher.activeRuns.values()][0];
+      await activeEntry.promise;
+      const detail = store.getWorkItemDetail(created.id);
+      const racedRun = detail.runs.find(item => item.id === activeEntry.runId);
+      expect(racedRun).toMatchObject({ status: 'completed', loopCount: 3 });
+      expect(detail.runs.filter(item => item.actionId === racedRun.actionId)).toHaveLength(1);
+      expect(detail.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'action.input_added' }),
+        expect.objectContaining({
+          type: 'run.loop_output',
+          data: expect.objectContaining({ response: 'Continued with: Use the new requirement' }),
+        }),
+      ]));
+      expect(store.db.prepare(`SELECT COUNT(*) AS count FROM pending_action_inputs
+        WHERE consumed_at IS NULL`).get()).toEqual({ count: 0 });
+      expect(store.getRun(racedRun.id).status).toBe('completed');
+    } finally {
+      await watcher.stop();
+      store.close();
+    }
   });
 
   it('flushes a just-completed tool checkpoint before watcher interruption', async () => {
@@ -1075,6 +1385,35 @@ describe('Work Center Runner execution resolution', () => {
     expect(search).not.toHaveBeenCalled();
     expect(engineQueries[0].prompt).not.toContain('<work-center-memory>');
     expect(engineQueries[0].prompt).not.toContain('This content must not be injected.');
+  });
+
+  it('uses the structured AI summary when a tool-driven Run has no free-text response', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-summary-response-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'linus', name: 'Linus', role: 'Developer', traits: ['implement'], modelHint: 'primary',
+      persona: 'Implement', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store: {
+        listCompletedRuns: vi.fn().mockReturnValue([]),
+        isActiveRun: vi.fn().mockReturnValue(true),
+        setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      },
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+
+    const result = await runner.run({
+      workItem: { id: 'wi-1', workDir, workspaceKey: workDir },
+      action: { type: 'implement', requiredRole: 'linus', instruction: 'Implement it' },
+      run: { id: 'run-1', leaseEpoch: 1 },
+      ownerBootId: 'boot-1', signal: new AbortController().signal,
+    });
+
+    expect(result).toMatchObject({ outcome: 'completed', summary: 'done', response: 'done' });
   });
 
   it('reports public text while filtering hidden thinking from progress and the result', async () => {

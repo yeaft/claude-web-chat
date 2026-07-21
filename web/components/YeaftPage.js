@@ -23,6 +23,7 @@ import {
 } from '../utils/overlay-dismiss.js';
 import { shouldShowYeaftOnboardingGuide } from '../utils/yeaftOnboarding.js';
 import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils/yeaftSessionSettings.js';
+import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
 
 function sessionTaskSortTime(task) {
   const raw = task?.updatedAt || task?.endedAt || task?.createdAt;
@@ -500,7 +501,7 @@ export default {
     const onSelectGroupV2 = (g) => {
       const id = g && g.id ? g.id : null;
       if (!id) return;
-      store.setActiveSessionFilter(id);
+      store.setActiveSessionFilter(id, { agentId: g.agentId || null });
       if (isMobile.value) store.closeSessionSidebar();
     };
 
@@ -1057,10 +1058,10 @@ export default {
       else console.log('[Yeaft] LLM config:', msg);
     };
 
-    const onLlmConfigSaved = () => {
-      showLlmConfig.value = false;
-      const agentId = store.currentAgent;
-      if (agentId) store.sendWsMessage({ type: 'yeaft_reset', agentId });
+    const onLlmConfigSaved = (result = {}) => {
+      // The Agent installs the persisted catalog before acknowledging the save.
+      // Keep the modal open on partial success so the warning remains visible.
+      if (shouldCloseLlmConfigAfterSave(result)) showLlmConfig.value = false;
     };
 
     // task-334m: Group invite modal wiring. The modal is shown whenever

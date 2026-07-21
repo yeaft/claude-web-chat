@@ -74,13 +74,44 @@ describe('Work Center core', () => {
       linkedSessionIds: ['session-1'],
     }));
     const detail = store.getWorkItemDetail(item.id);
-    expect(detail.status).toBe('ready');
+    expect(detail).toMatchObject({ status: 'ready', executionSchemaVersion: 2, ledgerRevision: 0 });
     expect(detail.actions[0]).toMatchObject({
       type: 'triage', requiredRole: 'omni', status: 'ready', contractRevision: 1,
+      generation: 1, specHash: expect.stringMatching(/^[a-f0-9]{64}$/), resultRunId: null,
     });
     expect(detail.origin).toEqual({ sessionId: 'session-1', messageId: 'message-1', createdBy: 'user' });
     expect(detail.linkedSessionIds).toEqual(['session-1']);
     expect(store.listWorkItems({ sessionId: 'session-1' }).map(row => row.id)).toEqual([item.id]);
+  });
+
+  it('persists, filters, resolves, and deletes plan conflicts', () => {
+    const item = controller.create(createInput());
+    const action = store.getWorkItemDetail(item.id).actions[0];
+    const conflict = store.createPlanConflict(item.id, {
+      id: 'conflict-1',
+      actionId: action.id,
+      generation: 2,
+      kind: 'stale-spec',
+      details: { expectedSpecHash: 'new', actualSpecHash: 'old' },
+    });
+
+    expect(conflict).toMatchObject({
+      id: 'conflict-1', actionId: action.id, generation: 2, kind: 'stale-spec', status: 'open',
+      details: { expectedSpecHash: 'new', actualSpecHash: 'old' },
+      resolvedAt: null,
+    });
+    expect(store.listPlanConflicts(item.id, { status: 'open' })).toEqual([conflict]);
+    expect(store.getWorkItemDetail(item.id).planConflicts).toEqual([conflict]);
+
+    now = 2_000;
+    const resolved = store.resolvePlanConflict(conflict.id, { resolution: 'regenerated' });
+    expect(resolved).toMatchObject({
+      status: 'resolved', details: { resolution: 'regenerated' }, updatedAt: 2_000, resolvedAt: 2_000,
+    });
+    expect(store.resolvePlanConflict(conflict.id)).toBeNull();
+    expect(store.listPlanConflicts(item.id, { status: 'open' })).toEqual([]);
+    expect(store.deletePlanConflict(conflict.id)).toBe(true);
+    expect(store.getPlanConflict(conflict.id)).toBeNull();
   });
 
   it('freezes an AI-planned ordered VP assignment and rejects unavailable candidates', () => {
@@ -188,9 +219,13 @@ describe('Work Center core', () => {
       outcome: 'failed', error: 'left failed', summary: '', evidence: [],
     });
     expect(failed.status).toBe('needs_attention');
-    expect(() => controller.submit(right.run.id, 'boot-a', right.run.leaseEpoch, completed('research')))
-      .toThrow(/stale|cancelled|finished/i);
-    expect(store.getWorkItem(failed.id).status).toBe('needs_attention');
+    const progressed = controller.submit(
+      right.run.id, 'boot-a', right.run.leaseEpoch, completed('research'),
+    );
+    expect(progressed.actions.find(action => action.stageId === 'right')).toMatchObject({ status: 'completed' });
+    expect(store.getWorkItem(failed.id)).toMatchObject({
+      status: 'needs_attention', lifecycle: 'active', attentionState: 'failed',
+    });
   });
 
   it('returns graph review changes to the persisted target and fences sibling late submits', () => {
@@ -215,10 +250,12 @@ describe('Work Center core', () => {
     }));
     expect(detail.actions.find(action => action.stageId === 'fix')).toMatchObject({ status: 'ready' });
     expect(detail.actions.find(action => action.stageId === 'deliver')).toMatchObject({ status: 'ready' });
-    expect(detail.actions.find(action => action.stageId === 'side')).toMatchObject({ status: 'ready' });
-    expect(detail.runs.find(run => run.id === side.run.id).status).toBe('superseded');
-    expect(() => controller.submit(side.run.id, 'boot-a', side.run.leaseEpoch, completed('research')))
-      .toThrow(/stale|cancelled|finished/i);
+    expect(detail.actions.find(action => action.stageId === 'side')).toMatchObject({ status: 'running' });
+    expect(detail.runs.find(run => run.id === side.run.id).status).toBe('running');
+    const sideCompleted = controller.submit(
+      side.run.id, 'boot-a', side.run.leaseEpoch, completed('research'),
+    );
+    expect(sideCompleted.actions.find(action => action.stageId === 'side')).toMatchObject({ status: 'completed' });
     expect(store.claimReadyAction('boot-a', 5_000).action.stageId).toBe('fix');
   });
 
@@ -272,6 +309,7 @@ describe('Work Center core', () => {
     const attachments = [{ fileId: 'file-1', name: 'sample.txt', mimeType: 'text/plain', size: 12 }];
     const input = {
       text: 'Use this sample', actionId: diagnose.action.id, revision: waiting.revision,
+      generation: diagnose.action.generation,
       addedAttachmentCount: 1,
       addedAttachments: [{ id: 'file-1', name: 'sample.txt', mimeType: 'text/plain', size: 12, isImage: false }],
       attachments,
@@ -298,6 +336,7 @@ describe('Work Center core', () => {
 
     const guided = controller.input(item.id, {
       text: 'Also inspect parser boundaries', actionId: diagnose.action.id, revision: resumed.revision,
+      generation: reset.generation,
       addedAttachmentCount: 0, addedAttachments: [], attachments,
     });
     const guidedAction = guided.actions.find(action => action.stageId === 'diagnose');
@@ -312,9 +351,10 @@ describe('Work Center core', () => {
     expect(guided.actions.find(action => action.stageId === 'verify')).toMatchObject({
       status: 'ready', dependsOnStageIds: ['diagnose'],
     });
-    expect(guided.events.find(event => event.type === 'action.guidance_added')).toMatchObject({
+    expect(guided.events.find(event => event.type === 'action.input_added'
+      && event.data?.text === 'Also inspect parser boundaries')).toMatchObject({
       actionId: diagnose.action.id,
-      data: { guidance: 'Also inspect parser boundaries' },
+      data: { text: 'Also inspect parser boundaries' },
     });
   });
 
@@ -334,6 +374,7 @@ describe('Work Center core', () => {
     const attachments = [{ fileId: 'file-2', name: 'repro.md', mimeType: 'text/markdown', size: 8 }];
     const retried = controller.input(item.id, {
       text: '', actionId: implement.action.id, revision: failed.revision,
+      generation: implement.action.generation,
       addedAttachmentCount: 1,
       addedAttachments: [{ id: 'file-2', name: 'repro.md', mimeType: 'text/markdown', size: 8, isImage: false }],
       attachments,
@@ -425,7 +466,7 @@ describe('Work Center core', () => {
       store.createWorkItem(createInput({ id: 'second-fallback', workDir: workspace }), action('second'));
       const first = store.claimReadyAction('boot-a', 5_000);
       const runner = new WorkItemRunner({ store, actionWorktreeRoot: join(dir, 'worktrees') });
-      const prepared = await runner.prepare(first);
+      const prepared = await runner.prepare({ ...first, ownerBootId: 'boot-a' });
       expect(prepared.action).toMatchObject({ workspaceMode: 'shared', workspace: null });
       expect(store.getAction(first.action.id).workspaceMode).toBe('shared');
       expect(store.claimReadyAction('boot-a', 5_000)).toBeNull();
@@ -666,24 +707,51 @@ describe('Work Center core', () => {
     expect(item.workflowSnapshot.stages).toHaveLength(1);
   });
 
-  it('reuses a matching Work Item type Action template without accepting an LLM Action list', () => {
+  it('requires task-specific Actions even when the inferred type matches a reference workflow', () => {
+    const item = controller.create(createInput({
+      workflowTemplate: 'ai-planned',
+      workflowSnapshot: resolvePlanningWorkflowSnapshot({}, 'auto'),
+    }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    const rejected = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'software-change' },
+    }));
+
+    expect(rejected).toMatchObject({ status: 'needs_attention', currentActionId: triage.action.id });
+    expect(store.getRun(triage.run.id)).toMatchObject({
+      status: 'failed', error: expect.stringMatching(/between 1 and 8 task-specific Actions/i),
+    });
+    expect(item.workflowSnapshot.stages).toHaveLength(1);
+  });
+
+  it('persists AI-generated briefs when the inferred type matches a reference workflow', () => {
     const item = controller.create(createInput({
       workflowTemplate: 'ai-planned',
       workflowSnapshot: resolvePlanningWorkflowSnapshot({}, 'auto'),
     }));
     const triage = store.claimReadyAction('boot-a', 5_000);
     const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
-      plan: { workItemType: 'software-change' },
+      plan: {
+        workItemType: 'software-change',
+        actions: [{
+          id: 'fix-folder-picker', type: 'implement',
+          objective: 'Restyle the Work Center directory picker and preserve project selection',
+          approach: 'Reuse Work Center modal tokens, remove tree-item styling, and add browser coverage',
+          expectedOutcome: 'The picker matches the Work Center in both themes and still selects a valid project path',
+          dependsOnActionIds: [], workspaceMode: 'shared',
+        }],
+      },
     }));
 
-    expect(detail.workflowSnapshot).toMatchObject({ workItemType: 'software-change' });
-    expect(detail.workflowSnapshot.stages.map(stage => stage.type))
-      .toEqual(['triage', 'implement', 'review', 'deliver']);
-    expect(detail.actions.at(-1)).toMatchObject({ type: 'implement', status: 'ready' });
-    expect(detail.actions.at(-1).brief).toMatchObject({
-      objective: expect.stringContaining('Implement'),
-      approach: expect.any(String),
-      expectedOutcome: expect.any(String),
+    expect(detail.workflowSnapshot).toMatchObject({ workItemType: 'software-change', planningMode: 'ai' });
+    expect(detail.workflowSnapshot.stages.map(stage => stage.id)).toEqual(['triage', 'fix-folder-picker']);
+    expect(detail.actions.at(-1)).toMatchObject({
+      type: 'implement', status: 'ready',
+      brief: {
+        objective: 'Restyle the Work Center directory picker and preserve project selection',
+        approach: 'Reuse Work Center modal tokens, remove tree-item styling, and add browser coverage',
+        expectedOutcome: 'The picker matches the Work Center in both themes and still selects a valid project path',
+      },
     });
     expect(item.workflowSnapshot.stages).toHaveLength(1);
   });
@@ -814,7 +882,78 @@ describe('Work Center core', () => {
     expect(store.getWorkItem(source.id).workspaceKey).toBe(projectA);
   });
 
-  it('restarts only the current Action when the user adds guidance', () => {
+  it('appends fenced input to the same running Action without superseding its Run', () => {
+    const item = controller.create(createInput());
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    const updated = controller.input(item.id, {
+      text: 'Keep the public API unchanged',
+      actionId: claim.action.id,
+      revision: item.revision,
+      addedAttachmentCount: 0,
+      addedAttachments: [],
+      attachments: item.attachments,
+    });
+
+    expect(updated).toMatchObject({
+      id: item.id,
+      status: 'running',
+      currentActionId: claim.action.id,
+      currentRunId: claim.run.id,
+      revision: item.revision + 1,
+    });
+    expect(updated.actions).toHaveLength(1);
+    expect(updated.actions[0]).toMatchObject({ id: claim.action.id, status: 'running' });
+    expect(store.getRun(claim.run.id)).toMatchObject({ status: 'running' });
+    expect(store.listPendingActionInputs(claim.action.id, claim.run.id, 'boot-a', claim.run.leaseEpoch))
+      .toEqual([{ id: expect.any(String), text: 'Keep the public API unchanged', attachments: [] }]);
+    expect(updated.events.find(event => event.type === 'action.input_added')).toMatchObject({
+      actionId: claim.action.id,
+      runId: claim.run.id,
+      data: { text: 'Keep the public API unchanged', attachments: [] },
+    });
+    expect(() => controller.input(item.id, {
+      text: 'replay', actionId: claim.action.id, revision: item.revision,
+    })).toThrow(/Action changed/);
+    expect(store.closeRunInput(claim.run.id, 'boot-a', claim.run.leaseEpoch)).toBe(false);
+    expect(store.getRun(claim.run.id)).toMatchObject({ status: 'running', acceptingInput: true });
+    const [pending] = store.listPendingActionInputs(claim.action.id, claim.run.id, 'boot-a', claim.run.leaseEpoch);
+    expect(store.acknowledgeActionInput(pending.id, claim.action.id, claim.run.id, 'boot-a', claim.run.leaseEpoch)).toBe(true);
+    expect(store.listPendingActionInputs(claim.action.id, claim.run.id, 'boot-a', claim.run.leaseEpoch)).toEqual([]);
+    expect(store.closeRunInput(claim.run.id, 'boot-a', claim.run.leaseEpoch)).toBe(true);
+    expect(store.getRun(claim.run.id)).toMatchObject({ acceptingInput: false });
+    expect(() => controller.input(item.id, {
+      text: 'too late', actionId: claim.action.id, revision: updated.revision,
+    })).toThrow(/Action changed/);
+  });
+
+  it('accepts fenced input for a running graph Action that is not the WorkItem display pointer', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'parallel-input', actions: [
+        { id: 'first', type: 'research', objective: 'Research first', dependsOnActionIds: [], workspaceMode: 'read' },
+        { id: 'second', type: 'design', objective: 'Design second', dependsOnActionIds: [], workspaceMode: 'read' },
+      ] },
+    }));
+    const first = store.claimReadyAction('boot-a', 5_000);
+    const second = store.claimReadyAction('boot-b', 5_000);
+    expect(store.getWorkItem(item.id).currentActionId).toBe(second.action.id);
+
+    const updated = controller.input(item.id, {
+      text: 'Apply this to the first Action', actionId: first.action.id,
+      revision: store.getWorkItem(item.id).revision,
+      addedAttachmentCount: 0, addedAttachments: [], attachments: [],
+    });
+
+    expect(updated.currentActionId).toBe(second.action.id);
+    expect(updated.actions.find(action => action.id === first.action.id)).toMatchObject({ status: 'running' });
+    expect(store.getRun(first.run.id)).toMatchObject({ status: 'running' });
+    expect(store.listPendingActionInputs(first.action.id, first.run.id, 'boot-a', first.run.leaseEpoch))
+      .toEqual([expect.objectContaining({ text: 'Apply this to the first Action' })]);
+  });
+
+  it('keeps explicit guidance restart semantics for administrative guidance', () => {
     const item = controller.create(createInput());
     const claim = store.claimReadyAction('boot-a', 5_000);
     const guided = controller.guide(item.id, {
@@ -1112,6 +1251,29 @@ describe('Work Center core', () => {
     });
   });
 
+  it.each([
+    ['completed', completed('triage')],
+    ['waiting', { outcome: 'waiting', summary: 'Need input', evidence: [], waitingReason: 'Provide input' }],
+    ['failed', { outcome: 'failed', summary: 'Failed', evidence: [], error: 'broken' }],
+  ])('increments the v2 ledger for a %s terminal Run and fences the canonical result', (_outcome, result) => {
+    const item = controller.create(createInput());
+    const claim = store.claimReadyAction('boot-a', 5_000);
+    const generation = claim.action.generation;
+
+    controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, result);
+
+    const detail = store.getWorkItemDetail(item.id);
+    expect(detail.ledgerRevision).toBe(1);
+    expect(store.getAction(claim.action.id)).toMatchObject({
+      generation,
+      resultRunId: result.outcome === 'completed' ? claim.run.id : null,
+    });
+    expect(store.finalizeRun(claim.run.id, 'boot-a', claim.run.leaseEpoch, result, () => {
+      throw new Error('stale terminal callback must not run');
+    })).toBeNull();
+    expect(store.getWorkItem(item.id).ledgerRevision).toBe(1);
+  });
+
   it('persists immutable execution snapshots only for the fenced Run', () => {
     controller.create(createInput());
     const claim = store.claimReadyAction('boot-a', 5_000);
@@ -1120,6 +1282,8 @@ describe('Work Center core', () => {
       vpSnapshot: { id: 'omni', name: 'Omni' },
       modelSnapshot: { id: 'provider/model' },
       toolPolicySnapshot: { policyVersion: 1, allowedToolNames: ['FileRead'] },
+      contextSnapshot: { contract: { revision: 1 }, dynamic: ['prior result'] },
+      executionManifest: { schemaVersion: 2, actionGeneration: 1 },
     })).toBe(true);
     expect(store.setRunExecutionSnapshots(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
       roleSnapshot: { id: 'tampered' },
@@ -1129,6 +1293,8 @@ describe('Work Center core', () => {
       vpSnapshot: { id: 'omni', name: 'Omni' },
       modelSnapshot: { id: 'provider/model' },
       toolPolicySnapshot: { policyVersion: 1, allowedToolNames: ['FileRead'] },
+      contextSnapshot: { contract: { revision: 1 }, dynamic: ['prior result'] },
+      executionManifest: { schemaVersion: 2, actionGeneration: 1 },
     });
   });
 

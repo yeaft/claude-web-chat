@@ -93,7 +93,7 @@ export class WorkCenterService {
       case 'get_action_messages': {
         const detail = this.#requiredItem(payload.id);
         const action = this.#requiredAction(detail, payload.actionId);
-        return projectActionMessagePage(action, detail.runs, detail.events, {
+        return projectActionMessagePage(action, detail.runs, this.store.listActionEvents(action.id), {
           cursor: payload.cursor,
           limit: payload.limit,
         });
@@ -221,6 +221,7 @@ export class WorkCenterService {
             text: typeof payload.text === 'string' ? payload.text : '',
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
+            generation: payload.generation,
             addedAttachmentCount: addedAttachments.length,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],
@@ -236,6 +237,7 @@ export class WorkCenterService {
           throw error;
         }
         this.watcher.abortInvalidWorkItemRuns(id);
+        this.watcher.notifyActionInput(id, payload.actionId);
         this.#emit({ type: 'action.input_added', workItem: detail });
         return detail;
       }
@@ -253,6 +255,7 @@ export class WorkCenterService {
             guidance: typeof payload.guidance === 'string' ? payload.guidance : '',
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
+            generation: payload.generation,
             addedAttachmentCount: addedAttachments.length,
             addedAttachments,
             attachments: [...(workItem.attachments || []), ...addedAttachments],

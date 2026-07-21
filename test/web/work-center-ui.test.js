@@ -67,7 +67,7 @@ describe('Work Center UI contract', () => {
     expect(store).not.toContain('workCenterActiveTasksBySession');
   });
 
-  it('offers Session-to-WorkItem creation and renders aggregate Action execution counts', () => {
+  it('offers Session-to-WorkItem creation and keeps execution counts out of the Action list', () => {
     const input = read('web/components/ChatInput.js');
     const page = read('web/components/YeaftPage.js');
     const workCenter = read('web/components/WorkCenterPage.js');
@@ -76,10 +76,12 @@ describe('Work Center UI contract', () => {
     expect(page).toContain(':work-item-fn="openWorkItemDraft"');
     expect(store).toContain('enterWorkCenterFromSession');
     expect(workCenter).toContain('class="work-center-action-card"');
-    expect(workCenter).toContain("$t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) })");
-    expect(workCenter).toContain("$t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) })");
-    expect(workCenter).toContain("$t('workCenter.toolCount', { count: formatCount(executionStats(action).toolCount) })");
-    expect(workCenter).toContain("$t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) })");
+    expect(workCenter).toContain('{{ actionExecutor(action) }}');
+    expect(workCenter).toContain('{{ actionContentSummary(action) }}');
+    expect(workCenter).not.toContain("formatCount(executionStats(action).llmRequestCount)");
+    expect(workCenter).not.toContain("formatCount(executionStats(action).loopCount)");
+    expect(workCenter).not.toContain("formatCount(executionStats(action).toolCount)");
+    expect(workCenter).not.toContain("formatTokens(executionStats(action).totalTokens)");
     expect(workCenter).not.toContain('runsForAction(action.id)');
     expect(workCenter).not.toContain('run.evidence');
     expect(workCenter).not.toContain('selected.events');
@@ -141,6 +143,8 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain("event.key === 'End'");
     expect(detail).toContain('v-if="composerError"');
     expect(detail).toContain("tr('workCenter.requestDetailUnavailable'");
+    expect(detail).toContain("tr('workCenter.actionInputContinueHint'");
+    expect(detail).not.toContain('actionInputRestartHint');
     expect(page).toContain('workCenterRequestKey(request)');
     expect(detail).toContain(':key="requestKey(request)"');
     expect(detail).toContain("tr('workCenter.rawRequest'");
@@ -165,7 +169,9 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('class="work-center-action-content"');
     expect(page).toContain('class="work-center-action-primary"');
     expect(page).toContain('class="work-center-action-secondary"');
-    expect(page).toContain('class="work-center-action-stats"');
+    expect(page).toContain('class="work-center-action-vp"');
+    expect(page).toContain('class="work-center-action-content-summary"');
+    expect(page).not.toContain('class="work-center-action-stats"');
     expect(page).toContain('this.loadLatestActionMessages(action)');
     expect(css).toMatch(/\.work-center-action-summary\s*\{[^}]*grid-template-columns: 26px minmax\(0, 1fr\) 14px/s);
     expect(page).toContain('v-if="detailLoading"');
@@ -183,13 +189,14 @@ describe('Work Center UI contract', () => {
 
   });
 
-  it('creates Work Items with Auto or a reusable type and keeps Action creation out of the UI', () => {
+  it('creates Work Items with Auto or a task category and keeps Action creation out of the UI', () => {
     const page = read('web/components/WorkCenterPage.js');
     expect(page).toContain('v-model="form.workItemType"');
     expect(page).toContain('<option value="auto">');
     expect(page).toContain('v-for="type in workItemTypes"');
     expect(page).toContain("workItemType: this.form.workItemType || 'auto'");
-    expect(page).toContain("$t('workCenter.actionCount'");
+    expect(page).toContain('<option v-for="type in workItemTypes" :key="type.id" :value="type.id">{{ type.name }}</option>');
+    expect(page).not.toContain("type.name }} · {{ $t('workCenter.actionCount'");
     expect(page).toContain('class="work-center-action-list"');
     expect(page).toContain('@click="selectAction(action)"');
     expect(page).not.toContain('addAction');
@@ -250,18 +257,23 @@ describe('Work Center UI contract', () => {
     expect(page).toContain("tr('workCenter.startImmediatelyHint'");
     expect(page).toContain("mixins: [folderPickerMixin]");
     expect(page).toContain('class="work-center-workdir-picker"');
-    expect(page).toContain('v-model="form.workDir" type="text" required readonly');
+    expect(page).toContain('v-model="form.workDir" type="text" required @input="onCreateWorkDirInput"');
+    expect(page).not.toContain('v-model="form.workDir" type="text" required readonly');
     expect(page).toContain('@click="openFolderPicker"');
-    expect(page).toContain('class="folder-picker-dialog"');
+    expect(page).toContain('class="work-center-directory-dialog"');
+    expect(page).toContain('class="work-center-directory-item"');
+    expect(page).not.toContain('class="tree-item tree-dir folder-picker-item"');
+    expect(page).toContain('chat() { return this.store; }');
     expect(page).toContain('folderPickerSetWorkDir(path)');
-    expect(page).not.toContain('@input="onCreateWorkDirInput"');
+    expect(page).toContain('onCreateWorkDirInput()');
     expect(css).toMatch(/\.work-center-modal\s*\{[^}]*height: min\(660px, 86vh\)[^}]*overflow: hidden/s);
     expect(css).toMatch(/\.work-center-modal-body\s*\{[^}]*overflow-y: auto/s);
     expect(css).toContain('.work-center-modal .btn-primary');
     expect(css).toContain('.work-center-modal .btn-secondary');
-    expect(css).toContain('.work-center-modal .folder-picker-dialog');
+    expect(css).toContain('.work-center-directory-dialog');
+    expect(css).toContain('.work-center-directory-item.selected');
     expect(css).toContain('background: var(--modal-overlay-bg)');
-    expect(css).toContain('background: var(--session-active) !important');
+    expect(css).toContain('background: var(--session-active)');
     expect(css).toContain('width: calc(100vw - 16px)');
     expect(css).toContain('height: calc(100dvh - 16px)');
   });

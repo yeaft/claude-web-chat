@@ -170,6 +170,52 @@ describe('engine — same-turn background task wait', () => {
     expect(e.ownsPendingAsyncTask('task-xyz')).toBe(false);
   });
 
+  it('continues the same query when durable input wins the terminal close race', async () => {
+    const e = engine;
+    const a = adapter;
+    const queued = [];
+    let closeAttempts = 0;
+
+    a.pushResponse(endTurn('first answer'));
+    a.pushResponse(endTurn('answer with appended input'));
+
+    const events = await drainEvents(e.query({
+      prompt: 'start it',
+      messages: [],
+      drainPendingUserMessages: () => queued.splice(0),
+      closePendingUserInput: () => {
+        closeAttempts += 1;
+        if (closeAttempts === 1) {
+          queued.push({ content: 'new requirement', preview: 'new requirement' });
+          return false;
+        }
+        return true;
+      },
+    }));
+
+    expect(closeAttempts).toBe(2);
+    expect(a.streamCalls).toHaveLength(2);
+    expect(JSON.stringify(a.streamCalls[1].messages)).toContain('new requirement');
+    expect(events.filter(event => event.type === 'user_append')).toEqual([
+      expect.objectContaining({ preview: 'new requirement' }),
+    ]);
+    expect(events.filter(event => event.type === 'turn_end')).toEqual([
+      expect.objectContaining({ stopReason: 'user_append_continue' }),
+      expect.objectContaining({ stopReason: 'end_turn', terminal: true }),
+    ]);
+  });
+
+  it('fails explicitly when terminal input cannot close or be drained', async () => {
+    adapter.pushResponse(endTurn('done'));
+
+    await expect(drainEvents(engine.query({
+      prompt: 'start it',
+      messages: [],
+      drainPendingUserMessages: () => [],
+      closePendingUserInput: () => false,
+    }))).rejects.toThrow(/Could not close pending user input/);
+  });
+
   it('external thread-queue wake releases the wait and drains the user message without completing the task', async () => {
     const e = engine;
     const a = adapter;

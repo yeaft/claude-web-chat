@@ -101,6 +101,8 @@ async function exportMermaidImageWithHtmlToImage(svgEl, format, width, height) {
     backgroundColor: getCssVariable('--bg-main', 'white'),
     height,
     pixelRatio: Math.max(1, Math.min(3, window.devicePixelRatio || 1)),
+    // Do not copy the live auto margins into the fixed-size export canvas.
+    style: { margin: '0' },
     width,
   };
   const dataUrl = format === 'jpg'

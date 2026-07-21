@@ -434,6 +434,25 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.form.workDir).toBe('/workspace/chosen');
   });
 
+  it('preserves a manually entered work directory when delayed defaults arrive', () => {
+    const vm = {
+      createOpen: true,
+      workDirTouched: false,
+      startTouched: false,
+      createDefaultWorkDir: '',
+      createDefaultStart: true,
+      form: { workDir: '/workspace/manual', start: true },
+    };
+    vm.applyCreateDefaults = WorkCenterPage.methods.applyCreateDefaults.bind(vm);
+
+    WorkCenterPage.methods.onCreateWorkDirInput.call(vm);
+    vm.createDefaultWorkDir = '/workspace/default';
+    WorkCenterPage.watch.createDefaultWorkDir.call(vm);
+
+    expect(vm.workDirTouched).toBe(true);
+    expect(vm.form.workDir).toBe('/workspace/manual');
+  });
+
   it('waits for the new Agent defaults before replacing untouched execution input', async () => {
     const vm = {
       createOpen: true,

@@ -5,6 +5,10 @@ const DETAIL_SUMMARY_FIELDS = Object.freeze([
   'workItemType',
   'planningMode',
   'status',
+  'lifecycle',
+  'attentionState',
+  'activeActionIds',
+  'attentionActionIds',
   'currentActionId',
   'currentAction',
   'executionStats',
@@ -102,6 +106,10 @@ export function workItemDetailNeedsRefresh(current, summary) {
 
 const PROGRESS_BOUND_SUMMARY_FIELDS = new Set([
   'status',
+  'lifecycle',
+  'attentionState',
+  'activeActionIds',
+  'attentionActionIds',
   'currentActionId',
   'currentAction',
   'executionStats',

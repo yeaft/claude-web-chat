@@ -75,6 +75,8 @@ function normalizeTerminalResult(result, action) {
     evidence: normalizeEvidence(result.evidence),
     waitingReason: result.waitingReason ? String(result.waitingReason) : null,
     error: result.error ? String(result.error) : null,
+    failureKind: result.failureKind === 'system_blocked' ? 'system_blocked' : null,
+    failureCode: typeof result.failureCode === 'string' ? result.failureCode.slice(0, 128) : null,
     reviewDecision: ['approved', 'changes_requested'].includes(result.reviewDecision)
       ? result.reviewDecision
       : null,
@@ -202,10 +204,14 @@ export class WorkflowController {
     const guidanceSummary = guidance || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`;
     const expected = {
       actionId: typeof input.actionId === 'string' ? input.actionId : '',
+      generation: Number(input.generation),
       revision: Number(input.revision),
     };
-    if (!expected.actionId || !Number.isInteger(expected.revision)) {
-      throw new Error('actionId and revision are required for guidance');
+    const current = this.store.getWorkItem(id);
+    const graphMode = current?.workflowSnapshot?.executionMode === 'graph';
+    if (!expected.actionId || !Number.isInteger(expected.revision)
+        || (graphMode && !Number.isInteger(expected.generation))) {
+      throw new Error(`actionId, revision${graphMode ? ', and generation' : ''} are required for guidance`);
     }
     const detail = this.store.addActionGuidance(id, guidanceSummary, expected, (workItem, previous) => {
       const context = [...(previous.context || []), {
@@ -243,17 +249,35 @@ export class WorkflowController {
     const workItem = this.store.getWorkItem(id);
     if (!workItem) throw new Error(`WorkItem not found: ${id}`);
     if (['ready', 'running'].includes(workItem.status)) {
-      if (workItem.currentActionId !== input.actionId || workItem.revision !== input.revision) {
-        throw new Error('Action changed before input was applied; refresh and try again');
+      const activeAction = this.store.getAction(input.actionId);
+      if (activeAction?.status === 'running' && addedAttachmentCount > 0) {
+        throw new Error('Files cannot be added while an Action is running; send text now or wait for the next Action boundary');
       }
-      return this.guide(id, {
-        guidance: text,
+      const inputSummary = text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`;
+      return this.store.addActionInput(id, inputSummary, {
         actionId: input.actionId,
+        generation: input.generation,
         revision: input.revision,
-        addedAttachmentCount,
-        addedAttachments: input.addedAttachments,
-        attachments: input.attachments,
-      });
+      }, (current, action) => {
+        const context = [...(action.context || []), {
+          type: 'input', role: 'user', summary: inputSummary, evidence: [],
+        }];
+        const step = {
+          type: action.type,
+          stageId: action.stageId || action.type,
+          assignmentPolicy: action.assignmentPolicy,
+          modelPolicy: action.modelPolicy,
+          requiredRole: action.requiredRole,
+          dependsOnStageIds: action.dependsOnStageIds,
+          workspaceMode: action.workspaceMode,
+          changesRequestedStageId: action.changesRequestedStageId,
+          brief: action.brief,
+        };
+        return {
+          context,
+          instruction: actionInstruction(step, current, context, renderSessionContextSnapshot(current.sessionContext)),
+        };
+      }, input.attachments, input.addedAttachments);
     }
     if (!['waiting', 'needs_attention'].includes(workItem.status)) {
       throw new Error(`WorkItem in ${workItem.status} cannot accept Action input`);
@@ -261,7 +285,8 @@ export class WorkflowController {
     const targetAction = this.store.getAction(input.actionId);
     const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
     const targetMatches = graphMode
-      ? targetAction?.workItemId === id && ['waiting', 'failed'].includes(targetAction.status)
+      ? targetAction?.workItemId === id && targetAction.generation === input.generation
+        && ['waiting', 'failed'].includes(targetAction.status)
       : workItem.currentActionId === input.actionId;
     if (!targetMatches || workItem.revision !== input.revision) {
       throw new Error('Action changed before input was applied; refresh and try again');
@@ -269,7 +294,7 @@ export class WorkflowController {
     return this.retry(id, {
       answer: text,
       addedAttachmentCount,
-      expected: { actionId: input.actionId, revision: input.revision },
+      expected: { actionId: input.actionId, generation: input.generation, revision: input.revision },
       attachments: input.attachments,
       inputEvent: {
         text: text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`,
@@ -333,6 +358,13 @@ export class WorkflowController {
     const activeAction = activeRun ? this.store.getAction(activeRun.actionId) : null;
     if (!activeRun || !activeAction) throw new Error('Run is stale, cancelled, or already finished');
     const activeWorkItem = this.store.getWorkItem(activeRun.workItemId);
+    if (activeRun.acceptingInput !== false
+        && !this.store.closeRunInput(runId, ownerBootId, leaseEpoch)) {
+      if (!this.store.isActiveRun(runId, ownerBootId, leaseEpoch)) {
+        throw new Error('Run is stale, cancelled, expired, or already finished');
+      }
+      throw new Error('Run has unconsumed Action input and cannot finish yet');
+    }
     const result = normalizeTerminalResult(rawResult, activeAction);
     validateCompletedResult(result, activeAction, activeWorkItem);
     let validatedGeneratedWorkflow = null;
@@ -426,9 +458,13 @@ export class WorkflowController {
             actionStatus: 'failed',
             workItemStatus: 'needs_attention',
             keepCurrentAction: true,
-            eventType: 'action.failed',
+            eventType: result.failureKind === 'system_blocked' ? 'action.system_blocked' : 'action.failed',
             graphAdvance: workItem.workflowSnapshot?.executionMode === 'graph',
-            eventData: { error: result.error },
+            eventData: {
+              error: result.error,
+              failureKind: result.failureKind,
+              failureCode: result.failureCode,
+            },
           };
         }
 

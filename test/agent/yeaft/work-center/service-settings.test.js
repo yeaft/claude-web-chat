@@ -320,19 +320,18 @@ describe('Work Center settings service', () => {
     expect(JSON.stringify(item.workflowSnapshot)).not.toContain('caller/model');
   });
 
-  it('uses an explicit reusable Work Item type without running LLM triage', async () => {
+  it('uses an explicit Work Item type as a category while keeping AI planning', async () => {
     const service = await createService();
     const item = await service.handle('create', {
-      title: 'Typed change', goal: 'Use the reusable software change template',
+      title: 'Typed change', goal: 'Plan the concrete software change',
       workItemType: 'software-change', workDir: '/tmp', start: false,
     });
 
     expect(item).toMatchObject({ workflowTemplate: 'ai-planned', status: 'draft' });
     expect(item.workflowSnapshot).toMatchObject({
-      id: 'software-change', workItemType: 'software-change', planningMode: 'static',
+      id: 'ai-planned', workItemType: 'software-change', planningMode: 'ai',
     });
-    expect(item.workflowSnapshot.stages.map(stage => stage.type))
-      .toEqual(['triage', 'implement', 'review', 'deliver']);
+    expect(item.workflowSnapshot.stages.map(stage => stage.type)).toEqual(['triage']);
   });
 
   it('freezes an explicit custom Work Item type for LLM planning', async () => {

@@ -148,6 +148,18 @@ describe('Engine', () => {
       expect(engine.traceId).toBeTruthy();
       expect(typeof engine.traceId).toBe('string');
     });
+
+    it('refreshes the fast-model config without rebuilding the engine', () => {
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'old-primary', fastModelId: 'old-fast', maxOutputTokens: 1024 },
+      });
+
+      engine.refreshConfig({ model: 'new-primary', fastModelId: 'new-fast', maxOutputTokens: 2048 });
+
+      expect(engine.fastConfig).toMatchObject({ model: 'new-fast', maxOutputTokens: 2048 });
+    });
   });
 
   describe('perf trace', () => {

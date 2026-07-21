@@ -70,6 +70,24 @@ describe('web local LLM config state', () => {
     expect(store.llmConfig['agent-a'].globalConfig).toBeUndefined();
   });
 
+  it('stores a post-save runtime refresh warning without treating the disk write as failed', () => {
+    const store = makeStore();
+    handleMessage(store, {
+      type: 'llm_config_updated',
+      agentId: 'agent-warning',
+      providers: [{ name: 'p', baseUrl: 'http://p/v1', models: ['m'] }],
+      primaryModel: 'p/m',
+      statusRefreshError: 'runtime refresh failed',
+    });
+
+    expect(store.llmConfig['agent-warning']).toMatchObject({
+      primaryModel: 'p/m',
+      error: null,
+      statusRefreshError: 'runtime refresh failed',
+      loaded: true,
+    });
+  });
+
   it('falls back to top-level agent-local fields from older agent responses', () => {
     const store = makeStore();
     handleMessage(store, {

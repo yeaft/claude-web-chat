@@ -5,13 +5,15 @@ import {
   sanitizeDebugValue,
   sanitizeDiagnosticText,
 } from './debug-projection.js';
-import { normalizeActionBrief } from './workflow.js';
+import { taskSpecificActionBrief } from './workflow.js';
+import { buildMainlineProjection } from './mainline-projection.js';
 
 const MAX_ACTION_MESSAGE_CHARS = 16_000;
 const MAX_ACTION_DIAGNOSTIC_CHARS = 8_000;
 const MAX_ACTION_MESSAGES = 20;
 const MAX_ACTION_REQUEST_TOOL_CALLS = 128;
 const MAX_HISTORICAL_BRIEF_CHARS = 256;
+const MAX_CURRENT_BRIEF_BYTES = 8 * 1024;
 export const MAX_WORK_ITEM_BROWSER_DTO_BYTES = 512 * 1024;
 
 function jsonByteLength(value) {
@@ -111,12 +113,30 @@ function runResponseMessage(run) {
   });
 }
 
+function loopOutputMessages(action, events) {
+  return (Array.isArray(events) ? events : [])
+    .filter(event => event?.actionId === action?.id && event.type === 'run.loop_output')
+    .map(event => normalizeProjectedMessage({
+      id: `event:${event.id}`,
+      role: 'assistant',
+      kind: 'response',
+      status: 'completed',
+      text: event.data?.response || '',
+      createdAt: event.createdAt,
+    }))
+    .filter(Boolean);
+}
+
 function actionMessages(action, runs, events) {
   const matchingRuns = Array.isArray(runs)
     ? runs.filter(run => run?.actionId === action?.id)
     : [];
-  return [...actionInputMessages(action, events), ...matchingRuns
+  const runsWithLoopOutput = new Set((Array.isArray(events) ? events : [])
+    .filter(event => event?.actionId === action?.id && event.type === 'run.loop_output' && event.runId)
+    .map(event => event.runId));
+  return [...actionInputMessages(action, events), ...loopOutputMessages(action, events), ...matchingRuns
     .sort((left, right) => count(left.startedAt) - count(right.startedAt))
+    .filter(run => !runsWithLoopOutput.has(run.id))
     .map(run => runResponseMessage(run))
     .filter(Boolean)]
     .sort((left, right) => left.createdAt - right.createdAt
@@ -197,6 +217,10 @@ function actionExecution(action, runs, events, includeBody = true) {
       response: includeBody && typeof action?.response === 'string' ? action.response : '',
       failure: includeBody && action?.failure && typeof action.failure === 'object'
         ? {
+            ...(action.failure.kind === 'system_blocked' ? {
+              kind: 'system_blocked',
+              code: typeof action.failure.code === 'string' ? truncateUtf8(action.failure.code, 128) : null,
+            } : {}),
             error: sanitizeFailureDiagnostic(action.failure.error),
             summary: sanitizeFailureDiagnostic(action.failure.summary),
             failedAt: count(action.failure.failedAt),
@@ -237,6 +261,10 @@ function actionExecution(action, runs, events, includeBody = true) {
     ...stats,
     response: includeBody && typeof latest?.response === 'string' ? latest.response : '',
     failure: includeBody && latestFailure ? {
+      ...(latestFailure.failureKind === 'system_blocked' ? {
+        kind: 'system_blocked',
+        code: typeof latestFailure.failureCode === 'string' ? truncateUtf8(latestFailure.failureCode, 128) : null,
+      } : {}),
       error: sanitizeFailureDiagnostic(latestFailure.error),
       summary: sanitizeFailureDiagnostic(latestFailure.summary),
       failedAt: count(latestFailure.endedAt || latestFailure.startedAt),
@@ -277,13 +305,25 @@ function projectAction(action, runs, events, includeBody = true) {
   if (!action) return null;
   const execution = actionExecution(action, runs, events, includeBody);
   const alreadyProjected = !Array.isArray(runs) && Array.isArray(action.messages);
-  const brief = alreadyProjected ? (action.brief || null) : normalizeActionBrief(action.brief, action.type);
-  const projectedBrief = includeBody || !brief
+  const brief = taskSpecificActionBrief(action.brief, action.type);
+  const projectedBrief = !brief
     ? brief
     : Object.fromEntries(Object.entries(brief).map(([key, value]) => [
         key,
-        truncateUtf8(value, MAX_HISTORICAL_BRIEF_CHARS),
+        truncateUtf8(value, includeBody ? MAX_CURRENT_BRIEF_BYTES : MAX_HISTORICAL_BRIEF_CHARS),
       ]));
+  const matchingRuns = Array.isArray(runs) ? runs.filter(run => run?.actionId === action.id) : [];
+  const latestRun = [...matchingRuns].sort((left, right) => (
+    count(right.startedAt) - count(left.startedAt) || count(right.progressRevision) - count(left.progressRevision)
+  ))[0];
+  const assignedVp = latestRun?.vpSnapshot ? {
+    id: latestRun.vpSnapshot.id || null,
+    name: latestRun.vpSnapshot.name || latestRun.vpSnapshot.id || null,
+  } : null;
+  const contentSummary = truncateUtf8(
+    execution.response || latestRun?.summary || brief?.objective || brief?.expectedOutcome || '',
+    MAX_HISTORICAL_BRIEF_CHARS,
+  );
   return {
     id: action.id,
     sequence: action.sequence,
@@ -297,6 +337,8 @@ function projectAction(action, runs, events, includeBody = true) {
     requiredRole: action.requiredRole || '',
     brief: projectedBrief,
     status: action.status,
+    assignedVp,
+    contentSummary,
     executionStats: executionStats(execution),
     loopCount: execution.loopCount,
     toolCount: execution.toolCount,
@@ -356,6 +398,8 @@ function projectActionStats(detail) {
     const stats = {
       id: projected.id,
       status: projected.status,
+      assignedVp: projected.assignedVp,
+      contentSummary: projected.contentSummary,
       executionStats: projected.executionStats,
       loopCount: projected.loopCount,
       toolCount: projected.toolCount,
@@ -436,6 +480,84 @@ function enforceWorkItemBrowserDtoBudget(value, options = {}) {
   return dto;
 }
 
+function sanitizeMainlineDiagnostic(value, maxBytes) {
+  return sanitizeDiagnosticText(value, maxBytes)
+    .replace(/\bfile:\/\/[^\r\n"'<>]+/gi, '[path redacted]')
+    .replace(/\\\\(?:\?\\)?[^\\\r\n"'<>]+(?:\\[^\\\r\n"'<>]+)+/g, '[path redacted]')
+    .replace(/\b[A-Za-z]:\\[^\r\n"'<>]+/g, '[path redacted]')
+    .replace(/(?<![:/])\/(?:[^/\s"'<>]+\/)*[^/\s"'<>]+/g, '[path redacted]');
+}
+
+function projectCanonicalEvidence(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 20).map(item => {
+    if (typeof item === 'string') return sanitizeMainlineDiagnostic(item, 1_000);
+    if (!item || typeof item !== 'object') return null;
+    const projected = {};
+    for (const key of ['kind', 'label', 'ref', 'status']) {
+      if (typeof item[key] === 'string') projected[key] = sanitizeMainlineDiagnostic(item[key], 1_000);
+    }
+    return Object.keys(projected).length > 0 ? projected : null;
+  }).filter(Boolean);
+}
+
+function projectMainlineBrowser(detail) {
+  if (!detail?.id || detail.executionSchemaVersion !== 2) return null;
+  const mainline = buildMainlineProjection(detail);
+  const actionById = new Map((detail.actions || []).map(action => [action.id, action]));
+  const activeActionIds = Array.isArray(detail.activeActionIds)
+    ? detail.activeActionIds
+    : mainline.graph.nodes.filter(node => ['ready', 'running'].includes(node.status)).map(node => node.id);
+  const attentionActionIds = Array.isArray(detail.attentionActionIds)
+    ? detail.attentionActionIds
+    : mainline.graph.nodes.filter(node => ['waiting', 'failed'].includes(node.status)).map(node => node.id);
+  const counts = Object.fromEntries(['completed', 'running', 'ready', 'waiting', 'failed']
+    .map(status => [status, mainline.graph.nodes.filter(node => node.status === status).length]));
+  return {
+    contract: {
+      title: truncateUtf8(mainline.contract.title, 8_000),
+      goal: truncateUtf8(mainline.contract.goal, 16_000),
+      acceptanceCriteria: mainline.contract.acceptanceCriteria.slice(0, 100)
+        .map(criterion => truncateUtf8(criterion, 4_000)),
+    },
+    progress: {
+      lifecycle: detail.lifecycle || (counts.completed === mainline.graph.nodes.length ? 'done' : 'active'),
+      attentionState: detail.attentionState || (counts.waiting && counts.failed ? 'mixed'
+        : counts.waiting ? 'waiting' : counts.failed ? 'failed' : 'none'),
+      activeActionIds: [...activeActionIds],
+      attentionActionIds: [...attentionActionIds],
+      frontierActionIds: [...mainline.graph.frontier],
+      counts,
+    },
+    actions: mainline.graph.nodes.map(node => {
+      const action = actionById.get(node.id) || {};
+      const result = mainline.canonicalActionResults[node.id];
+      return {
+        id: node.id,
+        stageId: node.stageId,
+        type: node.type,
+        status: node.status,
+        generation: node.generation,
+        brief: taskSpecificActionBrief(action.brief, action.type)
+          ? Object.fromEntries(Object.entries(taskSpecificActionBrief(action.brief, action.type)).map(([key, value]) => [
+              key,
+              truncateUtf8(value, MAX_CURRENT_BRIEF_BYTES),
+            ]))
+          : null,
+        dependencies: [...node.dependsOnStageIds],
+        canonicalResult: result ? {
+          status: result.status,
+          summary: sanitizeMainlineDiagnostic(result.summary, MAX_ACTION_DIAGNOSTIC_CHARS),
+          evidence: projectCanonicalEvidence(result.evidence),
+          waitingReason: sanitizeDiagnosticText(result.waitingReason, MAX_ACTION_DIAGNOSTIC_CHARS) || null,
+          reviewDecision: typeof result.reviewDecision === 'string'
+            ? truncateUtf8(result.reviewDecision, 256) : null,
+        } : null,
+      };
+    }),
+  };
+}
+
 function waitingReason(detail) {
   if (typeof detail?.waitingReason === 'string') return detail.waitingReason;
   if (detail?.status !== 'waiting' || !Array.isArray(detail.runs)) return '';
@@ -460,6 +582,8 @@ function workItemFailureReason(detail) {
 export function projectWorkItemDetail(detail) {
   if (!detail) return null;
   const liveActionId = bodyActionId(detail);
+  const mainline = projectMainlineBrowser(detail);
+  const mainlineActionById = new Map((mainline?.actions || []).map(action => [action.id, action]));
   const projected = {
     id: detail.id,
     revision: detail.revision,
@@ -471,6 +595,11 @@ export function projectWorkItemDetail(detail) {
     planningMode: detail.workflowSnapshot?.planningMode || detail.planningMode || 'static',
     executionMode: detail.workflowSnapshot?.executionMode || detail.executionMode || 'linear',
     status: detail.status,
+    lifecycle: detail.lifecycle,
+    attentionState: detail.attentionState,
+    activeActionIds: Array.isArray(detail.activeActionIds) ? detail.activeActionIds : undefined,
+    attentionActionIds: Array.isArray(detail.attentionActionIds) ? detail.attentionActionIds : undefined,
+    mainline,
     currentActionId: detail.currentActionId || null,
     executionStats: Array.isArray(detail.runs)
       ? sumExecutionStats(detail.runs)
@@ -489,12 +618,10 @@ export function projectWorkItemDetail(detail) {
       ? detail.actions.map(action => action.type).filter(Boolean).join(' → ')
       : String(detail.actionSummary || ''),
     actions: Array.isArray(detail.actions)
-      ? detail.actions.map(action => projectAction(
-          action,
-          detail.runs,
-          detail.events,
-          action?.id === liveActionId,
-        ))
+      ? detail.actions.map(action => ({
+          ...projectAction(action, detail.runs, detail.events, action?.id === liveActionId),
+          ...(mainlineActionById.get(action.id) || {}),
+        }))
       : [],
   };
   return enforceWorkItemBrowserDtoBudget(projected, { keepActionId: liveActionId });
@@ -515,6 +642,10 @@ export function projectWorkItemSummary(detail) {
       workItemType: detail.workflowSnapshot?.workItemType || detail.workItemType || null,
       planningMode: detail.workflowSnapshot?.planningMode || detail.planningMode || 'static',
       status: detail.status,
+      lifecycle: detail.lifecycle,
+      attentionState: detail.attentionState,
+      activeActionIds: Array.isArray(detail.activeActionIds) ? detail.activeActionIds : undefined,
+      attentionActionIds: Array.isArray(detail.attentionActionIds) ? detail.attentionActionIds : undefined,
       currentActionId: detail.currentActionId || null,
       currentAction: null,
       executionStats: executionStats(detail.executionStats),
@@ -536,6 +667,10 @@ export function projectWorkItemSummary(detail) {
     planningMode: detail.workflowSnapshot?.planningMode || detail.planningMode || 'static',
     executionMode: detail.workflowSnapshot?.executionMode || detail.executionMode || 'linear',
     status: detail.status,
+    lifecycle: detail.lifecycle,
+    attentionState: detail.attentionState,
+    activeActionIds: Array.isArray(detail.activeActionIds) ? detail.activeActionIds : undefined,
+    attentionActionIds: Array.isArray(detail.attentionActionIds) ? detail.attentionActionIds : undefined,
     currentActionId: detail.currentActionId || null,
     executionStats: Array.isArray(detail.runs)
       ? sumExecutionStats(detail.runs)
