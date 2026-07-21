@@ -67,6 +67,120 @@ const YEAFT_CATALOG_STATUS_FIELDS = Object.freeze([
   'refreshing',
 ]);
 const YEAFT_RETIRED_CATALOG_EPOCH_LIMIT = 8;
+const YEAFT_ASK_TERMINAL_CACHE_LIMIT = 64;
+
+function askUserEventIdentity(msg, event, conversationId) {
+  return {
+    conversationId: conversationId || null,
+    agentId: msg?.agentId || event?.agentId || null,
+    requestId: event?.requestId || null,
+    toolCallId: event?.toolCallId || null,
+    sessionId: msg?.sessionId || event?.sessionId || null,
+    vpId: msg?.vpId || event?.vpId || null,
+    turnId: msg?.turnId || event?.turnId || null,
+    threadId: msg?.threadId || event?.threadId || null,
+  };
+}
+
+function askUserRowIdentity(row, conversationId) {
+  return {
+    conversationId: conversationId || null,
+    agentId: row?.agentId || null,
+    requestId: row?.askRequestId || null,
+    toolCallId: row?.toolId || null,
+    sessionId: row?.sessionId || row?.groupId || null,
+    vpId: row?.vpId || row?.speakerVpId || null,
+    turnId: row?.turnId || null,
+    threadId: row?.threadId || null,
+  };
+}
+
+const ASK_USER_IDENTITY_FIELDS = Object.freeze([
+  'conversationId',
+  'agentId',
+  'requestId',
+  'toolCallId',
+  'sessionId',
+  'vpId',
+  'turnId',
+  'threadId',
+]);
+
+function exactAskUserIdentity(candidate, expected) {
+  return ASK_USER_IDENTITY_FIELDS.every(field => !expected[field] || candidate[field] === expected[field]);
+}
+
+function compatibleAskUserIdentity(candidate, expected) {
+  return ASK_USER_IDENTITY_FIELDS.every(field => !candidate[field] || !expected[field] || candidate[field] === expected[field]);
+}
+
+function findAskUserRow(messages, identity, conversationId) {
+  const candidates = (messages || []).filter(row => row?.type === 'tool-use'
+    && (row.toolName === 'AskUser' || row.toolName === 'AskUserQuestion')
+    && (!identity.requestId || !row.askRequestId || row.askRequestId === identity.requestId)
+    && (!identity.toolCallId || !row.toolId || row.toolId === identity.toolCallId));
+  const exact = candidates.filter(row => exactAskUserIdentity(askUserRowIdentity(row, conversationId), identity));
+  if (exact.length === 1) return exact[0];
+  const compatible = candidates.filter(row => compatibleAskUserIdentity(askUserRowIdentity(row, conversationId), identity));
+  return compatible.length === 1 ? compatible[0] : null;
+}
+
+function askUserTerminalKey(identity) {
+  return ASK_USER_IDENTITY_FIELDS.map(field => identity[field] || '').join('\u0000');
+}
+
+function rememberAskUserTerminal(state, identity, event) {
+  const key = askUserTerminalKey(identity);
+  const entries = {
+    ...(state._yeaftAskTerminalEvents || {}),
+    [key]: { identity, event, receivedAt: Date.now() },
+  };
+  const keys = Object.keys(entries);
+  if (keys.length > YEAFT_ASK_TERMINAL_CACHE_LIMIT) {
+    keys.sort((a, b) => entries[a].receivedAt - entries[b].receivedAt);
+    for (const staleKey of keys.slice(0, keys.length - YEAFT_ASK_TERMINAL_CACHE_LIMIT)) delete entries[staleKey];
+  }
+  state._yeaftAskTerminalEvents = entries;
+}
+
+function takeAskUserTerminal(state, identity) {
+  const entries = state._yeaftAskTerminalEvents || {};
+  const exactKey = askUserTerminalKey(identity);
+  let key = entries[exactKey] ? exactKey : null;
+  if (!key) {
+    const compatible = Object.entries(entries)
+      .filter(([, entry]) => compatibleAskUserIdentity(entry.identity || {}, identity));
+    if (compatible.length === 1) key = compatible[0][0];
+  }
+  if (!key) return null;
+  const terminal = entries[key];
+  const { [key]: _removed, ...rest } = entries;
+  state._yeaftAskTerminalEvents = rest;
+  return terminal?.event || null;
+}
+
+function hasPendingToolCall(state, conversationId, sessionId) {
+  return (state.messagesMap?.[conversationId] || []).some(row => row?.type === 'tool-use'
+    && row.sessionId === sessionId
+    && row.hasResult === false);
+}
+
+function applyAskUserTerminal(row, event) {
+  if (event.type === 'ask_user_answered') {
+    row.askAnswered = true;
+    row.selectedAnswers = event.answers || {};
+    row.askExpired = false;
+  } else {
+    row.isHistory = true;
+    row.askExpired = true;
+    row.askAnswered = false;
+    row.selectedAnswers = null;
+  }
+  row.askPending = false;
+  row.pendingAnswers = null;
+  row.askSubmitGeneration = null;
+  row.askRequestId = null;
+}
 
 // Yeaft message ids are `NNNNNN-…` where NNNNNN is the zero-padded seq.
 // Pull the seq out so the store can stamp / advance its delta cursor on
@@ -653,6 +767,9 @@ export const useChatStore = defineStore('chat', {
     _currentYeaftVpId: null,
     _currentYeaftTurnId: null,
     _currentYeaftThreadId: null,
+    // Terminal AskUser events can beat their tool-use row during reconnect.
+    // Keep a small bounded cache and apply the event when the row replays.
+    _yeaftAskTerminalEvents: {},
     // Feature system fully removed 2026-05-13; per-VP turns are folded
     // by VpTurnBlock keyed off vpId + message id.
 
@@ -2422,21 +2539,30 @@ export const useChatStore = defineStore('chat', {
                 messageType: msg.data?.type || null,
               });
             }
-            // Advance the delta cursor on every live user/assistant
-            // message arrival so the next re-entry of this session can
-            // request afterSeq instead of replaying the recent window.
-            // Cheap: only inspects the id and the prev cursor.
+            // Advance the delta cursor only for rows that the Web can restore
+            // independently. A tool-use row is not durable UI state until its
+            // matching result has also been persisted/projected; advancing here
+            // could skip that result after a Session switch.
             const data = msg.data;
             const liveId = data?.message?.id || data?.id || null;
             const seq = parseYeaftMessageSeq(liveId);
-            if (seq !== null && msgSessionId) {
+            const contentBlocks = Array.isArray(data?.message?.content) ? data.message.content : [];
+            const hasToolUse = contentBlocks.some(block => block?.type === 'tool_use');
+            const hasToolResult = !!data?.tool_use_result
+              || contentBlocks.some(block => block?.type === 'tool_result');
+            if (msgSessionId) {
+              const candidateSeq = !hasToolResult
+                && !hasPendingToolCall(this, conversationId, msgSessionId)
+                && (data?.type === 'user' || (data?.type === 'assistant' && !hasToolUse))
+                ? seq
+                : null;
               const sessionKey = yeaftHistoryIdentityKey(msg.agentId || null, msgSessionId);
               const prevState = this.yeaftSessionHistoryState[sessionKey] || {};
               const prevLatest = Number.isFinite(prevState.latestSeq) ? prevState.latestSeq : -1;
-              if (seq > prevLatest) {
+              if (candidateSeq !== null && candidateSeq > prevLatest) {
                 this.yeaftSessionHistoryState = {
                   ...this.yeaftSessionHistoryState,
-                  [sessionKey]: { ...prevState, latestSeq: seq },
+                  [sessionKey]: { ...prevState, latestSeq: candidateSeq },
                 };
               }
             }
@@ -2457,51 +2583,55 @@ export const useChatStore = defineStore('chat', {
       switch (event.type) {
         case 'ask_user_question': {
           const conversationId = msg.conversationId || this.yeaftConversationId;
-          if (!conversationId) break;
-          const expected = {
-            sessionId: msg.sessionId || event.sessionId || null,
-            vpId: msg.vpId || event.vpId || null,
-            turnId: msg.turnId || event.turnId || null,
-            threadId: msg.threadId || event.threadId || 'main',
-          };
-          const matches = row => row?.type === 'tool-use'
-            && (row.toolName === 'AskUser' || row.toolName === 'AskUserQuestion')
-            && (!row.askRequestId || row.askRequestId === event.requestId)
-            && (!expected.sessionId || row.sessionId === expected.sessionId)
-            && (!expected.vpId || (row.vpId || row.speakerVpId) === expected.vpId)
-            && (!expected.turnId || row.turnId === expected.turnId)
-            && (!expected.threadId || (row.threadId || 'main') === expected.threadId);
+          if (!conversationId || !event.requestId) break;
+          const identity = askUserEventIdentity(msg, event, conversationId);
           const linkPrompt = () => {
             const messages = this.messagesMap[conversationId] || [];
-            for (let i = messages.length - 1; i >= 0; i--) {
-              if (!matches(messages[i])) continue;
-              messages[i].toolName = 'AskUserQuestion';
-              messages[i].askRequestId = event.requestId;
-              messages[i].askQuestions = event.questions || [];
-              messages[i].askCreatedAt = event.createdAt || null;
-              messages[i].askExpiresAt = event.expiresAt || null;
-              messages[i].isHistory = false;
+            const existingRow = findAskUserRow(messages, identity, conversationId);
+            if (existingRow) {
+              if (existingRow.askAnswered || existingRow.askExpired) return true;
+              existingRow.toolName = 'AskUserQuestion';
+              if (event.toolCallId && !existingRow.toolId) existingRow.toolId = event.toolCallId;
+              existingRow.agentId = identity.agentId || existingRow.agentId || null;
+              existingRow.askRequestId = event.requestId;
+              existingRow.askQuestions = event.questions || [];
+              existingRow.askCreatedAt = event.createdAt || null;
+              existingRow.askExpiresAt = event.expiresAt || null;
+              if (event.replay) {
+                existingRow.askPending = false;
+                existingRow.pendingAnswers = null;
+                existingRow.askSubmitGeneration = null;
+              }
+              existingRow.isHistory = false;
+              const terminal = takeAskUserTerminal(this, identity);
+              if (terminal) applyAskUserTerminal(existingRow, terminal);
+              this.messagesMap = { ...this.messagesMap, [conversationId]: messages.slice() };
               return true;
             }
             if (!event.replay) return false;
-            messages.push({
+            const promptRow = {
               id: `ask-card-${event.requestId}`,
               type: 'tool-use',
               toolName: 'AskUserQuestion',
+              toolId: event.toolCallId || null,
               toolInput: { questions: event.questions || [] },
               askRequestId: event.requestId,
               askQuestions: event.questions || [],
               askCreatedAt: event.createdAt || null,
               askExpiresAt: event.expiresAt || null,
-              sessionId: expected.sessionId,
-              vpId: expected.vpId,
-              speakerVpId: expected.vpId,
-              turnId: expected.turnId,
-              threadId: expected.threadId,
+              agentId: identity.agentId,
+              sessionId: identity.sessionId,
+              vpId: identity.vpId,
+              speakerVpId: identity.vpId,
+              turnId: identity.turnId,
+              threadId: identity.threadId || 'main',
               hasResult: false,
               isHistory: false,
               timestamp: event.createdAt || Date.now(),
-            });
+            };
+            const terminal = takeAskUserTerminal(this, identity);
+            if (terminal) applyAskUserTerminal(promptRow, terminal);
+            messages.push(promptRow);
             this.messagesMap = { ...this.messagesMap, [conversationId]: messages.slice() };
             return true;
           };
@@ -2518,17 +2648,15 @@ export const useChatStore = defineStore('chat', {
         case 'ask_user_answered':
         case 'ask_user_expired': {
           const conversationId = msg.conversationId || this.yeaftConversationId;
-          const messages = conversationId ? (this.messagesMap[conversationId] || []) : [];
-          const askMsg = messages.find(row => row?.askRequestId === event.requestId);
-          if (!askMsg) break;
-          if (event.type === 'ask_user_answered') {
-            askMsg.askAnswered = true;
-            askMsg.selectedAnswers = event.answers || {};
-          } else {
-            askMsg.isHistory = true;
-            askMsg.askExpired = true;
+          if (!conversationId || !event.requestId) break;
+          const messages = this.messagesMap[conversationId] || [];
+          const identity = askUserEventIdentity(msg, event, conversationId);
+          const askMsg = findAskUserRow(messages, identity, conversationId);
+          if (!askMsg) {
+            rememberAskUserTerminal(this, identity, event);
+            break;
           }
-          askMsg.askRequestId = null;
+          applyAskUserTerminal(askMsg, event);
           this.messagesMap = { ...this.messagesMap, [conversationId]: messages.slice() };
           break;
         }
@@ -4314,6 +4442,7 @@ export const useChatStore = defineStore('chat', {
       this.yeaftModel = null;
       this.yeaftAvailableModels = [];
       this.yeaftStatus = null;
+      this._yeaftAskTerminalEvents = {};
       // feat-6af5f9f1 PR B: clear new Turn-grouped debug shape.
       this.yeaftDebugLoops = [];
       this.yeaftDebugTurnsById = {};

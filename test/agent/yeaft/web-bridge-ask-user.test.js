@@ -18,6 +18,7 @@ describe('Yeaft AskUser response routing', () => {
       vpId: 'vp-a',
       threadId: 'thread-a',
       turnId: 'turn-a',
+      toolCallId: 'call-a',
     });
 
     expect(handleYeaftAskUserAnswer({
@@ -26,6 +27,7 @@ describe('Yeaft AskUser response routing', () => {
       vpId: 'vp-a',
       threadId: 'thread-a',
       turnId: 'turn-a',
+      toolCallId: 'call-b',
       answers: { Continue: 'No' },
     })).toBe(false);
 
@@ -35,6 +37,7 @@ describe('Yeaft AskUser response routing', () => {
       vpId: 'vp-a',
       threadId: 'thread-a',
       turnId: 'turn-a',
+      toolCallId: 'call-a',
       answers: { Continue: 'Yes' },
     })).toBe(true);
     await expect(result).resolves.toEqual({ Continue: 'Yes' });
@@ -56,6 +59,7 @@ describe('Yeaft AskUser response routing', () => {
       vpId: 'vp-a',
       threadId: 'thread-a',
       turnId: 'turn-a',
+      toolCallId: 'call-replay',
       question: 'Pick one',
       options: ['A', 'B'],
       createdAt: 100,
@@ -75,6 +79,7 @@ describe('Yeaft AskUser response routing', () => {
         type: 'ask_user_question',
         replay: true,
         requestId: 'ask-replay',
+        toolCallId: 'call-replay',
         createdAt: 100,
         questions: [{ question: 'Pick one' }],
       },
@@ -89,6 +94,7 @@ describe('Yeaft AskUser response routing', () => {
       vpId: 'vp-a',
       threadId: 'thread-a',
       turnId: 'turn-a',
+      toolCallId: 'call-expired',
     });
 
     expect(__testHooks.settlePendingUserPromptForTest('ask-expired', { timedOut: true })).toBe(true);
@@ -98,6 +104,7 @@ describe('Yeaft AskUser response routing', () => {
       sessionId: 'session-a',
       vpId: 'vp-a',
       turnId: 'turn-a',
+      event: { toolCallId: 'call-expired' },
     });
   });
 });

@@ -61,7 +61,7 @@ import {
   trimSnapshotForBudget,
 } from './history-compact.js';
 import { persistYeaftAttachments, attachmentsForPersistence, persistedAttachmentPreviewPayload } from './attachments.js';
-import { ConversationStore, parseSeqFromId } from './conversation/persist.js';
+import { ConversationStore, parseSeqFromId, projectVisibleSessionMessages } from './conversation/persist.js';
 import { isHiddenConversationRow } from './conversation/internal-control.js';
 import { imageMetadataForPersistence } from './image-assets.js';
 import { sliceLastNTurns } from './turn-utils.js';
@@ -94,6 +94,7 @@ const SKILL_RELOAD_INTERVAL_MS = 2_000;
  *   vpId:string,
  *   threadId:string,
  *   turnId:string,
+ *   toolCallId:string,
  *   question:string,
  *   options:Array<string>,
  *   createdAt:number,
@@ -1188,6 +1189,9 @@ function projectPersistedToHistoryEntry(m) {
   if (m.clientMessageId) entry.clientMessageId = m.clientMessageId;
   if (m.speakerVpId) entry.speakerVpId = m.speakerVpId;
   if (m.toolCallId) entry.toolCallId = m.toolCallId;
+  if (Array.isArray(m.askUserResults) && m.askUserResults.length > 0) {
+    entry.askUserResults = m.askUserResults;
+  }
   if (Array.isArray(m.toolCalls) && m.toolCalls.length > 0) {
     entry.toolCalls = m.toolCalls.map(tc => ({
       id: tc.id,
@@ -1203,7 +1207,7 @@ function projectPersistedToHistoryEntry(m) {
   else if (m.time) entry.ts = m.time;
   if (Array.isArray(m.images) && m.images.length > 0) entry.images = m.images;
   if (Array.isArray(m.attachments) && m.attachments.length > 0) entry.attachments = m.attachments;
-  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.images && !entry.toolCalls && !entry.toolSummaryCount) return null;
+  if ((entry.role === 'user' || entry.role === 'assistant') && !entry.content && !entry.attachments && !entry.images && !entry.toolCalls && !entry.toolSummaryCount && !entry.askUserResults) return null;
   return entry;
 }
 
@@ -1253,7 +1257,7 @@ function loadVisibleGroupHistoryPage(store, sessionId, limit, beforeSeq = null) 
     return { messages: [], oldestSeq: null, hasMore: false };
   }
 
-  const visible = rows
+  const visible = projectVisibleSessionMessages(rows)
     .map(projectPersistedToVisibleHistoryEntry)
     .filter(Boolean);
   const messages = sliceLastNTurns(visible, limit);
@@ -1280,7 +1284,7 @@ function ensureYeaftConversationId() {
 }
 
 function projectVisibleHistoryChunkMessages(messages = []) {
-  return (messages || [])
+  return projectVisibleSessionMessages(messages)
     .map(projectPersistedToVisibleHistoryEntry)
     .filter(Boolean)
     .map(m => ({
@@ -1296,6 +1300,7 @@ function projectVisibleHistoryChunkMessages(messages = []) {
       ...(Array.isArray(m.attachments) && m.attachments.length > 0 ? { attachments: hydrateHistoryAttachmentPreviews(m.attachments) } : {}),
       ...(Array.isArray(m.images) && m.images.length > 0 ? { images: m.images } : {}),
       ...(m.speakerVpId ? { speakerVpId: m.speakerVpId } : {}),
+      ...(Array.isArray(m.askUserResults) && m.askUserResults.length > 0 ? { askUserResults: m.askUserResults } : {}),
       ...(Number.isFinite(m.toolSummaryCount) && m.toolSummaryCount > 0
         ? { toolSummaryCount: m.toolSummaryCount }
         : (Array.isArray(m.toolCalls) && m.toolCalls.length > 0 ? { toolSummaryCount: m.toolCalls.length } : {})),
@@ -1304,9 +1309,9 @@ function projectVisibleHistoryChunkMessages(messages = []) {
 
 function emitHistoryChunk({ sessionId, messages, mode = 'older', oldestSeq = null, hasMore = false, latestSeq = null, afterSeq = null, turns = null, perfTraceId = null }) {
   const projectedMessages = projectVisibleHistoryChunkMessages(messages);
-  if (mode === 'delta' && projectedMessages.length === 0) {
-    return projectedMessages;
-  }
+  // Empty deltas still carry the authoritative safe cursor and clear the
+  // browser's syncingAfterSeq fence. Dropping this envelope leaves Session
+  // switching stuck after hidden-only or pair-unsafe rows.
   sendToServer({
     type: 'yeaft_history_chunk',
     conversationId: yeaftConversationId,
@@ -2719,6 +2724,7 @@ function pendingUserPromptEvent(requestId, pending, extra = {}) {
   return {
     type: 'ask_user_question',
     requestId,
+    toolCallId: pending.toolCallId || null,
     questions: [{
       question: pending.question,
       options: pending.options.map(label => ({ label, description: '' })),
@@ -2758,6 +2764,7 @@ function settlePendingUserPrompt(requestId, pending, { answers = null, timedOut 
   sendSessionEvent({
     type: timedOut ? 'ask_user_expired' : 'ask_user_answered',
     requestId,
+    toolCallId: pending.toolCallId || null,
     ...(timedOut ? { expiredAt: Date.now() } : { answers: answers || {} }),
   }, {
     sessionId: pending.sessionId,
@@ -5025,7 +5032,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         // each write a copy of the user message, and history replay
         // would render the user's prompt N times.
         userAlreadyPersisted: true,
-        askUser: ({ question, options }) => new Promise((resolve, reject) => {
+        askUser: ({ question, options }, toolCall = null) => new Promise((resolve, reject) => {
           const requestId = `ask_${randomUUID()}`;
           const signal = vpAbort.signal;
           const createdAt = Date.now();
@@ -5043,6 +5050,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
             vpId,
             threadId,
             turnId,
+            toolCallId: typeof toolCall?.id === 'string' ? toolCall.id : '',
             question,
             options: Array.isArray(options) ? options.filter(label => typeof label === 'string') : [],
             createdAt,
@@ -6110,6 +6118,7 @@ export function handleYeaftAskUserAnswer(msg) {
   if (msg.vpId && msg.vpId !== pending.vpId) return false;
   if (msg.turnId && msg.turnId !== pending.turnId) return false;
   if (msg.threadId && msg.threadId !== pending.threadId) return false;
+  if (msg.toolCallId && msg.toolCallId !== pending.toolCallId) return false;
 
   return settlePendingUserPrompt(requestId, pending, { answers: msg.answers || {} });
 }
@@ -7066,10 +7075,10 @@ export const __testHooks = {
     vpAborts.clear();
     vpInboxes.clear();
   },
-  seedPendingUserPrompt({ requestId = 'ask-test', sessionId = 'session-test', vpId = 'vp-test', threadId = 'main', turnId = 'turn-test', question = 'Continue?', options = [], createdAt = Date.now(), expiresAt = Date.now() + ASK_USER_TIMEOUT_MS } = {}) {
+  seedPendingUserPrompt({ requestId = 'ask-test', sessionId = 'session-test', vpId = 'vp-test', threadId = 'main', turnId = 'turn-test', toolCallId = 'call-test', question = 'Continue?', options = [], createdAt = Date.now(), expiresAt = Date.now() + ASK_USER_TIMEOUT_MS } = {}) {
     let resolved;
     const promise = new Promise(resolve => { resolved = resolve; });
-    pendingUserPrompts.set(requestId, { resolve: resolved, sessionId, vpId, threadId, turnId, question, options, createdAt, expiresAt, timer: null });
+    pendingUserPrompts.set(requestId, { resolve: resolved, sessionId, vpId, threadId, turnId, toolCallId, question, options, createdAt, expiresAt, timer: null });
     return promise;
   },
   replayPendingUserPrompts,

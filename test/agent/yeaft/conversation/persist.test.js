@@ -397,6 +397,43 @@ legacy session`, { encoding: 'utf8' });
       expect(window.messages.every(message => message.sessionId === 'session_window')).toBe(true);
       expect(window.messages.length).toBeLessThan(10);
     });
+
+    it('restores AskUser answers inside a bounded search window', () => {
+      store.append({ role: 'user', content: 'searchable AskUser turn', sessionId: 'session_window_ask' });
+      const assistant = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'session_window_ask',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'ask_window', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'session_window_ask',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_window',
+      });
+      store.append({ role: 'assistant', content: 'done', sessionId: 'session_window_ask' });
+
+      const window = store.loadVisibleWindowBySession(
+        'session_window_ask',
+        store.getMessageSeqById(assistant.id),
+        { beforeTurns: 1, afterTurns: 1 },
+      );
+
+      expect(window.messages.find(message => message.id === assistant.id)?.askUserResults).toEqual([
+        expect.objectContaining({
+          toolCallId: 'ask_window',
+          status: 'answered',
+          answers: { 'Continue?': 'Yes' },
+        }),
+      ]);
+    });
   });
 
   describe('appendBatch', () => {
@@ -523,6 +560,150 @@ legacy session`, { encoding: 'utf8' });
 
       const page = store.loadAfterSeqByGroup('grp_a', Number(first.id.replace(/^m/, '')));
       expect(page.messages.map(m => m.content)).toEqual(['target response']);
+    });
+
+    it('keeps an AskUser call and result atomic at the default delta limit', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_ask' });
+      store.appendBatch(Array.from({ length: 499 }, (_, index) => ({
+        role: 'assistant',
+        content: `filler-${index}`,
+        sessionId: 'grp_delta_ask',
+      })));
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_ask',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCalls: [{ id: 'ask_boundary', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      const result = store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_delta_ask',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCallId: 'ask_boundary',
+      });
+      const trailing = store.append({ role: 'assistant', content: 'after pair', sessionId: 'grp_delta_ask' });
+
+      const firstPage = store.loadAfterSeqByGroup('grp_delta_ask', store.getMessageSeqById(cursor.id));
+      expect(firstPage.messages.find(message => message.id === call.id)?.askUserResults).toEqual([
+        expect.objectContaining({
+          toolCallId: 'ask_boundary',
+          status: 'answered',
+          answers: { 'Continue?': 'Yes' },
+        }),
+      ]);
+      expect(firstPage.latestSeq).toBe(store.getMessageSeqById(result.id));
+
+      const secondPage = store.loadAfterSeqByGroup('grp_delta_ask', firstPage.latestSeq);
+      expect(secondPage.messages.map(message => message.id)).toEqual([trailing.id]);
+    });
+
+    it('recovers an AskUser result when the incoming cursor already points at its call', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_cursor' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCalls: [{ id: 'ask_cursor', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.appendBatch(Array.from({ length: 499 }, (_, index) => ({
+        role: 'assistant',
+        content: `sibling output ${index}`,
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-b',
+        turnId: `turn-b-${index}`,
+        threadId: `thread-b-${index}`,
+      })));
+      const result = store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCallId: 'ask_cursor',
+      });
+
+      const siblingCursor = store.getMessageSeqById(result.id) - 1;
+      const page = store.loadAfterSeqByGroup('grp_delta_cursor', siblingCursor);
+
+      expect(store.getMessageSeqById(cursor.id)).toBeLessThan(store.getMessageSeqById(call.id));
+      expect(page.messages.find(message => message.id === call.id)?.askUserResults).toEqual([
+        expect.objectContaining({ toolCallId: 'ask_cursor', status: 'answered' }),
+      ]);
+      expect(page.latestSeq).toBe(store.getMessageSeqById(result.id));
+    });
+
+    it('keeps a tool pair atomic across interleaved visible Session rows', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_interleaved' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        toolCalls: [{ id: 'tool_interleaved', name: 'FileRead', input: {} }],
+      });
+      store.append({
+        role: 'assistant',
+        content: 'sibling output',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-b',
+        turnId: 'turn-b',
+      });
+      const result = store.append({
+        role: 'tool',
+        content: 'done',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        toolCallId: 'tool_interleaved',
+      });
+
+      const page = store.loadAfterSeqByGroup(
+        'grp_delta_interleaved',
+        store.getMessageSeqById(cursor.id),
+        { limit: 1 },
+      );
+
+      expect(page.messages.find(message => message.id === call.id)).toMatchObject({ toolSummaryCount: 1 });
+      expect(page.latestSeq).toBe(store.getMessageSeqById(result.id));
+    });
+
+    it('keeps every result in an ordinary multi-tool arc at a delta boundary', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_tools' });
+      store.append({ role: 'assistant', content: 'filler', sessionId: 'grp_delta_tools' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_tools',
+        toolCalls: [
+          { id: 'tool_a', name: 'FileRead', input: {} },
+          { id: 'tool_b', name: 'Grep', input: {} },
+        ],
+      });
+      store.append({ role: 'tool', content: 'a', sessionId: 'grp_delta_tools', toolCallId: 'tool_a' });
+      const lastResult = store.append({ role: 'tool', content: 'b', sessionId: 'grp_delta_tools', toolCallId: 'tool_b' });
+      const trailing = store.append({ role: 'assistant', content: 'after pair', sessionId: 'grp_delta_tools' });
+
+      const firstPage = store.loadAfterSeqByGroup(
+        'grp_delta_tools',
+        store.getMessageSeqById(cursor.id),
+        { limit: 3 },
+      );
+      expect(firstPage.messages.find(message => message.id === call.id)).toMatchObject({ toolSummaryCount: 2 });
+      expect(firstPage.latestSeq).toBe(store.getMessageSeqById(lastResult.id));
+
+      const secondPage = store.loadAfterSeqByGroup('grp_delta_tools', firstPage.latestSeq, { limit: 3 });
+      expect(secondPage.messages.map(message => message.id)).toEqual([trailing.id]);
     });
 
     it('hides legacy unstamped task-result and system-note rows from session history', () => {
@@ -669,6 +850,136 @@ legacy session`, { encoding: 'utf8' });
       expect(recent[1].toolCalls).toHaveLength(1);
       expect(recent[2].toolCallId).toBe('toolu_1');
       expect(readCounts.count).toBeLessThan(10);
+    });
+
+    it('projects persisted AskUser answers without exposing ordinary tool results', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [
+          { id: 'ask_1', name: 'AskUser', input: { question: 'Continue?', options: ['Yes', 'No'] } },
+          { id: 'bash_1', name: 'Bash', input: { command: 'echo ok' } },
+        ],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_1',
+      });
+      store.append({
+        role: 'tool',
+        content: 'ok',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'bash_1',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages.map(m => m.role)).toEqual(['user', 'assistant']);
+      expect(page.messages[1]).toMatchObject({
+        toolSummaryCount: 1,
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes', 'No'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+      });
+      expect(page.messages[1]).not.toHaveProperty('toolCalls');
+      expect(page.messages.some(m => m.role === 'tool')).toBe(false);
+    });
+
+    it('does not misclassify legacy pending AskUser output as an answer', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        toolCalls: [{ id: 'ask_legacy', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ type: 'ask_user', requestId: 'ask_old', question: 'Continue?', options: ['Yes'], message: 'Question sent to user' }),
+        sessionId: 'grp_a',
+        toolCallId: 'ask_legacy',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1]).toMatchObject({ toolSummaryCount: 1 });
+      expect(page.messages[1].askUserResults).toBeUndefined();
+    });
+
+    it('keeps same-id AskUser results isolated by Session turn identity', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'shared_call', name: 'AskUser', input: { question: 'Continue?' } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Wrong' } }),
+        sessionId: 'grp_b',
+        threadId: 'thread-b',
+        turnId: 'turn-b',
+        speakerVpId: 'vp-b',
+        toolCallId: 'shared_call',
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Right' } }),
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'shared_call',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1].askUserResults).toEqual([
+        expect.objectContaining({ answers: { 'Continue?': 'Right' } }),
+      ]);
+    });
+
+    it('restores timed-out AskUser calls as expired history state', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        toolCalls: [{ id: 'ask_timeout', name: 'AskUser', input: { question: 'Continue?' } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', timedOut: true }),
+        sessionId: 'grp_a',
+        toolCallId: 'ask_timeout',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1].askUserResults).toEqual([
+        expect.objectContaining({ toolCallId: 'ask_timeout', status: 'expired' }),
+      ]);
     });
 
     it('loadVisibleBySession stops on dense hidden rows after the requested turn', () => {

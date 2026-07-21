@@ -80,6 +80,46 @@ describe('Yeaft load-history first paint', () => {
     });
   });
 
+  it('projects a persisted AskUser answer as terminal history metadata', () => {
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([
+      {
+        id: 'm0100',
+        role: 'assistant',
+        content: '',
+        sessionId: 'session-fast',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'ask_1', name: 'AskUser', input: { question: 'Continue?', options: ['Yes', 'No'] } }],
+      },
+      {
+        id: 'm0101',
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'session-fast',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_1',
+      },
+    ]);
+
+    expect(projected).toEqual([
+      expect.objectContaining({
+        id: 'm0100',
+        role: 'assistant',
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes', 'No'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+      }),
+    ]);
+    expect(projected[0].toolSummaryCount).toBeUndefined();
+  });
+
   it('replays the recent message window before full session boot resolves', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-fast-history-'));
     try {
@@ -427,7 +467,7 @@ describe('Yeaft load-history first paint', () => {
     }
   });
 
-  it('does not emit an empty delta chunk when no rows changed after the cursor', async () => {
+  it('emits an empty delta acknowledgement when no visible rows changed after the cursor', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-empty-delta-'));
     try {
       ctx.CONFIG = { yeaftDir: dir };
@@ -448,7 +488,12 @@ describe('Yeaft load-history first paint', () => {
       const pending = handleYeaftLoadHistory({ sessionId: 'session-fast', afterSeq: Number(anchor.id.slice(1)) });
       await flushMicrotasks();
 
-      expect(sent.some(m => m.type === 'yeaft_history_chunk' && m.mode === 'delta')).toBe(false);
+      expect(sent.find(m => m.type === 'yeaft_history_chunk' && m.mode === 'delta')).toMatchObject({
+        sessionId: 'session-fast',
+        messages: [],
+        latestSeq: Number(hidden.id.slice(1)),
+        afterSeq: Number(anchor.id.slice(1)),
+      });
       const event = sent.find(m => m.event?.type === 'history_loaded')?.event;
       expect(event).toMatchObject({
         mode: 'delta',
