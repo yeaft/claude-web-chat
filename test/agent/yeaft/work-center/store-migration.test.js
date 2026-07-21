@@ -83,7 +83,22 @@ describe('Work Center store migration', () => {
       progressRevision: 0, checkpoint: null,
     });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('12');
-    expect(store.getWorkItem('legacy-item').planRevision).toBe(0);
+      .toBe('13');
+    expect(store.getWorkItem('legacy-item')).toMatchObject({
+      planRevision: 0,
+      executionSchemaVersion: 1,
+      ledgerRevision: 0,
+    });
+    expect(store.getWorkItemDetail('legacy-item').actions[0]).toMatchObject({
+      generation: 1,
+      specHash: '',
+      resultRunId: null,
+    });
+    expect(store.getRun('legacy-run')).toMatchObject({
+      contextSnapshot: null,
+      executionManifest: null,
+    });
+    expect(store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plan_conflicts'").get())
+      .toEqual({ name: 'plan_conflicts' });
   });
 });

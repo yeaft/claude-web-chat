@@ -32,6 +32,11 @@ import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
 import { BUILT_IN_ACTION_TYPES } from './workflow.js';
+import {
+  buildMainlineContextSnapshot,
+  hashMainlineSnapshot,
+  renderMainlineContextSnapshot,
+} from './mainline-projection.js';
 
 const WORK_ITEM_TOOL_NAMES = Object.freeze([
   'FileRead',
@@ -781,7 +786,13 @@ export class WorkItemRunner {
       ? resolveWorkItemWorkDir({ workspaceKey: action.workspace.path }, runtime.defaultWorkDir)
       : workspaceDir;
     const priorRuns = this.store.listCompletedRuns(workItem.id);
-    const dependencyContext = this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
+    const v2Execution = Number(workItem.executionSchemaVersion) === 2;
+    const mainline = v2Execution
+      ? buildMainlineContextSnapshot(this.store.getWorkItemDetail(workItem.id), executionAction)
+      : null;
+    const dependencyContext = v2Execution
+      ? []
+      : this.store.listActionDependencies?.(workItem.id, action.dependsOnStageIds || []) || [];
     const dependencyBlock = dependencyContext.length === 0 ? '' : `\n\nCompleted dependency results:\n${dependencyContext.map(dependency => {
       const evidence = dependency.evidence?.length
         ? `\nEvidence: ${dependency.evidence.map(item => item.label).join('; ')}`
@@ -889,6 +900,18 @@ export class WorkItemRunner {
           policy: resolvedModel.policy,
         },
         toolPolicySnapshot,
+        contextSnapshot: mainline?.contextSnapshot || null,
+        executionManifest: mainline ? {
+          schemaVersion: 2,
+          ledgerRevision: mainline.contextSnapshot.ledgerRevision,
+          planRevision: mainline.contextSnapshot.graph.planRevision,
+          contractRevision: mainline.contextSnapshot.contract.revision,
+          actionGeneration: mainline.contextSnapshot.action.generation,
+          actionSpecHash: mainline.contextSnapshot.action.specHash,
+          contextBytes: mainline.budget.bytes,
+          contextHash: hashMainlineSnapshot(mainline.contextSnapshot),
+          selectionReason: mainline.budget.selectionReason,
+        } : null,
       },
     );
     if (!snapshotsWritten) throw new Error('Work Center Run lost its lease before execution');
@@ -950,7 +973,9 @@ export class WorkItemRunner {
       vpId: vp.id,
     });
     try {
-      const prompt = `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${workspaceSessionBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
+      const prompt = v2Execution
+        ? `${renderMainlineContextSnapshot(mainline.contextSnapshot)}${resumeBlock}${attachmentContext.promptBlock}${completionContract(executionAction, workItem)}`
+        : `${executionAction.instruction}${dependencyBlock}${resumeBlock}${attachmentContext.promptBlock}${workspaceSessionBlock}${memoryBlock}${completionContract(executionAction, workItem)}`;
       const promptParts = attachmentContext.promptParts.length > 0
         ? [{ type: 'text', text: prompt }, ...attachmentContext.promptParts]
         : null;

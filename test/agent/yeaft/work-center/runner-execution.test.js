@@ -122,6 +122,68 @@ describe('Work Center Runner execution resolution', () => {
     await expect(tool.execute({ actions: [] }, {})).rejects.toThrow(/no longer active/);
   });
 
+  it('uses one frozen Mainline context for v2 while preserving the v1 legacy prompt', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-mainline-runner-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Triage Lead', traits: ['triage'], modelHint: 'primary',
+      persona: 'Triage', personaHash: 'hash',
+    });
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    try {
+      const v2Item = controller.create({
+        title: 'V2 item', goal: 'Use Mainline', acceptanceCriteria: [], workDir, start: true,
+        sessionContext: [{ role: 'user', content: 'controlled session fact' }],
+      });
+      const v2Claim = store.claimReadyAction('boot-v2', 5_000);
+      const v2Result = await runner.run({
+        workItem: store.getWorkItem(v2Item.id), action: v2Claim.action, run: v2Claim.run,
+        ownerBootId: 'boot-v2', signal: new AbortController().signal,
+      });
+      const v2Prompt = engineQueries.at(-1).prompt;
+      const frozen = store.getRun(v2Claim.run.id);
+      expect(v2Prompt).toContain('<work-center-mainline-context>');
+      expect(v2Prompt.match(/controlled session fact/g)).toHaveLength(1);
+      expect(frozen.contextSnapshot).toBeTruthy();
+      expect(frozen.executionManifest).toMatchObject({
+        schemaVersion: 2,
+        ledgerRevision: 0,
+        planRevision: 0,
+        contractRevision: 1,
+        actionGeneration: v2Claim.action.generation,
+        actionSpecHash: v2Claim.action.specHash,
+        contextBytes: expect.any(Number),
+        contextHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        selectionReason: expect.any(String),
+      });
+      controller.submit(v2Claim.run.id, 'boot-v2', v2Claim.run.leaseEpoch, v2Result);
+      controller.cancel(v2Item.id);
+
+      const v1Item = controller.create({
+        title: 'V1 item', goal: 'Use legacy', acceptanceCriteria: [], workDir, start: true,
+      });
+      store.db.prepare('UPDATE work_items SET execution_schema_version = 1 WHERE id = ?').run(v1Item.id);
+      const v1Claim = store.claimReadyAction('boot-v1', 5_000);
+      await runner.run({
+        workItem: store.getWorkItem(v1Item.id), action: v1Claim.action, run: v1Claim.run,
+        ownerBootId: 'boot-v1', signal: new AbortController().signal,
+      });
+      expect(engineQueries.at(-1).prompt).not.toContain('<work-center-mainline-context>');
+      expect(engineQueries.at(-1).prompt).toContain(v1Claim.action.instruction);
+      expect(store.getRun(v1Claim.run.id)).toMatchObject({ contextSnapshot: null, executionManifest: null });
+    } finally {
+      store.close();
+    }
+  });
+
   it('rolls back an isolated worktree when persisting ownership fails', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-prepare-rollback-'));
     const worktreeRoot = mkdtempSync(join(tmpdir(), 'work-center-prepare-worktrees-'));

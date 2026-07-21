@@ -40,7 +40,7 @@ function makeContext() {
       id: 'wi-1', revision: 2, status: 'running', currentActionId: 'action-1',
       attachments: [], actions: [{ id: 'action-1' }, { id: 'action-2' }],
     },
-    selectedAction: { id: 'action-1' },
+    selectedAction: { id: 'action-1', generation: 3 },
     store: { sendWorkItemActionInput: vi.fn() },
     workItemAttachmentsSupported: true,
     tr: (_key, fallback) => fallback,
@@ -165,7 +165,7 @@ describe('Work Center Action composer scope', () => {
     await WorkCenterPage.methods.guideSelectedAction.call(context);
 
     expect(context.store.sendWorkItemActionInput).toHaveBeenCalledWith(
-      'wi-1', 'old draft', 'action-1', 2,
+      'wi-1', 'old draft', 'action-1', 2, 3,
       [{ fileId: 'old-file', name: 'old.txt', mimeType: 'text/plain', size: 3 }],
       'agent-1',
     );
@@ -178,13 +178,13 @@ describe('Work Center Action composer scope', () => {
     context.selected.workflowSnapshot = { executionMode: 'graph' };
     context.selected.status = 'needs_attention';
     context.selected.currentActionId = 'action-2';
-    context.selectedAction = { id: 'action-1', status: 'failed' };
+    context.selectedAction = { id: 'action-1', status: 'failed', generation: 3 };
     context.store.sendWorkItemActionInput.mockResolvedValue({ currentActionId: 'action-1' });
 
     await WorkCenterPage.methods.guideSelectedAction.call(context);
 
     expect(context.store.sendWorkItemActionInput).toHaveBeenCalledWith(
-      'wi-1', 'old draft', 'action-1', 2,
+      'wi-1', 'old draft', 'action-1', 2, 3,
       [{ fileId: 'old-file', name: 'old.txt', mimeType: 'text/plain', size: 3 }],
       'agent-1',
     );

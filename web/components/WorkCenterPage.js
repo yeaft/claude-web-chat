@@ -611,7 +611,7 @@ export default {
       this.actionInputError = '';
       try {
         const next = await this.store.sendWorkItemActionInput(
-          itemId, text, actionId, revision, attachments, this.agentId,
+          itemId, text, actionId, revision, this.selectedAction.generation, attachments, this.agentId,
         );
         if (this.actionComposerScope !== scope) return;
         this.actionGuidance = '';
@@ -780,6 +780,15 @@ export default {
                   </div>
                 </div>
                 <div class="work-center-section work-center-workflow" v-if="selected.actions?.length">
+                  <div v-if="selected.mainline?.progress" class="work-center-mainline-progress" :data-attention="selected.mainline.progress.attentionState">
+                    <strong>{{ tr('workCenter.currentProgress', 'Current progress') }}</strong>
+                    <span>{{ statusLabel(selected.mainline.progress.lifecycle) }}</span>
+                    <span>{{ selected.mainline.progress.counts.completed }} {{ tr('workCenter.status.completed', 'Completed') }}</span>
+                    <span v-if="selected.mainline.progress.counts.running">{{ selected.mainline.progress.counts.running }} {{ tr('workCenter.status.running', 'Running') }}</span>
+                    <span v-if="selected.mainline.progress.counts.ready">{{ selected.mainline.progress.counts.ready }} {{ tr('workCenter.status.ready', 'Ready') }}</span>
+                    <span v-if="selected.mainline.progress.counts.waiting">{{ selected.mainline.progress.counts.waiting }} {{ tr('workCenter.status.waiting', 'Waiting') }}</span>
+                    <span v-if="selected.mainline.progress.counts.failed">{{ selected.mainline.progress.counts.failed }} {{ tr('workCenter.status.failed', 'Failed') }}</span>
+                  </div>
                   <div class="work-center-action-list-heading">
                     <h3>{{ tr('workCenter.workflow', 'Workflow') }}</h3>
                     <span>{{ $t('workCenter.actionCount', { count: selected.actionCount || selected.actions.length }) }}</span>
@@ -792,11 +801,14 @@ export default {
                         <span class="work-center-action-index">{{ action.sequence }}</span>
                         <span class="work-center-action-content">
                           <span class="work-center-action-primary">
-                            <strong>{{ actionLabel(action.type) }}</strong>
+                            <strong>{{ action.brief?.objective || actionLabel(action.type) }}</strong>
                             <span class="work-center-status" :data-status="action.status"><span aria-hidden="true"></span>{{ statusLabel(action.status) }}</span>
                           </span>
+                          <span v-if="action.brief?.approach || action.canonicalResult?.summary" class="work-center-action-description">
+                            {{ action.canonicalResult?.summary || action.brief?.approach }}
+                          </span>
                           <span class="work-center-action-secondary">
-                            <small>{{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.capability || tr('workCenter.assignment.auto', 'Auto') }}</small>
+                            <small>{{ actionLabel(action.type) }} · {{ action.requiredRole || action.assignmentPolicy?.fixedVpId || action.assignmentPolicy?.capability || tr('workCenter.assignment.auto', 'Auto') }}</small>
                             <span class="work-center-action-stats" aria-label="Execution totals">
                               <span>{{ $t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) }) }}</span>
                               <span>{{ $t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) }) }}</span>

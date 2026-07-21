@@ -241,7 +241,7 @@ describe('Work Center navigation', () => {
     });
 
     const input = store.sendWorkItemActionInput(
-      'wi-1', 'Keep the public API unchanged', 'action-1', 1, [], 'agent-1',
+      'wi-1', 'Keep the public API unchanged', 'action-1', 1, 1, [], 'agent-1',
     );
     store.workCenterDetailByAgent = {
       'agent-1': {

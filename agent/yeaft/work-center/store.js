@@ -1,11 +1,11 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -29,12 +29,40 @@ function stringify(value) {
   return JSON.stringify(value ?? null);
 }
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function actionSpecHash(action) {
+  const spec = {
+    type: action.type || '',
+    stageId: action.stageId || action.type || '',
+    assignmentPolicy: action.assignmentPolicy || null,
+    modelPolicy: action.modelPolicy || null,
+    dependsOnStageIds: [...new Set(action.dependsOnStageIds || [])].sort(),
+    workspaceMode: action.workspaceMode || 'shared',
+    changesRequestedStageId: action.changesRequestedStageId || null,
+    requiredRole: action.requiredRole || '',
+    instruction: action.instruction || '',
+    brief: action.brief || null,
+    context: Array.isArray(action.context) ? action.context : [],
+    contractRevision: Number.isInteger(action.contractRevision) ? action.contractRevision : 1,
+  };
+  return createHash('sha256').update(stableJson(spec), 'utf8').digest('hex');
+}
+
 function mapWorkItem(row) {
   if (!row) return null;
   return {
     id: row.id,
     revision: row.revision,
     planRevision: Math.max(0, Number(row.plan_revision) || 0),
+    executionSchemaVersion: Math.max(1, Number(row.execution_schema_version) || 1),
+    ledgerRevision: Math.max(0, Number(row.ledger_revision) || 0),
     title: row.title,
     goal: row.goal,
     acceptanceCriteria: parseJson(row.acceptance_criteria, []),
@@ -65,6 +93,36 @@ function mapWorkItem(row) {
   };
 }
 
+function graphExecutionState(workItem, actions) {
+  if (workItem?.executionSchemaVersion !== 2
+      || workItem?.workflowSnapshot?.executionMode !== 'graph') return workItem;
+  const current = (Array.isArray(actions) ? actions : [])
+    .filter(action => !['superseded', 'cancelled'].includes(action.status));
+  const activeActionIds = current
+    .filter(action => ['ready', 'running'].includes(action.status))
+    .map(action => action.id);
+  const waitingIds = current.filter(action => action.status === 'waiting').map(action => action.id);
+  const failedIds = current.filter(action => action.status === 'failed').map(action => action.id);
+  const attentionActionIds = current
+    .filter(action => ['waiting', 'failed'].includes(action.status))
+    .map(action => action.id);
+  const lifecycle = workItem.status === 'cancelled' ? 'cancelled'
+    : current.length === 0 || workItem.status === 'draft' ? 'draft'
+      : current.every(action => action.status === 'completed') ? 'done'
+        : 'active';
+  const attentionState = waitingIds.length > 0 && failedIds.length > 0 ? 'mixed'
+    : waitingIds.length > 0 ? 'waiting'
+      : failedIds.length > 0 ? 'failed'
+        : 'none';
+  return {
+    ...workItem,
+    lifecycle,
+    attentionState,
+    activeActionIds,
+    attentionActionIds,
+  };
+}
+
 function mapAction(row) {
   if (!row) return null;
   return {
@@ -84,6 +142,9 @@ function mapAction(row) {
     brief: parseJson(row.brief, null),
     context: parseJson(row.context, []),
     contractRevision: row.contract_revision,
+    generation: Math.max(1, Number(row.generation) || 1),
+    specHash: row.spec_hash || '',
+    resultRunId: row.result_run_id || null,
     status: row.status,
     attempt: row.attempt,
     maxAttempts: row.max_attempts,
@@ -110,6 +171,8 @@ function mapRun(row) {
     vpSnapshot: parseJson(row.vp_snapshot, null),
     modelSnapshot: parseJson(row.model_snapshot, null),
     toolPolicySnapshot: parseJson(row.tool_policy_snapshot, null),
+    contextSnapshot: parseJson(row.context_snapshot, null),
+    executionManifest: parseJson(row.execution_manifest, null),
     response: row.response || '',
     summary: row.summary || '',
     evidence: normalizeEvidence(parseJson(row.evidence, [])),
@@ -127,6 +190,22 @@ function mapRun(row) {
     totalTokens: Math.max(0, Number(row.total_tokens) || 0),
     progressRevision: Math.max(0, Number(row.progress_revision) || 0),
     checkpoint: normalizeActionCheckpoint(parseJson(row.checkpoint, null)),
+  };
+}
+
+function mapPlanConflict(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    workItemId: row.work_item_id,
+    actionId: row.action_id || null,
+    generation: Math.max(1, Number(row.generation) || 1),
+    kind: row.kind,
+    status: row.status,
+    details: parseJson(row.details, {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at || null,
   };
 }
 
@@ -183,6 +262,8 @@ export class WorkItemStore {
         id TEXT PRIMARY KEY,
         revision INTEGER NOT NULL DEFAULT 1,
         plan_revision INTEGER NOT NULL DEFAULT 0,
+        execution_schema_version INTEGER NOT NULL DEFAULT 2,
+        ledger_revision INTEGER NOT NULL DEFAULT 0,
         title TEXT NOT NULL,
         goal TEXT NOT NULL,
         acceptance_criteria TEXT NOT NULL,
@@ -218,6 +299,9 @@ export class WorkItemStore {
         brief TEXT,
         context TEXT NOT NULL DEFAULT '[]',
         contract_revision INTEGER NOT NULL DEFAULT 1,
+        generation INTEGER NOT NULL DEFAULT 1,
+        spec_hash TEXT NOT NULL DEFAULT '',
+        result_run_id TEXT,
         status TEXT NOT NULL,
         attempt INTEGER NOT NULL DEFAULT 0,
         max_attempts INTEGER NOT NULL DEFAULT 2,
@@ -241,6 +325,8 @@ export class WorkItemStore {
         vp_snapshot TEXT,
         model_snapshot TEXT,
         tool_policy_snapshot TEXT,
+        context_snapshot TEXT,
+        execution_manifest TEXT,
         summary TEXT,
         evidence TEXT NOT NULL DEFAULT '[]',
         waiting_reason TEXT,
@@ -281,6 +367,19 @@ export class WorkItemStore {
         created_at INTEGER NOT NULL,
         UNIQUE(work_item_id, proposal_id)
       );
+      CREATE TABLE IF NOT EXISTS plan_conflicts (
+        id TEXT PRIMARY KEY,
+        work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+        action_id TEXT REFERENCES actions(id) ON DELETE SET NULL,
+        generation INTEGER NOT NULL DEFAULT 1,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        details TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        resolved_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_plan_conflicts_work_item ON plan_conflicts(work_item_id, created_at, id);
       CREATE INDEX IF NOT EXISTS idx_work_items_status_updated ON work_items(status, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_actions_ready ON actions(status, updated_at, sequence);
       CREATE INDEX IF NOT EXISTS idx_runs_active ON runs(status, expires_at);
@@ -380,6 +479,27 @@ export class WorkItemStore {
     if (!hasColumn(this.db, 'work_items', 'plan_revision')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN plan_revision INTEGER NOT NULL DEFAULT 0');
     }
+    if (!hasColumn(this.db, 'work_items', 'execution_schema_version')) {
+      this.db.exec('ALTER TABLE work_items ADD COLUMN execution_schema_version INTEGER NOT NULL DEFAULT 1');
+    }
+    if (!hasColumn(this.db, 'work_items', 'ledger_revision')) {
+      this.db.exec('ALTER TABLE work_items ADD COLUMN ledger_revision INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!hasColumn(this.db, 'actions', 'generation')) {
+      this.db.exec('ALTER TABLE actions ADD COLUMN generation INTEGER NOT NULL DEFAULT 1');
+    }
+    if (!hasColumn(this.db, 'actions', 'spec_hash')) {
+      this.db.exec("ALTER TABLE actions ADD COLUMN spec_hash TEXT NOT NULL DEFAULT ''");
+    }
+    if (!hasColumn(this.db, 'actions', 'result_run_id')) {
+      this.db.exec('ALTER TABLE actions ADD COLUMN result_run_id TEXT');
+    }
+    if (!hasColumn(this.db, 'runs', 'context_snapshot')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN context_snapshot TEXT');
+    }
+    if (!hasColumn(this.db, 'runs', 'execution_manifest')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN execution_manifest TEXT');
+    }
     this.db.prepare(`INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(SCHEMA_VERSION));
   }
@@ -402,16 +522,58 @@ export class WorkItemStore {
     return Number(result.lastInsertRowid);
   }
 
+  createPlanConflict(workItemId, input = {}) {
+    const id = input.id || randomUUID();
+    const now = this.now();
+    this.db.prepare(`INSERT INTO plan_conflicts
+      (id, work_item_id, action_id, generation, kind, status, details, created_at, updated_at, resolved_at)
+      VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, NULL)`).run(
+      id,
+      workItemId,
+      input.actionId || null,
+      Number.isInteger(input.generation) && input.generation > 0 ? input.generation : 1,
+      input.kind || 'plan',
+      stringify(input.details || {}),
+      now,
+      now,
+    );
+    return this.getPlanConflict(id);
+  }
+
+  getPlanConflict(id) {
+    return mapPlanConflict(this.db.prepare('SELECT * FROM plan_conflicts WHERE id = ?').get(id));
+  }
+
+  listPlanConflicts(workItemId, options = {}) {
+    const status = typeof options.status === 'string' && options.status ? options.status : null;
+    return this.db.prepare(`SELECT * FROM plan_conflicts WHERE work_item_id = ?
+      AND (? IS NULL OR status = ?) ORDER BY created_at, id`).all(workItemId, status, status).map(mapPlanConflict);
+  }
+
+  resolvePlanConflict(id, details = null) {
+    const now = this.now();
+    const changed = details && typeof details === 'object'
+      ? this.db.prepare(`UPDATE plan_conflicts SET status = 'resolved', details = ?,
+          updated_at = ?, resolved_at = ? WHERE id = ? AND status = 'open'`).run(stringify(details), now, now, id)
+      : this.db.prepare(`UPDATE plan_conflicts SET status = 'resolved',
+          updated_at = ?, resolved_at = ? WHERE id = ? AND status = 'open'`).run(now, now, id);
+    return Number(changed.changes) === 1 ? this.getPlanConflict(id) : null;
+  }
+
+  deletePlanConflict(id) {
+    return Number(this.db.prepare('DELETE FROM plan_conflicts WHERE id = ?').run(id).changes) === 1;
+  }
+
   createWorkItem(input, firstAction) {
     return withTransaction(this.db, () => {
       const now = this.now();
       const id = input.id || randomUUID();
       const workspaceKey = canonicalWorkspaceKey(input.workDir);
       this.db.prepare(`INSERT INTO work_items
-        (id, revision, title, goal, acceptance_criteria, workflow_template, workflow_snapshot, status,
+        (id, revision, execution_schema_version, ledger_revision, title, goal, acceptance_criteria, workflow_template, workflow_snapshot, status,
          current_action_id, current_run_id, work_dir, workspace_key, reuse_memory, origin, linked_session_ids,
          session_context, attachments, created_at, updated_at)
-        VALUES (?, 1, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        VALUES (?, 1, 2, 0, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         id,
         input.title,
         input.goal,
@@ -457,6 +619,9 @@ export class WorkItemStore {
       brief: input.brief && typeof input.brief === 'object' ? input.brief : null,
       context: Array.isArray(input.context) ? input.context : [],
       contractRevision: Number.isInteger(input.contractRevision) ? input.contractRevision : 1,
+      generation: Number.isInteger(input.generation) && input.generation > 0 ? input.generation : 1,
+      specHash: '',
+      resultRunId: input.resultRunId || null,
       status: input.status || 'ready',
       attempt: Number.isInteger(input.attempt) ? input.attempt : 0,
       maxAttempts: Number.isInteger(input.maxAttempts) ? input.maxAttempts : 2,
@@ -465,11 +630,12 @@ export class WorkItemStore {
       createdAt: now,
       updatedAt: now,
     };
+    action.specHash = actionSpecHash(action);
     this.db.prepare(`INSERT INTO actions
       (id, work_item_id, sequence, type, required_role, stage_id, assignment_policy, model_policy,
        depends_on_stage_ids, workspace_mode, changes_requested_stage_id, workspace, instruction, brief, context, contract_revision,
-       status, attempt, max_attempts, current_run_id, lease_epoch, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
+       generation, spec_hash, result_run_id, status, attempt, max_attempts, current_run_id, lease_epoch, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`).run(
       action.id,
       workItemId,
       action.sequence,
@@ -486,6 +652,9 @@ export class WorkItemStore {
       stringify(action.brief),
       stringify(action.context),
       action.contractRevision,
+      action.generation,
+      action.specHash,
+      action.resultRunId,
       action.status,
       action.attempt,
       action.maxAttempts,
@@ -517,9 +686,6 @@ export class WorkItemStore {
     const target = actions.find(action => action.stageId === targetStageId);
     if (!target) throw new Error('Work Center graph reset target is missing');
     const affected = new Set([targetStageId]);
-    for (const action of actions) {
-      if (action.status === 'running') affected.add(action.stageId);
-    }
     let changed = true;
     while (changed) {
       changed = false;
@@ -548,16 +714,27 @@ export class WorkItemStore {
         WHERE action_id IN (${placeholders}) AND status = 'running'`).run(now, reason, ...ids);
       for (const action of affectedActions) {
         const workspace = action.id === target.id ? preservedTargetWorkspace : null;
+        const nextAction = action.id === target.id && replacement
+          ? { ...action, ...replacement, generation: action.generation + 1 }
+          : { ...action, generation: action.generation + 1 };
         this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0, current_run_id = NULL,
-          lease_epoch = ?, workspace = ?, updated_at = ? WHERE id = ?`).run(
-          nextEpoch.get(action.id), stringify(workspace), now, action.id,
+          lease_epoch = ?, generation = generation + 1, spec_hash = ?, result_run_id = NULL,
+          workspace = ?, updated_at = ? WHERE id = ?`).run(
+          nextEpoch.get(action.id), actionSpecHash(nextAction), stringify(workspace), now, action.id,
         );
       }
     }
     if (replacement) {
+      const replacementAction = {
+        ...target,
+        ...replacement,
+        generation: target.generation + 1,
+        contractRevision: replacement.contractRevision ?? target.contractRevision,
+      };
+      const specHash = actionSpecHash(replacementAction);
       this.db.prepare(`UPDATE actions SET type = ?, required_role = ?, assignment_policy = ?,
         model_policy = ?, depends_on_stage_ids = ?, workspace_mode = ?, changes_requested_stage_id = ?,
-        instruction = ?, brief = ?, context = ?, max_attempts = ?, workspace = ?, updated_at = ?
+        instruction = ?, brief = ?, context = ?, max_attempts = ?, workspace = ?, spec_hash = ?, updated_at = ?
         WHERE id = ?`).run(
         replacement.type || target.type,
         replacement.requiredRole || '',
@@ -571,6 +748,7 @@ export class WorkItemStore {
         stringify(Array.isArray(replacement.context) ? replacement.context : []),
         Number.isInteger(replacement.maxAttempts) ? replacement.maxAttempts : 2,
         stringify(preservedTargetWorkspace),
+        specHash,
         now,
         target.id,
       );
@@ -683,7 +861,12 @@ export class WorkItemStore {
   }
 
   getWorkItem(id) {
-    return mapWorkItem(this.db.prepare('SELECT * FROM work_items WHERE id = ?').get(id));
+    const workItem = mapWorkItem(this.db.prepare('SELECT * FROM work_items WHERE id = ?').get(id));
+    if (workItem?.executionSchemaVersion !== 2
+        || workItem?.workflowSnapshot?.executionMode !== 'graph') return workItem;
+    const actions = this.db.prepare('SELECT * FROM actions WHERE work_item_id = ? ORDER BY sequence')
+      .all(id).map(mapAction);
+    return graphExecutionState(workItem, actions);
   }
 
   getAction(id) {
@@ -734,18 +917,26 @@ export class WorkItemStore {
       FROM work_items w LEFT JOIN runs r ON r.work_item_id = w.id
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       GROUP BY w.id ORDER BY w.updated_at DESC LIMIT ?`;
-    return this.db.prepare(sql).all(...values, limit).map(mapWorkItem);
+    return this.db.prepare(sql).all(...values, limit).map(mapWorkItem).map(workItem => {
+      if (workItem.executionSchemaVersion !== 2
+          || workItem.workflowSnapshot?.executionMode !== 'graph') return workItem;
+      const actions = this.db.prepare('SELECT * FROM actions WHERE work_item_id = ? ORDER BY sequence')
+        .all(workItem.id).map(mapAction);
+      return graphExecutionState(workItem, actions);
+    });
   }
 
   getWorkItemDetail(id) {
     const workItem = this.getWorkItem(id);
     if (!workItem) return null;
-    return {
+    const detail = {
       ...workItem,
       actions: this.db.prepare('SELECT * FROM actions WHERE work_item_id = ? ORDER BY sequence').all(id).map(mapAction),
       runs: this.db.prepare('SELECT * FROM runs WHERE work_item_id = ? ORDER BY started_at DESC').all(id).map(mapRun),
+      planConflicts: this.listPlanConflicts(id),
       events: this.db.prepare('SELECT * FROM events WHERE work_item_id = ? ORDER BY id DESC LIMIT 500').all(id).map(mapEvent),
     };
+    return graphExecutionState(detail, detail.actions);
   }
 
   getReusableContext(workDir, excludeWorkItemId = null) {
@@ -777,13 +968,23 @@ export class WorkItemStore {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
-      if (workItem.currentActionId !== expected.actionId || workItem.revision !== expected.revision) {
+      const graphMode = workItem.executionSchemaVersion === 2
+        && workItem.workflowSnapshot?.executionMode === 'graph';
+      const expectedAction = this.getAction(expected.actionId);
+      const expectedMatches = graphMode
+        ? expectedAction?.workItemId === id && expectedAction.generation === expected.generation
+        : workItem.currentActionId === expected.actionId;
+      if (!expectedMatches || workItem.revision !== expected.revision) {
         throw new Error('Action changed before guidance was applied; refresh and try again');
       }
-      if (!['ready', 'running'].includes(workItem.status)) {
+      const guidanceStatuses = graphMode
+        ? ['ready', 'running', 'waiting', 'needs_attention']
+        : ['ready', 'running'];
+      if (!guidanceStatuses.includes(workItem.status)) {
         throw new Error(`WorkItem in ${workItem.status} cannot accept Action guidance`);
       }
-      const previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
+      const previous = graphMode ? expectedAction
+        : (workItem.currentActionId ? this.getAction(workItem.currentActionId) : null);
       if (!previous || !['ready', 'running'].includes(previous.status)) {
         throw new Error('WorkItem has no active Action for guidance');
       }
@@ -794,7 +995,7 @@ export class WorkItemStore {
         contractRevision: previous.contractRevision,
       };
       let action;
-      if (workItem.workflowSnapshot?.executionMode === 'graph') {
+      if (graphMode) {
         action = this.#resetGraphFromStage(
           id,
           previous.stageId,
@@ -954,12 +1155,14 @@ export class WorkItemStore {
       if (!['waiting', 'needs_attention'].includes(workItem.status)) {
         throw new Error(`WorkItem in ${workItem.status} does not need retry`);
       }
-      const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
+      const graphMode = workItem.executionSchemaVersion === 2
+        && workItem.workflowSnapshot?.executionMode === 'graph';
       let previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
       if (options.expected) {
         const expectedAction = this.getAction(options.expected.actionId);
         const expectedMatches = graphMode
-          ? expectedAction?.workItemId === id && ['waiting', 'failed'].includes(expectedAction.status)
+          ? expectedAction?.workItemId === id && expectedAction.generation === options.expected.generation
+            && ['waiting', 'failed'].includes(expectedAction.status)
           : workItem.currentActionId === options.expected.actionId;
         if (!expectedMatches || workItem.revision !== options.expected.revision) {
           throw new Error('Action changed before input was applied; refresh and try again');
@@ -1033,8 +1236,9 @@ export class WorkItemStore {
             (COALESCE(json_extract(w.workflow_snapshot, '$.executionMode'), 'linear') != 'graph'
               AND w.status = 'ready' AND w.current_action_id = a.id AND w.current_run_id IS NULL)
             OR
-            (json_extract(w.workflow_snapshot, '$.executionMode') = 'graph'
-              AND w.status IN ('ready', 'running')
+            (w.execution_schema_version = 2
+              AND json_extract(w.workflow_snapshot, '$.executionMode') = 'graph'
+              AND w.status IN ('ready', 'running', 'waiting', 'needs_attention')
               AND NOT EXISTS (
                 SELECT 1 FROM json_each(a.depends_on_stage_ids) dependency
                 LEFT JOIN actions required ON required.work_item_id = a.work_item_id
@@ -1069,10 +1273,12 @@ export class WorkItemStore {
       );
       if (Number(changedAction.changes) !== 1) return null;
       const workItem = this.getWorkItem(row.work_item_id);
-      const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
+      const graphMode = workItem.executionSchemaVersion === 2
+        && workItem.workflowSnapshot?.executionMode === 'graph';
       const changedWorkItem = graphMode
         ? this.db.prepare(`UPDATE work_items SET status = 'running', current_action_id = ?,
-          current_run_id = NULL, updated_at = ? WHERE id = ? AND status IN ('ready', 'running')`).run(
+          current_run_id = NULL, updated_at = ? WHERE id = ?
+          AND status IN ('ready', 'running', 'waiting', 'needs_attention')`).run(
           row.id, now, row.work_item_id,
         )
         : this.db.prepare(`UPDATE work_items SET status = 'running', current_run_id = ?, updated_at = ?
@@ -1103,13 +1309,14 @@ export class WorkItemStore {
       JOIN work_items w ON w.id = r.work_item_id
       WHERE r.id = ? AND r.owner_boot_id = ? AND r.lease_epoch = ? AND r.status = 'running'
         AND a.status = 'running' AND a.current_run_id = r.id AND a.lease_epoch = r.lease_epoch
-        AND w.status IN ('ready', 'running', 'waiting')
+        AND w.status IN ('ready', 'running', 'waiting', 'needs_attention')
         ${requireUnexpired ? 'AND r.expires_at > ?' : ''}`).get(
       runId, ownerBootId, leaseEpoch, ...(requireUnexpired ? [this.now()] : []),
     );
     if (!row) return null;
     const workItem = this.getWorkItem(row.work_item_id);
-    if (workItem?.workflowSnapshot?.executionMode === 'graph') return row;
+    if (workItem?.executionSchemaVersion === 2
+        && workItem?.workflowSnapshot?.executionMode === 'graph') return row;
     return workItem?.status === 'running' && workItem.currentActionId === row.action_id
       && workItem.currentRunId === row.id ? row : null;
   }
@@ -1189,7 +1396,9 @@ export class WorkItemStore {
         leaseEpoch,
       );
       if (Number(actionChanged.changes) !== 1) throw new Error('Run interruption lost the Action fence');
-      const graphMode = this.getWorkItem(active.work_item_id)?.workflowSnapshot?.executionMode === 'graph';
+      const activeWorkItem = this.getWorkItem(active.work_item_id);
+      const graphMode = activeWorkItem?.executionSchemaVersion === 2
+        && activeWorkItem?.workflowSnapshot?.executionMode === 'graph';
       const itemChanged = graphMode
         ? this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
           updated_at = ? WHERE id = ? AND status = 'running'`).run(
@@ -1213,13 +1422,16 @@ export class WorkItemStore {
     return withTransaction(this.db, () => {
       if (!this.#activeRunRow(runId, ownerBootId, leaseEpoch, true)) return false;
       const result = this.db.prepare(`UPDATE runs SET role_snapshot = ?, vp_snapshot = ?,
-        model_snapshot = ?, tool_policy_snapshot = ? WHERE id = ? AND status = 'running'
+        model_snapshot = ?, tool_policy_snapshot = ?, context_snapshot = ?, execution_manifest = ?
+        WHERE id = ? AND status = 'running'
         AND role_snapshot IS NULL AND vp_snapshot IS NULL AND model_snapshot IS NULL
-        AND tool_policy_snapshot IS NULL`).run(
+        AND tool_policy_snapshot IS NULL AND context_snapshot IS NULL AND execution_manifest IS NULL`).run(
         stringify(snapshots.roleSnapshot || null),
         stringify(snapshots.vpSnapshot || null),
         stringify(snapshots.modelSnapshot || null),
         stringify(snapshots.toolPolicySnapshot || null),
+        stringify(snapshots.contextSnapshot || null),
+        stringify(snapshots.executionManifest || null),
         runId,
       );
       return Number(result.changes) === 1;
@@ -1287,6 +1499,8 @@ export class WorkItemStore {
         throw new Error('Work Center transition plan is incomplete');
       }
       const now = this.now();
+      const ledgerIncrement = workItem.executionSchemaVersion === 2
+        && ['completed', 'failed', 'waiting'].includes(result.outcome) ? 1 : 0;
       this.db.prepare(`UPDATE runs SET status = ?, ended_at = ?, response = ?, summary = ?, evidence = ?,
         waiting_reason = ?, error = ?, review_decision = ?, contract_patch = ?, checkpoint = ?,
         loop_count = ?, tool_count = ?, llm_request_count = ?, input_tokens = ?, output_tokens = ?,
@@ -1314,12 +1528,17 @@ export class WorkItemStore {
       );
       this.onTransitionStep?.('after_run_update');
 
-      const changedAction = this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL, updated_at = ?
-        WHERE id = ? AND status = 'running' AND current_run_id = ?`).run(
+      const changedAction = this.db.prepare(`UPDATE actions SET status = ?, current_run_id = NULL,
+        result_run_id = CASE WHEN ? = 'completed' THEN ? ELSE result_run_id END, updated_at = ?
+        WHERE id = ? AND status = 'running' AND current_run_id = ? AND lease_epoch = ? AND generation = ?`).run(
         transition.actionStatus,
+        result.outcome,
+        runId,
         now,
         action.id,
         runId,
+        leaseEpoch,
+        action.generation,
       );
       if (Number(changedAction.changes) !== 1) {
         throw new Error('Work Center terminal transition lost the current Action fence');
@@ -1446,14 +1665,15 @@ export class WorkItemStore {
             : 'done';
         currentActionId = blocked?.id || runnable?.id || null;
         changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
-          current_run_id = NULL, updated_at = ? WHERE id = ? AND status IN ('ready', 'running')`).run(
-          workItemStatus, currentActionId, now, workItem.id,
+          current_run_id = NULL, ledger_revision = ledger_revision + ?, updated_at = ?
+          WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention')`).run(
+          workItemStatus, currentActionId, ledgerIncrement, now, workItem.id,
         );
       } else {
         changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
-          current_run_id = NULL, updated_at = ? WHERE id = ? AND current_run_id = ?
+          current_run_id = NULL, ledger_revision = ledger_revision + ?, updated_at = ? WHERE id = ? AND current_run_id = ?
           AND current_action_id = ? AND status = 'running'`).run(
-          workItemStatus, currentActionId, now, workItem.id, runId, action.id,
+          workItemStatus, currentActionId, ledgerIncrement, now, workItem.id, runId, action.id,
         );
       }
       if (Number(changedWorkItem.changes) !== 1) {
@@ -1516,7 +1736,8 @@ export class WorkItemStore {
         const action = this.getAction(row.action_id);
         if (this.#hasActiveIntegrationReservation(action, now)) continue;
         const workItem = this.getWorkItem(row.work_item_id);
-        const graphMode = workItem?.workflowSnapshot?.executionMode === 'graph';
+        const graphMode = workItem?.executionSchemaVersion === 2
+        && workItem?.workflowSnapshot?.executionMode === 'graph';
         const isCurrent = action?.status === 'running'
           && action.currentRunId === row.id
           && action.leaseEpoch === row.lease_epoch
