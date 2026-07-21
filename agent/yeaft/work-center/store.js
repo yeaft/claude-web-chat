@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -195,6 +195,7 @@ function mapRun(row) {
     totalTokens: Math.max(0, Number(row.total_tokens) || 0),
     progressRevision: Math.max(0, Number(row.progress_revision) || 0),
     checkpoint: normalizeActionCheckpoint(parseJson(row.checkpoint, null)),
+    acceptingInput: row.accepting_input !== 0,
   };
 }
 
@@ -350,7 +351,8 @@ export class WorkItemStore {
         cache_write_tokens INTEGER NOT NULL DEFAULT 0,
         total_tokens INTEGER NOT NULL DEFAULT 0,
         progress_revision INTEGER NOT NULL DEFAULT 0,
-        checkpoint TEXT
+        checkpoint TEXT,
+        accepting_input INTEGER NOT NULL DEFAULT 1
       );
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -360,6 +362,15 @@ export class WorkItemStore {
         type TEXT NOT NULL,
         data TEXT NOT NULL,
         created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS pending_action_inputs (
+        event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+        work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+        action_id TEXT NOT NULL REFERENCES actions(id) ON DELETE CASCADE,
+        run_id TEXT,
+        text TEXT NOT NULL,
+        attachments TEXT NOT NULL DEFAULT '[]',
+        consumed_at INTEGER
       );
       CREATE TABLE IF NOT EXISTS plan_audits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -391,6 +402,8 @@ export class WorkItemStore {
       CREATE INDEX IF NOT EXISTS idx_actions_ready ON actions(status, updated_at, sequence);
       CREATE INDEX IF NOT EXISTS idx_runs_active ON runs(status, expires_at);
       CREATE INDEX IF NOT EXISTS idx_events_work_item ON events(work_item_id, id);
+      CREATE INDEX IF NOT EXISTS idx_pending_action_inputs_action
+        ON pending_action_inputs(action_id, consumed_at, event_id);
     `);
 
     // The feature shipped first as an unmerged PR, but keep the store tolerant
@@ -458,6 +471,9 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'runs', 'checkpoint')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN checkpoint TEXT');
+    }
+    if (!hasColumn(this.db, 'runs', 'accepting_input')) {
+      this.db.exec('ALTER TABLE runs ADD COLUMN accepting_input INTEGER NOT NULL DEFAULT 1');
     }
     if (!hasColumn(this.db, 'work_items', 'workflow_snapshot')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN workflow_snapshot TEXT');
@@ -533,6 +549,110 @@ export class WorkItemStore {
       this.now(),
     );
     return Number(result.lastInsertRowid);
+  }
+
+  addActionInput(id, input, expected, updateReadyAction, attachments = null, addedAttachments = []) {
+    return withTransaction(this.db, () => {
+      const workItem = this.getWorkItem(id);
+      if (!workItem) return null;
+      if (!['ready', 'running'].includes(workItem.status)) {
+        throw new Error(`WorkItem in ${workItem.status} cannot accept Action input`);
+      }
+      const action = this.getAction(expected.actionId);
+      const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
+      const actionMatches = graphMode
+        ? action?.workItemId === id && ['ready', 'running'].includes(action.status)
+        : action?.id === workItem.currentActionId && ['ready', 'running'].includes(action?.status);
+      const activeRun = action?.currentRunId ? this.getRun(action.currentRunId) : null;
+      if (!actionMatches || activeRun?.acceptingInput === false || workItem.revision !== expected.revision) {
+        throw new Error('Action changed before input was applied; refresh and try again');
+      }
+      const now = this.now();
+      const revision = workItem.revision + 1;
+      const updated = updateReadyAction(workItem, action);
+      const changedAction = this.db.prepare(`UPDATE actions SET context = ?, instruction = ?, updated_at = ?
+        WHERE id = ? AND status = ? AND current_run_id IS ?`).run(
+        stringify(updated.context || []),
+        updated.instruction || action.instruction,
+        now,
+        action.id,
+        action.status,
+        action.currentRunId,
+      );
+      if (Number(changedAction.changes) !== 1) {
+        throw new Error('Action changed before input was applied; refresh and try again');
+      }
+      this.db.prepare(`UPDATE work_items SET attachments = ?, revision = ?, updated_at = ?
+        WHERE id = ?`).run(
+        stringify(Array.isArray(attachments) ? attachments : workItem.attachments),
+        revision,
+        now,
+        id,
+      );
+      const projectedAttachments = (Array.isArray(addedAttachments) ? addedAttachments : []).map(attachment => ({
+        id: attachment.id,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        size: Math.max(0, Number(attachment.size) || 0),
+        isImage: attachment.isImage === true,
+      }));
+      const eventId = this.appendEvent(id, 'action.input_added', {
+        text: input,
+        attachments: projectedAttachments,
+      }, { actionId: action.id, runId: action.currentRunId });
+      if (action.status === 'running') {
+        this.db.prepare(`INSERT INTO pending_action_inputs
+          (event_id, work_item_id, action_id, run_id, text, attachments, consumed_at)
+          VALUES (?, ?, ?, ?, ?, ?, NULL)`).run(
+          eventId,
+          id,
+          action.id,
+          action.currentRunId,
+          input,
+          stringify(projectedAttachments),
+        );
+      }
+      return this.getWorkItemDetail(id);
+    });
+  }
+
+  listPendingActionInputs(actionId, runId, ownerBootId, leaseEpoch) {
+    const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
+    if (!active || active.action_id !== actionId) return [];
+    return this.db.prepare(`SELECT * FROM pending_action_inputs
+      WHERE action_id = ? AND consumed_at IS NULL ORDER BY event_id`).all(actionId).map(row => ({
+      id: String(row.event_id),
+      text: row.text || '',
+      attachments: parseJson(row.attachments, []),
+    }));
+  }
+
+  acknowledgeActionInput(eventId, actionId, runId, ownerBootId, leaseEpoch) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
+      if (!active || active.action_id !== actionId) return false;
+      const result = this.db.prepare(`UPDATE pending_action_inputs SET consumed_at = ?
+        WHERE event_id = ? AND action_id = ? AND consumed_at IS NULL`).run(
+        this.now(), Number(eventId), actionId,
+      );
+      return Number(result.changes) === 1;
+    });
+  }
+
+  appendRunLoop(runId, ownerBootId, leaseEpoch, loop = {}) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
+      if (!active) return null;
+      const response = normalizeRunResponse(loop.response).trim();
+      if (response) {
+        this.appendEvent(active.work_item_id, 'run.loop_output', {
+          loopNumber: Math.max(0, Number(loop.loopNumber) || 0),
+          response,
+          stopReason: loop.stopReason || null,
+        }, { actionId: active.action_id, runId });
+      }
+      return this.getWorkItemDetail(active.work_item_id);
+    });
   }
 
   createPlanConflict(workItemId, input = {}) {
@@ -999,6 +1119,10 @@ export class WorkItemStore {
       events: this.db.prepare('SELECT * FROM events WHERE work_item_id = ? ORDER BY id DESC LIMIT 500').all(id).map(mapEvent),
     };
     return graphExecutionState(detail, detail.actions);
+  }
+
+  listActionEvents(actionId) {
+    return this.db.prepare(`SELECT * FROM events WHERE action_id = ? ORDER BY id`).all(actionId).map(mapEvent);
   }
 
   getReusableContext(workDir, excludeWorkItemId = null) {
@@ -1544,12 +1668,29 @@ export class WorkItemStore {
     };
   }
 
+  closeRunInput(runId, ownerBootId, leaseEpoch) {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
+      if (!active) return false;
+      const pendingInput = this.db.prepare(`SELECT event_id FROM pending_action_inputs
+        WHERE action_id = ? AND consumed_at IS NULL LIMIT 1`).get(active.action_id);
+      if (pendingInput) return false;
+      const changed = this.db.prepare(`UPDATE runs SET accepting_input = 0
+        WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'
+        AND accepting_input = 1`).run(runId, ownerBootId, leaseEpoch);
+      return Number(changed.changes) === 1;
+    });
+  }
+
   finalizeRun(runId, ownerBootId, leaseEpoch, result, makeTransition) {
     return withTransaction(this.db, () => {
       const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
-      if (!active) return null;
+      if (!active || Number(active.accepting_input) !== 0) return null;
       const action = this.getAction(active.action_id);
       const workItem = this.getWorkItem(active.work_item_id);
+      const pendingInput = this.db.prepare(`SELECT event_id FROM pending_action_inputs
+        WHERE action_id = ? AND consumed_at IS NULL LIMIT 1`).get(action.id);
+      if (pendingInput) throw new Error('Run has unconsumed Action input and cannot finish yet');
       const priorRuns = this.db.prepare(`SELECT * FROM runs
         WHERE work_item_id = ? AND id != ? AND status != 'running'
         ORDER BY started_at ASC`).all(workItem.id, runId).map(mapRun);
@@ -1727,14 +1868,15 @@ export class WorkItemStore {
         currentActionId = blocked?.id || runnable?.id || null;
         changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
           current_run_id = NULL, ledger_revision = ledger_revision + ?, updated_at = ?
-          WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention')`).run(
-          workItemStatus, currentActionId, ledgerIncrement, now, workItem.id,
+          WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention')
+          AND revision = ?`).run(
+          workItemStatus, currentActionId, ledgerIncrement, now, workItem.id, nextWorkItem.revision,
         );
       } else {
         changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
           current_run_id = NULL, ledger_revision = ledger_revision + ?, updated_at = ? WHERE id = ? AND current_run_id = ?
-          AND current_action_id = ? AND status = 'running'`).run(
-          workItemStatus, currentActionId, ledgerIncrement, now, workItem.id, runId, action.id,
+          AND current_action_id = ? AND status = 'running' AND revision = ?`).run(
+          workItemStatus, currentActionId, ledgerIncrement, now, workItem.id, runId, action.id, nextWorkItem.revision,
         );
       }
       if (Number(changedWorkItem.changes) !== 1) {

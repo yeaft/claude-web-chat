@@ -865,7 +865,8 @@
 .work-center-action-secondary small {
   min-width: 0;
   overflow: hidden;
-  flex: 1;
+  flex: 0 0 auto;
+  max-width: 34%;
   color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.35;
@@ -873,12 +874,14 @@
   white-space: nowrap;
 }
 
-.work-center-action-stats {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 8px;
+.work-center-action-content-summary {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

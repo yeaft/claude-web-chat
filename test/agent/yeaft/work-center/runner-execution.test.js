@@ -36,16 +36,17 @@ let notifyEngineToolEnd = null;
 vi.mock('../../../../agent/yeaft/engine.js', () => ({
   Engine: class {
     constructor(options) { engineOptions.push(options); }
+    wakeForPendingUserMessage() { return true; }
     async *query(input) {
       engineQueries.push(input);
       const adapter = engineOptions.at(-1).adapter;
       for await (const event of adapter.stream({ scenario: 'work-item' })) yield event;
-      yield { type: 'loop', loopNumber: 1 };
+      yield { type: 'loop', loopNumber: 1, response: 'Inspected the current implementation.' };
       yield { type: 'tool_start', id: 'tool-1', name: engineToolName, input: engineToolInput };
       yield { type: 'tool_end', id: 'tool-1', name: engineToolName, output: 'ok', isError: false };
       notifyEngineToolEnd?.();
       if (engineAfterToolGate) await engineAfterToolGate;
-      yield { type: 'loop', loopNumber: 2 };
+      yield { type: 'loop', loopNumber: 2, response: 'Verified the final result.' };
       if (invalidEngineResult) {
         yield { type: 'text_delta', text: 'not-json' };
         return;
@@ -713,6 +714,50 @@ describe('Work Center Runner execution resolution', () => {
     expect(result.checkpoint.toolEvents[0].resource).toBe('https://example.com/api/data');
     expect(JSON.stringify(progress)).not.toContain('ghp_SUPER_SECRET_TOKEN');
     expect(JSON.stringify(result)).not.toContain('password');
+  });
+
+  it('wires the persistent input drain and records every Loop response', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-loop-transcript-'));
+    const registry = new Registry();
+    registry.setVp({
+      id: 'omni', name: 'Omni', role: 'Engineer', traits: ['implementation'], modelHint: 'primary',
+      persona: 'Continue safely', personaHash: 'hash',
+    });
+    const store = {
+      listCompletedRuns: vi.fn().mockReturnValue([]),
+      isActiveRun: vi.fn().mockReturnValue(true),
+      setRunExecutionSnapshots: vi.fn().mockReturnValue(true),
+      listPendingActionInputs: vi.fn().mockReturnValue([{ id: '7', text: 'Keep the API stable', attachments: [] }]),
+      acknowledgeActionInput: vi.fn().mockReturnValue(true),
+      appendRunLoop: vi.fn(),
+    };
+    const runner = new WorkItemRunner({
+      registry,
+      store,
+      runtimeProvider: async () => ({
+        adapter: runtimeAdapter, config: { primaryModel: 'provider/model', availableModels: [] },
+      }),
+    });
+    const registerInputWake = vi.fn();
+
+    await runner.run({
+      workItem: { id: 'wi-loop', workDir, workspaceKey: workDir, acceptanceCriteria: [] },
+      action: { id: 'action-loop', type: 'implement', instruction: 'Implement safely', requiredRole: 'omni' },
+      run: { id: 'run-loop', leaseEpoch: 1 }, ownerBootId: 'boot',
+      signal: new AbortController().signal, registerInputWake,
+    });
+
+    expect(registerInputWake).toHaveBeenCalledWith(expect.any(Function));
+    expect(engineQueries[0].drainPendingUserMessages()).toEqual([{
+      content: 'Keep the API stable', preview: 'Keep the API stable',
+    }]);
+    expect(store.acknowledgeActionInput).toHaveBeenCalledWith(
+      '7', 'action-loop', 'run-loop', 'boot', 1,
+    );
+    expect(store.appendRunLoop).toHaveBeenNthCalledWith(1, 'run-loop', 'boot', 1,
+      expect.objectContaining({ loopNumber: 1, response: 'Inspected the current implementation.' }));
+    expect(store.appendRunLoop).toHaveBeenNthCalledWith(2, 'run-loop', 'boot', 1,
+      expect.objectContaining({ loopNumber: 2, response: 'Verified the final result.' }));
   });
 
   it('flushes a just-completed tool checkpoint before watcher interruption', async () => {

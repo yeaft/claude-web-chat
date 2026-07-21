@@ -88,6 +88,13 @@ export class WorkItemWatcher {
     }
   }
 
+  notifyActionInput(workItemId, actionId) {
+    for (const entry of this.activeRuns.values()) {
+      if (entry.workItemId !== workItemId || entry.actionId !== actionId) continue;
+      try { entry.wakeForPendingUserMessage?.(); } catch {}
+    }
+  }
+
   #recoverExpiredRuns() {
     const recovered = this.store.recoverInterruptedRuns?.(this.ownerBootId) || 0;
     if (recovered > 0) {
@@ -172,11 +179,15 @@ export class WorkItemWatcher {
       readFinalProgress: null,
       interrupted: false,
       workItemId: claim.workItem.id,
+      actionId: claim.action.id,
       runId: claim.run.id,
       leaseEpoch: claim.run.leaseEpoch,
+      wakeForPendingUserMessage: null,
     };
     entry.promise = this.#execute(claim, abortController.signal, readProgress => {
       entry.readFinalProgress = readProgress;
+    }, wake => {
+      entry.wakeForPendingUserMessage = wake;
     }).finally(() => {
       clearInterval(renewal);
       this.activeRuns.delete(key);
@@ -186,7 +197,7 @@ export class WorkItemWatcher {
     this.onEvent({ type: 'run.started', workItem: this.store.getWorkItemDetail(claim.workItem.id) });
   }
 
-  async #execute(claim, signal, registerProgressReader) {
+  async #execute(claim, signal, registerProgressReader, registerInputWake) {
     try {
       let result;
       try {
@@ -195,6 +206,7 @@ export class WorkItemWatcher {
           signal,
           ownerBootId: this.ownerBootId,
           registerProgressReader,
+          registerInputWake,
           onProgress: progress => {
             const detail = this.store.updateRunProgress(
               claim.run.id,

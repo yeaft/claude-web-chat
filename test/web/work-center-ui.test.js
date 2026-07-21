@@ -67,7 +67,7 @@ describe('Work Center UI contract', () => {
     expect(store).not.toContain('workCenterActiveTasksBySession');
   });
 
-  it('offers Session-to-WorkItem creation and renders aggregate Action execution counts', () => {
+  it('offers Session-to-WorkItem creation and keeps execution counts out of the Action list', () => {
     const input = read('web/components/ChatInput.js');
     const page = read('web/components/YeaftPage.js');
     const workCenter = read('web/components/WorkCenterPage.js');
@@ -76,10 +76,12 @@ describe('Work Center UI contract', () => {
     expect(page).toContain(':work-item-fn="openWorkItemDraft"');
     expect(store).toContain('enterWorkCenterFromSession');
     expect(workCenter).toContain('class="work-center-action-card"');
-    expect(workCenter).toContain("$t('workCenter.llmRequestCount', { count: formatCount(executionStats(action).llmRequestCount) })");
-    expect(workCenter).toContain("$t('workCenter.loopCount', { count: formatCount(executionStats(action).loopCount) })");
-    expect(workCenter).toContain("$t('workCenter.toolCount', { count: formatCount(executionStats(action).toolCount) })");
-    expect(workCenter).toContain("$t('workCenter.tokenCount', { count: formatTokens(executionStats(action).totalTokens) })");
+    expect(workCenter).toContain('{{ actionExecutor(action) }}');
+    expect(workCenter).toContain('{{ actionContentSummary(action) }}');
+    expect(workCenter).not.toContain("formatCount(executionStats(action).llmRequestCount)");
+    expect(workCenter).not.toContain("formatCount(executionStats(action).loopCount)");
+    expect(workCenter).not.toContain("formatCount(executionStats(action).toolCount)");
+    expect(workCenter).not.toContain("formatTokens(executionStats(action).totalTokens)");
     expect(workCenter).not.toContain('runsForAction(action.id)');
     expect(workCenter).not.toContain('run.evidence');
     expect(workCenter).not.toContain('selected.events');
@@ -141,6 +143,8 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain("event.key === 'End'");
     expect(detail).toContain('v-if="composerError"');
     expect(detail).toContain("tr('workCenter.requestDetailUnavailable'");
+    expect(detail).toContain("tr('workCenter.actionInputContinueHint'");
+    expect(detail).not.toContain('actionInputRestartHint');
     expect(page).toContain('workCenterRequestKey(request)');
     expect(detail).toContain(':key="requestKey(request)"');
     expect(detail).toContain("tr('workCenter.rawRequest'");
@@ -165,7 +169,9 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('class="work-center-action-content"');
     expect(page).toContain('class="work-center-action-primary"');
     expect(page).toContain('class="work-center-action-secondary"');
-    expect(page).toContain('class="work-center-action-stats"');
+    expect(page).toContain('class="work-center-action-vp"');
+    expect(page).toContain('class="work-center-action-content-summary"');
+    expect(page).not.toContain('class="work-center-action-stats"');
     expect(page).toContain('this.loadLatestActionMessages(action)');
     expect(css).toMatch(/\.work-center-action-summary\s*\{[^}]*grid-template-columns: 26px minmax\(0, 1fr\) 14px/s);
     expect(page).toContain('v-if="detailLoading"');
