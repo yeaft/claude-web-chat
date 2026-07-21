@@ -1,4 +1,4 @@
-import { DEFAULT_SLASH_COMMANDS, getCommandDescription, buildGroupedCommands, mergeSlashCommands, resolveDynamicSlashCommands } from '../utils/slash-commands.js';
+import { DEFAULT_SLASH_COMMANDS, YEAFT_DEFAULT_SLASH_COMMANDS, getCommandDescription, buildGroupedCommands, mergeSlashCommands, resolveDynamicSlashCommands } from '../utils/slash-commands.js';
 import { buildAutocompleteItems as buildExpertAutocomplete, getSelectionLabel, EXPERT_ROLES, MAX_SELECTIONS } from '../utils/expert-roles.js';
 import { parseMentions } from '../utils/parseMentions.js';
 import VpMentionAutocomplete, {
@@ -375,7 +375,10 @@ export default {
       const convId = props.conversationId || store.activeConversationId || store.currentConversation;
       const agentId = store.currentAgent;
       const dynamic = resolveDynamicSlashCommands(store, convId, agentId);
-      const commands = mergeSlashCommands(DEFAULT_SLASH_COMMANDS, dynamic);
+      const defaults = store.currentView === 'yeaft'
+        ? YEAFT_DEFAULT_SLASH_COMMANDS
+        : DEFAULT_SLASH_COMMANDS;
+      const commands = mergeSlashCommands(defaults, dynamic);
       return commands.map(cmd => cmd.startsWith('/') ? cmd : '/' + cmd);
     });
 

@@ -641,22 +641,27 @@ export function handleMessage(store, msg) {
       break;
 
     case 'slash_commands_update':
-      if (msg.slashCommands && msg.slashCommands.length > 0) {
+      if (Array.isArray(msg.slashCommands)) {
         const slashCommands = [...new Set(msg.slashCommands)];
         if (msg.conversationId) {
           store.slashCommandsMap[msg.conversationId] = slashCommands;
-          if (store.currentView === 'yeaft' && store.yeaftConversationId) {
-            store.slashCommandsMap[store.yeaftConversationId] = slashCommands;
-          }
         }
-        if (msg.agentId) {
-          store.slashCommandsMap[`agent:${msg.agentId}`] = slashCommands;
-          if (store.currentView === 'yeaft' && store.yeaftConversationId) {
+        if (msg.commandSet === 'yeaft') {
+          // Yeaft publishes an authoritative hot-reload snapshot. Keep it on
+          // the virtual Yeaft conversation, including an empty list after the
+          // final skill is removed.
+          if (store.yeaftConversationId) {
             store.slashCommandsMap[store.yeaftConversationId] = slashCommands;
           }
+        } else if (msg.agentId) {
+          // Claude Chat commands remain an agent-level fallback, but must not
+          // overwrite Yeaft's isolated command catalogue while that view is open.
+          store.slashCommandsMap[`agent:${msg.agentId}`] = slashCommands;
         }
       }
-      // Merge command descriptions (cumulative — new descriptions extend existing)
+      // Descriptions are harmless when their command is not in the active list;
+      // keep the shared cache cumulative so switching back to Chat does not lose
+      // Claude command help after a Yeaft skill refresh.
       if (msg.slashCommandDescriptions) {
         store.slashCommandDescriptions = { ...store.slashCommandDescriptions, ...msg.slashCommandDescriptions };
       }

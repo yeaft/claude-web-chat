@@ -80,6 +80,7 @@ const LEGACY_SKILL_COMMAND_PREFIX = 'skill:';
 const YEAFT_SKILL_COMMAND_PREFIX = 'yeaft-skills:';
 const PROJECT_SKILL_TIERS = new Set(['project', 'project-claude', 'project-codex']);
 const BASE_RUNTIME_KEY = '__base__';
+const SKILL_RELOAD_INTERVAL_MS = 2_000;
 
 /**
  * Live AskUser requests. They are Session-scoped runtime state rather than a
@@ -542,6 +543,8 @@ const projectRuntimes = new Map();
 /** @type {Map<string, Promise<any>>} */
 const baseRuntimeLoadPromises = new Map();
 let activeRuntimeKey = BASE_RUNTIME_KEY;
+let skillReloadTimer = null;
+let skillReloadRunning = false;
 
 function replaceSessionMcpTools(mcpManager) {
   if (!session?.toolRegistry || typeof session.toolRegistry.replaceMcpTools !== 'function') {
@@ -602,6 +605,7 @@ function activateProjectRuntime(runtime) {
 }
 
 async function shutdownProjectRuntimes() {
+  stopSkillHotReload();
   const runtimes = Array.from(projectRuntimes.values());
   projectRuntimes.clear();
   projectRuntimeLoadPromises.clear();
@@ -887,7 +891,6 @@ let yeaftConversationId = null;
  *  creates/replaces the virtual Yeaft conversation id so `/` autocomplete never
  *  falls back to built-ins while full Session metadata is still loading. */
 let lastYeaftSlashCommandSnapshot = null;
-let lastYeaftGeneratedSlashCommands = new Set();
 /** @type {Map<string, Promise<any>>} */
 const projectRuntimeLoadPromises = new Map();
 
@@ -2135,6 +2138,7 @@ export function buildMergedSkillSlashCommands(skillManagers = []) {
 function sendSkillSlashCommandsUpdate({ conversationId, slashCommands, slashCommandDescriptions }) {
   sendToServer({
     type: 'slash_commands_update',
+    commandSet: 'yeaft',
     agentId: ctx.AGENT_ID || ctx.agentId || null,
     conversationId,
     slashCommands,
@@ -2175,27 +2179,91 @@ export function preloadYeaftSkillSlashCommands() {
 
 function broadcastSkillSlashCommands(sessionLike, extraSkillManagers = []) {
   const managers = [sessionLike?.skillManager, ...extraSkillManagers].filter(Boolean);
-  const { commands, descriptions } = buildMergedSkillSlashCommands(managers);
-  const isYeaftSkillCommand = (cmd) => typeof cmd === 'string'
-    && (lastYeaftGeneratedSlashCommands.has(cmd)
-      || cmd.startsWith(LEGACY_SKILL_COMMAND_PREFIX)
-      || cmd.startsWith(YEAFT_SKILL_COMMAND_PREFIX));
-  const nonSkillCommands = (ctx.slashCommands || []).filter(cmd => !isYeaftSkillCommand(cmd));
-  const slashCommands = [...new Set([...nonSkillCommands, ...commands])];
-  const slashCommandDescriptions = Object.fromEntries(
-    Object.entries(ctx.slashCommandDescriptions || {})
-      .filter(([cmd]) => !isYeaftSkillCommand(cmd))
-  );
-  Object.assign(slashCommandDescriptions, descriptions);
-  ctx.slashCommands = slashCommands;
-  ctx.slashCommandDescriptions = slashCommandDescriptions;
-  lastYeaftGeneratedSlashCommands = new Set(commands);
+  const { commands: slashCommands, descriptions: slashCommandDescriptions } = buildMergedSkillSlashCommands(managers);
+  // Yeaft owns an isolated command catalogue. Reusing ctx's Claude Chat
+  // commands made unsupported entries such as /compact and /mcp appear in a
+  // Session even though the Yeaft engine only parses effort and Skill prefixes.
   lastYeaftSlashCommandSnapshot = { slashCommands, slashCommandDescriptions };
   sendSkillSlashCommandsUpdate({
     conversationId: yeaftConversationId || '__preload__',
     slashCommands,
     slashCommandDescriptions,
   });
+}
+
+function skillManagersForHotReload() {
+  const managers = new Set();
+  if (session?.skillManager) managers.add(session.skillManager);
+  for (const runtime of projectRuntimes.values()) {
+    if (runtime?.skillManager) managers.add(runtime.skillManager);
+  }
+  return [...managers];
+}
+
+function reloadActiveSkills() {
+  if (skillReloadRunning) return { changed: false, loaded: 0, errors: [] };
+  skillReloadRunning = true;
+  try {
+    let changed = false;
+    let loaded = 0;
+    const errors = [];
+    const changedManagers = new Set();
+    const managers = skillManagersForHotReload();
+    for (const manager of managers) {
+      if (typeof manager?.load !== 'function') continue;
+      const result = manager.load();
+      if (result?.changed) {
+        changed = true;
+        changedManagers.add(manager);
+      }
+      loaded += Number(result?.loaded) || 0;
+      errors.push(...(result?.errors || []));
+    }
+    if (changed) {
+      if (session?.status && changedManagers.has(session.skillManager)) {
+        session.status.skills = session.skillManager?.size || 0;
+      }
+      for (const runtime of projectRuntimes.values()) {
+        if (runtime?.status && changedManagers.has(runtime.skillManager)) {
+          runtime.status.skills = runtime.skillManager?.size || 0;
+        }
+      }
+      if (activeRuntimeKey === BASE_RUNTIME_KEY) {
+        broadcastSkillSlashCommands(session);
+      } else {
+        const runtime = projectRuntimes.get(activeRuntimeKey);
+        broadcastSkillSlashCommands(session, runtime?.skillManager ? [runtime.skillManager] : []);
+      }
+      const activeRuntime = activeRuntimeKey === BASE_RUNTIME_KEY ? null : projectRuntimes.get(activeRuntimeKey);
+      const activeStatus = activeRuntime ? mergedStatusForProjectRuntime(activeRuntime) : session?.status;
+      hydrateYeaftStatusFromSession(
+        activeStatus && session ? { ...session, status: activeStatus } : session,
+        { reason: 'skills_hot_reload', emitEvent: true },
+      );
+    }
+    if (errors.length > 0) {
+      console.warn(`[Yeaft] skill hot reload completed with ${errors.length} error(s):`, errors.join('; '));
+    }
+    return { changed, loaded, errors };
+  } finally {
+    skillReloadRunning = false;
+  }
+}
+
+function startSkillHotReload() {
+  if (skillReloadTimer) return;
+  skillReloadTimer = setInterval(() => {
+    try { reloadActiveSkills(); }
+    catch (err) { console.warn('[Yeaft] skill hot reload failed:', err?.message || err); }
+  }, SKILL_RELOAD_INTERVAL_MS);
+  skillReloadTimer.unref?.();
+}
+
+function stopSkillHotReload() {
+  if (!skillReloadTimer) return;
+  clearInterval(skillReloadTimer);
+  skillReloadTimer = null;
+  skillReloadRunning = false;
 }
 
 async function loadBaseRuntime() {
@@ -2221,6 +2289,7 @@ async function loadBaseRuntime() {
   } else {
     broadcastSkillSlashCommands(session);
   }
+  startSkillHotReload();
   hydrateYeaftStatusFromSession(session, { reason: 'base_runtime_skills', emitEvent: true });
 
   if (mcpConfig.servers.length > 0) {
@@ -2295,6 +2364,7 @@ async function loadProjectRuntime(workDir) {
   // Skill metadata is available after the filesystem scan; publish it before
   // any MCP server startup so autocomplete does not wait on external processes.
   activateProjectRuntime(runtime);
+  startSkillHotReload();
   if (mcpConfig.servers.length > 0) {
     mcpStatus = await mcpManager.connectAll(mcpConfig.servers);
     runtime.mcpStatus = mcpStatus;
@@ -6663,6 +6733,9 @@ export const __testHooks = {
   },
   preloadYeaftSkillSlashCommandsForTest() {
     return broadcastSkillSlashCommands(session);
+  },
+  reloadActiveSkillsForTest() {
+    return reloadActiveSkills();
   },
   loadAndBroadcastYeaftSkillSlashCommandsForTest() {
     return loadAndBroadcastYeaftSkillSlashCommands();
