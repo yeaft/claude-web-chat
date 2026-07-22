@@ -475,6 +475,33 @@ describe('Work Center core', () => {
     }
   });
 
+  it('defers cross-WorkItem shared fallback while a read Action runs in the canonical workspace', async () => {
+    const readItem = store.createWorkItem(createInput({ id: 'workspace-reader' }), {
+      id: 'read-action', type: 'research', stageId: 'read', workspaceMode: 'read',
+    });
+    const writeItem = store.createWorkItem(createInput({ id: 'workspace-writer' }), {
+      id: 'write-action', type: 'implement', stageId: 'write', workspaceMode: 'isolated-write',
+    });
+    const reader = store.claimReadyAction('boot-a', 5_000);
+    const writer = store.claimReadyAction('boot-a', 5_000);
+    expect(reader.workItem.id).toBe(readItem.id);
+    expect(writer.workItem.id).toBe(writeItem.id);
+    const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
+
+    let prepareError;
+    try {
+      await runner.prepare({ ...writer, ownerBootId: 'boot-a' });
+    } catch (error) {
+      prepareError = error;
+    }
+
+    expect(prepareError).toMatchObject({ workItemPrepareDeferred: true });
+    expect(store.getAction(writer.action.id)).toMatchObject({
+      status: 'running', attempt: 1, workspaceMode: 'isolated-write',
+    });
+    expect(store.isActiveRun(reader.run.id, 'boot-a', reader.run.leaseEpoch)).toBe(true);
+  });
+
   it('serializes a fallback shared Action across WorkItems after isolation fails', () => {
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
     const createGraph = title => {

@@ -935,12 +935,16 @@ export class WorkItemStore {
       const nextAction = { ...action, workspaceMode: nextWorkspaceMode };
       const now = this.now();
       if (action.workspaceMode === 'isolated-write' && nextWorkspaceMode === 'shared') {
-        const runningSibling = this.db.prepare(`SELECT 1 FROM actions
-          WHERE work_item_id = ? AND id != ? AND status = 'running'
-          AND workspace_mode IN ('isolated-write', 'integrate') LIMIT 1`).get(action.workItemId, action.id);
-        if (runningSibling) {
-          const error = new Error('Work Center cannot fall back to shared while an isolated sibling Action is running');
-          error.workItemPrepareRetryable = true;
+        const workItem = this.getWorkItem(action.workItemId);
+        const workspaceConflict = workItem?.workspaceKey
+          ? this.db.prepare(`SELECT 1 FROM actions running
+            JOIN work_items running_item ON running_item.id = running.work_item_id
+            WHERE running.id != ? AND running.status = 'running'
+              AND running_item.workspace_key = ? LIMIT 1`).get(action.id, workItem.workspaceKey)
+          : null;
+        if (workspaceConflict) {
+          const error = new Error('Work Center cannot fall back to shared while the workspace has another running Action');
+          error.workItemPrepareDeferred = true;
           throw error;
         }
       }
@@ -984,6 +988,46 @@ export class WorkItemStore {
         }
       }
       return this.getAction(actionId);
+    });
+  }
+
+  deferRun(runId, ownerBootId, leaseEpoch, reason = 'Work Center resource is temporarily busy') {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
+      if (!active) return null;
+      const action = this.getAction(active.action_id);
+      const workItem = this.getWorkItem(active.work_item_id);
+      const now = this.now();
+      const changedRun = this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?,
+        failure_kind = 'resource_deferred', failure_code = 'workspace_busy'
+        WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
+        now, reason, runId, ownerBootId, leaseEpoch,
+      );
+      if (Number(changedRun.changes) !== 1) return null;
+      const changedAction = this.db.prepare(`UPDATE actions SET status = 'ready', attempt = MAX(attempt - 1, 0),
+        current_run_id = NULL, updated_at = ? WHERE id = ? AND status = 'running'
+        AND current_run_id = ? AND lease_epoch = ? AND generation = ?`).run(
+        now, action.id, runId, leaseEpoch, action.generation,
+      );
+      if (Number(changedAction.changes) !== 1) {
+        throw new Error('Work Center deferred Run lost the current Action fence');
+      }
+      const graphMode = isGraphWorkItem(workItem);
+      const changedWorkItem = graphMode
+        ? this.db.prepare(`UPDATE work_items SET status = CASE WHEN EXISTS (
+            SELECT 1 FROM actions sibling WHERE sibling.work_item_id = work_items.id
+              AND sibling.status = 'running'
+          ) THEN 'running' ELSE 'ready' END, current_run_id = NULL, updated_at = ?
+          WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention')`).run(now, workItem.id)
+        : this.db.prepare(`UPDATE work_items SET status = 'ready', current_run_id = NULL, updated_at = ?
+          WHERE id = ? AND status = 'running' AND current_action_id = ? AND current_run_id = ?`).run(
+          now, workItem.id, action.id, runId,
+        );
+      if (Number(changedWorkItem.changes) !== 1) {
+        throw new Error('Work Center deferred Run lost the WorkItem fence');
+      }
+      this.appendEvent(workItem.id, 'run.deferred', { reason }, { actionId: action.id, runId });
+      return this.getWorkItemDetail(workItem.id);
     });
   }
 
@@ -1478,6 +1522,19 @@ export class WorkItemStore {
                 OR running.workspace_mode IN ('shared', 'integrate')
                 OR (running.work_item_id != a.work_item_id
                   AND a.workspace_mode != 'read' AND running.workspace_mode != 'read'))
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM runs deferred
+            WHERE deferred.action_id = a.id
+              AND deferred.failure_kind = 'resource_deferred'
+              AND deferred.failure_code = 'workspace_busy'
+              AND EXISTS (
+                SELECT 1 FROM actions blocker
+                JOIN work_items blocker_item ON blocker_item.id = blocker.work_item_id
+                WHERE blocker.status = 'running' AND blocker.id != a.id
+                  AND blocker_item.workspace_key != ''
+                  AND blocker_item.workspace_key = w.workspace_key
+              )
           )
         ORDER BY a.updated_at ASC, a.sequence ASC LIMIT 1`).get();
       if (!row) return null;

@@ -474,7 +474,7 @@ describe('Work Center Runner execution resolution', () => {
     }
   });
 
-  it('retries instead of mixing shared fallback with a running isolated sibling', async () => {
+  it('defers shared fallback without consuming an attempt while another workspace Action is running', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-concurrent-fallback-'));
     const store = new WorkItemStore(join(workDir, 'work-center.db'));
     const controller = new WorkflowController(store);
@@ -509,14 +509,36 @@ describe('Work Center Runner execution resolution', () => {
       const second = store.claimReadyAction('boot-fallback', 5_000);
       const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
 
-      await expect(runner.prepare({ ...second, ownerBootId: 'boot-fallback' })).rejects.toMatchObject({
-        message: expect.stringMatching(/isolated sibling Action is running/),
-        workItemPrepareRetryable: true,
+      let prepareError;
+      try {
+        await runner.prepare({ ...second, ownerBootId: 'boot-fallback' });
+      } catch (error) {
+        prepareError = error;
+      }
+      expect(prepareError).toMatchObject({
+        message: expect.stringMatching(/workspace has another running Action/),
+        workItemPrepareDeferred: true,
       });
+      const deferred = store.deferRun(
+        second.run.id,
+        'boot-fallback',
+        second.run.leaseEpoch,
+        prepareError.message,
+      );
+      expect(deferred).not.toBeNull();
       expect(store.getAction(first.action.id).workspaceMode).toBe('isolated-write');
-      expect(store.getAction(second.action.id).workspaceMode).toBe('isolated-write');
+      expect(store.getAction(second.action.id)).toMatchObject({
+        workspaceMode: 'isolated-write', status: 'ready', attempt: 0, currentRunId: null,
+      });
       expect(store.isActiveRun(first.run.id, 'boot-fallback', first.run.leaseEpoch)).toBe(true);
-      expect(store.isActiveRun(second.run.id, 'boot-fallback', second.run.leaseEpoch)).toBe(true);
+      expect(store.getRun(second.run.id)).toMatchObject({
+        status: 'interrupted', failureKind: 'resource_deferred', failureCode: 'workspace_busy',
+      });
+      expect(store.claimReadyAction('boot-fallback', 5_000)).toBeNull();
+      controller.submit(first.run.id, 'boot-fallback', first.run.leaseEpoch, {
+        outcome: 'completed', summary: 'First branch completed', evidence: ['tests'], acceptanceChecks: [],
+      });
+      expect(store.claimReadyAction('boot-fallback', 5_000)?.action.id).toBe(second.action.id);
     } finally {
       store.close();
     }
