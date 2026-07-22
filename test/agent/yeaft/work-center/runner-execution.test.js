@@ -168,7 +168,11 @@ describe('Work Center Runner execution resolution', () => {
     };
     const invalid = {
       summary: 'Planned isolated implementation', evidence: ['Inspected the repository'],
-      acceptanceChecks: [],
+      acceptanceChecks: [{
+        criterion: 'Focused regression tests pass',
+        status: 'deferred',
+        evidence: 'The test Action will verify this criterion after integration',
+      }],
       contractPatch: { acceptanceCriteria: ['Focused regression tests pass'] },
       workItemType: 'software-change', actions: [implementAction],
     };
@@ -181,6 +185,7 @@ describe('Work Center Runner execution resolution', () => {
 
     const correctedGraph = {
       ...invalid,
+      acceptanceChecks: [],
       actions: [implementAction, {
         id: 'integrate-fix', name: 'Integrate fix', type: 'integrate',
         objective: 'Merge the isolated implementation into the WorkItem integration branch',
