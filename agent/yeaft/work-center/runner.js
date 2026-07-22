@@ -32,6 +32,7 @@ import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
 import { applyGeneratedPlan, BUILT_IN_ACTION_TYPES } from './workflow.js';
+import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
 import {
   MAINLINE_CONTEXT_HARD_LIMIT_BYTES,
   buildMainlineContextSnapshot,
@@ -337,10 +338,19 @@ export function createSubmitWorkItemPlanTool({
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('WorkItem plan was already submitted for this Run');
-      const effectiveWorkItem = input.contractPatch ? {
+      const contractPatch = normalizeContractPatch(input.contractPatch);
+      const proposedResult = {
+        outcome: 'completed',
+        evidence: normalizeEvidence(input.evidence),
+        contractPatch,
+        acceptanceChecks: input.acceptanceChecks,
+      };
+      validateCompletedResult(proposedResult, { type: 'triage' }, workItem);
+      if (proposedResult.outcome !== 'completed') throw new Error(proposedResult.error);
+      const effectiveWorkItem = contractPatch ? {
         ...workItem,
-        goal: input.contractPatch.goal ?? workItem.goal,
-        acceptanceCriteria: input.contractPatch.acceptanceCriteria ?? workItem.acceptanceCriteria,
+        goal: contractPatch.goal ?? workItem.goal,
+        acceptanceCriteria: contractPatch.acceptanceCriteria ?? workItem.acceptanceCriteria,
       } : workItem;
       applyGeneratedPlan(effectiveWorkItem, {
         workItemType: input.workItemType,

@@ -179,7 +179,7 @@ describe('Work Center Runner execution resolution', () => {
     expect(collector.value).toBeNull();
     expect(requestEndTurn).not.toHaveBeenCalled();
 
-    const corrected = {
+    const correctedGraph = {
       ...invalid,
       actions: [implementAction, {
         id: 'integrate-fix', name: 'Integrate fix', type: 'integrate',
@@ -188,6 +188,32 @@ describe('Work Center Runner execution resolution', () => {
         expectedOutcome: 'The integrated branch contains the implementation and regression tests',
         candidateVpIds: ['linus'], assignmentReason: 'Implementation owner can integrate the prepared worktree',
         dependsOnActionIds: ['implement-fix'], workspaceMode: 'integrate',
+      }],
+    };
+    await expect(tool.execute(correctedGraph, { requestEndTurn })).rejects.toThrow(
+      /one ordered acceptance check/,
+    );
+    expect(collector.value).toBeNull();
+    expect(requestEndTurn).not.toHaveBeenCalled();
+
+    const mismatchedChecks = {
+      ...correctedGraph,
+      acceptanceChecks: [{
+        criterion: 'Wrong criterion', status: 'deferred', evidence: 'Scheduled for verification',
+      }],
+    };
+    await expect(tool.execute(mismatchedChecks, { requestEndTurn })).rejects.toThrow(
+      /one ordered acceptance check/,
+    );
+    expect(collector.value).toBeNull();
+    expect(requestEndTurn).not.toHaveBeenCalled();
+
+    const corrected = {
+      ...correctedGraph,
+      acceptanceChecks: [{
+        criterion: 'Focused regression tests pass',
+        status: 'deferred',
+        evidence: 'The test Action will verify this criterion after integration',
       }],
     };
     await expect(tool.execute(corrected, { requestEndTurn })).resolves.toContain('"submitted":true');
