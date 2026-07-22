@@ -152,6 +152,47 @@ describe('Mainline projection', () => {
     expect(hashMainlineSnapshot(structuredClone(built.contextSnapshot))).toBe(hashMainlineSnapshot(built.contextSnapshot));
   });
 
+  it('includes WorkItem messages in every Action while isolating Action-scoped input', () => {
+    const actionA = {
+      id: 'action-a', sequence: 1, stageId: 'action-a', type: 'research', status: 'ready',
+      generation: 1, specHash: 'action-a-v1', dependsOnStageIds: [],
+    };
+    const actionB = {
+      id: 'action-b', sequence: 2, stageId: 'action-b', type: 'design', status: 'ready',
+      generation: 1, specHash: 'action-b-v1', dependsOnStageIds: [],
+    };
+    const input = detail({
+      actions: [actionA, actionB],
+      messages: [{ id: 'message-1', text: 'Apply this to every unfinished Action', createdAt: 10 }],
+      events: [
+        {
+          id: 2, type: 'action.input_added', actionId: actionA.id, createdAt: 20,
+          data: { text: 'Only Action A may use this' },
+        },
+        {
+          id: 3, type: 'action.guidance_added', actionId: actionB.id, createdAt: 30,
+          data: { guidance: 'Only Action B may use this' },
+        },
+      ],
+    });
+
+    const snapshotA = buildMainlineContextSnapshot(input, actionA).contextSnapshot;
+    const snapshotB = buildMainlineContextSnapshot(input, actionB).contextSnapshot;
+
+    expect(snapshotA.userContext.workItemMessages).toEqual([
+      expect.objectContaining({ messageId: 'message-1', text: 'Apply this to every unfinished Action' }),
+    ]);
+    expect(snapshotB.userContext.workItemMessages).toEqual(snapshotA.userContext.workItemMessages);
+    expect(snapshotA.userContext.guidance).toEqual([
+      expect.objectContaining({ actionId: actionA.id, text: 'Only Action A may use this' }),
+    ]);
+    expect(snapshotB.userContext.guidance).toEqual([
+      expect.objectContaining({ actionId: actionB.id, text: 'Only Action B may use this' }),
+    ]);
+    expect(JSON.stringify(snapshotB)).not.toContain('Only Action A may use this');
+    expect(JSON.stringify(snapshotA)).not.toContain('Only Action B may use this');
+  });
+
   it('reserves final prompt wrapper bytes inside the 64 KiB hard limit', () => {
     const action = { id: 'current', sequence: 1, stageId: 'implement', type: 'implement', status: 'running' };
     const reservedBytes = 12 * 1024;

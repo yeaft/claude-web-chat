@@ -560,13 +560,17 @@ export class WorkItemStore {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
-      if (!['ready', 'running'].includes(workItem.status)) {
+      const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
+      const inputStatuses = graphMode
+        ? ['ready', 'running', 'waiting', 'needs_attention']
+        : ['ready', 'running'];
+      if (!inputStatuses.includes(workItem.status)) {
         throw new Error(`WorkItem in ${workItem.status} cannot accept Action input`);
       }
       const action = this.getAction(expected.actionId);
-      const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
       const actionMatches = graphMode
-        ? action?.workItemId === id && ['ready', 'running'].includes(action.status)
+        ? action?.workItemId === id && action.generation === expected.generation
+          && ['ready', 'running'].includes(action.status)
         : action?.id === workItem.currentActionId && ['ready', 'running'].includes(action?.status);
       const activeRun = action?.currentRunId ? this.getRun(action.currentRunId) : null;
       if (!actionMatches || activeRun?.acceptingInput === false || workItem.revision !== expected.revision) {
@@ -1232,6 +1236,14 @@ export class WorkItemStore {
       if (workItem.revision !== expectedRevision) {
         throw new Error('WorkItem changed before the message was applied; refresh and try again');
       }
+      const openActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+        AND status IN ('ready', 'running') ORDER BY sequence`).all(id).map(mapAction);
+      for (const action of openActions.filter(candidate => candidate.status === 'running')) {
+        const run = action.currentRunId ? this.getRun(action.currentRunId) : null;
+        if (!run || run.status !== 'running' || run.acceptingInput === false) {
+          throw new Error('A running Action closed its input window before the WorkItem message was applied; refresh and try again');
+        }
+      }
       const now = this.now();
       const revision = workItem.revision + 1;
       const message = { id: randomUUID(), text, createdAt: now };
@@ -1239,8 +1251,6 @@ export class WorkItemStore {
       this.db.prepare(`UPDATE work_items SET messages = ?, revision = ?, updated_at = ? WHERE id = ?`)
         .run(stringify(messages), revision, now, id);
       const updatedWorkItem = { ...workItem, messages, revision };
-      const openActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
-        AND status IN ('ready', 'running') ORDER BY sequence`).all(id).map(mapAction);
       for (const action of openActions) {
         if (action.status === 'ready') {
           const instruction = updateActionInstruction(updatedWorkItem, action);
@@ -1253,8 +1263,7 @@ export class WorkItemStore {
           );
           continue;
         }
-        const run = action.currentRunId ? this.getRun(action.currentRunId) : null;
-        if (!run || run.acceptingInput === false) continue;
+        const run = this.getRun(action.currentRunId);
         const eventId = this.appendEvent(id, 'work_item.message_applied', { message }, {
           actionId: action.id,
           runId: action.currentRunId,

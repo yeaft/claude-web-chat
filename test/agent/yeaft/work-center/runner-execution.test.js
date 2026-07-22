@@ -294,6 +294,10 @@ describe('Work Center Runner execution resolution', () => {
         title: 'V2 item', goal: 'Use Mainline', acceptanceCriteria: [], workDir, start: true,
         sessionContext: [{ role: 'user', content: 'controlled session fact' }],
       });
+      controller.message(v2Item.id, {
+        text: 'WorkItem message must reach the schema-v2 prompt',
+        revision: v2Item.revision,
+      });
       const v2Claim = store.claimReadyAction('boot-v2', 5_000);
       const v2Result = await runner.run({
         workItem: store.getWorkItem(v2Item.id), action: v2Claim.action, run: v2Claim.run,
@@ -303,14 +307,17 @@ describe('Work Center Runner execution resolution', () => {
       const frozen = store.getRun(v2Claim.run.id);
       expect(v2Prompt).toContain('<work-center-mainline-context>');
       expect(v2Prompt.match(/controlled session fact/g)).toHaveLength(1);
-      expect(frozen.contextSnapshot).toBeTruthy();
+      expect(v2Prompt.match(/WorkItem message must reach the schema-v2 prompt/g)).toHaveLength(1);
+      expect(frozen.contextSnapshot.userContext.workItemMessages).toEqual([
+        expect.objectContaining({ text: 'WorkItem message must reach the schema-v2 prompt' }),
+      ]);
       expect(Buffer.byteLength(v2Prompt, 'utf8')).toBeLessThanOrEqual(64 * 1024);
       expect(frozen.executionManifest.contextBytes).toBe(Buffer.byteLength(v2Prompt, 'utf8'));
       expect(frozen.executionManifest).toMatchObject({
         schemaVersion: 2,
         ledgerRevision: 0,
         planRevision: 0,
-        contractRevision: 1,
+        contractRevision: store.getWorkItem(v2Item.id).revision,
         actionGeneration: v2Claim.action.generation,
         actionSpecHash: v2Claim.action.specHash,
         contextBytes: expect.any(Number),

@@ -24,7 +24,7 @@ V1 操作：
 - `update`：修改 title、goal、acceptance criteria、workDir。
 - `start`：把 draft/waiting 工作项推进到 ready。
 - `cancel`：取消非终态工作项并 abort 当前 Run。
-- `work_item_message`：向整个 WorkItem 追加消息；请求携带 WorkItem `revision`。成功后同一事务递增 revision，更新未启动 Action 的 instruction，并把消息排入所有可接收输入的 running Action，后续 Action 也会从 WorkItem 消息记录继承。
+- `work_item_message`：向整个 WorkItem 追加消息；请求携带 WorkItem `revision`。成功后同一事务递增 revision，把消息排入所有 running Action，并让 ready/future Action 从 Mainline 的 WorkItem 消息上下文继承。若任一 running Action 已关闭输入窗口，整笔请求失败且不递增 revision，客户端必须保留草稿并刷新重试。
 - `action_input`：向指定 Action 追加输入；请求携带 `actionId + revision + generation`。ready Action 直接带上下文启动，running Action 在下一个安全 Loop 消费，waiting/failed Action 原地恢复。
 - `retry_action`：显式重试指定 failed Action；请求携带 `actionId + revision + generation`，不要求用户先输入消息，也不得中止无关 sibling Run。
 - `guide`：兼容管理型 Action guidance；请求必须携带用户看到的 `actionId` 和 WorkItem `revision`，匹配后才原子终止旧执行并重启同类型 Action。成功后 WorkItem `revision` 在同一事务中递增，因此相同请求不可重放；图流程原地 reset 目标 Action 及受影响下游，不得走线性 Action 替换。
