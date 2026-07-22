@@ -734,6 +734,10 @@ export default {
     };
 
     const handleKeydown = (e) => {
+      // IME owns every key while composing. Safari can report isComposing=false
+      // for the confirmation keydown but keeps the standard process keyCode.
+      if (e.isComposing || e.keyCode === 229) return;
+
       // Esc exits btw mode
       if (e.key === 'Escape' && store.btwMode) {
         e.preventDefault();
