@@ -28,6 +28,7 @@ export default {
       workItemMessage: '',
       workItemMessageSending: false,
       workItemMessageError: '',
+      workItemComposerGeneration: 0,
       detailLoading: false,
       detailError: '',
       createOpen: false,
@@ -104,6 +105,11 @@ export default {
     actionComposerScope() {
       return this.selected?.id && this.selectedAction?.id
         ? `${this.agentId}:${this.selected.id}:${this.selectedAction.id}:${this.actionComposerGeneration}`
+        : '';
+    },
+    workItemComposerScope() {
+      return this.selected?.id
+        ? `${this.agentId}:${this.selected.id}:${this.workItemComposerGeneration}`
         : '';
     },
     actionMessages() {
@@ -205,6 +211,7 @@ export default {
         this.selectedId = null;
         this.selectedActionId = null;
         this.resetActionComposer?.();
+        this.resetWorkItemComposer?.();
         this.narrowPane = 'items';
         if (previousId && id !== previousId) {
           this.closeFolderPicker();
@@ -290,11 +297,18 @@ export default {
       this.guidanceAttachmentsUploading = false;
       this.actionInputSending = false;
     },
+    resetWorkItemComposer() {
+      this.workItemComposerGeneration += 1;
+      this.workItemMessage = '';
+      this.workItemMessageError = '';
+      this.workItemMessageSending = false;
+    },
     async selectItem(item) {
       this.selectedId = item.id;
       this.selectedActionId = null;
       this.narrowPane = 'actions';
       this.resetActionComposer();
+      this.resetWorkItemComposer();
       this.expandedActions = {};
       this.actionsExpanded = false;
       this.detailError = '';
@@ -603,6 +617,7 @@ export default {
     },
     async sendSelectedWorkItemMessage() {
       if (!this.selected || !this.workItemMessage.trim() || this.workItemMessageSending) return;
+      const scope = this.workItemComposerScope;
       const itemId = this.selected.id;
       const revision = this.selected.revision;
       const text = this.workItemMessage.trim();
@@ -610,11 +625,13 @@ export default {
       this.workItemMessageError = '';
       try {
         await this.store.sendWorkItemMessage(itemId, text, revision, this.agentId);
-        if (this.selected?.id === itemId && this.workItemMessage.trim() === text) this.workItemMessage = '';
+        if (this.workItemComposerScope === scope && this.workItemMessage.trim() === text) {
+          this.workItemMessage = '';
+        }
       } catch (error) {
-        if (this.selected?.id === itemId) this.workItemMessageError = error?.message || String(error);
+        if (this.workItemComposerScope === scope) this.workItemMessageError = error?.message || String(error);
       } finally {
-        if (this.selected?.id === itemId) this.workItemMessageSending = false;
+        if (this.workItemComposerScope === scope) this.workItemMessageSending = false;
       }
     },
     async retrySelectedAction() {

@@ -266,8 +266,8 @@ export class WorkflowController {
     const answer = typeof input.answer === 'string' ? input.answer.trim().slice(0, 8_000) : '';
     const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
     const detail = this.store.retryWorkItemAtomic(id, (workItem, previous, previousRun) => {
-      if (workItem.status === 'waiting' && !answer && addedAttachmentCount === 0) {
-        throw new Error('answer or attachments are required to resume a waiting WorkItem');
+      if (previous?.status === 'waiting' && !answer && addedAttachmentCount === 0) {
+        throw new Error('answer or attachments are required to resume a waiting Action');
       }
       const step = previous
         ? {

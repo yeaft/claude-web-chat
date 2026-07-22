@@ -172,6 +172,61 @@ describe('Work Center Action composer scope', () => {
     expect(context.workItemMessageError).toBe('');
   });
 
+  it('resets the WorkItem composer when selecting another WorkItem', async () => {
+    const context = {
+      selectedId: 'wi-1',
+      selectedActionId: 'action-1',
+      narrowPane: 'action',
+      workItemComposerGeneration: 1,
+      workItemMessage: 'Draft for the first WorkItem',
+      workItemMessageSending: true,
+      workItemMessageError: 'old error',
+      expandedActions: {},
+      actionsExpanded: true,
+      detailError: '',
+      detailLoading: false,
+      store: { getWorkItem: vi.fn().mockResolvedValue({ id: 'wi-2', actions: [] }) },
+      resetActionComposer: vi.fn(),
+      resetWorkItemComposer: WorkCenterPage.methods.resetWorkItemComposer,
+    };
+
+    await WorkCenterPage.methods.selectItem.call(context, { id: 'wi-2' });
+
+    expect(context.selectedId).toBe('wi-2');
+    expect(context.workItemMessage).toBe('');
+    expect(context.workItemMessageError).toBe('');
+    expect(context.workItemMessageSending).toBe(false);
+    expect(context.workItemComposerGeneration).toBe(2);
+  });
+
+  it.each(['resolve', 'reject'])('isolates an old WorkItem send when the user switches items before it %s', async outcome => {
+    const pending = deferred();
+    const context = {
+      agentId: 'agent-1',
+      selected: { id: 'wi-1', revision: 2 },
+      workItemComposerGeneration: 1,
+      workItemMessage: 'Message for the first WorkItem',
+      workItemMessageSending: false,
+      workItemMessageError: '',
+      store: { sendWorkItemMessage: vi.fn().mockReturnValue(pending.promise) },
+    };
+    Object.defineProperty(context, 'workItemComposerScope', {
+      get() { return `${this.agentId}:${this.selected.id}:${this.workItemComposerGeneration}`; },
+    });
+
+    const sending = WorkCenterPage.methods.sendSelectedWorkItemMessage.call(context);
+    context.selected = { id: 'wi-2', revision: 4 };
+    WorkCenterPage.methods.resetWorkItemComposer.call(context);
+    context.workItemMessage = 'Message for the second WorkItem';
+    if (outcome === 'resolve') pending.resolve({ id: 'wi-1', revision: 3 });
+    else pending.reject(new Error('old request failed'));
+    await sending;
+
+    expect(context.workItemMessage).toBe('Message for the second WorkItem');
+    expect(context.workItemMessageError).toBe('');
+    expect(context.workItemMessageSending).toBe(false);
+  });
+
   it('retries the visible failed Action with its stable identity and revision', async () => {
     const retryWorkItemAction = vi.fn().mockResolvedValue({ id: 'wi-1', revision: 3 });
     const context = {

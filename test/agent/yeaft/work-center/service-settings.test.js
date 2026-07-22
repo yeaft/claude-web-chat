@@ -107,6 +107,29 @@ describe('Work Center settings service', () => {
     });
   });
 
+  it('reserves retry_action for failed Actions instead of bypassing waiting input requirements', async () => {
+    const service = await createService();
+    const created = await service.handle('create', {
+      title: 'Wait for input', goal: 'Require a user choice', workDir: '/tmp', start: true,
+    });
+    const claim = service.store.claimReadyAction('boot-a', 5_000);
+    service.controller.submit(claim.run.id, 'boot-a', claim.run.leaseEpoch, {
+      outcome: 'waiting', response: 'Need a choice', summary: 'Waiting', evidence: [],
+      waitingReason: 'Choose A or B', acceptanceChecks: [],
+    });
+    const waiting = service.store.getWorkItemDetail(created.id);
+
+    await expect(service.handle('retry_action', {
+      id: created.id,
+      actionId: waiting.currentActionId,
+      generation: waiting.actions.find(action => action.id === waiting.currentActionId).generation,
+      revision: waiting.revision,
+    })).rejects.toThrow(/Action changed/);
+    expect(service.store.getWorkItemDetail(created.id)).toMatchObject({
+      status: 'waiting', currentActionId: waiting.currentActionId, revision: waiting.revision,
+    });
+  });
+
   it('removes a newly created attachment directory when stale guidance is rejected', async () => {
     const service = await createService();
     const created = await service.handle('create', {

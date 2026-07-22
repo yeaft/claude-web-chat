@@ -1078,6 +1078,39 @@ describe('Work Center core', () => {
     expect(store.getRun(running.run.id).status).toBe('running');
   });
 
+  it('retries a failed graph Action when an earlier sibling keeps the WorkItem waiting', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'mixed-blocked-retry', actions: [
+        { id: 'waiting', type: 'research', objective: 'Wait for input', dependsOnActionIds: [], workspaceMode: 'read' },
+        { id: 'failed', type: 'design', objective: 'Fail independently', dependsOnActionIds: [], workspaceMode: 'read', maxAttempts: 1 },
+      ] },
+    }));
+    const waiting = store.claimReadyAction('boot-a', 5_000);
+    const failed = store.claimReadyAction('boot-b', 5_000);
+    controller.submit(waiting.run.id, 'boot-a', waiting.run.leaseEpoch, {
+      outcome: 'waiting', response: 'Need a choice', summary: 'waiting', evidence: [],
+      waitingReason: 'Choose A or B', acceptanceChecks: [],
+    });
+    controller.submit(failed.run.id, 'boot-b', failed.run.leaseEpoch, {
+      outcome: 'failed', response: '', summary: 'failed', evidence: [], error: 'broken', acceptanceChecks: [],
+    });
+    const before = store.getWorkItemDetail(item.id);
+    expect(before.status).toBe('waiting');
+
+    const retried = controller.retry(item.id, {
+      expected: { actionId: failed.action.id, generation: failed.action.generation, revision: before.revision },
+    });
+
+    expect(retried.actions.find(action => action.id === failed.action.id).status).toBe('ready');
+    expect(retried.actions.find(action => action.id === waiting.action.id).status).toBe('waiting');
+    expect(() => controller.retry(item.id, {
+      expected: { actionId: waiting.action.id, generation: waiting.action.generation, revision: retried.revision },
+    })).toThrow(/answer or attachments are required/i);
+  });
+
   it('keeps explicit guidance restart semantics for administrative guidance', () => {
     const item = controller.create(createInput());
     const claim = store.claimReadyAction('boot-a', 5_000);

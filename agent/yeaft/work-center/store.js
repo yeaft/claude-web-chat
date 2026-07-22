@@ -1499,10 +1499,14 @@ export class WorkItemStore {
       let previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
       if (options.expected) {
         const expectedAction = this.getAction(options.expected.actionId);
+        const allowedExpectedStatuses = Array.isArray(options.expected.statuses)
+          ? options.expected.statuses
+          : ['waiting', 'failed'];
         const expectedMatches = graphMode
           ? expectedAction?.workItemId === id && expectedAction.generation === options.expected.generation
-            && ['waiting', 'failed'].includes(expectedAction.status)
-          : workItem.currentActionId === options.expected.actionId;
+            && allowedExpectedStatuses.includes(expectedAction.status)
+          : workItem.currentActionId === options.expected.actionId
+            && allowedExpectedStatuses.includes(expectedAction?.status);
         if (!expectedMatches || workItem.revision !== options.expected.revision) {
           throw new Error('Action changed before input was applied; refresh and try again');
         }

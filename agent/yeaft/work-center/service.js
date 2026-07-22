@@ -224,6 +224,7 @@ export class WorkCenterService {
             actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
             revision: payload.revision,
             generation: payload.generation,
+            statuses: ['failed'],
           },
         });
         this.watcher.abortInvalidWorkItemRuns(id);
