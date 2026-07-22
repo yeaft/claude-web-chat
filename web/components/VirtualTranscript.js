@@ -168,34 +168,66 @@ export default {
         measureRafId = null;
         const entries = Array.from(pendingMeasurements.entries());
         pendingMeasurements.clear();
-        for (const [entryKey, entry] of entries) {
-          measureElement(entryKey, entry.index, entry.el);
-        }
+        commitMeasurements(entries);
       });
     }
 
-    function measureElement(key, index, el) {
-      if (!el) return;
-      const nextHeight = Math.ceil(el.getBoundingClientRect?.().height || el.offsetHeight || 0);
-      if (!Number.isFinite(nextHeight) || nextHeight <= 0) return;
-
-      const previousHeight = heightCache[key];
-      if (previousHeight === nextHeight) return;
+    function commitMeasurements(entries) {
+      // Read every DOM height before touching reactive state. Each cache write
+      // invalidates virtualLayout, so reading virtualWindow between writes would
+      // rebuild all offsets once per mounted row.
+      const measurements = [];
+      for (const [key, entry] of entries) {
+        const el = entry?.el;
+        if (!el) continue;
+        const nextHeight = Math.ceil(el.getBoundingClientRect?.().height || el.offsetHeight || 0);
+        if (!Number.isFinite(nextHeight) || nextHeight <= 0) continue;
+        const previousHeight = heightCache[key];
+        if (previousHeight === nextHeight) continue;
+        const mappedIndex = itemIndexByKey.get(key);
+        measurements.push({
+          key,
+          nextHeight,
+          previousHeight,
+          itemIndex: Number.isFinite(mappedIndex) ? mappedIndex : entry.index,
+        });
+      }
+      if (!measurements.length) return;
 
       const scroller = scrollEl.value;
       const wasNearBottom = isNearBottom(scroller);
-      const previousIndex = itemIndexByKey.get(key);
-      const changedBeforeWindow = Number.isFinite(previousIndex) && previousIndex < virtualWindow.value.visibleStart;
-      heightCache[key] = nextHeight;
+      const windowStart = virtualWindow.value.visibleStart;
+      let anchorDelta = 0;
+      let shouldScrollToBottom = false;
 
-      if (scroller && Number.isFinite(previousHeight)) {
+      // Do not read virtualWindow or virtualLayout in this loop. Vue can then
+      // collapse all cache invalidations into one render/layout recomputation.
+      for (const measurement of measurements) {
+        const {
+          key,
+          nextHeight,
+          previousHeight,
+          itemIndex,
+        } = measurement;
+        heightCache[key] = nextHeight;
+        if (!scroller || !Number.isFinite(previousHeight)) continue;
+
         const delta = nextHeight - previousHeight;
-        if (Math.abs(delta) < HEIGHT_CHANGE_THRESHOLD) return;
-        if (changedBeforeWindow) {
-          scheduleScrollAdjustment({ delta });
+        if (Math.abs(delta) < HEIGHT_CHANGE_THRESHOLD) continue;
+        if (Number.isFinite(itemIndex) && itemIndex < windowStart) {
+          anchorDelta += delta;
         } else if (wasNearBottom) {
-          Vue.nextTick(() => scheduleScrollAdjustment({ toBottom: true }));
+          shouldScrollToBottom = true;
         }
+      }
+
+      const hasAnchorAdjustment = Math.abs(anchorDelta) >= HEIGHT_CHANGE_THRESHOLD;
+      if (!hasAnchorAdjustment && !shouldScrollToBottom) return;
+      const adjustment = { delta: anchorDelta, toBottom: shouldScrollToBottom };
+      if (shouldScrollToBottom) {
+        Vue.nextTick(() => scheduleScrollAdjustment(adjustment));
+      } else {
+        scheduleScrollAdjustment(adjustment);
       }
     }
 

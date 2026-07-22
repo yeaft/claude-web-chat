@@ -34,9 +34,34 @@ function renderedIds(wrapper) {
   return wrapper.findAll('[data-turn-id]').map(node => node.attributes('data-turn-id'));
 }
 
-async function flushAnimationFrame() {
-  await new Promise(resolve => setTimeout(resolve, 5));
-  await Vue.nextTick();
+async function flushAnimationFrame(rounds = 1) {
+  for (let round = 0; round < rounds; round += 1) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await Vue.nextTick();
+  }
+}
+
+function stubVirtualRowHeight(height) {
+  const original = HTMLElement.prototype.getBoundingClientRect;
+  let measurementCalls = 0;
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
+    if (this.classList?.contains('virtual-transcript-item')) {
+      measurementCalls += 1;
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 100,
+        bottom: height,
+        left: 0,
+        width: 100,
+        height,
+        toJSON: () => ({}),
+      };
+    }
+    return original.call(this);
+  });
+  return () => measurementCalls;
 }
 
 describe('VirtualTranscript DOM windowing', () => {
@@ -112,6 +137,40 @@ describe('VirtualTranscript DOM windowing', () => {
     expect(renderedIds(wrapper)).toContain('turn-500');
     expect(renderedIds(wrapper).length).toBeLessThan(8);
     expect(estimateHeight).toHaveBeenCalledTimes(1000);
+    wrapper.unmount();
+  });
+
+  it('rebuilds the full layout at most once for a batch of non-zero DOM measurements', async () => {
+    const scroller = createScroller();
+    const estimateHeight = vi.fn(() => 90);
+    const measurementCalls = stubVirtualRowHeight(100);
+    const wrapper = mount(VirtualTranscript, {
+      props: {
+        items: turns(1000),
+        estimateHeight,
+        itemGap: 0,
+        overscan: 1,
+      },
+      slots: {
+        default: ({ item }) => Vue.h('div', { 'data-turn-id': item.id }, item.id),
+      },
+      attachTo: scroller,
+    });
+
+    await flushAnimationFrame(3);
+
+    expect(measurementCalls()).toBeGreaterThan(1);
+    expect(estimateHeight.mock.calls.length).toBeGreaterThanOrEqual(1000);
+    expect(estimateHeight.mock.calls.length).toBeLessThanOrEqual(2000);
+
+    const callsBeforeScroll = estimateHeight.mock.calls.length;
+    scroller.scrollTop = 50000;
+    scroller.dispatchEvent(new Event('scroll'));
+    await flushAnimationFrame(3);
+
+    expect(renderedIds(wrapper)).toContain('turn-555');
+    expect(measurementCalls()).toBeGreaterThan(4);
+    expect(estimateHeight.mock.calls.length - callsBeforeScroll).toBeLessThanOrEqual(1000);
     wrapper.unmount();
   });
 

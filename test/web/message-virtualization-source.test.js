@@ -84,8 +84,10 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('const pendingMeasurements = new Map();');
     expect(source).toContain('function scheduleMeasureElement(key, index, el) {');
     expect(source).toContain('requestAnimationFrame(() => {');
+    expect(source).toContain('commitMeasurements(entries);');
     expect(source).toContain('if (key) scheduleMeasureElement(key, index, entry.target);');
     expect(source).toContain('const HEIGHT_CHANGE_THRESHOLD = 2;');
+    expect(source).toContain('const windowStart = virtualWindow.value.visibleStart;');
     expect(source).toContain('function scheduleScrollAdjustment({ delta = 0, toBottom = false } = {}) {');
     expect(source).not.toContain('if (key) measureElement(key, index, entry.target);');
   });
