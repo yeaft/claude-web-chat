@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
 const MAX_REUSABLE_CONTEXT_ITEMS = 12;
 const MAX_RUN_RESPONSE_CHARS = 65_536;
@@ -77,6 +77,7 @@ function mapWorkItem(row) {
     origin: parseJson(row.origin, null),
     linkedSessionIds: parseJson(row.linked_session_ids, []),
     sessionContext: parseJson(row.session_context, []),
+    messages: parseJson(row.messages, []),
     attachments: parseJson(row.attachments, []),
     executionStats: {
       llmRequestCount: Math.max(0, Number(row.usage_llm_request_count) || 0),
@@ -284,6 +285,7 @@ export class WorkItemStore {
         origin TEXT,
         linked_session_ids TEXT NOT NULL DEFAULT '[]',
         session_context TEXT NOT NULL DEFAULT '[]',
+        messages TEXT NOT NULL DEFAULT '[]',
         attachments TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -420,6 +422,9 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'work_items', 'reuse_memory')) {
       this.db.exec('ALTER TABLE work_items ADD COLUMN reuse_memory INTEGER NOT NULL DEFAULT 1');
+    }
+    if (!hasColumn(this.db, 'work_items', 'messages')) {
+      this.db.exec("ALTER TABLE work_items ADD COLUMN messages TEXT NOT NULL DEFAULT '[]'");
     }
     if (!hasColumn(this.db, 'actions', 'brief')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN brief TEXT');
@@ -1217,6 +1222,58 @@ export class WorkItemStore {
     return this.db.prepare(`SELECT * FROM events WHERE action_id = ? ORDER BY id`).all(actionId).map(mapEvent);
   }
 
+  addWorkItemMessage(id, text, expectedRevision, updateActionInstruction) {
+    return withTransaction(this.db, () => {
+      const workItem = this.getWorkItem(id);
+      if (!workItem) return null;
+      if (['done', 'cancelled'].includes(workItem.status)) {
+        throw new Error(`WorkItem in ${workItem.status} cannot accept messages`);
+      }
+      if (workItem.revision !== expectedRevision) {
+        throw new Error('WorkItem changed before the message was applied; refresh and try again');
+      }
+      const now = this.now();
+      const revision = workItem.revision + 1;
+      const message = { id: randomUUID(), text, createdAt: now };
+      const messages = [...(workItem.messages || []), message].slice(-100);
+      this.db.prepare(`UPDATE work_items SET messages = ?, revision = ?, updated_at = ? WHERE id = ?`)
+        .run(stringify(messages), revision, now, id);
+      const updatedWorkItem = { ...workItem, messages, revision };
+      const openActions = this.db.prepare(`SELECT * FROM actions WHERE work_item_id = ?
+        AND status IN ('ready', 'running') ORDER BY sequence`).all(id).map(mapAction);
+      for (const action of openActions) {
+        if (action.status === 'ready') {
+          const instruction = updateActionInstruction(updatedWorkItem, action);
+          this.db.prepare(`UPDATE actions SET instruction = ?, spec_hash = ?, updated_at = ?
+            WHERE id = ? AND status = 'ready'`).run(
+            instruction,
+            actionSpecHash({ ...action, instruction }),
+            now,
+            action.id,
+          );
+          continue;
+        }
+        const run = action.currentRunId ? this.getRun(action.currentRunId) : null;
+        if (!run || run.acceptingInput === false) continue;
+        const eventId = this.appendEvent(id, 'work_item.message_applied', { message }, {
+          actionId: action.id,
+          runId: action.currentRunId,
+        });
+        this.db.prepare(`INSERT INTO pending_action_inputs
+          (event_id, work_item_id, action_id, run_id, text, attachments, consumed_at)
+          VALUES (?, ?, ?, ?, ?, '[]', NULL)`).run(
+          eventId,
+          id,
+          action.id,
+          action.currentRunId,
+          `WorkItem-level message: ${text}`,
+        );
+      }
+      this.appendEvent(id, 'work_item.message_added', { message });
+      return this.getWorkItemDetail(id);
+    });
+  }
+
   getReusableContext(workDir, excludeWorkItemId = null) {
     const workspaceKey = canonicalWorkspaceKey(workDir);
     if (!workspaceKey) return [];
@@ -1432,10 +1489,13 @@ export class WorkItemStore {
     return withTransaction(this.db, () => {
       const workItem = this.getWorkItem(id);
       if (!workItem) return null;
-      if (!['waiting', 'needs_attention'].includes(workItem.status)) {
+      const graphMode = isGraphWorkItem(workItem);
+      const retryableWorkItemStatuses = graphMode
+        ? ['ready', 'running', 'waiting', 'needs_attention']
+        : ['waiting', 'needs_attention'];
+      if (!retryableWorkItemStatuses.includes(workItem.status)) {
         throw new Error(`WorkItem in ${workItem.status} does not need retry`);
       }
-      const graphMode = isGraphWorkItem(workItem);
       let previous = workItem.currentActionId ? this.getAction(workItem.currentActionId) : null;
       if (options.expected) {
         const expectedAction = this.getAction(options.expected.actionId);

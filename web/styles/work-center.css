@@ -1356,11 +1356,56 @@
   opacity: 0;
 }
 
+.work-center-action-composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .work-center-action-composer-hint {
   padding: 0 10px;
   color: var(--text-muted);
   font-size: 10px;
   line-height: 1.4;
+}
+
+.work-center-item-messages {
+  display: grid;
+  gap: 10px;
+}
+
+.work-center-item-message-heading small,
+.work-center-item-message-list article small {
+  color: var(--text-muted);
+}
+
+.work-center-item-message-list {
+  display: grid;
+  gap: 8px;
+}
+
+.work-center-item-message-list article {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-main);
+}
+
+.work-center-item-message-list p {
+  margin: 0 0 4px;
+}
+
+.work-center-item-message-input {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+}
+
+.work-center-item-message-input textarea {
+  min-height: 24px;
+  max-height: 96px;
+  padding: 0;
+  overflow-y: auto;
 }
 
 .work-center-send-spinner {

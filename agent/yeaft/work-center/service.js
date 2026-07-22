@@ -207,6 +207,29 @@ export class WorkCenterService {
         this.#emit({ type: 'work_item.cancelled', workItem: detail });
         return detail;
       }
+      case 'work_item_message': {
+        const id = requiredString(payload.id, 'id');
+        const detail = this.controller.message(id, {
+          text: typeof payload.text === 'string' ? payload.text : '',
+          revision: payload.revision,
+        });
+        this.watcher.notifyWorkItemInput(id);
+        this.#emit({ type: 'work_item.message_added', workItem: detail });
+        return detail;
+      }
+      case 'retry_action': {
+        const id = requiredString(payload.id, 'id');
+        const detail = this.controller.retry(id, {
+          expected: {
+            actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
+            revision: payload.revision,
+            generation: payload.generation,
+          },
+        });
+        this.watcher.abortInvalidWorkItemRuns(id);
+        this.#emit({ type: 'action.retried', workItem: detail });
+        return detail;
+      }
       case 'action_input': {
         const id = requiredString(payload.id, 'id');
         const workItem = this.#requiredItem(id);

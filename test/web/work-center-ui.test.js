@@ -149,6 +149,13 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain(':key="requestKey(request)"');
     expect(detail).toContain("tr('workCenter.rawRequest'");
     expect(detail).toContain('class="work-center-action-composer"');
+    expect(detail).toContain("tr('workCenter.retryAction'");
+    expect(detail).toContain("['ready', 'running', 'waiting', 'failed']");
+    expect(page).toContain('work-center-item-messages');
+    expect(page).toContain("tr('workCenter.workItemMessageScope'");
+    expect(page).toContain('@retry="retrySelectedAction"');
+    expect(store).toContain("workCenterRequest('work_item_message'");
+    expect(store).toContain("workCenterRequest('retry_action'");
     expect(detail).toContain('input-wrapper work-center-action-input-wrapper');
     expect(detail).toContain('class="attach-btn work-center-attachment-picker"');
     expect(detail).toContain('class="send-btn"');
@@ -179,7 +186,7 @@ describe('Work Center UI contract', () => {
     expect(page).toContain("if (this.selectedId === item.id) this.detailError = error?.message || String(error)");
     expect(page).toContain('v-if="selected.failureReason"');
     expect(page).not.toContain('v-model="resumeAnswer"');
-    expect(page).not.toContain('retrySelected');
+    expect(page).toContain('retrySelectedAction');
     expect(page).not.toContain("selected.status === 'cancelled'\" class=\"btn-primary");
     expect(page).toContain("tr('workCenter.answerInActionDetail'");
     expect(page).toContain('this.selectedActionId = detail?.currentActionId || detail?.actions?.[0]?.id || null');

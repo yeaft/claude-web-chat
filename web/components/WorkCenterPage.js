@@ -25,6 +25,9 @@ export default {
       actionInputSending: false,
       actionInputError: '',
       actionComposerGeneration: 0,
+      workItemMessage: '',
+      workItemMessageSending: false,
+      workItemMessageError: '',
       detailLoading: false,
       detailError: '',
       createOpen: false,
@@ -598,12 +601,42 @@ export default {
       if (!this.selected) return;
       await this.store.startWorkItem(this.selected.id, this.agentId);
     },
+    async sendSelectedWorkItemMessage() {
+      if (!this.selected || !this.workItemMessage.trim() || this.workItemMessageSending) return;
+      const itemId = this.selected.id;
+      const revision = this.selected.revision;
+      const text = this.workItemMessage.trim();
+      this.workItemMessageSending = true;
+      this.workItemMessageError = '';
+      try {
+        await this.store.sendWorkItemMessage(itemId, text, revision, this.agentId);
+        if (this.selected?.id === itemId && this.workItemMessage.trim() === text) this.workItemMessage = '';
+      } catch (error) {
+        if (this.selected?.id === itemId) this.workItemMessageError = error?.message || String(error);
+      } finally {
+        if (this.selected?.id === itemId) this.workItemMessageSending = false;
+      }
+    },
+    async retrySelectedAction() {
+      if (!this.selected || this.selectedAction?.status !== 'failed' || this.actionInputSending) return;
+      const scope = this.actionComposerScope;
+      this.actionInputSending = true;
+      this.actionInputError = '';
+      try {
+        await this.store.retryWorkItemAction(
+          this.selected.id, this.selectedAction.id, this.selected.revision,
+          this.selectedAction.generation, this.agentId,
+        );
+      } catch (error) {
+        if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
+      } finally {
+        if (this.actionComposerScope === scope) this.actionInputSending = false;
+      }
+    },
     async guideSelectedAction() {
       if (!this.selected || !this.selectedAction
         || (!this.actionGuidance.trim() && this.guidanceAttachments.length === 0)) return;
-      const graphBlockedAction = this.selected.workflowSnapshot?.executionMode === 'graph'
-        && ['waiting', 'failed'].includes(this.selectedAction.status);
-      if (this.selected.currentActionId !== this.selectedAction.id && !graphBlockedAction) return;
+      if (!['ready', 'running', 'waiting', 'failed'].includes(this.selectedAction.status)) return;
       const scope = this.actionComposerScope;
       const itemId = this.selected.id;
       const actionId = this.selectedAction.id;
@@ -768,6 +801,27 @@ export default {
                   <h3>{{ tr('workCenter.goal', 'Goal') }}</h3>
                   <p>{{ selected.goal }}</p>
                 </div>
+                <div class="work-center-section work-center-item-messages">
+                  <div class="work-center-item-message-heading">
+                    <h3>{{ tr('workCenter.workItemMessages', 'Work Item messages') }}</h3>
+                    <small>{{ tr('workCenter.workItemMessageScope', 'Applies to every unfinished Action at its next safe boundary.') }}</small>
+                  </div>
+                  <div v-if="selected.messages?.length" class="work-center-item-message-list">
+                    <article v-for="message in selected.messages" :key="message.id">
+                      <p>{{ message.text }}</p><small>{{ time(message.createdAt) }}</small>
+                    </article>
+                  </div>
+                  <p v-if="workItemMessageError" class="work-center-error" role="alert">{{ workItemMessageError }}</p>
+                  <div class="input-wrapper work-center-item-message-input">
+                    <div class="textarea-wrapper">
+                      <textarea v-model="workItemMessage" rows="1" :placeholder="tr('workCenter.workItemMessagePlaceholder', 'Add direction for the whole Work Item')" @keydown.enter.exact.prevent="sendSelectedWorkItemMessage"></textarea>
+                    </div>
+                    <button class="send-btn" type="button" @click="sendSelectedWorkItemMessage" :disabled="workItemMessageSending || !workItemMessage.trim()" :title="tr('workCenter.sendWorkItemMessage', 'Send to Work Item')">
+                      <svg v-if="!workItemMessageSending" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                      <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
+                    </button>
+                  </div>
+                </div>
                 <div class="work-center-section">
                   <h3>{{ tr('workCenter.acceptanceCriteria', 'Acceptance criteria') }}</h3>
                   <ul v-if="selected.acceptanceCriteria?.length">
@@ -859,6 +913,7 @@ export default {
               @attachment-input="onGuidanceAttachmentInput"
               @remove-attachment="removeGuidanceAttachment"
               @send="guideSelectedAction"
+              @retry="retrySelectedAction"
             />
           </div>
         </div>

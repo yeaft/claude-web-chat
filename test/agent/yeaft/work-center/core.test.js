@@ -1023,6 +1023,61 @@ describe('Work Center core', () => {
       .toEqual([expect.objectContaining({ text: 'Apply this to the first Action' })]);
   });
 
+  it('fans a fenced WorkItem message out to ready and running Actions without restarting them', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'message-scope', actions: [
+        { id: 'running', type: 'research', objective: 'Research', dependsOnActionIds: [], workspaceMode: 'read' },
+        { id: 'ready', type: 'design', objective: 'Design', dependsOnActionIds: [], workspaceMode: 'read' },
+      ] },
+    }));
+    const running = store.claimReadyAction('boot-a', 5_000);
+    const before = store.getWorkItem(item.id);
+
+    const updated = controller.message(item.id, { text: 'Keep compatibility for every Action', revision: before.revision });
+
+    expect(updated.messages).toEqual([expect.objectContaining({ text: 'Keep compatibility for every Action' })]);
+    expect(updated.revision).toBe(before.revision + 1);
+    expect(store.getRun(running.run.id)).toMatchObject({ status: 'running' });
+    expect(store.listPendingActionInputs(running.action.id, running.run.id, 'boot-a', running.run.leaseEpoch))
+      .toEqual([expect.objectContaining({ text: 'WorkItem-level message: Keep compatibility for every Action' })]);
+    const ready = updated.actions.find(action => action.status === 'ready');
+    expect(ready.instruction).toContain('WorkItem-level user messages');
+    expect(ready.instruction).toContain('Keep compatibility for every Action');
+    expect(() => controller.message(item.id, { text: 'replay', revision: before.revision }))
+      .toThrow(/WorkItem changed/);
+  });
+
+  it('retries a failed graph Action while a sibling Action is still running', () => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    const item = controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'mixed-retry', actions: [
+        { id: 'failed', type: 'research', objective: 'Fail', dependsOnActionIds: [], workspaceMode: 'read', maxAttempts: 1 },
+        { id: 'running', type: 'design', objective: 'Keep running', dependsOnActionIds: [], workspaceMode: 'read' },
+      ] },
+    }));
+    const failed = store.claimReadyAction('boot-a', 5_000);
+    const running = store.claimReadyAction('boot-b', 5_000);
+    controller.submit(failed.run.id, 'boot-a', failed.run.leaseEpoch, {
+      outcome: 'failed', response: '', summary: 'failed', evidence: [], error: 'broken', acceptanceChecks: [],
+    });
+    const before = store.getWorkItemDetail(item.id);
+    expect(before.status).toBe('needs_attention');
+    expect(before.actions.find(action => action.id === failed.action.id).status).toBe('failed');
+    expect(before.actions.find(action => action.id === running.action.id).status).toBe('running');
+
+    const retried = controller.retry(item.id, {
+      expected: { actionId: failed.action.id, generation: failed.action.generation, revision: before.revision },
+    });
+
+    expect(retried.actions.find(action => action.id === failed.action.id).status).toBe('ready');
+    expect(store.getRun(running.run.id).status).toBe('running');
+  });
+
   it('keeps explicit guidance restart semantics for administrative guidance', () => {
     const item = controller.create(createInput());
     const claim = store.claimReadyAction('boot-a', 5_000);

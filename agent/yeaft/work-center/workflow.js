@@ -675,7 +675,10 @@ function renderContext(context = []) {
 
 export function actionInstruction(stage, workItem, context = [], sessionContextBlock = renderSessionContextSnapshot(workItem?.sessionContext)) {
   const criteria = (workItem.acceptanceCriteria || []).map(item => `- ${item}`).join('\n') || '- No explicit criteria';
-  const common = `WorkItem: ${workItem.title}\nGoal: ${workItem.goal}\nAcceptance criteria:\n${criteria}${sessionContextBlock}${renderContext(context)}`;
+  const workItemMessages = Array.isArray(workItem.messages) && workItem.messages.length > 0
+    ? `\n\nWorkItem-level user messages (apply to every unfinished Action):\n${workItem.messages.map(message => `- ${message.text}`).join('\n')}`
+    : '';
+  const common = `WorkItem: ${workItem.title}\nGoal: ${workItem.goal}\nAcceptance criteria:\n${criteria}${sessionContextBlock}${workItemMessages}${renderContext(context)}`;
   const policy = stage.instruction || defaultWorkCenterStageInstruction(stage.type);
   const brief = normalizeActionBrief(stage.brief || stage, stage.type);
   const contract = `Action type: ${stage.type}\nWhat to do:\n${brief.objective}\n\nHow to do it:\n${brief.approach}\n\nExpected result:\n${brief.expectedOutcome}`;
