@@ -10,6 +10,10 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain("import VirtualTranscript from './VirtualTranscript.js';");
     expect(source).toContain('<VirtualTranscript');
     expect(source).toContain(':items="messageBlocks"');
+    expect(source).toContain('initial-align="end"');
+    expect(source).toContain(':key="virtualTranscriptIdentity"');
+    expect(source).toContain("store.currentAgent || ''");
+    expect(source).toContain("store.yeaftActiveSessionFilter || activeYeaftSessionId.value || '__all__'");
     expect(source).toContain('@scroll-state="onVirtualTranscriptScrollState"');
     expect(source).toContain('showInitialMessagesLoading');
     expect(source).toContain('initial-message-loading');
@@ -84,6 +88,14 @@ describe('MessageList virtualization wiring', () => {
     expect(source).toContain('const HEIGHT_CHANGE_THRESHOLD = 2;');
     expect(source).toContain('function scheduleScrollAdjustment({ delta = 0, toBottom = false } = {}) {');
     expect(source).not.toContain('if (key) measureElement(key, index, entry.target);');
+  });
+
+  it('caches item offsets outside the scroll-dependent virtual window', () => {
+    const source = read('components/VirtualTranscript.js');
+
+    expect(source).toContain('const virtualLayout = Vue.computed(() => buildVirtualOffsets(');
+    expect(source).toContain('computeVirtualWindowFromLayout(props.items, virtualLayout.value, {');
+    expect(source).not.toContain('computeVirtualWindow(props.items, {');
   });
 
 

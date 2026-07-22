@@ -1,5 +1,6 @@
 import {
-  computeVirtualWindow,
+  buildVirtualOffsets,
+  computeVirtualWindowFromLayout,
   estimateVirtualItemHeight,
   getVirtualItemKey,
   shouldFollowTranscriptBottom,
@@ -16,6 +17,7 @@ export default {
     overscan: { type: Number, default: virtualTranscriptDefaults.overscan },
     itemGap: { type: Number, default: virtualTranscriptDefaults.itemGap },
     estimateHeight: { type: Function, default: estimateVirtualItemHeight },
+    initialAlign: { type: String, default: 'start' },
   },
   emits: ['scroll-state'],
   template: `
@@ -49,7 +51,8 @@ export default {
   setup(props, { emit, expose }) {
     const rootRef = Vue.ref(null);
     const scrollEl = Vue.ref(null);
-    const scrollTop = Vue.ref(0);
+    let initialEndPending = props.initialAlign === 'end';
+    const scrollTop = Vue.ref(initialEndPending ? Number.MAX_SAFE_INTEGER : 0);
     const viewportHeight = Vue.ref(virtualTranscriptDefaults.viewportHeight);
     const heightCache = Vue.reactive({});
     const itemIndexByKey = new Map();
@@ -62,13 +65,17 @@ export default {
     let pendingScrollDelta = 0;
     let pendingScrollToBottom = false;
 
-    const virtualWindow = Vue.computed(() => computeVirtualWindow(props.items, {
-      scrollTop: scrollTop.value,
-      viewportHeight: viewportHeight.value,
-      heightCache,
-      overscan: props.overscan,
+    // Item offsets only change when the items, estimates, or measured heights
+    // change. Keep them out of the scroll-dependent computed so wheel/touch
+    // events only do binary range lookup plus a small visible slice.
+    const virtualLayout = Vue.computed(() => buildVirtualOffsets(props.items, heightCache, {
       itemGap: props.itemGap,
       estimateHeight: props.estimateHeight,
+    }));
+    const virtualWindow = Vue.computed(() => computeVirtualWindowFromLayout(props.items, virtualLayout.value, {
+      scrollTop: scrollTop.value,
+      viewportHeight: viewportHeight.value,
+      overscan: props.overscan,
     }));
 
     const visibleEntries = Vue.computed(() => virtualWindow.value.items);
@@ -87,9 +94,29 @@ export default {
     function readScrollState() {
       const el = scrollEl.value;
       if (!el) return;
-      scrollTop.value = Math.max(0, el.scrollTop || 0);
       viewportHeight.value = Math.max(1, el.clientHeight || virtualTranscriptDefaults.viewportHeight);
+      // Preserve the synthetic tail position until the first non-empty item
+      // set is mounted. Otherwise an async history response briefly mounts the
+      // oldest Markdown/Mermaid rows before MessageList scrolls to the latest.
+      if (!(initialEndPending && props.items.length === 0)) {
+        scrollTop.value = Math.max(0, el.scrollTop || 0);
+      }
       emitScrollState(el);
+    }
+
+    function alignInitialEnd() {
+      const el = scrollEl.value;
+      if (!initialEndPending || props.initialAlign !== 'end' || props.items.length === 0 || !el) {
+        return false;
+      }
+      el.scrollTop = el.scrollHeight;
+      initialEndPending = false;
+      readScrollState();
+      return true;
+    }
+
+    function syncInitialPosition() {
+      if (!alignInitialEnd()) readScrollState();
     }
 
     function scheduleReadScrollState() {
@@ -222,14 +249,14 @@ export default {
       () => {
         itemIndexByKey.clear();
         props.items.forEach((item, index) => itemIndexByKey.set(getVirtualItemKey(item, index), index));
-        Vue.nextTick(readScrollState);
+        Vue.nextTick(syncInitialPosition);
       },
       { immediate: true },
     );
 
     Vue.onMounted(() => {
       scrollEl.value = rootRef.value?.closest?.('.chat-container') || rootRef.value?.parentElement || null;
-      readScrollState();
+      syncInitialPosition();
       scrollEl.value?.addEventListener('scroll', scheduleReadScrollState, { passive: true });
       window.addEventListener('resize', scheduleReadScrollState);
 
