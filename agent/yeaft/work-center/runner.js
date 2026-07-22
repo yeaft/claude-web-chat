@@ -33,6 +33,7 @@ import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
 import { applyGeneratedPlan, BUILT_IN_ACTION_TYPES } from './workflow.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
+import { normalizeEvidence } from './evidence.js';
 import {
   MAINLINE_CONTEXT_HARD_LIMIT_BYTES,
   buildMainlineContextSnapshot,

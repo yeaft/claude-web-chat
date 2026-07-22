@@ -219,6 +219,43 @@ describe('Work Center Runner execution resolution', () => {
     await expect(tool.execute(corrected, { requestEndTurn })).resolves.toContain('"submitted":true');
     expect(collector.value).toEqual(corrected);
     expect(requestEndTurn).toHaveBeenCalledWith({ kind: 'work_item_plan_submitted' });
+
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-triage-plan-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store, {
+      listAvailableVpIds: () => ['linus', 'martin'],
+    });
+    try {
+      const item = controller.create({
+        title: 'Implement and verify the requested change',
+        goal: workItem.goal,
+        acceptanceCriteria: [],
+        workflowTemplate: 'ai-planned',
+        workflowSnapshot: workItem.workflowSnapshot,
+        workDir,
+        start: true,
+      });
+      const triage = store.claimReadyAction('boot-a', 5_000);
+      const detail = controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, {
+        outcome: 'completed',
+        summary: corrected.summary,
+        evidence: corrected.evidence,
+        acceptanceChecks: corrected.acceptanceChecks,
+        contractPatch: corrected.contractPatch,
+        plan: { workItemType: corrected.workItemType, actions: corrected.actions },
+      });
+
+      expect(store.getWorkItem(item.id).acceptanceCriteria).toEqual([
+        'Focused regression tests pass',
+      ]);
+      expect(detail.status).toBe('ready');
+      expect(detail.actions.map(action => action.stageId)).toEqual([
+        'triage', 'implement-fix', 'integrate-fix',
+      ]);
+      expect(detail.actions[1]).toMatchObject({ status: 'ready', workspaceMode: 'isolated-write' });
+    } finally {
+      store.close();
+    }
   });
 
   it('rejects a planning tool submission after the Run lease is lost', async () => {
