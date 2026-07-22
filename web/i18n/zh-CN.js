@@ -580,6 +580,7 @@ export default {
   'settings.sandbox.stage.complete': '已完成',
   'settings.sandbox.unavailable.disabled': '此部署尚未启用 Sandbox。',
   'settings.sandbox.unavailable.notEntitled': '此账号暂不可使用 Sandbox。',
+  'settings.sandbox.unavailable.capacityUnavailable': 'Sandbox 暂时不可用。',
   'settings.sandbox.error.SANDBOX_LOAD_FAILED': '无法加载 Sandbox 状态。请关闭设置后重试。',
   'settings.sandbox.error.SANDBOX_CREATE_FAILED': '无法创建 Sandbox，请稍后重试。',
   'settings.sandbox.error.SANDBOX_ACTION_FAILED': '无法安排 Sandbox 操作，请稍后重试。',
