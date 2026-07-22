@@ -181,9 +181,11 @@ export default {
         <div v-else-if="(store.loadingMoreMessages && store.currentView !== 'yeaft') || store.yeaftLoadingMoreHistory" class="loading-more">{{ $t('message.loadingMore') }}</div>
         <div v-else-if="(store.hasMoreMessages && store.currentView !== 'yeaft') || store.yeaftHasMoreHistory || store.hasHiddenYeaftMessages" class="load-more-hint" @click="onClickLoadMore">{{ $t('message.loadMore') }}</div>
         <VirtualTranscript
+          :key="virtualTranscriptIdentity"
           ref="virtualTranscriptRef"
           :items="messageBlocks"
           :estimate-height="estimateMessageBlockHeight"
+          initial-align="end"
           :overscan="1"
           :item-gap="18"
           @scroll-state="onVirtualTranscriptScrollState"
@@ -782,6 +784,14 @@ export default {
       if (gs.activeSessionId && typeof gs.sessionById === 'function' && gs.sessionById(gs.activeSessionId, store.currentAgent || null)) return gs.activeSessionId;
       return null;
     });
+    const virtualTranscriptIdentity = Vue.computed(() => [
+      store.activeConversationId || '',
+      store.currentView || '',
+      store.currentAgent || '',
+      store.currentView === 'yeaft'
+        ? (store.yeaftActiveSessionFilter || activeYeaftSessionId.value || '__all__')
+        : '',
+    ].join('\u001f'));
 
     // Issue C (2026-05-12) — IM-style dual-column layout gate.
     // The user explicitly scoped this to Yeaft Session conversations only:
@@ -2076,6 +2086,7 @@ export default {
       copyWelcomeCommand,
       turnGroups,
       messageBlocks,
+      virtualTranscriptIdentity,
       estimateMessageBlockHeight,
       visibleItemsForBlock,
       collapsedResponsePreviewLines,
