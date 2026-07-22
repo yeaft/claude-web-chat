@@ -24,6 +24,8 @@
  */
 
 import { createInterface } from 'readline';
+import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import { join } from 'path';
 import { loadConfig } from './config.js';
 import { DebugTrace } from './debug-trace.js';
@@ -33,6 +35,8 @@ import { buildSystemPrompt } from './prompts.js';
 import { searchMessages } from './conversation/search.js';
 import { ConversationStore } from './conversation/persist.js';
 import { snapshotSessions } from './sessions/session-crud.js';
+import { loadSessionConfig, resolveSessionConfig } from './sessions/session-config.js';
+import { createJsonlWriter, JsonlInput, runStreamTurn } from './stdio-protocol.js';
 
 // ─── Argument parsing ──────────────────────────────────────────
 
@@ -51,6 +55,11 @@ function parseArgs(argv) {
     compactOrphans: false,
     compactOrphansDry: false,
     deleteSession: null,
+    sessionId: null,
+    workDir: null,
+    modelEffort: null,
+    inputFormat: 'text',
+    outputFormat: 'text',
     prompt: null,
   };
 
@@ -74,6 +83,28 @@ function parseArgs(argv) {
         break;
       case '--model':
         args.model = rest[++i] || null;
+        break;
+      case '--effort':
+      case '--model-effort':
+        args.modelEffort = rest[++i] || null;
+        break;
+      case '--session-id':
+      case '--resume':
+        args.sessionId = rest[++i] || null;
+        break;
+      case '--cwd':
+      case '--work-dir':
+        args.workDir = rest[++i] || null;
+        break;
+      case '--input-format':
+        args.inputFormat = rest[++i] || 'text';
+        break;
+      case '--output-format':
+        args.outputFormat = rest[++i] || 'text';
+        break;
+      case '-p':
+      case '--print':
+        args.prompt = rest[++i] || null;
         break;
       case '--language':
         args.language = rest[++i] || null;
@@ -693,6 +724,99 @@ async function runREPL(config, args) {
   });
 }
 
+// ─── Structured stdio handler ──────────────────────────────────
+
+async function runStreamJson(config, args) {
+  const sessionId = args.sessionId || `session_cli_${randomUUID()}`;
+  const workDir = resolve(args.workDir || process.cwd());
+  const persisted = args.sessionId ? loadSessionConfig(config.dir, sessionId) : {};
+  const effectiveConfig = resolveSessionConfig(config, persisted);
+  if (args.model) {
+    effectiveConfig.model = args.model;
+    effectiveConfig.primaryModel = args.model;
+  }
+  if (args.modelEffort) effectiveConfig.modelEffort = args.modelEffort;
+
+  const write = createJsonlWriter(process.stdout);
+  const input = args.inputFormat === 'stream-json' ? new JsonlInput(process.stdin) : null;
+  const originalLog = console.log;
+  console.log = (...values) => console.error(...values);
+
+  const loaded = await loadSession({
+    dir: config.dir,
+    workDir,
+    model: effectiveConfig.model,
+    language: args.language || effectiveConfig.language,
+    debug: args.debug || effectiveConfig.debug,
+    skipMCP: args.skipMCP,
+    skipSkills: args.skipSkills,
+    configOverrides: {
+      ...effectiveConfig,
+      ...(effectiveConfig.modelEffort ? { modelEffort: effectiveConfig.modelEffort } : {}),
+    },
+  });
+  const { engine, conversationStore, skillManager, toolRegistry } = loaded;
+  const todoState = { value: [] };
+
+  write({
+    type: 'system',
+    subtype: 'init',
+    session_id: sessionId,
+    model: loaded.config.model,
+    model_effort: loaded.config.modelEffort || null,
+    cwd: workDir,
+    tools: toolRegistry.names,
+    skills: skillManager.list(),
+    input_format: args.inputFormat,
+    output_format: 'stream-json',
+  });
+
+  const runPrompt = async (prompt) => {
+    const priorMessages = conversationStore.loadRecentBySession(sessionId, 20).map(message => ({
+      role: message.role,
+      content: message.content,
+      ...(message.toolCallId && { toolCallId: message.toolCallId }),
+      ...(message.toolCalls && { toolCalls: message.toolCalls }),
+    }));
+    return runStreamTurn({
+      engine,
+      prompt,
+      messages: priorMessages,
+      sessionId,
+      workDir,
+      model: loaded.config.model,
+      modelEffort: loaded.config.modelEffort || null,
+      skillManager,
+      input,
+      write,
+      getCurrentTodos: () => todoState.value.slice(),
+      setCurrentTodos: todos => { todoState.value = Array.isArray(todos) ? todos.slice() : []; },
+    });
+  };
+
+  let lastResult = null;
+  try {
+    if (args.prompt) {
+      lastResult = await runPrompt(args.prompt);
+    } else if (input) {
+      for (;;) {
+        const item = await input.nextPrompt();
+        if (!item) break;
+        lastResult = await runPrompt(item.prompt);
+      }
+    } else {
+      let prompt = '';
+      for await (const chunk of process.stdin) prompt += chunk;
+      if (prompt.trim()) lastResult = await runPrompt(prompt.trim());
+    }
+  } finally {
+    input?.close();
+    await loaded.shutdown();
+    console.log = originalLog;
+  }
+  if (lastResult?.is_error) process.exitCode = 1;
+}
+
 // ─── One-shot handler ──────────────────────────────────────────
 
 async function runOnce(config, args) {
@@ -819,6 +943,20 @@ async function main() {
     return;
   }
 
+  if (args.outputFormat === 'stream-json') {
+    if (args.inputFormat !== 'text' && args.inputFormat !== 'stream-json') {
+      throw new Error('--input-format must be text or stream-json');
+    }
+    if (!args.prompt && args.inputFormat !== 'stream-json' && process.stdin.isTTY) {
+      throw new Error('stream-json output requires a prompt, piped stdin, or --input-format stream-json');
+    }
+    await runStreamJson(config, args);
+    return;
+  }
+  if (args.inputFormat === 'stream-json') {
+    throw new Error('--input-format stream-json requires --output-format stream-json');
+  }
+
   // Handle prompt (from args or stdin)
   if (args.prompt) {
     await runOnce(config, args);
@@ -856,8 +994,14 @@ async function main() {
   console.log('  -d, --debug           Enable debug tracing');
   console.log('  -i, --interactive     Start REPL');
   console.log('  -v, --verbose         Verbose output');
-  console.log('  --model <name>        Override model');
-  console.log('  --language <code>     Language: en, zh (default: en)');
+  console.log('  -p, --print <prompt>  Run a non-interactive query');
+  console.log('  --session-id <id>     Persist and resume a Yeaft Session');
+  console.log('  --cwd <dir>           Set the working directory');
+  console.log('  --model <name>         Override model');
+  console.log('  --effort <level>       Override model effort');
+  console.log('  --input-format <fmt>   text or stream-json');
+  console.log('  --output-format <fmt>  text or stream-json');
+  console.log('  --language <code>      Language: en, zh (default: en)');
   console.log('  --trace <cmd>         Query debug trace');
   console.log('  --dry-run             Show prompt without calling LLM');
   console.log('  --skip-mcp            Skip MCP server connections');
