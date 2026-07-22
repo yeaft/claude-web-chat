@@ -143,6 +143,17 @@ export class WorkItemWatcher {
               );
               break;
             }
+            if (error?.workItemPrepareDeferred) {
+              const detail = this.store.deferRun(
+                claim.run.id,
+                this.ownerBootId,
+                claim.run.leaseEpoch,
+                error.message,
+              );
+              if (!detail) throw new Error('Work Center deferred preparation lost its Run lease');
+              this.onEvent({ type: 'run.deferred', workItem: detail });
+              break;
+            }
             this.controller.submit(claim.run.id, this.ownerBootId, claim.run.leaseEpoch, {
               outcome: error?.workItemPrepareRetryable ? 'retryable' : 'failed',
               response: '', summary: '', evidence: [],

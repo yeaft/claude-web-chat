@@ -933,6 +933,21 @@ export class WorkItemStore {
       const nextWorkspaceMode = workspaceMode || action.workspaceMode;
       const specChanged = nextWorkspaceMode !== action.workspaceMode;
       const nextAction = { ...action, workspaceMode: nextWorkspaceMode };
+      const now = this.now();
+      if (action.workspaceMode === 'isolated-write' && nextWorkspaceMode === 'shared') {
+        const workItem = this.getWorkItem(action.workItemId);
+        const workspaceConflict = workItem?.workspaceKey
+          ? this.db.prepare(`SELECT 1 FROM actions running
+            JOIN work_items running_item ON running_item.id = running.work_item_id
+            WHERE running.id != ? AND running.status = 'running'
+              AND running_item.workspace_key = ? LIMIT 1`).get(action.id, workItem.workspaceKey)
+          : null;
+        if (workspaceConflict) {
+          const error = new Error('Work Center cannot fall back to shared while the workspace has another running Action');
+          error.workItemPrepareDeferred = true;
+          throw error;
+        }
+      }
       const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?,
         generation = generation + ?, spec_hash = ?, result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
         updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
@@ -942,13 +957,90 @@ export class WorkItemStore {
         specChanged ? 1 : 0,
         specChanged ? actionSpecHash(nextAction) : action.specHash,
         specChanged ? 1 : 0,
-        this.now(),
+        now,
         actionId,
         runId,
         leaseEpoch,
         expectedGeneration,
       );
-      return Number(changed.changes) === 1 ? this.getAction(actionId) : null;
+      if (Number(changed.changes) !== 1) return null;
+
+      if (action.workspaceMode === 'isolated-write' && nextWorkspaceMode === 'shared') {
+        const pendingRows = this.db.prepare(`SELECT * FROM actions
+          WHERE work_item_id = ? AND id != ? AND workspace_mode IN ('isolated-write', 'integrate')
+          AND status = 'ready' AND current_run_id IS NULL`).all(action.workItemId, action.id);
+        for (const row of pendingRows) {
+          const pending = mapAction(row);
+          const fallback = { ...pending, workspaceMode: 'shared', workspace: null };
+          const repaired = this.db.prepare(`UPDATE actions SET workspace = NULL, workspace_mode = 'shared',
+            generation = generation + 1, spec_hash = ?, result_run_id = NULL, updated_at = ?
+            WHERE id = ? AND status = 'ready' AND current_run_id IS NULL
+            AND generation = ? AND workspace_mode = ?`).run(
+            actionSpecHash(fallback),
+            now,
+            pending.id,
+            pending.generation,
+            pending.workspaceMode,
+          );
+          if (Number(repaired.changes) !== 1) {
+            throw new Error('Work Center could not serialize the pending Action graph after workspace fallback');
+          }
+        }
+      }
+      return this.getAction(actionId);
+    });
+  }
+
+  #graphWorkItemState(workItemId) {
+    const remaining = this.db.prepare(`SELECT id, status FROM actions WHERE work_item_id = ?
+      AND status IN ('ready', 'running', 'waiting', 'failed') ORDER BY sequence`).all(workItemId);
+    const blocked = remaining.find(candidate => candidate.status === 'waiting' || candidate.status === 'failed');
+    const runnable = remaining.find(candidate => candidate.status === 'ready' || candidate.status === 'running');
+    return {
+      status: blocked ? (blocked.status === 'waiting' ? 'waiting' : 'needs_attention')
+        : runnable ? (remaining.some(candidate => candidate.status === 'running') ? 'running' : 'ready')
+          : 'done',
+      currentActionId: blocked?.id || runnable?.id || null,
+    };
+  }
+
+  deferRun(runId, ownerBootId, leaseEpoch, reason = 'Work Center resource is temporarily busy') {
+    return withTransaction(this.db, () => {
+      const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
+      if (!active) return null;
+      const action = this.getAction(active.action_id);
+      const workItem = this.getWorkItem(active.work_item_id);
+      const now = this.now();
+      const changedRun = this.db.prepare(`UPDATE runs SET status = 'interrupted', ended_at = ?, error = ?,
+        failure_kind = 'resource_deferred', failure_code = 'workspace_busy'
+        WHERE id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'`).run(
+        now, reason, runId, ownerBootId, leaseEpoch,
+      );
+      if (Number(changedRun.changes) !== 1) return null;
+      const changedAction = this.db.prepare(`UPDATE actions SET status = 'ready', attempt = MAX(attempt - 1, 0),
+        current_run_id = NULL, updated_at = ? WHERE id = ? AND status = 'running'
+        AND current_run_id = ? AND lease_epoch = ? AND generation = ?`).run(
+        now, action.id, runId, leaseEpoch, action.generation,
+      );
+      if (Number(changedAction.changes) !== 1) {
+        throw new Error('Work Center deferred Run lost the current Action fence');
+      }
+      const graphMode = isGraphWorkItem(workItem);
+      const graphState = graphMode ? this.#graphWorkItemState(workItem.id) : null;
+      const changedWorkItem = graphMode
+        ? this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
+            updated_at = ? WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention')`).run(
+            graphState.status, graphState.currentActionId, now, workItem.id,
+          )
+        : this.db.prepare(`UPDATE work_items SET status = 'ready', current_run_id = NULL, updated_at = ?
+          WHERE id = ? AND status = 'running' AND current_action_id = ? AND current_run_id = ?`).run(
+          now, workItem.id, action.id, runId,
+        );
+      if (Number(changedWorkItem.changes) !== 1) {
+        throw new Error('Work Center deferred Run lost the WorkItem fence');
+      }
+      this.appendEvent(workItem.id, 'run.deferred', { reason }, { actionId: action.id, runId });
+      return this.getWorkItemDetail(workItem.id);
     });
   }
 
@@ -1444,6 +1536,19 @@ export class WorkItemStore {
                 OR (running.work_item_id != a.work_item_id
                   AND a.workspace_mode != 'read' AND running.workspace_mode != 'read'))
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM runs deferred
+            WHERE deferred.action_id = a.id
+              AND deferred.failure_kind = 'resource_deferred'
+              AND deferred.failure_code = 'workspace_busy'
+              AND EXISTS (
+                SELECT 1 FROM actions blocker
+                JOIN work_items blocker_item ON blocker_item.id = blocker.work_item_id
+                WHERE blocker.status = 'running' AND blocker.id != a.id
+                  AND blocker_item.workspace_key != ''
+                  AND blocker_item.workspace_key = w.workspace_key
+              )
+          )
         ORDER BY a.updated_at ASC, a.sequence ASC LIMIT 1`).get();
       if (!row) return null;
       const now = this.now();
@@ -1858,14 +1963,9 @@ export class WorkItemStore {
       let currentActionId = nextAction?.id ?? (transition.keepCurrentAction ? action.id : null);
       let changedWorkItem;
       if (transition.graphAdvance) {
-        const remaining = this.db.prepare(`SELECT id, status FROM actions WHERE work_item_id = ?
-          AND status IN ('ready', 'running', 'waiting', 'failed') ORDER BY sequence`).all(workItem.id);
-        const blocked = remaining.find(candidate => candidate.status === 'waiting' || candidate.status === 'failed');
-        const runnable = remaining.find(candidate => candidate.status === 'ready' || candidate.status === 'running');
-        workItemStatus = blocked ? (blocked.status === 'waiting' ? 'waiting' : 'needs_attention')
-          : runnable ? (remaining.some(candidate => candidate.status === 'running') ? 'running' : 'ready')
-            : 'done';
-        currentActionId = blocked?.id || runnable?.id || null;
+        const graphState = this.#graphWorkItemState(workItem.id);
+        workItemStatus = graphState.status;
+        currentActionId = graphState.currentActionId;
         changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
           current_run_id = NULL, ledger_revision = ledger_revision + ?, updated_at = ?
           WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention')
