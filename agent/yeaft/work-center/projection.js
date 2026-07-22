@@ -610,6 +610,11 @@ export function projectWorkItemDetail(detail) {
 
     origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
     linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
+    messages: (Array.isArray(detail.messages) ? detail.messages : []).slice(-100).map(message => ({
+      id: String(message.id || ''),
+      text: truncateUtf8(message.text || '', MAX_ACTION_MESSAGE_CHARS),
+      createdAt: count(message.createdAt),
+    })),
     attachments: projectAttachments(detail.attachments),
     createdAt: detail.createdAt,
     updatedAt: detail.updatedAt,

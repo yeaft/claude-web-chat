@@ -83,7 +83,7 @@ describe('Work Center store migration', () => {
       progressRevision: 0, checkpoint: null, acceptingInput: true,
     });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('15');
+      .toBe('16');
     expect(store.getWorkItem('legacy-item')).toMatchObject({
       planRevision: 0,
       executionSchemaVersion: 1,

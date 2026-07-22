@@ -103,9 +103,10 @@ Work Center memory 有两条受 `reuseMemory` 控制的路径：同 canonical wo
 12. VP 或模型策略无法解析时停止执行并进入 `needs_attention`，不得自动回退到 omni 或其他模型。
 13. Work Center 可复用同一 canonical workspace key 下已完成 WorkItem 的结构化 Run summary/evidence，并从当前 Agent memory index 做 scope-bounded FTS 召回；不复用原始工具输出，`reuseMemory=false` 时两条路径都完全关闭。
 14. canonical workspace key 同时是执行目录的权威值；Runner 不得在执行时重新信任可变的原始 `workDir`。旧数据迁移只 backfill 当前可解析的目录，无法解析的显式目录在修正前不得执行或参与记忆复用。
-15. 用户补充提示作用于当前 Action：请求用 `actionId + revision` 做事务 fence；每次成功消费输入都必须在同一事务中递增 WorkItem revision，使相同请求不能重放。线性流程原子替换当前 Action；图流程原地 reset 目标 Action 及受影响下游，并保留 stage、依赖、workspace、分配/模型策略和历史 context。
-16. AI 规划 WorkItem 在 triage 完成时固化任务类型和 Action 流，但每次 Run 使用当时的 Work Center model/effort policy；旧显式 workflow WorkItem 仍使用创建时固化的 policy snapshot。
-17. Settings 使用 revision compare-and-swap；并发旧版本保存必须拒绝并要求重新加载。
+15. 用户补充提示分为两个 scope。Action 级输入使用 `actionId + revision + generation` 做事务 fence，只作用于目标 Action；WorkItem 级消息使用 `revision` 做事务 fence，持久化一次并应用到所有未完成 Action。每次成功消费都必须在同一事务中递增 WorkItem revision，使相同请求不能重放。
+16. failed Action 的显式重试必须固定目标 Action identity，图流程原地 reset 该 Action 及受影响下游，并保留无关 sibling Run、stage、依赖、workspace、分配/模型策略和历史 context。
+17. AI 规划 WorkItem 在 triage 完成时固化任务类型和 Action 流，但每次 Run 使用当时的 Work Center model/effort policy；旧显式 workflow WorkItem 仍使用创建时固化的 policy snapshot。
+18. Settings 使用 revision compare-and-swap；并发旧版本保存必须拒绝并要求重新加载。
 
 ## 恢复策略
 

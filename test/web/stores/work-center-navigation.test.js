@@ -226,6 +226,35 @@ describe('Work Center navigation', () => {
     await Promise.all([first, second]);
   });
 
+  it('commits a successful input response for a non-pointer sibling Action', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterDetailByAgent = {
+      'agent-1': {
+        id: 'wi-1', revision: 5, currentActionId: 'action-waiting',
+        actions: [
+          { id: 'action-waiting', status: 'waiting', generation: 1 },
+          { id: 'action-running', status: 'running', generation: 3 },
+        ],
+      },
+    };
+    store.workCenterRequest = vi.fn().mockResolvedValue({
+      id: 'wi-1', revision: 6, currentActionId: 'action-waiting',
+      actions: [
+        { id: 'action-waiting', status: 'waiting', generation: 1 },
+        { id: 'action-running', status: 'running', generation: 3 },
+      ],
+    });
+
+    const result = await store.sendWorkItemActionInput(
+      'wi-1', 'Update only the running sibling', 'action-running', 5, 3, [], 'agent-1',
+    );
+
+    expect(result).toMatchObject({ revision: 6, currentActionId: 'action-waiting' });
+    expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
+      revision: 6, currentActionId: 'action-waiting',
+    });
+  });
+
   it('does not let an old Action input response overwrite a newer Action in the same Work Item', async () => {
     const store = makeStore('yeaft');
     store.workCenterDetailByAgent = {

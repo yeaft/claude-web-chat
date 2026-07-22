@@ -152,6 +152,92 @@ describe('Mainline projection', () => {
     expect(hashMainlineSnapshot(structuredClone(built.contextSnapshot))).toBe(hashMainlineSnapshot(built.contextSnapshot));
   });
 
+  it('keeps the newest WorkItem messages under budget and restores chronological order', () => {
+    const action = {
+      id: 'current', sequence: 1, stageId: 'current', type: 'implement', status: 'ready',
+      generation: 1, specHash: 'current-v1', dependsOnStageIds: [],
+    };
+    const messages = Array.from({ length: 5 }, (_, index) => ({
+      id: `message-${index + 1}`,
+      text: `message-${index + 1}:`.padEnd(7_900, String(index + 1)),
+      createdAt: index + 1,
+    }));
+
+    const built = buildMainlineContextSnapshot(detail({ actions: [action], messages }), action);
+    const selectedIds = built.contextSnapshot.userContext.workItemMessages.map(message => message.messageId);
+
+    expect(selectedIds).toContain('message-5');
+    expect(selectedIds).not.toContain('message-1');
+    expect(selectedIds).toEqual(selectedIds.slice().sort());
+    expect(built.contextSnapshot.userContext.omittedCount).toBeGreaterThan(0);
+    expect(built.budget.bytes).toBeLessThanOrEqual(MAINLINE_CONTEXT_HARD_LIMIT_BYTES);
+  });
+
+  it('fails explicitly when the latest WorkItem message cannot fit the prompt budget', () => {
+    const action = {
+      id: 'current', sequence: 1, stageId: 'current', type: 'implement', status: 'ready',
+      generation: 1, specHash: 'current-v1', dependsOnStageIds: [],
+    };
+    let blocked;
+    try {
+      buildMainlineContextSnapshot(detail({
+        actions: [action],
+        messages: [{ id: 'latest', text: 'x'.repeat(8_000), createdAt: 1 }],
+      }), action, { reservedBytes: 58 * 1024 });
+    } catch (error) {
+      blocked = error;
+    }
+
+    expect(blocked).toMatchObject({
+      name: 'MainlineContextBlockedError',
+      retryable: false,
+      workItemFailureKind: 'system_blocked',
+      workItemFailureCode: 'mainline_context_too_large',
+    });
+    expect(blocked.message).toMatch(/Latest WorkItem message exceeds/);
+  });
+
+  it('includes WorkItem messages in every Action while isolating Action-scoped input', () => {
+    const actionA = {
+      id: 'action-a', sequence: 1, stageId: 'action-a', type: 'research', status: 'ready',
+      generation: 1, specHash: 'action-a-v1', dependsOnStageIds: [],
+    };
+    const actionB = {
+      id: 'action-b', sequence: 2, stageId: 'action-b', type: 'design', status: 'ready',
+      generation: 1, specHash: 'action-b-v1', dependsOnStageIds: [],
+    };
+    const input = detail({
+      actions: [actionA, actionB],
+      messages: [{ id: 'message-1', text: 'Apply this to every unfinished Action', createdAt: 10 }],
+      events: [
+        {
+          id: 2, type: 'action.input_added', actionId: actionA.id, createdAt: 20,
+          data: { text: 'Only Action A may use this' },
+        },
+        {
+          id: 3, type: 'action.guidance_added', actionId: actionB.id, createdAt: 30,
+          data: { guidance: 'Only Action B may use this' },
+        },
+      ],
+    });
+
+    const snapshotA = buildMainlineContextSnapshot(input, actionA).contextSnapshot;
+    const snapshotB = buildMainlineContextSnapshot(input, actionB).contextSnapshot;
+
+    expect(snapshotA.userContext.workItemMessages).toEqual([
+      expect.objectContaining({ messageId: 'message-1', text: 'Apply this to every unfinished Action' }),
+    ]);
+    expect(snapshotB.userContext.workItemMessages).toEqual(snapshotA.userContext.workItemMessages);
+    expect(snapshotA.userContext.guidance).toEqual([
+      expect.objectContaining({ actionId: actionA.id, text: 'Only Action A may use this' }),
+    ]);
+    expect(snapshotB.userContext.guidance).toEqual([
+      expect.objectContaining({ actionId: actionB.id, text: 'Only Action B may use this' }),
+    ]);
+    expect(JSON.stringify(snapshotB)).not.toContain('Only Action A may use this');
+    expect(JSON.stringify(snapshotA)).not.toContain('Only Action B may use this');
+  });
+
   it('reserves final prompt wrapper bytes inside the 64 KiB hard limit', () => {
     const action = { id: 'current', sequence: 1, stageId: 'implement', type: 'implement', status: 'running' };
     const reservedBytes = 12 * 1024;

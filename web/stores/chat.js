@@ -1580,6 +1580,24 @@ export const useChatStore = defineStore('chat', {
       this.commitWorkCenterDetail(target, detail, generation);
       return detail;
     },
+    async sendWorkItemMessage(id, text, revision, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
+      const detail = await this.workCenterRequest('work_item_message', { id, text, revision }, target);
+      await this.listWorkItems(target);
+      this.commitWorkCenterDetail(target, detail, generation);
+      return detail;
+    },
+    async retryWorkItemAction(id, actionId, revision, actionGeneration, agentId = null) {
+      const target = agentId || this.workCenterAgentId || this.currentAgent;
+      const generation = this.beginWorkCenterDetailWrite(target);
+      const detail = await this.workCenterRequest('retry_action', {
+        id, actionId, revision, generation: actionGeneration,
+      }, target);
+      await this.listWorkItems(target);
+      this.commitWorkCenterDetail(target, detail, generation);
+      return detail;
+    },
     async sendWorkItemActionInput(id, text, actionId, revision, actionGeneration, attachments = [], agentId = null) {
       const target = agentId || this.workCenterAgentId || this.currentAgent;
       const generation = Number(this._workCenterActionInputGenerationByAgent[target] || 0) + 1;
@@ -1592,9 +1610,11 @@ export const useChatStore = defineStore('chat', {
       }, target);
       await this.listWorkItems(target);
       const current = this.workCenterDetailByAgent[target];
+      const currentAction = current?.actions?.find(action => action?.id === actionId);
       const requestStillCurrent = current?.id === id
-        && current.currentActionId === actionId
-        && Number(current.revision) === Number(revision);
+        && Number(current.revision) === Number(revision)
+        && currentAction
+        && Number(currentAction.generation) === Number(actionGeneration);
       if (this._workCenterActionInputGenerationByAgent[target] === generation
         && requestStillCurrent
         && !isWorkItemDetailResponseStale(detail, current)) {

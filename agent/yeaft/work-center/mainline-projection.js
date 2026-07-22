@@ -70,9 +70,23 @@ function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function guidanceView(events) {
+function workItemMessageView(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .filter(message => typeof message?.text === 'string' && message.text)
+    .slice()
+    .sort((left, right) => count(left.createdAt) - count(right.createdAt)
+      || String(left.id).localeCompare(String(right.id)))
+    .map(message => ({
+      messageId: message.id,
+      text: message.text,
+      createdAt: count(message.createdAt),
+    }));
+}
+
+function guidanceView(events, actionId) {
   return (Array.isArray(events) ? events : [])
-    .filter(event => ['action.guidance_added', 'action.input_added'].includes(event?.type))
+    .filter(event => event?.actionId === actionId
+      && ['action.guidance_added', 'action.input_added'].includes(event.type))
     .slice()
     .sort((left, right) => count(left.id) - count(right.id))
     .map(event => ({
@@ -223,6 +237,7 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     directDependencies: dependencies,
     userContext: {
       sessionContext: [],
+      workItemMessages: [],
       guidance: [],
       includedCount: 0,
       omittedCount: 0,
@@ -249,12 +264,26 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     return false;
   };
   const sessionContext = normalizeSessionContextSnapshot(detail.sessionContext);
-  const guidance = guidanceView(detail.events);
-  const userEntries = [
-    ...sessionContext.map(value => ({ kind: 'sessionContext', value })),
+  const workItemMessages = workItemMessageView(detail.messages);
+  const guidance = guidanceView(detail.events, action.id);
+  const newestFirstMessages = workItemMessages.slice().reverse();
+  for (const [index, message] of newestFirstMessages.entries()) {
+    const next = {
+      ...snapshot.userContext,
+      workItemMessages: [message, ...snapshot.userContext.workItemMessages],
+      includedCount: snapshot.userContext.includedCount + 1,
+      omittedCount: 0,
+    };
+    const included = trySet('userContext', next);
+    if (index === 0 && !included) {
+      throw mainlineContextBlocked('Latest WorkItem message exceeds the Mainline prompt budget');
+    }
+  }
+  const otherUserEntries = [
     ...guidance.map(value => ({ kind: 'guidance', value })),
+    ...sessionContext.map(value => ({ kind: 'sessionContext', value })),
   ];
-  for (const entry of userEntries) {
+  for (const entry of otherUserEntries) {
     const next = {
       ...snapshot.userContext,
       [entry.kind]: [...snapshot.userContext[entry.kind], entry.value],
@@ -263,7 +292,8 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     };
     trySet('userContext', next);
   }
-  snapshot.userContext.omittedCount = userEntries.length - snapshot.userContext.includedCount;
+  snapshot.userContext.omittedCount = workItemMessages.length + otherUserEntries.length
+    - snapshot.userContext.includedCount;
 
   const siblingEntries = Object.entries(projection.canonicalActionResults)
     .filter(([actionId]) => actionId !== action.id && !dependencies.some(item => item.actionId === actionId))

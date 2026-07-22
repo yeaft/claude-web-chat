@@ -189,15 +189,34 @@ export class WorkflowController {
     return detail;
   }
 
+  message(id, input = {}) {
+    const text = typeof input.text === 'string' ? input.text.trim().slice(0, 8_000) : '';
+    if (!text) throw new Error('WorkItem message is required');
+    const revision = Number(input.revision);
+    if (!Number.isInteger(revision)) throw new Error('revision is required for WorkItem messages');
+    const detail = this.store.addWorkItemMessage(id, text, revision, (workItem, action) => (
+      actionInstruction(action, workItem, action.context || [], renderSessionContextSnapshot(workItem.sessionContext))
+    ));
+    if (!detail) throw new Error(`WorkItem not found: ${id}`);
+    return detail;
+  }
+
   input(id, input = {}) {
     const text = typeof input.text === 'string' ? input.text.trim().slice(0, 8_000) : '';
     const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
     if (!text && addedAttachmentCount === 0) throw new Error('Action input or attachments are required');
     const workItem = this.store.getWorkItem(id);
     if (!workItem) throw new Error(`WorkItem not found: ${id}`);
-    if (['ready', 'running'].includes(workItem.status)) {
-      const activeAction = this.store.getAction(input.actionId);
-      if (activeAction?.status === 'running' && addedAttachmentCount > 0) {
+    const targetAction = this.store.getAction(input.actionId);
+    const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
+    const targetMatches = graphMode
+      ? targetAction?.workItemId === id && targetAction.generation === input.generation
+      : workItem.currentActionId === input.actionId;
+    if (!targetMatches || workItem.revision !== input.revision) {
+      throw new Error('Action changed before input was applied; refresh and try again');
+    }
+    if (['ready', 'running'].includes(targetAction.status)) {
+      if (targetAction.status === 'running' && addedAttachmentCount > 0) {
         throw new Error('Files cannot be added while an Action is running; send text now or wait for the next Action boundary');
       }
       const inputSummary = text || `The user added ${addedAttachmentCount} attachment(s) as additional context for this Action.`;
@@ -205,20 +224,20 @@ export class WorkflowController {
         actionId: input.actionId,
         generation: input.generation,
         revision: input.revision,
-      }, (current, action) => {
-        const context = [...(action.context || []), {
+      }, (current, currentAction) => {
+        const context = [...(currentAction.context || []), {
           type: 'input', role: 'user', summary: inputSummary, evidence: [],
         }];
         const step = {
-          type: action.type,
-          stageId: action.stageId || action.type,
-          assignmentPolicy: action.assignmentPolicy,
-          modelPolicy: action.modelPolicy,
-          requiredRole: action.requiredRole,
-          dependsOnStageIds: action.dependsOnStageIds,
-          workspaceMode: action.workspaceMode,
-          changesRequestedStageId: action.changesRequestedStageId,
-          brief: action.brief,
+          type: currentAction.type,
+          stageId: currentAction.stageId || currentAction.type,
+          assignmentPolicy: currentAction.assignmentPolicy,
+          modelPolicy: currentAction.modelPolicy,
+          requiredRole: currentAction.requiredRole,
+          dependsOnStageIds: currentAction.dependsOnStageIds,
+          workspaceMode: currentAction.workspaceMode,
+          changesRequestedStageId: currentAction.changesRequestedStageId,
+          brief: currentAction.brief,
         };
         return {
           context,
@@ -226,17 +245,8 @@ export class WorkflowController {
         };
       }, input.attachments, input.addedAttachments);
     }
-    if (!['waiting', 'needs_attention'].includes(workItem.status)) {
-      throw new Error(`WorkItem in ${workItem.status} cannot accept Action input`);
-    }
-    const targetAction = this.store.getAction(input.actionId);
-    const graphMode = workItem.workflowSnapshot?.executionMode === 'graph';
-    const targetMatches = graphMode
-      ? targetAction?.workItemId === id && targetAction.generation === input.generation
-        && ['waiting', 'failed'].includes(targetAction.status)
-      : workItem.currentActionId === input.actionId;
-    if (!targetMatches || workItem.revision !== input.revision) {
-      throw new Error('Action changed before input was applied; refresh and try again');
+    if (!['waiting', 'failed'].includes(targetAction.status)) {
+      throw new Error(`Action in ${targetAction.status} cannot accept input`);
     }
     return this.retry(id, {
       answer: text,
@@ -254,8 +264,8 @@ export class WorkflowController {
     const answer = typeof input.answer === 'string' ? input.answer.trim().slice(0, 8_000) : '';
     const addedAttachmentCount = Math.max(0, Number(input.addedAttachmentCount) || 0);
     const detail = this.store.retryWorkItemAtomic(id, (workItem, previous, previousRun) => {
-      if (workItem.status === 'waiting' && !answer && addedAttachmentCount === 0) {
-        throw new Error('answer or attachments are required to resume a waiting WorkItem');
+      if (previous?.status === 'waiting' && !answer && addedAttachmentCount === 0) {
+        throw new Error('answer or attachments are required to resume a waiting Action');
       }
       const step = previous
         ? {
