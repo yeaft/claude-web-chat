@@ -125,6 +125,11 @@ describe('Work Center Runner execution resolution', () => {
     expect(tool.parameters.properties.actions.items.properties.candidateVpIds.items.enum).toEqual(['linus', 'martin']);
     expect(tool.description).toContain('linus (Systems Engineer; implementation)');
     expect(tool.description).toContain('exactly one integrate Action');
+    const planningInstruction = resolvePlanningWorkflowSnapshot({ maxConcurrentActions: 5 })
+      .stages[0].instruction;
+    expect(planningInstruction).toContain('run up to 5 Actions concurrently');
+    expect(planningInstruction).toContain('ordering by narrative, phase name, or list position is not a dependency');
+    expect(planningInstruction).toContain('do not fake parallelism by marking a mutating Action as read');
 
     const input = {
       summary: 'Planned the work', evidence: ['Inspected the current implementation'], acceptanceChecks: [],
@@ -416,6 +421,162 @@ describe('Work Center Runner execution resolution', () => {
       expect(prepared.action).toMatchObject({ workspaceMode: 'shared', generation: claimed.action.generation + 1 });
       expect(prepared.action.specHash).not.toBe(claimed.action.specHash);
       expect(prepared.action.resultRunId).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it('serializes the pending write graph when isolated execution falls back to shared', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-graph-fallback-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    try {
+      const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+      controller.create({
+        title: 'Parallel fallback', goal: 'Implement two independent changes', acceptanceCriteria: [],
+        workflowTemplate: 'ai-planned', workflowSnapshot, workDir, start: true,
+      });
+      const triage = store.claimReadyAction('boot-fallback', 5_000);
+      controller.submit(triage.run.id, 'boot-fallback', triage.run.leaseEpoch, {
+        outcome: 'completed', summary: 'Planned parallel work', evidence: ['plan'], acceptanceChecks: [],
+        plan: { workItemType: 'software-change', actions: [
+          {
+            id: 'left', name: 'Left change', type: 'implement', objective: 'Implement the left change',
+            approach: 'Modify the left module in an isolated worktree', expectedOutcome: 'Left tests pass',
+            dependsOnActionIds: [], workspaceMode: 'isolated-write',
+          },
+          {
+            id: 'right', name: 'Right change', type: 'implement', objective: 'Implement the right change',
+            approach: 'Modify the right module in an isolated worktree', expectedOutcome: 'Right tests pass',
+            dependsOnActionIds: [], workspaceMode: 'isolated-write',
+          },
+          {
+            id: 'integrate', name: 'Integrate changes', type: 'integrate', objective: 'Combine both changes',
+            approach: 'Merge both completed Action branches', expectedOutcome: 'One integrated result',
+            dependsOnActionIds: ['left', 'right'], workspaceMode: 'integrate',
+          },
+        ] },
+      });
+      const claimed = store.claimReadyAction('boot-fallback', 5_000);
+      const siblingStageId = claimed.action.stageId === 'left' ? 'right' : 'left';
+      const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
+
+      const prepared = await runner.prepare({ ...claimed, ownerBootId: 'boot-fallback' });
+
+      expect(prepared.action.workspaceMode).toBe('shared');
+      expect(store.getWorkItemDetail(claimed.workItem.id).actions
+        .find(action => action.stageId === siblingStageId)).toMatchObject({ workspaceMode: 'shared' });
+      expect(store.getWorkItemDetail(claimed.workItem.id).actions
+        .find(action => action.stageId === 'integrate')).toMatchObject({ workspaceMode: 'shared' });
+      expect(store.claimReadyAction('boot-fallback', 5_000)).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it('retries instead of mixing shared fallback with a running isolated sibling', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-concurrent-fallback-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    try {
+      const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+      controller.create({
+        title: 'Concurrent fallback', goal: 'Implement two independent changes', acceptanceCriteria: [],
+        workflowTemplate: 'ai-planned', workflowSnapshot, workDir, start: true,
+      });
+      const triage = store.claimReadyAction('boot-fallback', 5_000);
+      controller.submit(triage.run.id, 'boot-fallback', triage.run.leaseEpoch, {
+        outcome: 'completed', summary: 'Planned parallel work', evidence: ['plan'], acceptanceChecks: [],
+        plan: { workItemType: 'software-change', actions: [
+          {
+            id: 'left', name: 'Left', type: 'implement', objective: 'Implement left',
+            approach: 'Modify left in isolation', expectedOutcome: 'Left completes',
+            dependsOnActionIds: [], workspaceMode: 'isolated-write',
+          },
+          {
+            id: 'right', name: 'Right', type: 'implement', objective: 'Implement right',
+            approach: 'Modify right in isolation', expectedOutcome: 'Right completes',
+            dependsOnActionIds: [], workspaceMode: 'isolated-write',
+          },
+          {
+            id: 'integrate', name: 'Integrate', type: 'integrate', objective: 'Combine both changes',
+            approach: 'Merge both branches', expectedOutcome: 'Integrated result exists',
+            dependsOnActionIds: ['left', 'right'], workspaceMode: 'integrate',
+          },
+        ] },
+      });
+      const first = store.claimReadyAction('boot-fallback', 5_000);
+      const second = store.claimReadyAction('boot-fallback', 5_000);
+      const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
+
+      await expect(runner.prepare({ ...second, ownerBootId: 'boot-fallback' })).rejects.toMatchObject({
+        message: expect.stringMatching(/isolated sibling Action is running/),
+        workItemPrepareRetryable: true,
+      });
+      expect(store.getAction(first.action.id).workspaceMode).toBe('isolated-write');
+      expect(store.getAction(second.action.id).workspaceMode).toBe('isolated-write');
+      expect(store.isActiveRun(first.run.id, 'boot-fallback', first.run.leaseEpoch)).toBe(true);
+      expect(store.isActiveRun(second.run.id, 'boot-fallback', second.run.leaseEpoch)).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('recovers a legacy integration Action after its dependencies already fell back to shared', async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-legacy-integration-fallback-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    try {
+      const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+      controller.create({
+        title: 'Legacy fallback', goal: 'Complete a serialized implementation', acceptanceCriteria: [],
+        workflowTemplate: 'ai-planned', workflowSnapshot, workDir, start: true,
+      });
+      const triage = store.claimReadyAction('boot-fallback', 5_000);
+      controller.submit(triage.run.id, 'boot-fallback', triage.run.leaseEpoch, {
+        outcome: 'completed', summary: 'Planned work', evidence: ['plan'], acceptanceChecks: [],
+        plan: { workItemType: 'software-change', actions: [
+          {
+            id: 'implement', name: 'Implement', type: 'implement', objective: 'Implement the change',
+            approach: 'Modify the repository', expectedOutcome: 'Implementation completes',
+            dependsOnActionIds: [], workspaceMode: 'isolated-write',
+          },
+          {
+            id: 'integrate', name: 'Integrate', type: 'integrate', objective: 'Integrate the change',
+            approach: 'Merge the implementation branch', expectedOutcome: 'Integrated result exists',
+            dependsOnActionIds: ['implement'], workspaceMode: 'integrate',
+          },
+        ] },
+      });
+      const implement = store.claimReadyAction('boot-fallback', 5_000);
+      store.setActionWorkspaceForRun(
+        implement.action.id,
+        implement.run.id,
+        'boot-fallback',
+        implement.run.leaseEpoch,
+        implement.action.generation,
+        null,
+        'shared',
+      );
+      controller.submit(implement.run.id, 'boot-fallback', implement.run.leaseEpoch, {
+        outcome: 'completed', summary: 'Implemented in the shared workspace', evidence: ['tests'],
+        acceptanceChecks: [],
+      });
+      const integrationAction = store.getWorkItemDetail(implement.workItem.id).actions
+        .find(action => action.stageId === 'integrate');
+      store.db.prepare(`UPDATE actions SET workspace_mode = 'integrate', generation = generation + 1,
+        spec_hash = '', workspace = NULL WHERE id = ?`).run(integrationAction.id);
+      const integration = store.claimReadyAction('boot-fallback', 5_000);
+      const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
+
+      const prepared = await runner.prepare({ ...integration, ownerBootId: 'boot-fallback' });
+
+      expect(prepared.action).toMatchObject({ workspaceMode: 'shared', workspace: null });
+      expect(store.isActiveRun(
+        integration.run.id,
+        'boot-fallback',
+        integration.run.leaseEpoch,
+      )).toBe(true);
     } finally {
       store.close();
     }

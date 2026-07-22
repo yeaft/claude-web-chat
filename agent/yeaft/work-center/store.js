@@ -933,6 +933,17 @@ export class WorkItemStore {
       const nextWorkspaceMode = workspaceMode || action.workspaceMode;
       const specChanged = nextWorkspaceMode !== action.workspaceMode;
       const nextAction = { ...action, workspaceMode: nextWorkspaceMode };
+      const now = this.now();
+      if (action.workspaceMode === 'isolated-write' && nextWorkspaceMode === 'shared') {
+        const runningSibling = this.db.prepare(`SELECT 1 FROM actions
+          WHERE work_item_id = ? AND id != ? AND status = 'running'
+          AND workspace_mode IN ('isolated-write', 'integrate') LIMIT 1`).get(action.workItemId, action.id);
+        if (runningSibling) {
+          const error = new Error('Work Center cannot fall back to shared while an isolated sibling Action is running');
+          error.workItemPrepareRetryable = true;
+          throw error;
+        }
+      }
       const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?,
         generation = generation + ?, spec_hash = ?, result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
         updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
@@ -942,13 +953,37 @@ export class WorkItemStore {
         specChanged ? 1 : 0,
         specChanged ? actionSpecHash(nextAction) : action.specHash,
         specChanged ? 1 : 0,
-        this.now(),
+        now,
         actionId,
         runId,
         leaseEpoch,
         expectedGeneration,
       );
-      return Number(changed.changes) === 1 ? this.getAction(actionId) : null;
+      if (Number(changed.changes) !== 1) return null;
+
+      if (action.workspaceMode === 'isolated-write' && nextWorkspaceMode === 'shared') {
+        const pendingRows = this.db.prepare(`SELECT * FROM actions
+          WHERE work_item_id = ? AND id != ? AND workspace_mode IN ('isolated-write', 'integrate')
+          AND status = 'ready' AND current_run_id IS NULL`).all(action.workItemId, action.id);
+        for (const row of pendingRows) {
+          const pending = mapAction(row);
+          const fallback = { ...pending, workspaceMode: 'shared', workspace: null };
+          const repaired = this.db.prepare(`UPDATE actions SET workspace = NULL, workspace_mode = 'shared',
+            generation = generation + 1, spec_hash = ?, result_run_id = NULL, updated_at = ?
+            WHERE id = ? AND status = 'ready' AND current_run_id IS NULL
+            AND generation = ? AND workspace_mode = ?`).run(
+            actionSpecHash(fallback),
+            now,
+            pending.id,
+            pending.generation,
+            pending.workspaceMode,
+          );
+          if (Number(repaired.changes) !== 1) {
+            throw new Error('Work Center could not serialize the pending Action graph after workspace fallback');
+          }
+        }
+      }
+      return this.getAction(actionId);
     });
   }
 
