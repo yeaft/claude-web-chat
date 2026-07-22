@@ -32,7 +32,7 @@ import { archiveTurn } from './archive/turn-archive.js';
 import { archiveToolResults } from './archive/tool-results.js';
 import { readSummary as readScopeSummary } from './memory/store.js';
 import { runAdjust } from './memory/adjust.js';
-import { cleanMemoryPromptText } from './memory/prompt-cleanup.js';
+import { cleanMemoryPromptText, isMemoryPromptRelevant } from './memory/prompt-cleanup.js';
 import { isVpSeedBackfillStub } from './memory/seed-backfill.js';
 import { runStopHooks } from './stop-hooks.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
@@ -388,6 +388,20 @@ export function shouldAllowGroupReflection({
  * }} args
  * @returns {Array<{scope: string, summary: string}>}
  */
+export function selectResidentTopicScopes(topicScopes, recallEntries, userMsg = '') {
+  const recalledTopicScopes = new Set((recallEntries || [])
+    .map(entry => entry?.scope)
+    .filter(scope => typeof scope === 'string' && /^sessions\/[^/]+\/topic\//.test(scope)));
+  return (Array.isArray(topicScopes) ? topicScopes : [])
+    .filter(scope => recalledTopicScopes.has(scope) || isTopicScopeRelevant(scope, userMsg));
+}
+
+function isTopicScopeRelevant(scope, userMsg) {
+  if (!userMsg || typeof scope !== 'string') return false;
+  const label = scope.replace(/^sessions\/[^/]+\/topic\//, '').replace(/[/-]+/g, ' ');
+  return isMemoryPromptRelevant(label, userMsg);
+}
+
 export function buildResidentEntries(args) {
   const summaries = (args && args.summaries) || {};
   const out = [];
@@ -873,6 +887,7 @@ export class Engine {
    *   ownVpId?: string|null,
    *   summaries: { user?: string, session?: string, vp?: string },
    *   recallEntries: object[],
+   *   userMsg?: string,
    * }} args
    * @returns {{
    *   ams: import('./memory/ams.js').ActiveMemorySet,
@@ -912,7 +927,7 @@ export class Engine {
     ams.setOnDemand(segs);
 
     // (c) Snapshot — render the AMS layers as a single prompt block.
-    const snapshotBlock = this.#renderAmsSnapshot(ams, this.#config.language || 'en');
+    const snapshotBlock = this.#renderAmsSnapshot(ams, this.#config.language || 'en', args.userMsg || '');
 
     const scopes = buildRelevantScopes({
       sessionId: args.sessionId,
@@ -929,10 +944,11 @@ export class Engine {
    *
    * @param {import('./memory/ams.js').ActiveMemorySet} ams
    * @param {string} [language]
+   * @param {string} [userMsg]
    * @returns {string}
    */
-  #renderAmsSnapshot(ams, language = 'en') {
-    const snap = ams.snapshot();
+  #renderAmsSnapshot(ams, language = 'en', userMsg = '') {
+    const snap = ams.snapshot({ userMsg });
     if (!snap) return '';
     const parts = [];
     if (snap.resident.length === 0 && snap.recent.length === 0 && snap.onDemand.length === 0) {
@@ -1906,6 +1922,11 @@ export class Engine {
     if (recallEntryCount > 0) {
       yield { type: 'recall', entryCount: recallEntryCount, cached: false, threadId };
     }
+    const topicScopesForResident = selectResidentTopicScopes(
+      topicScopesForMemory,
+      recallResult?.entries || [],
+      prompt,
+    );
 
     // Layer-A summaries — same scopes AMS Resident will surface, loaded
     // here so we can pass them into #prepareAms. (Rolling per-scope
@@ -1916,7 +1937,7 @@ export class Engine {
         ? vpPersona.vpId
         : (typeof senderVpId === 'string' ? senderVpId : undefined),
       language: this.#config.language || 'en',
-      topicScopes: topicScopesForMemory,
+      topicScopes: topicScopesForResident,
     });
 
     // ─── AMS: populate + snapshot ───────────────────────────────
@@ -1935,6 +1956,7 @@ export class Engine {
       ownVpId: ownVpIdForAms,
       summaries,
       recallEntries: recallResult ? (recallResult.entries || []) : [],
+      userMsg: prompt,
     });
     if (amsContext && amsContext.snapshotBlock) {
       memoryInjection = amsContext.snapshotBlock;

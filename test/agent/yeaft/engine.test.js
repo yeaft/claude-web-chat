@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, rmSync, mkdtempSync, writeFileSync, readFileSync
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ActiveMemorySet } from '../../../agent/yeaft/memory/ams.js';
-import { Engine, buildResidentEntries } from '../../../agent/yeaft/engine.js';
+import { filterMemoryPromptTextForPrompt } from '../../../agent/yeaft/memory/prompt-cleanup.js';
+import { Engine, buildResidentEntries, selectResidentTopicScopes } from '../../../agent/yeaft/engine.js';
 import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js';
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeSummary } from '../../../agent/yeaft/memory/store.js';
@@ -134,6 +135,112 @@ describe('Engine memory prompt hygiene', () => {
 
     expect(snap.resident.map(entry => entry.summary)).toEqual([summary]);
     expect(snap.onDemand.map(seg => seg.body)).toEqual([detail]);
+  });
+
+  it('drops unrelated transient work-item state from the prompt snapshot', () => {
+    const ams = new ActiveMemorySet({
+      budget: { total: 1000, resident: 500, recent: 200, onDemand: 300 },
+    });
+    ams.setResident([
+      {
+        scope: 'sessions/s1',
+        summary: [
+          'Reusable Dream memory rule: topic recall must stay precise.',
+          '',
+          'Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+        ].join('\n'),
+      },
+    ]);
+    ams.setOnDemand([
+      {
+        id: 'billing-work-item',
+        scope: 'sessions/s1/topic/billing',
+        body: 'Work Item #884: billing dashboard export is in progress and awaiting review.',
+        kind: 'context',
+        tags: [],
+        sourceMessages: [],
+      },
+      {
+        id: 'dream-rule',
+        scope: 'sessions/s1/topic/dream',
+        body: 'Dream memory relevance should keep stable topic recall facts available.',
+        kind: 'context',
+        tags: [],
+        sourceMessages: [],
+      },
+    ]);
+
+    const snap = ams.snapshot({ userMsg: '优化 Dream memory relevance，减少无关状态' });
+
+    expect(snap.resident.map(entry => entry.summary)).toEqual([
+      'Reusable Dream memory rule: topic recall must stay precise.',
+    ]);
+    expect(snap.onDemand.map(seg => seg.body)).toEqual([
+      'Dream memory relevance should keep stable topic recall facts available.',
+    ]);
+  });
+
+  it('keeps transient work-item state when the user asks about the same task', () => {
+    const ams = new ActiveMemorySet({
+      budget: { total: 1000, resident: 500, recent: 200, onDemand: 300 },
+    });
+    ams.setOnDemand([
+      {
+        id: 'billing-work-item',
+        scope: 'sessions/s1/topic/billing',
+        body: 'Work Item #884: billing dashboard export is in progress and awaiting review.',
+        kind: 'context',
+        tags: [],
+        sourceMessages: [],
+      },
+    ]);
+
+    const snap = ams.snapshot({ userMsg: '继续 billing dashboard export 的 work item' });
+
+    expect(snap.onDemand.map(seg => seg.body)).toEqual([
+      'Work Item #884: billing dashboard export is in progress and awaiting review.',
+    ]);
+  });
+
+  it('keeps stable markdown bullets when a sibling transient bullet is unrelated', () => {
+    const filtered = filterMemoryPromptTextForPrompt(
+      [
+        '- Stable preference: user wants Dream memory topic labels compact.',
+        '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+      ].join('\n'),
+      '优化 Dream memory relevance，减少无关状态',
+    );
+
+    expect(filtered).toBe('- Stable preference: user wants Dream memory topic labels compact.');
+  });
+
+  it('keeps related transient markdown bullets alongside stable bullets', () => {
+    const filtered = filterMemoryPromptTextForPrompt(
+      [
+        '- Stable preference: user wants Dream memory topic labels compact.',
+        '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+      ].join('\n'),
+      '继续 billing dashboard export 的 work item',
+    );
+
+    expect(filtered).toBe([
+      '- Stable preference: user wants Dream memory topic labels compact.',
+      '- Current Work Item #884: build billing dashboard export. Next step: merge PR #884.',
+    ].join('\n'));
+  });
+
+  it('loads resident topic summaries only for topics recalled or named this turn', () => {
+    expect(selectResidentTopicScopes([
+      'sessions/s1/topic/dream/relevance',
+      'sessions/s1/topic/dream/recall',
+      'sessions/s1/topic/billing/export',
+    ], [
+      { scope: 'sessions/s1/topic/dream/relevance', body: 'Relevant Dream memory.' },
+      { scope: 'sessions/s1', body: 'Session memory.' },
+    ], 'please inspect dream recall')).toEqual([
+      'sessions/s1/topic/dream/relevance',
+      'sessions/s1/topic/dream/recall',
+    ]);
   });
 });
 
@@ -419,7 +526,7 @@ describe('Engine', () => {
 
       const events = [];
       for await (const event of engine.query({
-        prompt: 'test',
+        prompt: 'dream recall test',
         sessionId: 'g1',
         vpPersona: { vpId: 'vp1', name: 'VP One' },
       })) {

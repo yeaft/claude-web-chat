@@ -17,7 +17,12 @@
  */
 
 import { approxTokens } from './budget.js';
-import { cleanMemoryPromptText, isDuplicateMemoryText, rememberMemoryText } from './prompt-cleanup.js';
+import {
+  cleanMemoryPromptText,
+  filterMemoryPromptTextForPrompt,
+  isDuplicateMemoryText,
+  rememberMemoryText,
+} from './prompt-cleanup.js';
 import { isVpForeign } from './store.js';
 
 const RECENT_DEFAULT_CAPACITY = 64;
@@ -144,16 +149,18 @@ export class ActiveMemorySet {
    * system prompt. Each layer is greedily packed within its budget;
    * overflow is dropped from this turn but not from disk.
    *
+   * @param {{ userMsg?: string }} [opts]
    * @returns {AmsSnapshot}
    */
-  snapshot() {
+  snapshot(opts = {}) {
+    const userMsg = typeof opts.userMsg === 'string' ? opts.userMsg : '';
     const seenPromptText = new Set();
 
     // Resident: pack scopes by priority order (caller provides via insert
     // order — current group's own vp first, then user, etc.).
     const { picked: resPicked, cost: resCost } = pickMemoryItems({
       items: [...this._resident.entries()].map(([scope, summary]) => ({
-        scope, summary: cleanMemoryPromptText(summary),
+        scope, summary: filterMemoryPromptTextForPrompt(summary, userMsg),
       })),
       budget: this.budget.resident,
       seen: seenPromptText,
@@ -165,7 +172,7 @@ export class ActiveMemorySet {
     const { picked: recPicked, cost: recCost } = pickMemoryItems({
       items: [...this._recent.values()]
         .reverse()
-        .map(e => ({ ...e.seg, body: cleanMemoryPromptText(e.seg?.body) })),
+        .map(e => ({ ...e.seg, body: filterMemoryPromptTextForPrompt(e.seg?.body, userMsg) })),
       budget: this.budget.recent,
       seen: seenPromptText,
       textOf: seg => seg.body,
@@ -175,7 +182,7 @@ export class ActiveMemorySet {
     // OnDemand: insertion order from caller (already FTS-ranked).
     const { picked: odPicked, cost: odCost } = pickMemoryItems({
       items: [...this._onDemand.values()]
-        .map(seg => ({ ...seg, body: cleanMemoryPromptText(seg?.body) })),
+        .map(seg => ({ ...seg, body: filterMemoryPromptTextForPrompt(seg?.body, userMsg) })),
       budget: this.budget.onDemand,
       seen: seenPromptText,
       textOf: seg => seg.body,
