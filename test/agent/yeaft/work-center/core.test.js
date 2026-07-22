@@ -228,6 +228,49 @@ describe('Work Center core', () => {
     });
   });
 
+  it.each([
+    ['failed', { outcome: 'failed', error: 'blocked failure', summary: '', evidence: [] }, 'needs_attention', false],
+    ['waiting', { outcome: 'waiting', summary: 'Need input', evidence: [], waitingReason: 'Provide input' }, 'waiting', false],
+    ['failed after blocker completes', { outcome: 'failed', error: 'blocked failure', summary: '', evidence: [] }, 'needs_attention', true],
+  ])('keeps graph %s when a concurrent Run is deferred', (_label, blockedResult, expectedStatus, completeBlocker) => {
+    const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
+    controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
+    const triage = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(triage.run.id, 'boot-a', triage.run.leaseEpoch, completed('triage', {
+      plan: { workItemType: 'parallel-defer', actions: [
+        { id: 'blocked', type: 'research', objective: 'Expose the blocker', dependsOnActionIds: [], workspaceMode: 'read' },
+        { id: 'blocker', type: 'research', objective: 'Keep the workspace busy', dependsOnActionIds: [], workspaceMode: 'read' },
+        { id: 'deferred', type: 'implement', objective: 'Wait for the workspace', dependsOnActionIds: [], workspaceMode: 'isolated-write' },
+        { id: 'integrate', type: 'integrate', objective: 'Integrate the change', dependsOnActionIds: ['deferred'], workspaceMode: 'integrate' },
+      ] },
+    }));
+    const blocked = store.claimReadyAction('boot-a', 5_000);
+    const blocker = store.claimReadyAction('boot-a', 5_000);
+    const deferred = store.claimReadyAction('boot-a', 5_000);
+    controller.submit(blocked.run.id, 'boot-a', blocked.run.leaseEpoch, blockedResult);
+    if (completeBlocker) {
+      controller.submit(blocker.run.id, 'boot-a', blocker.run.leaseEpoch, completed('research'));
+    }
+
+    const detail = store.deferRun(
+      deferred.run.id,
+      'boot-a',
+      deferred.run.leaseEpoch,
+      'workspace busy',
+    );
+
+    expect(detail).toMatchObject({
+      status: expectedStatus,
+      currentActionId: blocked.action.id,
+    });
+    expect(detail.actions.find(action => action.id === deferred.action.id)).toMatchObject({
+      status: 'ready', attempt: 0, currentRunId: null,
+    });
+    if (!completeBlocker) {
+      expect(detail.actions.find(action => action.id === blocker.action.id)).toMatchObject({ status: 'running' });
+    }
+  });
+
   it('returns graph review changes to the persisted target and fences sibling late submits', () => {
     const workflowSnapshot = resolvePlanningWorkflowSnapshot({});
     controller.create(createInput({ workflowTemplate: 'ai-planned', workflowSnapshot }));
@@ -473,6 +516,33 @@ describe('Work Center core', () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
+  });
+
+  it('defers cross-WorkItem shared fallback while a read Action runs in the canonical workspace', async () => {
+    const readItem = store.createWorkItem(createInput({ id: 'workspace-reader' }), {
+      id: 'read-action', type: 'research', stageId: 'read', workspaceMode: 'read',
+    });
+    const writeItem = store.createWorkItem(createInput({ id: 'workspace-writer' }), {
+      id: 'write-action', type: 'implement', stageId: 'write', workspaceMode: 'isolated-write',
+    });
+    const reader = store.claimReadyAction('boot-a', 5_000);
+    const writer = store.claimReadyAction('boot-a', 5_000);
+    expect(reader.workItem.id).toBe(readItem.id);
+    expect(writer.workItem.id).toBe(writeItem.id);
+    const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
+
+    let prepareError;
+    try {
+      await runner.prepare({ ...writer, ownerBootId: 'boot-a' });
+    } catch (error) {
+      prepareError = error;
+    }
+
+    expect(prepareError).toMatchObject({ workItemPrepareDeferred: true });
+    expect(store.getAction(writer.action.id)).toMatchObject({
+      status: 'running', attempt: 1, workspaceMode: 'isolated-write',
+    });
+    expect(store.isActiveRun(reader.run.id, 'boot-a', reader.run.leaseEpoch)).toBe(true);
   });
 
   it('serializes a fallback shared Action across WorkItems after isolation fails', () => {

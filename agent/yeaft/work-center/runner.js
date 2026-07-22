@@ -756,6 +756,21 @@ export class WorkItemRunner {
         };
       }
       const dependencies = this.store.listActionDependencies(workItem.id, action.dependsOnStageIds || []);
+      if (dependencies.length > 0 && dependencies.every(dependency => (
+        dependency.workspaceMode === 'shared' && !dependency.workspace?.isolated
+      ))) {
+        const persistedAction = this.store.setActionWorkspaceForRun(
+          action.id,
+          run.id,
+          ownerBootId,
+          run.leaseEpoch,
+          action.generation,
+          null,
+          'shared',
+        );
+        if (!persistedAction) throw integrationFenceError('Work Center integration fallback lost its Run lease');
+        return { ...claim, action: persistedAction };
+      }
       const integration = prepareActionIntegration({
         workDir: workItem.workspaceKey || workItem.workDir,
         dependencies,
