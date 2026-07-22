@@ -10,6 +10,10 @@ import { WorkflowController } from '../../../../agent/yeaft/work-center/controll
 import { WorkItemWatcher } from '../../../../agent/yeaft/work-center/watcher.js';
 import { projectWorkItemDetail } from '../../../../agent/yeaft/work-center/projection.js';
 import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
+import {
+  defaultWorkCenterSettings,
+  resolvePlanningWorkflowSnapshot,
+} from '../../../../agent/yeaft/work-center/workflow.js';
 
 const engineOptions = [];
 const engineQueries = [];
@@ -108,6 +112,11 @@ describe('Work Center Runner execution resolution', () => {
         { id: 'linus', name: 'Linus', role: 'Systems Engineer', traits: ['implementation'] },
         { id: 'martin', name: 'Martin', role: 'Reviewer', traits: ['review'] },
       ],
+      workItem: {
+        goal: 'Implement the requested fix',
+        acceptanceCriteria: [],
+        workflowSnapshot: resolvePlanningWorkflowSnapshot(defaultWorkCenterSettings()),
+      },
       collector,
       isRunActive: () => true,
     });
@@ -115,6 +124,7 @@ describe('Work Center Runner execution resolution', () => {
     expect(tool.parameters.properties.actions.items.properties.type.enum).not.toContain('triage');
     expect(tool.parameters.properties.actions.items.properties.candidateVpIds.items.enum).toEqual(['linus', 'martin']);
     expect(tool.description).toContain('linus (Systems Engineer; implementation)');
+    expect(tool.description).toContain('exactly one integrate Action');
 
     const input = {
       summary: 'Planned the work', evidence: ['Inspected the current implementation'], acceptanceChecks: [],
@@ -129,6 +139,60 @@ describe('Work Center Runner execution resolution', () => {
     expect(collector.value).toEqual(input);
     expect(requestEndTurn).toHaveBeenCalledWith({ kind: 'work_item_plan_submitted' });
     await expect(tool.execute(input, { requestEndTurn })).rejects.toThrow(/already submitted/);
+  });
+
+  it('keeps triage active after an invalid isolated-write plan so the AI can correct it', async () => {
+    const collector = { value: null };
+    const requestEndTurn = vi.fn();
+    const workItem = {
+      goal: 'Implement and verify the requested change',
+      acceptanceCriteria: [],
+      workflowSnapshot: resolvePlanningWorkflowSnapshot(defaultWorkCenterSettings()),
+    };
+    const tool = createSubmitWorkItemPlanTool({
+      vps: [
+        { id: 'linus', role: 'Systems Engineer' },
+        { id: 'martin', role: 'Reviewer' },
+      ],
+      workItem,
+      collector,
+      isRunActive: () => true,
+    });
+    const implementAction = {
+      id: 'implement-fix', name: 'Implement fix', type: 'implement',
+      objective: 'Implement the requested repository change',
+      approach: 'Inspect the existing path, make the minimal code change, and add focused tests',
+      expectedOutcome: 'The implementation and focused tests are complete',
+      candidateVpIds: ['linus'], assignmentReason: 'Implementation owner',
+      dependsOnActionIds: [], workspaceMode: 'isolated-write',
+    };
+    const invalid = {
+      summary: 'Planned isolated implementation', evidence: ['Inspected the repository'],
+      acceptanceChecks: [],
+      contractPatch: { acceptanceCriteria: ['Focused regression tests pass'] },
+      workItemType: 'software-change', actions: [implementAction],
+    };
+
+    await expect(tool.execute(invalid, { requestEndTurn })).rejects.toThrow(
+      /require exactly one integration Action/,
+    );
+    expect(collector.value).toBeNull();
+    expect(requestEndTurn).not.toHaveBeenCalled();
+
+    const corrected = {
+      ...invalid,
+      actions: [implementAction, {
+        id: 'integrate-fix', name: 'Integrate fix', type: 'integrate',
+        objective: 'Merge the isolated implementation into the WorkItem integration branch',
+        approach: 'Integrate the completed implementation worktree and resolve conflicts without dropping tests',
+        expectedOutcome: 'The integrated branch contains the implementation and regression tests',
+        candidateVpIds: ['linus'], assignmentReason: 'Implementation owner can integrate the prepared worktree',
+        dependsOnActionIds: ['implement-fix'], workspaceMode: 'integrate',
+      }],
+    };
+    await expect(tool.execute(corrected, { requestEndTurn })).resolves.toContain('"submitted":true');
+    expect(collector.value).toEqual(corrected);
+    expect(requestEndTurn).toHaveBeenCalledWith({ kind: 'work_item_plan_submitted' });
   });
 
   it('rejects a planning tool submission after the Run lease is lost', async () => {

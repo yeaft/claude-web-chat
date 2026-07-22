@@ -31,7 +31,7 @@ import { loadMCPConfig } from '../config.js';
 import { MCPManager } from '../mcp.js';
 import { buildMcpFlattenedTools } from '../tools/mcp-tools.js';
 import { recallWorkspaceSessionContext } from './workspace-context.js';
-import { BUILT_IN_ACTION_TYPES } from './workflow.js';
+import { applyGeneratedPlan, BUILT_IN_ACTION_TYPES } from './workflow.js';
 import {
   MAINLINE_CONTEXT_HARD_LIMIT_BYTES,
   buildMainlineContextSnapshot,
@@ -300,14 +300,20 @@ export function planningVpCatalog(vps) {
   }));
 }
 
-export function createSubmitWorkItemPlanTool({ vps, collector, isRunActive }) {
+export function createSubmitWorkItemPlanTool({
+  vps,
+  workItem,
+  collector,
+  isRunActive,
+  reservedStageIds = [],
+}) {
   const vpCatalog = planningVpCatalog(vps);
   const vpIds = vpCatalog.map(vp => vp.id);
   const actionTypes = BUILT_IN_ACTION_TYPES.filter(type => type !== 'triage');
   const catalogDescription = `Action types: ${actionTypes.join(', ')}. Available VPs: ${vpCatalog.map(vp => `${vp.id} (${vp.role || vp.area || 'VP'}; ${vp.traits.join(', ') || 'no traits'})`).join('; ')}.`;
   return defineTool({
     name: 'SubmitWorkItemPlan',
-    description: `Submit the complete initial WorkItem contract and executable Action DAG. Every Action must describe this WorkItem's concrete objective, repository-aware approach, and verifiable expected outcome; never copy generic Action-type text. The reference workflow catalog does not replace this Action list. This tool records a Run-local proposal only; Work Center validates and persists it in the current Run finalization transaction. ${catalogDescription}`,
+    description: `Submit the complete initial WorkItem contract and executable Action DAG. Every Action must describe this WorkItem's concrete objective, repository-aware approach, and verifiable expected outcome; never copy generic Action-type text. The reference workflow catalog does not replace this Action list. If any Action uses isolated-write workspace mode, the plan must contain exactly one integrate Action in integrate workspace mode; that Action must depend directly on every isolated-write Action, and all later Actions must consume those writes through it. This tool validates the proposal immediately so you can correct an invalid graph in the same triage loop; Work Center persists only a valid proposal in the current Run finalization transaction. ${catalogDescription}`,
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -331,6 +337,19 @@ export function createSubmitWorkItemPlanTool({ vps, collector, isRunActive }) {
     async execute(input, ctx = {}) {
       if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       if (collector.value) throw new Error('WorkItem plan was already submitted for this Run');
+      const effectiveWorkItem = input.contractPatch ? {
+        ...workItem,
+        goal: input.contractPatch.goal ?? workItem.goal,
+        acceptanceCriteria: input.contractPatch.acceptanceCriteria ?? workItem.acceptanceCriteria,
+      } : workItem;
+      applyGeneratedPlan(effectiveWorkItem, {
+        workItemType: input.workItemType,
+        actions: input.actions,
+      }, {
+        availableVpIds: vpIds,
+        reservedStageIds,
+      });
+      if (!isRunActive()) throw new Error('Work Center Run is no longer active');
       collector.value = structuredClone(input);
       ctx.requestEndTurn?.({ kind: 'work_item_plan_submitted' });
       return JSON.stringify({ submitted: true, actionCount: input.actions.length });
@@ -860,7 +879,13 @@ export class WorkItemRunner {
       && workItem?.workflowSnapshot?.planningMode === 'ai';
     const runTools = [];
     if (planToolEnabled) runTools.push(createSubmitWorkItemPlanTool({
-      vps: this.registry.listVps(), collector: planCollector, isRunActive,
+      vps: this.registry.listVps(),
+      workItem,
+      collector: planCollector,
+      isRunActive,
+      reservedStageIds: executionAction.stageId?.startsWith('replan-')
+        ? this.store.getWorkItemDetail(workItem.id).actions.map(item => item.stageId)
+        : [],
     }));
     if (!planToolEnabled && workItem?.workflowSnapshot?.executionMode === 'graph') {
       runTools.push(createProposeWorkItemActionsTool({
