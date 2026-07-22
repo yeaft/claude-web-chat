@@ -991,6 +991,19 @@ export class WorkItemStore {
     });
   }
 
+  #graphWorkItemState(workItemId) {
+    const remaining = this.db.prepare(`SELECT id, status FROM actions WHERE work_item_id = ?
+      AND status IN ('ready', 'running', 'waiting', 'failed') ORDER BY sequence`).all(workItemId);
+    const blocked = remaining.find(candidate => candidate.status === 'waiting' || candidate.status === 'failed');
+    const runnable = remaining.find(candidate => candidate.status === 'ready' || candidate.status === 'running');
+    return {
+      status: blocked ? (blocked.status === 'waiting' ? 'waiting' : 'needs_attention')
+        : runnable ? (remaining.some(candidate => candidate.status === 'running') ? 'running' : 'ready')
+          : 'done',
+      currentActionId: blocked?.id || runnable?.id || null,
+    };
+  }
+
   deferRun(runId, ownerBootId, leaseEpoch, reason = 'Work Center resource is temporarily busy') {
     return withTransaction(this.db, () => {
       const active = this.#activeRunRow(runId, ownerBootId, leaseEpoch, true);
@@ -1013,12 +1026,12 @@ export class WorkItemStore {
         throw new Error('Work Center deferred Run lost the current Action fence');
       }
       const graphMode = isGraphWorkItem(workItem);
+      const graphState = graphMode ? this.#graphWorkItemState(workItem.id) : null;
       const changedWorkItem = graphMode
-        ? this.db.prepare(`UPDATE work_items SET status = CASE WHEN EXISTS (
-            SELECT 1 FROM actions sibling WHERE sibling.work_item_id = work_items.id
-              AND sibling.status = 'running'
-          ) THEN 'running' ELSE 'ready' END, current_run_id = NULL, updated_at = ?
-          WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention')`).run(now, workItem.id)
+        ? this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?, current_run_id = NULL,
+            updated_at = ? WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention')`).run(
+            graphState.status, graphState.currentActionId, now, workItem.id,
+          )
         : this.db.prepare(`UPDATE work_items SET status = 'ready', current_run_id = NULL, updated_at = ?
           WHERE id = ? AND status = 'running' AND current_action_id = ? AND current_run_id = ?`).run(
           now, workItem.id, action.id, runId,
@@ -1950,14 +1963,9 @@ export class WorkItemStore {
       let currentActionId = nextAction?.id ?? (transition.keepCurrentAction ? action.id : null);
       let changedWorkItem;
       if (transition.graphAdvance) {
-        const remaining = this.db.prepare(`SELECT id, status FROM actions WHERE work_item_id = ?
-          AND status IN ('ready', 'running', 'waiting', 'failed') ORDER BY sequence`).all(workItem.id);
-        const blocked = remaining.find(candidate => candidate.status === 'waiting' || candidate.status === 'failed');
-        const runnable = remaining.find(candidate => candidate.status === 'ready' || candidate.status === 'running');
-        workItemStatus = blocked ? (blocked.status === 'waiting' ? 'waiting' : 'needs_attention')
-          : runnable ? (remaining.some(candidate => candidate.status === 'running') ? 'running' : 'ready')
-            : 'done';
-        currentActionId = blocked?.id || runnable?.id || null;
+        const graphState = this.#graphWorkItemState(workItem.id);
+        workItemStatus = graphState.status;
+        currentActionId = graphState.currentActionId;
         changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
           current_run_id = NULL, ledger_revision = ledger_revision + ?, updated_at = ?
           WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention')
