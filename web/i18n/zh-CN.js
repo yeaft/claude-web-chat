@@ -580,13 +580,11 @@ export default {
   'settings.sandbox.stage.complete': '已完成',
   'settings.sandbox.unavailable.disabled': '此部署尚未启用 Sandbox。',
   'settings.sandbox.unavailable.notEntitled': '此账号暂不可使用 Sandbox。',
-  'settings.sandbox.unavailable.capacityUnavailable': 'Sandbox 暂时不可用。',
+  'settings.sandbox.error.SANDBOX_LOAD_FAILED': '无法加载 Sandbox 状态。请关闭设置后重试。',
   'settings.sandbox.error.SANDBOX_CREATE_FAILED': '无法创建 Sandbox，请稍后重试。',
   'settings.sandbox.error.SANDBOX_ACTION_FAILED': '无法安排 Sandbox 操作，请稍后重试。',
   'settings.sandbox.error.SANDBOX_OPERATION_TIMEOUT': '操作已超时，请重试或移除 Sandbox。',
   'settings.sandbox.error.SANDBOX_RUNTIME_FAILED': 'Sandbox 运行时报告失败。',
-  'settings.sandbox.error.SANDBOX_INVALID_AGENT_NAME': '请输入 1–64 个字母、数字、空格、点、短横线或下划线。',
-
   // Settings - Account
   'settings.account.username': '用户名',
   'settings.account.role': '角色',

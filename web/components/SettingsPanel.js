@@ -294,11 +294,14 @@ export default {
             <!-- Managed Sandbox -->
             <div v-show="activeTab === 'sandbox'" class="settings-pane">
               <div class="sp-group">
-                <div v-if="sandboxLoading" class="sp-desc">{{ $t('common.loading') }}</div>
+                <div v-if="sandboxLoading" class="sp-desc" role="status">{{ $t('common.loading') }}</div>
+                <div v-else-if="sandboxLoadError" class="sp-error" role="alert">
+                  {{ $t('settings.sandbox.error.SANDBOX_LOAD_FAILED') }}
+                </div>
                 <template v-else-if="sandboxSnapshot">
                   <div class="sp-row">
                     <div class="sp-row-left">
-                      <span class="sp-label">{{ sandboxSnapshot.agentName }}</span>
+                      <span class="sp-label sp-text-wrap">{{ sandboxSnapshot.agentName }}</span>
                       <span class="sp-desc-small">{{ $t('settings.sandbox.size.' + sandboxSnapshot.sizeId) }}</span>
                     </div>
                     <span class="sp-badge">{{ $t('settings.sandbox.state.' + sandboxSnapshot.observedState) }}</span>
@@ -530,6 +533,7 @@ export default {
       qrDataUrl: '',
       sandboxLoading: false,
       sandboxSubmitting: false,
+      sandboxLoadError: false,
       sandboxCapability: { available: false, reasonCode: 'SANDBOX_DISABLED', catalog: [] },
       sandboxSnapshot: null,
       sandboxAgentName: '',
@@ -750,6 +754,7 @@ export default {
 
     async loadSandbox({ background = false } = {}) {
       if (!background) this.sandboxLoading = true;
+      if (!background) this.sandboxLoadError = false;
       try {
         const headers = this.getHeaders();
         const [capabilityResponse, snapshotResponse] = await Promise.all([
@@ -766,6 +771,7 @@ export default {
           this.sandboxSizeId = this.sandboxCapability.catalog[0]?.id || 'normal';
         }
       } catch {
+        this.sandboxLoadError = true;
         this.sandboxCapability = { available: false, reasonCode: 'SANDBOX_CAPACITY_UNAVAILABLE', catalog: [] };
         if (background) this.stopSandboxPolling();
       } finally {

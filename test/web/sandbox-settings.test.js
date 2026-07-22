@@ -7,14 +7,15 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const component = readFileSync(join(root, 'web/components/SettingsPanel.js'), 'utf8');
 const en = readFileSync(join(root, 'web/i18n/en.js'), 'utf8');
 const zh = readFileSync(join(root, 'web/i18n/zh-CN.js'), 'utf8');
+const css = readFileSync(join(root, 'web/styles/settings.css'), 'utf8');
 
 describe('Sandbox Settings contract', () => {
   it('keeps the entry visible and gates create from server capability', () => {
     expect(component).toContain("{ key: 'sandbox', label: this.$t('settings.tabs.sandbox') }");
-    expect(component).toContain("v-if=\"!sandboxCapability.available\"");
-    expect(component).toContain("if (!this.sandboxCapability.available || this.sandboxSubmitting) return;");
-    expect(component).toContain("fetch('/api/sandbox/capability'");
-    expect(component).toContain("fetch('/api/sandbox'");
+    expect(component).toContain('v-if="!sandboxCapability.available"');
+    expect(component).toContain('if (!this.sandboxCapability.available || this.sandboxSubmitting) return;');
+    expect(component).toContain("fetch('/api/sandbox/capability',");
+    expect(component).toContain("fetch('/api/sandbox',");
     expect(component).toContain("requestSandboxAction('stop')");
     expect(component).toContain("requestSandboxAction('start')");
     expect(component).toContain("requestSandboxAction('retry')");
@@ -27,7 +28,7 @@ describe('Sandbox Settings contract', () => {
   it('polls persisted operations while Settings remains on the Sandbox tab', () => {
     expect(component).toContain("snapshot?.operation?.status === 'pending'");
     expect(component).toContain("snapshot?.operation?.status === 'running'");
-    expect(component).toContain("await this.loadSandbox({ background: true })");
+    expect(component).toContain('await this.loadSandbox({ background: true })');
     expect(component).toContain("if (this.activeTab === 'sandbox') this.loadSandbox()");
     expect(component).toContain('beforeUnmount()');
     expect(component).toContain('this.stopSandboxPolling()');
@@ -42,5 +43,19 @@ describe('Sandbox Settings contract', () => {
     }
     const template = component.slice(component.indexOf('template: `'), component.indexOf('directives:'));
     expect(template).not.toMatch(/hostId|host_id|reservedCount|other users/i);
+  });
+
+  it('covers loading, empty, disabled, error, and long-name states', () => {
+    expect(component).toContain('v-if="sandboxLoading"');
+    expect(component).toContain('v-else-if="sandboxLoadError"');
+    expect(component).toContain('v-else-if="sandboxSnapshot"');
+    expect(component).toContain('v-if="!sandboxCapability.available"');
+    expect(component).toContain('sp-label sp-text-wrap');
+    expect(css).toContain('.sp-text-wrap');
+    expect(css).toContain('overflow-wrap: anywhere');
+    for (const locale of [en, zh]) {
+      expect(locale).toContain("'settings.sandbox.error.SANDBOX_LOAD_FAILED'");
+      expect(locale).toContain("'settings.sandbox.state.recovery_required'");
+    }
   });
 });

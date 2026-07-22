@@ -11,5 +11,34 @@ Sandbox Agent 默认关闭。当前 mixed-use Server Host 不得注册为 Sandbo
 Reconciler 仅在 `SANDBOX_ENABLED=true` 且 `SANDBOX_CONTROLLER_URL` 为 HTTPS，并同时配置 `SANDBOX_CONTROLLER_TOKEN`、`SANDBOX_CONTROLLER_CLIENT_CERT`、`SANDBOX_CONTROLLER_CLIENT_KEY`、`SANDBOX_CONTROLLER_CA_CERT`、`SANDBOX_OPERATION_SIGNING_PRIVATE_KEY`、`SANDBOX_CONTROLLER_RESULT_PUBLIC_KEY`、`SANDBOX_HELPER_ATTESTATION_PUBLIC_KEY`、`SANDBOX_CONTROLLER_HOST_ID` 与独立的 `SANDBOX_BOOTSTRAP_SIGNING_KEY` 时启动。Controller 请求使用专用客户端证书和显式 CA 信任执行双向 TLS；系统 CA、Bearer token 或 HTTPS 本身均不能替代该身份门禁。Server 使用独立 Ed25519 私钥签名 Controller operation envelope，专用 Host 只持有对应公钥；Controller 使用另一把私钥签名 result，Server 只持有 `SANDBOX_CONTROLLER_RESULT_PUBLIC_KEY`。两类消息均包含版本、签发/过期时间或时钟窗口与单次 nonce；Controller result 必须回绑 operation、generation、Host epoch 和请求 nonce，重放、迟到或未签名结果不会进入状态结算。Bearer token 仅作为传输端点认证，不能替代消息完整性与防重放校验。私钥必须由 secret manager 注入、不得复用用户或通用 Agent secret，并需在 Server 重启后保持稳定；任一密钥缺失时 fail closed。它从持久化 operation 恢复并只向指定专用 Host 分发 allowlisted operation；网络失败不会伪造状态，后续 tick 会使用同一 operation 的持久 credential 记录重建相同 bootstrap envelope，不会撤销既有 token 或长期 credential。每个 tick 还会巡检所有仍持有 reservation 的 Sandbox：Host epoch 变化、qualification/健康/freshness 丢失，或超过 `SANDBOX_AGENT_RECOVERY_GRACE_MS` 后 Running Agent 仍未通过 authenticated liveness 检查，都会持久进入 `recovery_required`、吊销 credential 并保留 reservation；该状态不会自动跳回 Running，必须经受控 Remove 或恢复流程处理。Controller 回报必须携带 `operationId`、`generation` 与 `hostEpoch`。Server 在结算结果时会重新验证 Host epoch、qualification、freshness 以及 Controller/Helper/runtime/quota/network 健康状态；任一门禁丢失都拒绝推进状态。Host epoch 改变会持久进入 `recovery_required`、吊销该 Sandbox 的 credential 并继续保留 reservation。用户仍可发起 Remove；新的 Remove operation 优先绑定同一 Host 当前持久 epoch，Host 记录缺失时保留 Sandbox 已持久化的最后 fenced epoch。Controller 分发仍只面向配置绑定的专用 Host；Remove 结果结算不依赖 Host 恢复 qualification，而依赖 operation/generation/epoch fence 和完整资源 absence proof，避免失格 Host 制造无法释放的 reservation 终态。Create、Start 和其他推进运行态的结果仍要求 Host 通过全部 qualification 与健康门禁。Remove 成功回报必须逐项证明 container、storage、quota、network 与 credential 均不存在；缺少任一证明时 reservation 继续保留。超时 operation 会进入稳定失败态，仍由 Retry 或 Remove 恢复，禁止人工直接清除 reservation。
 
 账户删除同样遵守 reservation 边界：只要用户仍持有 Sandbox reservation，删除请求返回稳定的 `SANDBOX_REMOVE_REQUIRED` 冲突，用户和 Sandbox 数据均不改变。只有 Remove 已完成真实资源 absence proof 和原子结算后，账户删除事务才会清理已释放的 Sandbox 历史并删除用户，避免外键错误或绕过容量结算。
-
 用户 entitlement 只能由已认证管理员通过 `PUT /api/admin/sandbox/entitlements/:userId` 显式设置；请求只接受布尔 `enabled`，目标用户必须存在。每次变更与执行者用户名会写入 `sandbox_entitlement_audit_events`。该接口不修改平台开关、Host qualification 或容量账本，因此 entitlement 本身不能绕过任何创建门禁。
+
+## 部署与 Host qualification
+
+1. 在专用 Host 安装固定版本 Podman、gVisor、XFS quota 和 nftables，把 Controller 与 Helper 配置为 root-owned systemd service/socket；Server Host 不得复用这些权限。
+2. 将数据盘以 XFS project quota 挂载到 `SANDBOX_DATA_ROOT`，预拉取并验证 `SANDBOX_IMAGE_DIGEST`。
+3. 在仍保持 `SANDBOX_ENABLED=false` 时运行 `node scripts/qualify-sandbox-host.mjs <report.json>`。该脚本只做静态能力采集；随后必须按 `docs/operations/sandbox-gap-matrix.md` 执行资源、网络、Credential、重启和故障注入矩阵，并把结果与 report 一起留档。
+4. 只有第 21 节全部证据经过独立审查后，才可对批准范围设置 `SANDBOX_ENABLED=true`。单独的 attestation、脚本成功或单元测试成功都不是生产放行。
+
+## 监控与告警
+
+持续监控 Host qualification freshness、reservation 与实际资源漂移、operation deadline、Agent heartbeat、Helper journal/epoch 错误、quota 使用、egress deny 和 removal age。qualification 失败、epoch 回退、签名失败、禁止网段可达、reservation 漂移、磁盘安全水位或长期 `recovery_required` 必须告警。
+
+## 故障恢复
+
+- Controller/Server 重启：从持久 operation 恢复，禁止手工改状态或释放 reservation。
+- Helper 中断：保持 recovery fence；核验 journal、容器、目录、quota、network 和 credential 后，使用受控 Remove 收敛。不得删除 journal 来“修复”。
+- Host 重启或 epoch 变化：先禁用 Host，吊销受影响 credential，激活并持久确认新 epoch，再 reconcile；旧 envelope 和迟到 result 必须拒绝。
+- 强制 Remove：只能走签名 Remove operation，且必须取得五项 absence proof。Host 离线时保持 deletion pending。
+
+## 回滚
+
+1. 立即设置 `SANDBOX_ENABLED=false` 并重启 Server，使新 capability fail closed。
+2. 禁用 Host qualification/Controller 分发，吊销 bootstrap 和长期 credential。
+3. 保留数据库、Helper journal、Host 数据盘与审计日志；不要直接删除 reservation。
+4. 对现存实例逐个执行受控 Remove，取得完整 absence proof 后再释放容量。
+5. 验证无残留容器、目录、quota、network identity 和 credential 后，才回滚二进制或镜像。
+
+## 账户删除
+
+账户仍持有 reservation 时删除返回 `SANDBOX_REMOVE_REQUIRED`。运维先吊销 credential，再发起 Remove；只有 Controller/Helper 证明运行时与持久资源完全不存在并完成原子结算后，才重试账户物理删除。Host 离线或证据不完整时保持 pending，不得绕过。

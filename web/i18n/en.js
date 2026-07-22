@@ -617,13 +617,11 @@ export default {
   'settings.sandbox.unavailable.disabled': 'Sandbox is not enabled for this deployment.',
   'settings.sandbox.unavailable.notEntitled': 'Sandbox is not available for this account.',
   'settings.sandbox.unavailable.capacityUnavailable': 'Sandbox is temporarily unavailable.',
+  'settings.sandbox.error.SANDBOX_LOAD_FAILED': 'Sandbox status could not be loaded. Close Settings and try again.',
   'settings.sandbox.error.SANDBOX_CREATE_FAILED': 'Sandbox could not be created. Try again later.',
   'settings.sandbox.error.SANDBOX_ACTION_FAILED': 'Sandbox action could not be scheduled. Try again later.',
   'settings.sandbox.error.SANDBOX_OPERATION_TIMEOUT': 'The operation timed out. Retry or remove the Sandbox.',
   'settings.sandbox.error.SANDBOX_RUNTIME_FAILED': 'The Sandbox runtime reported a failure.',
-  'settings.sandbox.error.SANDBOX_INVALID_AGENT_NAME': 'Use 1–64 letters, numbers, spaces, dots, dashes, or underscores.',
-
-  // Settings - Account
   'settings.account.username': 'Username',
   'settings.account.role': 'Role',
   'settings.account.email': 'Email',

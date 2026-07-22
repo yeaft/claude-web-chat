@@ -142,10 +142,7 @@ describe('managed Sandbox Helper authorization boundary', () => {
       operationId: 'op-2',
       hostEpoch: 'epoch-2',
       nonce: 'nonce-2'
-    }))).rejects.toThrow('invalid operation envelope');
-
-    expect(executor.execute).toHaveBeenCalledOnce();
-    instance.close();
+    }))).rejects.toThrow('inactive Host epoch');
   });
 
   it('fails closed when the executor cannot prove the requested resource policy', async () => {
@@ -242,10 +239,56 @@ describe('managed Sandbox Helper authorization boundary', () => {
       operationId: 'op-2',
       hostEpoch: 'epoch-2',
       nonce: 'nonce-2'
-    }))).rejects.toThrow('invalid operation envelope');
-    expect(restartedExecutor.execute).not.toHaveBeenCalled();
-    expect(executor.execute).toHaveBeenCalledOnce();
+    }))).rejects.toThrow('inactive Host epoch');
+  });
+
+  it('durably activates epochs, rejects conflicts and rollback, and fences late envelopes', async () => {
+    const { instance, root } = helper();
+
+    expect(instance.activeEpoch()).toEqual({ epoch: 'epoch-1', digest: 'sha256:fixed' });
+    await expect(instance.activateEpoch('epoch-1', 'sha256:fixed')).resolves.toEqual({
+      epoch: 'epoch-1', digest: 'sha256:fixed', activated: false
+    });
+    await expect(instance.activateEpoch('epoch-1', 'sha256:other'))
+      .rejects.toThrow('conflicting epoch activation');
+    await instance.activateEpoch('epoch-2', 'sha256:fixed');
+    await expect(instance.execute(signedOperation({ operationId: 'late', nonce: 'late' })))
+      .rejects.toThrow('inactive Host epoch');
+    await expect(instance.activateEpoch('epoch-1', 'sha256:fixed'))
+      .rejects.toThrow('epoch rollback');
+    instance.close();
+
+    const restarted = createSandboxHelper({
+      config: {
+        hostId: 'dedicated-1', hostEpoch: 'epoch-1', imageDigest: 'sha256:fixed',
+        operationSigningPublicKey: publicKey, attestationSigningPrivateKey: attestationPrivateKey,
+        journalPath: join(root, 'helper.db')
+      },
+      executor: { execute: vi.fn(async () => successfulRuntimeResult()) }
+    });
+    expect(restarted.activeEpoch()).toEqual({ epoch: 'epoch-2', digest: 'sha256:fixed' });
+    await expect(restarted.execute(signedOperation({
+      operationId: 'current', hostEpoch: 'epoch-2', nonce: 'current'
+    }))).resolves.toMatchObject({ success: true });
     restarted.close();
+  });
+
+  it('waits for an executing operation before committing a new epoch', async () => {
+    let finish;
+    const executor = { execute: vi.fn(() => new Promise(resolve => { finish = resolve; })) };
+    const { instance } = helper(executor);
+    const execution = instance.execute(signedOperation());
+    await vi.waitFor(() => expect(executor.execute).toHaveBeenCalledOnce());
+
+    let activated = false;
+    const activation = instance.activateEpoch('epoch-2', 'sha256:fixed').then(() => { activated = true; });
+    await Promise.resolve();
+    expect(activated).toBe(false);
+    finish(successfulRuntimeResult());
+    await execution;
+    await activation;
+    expect(instance.activeEpoch().epoch).toBe('epoch-2');
+    instance.close();
   });
 
   it('fails closed after restart finds an interrupted privileged operation', async () => {
