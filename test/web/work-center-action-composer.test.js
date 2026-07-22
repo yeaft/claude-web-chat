@@ -278,6 +278,26 @@ describe('Work Center Action composer scope', () => {
     );
   });
 
+  it('keeps a successfully updated sibling Action selected instead of following the display pointer', async () => {
+    const context = makeContext();
+    context.selected.currentActionId = 'action-2';
+    context.selectedActionId = 'action-1';
+    context.selectedAction = { id: 'action-1', status: 'running', generation: 3 };
+    context.store.sendWorkItemActionInput.mockResolvedValue({
+      currentActionId: 'action-2',
+      actions: [
+        { id: 'action-1', status: 'running', generation: 3 },
+        { id: 'action-2', status: 'waiting', generation: 1 },
+      ],
+    });
+
+    await WorkCenterPage.methods.guideSelectedAction.call(context);
+
+    expect(context.selectedActionId).toBe('action-1');
+    expect(context.actionGuidance).toBe('');
+    expect(context.guidanceAttachments).toEqual([]);
+  });
+
   it('preserves blocked graph composer input when the send fails', async () => {
     const context = makeContext();
     context.selected.workflowSnapshot = { executionMode: 'graph' };

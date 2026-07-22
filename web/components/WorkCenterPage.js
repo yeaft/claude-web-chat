@@ -674,7 +674,8 @@ export default {
         if (this.actionComposerScope !== scope) return;
         this.actionGuidance = '';
         this.guidanceAttachments = [];
-        const nextActionId = next?.currentActionId || this.selectedActionId;
+        const targetStillExists = next?.actions?.some(action => action?.id === actionId);
+        const nextActionId = targetStillExists ? actionId : (next?.currentActionId || this.selectedActionId);
         if (nextActionId !== this.selectedActionId) this.resetActionComposer();
         this.selectedActionId = nextActionId;
       } catch (error) {

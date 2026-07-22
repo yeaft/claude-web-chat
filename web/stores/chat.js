@@ -1610,9 +1610,11 @@ export const useChatStore = defineStore('chat', {
       }, target);
       await this.listWorkItems(target);
       const current = this.workCenterDetailByAgent[target];
+      const currentAction = current?.actions?.find(action => action?.id === actionId);
       const requestStillCurrent = current?.id === id
-        && current.currentActionId === actionId
-        && Number(current.revision) === Number(revision);
+        && Number(current.revision) === Number(revision)
+        && currentAction
+        && Number(currentAction.generation) === Number(actionGeneration);
       if (this._workCenterActionInputGenerationByAgent[target] === generation
         && requestStillCurrent
         && !isWorkItemDetailResponseStale(detail, current)) {

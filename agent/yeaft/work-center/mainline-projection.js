@@ -266,12 +266,24 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
   const sessionContext = normalizeSessionContextSnapshot(detail.sessionContext);
   const workItemMessages = workItemMessageView(detail.messages);
   const guidance = guidanceView(detail.events, action.id);
-  const userEntries = [
-    ...workItemMessages.map(value => ({ kind: 'workItemMessages', value })),
+  const newestFirstMessages = workItemMessages.slice().reverse();
+  for (const [index, message] of newestFirstMessages.entries()) {
+    const next = {
+      ...snapshot.userContext,
+      workItemMessages: [message, ...snapshot.userContext.workItemMessages],
+      includedCount: snapshot.userContext.includedCount + 1,
+      omittedCount: 0,
+    };
+    const included = trySet('userContext', next);
+    if (index === 0 && !included) {
+      throw mainlineContextBlocked('Latest WorkItem message exceeds the Mainline prompt budget');
+    }
+  }
+  const otherUserEntries = [
     ...guidance.map(value => ({ kind: 'guidance', value })),
     ...sessionContext.map(value => ({ kind: 'sessionContext', value })),
   ];
-  for (const entry of userEntries) {
+  for (const entry of otherUserEntries) {
     const next = {
       ...snapshot.userContext,
       [entry.kind]: [...snapshot.userContext[entry.kind], entry.value],
@@ -280,7 +292,8 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
     };
     trySet('userContext', next);
   }
-  snapshot.userContext.omittedCount = userEntries.length - snapshot.userContext.includedCount;
+  snapshot.userContext.omittedCount = workItemMessages.length + otherUserEntries.length
+    - snapshot.userContext.includedCount;
 
   const siblingEntries = Object.entries(projection.canonicalActionResults)
     .filter(([actionId]) => actionId !== action.id && !dependencies.some(item => item.actionId === actionId))
