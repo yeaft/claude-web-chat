@@ -62,6 +62,16 @@ describe('Grep tool', () => {
     expect(result).toBe('src/match.js');
   });
 
+  it('rejects invalid head limits through the default execute path', async () => {
+    writeFileSync(join(dir, 'many.js'), 'needle 1\nneedle 2\nneedle 3\n');
+
+    expect(grepTool.parameters.properties.head_limit).toMatchObject({ type: 'integer', minimum: 1 });
+    for (const headLimit of [-1, 0, 1.5]) {
+      const result = await grepTool.execute({ pattern: 'needle', head_limit: headLimit }, { cwd: dir });
+      expect(JSON.parse(result)).toEqual({ error: 'head_limit must be a positive integer' });
+    }
+  });
+
   it('fallback stops at the global result limit and UTF-8 byte budget', async () => {
     writeFileSync(join(dir, 'many.js'), Array.from({ length: 500 }, (_, i) => `needle ${i} ${'界'.repeat(100)}`).join('\n'));
     const limited = await grepTool.execute({ pattern: 'needle', output_mode: 'content', head_limit: 3 }, { cwd: dir });

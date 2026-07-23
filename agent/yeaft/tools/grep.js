@@ -447,7 +447,8 @@ Guidelines:
         },
       },
       head_limit: {
-        type: 'number',
+        type: 'integer',
+        minimum: 1,
         description: {
           en: 'Limit output to first N results (default: 250)',
           zh: '限制输出前 N 条结果（默认 250）',
@@ -467,6 +468,10 @@ Guidelines:
     } = input;
 
     if (!pattern) return JSON.stringify({ error: 'pattern is required' });
+    if (!Number.isInteger(head_limit) || head_limit < 1) {
+      return JSON.stringify({ error: 'head_limit must be a positive integer' });
+    }
+    const headLimit = Math.min(head_limit, 10000);
 
     const cwd = ctx?.cwd || process.cwd();
     const absPath = searchPath ? resolve(cwd, searchPath) : cwd;
@@ -486,7 +491,7 @@ Guidelines:
       before,
       after,
       multiline,
-      maxResults: Math.max(1, Math.min(Number(head_limit) || MAX_LINES, 10000)),
+      maxResults: headLimit,
       byteBudget: SEARCH_RESULT_BYTES,
     };
 
@@ -507,9 +512,9 @@ Guidelines:
       // Limit output lines, then enforce the byte budget at the actual tool
       // boundary so prefixes, JSON escaping, and result markers are included.
       const lines = result.trim().split('\n');
-      if (lines.length > head_limit) {
+      if (lines.length > headLimit) {
         return boundToolOutput(
-          lines.slice(0, head_limit).join('\n') + `\n\n... (${lines.length - head_limit} more results)`,
+          lines.slice(0, headLimit).join('\n') + `\n\n... (${lines.length - headLimit} more results)`,
         );
       }
 
