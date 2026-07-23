@@ -385,6 +385,21 @@ describe('Work Center event projection', () => {
     });
     expect(projected.messages.map(message => message.text))
       .toEqual(['Current generation input', 'Current generation response']);
+    detail.currentActionId = 'other-action';
+    detail.actions.push({
+      id: 'other-action', sequence: 2, type: 'test', stageId: 'test', status: 'ready',
+      generation: 1, brief: { objective: 'Keep the tested Action historical' },
+    });
+    expect(projectWorkItemDetail(detail).actions[0]).toMatchObject({
+      messageCount: 2,
+      messageCursor: '2',
+    });
+
+    detail.runs = [];
+    expect(projectWorkItemDetail(detail).actions[0]).toMatchObject({
+      messageCount: 1,
+      messageCursor: '1',
+    });
   });
 
   it('merges user Action input and assistant Run responses without exposing event data generally', () => {

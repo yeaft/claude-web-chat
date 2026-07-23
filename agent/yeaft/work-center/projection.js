@@ -307,6 +307,7 @@ function actionExecution(action, runs, events, includeBody = true) {
   if (matchingRuns.length === 0) {
     const inputMessageCount = Array.isArray(events) ? events.filter(event => (
       event?.actionId === action?.id
+        && matchesActionGeneration(event, action)
         && ['action.guidance_added', 'action.input_added'].includes(event.type)
     )).length : 0;
     const messages = includeBody
@@ -354,6 +355,7 @@ function actionExecution(action, runs, events, includeBody = true) {
     ? 0
     : (Array.isArray(events) ? events : []).filter(event => (
         event?.actionId === action?.id
+          && matchesActionGeneration(event, action)
           && ['action.guidance_added', 'action.input_added'].includes(event.type)
       )).length;
   const allMessages = includeBody ? actionMessages(action, matchingRuns, events) : [];
