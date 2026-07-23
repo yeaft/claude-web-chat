@@ -9,6 +9,7 @@ import { ConversationStore } from '../../../agent/yeaft/conversation/persist.js'
 import { AmsRegistry } from '../../../agent/yeaft/memory/ams-registry.js';
 import { writeSummary } from '../../../agent/yeaft/memory/store.js';
 import { NullTrace, DebugTrace } from '../../../agent/yeaft/debug-trace.js';
+import { buildMcpFlattenedTools } from '../../../agent/yeaft/tools/mcp-tools.js';
 
 // ─── Mock Adapter ─────────────────────────────────────────────
 
@@ -692,6 +693,94 @@ describe('Engine', () => {
         id: 'call_ask',
         name: 'ask_test',
       });
+    });
+
+    it('marks structured tool error envelopes as failed executions', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_structured_error', name: 'structured_error_tool', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'The tool returned an error.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const records = [];
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolStats: { record: entry => records.push(entry) },
+      });
+      engine.registerTool({
+        name: 'structured_error_tool',
+        description: 'Returns a structured failure',
+        parameters: {},
+        errorOutput: 'json-error-envelope',
+        execute: async () => JSON.stringify({ error: 'Path not found' }),
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'use the tool' })) events.push(event);
+
+      expect(events.find(event => event.type === 'tool_end')).toMatchObject({ isError: true });
+      expect(events.find(event => event.type === 'tool_exec')).toMatchObject({ isError: true });
+      expect(mockAdapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({ isError: true });
+      expect(records).toEqual([
+        expect.objectContaining({ name: 'structured_error_tool', isError: true, errorMessage: '{"error":"Path not found"}' }),
+      ]);
+    });
+
+    it('propagates resolved MCP isError results through events, model messages, and stats', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_mcp_error', name: 'mcp__secure__read', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'The MCP tool failed.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const records = [];
+      const mcpManager = {
+        listTools: () => [{
+          name: 'secure__read',
+          server: 'secure',
+          description: 'Read protected data',
+          inputSchema: { type: 'object', properties: {} },
+        }],
+        callTool: async () => ({
+          isError: true,
+          content: [{ type: 'text', text: 'permission denied' }],
+        }),
+      };
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolStats: { record: entry => records.push(entry) },
+      });
+      for (const tool of buildMcpFlattenedTools(mcpManager)) engine.registerTool(tool);
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'read protected data' })) events.push(event);
+
+      expect(events.find(event => event.type === 'tool_end')).toMatchObject({
+        output: 'Error: permission denied',
+        isError: true,
+      });
+      expect(events.find(event => event.type === 'tool_exec')).toMatchObject({ isError: true });
+      expect(mockAdapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({
+        content: 'Error: permission denied',
+        isError: true,
+      });
+      expect(records).toEqual([
+        expect.objectContaining({
+          name: 'mcp__secure__read',
+          isError: true,
+          errorMessage: 'Error: permission denied',
+        }),
+      ]);
     });
 
     it('should handle tool execution errors gracefully', async () => {

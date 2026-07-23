@@ -37,7 +37,7 @@ export const FORWARD_TOOL_NAMES = Object.freeze(['RouteForward']);
  * persisted transcripts need the raw result. The engine/history replay path
  * applies this only when building messages for the model.
  */
-export const TOOL_RESULT_MAX_BYTES = 10 * 1024;
+export const TOOL_RESULT_MAX_BYTES = 32 * 1024;
 
 function normalizeLanguage(language) {
   return String(language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
@@ -194,24 +194,49 @@ export function normalizeToolOutput(output) {
   return text;
 }
 
+export function isToolErrorOutput(output) {
+  const text = normalizeToolOutput(output).trim();
+  if (!text.startsWith('{')) return false;
+  try {
+    const parsed = JSON.parse(text);
+    return Boolean(
+      parsed
+      && typeof parsed === 'object'
+      && !Array.isArray(parsed)
+      && typeof parsed.error === 'string'
+      && parsed.error.trim(),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function truncateUtf8(text, maxBytes) {
+  if (maxBytes <= 0) return '';
+  const buffer = Buffer.from(String(text), 'utf8');
+  if (buffer.length <= maxBytes) return String(text);
+  let end = maxBytes;
+  while (end > 0 && (buffer[end] & 0xc0) === 0x80) end -= 1;
+  return buffer.subarray(0, end).toString('utf8');
+}
+
 export function truncateToolResultIfNeeded(output, { toolName, language } = {}) {
   const text = normalizeToolOutput(output);
   const originalBytes = Buffer.byteLength(text, 'utf8');
   if (originalBytes <= TOOL_RESULT_MAX_BYTES) return text;
 
-  const chunks = [];
-  let used = 0;
-  for (const ch of text) {
-    const n = Buffer.byteLength(ch, 'utf8');
-    if (used + n > TOOL_RESULT_MAX_BYTES) break;
-    chunks.push(ch);
-    used += n;
+  const markerFor = name => normalizeLanguage(language) === 'zh'
+    ? `\n\n[已截断：${name} 返回 ${formatSize(originalBytes)}，上限为 ${formatSize(TOOL_RESULT_MAX_BYTES)}；原因：单个 tool result 超过 ${formatSize(TOOL_RESULT_MAX_BYTES)}，模型消息历史不会看到剩余内容]`
+    : `\n\n[truncated: ${name} returned ${formatSize(originalBytes)}, capped at ${formatSize(TOOL_RESULT_MAX_BYTES)}; reason: single tool result exceeded ${formatSize(TOOL_RESULT_MAX_BYTES)}, the model message history will not see the rest]`;
+  let marker = markerFor(String(toolName || 'tool'));
+  if (Buffer.byteLength(marker, 'utf8') > TOOL_RESULT_MAX_BYTES) {
+    const fixedMarker = markerFor('');
+    const nameBudget = Math.max(0, TOOL_RESULT_MAX_BYTES - Buffer.byteLength(fixedMarker, 'utf8'));
+    marker = markerFor(truncateUtf8(String(toolName || 'tool'), nameBudget));
   }
-  const head = chunks.join('');
-  const marker = normalizeLanguage(language) === 'zh'
-    ? `\n\n[已截断：${toolName} 返回 ${formatSize(originalBytes)}，上限为 ${formatSize(TOOL_RESULT_MAX_BYTES)}；原因：单个 tool result 超过 ${formatSize(TOOL_RESULT_MAX_BYTES)}，模型消息历史不会看到剩余内容]`
-    : `\n\n[truncated: ${toolName} returned ${formatSize(originalBytes)}, capped at ${formatSize(TOOL_RESULT_MAX_BYTES)}; reason: single tool result exceeded ${formatSize(TOOL_RESULT_MAX_BYTES)}, the model message history will not see the rest]`;
-  return head + marker;
+  marker = truncateUtf8(marker, TOOL_RESULT_MAX_BYTES);
+  const contentBudget = Math.max(0, TOOL_RESULT_MAX_BYTES - Buffer.byteLength(marker, 'utf8'));
+  return truncateUtf8(text, contentBudget) + marker;
 }
 
 /**
