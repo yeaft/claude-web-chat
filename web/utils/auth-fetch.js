@@ -103,14 +103,12 @@ function withHeaders(init, headers) {
   return { ...(init || {}), headers };
 }
 
-function isSessionValidationEndpoint(url) {
-  return url?.pathname === '/api/user/profile';
-}
-
-function handleUnauthorized(requestToken) {
+function handleUnauthorized(response, requestToken) {
   if (!requestToken) return;
   const store = getAuthStore();
-  if (store && typeof store.handleAuthFailure === 'function') {
+  if (store && typeof store.handleAuthResponse === 'function') {
+    store.handleAuthResponse(response, requestToken);
+  } else if (store && typeof store.handleAuthFailure === 'function') {
     store.handleAuthFailure(undefined, requestToken);
   }
 }
@@ -144,8 +142,8 @@ export function installAuthFetch() {
       const fresh = response.headers && response.headers.get && response.headers.get('X-New-Token');
       if (fresh) applyFreshToken(fresh, requestToken);
 
-      if (shouldAuth && isSessionValidationEndpoint(url) && response.status === 401) {
-        handleUnauthorized(requestToken);
+      if (shouldAuth && response.status === 401) {
+        handleUnauthorized(response, requestToken);
       }
     } catch {
       /* never let auth bookkeeping break fetch semantics */

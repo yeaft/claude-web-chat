@@ -130,21 +130,24 @@ describe('auth fetch interceptor', () => {
     expect(globalThis.localStorage.setItem).not.toHaveBeenCalledWith('authToken', 'renewed-old-token');
   });
 
-  it('reports session validation 401 failures against the token used for that request', async () => {
+  it('routes protected API 401 failures through the shared auth policy', async () => {
     const authStore = {
       token: 'new-token',
       getActiveToken: vi.fn(() => 'old-token'),
+      handleAuthResponse: vi.fn(),
       handleAuthFailure: vi.fn(),
     };
-    const originalFetch = vi.fn(async () => response({ status: 401 }));
+    const unauthorized = response({ status: 401 });
+    const originalFetch = vi.fn(async () => unauthorized);
     const fetch = await loadInstaller({ authStore, fetchImpl: originalFetch });
 
-    await fetch('/api/user/profile');
+    await fetch('/api/upload', { method: 'POST' });
 
-    expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token');
+    expect(authStore.handleAuthResponse).toHaveBeenCalledWith(unauthorized, 'old-token');
+    expect(authStore.handleAuthFailure).not.toHaveBeenCalled();
   });
 
-  it('does not clear the login session when a non-session API returns 401', async () => {
+  it('falls back to the legacy auth failure handler while the store initializes', async () => {
     const authStore = {
       token: 'store-token',
       getActiveToken: vi.fn(() => 'store-token'),
@@ -155,9 +158,7 @@ describe('auth fetch interceptor', () => {
 
     await fetch('/api/invitations');
 
-    const headers = originalFetch.mock.calls[0][1].headers;
-    expect(headers.get('Authorization')).toBe('Bearer store-token');
-    expect(authStore.handleAuthFailure).not.toHaveBeenCalled();
+    expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'store-token');
   });
 
   it('does not clear a newer login when an old no-token request later returns 401', async () => {

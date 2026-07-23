@@ -88,6 +88,22 @@ describe('websocket auth token races', () => {
     expect(authStore.token).toBe('new-token');
   });
 
+  it('keeps login state when policy close is not an authentication failure', async () => {
+    const authStore = createRaceAuthStore();
+    const sockets = installFakeWebSocket();
+    globalThis.location = { protocol: 'https:', host: 'example.test' };
+    const { connect } = await loadWebsocketHelpers(authStore);
+    const store = createStore();
+    store.scheduleReconnect = vi.fn();
+
+    connect(store);
+    sockets[0].onclose({ code: 1008, reason: 'Encryption required' });
+
+    expect(authStore.handleAuthFailure).not.toHaveBeenCalled();
+    expect(authStore.token).toBe('old-token');
+    expect(store.scheduleReconnect).toHaveBeenCalledOnce();
+  });
+
   it('ignores auth_result failures from an older socket after a newer login wins', async () => {
     const authStore = createRaceAuthStore();
     const sockets = installFakeWebSocket();

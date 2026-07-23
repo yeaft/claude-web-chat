@@ -28,6 +28,7 @@ export const useAuthStore = defineStore('auth', {
     identitiesError: null,
 
     // Current auth state
+    initialized: false,
     isAuthenticated: false,
     token: null,
     sessionKey: null, // Uint8Array for encryption
@@ -56,6 +57,24 @@ export const useAuthStore = defineStore('auth', {
   }),
 
   actions: {
+    /** Resolve persisted authentication before rendering the login page. */
+    async initialize() {
+      if (this.initialized) return this.isAuthenticated;
+      try {
+        await this.checkAuthMode();
+        let ssoConsumed = false;
+        if (typeof window !== 'undefined' && typeof this.consumeSsoRedirect === 'function') {
+          ssoConsumed = this.consumeSsoRedirect();
+        }
+        if (!this.isAuthenticated && !ssoConsumed) {
+          await this.restoreSession();
+        }
+        return this.isAuthenticated;
+      } finally {
+        this.initialized = true;
+      }
+    },
+
     /**
      * Check auth mode from server
      */
@@ -691,8 +710,8 @@ export const useAuthStore = defineStore('auth', {
           headers: { 'Authorization': `Bearer ${requestToken}` }
         });
 
-        if (res.status === 401 || res.status === 403) {
-          return this.handleAuthFailure(undefined, requestToken);
+        if (this.handleAuthResponse(res, requestToken)) {
+          return false;
         }
 
         if (!res.ok) return false;
@@ -779,6 +798,15 @@ export const useAuthStore = defineStore('auth', {
       return this.token;
     },
 
+    /** Only authentication failures invalidate login; authorization failures do not. */
+    handleAuthResponse(response, failedToken = undefined, error = undefined) {
+      if (!response || response.status !== 401) return false;
+      const activeToken = this.token || localStorage.getItem('authToken') || null;
+      if (failedToken !== undefined && failedToken !== activeToken) return false;
+      this.handleAuthFailure(error, failedToken);
+      return true;
+    },
+
     handleAuthFailure(error = 'Session expired. Please log in again.', failedToken = undefined) {
       // Auth failures are asynchronous: an old WebSocket or fetch request can
       // fail after the user has already logged in again. Only clear the current
@@ -804,8 +832,8 @@ export const useAuthStore = defineStore('auth', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
 
-        if (res.status === 401 || res.status === 403) {
-          return this.handleAuthFailure(undefined, token);
+        if (this.handleAuthResponse(res, token)) {
+          return false;
         }
 
         if (!res.ok) {

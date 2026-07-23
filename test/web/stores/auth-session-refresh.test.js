@@ -128,6 +128,21 @@ describe('auth store session restore and refresh', () => {
     expect(globalThis.localStorage.setItem).toHaveBeenCalledWith('authToken', 'renewed-token');
   });
 
+  it('does not clear an active session when refresh is forbidden', async () => {
+    globalThis.localStorage = createLocalStorage({ authToken: 'valid-token' });
+    globalThis.fetch = vi.fn(async () => jsonResponse({ ok: false, status: 403 }));
+    const auth = await loadAuthStore();
+    auth.token = 'valid-token';
+    auth.isAuthenticated = true;
+
+    const ok = await auth.refreshSession();
+
+    expect(ok).toBe(false);
+    expect(auth.isAuthenticated).toBe(true);
+    expect(auth.token).toBe('valid-token');
+    expect(globalThis.localStorage.removeItem).not.toHaveBeenCalledWith('authToken');
+  });
+
   it('does not let stale refresh renewals overwrite a newer login token', async () => {
     globalThis.localStorage = createLocalStorage({ authToken: 'old-token' });
     let auth;
