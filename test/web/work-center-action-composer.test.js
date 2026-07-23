@@ -64,6 +64,8 @@ describe('Work Center Action composer scope', () => {
       narrowPane: 'actions',
       store: { workCenterActionMessages: {}, loadWorkItemActionMessages },
       resetActionComposer: vi.fn(),
+      previewingAttachmentId: 'file-1',
+      attachmentPreviewError: 'Old Action error',
       loadLatestActionMessages: WorkCenterPage.methods.loadLatestActionMessages,
     };
 
@@ -72,6 +74,8 @@ describe('Work Center Action composer scope', () => {
 
     expect(context.selectedActionId).toBe('action-2');
     expect(context.narrowPane).toBe('action');
+    expect(context.previewingAttachmentId).toBeNull();
+    expect(context.attachmentPreviewError).toBe('');
     expect(loadWorkItemActionMessages).toHaveBeenCalledWith('wi-1', 'action-2', null, 'agent-1');
   });
 
