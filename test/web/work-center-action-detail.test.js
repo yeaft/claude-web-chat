@@ -302,6 +302,83 @@ describe('Work Center Action detail tabs', () => {
     expect(context.previewingAttachmentId).toBeNull();
   });
 
+  it('rejects an old preview after returning to the same Action', async () => {
+    let resolveOld;
+    const oldPreview = new Promise(resolve => { resolveOld = resolve; });
+    const context = {
+      selected: { id: 'wi-1' },
+      selectedActionId: 'action-1',
+      agentId: 'agent-1',
+      previewingAttachmentId: null,
+      attachmentPreviewError: '',
+      attachmentPreviewGeneration: 0,
+      store: { previewWorkItemAttachment: vi.fn(() => oldPreview) },
+      tr: (_key, fallback) => fallback,
+    };
+    const opened = { opener: {}, location: { replace: vi.fn() }, close: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValue(opened);
+
+    const pending = WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-old', name: 'old.pdf', isImage: false,
+    });
+    context.selectedActionId = 'action-2';
+    context.attachmentPreviewGeneration += 1;
+    context.selectedActionId = 'action-1';
+    context.attachmentPreviewGeneration += 1;
+    resolveOld({ preview: '/stale-token', attachment: { isImage: false } });
+    await pending;
+
+    expect(opened.close).toHaveBeenCalledOnce();
+    expect(opened.location.replace).not.toHaveBeenCalled();
+    expect(context.attachmentPreviewError).toBe('');
+  });
+
+  it('does not let a stale failure overwrite a newer preview in the same Action', async () => {
+    let rejectOld;
+    let resolveCurrent;
+    const oldPreview = new Promise((_resolve, reject) => { rejectOld = reject; });
+    const currentPreview = new Promise(resolve => { resolveCurrent = resolve; });
+    const context = {
+      selected: { id: 'wi-1' },
+      selectedActionId: 'action-1',
+      agentId: 'agent-1',
+      previewingAttachmentId: null,
+      attachmentPreviewError: '',
+      attachmentPreviewGeneration: 0,
+      store: {
+        previewWorkItemAttachment: vi.fn()
+          .mockReturnValueOnce(oldPreview)
+          .mockReturnValueOnce(currentPreview),
+      },
+      tr: (_key, fallback) => fallback,
+    };
+    const oldWindow = { opener: {}, location: { replace: vi.fn() }, close: vi.fn() };
+    const currentWindow = { opener: {}, location: { replace: vi.fn() }, close: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValueOnce(oldWindow).mockReturnValueOnce(currentWindow);
+
+    const oldPending = WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-old', name: 'old.pdf', isImage: false,
+    });
+    context.selectedActionId = 'action-2';
+    context.previewingAttachmentId = null;
+    context.attachmentPreviewGeneration += 1;
+    context.selectedActionId = 'action-1';
+    context.attachmentPreviewGeneration += 1;
+    const currentPending = WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-current', name: 'current.pdf', isImage: false,
+    });
+
+    rejectOld(new Error('stale preview failure'));
+    await oldPending;
+    expect(context.attachmentPreviewError).toBe('');
+    expect(context.previewingAttachmentId).toBe('file-current');
+
+    resolveCurrent({ preview: '/current-token', attachment: { isImage: false } });
+    await currentPending;
+    expect(currentWindow.location.replace).toHaveBeenCalledWith('/current-token');
+    expect(context.previewingAttachmentId).toBeNull();
+  });
+
   it('reports blocked attachment windows without starting a preview request', async () => {
     const context = {
       selected: { id: 'wi-1' },

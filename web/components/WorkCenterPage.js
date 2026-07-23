@@ -53,6 +53,7 @@ export default {
       guidanceAttachmentsUploading: false,
       previewingAttachmentId: null,
       attachmentPreviewError: '',
+      attachmentPreviewGeneration: 0,
       form: {
         title: '',
         goal: '',
@@ -212,6 +213,7 @@ export default {
         this.narrowPane = 'items';
         this.previewingAttachmentId = null;
         this.attachmentPreviewError = '';
+        this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
         if (previousId && id !== previousId) {
           this.closeFolderPicker();
           this.resetCreateExecutionContext(id);
@@ -242,7 +244,12 @@ export default {
         const actions = Array.isArray(detail.actions) ? detail.actions : [];
         if (!actions.some(action => action.id === this.selectedActionId)) {
           const nextActionId = detail.currentActionId || actions[0]?.id || null;
-          if (nextActionId !== this.selectedActionId) this.resetActionComposer();
+          if (nextActionId !== this.selectedActionId) {
+            this.resetActionComposer();
+            this.previewingAttachmentId = null;
+            this.attachmentPreviewError = '';
+            this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+          }
           this.selectedActionId = nextActionId;
         }
       },
@@ -370,6 +377,7 @@ export default {
       this.detailLoading = false;
       this.previewingAttachmentId = null;
       this.attachmentPreviewError = '';
+      this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
     },
     async selectItem(item) {
       this.openWorkItem(item.id);
@@ -390,6 +398,7 @@ export default {
         this.resetActionComposer();
         this.previewingAttachmentId = null;
         this.attachmentPreviewError = '';
+        this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
       }
       this.selectedActionId = action.id;
       this.narrowPane = 'action';
@@ -597,7 +606,10 @@ export default {
       const workItemId = this.selected.id;
       const actionId = this.selectedActionId || '';
       const scope = `${agentId}:${workItemId}:${actionId}`;
-      const currentScope = () => `${this.agentId}:${this.selected?.id || ''}:${this.selectedActionId || ''}`;
+      const requestGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+      this.attachmentPreviewGeneration = requestGeneration;
+      const requestIsCurrent = () => this.attachmentPreviewGeneration === requestGeneration
+        && `${this.agentId}:${this.selected?.id || ''}:${this.selectedActionId || ''}` === scope;
       const previewWindow = attachment.isImage ? null : window.open('', '_blank');
       if (!attachment.isImage && !previewWindow) {
         this.attachmentPreviewError = this.tr('workCenter.attachmentOpenBlocked', 'The browser blocked the attachment window. Allow pop-ups and try again.');
@@ -608,7 +620,7 @@ export default {
       this.attachmentPreviewError = '';
       try {
         const data = await this.store.previewWorkItemAttachment(workItemId, attachment.id, agentId);
-        if (currentScope() !== scope) {
+        if (!requestIsCurrent()) {
           previewWindow?.close();
           return;
         }
@@ -623,12 +635,12 @@ export default {
         else previewWindow?.close();
       } catch (error) {
         previewWindow?.close();
-        if (currentScope() === scope) {
+        if (requestIsCurrent()) {
           this.attachmentPreviewError = error?.message
             || this.tr('workCenter.attachmentPreviewFailed', 'Could not open the attachment. Try again.');
         }
       } finally {
-        if (currentScope() === scope) this.previewingAttachmentId = null;
+        if (requestIsCurrent()) this.previewingAttachmentId = null;
       }
     },
     formatAttachmentSize(value) {
@@ -771,7 +783,12 @@ export default {
         this.guidanceAttachments = [];
         const targetStillExists = next?.actions?.some(action => action?.id === actionId);
         const nextActionId = targetStillExists ? actionId : (next?.currentActionId || this.selectedActionId);
-        if (nextActionId !== this.selectedActionId) this.resetActionComposer();
+        if (nextActionId !== this.selectedActionId) {
+          this.resetActionComposer();
+          this.previewingAttachmentId = null;
+          this.attachmentPreviewError = '';
+          this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+        }
         this.selectedActionId = nextActionId;
       } catch (error) {
         if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
