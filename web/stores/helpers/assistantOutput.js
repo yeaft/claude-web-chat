@@ -4,6 +4,12 @@ import { resetProcessingWatchdog, stopProcessingWatchdog } from './watchdog.js';
 import { markAllToolsCompleted } from './handlers/conversationHandler.js';
 import { sameUserMessage } from './dedup.js';
 
+function promoteOrInvalidateOutline(store, row) {
+  if (store.promoteYeaftHistoryOutlineRow?.(row)) return;
+  const sessionId = row?.sessionId ?? row?.groupId ?? store._currentYeaftSessionId ?? null;
+  if (sessionId) store.invalidateYeaftHistoryOutline?.(sessionId);
+}
+
 function normalizeUserVisibleContent(content) {
   let value = content;
   if (typeof value === 'string') {
@@ -279,7 +285,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
       const msgs = store.messagesMap[conversationId] || [];
       const duplicate = msgs.some(m => sameUserMessage(m, echoCandidate));
       if (!duplicate) {
-        store.addMessageToConversation(conversationId, {
+        const persistedUserRow = store.addMessageToConversation(conversationId, {
           ...(data.message?.id ? { id: data.message.id, messageId: data.message.id } : {}),
           ...(data.ts ? { ts: data.ts } : {}),
           type: 'user',
@@ -292,6 +298,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
           // Bug 1: forward original ts so history messages keep their real
           // timestamp instead of using arrival time.
         });
+        promoteOrInvalidateOutline(store, persistedUserRow);
       } else if (echoClientMsgId) {
         // Common live-send path (NOT a rare race): the dedup gate above
         // already collapsed the echo's row onto the optimistic row by
@@ -311,6 +318,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
               msgs[i].messageId = data.message.id;
             }
             if (data.ts && !msgs[i].ts) msgs[i].ts = data.ts;
+            promoteOrInvalidateOutline(store, msgs[i]);
             break;
           }
         }
@@ -388,6 +396,13 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
       }
     }
     store.finishStreamingForConversation(conversationId);
+    const outlinePromoted = store.promoteCompletedYeaftHistoryOutline?.(
+      conversationId,
+      store._currentYeaftTurnId || null,
+    );
+    if (!outlinePromoted && completedYeaftSessionId) {
+      store.invalidateYeaftHistoryOutline?.(completedYeaftSessionId);
+    }
     // v0.1.768 — orphan sweep: when this is the last per-VP `result` for
     // the conversation, clear any stale `isStreaming: true` flag left
     // behind by a prior turn whose `result` was lost (WS hiccup, agent

@@ -33,6 +33,29 @@ afterEach(() => {
 });
 
 describe('Yeaft Session history search relay', () => {
+  it('relays bounded outline pages with explicit compound identity', async () => {
+    await handleClientConversation('client-1', client, {
+      type: 'yeaft_load_history_outline',
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      requestId: 'outline-1',
+      limit: 50,
+      beforeSeq: 42,
+      includeTotal: false,
+    }, allow);
+
+    expect(getForAgent).toHaveBeenCalledWith('owner-1', 'agent-1', 'sess-1');
+    expect(forwardToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({
+      type: 'yeaft_load_history_outline',
+      sessionId: 'sess-1',
+      requestId: 'outline-1',
+      limit: 50,
+      beforeSeq: 42,
+      includeTotal: false,
+      _requestClientId: 'client-1',
+    }));
+  });
+
   it('requires explicit compound identity and targets the requesting client', async () => {
     await handleClientConversation('client-1', client, {
       type: 'yeaft_search_history',

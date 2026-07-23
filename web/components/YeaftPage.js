@@ -9,7 +9,7 @@ import WorkbenchPanel from './WorkbenchPanel.js';
 import YeaftDebugPanel from './YeaftDebugPanel.js';
 import VpTimelinePane from './VpTimelinePane.js';
 import YeaftSessionActions from './YeaftSessionActions.js';
-import YeaftTranscriptSearch from './YeaftTranscriptSearch.js';
+import YeaftConversationOutline from './YeaftConversationOutline.js';
 import LlmTab from './LlmTab.js';
 import WorkCenterPage from './WorkCenterPage.js';
 import { parseMentions } from '../utils/parseMentions.js';
@@ -24,6 +24,7 @@ import {
 import { shouldShowYeaftOnboardingGuide } from '../utils/yeaftOnboarding.js';
 import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils/yeaftSessionSettings.js';
 import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
+import { revealOutlineResult } from '../utils/message-search-navigation.js';
 
 function sessionTaskSortTime(task) {
   const raw = task?.updatedAt || task?.endedAt || task?.createdAt;
@@ -43,7 +44,7 @@ export function visibleSessionStatusTasks(taskMap) {
 
 export default {
   name: 'YeaftPage',
-  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftTranscriptSearch, LlmTab },
+  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline, LlmTab },
   template: `
     <div class="yeaft-page" ref="pageRef">
       <!-- Mobile sidebar overlay -->
@@ -163,15 +164,17 @@ export default {
           />
         </div>
 
-        <YeaftTranscriptSearch
+        <YeaftConversationOutline
           v-if="historySearchOpen && !showOnboardingGuide"
           ref="historySearchRef"
-          :state="store.yeaftHistorySearchState"
+          :outline-state="historyOutlineState"
+          :search-state="store.yeaftHistorySearchState"
           :active-index="historySearchActiveIndex"
           @query="onHistorySearchQuery"
           @move="historySearchActiveIndex = $event"
           @select="selectHistorySearchResult"
-          @load-more="loadMoreHistorySearchResults"
+          @load-older="loadOlderHistoryOutline"
+          @load-more-search="loadMoreHistorySearchResults"
           @close="closeHistorySearch"
         />
 
@@ -431,6 +434,7 @@ export default {
     const historySearchRef = Vue.ref(null);
     const historySearchOpen = Vue.ref(false);
     const historySearchActiveIndex = Vue.ref(0);
+    const historyOutlineState = Vue.computed(() => store.getYeaftHistoryOutlineState());
     let historySearchTimer = null;
     const yeaftInputDraftKey = Vue.computed(() => {
       const agentId = store.currentAgent || 'agent';
@@ -668,6 +672,7 @@ export default {
     };
     const openHistorySearch = () => {
       historySearchOpen.value = true;
+      store.loadYeaftHistoryOutline();
       Vue.nextTick(() => historySearchRef.value?.focus?.());
     };
     const toggleHistorySearch = () => {
@@ -679,14 +684,26 @@ export default {
       historySearchActiveIndex.value = 0;
       historySearchTimer = setTimeout(() => store.searchYeaftHistory(query), 220);
     };
-    const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true });
-    const selectHistorySearchResult = async (result) => {
-      if (!result) return;
-      const loaded = await store.loadYeaftHistoryWindow(result);
-      if (!loaded) return;
-      await Vue.nextTick();
-      await messageListRef.value?.revealMessage?.(result.messageId);
+    const loadOlderHistoryOutline = (scrollSnapshot) => {
+      if (!store.loadYeaftHistoryOutline({ append: true })) return;
+      const stop = Vue.watch(
+        () => historyOutlineState.value.loading,
+        loading => {
+          if (loading) return;
+          stop();
+          historySearchRef.value?.restoreOlderScroll?.(scrollSnapshot);
+        },
+      );
     };
+    const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true });
+    const selectHistorySearchResult = result => revealOutlineResult({
+      result,
+      loadWindow: candidate => store.loadYeaftHistoryWindow(candidate),
+      nextTick: () => Vue.nextTick(),
+      revealMessage: messageId => messageListRef.value?.revealMessage?.(messageId),
+      isMobile: isMobile.value,
+      closeOutline: closeHistorySearch,
+    });
 
     // Esc handling — close transient controls. Detail drill-down layers were
     // removed; the center pane always stays on the Session stream.
@@ -1359,9 +1376,11 @@ export default {
       historySearchRef,
       historySearchOpen,
       historySearchActiveIndex,
+      historyOutlineState,
       toggleHistorySearch,
       closeHistorySearch,
       onHistorySearchQuery,
+      loadOlderHistoryOutline,
       loadMoreHistorySearchResults,
       selectHistorySearchResult,
       yeaftInputDraftKey,

@@ -727,7 +727,7 @@ function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existi
       const toolSummaryCount = Number(m.toolSummaryCount || m.toolCalls?.length || 0) || 0;
       if (toolSummaryCount > 0) {
         formatted.push({
-          ...(stableId ? { id: `${stableId}:tool-summary`, messageId: `${stableId}:tool-summary` } : {}),
+          ...(stableId ? { id: `${stableId}:tool-summary`, messageId: `${stableId}:tool-summary`, persistedMessageId: stableId } : {}),
           type: 'tool-summary',
           count: toolSummaryCount,
           omittedCount: toolSummaryCount,

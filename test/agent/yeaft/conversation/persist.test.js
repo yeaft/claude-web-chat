@@ -372,6 +372,184 @@ legacy session`, { encoding: 'utf8' });
       expect(page.hasMore).toBe(false);
     });
 
+    it('returns one canonical search result for a tool-using assistant response', () => {
+      store.append({ role: 'user', content: 'run it', sessionId: 'session_search_response' });
+      store.append({
+        role: 'assistant', content: 'Needle before tool', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker',
+      });
+      const tool = store.append({
+        role: 'assistant', content: '', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: {} }],
+      });
+      const final = store.append({
+        role: 'assistant', content: 'needle after tool', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker',
+      });
+
+      const page = store.searchVisibleBySession('session_search_response', 'needle', { limit: 20 });
+
+      expect(page.results).toEqual([
+        expect.objectContaining({
+          messageId: final.id,
+          turnId: 'response-search',
+          role: 'assistant',
+          speakerVpId: 'maker',
+        }),
+      ]);
+      expect(page.results[0].messageId).not.toBe(tool.id);
+      expect(page.results[0].snippet).toContain('Needle before tool');
+    });
+
+    it('pages search results on response boundaries', () => {
+      for (let i = 0; i < 3; i += 1) {
+        store.append({ role: 'user', content: `question ${i}`, sessionId: 'session_search_pages' });
+        store.append({
+          role: 'assistant', content: `needle start ${i}`, sessionId: 'session_search_pages',
+          turnId: `response-${i}`, speakerVpId: 'maker',
+        });
+        store.append({
+          role: 'assistant', content: `needle final ${i}`, sessionId: 'session_search_pages',
+          turnId: `response-${i}`, speakerVpId: 'maker',
+        });
+      }
+
+      const firstPage = store.searchVisibleBySession('session_search_pages', 'needle', { limit: 1 });
+      const secondPage = store.searchVisibleBySession('session_search_pages', 'needle', {
+        limit: 1, beforeSeq: firstPage.nextBeforeSeq,
+      });
+
+      expect(firstPage.results).toHaveLength(1);
+      expect(firstPage.results[0].turnId).toBe('response-2');
+      expect(firstPage.hasMore).toBe(true);
+      expect(secondPage.results).toHaveLength(1);
+      expect(secondPage.results[0].turnId).toBe('response-1');
+      expect(secondPage.results[0].seq).toBeLessThan(firstPage.nextBeforeSeq);
+    });
+
+    it('loads a bounded lightweight outline page with a stable total count', () => {
+      const longText = `outline ${'x'.repeat(220)}`;
+      const first = store.append({
+        role: 'user', content: longText, sessionId: 'session_outline', clientMessageId: 'client-1',
+        attachments: [{ name: 'secret.txt', data: 'do-not-project' }],
+      });
+      store.append({ role: 'assistant', content: 'first answer', sessionId: 'session_outline', speakerVpId: 'maker' });
+      store.append({ role: 'system', content: 'hidden row', sessionId: 'session_outline' });
+      store.append({ role: 'user', content: 'second question', sessionId: 'session_outline' });
+      const latest = store.append({ role: 'assistant', content: 'second answer', sessionId: 'session_outline' });
+
+      const firstPage = store.loadVisibleOutlineBySession('session_outline', { limit: 2 });
+      const olderPage = store.loadVisibleOutlineBySession('session_outline', {
+        limit: 2, beforeSeq: firstPage.nextBeforeSeq, includeTotal: false,
+      });
+
+      expect(firstPage.results.map(result => result.messageId)).toEqual([
+        expect.any(String), latest.id,
+      ]);
+      expect(firstPage).toMatchObject({ hasMore: true, totalCount: 4 });
+      expect(olderPage.results.map(result => result.messageId)).toContain(first.id);
+      expect(olderPage.totalCount).toBeNull();
+      expect(olderPage.results.find(result => result.messageId === first.id)).toMatchObject({
+        clientMessageId: 'client-1', role: 'user',
+      });
+      expect(olderPage.results.find(result => result.messageId === first.id).snippet.length).toBeLessThan(longText.length);
+      expect(JSON.stringify([...firstPage.results, ...olderPage.results])).not.toContain('do-not-project');
+      expect(JSON.stringify([...firstPage.results, ...olderPage.results])).not.toContain('attachments');
+    });
+
+    it('groups one tool-using assistant response into one canonical outline entry', () => {
+      const user = store.append({
+        role: 'user', content: 'run the tool', sessionId: 'session_outline_tools', turnId: 'user-turn',
+      });
+      store.append({
+        role: 'assistant', content: 'I will check. ', sessionId: 'session_outline_tools',
+        turnId: 'assistant-turn', speakerVpId: 'maker',
+      });
+      store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_tools', turnId: 'assistant-turn',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: 'true' } }],
+      });
+      const final = store.append({
+        role: 'assistant', content: 'Done.', sessionId: 'session_outline_tools',
+        turnId: 'assistant-turn', speakerVpId: 'maker',
+      });
+
+      const page = store.loadVisibleOutlineBySession('session_outline_tools', { limit: 50 });
+
+      expect(page).toMatchObject({ totalCount: 2, hasMore: false, nextBeforeSeq: null });
+      expect(page.results).toEqual([
+        expect.objectContaining({ messageId: user.id, role: 'user' }),
+        expect.objectContaining({
+          messageId: final.id,
+          turnId: 'assistant-turn',
+          role: 'assistant',
+          speakerVpId: 'maker',
+          snippet: 'I will check. Done.',
+        }),
+      ]);
+    });
+
+    it('keeps the persisted tool-call row as the anchor for a tool-only response', () => {
+      store.append({ role: 'user', content: 'run only', sessionId: 'session_outline_tool_only' });
+      const toolOnly = store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_tool_only', turnId: 'tool-only-turn',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: 'true' } }],
+      });
+
+      const page = store.loadVisibleOutlineBySession('session_outline_tool_only', { limit: 50 });
+
+      expect(page.totalCount).toBe(2);
+      expect(page.results[1]).toMatchObject({
+        messageId: toolOnly.id,
+        seq: store.getMessageSeqById(toolOnly.id),
+        turnId: 'tool-only-turn',
+        role: 'assistant',
+        snippet: '',
+      });
+    });
+
+    it('pages on response boundaries without repeating a multi-row response', () => {
+      const oldUser = store.append({ role: 'user', content: 'old question', sessionId: 'session_outline_pages' });
+      const oldTool = store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_pages', turnId: 'old-response',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-old', name: 'Bash', input: {} }],
+      });
+      store.append({
+        role: 'assistant', content: 'old final', sessionId: 'session_outline_pages',
+        turnId: 'old-response', speakerVpId: 'maker',
+      });
+      const newUser = store.append({ role: 'user', content: 'new question', sessionId: 'session_outline_pages' });
+      const newTool = store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_pages', turnId: 'new-response',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-new', name: 'Bash', input: {} }],
+      });
+      const newest = store.append({
+        role: 'assistant', content: 'new answer', sessionId: 'session_outline_pages',
+        turnId: 'new-response', speakerVpId: 'maker',
+      });
+      const latestPage = store.loadVisibleOutlineBySession('session_outline_pages', { limit: 1 });
+      const firstPage = store.loadVisibleOutlineBySession('session_outline_pages', {
+        limit: 2, beforeSeq: latestPage.nextBeforeSeq, includeTotal: false,
+      });
+      const olderPage = store.loadVisibleOutlineBySession('session_outline_pages', {
+        limit: 2, beforeSeq: firstPage.nextBeforeSeq, includeTotal: false,
+      });
+
+      expect(latestPage.results).toEqual([
+        expect.objectContaining({ messageId: newest.id, turnId: 'new-response' }),
+      ]);
+      expect(latestPage.nextBeforeSeq).toBe(store.getMessageSeqById(newTool.id));
+      expect(firstPage.results).toEqual([
+        expect.objectContaining({ turnId: 'old-response', role: 'assistant', snippet: 'old final' }),
+        expect.objectContaining({ messageId: newUser.id, role: 'user' }),
+      ]);
+      expect(firstPage.results.some(result => result.turnId === 'new-response')).toBe(false);
+      expect(firstPage.results.some(result => result.messageId === oldTool.id)).toBe(false);
+      expect(olderPage.results).toEqual([
+        expect.objectContaining({ messageId: oldUser.id, role: 'user' }),
+      ]);
+    });
+
     it('supports an exclusive seq cursor and bounded anchor window', () => {
       const ids = [];
       for (let i = 0; i < 5; i += 1) {
