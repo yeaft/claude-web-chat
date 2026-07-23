@@ -23,6 +23,7 @@ const compileCoveredComponents = [
   'YeaftSessionActions.js',
   'YeaftConversationOutline.js',
   'WorkCenterPage.js',
+  'WorkCenterActionDetail.js',
   'WorkCenterSettingsModal.js',
 ];
 
