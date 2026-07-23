@@ -20,6 +20,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, unlinkSync, statSync, appendFileSync } from 'fs';
 import { join, basename } from 'path';
 import { isPermissionError } from '../init.js';
+import { writeAtomic } from '../storage/atomic.js';
 import { pairSanitize } from '../pair-sanitize.js';
 import { sliceLastNTurns, stripVpMentionPrefix } from '../turn-utils.js';
 import { isHiddenConversationRow } from './internal-control.js';
@@ -76,6 +77,7 @@ function emptySegmentIndex() {
     lastMessageId: null,
     activeSegment: SEGMENT_FIRST_NAME,
     segments: [],
+    foldedMessageIds: [],
   };
 }
 
@@ -89,6 +91,26 @@ function normalizeSegmentRecord(msg) {
   if (!Number.isFinite(seq)) return null;
   const out = { ...msg, seq, id: msg.id || seqId(seq) };
   return out;
+}
+
+function foldedMessageIdsFrom(rows) {
+  const ids = new Set();
+  for (const row of rows || []) {
+    if (!row?._reflection || !Array.isArray(row.foldedMessageIds)) continue;
+    for (const id of row.foldedMessageIds) {
+      if (typeof id === 'string' && id) ids.add(id);
+    }
+  }
+  return ids;
+}
+
+function applyFoldedMessageTombstones(rows, additionalIds = []) {
+  const foldedIds = foldedMessageIdsFrom(rows);
+  for (const id of additionalIds || []) {
+    if (typeof id === 'string' && id) foldedIds.add(id);
+  }
+  if (foldedIds.size === 0) return rows;
+  return rows.filter(row => !foldedIds.has(row?.id));
 }
 
 function segmentNameForNumber(n) {
@@ -363,6 +385,8 @@ function serializeMessage(msg) {
   if (msg.sessionId) fm.push(`sessionId: ${msg.sessionId}`);
   if (msg.chatId) fm.push(`chatId: ${msg.chatId}`);
   if (msg.clientMessageId) fm.push(`clientMessageId: ${msg.clientMessageId}`);
+  if (msg.incomplete) fm.push('incomplete: true');
+  if (msg.stopReason) fm.push(`stopReason: ${msg.stopReason}`);
   // Session attribution: when a VP authors an assistant turn (either
   // its own reply or a route_forward injection from another VP), stamp
   // the speaker so the UI can render the message on the correct VP track.
@@ -492,6 +516,8 @@ export function parseMessage(raw) {
       case 'sessionId': msg.sessionId = value; break;
       case 'chatId': msg.chatId = value; break;
       case 'clientMessageId': msg.clientMessageId = value; break;
+      case 'incomplete': msg.incomplete = value === 'true'; break;
+      case 'stopReason': msg.stopReason = value; break;
       case 'speakerVpId': msg.speakerVpId = value; break;
       case 'attachmentsB64':
         try {
@@ -621,8 +647,9 @@ class SegmentStore {
         idx = null;
       }
     }
-    this.index = this.#normalizeIndex(idx || this.#rebuildIndex());
-    if (!existsSync(this.indexPath) && this.hasData()) this.saveIndex();
+    const indexWasStale = idx && !this.#indexMatchesDisk(idx);
+    this.index = this.#normalizeIndex(!idx || indexWasStale ? this.#rebuildIndex() : idx);
+    if ((!existsSync(this.indexPath) || indexWasStale) && this.hasData()) this.saveIndex();
     return this.index;
   }
 
@@ -659,6 +686,12 @@ class SegmentStore {
     idx.totalMessages = (idx.totalMessages || 0) + 1;
     idx.lastMessageId = msg.id || null;
     idx.nextSeq = Math.max(Number(idx.nextSeq) || 1, seq + 1);
+    if (msg._reflection && Array.isArray(msg.foldedMessageIds)) {
+      idx.foldedMessageIds = Array.from(new Set([
+        ...(Array.isArray(idx.foldedMessageIds) ? idx.foldedMessageIds : []),
+        ...msg.foldedMessageIds.filter(id => typeof id === 'string' && id),
+      ]));
+    }
     this.saveIndex();
   }
 
@@ -672,9 +705,11 @@ class SegmentStore {
     const out = [];
     for (const seg of segments) {
       const rows = this.#readSegment(seg.file, { beforeSeq, afterSeq, desc, includeCold });
-      out.push(...rows);
+      out.push(...applyFoldedMessageTombstones(rows, idx.foldedMessageIds));
     }
-    return desc ? out.sort((a, b) => parseSeqFromId(b.id) - parseSeqFromId(a.id)) : out.sort(compareMessagesBySeq);
+    return desc
+      ? out.sort((a, b) => parseSeqFromId(b.id) - parseSeqFromId(a.id))
+      : out.sort(compareMessagesBySeq);
   }
 
   *scan({ beforeSeq = Infinity, afterSeq = -Infinity, desc = false, includeCold = false } = {}) {
@@ -685,7 +720,8 @@ class SegmentStore {
       .slice()
       .sort((a, b) => desc ? (b.lastSeq || 0) - (a.lastSeq || 0) : (a.firstSeq || 0) - (b.firstSeq || 0));
     for (const seg of segments) {
-      for (const row of this.#readSegment(seg.file, { beforeSeq, afterSeq, desc, includeCold })) yield row;
+      const rows = this.#readSegment(seg.file, { beforeSeq, afterSeq, desc, includeCold });
+      yield* applyFoldedMessageTombstones(rows, idx.foldedMessageIds);
     }
   }
 
@@ -705,18 +741,39 @@ class SegmentStore {
     for (const msg of (rows || []).filter(Boolean).sort(compareMessagesBySeq)) this.append(msg);
   }
 
+  updateById(id, updater) {
+    if (!id || typeof updater !== 'function' || !this.hasData()) return null;
+    const targetSeq = parseSeqFromId(id);
+    const idx = this.loadIndex();
+    const segment = (idx.segments || []).find((candidate) => {
+      const first = Number(candidate.firstSeq);
+      const last = Number(candidate.lastSeq);
+      return Number.isFinite(targetSeq)
+        && Number.isFinite(first)
+        && Number.isFinite(last)
+        && targetSeq >= first
+        && targetSeq <= last;
+    });
+    if (!segment?.file) return null;
+
+    const path = join(this.segmentDir, segment.file);
+    const rows = this.#readSegment(segment.file, { includeCold: true });
+    const rowIndex = rows.findIndex(row => row?.id === id);
+    if (rowIndex < 0) return null;
+    const next = updater({ ...rows[rowIndex] });
+    if (!next || typeof next !== 'object') return null;
+    const updated = { ...next, id: rows[rowIndex].id };
+    rows[rowIndex] = updated;
+
+    const body = rows.map(row => JSON.stringify(row)).join('\n') + (rows.length > 0 ? '\n' : '');
+    writeAtomic(path, body);
+    segment.bytes = Buffer.byteLength(body);
+    this.saveIndex();
+    return updated;
+  }
+
   markCold(id) {
-    if (!id || !this.hasData()) return 0;
-    const rows = this.readAll({ includeCold: true });
-    let changed = 0;
-    for (const msg of rows) {
-      if (msg?.id === id && msg.cold !== true) {
-        msg.cold = true;
-        changed += 1;
-      }
-    }
-    if (changed > 0) this.replaceAll(rows);
-    return changed;
+    return this.updateById(id, msg => ({ ...msg, cold: true })) ? 1 : 0;
   }
 
   clear() {
@@ -729,6 +786,19 @@ class SegmentStore {
     this.index = emptySegmentIndex();
   }
 
+  #indexMatchesDisk(idx) {
+    if (!existsSync(this.segmentDir)) return !(idx?.segments?.length > 0);
+    const diskFiles = readdirSync(this.segmentDir).filter(file => file.endsWith('.jsonl')).sort();
+    const indexedSegments = Array.isArray(idx?.segments) ? idx.segments : [];
+    const indexedFiles = indexedSegments.map(segment => segment?.file).filter(Boolean).sort();
+    if (diskFiles.length !== indexedFiles.length
+        || diskFiles.some((file, index) => file !== indexedFiles[index])) return false;
+    return indexedSegments.every(segment => {
+      const path = join(this.segmentDir, segment.file);
+      return existsSync(path) && statSync(path).size === Number(segment.bytes);
+    });
+  }
+
   #normalizeIndex(idx) {
     const out = { ...emptySegmentIndex(), ...(idx || {}) };
     out.segments = Array.isArray(out.segments) ? out.segments.filter(s => s && s.file) : [];
@@ -737,6 +807,9 @@ class SegmentStore {
     out.nextSeq = Math.max(Number(out.nextSeq) || 1, maxSeq + 1);
     out.activeSegment = out.activeSegment || out.segments[out.segments.length - 1]?.file || SEGMENT_FIRST_NAME;
     out.totalMessages = Number(out.totalMessages) || out.segments.reduce((sum, seg) => sum + (Number(seg.count) || 0), 0);
+    out.foldedMessageIds = Array.isArray(out.foldedMessageIds)
+      ? Array.from(new Set(out.foldedMessageIds.filter(id => typeof id === 'string' && id)))
+      : [];
     return out;
   }
 
@@ -758,10 +831,12 @@ class SegmentStore {
       };
       idx.segments.push(seg);
       idx.totalMessages += rows.length;
+      idx.foldedMessageIds.push(...foldedMessageIdsFrom(rows));
       idx.lastMessageId = rows[rows.length - 1]?.id || idx.lastMessageId;
       idx.nextSeq = Math.max(idx.nextSeq, seg.lastSeq + 1);
       idx.activeSegment = file;
     }
+    idx.foldedMessageIds = Array.from(new Set(idx.foldedMessageIds));
     return idx;
   }
 
@@ -929,6 +1004,51 @@ export class ConversationStore {
    */
   appendBatch(messages) {
     return messages.map(m => this.append(m));
+  }
+
+  /**
+   * Replace fields on one persisted message while preserving its id/order.
+   * Rewrites only the owning conversation segment set; used for async tool
+   * results that complete after their initial tool row was appended.
+   *
+   * @param {object} message — persisted row returned by append()
+   * @param {object} patch — fields to merge into the row
+   * @returns {object|null}
+   */
+  update(message, patch) {
+    if (!message?.id || !patch || typeof patch !== 'object') return null;
+    try {
+      const store = this.#segmentStoreFor(message, { create: false });
+      return store.updateById(message.id, current => ({ ...current, ...patch }));
+    } catch (err) {
+      if (isPermissionError(err)) {
+        if (!_permissionWarned) {
+          console.warn(`[Yeaft] Cannot update message ${message.id}: ${err.code}`);
+          _permissionWarned = true;
+        }
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Atomically publish a logical range replacement for tool folding.
+   *
+   * The original rows stay append-only on disk. A single reflection row owns
+   * their ids as tombstones, so readers either observe the complete old arc or
+   * the complete reflection — never a half-rewritten tool pair.
+   *
+   * @param {object[]} messages — persisted rows being folded
+   * @param {object} reflection — synthetic `_reflection` user row
+   * @returns {object|null}
+   */
+  foldMessages(messages, reflection) {
+    const foldedMessageIds = Array.from(new Set(
+      (messages || []).map(message => message?.id).filter(id => typeof id === 'string' && id),
+    ));
+    if (foldedMessageIds.length === 0 || !reflection || reflection._reflection !== true) return null;
+    return this.append({ ...reflection, foldedMessageIds });
   }
 
   /**
@@ -1264,11 +1384,12 @@ export class ConversationStore {
    * @param {number} [turnsLimit=DEFAULT_RECENT_TURNS]
    * @returns {object[]}
    */
-  loadRecentBySession(sessionId, turnsLimit = DEFAULT_RECENT_TURNS) {
+  loadRecentBySession(sessionId, turnsLimit = DEFAULT_RECENT_TURNS, { includeReflections = false } = {}) {
     if (!sessionId) return [];
     if (turnsLimit === Infinity || turnsLimit < 0) {
       const all = this.#loadSessionMessages(sessionId);
-      const filtered = all.filter(m => m && m.sessionId === sessionId && !isHiddenConversationRow(m));
+      const filtered = all.filter(m => m && m.sessionId === sessionId
+        && (!isHiddenConversationRow(m) || (includeReflections && m._reflection === true)));
       return pairSanitize(filtered);
     }
     if (!(turnsLimit > 0)) return [];
@@ -1276,6 +1397,7 @@ export class ConversationStore {
     const { messages, truncated } = this.#loadRecentSessionWindow(sessionId, turnsLimit, {
       roles: null,
       stripAssistantToolCalls: false,
+      includeReflections,
     });
     if (truncated) {
       const hasCompact = this.hasAnyCompactSummaryForSession(sessionId);
@@ -1324,9 +1446,14 @@ export class ConversationStore {
   loadSessionHistoryForVp(sessionId, vpId) {
     if (!sessionId || !vpId) return [];
     const all = this.#loadSessionMessages(sessionId);
+    const foldedIds = foldedMessageIdsFrom(all);
     const out = [];
     for (const m of all) {
-      if (!m || m.sessionId !== sessionId) continue;
+      if (!m || m.sessionId !== sessionId || foldedIds.has(m.id)) continue;
+      if (m._reflection === true) {
+        out.push(m);
+        continue;
+      }
       if (isHiddenConversationRow(m)) continue;
       if (m.role === 'user') {
         out.push(m);
@@ -2320,7 +2447,12 @@ export class ConversationStore {
     return parseMessage(readFileSync(path, 'utf8'));
   }
 
-  #loadRecentSessionWindow(sessionId, turnsLimit, { beforeSeq = Infinity, roles = null, stripAssistantToolCalls = false } = {}) {
+  #loadRecentSessionWindow(sessionId, turnsLimit, {
+    beforeSeq = Infinity,
+    roles = null,
+    stripAssistantToolCalls = false,
+    includeReflections = false,
+  } = {}) {
     const kept = [];
     const pendingBoundaryRows = [];
     let turnsFromEnd = 0;
@@ -2366,7 +2498,7 @@ export class ConversationStore {
       if (!m || m.sessionId !== sessionId) continue;
 
       const boundaryComplete = turnsFromEnd >= turnsLimit;
-      if (isHiddenConversationRow(m)) {
+      if (isHiddenConversationRow(m) && !(includeReflections && m._reflection === true)) {
         if (boundaryComplete) {
           truncated = true;
           break;

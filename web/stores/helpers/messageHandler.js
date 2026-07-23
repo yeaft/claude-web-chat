@@ -275,10 +275,11 @@ export function handleMessage(store, msg) {
       store.handleYeaftHistorySearchResult(msg);
       break;
 
-    case 'yeaft_history_window':
-      handleYeaftHistoryWindow(store, msg);
-      store.handleYeaftHistoryWindow(msg);
+    case 'yeaft_history_window': {
+      const conversationId = handleYeaftHistoryWindow(store, msg);
+      store.handleYeaftHistoryWindow(msg, conversationId);
       break;
+    }
 
     // 2026-05-16: tool-usage stats reply from the agent. The agent
     // emits this as a BARE top-level message (see

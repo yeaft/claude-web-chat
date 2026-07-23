@@ -1173,8 +1173,8 @@ export default {
 
     const messageBlocks = Vue.computed(() => {
       // Group one user row plus the following AI replies into one virtual item.
-      // That keeps reply context attached during virtualization and lets older
-      // user turns collapse their AI response without touching message storage.
+      // That keeps reply context attached during virtualization. VirtualTranscript
+      // limits DOM mounting, so response bodies do not need a second collapse layer.
       const blocks = [];
       let currentBlock = null;
       const finishBlock = () => {
@@ -1207,7 +1207,7 @@ export default {
       });
 
       finishBlock();
-      return annotateMessageBlocksForResponseCollapse(blocks, messageTurnCollapseStates);
+      return blocks;
     });
 
     // PR-L: reflection cards grouped by anchor (the message id present at the

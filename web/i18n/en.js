@@ -278,6 +278,7 @@ export default {
   'yeaft.reloadPage': 'Reload page',
   'yeaft.reloadMessages': 'Reload messages',
   'yeaft.historySearch.label': 'Search Session history',
+  'yeaft.historySearch.button': 'Search messages',
   'yeaft.historySearch.placeholder': 'Search messages in this Session',
   'yeaft.historySearch.searching': 'Searching…',
   'yeaft.historySearch.minChars': 'Type at least 2 characters',
