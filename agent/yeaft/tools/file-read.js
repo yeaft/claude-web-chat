@@ -12,6 +12,7 @@ import { defineTool } from './types.js';
 import { readFile, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve, extname } from 'path';
+import { StringDecoder } from 'string_decoder';
 
 /** Binary file extensions that shouldn't be read as text. */
 const BINARY_EXTS = new Set([
@@ -33,6 +34,35 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
  *  would trigger a follow-up `offset:3000` call — that's exactly the
  *  round-trip this tool's prompt guidance promises to avoid). */
 const DEFAULT_LIMIT = 3000;
+
+/** Keep raw output close to the model-facing 32 KiB budget while leaving
+ * room for line metadata and the Registry's localized truncation marker. */
+const DEFAULT_OUTPUT_BYTES = 30 * 1024;
+
+function truncateUtf8(text, maxBytes) {
+  const buffer = Buffer.from(text, 'utf8');
+  if (buffer.length <= maxBytes) return text;
+  return new StringDecoder('utf8').write(buffer.subarray(0, maxBytes));
+}
+
+function formatLinesWithinBudget(allLines, startLine, endLine, maxBytes = DEFAULT_OUTPUT_BYTES) {
+  const parts = [];
+  let usedBytes = 0;
+  let nextLine = startLine;
+  for (let i = startLine; i < endLine; i += 1) {
+    const prefix = parts.length > 0 ? '\n' : '';
+    const formatted = `${i + 1}\t${allLines[i]}`;
+    const remaining = maxBytes - usedBytes - Buffer.byteLength(prefix, 'utf8');
+    if (remaining <= 0) break;
+    const bounded = truncateUtf8(formatted, remaining);
+    if (!bounded) break;
+    parts.push(prefix + bounded);
+    usedBytes += Buffer.byteLength(prefix + bounded, 'utf8');
+    nextLine = i + 1;
+    if (bounded !== formatted) break;
+  }
+  return { text: parts.join(''), nextLine };
+}
 
 export default defineTool({
   name: 'FileRead',
@@ -129,17 +159,12 @@ Guidelines:
       // Apply offset and limit
       const startLine = Math.max(0, Math.min(offset, totalLines));
       const endLine = Math.min(startLine + limit, totalLines);
-      const lines = allLines.slice(startLine, endLine);
+      const { text: numbered, nextLine } = formatLinesWithinBudget(allLines, startLine, endLine);
 
-      // Format with line numbers (1-based like cat -n)
-      const numbered = lines.map((line, i) => {
-        const lineNum = startLine + i + 1;
-        return `${lineNum}\t${line}`;
-      }).join('\n');
-
-      // Add metadata if partial
-      if (startLine > 0 || endLine < totalLines) {
-        return `${numbered}\n\n[Showing lines ${startLine + 1}-${endLine} of ${totalLines} total]`;
+      // Add metadata if partial. `nextLine` is also the next zero-based offset,
+      // so the model can continue without rereading or skipping content.
+      if (startLine > 0 || nextLine < totalLines) {
+        return `${numbered}\n\n[Showing lines ${startLine + 1}-${nextLine} of ${totalLines} total]`;
       }
 
       return numbered;

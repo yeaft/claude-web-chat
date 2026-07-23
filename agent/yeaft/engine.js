@@ -46,7 +46,7 @@ import { countTurns } from './turn-utils.js';
 import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/continuity.js';
 import { resolveThinking } from './router/thinking.js';
 import { approxTokens } from './memory/budget.js';
-import { COLLAB_TOOL_POLICY, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { COLLAB_TOOL_POLICY, isToolErrorOutput, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
 import { extractDisplayImages, stripDisplayImageData } from './image-assets.js';
 import { acknowledgePendingNotifications, formatNotificationsForPrompt, peekPendingNotifications } from './sub-agent/notifications.js';
 import {
@@ -3325,7 +3325,8 @@ export class Engine {
             if (displayImages.length > 0) {
               output = stripDisplayImageData(output, displayImages);
             }
-            yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError: false, threadId: this.currentThreadId };
+            isError = isToolErrorOutput(output);
+            yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError, threadId: this.currentThreadId };
             if (displayImages.some(image => image.deliveryQueued === true)) hasDisplayImageAnchor = true;
           } catch (err) {
             output = `Error: ${err.message}`;

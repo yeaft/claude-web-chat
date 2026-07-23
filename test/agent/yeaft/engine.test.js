@@ -587,6 +587,41 @@ describe('Engine', () => {
       });
     });
 
+    it('marks structured tool error envelopes as failed executions', async () => {
+      mockAdapter.pushResponse([
+        { type: 'tool_call', id: 'call_structured_error', name: 'structured_error_tool', input: {} },
+        { type: 'stop', stopReason: 'tool_use' },
+      ]);
+      mockAdapter.pushResponse([
+        { type: 'text_delta', text: 'The tool returned an error.' },
+        { type: 'stop', stopReason: 'end_turn' },
+      ]);
+
+      const records = [];
+      const engine = new Engine({
+        adapter: mockAdapter,
+        trace,
+        config: { model: 'test-model', maxOutputTokens: 1024 },
+        toolStats: { record: entry => records.push(entry) },
+      });
+      engine.registerTool({
+        name: 'structured_error_tool',
+        description: 'Returns a structured failure',
+        parameters: {},
+        execute: async () => JSON.stringify({ error: 'Path not found' }),
+      });
+
+      const events = [];
+      for await (const event of engine.query({ prompt: 'use the tool' })) events.push(event);
+
+      expect(events.find(event => event.type === 'tool_end')).toMatchObject({ isError: true });
+      expect(events.find(event => event.type === 'tool_exec')).toMatchObject({ isError: true });
+      expect(mockAdapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({ isError: true });
+      expect(records).toEqual([
+        expect.objectContaining({ name: 'structured_error_tool', isError: true, errorMessage: '{"error":"Path not found"}' }),
+      ]);
+    });
+
     it('should handle tool execution errors gracefully', async () => {
       mockAdapter.pushResponse([
         { type: 'tool_call', id: 'call_1', name: 'failing_tool', input: {} },
