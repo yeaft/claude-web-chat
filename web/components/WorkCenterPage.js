@@ -317,8 +317,8 @@ export default {
       this.workItemMessageError = '';
       this.workItemMessageSending = false;
     },
-    async selectItem(item) {
-      this.selectedId = item.id;
+    openWorkItem(itemId) {
+      this.selectedId = itemId;
       this.selectedActionId = null;
       this.narrowPane = 'actions';
       this.resetActionComposer();
@@ -326,6 +326,10 @@ export default {
       this.expandedActions = {};
       this.actionsExpanded = false;
       this.detailError = '';
+      this.detailLoading = false;
+    },
+    async selectItem(item) {
+      this.openWorkItem(item.id);
       this.detailLoading = true;
       try {
         const detail = await this.store.getWorkItem(item.id, this.agentId);
@@ -606,7 +610,8 @@ export default {
           reuseMemory: this.form.reuseMemory,
           start: this.form.start,
         }, this.agentId);
-        this.selectedId = detail.id;
+        this.openWorkItem(detail.id);
+        this.selectedActionId = detail.currentActionId || detail.actions?.[0]?.id || null;
         this.form = {
           title: '',
           goal: '',

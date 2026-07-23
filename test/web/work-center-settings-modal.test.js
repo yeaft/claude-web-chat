@@ -469,6 +469,9 @@ describe('Work Center settings modal ownership', () => {
       saving: false,
       settings: { startImmediately: true },
       closeFolderPicker: vi.fn(),
+      resetActionComposer: vi.fn(),
+      resetWorkItemComposer: vi.fn(),
+      openWorkItem: WorkCenterPage.methods.openWorkItem,
       store: {
         workCenterCreateDraft: {
           sourceAgentId: 'agent-a',
@@ -556,6 +559,83 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.store.workCenterCreateDraft.linkedSessionIds).toEqual([]);
   });
 
+  it.each([
+    {
+      name: 'started Work Item',
+      start: true,
+      detail: {
+        id: 'item-running',
+        currentActionId: 'action-current',
+        actions: [{ id: 'action-first' }, { id: 'action-current' }],
+      },
+      expectedActionId: 'action-current',
+    },
+    {
+      name: 'draft Work Item with a planned Action',
+      start: false,
+      detail: {
+        id: 'item-draft',
+        currentActionId: null,
+        actions: [{ id: 'action-planned' }],
+      },
+      expectedActionId: 'action-planned',
+    },
+    {
+      name: 'draft Work Item without Actions',
+      start: false,
+      detail: { id: 'item-empty-draft', currentActionId: null, actions: [] },
+      expectedActionId: null,
+    },
+  ])('opens the Action canvas after creating a $name', async ({ start, detail, expectedActionId }) => {
+    const resetActionComposer = vi.fn();
+    const resetWorkItemComposer = vi.fn();
+    const createWorkItem = vi.fn().mockResolvedValue(detail);
+    const vm = {
+      agentId: 'agent-a',
+      saving: false,
+      selectedId: 'item-old',
+      selectedActionId: 'action-old',
+      narrowPane: 'items',
+      expandedActions: { 'action-old': true },
+      actionsExpanded: true,
+      detailError: 'old error',
+      detailLoading: true,
+      settings: { startImmediately: true },
+      workDirTouched: true,
+      startTouched: true,
+      createOpen: true,
+      workItemAttachmentsSupported: false,
+      createAttachments: [],
+      resetActionComposer,
+      resetWorkItemComposer,
+      openWorkItem: WorkCenterPage.methods.openWorkItem,
+      form: {
+        title: 'Create navigation',
+        goal: 'Open the created Work Item',
+        acceptanceCriteriaText: '',
+        workItemType: 'auto',
+        workDir: '/workspace/project',
+        reuseMemory: true,
+        start,
+      },
+      store: { workCenterCreateDraft: null, createWorkItem },
+    };
+
+    await WorkCenterPage.methods.submitCreate.call(vm);
+
+    expect(createWorkItem).toHaveBeenCalledWith(expect.objectContaining({ start }), 'agent-a');
+    expect(vm.selectedId).toBe(detail.id);
+    expect(vm.selectedActionId).toBe(expectedActionId);
+    expect(vm.narrowPane).toBe('actions');
+    expect(vm.createOpen).toBe(false);
+    expect(vm.expandedActions).toEqual({});
+    expect(vm.actionsExpanded).toBe(false);
+    expect(vm.detailError).toBe('');
+    expect(vm.detailLoading).toBe(false);
+    expect(resetActionComposer).toHaveBeenCalledOnce();
+    expect(resetWorkItemComposer).toHaveBeenCalledOnce();
+  });
+
   it('drops provenance when a stale draft bypasses the Agent watcher', async () => {
     const vm = {
       agentId: 'agent-b',
@@ -563,6 +643,9 @@ describe('Work Center settings modal ownership', () => {
       selectedId: null,
       settings: { startImmediately: true },
       workDirTouched: false,
+      resetActionComposer: vi.fn(),
+      resetWorkItemComposer: vi.fn(),
+      openWorkItem: WorkCenterPage.methods.openWorkItem,
       startTouched: false,
       createOpen: true,
       workItemAttachmentsSupported: false,
