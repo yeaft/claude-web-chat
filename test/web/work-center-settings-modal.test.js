@@ -12,6 +12,61 @@ import {
   normalizeWorkCenterSettings,
 } from '../../agent/yeaft/work-center/workflow.js';
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function createPageVm(createWorkItem, overrides = {}) {
+  return {
+    agentId: 'agent-a',
+    createGeneration: 0,
+    saving: false,
+    selectedId: 'item-a',
+    selectedActionId: 'action-a',
+    narrowPane: 'items',
+    expandedActions: {},
+    actionsExpanded: false,
+    detailError: '',
+    detailLoading: false,
+    settings: { startImmediately: true },
+    createDefaultWorkDir: '/workspace/a',
+    createDefaultStart: true,
+    workDirTouched: true,
+    startTouched: true,
+    createOpen: true,
+    workItemAttachmentsSupported: false,
+    createAttachments: [],
+    resetActionComposer: vi.fn(),
+    resetWorkItemComposer: vi.fn(),
+    closeFolderPicker: vi.fn(),
+    openWorkItem: WorkCenterPage.methods.openWorkItem,
+    applyCreateDefaults: WorkCenterPage.methods.applyCreateDefaults,
+    resetCreateExecutionContext: WorkCenterPage.methods.resetCreateExecutionContext,
+    form: {
+      title: 'Agent A Work Item',
+      goal: 'Remain scoped to Agent A',
+      acceptanceCriteriaText: '',
+      workItemType: 'auto',
+      workDir: '/workspace/a',
+      reuseMemory: true,
+      start: true,
+    },
+    store: {
+      workCenterCreateDraft: null,
+      createWorkItem,
+      listWorkItems: vi.fn().mockResolvedValue([]),
+      loadWorkCenterSettings: vi.fn().mockResolvedValue({}),
+    },
+    ...overrides,
+  };
+}
+
 function modalVm(overrides = {}) {
   return {
     agentId: 'agent-a',
@@ -469,6 +524,9 @@ describe('Work Center settings modal ownership', () => {
       saving: false,
       settings: { startImmediately: true },
       closeFolderPicker: vi.fn(),
+      resetActionComposer: vi.fn(),
+      resetWorkItemComposer: vi.fn(),
+      openWorkItem: WorkCenterPage.methods.openWorkItem,
       store: {
         workCenterCreateDraft: {
           sourceAgentId: 'agent-a',
@@ -556,6 +614,166 @@ describe('Work Center settings modal ownership', () => {
     expect(vm.store.workCenterCreateDraft.linkedSessionIds).toEqual([]);
   });
 
+  it.each([
+    {
+      name: 'started Work Item',
+      start: true,
+      detail: {
+        id: 'item-running',
+        currentActionId: 'action-current',
+        actions: [{ id: 'action-first' }, { id: 'action-current' }],
+      },
+      expectedActionId: 'action-current',
+    },
+    {
+      name: 'draft Work Item with a planned Action',
+      start: false,
+      detail: {
+        id: 'item-draft',
+        currentActionId: null,
+        actions: [{ id: 'action-planned' }],
+      },
+      expectedActionId: 'action-planned',
+    },
+    {
+      name: 'draft Work Item without Actions',
+      start: false,
+      detail: { id: 'item-empty-draft', currentActionId: null, actions: [] },
+      expectedActionId: null,
+    },
+  ])('opens the Action canvas after creating a $name', async ({ start, detail, expectedActionId }) => {
+    const resetActionComposer = vi.fn();
+    const resetWorkItemComposer = vi.fn();
+    const createWorkItem = vi.fn().mockResolvedValue(detail);
+    const vm = {
+      agentId: 'agent-a',
+      saving: false,
+      selectedId: 'item-old',
+      selectedActionId: 'action-old',
+      narrowPane: 'items',
+      expandedActions: { 'action-old': true },
+      actionsExpanded: true,
+      detailError: 'old error',
+      detailLoading: true,
+      settings: { startImmediately: true },
+      workDirTouched: true,
+      startTouched: true,
+      createOpen: true,
+      workItemAttachmentsSupported: false,
+      createAttachments: [],
+      resetActionComposer,
+      resetWorkItemComposer,
+      openWorkItem: WorkCenterPage.methods.openWorkItem,
+      form: {
+        title: 'Create navigation',
+        goal: 'Open the created Work Item',
+        acceptanceCriteriaText: '',
+        workItemType: 'auto',
+        workDir: '/workspace/project',
+        reuseMemory: true,
+        start,
+      },
+      store: { workCenterCreateDraft: null, createWorkItem },
+    };
+
+    await WorkCenterPage.methods.submitCreate.call(vm);
+
+    expect(createWorkItem).toHaveBeenCalledWith(expect.objectContaining({ start }), 'agent-a');
+    expect(vm.selectedId).toBe(detail.id);
+    expect(vm.selectedActionId).toBe(expectedActionId);
+    expect(vm.narrowPane).toBe('actions');
+    expect(vm.createOpen).toBe(false);
+    expect(vm.expandedActions).toEqual({});
+    expect(vm.actionsExpanded).toBe(false);
+    expect(vm.detailError).toBe('');
+    expect(vm.detailLoading).toBe(false);
+    expect(resetActionComposer).toHaveBeenCalledOnce();
+    expect(resetWorkItemComposer).toHaveBeenCalledOnce();
+  });
+
+  it.each(['resolve', 'reject'])('ignores an Agent A create that settles after switching to Agent B (%s)', async outcome => {
+    const pending = deferred();
+    const vm = createPageVm(vi.fn().mockReturnValue(pending.promise));
+    const submission = WorkCenterPage.methods.submitCreate.call(vm);
+
+    vm.agentId = 'agent-b';
+    WorkCenterPage.watch.agentId.handler.call(vm, 'agent-b', 'agent-a');
+    vm.form = {
+      title: 'Agent B draft',
+      goal: 'Keep Agent B state',
+      acceptanceCriteriaText: 'B criterion',
+      workItemType: 'auto',
+      workDir: '/workspace/b',
+      reuseMemory: false,
+      start: false,
+    };
+    vm.createOpen = true;
+    vm.selectedId = 'item-b';
+    vm.selectedActionId = 'action-b';
+    vm.narrowPane = 'action';
+    vm.saving = true;
+
+    if (outcome === 'resolve') {
+      pending.resolve({
+        id: 'item-from-a',
+        currentActionId: 'action-from-a',
+        actions: [{ id: 'action-from-a' }],
+      });
+      await submission;
+    } else {
+      pending.reject(new Error('Agent A create failed'));
+      await expect(submission).rejects.toThrow('Agent A create failed');
+    }
+
+    expect(vm.selectedId).toBe('item-b');
+    expect(vm.selectedActionId).toBe('action-b');
+    expect(vm.narrowPane).toBe('action');
+    expect(vm.createOpen).toBe(true);
+    expect(vm.form).toMatchObject({
+      title: 'Agent B draft', goal: 'Keep Agent B state', workDir: '/workspace/b', start: false,
+    });
+    expect(vm.saving).toBe(true);
+  });
+
+  it('rejects a stale Agent A create after switching A to B and back to A', async () => {
+    const pending = deferred();
+    const vm = createPageVm(vi.fn().mockReturnValue(pending.promise));
+    const submission = WorkCenterPage.methods.submitCreate.call(vm);
+
+    vm.agentId = 'agent-b';
+    WorkCenterPage.watch.agentId.handler.call(vm, 'agent-b', 'agent-a');
+    vm.agentId = 'agent-a';
+    WorkCenterPage.watch.agentId.handler.call(vm, 'agent-a', 'agent-b');
+    vm.form = {
+      title: 'New Agent A draft',
+      goal: 'Do not overwrite after identity returns',
+      acceptanceCriteriaText: '',
+      workItemType: 'auto',
+      workDir: '/workspace/new-a',
+      reuseMemory: true,
+      start: false,
+    };
+    vm.createOpen = true;
+    vm.selectedId = 'new-item-a';
+    vm.selectedActionId = null;
+    vm.narrowPane = 'items';
+    vm.saving = true;
+
+    pending.resolve({
+      id: 'old-item-a',
+      currentActionId: 'old-action-a',
+      actions: [{ id: 'old-action-a' }],
+    });
+    await submission;
+
+    expect(vm.selectedId).toBe('new-item-a');
+    expect(vm.selectedActionId).toBeNull();
+    expect(vm.narrowPane).toBe('items');
+    expect(vm.createOpen).toBe(true);
+    expect(vm.form).toMatchObject({ title: 'New Agent A draft', workDir: '/workspace/new-a' });
+    expect(vm.saving).toBe(true);
+  });
+
   it('drops provenance when a stale draft bypasses the Agent watcher', async () => {
     const vm = {
       agentId: 'agent-b',
@@ -563,6 +781,9 @@ describe('Work Center settings modal ownership', () => {
       selectedId: null,
       settings: { startImmediately: true },
       workDirTouched: false,
+      resetActionComposer: vi.fn(),
+      resetWorkItemComposer: vi.fn(),
+      openWorkItem: WorkCenterPage.methods.openWorkItem,
       startTouched: false,
       createOpen: true,
       workItemAttachmentsSupported: false,

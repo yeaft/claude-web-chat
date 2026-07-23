@@ -390,7 +390,7 @@
 
 .work-center-body {
   display: grid;
-  grid-template-columns: clamp(230px, 17cqw, 290px) clamp(330px, 25cqw, 430px) minmax(480px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
   flex: 1;
   min-height: 0;
@@ -400,8 +400,16 @@
   background: var(--bg-main);
 }
 
+.work-center-body[data-pane="items"] .work-center-detail,
+.work-center-body[data-pane="items"] .work-center-action-detail-pane,
+.work-center-body[data-pane="actions"] .work-center-list,
+.work-center-body[data-pane="actions"] .work-center-action-detail-pane,
+.work-center-body[data-pane="action"] .work-center-list,
+.work-center-body[data-pane="action"] .work-center-detail {
+  display: none;
+}
+
 .work-center-body.is-empty {
-  grid-template-columns: minmax(0, 1fr);
   border-color: transparent;
 }
 
@@ -429,14 +437,13 @@
 }
 
 .work-center-list {
-  padding: 6px;
-  background: var(--bg-sidebar);
+  padding: 10px;
+  background: var(--bg-main);
 }
 
 .work-center-detail {
-  padding: 18px 20px;
+  padding: 24px clamp(20px, 4vw, 56px);
   background: var(--bg-main);
-  box-shadow: inset -1px 0 0 var(--border-light);
 }
 
 .work-center-list-heading {
@@ -456,10 +463,14 @@
 }
 
 .work-center-card {
-  display: block;
+  display: grid;
   width: 100%;
-  margin: 0 0 2px;
-  padding: 11px 10px;
+  min-width: 0;
+  margin: 0 0 3px;
+  padding: 14px 12px;
+  align-items: center;
+  grid-template-columns: minmax(112px, auto) minmax(240px, 1fr) minmax(72px, auto) minmax(140px, auto) 14px;
+  gap: 18px;
   border-radius: 8px;
   background: transparent;
   color: var(--text-primary);
@@ -474,38 +485,45 @@
   background: var(--session-active);
 }
 
-.work-center-card-topline,
-.work-center-card-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+.work-center-card-state,
+.work-center-card-content {
+  min-width: 0;
 }
 
-.work-center-card-title {
-  min-width: 0;
+.work-center-card-content {
+  display: grid;
+  gap: 4px;
+}
+
+.work-center-card-title,
+.work-center-card-goal,
+.work-center-card-current-action {
   overflow: hidden;
-  font-size: 14px;
-  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.work-center-card-goal {
-  display: -webkit-box;
-  margin-top: 5px;
-  overflow: hidden;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.45;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+.work-center-card-title {
+  font-size: 14px;
+  font-weight: 600;
 }
 
-.work-center-card-meta {
-  margin-top: 8px;
+.work-center-card-goal {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.work-center-card-current-action,
+.work-center-card-progress,
+.work-center-card-updated {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
+}
+
+.work-center-card-chevron {
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
 }
 
 .work-center-usage-summary {
@@ -972,7 +990,7 @@
 }
 
 .work-center-pane-back {
-  display: none;
+  display: inline-flex;
   width: fit-content;
   align-items: center;
   gap: 5px;
@@ -2340,21 +2358,12 @@
     display: none;
   }
 
-  .work-center-body {
-    grid-template-columns: minmax(0, 1fr);
+  .work-center-card {
+    grid-template-columns: minmax(100px, auto) minmax(220px, 1fr) minmax(72px, auto) 14px;
   }
 
-  .work-center-body[data-pane="items"] .work-center-detail,
-  .work-center-body[data-pane="items"] .work-center-action-detail-pane,
-  .work-center-body[data-pane="actions"] .work-center-list,
-  .work-center-body[data-pane="actions"] .work-center-action-detail-pane,
-  .work-center-body[data-pane="action"] .work-center-list,
-  .work-center-body[data-pane="action"] .work-center-detail {
+  .work-center-card-updated {
     display: none;
-  }
-
-  .work-center-pane-back {
-    display: inline-flex;
   }
 }
 

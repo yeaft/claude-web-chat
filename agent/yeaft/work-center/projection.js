@@ -33,6 +33,18 @@ function currentAction(detail) {
   return detail.actions.find(action => action.id === detail.currentActionId) || null;
 }
 
+function projectCurrentActionSummary(action, projectedAction = action) {
+  if (!projectedAction?.id) return null;
+  return {
+    id: projectedAction.id,
+    type: projectedAction.type,
+    stageId: projectedAction.stageId,
+    assignmentMode: projectedAction.assignmentPolicy?.mode || (projectedAction.requiredRole ? 'fixed' : null),
+    status: projectedAction.status,
+    objective: truncateUtf8(action?.brief?.objective, 1_000) || null,
+  };
+}
+
 function count(value) {
   return Math.max(0, Number(value) || 0);
 }
@@ -652,7 +664,9 @@ export function projectWorkItemSummary(detail) {
       activeActionIds: Array.isArray(detail.activeActionIds) ? detail.activeActionIds : undefined,
       attentionActionIds: Array.isArray(detail.attentionActionIds) ? detail.attentionActionIds : undefined,
       currentActionId: detail.currentActionId || null,
-      currentAction: null,
+      currentAction: projectCurrentActionSummary(detail.currentAction),
+      actionCount: count(detail.actionCount),
+      completedActionCount: count(detail.completedActionCount),
       executionStats: executionStats(detail.executionStats),
       origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
       linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
@@ -677,18 +691,14 @@ export function projectWorkItemSummary(detail) {
     activeActionIds: Array.isArray(detail.activeActionIds) ? detail.activeActionIds : undefined,
     attentionActionIds: Array.isArray(detail.attentionActionIds) ? detail.attentionActionIds : undefined,
     currentActionId: detail.currentActionId || null,
+    actionCount: detail.actions.filter(item => !['superseded', 'cancelled'].includes(item?.status)).length,
+    completedActionCount: detail.actions.filter(item => item?.status === 'completed').length,
     executionStats: Array.isArray(detail.runs)
       ? sumExecutionStats(detail.runs)
       : executionStats(detail.executionStats),
     failureReason: workItemFailureReason(detail),
 
-    currentAction: projectedAction ? {
-      id: projectedAction.id,
-      type: projectedAction.type,
-      stageId: projectedAction.stageId,
-      assignmentMode: projectedAction.assignmentPolicy?.mode || (projectedAction.requiredRole ? 'fixed' : null),
-      status: projectedAction.status,
-    } : null,
+    currentAction: projectCurrentActionSummary(action, projectedAction),
     origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
     linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
     attachmentCount: Array.isArray(detail.attachments) ? detail.attachments.length : 0,

@@ -188,6 +188,7 @@ describe('Work Center Action composer scope', () => {
       store: { getWorkItem: vi.fn().mockResolvedValue({ id: 'wi-2', actions: [] }) },
       resetActionComposer: vi.fn(),
       resetWorkItemComposer: WorkCenterPage.methods.resetWorkItemComposer,
+      openWorkItem: WorkCenterPage.methods.openWorkItem,
     };
 
     await WorkCenterPage.methods.selectItem.call(context, { id: 'wi-2' });
