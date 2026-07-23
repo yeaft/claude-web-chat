@@ -128,7 +128,9 @@ describe('Work Center UI contract', () => {
     expect(detail).toContain('class="work-center-action-detail-pane"');
     expect(detail).toContain("activeTab === 'messages'");
     expect(detail).toContain("activeTab === 'requests'");
-    expect(detail).toContain('v-for="message in messages"');
+    expect(detail).toContain('v-for="generation in actionThread"');
+    expect(detail).toContain('v-for="message in generation.messages"');
+    expect(detail).toContain('class="work-center-action-run"');
     expect(detail).toContain("$emit('load-earlier-messages')");
     expect(store).toContain("workCenterRequest('get_action_messages'");
     expect(page).toContain(':messages-next-cursor="actionMessagesNextCursor"');

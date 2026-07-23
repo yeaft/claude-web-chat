@@ -189,6 +189,43 @@ describe('Work Center Action detail tabs', () => {
     expect(wrapper.get('.work-center-request-detail').text()).toContain('This request has no retained loop details.');
   });
 
+  it('renders generation history as one Action thread and opens run diagnostics lazily', async () => {
+    const request = { id: 'request-2', runId: 'run-2', model: 'model-2' };
+    const wrapper = mountDetail({
+      action: {
+        id: 'action-1', type: 'implement', status: 'running', generation: 2,
+        executionStats: {},
+        thread: [{
+          generation: 1, canonical: false,
+          messages: [{ id: 'old-message', role: 'assistant', text: 'Old attempt result', createdAt: 1 }],
+          runs: [{ id: 'run-1', attempt: 1, status: 'failed', loopCount: 2, toolCount: 3, startedAt: 1 }],
+        }, {
+          generation: 2, canonical: true,
+          messages: [{ id: 'current-message', role: 'assistant', text: 'stale inline page', createdAt: 2 }],
+          runs: [{ id: 'run-2', attempt: 1, status: 'running', loopCount: 4, toolCount: 5, startedAt: 2 }],
+        }],
+      },
+      messages: [{ id: 'paged-current', role: 'assistant', text: 'Current paged response', createdAt: 3 }],
+      requests: [request],
+    });
+
+    const generations = wrapper.findAll('.work-center-action-generation');
+    expect(generations).toHaveLength(2);
+    expect(generations[0].text()).toContain('Generation 1');
+    expect(generations[0].text()).toContain('Previous execution');
+    expect(generations[0].text()).toContain('Old attempt result');
+    expect(generations[1].text()).toContain('Current execution');
+    expect(generations[1].text()).toContain('Current paged response');
+    expect(generations[1].text()).not.toContain('stale inline page');
+    expect(generations[1].text()).toContain('4 loops');
+    expect(generations[1].text()).toContain('5 tools');
+
+    await generations[1].get('.work-center-action-run').trigger('click');
+    expect(wrapper.vm.activeTab).toBe('requests');
+    expect(wrapper.vm.expandedRequestKey).toBe('run-2:request-2');
+    expect(wrapper.emitted('select-request')[0][0]).toEqual(request);
+  });
+
   it('opens persisted message attachments with an accessible, loading-aware button', async () => {
     const attachment = { id: 'file-1', name: 'report.pdf', size: 2048, isImage: false };
     const wrapper = mountDetail({

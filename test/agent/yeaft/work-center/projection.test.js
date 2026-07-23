@@ -412,6 +412,51 @@ describe('Work Center event projection', () => {
     });
   });
 
+  it('projects the complete Action thread by generation while keeping only the current result canonical', () => {
+    const detail = internalDetail();
+    detail.actions[0].generation = 2;
+    detail.actions[0].specHash = 'review-v2';
+    detail.runs = [{
+      ...detail.runs[0], id: 'current-run', status: 'running', actionGeneration: 2,
+      actionSpecHash: 'review-v2', actionAttempt: 1, response: 'Current response', startedAt: 20,
+    }, {
+      ...detail.runs[1], id: 'old-run', status: 'failed', actionGeneration: 1,
+      actionSpecHash: 'review-v1', actionAttempt: 2, response: 'Old response', startedAt: 10, endedAt: 15,
+    }, {
+      ...detail.runs[1], id: 'wrong-spec-run', actionGeneration: 2,
+      actionSpecHash: 'wrong-spec', actionAttempt: 3, response: 'Wrong spec response', startedAt: 30,
+    }];
+    detail.events = [{
+      id: 1, actionId: 'a-1', actionGeneration: 1, type: 'action.input_added',
+      data: { text: 'Old input' }, createdAt: 5,
+    }, {
+      id: 2, actionId: 'a-1', actionGeneration: 2, type: 'action.input_added',
+      data: { text: 'Current input' }, createdAt: 18,
+    }, {
+      id: 3, actionId: 'a-1', actionGeneration: 1, runId: 'old-run', type: 'run.loop_output',
+      data: { response: 'Old loop output', actionAttempt: 2 }, createdAt: 12,
+    }];
+
+    const projected = projectWorkItemDetail(detail).actions[0];
+    expect(projected.thread).toEqual([
+      expect.objectContaining({
+        generation: 1, canonical: false,
+        messages: [
+          expect.objectContaining({ text: 'Old input', generation: 1 }),
+          expect.objectContaining({ text: 'Old loop output', generation: 1, runId: 'old-run' }),
+        ],
+        runs: [expect.objectContaining({ id: 'old-run', attempt: 2, status: 'failed' })],
+      }),
+      expect.objectContaining({
+        generation: 2, canonical: true,
+        messages: [],
+        runs: [expect.objectContaining({ id: 'current-run', attempt: 1, status: 'running' })],
+      }),
+    ]);
+    expect(JSON.stringify(projected.thread)).not.toContain('Wrong spec response');
+    expect(projected.response).toBe('Current response');
+  });
+
   it('merges user Action input and assistant Run responses without exposing event data generally', () => {
     const detail = internalDetail();
     detail.events = [{
@@ -504,6 +549,23 @@ describe('Work Center event projection', () => {
     expect(projectActionRequestDetail(strictAction, wrongSpecRun, {
       turns: [{ ...turn, tools: [] }], loops: [],
     })).toBeNull();
+
+    const currentAction = { ...strictAction, generation: 2, specHash: 'current-v2' };
+    const historicalRun = { ...run, actionGeneration: 1, actionSpecHash: 'current-spec' };
+    expect(projectActionRequestIndex(currentAction, [{ run: historicalRun, turn }]).requests)
+      .toEqual([expect.objectContaining({ runId: historicalRun.id, generation: 1 })]);
+    expect(projectActionRequestDetail(currentAction, historicalRun, {
+      turns: [{ ...turn, tools: [] }], loops: [],
+    })).toMatchObject({ request: { runId: historicalRun.id } });
+
+    const wrongHistoricalSpec = { ...historicalRun, id: 'wrong-history', actionSpecHash: 'wrong-v1' };
+    expect(projectActionRequestIndex(currentAction, [
+      { run: historicalRun, turn },
+      { run: wrongHistoricalSpec, turn: { ...turn, turnId: 'wrong-request' } },
+    ]).requests).toEqual([expect.objectContaining({ runId: historicalRun.id })]);
+    expect(projectActionRequestDetail(currentAction, wrongHistoricalSpec, {
+      turns: [{ ...turn, tools: [] }], loops: [],
+    }, [historicalRun, wrongHistoricalSpec])).toBeNull();
   });
 
   it('redacts complete sensitive header values across browser DTO header shapes', () => {
@@ -1253,6 +1315,7 @@ describe('Work Center event projection', () => {
     expect(projected.request.truncated).toBe(true);
 
     action.id = hugeUnicode;
+    run.actionId = hugeUnicode;
     run.id = hugeUnicode;
     run.status = hugeUnicode;
     run.modelSnapshot.id = hugeUnicode;

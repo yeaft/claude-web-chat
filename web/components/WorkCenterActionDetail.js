@@ -54,6 +54,16 @@ export default {
       return !this.uploading && !this.sending
         && (!!this.composerText.trim() || this.composerAttachments.length > 0);
     },
+    actionThread() {
+      const thread = Array.isArray(this.action?.thread) ? this.action.thread : [];
+      if (thread.length === 0) return [{
+        generation: Math.max(1, Number(this.action?.generation) || 1),
+        canonical: true,
+        messages: this.messages,
+        runs: [],
+      }];
+      return thread.map(entry => entry.canonical ? { ...entry, messages: this.messages } : entry);
+    },
   },
   watch: {
     'action.id'() {
@@ -123,6 +133,16 @@ export default {
     requestDetail(request) {
       const detail = this.requestDetails[this.requestKey(request)] || null;
       return detail?.request || detail;
+    },
+    requestForRun(run) {
+      return this.requests.find(request => request.runId === run.id) || null;
+    },
+    async openRun(run) {
+      const request = this.requestForRun(run);
+      this.switchTab('requests');
+      if (!request) return;
+      this.expandedRequestKey = this.requestKey(request);
+      if (!this.requestDetail(request)) this.$emit('select-request', request);
     },
     async toggleRequest(request) {
       const key = this.requestKey(request);
@@ -229,22 +249,34 @@ export default {
               <li v-for="(evidence, index) in action.canonicalResult.evidence" :key="index">{{ typeof evidence === 'string' ? evidence : (evidence.label || evidence.ref || evidence.kind) }}</li>
             </ul>
           </section>
-          <article v-for="message in messages" :key="message.id" class="work-center-action-message" :class="'role-' + message.role" :data-status="message.status">
-            <header>
-              <strong>{{ message.role === 'user' ? tr('workCenter.you', 'You') : tr('workCenter.aiResponse', 'AI response') }}</strong>
-              <small>{{ time(message.updatedAt || message.createdAt) }}</small>
+          <section v-for="generation in actionThread" :key="generation.generation" class="work-center-action-generation" :class="{ canonical: generation.canonical }">
+            <header class="work-center-action-generation-header">
+              <strong>{{ tr('workCenter.generation', 'Generation') }} {{ generation.generation }}</strong>
+              <span>{{ generation.canonical ? tr('workCenter.currentExecution', 'Current execution') : tr('workCenter.previousExecution', 'Previous execution') }}</span>
             </header>
-            <div v-if="message.text" class="markdown-body" v-html="messageHtml(message.text)"></div>
-            <div v-if="message.attachments?.length" class="work-center-attachment-list">
-              <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
-                      class="work-center-attachment-chip work-center-attachment-preview"
-                      :disabled="previewingAttachmentId === attachment.id"
-                      :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })"
-                      @click="$emit('open-attachment', attachment, $event.currentTarget)">
-                <span>{{ attachment.name }}</span><small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
+            <div v-if="generation.runs?.length" class="work-center-action-runs">
+              <button v-for="run in generation.runs" :key="run.id" type="button" class="work-center-action-run" @click="openRun(run)">
+                <span><strong>{{ tr('workCenter.attempt', 'Attempt') }} {{ run.attempt }}</strong><small>{{ statusLabel(run.status) }} · {{ time(run.startedAt) }}</small></span>
+                <span>{{ formatCount(run.loopCount) }} {{ tr('workCenter.loops', 'loops') }} · {{ formatCount(run.toolCount) }} {{ tr('workCenter.tools', 'tools') }}</span>
               </button>
             </div>
-          </article>
+            <article v-for="message in generation.messages" :key="message.id" class="work-center-action-message" :class="'role-' + message.role" :data-status="message.status">
+              <header>
+                <strong>{{ message.role === 'user' ? tr('workCenter.you', 'You') : tr('workCenter.aiResponse', 'AI response') }}</strong>
+                <small>{{ time(message.updatedAt || message.createdAt) }}</small>
+              </header>
+              <div v-if="message.text" class="markdown-body" v-html="messageHtml(message.text)"></div>
+              <div v-if="message.attachments?.length" class="work-center-attachment-list">
+                <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
+                        class="work-center-attachment-chip work-center-attachment-preview"
+                        :disabled="previewingAttachmentId === attachment.id"
+                        :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })"
+                        @click="$emit('open-attachment', attachment, $event.currentTarget)">
+                  <span>{{ attachment.name }}</span><small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
+                </button>
+              </div>
+            </article>
+          </section>
           <p v-if="attachmentError" class="work-center-error" role="alert">{{ attachmentError }}</p>
           <p v-if="messages.length === 0" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No execution messages yet.') }}</p>
         </div>

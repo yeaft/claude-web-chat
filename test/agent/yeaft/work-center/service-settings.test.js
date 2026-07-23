@@ -321,6 +321,17 @@ describe('Work Center settings service', () => {
 
     service.store.db.prepare("UPDATE actions SET generation = 2, spec_hash = 'current-v2' WHERE id = ?")
       .run(claim.action.id);
+    const historicalIndex = await service.handle('get_action_requests', {
+      id: item.id, actionId: claim.action.id,
+    });
+    expect(historicalIndex).toMatchObject({
+      generation: 2,
+      requests: [expect.objectContaining({ runId: claim.run.id, generation: 1 })],
+    });
+    await expect(service.handle('get_action_request', {
+      id: item.id, actionId: claim.action.id, runId: claim.run.id, requestId: 'request-1',
+    })).resolves.toMatchObject({ request: { runId: claim.run.id } });
+
     service.store.db.prepare("UPDATE runs SET action_generation = 2, action_spec_hash = 'wrong-v2' WHERE id = ?")
       .run(claim.run.id);
     await expect(service.handle('get_action_requests', {
@@ -328,7 +339,7 @@ describe('Work Center settings service', () => {
     })).resolves.toMatchObject({ generation: 2, requests: [] });
     await expect(service.handle('get_action_request', {
       id: item.id, actionId: claim.action.id, runId: claim.run.id, requestId: 'request-1',
-    })).rejects.toThrow(/Action request not found/);
+    })).rejects.toThrow(/Action request detail is no longer available/);
   });
 
   it('keeps the real get operation internal so the bridge projects it exactly once', async () => {
