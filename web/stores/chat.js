@@ -1405,6 +1405,7 @@ export const useChatStore = defineStore('chat', {
       if (!target || !page?.nextCursor || !filters) return [];
       const queryKey = page.queryKey;
       const generation = this._workCenterListGenerationByAgent[target];
+      const eventGeneration = Number(this._workCenterListEventGenerationByAgent[target] || 0);
       const cursor = page.nextCursor;
       const requestKey = `${generation}:${queryKey}:${cursor}`;
       if (this._workCenterListMoreRequestsByAgent[target]?.key === requestKey) {
@@ -1422,11 +1423,18 @@ export const useChatStore = defineStore('chat', {
               || currentPage?.queryKey !== queryKey
               || currentPage?.nextCursor !== cursor
               || this.workCenterAgentId !== target) return [];
-          const merged = [...(this.workCenterItemsByAgent[target] || [])];
+          let merged = [...(this.workCenterItemsByAgent[target] || [])];
           for (const item of Array.isArray(data?.items) ? data.items : []) {
             const index = merged.findIndex(current => current.id === item.id);
             if (index < 0) merged.push(item);
             else merged[index] = applyWorkItemSummary([merged[index]], item)[0];
+          }
+          const events = this._workCenterListEventsByAgent[target] || {};
+          for (const entry of Object.values(events)) {
+            if (Number(entry?.generation) <= eventGeneration || entry?.queryKey !== queryKey) continue;
+            merged = entry.matches
+              ? applyWorkItemSummary(merged, entry.summary)
+              : merged.filter(item => item.id !== entry.summary?.id);
           }
           this.workCenterItemsByAgent = { ...this.workCenterItemsByAgent, [target]: merged };
           this.workCenterListPageByAgent = {

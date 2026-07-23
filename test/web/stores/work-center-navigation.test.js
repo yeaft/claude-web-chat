@@ -207,6 +207,31 @@ describe('Work Center navigation', () => {
     expect(store.workCenterItemsByAgent['agent-1'][0]).toMatchObject({ revision: 2, status: 'running' });
   });
 
+  it('does not let a stale Board page insert an unloaded card removed by a live event', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    const filters = { keyword: 'release' };
+    const queryKey = JSON.stringify(filters);
+    store.workCenterListPageByAgent['agent-1'] = { nextCursor: 'cursor-1', queryKey };
+    store._workCenterListQueryByAgent['agent-1'] = queryKey;
+    store._workCenterListGenerationByAgent['agent-1'] = 4;
+    store._workCenterListFiltersByAgent['agent-1'] = filters;
+    const page = deferred();
+    store.workCenterRequest = vi.fn(() => page.promise);
+
+    const pending = store.loadMoreWorkItems('agent-1');
+    store.applyWorkCenterEvent('agent-1', {
+      workItem: { id: 'wi-page', title: 'Renamed', goal: 'No longer matches', revision: 2 },
+    });
+    page.resolve({
+      items: [{ id: 'wi-page', title: 'Release build', revision: 1 }],
+      nextCursor: null,
+    });
+    await pending;
+
+    expect(store.workCenterItemsByAgent['agent-1'] || []).toEqual([]);
+  });
+
   it('keeps filtered Board events out and removes cards that leave the query', () => {
     const store = makeStore('yeaft');
     store.workCenterAgentId = 'agent-1';
