@@ -83,6 +83,7 @@ vi.mock('../../../../agent/yeaft/engine.js', () => ({
 
 const {
   createSubmitWorkItemPlanTool,
+  createSubmitWorkItemReplanTool,
   parseStructuredResult,
   publicWorkItemResponse,
   WorkItemRunner,
@@ -145,6 +146,39 @@ describe('Work Center Runner execution resolution', () => {
     expect(collector.value).toEqual(input);
     expect(requestEndTurn).toHaveBeenCalledWith({ kind: 'work_item_plan_submitted' });
     await expect(tool.execute(input, { requestEndTurn })).rejects.toThrow(/already submitted/);
+  });
+
+  it('builds a dedicated replan tool from the frozen candidate set', async () => {
+    const collector = { value: null };
+    const requestEndTurn = vi.fn();
+    const action = { id: 'replan-db', type: 'triage', stageId: 'replan-1', context: [{
+      type: 'replan-barrier', proposalId: 'request-1', basePlanRevision: 2,
+      candidateActionIds: ['implement-db', 'review-db'],
+    }] };
+    const tool = createSubmitWorkItemReplanTool({
+      vps: [{ id: 'linus', role: 'Systems Engineer' }, { id: 'martin', role: 'Reviewer' }],
+      workItem: { planRevision: 2 }, action,
+      actions: [
+        { id: 'implement-db', stageId: 'implement', type: 'implement' },
+        { id: 'review-db', stageId: 'review', type: 'review' },
+      ],
+      collector, isRunActive: () => true,
+    });
+    expect(tool.name).toBe('SubmitWorkItemReplan');
+    expect(tool.parameters.properties.retain.items.properties.actionId.enum)
+      .toEqual(['implement-db', 'review-db']);
+    expect(tool.parameters.properties.basePlanRevision.const).toBe(2);
+    expect(tool.description).toContain('Classify every frozen candidate exactly once');
+    const input = {
+      summary: 'Replanned future work', evidence: ['Inspected current evidence'], acceptanceChecks: [],
+      proposalId: 'result-1', basePlanRevision: 2,
+      retain: [], replace: [], remove: ['implement-db', 'review-db'], add: [],
+    };
+    await expect(tool.execute(input, { requestEndTurn })).resolves.toContain('"submitted":true');
+    expect(collector.value).toEqual(input);
+    expect(requestEndTurn).toHaveBeenCalledWith({
+      kind: 'work_item_replan_submitted', proposalId: 'result-1',
+    });
   });
 
   it('keeps triage active after an invalid isolated-write plan so the AI can correct it', async () => {

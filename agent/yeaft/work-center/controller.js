@@ -8,7 +8,7 @@ import {
 } from './workflow.js';
 import { renderSessionContextSnapshot } from './session-context.js';
 import { normalizeEvidence } from './evidence.js';
-import { applyAdditivePlanProposal } from './plan-mutation.js';
+import { applyAdditivePlanProposal, applyReplanMutation } from './plan-mutation.js';
 import { normalizeContractPatch, validateCompletedResult } from './completion-contract.js';
 
 function normalizeTerminalResult(result, action) {
@@ -46,6 +46,8 @@ function normalizeTerminalResult(result, action) {
       && !Array.isArray(result.planProposal) ? result.planProposal : null,
     replanRequest: result.replanRequest && typeof result.replanRequest === 'object'
       && !Array.isArray(result.replanRequest) ? result.replanRequest : null,
+    replanMutation: result.replanMutation && typeof result.replanMutation === 'object'
+      && !Array.isArray(result.replanMutation) ? result.replanMutation : null,
   };
   if (normalized.outcome === 'waiting' && !normalized.waitingReason) {
     throw new Error('waiting outcome requires waitingReason');
@@ -58,12 +60,14 @@ function normalizeTerminalResult(result, action) {
   if (normalized.outcome !== 'completed') {
     normalized.planProposal = null;
     normalized.replanRequest = null;
+    normalized.replanMutation = null;
   }
-  if (normalized.planProposal && normalized.replanRequest) {
+  if ([normalized.planProposal, normalized.replanRequest, normalized.replanMutation].filter(Boolean).length > 1) {
     normalized.outcome = 'failed';
-    normalized.error = 'An Action cannot expand and replan the WorkItem in the same completion';
+    normalized.error = 'An Action cannot submit more than one WorkItem plan mutation';
     normalized.planProposal = null;
     normalized.replanRequest = null;
+    normalized.replanMutation = null;
   }
   if (action.type === 'review' && normalized.outcome === 'completed' && !normalized.reviewDecision) {
     normalized.outcome = 'failed';
@@ -323,10 +327,17 @@ export class WorkflowController {
       throw new Error('Run has unconsumed Action input and cannot finish yet');
     }
     const result = normalizeTerminalResult(rawResult, activeAction);
+    if (result.outcome === 'completed'
+        && activeAction.stageId?.startsWith('replan-')
+        && !result.replanMutation) {
+      result.outcome = 'failed';
+      result.error = 'Work Center replan triage must submit SubmitWorkItemReplan';
+    }
     validateCompletedResult(result, activeAction, activeWorkItem);
     let validatedGeneratedWorkflow = null;
     if (result.outcome === 'completed'
         && activeAction.type === 'triage'
+        && !activeAction.stageId?.startsWith('replan-')
         && activeRun
         && this.store.getWorkItem(activeRun.workItemId)?.workflowSnapshot?.planningMode === 'ai') {
       const current = this.store.getWorkItem(activeRun.workItemId);
@@ -362,6 +373,27 @@ export class WorkflowController {
       } catch (error) {
         result.outcome = 'failed';
         result.error = error?.message || String(error);
+      }
+    }
+    let validatedReplanMutation = null;
+    let staleReplanMutation = null;
+    if (result.outcome === 'completed' && result.replanMutation) {
+      const currentWorkItem = this.store.getWorkItem(activeWorkItem.id);
+      if (Number(result.replanMutation.basePlanRevision) !== currentWorkItem.planRevision) {
+        staleReplanMutation = result.replanMutation;
+      } else {
+        try {
+          validatedReplanMutation = applyReplanMutation({
+            workItem: currentWorkItem,
+            action: activeAction,
+            actions: this.store.getWorkItemDetail(activeWorkItem.id).actions,
+            proposal: result.replanMutation,
+            availableVpIds: this.listAvailableVpIds?.(),
+          });
+        } catch (error) {
+          result.outcome = 'failed';
+          result.error = error?.message || String(error);
+        }
       }
     }
     if (result.outcome === 'completed' && result.replanRequest) {
@@ -451,6 +483,36 @@ export class WorkflowController {
             : effectiveWorkItem;
         const context = [...(action.context || []), contextEntry(action, result, activeRun)];
         if (plannedWorkItem.workflowSnapshot?.executionMode === 'graph') {
+          if (staleReplanMutation) {
+            return {
+              actionStatus: 'completed', workItemStatus: 'needs_attention', graphAdvance: false,
+              keepCurrentAction: true,
+              planConflict: {
+                kind: 'plan_revision',
+                proposalId: staleReplanMutation.proposalId,
+                expectedPlanRevision: staleReplanMutation.basePlanRevision,
+                actualPlanRevision: workItem.planRevision,
+              },
+              eventType: 'workflow.plan_conflict',
+              eventData: { proposalId: staleReplanMutation.proposalId },
+            };
+          }
+          if (validatedReplanMutation) {
+            return {
+              actionStatus: 'completed', workItemStatus: 'ready', graphAdvance: true,
+              workflowSnapshot: validatedReplanMutation.workflowSnapshot,
+              expectedPlanRevision: validatedReplanMutation.basePlanRevision,
+              proposalId: validatedReplanMutation.proposalId,
+              replanMutation: validatedReplanMutation,
+              eventType: 'workflow.replanned',
+              eventData: {
+                retainedActionCount: validatedReplanMutation.retain.length,
+                replacedActionCount: validatedReplanMutation.replace.length,
+                removedActionCount: validatedReplanMutation.remove.length,
+                addedActionCount: validatedReplanMutation.add.length,
+              },
+            };
+          }
           if (result.replanRequest) {
             const replanStage = {
               ...plannedWorkItem.workflowSnapshot.stages[0],

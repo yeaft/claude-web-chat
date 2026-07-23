@@ -2094,6 +2094,15 @@ export class WorkItemStore {
         throw new Error('Work Center terminal transition lost the current Action fence');
       }
 
+      if (transition.planConflict) {
+        this.db.prepare(`INSERT INTO plan_conflicts
+          (id, work_item_id, action_id, generation, kind, status, details, created_at, updated_at, resolved_at)
+          VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, NULL)`).run(
+          randomUUID(), workItem.id, action.id, action.generation,
+          transition.planConflict.kind || 'plan', stringify(transition.planConflict), now, now,
+        );
+      }
+
       let nextWorkItem = workItem;
       if (transition.contractPatch) {
         const patch = transition.contractPatch;
@@ -2175,9 +2184,65 @@ export class WorkItemStore {
         nextWorkItem = this.getWorkItem(workItem.id);
         nextAction = this.#insertAction(workItem.id, {
           ...barrier.action,
+          context: [
+            ...(Array.isArray(barrier.action.context) ? barrier.action.context : []),
+            {
+              type: 'replan-barrier',
+              proposalId: barrier.proposalId,
+              basePlanRevision: nextWorkItem.planRevision,
+              candidateActionIds: unfinished.map(candidate => candidate.id),
+            },
+          ],
           contractRevision: nextWorkItem.revision,
           status: 'ready',
         }, this.#nextSequence(workItem.id), now);
+      }
+      if (transition.replanMutation) {
+        for (const retained of transition.replanMutation.retain) {
+          const prior = retained.action;
+          const candidate = {
+            ...prior,
+            ...retained.nextAction,
+            status: 'ready',
+            generation: prior.generation + 1,
+            attempt: 0,
+            currentRunId: null,
+            resultRunId: null,
+            contractRevision: nextWorkItem.revision,
+          };
+          const changed = this.db.prepare(`UPDATE actions SET type = ?, required_role = ?, stage_id = ?,
+            assignment_policy = ?, model_policy = ?, depends_on_stage_ids = ?, workspace_mode = ?,
+            changes_requested_stage_id = ?, workspace = NULL, instruction = ?, brief = ?, context = ?,
+            contract_revision = ?, generation = ?, spec_hash = ?, result_run_id = NULL, status = 'ready',
+            attempt = 0, max_attempts = ?, current_run_id = NULL, lease_epoch = lease_epoch + 1,
+            updated_at = ? WHERE id = ? AND work_item_id = ? AND status = 'superseded' AND generation = ?`).run(
+            candidate.type, candidate.requiredRole || '', candidate.stageId,
+            stringify(candidate.assignmentPolicy || null), stringify(candidate.modelPolicy || null),
+            stringify(candidate.dependsOnStageIds || []), candidate.workspaceMode || 'shared',
+            candidate.changesRequestedStageId || null, candidate.instruction || '', stringify(candidate.brief || null),
+            stringify(candidate.context || []), candidate.contractRevision, candidate.generation,
+            actionSpecHash(candidate), candidate.maxAttempts || 2, now,
+            prior.id, workItem.id, prior.generation,
+          );
+          if (Number(changed.changes) !== 1) throw new Error('Work Center retained Action lost its superseded identity fence');
+          if (!nextAction) nextAction = this.getAction(prior.id);
+        }
+        for (const replacement of transition.replanMutation.replace) {
+          const inserted = this.#insertAction(workItem.id, {
+            ...replacement.nextAction,
+            contractRevision: nextWorkItem.revision,
+            status: 'ready',
+          }, this.#nextSequence(workItem.id), now);
+          if (!nextAction) nextAction = inserted;
+        }
+        for (const added of transition.replanMutation.add) {
+          const inserted = this.#insertAction(workItem.id, {
+            ...added,
+            contractRevision: nextWorkItem.revision,
+            status: 'ready',
+          }, this.#nextSequence(workItem.id), now);
+          if (!nextAction) nextAction = inserted;
+        }
       }
       if (transition.graphResetStageId) {
         nextAction = this.#resetGraphFromStage(
@@ -2205,7 +2270,13 @@ export class WorkItemStore {
       let workItemStatus = transition.workItemStatus;
       let currentActionId = nextAction?.id ?? (transition.keepCurrentAction ? action.id : null);
       let changedWorkItem;
-      if (transition.graphAdvance) {
+      if (transition.planConflict) {
+        changedWorkItem = this.db.prepare(`UPDATE work_items SET status = ?, current_action_id = ?,
+          current_run_id = NULL, ledger_revision = ledger_revision + ?, updated_at = ?
+          WHERE id = ? AND status IN ('ready', 'running', 'waiting', 'needs_attention') AND revision = ?`).run(
+          workItemStatus, currentActionId, ledgerIncrement, now, workItem.id, nextWorkItem.revision,
+        );
+      } else if (transition.graphAdvance) {
         const graphState = this.#graphWorkItemState(workItem.id);
         workItemStatus = graphState.status;
         currentActionId = graphState.currentActionId;
@@ -2233,7 +2304,9 @@ export class WorkItemStore {
             (work_item_id, proposal_id, base_plan_revision, plan_revision, kind, action_id, run_id, data, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
             workItem.id, proposalId, workItem.planRevision, nextWorkItem.planRevision,
-            transition.replanBarrier ? 'replan' : (workItem.planRevision === 0 ? 'initial' : 'expand'),
+            (transition.replanBarrier || transition.replanMutation)
+              ? 'replan'
+              : (workItem.planRevision === 0 ? 'initial' : 'expand'),
             action.id, runId, stringify(transition.eventData || {}), now,
           );
         } catch (error) {
