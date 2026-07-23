@@ -18,8 +18,11 @@ const agentHandler = read('stores/helpers/handlers/agentHandler.js');
 const indexOf = (haystack, needle) => haystack.indexOf(needle);
 
 describe('Yeaft conversation outline UI', () => {
-  it('replaces the search button with a lazy 50-row outline while preserving server search', () => {
+  it('uses an explicit search button with a lazy 50-row outline while preserving server search', () => {
     expect(actions).toContain('aria-controls="yeaft-conversation-outline"');
+    expect(actions).toContain('<circle cx="11" cy="11" r="7"/>');
+    expect(actions).toContain('<path d="m20 20-3.5-3.5"/>');
+    expect(actions).not.toContain('<path d="M4 6h2"/>');
     expect(page).toContain('<YeaftConversationOutline');
     expect(page).toContain('store.loadYeaftHistoryOutline()');
     expect(store).toContain("type: 'yeaft_load_history_outline'");
@@ -71,7 +74,8 @@ describe('Yeaft conversation outline UI', () => {
     expect(store).toContain('buildYeaftMessageTurnSpans(scoped)');
     expect(list).toContain('navigateToPersistedMessage({');
     expect(list).toContain("virtualTranscriptRef.value?.scrollToKey?.(blockId, { align: 'center' })");
-    expect(navigation).toContain('collapseStates[target.collapseKey] = false');
+    expect(store).toContain('const containsAnchor = !msg.error');
+    expect(store).toContain('const loaded = containsAnchor || revealedInStore');
     expect(virtual).toContain('expose({ scrollToKey, scrollToIndex })');
     expect(css).toContain('@keyframes yeaft-history-search-flash');
   });

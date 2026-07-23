@@ -2867,9 +2867,18 @@ export const useChatStore = defineStore('chat', {
       if (msg.agentId !== pending.agentId || msg.sessionId !== pending.sessionId) return false;
       clearTimeout(pending.timeout);
       this._yeaftHistoryWindowPending = null;
-      const revealed = !msg.error && this.revealYeaftMessage(pending.sessionId, pending.messageId);
-      pending.resolve(!!revealed);
-      return !!revealed;
+      const containsAnchor = !msg.error && (msg.messages || []).some(message => (
+        message?.id === pending.messageId
+        || message?.messageId === pending.messageId
+        || message?.persistedMessageId === pending.messageId
+      ));
+      // The message handler merged this window before calling us. Do not
+      // require Vue's transcript to have recomputed synchronously: YeaftPage
+      // waits for nextTick before asking MessageList to navigate.
+      const revealedInStore = !msg.error && this.revealYeaftMessage(pending.sessionId, pending.messageId);
+      const loaded = containsAnchor || revealedInStore;
+      pending.resolve(!!loaded);
+      return !!loaded;
     },
 
     // ─── Yeaft Session creation ────────────────────────────────

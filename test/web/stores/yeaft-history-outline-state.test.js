@@ -77,6 +77,48 @@ describe('Yeaft history outline state', () => {
     expect(store._sent.at(-1)).toMatchObject({ beforeSeq: 50, includeTotal: false });
   });
 
+  it('accepts a freshly merged history window before Vue recomputes the transcript', async () => {
+    const store = primeStore();
+    store.currentAgentInfo.capabilities.push('session_history_search');
+    store.agents[0].capabilities.push('session_history_search');
+    const revealYeaftMessage = vi.spyOn(store, 'revealYeaftMessage').mockReturnValue(false);
+
+    const pending = store.loadYeaftHistoryWindow({ messageId: 'm42', seq: 42 });
+    const request = store._sent.at(-1);
+    expect(request).toMatchObject({
+      type: 'yeaft_load_history_window',
+      sessionId: 'same',
+      anchorMessageId: 'm42',
+      anchorSeq: 42,
+    });
+
+    expect(store.handleYeaftHistoryWindow({
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: request.requestId,
+      messages: [{ id: 'm42', role: 'assistant', content: 'old answer' }],
+    })).toBe(true);
+    await expect(pending).resolves.toBe(true);
+    expect(revealYeaftMessage).toHaveBeenCalledWith('same', 'm42');
+    revealYeaftMessage.mockRestore();
+  });
+
+  it('rejects a history window that does not contain the requested anchor', async () => {
+    const store = primeStore();
+    const revealYeaftMessage = vi.spyOn(store, 'revealYeaftMessage').mockReturnValue(false);
+
+    const pending = store.loadYeaftHistoryWindow({ messageId: 'm42', seq: 42 });
+    const request = store._sent.at(-1);
+    expect(store.handleYeaftHistoryWindow({
+      agentId: 'agent-a',
+      sessionId: 'same',
+      requestId: request.requestId,
+      messages: [{ id: 'm41', role: 'assistant', content: 'neighbor' }],
+    })).toBe(false);
+    await expect(pending).resolves.toBe(false);
+    revealYeaftMessage.mockRestore();
+  });
+
   it('merges optimistic and persisted rows by clientMessageId', () => {
     const store = primeStore();
     store.messagesMap['conv-a'] = [{
