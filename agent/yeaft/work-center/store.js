@@ -1009,6 +1009,8 @@ export class WorkItemStore {
       const nextWorkspaceMode = workspaceMode || action.workspaceMode;
       const specChanged = nextWorkspaceMode !== action.workspaceMode;
       const nextAction = { ...action, workspaceMode: nextWorkspaceMode };
+      const nextGeneration = action.generation + (specChanged ? 1 : 0);
+      const nextSpecHash = specChanged ? actionSpecHash(nextAction) : action.specHash;
       const now = this.now();
       if (action.workspaceMode === 'isolated-write' && nextWorkspaceMode === 'shared') {
         const workItem = this.getWorkItem(action.workItemId);
@@ -1031,7 +1033,7 @@ export class WorkItemStore {
         stringify(workspace),
         nextWorkspaceMode,
         specChanged ? 1 : 0,
-        specChanged ? actionSpecHash(nextAction) : action.specHash,
+        nextSpecHash,
         specChanged ? 1 : 0,
         now,
         actionId,
@@ -1040,6 +1042,23 @@ export class WorkItemStore {
         expectedGeneration,
       );
       if (Number(changed.changes) !== 1) return null;
+      if (specChanged) {
+        const rebound = this.db.prepare(`UPDATE runs SET action_generation = ?, action_spec_hash = ?
+          WHERE id = ? AND action_id = ? AND owner_boot_id = ? AND lease_epoch = ? AND status = 'running'
+          AND action_generation = ? AND action_spec_hash = ?`).run(
+          nextGeneration,
+          nextSpecHash,
+          runId,
+          actionId,
+          ownerBootId,
+          leaseEpoch,
+          action.generation,
+          action.specHash,
+        );
+        if (Number(rebound.changes) !== 1) {
+          throw new Error('Work Center could not rebind the owned Run after workspace fallback');
+        }
+      }
 
       if (action.workspaceMode === 'isolated-write' && nextWorkspaceMode === 'shared') {
         const pendingRows = this.db.prepare(`SELECT * FROM actions

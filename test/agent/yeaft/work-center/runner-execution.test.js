@@ -9,6 +9,7 @@ import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { WorkItemWatcher } from '../../../../agent/yeaft/work-center/watcher.js';
 import { projectWorkItemDetail } from '../../../../agent/yeaft/work-center/projection.js';
+import { buildMainlineProjection } from '../../../../agent/yeaft/work-center/mainline-projection.js';
 import { approxTokens } from '../../../../agent/yeaft/memory/budget.js';
 import {
   defaultWorkCenterSettings,
@@ -427,6 +428,7 @@ describe('Work Center Runner execution resolution', () => {
       const item = controller.create({
         title: 'Fallback item', goal: 'Preserve frozen spec', acceptanceCriteria: [], workDir, start: true,
       });
+      store.db.prepare('UPDATE work_items SET execution_schema_version = 2 WHERE id = ?').run(item.id);
       const action = store.getWorkItemDetail(item.id).actions[0];
       store.db.prepare("UPDATE actions SET workspace_mode = 'isolated-write', spec_hash = '' WHERE id = ?").run(action.id);
       const claimed = store.claimReadyAction('boot-fallback', 5_000);
@@ -437,6 +439,36 @@ describe('Work Center Runner execution resolution', () => {
       expect(prepared.action).toMatchObject({ workspaceMode: 'shared', generation: claimed.action.generation + 1 });
       expect(prepared.action.specHash).not.toBe(claimed.action.specHash);
       expect(prepared.action.resultRunId).toBeNull();
+      expect(store.getRun(claimed.run.id)).toMatchObject({
+        actionGeneration: prepared.action.generation,
+        actionSpecHash: prepared.action.specHash,
+      });
+
+      expect(store.setRunExecutionSnapshots(
+        claimed.run.id,
+        'boot-fallback',
+        claimed.run.leaseEpoch,
+        {
+          executionManifest: {
+            schemaVersion: 2,
+            actionGeneration: prepared.action.generation,
+            actionSpecHash: prepared.action.specHash,
+          },
+        },
+      )).toBe(true);
+      expect(store.getRun(claimed.run.id).executionManifest).toMatchObject({
+        actionGeneration: prepared.action.generation,
+        actionSpecHash: prepared.action.specHash,
+      });
+      const completed = controller.submit(claimed.run.id, 'boot-fallback', claimed.run.leaseEpoch, {
+        outcome: 'completed', summary: 'Fallback completed', evidence: ['shared workspace verified'],
+        acceptanceChecks: [],
+      });
+      expect(completed.actions[0].resultRunId).toBe(claimed.run.id);
+      expect(buildMainlineProjection(completed).canonicalActionResults[prepared.action.id]).toMatchObject({
+        runId: claimed.run.id,
+        summary: 'Fallback completed',
+      });
     } finally {
       store.close();
     }
@@ -620,6 +652,47 @@ describe('Work Center Runner execution resolution', () => {
     }
   });
 
+  it('rolls back the Action when the owned Run cannot be rebound to the fallback identity', () => {
+    workDir = mkdtempSync(join(tmpdir(), 'work-center-fallback-rebind-rollback-'));
+    const store = new WorkItemStore(join(workDir, 'work-center.db'));
+    const controller = new WorkflowController(store);
+    try {
+      const item = controller.create({
+        title: 'Fallback rollback', goal: 'Keep Action and Run identity atomic',
+        acceptanceCriteria: [], workDir, start: true,
+      });
+      const action = store.getWorkItemDetail(item.id).actions[0];
+      store.db.prepare("UPDATE actions SET workspace_mode = 'isolated-write', spec_hash = '' WHERE id = ?").run(action.id);
+      const claim = store.claimReadyAction('boot-fallback', 5_000);
+      const before = store.getAction(action.id);
+      store.db.prepare('UPDATE runs SET action_spec_hash = ? WHERE id = ?')
+        .run('tampered-run-spec', claim.run.id);
+
+      expect(() => store.setActionWorkspaceForRun(
+        action.id,
+        claim.run.id,
+        'boot-fallback',
+        claim.run.leaseEpoch,
+        before.generation,
+        null,
+        'shared',
+      )).toThrow(/could not rebind the owned Run/);
+
+      expect(store.getAction(action.id)).toMatchObject({
+        generation: before.generation,
+        specHash: before.specHash,
+        workspaceMode: before.workspaceMode,
+        currentRunId: claim.run.id,
+      });
+      expect(store.getRun(claim.run.id)).toMatchObject({
+        actionSpecHash: 'tampered-run-spec',
+        status: 'running',
+      });
+    } finally {
+      store.close();
+    }
+  });
+
   it('rejects an expired runner workspace fallback after a new Run claims the Action', async () => {
     workDir = mkdtempSync(join(tmpdir(), 'work-center-stale-fallback-'));
     let now = 1_000;
@@ -636,6 +709,8 @@ describe('Work Center Runner execution resolution', () => {
       expect(store.recoverInterruptedRuns('new-boot')).toBe(1);
       const currentClaim = store.claimReadyAction('new-boot', 5_000);
       const before = store.getAction(action.id);
+      const currentRunBefore = store.getRun(currentClaim.run.id);
+      const staleRunBefore = store.getRun(staleClaim.run.id);
       const runner = new WorkItemRunner({ store, actionWorktreeRoot: null });
 
       await expect(runner.prepare({ ...staleClaim, ownerBootId: 'old-boot' }))
@@ -650,6 +725,15 @@ describe('Work Center Runner execution resolution', () => {
         leaseEpoch: currentClaim.run.leaseEpoch,
       });
       expect(store.isActiveRun(currentClaim.run.id, 'new-boot', currentClaim.run.leaseEpoch)).toBe(true);
+      expect(store.getRun(currentClaim.run.id)).toMatchObject({
+        actionGeneration: currentRunBefore.actionGeneration,
+        actionSpecHash: currentRunBefore.actionSpecHash,
+      });
+      expect(store.getRun(staleClaim.run.id)).toMatchObject({
+        actionGeneration: staleRunBefore.actionGeneration,
+        actionSpecHash: staleRunBefore.actionSpecHash,
+        status: 'interrupted',
+      });
     } finally {
       store.close();
     }
