@@ -1,6 +1,7 @@
 import { realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { runMatchesActionIdentity } from './action-identity.js';
 import { WorkItemStore } from './store.js';
 import { WorkflowController } from './controller.js';
 import { WorkItemWatcher } from './watcher.js';
@@ -30,12 +31,6 @@ import {
 function requiredString(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
   return value.trim();
-}
-
-function matchesActionGeneration(run, action) {
-  const actionGeneration = Math.max(1, Number(action?.generation) || 1);
-  const runGeneration = Math.max(1, Number(run?.actionGeneration) || 1);
-  return runGeneration === actionGeneration;
 }
 
 function requiredWorkDir(value) {
@@ -149,7 +144,7 @@ export class WorkCenterService {
         const action = this.#requiredAction(detail, payload.actionId);
         const entries = [];
         for (const run of detail.runs.filter(item => item.actionId === action.id
-          && matchesActionGeneration(item, action))) {
+          && runMatchesActionIdentity(item, action))) {
           const history = await this.#debugHistory(run, { indexOnly: true });
           for (const turn of Array.isArray(history?.turns) ? history.turns : []) {
             entries.push({ run, turn });
@@ -162,7 +157,7 @@ export class WorkCenterService {
         const action = this.#requiredAction(detail, payload.actionId);
         const requestId = requiredString(payload.requestId, 'requestId');
         const run = detail.runs.find(item => item.actionId === action.id
-          && item.id === payload.runId && matchesActionGeneration(item, action));
+          && item.id === payload.runId && runMatchesActionIdentity(item, action));
         if (!run) throw new Error('Action request not found');
         const history = await this.#debugHistory(run, { detailTurnId: requestId });
         const projected = projectActionRequestDetail(action, run, history);

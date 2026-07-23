@@ -319,7 +319,10 @@ describe('Work Center settings service', () => {
       id: item.id, actionId: 'missing', runId: claim.run.id, requestId: 'request-1',
     })).rejects.toThrow(/Action not found/);
 
-    service.store.db.prepare('UPDATE actions SET generation = 2 WHERE id = ?').run(claim.action.id);
+    service.store.db.prepare("UPDATE actions SET generation = 2, spec_hash = 'current-v2' WHERE id = ?")
+      .run(claim.action.id);
+    service.store.db.prepare("UPDATE runs SET action_generation = 2, action_spec_hash = 'wrong-v2' WHERE id = ?")
+      .run(claim.run.id);
     await expect(service.handle('get_action_requests', {
       id: item.id, actionId: claim.action.id,
     })).resolves.toMatchObject({ generation: 2, requests: [] });

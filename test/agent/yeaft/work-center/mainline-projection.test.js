@@ -251,16 +251,21 @@ describe('Mainline projection', () => {
           data: { text: 'Input for the superseded generation' },
         },
         {
-          id: 2, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          id: 2, type: 'action.input_added', actionId: action.id,
+          data: { text: 'Legacy input without a generation' },
+        },
+        {
+          id: 3, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
           data: { text: 'Input for the current generation' },
         },
       ],
     }), action).contextSnapshot;
 
     expect(snapshot.userContext.guidance).toEqual([
-      expect.objectContaining({ eventId: 2, text: 'Input for the current generation' }),
+      expect.objectContaining({ eventId: 3, text: 'Input for the current generation' }),
     ]);
     expect(JSON.stringify(snapshot)).not.toContain('Input for the superseded generation');
+    expect(JSON.stringify(snapshot)).not.toContain('Legacy input without a generation');
   });
 
   it('reserves final prompt wrapper bytes inside the 64 KiB hard limit', () => {
