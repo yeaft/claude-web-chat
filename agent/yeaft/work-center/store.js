@@ -1447,12 +1447,18 @@ export class WorkItemStore {
       for (const action of openActions) {
         if (action.status === 'ready') {
           const instruction = updateActionInstruction(updatedWorkItem, action);
-          this.db.prepare(`UPDATE actions SET instruction = ?, spec_hash = ?, updated_at = ?
-            WHERE id = ? AND status = 'ready'`).run(
+          const nextGeneration = action.generation + 1;
+          const nextSpecHash = actionSpecHash({ ...action, instruction, generation: nextGeneration });
+          this.db.prepare(`UPDATE actions SET instruction = ?, generation = ?, spec_hash = ?,
+            identity_history = ?, result_run_id = NULL, updated_at = ?
+            WHERE id = ? AND status = 'ready' AND generation = ?`).run(
             instruction,
-            actionSpecHash({ ...action, instruction }),
+            nextGeneration,
+            nextSpecHash,
+            stringify(actionIdentityHistory(action, nextGeneration, nextSpecHash)),
             now,
             action.id,
+            action.generation,
           );
           continue;
         }

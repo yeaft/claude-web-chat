@@ -99,6 +99,41 @@ describe('Work Center Action composer scope', () => {
     expect(resolved).toHaveBeenCalledWith(request);
   });
 
+  it('keeps the latest Run click authoritative across index and detail races', async () => {
+    const indexA = deferred();
+    const indexB = deferred();
+    const detailA = deferred();
+    const detailB = deferred();
+    const context = {
+      agentId: 'agent-1', selected: { id: 'wi-1' },
+      selectedAction: { id: 'action-1', generation: 2 },
+      actionRunOpenGeneration: 0,
+      store: {
+        loadWorkItemActionRequests: vi.fn()
+          .mockImplementationOnce(() => indexA.promise)
+          .mockImplementationOnce(() => indexB.promise),
+        loadWorkItemActionRequest: vi.fn()
+          .mockImplementationOnce(() => detailB.promise)
+          .mockImplementationOnce(() => detailA.promise),
+      },
+    };
+    const resolvedA = vi.fn();
+    const resolvedB = vi.fn();
+    const openingA = WorkCenterPage.methods.openActionRun.call(context, { id: 'run-a' }, resolvedA);
+    const openingB = WorkCenterPage.methods.openActionRun.call(context, { id: 'run-b' }, resolvedB);
+
+    indexB.resolve([{ id: 'request-b', runId: 'run-b' }]);
+    await Promise.resolve();
+    detailB.resolve({ request: { id: 'request-b' } });
+    await openingB;
+    indexA.resolve([{ id: 'request-a', runId: 'run-a' }]);
+    await openingA;
+
+    expect(resolvedB).toHaveBeenCalledWith({ id: 'request-b', runId: 'run-b' });
+    expect(resolvedA).toHaveBeenCalledWith(null);
+    expect(context.store.loadWorkItemActionRequest).toHaveBeenCalledTimes(1);
+  });
+
   it('does not open late Run diagnostics after the selected Action changes', async () => {
     const pending = deferred();
     const context = {

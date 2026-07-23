@@ -25,6 +25,7 @@ export default {
       actionInputSending: false,
       actionInputError: '',
       actionComposerGeneration: 0,
+      actionRunOpenGeneration: 0,
       workItemMessage: '',
       workItemMessageSending: false,
       workItemMessageError: '',
@@ -449,6 +450,8 @@ export default {
       ).catch(() => null);
     },
     async openActionRun(run, resolve) {
+      const openGeneration = (this.actionRunOpenGeneration || 0) + 1;
+      this.actionRunOpenGeneration = openGeneration;
       const scope = {
         agentId: this.agentId,
         workItemId: this.selected?.id,
@@ -456,15 +459,17 @@ export default {
         generation: this.selectedAction?.generation,
         runId: run?.id,
       };
+      const scopeIsCurrent = () => this.actionRunOpenGeneration === openGeneration
+        && this.agentId === scope.agentId && this.selected?.id === scope.workItemId
+        && this.selectedAction?.id === scope.actionId
+        && this.selectedAction?.generation === scope.generation;
       if (!scope.workItemId || !scope.actionId || !scope.runId) return resolve?.(null);
       const requests = await this.store.loadWorkItemActionRequests(
         scope.workItemId,
         scope.actionId,
         scope.agentId,
       ).catch(() => []);
-      if (this.agentId !== scope.agentId || this.selected?.id !== scope.workItemId
-        || this.selectedAction?.id !== scope.actionId
-        || this.selectedAction?.generation !== scope.generation) return resolve?.(null);
+      if (!scopeIsCurrent()) return resolve?.(null);
       const request = requests.find(candidate => candidate.runId === scope.runId) || null;
       if (!request) return resolve?.(null);
       const detail = await this.store.loadWorkItemActionRequest(
@@ -474,9 +479,7 @@ export default {
         request.id,
         scope.agentId,
       ).catch(() => null);
-      if (!detail || this.agentId !== scope.agentId || this.selected?.id !== scope.workItemId
-        || this.selectedAction?.id !== scope.actionId
-        || this.selectedAction?.generation !== scope.generation) return resolve?.(null);
+      if (!detail || !scopeIsCurrent()) return resolve?.(null);
       return resolve?.(request);
     },
     actionHasDetail(action) {
