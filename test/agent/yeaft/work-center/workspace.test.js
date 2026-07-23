@@ -107,6 +107,45 @@ describe('Work Center Action workspaces', () => {
     expect(git(['branch', '--list', committed.branch], root)).toBe('');
   });
 
+  it.each([true, false])('does not skip integration for an isolated dependency with changed=%s', async changed => {
+    const { root, store, item, committed } = integrationFixture();
+    if (!changed) {
+      store.setActionWorkspace('a', { ...committed, changed: false, commit: committed.baseCommit });
+    }
+    const claim = claimIntegration(store, item.id);
+    const runner = new WorkItemRunner({ store });
+    try {
+      const prepared = await runner.prepare(claim);
+      expect(prepared.action.workspaceMode).toBe('integrate');
+      expect(prepared.action.workspace.integration.status).toBe('finalized');
+      if (changed) expect(readFileSync(join(root, 'result.txt'), 'utf8')).toBe('result\n');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('does not skip integration for mixed shared and isolated dependencies', async () => {
+    const { root, store, item, committed } = integrationFixture();
+    store.createNextAction(item.id, {
+      id: 'shared', type: 'test', stageId: 'shared', status: 'completed',
+      workspaceMode: 'shared', workspace: null,
+    });
+    store.db.prepare(`UPDATE actions SET depends_on_stage_ids = ? WHERE id = 'integrate'`)
+      .run(JSON.stringify(['implement', 'shared']));
+    const claim = claimIntegration(store, item.id);
+    const runner = new WorkItemRunner({ store });
+    try {
+      const prepared = await runner.prepare(claim);
+      expect(prepared.action.workspaceMode).toBe('integrate');
+      expect(prepared.action.workspace.integration).toMatchObject({
+        status: 'finalized', commits: [committed.commit],
+      });
+      expect(readFileSync(join(root, 'result.txt'), 'utf8')).toBe('result\n');
+    } finally {
+      store.close();
+    }
+  });
+
   it('integrates the real dependency DTO returned by WorkItemStore', async () => {
     const { root, store, item, committed } = integrationFixture();
     const claim = claimIntegration(store, item.id);

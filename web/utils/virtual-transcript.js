@@ -97,7 +97,7 @@ function findEndIndex(offsets, viewportBottom, itemCount) {
   return clamp(index, 0, itemCount);
 }
 
-export function computeVirtualWindow(items, params = {}) {
+export function computeVirtualWindowFromLayout(items, layout, params = {}) {
   const list = Array.isArray(items) ? items : [];
   const itemCount = list.length;
   if (!itemCount) {
@@ -116,7 +116,8 @@ export function computeVirtualWindow(items, params = {}) {
   const scrollTop = Math.max(0, Number(params.scrollTop || 0));
   const viewportHeight = Math.max(1, Number(params.viewportHeight || DEFAULT_VIEWPORT_HEIGHT));
   const overscan = Math.max(0, Number(params.overscan ?? DEFAULT_OVERSCAN));
-  const { offsets, totalHeight } = buildVirtualOffsets(list, params.heightCache || {}, params);
+  const offsets = Array.isArray(layout?.offsets) ? layout.offsets : [0];
+  const totalHeight = Number.isFinite(layout?.totalHeight) ? layout.totalHeight : 0;
   const viewportBottom = scrollTop + viewportHeight;
   const visibleStart = clamp(findStartIndex(offsets, scrollTop), 0, itemCount - 1);
   const visibleEnd = clamp(findEndIndex(offsets, viewportBottom, itemCount), visibleStart + 1, itemCount);
@@ -141,6 +142,11 @@ export function computeVirtualWindow(items, params = {}) {
       };
     }),
   };
+}
+
+export function computeVirtualWindow(items, params = {}) {
+  const layout = buildVirtualOffsets(items, params.heightCache || {}, params);
+  return computeVirtualWindowFromLayout(items, layout, params);
 }
 
 export function virtualScrollTopForIndex(items, index, heightCache = {}, options = {}) {

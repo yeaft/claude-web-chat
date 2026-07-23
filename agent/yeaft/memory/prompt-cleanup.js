@@ -8,6 +8,20 @@
 
 const DREAM_STATE_BLOCK_RE = /<!--\s*dream-state\s*-->[\s\S]*?<!--\s*\/dream-state\s*-->/gi;
 
+const TRANSIENT_MEMORY_RE = /\b(work\s*item|current\s+(?:state|work|task)|in[_ -]?progress|todo|next\s+step|blocker|blocked|pr\s*#?\d+|pull\s+request|review|merge\s+commit|release\s+tag|tag\s+v\d|v\d+\.\d+\.\d+)\b|(?:工作项|当前(?:状态|任务|工作)|正在|待办|下一步|阻塞|评审|合并|发布|标签|已推|已合并|已完成)/i;
+const ASCII_WORD_RE = /[a-z0-9_]{3,}/gi;
+const CJK_RUN_RE = /[\u4e00-\u9fff]{2,}/g;
+const MARKDOWN_LIST_ITEM_RE = /^\s*(?:[-*+]\s+|\d+[.)]\s+)/;
+const COMMON_INTENT_TOKENS = new Set([
+  'current', 'state', 'work', 'task', 'item', 'items', 'todo', 'todos',
+  'next', 'step', 'steps', 'done', 'completed', 'finish', 'finished',
+  'merge', 'merged', 'review', 'reviewed', 'release', 'tag', 'tags',
+  'pr', 'pull', 'request', 'issue', 'fix', 'feat', 'test', 'tests',
+  'dream', 'memory', 'session', 'topic', 'status', 'blocker', 'blocked',
+  '当前', '状态', '任务', '工作', '工作项', '待办', '下一步', '完成', '已完成',
+  '合并', '评审', '发布', '标签', '记忆', '主题', '阻塞', '正在',
+]);
+
 /**
  * Remove Dream scheduler metadata blocks from memory text.
  *
@@ -29,6 +43,134 @@ export function cleanMemoryPromptText(text) {
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/**
+ * Whether a memory item describes short-lived execution state rather than a
+ * stable preference / project fact. Transient memory is still valid on disk, but
+ * should only enter the prompt when it is related to the current user turn.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isTransientMemoryText(text) {
+  return TRANSIENT_MEMORY_RE.test(cleanMemoryPromptText(text));
+}
+
+/**
+ * Conservative prompt relevance gate for transient Dream memories. Stable
+ * memories are handled by the caller; this function only answers whether a
+ * known-transient item has lexical overlap with the current user request.
+ *
+ * @param {string} memoryText
+ * @param {string} userText
+ * @returns {boolean}
+ */
+export function isTransientMemoryRelevant(memoryText, userText) {
+  return isMemoryPromptRelevant(memoryText, userText);
+}
+
+/**
+ * Conservative lexical relevance check used only at prompt assembly time. It is
+ * deliberately not semantic clustering: if there is no concrete token overlap,
+ * the memory should win again through FTS when the user asks for it explicitly.
+ *
+ * @param {string} memoryText
+ * @param {string} userText
+ * @returns {boolean}
+ */
+export function isMemoryPromptRelevant(memoryText, userText) {
+  const memoryTokens = promptRelevanceTokens(memoryText);
+  const userTokens = promptRelevanceTokens(userText);
+  if (memoryTokens.size === 0 || userTokens.size === 0) return false;
+  for (const token of memoryTokens) {
+    if (userTokens.has(token)) return true;
+  }
+  return false;
+}
+
+/**
+ * Drop irrelevant transient paragraphs while preserving stable memory text. This
+ * keeps disk memory intact; it only trims what enters the current prompt.
+ *
+ * @param {string} text
+ * @param {string} userText
+ * @returns {string}
+ */
+export function filterMemoryPromptTextForPrompt(text, userText) {
+  const cleaned = cleanMemoryPromptText(text);
+  if (!cleaned || !userText) return cleaned;
+  const kept = [];
+  for (const chunk of splitMemoryPromptChunks(cleaned)) {
+    if (!isTransientMemoryText(chunk) || isTransientMemoryRelevant(chunk, userText)) {
+      kept.push(chunk);
+    }
+  }
+  return joinMemoryPromptChunks(kept).trim();
+}
+
+function splitMemoryPromptChunks(text) {
+  const chunks = [];
+  for (const block of String(text || '').split(/\n{2,}/)) {
+    const trimmed = block.trim();
+    if (!trimmed) continue;
+    chunks.push(...splitListBlock(trimmed));
+  }
+  return chunks;
+}
+
+function splitListBlock(block) {
+  const lines = block.split('\n');
+  if (!lines.some(line => MARKDOWN_LIST_ITEM_RE.test(line))) return [block];
+
+  const chunks = [];
+  let current = [];
+  for (const line of lines) {
+    if (MARKDOWN_LIST_ITEM_RE.test(line) && current.length > 0) {
+      chunks.push(current.join('\n').trim());
+      current = [];
+    }
+    current.push(line);
+  }
+  if (current.length > 0) chunks.push(current.join('\n').trim());
+  return chunks.filter(Boolean);
+}
+
+function joinMemoryPromptChunks(chunks) {
+  const out = [];
+  let previousWasList = false;
+  for (const chunk of chunks) {
+    const isList = MARKDOWN_LIST_ITEM_RE.test(chunk);
+    if (out.length > 0 && !(previousWasList && isList)) out.push('');
+    out.push(chunk);
+    previousWasList = isList;
+  }
+  return out.join('\n');
+}
+
+/**
+ * @param {string} text
+ * @returns {Set<string>}
+ */
+export function promptRelevanceTokens(text) {
+  const cleaned = cleanMemoryPromptText(text).toLowerCase();
+  const out = new Set();
+  for (const match of cleaned.matchAll(ASCII_WORD_RE)) {
+    const token = match[0];
+    if (!COMMON_INTENT_TOKENS.has(token)) out.add(token);
+  }
+  for (const match of cleaned.matchAll(CJK_RUN_RE)) {
+    for (const token of cjkBigrams(match[0])) {
+      if (!COMMON_INTENT_TOKENS.has(token)) out.add(token);
+    }
+  }
+  return out;
+}
+
+function cjkBigrams(text) {
+  const out = [];
+  for (let i = 0; i < text.length - 1; i += 1) out.push(text.slice(i, i + 2));
+  return out;
 }
 
 /**

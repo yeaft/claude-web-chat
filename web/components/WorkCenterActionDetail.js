@@ -23,7 +23,7 @@ export default {
     composerError: { type: String, default: '' },
     attachmentsSupported: { type: Boolean, default: false },
   },
-  emits: ['back', 'update:composerText', 'load-earlier-messages', 'select-request', 'refresh-requests', 'attachment-input', 'remove-attachment', 'send'],
+  emits: ['back', 'update:composerText', 'load-earlier-messages', 'select-request', 'refresh-requests', 'attachment-input', 'remove-attachment', 'send', 'retry'],
   data() {
     return {
       activeTab: 'messages',
@@ -33,10 +33,11 @@ export default {
   },
   computed: {
     canCompose() {
-      if (!this.action || !['ready', 'running', 'waiting', 'needs_attention'].includes(this.selected?.status)) return false;
-      if (this.selected?.currentActionId === this.action.id) return true;
-      return this.selected?.workflowSnapshot?.executionMode === 'graph'
-        && ['waiting', 'failed'].includes(this.action.status);
+      if (!this.action || ['done', 'cancelled'].includes(this.selected?.status)) return false;
+      return ['ready', 'running', 'waiting', 'failed'].includes(this.action.status);
+    },
+    canRetry() {
+      return this.action?.status === 'failed' && !this.uploading && !this.sending;
     },
     composerHint() {
       if (this.selected?.status === 'waiting') {
@@ -297,7 +298,12 @@ export default {
             <span v-else class="work-center-send-spinner" aria-hidden="true"></span>
           </button>
         </div>
-        <small class="work-center-action-composer-hint">{{ uploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : composerHint }}</small>
+        <div class="work-center-action-composer-footer">
+          <small class="work-center-action-composer-hint">{{ uploading ? tr('workCenter.attachmentsUploading', 'Uploading…') : composerHint }}</small>
+          <button v-if="canRetry" class="btn-secondary" type="button" @click="$emit('retry')">
+            {{ tr('workCenter.retryAction', 'Retry Action') }}
+          </button>
+        </div>
       </footer>
     </section>
     <section v-else class="work-center-action-detail-pane work-center-detail-empty"><strong>{{ tr('workCenter.selectAction', 'Select an Action to inspect its execution') }}</strong></section>
