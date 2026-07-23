@@ -1378,56 +1378,64 @@ export class Engine {
   }
 
   /**
-   * Persist user message and assistant response to conversation store.
-   * Skipped in read-only mode (config._readOnly).
-   *
-   * Multi-VP fan-out (Bug 1): when several engines run the same user
-   * prompt in parallel, we must NOT each write our own copy of the user
-   * message — `coord.ingest`/the orchestrator already wrote it once. Pass
-   * `userAlreadyPersisted: true` from the caller to skip the user-row
-   * append while still persisting the assistant + tool rows.
+   * Persist an accepted user message before any pre-query or provider work.
+   * Session fan-out callers pass userAlreadyPersisted and skip this helper.
    *
    * @param {string} userContent
-   * @param {string} assistantContent
-   * @param {object[]} [toolCalls]
    * @param {string} [sessionId]
-   * @param {boolean} [userAlreadyPersisted]
+   * @returns {boolean}
    */
-  #persistMessages(userContent, assistantContent, toolCalls, sessionId, userAlreadyPersisted = false) {
-    if (!this.#conversationStore) return;
-    if (this.#config._readOnly) return;
+  #persistUserMessage(userContent, sessionId) {
+    if (!this.#conversationStore || this.#config._readOnly) return false;
 
-    // Persist with the active runtime thread. Legacy / non-group flows use
-    // MAIN_THREAD_ID; group VP flows pass their classified threadId.
+    // Persist with the active runtime thread. Legacy / non-session flows use
+    // MAIN_THREAD_ID; Session VP flows pass their classified threadId.
     const threadId = this.#currentThreadId || MAIN_THREAD_ID;
-
-    // Persist user message — unless an upstream caller (e.g. the group
-    // coordinator) has already done so for this turn.
-    if (!userAlreadyPersisted) {
-      this.#conversationStore.append({
-        role: 'user',
-        content: userContent,
-        threadId,
-        // Bug 6: stamp sessionId/chatId so history replay can route by container.
-        ...(sessionId ? { sessionId } : {}),
-        ...(this.#chatId ? { chatId: this.#chatId } : {}),
-      });
-    }
-
-    // Persist assistant message
-    const assistantMsg = {
-      role: 'assistant',
-      content: assistantContent,
-      model: this.#config.model,
+    this.#conversationStore.append({
+      role: 'user',
+      content: userContent,
       threadId,
+      // Stamp sessionId/chatId so history replay can route by container.
       ...(sessionId ? { sessionId } : {}),
       ...(this.#chatId ? { chatId: this.#chatId } : {}),
-      ...(this.#vpId ? { speakerVpId: this.#vpId } : {}),
+    });
+    return true;
+  }
+
+  /**
+   * Persist one provider-complete assistant or tool row.
+   *
+   * @param {object} msg
+   * @param {{ sessionId?: string, threadId?: string, turnId?: string, model?: string, imageAssetAnchor?: boolean }} [context]
+   * @returns {object|false}
+   */
+  #persistTurnMessage(msg, { sessionId, threadId, turnId, model, imageAssetAnchor = false } = {}) {
+    if (!this.#conversationStore || this.#config._readOnly || !msg?.role) return false;
+    const isPersistable = (
+      (typeof msg.content === 'string' && msg.content.length > 0)
+      || (msg.content && typeof msg.content !== 'string')
+      || (Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0)
+      || msg.role === 'tool'
+    );
+    if (!isPersistable) return false;
+
+    const record = {
+      role: msg.role,
+      content: typeof msg.content === 'string'
+        ? msg.content
+        : JSON.stringify(msg.content ?? ''),
+      model: model || this.#config.model,
+      threadId: threadId || this.#currentThreadId || MAIN_THREAD_ID,
+      ...(sessionId ? { sessionId } : {}),
+      ...(this.#chatId ? { chatId: this.#chatId } : {}),
     };
-    if (toolCalls && toolCalls.length > 0) {
-      assistantMsg.toolCalls = toolCalls;
-    }
-    this.#conversationStore.append(assistantMsg);
+    if (msg.toolCallId) record.toolCallId = msg.toolCallId;
+    if (Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0) record.toolCalls = msg.toolCalls;
+    if (msg.isError) record.isError = true;
+    if (imageAssetAnchor) record.imageAssetAnchor = true;
+    if (turnId && (msg.role === 'assistant' || msg.role === 'tool')) record.turnId = turnId;
+    if (this.#vpId && (msg.role === 'assistant' || msg.role === 'tool')) record.speakerVpId = this.#vpId;
+    return this.#conversationStore.append(record);
   }
 
   /**
@@ -1896,6 +1904,22 @@ export class Engine {
       });
     };
 
+    // Durability boundary: once query() accepts a user turn, persist it before
+    // recall, prompt construction, or the first adapter request can fail. The
+    // Web Session coordinator already writes the canonical row before fan-out;
+    // standalone/legacy callers rely on the Engine to do it here.
+    let userPersisted = Boolean(userAlreadyPersisted);
+    if (!userPersisted && this.#conversationStore && !this.#config._readOnly) {
+      try {
+        userPersisted = this.#persistUserMessage(prompt, runtimeSessionId);
+      } catch (err) {
+        // Preserve the existing best-effort persistence contract. A storage
+        // failure must not prevent the LLM turn, but it is no longer deferred
+        // until terminal completion.
+        console.warn('[Engine] Failed to persist accepted user message:', err?.message || err);
+      }
+    }
+
     // ─── Pre-query: FTS5 Memory Recall + AMS snapshot ─────
     // Memory has a SINGLE render outlet now (DESIGN-PROMPT §3 ③):
     //   1. FTS5 pre-flow recall produces a list of segments;
@@ -2252,6 +2276,10 @@ export class Engine {
     let fullResponseText = '';
     let hasDisplayImageAnchor = false;
     let currentModel = this.#config.model;
+    // Track the exact in-memory rows committed at loop boundaries so terminal
+    // stop hooks only persist synthetic/appended leftovers. The mapped value is
+    // the durable record assigned by ConversationStore.
+    const incrementallyPersistedMessages = new WeakMap();
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
     // task-707: tool-callable end-turn signal. Tools (currently only
@@ -2965,6 +2993,25 @@ export class Engine {
       conversationMessages.push(assistantMsg);
       fullResponseText += responseText;
 
+      // A normal provider stop is a durability boundary even when the overall
+      // user turn continues into tools, max-token continuation, async work, or
+      // appended input. Persist this completed assistant row now; retries and
+      // aborted/truncated streams never reach this point.
+      try {
+        const persistedAssistant = this.#persistTurnMessage(assistantMsg, {
+          sessionId: runtimeSessionId,
+          threadId: runtimeThreadId,
+          turnId: vpTurnId || queryTurnId,
+          model: currentModel,
+          imageAssetAnchor: hasDisplayImageAnchor,
+        });
+        if (persistedAssistant) {
+          incrementallyPersistedMessages.set(assistantMsg, persistedAssistant);
+        }
+      } catch (err) {
+        console.warn('[Engine] Failed to persist completed assistant loop:', err?.message || err);
+      }
+
       // ─── Handle max_tokens → auto-continue ────────────
       if (stopReason === 'max_tokens' && continueTurns < MAX_CONTINUE_TURNS) {
         continueTurns++;
@@ -3118,8 +3165,11 @@ export class Engine {
         if (pendingSubAgentNotifs.length > 0) {
           acknowledgePendingNotifications(notifScope, pendingSubAgentNotifs.map(n => n.id));
         }
-        yield { type: 'turn_end', turnNumber, stopReason, threadId, terminal: true };
 
+        // Persist the completed response before exposing terminal turn_end.
+        // Async-generator consumers are allowed to stop iteration at that
+        // event; yielding first made all code below unreachable in that case.
+        // Assistant/tool rows already committed at loop boundaries are skipped.
         // ─── Post-query: StopHooks or Legacy ─────────────
         if (this.#config._readOnly) {
           // Read-only mode: skip all persistence operations
@@ -3145,6 +3195,7 @@ export class Engine {
             // from there persists the full collapsed turn including all
             // reflection messages and the trailing assistant response.
             turnStartIdx,
+            skipMessages: incrementallyPersistedMessages,
             trace: this.#trace,
             // Bug 6: tag persisted messages with the originating group so
             // history replay can re-stamp them on reload.
@@ -3152,11 +3203,10 @@ export class Engine {
             threadId,
             turnId: vpTurnId || queryTurnId,
             vpId: this.#vpId,
-            // Multi-VP fan-out (history-dedup): skip the user-row append
-            // in stop-hooks when the orchestrator already wrote it once
-            // for this turn. The hook still persists assistant + tool
-            // rows for THIS VP's contribution.
-            userAlreadyPersisted,
+            // The canonical user row is durable before the first LLM call,
+            // either through the Session coordinator or the Engine pre-query
+            // write. Completion persists assistant/tool rows only.
+            userAlreadyPersisted: userPersisted,
             hasDisplayImageAnchor,
           });
 
@@ -3164,14 +3214,15 @@ export class Engine {
             yield { type: 'consolidate', archivedCount: 0, extractedCount: 0 };
           }
         } else {
-          // Legacy path (no yeaftDir → use old behavior)
-          this.#persistMessages(prompt, fullResponseText, assistantMsg.toolCalls, sessionId, userAlreadyPersisted);
-
+          // Legacy path: user and provider-complete assistant rows were already
+          // persisted at their durability boundaries above.
           const consolidated = await this.#maybeConsolidate();
           if (consolidated && consolidated.archivedCount > 0) {
             yield { type: 'consolidate', archivedCount: consolidated.archivedCount, extractedCount: consolidated.extractedCount };
           }
         }
+
+        yield { type: 'turn_end', turnNumber, stopReason, threadId, terminal: true };
 
         // ─── Post-turn AMS adjust ────────────────────────────────
         // shouldRunAdjust gates the LLM round-trip so most turns are
@@ -3444,12 +3495,30 @@ export class Engine {
           toolName: tc.name,
           language: this.#config?.language,
         });
-        conversationMessages.push({
+        const toolMessage = {
           role: 'tool',
           toolCallId: tc.id,
           content: contextOutput,
           isError,
-        });
+        };
+        conversationMessages.push(toolMessage);
+
+        // Tool completion is independently durable. If the next adapter call
+        // fails, history still contains the assistant tool request and its
+        // paired result rather than losing the entire executed arc.
+        try {
+          const persistedTool = this.#persistTurnMessage(toolMessage, {
+            sessionId: runtimeSessionId,
+            threadId: runtimeThreadId,
+            turnId: vpTurnId || queryTurnId,
+            model: currentModel,
+          });
+          if (persistedTool) {
+            incrementallyPersistedMessages.set(toolMessage, persistedTool);
+          }
+        } catch (err) {
+          console.warn('[Engine] Failed to persist completed tool result:', err?.message || err);
+        }
 
         // PR-L: persist this execution to the exec-log for fallback-stub
         // and duplicate-call detection. Best-effort — disk failures are
@@ -3560,11 +3629,22 @@ export class Engine {
             language: this.#config.language,
             signal,
           });
+          const collapsedRange = conversationMessages.slice(batchStart, batchEnd + 1);
           const next = collapseRangeToReflection(
             conversationMessages, batchStart, batchEnd, content,
           );
           conversationMessages.length = 0;
           for (const m of next) conversationMessages.push(m);
+          const reflectionMsg = conversationMessages[batchStart];
+          const persistedCollapsedRecords = collapsedRange
+            .map(message => incrementallyPersistedMessages.get(message))
+            .filter(Boolean);
+          if (reflectionMsg?._reflection && persistedCollapsedRecords.length > 0) {
+            // Reflection replaces already-durable assistant/tool rows in the
+            // terminal snapshot. Treat the synthetic row as already represented
+            // on disk so stop hooks do not append a second logical arc.
+            incrementallyPersistedMessages.set(reflectionMsg, persistedCollapsedRecords);
+          }
           // After collapse: the just-inserted reflection lives at
           // index `batchStart`. The next tool arc therefore starts
           // immediately after it, i.e. at conversationMessages.length

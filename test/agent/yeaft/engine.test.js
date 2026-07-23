@@ -489,6 +489,220 @@ describe('Engine', () => {
       }
     });
 
+    it('persists an accepted user message before starting the LLM request', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-user-durable-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = {
+          async *stream() {
+            expect(conversationStore.loadRecentBySession('session-user-durable', 10)).toEqual([
+              expect.objectContaining({
+                role: 'user',
+                content: 'keep this input',
+                threadId: 'thread-user-durable',
+              }),
+            ]);
+            throw new Error('provider failed before replying');
+          },
+        };
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'keep this input',
+          sessionId: 'session-user-durable',
+          threadId: 'thread-user-durable',
+        })) {
+          events.push(event);
+        }
+
+        expect(events).toContainEqual(expect.objectContaining({ type: 'turn_end', stopReason: 'error' }));
+        const loaded = conversationStore.loadRecentBySession('session-user-durable', 10);
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0]).toMatchObject({ role: 'user', content: 'keep this input' });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists completed output before yielding terminal turn_end', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-response-durable-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'durable reply' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        const iterator = engine.query({
+          prompt: 'persist both sides',
+          sessionId: 'session-response-durable',
+          threadId: 'thread-response-durable',
+        });
+        let terminalEvent = null;
+        while (!terminalEvent) {
+          const next = await iterator.next();
+          expect(next.done).toBe(false);
+          if (next.value?.type === 'turn_end' && next.value.terminal === true) {
+            terminalEvent = next.value;
+          }
+        }
+
+        const loadedAtTerminal = conversationStore.loadRecentBySession('session-response-durable', 10);
+        expect(loadedAtTerminal.map(message => message.role)).toEqual(['user', 'assistant']);
+        expect(loadedAtTerminal[1]).toMatchObject({
+          content: 'durable reply',
+          threadId: 'thread-response-durable',
+        });
+        await iterator.return();
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists a completed tool arc before a later LLM loop fails', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-tool-arc-durable-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'running tool' },
+          { type: 'tool_call', id: 'call-durable', name: 'durable_tool', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'error', error: new Error('second loop failed'), retryable: false },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+        engine.registerTool({
+          name: 'durable_tool',
+          description: 'returns a durable result',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => 'durable tool result',
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'run durable tool',
+          sessionId: 'session-tool-arc-durable',
+          threadId: 'main',
+        })) {
+          events.push(event);
+        }
+
+        expect(events).toContainEqual(expect.objectContaining({ type: 'turn_end', stopReason: 'error' }));
+        const loaded = conversationStore.loadRecentBySession('session-tool-arc-durable', 10);
+        expect(loaded.map(message => message.role)).toEqual(['user', 'assistant', 'tool']);
+        expect(loaded[1]).toMatchObject({
+          content: 'running tool',
+          toolCalls: [expect.objectContaining({ id: 'call-durable', name: 'durable_tool' })],
+        });
+        expect(loaded[2]).toMatchObject({ toolCallId: 'call-durable', content: 'durable tool result' });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not duplicate the user row across a retryable provider retry', async () => {
+      const { LLMServerError } = await import('../../../agent/yeaft/llm/adapter.js');
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-user-retry-dedup-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        let attempts = 0;
+        const adapter = {
+          async *stream() {
+            attempts += 1;
+            if (attempts === 1) throw new LLMServerError('retry me', 502);
+            yield { type: 'text_delta', text: 'retry succeeded' };
+            yield { type: 'stop', stopReason: 'end_turn' };
+          },
+        };
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: {
+            model: 'test-model',
+            maxOutputTokens: 1024,
+            llmRetry: { maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+          },
+          conversationStore,
+          yeaftDir,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'retry input',
+          sessionId: 'session-user-retry-dedup',
+        })) {
+          // consume
+        }
+
+        expect(attempts).toBe(2);
+        const loaded = conversationStore.loadRecentBySession('session-user-retry-dedup', 10);
+        expect(loaded.filter(message => message.role === 'user')).toHaveLength(1);
+        expect(loaded.filter(message => message.role === 'assistant')).toEqual([
+          expect.objectContaining({ content: 'retry succeeded' }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not duplicate a user row already persisted by the Session coordinator', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-user-dedup-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        conversationStore.append({
+          role: 'user',
+          content: 'coordinator input',
+          sessionId: 'session-user-dedup',
+          threadId: 'main',
+        });
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'one reply' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'coordinator input',
+          sessionId: 'session-user-dedup',
+          userAlreadyPersisted: true,
+        })) {
+          // consume
+        }
+
+        const loaded = conversationStore.loadRecentBySession('session-user-dedup', 10);
+        expect(loaded.filter(message => message.role === 'user')).toHaveLength(1);
+        expect(loaded.filter(message => message.role === 'assistant')).toHaveLength(1);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
     it('loads Dream session summary into the system prompt Memory section and debug event', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-dream-load-'));
       await writeSummary(

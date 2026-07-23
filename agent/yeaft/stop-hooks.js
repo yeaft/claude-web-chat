@@ -31,6 +31,7 @@ let _permissionWarned = false;
  *   primaryModel?: string,
  *   messages?: object[],
  *   turnStartIdx?: number,
+ *   skipMessages?: Set<object>|WeakSet<object>|Map<object, object>|WeakMap<object, object>,
  *   taskId?: string,
  *   workerId?: string,
  *   trace?: object,
@@ -59,6 +60,9 @@ export async function runStopHooks(context) {
     // callers (sub-agents, workers) that don't pass it continue to
     // work.
     turnStartIdx,
+    // Messages already committed at provider/tool completion boundaries. Object
+    // identity is sufficient because the Engine owns this in-memory turn array.
+    skipMessages = null,
     taskId,
     trace,
     // Bug 6: sessionId/threadId stamped on every persisted message so
@@ -137,6 +141,7 @@ export async function runStopHooks(context) {
         : null;
       for (const msg of recentMessages) {
         if (!msg || !msg.role) continue;
+        if (skipMessages && typeof skipMessages.has === 'function' && skipMessages.has(msg)) continue;
         // Skip the user row if the orchestrator already wrote it once for
         // this turn (multi-VP fan-out: every VP's engine sees the same
         // user prompt at conversationMessages[turnStart] but only the

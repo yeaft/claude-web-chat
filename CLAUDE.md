@@ -81,15 +81,16 @@ eval/            — 评估脚本
 ### Engine Query Loop（engine.js）
 > 这里描述的是当前实现路径，目的是帮助维护者定位代码，不是对外稳定 API 契约。改 query loop、tool folding、debug trace、sub-agent notification 时必须同步更新本段。
 
-1. Pre-query：召回记忆 + project docs + runtime platform + pending sub-agent notification -> 注入 system prompt / 当前 user turn
-2. 构造 messages 数组（带 compact summary、reflection message、attachment payload 时一并带上）
-3. 调 adapter.stream() -> 收集 text、thinking blocks / reasoning、tool_calls、usage、debug trace
-4. 如果有 tool_calls -> ToolRegistry 执行；普通结果进入当前 loop，后台任务 / 子 Agent 返回 task envelope 并继续异步
-5. Tool folding：T1 在 turn 内按 `TOOL_BATCH_SIZE = 30` 折叠长工具弧；T2 在 end_turn 对超过 `TURN_SUMMARY_THRESHOLD = 8` 的长 turn 做 reflection；重复同参工具调用第 3 次会插入提醒
-6. end_turn -> 持久化 messages / raw tool output / debug trace -> acknowledge sub-agent notifications -> 检查 Dream / AMS adjust / compact 触发
-7. max_tokens -> 自动续写（最多 3 次）
-8. 遇到 LLMContextError -> 强制 compact -> 重试
-9. 可重试错误且配了 fallbackModel -> 换 model -> 重试；adapter 层会对 rate limit / 5xx / idle timeout 做分类
+1. 接受 user turn 后先持久化 canonical user row；Session fan-out 已由 coordinator 写入时通过 `userAlreadyPersisted` 跳过，避免多 VP 重复
+2. Pre-query：召回记忆 + project docs + runtime platform + pending sub-agent notification -> 注入 system prompt / 当前 user turn
+3. 构造 messages 数组（带 compact summary、reflection message、attachment payload 时一并带上）
+4. 调 adapter.stream() -> 收集 text、thinking blocks / reasoning、tool_calls、usage、debug trace；provider 正常 stop 后立即持久化该 assistant row
+5. 如果有 tool_calls -> ToolRegistry 执行；每个完成的 tool result 立即持久化，后台任务 / 子 Agent 返回 task envelope 并继续异步
+6. Tool folding：T1 在 turn 内按 `TOOL_BATCH_SIZE = 30` 折叠长工具弧；T2 在 end_turn 对超过 `TURN_SUMMARY_THRESHOLD = 8` 的长 turn 做 reflection；重复同参工具调用第 3 次会插入提醒
+7. terminal end_turn 前，stop hooks 只补写尚未增量提交的 synthetic/appended rows，再 acknowledge sub-agent notifications -> 检查 Dream / AMS adjust / compact 触发
+8. max_tokens -> 自动续写（最多 3 次）
+9. 遇到 LLMContextError -> 强制 compact -> 重试
+10. 可重试错误且配了 fallbackModel -> 换 model -> 重试；adapter 层会对 rate limit / 5xx / idle timeout 做分类
 
 ### LLM 层（agent/yeaft/llm/）— Yeaft Code Agent provider 集成
 ```
