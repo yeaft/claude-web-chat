@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { eventMatchesActionGeneration, runMatchesActionIdentity } from './action-identity.js';
 import { normalizeSessionContextSnapshot } from './session-context.js';
 
 export const MAINLINE_CONTEXT_HARD_LIMIT_BYTES = 64 * 1024;
@@ -45,17 +46,10 @@ function stableRunOrder(left, right) {
     || String(right.id).localeCompare(String(left.id));
 }
 
-function runMatchesActionSpec(run, action) {
-  const manifest = run?.executionManifest;
-  return manifest?.schemaVersion === 2
-    && manifest.actionGeneration === Math.max(1, count(action.generation) || 1)
-    && manifest.actionSpecHash === (action.specHash || '');
-}
-
 function canonicalRun(action, runs) {
   const candidates = runs.filter(run => run?.actionId === action.id
     && TERMINAL_RUN_STATUSES.has(run.status)
-    && runMatchesActionSpec(run, action));
+    && runMatchesActionIdentity(run, action));
   if (action.resultRunId) {
     return candidates.find(run => run.id === action.resultRunId) || null;
   }
@@ -83,9 +77,10 @@ function workItemMessageView(messages) {
     }));
 }
 
-function guidanceView(events, actionId) {
+function guidanceView(events, action) {
   return (Array.isArray(events) ? events : [])
-    .filter(event => event?.actionId === actionId
+    .filter(event => event?.actionId === action?.id
+      && eventMatchesActionGeneration(event, action)
       && ['action.guidance_added', 'action.input_added'].includes(event.type))
     .slice()
     .sort((left, right) => count(left.id) - count(right.id))
@@ -265,7 +260,7 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
   };
   const sessionContext = normalizeSessionContextSnapshot(detail.sessionContext);
   const workItemMessages = workItemMessageView(detail.messages);
-  const guidance = guidanceView(detail.events, action.id);
+  const guidance = guidanceView(detail.events, action);
   const newestFirstMessages = workItemMessages.slice().reverse();
   for (const [index, message] of newestFirstMessages.entries()) {
     const next = {

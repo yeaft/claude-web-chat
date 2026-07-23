@@ -238,6 +238,36 @@ describe('Mainline projection', () => {
     expect(JSON.stringify(snapshotA)).not.toContain('Only Action B may use this');
   });
 
+  it('does not carry Action-scoped input across generations', () => {
+    const action = {
+      id: 'action-a', sequence: 1, stageId: 'action-a', type: 'implement', status: 'ready',
+      generation: 2, specHash: 'action-a-v2', dependsOnStageIds: [],
+    };
+    const snapshot = buildMainlineContextSnapshot(detail({
+      actions: [action],
+      events: [
+        {
+          id: 1, type: 'action.input_added', actionId: action.id, actionGeneration: 1,
+          data: { text: 'Input for the superseded generation' },
+        },
+        {
+          id: 2, type: 'action.input_added', actionId: action.id,
+          data: { text: 'Legacy input without a generation' },
+        },
+        {
+          id: 3, type: 'action.input_added', actionId: action.id, actionGeneration: 2,
+          data: { text: 'Input for the current generation' },
+        },
+      ],
+    }), action).contextSnapshot;
+
+    expect(snapshot.userContext.guidance).toEqual([
+      expect.objectContaining({ eventId: 3, text: 'Input for the current generation' }),
+    ]);
+    expect(JSON.stringify(snapshot)).not.toContain('Input for the superseded generation');
+    expect(JSON.stringify(snapshot)).not.toContain('Legacy input without a generation');
+  });
+
   it('reserves final prompt wrapper bytes inside the 64 KiB hard limit', () => {
     const action = { id: 'current', sequence: 1, stageId: 'implement', type: 'implement', status: 'running' };
     const reservedBytes = 12 * 1024;

@@ -83,7 +83,7 @@ describe('Work Center store migration', () => {
       progressRevision: 0, checkpoint: null, acceptingInput: true,
     });
     expect(store.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value)
-      .toBe('16');
+      .toBe('17');
     expect(store.getWorkItem('legacy-item')).toMatchObject({
       planRevision: 0,
       executionSchemaVersion: 1,
@@ -97,6 +97,9 @@ describe('Work Center store migration', () => {
     expect(store.getRun('legacy-run')).toMatchObject({
       contextSnapshot: null,
       executionManifest: null,
+      actionGeneration: 1,
+      actionSpecHash: '',
+      actionAttempt: 1,
     });
     expect(store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plan_conflicts'").get())
       .toEqual({ name: 'plan_conflicts' });

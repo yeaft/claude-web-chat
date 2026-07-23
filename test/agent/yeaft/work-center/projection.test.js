@@ -213,13 +213,16 @@ describe('Work Center event projection', () => {
     });
     Object.assign(detail.actions[0], {
       generation: 3,
+      specHash: 'review-v3',
       dependsOnStageIds: ['implement'],
       status: 'waiting',
       resultRunId: 'r-2',
       contextSnapshot: { secret: 'large internal snapshot' },
     });
     Object.assign(detail.runs[0], {
-      executionManifest: { schemaVersion: 2, actionGeneration: 3, actionSpecHash: '' },
+      actionGeneration: 3,
+      actionSpecHash: 'review-v3',
+      executionManifest: { schemaVersion: 2, actionGeneration: 3, actionSpecHash: 'review-v3' },
       reviewDecision: 'changes_requested',
       evidence: [{ kind: 'test', label: 'Focused tests', ref: 'projection.test.js', stdout: 'raw output' }],
       debug: { secret: true },
@@ -359,6 +362,56 @@ describe('Work Center event projection', () => {
     });
   });
 
+  it('isolates Action transcript and execution stats to the current generation', () => {
+    const detail = internalDetail();
+    detail.actions[0].generation = 2;
+    detail.actions[0].specHash = 'review-v2';
+    detail.runs = [{
+      ...detail.runs[0], id: 'current-run', actionGeneration: 2, actionSpecHash: 'review-v2', actionAttempt: 1,
+      response: 'Current generation response', loopCount: 2, toolCount: 3,
+    }, {
+      ...detail.runs[1], id: 'wrong-spec-run', actionGeneration: 2, actionSpecHash: 'review-other', actionAttempt: 2,
+      response: 'Wrong spec response', loopCount: 40, toolCount: 45,
+    }, {
+      ...detail.runs[1], id: 'old-run', actionGeneration: 1, actionSpecHash: 'review-v1', actionAttempt: 4,
+      response: 'Old generation response', loopCount: 50, toolCount: 60,
+    }];
+    detail.events = [{
+      id: 1, actionId: 'a-1', actionGeneration: 1, type: 'action.input_added',
+      data: { text: 'Old generation input' }, createdAt: 1,
+    }, {
+      id: 2, actionId: 'a-1', actionGeneration: 2, type: 'action.input_added',
+      data: { text: 'Current generation input' }, createdAt: 2,
+    }];
+
+    const projected = projectWorkItemDetail(detail).actions[0];
+    expect(projected).toMatchObject({
+      generation: 2,
+      response: 'Current generation response',
+      executionStats: { loopCount: 2, toolCount: 3 },
+    });
+    expect(projected.messages.map(message => message.text))
+      .toEqual(['Current generation input', 'Current generation response']);
+    expect(JSON.stringify(projected)).not.toContain('Wrong spec response');
+    expect(projectActionMessagePage(detail.actions[0], detail.runs, detail.events).messages
+      .map(message => message.text)).toEqual(['Current generation input', 'Current generation response']);
+    detail.currentActionId = 'other-action';
+    detail.actions.push({
+      id: 'other-action', sequence: 2, type: 'test', stageId: 'test', status: 'ready',
+      generation: 1, brief: { objective: 'Keep the tested Action historical' },
+    });
+    expect(projectWorkItemDetail(detail).actions[0]).toMatchObject({
+      messageCount: 2,
+      messageCursor: '2',
+    });
+
+    detail.runs = [];
+    expect(projectWorkItemDetail(detail).actions[0]).toMatchObject({
+      messageCount: 1,
+      messageCursor: '1',
+    });
+  });
+
   it('merges user Action input and assistant Run responses without exposing event data generally', () => {
     const detail = internalDetail();
     detail.events = [{
@@ -415,9 +468,10 @@ describe('Work Center event projection', () => {
       totalMs: 100, totalTokens: 20, summaryInputTokens: 12, summaryOutputTokens: 8,
     };
     expect(projectActionRequestIndex(action, [{ run, turn }])).toEqual({
-      actionId: 'a-1',
+      actionId: 'a-1', generation: 1,
       requests: [{
-        id: 'request-1', runId: 'r-2', status: 'waiting', model: 'provider/review',
+        id: 'request-1', runId: 'r-2', generation: 1, attempt: 1,
+        status: 'waiting', model: 'provider/review',
         vp: { id: 'martin', name: 'Martin' }, openedAt: 100, closedAt: 200,
         loopCount: 1, totalMs: 100, inputTokens: 12, outputTokens: 8, totalTokens: 20,
       }],
@@ -443,6 +497,13 @@ describe('Work Center event projection', () => {
     expect(wire).not.toContain('Bearer secret');
     expect(wire).not.toContain('secret-image');
     expect(wire).toContain('binary data omitted');
+
+    const wrongSpecRun = { ...run, actionGeneration: 1, actionSpecHash: 'wrong-spec' };
+    const strictAction = { ...action, generation: 1, specHash: 'current-spec' };
+    expect(projectActionRequestIndex(strictAction, [{ run: wrongSpecRun, turn }]).requests).toEqual([]);
+    expect(projectActionRequestDetail(strictAction, wrongSpecRun, {
+      turns: [{ ...turn, tools: [] }], loops: [],
+    })).toBeNull();
   });
 
   it('redacts complete sensitive header values across browser DTO header shapes', () => {
