@@ -84,9 +84,11 @@ function workItemMessageView(messages) {
     }));
 }
 
-function guidanceView(events, actionId) {
+function guidanceView(events, action) {
+  const generation = Math.max(1, count(action?.generation) || 1);
   return (Array.isArray(events) ? events : [])
-    .filter(event => event?.actionId === actionId
+    .filter(event => event?.actionId === action?.id
+      && (event.actionGeneration == null || Math.max(1, count(event.actionGeneration) || 1) === generation)
       && ['action.guidance_added', 'action.input_added'].includes(event.type))
     .slice()
     .sort((left, right) => count(left.id) - count(right.id))
@@ -266,7 +268,7 @@ export function buildMainlineContextSnapshot(detail, action, budgetInput = {}) {
   };
   const sessionContext = normalizeSessionContextSnapshot(detail.sessionContext);
   const workItemMessages = workItemMessageView(detail.messages);
-  const guidance = guidanceView(detail.events, action.id);
+  const guidance = guidanceView(detail.events, action);
   const newestFirstMessages = workItemMessages.slice().reverse();
   for (const [index, message] of newestFirstMessages.entries()) {
     const next = {
