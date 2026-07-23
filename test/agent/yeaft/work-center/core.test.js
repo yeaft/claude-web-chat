@@ -95,6 +95,21 @@ describe('Work Center core', () => {
     });
   });
 
+  it('filters and orders Board query inputs deterministically', () => {
+    const first = controller.create(createInput({ id: 'wi-a', title: 'Alpha task', goal: 'First goal' }));
+    now = 2_000;
+    const second = controller.create(createInput({ id: 'wi-b', title: 'Beta task', goal: 'Second searchable goal' }));
+    store.db.prepare('UPDATE work_items SET updated_at = ? WHERE id IN (?, ?)').run(3_000, first.id, second.id);
+
+    expect(store.listWorkItems({ keyword: 'searchable' }).map(item => item.id)).toEqual([second.id]);
+    expect(store.listWorkItems({ search: 'Alpha' }).map(item => item.id)).toEqual([first.id]);
+    expect(store.listWorkItems({ createdFrom: 2_000, createdTo: 2_000 }).map(item => item.id)).toEqual([second.id]);
+    expect(store.listWorkItems({ updatedFrom: 3_000, updatedTo: 3_000 }).map(item => item.id))
+      .toEqual(['wi-b', 'wi-a']);
+    expect(store.listWorkItems({ lane: 'active' }).map(item => item.id)).toEqual(['wi-b', 'wi-a']);
+    expect(store.listWorkItems({ lane: 'closed' })).toEqual([]);
+  });
+
   it('persists, filters, resolves, and deletes plan conflicts', () => {
     const item = controller.create(createInput());
     const action = store.getWorkItemDetail(item.id).actions[0];

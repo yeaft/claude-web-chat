@@ -1192,10 +1192,46 @@ export class WorkItemStore {
       where.push('(instr(w.origin, ?) > 0 OR instr(w.linked_session_ids, ?) > 0)');
       values.push(`\"sessionId\":${JSON.stringify(sessionId)}`, JSON.stringify(sessionId));
     }
-    if (typeof filters.search === 'string' && filters.search.trim()) {
+    const keyword = typeof filters.keyword === 'string' ? filters.keyword.trim()
+      : typeof filters.search === 'string' ? filters.search.trim() : '';
+    if (keyword) {
       where.push('(w.title LIKE ? OR w.goal LIKE ?)');
-      const query = `%${filters.search.trim()}%`;
+      const query = `%${keyword}%`;
       values.push(query, query);
+    }
+    const createdFrom = Number(filters.createdFrom);
+    const createdTo = Number(filters.createdTo);
+    const updatedFrom = Number(filters.updatedFrom);
+    const updatedTo = Number(filters.updatedTo);
+    if (Number.isFinite(createdFrom) && createdFrom > 0) { where.push('w.created_at >= ?'); values.push(createdFrom); }
+    if (Number.isFinite(createdTo) && createdTo > 0) { where.push('w.created_at <= ?'); values.push(createdTo); }
+    if (Number.isFinite(updatedFrom) && updatedFrom > 0) { where.push('w.updated_at >= ?'); values.push(updatedFrom); }
+    if (Number.isFinite(updatedTo) && updatedTo > 0) { where.push('w.updated_at <= ?'); values.push(updatedTo); }
+    if (typeof filters.workItemType === 'string' && filters.workItemType.trim()) {
+      where.push('instr(w.workflow_snapshot, ?) > 0');
+      values.push(`\"workItemType\":${JSON.stringify(filters.workItemType.trim())}`);
+    }
+    if (typeof filters.vpId === 'string' && filters.vpId.trim()) {
+      where.push(`EXISTS (SELECT 1 FROM runs executor_run
+        WHERE executor_run.work_item_id = w.id AND instr(executor_run.vp_snapshot, ?) > 0)`);
+      values.push(`\"id\":${JSON.stringify(filters.vpId.trim())}`);
+    }
+    if (filters.lane === 'closed') {
+      where.push("w.status IN ('done', 'cancelled')");
+    } else if (filters.lane === 'needs_attention') {
+      where.push(`(w.status IN ('draft', 'waiting', 'needs_attention') OR EXISTS (
+        SELECT 1 FROM actions attention_action WHERE attention_action.work_item_id = w.id
+          AND attention_action.status IN ('waiting', 'failed')))`);
+    } else if (filters.lane === 'active') {
+      where.push(`w.status NOT IN ('done', 'cancelled', 'draft', 'waiting', 'needs_attention')
+        AND NOT EXISTS (SELECT 1 FROM actions attention_action WHERE attention_action.work_item_id = w.id
+          AND attention_action.status IN ('waiting', 'failed'))`);
+    }
+    const cursorUpdatedAt = Number(filters.cursorUpdatedAt);
+    const cursorId = typeof filters.cursorId === 'string' ? filters.cursorId : '';
+    if (Number.isFinite(cursorUpdatedAt) && cursorUpdatedAt >= 0 && cursorId) {
+      where.push('(w.updated_at < ? OR (w.updated_at = ? AND w.id < ?))');
+      values.push(cursorUpdatedAt, cursorUpdatedAt, cursorId);
     }
     const limit = Math.min(Math.max(Number(filters.limit) || 100, 1), 500);
     const sql = `SELECT w.*,
@@ -1219,12 +1255,24 @@ export class WorkItemStore {
       LEFT JOIN actions current_action ON current_action.id = w.current_action_id
       LEFT JOIN runs r ON r.work_item_id = w.id
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      GROUP BY w.id ORDER BY w.updated_at DESC LIMIT ?`;
-    return this.db.prepare(sql).all(...values, limit).map(mapWorkItem).map(workItem => {
-      if (!isGraphWorkItem(workItem)) return workItem;
-      const actions = this.db.prepare('SELECT * FROM actions WHERE work_item_id = ? ORDER BY sequence')
-        .all(workItem.id).map(mapAction);
-      return graphExecutionState(workItem, actions);
+      GROUP BY w.id ORDER BY w.updated_at DESC, w.id DESC LIMIT ?`;
+    const workItems = this.db.prepare(sql).all(...values, limit).map(mapWorkItem);
+    if (workItems.length === 0) return [];
+    const placeholders = workItems.map(() => '?').join(',');
+    const ids = workItems.map(item => item.id);
+    const actionsByWorkItem = new Map(ids.map(id => [id, []]));
+    for (const row of this.db.prepare(`SELECT * FROM actions WHERE work_item_id IN (${placeholders})
+      ORDER BY work_item_id, sequence`).all(...ids)) {
+      actionsByWorkItem.get(row.work_item_id).push(mapAction(row));
+    }
+    const runsByWorkItem = new Map(ids.map(id => [id, []]));
+    for (const row of this.db.prepare(`SELECT * FROM runs WHERE work_item_id IN (${placeholders})
+      ORDER BY work_item_id, started_at DESC`).all(...ids)) {
+      runsByWorkItem.get(row.work_item_id).push(mapRun(row));
+    }
+    return workItems.map(workItem => {
+      const actions = actionsByWorkItem.get(workItem.id) || [];
+      return graphExecutionState({ ...workItem, actions, runs: runsByWorkItem.get(workItem.id) || [] }, actions);
     });
   }
 

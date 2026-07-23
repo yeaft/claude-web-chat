@@ -36,8 +36,11 @@ export default {
       saving: false,
       createGeneration: 0,
       llmConfigOpen: false,
-      filter: 'attention',
       search: '',
+      boardVpId: '',
+      boardWorkItemType: '',
+      boardUpdatedRange: '',
+      boardQueryTimer: null,
       actionGuidance: '',
       expandedActions: {},
       actionsExpanded: false,
@@ -69,6 +72,7 @@ export default {
         && Array.isArray(agent.capabilities) && agent.capabilities.includes('work_center'));
     },
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
+    boardNextCursor() { return this.store.workCenterListPageByAgent[this.agentId]?.nextCursor || null; },
     settings() { return this.store.workCenterSettingsByAgent[this.agentId] || null; },
     runtime() { return this.store.workCenterRuntimeByAgent[this.agentId] || null; },
     workItemTypes() { return Array.isArray(this.runtime?.workItemTypes) ? this.runtime.workItemTypes : []; },
@@ -161,56 +165,34 @@ export default {
     actionRequestsError() {
       return this.store.workCenterActionRequestsError[this.actionRequestKey] || '';
     },
-    visibleItems() {
-      const q = this.search.trim().toLowerCase();
-      return this.items.filter(item => {
-        if (this.filter === 'attention' && !['waiting', 'needs_attention'].includes(item.status)) return false;
-        if (this.filter === 'active' && !['draft', 'ready', 'running'].includes(item.status)) return false;
-        if (this.filter === 'done' && item.status !== 'done') return false;
-        if (!q) return true;
-        return String(item.title || '').toLowerCase().includes(q)
-          || String(item.goal || '').toLowerCase().includes(q);
-      });
+    boardLanes() {
+      return [
+        { id: 'active', title: this.tr('workCenter.board.active', 'Active') },
+        { id: 'needs_attention', title: this.tr('workCenter.board.needsAttention', 'Needs attention') },
+        { id: 'closed', title: this.tr('workCenter.board.closed', 'Closed') },
+      ].map(lane => ({ ...lane, items: this.items.filter(item => item.boardLane === lane.id) }));
     },
-    listHeading() {
-      if (this.filter === 'attention') return this.tr('workCenter.attentionItems', 'Needs attention');
-      if (this.filter === 'active') return this.tr('workCenter.activeItems', 'Active work');
-      if (this.filter === 'done') return this.tr('workCenter.completedItems', 'Completed');
-      return this.tr('workCenter.allItems', 'All work items');
+    boardExecutorOptions() {
+      const options = new Map();
+      for (const item of this.items) {
+        for (const executor of Array.isArray(item.executors) ? item.executors : []) {
+          if (executor?.id) options.set(executor.id, executor.name || executor.id);
+        }
+      }
+      return [...options.entries()].map(([id, name]) => ({ id, name }));
+    },
+    boardTypeOptions() {
+      return [...new Set(this.items.map(item => item.workItemType).filter(Boolean))].sort();
     },
     emptyState() {
-      if (this.search.trim()) {
-        return {
-          title: this.tr('workCenter.noMatchesTitle', 'No matching work items'),
-          body: this.tr('workCenter.noMatchesBody', 'Try a different search or filter.'),
-          canCreate: false,
-        };
-      }
-      if (this.filter === 'done') {
-        return {
-          title: this.tr('workCenter.noCompletedTitle', 'No completed work items'),
-          body: this.tr('workCenter.noCompletedBody', 'Completed work items will appear here.'),
-          canCreate: false,
-        };
-      }
-      if (this.filter === 'attention') {
-        return {
-          title: this.tr('workCenter.noAttentionTitle', 'Nothing needs attention'),
-          body: this.tr('workCenter.noAttentionBody', 'Work Items waiting for you or needing recovery will appear here.'),
-          canCreate: this.items.length === 0,
-        };
-      }
-      if (this.filter === 'active') {
-        return {
-          title: this.tr('workCenter.noActiveTitle', 'No active work items'),
-          body: this.tr('workCenter.noActiveBody', 'Draft, ready, and running Work Items will appear here.'),
-          canCreate: true,
-        };
-      }
       return {
-        title: this.tr('workCenter.emptyTitle', 'No work items yet'),
-        body: this.tr('workCenter.emptyBody', 'Create a persistent task when work must continue beyond one conversation turn.'),
-        canCreate: true,
+        title: this.search.trim()
+          ? this.tr('workCenter.noMatchesTitle', 'No matching work items')
+          : this.tr('workCenter.emptyTitle', 'No work items yet'),
+        body: this.search.trim()
+          ? this.tr('workCenter.noMatchesBody', 'Try a different search or filter.')
+          : this.tr('workCenter.emptyBody', 'Create a persistent task when work must continue beyond one conversation turn.'),
+        canCreate: !this.search.trim(),
       };
     },
   },
@@ -230,7 +212,10 @@ export default {
           this.resetCreateExecutionContext(id);
         }
         if (id) {
-          this.store.listWorkItems(id).catch(() => {});
+          const listRequest = typeof this.boardFilters === 'function'
+            ? this.store.listWorkItems(id, this.boardFilters())
+            : this.store.listWorkItems(id);
+          listRequest.catch(() => {});
           this.store.loadWorkCenterSettings(id).catch(() => {});
         }
       },
@@ -241,6 +226,10 @@ export default {
     createDefaultStart() {
       this.applyCreateDefaults();
     },
+    search() { this.scheduleBoardQuery(); },
+    boardVpId() { this.scheduleBoardQuery(); },
+    boardWorkItemType() { this.scheduleBoardQuery(); },
+    boardUpdatedRange() { this.scheduleBoardQuery(); },
     detail: {
       deep: true,
       handler(detail) {
@@ -253,6 +242,9 @@ export default {
         }
       },
     },
+  },
+  beforeUnmount() {
+    if (this.boardQueryTimer) clearTimeout(this.boardQueryTimer);
   },
   mounted() {
     const draft = this.store.workCenterCreateDraft;
@@ -303,8 +295,49 @@ export default {
       if (!value) return '';
       try { return new Date(Number(value)).toLocaleString(); } catch { return ''; }
     },
+    boardFilters() {
+      const now = Date.now();
+      const updatedFrom = this.boardUpdatedRange === 'day' ? now - 24 * 60 * 60 * 1000
+        : this.boardUpdatedRange === 'week' ? now - 7 * 24 * 60 * 60 * 1000
+          : this.boardUpdatedRange === 'month' ? now - 30 * 24 * 60 * 60 * 1000 : null;
+      return {
+        keyword: this.search.trim(),
+        vpId: this.boardVpId,
+        workItemType: this.boardWorkItemType,
+        updatedFrom,
+        limit: 200,
+      };
+    },
+    scheduleBoardQuery() {
+      if (this.boardQueryTimer) clearTimeout(this.boardQueryTimer);
+      this.boardQueryTimer = setTimeout(() => {
+        this.boardQueryTimer = null;
+        if (this.agentId) this.refresh();
+      }, 180);
+    },
     refresh() {
-      return this.store.listWorkItems(this.agentId).catch(() => {});
+      return this.store.listWorkItems(this.agentId, this.boardFilters()).catch(() => {});
+    },
+    loadMoreBoardItems() {
+      return this.store.loadMoreWorkItems(this.agentId).catch(() => {});
+    },
+    boardAction(item) {
+      return item.attentionAction || item.activeAction || item.currentAction || null;
+    },
+    boardActionCountLabel(item) {
+      const counts = item.actionCounts || {};
+      const parts = [];
+      for (const status of ['running', 'failed', 'waiting', 'ready']) {
+        if (Number(counts[status]) > 0) parts.push(`${counts[status]} ${this.statusLabel(status)}`);
+      }
+      return parts.join(' · ') || this.itemActionProgress(item);
+    },
+    boardExecutorLabel(item) {
+      const executors = Array.isArray(item.executors) ? item.executors : [];
+      if (executors.length > 0) return executors.map(executor => executor.name || executor.id).join(', ');
+      const action = this.boardAction(item);
+      return action?.assignedVp?.name || action?.assignedVp?.id
+        || this.tr('workCenter.assignment.planned', 'Planned assignment');
     },
     resetActionComposer() {
       this.actionComposerGeneration += 1;
@@ -750,16 +783,24 @@ export default {
           </header>
 
           <div v-if="narrowPane === 'items'" class="work-center-toolbar">
-            <div class="work-center-filter" role="group" :aria-label="tr('workCenter.filter', 'Filter')">
-              <button type="button" :class="{ active: filter === 'attention' }" @click="filter = 'attention'">{{ tr('workCenter.filterAttention', 'Needs attention') }}</button>
-              <button type="button" :class="{ active: filter === 'active' }" @click="filter = 'active'">{{ tr('workCenter.filterActive', 'Active') }}</button>
-              <button type="button" :class="{ active: filter === 'all' }" @click="filter = 'all'">{{ tr('workCenter.filterAll', 'All') }}</button>
-              <button type="button" :class="{ active: filter === 'done' }" @click="filter = 'done'">{{ tr('workCenter.filterDone', 'Done') }}</button>
-            </div>
             <label class="work-center-search">
               <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M9.5 3a6.5 6.5 0 1 0 4.02 11.61L19.91 21 21 19.91l-6.39-6.39A6.5 6.5 0 0 0 9.5 3Zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z"/></svg>
               <input v-model="search" type="search" :placeholder="tr('workCenter.search', 'Search work items')">
             </label>
+            <select v-model="boardVpId" :aria-label="tr('workCenter.filterVp', 'Filter by VP')">
+              <option value="">{{ tr('workCenter.allVps', 'All VPs') }}</option>
+              <option v-for="executor in boardExecutorOptions" :key="executor.id" :value="executor.id">{{ executor.name }}</option>
+            </select>
+            <select v-model="boardWorkItemType" :aria-label="tr('workCenter.filterType', 'Filter by type')">
+              <option value="">{{ tr('workCenter.allTypes', 'All types') }}</option>
+              <option v-for="type in boardTypeOptions" :key="type" :value="type">{{ type }}</option>
+            </select>
+            <select v-model="boardUpdatedRange" :aria-label="tr('workCenter.filterUpdated', 'Filter by update time')">
+              <option value="">{{ tr('workCenter.anyTime', 'Any time') }}</option>
+              <option value="day">{{ tr('workCenter.lastDay', 'Last 24 hours') }}</option>
+              <option value="week">{{ tr('workCenter.lastWeek', 'Last 7 days') }}</option>
+              <option value="month">{{ tr('workCenter.lastMonth', 'Last 30 days') }}</option>
+            </select>
             <span v-if="watcher && watcher.enabled" class="work-center-watcher active">
               <span aria-hidden="true"></span>{{ tr('workCenter.watcherActive', 'Watcher active') }}
             </span>
@@ -769,32 +810,44 @@ export default {
             {{ tr('workCenter.noAvailableAgents', 'No compatible online Agents') }}
           </p>
           <p v-if="error" class="work-center-error">{{ error }}</p>
-          <div class="work-center-body" :class="{ 'is-empty': loaded && !loading && visibleItems.length === 0 }" :data-pane="narrowPane">
-            <section class="work-center-list" :aria-busy="loading ? 'true' : 'false'">
-              <div v-if="visibleItems.length > 0" class="work-center-list-heading">
-                <span>{{ listHeading }}</span>
-                <small>{{ visibleItems.length }}</small>
-              </div>
-              <button v-for="item in visibleItems" :key="item.id" type="button"
-                      class="work-center-card" :class="{ active: selectedId === item.id }"
-                      :aria-label="item.title || tr('workCenter.workItem', 'Work item')"
-                      @click="selectItem(item)">
-                <span class="work-center-card-state">
-                  <span class="work-center-status" :data-status="item.status"><span aria-hidden="true"></span>{{ statusLabel(item.status) }}</span>
-                </span>
-                <span class="work-center-card-content">
-                  <span class="work-center-card-title">{{ item.title }}</span>
-                  <span class="work-center-card-goal">{{ item.goal }}</span>
-                  <span v-if="item.currentAction" class="work-center-card-current-action">
-                    {{ tr('workCenter.currentAction', 'Current Action') }}: {{ item.currentAction.objective || actionLabel(item.currentAction.type) }}
-                  </span>
-                </span>
-                <span class="work-center-card-progress">{{ itemActionProgress(item) }}</span>
-                <span class="work-center-card-updated">{{ time(item.updatedAt) || tr('workCenter.noTimestamp', 'No timestamp') }}</span>
-                <span class="work-center-card-chevron" aria-hidden="true">›</span>
-              </button>
+          <div class="work-center-body" :class="{ 'is-empty': loaded && !loading && items.length === 0 }" :data-pane="narrowPane">
+            <section class="work-center-list work-center-board" :aria-busy="loading ? 'true' : 'false'">
+              <section v-for="lane in boardLanes" :key="lane.id" class="work-center-board-lane" :data-lane="lane.id" :aria-labelledby="'work-center-lane-' + lane.id">
+                <header class="work-center-board-lane-header">
+                  <h2 :id="'work-center-lane-' + lane.id">{{ lane.title }}</h2>
+                  <span>{{ lane.items.length }}</span>
+                </header>
+                <div class="work-center-board-cards">
+                  <button v-for="item in lane.items" :key="item.id" type="button"
+                          class="work-center-card" :class="{ active: selectedId === item.id }"
+                          :aria-label="item.title || tr('workCenter.workItem', 'Work item')"
+                          @click="selectItem(item)">
+                    <span class="work-center-card-head">
+                      <span class="work-center-status" :data-status="boardAction(item)?.status || item.status"><span aria-hidden="true"></span>{{ statusLabel(boardAction(item)?.status || item.status) }}</span>
+                      <span class="work-center-card-updated">{{ time(item.updatedAt) }}</span>
+                    </span>
+                    <span class="work-center-card-title">{{ item.title }}</span>
+                    <span class="work-center-card-goal">{{ item.goal }}</span>
+                    <span v-if="boardAction(item)" class="work-center-card-current-action">
+                      {{ boardAction(item).objective || actionLabel(boardAction(item).type) }}
+                    </span>
+                    <span class="work-center-card-meta">
+                      <span>{{ boardExecutorLabel(item) }}</span>
+                      <span>{{ boardActionCountLabel(item) }}</span>
+                    </span>
+                    <span class="work-center-card-foot">
+                      <span>{{ tr('workCenter.created', 'Created') }} {{ time(item.createdAt) }}</span>
+                      <span v-if="item.attachmentCount">{{ item.attachmentCount }} {{ tr('workCenter.files', 'files') }}</span>
+                    </span>
+                  </button>
+                  <p v-if="!loading && lane.items.length === 0" class="work-center-board-empty">{{ tr('workCenter.board.emptyLane', 'No work items') }}</p>
+                </div>
+              </section>
               <div v-if="loading" class="work-center-loading">{{ tr('workCenter.loading', 'Loading work items…') }}</div>
-              <div v-if="loaded && !loading && visibleItems.length === 0" class="work-center-empty-state">
+              <button v-if="boardNextCursor && !loading" class="btn-secondary work-center-board-more" type="button" @click="loadMoreBoardItems">
+                {{ tr('workCenter.loadMore', 'Load more') }}
+              </button>
+              <div v-if="loaded && !loading && items.length === 0" class="work-center-empty-state">
                 <h2>{{ emptyState.title }}</h2>
                 <p>{{ emptyState.body }}</p>
                 <button v-if="emptyState.canCreate" class="btn-ghost work-center-empty-create" type="button" @click="openCreate" :disabled="onlineAgents.length === 0">

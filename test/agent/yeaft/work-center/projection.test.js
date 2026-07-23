@@ -65,6 +65,45 @@ function internalDetail() {
 }
 
 describe('Work Center event projection', () => {
+  it('projects mutually exclusive Board lanes with mixed Action counts and real executors', () => {
+    const detail = internalDetail();
+    detail.status = 'running';
+    detail.actions = [{
+      id: 'running-action', sequence: 1, type: 'implement', stageId: 'implement', status: 'running',
+      brief: { objective: 'Implement the fix' },
+    }, {
+      id: 'failed-action', sequence: 2, type: 'test', stageId: 'test', status: 'failed',
+      brief: { objective: 'Verify the fix' },
+    }];
+    detail.runs = [{
+      id: 'run-active', actionId: 'running-action', workItemId: detail.id, status: 'running', startedAt: 10,
+      vpSnapshot: { id: 'linus', name: 'Linus', private: 'omit' },
+    }, {
+      id: 'run-failed', actionId: 'failed-action', workItemId: detail.id, status: 'failed', startedAt: 11,
+      vpSnapshot: { id: 'martin', name: 'Martin', private: 'omit' },
+    }];
+
+    expect(projectWorkItemSummary(detail)).toMatchObject({
+      boardLane: 'needs_attention',
+      actionCounts: { completed: 0, running: 1, ready: 0, waiting: 0, failed: 1 },
+      attentionAction: { id: 'failed-action', status: 'failed', assignedVp: { id: 'martin', name: 'Martin' } },
+      activeAction: { id: 'running-action', status: 'running', assignedVp: { id: 'linus', name: 'Linus' } },
+      executors: [{ id: 'linus', name: 'Linus' }, { id: 'martin', name: 'Martin' }],
+    });
+    expect(JSON.stringify(projectWorkItemSummary(detail))).not.toContain('private');
+    expect(projectWorkItemSummary({ ...detail, status: 'done' }).boardLane).toBe('closed');
+    expect(projectWorkItemSummary({ ...detail, status: 'ready', actions: [detail.actions[0]] }).boardLane).toBe('active');
+  });
+
+  it('projects identical Board fields for list summaries and live events', () => {
+    const detail = internalDetail();
+    const summary = projectWorkItemSummary(detail);
+    const eventSummary = projectWorkCenterEvent({ type: 'work_item.updated', workItem: detail }).workItem;
+    for (const key of ['boardLane', 'actionCounts', 'attentionAction', 'activeAction', 'executors']) {
+      expect(eventSummary[key]).toEqual(summary[key]);
+    }
+  });
+
   it('projects list Action progress without exposing execution detail', () => {
     const detail = internalDetail();
     detail.actions.push({
