@@ -1212,8 +1212,15 @@ export class WorkItemStore {
       values.push(`\"workItemType\":${JSON.stringify(filters.workItemType.trim())}`);
     }
     if (typeof filters.vpId === 'string' && filters.vpId.trim()) {
-      where.push(`EXISTS (SELECT 1 FROM runs executor_run
-        WHERE executor_run.work_item_id = w.id AND instr(executor_run.vp_snapshot, ?) > 0)`);
+      where.push(`EXISTS (SELECT 1 FROM actions executor_action
+        JOIN runs executor_run ON executor_run.id = (
+          SELECT latest_executor_run.id FROM runs latest_executor_run
+          WHERE latest_executor_run.action_id = executor_action.id
+          ORDER BY latest_executor_run.started_at DESC, latest_executor_run.progress_revision DESC
+          LIMIT 1)
+        WHERE executor_action.work_item_id = w.id
+          AND executor_action.status NOT IN ('superseded', 'cancelled')
+          AND instr(executor_run.vp_snapshot, ?) > 0)`);
       values.push(`\"id\":${JSON.stringify(filters.vpId.trim())}`);
     }
     if (filters.lane === 'closed') {

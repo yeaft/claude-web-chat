@@ -478,6 +478,10 @@
   background: var(--bg-sidebar);
 }
 
+.work-center-board-lane-tabs {
+  display: none;
+}
+
 .work-center-board-lane {
   display: flex;
   min-width: 0;
@@ -2503,6 +2507,64 @@
     grid-column: 1 / -1;
     width: 100%;
     margin-left: 0;
+  }
+
+  .work-center-board {
+    display: flex;
+    overflow-x: hidden;
+  }
+
+  .work-center-board-lane-tabs {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    padding: 4px;
+    border-radius: 9px;
+    background: var(--bg-sidebar);
+  }
+
+  .work-center-board-lane-tabs button {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 6px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .work-center-board-lane-tabs button.active {
+    background: var(--session-active);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .work-center-board-lane-tabs small {
+    color: inherit;
+    font-size: 10px;
+  }
+
+  .work-center-board-lane {
+    display: none;
+    width: 100%;
+    min-height: 0;
+  }
+
+  .work-center-board-lane.mobile-active {
+    display: flex;
+  }
+
+  .work-center-board-more {
+    position: static;
+    width: fit-content;
+    align-self: center;
   }
 
   .work-center-filter {

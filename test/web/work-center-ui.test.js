@@ -257,6 +257,12 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('.work-center-header-create span');
     expect(css).toContain('grid-template-columns: 1fr 1fr');
     expect(css).toContain('grid-template-columns: repeat(3, minmax(250px, 1fr))');
+    expect(css).toContain('.work-center-board-lane-tabs');
+    expect(css).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.work-center-board\s*\{[^}]*display: flex;[^}]*overflow-x: hidden/s);
+    expect(css).toMatch(/\.work-center-board-lane\.mobile-active\s*\{[^}]*display: flex/s);
+    expect(page).toContain('role="tablist"');
+    expect(page).toContain('mobileBoardLane === lane.id');
+    expect(page).toContain(':disabled="boardLoadingMore"');
     expect(page).toContain(':aria-label="tr(\'workCenter.newWorkItem\'');
   });
 

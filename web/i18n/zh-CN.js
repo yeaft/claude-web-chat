@@ -1448,6 +1448,7 @@ export default {
   'workCenter.board.needsAttention': '需要处理',
   'workCenter.board.closed': '已关闭',
   'workCenter.board.emptyLane': '暂无工作项',
+  'workCenter.board.lanes': '工作项分栏',
   'workCenter.filterVp': '按 VP 筛选',
   'workCenter.filterType': '按类型筛选',
   'workCenter.filterUpdated': '按更新时间筛选',

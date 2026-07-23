@@ -40,6 +40,7 @@ export default {
       boardVpId: '',
       boardWorkItemType: '',
       boardUpdatedRange: '',
+      mobileBoardLane: 'active',
       boardQueryTimer: null,
       actionGuidance: '',
       expandedActions: {},
@@ -73,6 +74,7 @@ export default {
     },
     watcher() { return this.store.workCenterWatcherByAgent[this.agentId] || null; },
     boardNextCursor() { return this.store.workCenterListPageByAgent[this.agentId]?.nextCursor || null; },
+    boardLoadingMore() { return !!this.store.workCenterListMoreLoadingByAgent[this.agentId]; },
     settings() { return this.store.workCenterSettingsByAgent[this.agentId] || null; },
     runtime() { return this.store.workCenterRuntimeByAgent[this.agentId] || null; },
     workItemTypes() { return Array.isArray(this.runtime?.workItemTypes) ? this.runtime.workItemTypes : []; },
@@ -811,8 +813,17 @@ export default {
           </p>
           <p v-if="error" class="work-center-error">{{ error }}</p>
           <div class="work-center-body" :class="{ 'is-empty': loaded && !loading && items.length === 0 }" :data-pane="narrowPane">
-            <section class="work-center-list work-center-board" :aria-busy="loading ? 'true' : 'false'">
-              <section v-for="lane in boardLanes" :key="lane.id" class="work-center-board-lane" :data-lane="lane.id" :aria-labelledby="'work-center-lane-' + lane.id">
+            <section class="work-center-list work-center-board" :aria-busy="loading || boardLoadingMore ? 'true' : 'false'">
+              <div class="work-center-board-lane-tabs" role="tablist" :aria-label="tr('workCenter.board.lanes', 'Work item lanes')">
+                <button v-for="lane in boardLanes" :key="lane.id" type="button" role="tab"
+                        :aria-selected="mobileBoardLane === lane.id ? 'true' : 'false'"
+                        :class="{ active: mobileBoardLane === lane.id }" @click="mobileBoardLane = lane.id">
+                  <span>{{ lane.title }}</span><small>{{ lane.items.length }}</small>
+                </button>
+              </div>
+              <section v-for="lane in boardLanes" :key="lane.id" class="work-center-board-lane"
+                       :class="{ 'mobile-active': mobileBoardLane === lane.id }"
+                       :data-lane="lane.id" :aria-labelledby="'work-center-lane-' + lane.id">
                 <header class="work-center-board-lane-header">
                   <h2 :id="'work-center-lane-' + lane.id">{{ lane.title }}</h2>
                   <span>{{ lane.items.length }}</span>
@@ -844,8 +855,9 @@ export default {
                 </div>
               </section>
               <div v-if="loading" class="work-center-loading">{{ tr('workCenter.loading', 'Loading work items…') }}</div>
-              <button v-if="boardNextCursor && !loading" class="btn-secondary work-center-board-more" type="button" @click="loadMoreBoardItems">
-                {{ tr('workCenter.loadMore', 'Load more') }}
+              <button v-if="boardNextCursor && !loading" class="btn-secondary work-center-board-more" type="button"
+                      @click="loadMoreBoardItems" :disabled="boardLoadingMore">
+                {{ boardLoadingMore ? tr('workCenter.loading', 'Loading work items…') : tr('workCenter.loadMore', 'Load more') }}
               </button>
               <div v-if="loaded && !loading && items.length === 0" class="work-center-empty-state">
                 <h2>{{ emptyState.title }}</h2>

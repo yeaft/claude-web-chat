@@ -159,6 +159,54 @@ describe('Work Center navigation', () => {
     expect(store.workCenterListPageByAgent['agent-1'].nextCursor).toBeNull();
   });
 
+  it('deduplicates a pending Board page and fences a stale cursor response', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    store.workCenterItemsByAgent['agent-1'] = [{ id: 'wi-1', revision: 1 }];
+    store.workCenterListPageByAgent['agent-1'] = { nextCursor: 'cursor-1', queryKey: 'query-1' };
+    store._workCenterListQueryByAgent['agent-1'] = 'query-1';
+    store._workCenterListGenerationByAgent['agent-1'] = 4;
+    store._workCenterListFiltersByAgent['agent-1'] = { keyword: '' };
+    const page = deferred();
+    store.workCenterRequest = vi.fn(() => page.promise);
+
+    const first = store.loadMoreWorkItems('agent-1');
+    const duplicate = store.loadMoreWorkItems('agent-1');
+    expect(store.workCenterRequest).toHaveBeenCalledTimes(1);
+    expect(store.workCenterListMoreLoadingByAgent['agent-1']).toBe(true);
+    store.workCenterListPageByAgent['agent-1'] = { nextCursor: 'cursor-2', queryKey: 'query-1' };
+    page.resolve({ items: [{ id: 'stale-page', revision: 1 }], nextCursor: null });
+    await Promise.all([first, duplicate]);
+
+    expect(store.workCenterItemsByAgent['agent-1']).toEqual([{ id: 'wi-1', revision: 1 }]);
+    expect(store.workCenterListPageByAgent['agent-1'].nextCursor).toBe('cursor-2');
+    expect(store.workCenterListMoreLoadingByAgent['agent-1']).toBe(false);
+  });
+
+  it('keeps a live Board event when the initial list or a page returns stale data', async () => {
+    const store = makeStore('yeaft');
+    store.workCenterAgentId = 'agent-1';
+    store.listWorkItems = useChatStore().listWorkItems;
+    const list = deferred();
+    store.workCenterRequest = vi.fn(() => list.promise);
+
+    const pending = store.listWorkItems('agent-1', {});
+    store.applyWorkCenterEvent('agent-1', {
+      workItem: { id: 'wi-1', revision: 2, updatedAt: 20, status: 'running', boardLane: 'active' },
+    });
+    list.resolve({ items: [{ id: 'wi-1', revision: 1, updatedAt: 10, status: 'ready', boardLane: 'active' }] });
+    await pending;
+    expect(store.workCenterItemsByAgent['agent-1'][0]).toMatchObject({ revision: 2, status: 'running' });
+
+    store.workCenterListPageByAgent['agent-1'] = { nextCursor: 'cursor-1', queryKey: store._workCenterListQueryByAgent['agent-1'] };
+    store.workCenterRequest = vi.fn().mockResolvedValue({
+      items: [{ id: 'wi-1', revision: 1, updatedAt: 10, status: 'ready', boardLane: 'active' }],
+      nextCursor: null,
+    });
+    await store.loadMoreWorkItems('agent-1');
+    expect(store.workCenterItemsByAgent['agent-1'][0]).toMatchObject({ revision: 2, status: 'running' });
+  });
+
   it('keeps filtered Board events out and removes cards that leave the query', () => {
     const store = makeStore('yeaft');
     store.workCenterAgentId = 'agent-1';
@@ -327,6 +375,25 @@ describe('Work Center navigation', () => {
     expect(store.workCenterDetailByAgent['agent-1']).toMatchObject({
       revision: 6, currentActionId: 'action-waiting',
     });
+  });
+
+  it('preserves the active Board filters after Action input', async () => {
+    const store = makeStore('yeaft');
+    const filters = { keyword: 'release', vpId: 'linus', workItemType: 'bug-fix', updatedFrom: 100 };
+    store._workCenterListFiltersByAgent['agent-1'] = filters;
+    store.workCenterDetailByAgent['agent-1'] = {
+      id: 'wi-1', revision: 5, currentActionId: 'action-1',
+      actions: [{ id: 'action-1', status: 'waiting', generation: 2 }],
+    };
+    store.workCenterRequest = vi.fn().mockResolvedValue({
+      id: 'wi-1', revision: 6, currentActionId: 'action-1',
+      actions: [{ id: 'action-1', status: 'running', generation: 2 }],
+    });
+    store.listWorkItems = vi.fn().mockResolvedValue([]);
+
+    await store.sendWorkItemActionInput('wi-1', 'Continue', 'action-1', 5, 2, [], 'agent-1');
+
+    expect(store.listWorkItems).toHaveBeenCalledWith('agent-1', filters);
   });
 
   it('does not let an old Action input response overwrite a newer Action in the same Work Item', async () => {

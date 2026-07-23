@@ -1452,6 +1452,7 @@ export default {
   'workCenter.board.needsAttention': 'Needs attention',
   'workCenter.board.closed': 'Closed',
   'workCenter.board.emptyLane': 'No work items',
+  'workCenter.board.lanes': 'Work item lanes',
   'workCenter.filterVp': 'Filter by VP',
   'workCenter.filterType': 'Filter by type',
   'workCenter.filterUpdated': 'Filter by update time',
