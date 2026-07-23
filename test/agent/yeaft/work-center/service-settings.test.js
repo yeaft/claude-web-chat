@@ -318,6 +318,14 @@ describe('Work Center settings service', () => {
     await expect(service.handle('get_action_request', {
       id: item.id, actionId: 'missing', runId: claim.run.id, requestId: 'request-1',
     })).rejects.toThrow(/Action not found/);
+
+    service.store.db.prepare('UPDATE actions SET generation = 2 WHERE id = ?').run(claim.action.id);
+    await expect(service.handle('get_action_requests', {
+      id: item.id, actionId: claim.action.id,
+    })).resolves.toMatchObject({ generation: 2, requests: [] });
+    await expect(service.handle('get_action_request', {
+      id: item.id, actionId: claim.action.id, runId: claim.run.id, requestId: 'request-1',
+    })).rejects.toThrow(/Action request not found/);
   });
 
   it('keeps the real get operation internal so the bridge projects it exactly once', async () => {
