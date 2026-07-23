@@ -321,9 +321,17 @@
 
 .work-center-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   margin-bottom: 14px;
+}
+
+.work-center-toolbar > select {
+  width: auto;
+  min-width: 132px;
+  height: 34px;
+  font-size: 12px;
 }
 
 .work-center-search {
@@ -462,68 +470,143 @@
   font-weight: 500;
 }
 
+.work-center-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(260px, 1fr));
+  gap: 14px;
+  overflow: auto;
+  background: var(--bg-sidebar);
+}
+
+.work-center-board-lane-tabs {
+  display: none;
+}
+
+.work-center-board-lane {
+  display: flex;
+  min-width: 0;
+  min-height: 100%;
+  flex-direction: column;
+  border-radius: 10px;
+  background: var(--bg-main);
+}
+
+.work-center-board-lane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px 8px;
+}
+
+.work-center-board-lane-header h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.work-center-board-lane-header span,
+.work-center-board-empty {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.work-center-board-cards {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 4px 8px 12px;
+}
+
+.work-center-board-empty {
+  margin: 18px 8px;
+  text-align: center;
+}
+
+.work-center-board-more {
+  position: sticky;
+  left: 50%;
+  grid-column: 1 / -1;
+  width: fit-content;
+  justify-self: center;
+}
+
 .work-center-card {
   display: grid;
   width: 100%;
   min-width: 0;
-  margin: 0 0 3px;
-  padding: 14px 12px;
-  align-items: center;
-  grid-template-columns: minmax(112px, auto) minmax(240px, 1fr) minmax(72px, auto) minmax(140px, auto) 14px;
-  gap: 18px;
-  border-radius: 8px;
-  background: transparent;
+  padding: 12px;
+  gap: 7px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--bg-main);
   color: var(--text-primary);
   text-align: left;
 }
 
 .work-center-card:hover {
+  border-color: var(--border-color);
   background: var(--sidebar-hover);
 }
 
 .work-center-card.active {
+  border-color: var(--accent-blue);
   background: var(--session-active);
 }
 
-.work-center-card-state,
-.work-center-card-content {
+.work-center-card-head,
+.work-center-card-meta,
+.work-center-card-foot {
+  display: flex;
   min-width: 0;
-}
-
-.work-center-card-content {
-  display: grid;
-  gap: 4px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .work-center-card-title,
 .work-center-card-goal,
-.work-center-card-current-action {
+.work-center-card-current-action,
+.work-center-card-meta span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .work-center-card-title {
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 650;
+  white-space: nowrap;
 }
 
 .work-center-card-goal {
+  display: -webkit-box;
   color: var(--text-secondary);
   font-size: 12px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
-.work-center-card-current-action,
-.work-center-card-progress,
+.work-center-card-current-action {
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.work-center-card-meta,
+.work-center-card-foot,
 .work-center-card-updated {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10px;
 }
 
-.work-center-card-chevron {
-  color: var(--text-muted);
-  font-size: 18px;
-  line-height: 1;
+.work-center-card-meta span:first-child {
+  color: var(--text-secondary);
+}
+
+.work-center-card-foot {
+  margin-top: 2px;
 }
 
 .work-center-usage-summary {
@@ -2358,12 +2441,8 @@
     display: none;
   }
 
-  .work-center-card {
-    grid-template-columns: minmax(100px, auto) minmax(220px, 1fr) minmax(72px, auto) 14px;
-  }
-
-  .work-center-card-updated {
-    display: none;
+  .work-center-board {
+    grid-template-columns: repeat(3, minmax(250px, 1fr));
   }
 }
 
@@ -2414,13 +2493,78 @@
   }
 
   .work-center-toolbar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     align-items: stretch;
-    flex-direction: column-reverse;
+  }
+
+  .work-center-toolbar > select {
+    width: 100%;
+    min-width: 0;
   }
 
   .work-center-search {
+    grid-column: 1 / -1;
     width: 100%;
     margin-left: 0;
+  }
+
+  .work-center-board {
+    display: flex;
+    overflow-x: hidden;
+  }
+
+  .work-center-board-lane-tabs {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    padding: 4px;
+    border-radius: 9px;
+    background: var(--bg-sidebar);
+  }
+
+  .work-center-board-lane-tabs button {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 6px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .work-center-board-lane-tabs button.active {
+    background: var(--session-active);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .work-center-board-lane-tabs small {
+    color: inherit;
+    font-size: 10px;
+  }
+
+  .work-center-board-lane {
+    display: none;
+    width: 100%;
+    min-height: 0;
+  }
+
+  .work-center-board-lane.mobile-active {
+    display: flex;
+  }
+
+  .work-center-board-more {
+    position: static;
+    width: fit-content;
+    align-self: center;
   }
 
   .work-center-filter {

@@ -42,6 +42,77 @@ function projectCurrentActionSummary(action, projectedAction = action) {
     assignmentMode: projectedAction.assignmentPolicy?.mode || (projectedAction.requiredRole ? 'fixed' : null),
     status: projectedAction.status,
     objective: truncateUtf8(action?.brief?.objective, 1_000) || null,
+    ...(projectedAction.assignedVp ? { assignedVp: projectedAction.assignedVp } : {}),
+  };
+}
+
+const BOARD_ACTION_STATUSES = ['completed', 'running', 'ready', 'waiting', 'failed'];
+
+function boardActionCounts(actions) {
+  const counts = Object.fromEntries(BOARD_ACTION_STATUSES.map(status => [status, 0]));
+  for (const action of Array.isArray(actions) ? actions : []) {
+    if (Object.hasOwn(counts, action?.status)) counts[action.status] += 1;
+  }
+  return counts;
+}
+
+export function workItemBoardLane(detail) {
+  const actions = (Array.isArray(detail?.actions) ? detail.actions : [])
+    .filter(action => !['superseded', 'cancelled'].includes(action?.status));
+  if (['done', 'cancelled'].includes(detail?.status)) return 'closed';
+  if (['draft', 'waiting', 'needs_attention'].includes(detail?.status)
+      || actions.some(action => ['waiting', 'failed'].includes(action?.status))) {
+    return 'needs_attention';
+  }
+  return 'active';
+}
+
+function boardActionSummary(action, runs, events) {
+  if (!action) return null;
+  const projected = projectAction(action, runs, events, false);
+  return {
+    id: projected.id,
+    type: projected.type,
+    stageId: projected.stageId,
+    status: projected.status,
+    objective: truncateUtf8(action?.brief?.objective, 1_000) || null,
+    assignedVp: projected.assignedVp || null,
+  };
+}
+
+function boardFields(detail) {
+  const actions = (Array.isArray(detail?.actions) ? detail.actions : [])
+    .filter(action => !['superseded', 'cancelled'].includes(action?.status));
+  const runs = Array.isArray(detail?.runs) ? detail.runs : [];
+  const events = Array.isArray(detail?.events) ? detail.events : [];
+  const bySequence = (left, right) => count(left?.sequence) - count(right?.sequence)
+    || String(left?.id || '').localeCompare(String(right?.id || ''));
+  const attentionAction = [...actions]
+    .filter(action => ['waiting', 'failed'].includes(action?.status))
+    .sort((left, right) => {
+      const priority = { waiting: 0, failed: 1 };
+      return priority[left.status] - priority[right.status] || bySequence(left, right);
+    })[0] || null;
+  const activeAction = [...actions]
+    .filter(action => ['running', 'ready'].includes(action?.status))
+    .sort((left, right) => {
+      const priority = { running: 0, ready: 1 };
+      return priority[left.status] - priority[right.status] || bySequence(left, right);
+    })[0] || null;
+  const executors = [];
+  const seenExecutors = new Set();
+  for (const action of actions) {
+    const assignedVp = projectAction(action, runs, events, false).assignedVp;
+    if (!assignedVp?.id || seenExecutors.has(assignedVp.id)) continue;
+    seenExecutors.add(assignedVp.id);
+    executors.push(assignedVp);
+  }
+  return {
+    boardLane: workItemBoardLane({ ...detail, actions }),
+    actionCounts: boardActionCounts(actions),
+    attentionAction: boardActionSummary(attentionAction, runs, events),
+    activeAction: boardActionSummary(activeAction, runs, events),
+    executors,
   };
 }
 
@@ -673,6 +744,11 @@ export function projectWorkItemSummary(detail) {
       attachmentCount: Array.isArray(detail.attachments) ? detail.attachments.length : 0,
       createdAt: detail.createdAt,
       updatedAt: detail.updatedAt,
+      boardLane: detail.boardLane || workItemBoardLane(detail),
+      actionCounts: detail.actionCounts || boardActionCounts([]),
+      attentionAction: detail.attentionAction || null,
+      activeAction: detail.activeAction || null,
+      executors: Array.isArray(detail.executors) ? detail.executors : [],
     };
   }
   const action = currentAction(detail);
@@ -704,6 +780,7 @@ export function projectWorkItemSummary(detail) {
     attachmentCount: Array.isArray(detail.attachments) ? detail.attachments.length : 0,
     createdAt: detail.createdAt,
     updatedAt: detail.updatedAt,
+    ...boardFields(detail),
   };
 }
 

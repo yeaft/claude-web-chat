@@ -58,6 +58,24 @@ describe('Work Center settings service', () => {
     });
   });
 
+  it('returns stable cursor pages without duplicates when timestamps tie', async () => {
+    const service = await createService();
+    for (const id of ['wi-a', 'wi-b', 'wi-c']) {
+      service.controller.create({
+        id, title: id, goal: `Goal for ${id}`, acceptanceCriteria: [],
+        workflowTemplate: 'software-change', workDir: '/tmp', start: false,
+      });
+    }
+    service.store.db.prepare('UPDATE work_items SET updated_at = 5000').run();
+
+    const first = await service.handle('list', { limit: 2 });
+    const second = await service.handle('list', { limit: 2, cursor: first.nextCursor });
+    expect(first.items.map(item => item.id)).toEqual(['wi-c', 'wi-b']);
+    expect(second.items.map(item => item.id)).toEqual(['wi-a']);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set([...first.items, ...second.items].map(item => item.id)).size).toBe(3);
+  });
+
   it('persists WorkItem attachments with the item and returns only safe browser metadata', async () => {
     const service = await createService();
     const detail = await service.handle('create', {

@@ -218,6 +218,26 @@ describe('Work Center summary state', () => {
     expect(JSON.stringify(eventSummary)).not.toContain('secret context');
   });
 
+  it('preserves backend Board fields through a live event summary merge', () => {
+    const current = {
+      id: 'wi-1', revision: 3, updatedAt: 30, boardLane: 'active',
+      actionCounts: { completed: 0, running: 1, ready: 0, waiting: 0, failed: 0 },
+      activeAction: { id: 'action-1', status: 'running' }, executors: [{ id: 'linus', name: 'Linus' }],
+    };
+    const event = {
+      ...current, revision: 4, updatedAt: 31, boardLane: 'needs_attention',
+      actionCounts: { completed: 0, running: 1, ready: 0, waiting: 0, failed: 1 },
+      attentionAction: { id: 'action-2', status: 'failed' },
+    };
+
+    expect(applyWorkItemSummary([current], event)[0]).toMatchObject({
+      boardLane: 'needs_attention',
+      attentionAction: { id: 'action-2', status: 'failed' },
+      executors: [{ id: 'linus', name: 'Linus' }],
+    });
+    expect(applyWorkItemSummary([event], current)[0].boardLane).toBe('needs_attention');
+  });
+
   it('does not let an out-of-order list event roll aggregate usage backwards', () => {
     const fresh = {
       id: 'wi-1', revision: 3, status: 'running', updatedAt: 31,

@@ -98,7 +98,7 @@ describe('Work Center UI contract', () => {
     expect(sidebar).toContain("agent.capabilities.includes('work_center')");
     expect(page).toContain("agent.capabilities.includes('work_center')");
     expect(page).toContain("'is-empty': loaded && !loading");
-    expect(page).toContain('v-if="loaded && !loading && visibleItems.length === 0"');
+    expect(page).toContain('v-if="loaded && !loading && items.length === 0"');
     expect(css).toMatch(/\.sidebar-work-center-trigger:hover\s*\{[^}]*color: var\(--text-secondary\)/s);
     expect(css).toMatch(/\.sidebar-work-center-agent:hover\s*\{[^}]*color: var\(--text-secondary\)/s);
     expect(page).toContain('<main class="work-center-main"');
@@ -175,10 +175,11 @@ describe('Work Center UI contract', () => {
     expect(page).toContain('class="work-center-status" :data-status="action.status"');
     expect(css).toContain('.work-center-action-input-wrapper');
 
-    expect(page).toContain('class="work-center-card-content"');
-    expect(page).toContain('class="work-center-card-progress"');
+    expect(page).toContain('class="work-center-list work-center-board"');
+    expect(page).toContain('class="work-center-board-lane"');
+    expect(page).toContain('class="work-center-card-meta"');
     expect(page).toContain('class="work-center-card-current-action"');
-    expect(page).toContain('itemActionProgress(item)');
+    expect(page).toContain('boardActionCountLabel(item)');
     expect(page).toContain('class="work-center-action-card"');
     expect(page).toContain('class="work-center-action-content"');
     expect(page).toContain('class="work-center-action-primary"');
@@ -254,7 +255,14 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('@media (max-width: 768px)');
     expect(css).not.toContain('@media (max-width: 760px)');
     expect(css).toContain('.work-center-header-create span');
-    expect(css).toContain('flex-direction: column-reverse');
+    expect(css).toContain('grid-template-columns: 1fr 1fr');
+    expect(css).toContain('grid-template-columns: repeat(3, minmax(250px, 1fr))');
+    expect(css).toContain('.work-center-board-lane-tabs');
+    expect(css).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.work-center-board\s*\{[^}]*display: flex;[^}]*overflow-x: hidden/s);
+    expect(css).toMatch(/\.work-center-board-lane\.mobile-active\s*\{[^}]*display: flex/s);
+    expect(page).toContain('role="tablist"');
+    expect(page).toContain('mobileBoardLane === lane.id');
+    expect(page).toContain(':disabled="boardLoadingMore"');
     expect(page).toContain(':aria-label="tr(\'workCenter.newWorkItem\'');
   });
 
@@ -292,20 +300,21 @@ describe('Work Center UI contract', () => {
     expect(css).toContain('height: calc(100dvh - 16px)');
   });
 
-  it('uses filter-specific list headings and empty states', () => {
+  it('uses backend-projected Board lanes and query filters', () => {
     const page = read('web/components/WorkCenterPage.js');
+    const store = read('web/stores/chat.js');
 
-    expect(page).toContain("this.filter === 'attention'");
-    expect(page).toContain("this.filter === 'active'");
-    expect(page).toContain("filter === 'all'");
-    expect(page).toContain("tr('workCenter.attentionItems'");
-    expect(page).toContain("tr('workCenter.allItems'");
-    expect(page).toContain("tr('workCenter.noAttentionTitle'");
-    expect(page).toContain("tr('workCenter.noActiveTitle'");
-    expect(page).toContain("tr('workCenter.noCompletedTitle'");
-    expect(page).toContain('<span>{{ listHeading }}</span>');
+    expect(page).toContain("{ id: 'active'");
+    expect(page).toContain("{ id: 'needs_attention'");
+    expect(page).toContain("{ id: 'closed'");
+    expect(page).toContain('item.boardLane === lane.id');
+    expect(page).toContain('v-model="boardVpId"');
+    expect(page).toContain('v-model="boardWorkItemType"');
+    expect(page).toContain('v-model="boardUpdatedRange"');
     expect(page).toContain('<h2>{{ emptyState.title }}</h2>');
     expect(page).toContain('v-if="emptyState.canCreate"');
+    expect(store).toContain('_workCenterListGenerationByAgent');
+    expect(store).toContain('_workCenterListQueryByAgent');
   });
 
   it('lets AI plan WorkItems while settings define reusable prompts, model, and effort', () => {

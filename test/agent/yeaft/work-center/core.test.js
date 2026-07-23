@@ -95,6 +95,47 @@ describe('Work Center core', () => {
     });
   });
 
+  it('filters and orders Board query inputs deterministically', () => {
+    const first = controller.create(createInput({ id: 'wi-a', title: 'Alpha task', goal: 'First goal' }));
+    now = 2_000;
+    const second = controller.create(createInput({ id: 'wi-b', title: 'Beta task', goal: 'Second searchable goal' }));
+    store.db.prepare('UPDATE work_items SET updated_at = ? WHERE id IN (?, ?)').run(3_000, first.id, second.id);
+
+    expect(store.listWorkItems({ keyword: 'searchable' }).map(item => item.id)).toEqual([second.id]);
+    expect(store.listWorkItems({ search: 'Alpha' }).map(item => item.id)).toEqual([first.id]);
+    expect(store.listWorkItems({ createdFrom: 2_000, createdTo: 2_000 }).map(item => item.id)).toEqual([second.id]);
+    expect(store.listWorkItems({ updatedFrom: 3_000, updatedTo: 3_000 }).map(item => item.id))
+      .toEqual(['wi-b', 'wi-a']);
+    expect(store.listWorkItems({ lane: 'active' }).map(item => item.id)).toEqual(['wi-b', 'wi-a']);
+    expect(store.listWorkItems({ lane: 'closed' })).toEqual([]);
+
+    store.db.prepare("UPDATE work_items SET status = 'done' WHERE id = ?").run(first.id);
+    store.db.prepare("UPDATE actions SET status = 'failed' WHERE work_item_id = ?").run(first.id);
+    expect(store.listWorkItems({ lane: 'closed' }).map(item => item.id)).toEqual([first.id]);
+    expect(store.listWorkItems({ lane: 'needs_attention' }).map(item => item.id)).not.toContain(first.id);
+  });
+
+  it('filters Board executors by the latest Run of effective Actions only', () => {
+    const item = controller.create(createInput({ id: 'wi-executors' }));
+    const action = store.getWorkItemDetail(item.id).actions[0];
+    const firstRun = store.claimReadyAction('boot-a', 5_000).run;
+    store.db.prepare('UPDATE runs SET vp_snapshot = ? WHERE id = ?')
+      .run(JSON.stringify({ id: 'old-vp', name: 'Old VP' }), firstRun.id);
+    store.db.prepare("UPDATE runs SET status = 'failed', ended_at = ? WHERE id = ?").run(now, firstRun.id);
+    store.db.prepare("UPDATE actions SET status = 'ready', current_run_id = NULL WHERE id = ?").run(action.id);
+    store.db.prepare("UPDATE work_items SET status = 'ready', current_run_id = NULL WHERE id = ?").run(item.id);
+    now += 1;
+    const latestRun = store.claimReadyAction('boot-b', 5_000).run;
+    store.db.prepare('UPDATE runs SET vp_snapshot = ? WHERE id = ?')
+      .run(JSON.stringify({ id: 'current-vp', name: 'Current VP' }), latestRun.id);
+
+    expect(store.listWorkItems({ vpId: 'old-vp' })).toEqual([]);
+    expect(store.listWorkItems({ vpId: 'current-vp' }).map(workItem => workItem.id)).toEqual([item.id]);
+
+    store.db.prepare("UPDATE actions SET status = 'superseded' WHERE id = ?").run(action.id);
+    expect(store.listWorkItems({ vpId: 'current-vp' })).toEqual([]);
+  });
+
   it('persists, filters, resolves, and deletes plan conflicts', () => {
     const item = controller.create(createInput());
     const action = store.getWorkItemDetail(item.id).actions[0];
