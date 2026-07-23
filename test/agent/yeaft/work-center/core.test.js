@@ -1867,6 +1867,57 @@ describe('Work Center core', () => {
     expect(first.id).not.toBe(unrelated.id);
   });
 
+  it('does not resume interrupted state with the current generation but a different spec hash', () => {
+    controller.create(createInput());
+    const firstClaim = store.claimReadyAction('boot-a', 5_000);
+    store.updateRunProgress(firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, {
+      response: 'WRONG SPEC STATE',
+      loopCount: 1,
+      toolCount: 1,
+      checkpoint: {
+        version: 1,
+        toolEvents: [{ name: 'FileEdit', status: 'completed', resource: 'wrong-spec.js' }],
+      },
+    });
+    expect(store.interruptRun(
+      firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, 'wrong spec interrupted',
+    )).toBe(true);
+    store.db.prepare('UPDATE runs SET action_spec_hash = ? WHERE id = ?')
+      .run('different-spec-hash', firstClaim.run.id);
+
+    const secondClaim = store.claimReadyAction('boot-a', 5_000);
+    expect(secondClaim.action.generation).toBe(firstClaim.action.generation);
+    expect(store.getActionResumeContext(firstClaim.action.id, secondClaim.run.id)).toBeNull();
+  });
+
+  it('does not resume interrupted state after the Action identity changes', () => {
+    controller.create(createInput());
+    const firstClaim = store.claimReadyAction('boot-a', 5_000);
+    store.updateRunProgress(firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, {
+      response: 'STALE OLD SPEC STATE',
+      loopCount: 1,
+      toolCount: 1,
+      checkpoint: {
+        version: 1,
+        toolEvents: [{ name: 'FileEdit', status: 'completed', resource: 'old.js' }],
+      },
+    });
+    expect(store.interruptRun(
+      firstClaim.run.id, 'boot-a', firstClaim.run.leaseEpoch, 'old generation interrupted',
+    )).toBe(true);
+
+    const changedAction = store.setActionWorkspace(firstClaim.action.id, null, 'read');
+    expect(changedAction).toMatchObject({ generation: 2, workspaceMode: 'read' });
+    expect(changedAction.specHash).not.toBe(firstClaim.action.specHash);
+    const secondClaim = store.claimReadyAction('boot-a', 5_000);
+    expect(secondClaim.action).toMatchObject({
+      id: firstClaim.action.id,
+      generation: changedAction.generation,
+      specHash: changedAction.specHash,
+    });
+    expect(store.getActionResumeContext(firstClaim.action.id, secondClaim.run.id)).toBeNull();
+  });
+
   it('recovers only the currently fenced expired Run', () => {
     const firstItem = controller.create(createInput());
     const firstRun = store.claimReadyAction('old-boot', 10);

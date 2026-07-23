@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { normalizeEvidence } from './evidence.js';
 import { normalizeActionCheckpoint } from './action-checkpoint.js';
+import { runMatchesActionIdentity } from './action-identity.js';
 
 const SCHEMA_VERSION = 17;
 const OPEN_ACTION_STATUSES = "'ready','running','waiting'";
@@ -1974,9 +1975,13 @@ export class WorkItemStore {
   }
 
   getActionResumeContext(actionId, excludeRunId = null) {
+    const action = this.getAction(actionId);
+    if (!action) return null;
     const runs = this.db.prepare(`SELECT * FROM runs
       WHERE action_id = ? AND id != ? AND status IN ('interrupted', 'retryable')
-      ORDER BY ended_at DESC, started_at DESC`).all(actionId, excludeRunId || '').map(mapRun);
+      ORDER BY ended_at DESC, started_at DESC`).all(actionId, excludeRunId || '')
+      .map(mapRun)
+      .filter(run => runMatchesActionIdentity(run, action));
     if (runs.length === 0) return null;
     const latest = runs[0];
     const response = runs.find(run => run.response)?.response || '';
