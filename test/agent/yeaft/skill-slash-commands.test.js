@@ -180,6 +180,10 @@ describe('Yeaft skill slash commands', () => {
     }
 
     expect(events.some(event => event.type === 'turn_end')).toBe(true);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'skill_loaded',
+      skill: expect.objectContaining({ name: 'review-code', explicit: true }),
+    }));
     expect(adapter.calls).toHaveLength(1);
     expect(adapter.calls[0].system).toContain('## Skill: review-code');
     expect(adapter.calls[0].system).toContain('Review instructions');
@@ -187,6 +191,29 @@ describe('Yeaft skill slash commands', () => {
       role: 'user',
       content: 'please review this',
     });
+  });
+
+  it('emits an authoritative error for a missing explicit skill', async () => {
+    const adapter = new RecordingAdapter();
+    const skillManager = {
+      has: () => false,
+      list: () => [],
+      getPromptContent: () => '',
+      findRelevant: () => [],
+    };
+    const engine = new Engine({
+      adapter,
+      trace: new NullTrace(),
+      config: { model: 'test-model', maxOutputTokens: 1024, language: 'en' },
+      skillManager,
+    });
+    const events = [];
+    for await (const event of engine.query({ prompt: '/skill:missing inspect this' })) events.push(event);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'skill_error',
+      skillName: 'missing',
+    }));
+    expect(adapter.calls[0].system).toContain('Requested skill "missing" was not found.');
   });
 
   it('reactivates cached project MCP tools on A-B-A workDir switches', async () => {

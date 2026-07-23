@@ -1086,12 +1086,12 @@ export class Engine {
    * @param {string} [args.explicitSkillName] — leading /skill:<name> command, if present
    * @returns {string}
    */
-  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, workCenterInstructions, projectDoc, taskCtx, activeTasks, explicitSkillName } = {}) {
-    // Get relevant skill content if SkillManager is wired. A leading
-    // /skill:<name> is explicit, not relevance matching: load that skill by
-    // name or inject a visible prompt warning when the command is unknown.
-    let skillContent = '';
-    if (this.#skillManager) {
+  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, workCenterInstructions, projectDoc, taskCtx, activeTasks, explicitSkillName, resolvedSkillContent = null } = {}) {
+    // Skill selection is normally resolved once by #runQuery so the prompt and
+    // emitted protocol events describe the exact same skills. Keep the local
+    // fallback for internal callers that do not need selection events.
+    let skillContent = typeof resolvedSkillContent === 'string' ? resolvedSkillContent : '';
+    if (resolvedSkillContent === null && this.#skillManager) {
       if (explicitSkillName) {
         skillContent = this.#skillManager.getPromptContent(explicitSkillName)
           || `## Skill command error\n\nRequested skill "${explicitSkillName}" was not found. Continue without that skill and tell the user it is unavailable.`;
@@ -2004,6 +2004,32 @@ export class Engine {
     const activeTasks = this.#taskManager
       ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId)
       : '';
+    let resolvedSkillContent = '';
+    let resolvedSkills = [];
+    let skillResolutionError = null;
+    if (this.#skillManager) {
+      if (explicitSkillName) {
+        resolvedSkillContent = this.#skillManager.getPromptContent(explicitSkillName);
+        const skill = this.#skillManager.list?.().find(item => item.name === explicitSkillName)
+          || (resolvedSkillContent ? { name: explicitSkillName } : null);
+        if (resolvedSkillContent && skill) {
+          resolvedSkills = [{ ...skill, explicit: true }];
+        } else {
+          skillResolutionError = `Requested skill "${explicitSkillName}" was not found.`;
+          resolvedSkillContent = `## Skill command error\n\n${skillResolutionError} Continue without that skill and tell the user it is unavailable.`;
+        }
+      } else if (prompt && typeof this.#skillManager.findRelevant === 'function') {
+        resolvedSkills = this.#skillManager.findRelevant(prompt).map(skill => ({
+          name: skill.name,
+          description: skill.description || '',
+          trigger: skill.trigger || '',
+          category: skill.category,
+          tier: skill._tier,
+          explicit: false,
+        }));
+        resolvedSkillContent = resolvedSkills.map(skill => this.#skillManager.getPromptContent(skill.name)).join('\n\n');
+      }
+    }
 
     const systemPrompt = this.#buildSystemPrompt({
       prompt,
@@ -2015,6 +2041,7 @@ export class Engine {
       projectDoc,
       activeTasks,
       explicitSkillName,
+      resolvedSkillContent,
     });
 
     // ─── HARD INVARIANT: Compact ≠ Dream (read DESIGN-COMPACT-VS-DREAM.md) ─
@@ -2184,6 +2211,12 @@ export class Engine {
       sessionId: sessionId || null,
       at: queryStartedAt,
     };
+    for (const skill of resolvedSkills) {
+      yield { type: 'skill_loaded', turnId: queryTurnId, skill };
+    }
+    if (skillResolutionError) {
+      yield { type: 'skill_error', turnId: queryTurnId, skillName: explicitSkillName, message: skillResolutionError };
+    }
 
     // Surface memory recall to the debug panel right after turn_open.
     // recallResult was loaded above; emit a structured `memory_used`
