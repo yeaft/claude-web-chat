@@ -148,61 +148,88 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
     if (options.multiline) args.push('-U', '--multiline-dotall');
 
     const proc = spawnProcess('rg', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const requestedBudget = Number(options.byteBudget);
+    const stdoutBudget = Number.isFinite(requestedBudget) && requestedBudget >= 0
+      ? Math.min(requestedBudget, MAX_OUTPUT_BYTES)
+      : MAX_OUTPUT_BYTES;
+    const stdoutMarker = truncateUtf8(OUTPUT_TRUNCATED_MARKER, stdoutBudget);
+    const stdoutCaptureLimit = Math.max(0, stdoutBudget - Buffer.byteLength(stdoutMarker, 'utf8'));
     const stdoutChunks = [];
     const stderrChunks = [];
-    let capturedBytes = 0;
-    let truncatedStream = null;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let stdoutLines = 0;
+    let stoppedForLimit = false;
     let settled = false;
 
-    function capture(streamName, chunk, chunks) {
-      if (truncatedStream || (streamName === 'stdout' && stdoutLines >= (options.maxResults || 500))) return;
+    function stop() {
+      try { proc.kill(); } catch {}
+    }
+
+    function captureStdout(chunk) {
+      if (stdoutTruncated || stoppedForLimit) return;
       let buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      if (streamName === 'stdout') {
-        const maxResults = Math.max(1, options.maxResults || 500);
-        let cursor = 0;
-        while (stdoutLines < maxResults) {
-          const newline = buffer.indexOf(0x0a, cursor);
-          if (newline === -1) break;
-          stdoutLines += 1;
-          cursor = newline + 1;
-        }
-        if (stdoutLines >= maxResults) {
-          buffer = buffer.subarray(0, cursor);
-          try { proc.kill(); } catch {}
-        }
+      const maxResults = Math.max(1, options.maxResults || 500);
+      let cursor = 0;
+      while (stdoutLines < maxResults) {
+        const newline = buffer.indexOf(0x0a, cursor);
+        if (newline === -1) break;
+        stdoutLines += 1;
+        cursor = newline + 1;
       }
-      const remaining = MAX_CAPTURE_BYTES - capturedBytes;
-      if (buffer.length > remaining) {
-        if (remaining > 0) chunks.push(buffer.subarray(0, remaining));
-        capturedBytes = MAX_CAPTURE_BYTES;
-        truncatedStream = streamName;
-        try { proc.kill(); } catch {}
+      if (stdoutLines >= maxResults) {
+        buffer = buffer.subarray(0, cursor);
+        stoppedForLimit = true;
+      }
+
+      const remaining = stdoutCaptureLimit - stdoutBytes;
+      if (buffer.length >= remaining) {
+        if (remaining > 0) stdoutChunks.push(buffer.subarray(0, remaining));
+        stdoutBytes = stdoutCaptureLimit;
+        stdoutTruncated = true;
+      } else {
+        stdoutChunks.push(buffer);
+        stdoutBytes += buffer.length;
+      }
+      if (stdoutTruncated || stoppedForLimit) stop();
+    }
+
+    function captureStderr(chunk) {
+      if (stderrTruncated) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const remaining = MAX_CAPTURE_BYTES - stderrBytes;
+      if (buffer.length >= remaining) {
+        if (remaining > 0) stderrChunks.push(buffer.subarray(0, remaining));
+        stderrBytes = MAX_CAPTURE_BYTES;
+        stderrTruncated = true;
+        stop();
         return;
       }
-      chunks.push(buffer);
-      capturedBytes += buffer.length;
+      stderrChunks.push(buffer);
+      stderrBytes += buffer.length;
     }
 
-    function decodeCaptured(chunks, wasTruncated) {
-      const marker = wasTruncated ? OUTPUT_TRUNCATED_MARKER : '';
-      const maxTextBytes = MAX_OUTPUT_BYTES - Buffer.byteLength(marker, 'utf8');
+    function decodeCaptured(chunks, maxBytes, wasTruncated, marker = OUTPUT_TRUNCATED_MARKER) {
+      const boundedMarker = wasTruncated ? truncateUtf8(marker, maxBytes) : '';
+      const maxTextBytes = Math.max(0, maxBytes - Buffer.byteLength(boundedMarker, 'utf8'));
       const decoded = Buffer.concat(chunks).toString('utf8').replaceAll('\ufffd', '?').replace(/\r/g, '');
-      return truncateUtf8(decoded, maxTextBytes) + marker;
+      return truncateUtf8(decoded, maxTextBytes) + boundedMarker;
     }
 
-    proc.stdout.on('data', chunk => capture('stdout', chunk, stdoutChunks));
-    proc.stderr.on('data', chunk => capture('stderr', chunk, stderrChunks));
+    proc.stdout.on('data', captureStdout);
+    proc.stderr.on('data', captureStderr);
     proc.on('close', (code) => {
       if (settled) return;
       settled = true;
-      const stdout = decodeCaptured(stdoutChunks, truncatedStream === 'stdout');
-      const stderr = decodeCaptured(stderrChunks, truncatedStream === 'stderr');
-      if (code === 0 || code === 1 || stdoutLines >= (options.maxResults || 500) || truncatedStream === 'stdout') resolve(stdout);
+      const stdout = decodeCaptured(stdoutChunks, stdoutBudget, stdoutTruncated, stdoutMarker);
+      const stderr = decodeCaptured(stderrChunks, MAX_OUTPUT_BYTES, stderrTruncated);
+      if (code === 0 || code === 1 || stoppedForLimit || stdoutTruncated) resolve(stdout);
       else reject(new Error(stderr || `rg exited with code ${code}`));
     });
     proc.on('error', (err) => {
-      if (settled) return;
+      if (settled || stdoutTruncated || stoppedForLimit) return;
       settled = true;
       reject(err);
     });
