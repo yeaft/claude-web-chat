@@ -16,8 +16,8 @@ export default {
         class="yeaft-search-btn"
         :class="{ active: searchOpen }"
         @click="$emit('toggle-search')"
-        :title="$t('yeaft.outline.label')"
-        :aria-label="$t('yeaft.outline.label')"
+        :title="$t('yeaft.historySearch.button')"
+        :aria-label="$t('yeaft.historySearch.button')"
         :aria-expanded="searchOpen ? 'true' : 'false'"
         aria-controls="yeaft-conversation-outline"
       >

@@ -2427,11 +2427,11 @@ export const useChatStore = defineStore('chat', {
       };
     },
 
-    revealYeaftMessage(sessionId, messageId) {
+    revealYeaftMessage(sessionId, messageId, conversationId = null) {
       const targetSessionId = sessionId || this.yeaftActiveSessionFilter || null;
-      const convId = resolveYeaftConversationIdForSession(this);
-      if (!convId || !messageId) return false;
-      const scoped = (this.messagesMap[convId] || []).filter((message) => {
+      const targetConversationId = conversationId || resolveYeaftConversationIdForSession(this, targetSessionId);
+      if (!targetConversationId || !messageId) return false;
+      const scoped = (this.messagesMap[targetConversationId] || []).filter((message) => {
         if (!targetSessionId) return true;
         return (message?.sessionId ?? message?.groupId ?? null) === targetSessionId;
       });
@@ -2861,22 +2861,18 @@ export const useChatStore = defineStore('chat', {
       });
     },
 
-    handleYeaftHistoryWindow(msg) {
+    handleYeaftHistoryWindow(msg, conversationId = null) {
       const pending = this._yeaftHistoryWindowPending;
       if (!pending || msg?.requestId !== pending.requestId) return false;
       if (msg.agentId !== pending.agentId || msg.sessionId !== pending.sessionId) return false;
       clearTimeout(pending.timeout);
       this._yeaftHistoryWindowPending = null;
-      const containsAnchor = !msg.error && (msg.messages || []).some(message => (
-        message?.id === pending.messageId
-        || message?.messageId === pending.messageId
-        || message?.persistedMessageId === pending.messageId
-      ));
-      // The message handler merged this window before calling us. Do not
-      // require Vue's transcript to have recomputed synchronously: YeaftPage
-      // waits for nextTick before asking MessageList to navigate.
-      const revealedInStore = !msg.error && this.revealYeaftMessage(pending.sessionId, pending.messageId);
-      const loaded = containsAnchor || revealedInStore;
+      // The merge handler passes the exact conversation it updated. Search and
+      // expand that same store window so agent/session switches cannot make a
+      // successful wire response look navigable in the wrong transcript.
+      const loaded = !msg.error
+        && !!conversationId
+        && this.revealYeaftMessage(pending.sessionId, pending.messageId, conversationId);
       pending.resolve(!!loaded);
       return !!loaded;
     },

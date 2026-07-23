@@ -22,6 +22,8 @@ describe('Yeaft conversation outline UI', () => {
     expect(actions).toContain('aria-controls="yeaft-conversation-outline"');
     expect(actions).toContain('<circle cx="11" cy="11" r="7"/>');
     expect(actions).toContain('<path d="m20 20-3.5-3.5"/>');
+    expect(actions).toContain(":title=\"$t('yeaft.historySearch.button')\"");
+    expect(actions).toContain(":aria-label=\"$t('yeaft.historySearch.button')\"");
     expect(actions).not.toContain('<path d="M4 6h2"/>');
     expect(page).toContain('<YeaftConversationOutline');
     expect(page).toContain('store.loadYeaftHistoryOutline()');
@@ -74,8 +76,8 @@ describe('Yeaft conversation outline UI', () => {
     expect(store).toContain('buildYeaftMessageTurnSpans(scoped)');
     expect(list).toContain('navigateToPersistedMessage({');
     expect(list).toContain("virtualTranscriptRef.value?.scrollToKey?.(blockId, { align: 'center' })");
-    expect(store).toContain('const containsAnchor = !msg.error');
-    expect(store).toContain('const loaded = containsAnchor || revealedInStore');
+    expect(store).toContain('this.revealYeaftMessage(pending.sessionId, pending.messageId, conversationId)');
+    expect(store).not.toContain('containsAnchor || revealedInStore');
     expect(virtual).toContain('expose({ scrollToKey, scrollToIndex })');
     expect(css).toContain('@keyframes yeaft-history-search-flash');
   });
