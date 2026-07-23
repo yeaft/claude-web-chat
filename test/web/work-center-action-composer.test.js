@@ -25,6 +25,60 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+function runOpenContext(indexPromise, detailPromise) {
+  const context = {
+    agentId: 'agent-a',
+    selectedId: 'wi-a',
+    selectedActionId: 'action-a',
+    actionRunOpenGeneration: 0,
+    store: {
+      loadWorkItemActionRequests: vi.fn(() => indexPromise),
+      loadWorkItemActionRequest: vi.fn(() => detailPromise),
+      workCenterActionMessages: {},
+      listWorkItems: vi.fn(() => Promise.resolve([])),
+      loadWorkCenterSettings: vi.fn(() => Promise.resolve({})),
+    },
+    resetActionComposer: vi.fn(),
+    resetWorkItemComposer: vi.fn(),
+    loadLatestActionMessages: vi.fn(),
+    closeFolderPicker: vi.fn(),
+    resetCreateExecutionContext: vi.fn(),
+    expandedActions: {},
+    narrowPane: 'action',
+  };
+  Object.defineProperty(context, 'selected', {
+    configurable: true,
+    get() { return { id: this.selectedId }; },
+  });
+  Object.defineProperty(context, 'selectedAction', {
+    configurable: true,
+    get() { return { id: this.selectedActionId, generation: 3 }; },
+  });
+  return context;
+}
+
+function reboundRunScope(context, kind) {
+  if (kind === 'action') {
+    WorkCenterPage.methods.selectAction.call(context, { id: 'action-b' });
+    WorkCenterPage.methods.selectAction.call(context, { id: 'action-a' });
+    return;
+  }
+  if (kind === 'workItem') {
+    WorkCenterPage.methods.openWorkItem.call(context, 'wi-b');
+    context.selectedActionId = 'action-b';
+    WorkCenterPage.methods.openWorkItem.call(context, 'wi-a');
+    context.selectedActionId = 'action-a';
+    return;
+  }
+  const watcher = WorkCenterPage.watch.agentId.handler;
+  context.agentId = 'agent-b';
+  watcher.call(context, 'agent-b', 'agent-a');
+  context.agentId = 'agent-a';
+  watcher.call(context, 'agent-a', 'agent-b');
+  context.selectedId = 'wi-a';
+  context.selectedActionId = 'action-a';
+}
+
 function makeContext() {
   const context = {
     agentId: 'agent-1',
@@ -63,6 +117,7 @@ describe('Work Center Action composer scope', () => {
       agentId: 'agent-1',
       narrowPane: 'actions',
       store: { workCenterActionMessages: {}, loadWorkItemActionMessages },
+      actionRunOpenGeneration: 0,
       resetActionComposer: vi.fn(),
       previewingAttachmentId: 'file-1',
       attachmentPreviewError: 'Old Action error',
@@ -78,6 +133,114 @@ describe('Work Center Action composer scope', () => {
     expect(context.attachmentPreviewError).toBe('');
     expect(loadWorkItemActionMessages).toHaveBeenCalledWith('wi-1', 'action-2', null, 'agent-1');
   });
+
+  it('loads and opens Run diagnostics only while the full Action scope remains current', async () => {
+    const request = { id: 'request-1', runId: 'run-1' };
+    const loadWorkItemActionRequests = vi.fn().mockResolvedValue([request]);
+    const loadWorkItemActionRequest = vi.fn().mockResolvedValue({ request });
+    const context = {
+      agentId: 'agent-1', selected: { id: 'wi-1' },
+      selectedAction: { id: 'action-1', generation: 2 },
+      actionRunOpenGeneration: 0,
+      store: { loadWorkItemActionRequests, loadWorkItemActionRequest },
+    };
+    const resolved = vi.fn();
+
+    await WorkCenterPage.methods.openActionRun.call(context, { id: 'run-1' }, resolved);
+
+    expect(loadWorkItemActionRequests).toHaveBeenCalledWith('wi-1', 'action-1', 'agent-1');
+    expect(loadWorkItemActionRequest).toHaveBeenCalledWith(
+      'wi-1', 'action-1', 'run-1', 'request-1', 'agent-1',
+    );
+    expect(resolved).toHaveBeenCalledWith(request);
+  });
+
+  it('keeps the latest Run click authoritative across index and detail races', async () => {
+    const indexA = deferred();
+    const indexB = deferred();
+    const detailA = deferred();
+    const detailB = deferred();
+    const context = {
+      agentId: 'agent-1', selected: { id: 'wi-1' },
+      selectedAction: { id: 'action-1', generation: 2 },
+      actionRunOpenGeneration: 0,
+      store: {
+        loadWorkItemActionRequests: vi.fn()
+          .mockImplementationOnce(() => indexA.promise)
+          .mockImplementationOnce(() => indexB.promise),
+        loadWorkItemActionRequest: vi.fn()
+          .mockImplementationOnce(() => detailB.promise)
+          .mockImplementationOnce(() => detailA.promise),
+      },
+    };
+    const resolvedA = vi.fn();
+    const resolvedB = vi.fn();
+    const openingA = WorkCenterPage.methods.openActionRun.call(context, { id: 'run-a' }, resolvedA);
+    const openingB = WorkCenterPage.methods.openActionRun.call(context, { id: 'run-b' }, resolvedB);
+
+    indexB.resolve([{ id: 'request-b', runId: 'run-b' }]);
+    await Promise.resolve();
+    detailB.resolve({ request: { id: 'request-b' } });
+    await openingB;
+    indexA.resolve([{ id: 'request-a', runId: 'run-a' }]);
+    await openingA;
+
+    expect(resolvedB).toHaveBeenCalledWith({ id: 'request-b', runId: 'run-b' });
+    expect(resolvedA).toHaveBeenCalledWith(null);
+    expect(context.store.loadWorkItemActionRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not open late Run diagnostics after the selected Action changes', async () => {
+    const pending = deferred();
+    const context = {
+      agentId: 'agent-1', selected: { id: 'wi-1' },
+      selectedAction: { id: 'action-1', generation: 2 },
+      actionRunOpenGeneration: 0,
+      store: {
+        loadWorkItemActionRequests: vi.fn(() => pending.promise),
+        loadWorkItemActionRequest: vi.fn(),
+      },
+    };
+    const resolved = vi.fn();
+    const opening = WorkCenterPage.methods.openActionRun.call(context, { id: 'run-1' }, resolved);
+    context.selectedAction = { id: 'action-2', generation: 1 };
+    pending.resolve([{ id: 'request-1', runId: 'run-1' }]);
+
+    await opening;
+
+    expect(context.store.loadWorkItemActionRequest).not.toHaveBeenCalled();
+    expect(resolved).toHaveBeenCalledWith(null);
+  });
+
+  for (const scope of ['action', 'workItem', 'agent']) {
+    for (const stage of ['index', 'detail']) {
+      it(`invalidates ${scope} A→B→A Run opens while ${stage} is pending`, async () => {
+        const index = deferred();
+        const detail = deferred();
+        const context = runOpenContext(index.promise, detail.promise);
+        const resolved = vi.fn();
+        const opening = WorkCenterPage.methods.openActionRun.call(
+          context,
+          { id: 'run-old' },
+          resolved,
+        );
+
+        if (stage === 'detail') {
+          index.resolve([{ id: 'request-old', runId: 'run-old' }]);
+          await vi.waitFor(() => {
+            expect(context.store.loadWorkItemActionRequest).toHaveBeenCalledOnce();
+          });
+        }
+        reboundRunScope(context, scope);
+        if (stage === 'index') index.resolve([{ id: 'request-old', runId: 'run-old' }]);
+        else detail.resolve({ request: { id: 'request-old' } });
+        await opening;
+
+        expect(resolved).toHaveBeenCalledWith(null);
+        if (stage === 'index') expect(context.store.loadWorkItemActionRequest).not.toHaveBeenCalled();
+      });
+    }
+  }
 
   it('does not refetch a cached Action message page', () => {
     const loadWorkItemActionMessages = vi.fn();

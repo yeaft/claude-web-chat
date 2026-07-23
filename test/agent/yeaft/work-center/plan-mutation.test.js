@@ -180,6 +180,11 @@ describe('Work Center additive plan mutation', () => {
       .toEqual(['triage', 'discover', 'implement', 'verify', 'review-next']);
     expect(replanned.actions.find(action => action.id === implementBefore.id)).toMatchObject({
       stageId: 'implement', status: 'ready', generation: implementBefore.generation + 1,
+      identityHistory: [
+        { generation: implementBefore.generation, specHash: implementBefore.specHash },
+        { generation: implementBefore.generation + 1,
+          specHash: replanned.actions.find(action => action.id === implementBefore.id).specHash },
+      ],
     });
     expect(replanned.actions.find(action => action.stageId === 'verify')).toMatchObject({
       status: 'ready', replacesActionId: reviewBefore.id,

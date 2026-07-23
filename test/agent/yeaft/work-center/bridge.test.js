@@ -228,7 +228,7 @@ describe('Work Center lifecycle bridge', () => {
       for (const secret of [
         '/private/project', '/private/canonical', 'workflowSnapshot', 'private-message',
         'private prompt', 'private context', 'private persona', 'private-hash',
-        'Contract prepared', 'modelSnapshot', 'provider/model', 'runs', 'events',
+        'Contract prepared', 'modelSnapshot', 'provider/model', 'events',
         'toolPolicySnapshot', 'allowedToolNames', '/private/read', '/private/write', '/private/cwd',
         'private event data',
       ]) {

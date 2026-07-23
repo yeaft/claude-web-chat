@@ -12,6 +12,12 @@ import {
   trackOverlayPointerUp,
 } from '../utils/overlay-dismiss.js';
 
+function invalidateActionRunOpen(target) {
+  const generation = (Number(target?.actionRunOpenGeneration) || 0) + 1;
+  if (target) target.actionRunOpenGeneration = generation;
+  return generation;
+}
+
 export default {
   name: 'WorkCenterPage',
   components: { WorkCenterActionDetail, WorkCenterSettingsModal, LlmTab },
@@ -25,6 +31,7 @@ export default {
       actionInputSending: false,
       actionInputError: '',
       actionComposerGeneration: 0,
+      actionRunOpenGeneration: 0,
       workItemMessage: '',
       workItemMessageSending: false,
       workItemMessageError: '',
@@ -204,6 +211,7 @@ export default {
     agentId: {
       immediate: true,
       handler(id, previousId) {
+        invalidateActionRunOpen(this);
         this.createGeneration = (Number(this.createGeneration) || 0) + 1;
         this.saving = false;
         this.selectedId = null;
@@ -245,6 +253,7 @@ export default {
         if (!actions.some(action => action.id === this.selectedActionId)) {
           const nextActionId = detail.currentActionId || actions[0]?.id || null;
           if (nextActionId !== this.selectedActionId) {
+            invalidateActionRunOpen(this);
             this.resetActionComposer();
             this.previewingAttachmentId = null;
             this.attachmentPreviewError = '';
@@ -256,6 +265,7 @@ export default {
     },
   },
   beforeUnmount() {
+    invalidateActionRunOpen(this);
     if (this.boardQueryTimer) clearTimeout(this.boardQueryTimer);
   },
   mounted() {
@@ -366,6 +376,7 @@ export default {
       this.workItemMessageSending = false;
     },
     openWorkItem(itemId) {
+      invalidateActionRunOpen(this);
       this.selectedId = itemId;
       this.selectedActionId = null;
       this.narrowPane = 'actions';
@@ -395,6 +406,7 @@ export default {
     },
     selectAction(action) {
       if (this.selectedActionId !== action.id) {
+        invalidateActionRunOpen(this);
         this.resetActionComposer();
         this.previewingAttachmentId = null;
         this.attachmentPreviewError = '';
@@ -447,6 +459,38 @@ export default {
         request.id,
         this.agentId,
       ).catch(() => null);
+    },
+    async openActionRun(run, resolve) {
+      const openGeneration = invalidateActionRunOpen(this);
+      const scope = {
+        agentId: this.agentId,
+        workItemId: this.selected?.id,
+        actionId: this.selectedAction?.id,
+        generation: this.selectedAction?.generation,
+        runId: run?.id,
+      };
+      const scopeIsCurrent = () => this.actionRunOpenGeneration === openGeneration
+        && this.agentId === scope.agentId && this.selected?.id === scope.workItemId
+        && this.selectedAction?.id === scope.actionId
+        && this.selectedAction?.generation === scope.generation;
+      if (!scope.workItemId || !scope.actionId || !scope.runId) return resolve?.(null);
+      const requests = await this.store.loadWorkItemActionRequests(
+        scope.workItemId,
+        scope.actionId,
+        scope.agentId,
+      ).catch(() => []);
+      if (!scopeIsCurrent()) return resolve?.(null);
+      const request = requests.find(candidate => candidate.runId === scope.runId) || null;
+      if (!request) return resolve?.(null);
+      const detail = await this.store.loadWorkItemActionRequest(
+        scope.workItemId,
+        scope.actionId,
+        request.runId,
+        request.id,
+        scope.agentId,
+      ).catch(() => null);
+      if (!detail || !scopeIsCurrent()) return resolve?.(null);
+      return resolve?.(request);
     },
     actionHasDetail(action) {
       return !!action?.brief || (Array.isArray(action?.messages) && action.messages.length > 0)
@@ -1078,6 +1122,7 @@ export default {
               @load-earlier-messages="loadEarlierActionMessages"
               @refresh-requests="refreshActionRequests"
               @select-request="loadActionRequest"
+              @open-run="openActionRun"
               @attachment-input="onGuidanceAttachmentInput"
               @remove-attachment="removeGuidanceAttachment"
               @open-attachment="previewAttachment"

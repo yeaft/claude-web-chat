@@ -7,6 +7,11 @@ import { WorkItemStore } from '../../../../agent/yeaft/work-center/store.js';
 import { WorkflowController } from '../../../../agent/yeaft/work-center/controller.js';
 import { WorkItemRunner } from '../../../../agent/yeaft/work-center/runner.js';
 import { resolvePlanningWorkflowSnapshot } from '../../../../agent/yeaft/work-center/workflow.js';
+import {
+  projectActionRequestDetail,
+  projectActionRequestIndex,
+  projectWorkItemDetail,
+} from '../../../../agent/yeaft/work-center/projection.js';
 
 function createInput(overrides = {}) {
   return {
@@ -1113,6 +1118,7 @@ describe('Work Center core', () => {
     }));
     const running = store.claimReadyAction('boot-a', 5_000);
     const before = store.getWorkItem(item.id);
+    const readyBefore = store.getWorkItemDetail(item.id).actions.find(action => action.status === 'ready');
 
     const updated = controller.message(item.id, { text: 'Keep compatibility for every Action', revision: before.revision });
 
@@ -1124,6 +1130,13 @@ describe('Work Center core', () => {
     const ready = updated.actions.find(action => action.status === 'ready');
     expect(ready.instruction).toContain('WorkItem-level user messages');
     expect(ready.instruction).toContain('Keep compatibility for every Action');
+    expect(ready).toMatchObject({
+      generation: readyBefore.generation + 1,
+      identityHistory: [
+        { generation: readyBefore.generation, specHash: readyBefore.specHash },
+        { generation: readyBefore.generation + 1, specHash: ready.specHash },
+      ],
+    });
     expect(() => controller.message(item.id, { text: 'replay', revision: before.revision }))
       .toThrow(/WorkItem changed/);
   });
@@ -1890,6 +1903,52 @@ describe('Work Center core', () => {
     expect(store.getActionResumeContext(firstClaim.action.id, secondClaim.run.id)).toBeNull();
   });
 
+  it('keeps every interrupted spec visible after a WorkItem message and later generation bump', () => {
+    const item = controller.create(createInput());
+    const runA = store.claimReadyAction('boot-a', 5_000);
+    store.updateRunProgress(runA.run.id, 'boot-a', runA.run.leaseEpoch, {
+      response: 'OLD-A', loopCount: 1, toolCount: 0,
+    });
+    expect(store.interruptRun(runA.run.id, 'boot-a', runA.run.leaseEpoch, 'retry A')).toBe(true);
+
+    const beforeMessage = store.getWorkItem(item.id);
+    const afterMessage = controller.message(item.id, {
+      text: 'Use the updated specification', revision: beforeMessage.revision,
+    });
+    const identityB = afterMessage.actions[0];
+    expect(identityB.generation).toBe(runA.action.generation + 1);
+    const runB = store.claimReadyAction('boot-b', 5_000);
+    store.updateRunProgress(runB.run.id, 'boot-b', runB.run.leaseEpoch, {
+      response: 'NEW-B', loopCount: 1, toolCount: 0,
+    });
+    expect(store.interruptRun(runB.run.id, 'boot-b', runB.run.leaseEpoch, 'retry B')).toBe(true);
+
+    const identityC = store.setActionWorkspace(runB.action.id, null, 'read');
+    expect(identityC).toMatchObject({
+      generation: identityB.generation + 1,
+      identityHistory: [
+        { generation: runA.action.generation, specHash: runA.action.specHash },
+        { generation: identityB.generation, specHash: identityB.specHash },
+        { generation: identityB.generation + 1, specHash: identityC.specHash },
+      ],
+    });
+
+    const detail = store.getWorkItemDetail(item.id);
+    const projectedAction = projectWorkItemDetail(detail).actions[0];
+    expect(JSON.stringify(projectedAction.thread)).toContain('OLD-A');
+    expect(JSON.stringify(projectedAction.thread)).toContain('NEW-B');
+    const turns = detail.runs.map(run => ({
+      run,
+      turn: { turnId: `request-${run.id}`, openedAt: run.startedAt, loopCount: 1 },
+    }));
+    expect(projectActionRequestIndex(detail.actions[0], turns).requests.map(request => request.runId))
+      .toEqual(expect.arrayContaining([runA.run.id, runB.run.id]));
+    expect(projectActionRequestDetail(detail.actions[0], detail.runs.find(run => run.id === runB.run.id), {
+      turns: [{ turnId: `request-${runB.run.id}`, openedAt: runB.run.startedAt, tools: [] }],
+      loops: [],
+    }, detail.runs)).toMatchObject({ request: { runId: runB.run.id } });
+  });
+
   it('does not resume interrupted state after the Action identity changes', () => {
     controller.create(createInput());
     const firstClaim = store.claimReadyAction('boot-a', 5_000);
@@ -1907,7 +1966,14 @@ describe('Work Center core', () => {
     )).toBe(true);
 
     const changedAction = store.setActionWorkspace(firstClaim.action.id, null, 'read');
-    expect(changedAction).toMatchObject({ generation: 2, workspaceMode: 'read' });
+    expect(changedAction).toMatchObject({
+      generation: 2,
+      workspaceMode: 'read',
+      identityHistory: [
+        { generation: 1, specHash: firstClaim.action.specHash },
+        { generation: 2, specHash: changedAction.specHash },
+      ],
+    });
     expect(changedAction.specHash).not.toBe(firstClaim.action.specHash);
     const secondClaim = store.claimReadyAction('boot-a', 5_000);
     expect(secondClaim.action).toMatchObject({
