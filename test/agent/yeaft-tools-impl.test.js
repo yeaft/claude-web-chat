@@ -455,6 +455,29 @@ describe('HistorySearch tool', () => {
     }
   });
 
+  it('maps lowercase expansion offsets back to the original matching text', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'yeaft-history-search-'));
+    try {
+      const { ConversationStore } = await import('../../agent/yeaft/conversation/persist.js');
+      const mod = await import(`${TOOLS_DIR}/history-search.js`);
+      const store = new ConversationStore(tmpDir);
+      store.append({
+        role: 'assistant',
+        content: `${'İ'.repeat(600)}needle${'x'.repeat(1200)}`,
+        sessionId: 'session_search',
+      });
+
+      const output = await mod.default.execute({ keyword: 'NEEDLE' }, { yeaftDir: tmpDir });
+      const result = JSON.parse(output);
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].content.toLocaleLowerCase()).toContain('needle');
+      expect(result.results[0].content).toContain('needle');
+      expect(Buffer.from(result.results[0].content, 'utf8').toString('utf8')).not.toContain('\ufffd');
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps surrogate pairs intact at both snippet boundaries', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'yeaft-history-search-'));
     const hasLoneSurrogate = text => {

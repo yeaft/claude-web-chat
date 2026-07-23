@@ -29,14 +29,34 @@ function isLowSurrogate(codeUnit) {
   return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
 }
 
+function lowercaseWithOriginalOffsets(text) {
+  const fullLower = text.toLocaleLowerCase();
+  const lowerParts = [];
+  const originalOffsets = [];
+  for (let offset = 0; offset < text.length;) {
+    const codePoint = String.fromCodePoint(text.codePointAt(offset));
+    const loweredCodePoint = codePoint.toLocaleLowerCase();
+    lowerParts.push(loweredCodePoint);
+    for (let i = 0; i < loweredCodePoint.length; i += 1) originalOffsets.push(offset);
+    offset += codePoint.length;
+  }
+
+  const mappedLower = lowerParts.join('');
+  return {
+    lower: mappedLower.length === fullLower.length ? fullLower : mappedLower,
+    originalOffsets,
+  };
+}
+
 function buildSnippet(content, keyword, maxChars = MAX_SNIPPET_CHARS) {
   const text = String(content || '');
   if (text.length <= maxChars) return text;
 
   const terms = String(keyword || '').trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
-  const lower = text.toLocaleLowerCase();
+  const { lower, originalOffsets } = lowercaseWithOriginalOffsets(text);
   const positions = terms.map(term => lower.indexOf(term)).filter(pos => pos >= 0);
-  const matchAt = positions.length > 0 ? Math.min(...positions) : 0;
+  const transformedMatchAt = positions.length > 0 ? Math.min(...positions) : 0;
+  const matchAt = originalOffsets[transformedMatchAt] ?? 0;
   let start = Math.max(0, Math.min(matchAt - Math.floor(maxChars / 3), text.length - maxChars));
   let end = Math.min(text.length, start + maxChars);
 
