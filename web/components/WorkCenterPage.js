@@ -593,7 +593,11 @@ export default {
     },
     async previewAttachment(attachment) {
       if (!this.selected?.id || !attachment?.id || this.previewingAttachmentId) return;
-      const scope = `${this.agentId}:${this.selected.id}`;
+      const agentId = this.agentId;
+      const workItemId = this.selected.id;
+      const actionId = this.selectedActionId || '';
+      const scope = `${agentId}:${workItemId}:${actionId}`;
+      const currentScope = () => `${this.agentId}:${this.selected?.id || ''}:${this.selectedActionId || ''}`;
       const previewWindow = attachment.isImage ? null : window.open('', '_blank');
       if (!attachment.isImage && !previewWindow) {
         this.attachmentPreviewError = this.tr('workCenter.attachmentOpenBlocked', 'The browser blocked the attachment window. Allow pop-ups and try again.');
@@ -603,8 +607,8 @@ export default {
       this.previewingAttachmentId = attachment.id;
       this.attachmentPreviewError = '';
       try {
-        const data = await this.store.previewWorkItemAttachment(this.selected.id, attachment.id, this.agentId);
-        if (`${this.agentId}:${this.selected?.id}` !== scope) {
+        const data = await this.store.previewWorkItemAttachment(workItemId, attachment.id, agentId);
+        if (currentScope() !== scope) {
           previewWindow?.close();
           return;
         }
@@ -613,12 +617,12 @@ export default {
         else previewWindow?.close();
       } catch (error) {
         previewWindow?.close();
-        if (`${this.agentId}:${this.selected?.id}` === scope) {
+        if (currentScope() === scope) {
           this.attachmentPreviewError = error?.message
             || this.tr('workCenter.attachmentPreviewFailed', 'Could not open the attachment. Try again.');
         }
       } finally {
-        if (`${this.agentId}:${this.selected?.id}` === scope) this.previewingAttachmentId = null;
+        if (currentScope() === scope) this.previewingAttachmentId = null;
       }
     },
     formatAttachmentSize(value) {

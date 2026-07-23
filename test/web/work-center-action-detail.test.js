@@ -256,6 +256,50 @@ describe('Work Center Action detail tabs', () => {
     expect(context.attachmentPreviewError).toBe('');
   });
 
+  it('does not let an old Action preview clear a newer Action preview', async () => {
+    let resolveOld;
+    let resolveCurrent;
+    const oldPreview = new Promise(resolve => { resolveOld = resolve; });
+    const currentPreview = new Promise(resolve => { resolveCurrent = resolve; });
+    const context = {
+      selected: { id: 'wi-1' },
+      selectedActionId: 'action-1',
+      agentId: 'agent-1',
+      previewingAttachmentId: null,
+      attachmentPreviewError: '',
+      store: {
+        previewWorkItemAttachment: vi.fn()
+          .mockReturnValueOnce(oldPreview)
+          .mockReturnValueOnce(currentPreview),
+      },
+      tr: (_key, fallback) => fallback,
+    };
+    const oldWindow = { opener: {}, location: { replace: vi.fn() }, close: vi.fn() };
+    const currentWindow = { opener: {}, location: { replace: vi.fn() }, close: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValueOnce(oldWindow).mockReturnValueOnce(currentWindow);
+
+    const oldPending = WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-old', name: 'old.pdf', isImage: false,
+    });
+    context.selectedActionId = 'action-2';
+    context.previewingAttachmentId = null;
+    context.attachmentPreviewError = '';
+    const currentPending = WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-current', name: 'current.pdf', isImage: false,
+    });
+
+    resolveOld({ preview: '/old-token', attachment: { isImage: false } });
+    await oldPending;
+    expect(oldWindow.close).toHaveBeenCalledOnce();
+    expect(context.previewingAttachmentId).toBe('file-current');
+    expect(context.attachmentPreviewError).toBe('');
+
+    resolveCurrent({ preview: '/current-token', attachment: { isImage: false } });
+    await currentPending;
+    expect(currentWindow.location.replace).toHaveBeenCalledWith('/current-token');
+    expect(context.previewingAttachmentId).toBeNull();
+  });
+
   it('reports blocked attachment windows without starting a preview request', async () => {
     const context = {
       selected: { id: 'wi-1' },
