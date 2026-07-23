@@ -15,9 +15,15 @@ const compileCoveredComponents = [
   'SettingsPanel.js',
   'LlmTab.js',
   'VpCrudPanel.js',
+  'VpMentionAutocomplete.js',
+  'SessionCreateModal.js',
+  'SessionSettingsModal.js',
   'AssistantTurn.js',
   'YeaftDebugPanel.js',
   'YeaftSessionActions.js',
+  'YeaftConversationOutline.js',
+  'WorkCenterPage.js',
+  'WorkCenterSettingsModal.js',
 ];
 
 function walkAst(node, visit) {

@@ -10,6 +10,13 @@
  *       Caller (LlmTab) appends this to localProviders.
  */
 
+import {
+  clearOverlayPointerGesture,
+  shouldDismissFromOverlayClick,
+  trackOverlayPointerDown,
+  trackOverlayPointerUp,
+} from '../utils/overlay-dismiss.js';
+
 /**
  * Pick the wire protocol for a catalog model id. Mirrors the agent-side
  * inferProtocolFromModelId() heuristic so what the user sees in the picker
@@ -39,7 +46,13 @@ export default {
   name: 'ProviderPresetPicker',
   emits: ['close', 'pick'],
   template: `
-    <div class="llm-preset-modal-backdrop" @click.self="$emit('close')">
+    <div
+      class="llm-preset-modal-backdrop"
+      @pointerdown="trackOverlayPointerDown"
+      @pointerup="trackOverlayPointerUp"
+      @pointercancel="clearOverlayPointerGesture"
+      @click="onOverlayClick"
+    >
       <div class="llm-preset-modal">
         <div class="llm-preset-header">
           <strong>{{ $t('settings.llm.preset.title') }}</strong>
@@ -159,6 +172,14 @@ export default {
     await this.load(false);
   },
   methods: {
+    trackOverlayPointerDown,
+    trackOverlayPointerUp,
+    clearOverlayPointerGesture,
+
+    onOverlayClick(event) {
+      if (shouldDismissFromOverlayClick(event)) this.$emit('close');
+    },
+
     async load(forceRefresh) {
       this.loading = true;
       this.error = null;

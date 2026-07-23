@@ -3,6 +3,7 @@ node_modules/
 
 # Build outputs
 web/dist/
+agent/local-runtime/
 build/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
@@ -19,6 +20,8 @@ agent/logs/
 .env
 .env.local
 .env.production
+deploy/dev/deployer.env
+deploy/dev/state/
 
 # User data (contains password hashes and TOTP secrets)
 server/users.json

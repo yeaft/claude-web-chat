@@ -45,6 +45,7 @@
  * @typedef {Object} TimelineRow
  * @property {string} vpId
  * @property {string} displayName
+ * @property {string} description
  * @property {VpStatus} status
  * @property {number} runningThreadCount
  * @property {Array<object>} threads
@@ -83,6 +84,27 @@ export function selectGroupRosterVpList(roster, library) {
 }
 
 /**
+ * Resolve a Session row for roster display from the Sessions store.
+ *
+ * Multi-agent sidebars key sessions by `agentId + sessionId`, not by the bare
+ * session id. Call the store resolver instead of indexing `sessions[sessionId]`
+ * directly, otherwise the Session status pane renders "no VP" for perfectly
+ * valid Sessions owned by an agent-stamped row.
+ *
+ * @param {object|null|undefined} sessionsStore
+ * @param {string|null|undefined} sessionId
+ * @param {string|null|undefined} agentId
+ * @returns {object|null}
+ */
+export function resolveTimelineSession(sessionsStore, sessionId, agentId = null) {
+  if (!sessionId || !sessionsStore) return null;
+  if (typeof sessionsStore.sessionById === 'function') {
+    return sessionsStore.sessionById(sessionId, agentId || null) || null;
+  }
+  return sessionsStore.sessions?.[sessionId] || null;
+}
+
+/**
  * Decide the status tag for a single vpId given the active store state.
  * Pure: no closures over module state, no Date.now().
  *
@@ -118,6 +140,7 @@ export function statusFor(vpId, ctx) {
  * @param {Object<string, {state: VpStatus, since?:number, turnId?:string|null, sessionId?:string|null, runningThreadCount?:number, threads?:Array<object>}>} [args.vpStatuses]
  * @param {string} [args.connectionState]
  * @param {(vpId: string) => string} [args.vpLabelOf]   // optional locale-aware labeler
+ * @param {(vpId: string) => string} [args.vpDescriptionOf] // optional locale-aware capability summary
  * @returns {TimelineRow[]}
  */
 export function buildTimelineRows(args) {
@@ -127,6 +150,7 @@ export function buildTimelineRows(args) {
     stoppingVpTurnIds,
     connectionState,
     vpLabelOf,
+    vpDescriptionOf,
   } = args || {};
 
   const ctx = {
@@ -146,6 +170,18 @@ export function buildTimelineRows(args) {
     return id;
   };
 
+  const descriptionOf = (id, fallbackVp) => {
+    if (typeof vpDescriptionOf === 'function') {
+      const value = vpDescriptionOf(id);
+      if (value) return value;
+    }
+    if (fallbackVp) {
+      return fallbackVp.description || fallbackVp.role
+        || fallbackVp.descriptionZh || fallbackVp.roleZh || '';
+    }
+    return '';
+  };
+
   // Roster pass — primary source. Emit rows for every vpId in vpList in
   // declared order.
   const rosterIds = new Set();
@@ -155,7 +191,7 @@ export function buildTimelineRows(args) {
     for (const vp of vpList) {
       if (!vp || !vp.vpId) continue;
       rosterIds.add(vp.vpId);
-      rows.push(makeRow(vp.vpId, labelOf(vp.vpId, vp), ctx));
+      rows.push(makeRow(vp.vpId, labelOf(vp.vpId, vp), descriptionOf(vp.vpId, vp), ctx));
     }
   }
 
@@ -168,7 +204,7 @@ export function buildTimelineRows(args) {
     for (const vpId of Object.keys(vpStatuses)) {
       if (!vpId || rosterIds.has(vpId)) continue;
       rosterIds.add(vpId);
-      rows.push(makeRow(vpId, labelOf(vpId, null), ctx));
+      rows.push(makeRow(vpId, labelOf(vpId, null), descriptionOf(vpId, null), ctx));
     }
   }
 
@@ -180,14 +216,16 @@ export function buildTimelineRows(args) {
  *
  * @param {string} vpId
  * @param {string} displayName
+ * @param {string} description
  * @param {object} ctx
  * @returns {TimelineRow}
  */
-function makeRow(vpId, displayName, ctx) {
+function makeRow(vpId, displayName, description, ctx) {
   const entry = ctx && ctx.vpStatuses && ctx.vpStatuses[vpId];
   return {
     vpId,
     displayName: displayName || vpId,
+    description: description || '',
     status: statusFor(vpId, ctx),
     turnId: entry?.turnId || null,
     isStopping: !!(entry?.turnId && ctx?.stoppingVpTurnIds?.[entry.turnId]),

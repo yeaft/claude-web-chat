@@ -17,6 +17,8 @@ import { initYeaftDir, DEFAULT_YEAFT_DIR, isWritable } from './init.js';
 import { loadConfig, loadMCPConfig } from './config.js';
 import { createTrace } from './debug-trace.js';
 import { createLLMAdapter } from './llm/adapter.js';
+import { withUsageAccounting } from './llm/usage-accounting.js';
+import { recordAgentTokenUsage } from '../metrics.js';
 import { ConversationStore, setDefaultRecentTurnsLimit } from './conversation/persist.js';
 import { SkillManager, createSkillManager } from './skills.js';
 import { MCPManager } from './mcp.js';
@@ -262,7 +264,10 @@ export async function loadSession(options = {}) {
   });
 
   // ─── 4. Create LLM adapter ────────────────────────────
-  const adapter = await createLLMAdapter(config);
+  const adapter = withUsageAccounting(
+    await createLLMAdapter(config),
+    recordAgentTokenUsage
+  );
 
   // ─── 5. Create stores ──────────────────────────────────
   const conversationStore = new ConversationStore(yeaftDir);
@@ -624,6 +629,7 @@ export async function loadSession(options = {}) {
     trace,
     yeaftDir,
     status,
+    memoryIndex,
     amsRegistry,
     toolStats,
     taskManager,

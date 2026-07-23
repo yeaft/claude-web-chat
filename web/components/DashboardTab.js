@@ -30,7 +30,19 @@ export default {
           </div>
           <div class="db-stat-card">
             <div class="db-stat-value">{{ formatNumber(overview.todayMessages) }}</div>
-            <div class="db-stat-label">{{ $t('settings.dashboard.todayMessages') }}</div>
+            <div class="db-stat-label">{{ $t('settings.dashboard.todayUserTurns') }}</div>
+          </div>
+          <div class="db-stat-card" :title="$t('settings.dashboard.tokenAccuracy')">
+            <div class="db-stat-value">{{ formatCompactNumber(overview.totalTokens) }}</div>
+            <div class="db-stat-label">{{ $t('settings.dashboard.totalTokens') }}</div>
+          </div>
+          <div class="db-stat-card">
+            <div class="db-stat-value">{{ formatNumber(agentMetricTotals.totalTurns) }}</div>
+            <div class="db-stat-label">{{ $t('settings.dashboard.agentTurns') }}</div>
+          </div>
+          <div class="db-stat-card">
+            <div class="db-stat-value">{{ formatNumber(agentMetricTotals.sessionsCreated) }}</div>
+            <div class="db-stat-label">{{ $t('settings.dashboard.agentSessions') }}</div>
           </div>
         </div>
 
@@ -62,7 +74,7 @@ export default {
                     <span class="db-sort-arrow" v-if="userSort.field === 'username'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
                   </th>
                   <th class="db-cell-num db-th-sort" @click="toggleSort('user', 'messageCount')">
-                    {{ $t('settings.dashboard.messages') }}
+                    {{ $t('settings.dashboard.userTurns') }}
                     <span class="db-sort-arrow" v-if="userSort.field === 'messageCount'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
                   </th>
                   <th class="db-cell-num db-th-sort" @click="toggleSort('user', 'sessionCount')">
@@ -72,6 +84,10 @@ export default {
                   <th class="db-cell-num db-th-sort" @click="toggleSort('user', 'requestCount')">
                     {{ $t('settings.dashboard.requests') }}
                     <span class="db-sort-arrow" v-if="userSort.field === 'requestCount'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
+                  </th>
+                  <th class="db-cell-num db-th-sort" :title="$t('settings.dashboard.tokenAccuracy')" @click="toggleSort('user', 'totalTokens')">
+                    {{ $t('settings.dashboard.tokens') }}
+                    <span class="db-sort-arrow" v-if="userSort.field === 'totalTokens'">{{ userSort.order === 'asc' ? '▲' : '▼' }}</span>
                   </th>
                   <th class="db-cell-num db-th-sort" @click="toggleSort('user', 'traffic')">
                     {{ $t('settings.dashboard.traffic') }}
@@ -89,6 +105,7 @@ export default {
                   <td class="db-cell-num">{{ formatNumber(user.messageCount) }}</td>
                   <td class="db-cell-num">{{ formatNumber(user.sessionCount) }}</td>
                   <td class="db-cell-num">{{ formatNumber(user.requestCount) }}</td>
+                  <td class="db-cell-num" :title="userTokenTitle(user)">{{ formatCompactNumber(user.totalTokens) }}</td>
                   <td class="db-cell-num">{{ formatBytes(user.bytesSent + user.bytesReceived) }}</td>
                   <td class="db-cell-time">{{ formatRelativeTime(user.lastLoginAt) }}</td>
                 </tr>
@@ -104,12 +121,14 @@ export default {
             <div class="db-user-card" v-for="user in pagedUserStats" :key="'m-' + user.username">
               <div class="db-user-card-name">{{ user.username }}</div>
               <div class="db-user-card-stats">
-                <span>{{ $t('settings.dashboard.messages') }} {{ formatNumber(user.messageCount) }}</span>
+                <span>{{ $t('settings.dashboard.userTurns') }} {{ formatNumber(user.messageCount) }}</span>
                 <span>·</span>
                 <span>{{ $t('settings.dashboard.sessions') }} {{ formatNumber(user.sessionCount) }}</span>
               </div>
               <div class="db-user-card-stats">
                 <span>{{ $t('settings.dashboard.requests') }} {{ formatNumber(user.requestCount) }}</span>
+                <span>·</span>
+                <span :title="userTokenTitle(user)">{{ $t('settings.dashboard.tokens') }} {{ formatCompactNumber(user.totalTokens) }}</span>
                 <span>·</span>
                 <span>{{ formatBytes(user.bytesSent + user.bytesReceived) }}</span>
               </div>
@@ -154,6 +173,14 @@ export default {
                       {{ $t('settings.dashboard.owner') }}
                       <span class="db-sort-arrow" v-if="agentSort.field === 'owner'">{{ agentSort.order === 'asc' ? '▲' : '▼' }}</span>
                     </th>
+                    <th class="db-cell-num db-th-sort" @click="toggleSort('agent', 'totalTurns')">
+                      {{ $t('settings.dashboard.turns') }}
+                      <span class="db-sort-arrow" v-if="agentSort.field === 'totalTurns'">{{ agentSort.order === 'asc' ? '▲' : '▼' }}</span>
+                    </th>
+                    <th class="db-cell-num db-th-sort" @click="toggleSort('agent', 'totalTokens')">
+                      {{ $t('settings.dashboard.tokens') }}
+                      <span class="db-sort-arrow" v-if="agentSort.field === 'totalTokens'">{{ agentSort.order === 'asc' ? '▲' : '▼' }}</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -169,6 +196,8 @@ export default {
                     </td>
                     <td>{{ agent.version || '—' }}</td>
                     <td>{{ agent.owner || '—' }}</td>
+                    <td class="db-cell-num">{{ formatNumber(agent.metrics?.totalTurns || 0) }}</td>
+                    <td class="db-cell-num" :title="agentTokenTitle(agent)">{{ formatCompactNumber(agent.metrics?.totalTokens || 0) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -188,6 +217,11 @@ export default {
                   <span>{{ $t('settings.dashboard.latency') }} <span :class="latencyClass(agent.latency)">{{ agent.latency }}ms</span></span>
                   <span>·</span>
                   <span>v{{ agent.version || '?' }}</span>
+                </div>
+                <div class="db-agent-card-stats">
+                  <span>{{ $t('settings.dashboard.turns') }} {{ formatNumber(agent.metrics?.totalTurns || 0) }}</span>
+                  <span>·</span>
+                  <span>{{ $t('settings.dashboard.tokens') }} {{ formatCompactNumber(agent.metrics?.totalTokens || 0) }}</span>
                 </div>
                 <div class="db-agent-card-meta">{{ $t('settings.dashboard.owner') }}: {{ agent.owner || '—' }}</div>
               </div>
@@ -264,7 +298,7 @@ export default {
       loading: false,
       loaded: false,
       error: false,
-      overview: { totalUsers: 0, todayActiveUsers: 0, onlineAgents: 0, todayMessages: 0 },
+      overview: { totalUsers: 0, todayActiveUsers: 0, onlineAgents: 0, todayMessages: 0, totalTokens: 0, agentMetrics: null },
       statsPeriod: 'all',
       userStats: [],
       agents: [],
@@ -297,6 +331,9 @@ export default {
     },
     pagedUserStats() {
       return this.sortedUserStats.slice(0, this.userVisibleCount);
+    },
+    agentMetricTotals() {
+      return this.normalizeMetrics(this.overview.agentMetrics || {});
     },
     sortedAgents() {
       if (!this.agentSort.field) return this.agents;
@@ -343,6 +380,9 @@ export default {
         } else if (table === 'agent' && field === 'online') {
           va = a.online ? 1 : 0;
           vb = b.online ? 1 : 0;
+        } else if (table === 'agent' && (field === 'totalTokens' || field === 'totalTurns')) {
+          va = a.metrics?.[field] || 0;
+          vb = b.metrics?.[field] || 0;
         } else {
           va = a[field];
           vb = b[field];
@@ -394,10 +434,15 @@ export default {
           totalUsers: dashboard.totalUsers ?? 0,
           todayActiveUsers: dashboard.todayActiveUsers ?? 0,
           onlineAgents: dashboard.onlineAgents ?? 0,
-          todayMessages: dashboard.todayMessages ?? 0
+          todayMessages: dashboard.todayMessages ?? 0,
+          totalTokens: dashboard.totalTokens ?? 0,
+          agentMetrics: this.normalizeMetrics(dashboard.agentMetrics || {})
         };
         this.userStats = Array.isArray(userStats) ? userStats : [];
-        this.agents = Array.isArray(agents) ? agents : [];
+        this.agents = Array.isArray(agents) ? agents.map(agent => ({
+          ...agent,
+          metrics: this.normalizeMetrics(agent.metrics || {})
+        })) : [];
         this.onlineUsers = Array.isArray(onlineUsers) ? onlineUsers : [];
         this.loaded = true;
       } catch {
@@ -436,9 +481,59 @@ export default {
       return 'db-latency-bad';
     },
 
+    normalizeMetrics(metrics = {}) {
+      const num = (value) => {
+        const n = Number(value);
+        return Number.isFinite(n) && n > 0 ? n : 0;
+      };
+      const chatTurns = num(metrics.chatTurns);
+      const yeaftTurns = num(metrics.yeaftTurns);
+      const inputTokens = num(metrics.inputTokens);
+      const outputTokens = num(metrics.outputTokens);
+      const cacheReadTokens = num(metrics.cacheReadTokens);
+      const cacheWriteTokens = num(metrics.cacheWriteTokens);
+      return {
+        chatTurns,
+        yeaftTurns,
+        totalTurns: num(metrics.totalTurns) || chatTurns + yeaftTurns,
+        sessionsCreated: num(metrics.sessionsCreated),
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        totalTokens: num(metrics.totalTokens) || inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+        lastUpdatedAt: metrics.lastUpdatedAt || null
+      };
+    },
+
+    agentTokenTitle(agent) {
+      const metrics = this.normalizeMetrics(agent?.metrics || {});
+      return this.tokenTitle(metrics);
+    },
+
+    userTokenTitle(user) {
+      return this.tokenTitle(user || {});
+    },
+
+    tokenTitle(usage) {
+      return [
+        `${this.$t('settings.dashboard.inputTokens')}: ${this.formatNumber(Number(usage.inputTokens) || 0)}`,
+        `${this.$t('settings.dashboard.outputTokens')}: ${this.formatNumber(Number(usage.outputTokens) || 0)}`,
+        `${this.$t('settings.dashboard.cacheTokens')}: ${this.formatNumber((Number(usage.cacheReadTokens) || 0) + (Number(usage.cacheWriteTokens) || 0))}`
+      ].join(' · ');
+    },
+
     formatNumber(n) {
       if (n == null) return '0';
       return n.toLocaleString();
+    },
+
+    formatCompactNumber(n) {
+      const value = Number(n) || 0;
+      if (value < 1000) return this.formatNumber(value);
+      if (value < 1000000) return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}K`;
+      if (value < 1000000000) return `${(value / 1000000).toFixed(value < 10000000 ? 1 : 0)}M`;
+      return `${(value / 1000000000).toFixed(1)}B`;
     },
 
     formatBytes(bytes) {

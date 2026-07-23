@@ -55,12 +55,15 @@
  * Reference: yeaft-yeaft-design.md §8, yeaft-yeaft-core-systems.md
  */
 
-import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdirSync, statSync, realpathSync } from 'fs';
 import { join, basename, sep, dirname, resolve, delimiter } from 'path';
 import { platform, homedir } from 'os';
 import { fileURLToPath } from 'url';
+import { listWorkspaceDirectory, readWorkspaceFile } from './workspace-file.js';
 
 // ─── Platform Matching ────────────────────────────────────
+
+const MAX_PROJECT_SKILL_BYTES = 1024 * 1024;
 
 const PLATFORM_MAP = {
   macos: 'darwin',
@@ -304,6 +307,71 @@ function discoverSkills(rootDir, subPath = '', opts = {}) {
   return { skills, errors };
 }
 
+function listWorkspaceSkillFiles(workspaceRoot, relativeDir) {
+  return (listWorkspaceDirectory(workspaceRoot, relativeDir) || [])
+    .filter(entry => entry.isFile && !entry.isSymbolicLink)
+    .map(entry => entry.name);
+}
+
+function discoverWorkspaceSkills(workspaceRoot, skillsRelativeRoot, subPath = '') {
+  const skills = [];
+  const errors = [];
+  const relativeDir = subPath ? join(skillsRelativeRoot, subPath) : skillsRelativeRoot;
+  const entries = listWorkspaceDirectory(workspaceRoot, relativeDir);
+  if (!entries) return { skills, errors };
+
+  for (const entry of entries) {
+    if (entry.isSymbolicLink) continue;
+    const relPath = subPath ? join(subPath, entry.name) : entry.name;
+    const workspacePath = join(skillsRelativeRoot, relPath);
+    if (entry.isFile && entry.name.endsWith('.md') && entry.name !== 'SKILL.md') {
+      const read = readWorkspaceFile(workspaceRoot, workspacePath, { maxBytes: MAX_PROJECT_SKILL_BYTES });
+      if (!read || read.truncated) continue;
+      const skill = parseSkill(read.buffer.toString('utf8'), entry.name);
+      if (!skill?.name) {
+        errors.push(`Failed to parse skill: ${relPath}`);
+        continue;
+      }
+      skill._source = 'file';
+      skill._path = resolve(workspaceRoot, workspacePath);
+      skill._secureWorkspaceRoot = workspaceRoot;
+      skill._secureRelativePath = workspacePath;
+      if (subPath) skill.category ||= subPath.split(sep).join('/');
+      skills.push(skill);
+      continue;
+    }
+    if (!entry.isDirectory) continue;
+
+    const childEntries = listWorkspaceDirectory(workspaceRoot, workspacePath);
+    if (!childEntries) continue;
+    const skillFile = childEntries.find(child => child.name === 'SKILL.md');
+    if (skillFile) {
+      if (!skillFile.isFile || skillFile.isSymbolicLink) continue;
+      const skillRelativePath = join(workspacePath, 'SKILL.md');
+      const read = readWorkspaceFile(workspaceRoot, skillRelativePath, { maxBytes: MAX_PROJECT_SKILL_BYTES });
+      if (!read || read.truncated) continue;
+      const skill = parseSkill(read.buffer.toString('utf8'), entry.name);
+      if (!skill?.name) {
+        errors.push(`Failed to parse skill: ${relPath}/SKILL.md`);
+        continue;
+      }
+      skill._source = 'directory';
+      skill._path = resolve(workspaceRoot, workspacePath);
+      skill._secureWorkspaceRoot = workspaceRoot;
+      skill._secureRelativePath = workspacePath;
+      if (subPath) skill.category ||= subPath.split(sep).join('/');
+      skill._references = listWorkspaceSkillFiles(workspaceRoot, join(workspacePath, 'references'));
+      skill._templates = listWorkspaceSkillFiles(workspaceRoot, join(workspacePath, 'templates'));
+      skills.push(skill);
+      continue;
+    }
+    const nested = discoverWorkspaceSkills(workspaceRoot, skillsRelativeRoot, relPath);
+    skills.push(...nested.skills);
+    errors.push(...nested.errors);
+  }
+  return { skills, errors };
+}
+
 // ─── Trigger Matching ─────────────────────────────────────
 
 /**
@@ -387,11 +455,17 @@ export class SkillManager {
   /** @type {Map<string, string[]>} — dir path → resolved ignore paths */
   #ignorePathsByDir;
 
+  /** @type {Map<string, { workspaceRoot: string, relativeRoot: string }>} */
+  #secureWorkspaceByDir;
+
+  /** Hash of the effective loaded skill set, including prompt content. */
+  #snapshotHash = '';
+
   /**
    * @param {string | string[]} dirs — single directory (back-compat) or array of
    *   directories in priority order (lowest → highest). Falsy entries are
    *   filtered out so callers can write `[bundled, user, projectOrNull]`.
-   * @param {{ userDir?: string, tierByDir?: Record<string, string>, ignorePathsByDir?: Record<string, string[]> }} [opts]
+   * @param {{ userDir?: string, tierByDir?: Record<string, string>, ignorePathsByDir?: Record<string, string[]>, secureWorkspaceByDir?: Record<string, { workspaceRoot: string, relativeRoot: string }> }} [opts]
    *   userDir: directory where `save()` and `remove()` write. Defaults to the
    *     last entry in `dirs` (typical case: user dir is highest priority that
    *     isn't a per-project layer).
@@ -427,6 +501,14 @@ export class SkillManager {
         this.#ignorePathsByDir.set(d, ignorePaths.filter(p => typeof p === 'string' && p.length > 0).map(p => resolve(p)));
       }
     }
+    this.#secureWorkspaceByDir = new Map();
+    if (opts && opts.secureWorkspaceByDir && typeof opts.secureWorkspaceByDir === 'object') {
+      for (const [d, secure] of Object.entries(opts.secureWorkspaceByDir)) {
+        if (typeof d !== 'string' || typeof secure?.workspaceRoot !== 'string'
+          || typeof secure?.relativeRoot !== 'string') continue;
+        this.#secureWorkspaceByDir.set(d, secure);
+      }
+    }
   }
 
   /** The user-writable skills directory (save/remove target). */
@@ -447,19 +529,24 @@ export class SkillManager {
    * tagged with `_tier` (from the constructor's `tierByDir` map, or the dir
    * basename as fallback) so consumers can show provenance.
    *
-   * @returns {{ loaded: number, errors: string[] }}
+   * @returns {{ loaded: number, errors: string[], changed: boolean }}
    */
   load() {
+    const previousHash = this.#snapshotHash;
     this.#skills.clear();
     const allErrors = [];
 
     if (this.#skillsDirs.length === 0) {
-      return { loaded: 0, errors: [] };
+      this.#snapshotHash = this.#computeSnapshotHash();
+      return { loaded: 0, errors: [], changed: this.#snapshotHash !== previousHash };
     }
 
     for (const dir of this.#skillsDirs) {
-      if (!existsSync(dir)) continue;
-      const { skills, errors } = discoverSkills(dir, '', { ignorePaths: this.#ignorePathsByDir.get(dir) || [] });
+      const secure = this.#secureWorkspaceByDir.get(dir);
+      if (!secure && !existsSync(dir)) continue;
+      const { skills, errors } = secure
+        ? discoverWorkspaceSkills(secure.workspaceRoot, secure.relativeRoot)
+        : discoverSkills(dir, '', { ignorePaths: this.#ignorePathsByDir.get(dir) || [] });
       const tier = this.#tierByDir.get(dir) || basename(dir);
       for (const skill of skills) {
         // Platform filtering at load time
@@ -472,7 +559,33 @@ export class SkillManager {
       allErrors.push(...errors);
     }
 
-    return { loaded: this.#skills.size, errors: allErrors };
+    this.#snapshotHash = this.#computeSnapshotHash();
+    return {
+      loaded: this.#skills.size,
+      errors: allErrors,
+      changed: this.#snapshotHash !== previousHash,
+    };
+  }
+
+  #computeSnapshotHash() {
+    const records = [...this.#skills.values()]
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+      .map(skill => ({
+        name: skill.name || '',
+        description: skill.description || '',
+        trigger: skill.trigger || '',
+        mode: skill.mode || 'both',
+        category: skill.category || '',
+        platforms: skill.platforms || [],
+        keywords: skill.keywords || [],
+        content: skill.content || '',
+        source: skill._source || '',
+        path: skill._path || '',
+        tier: skill._tier || '',
+        references: skill._references || [],
+        templates: skill._templates || [],
+      }));
+    return JSON.stringify(records);
   }
 
   /**
@@ -544,17 +657,38 @@ export class SkillManager {
 
     // Read a specific linked file if requested
     if (filePath && skill._source === 'directory') {
+      if (skill._secureWorkspaceRoot && skill._secureRelativePath) {
+        const fullPath = resolve(skill._path, filePath);
+        if (!pathIsInside(fullPath, skill._path)) {
+          result.linkedContent = 'Error: path traversal not allowed';
+        } else {
+          const relativePath = join(skill._secureRelativePath, filePath);
+          const read = readWorkspaceFile(skill._secureWorkspaceRoot, relativePath, { maxBytes: MAX_PROJECT_SKILL_BYTES });
+          result.linkedContent = !read
+            ? 'Error reading file: secure workspace read failed'
+            : (read.truncated ? 'Error reading file: linked file exceeds size limit' : read.buffer.toString('utf8'));
+        }
+        return result;
+      }
       // Security: resolve both ends to absolute paths and require fullPath to
       // sit under the skill root (separator-anchored so /foo-evil isn't seen
       // as a child of /foo). `path.join` alone collapses `..` but does not
       // detect symlink-escapes or absolute-path overrides.
-      const fullPath = resolve(skill._path, filePath);
-      const root = resolve(skill._path) + sep;
-      if (fullPath !== resolve(skill._path) && !fullPath.startsWith(root)) {
+      const lexicalRoot = resolve(skill._path);
+      const fullPath = resolve(lexicalRoot, filePath);
+      const rootPrefix = lexicalRoot + sep;
+      if (fullPath !== lexicalRoot && !fullPath.startsWith(rootPrefix)) {
         result.linkedContent = 'Error: path traversal not allowed';
       } else if (existsSync(fullPath)) {
         try {
-          result.linkedContent = readFileSync(fullPath, 'utf8');
+          const canonicalRoot = realpathSync(lexicalRoot);
+          const canonicalPath = realpathSync(fullPath);
+          const canonicalPrefix = canonicalRoot + sep;
+          if (canonicalPath !== canonicalRoot && !canonicalPath.startsWith(canonicalPrefix)) {
+            result.linkedContent = 'Error: linked file escapes skill root';
+          } else {
+            result.linkedContent = readFileSync(canonicalPath, 'utf8');
+          }
         } catch (err) {
           result.linkedContent = `Error reading file: ${err.message}`;
         }
@@ -643,6 +777,7 @@ export class SkillManager {
       _path: filePath,
       _tier: userTier,
     });
+    this.#snapshotHash = this.#computeSnapshotHash();
 
     return filename;
   }
@@ -680,6 +815,7 @@ export class SkillManager {
     }
 
     this.#skills.delete(name);
+    this.#snapshotHash = this.#computeSnapshotHash();
     return true;
   }
 
@@ -753,7 +889,7 @@ export class SkillManager {
  * @param {string} [workDir] — optional project working directory (project tier root)
  * @returns {SkillManager}
  */
-export function createSkillManager(yeaftDir, workDir) {
+export function createSkillManager(yeaftDir, workDir, options = {}) {
   const bundled = bundledYeaftSkillsDir();
   const userDir = join(yeaftDir, 'skills');
   const projectRoots = [...new Set(String(workDir || '')
@@ -772,7 +908,19 @@ export function createSkillManager(yeaftDir, workDir) {
   for (const dir of codexProjectDirs) tierByDir[dir] = 'project-codex';
   for (const dir of projectDirs) tierByDir[dir] = 'project';
 
-  const manager = new SkillManager(dirs, { userDir, tierByDir });
+  const secureWorkspaceByDir = {};
+  if (options.secureWorkspace === true && projectRoots.length === 1) {
+    const workspaceRoot = projectRoots[0];
+    for (const [dir, relativeRoot] of [
+      [claudeProjectDirs[0], '.claude/skills'],
+      [codexProjectDirs[0], '.agents/skills'],
+      [projectDirs[0], '.yeaft/skills'],
+    ]) {
+      secureWorkspaceByDir[dir] = { workspaceRoot, relativeRoot };
+    }
+  }
+
+  const manager = new SkillManager(dirs, { userDir, tierByDir, secureWorkspaceByDir });
   manager.load();
   return manager;
 }

@@ -12,6 +12,7 @@ class FakeWritable extends EventEmitter {
   write(chunk) {
     const msg = JSON.parse(String(chunk));
     const child = spawns[spawns.length - 1];
+    if (child.command === 'never-ready') return true;
     queueMicrotask(() => {
       let result = {};
       if (msg.method === 'session/new') {
@@ -31,8 +32,10 @@ vi.mock('child_process', () => ({
     child.stdin = new FakeWritable();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
-    child.kill = vi.fn(() => {
-      queueMicrotask(() => child.emit('close', null));
+    child.kill = vi.fn((signal) => {
+      if (command !== 'never-ready' || signal === 'SIGKILL') {
+        queueMicrotask(() => child.emit('close', null));
+      }
       return true;
     });
     child.command = command;
@@ -135,6 +138,33 @@ describe('Windows hidden non-interactive process launches', () => {
     });
   });
 
+  it('starts MCP servers in the configured execution cwd', async () => {
+    const cwd = makeTempDir('yeaft-mcp-cwd-');
+    const manager = await createMCPManager({
+      mcp_servers: [{ name: 'fake', command: 'node', args: ['fake-mcp.js'], cwd }],
+    });
+
+    expect(manager.status()).toEqual([{ name: 'fake', ready: true, toolCount: 0 }]);
+    expect(spawns[0].options.cwd).toBe(cwd);
+  });
+
+  it('does not pool identical MCP configs across different execution roots', async () => {
+    const firstCwd = makeTempDir('yeaft-mcp-first-');
+    const secondCwd = makeTempDir('yeaft-mcp-second-');
+    const first = await createMCPManager({
+      mcp_servers: [{ name: 'fake', command: 'node', args: ['fake-mcp.js'], cwd: firstCwd }],
+    });
+    const second = await createMCPManager({
+      mcp_servers: [{ name: 'fake', command: 'node', args: ['fake-mcp.js'], cwd: secondCwd }],
+    });
+
+    expect(spawns).toHaveLength(2);
+    expect(spawns.map(child => child.options.cwd)).toEqual([firstCwd, secondCwd]);
+    expect(__mcpConnectionPoolSizeForTests()).toBe(2);
+    await first.disconnectAll();
+    await second.disconnectAll();
+  });
+
   it('reuses stdio MCP server processes for identical configs until the last manager disconnects', async () => {
     const config = { mcp_servers: [{ name: 'fake', command: 'node', args: ['fake-mcp.js'], env: { B: '2', A: '1' } }] };
     const first = await createMCPManager(config);
@@ -154,6 +184,25 @@ describe('Windows hidden non-interactive process launches', () => {
     await second.disconnectAll();
     expect(spawns[0].kill).toHaveBeenCalledWith('SIGTERM');
     expect(__mcpConnectionPoolSizeForTests()).toBe(0);
+  });
+
+  it('stops an MCP server when startup times out', async () => {
+    vi.useFakeTimers();
+    try {
+      const managerPromise = createMCPManager({
+        mcp_servers: [{ name: 'stuck', command: 'never-ready' }],
+      });
+      await vi.advanceTimersByTimeAsync(10000);
+      await vi.advanceTimersByTimeAsync(2000);
+      const manager = await managerPromise;
+
+      expect(manager.status()).toEqual([]);
+      expect(spawns).toHaveLength(1);
+      expect(spawns[0].kill.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
+      expect(__mcpConnectionPoolSizeForTests()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not crash the agent when an MCP server writes stderr without an error listener', async () => {

@@ -8,6 +8,7 @@ import { decodeKey } from '../../utils/encryption.js';
 import { t } from '../../utils/i18n.js';
 import { stopProcessingWatchdog, startLegacyWatchdog } from './watchdog.js';
 import { clearSessionLoading } from './session.js';
+import { applyDebugRawRequestDelta } from '../../components/yeaft-debug-helpers.js';
 import { handleAgentList, handleAgentSelected } from './handlers/agentHandler.js';
 import {
   handleConversationCreated,
@@ -18,7 +19,8 @@ import {
   handleConversationRefresh,
   handleExecutionCancelled,
   handleSyncMessagesResult,
-  handleYeaftHistoryChunk
+  handleYeaftHistoryChunk,
+  handleYeaftHistoryWindow,
 } from './handlers/conversationHandler.js';
 
 
@@ -40,33 +42,6 @@ function cloneDebugValue(value) {
   catch { return value; }
 }
 
-function applyDebugRawRequestDelta(previous, delta) {
-  if (!delta) return previous ?? null;
-  if (Object.prototype.hasOwnProperty.call(delta, 'base')) return cloneDebugValue(delta.base) ?? null;
-  if (Object.prototype.hasOwnProperty.call(delta, 'replacement')) return cloneDebugValue(delta.replacement) ?? null;
-  const next = previous && typeof previous === 'object' && !Array.isArray(previous)
-    ? cloneDebugValue(previous)
-    : {};
-  if (delta.set && typeof delta.set === 'object') {
-    for (const [key, value] of Object.entries(delta.set)) next[key] = cloneDebugValue(value);
-  }
-  if (delta.body && typeof delta.body === 'object') {
-    const body = next.body && typeof next.body === 'object' && !Array.isArray(next.body) ? { ...next.body } : {};
-    for (const [key, value] of Object.entries(delta.body)) {
-      if (key === 'messages' || key === 'messagesFrom' || key === 'messagesAppend') continue;
-      body[key] = cloneDebugValue(value);
-    }
-    if (Array.isArray(delta.body.messages)) {
-      body.messages = cloneDebugValue(delta.body.messages) || [];
-    } else if (Array.isArray(delta.body.messagesAppend)) {
-      const from = Number.isFinite(Number(delta.body.messagesFrom)) ? Number(delta.body.messagesFrom) : (Array.isArray(body.messages) ? body.messages.length : 0);
-      body.messages = (Array.isArray(body.messages) ? body.messages.slice(0, from) : []).concat(cloneDebugValue(delta.body.messagesAppend) || []);
-    }
-    next.body = body;
-  }
-  return next;
-}
-
 function applyDebugRequestDelta(previous, delta = {}) {
   const base = previous || { systemPrompt: '', messages: [], rawRequest: null };
   const next = {
@@ -75,11 +50,15 @@ function applyDebugRequestDelta(previous, delta = {}) {
     rawRequest: base.rawRequest ?? null,
   };
   if (delta?.base) {
-    return {
+    const nextBase = {
       systemPrompt: delta.systemPrompt || '',
       messages: Array.isArray(delta.messages) ? delta.messages : [],
-      rawRequest: base.rawRequest ?? null,
+      rawRequest: null,
     };
+    if (Object.prototype.hasOwnProperty.call(delta, 'rawRequestDelta')) {
+      nextBase.rawRequest = applyDebugRawRequestDelta(null, delta.rawRequestDelta);
+    }
+    return nextBase;
   }
   if (typeof delta?.systemPrompt === 'string') next.systemPrompt = delta.systemPrompt;
   if (Array.isArray(delta?.messages)) {
@@ -98,13 +77,15 @@ function hydrateDebugLoopRequests(loops = []) {
     if (!loop || !loop.requestDelta) return loop;
     const turnId = loop.turnId || '__unknown__';
     const previous = snapshotsByTurn.get(turnId) || loop.requestBase || null;
+    const rawRequestBase = previous?.rawRequest ?? null;
     const snapshot = applyDebugRequestDelta(previous, loop.requestDelta);
     snapshotsByTurn.set(turnId, snapshot);
     return {
       ...loop,
       systemPrompt: typeof loop.systemPrompt === 'string' && loop.systemPrompt ? loop.systemPrompt : snapshot.systemPrompt,
       messages: Array.isArray(loop.messages) && loop.messages.length > 0 ? loop.messages : snapshot.messages,
-      rawRequest: loop.rawRequest ?? snapshot.rawRequest,
+      rawRequest: loop.rawRequest ?? null,
+      rawRequestBase,
     };
   });
 }
@@ -116,6 +97,20 @@ export function handleMessage(store, msg) {
   store._lastPongAt = Date.now();
 
   switch (msg.type) {
+    case 'work_center_response': {
+      const pending = msg.requestId ? store.workCenterPending[msg.requestId] : null;
+      if (!pending) break;
+      clearTimeout(pending.timer);
+      delete store.workCenterPending[msg.requestId];
+      if (msg.ok) pending.resolve(msg.data);
+      else pending.reject(new Error(msg.error || 'Work Center request failed'));
+      break;
+    }
+
+    case 'work_center_event':
+      store.applyWorkCenterEvent(msg.agentId, msg.event);
+      break;
+
     case 'auth_result':
       if (msg.success) {
         store.authenticated = true;
@@ -149,16 +144,29 @@ export function handleMessage(store, msg) {
           type: 'error',
           content: msg.error || t('login.error.loginFailed')
         });
-        authStore.reset();
+        authStore.handleAuthFailure?.(undefined, msg._wsAuthToken);
       }
       break;
 
     case 'agent_list':
       handleAgentList(store, msg);
+      if (store.workCenterOpen && store.workCenterAgentId) {
+        store.listWorkItems(store.workCenterAgentId).catch(() => {});
+      }
       break;
+
+    case 'yeaft_session_hydrate': {
+      const sessions = window.Pinia?.useSessionsStore?.()
+        || (window.__useSessionsStore && window.__useSessionsStore());
+      if (sessions) sessions.applySnapshot(msg.sessions || [], msg.agentId || null);
+      break;
+    }
 
     case 'agent_selected':
       handleAgentSelected(store, msg);
+      if (store.workCenterOpen && store.workCenterAgentId) {
+        store.listWorkItems(store.workCenterAgentId).catch(() => {});
+      }
       break;
 
     case 'conversation_created':
@@ -238,8 +246,38 @@ export function handleMessage(store, msg) {
       store.handleYeaftOutput(msg);
       break;
 
+    case 'yeaft_asset_ready': {
+      const conversationId = msg.conversationId || store.yeaftConversationId;
+      if (!conversationId || !msg.image) break;
+      if (!store.messagesMap[conversationId]) store.messagesMap[conversationId] = [];
+      const duplicate = store.messagesMap[conversationId].some(row =>
+        row?.type === 'chat-image' && row.assetId === msg.image.assetId
+        && row.sessionId === msg.sessionId && row.turnId === msg.turnId
+      );
+      if (!duplicate) store.addMessageToConversation(conversationId, {
+        type: 'chat-image', ...msg.image,
+        sessionId: msg.sessionId || null, vpId: msg.vpId || null,
+        speakerVpId: msg.vpId || null, turnId: msg.turnId || null,
+        threadId: msg.threadId || null,
+      });
+      break;
+    }
+
     case 'yeaft_history_chunk':
       handleYeaftHistoryChunk(store, msg);
+      break;
+
+    case 'yeaft_history_outline':
+      store.handleYeaftHistoryOutline(msg);
+      break;
+
+    case 'yeaft_history_search_result':
+      store.handleYeaftHistorySearchResult(msg);
+      break;
+
+    case 'yeaft_history_window':
+      handleYeaftHistoryWindow(store, msg);
+      store.handleYeaftHistoryWindow(msg);
       break;
 
     // 2026-05-16: tool-usage stats reply from the agent. The agent
@@ -585,15 +623,17 @@ export function handleMessage(store, msg) {
       // Server confirms pin state. Chat applies this optimistically in
       // togglePin(), but Yeaft Session rows also need their own metadata
       // updated so later session-list refreshes and active-session sorting
-      // cannot drop the persisted pin.
+      // cannot drop the persisted pin. The agentId is part of the Yeaft row
+      // identity; duplicate session ids can exist across agents.
       if (msg.conversationId) {
+        const meta = msg.agentId ? { agentId: msg.agentId } : {};
         if (typeof store.setSessionPinned === 'function') {
-          store.setSessionPinned(msg.conversationId, !!msg.pinned);
+          store.setSessionPinned(msg.conversationId, !!msg.pinned, meta);
         } else {
           try {
             const gs = window.Pinia?.useSessionsStore?.() || (window.__useSessionsStore && window.__useSessionsStore());
             if (gs && typeof gs.applyPinState === 'function') {
-              gs.applyPinState(msg.conversationId, !!msg.pinned);
+              gs.applyPinState(msg.conversationId, !!msg.pinned, msg.agentId || store.yeaftSessionAgentById?.[msg.conversationId] || store.currentAgent || null);
             }
           } catch (_) { /* no sessions store in tests */ }
         }
@@ -605,22 +645,46 @@ export function handleMessage(store, msg) {
       break;
 
     case 'slash_commands_update':
-      if (msg.slashCommands && msg.slashCommands.length > 0) {
+      if (Array.isArray(msg.slashCommands)) {
         const slashCommands = [...new Set(msg.slashCommands)];
-        if (msg.conversationId) {
-          store.slashCommandsMap[msg.conversationId] = slashCommands;
-          if (store.currentView === 'yeaft' && store.yeaftConversationId) {
-            store.slashCommandsMap[store.yeaftConversationId] = slashCommands;
+        if (msg.commandSet === 'yeaft') {
+          // Route an authoritative Yeaft snapshot only to the sending Agent's
+          // canonical conversation. `__preload__` is shared transport state,
+          // not a cache key: using it or the global visible pointer lets Agent B
+          // overwrite (or clear) Agent A's autocomplete catalogue.
+          const frameConversationId = msg.conversationId && msg.conversationId !== '__preload__'
+            ? msg.conversationId
+            : null;
+          const agentConversationId = msg.agentId
+            ? store.yeaftConversationIdsByAgent?.[msg.agentId] || null
+            : null;
+          const canonicalConversationId = frameConversationId || agentConversationId;
+          if (canonicalConversationId) {
+            store.slashCommandsMap[canonicalConversationId] = slashCommands;
           }
-        }
-        if (msg.agentId) {
-          store.slashCommandsMap[`agent:${msg.agentId}`] = slashCommands;
-          if (store.currentView === 'yeaft' && store.yeaftConversationId) {
-            store.slashCommandsMap[store.yeaftConversationId] = slashCommands;
+
+          const visibleConversationId = store.yeaftConversationId || null;
+          const visibleBelongsToSender = msg.agentId
+            ? store.currentAgent === msg.agentId
+              && (agentConversationId === visibleConversationId || frameConversationId === visibleConversationId)
+            : frameConversationId === visibleConversationId;
+          if (visibleConversationId && visibleBelongsToSender) {
+            store.slashCommandsMap[visibleConversationId] = slashCommands;
+          }
+        } else {
+          if (msg.conversationId) {
+            store.slashCommandsMap[msg.conversationId] = slashCommands;
+          }
+          if (msg.agentId) {
+            // Claude Chat commands remain an agent-level fallback, but must not
+            // overwrite Yeaft's isolated command catalogue while that view is open.
+            store.slashCommandsMap[`agent:${msg.agentId}`] = slashCommands;
           }
         }
       }
-      // Merge command descriptions (cumulative — new descriptions extend existing)
+      // Descriptions are harmless when their command is not in the active list;
+      // keep the shared cache cumulative so switching back to Chat does not lose
+      // Claude command help after a Yeaft skill refresh.
       if (msg.slashCommandDescriptions) {
         store.slashCommandDescriptions = { ...store.slashCommandDescriptions, ...msg.slashCommandDescriptions };
       }
@@ -811,6 +875,8 @@ export function handleMessage(store, msg) {
           needsSetup: msg.needsSetup ?? effectiveConfig.needsSetup ?? false,
           agentConfig,
           effectiveConfig,
+          requestId: msg.requestId || null,
+          statusRefreshError: msg.statusRefreshError || null,
           error: msg.error || null,
           loaded: true
         };

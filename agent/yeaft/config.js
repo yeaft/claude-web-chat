@@ -26,6 +26,7 @@ import { DEFAULT_YEAFT_DIR } from './init.js';
 import { getModelEffortOptions, getThinkingCapability, modelSupportsEffort, resolveModel, parseModelRef, normalizeProviderModels, resolveContextWindow, resolveMaxOutputTokens } from './models.js';
 import { inferProtocolFromModelId } from './llm/router.js';
 import { normalizeKnownProviderForRuntime } from './llm/known-providers.js';
+import { readWorkspaceFile } from './workspace-file.js';
 
 /** Default configuration values. */
 const DEFAULTS = {
@@ -454,11 +455,14 @@ export function loadConfig(overrides = {}) {
       const p = normalizeKnownProviderForRuntime(rawProvider);
       const normalized = normalizeProviderModels(p);
       for (const m of normalized) {
-        // Avoid duplicates (first provider wins)
-        if (!config.availableModels.some(am => am.id === m.id)) {
+        const ref = p.name ? `${p.name}/${m.id}` : m.id;
+        // A model id is only unique inside its provider. Keep provider-qualified
+        // duplicates so an explicit `provider/model` never disappears from the
+        // runtime catalog just because another provider exposes the same id.
+        if (!config.availableModels.some(am => am.ref === ref)) {
           const entry = {
             id: m.id,
-            ref: p.name ? `${p.name}/${m.id}` : m.id,
+            ref,
             provider: p.name,
             label: m.id,
           };
@@ -530,11 +534,11 @@ export function loadConfig(overrides = {}) {
  * @param {string} [workDir] — optional project working directory (project tier root)
  * @returns {{ servers: object[], skipped: { name: string, reason: string, source: string }[] }}
  */
-export function loadMCPConfig(yeaftDir, jsonConfig, workDir) {
+export function loadMCPConfig(yeaftDir, jsonConfig, workDir, options = {}) {
   const yeaftGlobal = loadGlobalMCPServers(yeaftDir, jsonConfig);
   const externalUser = loadExternalUserMCPServers();
   const project = workDir
-    ? loadProjectMCPServers(workDir)
+    ? loadProjectMCPServers(workDir, options)
     : { servers: [], skipped: [] };
 
   const servers = [];
@@ -596,13 +600,13 @@ function normaliseStdioMCPServer(name, raw, source) {
   return { server: null, skipped: { name, reason: 'invalid-config', source } };
 }
 
-function loadClaudeMCPJsonFile(filePath, source) {
+function loadClaudeMCPJsonFile(filePath, source, content) {
   const empty = { servers: [], skipped: [] };
-  if (!filePath || !existsSync(filePath)) return empty;
+  if (content === undefined && (!filePath || !existsSync(filePath))) return empty;
 
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+    parsed = JSON.parse(content === undefined ? readFileSync(filePath, 'utf8') : content);
   } catch {
     return empty;
   }
@@ -733,11 +737,14 @@ function parseCodexMCPServersToml(content, source) {
   return { servers, skipped };
 }
 
-function loadCodexMCPConfigFile(filePath, source) {
+function loadCodexMCPConfigFile(filePath, source, content) {
   const empty = { servers: [], skipped: [] };
-  if (!filePath || !existsSync(filePath)) return empty;
+  if (content === undefined && (!filePath || !existsSync(filePath))) return empty;
   try {
-    return parseCodexMCPServersToml(readFileSync(filePath, 'utf8'), source);
+    return parseCodexMCPServersToml(
+      content === undefined ? readFileSync(filePath, 'utf8') : content,
+      source,
+    );
   } catch {
     return empty;
   }
@@ -792,9 +799,21 @@ function loadExternalUserMCPServers() {
  * @param {string} workDir — project working directory
  * @returns {{ servers: object[], skipped: { name: string, reason: string, source: string }[] }}
  */
-export function loadProjectMCPServers(workDir) {
+export function loadProjectMCPServers(workDir, options = {}) {
   const empty = { servers: [], skipped: [] };
+  const maxBytes = 1024 * 1024;
   if (!workDir || typeof workDir !== 'string') return empty;
+
+  if (options.secureWorkspace === true) {
+    const claude = readWorkspaceFile(workDir, '.mcp.json', { maxBytes });
+    const codex = readWorkspaceFile(workDir, '.codex/config.toml', { maxBytes });
+    return mergeMCPConfigResults([
+      claude && !claude.truncated
+        ? loadClaudeMCPJsonFile(null, '.mcp.json', claude.buffer.toString('utf8')) : empty,
+      codex && !codex.truncated
+        ? loadCodexMCPConfigFile(null, '.codex/config.toml', codex.buffer.toString('utf8')) : empty,
+    ]);
+  }
 
   return mergeMCPConfigResults([
     loadClaudeMCPJsonFile(join(workDir, '.mcp.json'), '.mcp.json'),

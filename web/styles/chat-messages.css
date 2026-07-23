@@ -42,6 +42,40 @@
   opacity: 1;
 }
 
+/* Turn: VP route_forward messages */
+.turn-route-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.turn-route-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.turn-route-body {
+  min-width: 0;
+}
+
+.turn-route-target {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.turn-route-text {
+  white-space: pre-wrap;
+}
+
+.turn-route-reason {
+  color: var(--text-muted);
+}
+
 /* Turn: todo progress */
 .turn-todos {
   border-top: 1px solid var(--border-light);
@@ -98,24 +132,48 @@
 
 /* Turn: Images (screenshots from Claude tools) */
 .turn-images {
-  padding: 8px 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 280px));
+  gap: 10px;
+  padding: 10px 12px;
 }
 
 .turn-image-item {
-  margin: 4px 0;
+  display: flex;
+  width: 100%;
+  min-height: 120px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+  color: var(--text-muted);
+  cursor: zoom-in;
 }
 
 .chat-screenshot {
+  display: block;
+  width: 100%;
   max-width: 100%;
-  max-height: 400px;
-  border-radius: 6px;
-  cursor: pointer;
-  border: 1px solid var(--border-color);
+  max-height: 360px;
+  object-fit: contain;
   transition: opacity 0.2s;
 }
 
 .chat-screenshot:hover {
   opacity: 0.9;
+}
+
+.turn-image-fallback {
+  display: flex;
+  min-height: 120px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  font-size: 13px;
 }
 
 /* Turn: AskUserQuestion */
@@ -1270,12 +1328,56 @@
 }
 
 .mermaid-rendered {
+  position: relative;
   max-width: 100%;
   margin: 1em 0;
   padding: 16px;
   overflow-x: auto;
   background: var(--bg-main);
   border-radius: 8px;
+}
+
+.mermaid-export-controls {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  z-index: 2;
+}
+
+.mermaid-rendered:hover .mermaid-export-controls,
+.mermaid-rendered:focus-within .mermaid-export-controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.mermaid-export-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mermaid-export-btn:hover,
+.mermaid-export-btn:focus-visible {
+  background: var(--bg-user-msg);
+  color: var(--text-primary);
+}
+
+.mermaid-export-btn:focus-visible {
+  outline: none;
 }
 
 .mermaid-rendered:first-child {
@@ -1357,11 +1459,71 @@
   transition: opacity 0.15s;
 }
 
-.assistant-turn:hover .turn-footer {
+.assistant-turn:hover .turn-footer,
+.message-block:hover .message-block-collapse-footer {
   opacity: 1;
 }
 
-.copy-full-btn {
+.message-block-collapse-footer {
+  justify-content: flex-end;
+}
+
+.message-block-collapsed-response {
+  min-width: 0;
+}
+
+.message-block-collapsed-preview {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.message-block-collapsed-preview-header {
+  margin-bottom: 2px;
+}
+
+.message-block-collapsed-preview-speaker {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.message-block-collapsed-preview-body {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  overflow: hidden;
+}
+
+.message-block-collapsed-preview-line {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.message-block-collapsed-preview-body:focus-visible,
+.message-block-collapse-header-btn:focus-visible {
+  outline: none;
+}
+
+.message-block-collapse-header-btn {
+  flex-shrink: 0;
+}
+
+.copy-full-btn,
+.response-collapse-btn {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1375,12 +1537,19 @@
   transition: background 0.15s, color 0.15s;
 }
 
-.copy-full-btn:hover {
+.copy-full-btn:hover,
+.response-collapse-btn:hover,
+.response-collapse-btn:focus-visible {
   background: var(--bg-user-msg);
   color: var(--text-primary);
 }
 
-.copy-full-label {
+.response-collapse-btn:focus-visible {
+  outline: none;
+}
+
+.copy-full-label,
+.response-collapse-label {
   font-size: 11px;
 }
 
@@ -1612,7 +1781,7 @@
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(0, 0, 0, 0.85);
+  background: var(--modal-overlay-bg);
   display: flex;
   align-items: center;
   justify-content: center;

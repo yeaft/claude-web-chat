@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 // 共享上下文对象 - 所有模块通过 import 访问
 // 由 index.js 在启动时初始化
 
@@ -21,6 +23,18 @@ export default {
   slashCommands: [],
   // Slash command 描述映射: { commandName: description } — 从 plugin commands/*.md 提取
   slashCommandDescriptions: {},
+  agentMetrics: {
+    metricEpoch: randomUUID(),
+    chatTurns: 0,
+    yeaftTurns: 0,
+    sessionsCreated: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    lastUpdatedAt: 0,
+  },
   // MCP servers 列表 (从 ~/.claude.json 读取): [{ name, enabled, source }]
   mcpServers: [],
   // 连接相关
@@ -33,6 +47,7 @@ export default {
   lastHeartbeatStallMs: 0,
   outboundSendQueue: [],
   outboundSendQueueActive: false,
+  assetOutbox: null,
   // 断连期间的消息缓冲队列（重连后 flush）
   messageBuffer: [],
   messageBufferMaxSize: 5000, // 防止内存无限增长

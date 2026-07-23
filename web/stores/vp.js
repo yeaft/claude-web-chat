@@ -107,6 +107,38 @@ export function fallbackTextColor(vpId) {
   return fallbackAvatarMotif(vpId).foreground;
 }
 
+/**
+ * Read the current UI locale without making VP consumers own i18n plumbing.
+ * The Pinia chat-store read is reactive; localStorage is only a startup/test
+ * fallback before the chat store has been installed.
+ *
+ * @returns {string}
+ */
+function currentVpLocale() {
+  const chat = (typeof window !== 'undefined' && window.Pinia && window.Pinia.useChatStore)
+    ? window.Pinia.useChatStore()
+    : null;
+  return (chat && typeof chat.locale === 'string')
+    ? chat.locale
+    : ((typeof localStorage !== 'undefined' && localStorage.getItem('locale')) || '');
+}
+
+/**
+ * Resolve the localized one-line capability summary used by VP lists.
+ * Older/custom VP records may not have description fields yet, so role is the
+ * compatibility fallback rather than rendering an empty second line.
+ *
+ * @param {object|null|undefined} vp
+ * @param {string} locale
+ * @returns {string}
+ */
+export function localizedVpDescription(vp, locale = '') {
+  if (!vp) return '';
+  const preferZh = String(locale || '').startsWith('zh');
+  if (preferZh) return vp.descriptionZh || vp.roleZh || vp.description || vp.role || '';
+  return vp.description || vp.role || vp.descriptionZh || vp.roleZh || '';
+}
+
 export const useVpStore = defineStore('vp', {
   state: () => ({
     /** @type {Record<string, object>} */
@@ -180,24 +212,14 @@ export const useVpStore = defineStore('vp', {
     vpLabel: (state) => (id) => {
       const v = state.vps[id];
       if (!v) return id;
-      const chat = (typeof window !== 'undefined' && window.Pinia && window.Pinia.useChatStore)
-        ? window.Pinia.useChatStore()
-        : null;
-      const locale = (chat && typeof chat.locale === 'string')
-        ? chat.locale
-        : ((typeof localStorage !== 'undefined' && localStorage.getItem('locale')) || '');
+      const locale = currentVpLocale();
       if (locale.startsWith('zh') && v.displayNameZh) return v.displayNameZh;
       return v.displayName || v.vpId || id;
     },
+    vpDescription: (state) => (id) => localizedVpDescription(state.vps[id], currentVpLocale()),
     vpInitial: (state) => (id) => {
       const v = state.vps[id];
-      const chat = (typeof window !== 'undefined' && window.Pinia && window.Pinia.useChatStore)
-        ? window.Pinia.useChatStore()
-        : null;
-      const locale = (chat && typeof chat.locale === 'string')
-        ? chat.locale
-        : ((typeof localStorage !== 'undefined' && localStorage.getItem('locale')) || '');
-      const preferZh = locale.startsWith('zh');
+      const preferZh = currentVpLocale().startsWith('zh');
       const src = (v && (v.avatar
         || (preferZh && v.displayNameZh)
         || v.displayName
@@ -324,7 +346,7 @@ export const useVpStore = defineStore('vp', {
      *
      * @param {string} groupId legacy in-store argument name for sessionId
      */
-    triggerGroupDream(groupId) {
+    triggerGroupDream(groupId, meta = {}) {
       if (!groupId) return;
       this.groupDreamStatus = {
         ...this.groupDreamStatus,
@@ -362,9 +384,11 @@ export const useVpStore = defineStore('vp', {
       const frame = { type: 'yeaft_dream_trigger', sessionId: groupId };
       // Route by the session's owning agent (dream is session-scoped). Falls
       // back to currentAgent; server also defaults to client.currentAgent.
-      const dreamAgentId = typeof chat.agentIdForSession === 'function'
-        ? chat.agentIdForSession(groupId)
-        : chat.currentAgent;
+      const dreamAgentId = meta && meta.agentId
+        ? meta.agentId
+        : (typeof chat.agentIdForSession === 'function'
+          ? chat.agentIdForSession(groupId)
+          : chat.currentAgent);
       if (dreamAgentId) frame.agentId = dreamAgentId;
       const sent = chat.sendWsMessage(frame);
       if (sent === false) {

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Engine } from '../../../agent/yeaft/engine.js';
 import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { LLMAbortError, LLMServerError } from '../../../agent/yeaft/llm/adapter.js';
 
 /**
  * Adapter that yields a queued response per stream() call. Tests push
@@ -16,9 +17,13 @@ class QueueAdapter {
     this.streamCalls.push({
       messages: JSON.parse(JSON.stringify(params.messages || [])),
     });
-    const events = this.responses.shift();
-    if (!events) throw new Error('QueueAdapter: no more responses queued');
-    for (const ev of events) yield ev;
+    const response = this.responses.shift();
+    if (!response) throw new Error('QueueAdapter: no more responses queued');
+    if (typeof response === 'function') {
+      for await (const event of response(params)) yield event;
+      return;
+    }
+    for (const event of response) yield event;
   }
   async call() { return { text: 'ok', usage: {} }; }
 }
@@ -30,12 +35,12 @@ function endTurn(text = 'done') {
   ];
 }
 
-function buildEngine() {
+function buildEngine(config = {}) {
   const adapter = new QueueAdapter();
   const engine = new Engine({
     adapter,
     trace: new NullTrace(),
-    config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true },
+    config: { model: 'test-model', maxOutputTokens: 1024, _readOnly: true, ...config },
   });
   return { engine, adapter };
 }
@@ -44,6 +49,33 @@ async function drainEvents(it) {
   const events = [];
   for await (const ev of it) events.push(ev);
   return events;
+}
+
+function registerPendingTask(engine, adapter, taskId, toolName = `tool-${taskId}`) {
+  engine.registerTool({
+    name: toolName,
+    description: 'launches a fake background task',
+    parameters: { type: 'object', properties: {} },
+    execute: async (_input, ctx) => {
+      ctx.registerAsyncTask(taskId);
+      return 'started';
+    },
+  });
+  adapter.pushResponse([
+    { type: 'tool_call', id: `call-${taskId}`, name: toolName, input: {} },
+    { type: 'stop', stopReason: 'tool_use' },
+  ]);
+  adapter.pushResponse(endTurn('parking'));
+}
+
+function trackTaskDelivery(engine) {
+  const consumed = [];
+  const undelivered = [];
+  engine.setAsyncTaskCoordinator({
+    onConsumed(taskId) { consumed.push(taskId); },
+    onUndelivered(taskId) { undelivered.push(taskId); },
+  });
+  return { consumed, undelivered };
 }
 
 describe('engine — same-turn background task wait', () => {
@@ -136,6 +168,106 @@ describe('engine — same-turn background task wait', () => {
     // After query() returns, the engine must no longer claim ownership.
     expect(e.hasPendingAsyncTasks()).toBe(false);
     expect(e.ownsPendingAsyncTask('task-xyz')).toBe(false);
+  });
+
+  it('continues the same query when durable input wins the terminal close race', async () => {
+    const e = engine;
+    const a = adapter;
+    const queued = [];
+    let closeAttempts = 0;
+
+    a.pushResponse(endTurn('first answer'));
+    a.pushResponse(endTurn('answer with appended input'));
+
+    const events = await drainEvents(e.query({
+      prompt: 'start it',
+      messages: [],
+      drainPendingUserMessages: () => queued.splice(0),
+      closePendingUserInput: () => {
+        closeAttempts += 1;
+        if (closeAttempts === 1) {
+          queued.push({ content: 'new requirement', preview: 'new requirement' });
+          return false;
+        }
+        return true;
+      },
+    }));
+
+    expect(closeAttempts).toBe(2);
+    expect(a.streamCalls).toHaveLength(2);
+    expect(JSON.stringify(a.streamCalls[1].messages)).toContain('new requirement');
+    expect(events.filter(event => event.type === 'user_append')).toEqual([
+      expect.objectContaining({ preview: 'new requirement' }),
+    ]);
+    expect(events.filter(event => event.type === 'turn_end')).toEqual([
+      expect.objectContaining({ stopReason: 'user_append_continue' }),
+      expect.objectContaining({ stopReason: 'end_turn', terminal: true }),
+    ]);
+  });
+
+  it('fails explicitly when terminal input cannot close or be drained', async () => {
+    adapter.pushResponse(endTurn('done'));
+
+    await expect(drainEvents(engine.query({
+      prompt: 'start it',
+      messages: [],
+      drainPendingUserMessages: () => [],
+      closePendingUserInput: () => false,
+    }))).rejects.toThrow(/Could not close pending user input/);
+  });
+
+  it('external thread-queue wake releases the wait and drains the user message without completing the task', async () => {
+    const e = engine;
+    const a = adapter;
+    let queued = [];
+
+    e.registerTool({
+      name: 'fakeExternalWakeTool',
+      description: 'launches a fake background task',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, ctx) => {
+        ctx.registerAsyncTask('task-external-wake');
+        return 'Started background task task-external-wake.';
+      },
+    });
+
+    a.pushResponse([
+      { type: 'tool_call', id: 'call-external', name: 'fakeExternalWakeTool', input: {} },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    a.pushResponse(endTurn('parked'));
+    a.pushResponse(endTurn('answered user while task remains active'));
+    a.pushResponse(endTurn('task finished'));
+
+    const events = [];
+    let wakeSent = false;
+    let completionSent = false;
+    for await (const ev of e.query({
+      prompt: 'start it',
+      messages: [],
+      drainPendingUserMessages: () => queued.splice(0),
+    })) {
+      events.push(ev);
+      if (ev.type === 'async_task_wait_start' && !wakeSent) {
+        wakeSent = true;
+        queued.push({ content: 'answer this now too', preview: 'answer this now too' });
+        expect(e.wakeForPendingUserMessage()).toBe(true);
+      } else if (ev.type === 'async_task_wait_start' && wakeSent && !completionSent) {
+        completionSent = true;
+        e.notifyAsyncTaskCompleted(
+          'task-external-wake',
+          '<task-result id="task-external-wake" status="succeeded">done</task-result>',
+          { preview: 'done' },
+        );
+      }
+    }
+
+    expect(a.streamCalls).toHaveLength(4);
+    expect(JSON.stringify(a.streamCalls[2].messages)).toContain('answer this now too');
+    expect(events.filter(ev => ev.type === 'user_append')).toEqual([
+      expect.objectContaining({ preview: 'answer this now too', internal: false }),
+    ]);
+    expect(e.hasPendingAsyncTasks()).toBe(false);
   });
 
   it('user append during the wait splices the user message and continues without dropping the still-pending task', async () => {
@@ -273,9 +405,221 @@ describe('engine — same-turn background task wait', () => {
     const waitEnd = events.find(ev => ev.type === 'async_task_wait_end');
     expect(waitEnd).toBeTruthy();
     expect(waitEnd.aborted).toBe(true);
+    expect(events.filter(ev => ev.type === 'aborted')).toHaveLength(1);
+    expect(events.filter(ev => ev.type === 'turn_end').at(-1)?.stopReason).toBe('aborted');
 
     // After abort the engine should have cleared ownership.
     expect(e.hasPendingAsyncTasks()).toBe(false);
+  });
+
+  it('rejects task completion after abort so the bridge can rescue it in a new turn', async () => {
+    const e = engine;
+    const a = adapter;
+
+    e.registerTool({
+      name: 'fakeBgTool',
+      description: 'launches a fake background task',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, ctx) => {
+        ctx.registerAsyncTask('task-after-abort');
+        return 'started';
+      },
+    });
+
+    a.pushResponse([
+      { type: 'tool_call', id: 'call-1', name: 'fakeBgTool', input: {} },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    a.pushResponse(endTurn('parking'));
+
+    let accepted = null;
+    const events = [];
+    for await (const ev of e.query({ prompt: 'do it', messages: [] })) {
+      events.push(ev);
+      if (ev.type === 'async_task_wait_start') {
+        e.abort('timeout');
+        accepted = e.notifyAsyncTaskCompleted(
+          'task-after-abort',
+          '<task-result id="task-after-abort">done</task-result>',
+        );
+      }
+    }
+
+    expect(accepted).toBe(false);
+    expect(a.streamCalls).toHaveLength(2);
+    expect(events.filter(ev => ev.type === 'aborted')).toHaveLength(1);
+    expect(events.filter(ev => ev.type === 'turn_end').at(-1)?.stopReason).toBe('aborted');
+  });
+
+  it('hands accepted-but-undrained completion back when abort wins before continuation', async () => {
+    const e = engine;
+    const a = adapter;
+    const consumed = [];
+    const undelivered = [];
+    e.setAsyncTaskCoordinator({
+      onConsumed(taskId) { consumed.push(taskId); },
+      onUndelivered(taskId) { undelivered.push(taskId); },
+    });
+
+    e.registerTool({
+      name: 'fakeBgTool',
+      description: 'launches a fake background task',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_input, ctx) => {
+        ctx.registerAsyncTask('task-before-abort');
+        return 'started';
+      },
+    });
+
+    a.pushResponse([
+      { type: 'tool_call', id: 'call-1', name: 'fakeBgTool', input: {} },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    a.pushResponse(endTurn('parking'));
+
+    let accepted = null;
+    const events = [];
+    for await (const ev of e.query({ prompt: 'do it', messages: [] })) {
+      events.push(ev);
+      if (ev.type === 'async_task_wait_start') {
+        accepted = e.notifyAsyncTaskCompleted(
+          'task-before-abort',
+          '<task-result id="task-before-abort">done</task-result>',
+        );
+        e.abort('timeout');
+      }
+    }
+
+    expect(accepted).toBe(true);
+    expect(a.streamCalls).toHaveLength(2);
+    expect(consumed).toEqual([]);
+    expect(undelivered).toEqual(['task-before-abort']);
+    expect(events.filter(ev => ev.type === 'aborted')).toHaveLength(1);
+  });
+
+  it('keeps a fetch-pending task result undelivered when watchdog aborts before provider events', async () => {
+    const { engine: e, adapter: a } = buildEngine();
+    const delivery = trackTaskDelivery(e);
+    registerPendingTask(e, a, 'task-fetch-pending');
+
+    let markThirdRequestStarted;
+    const thirdRequestStarted = new Promise(resolve => { markThirdRequestStarted = resolve; });
+    a.pushResponse(async function* (params) {
+      markThirdRequestStarted();
+      await new Promise((_, reject) => {
+        const rejectAbort = () => reject(new LLMAbortError());
+        if (params.signal.aborted) rejectAbort();
+        else params.signal.addEventListener('abort', rejectAbort, { once: true });
+      });
+    });
+
+    const events = [];
+    const queryPromise = (async () => {
+      for await (const event of e.query({ prompt: 'do it', messages: [] })) {
+        events.push(event);
+        if (event.type === 'async_task_wait_start') {
+          expect(e.notifyAsyncTaskCompleted(
+            'task-fetch-pending',
+            '<task-result id="task-fetch-pending">done</task-result>',
+          )).toBe(true);
+        }
+      }
+    })();
+
+    await thirdRequestStarted;
+    expect(e.abort('timeout')).toBe(true);
+    await queryPromise;
+
+    expect(a.streamCalls).toHaveLength(3);
+    expect(JSON.stringify(a.streamCalls[2].messages)).toContain('task-fetch-pending');
+    expect(delivery.consumed).toEqual([]);
+    expect(delivery.undelivered).toEqual(['task-fetch-pending']);
+    expect(events.filter(event => event.type === 'aborted')).toHaveLength(1);
+  });
+
+  it('keeps task result escrow across a transient stream error and consumes it after retry success', async () => {
+    const { engine: e, adapter: a } = buildEngine({
+      llmRetry: { maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+    });
+    const delivery = trackTaskDelivery(e);
+    registerPendingTask(e, a, 'task-retry');
+    a.pushResponse(async function* () {
+      throw new LLMServerError('temporary gateway failure', 502);
+    });
+    a.pushResponse(endTurn('handled after retry'));
+
+    const events = [];
+    for await (const event of e.query({ prompt: 'do it', messages: [] })) {
+      events.push(event);
+      if (event.type === 'async_task_wait_start') {
+        expect(e.notifyAsyncTaskCompleted(
+          'task-retry',
+          '<task-result id="task-retry">done</task-result>',
+        )).toBe(true);
+      }
+    }
+
+    expect(a.streamCalls).toHaveLength(4);
+    expect(JSON.stringify(a.streamCalls[2].messages)).toContain('task-retry');
+    expect(JSON.stringify(a.streamCalls[3].messages)).toContain('task-retry');
+    expect(events.filter(event => event.type === 'llm_retry')).toHaveLength(1);
+    expect(delivery.consumed).toEqual(['task-retry']);
+    expect(delivery.undelivered).toEqual([]);
+  });
+
+  it('consumes a task result once after a successful provider terminal stop', async () => {
+    const { engine: e, adapter: a } = buildEngine();
+    const delivery = trackTaskDelivery(e);
+    registerPendingTask(e, a, 'task-success');
+    a.pushResponse(endTurn('handled successfully'));
+
+    for await (const event of e.query({ prompt: 'do it', messages: [] })) {
+      if (event.type === 'async_task_wait_start') {
+        expect(e.notifyAsyncTaskCompleted(
+          'task-success',
+          '<task-result id="task-success">done</task-result>',
+        )).toBe(true);
+      }
+    }
+
+    expect(a.streamCalls).toHaveLength(3);
+    expect(JSON.stringify(a.streamCalls[2].messages)).toContain('task-success');
+    expect(delivery.consumed).toEqual(['task-success']);
+    expect(delivery.undelivered).toEqual([]);
+  });
+
+  it('rescues task result when stream emits a nonterminal event and then aborts', async () => {
+    const { engine: e, adapter: a } = buildEngine();
+    const delivery = trackTaskDelivery(e);
+    registerPendingTask(e, a, 'task-partial-abort');
+    a.pushResponse(async function* (params) {
+      yield { type: 'text_delta', text: 'partial task handling' };
+      await new Promise((_, reject) => {
+        const rejectAbort = () => reject(new LLMAbortError());
+        if (params.signal.aborted) rejectAbort();
+        else params.signal.addEventListener('abort', rejectAbort, { once: true });
+      });
+    });
+
+    const events = [];
+    for await (const event of e.query({ prompt: 'do it', messages: [] })) {
+      events.push(event);
+      if (event.type === 'async_task_wait_start') {
+        expect(e.notifyAsyncTaskCompleted(
+          'task-partial-abort',
+          '<task-result id="task-partial-abort">done</task-result>',
+        )).toBe(true);
+      }
+      if (event.type === 'text_delta' && event.text === 'partial task handling') {
+        expect(e.abort('timeout')).toBe(true);
+      }
+    }
+
+    expect(a.streamCalls).toHaveLength(3);
+    expect(JSON.stringify(a.streamCalls[2].messages)).toContain('task-partial-abort');
+    expect(delivery.consumed).toEqual([]);
+    expect(delivery.undelivered).toEqual(['task-partial-abort']);
+    expect(events.filter(event => event.type === 'aborted')).toHaveLength(1);
   });
 
   it('end_turn with no pending async tasks finalizes immediately (legacy behaviour unchanged)', async () => {

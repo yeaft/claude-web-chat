@@ -268,19 +268,24 @@
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 500;
   line-height: 1.2;
 }
 
-.settings-pane-yeaft .vp-crud-card-name span {
+.settings-pane-yeaft .vp-crud-card-name > span {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settings-pane-yeaft .vp-crud-card-description {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .settings-pane-yeaft .vp-crud-stock-badge {
@@ -958,8 +963,16 @@
   }
 
   .settings-pane-yeaft .vp-crud-card {
+    align-items: stretch;
+    flex-direction: column;
     gap: 8px;
     padding: 6px 0;
+  }
+
+  .settings-pane-yeaft .vp-crud-card-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    width: 100%;
   }
 
   .settings-pane-yeaft .vp-crud-card-actions .vp-crud-link-btn {

@@ -113,6 +113,50 @@ Hello`;
     expect(msg.content).toBe('Hello');
   });
 
+  it('round-trips image asset metadata without embedding image bytes', () => {
+    const store = new ConversationStore(TEST_DIR);
+    const written = store.append({
+      role: 'assistant',
+      content: '',
+      sessionId: 'session_image',
+      turnId: 'turn_image',
+      images: [{ assetId: 'a'.repeat(64), mimeType: 'image/png', filename: 'result.png', size: 68 }],
+    });
+    const sessionConversationDir = join(TEST_DIR, 'sessions', 'session_image', 'conversation');
+    const persistedFiles = readdirSync(join(sessionConversationDir, 'segments'));
+    expect(persistedFiles.length).toBeGreaterThan(0);
+    const raw = persistedFiles
+      .map(file => readFileSync(join(sessionConversationDir, 'segments', file), 'utf8'))
+      .join('\n');
+    expect(raw).toContain('"images"');
+    expect(raw).toContain('"assetId":"' + 'a'.repeat(64) + '"');
+    expect(raw).not.toContain('data:image');
+
+    const [loaded] = store.loadAllBySession('session_image');
+    expect(loaded.images).toEqual([
+      { assetId: 'a'.repeat(64), mimeType: 'image/png', filename: 'result.png', size: 68 },
+    ]);
+  });
+
+  it('round-trips the canonical image asset anchor without image bytes', () => {
+    const store = new ConversationStore(TEST_DIR);
+    store.append({
+      role: 'assistant',
+      content: 'final response',
+      sessionId: 'session_anchor',
+      turnId: 'turn_anchor',
+      imageAssetAnchor: true,
+    });
+
+    const [loaded] = store.loadAllBySession('session_anchor');
+    expect(loaded).toMatchObject({
+      role: 'assistant',
+      turnId: 'turn_anchor',
+      imageAssetAnchor: true,
+    });
+    expect(loaded).not.toHaveProperty('images');
+  });
+
   it('should parse turnId for persisted Yeaft assistant rows', () => {
     const raw = `---
 id: m0043
@@ -312,6 +356,264 @@ legacy session`, { encoding: 'utf8' });
       expect(compatStore.loadRecentBySession('s_fun', 10).map(m => m.content)).toEqual([]);
     });
 
+  describe('Session visible history search', () => {
+    it('searches only visible rows in the requested Session, newest first', () => {
+      const first = store.append({ role: 'user', content: 'Needle in the first turn', sessionId: 'session_search' });
+      store.append({ role: 'assistant', content: 'irrelevant', sessionId: 'session_search' });
+      const latest = store.append({ role: 'assistant', content: 'Latest NEEDLE answer', sessionId: 'session_search', speakerVpId: 'maker' });
+      store.append({ role: 'user', content: 'needle from another session', sessionId: 'session_other' });
+      store.append({ role: 'system', content: 'needle in hidden metadata', sessionId: 'session_search' });
+
+      const page = store.searchVisibleBySession('session_search', 'needle', { limit: 10 });
+
+      expect(page.results.map(result => result.messageId)).toEqual([latest.id, first.id]);
+      expect(page.results[0]).toMatchObject({ role: 'assistant', speakerVpId: 'maker' });
+      expect(page.results[0].snippet).toContain('NEEDLE');
+      expect(page.hasMore).toBe(false);
+    });
+
+    it('returns one canonical search result for a tool-using assistant response', () => {
+      store.append({ role: 'user', content: 'run it', sessionId: 'session_search_response' });
+      store.append({
+        role: 'assistant', content: 'Needle before tool', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker',
+      });
+      const tool = store.append({
+        role: 'assistant', content: '', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: {} }],
+      });
+      const final = store.append({
+        role: 'assistant', content: 'needle after tool', sessionId: 'session_search_response',
+        turnId: 'response-search', speakerVpId: 'maker',
+      });
+
+      const page = store.searchVisibleBySession('session_search_response', 'needle', { limit: 20 });
+
+      expect(page.results).toEqual([
+        expect.objectContaining({
+          messageId: final.id,
+          turnId: 'response-search',
+          role: 'assistant',
+          speakerVpId: 'maker',
+        }),
+      ]);
+      expect(page.results[0].messageId).not.toBe(tool.id);
+      expect(page.results[0].snippet).toContain('Needle before tool');
+    });
+
+    it('pages search results on response boundaries', () => {
+      for (let i = 0; i < 3; i += 1) {
+        store.append({ role: 'user', content: `question ${i}`, sessionId: 'session_search_pages' });
+        store.append({
+          role: 'assistant', content: `needle start ${i}`, sessionId: 'session_search_pages',
+          turnId: `response-${i}`, speakerVpId: 'maker',
+        });
+        store.append({
+          role: 'assistant', content: `needle final ${i}`, sessionId: 'session_search_pages',
+          turnId: `response-${i}`, speakerVpId: 'maker',
+        });
+      }
+
+      const firstPage = store.searchVisibleBySession('session_search_pages', 'needle', { limit: 1 });
+      const secondPage = store.searchVisibleBySession('session_search_pages', 'needle', {
+        limit: 1, beforeSeq: firstPage.nextBeforeSeq,
+      });
+
+      expect(firstPage.results).toHaveLength(1);
+      expect(firstPage.results[0].turnId).toBe('response-2');
+      expect(firstPage.hasMore).toBe(true);
+      expect(secondPage.results).toHaveLength(1);
+      expect(secondPage.results[0].turnId).toBe('response-1');
+      expect(secondPage.results[0].seq).toBeLessThan(firstPage.nextBeforeSeq);
+    });
+
+    it('loads a bounded lightweight outline page with a stable total count', () => {
+      const longText = `outline ${'x'.repeat(220)}`;
+      const first = store.append({
+        role: 'user', content: longText, sessionId: 'session_outline', clientMessageId: 'client-1',
+        attachments: [{ name: 'secret.txt', data: 'do-not-project' }],
+      });
+      store.append({ role: 'assistant', content: 'first answer', sessionId: 'session_outline', speakerVpId: 'maker' });
+      store.append({ role: 'system', content: 'hidden row', sessionId: 'session_outline' });
+      store.append({ role: 'user', content: 'second question', sessionId: 'session_outline' });
+      const latest = store.append({ role: 'assistant', content: 'second answer', sessionId: 'session_outline' });
+
+      const firstPage = store.loadVisibleOutlineBySession('session_outline', { limit: 2 });
+      const olderPage = store.loadVisibleOutlineBySession('session_outline', {
+        limit: 2, beforeSeq: firstPage.nextBeforeSeq, includeTotal: false,
+      });
+
+      expect(firstPage.results.map(result => result.messageId)).toEqual([
+        expect.any(String), latest.id,
+      ]);
+      expect(firstPage).toMatchObject({ hasMore: true, totalCount: 4 });
+      expect(olderPage.results.map(result => result.messageId)).toContain(first.id);
+      expect(olderPage.totalCount).toBeNull();
+      expect(olderPage.results.find(result => result.messageId === first.id)).toMatchObject({
+        clientMessageId: 'client-1', role: 'user',
+      });
+      expect(olderPage.results.find(result => result.messageId === first.id).snippet.length).toBeLessThan(longText.length);
+      expect(JSON.stringify([...firstPage.results, ...olderPage.results])).not.toContain('do-not-project');
+      expect(JSON.stringify([...firstPage.results, ...olderPage.results])).not.toContain('attachments');
+    });
+
+    it('groups one tool-using assistant response into one canonical outline entry', () => {
+      const user = store.append({
+        role: 'user', content: 'run the tool', sessionId: 'session_outline_tools', turnId: 'user-turn',
+      });
+      store.append({
+        role: 'assistant', content: 'I will check. ', sessionId: 'session_outline_tools',
+        turnId: 'assistant-turn', speakerVpId: 'maker',
+      });
+      store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_tools', turnId: 'assistant-turn',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: 'true' } }],
+      });
+      const final = store.append({
+        role: 'assistant', content: 'Done.', sessionId: 'session_outline_tools',
+        turnId: 'assistant-turn', speakerVpId: 'maker',
+      });
+
+      const page = store.loadVisibleOutlineBySession('session_outline_tools', { limit: 50 });
+
+      expect(page).toMatchObject({ totalCount: 2, hasMore: false, nextBeforeSeq: null });
+      expect(page.results).toEqual([
+        expect.objectContaining({ messageId: user.id, role: 'user' }),
+        expect.objectContaining({
+          messageId: final.id,
+          turnId: 'assistant-turn',
+          role: 'assistant',
+          speakerVpId: 'maker',
+          snippet: 'I will check. Done.',
+        }),
+      ]);
+    });
+
+    it('keeps the persisted tool-call row as the anchor for a tool-only response', () => {
+      store.append({ role: 'user', content: 'run only', sessionId: 'session_outline_tool_only' });
+      const toolOnly = store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_tool_only', turnId: 'tool-only-turn',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-1', name: 'Bash', input: { command: 'true' } }],
+      });
+
+      const page = store.loadVisibleOutlineBySession('session_outline_tool_only', { limit: 50 });
+
+      expect(page.totalCount).toBe(2);
+      expect(page.results[1]).toMatchObject({
+        messageId: toolOnly.id,
+        seq: store.getMessageSeqById(toolOnly.id),
+        turnId: 'tool-only-turn',
+        role: 'assistant',
+        snippet: '',
+      });
+    });
+
+    it('pages on response boundaries without repeating a multi-row response', () => {
+      const oldUser = store.append({ role: 'user', content: 'old question', sessionId: 'session_outline_pages' });
+      const oldTool = store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_pages', turnId: 'old-response',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-old', name: 'Bash', input: {} }],
+      });
+      store.append({
+        role: 'assistant', content: 'old final', sessionId: 'session_outline_pages',
+        turnId: 'old-response', speakerVpId: 'maker',
+      });
+      const newUser = store.append({ role: 'user', content: 'new question', sessionId: 'session_outline_pages' });
+      const newTool = store.append({
+        role: 'assistant', content: '', sessionId: 'session_outline_pages', turnId: 'new-response',
+        speakerVpId: 'maker', toolCalls: [{ id: 'call-new', name: 'Bash', input: {} }],
+      });
+      const newest = store.append({
+        role: 'assistant', content: 'new answer', sessionId: 'session_outline_pages',
+        turnId: 'new-response', speakerVpId: 'maker',
+      });
+      const latestPage = store.loadVisibleOutlineBySession('session_outline_pages', { limit: 1 });
+      const firstPage = store.loadVisibleOutlineBySession('session_outline_pages', {
+        limit: 2, beforeSeq: latestPage.nextBeforeSeq, includeTotal: false,
+      });
+      const olderPage = store.loadVisibleOutlineBySession('session_outline_pages', {
+        limit: 2, beforeSeq: firstPage.nextBeforeSeq, includeTotal: false,
+      });
+
+      expect(latestPage.results).toEqual([
+        expect.objectContaining({ messageId: newest.id, turnId: 'new-response' }),
+      ]);
+      expect(latestPage.nextBeforeSeq).toBe(store.getMessageSeqById(newTool.id));
+      expect(firstPage.results).toEqual([
+        expect.objectContaining({ turnId: 'old-response', role: 'assistant', snippet: 'old final' }),
+        expect.objectContaining({ messageId: newUser.id, role: 'user' }),
+      ]);
+      expect(firstPage.results.some(result => result.turnId === 'new-response')).toBe(false);
+      expect(firstPage.results.some(result => result.messageId === oldTool.id)).toBe(false);
+      expect(olderPage.results).toEqual([
+        expect.objectContaining({ messageId: oldUser.id, role: 'user' }),
+      ]);
+    });
+
+    it('supports an exclusive seq cursor and bounded anchor window', () => {
+      const ids = [];
+      for (let i = 0; i < 5; i += 1) {
+        ids.push(store.append({ role: 'user', content: `searchable turn ${i}`, sessionId: 'session_window' }));
+        store.append({ role: 'assistant', content: `answer ${i}`, sessionId: 'session_window' });
+      }
+      store.moveToCold(ids[0].id);
+      const coldPage = store.searchVisibleBySession('session_window', 'searchable turn 0', { limit: 2 });
+      expect(coldPage.results.map(result => result.messageId)).toContain(ids[0].id);
+
+      const firstPage = store.searchVisibleBySession('session_window', 'searchable', { limit: 2 });
+      const secondPage = store.searchVisibleBySession('session_window', 'searchable', { limit: 2, beforeSeq: firstPage.nextBeforeSeq });
+      expect(firstPage.results).toHaveLength(2);
+      expect(firstPage.hasMore).toBe(true);
+      expect(secondPage.results.every(result => result.seq < firstPage.nextBeforeSeq)).toBe(true);
+
+      const anchor = ids[2];
+      const window = store.loadVisibleWindowBySession('session_window', store.getMessageSeqById(anchor.id), {
+        beforeTurns: 1,
+        afterTurns: 1,
+      });
+      expect(window.messages.some(message => message.id === anchor.id)).toBe(true);
+      expect(window.messages.every(message => message.sessionId === 'session_window')).toBe(true);
+      expect(window.messages.length).toBeLessThan(10);
+    });
+
+    it('restores AskUser answers inside a bounded search window', () => {
+      store.append({ role: 'user', content: 'searchable AskUser turn', sessionId: 'session_window_ask' });
+      const assistant = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'session_window_ask',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'ask_window', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'session_window_ask',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_window',
+      });
+      store.append({ role: 'assistant', content: 'done', sessionId: 'session_window_ask' });
+
+      const window = store.loadVisibleWindowBySession(
+        'session_window_ask',
+        store.getMessageSeqById(assistant.id),
+        { beforeTurns: 1, afterTurns: 1 },
+      );
+
+      expect(window.messages.find(message => message.id === assistant.id)?.askUserResults).toEqual([
+        expect.objectContaining({
+          toolCallId: 'ask_window',
+          status: 'answered',
+          answers: { 'Continue?': 'Yes' },
+        }),
+      ]);
+    });
+  });
+
   describe('appendBatch', () => {
     it('should write multiple messages', () => {
       const messages = store.appendBatch([
@@ -436,6 +738,150 @@ legacy session`, { encoding: 'utf8' });
 
       const page = store.loadAfterSeqByGroup('grp_a', Number(first.id.replace(/^m/, '')));
       expect(page.messages.map(m => m.content)).toEqual(['target response']);
+    });
+
+    it('keeps an AskUser call and result atomic at the default delta limit', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_ask' });
+      store.appendBatch(Array.from({ length: 499 }, (_, index) => ({
+        role: 'assistant',
+        content: `filler-${index}`,
+        sessionId: 'grp_delta_ask',
+      })));
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_ask',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCalls: [{ id: 'ask_boundary', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      const result = store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_delta_ask',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCallId: 'ask_boundary',
+      });
+      const trailing = store.append({ role: 'assistant', content: 'after pair', sessionId: 'grp_delta_ask' });
+
+      const firstPage = store.loadAfterSeqByGroup('grp_delta_ask', store.getMessageSeqById(cursor.id));
+      expect(firstPage.messages.find(message => message.id === call.id)?.askUserResults).toEqual([
+        expect.objectContaining({
+          toolCallId: 'ask_boundary',
+          status: 'answered',
+          answers: { 'Continue?': 'Yes' },
+        }),
+      ]);
+      expect(firstPage.latestSeq).toBe(store.getMessageSeqById(result.id));
+
+      const secondPage = store.loadAfterSeqByGroup('grp_delta_ask', firstPage.latestSeq);
+      expect(secondPage.messages.map(message => message.id)).toEqual([trailing.id]);
+    });
+
+    it('recovers an AskUser result when the incoming cursor already points at its call', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_cursor' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCalls: [{ id: 'ask_cursor', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.appendBatch(Array.from({ length: 499 }, (_, index) => ({
+        role: 'assistant',
+        content: `sibling output ${index}`,
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-b',
+        turnId: `turn-b-${index}`,
+        threadId: `thread-b-${index}`,
+      })));
+      const result = store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_delta_cursor',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        threadId: 'thread-a',
+        toolCallId: 'ask_cursor',
+      });
+
+      const siblingCursor = store.getMessageSeqById(result.id) - 1;
+      const page = store.loadAfterSeqByGroup('grp_delta_cursor', siblingCursor);
+
+      expect(store.getMessageSeqById(cursor.id)).toBeLessThan(store.getMessageSeqById(call.id));
+      expect(page.messages.find(message => message.id === call.id)?.askUserResults).toEqual([
+        expect.objectContaining({ toolCallId: 'ask_cursor', status: 'answered' }),
+      ]);
+      expect(page.latestSeq).toBe(store.getMessageSeqById(result.id));
+    });
+
+    it('keeps a tool pair atomic across interleaved visible Session rows', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_interleaved' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        toolCalls: [{ id: 'tool_interleaved', name: 'FileRead', input: {} }],
+      });
+      store.append({
+        role: 'assistant',
+        content: 'sibling output',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-b',
+        turnId: 'turn-b',
+      });
+      const result = store.append({
+        role: 'tool',
+        content: 'done',
+        sessionId: 'grp_delta_interleaved',
+        speakerVpId: 'vp-a',
+        turnId: 'turn-a',
+        toolCallId: 'tool_interleaved',
+      });
+
+      const page = store.loadAfterSeqByGroup(
+        'grp_delta_interleaved',
+        store.getMessageSeqById(cursor.id),
+        { limit: 1 },
+      );
+
+      expect(page.messages.find(message => message.id === call.id)).toMatchObject({ toolSummaryCount: 1 });
+      expect(page.latestSeq).toBe(store.getMessageSeqById(result.id));
+    });
+
+    it('keeps every result in an ordinary multi-tool arc at a delta boundary', () => {
+      const cursor = store.append({ role: 'user', content: 'cached', sessionId: 'grp_delta_tools' });
+      store.append({ role: 'assistant', content: 'filler', sessionId: 'grp_delta_tools' });
+      const call = store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_delta_tools',
+        toolCalls: [
+          { id: 'tool_a', name: 'FileRead', input: {} },
+          { id: 'tool_b', name: 'Grep', input: {} },
+        ],
+      });
+      store.append({ role: 'tool', content: 'a', sessionId: 'grp_delta_tools', toolCallId: 'tool_a' });
+      const lastResult = store.append({ role: 'tool', content: 'b', sessionId: 'grp_delta_tools', toolCallId: 'tool_b' });
+      const trailing = store.append({ role: 'assistant', content: 'after pair', sessionId: 'grp_delta_tools' });
+
+      const firstPage = store.loadAfterSeqByGroup(
+        'grp_delta_tools',
+        store.getMessageSeqById(cursor.id),
+        { limit: 3 },
+      );
+      expect(firstPage.messages.find(message => message.id === call.id)).toMatchObject({ toolSummaryCount: 2 });
+      expect(firstPage.latestSeq).toBe(store.getMessageSeqById(lastResult.id));
+
+      const secondPage = store.loadAfterSeqByGroup('grp_delta_tools', firstPage.latestSeq, { limit: 3 });
+      expect(secondPage.messages.map(message => message.id)).toEqual([trailing.id]);
     });
 
     it('hides legacy unstamped task-result and system-note rows from session history', () => {
@@ -582,6 +1028,136 @@ legacy session`, { encoding: 'utf8' });
       expect(recent[1].toolCalls).toHaveLength(1);
       expect(recent[2].toolCallId).toBe('toolu_1');
       expect(readCounts.count).toBeLessThan(10);
+    });
+
+    it('projects persisted AskUser answers without exposing ordinary tool results', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [
+          { id: 'ask_1', name: 'AskUser', input: { question: 'Continue?', options: ['Yes', 'No'] } },
+          { id: 'bash_1', name: 'Bash', input: { command: 'echo ok' } },
+        ],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_1',
+      });
+      store.append({
+        role: 'tool',
+        content: 'ok',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'bash_1',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages.map(m => m.role)).toEqual(['user', 'assistant']);
+      expect(page.messages[1]).toMatchObject({
+        toolSummaryCount: 1,
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes', 'No'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+      });
+      expect(page.messages[1]).not.toHaveProperty('toolCalls');
+      expect(page.messages.some(m => m.role === 'tool')).toBe(false);
+    });
+
+    it('does not misclassify legacy pending AskUser output as an answer', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        toolCalls: [{ id: 'ask_legacy', name: 'AskUser', input: { question: 'Continue?', options: ['Yes'] } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ type: 'ask_user', requestId: 'ask_old', question: 'Continue?', options: ['Yes'], message: 'Question sent to user' }),
+        sessionId: 'grp_a',
+        toolCallId: 'ask_legacy',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1]).toMatchObject({ toolSummaryCount: 1 });
+      expect(page.messages[1].askUserResults).toBeUndefined();
+    });
+
+    it('keeps same-id AskUser results isolated by Session turn identity', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'shared_call', name: 'AskUser', input: { question: 'Continue?' } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Wrong' } }),
+        sessionId: 'grp_b',
+        threadId: 'thread-b',
+        turnId: 'turn-b',
+        speakerVpId: 'vp-b',
+        toolCallId: 'shared_call',
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Right' } }),
+        sessionId: 'grp_a',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'shared_call',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1].askUserResults).toEqual([
+        expect.objectContaining({ answers: { 'Continue?': 'Right' } }),
+      ]);
+    });
+
+    it('restores timed-out AskUser calls as expired history state', () => {
+      store.append({ role: 'user', content: 'latest q', sessionId: 'grp_a' });
+      store.append({
+        role: 'assistant',
+        content: '',
+        sessionId: 'grp_a',
+        toolCalls: [{ id: 'ask_timeout', name: 'AskUser', input: { question: 'Continue?' } }],
+      });
+      store.append({
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', timedOut: true }),
+        sessionId: 'grp_a',
+        toolCallId: 'ask_timeout',
+      });
+
+      const page = store.loadVisibleBySession('grp_a', null, 1);
+
+      expect(page.messages[1].askUserResults).toEqual([
+        expect.objectContaining({ toolCallId: 'ask_timeout', status: 'expired' }),
+      ]);
     });
 
     it('loadVisibleBySession stops on dense hidden rows after the requested turn', () => {

@@ -230,7 +230,10 @@ export default {
             @keydown.space.prevent="$emit('mention-vp', row.vpId)"
           >
             <div class="yeaft-vp-timeline-row-body">
-              <span class="yeaft-vp-timeline-row-name" :style="{ color: vpTextColorFor(row.vpId) }">{{ row.displayName }}</span>
+              <span class="yeaft-vp-timeline-row-copy">
+                <span class="yeaft-vp-timeline-row-name" :style="{ color: vpTextColorFor(row.vpId) }">{{ row.displayName }}</span>
+                <span v-if="row.description" class="yeaft-vp-timeline-row-description">{{ row.description }}</span>
+              </span>
               <span class="yeaft-vp-timeline-row-status">{{ statusLabel(row) }}</span>
               <span
                 v-if="row.runningThreadCount > 1"

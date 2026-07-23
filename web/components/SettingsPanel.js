@@ -7,6 +7,12 @@ import {
   getAgentServiceCommand,
   getServerWsUrl,
 } from '../utils/agentSetup.js';
+import {
+  clearOverlayPointerGesture,
+  shouldDismissFromOverlayClick,
+  trackOverlayPointerDown,
+  trackOverlayPointerUp,
+} from '../utils/overlay-dismiss.js';
 import DashboardTab from './DashboardTab.js';
 import VpCrudPanel from './VpCrudPanel.js';
 import SearchSettingsTab from './SearchSettingsTab.js';
@@ -23,7 +29,14 @@ export default {
   },
   emits: ['close'],
   template: `
-    <div class="settings-overlay" v-if="visible" @click.self="$emit('close')">
+    <div
+      class="settings-overlay"
+      v-if="visible"
+      @pointerdown="trackOverlayPointerDown"
+      @pointerup="trackOverlayPointerUp"
+      @pointercancel="clearOverlayPointerGesture"
+      @click="onSettingsOverlayClick"
+    >
       <div class="settings-dialog">
         <!-- Left Navigation -->
         <div class="settings-nav">
@@ -382,7 +395,10 @@ export default {
       <div
         v-if="authStore.qrPanel && authStore.qrPanel.intent === 'bind'"
         class="settings-overlay sp-qr-overlay"
-        @click.self="cancelQrBind"
+        @pointerdown="trackOverlayPointerDown"
+        @pointerup="trackOverlayPointerUp"
+        @pointercancel="clearOverlayPointerGesture"
+        @click="onQrOverlayClick"
       >
         <div class="sp-qr-card">
           <p class="totp-title">{{ qrModalTitle }}</p>
@@ -601,6 +617,11 @@ export default {
         if (this.authStore.qrPanel) this.cancelQrBind();
       }
     },
+    activeTab(tab) {
+      if (tab === 'invitations' && this.authStore.role === 'admin') {
+        this.loadInvitations();
+      }
+    },
     // When the bind QR completes (server reports status='bound'), close the
     // modal, refresh the linked-identities list, and surface a success toast.
     'authStore.qrPanel.status'(status) {
@@ -622,6 +643,18 @@ export default {
     }
   },
   methods: {
+    trackOverlayPointerDown,
+    trackOverlayPointerUp,
+    clearOverlayPointerGesture,
+
+    onSettingsOverlayClick(event) {
+      if (shouldDismissFromOverlayClick(event)) this.$emit('close');
+    },
+
+    onQrOverlayClick(event) {
+      if (shouldDismissFromOverlayClick(event)) this.cancelQrBind();
+    },
+
     changeLanguage() {
       this.chatStore.changeLocale(this.selectedLocale);
     },
@@ -672,18 +705,26 @@ export default {
       this._consumeSsoQueryFlags();
       try {
         const headers = this.getHeaders();
+        const requestToken = this.authStore.token || null;
         const [profileRes, secretRes] = await Promise.all([
           fetch('/api/user/profile', { headers }),
           fetch('/api/user/agent-secret', { headers })
         ]);
+        if (profileRes.status === 401 || profileRes.status === 403 || secretRes.status === 401 || secretRes.status === 403) {
+          this.authStore.handleAuthFailure?.(this.$t('auth.sessionExpired'), requestToken);
+          return;
+        }
         if (profileRes.ok) {
           this.profile = await profileRes.json();
+        } else {
+          const data = await profileRes.json().catch(() => ({}));
+          this.showMessage(data.error || this.$t('settings.account.profileLoadFailed'), true);
         }
         if (secretRes.ok) {
           const data = await secretRes.json();
           this.applyAgentSecretResponse(data);
         }
-        if (this.authStore.role === 'admin') {
+        if (this.authStore.role === 'admin' && this.activeTab === 'invitations') {
           await this.loadInvitations();
         }
         // Load linked SSO identities (best-effort).
@@ -818,8 +859,9 @@ export default {
 
     getHeaders() {
       const h = { 'Content-Type': 'application/json' };
-      if (this.authStore.token) {
-        h['Authorization'] = `Bearer ${this.authStore.token}`;
+      const token = this.authStore.getActiveToken?.() || this.authStore.token;
+      if (token) {
+        h['Authorization'] = `Bearer ${token}`;
       }
       return h;
     },

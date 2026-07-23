@@ -7,8 +7,10 @@ import { existsSync, mkdirSync } from 'fs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // 数据库文件位置
-const DATA_DIR = process.env.TEST_DB_DIR || join(__dirname, '../../data');
-const DB_PATH = process.env.TEST_DB_PATH || join(DATA_DIR, 'webchat.db');
+const DATA_DIR = process.env.SERVER_DATA_DIR || process.env.TEST_DB_DIR || join(__dirname, '../../data');
+const DB_PATH = process.env.SERVER_DATA_DIR
+  ? join(DATA_DIR, 'webchat.db')
+  : (process.env.TEST_DB_PATH || join(DATA_DIR, 'webchat.db'));
 
 // 确保数据目录存在
 if (!existsSync(DATA_DIR)) {
@@ -80,6 +82,11 @@ db.exec(`
     request_count INTEGER DEFAULT 0,
     bytes_sent INTEGER DEFAULT 0,
     bytes_received INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT 0
   );
 
@@ -92,7 +99,27 @@ db.exec(`
     request_count INTEGER DEFAULT 0,
     bytes_sent INTEGER DEFAULT 0,
     bytes_received INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
     PRIMARY KEY (user_id, date)
+  );
+
+  -- Agent token metric watermarks. Agent snapshots are cumulative within one
+  -- process epoch; this table makes reconnects and server restarts idempotent.
+  CREATE TABLE IF NOT EXISTS agent_metric_watermarks (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_instance_id TEXT NOT NULL,
+    metric_epoch TEXT NOT NULL,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, agent_instance_id, metric_epoch)
   );
 
   -- 基本索引（不依赖迁移列）
@@ -155,7 +182,17 @@ const migrations = [
   // without one → the UI lost the "copilot" marker AND sends mis-routed to
   // Claude (handleUserInput resolved providerName to the default). The send
   // forward now reads this column so the agent can self-heal its ACP child.
-  `ALTER TABLE sessions ADD COLUMN provider TEXT`
+  `ALTER TABLE sessions ADD COLUMN provider TEXT`,
+  `ALTER TABLE user_stats ADD COLUMN input_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE user_stats ADD COLUMN output_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE user_stats ADD COLUMN cache_read_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE user_stats ADD COLUMN cache_write_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE user_stats ADD COLUMN total_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE daily_stats ADD COLUMN input_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE daily_stats ADD COLUMN output_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE daily_stats ADD COLUMN cache_read_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE daily_stats ADD COLUMN cache_write_tokens INTEGER DEFAULT 0`,
+  `ALTER TABLE daily_stats ADD COLUMN total_tokens INTEGER DEFAULT 0`
 ];
 
 // Yeaft sessions table — server-side persistence so the unified sidebar
@@ -166,7 +203,7 @@ const migrations = [
 // config overrides — none of which are chat concerns).
 const yeaftSessionsTable = `
   CREATE TABLE IF NOT EXISTS yeaft_sessions (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     user_id TEXT REFERENCES users(id),
     agent_id TEXT NOT NULL,
     name TEXT,
@@ -179,14 +216,56 @@ const yeaftSessionsTable = `
     updated_at INTEGER NOT NULL,
     is_archived INTEGER DEFAULT 0,
     is_pinned INTEGER DEFAULT 0,
-    sort_order INTEGER
+    sort_order INTEGER,
+    PRIMARY KEY (user_id, agent_id, id)
   );
 
   CREATE INDEX IF NOT EXISTS idx_yeaft_sessions_user ON yeaft_sessions(user_id);
   CREATE INDEX IF NOT EXISTS idx_yeaft_sessions_agent ON yeaft_sessions(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_yeaft_sessions_id ON yeaft_sessions(id);
   CREATE INDEX IF NOT EXISTS idx_yeaft_sessions_updated ON yeaft_sessions(updated_at DESC);
 `;
 db.exec(yeaftSessionsTable);
+
+try {
+  const tableInfo = db.prepare(`PRAGMA table_info(yeaft_sessions)`).all();
+  const idColumn = tableInfo.find(col => col && col.name === 'id');
+  if (idColumn && Number(idColumn.pk) === 1) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS yeaft_sessions_composite (
+        id TEXT NOT NULL,
+        user_id TEXT REFERENCES users(id),
+        agent_id TEXT NOT NULL,
+        name TEXT,
+        roster_json TEXT,
+        default_vp_id TEXT,
+        work_dir TEXT,
+        config_json TEXT,
+        announcement TEXT,
+        created_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        is_archived INTEGER DEFAULT 0,
+        is_pinned INTEGER DEFAULT 0,
+        sort_order INTEGER,
+        PRIMARY KEY (user_id, agent_id, id)
+      );
+      INSERT OR REPLACE INTO yeaft_sessions_composite
+        (id, user_id, agent_id, name, roster_json, default_vp_id, work_dir,
+         config_json, announcement, created_at, updated_at, is_archived, is_pinned, sort_order)
+      SELECT id, user_id, agent_id, name, roster_json, default_vp_id, work_dir,
+        config_json, announcement, created_at, updated_at, is_archived, is_pinned, sort_order
+      FROM yeaft_sessions;
+      DROP TABLE yeaft_sessions;
+      ALTER TABLE yeaft_sessions_composite RENAME TO yeaft_sessions;
+      CREATE INDEX IF NOT EXISTS idx_yeaft_sessions_user ON yeaft_sessions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_yeaft_sessions_agent ON yeaft_sessions(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_yeaft_sessions_id ON yeaft_sessions(id);
+      CREATE INDEX IF NOT EXISTS idx_yeaft_sessions_updated ON yeaft_sessions(updated_at DESC);
+    `);
+  }
+} catch (e) {
+  console.warn('[DB] yeaft_sessions composite-key migration failed:', e?.message || e);
+}
 
 // Yeaft session schema additions (separate from `migrations` above so the
 // table existence in the CREATE block above is guaranteed before we try
@@ -598,34 +677,52 @@ export const stmts = {
 
   // UserStats 操作
   upsertUserStats: db.prepare(`
-    INSERT INTO user_stats (user_id, message_count, session_count, request_count, bytes_sent, bytes_received, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO user_stats (
+      user_id, message_count, session_count, request_count, bytes_sent, bytes_received,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
       message_count = message_count + excluded.message_count,
       session_count = session_count + excluded.session_count,
       request_count = request_count + excluded.request_count,
       bytes_sent = bytes_sent + excluded.bytes_sent,
       bytes_received = bytes_received + excluded.bytes_received,
+      input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens,
+      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+      total_tokens = total_tokens + excluded.total_tokens,
       updated_at = excluded.updated_at
   `),
 
   // DailyStats 操作
   upsertDailyStats: db.prepare(`
-    INSERT INTO daily_stats (user_id, date, message_count, session_count, request_count, bytes_sent, bytes_received)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO daily_stats (
+      user_id, date, message_count, session_count, request_count, bytes_sent, bytes_received,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, date) DO UPDATE SET
       message_count = message_count + excluded.message_count,
       session_count = session_count + excluded.session_count,
       request_count = request_count + excluded.request_count,
       bytes_sent = bytes_sent + excluded.bytes_sent,
-      bytes_received = bytes_received + excluded.bytes_received
+      bytes_received = bytes_received + excluded.bytes_received,
+      input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens,
+      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+      total_tokens = total_tokens + excluded.total_tokens
   `),
 
   getDailyStatsAll: db.prepare(`
     SELECT ds.user_id, u.username, u.display_name, u.role, u.last_login_at,
       SUM(ds.message_count) as message_count, SUM(ds.session_count) as session_count,
       SUM(ds.request_count) as request_count, SUM(ds.bytes_sent) as bytes_sent,
-      SUM(ds.bytes_received) as bytes_received
+      SUM(ds.bytes_received) as bytes_received,
+      SUM(ds.input_tokens) as input_tokens, SUM(ds.output_tokens) as output_tokens,
+      SUM(ds.cache_read_tokens) as cache_read_tokens,
+      SUM(ds.cache_write_tokens) as cache_write_tokens,
+      SUM(ds.total_tokens) as total_tokens
     FROM daily_stats ds
     JOIN users u ON ds.user_id = u.id
     WHERE ds.date >= ?
@@ -650,6 +747,25 @@ export const stmts = {
 
   getUserStatsById: db.prepare(`
     SELECT * FROM user_stats WHERE user_id = ?
+  `),
+
+  getAgentMetricWatermark: db.prepare(`
+    SELECT * FROM agent_metric_watermarks
+    WHERE user_id = ? AND agent_instance_id = ? AND metric_epoch = ?
+  `),
+
+  upsertAgentMetricWatermark: db.prepare(`
+    INSERT INTO agent_metric_watermarks (
+      user_id, agent_instance_id, metric_epoch, input_tokens, output_tokens,
+      cache_read_tokens, cache_write_tokens, total_tokens, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, agent_instance_id, metric_epoch) DO UPDATE SET
+      input_tokens = excluded.input_tokens,
+      output_tokens = excluded.output_tokens,
+      cache_read_tokens = excluded.cache_read_tokens,
+      cache_write_tokens = excluded.cache_write_tokens,
+      total_tokens = excluded.total_tokens,
+      updated_at = excluded.updated_at
   `),
 
   // Identity 操作 (multi-provider SSO)
@@ -720,9 +836,8 @@ export const stmts = {
       (id, user_id, agent_id, name, roster_json, default_vp_id, work_dir,
        config_json, announcement, created_at, updated_at, is_archived)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
+    ON CONFLICT(user_id, agent_id, id) DO UPDATE SET
       user_id = COALESCE(excluded.user_id, user_id),
-      agent_id = excluded.agent_id,
       name = excluded.name,
       roster_json = excluded.roster_json,
       default_vp_id = excluded.default_vp_id,
@@ -735,7 +850,11 @@ export const stmts = {
   `),
 
   getYeaftSession: db.prepare(`
-    SELECT * FROM yeaft_sessions WHERE id = ?
+    SELECT * FROM yeaft_sessions WHERE id = ? ORDER BY updated_at DESC LIMIT 1
+  `),
+
+  getYeaftSessionForAgent: db.prepare(`
+    SELECT * FROM yeaft_sessions WHERE id = ? AND user_id = ? AND agent_id = ?
   `),
 
   getYeaftSessionsByUser: db.prepare(`
@@ -754,6 +873,10 @@ export const stmts = {
     DELETE FROM yeaft_sessions WHERE id = ?
   `),
 
+  deleteYeaftSessionForAgent: db.prepare(`
+    DELETE FROM yeaft_sessions WHERE id = ? AND user_id = ? AND agent_id = ?
+  `),
+
   deleteYeaftSessionsByUser: db.prepare(`
     DELETE FROM yeaft_sessions WHERE user_id = ?
   `),
@@ -762,8 +885,16 @@ export const stmts = {
     UPDATE yeaft_sessions SET is_archived = ?, updated_at = ? WHERE id = ?
   `),
 
+  setYeaftSessionArchivedForAgent: db.prepare(`
+    UPDATE yeaft_sessions SET is_archived = ?, updated_at = ? WHERE id = ? AND user_id = ? AND agent_id = ?
+  `),
+
   setYeaftSessionPinned: db.prepare(`
     UPDATE yeaft_sessions SET is_pinned = ?, updated_at = ? WHERE id = ?
+  `),
+
+  setYeaftSessionPinnedForAgent: db.prepare(`
+    UPDATE yeaft_sessions SET is_pinned = ?, updated_at = ? WHERE id = ? AND user_id = ? AND agent_id = ?
   `),
 
   setYeaftSessionSortOrder: db.prepare(`
@@ -778,12 +909,25 @@ export const stmts = {
       (SELECT COUNT(*) FROM users) as total_users,
       (SELECT COUNT(*) FROM sessions) as total_sessions,
       (SELECT COUNT(*) FROM messages) as total_messages
+  `),
+
+  getDashboardTokenTotals: db.prepare(`
+    SELECT
+      COALESCE(SUM(input_tokens), 0) as input_tokens,
+      COALESCE(SUM(output_tokens), 0) as output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+      COALESCE(SUM(cache_write_tokens), 0) as cache_write_tokens,
+      COALESCE(SUM(total_tokens), 0) as total_tokens
+    FROM user_stats
   `)
 };
 
 // 关闭数据库连接（用于优雅退出）
+let dbClosed = false;
 export function closeDb() {
+  if (dbClosed) return;
   db.close();
+  dbClosed = true;
 }
 
 /**

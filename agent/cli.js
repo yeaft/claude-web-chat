@@ -29,6 +29,11 @@ import {
   discoverOpenAICompatibleModels,
   GITHUB_COPILOT_PROVIDER,
 } from './llm-model-discovery.js';
+import { applyAgentIdentityToEnv, warnDeprecatedInstanceArg } from './service/config.js';
+import {
+  buildUpgradeInstallCommand,
+  buildUpgradeVersionCommand,
+} from './upgrade-command.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf-8'));
@@ -44,6 +49,14 @@ if (command === 'doctor') {
   await handleDoctorCommand();
 } else if (command === 'llm') {
   await handleLlmCommand(subArgs);
+} else if (command === 'local') {
+  try {
+    const { runLocal } = await import('./local-run.js');
+    await runLocal(subArgs);
+  } catch (error) {
+    console.error(`Local run failed: ${error.message}`);
+    process.exit(1);
+  }
 } else if (command === 'upgrade') {
   upgrade();
 } else if (command === '--version' || command === '-v') {
@@ -63,6 +76,7 @@ function printHelp() {
 
   Usage:
     yeaft-agent [options]              Run agent in foreground
+    yeaft-agent local --name <name>    Run local Web UI, server, and agent
     yeaft-agent install [options]      Install as system service
     yeaft-agent uninstall [options]    Remove system service
     yeaft-agent start [options]        Start installed service
@@ -76,28 +90,31 @@ function printHelp() {
     yeaft-agent --version              Show version
 
   Options:
-    --instance <id>     Local service instance id (default: default)
+    --instance <id>     Deprecated alias for the local service instance id
     --server <url>      WebSocket server URL (default: ws://localhost:3456)
-    --name <name>       Agent display name (default: Worker-{platform}-{pid})
+    --name <name>       Agent name and instance id (letters, numbers, ._-)
+    --port <port>       Local server port (local command only; default: 6868)
     --secret <secret>   Agent secret for authentication
     --work-dir <dir>    Default working directory (default: cwd)
     --yeaft-dir <dir>   Yeaft data directory for this instance
     --auto-upgrade      Check for updates on startup
 
   Environment variables (alternative to flags):
-    YEAFT_AGENT_INSTANCE Local service instance id
+    YEAFT_AGENT_INSTANCE Deprecated local service instance id override
     SERVER_URL          WebSocket server URL
-    AGENT_NAME          Agent display name
+    AGENT_NAME          Agent name and instance id fallback
     AGENT_SECRET        Agent secret
     WORK_DIR            Working directory
     YEAFT_DIR           Yeaft data directory
 
   Examples:
+    yeaft-agent local --name my-worker
+    yeaft-agent local --name my-worker --port 7000
     yeaft-agent --server wss://your-server.com --name my-worker --secret xxx
     yeaft-agent install --server wss://your-server.com --name my-worker --secret xxx
-    yeaft-agent install --instance second --server wss://your-server.com --name my-worker-2 --secret xxx
-    yeaft-agent status --instance second
-    yeaft-agent logs --instance second
+    yeaft-agent install --server wss://your-server.com --name my-worker-2 --secret xxx
+    yeaft-agent status --name my-worker-2
+    yeaft-agent logs --name my-worker-2
 `);
 }
 
@@ -383,6 +400,7 @@ function parseLlmArgs(args) {
 }
 
 async function handleServiceCommand(command, args) {
+  warnDeprecatedInstanceArg(args);
   const service = await import('./service.js');
   switch (command) {
     case 'install':   await service.install(args); break;
@@ -401,20 +419,23 @@ async function handleDoctorCommand() {
 }
 
 function parseAndStart(args) {
-  // Parse CLI flags → set environment variables (env vars take precedence over flags)
+  warnDeprecatedInstanceArg(args);
+  applyAgentIdentityToEnv(args);
+
+  // Parse non-identity flags. Saved environment remains the fallback for these options.
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const next = args[i + 1];
 
     switch (arg) {
       case '--instance':
-        if (next) { process.env.YEAFT_AGENT_INSTANCE = process.env.YEAFT_AGENT_INSTANCE || next; i++; }
+        if (next) i++;
         break;
       case '--server':
         if (next) { process.env.SERVER_URL = process.env.SERVER_URL || next; i++; }
         break;
       case '--name':
-        if (next) { process.env.AGENT_NAME = process.env.AGENT_NAME || next; i++; }
+        if (next) i++;
         break;
       case '--secret':
         if (next) { process.env.AGENT_SECRET = process.env.AGENT_SECRET || next; i++; }
@@ -461,7 +482,7 @@ function upgrade() {
   console.log('Checking for updates...');
 
   try {
-    const latest = execSync(`npm view ${pkg.name} version`, { encoding: 'utf-8' }).trim();
+    const latest = execSync(buildUpgradeVersionCommand(pkg.name), { encoding: 'utf-8' }).trim();
     if (latest === pkg.version) {
       console.log('Already up to date.');
       return;
@@ -474,7 +495,7 @@ function upgrade() {
       // for us to exit, then runs npm install, then optionally restarts the service.
       upgradeWindows(latest);
     } else {
-      execSync(`npm install -g ${pkg.name}@latest`, { stdio: 'inherit' });
+      execSync(buildUpgradeInstallCommand(`${pkg.name}@latest`), { stdio: 'inherit' });
       console.log(`Successfully upgraded to ${latest}`);
 
       // If PM2 is managing yeaft-agent, restart it so the new version takes effect
@@ -556,7 +577,7 @@ function upgradeWindows(latestVersion) {
     'ping -n 5 127.0.0.1 >NUL',
     '',
     'echo [Upgrade] Running npm install -g %PKG%... >> "%LOGFILE%"',
-    'call npm install -g %PKG% >> "%LOGFILE%" 2>&1',
+    `call ${buildUpgradeInstallCommand('%PKG%')} >> "%LOGFILE%" 2>&1`,
     'if not "%errorlevel%"=="0" (',
     '  echo [Upgrade] npm install failed with exit code %errorlevel% at %time% >> "%LOGFILE%"',
     '  goto PM2_RESTART',

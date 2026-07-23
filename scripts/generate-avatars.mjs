@@ -48,7 +48,7 @@ mkdirSync(outDir, { recursive: true });
 //   2. web/components/VpAvatar.js#KNOWN_AVATAR_IDS (frontend gate)
 //   3. test/web/vp-avatar-image.test.js#KNOWN (test gate)
 const ENTRIES = [
-  // Original 12 (engineering / design / science / security / business).
+  // Core engineering / design / science / security / business roster.
   { id: 'ada' },
   { id: 'alan' },
   { id: 'alice' },
@@ -58,6 +58,7 @@ const ENTRIES = [
   { id: 'linus' },
   { id: 'margaret' },
   { id: 'martin' },
+  { id: 'anders' },
   { id: 'norman' },
   { id: 'shannon' },
   { id: 'steve' },

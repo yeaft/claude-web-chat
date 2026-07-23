@@ -3,10 +3,9 @@
 Pre-generated SVG portraits served as static assets at
 `/assets/avatars/<id>.svg`:
 
-- `ada.svg`, `alan.svg`, `alice.svg`, `dieter.svg`, `grace.svg`,
-  `ken.svg`, `linus.svg`, `margaret.svg`, `martin.svg`, `norman.svg`,
-  `shannon.svg`, `steve.svg` — one per VP in the default roster
-  (must match `KNOWN_AVATAR_IDS` in `web/components/VpAvatar.js`).
+The checked-in files are a curated subset of the default VP roster and must
+match `KNOWN_AVATAR_IDS` in `web/components/VpAvatar.js`. VPs without an SVG
+use the deterministic letter avatar instead of issuing a missing-file request.
 
 ## Regeneration
 

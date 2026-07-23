@@ -51,6 +51,18 @@ describe('Yeaft system prompt language propagation', () => {
     expect(prompt).not.toContain('## Core Principles');
   });
 
+  it('renders Work Center Agent instructions as a dedicated system block', () => {
+    const prompt = buildSystemPrompt({
+      language: 'zh-CN',
+      toolNames: [],
+      workCenterInstructions: '所有 Action 都必须提供可复核证据。',
+    });
+
+    expect(prompt).toContain('[Work Center Agent 指令]');
+    expect(prompt).toContain('所有 Action 都必须提供可复核证据。');
+    expect(prompt).toContain('系统/工具安全规则');
+  });
+
   it('keeps global language when applying session-scoped model config', () => {
     const userConfig = {
       language: 'zh-CN',

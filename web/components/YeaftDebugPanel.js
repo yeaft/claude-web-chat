@@ -26,7 +26,7 @@
  *   - turn   [copy turn]              → markdown summary
  */
 import { buildDreamDebugItems, filterDreamDebugItems, previewText } from './dream-debug-model.js';
-import { splitTokenBreakdown, apportionToBuckets, formatClockTime } from './yeaft-debug-helpers.js';
+import { splitTokenBreakdown, apportionToBuckets, formatClockTime, reconstructDebugRawRequest } from './yeaft-debug-helpers.js';
 
 const INITIAL_REQUEST_HISTORY_LIMIT = 1;
 const SEARCH_REQUEST_HISTORY_LIMIT = 5;
@@ -1026,6 +1026,16 @@ export default {
       }
       this.copyText(JSON.stringify(tool, null, 2), 'tool record');
     },
+    copyRawRequest(loop) {
+      this.copyText(this.rawRequestForLoop(loop), 'raw request');
+    },
+    rawRequestForLoop(loop) {
+      // Live loop events already carry the exact auth-redacted adapter payload.
+      // Hydrated history stores the same payload as structural deltas, so only
+      // reconstruct when the direct per-loop capture is absent.
+      if (loop?.rawRequest != null) return loop.rawRequest;
+      return reconstructDebugRawRequest(loop?.rawRequestBase ?? loop?.requestBase?.rawRequest ?? null, loop?.requestDelta || null);
+    },
     copyToolOutput(turn, tool) {
       if (tool && (tool.isRunning || tool.rawResult || tool.toolOutput != null)) {
         this.copyText(this.toolOutputText(tool), 'tool output');
@@ -1275,9 +1285,13 @@ export default {
                     <span>{{ $t('yeaft.dreamDebug.lastDream') }}</span>
                     <strong>{{ formatTimestamp(activeDreamItem.snapshot && activeDreamItem.snapshot.lastDreamAt) || formatTimestamp(activeDreamItem.lastAt) || '-' }}</strong>
                     <span>{{ $t('yeaft.dreamDebug.messagesCovered') }}</span>
-                    <strong>{{ (activeDreamItem.snapshot && activeDreamItem.snapshot.messageCount) || 0 }}</strong>
+                    <strong>{{ (activeDreamItem.snapshot && activeDreamItem.snapshot.messageCount) || 0 }} / {{ (activeDreamItem.snapshot && activeDreamItem.snapshot.totalMessageCount) || 0 }}</strong>
                     <span>{{ $t('yeaft.dreamDebug.segments') }}</span>
                     <strong>{{ activeDreamItem.segmentCount }}</strong>
+                    <template v-if="activeDreamItem.lastError">
+                      <span>{{ $t('yeaft.dreamDebug.lastError') }}</span>
+                      <strong>{{ activeDreamItem.lastError.message || activeDreamItem.lastError.error || activeDreamItem.lastError.phase || 'unknown' }}</strong>
+                    </template>
                     <span>{{ $t('yeaft.dreamDebug.loadedAt') }}</span>
                     <strong>{{ formatTimestamp(activeDreamItem.snapshot && activeDreamItem.snapshot.loadedAt) || '-' }}</strong>
                   </div>
@@ -1547,12 +1561,12 @@ export default {
                 </div>
 
                 <!-- Raw API request / response — copy-only, never inlined -->
-                <div class="yeaft-debug-section yeaft-debug-raw-row" v-if="loop.rawRequest || loop.rawResponse">
+                <div class="yeaft-debug-section yeaft-debug-raw-row" v-if="rawRequestForLoop(loop) || loop.rawResponse">
                   <span class="yeaft-debug-section-title">Raw</span>
-                  <button v-if="loop.rawRequest" class="yeaft-debug-copy-btn" @click="copyText(loop.rawRequest, 'raw request')">copy req</button>
+                  <button v-if="rawRequestForLoop(loop)" class="yeaft-debug-copy-btn" @click="copyRawRequest(loop)">copy req</button>
                   <button v-if="loop.rawResponse" class="yeaft-debug-copy-btn" @click="copyText(loop.rawResponse, 'raw response')">copy res</button>
                   <span class="yeaft-debug-section-meta">
-                    <span v-if="loop.rawRequest">{{ loop.rawRequest.method }} {{ loop.rawRequest.url }}</span>
+                    <span v-if="rawRequestForLoop(loop)">{{ rawRequestForLoop(loop).method }} {{ rawRequestForLoop(loop).url }}</span>
                     <span v-if="loop.rawResponse">· status={{ loop.rawResponse.status }}</span>
                   </span>
                 </div>

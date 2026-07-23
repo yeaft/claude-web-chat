@@ -66,6 +66,60 @@ describe('Yeaft load-history first paint', () => {
     ]);
   });
 
+  it('preserves the canonical image asset anchor in the history wire projection', () => {
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([
+      { id: 'm0001', role: 'assistant', content: 'tool progress', sessionId: 'session-fast', turnId: 'turn-image' },
+      { id: 'm0002', role: 'assistant', content: 'final response', sessionId: 'session-fast', turnId: 'turn-image', imageAssetAnchor: true },
+    ]);
+
+    expect(projected[0]).not.toHaveProperty('imageAssetAnchor');
+    expect(projected[1]).toMatchObject({
+      id: 'm0002',
+      turnId: 'turn-image',
+      imageAssetAnchor: true,
+    });
+  });
+
+  it('projects a persisted AskUser answer as terminal history metadata', () => {
+    const projected = __testHooks.projectVisibleHistoryChunkMessages([
+      {
+        id: 'm0100',
+        role: 'assistant',
+        content: '',
+        sessionId: 'session-fast',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCalls: [{ id: 'ask_1', name: 'AskUser', input: { question: 'Continue?', options: ['Yes', 'No'] } }],
+      },
+      {
+        id: 'm0101',
+        role: 'tool',
+        content: JSON.stringify({ question: 'Continue?', answers: { 'Continue?': 'Yes' } }),
+        sessionId: 'session-fast',
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        speakerVpId: 'vp-a',
+        toolCallId: 'ask_1',
+      },
+    ]);
+
+    expect(projected).toEqual([
+      expect.objectContaining({
+        id: 'm0100',
+        role: 'assistant',
+        askUserResults: [{
+          toolCallId: 'ask_1',
+          status: 'answered',
+          question: 'Continue?',
+          options: ['Yes', 'No'],
+          answers: { 'Continue?': 'Yes' },
+        }],
+      }),
+    ]);
+    expect(projected[0].toolSummaryCount).toBeUndefined();
+  });
+
   it('replays the recent message window before full session boot resolves', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-fast-history-'));
     try {
@@ -120,7 +174,12 @@ describe('Yeaft load-history first paint', () => {
       await flushMicrotasks();
 
       await new Promise(resolve => setTimeout(resolve, 0));
-      expect(sent.some(m => m.event?.type === 'session_ready' && !m.event.partial)).toBe(true);
+      const ready = sent.find(m => m.event?.type === 'session_ready' && !m.event.partial);
+      expect(ready).toMatchObject({
+        type: 'yeaft_output',
+        sessionId: 'session-fast',
+        event: { type: 'session_ready' },
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -408,7 +467,7 @@ describe('Yeaft load-history first paint', () => {
     }
   });
 
-  it('does not emit an empty delta chunk when no rows changed after the cursor', async () => {
+  it('emits an empty delta acknowledgement when no visible rows changed after the cursor', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'yeaft-empty-delta-'));
     try {
       ctx.CONFIG = { yeaftDir: dir };
@@ -429,7 +488,12 @@ describe('Yeaft load-history first paint', () => {
       const pending = handleYeaftLoadHistory({ sessionId: 'session-fast', afterSeq: Number(anchor.id.slice(1)) });
       await flushMicrotasks();
 
-      expect(sent.some(m => m.type === 'yeaft_history_chunk' && m.mode === 'delta')).toBe(false);
+      expect(sent.find(m => m.type === 'yeaft_history_chunk' && m.mode === 'delta')).toMatchObject({
+        sessionId: 'session-fast',
+        messages: [],
+        latestSeq: Number(hidden.id.slice(1)),
+        afterSeq: Number(anchor.id.slice(1)),
+      });
       const event = sent.find(m => m.event?.type === 'history_loaded')?.event;
       expect(event).toMatchObject({
         mode: 'delta',
@@ -487,6 +551,11 @@ describe('Yeaft load-history first paint', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
       sessionReadyIndex = sent.findIndex(m => m.event?.type === 'session_ready');
       expect(sessionReadyIndex).toBeGreaterThan(firstHistoryIndex);
+      expect(sent[sessionReadyIndex]).toMatchObject({
+        type: 'yeaft_output',
+        sessionId: 'session-fast',
+        event: { type: 'session_ready' },
+      });
       expect(sent[firstHistoryIndex].messages.map(m => m.content)).toEqual([
         'ready recent user',
         'ready recent assistant',

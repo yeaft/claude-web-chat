@@ -26,7 +26,7 @@ class TestServer {
     });
 
     await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 10000);
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 20000);
       this.process.stdout.on('data', (data) => {
         if (data.toString().includes('Server running on')) {
           clearTimeout(timeout);
@@ -43,6 +43,10 @@ class TestServer {
       this.process.on('error', (err) => {
         clearTimeout(timeout);
         reject(err);
+      });
+      this.process.on('exit', (code, signal) => {
+        clearTimeout(timeout);
+        reject(new Error(`Server exited before startup (code=${code}, signal=${signal || 'none'})`));
       });
     });
   }

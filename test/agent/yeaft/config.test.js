@@ -747,6 +747,22 @@ describe('loadConfig — memoryV2 flag retired', () => {
   });
 });
 
+describe('loadConfig — provider-qualified model catalog', () => {
+  it('preserves the same model id from different providers', () => {
+    writeFileSync(join(TEST_DIR, 'config.json'), JSON.stringify({
+      providers: [
+        { name: 'one', baseUrl: 'http://one/v1', apiKey: 'key', models: ['shared'] },
+        { name: 'two', baseUrl: 'http://two/v1', apiKey: 'key', models: ['shared'] },
+      ],
+      primaryModel: 'two/shared',
+    }));
+
+    const config = loadConfig({ dir: TEST_DIR });
+    expect(config.availableModels.map(model => model.ref)).toEqual(['one/shared', 'two/shared']);
+    expect(config.primaryModel).toBe('two/shared');
+  });
+});
+
 describe('managed GitHub Copilot provider config', () => {
   it('hydrates a minimal managed provider with fallback model catalog', () => {
     writeFileSync(join(TEST_DIR, 'config.json'), JSON.stringify({
@@ -760,5 +776,24 @@ describe('managed GitHub Copilot provider config', () => {
       expect.objectContaining({ id: 'claude-opus-4.8', provider: 'github-copilot' }),
       expect.objectContaining({ id: 'gpt-5-mini', provider: 'github-copilot' }),
     ]));
+  });
+
+  it('uses the persisted live Copilot catalog instead of the fallback list', () => {
+    writeFileSync(join(TEST_DIR, 'config.json'), JSON.stringify({
+      providers: [{
+        name: 'github-copilot',
+        credentialProvider: 'github-copilot',
+        managed: 'github-copilot',
+        models: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'],
+      }],
+      primaryModel: 'github-copilot/gpt-5.6-sol',
+    }));
+
+    const config = loadConfig({ dir: TEST_DIR });
+    expect(config.availableModels.map(model => model.id)).toEqual([
+      'gpt-5.6-luna',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+    ]);
   });
 });

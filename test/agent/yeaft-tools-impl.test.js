@@ -5,7 +5,7 @@
  * execute functions (no placeholders), registered in index.js, and functional.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join, resolve } from 'path';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -17,9 +17,9 @@ const TOOLS_DIR = join(import.meta.dirname, '..', '..', 'agent', 'yeaft', 'tools
 // ──────────────────────────────────────────────
 
 describe('index.js tool registration', () => {
-  it('allTools has 31 tools (mcp meta-tools removed 2026-06-12, flattened mcp__ tools registered at session start instead)', async () => {
+  it('allTools has 32 tools including the Session-scoped Work Center producer', async () => {
     const { allTools } = await import(`${TOOLS_DIR}/index.js`);
-    expect(allTools.length).toBe(31);
+    expect(allTools.length).toBe(32);
   });
 
   it('all tools have valid name, description, parameters, and execute', async () => {
@@ -160,18 +160,43 @@ describe('index.js tool registration', () => {
 // ──────────────────────────────────────────────
 
 describe('AskUser tool', () => {
-  it('returns structured question with options', async () => {
+  it('waits for the host card response and returns its answers', async () => {
     const mod = await import(`${TOOLS_DIR}/ask-user.js`);
     const tool = mod.default;
+    const askUser = vi.fn().mockResolvedValue({ 'Which language?': 'Chinese' });
     const result = JSON.parse(await tool.execute({
       question: 'Which language?',
       options: ['English', 'Chinese'],
-    }, {}));
+    }, { askUser }));
 
-    expect(result.type).toBe('ask_user');
-    expect(result.question).toBe('Which language?');
-    expect(result.options).toEqual(['English', 'Chinese']);
-    expect(result.requestId).toBeTruthy();
+    expect(tool.timeoutMs).toBe(0);
+    expect(askUser).toHaveBeenCalledWith({
+      question: 'Which language?',
+      options: ['English', 'Chinese'],
+    });
+    expect(result).toEqual({
+      question: 'Which language?',
+      answers: { 'Which language?': 'Chinese' },
+    });
+  });
+
+  it('returns a timeout result that tells the model to continue', async () => {
+    const mod = await import(`${TOOLS_DIR}/ask-user.js`);
+    const result = JSON.parse(await mod.default.execute(
+      { question: 'Continue?' },
+      { askUser: async () => ({ __yeaftTimedOut: true }) },
+    ));
+    expect(result).toMatchObject({
+      question: 'Continue?',
+      timedOut: true,
+    });
+    expect(result.message).toContain('Continue without this input');
+  });
+
+  it('returns a clear error outside an interactive host', async () => {
+    const mod = await import(`${TOOLS_DIR}/ask-user.js`);
+    const result = JSON.parse(await mod.default.execute({ question: 'Continue?' }, {}));
+    expect(result.error).toContain('unavailable');
   });
 
   it('returns error when question is missing', async () => {
@@ -739,12 +764,11 @@ describe('Bash tool', () => {
     expect(result.includes('timed out') || result.includes('Exit code')).toBe(true);
   }, 10000);
 
-  it('returns error when command is missing', async () => {
+  it('throws when command is missing', async () => {
     const mod = await import(`${TOOLS_DIR}/bash.js`);
     const tool = mod.default;
 
-    const result = JSON.parse(await tool.execute({}, { cwd: '/tmp' }));
-    expect(result.error).toBeTruthy();
+    await expect(tool.execute({}, { cwd: '/tmp' })).rejects.toThrow('command is required');
   });
 
   it('isDestructive detects dangerous commands', async () => {

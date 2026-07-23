@@ -11,15 +11,20 @@ describe('Yeaft conversation layout', () => {
     const source = read('web/components/YeaftPage.js');
 
     expect(source).toContain('<div class="yeaft-conversation-body">');
-    expect(source.indexOf('<div class="yeaft-conversation-body">')).toBeLessThan(source.indexOf('<MessageList'));
-    expect(source.indexOf('</div>\n\n        <div v-if="showLlmConfig"')).toBeGreaterThan(source.indexOf('<SettingsPanel'));
-    expect(source.indexOf('<ChatInput')).toBeGreaterThan(source.indexOf('</div>\n\n        <div v-if="showLlmConfig"'));
+    const conversationBody = source.indexOf('<div class="yeaft-conversation-body">');
+    const messageList = source.indexOf('<MessageList');
+    const llmConfig = source.indexOf('class="modal-overlay yeaft-llm-config-overlay"');
+    const chatInput = source.indexOf('<ChatInput');
+
+    expect(conversationBody).toBeLessThan(messageList);
+    expect(messageList).toBeLessThan(llmConfig);
+    expect(chatInput).toBeGreaterThan(llmConfig);
   });
 
   it('lets the message container consume remaining height instead of pushing the input upward', () => {
     const css = read('web/styles/yeaft.css');
 
-    expect(css).toContain('.yeaft-main-center {\n  flex: 1;\n  min-width: 0;\n  min-height: 0;');
+    expect(css).toMatch(/\.yeaft-main-center\s*\{[^}]*flex: 1;[^}]*min-width: 0;[^}]*min-height: 0;/);
     expect(css).toContain('.yeaft-conversation-body {\n  flex: 1 1 auto;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n}');
     expect(css).toContain('.yeaft-conversation-body > .chat-container {\n  flex: 1 1 auto;\n}');
   });

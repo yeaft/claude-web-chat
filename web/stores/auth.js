@@ -5,6 +5,8 @@ import { decodeKey } from '../utils/encryption.js';
 
 const { defineStore } = Pinia;
 
+const SESSION_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
+
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     // Auth mode from server
@@ -48,7 +50,9 @@ export const useAuthStore = defineStore('auth', {
 
     // SSO QR-scan flow (in-page QR for providers like Alipay/WeChat)
     qrPanel: null, // { provider, authorizeUrl, state, status: 'pending'|'scanned'|'error', error? } | null
-    _qrPollTimer: null
+    _qrPollTimer: null,
+    _sessionRefreshTimer: null,
+    _sessionRefreshVisibilityHandler: null
   }),
 
   actions: {
@@ -136,6 +140,7 @@ export const useAuthStore = defineStore('auth', {
 
         // Store token for reconnection (use localStorage for persistence across refreshes)
         localStorage.setItem('authToken', data.token);
+        this.startSessionRefresh();
         console.log('[Auth] Token saved to localStorage:', !!data.token);
 
         return true;
@@ -214,6 +219,7 @@ export const useAuthStore = defineStore('auth', {
         this.loginStep = 'authenticated';
 
         localStorage.setItem('authToken', data.token);
+        this.startSessionRefresh();
         console.log('[Auth] Microsoft AAD login successful, token saved');
         return true;
       } catch (err) {
@@ -268,6 +274,7 @@ export const useAuthStore = defineStore('auth', {
         this.tempToken = null;
 
         localStorage.setItem('authToken', data.token);
+        this.startSessionRefresh();
         console.log('[Auth] TOTP verified, token saved to localStorage:', !!data.token);
         return true;
       } catch (err) {
@@ -320,6 +327,7 @@ export const useAuthStore = defineStore('auth', {
         this.loginStep = 'authenticated';
 
         localStorage.setItem('authToken', data.token);
+        this.startSessionRefresh();
         console.log('[Auth] TOTP setup complete, token saved to localStorage:', !!data.token);
         return true;
       } catch (err) {
@@ -361,6 +369,7 @@ export const useAuthStore = defineStore('auth', {
 
         // Store token for reconnection
         localStorage.setItem('authToken', data.token);
+        this.startSessionRefresh();
         console.log('[Auth] Email verified, token saved to localStorage:', !!data.token);
 
         return true;
@@ -520,6 +529,7 @@ export const useAuthStore = defineStore('auth', {
             this.isAuthenticated = true;
             this.loginStep = 'authenticated';
             localStorage.setItem('authToken', data.token);
+            this.startSessionRefresh();
             this.cancelSsoQr();
             return;
           }
@@ -618,6 +628,7 @@ export const useAuthStore = defineStore('auth', {
       this.isAuthenticated = true;
       this.loginStep = 'authenticated';
       localStorage.setItem('authToken', token);
+      this.startSessionRefresh();
       // Clear the hash so the token never lingers in history.
       try { history.replaceState(null, '', window.location.pathname + window.location.search); } catch {}
       return true;
@@ -672,6 +683,68 @@ export const useAuthStore = defineStore('auth', {
       }
     },
 
+    async refreshSession() {
+      if (!this.token) return false;
+      const requestToken = this.token;
+      try {
+        const res = await fetch('/api/user/profile', {
+          headers: { 'Authorization': `Bearer ${requestToken}` }
+        });
+
+        if (res.status === 401 || res.status === 403) {
+          return this.handleAuthFailure(undefined, requestToken);
+        }
+
+        if (!res.ok) return false;
+
+        const profile = await res.json().catch(() => ({}));
+        const freshToken = res.headers?.get?.('X-New-Token');
+        const storedToken = localStorage.getItem('authToken');
+        if (freshToken && this.token === requestToken && (!storedToken || storedToken === requestToken)) {
+          this.token = freshToken;
+          localStorage.setItem('authToken', freshToken);
+        }
+        if (profile?.role) this.role = profile.role;
+        return true;
+      } catch (err) {
+        console.warn('[Auth] Session refresh failed:', err.message || err);
+        return false;
+      }
+    },
+
+    startSessionRefresh() {
+      this.stopSessionRefresh();
+      if (!this.token || this.skipAuth) return;
+      const refreshIfVisible = () => {
+        if (typeof document !== 'undefined' && document.visibilityState && document.visibilityState !== 'visible') return;
+        this.refreshSession();
+      };
+      this._sessionRefreshTimer = setInterval(refreshIfVisible, SESSION_REFRESH_INTERVAL_MS);
+      this._sessionRefreshVisibilityHandler = refreshIfVisible;
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', refreshIfVisible);
+      }
+      if (typeof window !== 'undefined') {
+        window.addEventListener('pageshow', refreshIfVisible);
+      }
+    },
+
+    stopSessionRefresh() {
+      if (this._sessionRefreshTimer) {
+        clearInterval(this._sessionRefreshTimer);
+        this._sessionRefreshTimer = null;
+      }
+      if (this._sessionRefreshVisibilityHandler) {
+        if (typeof document !== 'undefined') {
+          document.removeEventListener('visibilitychange', this._sessionRefreshVisibilityHandler);
+        }
+        if (typeof window !== 'undefined') {
+          window.removeEventListener('pageshow', this._sessionRefreshVisibilityHandler);
+        }
+        this._sessionRefreshVisibilityHandler = null;
+      }
+    },
+
     /**
      * Logout
      */
@@ -690,8 +763,32 @@ export const useAuthStore = defineStore('auth', {
         console.error('Logout error:', err);
       }
 
+      this.clearStoredSession();
+    },
+
+    clearStoredSession(error = null) {
       this.reset();
       localStorage.removeItem('authToken');
+      if (error) this.error = error;
+    },
+
+    getActiveToken() {
+      if (this.token) return this.token;
+      const stored = localStorage.getItem('authToken');
+      if (stored) this.token = stored;
+      return this.token;
+    },
+
+    handleAuthFailure(error = 'Session expired. Please log in again.', failedToken = undefined) {
+      // Auth failures are asynchronous: an old WebSocket or fetch request can
+      // fail after the user has already logged in again. Only clear the current
+      // session if the failed request used the token that is still active.
+      const activeToken = this.token || localStorage.getItem('authToken') || null;
+      if (failedToken !== undefined && failedToken !== activeToken) {
+        return false;
+      }
+      this.clearStoredSession(error);
+      return false;
     },
 
     /**
@@ -702,11 +799,35 @@ export const useAuthStore = defineStore('auth', {
       console.log('[Auth] Restoring session, token exists:', !!token);
       if (!token) return false;
 
-      // Token will be verified when connecting to WebSocket
-      this.token = token;
-      this.isAuthenticated = true;
-      this.loginStep = 'authenticated';
-      return true;
+      try {
+        const res = await fetch('/api/user/profile', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (res.status === 401 || res.status === 403) {
+          return this.handleAuthFailure(undefined, token);
+        }
+
+        if (!res.ok) {
+          this.error = 'Failed to restore session';
+          return false;
+        }
+
+        const profile = await res.json();
+        const headerToken = res.headers?.get?.('X-New-Token');
+        const activeToken = this.getActiveToken();
+        const freshToken = headerToken && activeToken === token ? headerToken : activeToken || token;
+        this.token = freshToken;
+        if (freshToken !== token) localStorage.setItem('authToken', freshToken);
+        this.role = profile?.role || 'pro';
+        this.isAuthenticated = true;
+        this.loginStep = 'authenticated';
+        this.startSessionRefresh();
+        return true;
+      } catch (err) {
+        this.error = err.message || 'Failed to restore session';
+        return false;
+      }
     },
 
     /**
@@ -800,8 +921,7 @@ export const useAuthStore = defineStore('auth', {
           return { success: false, error: data.error || 'Failed to delete account' };
         }
         // Clear local state — server already revoked the JWT.
-        this.reset();
-        localStorage.removeItem('authToken');
+        this.clearStoredSession();
         return { success: true };
       } catch (err) {
         return { success: false, error: err.message || 'Network error' };
@@ -812,6 +932,7 @@ export const useAuthStore = defineStore('auth', {
      * Reset state
      */
     reset() {
+      this.stopSessionRefresh();
       this.isAuthenticated = false;
       this.token = null;
       this.sessionKey = null;

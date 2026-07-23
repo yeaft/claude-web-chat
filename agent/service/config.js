@@ -59,16 +59,45 @@ export function validateInstanceId(instanceId) {
 }
 
 export function getInstanceIdFromArgs(args = [], env = process.env) {
-  let instanceId = env.YEAFT_AGENT_INSTANCE || '';
+  let instanceId = '';
+  let agentName = '';
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const next = args[i + 1];
     if (arg === '--instance' && next) {
       instanceId = next;
       i++;
+    } else if (arg === '--name' && next) {
+      agentName = next;
+      i++;
     }
   }
-  return validateInstanceId(instanceId || DEFAULT_INSTANCE_ID);
+  return validateInstanceId(
+    instanceId
+    || agentName
+    || env.YEAFT_AGENT_INSTANCE
+    || env.AGENT_NAME
+    || DEFAULT_INSTANCE_ID,
+  );
+}
+
+export function applyAgentIdentityToEnv(args = [], env = process.env) {
+  env.YEAFT_AGENT_INSTANCE = getInstanceIdFromArgs(args, env);
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--name' && args[i + 1]) {
+      env.AGENT_NAME = args[i + 1];
+      i++;
+    }
+  }
+
+  return env.YEAFT_AGENT_INSTANCE;
+}
+
+export function warnDeprecatedInstanceArg(args = [], warn = console.warn) {
+  if (args.includes('--instance')) {
+    warn('Warning: --instance is deprecated; use --name instead. The instance id now defaults to the agent name.');
+  }
 }
 
 export function getServiceName(instanceId = DEFAULT_INSTANCE_ID) {

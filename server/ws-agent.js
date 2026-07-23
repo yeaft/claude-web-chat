@@ -9,6 +9,7 @@ import {
 } from './ws-utils.js';
 import { handleAgentConversation } from './handlers/agent-conversation.js';
 import { handleAgentOutput } from './handlers/agent-output.js';
+import { handleAgentWorkCenter } from './handlers/agent-work-center.js';
 import { handleAgentFileTerminal } from './handlers/agent-file-terminal.js';
 import { handleAgentSync } from './handlers/agent-sync.js';
 import { recordPerfTraceEvent } from './perf-trace.js';
@@ -38,8 +39,8 @@ export function handleAgentConnection(ws, url) {
 
     ws.on('message', async (data) => {
       const agent = agents.get(clientAgentId);
-      if (!agent) {
-        console.error(`[Agent] No agent found for id: ${clientAgentId}`);
+      if (!agent || agent.ws !== ws) {
+        if (!agent) console.error(`[Agent] No agent found for id: ${clientAgentId}`);
         return;
       }
       markAgentHeartbeatSeen(agent);
@@ -61,14 +62,14 @@ export function handleAgentConnection(ws, url) {
             bytes: data.length || 0,
           });
         }
-        handleAgentMessage(clientAgentId, msg);
+        handleAgentMessage(clientAgentId, msg, ws);
       } else {
         console.error(`[Agent] Failed to parse message from ${clientAgentId}`);
       }
     });
 
     ws.on('close', () => {
-      handleAgentDisconnect(clientAgentId, agentName);
+      handleAgentDisconnect(clientAgentId, agentName, ws);
     });
 
     ws.on('error', (err) => {
@@ -135,8 +136,8 @@ export function handleAgentConnection(ws, url) {
       // Already authenticated, handle normally
       if (!resolvedAgentId) return;
       const agent = agents.get(resolvedAgentId);
-      if (!agent) {
-        console.error(`[Agent] No agent found for id: ${resolvedAgentId}`);
+      if (!agent || agent.ws !== ws) {
+        if (!agent) console.error(`[Agent] No agent found for id: ${resolvedAgentId}`);
         return;
       }
       markAgentHeartbeatSeen(agent);
@@ -158,7 +159,7 @@ export function handleAgentConnection(ws, url) {
             bytes: data.length || 0,
           });
         }
-        handleAgentMessage(resolvedAgentId, msg);
+        handleAgentMessage(resolvedAgentId, msg, ws);
       } else {
         console.error(`[Agent] Failed to parse message from ${resolvedAgentId}`);
       }
@@ -173,7 +174,7 @@ export function handleAgentConnection(ws, url) {
     }
     // Use resolvedAgentId if auth completed, otherwise nothing to clean
     if (resolvedAgentId) {
-      handleAgentDisconnect(resolvedAgentId, agentName);
+      handleAgentDisconnect(resolvedAgentId, agentName, ws);
     }
   });
 
@@ -187,12 +188,13 @@ export function handleAgentConnection(ws, url) {
  * Conversations are persisted in DB and will be restored on reconnect via
  * get_agents (client-side recovery) and conversation_list (agent-side sync).
  */
-function handleAgentDisconnect(agentId, agentName) {
+function handleAgentDisconnect(agentId, agentName, ws) {
   const agent = agents.get(agentId);
+  if (!agent || agent.ws !== ws) return;
   // Phase 4: 清理目录缓存
   clearAgentDirCache(agentId);
   // Phase 1: 清理同步超时
-  if (agent?._syncTimeout) {
+  if (agent._syncTimeout) {
     clearTimeout(agent._syncTimeout);
   }
   // Remove agent entirely — eliminates zombie agents from broadcastAgentList
@@ -208,6 +210,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   const proxyPorts = (existingAgent?.proxyPorts || []).map(p => ({ ...p, enabled: false }));
   const slashCommands = existingAgent?.slashCommands || [];
   const slashCommandDescriptions = existingAgent?.slashCommandDescriptions || {};
+  if (existingAgent?._syncTimeout) clearTimeout(existingAgent._syncTimeout);
 
   // 兼容旧版 agent：未上报 capabilities 时默认全部开启
   const effectiveCapabilities = capabilities.length > 0
@@ -243,7 +246,7 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   // 同步超时保护：30 秒后强制 ready
   const syncTimeout = setTimeout(() => {
     const ag = agents.get(agentId);
-    if (ag && ag.status === 'syncing') {
+    if (ag?.ws === ws && ag.status === 'syncing') {
       console.warn(`[Sync] Agent ${agentName} sync timeout, forcing ready`);
       ag.status = 'ready';
       broadcastAgentList();
@@ -251,10 +254,14 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   }, 30000);
   agents.get(agentId)._syncTimeout = syncTimeout;
 
+  if (existingAgent?.ws && existingAgent.ws !== ws) {
+    existingAgent.ws.close(1008, 'Superseded by a newer Agent connection');
+  }
+
   // 心跳响应处理 + latency 测量
   ws.on('pong', () => {
     const agent = agents.get(agentId);
-    if (agent) {
+    if (agent?.ws === ws) {
       markAgentHeartbeatSeen(agent);
       if (agent.pingSentAt) {
         agent.latency = Date.now() - agent.pingSentAt;
@@ -283,9 +290,9 @@ function completeAgentRegistration(ws, agentId, agentName, workDir, sessionKey, 
   broadcastAgentList();
 }
 
-async function handleAgentMessage(agentId, msg) {
+async function handleAgentMessage(agentId, msg, ws) {
   const agent = agents.get(agentId);
-  if (!agent) return;
+  if (!agent || agent.ws !== ws) return;
 
   // Security: 需要 conversationId 的消息类型，验证该 conversation 属于此 agent.
   // The conversation-id check only authorizes Chat flows where the
@@ -297,8 +304,8 @@ async function handleAgentMessage(agentId, msg) {
     'agent_sync_complete', 'sync_sessions', 'proxy_response', 'proxy_response_chunk',
     'proxy_response_end', 'proxy_ports_update', 'proxy_ws_opened', 'proxy_ws_message',
     'proxy_ws_closed', 'proxy_ws_error', 'restart_agent_ack', 'upgrade_agent_ack',
-    'directory_listing', 'folders_list', 'models_list', 'yeaft_output', 'yeaft_session_output', 'session_output',
-    'yeaft_history_chunk', 'slash_commands_update',
+    'directory_listing', 'folders_list', 'models_list', 'yeaft_output', 'yeaft_session_output', 'session_output', 'yeaft_asset_put',
+    'yeaft_history_chunk', 'yeaft_history_outline', 'yeaft_history_search_result', 'yeaft_history_window', 'slash_commands_update', 'agent_metrics',
     'file_content', 'file_saved', 'file_op_result', 'file_search_result',
     'git_status_result', 'git_diff_result', 'git_op_result'
   ]);
@@ -311,6 +318,7 @@ async function handleAgentMessage(agentId, msg) {
 
   // Dispatch to handler sub-modules
   if (await handleAgentConversation(agentId, agent, msg)) return;
+  if (await handleAgentWorkCenter(agentId, msg)) return;
   if (await handleAgentOutput(agentId, agent, msg)) return;
   if (await handleAgentFileTerminal(agentId, agent, msg)) return;
   if (await handleAgentSync(agentId, agent, msg)) return;

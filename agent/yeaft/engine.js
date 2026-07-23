@@ -23,7 +23,7 @@ import { join, resolve as resolvePath } from 'path';
 import { buildSystemPrompt, buildWorkerPrompt } from './prompts.js';
 import { getRuntimePlatformInfo } from './runtime-platform.js';
 import { LLMContextError, LLMAbortError, LLMRateLimitError, LLMServerError, LLMStreamIdleTimeoutError } from './llm/adapter.js';
-import { runMemoryPreflow, buildRelevantScopes } from './sessions/pre-flow.js';
+import { runMemoryPreflow, buildRelevantScopes, memoryScopeLabel } from './sessions/pre-flow.js';
 import { readProjectDoc, pickProjectDocFile, DEFAULT_PROJECT_DOC_MAX_BYTES } from './sessions/project-doc.js';
 import { partitionMessages } from './compact/partition.js';
 import { runCompact as runCompactOrchestrator } from './compact/orchestrator.js';
@@ -32,6 +32,7 @@ import { archiveTurn } from './archive/turn-archive.js';
 import { archiveToolResults } from './archive/tool-results.js';
 import { readSummary as readScopeSummary } from './memory/store.js';
 import { runAdjust } from './memory/adjust.js';
+import { cleanMemoryPromptText, isMemoryPromptRelevant } from './memory/prompt-cleanup.js';
 import { isVpSeedBackfillStub } from './memory/seed-backfill.js';
 import { runStopHooks } from './stop-hooks.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
@@ -45,7 +46,8 @@ import { countTurns } from './turn-utils.js';
 import { attachRouterPlan, extractPriorPlan, stripMetaForWire } from './router/continuity.js';
 import { resolveThinking } from './router/thinking.js';
 import { approxTokens } from './memory/budget.js';
-import { COLLAB_TOOL_POLICY, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { COLLAB_TOOL_POLICY, isToolErrorOutput, normalizeToolOutput, truncateToolResultIfNeeded } from './tools/registry.js';
+import { extractDisplayImages, stripDisplayImageData } from './image-assets.js';
 import { acknowledgePendingNotifications, formatNotificationsForPrompt, peekPendingNotifications } from './sub-agent/notifications.js';
 import {
   TOOL_BATCH_SIZE,
@@ -76,6 +78,9 @@ import {
 
 /** Maximum auto-continue turns when stopReason is 'max_tokens'. */
 const MAX_CONTINUE_TURNS = 3;
+
+/** Bound the best-effort post-turn AMS LLM call independently of the user turn. */
+const AMS_ADJUST_TIMEOUT_MS = 30_000;
 
 // ─── LLM retry policy defaults ──────────────────────────────────
 // Hard-coded floor / ceiling for retry behaviour. The engine reads the
@@ -343,7 +348,7 @@ export function shouldAllowGroupReflection({
 
 /**
  * @typedef {{ type: 'turn_start', turnNumber: number }} TurnStartEvent
- * @typedef {{ type: 'turn_end', turnNumber: number, stopReason: string }} TurnEndEvent
+ * @typedef {{ type: 'turn_end', turnNumber: number, stopReason: string, terminal?: boolean }} TurnEndEvent
  * @typedef {{ type: 'tool_start', id: string, name: string, input: object }} ToolStartEvent
  * @typedef {{ type: 'tool_end', id: string, name: string, output: string, isError: boolean }} ToolEndEvent
  * @typedef {{ type: 'consolidate', archivedCount: number, extractedCount: number }} ConsolidateEvent
@@ -379,16 +384,39 @@ export function shouldAllowGroupReflection({
  * @param {{
  *   sessionId?: string|null,
  *   ownVpId?: string|null,
- *   summaries: { user?: string, session?: string, vp?: string }
+ *   summaries: { user?: string, session?: string, vp?: string, topics?: Array<{scope:string, summary:string}> }
  * }} args
  * @returns {Array<{scope: string, summary: string}>}
  */
+export function selectResidentTopicScopes(topicScopes, recallEntries, userMsg = '') {
+  const recalledTopicScopes = new Set((recallEntries || [])
+    .map(entry => entry?.scope)
+    .filter(scope => typeof scope === 'string' && /^sessions\/[^/]+\/topic\//.test(scope)));
+  return (Array.isArray(topicScopes) ? topicScopes : [])
+    .filter(scope => recalledTopicScopes.has(scope) || isTopicScopeRelevant(scope, userMsg));
+}
+
+function isTopicScopeRelevant(scope, userMsg) {
+  if (!userMsg || typeof scope !== 'string') return false;
+  const label = scope.replace(/^sessions\/[^/]+\/topic\//, '').replace(/[/-]+/g, ' ');
+  return isMemoryPromptRelevant(label, userMsg);
+}
+
 export function buildResidentEntries(args) {
   const summaries = (args && args.summaries) || {};
   const out = [];
-  if (summaries.user) out.push({ scope: 'user', summary: summaries.user });
-  if (args.sessionId && summaries.session) {
-    out.push({ scope: `sessions/${args.sessionId}`, summary: summaries.session });
+  const userSummary = cleanMemoryPromptText(summaries.user);
+  const sessionSummary = cleanMemoryPromptText(summaries.session);
+  const vpSummary = cleanMemoryPromptText(summaries.vp);
+  if (userSummary) out.push({ scope: 'user', summary: userSummary });
+  if (args.sessionId && sessionSummary) {
+    out.push({ scope: `sessions/${args.sessionId}`, summary: sessionSummary });
+  }
+  if (args.sessionId && Array.isArray(summaries.topics)) {
+    for (const topic of summaries.topics) {
+      const summary = cleanMemoryPromptText(topic?.summary);
+      if (topic?.scope && summary) out.push({ scope: topic.scope, summary });
+    }
   }
   // VP per-session isolation (2026-06-09): the VP summary scope MUST be
   // session-qualified. The legacy bare `vp/<id>` scope was a structural
@@ -399,8 +427,8 @@ export function buildResidentEntries(args) {
   // by id rather than by full scope path. The session-qualified form
   // makes the per-session boundary explicit and matches the on-disk
   // layout 1:1.
-  if (args.sessionId && args.ownVpId && summaries.vp && !isVpSeedBackfillStub(summaries.vp)) {
-    out.push({ scope: `sessions/${args.sessionId}/vp/${args.ownVpId}`, summary: summaries.vp });
+  if (args.sessionId && args.ownVpId && vpSummary && !isVpSeedBackfillStub(vpSummary)) {
+    out.push({ scope: `sessions/${args.sessionId}/vp/${args.ownVpId}`, summary: vpSummary });
   }
   return out;
 }
@@ -516,6 +544,9 @@ export class Engine {
   /** @type {Array<{content:string|Array, preview:string}>} */
   #pendingUserMessages = [];
 
+  /** True after the bridge queued input in its external per-thread buffer. */
+  #externalUserWakePending = false;
+
   /**
    * Tasks (background bash, sub-agent spawns) that were launched DURING
    * the currently-running query() and have NOT terminated yet. The query
@@ -542,6 +573,21 @@ export class Engine {
    * @type {Array<{taskId:string, toolCallId:string, content:string|Array, preview:string}>}
    */
   #pendingTaskResultUpdates = [];
+
+  /**
+   * Terminal task results accepted by this Engine but not yet consumed by a
+   * successful adapter loop. Ownership stays with the Engine until delivery
+   * is acknowledged; abort/retirement hands these payloads back to the bridge
+   * for a new-turn rescue.
+   * @type {Map<string, {content:string|Array, preview:string, sessionId?:string, vpId?:string, threadId?:string, taskKind?:string, taskStatus?:string}>}
+   */
+  #acceptedAsyncTaskResults = new Map();
+
+  /** Task results already spliced into conversationMessages for the next request. */
+  #pendingAsyncTaskConfirmIds = new Set();
+
+  /** Reject new same-turn deliveries once the current query starts closing. */
+  #asyncTaskDeliveryClosed = true;
 
   /**
    * Async task ownership metadata captured when a tool registers a
@@ -571,7 +617,12 @@ export class Engine {
    * `toolCtx.registerAsyncTask` and the engine waits locally; web-bridge
    * fallback (legacy `scheduleTaskResultReentry` → new turn) handles the
    * post-run case.
-   * @type {{ onRegister?: (taskId:string, engine:Engine) => void, onUnregister?: (taskId:string) => void } | null}
+   * @type {{
+   *   onRegister?: (taskId:string, engine:Engine) => void,
+   *   onUnregister?: (taskId:string, engine:Engine) => void,
+   *   onConsumed?: (taskId:string, engine:Engine) => void,
+   *   onUndelivered?: (taskId:string, delivery:object, engine:Engine) => void,
+   * } | null}
    */
   #asyncTaskCoordinator = null;
 
@@ -646,14 +697,7 @@ export class Engine {
       conversationId: this.#traceId,
     });
 
-    // Build fast config: uses fastModelId for internal tasks (recall, consolidation, dream)
-    // Falls back to primary model if no fastModel configured
-    const fastModelId = config.fastModelId || config.model;
-    if (fastModelId !== config.model) {
-      this.#fastConfig = { ...config, model: fastModelId };
-    } else {
-      this.#fastConfig = config;
-    }
+    this.refreshConfig(config);
   }
 
   /**
@@ -685,6 +729,7 @@ export class Engine {
     if (!this.#currentAbortCtrl) return false;
     if (this.#currentAbortCtrl.signal.aborted) return false;
     this.#abortReason = reason || 'user';
+    this.retireAsyncTasks(`query_${this.#abortReason}`);
     try {
       this.#currentAbortCtrl.abort();
     } catch {
@@ -719,6 +764,21 @@ export class Engine {
   setLanguage(lang) {
     if (typeof lang !== 'string' || !lang) return;
     this.#config.language = lang;
+  }
+
+  /**
+   * Replace the effective runtime config for subsequent queries without
+   * interrupting a turn that already captured its model.
+   *
+   * @param {object} config
+   */
+  refreshConfig(config) {
+    if (!config || typeof config !== 'object') return;
+    this.#config = config;
+    const fastModelId = config.fastModelId || config.model;
+    this.#fastConfig = fastModelId !== config.model
+      ? { ...config, model: fastModelId }
+      : config;
   }
 
   /**
@@ -783,12 +843,13 @@ export class Engine {
    * dream tick (Phase 6) is what populates these; on a fresh install they
    * all return ''.
    *
-   * @param {{sessionId?: string, vpId?: string, language?: string}} ctx
-   * @returns {Promise<{user:string, session:string, vp:string}>}
+   * @param {{sessionId?: string, vpId?: string, language?: string, topicScopes?: string[]}} ctx
+   * @returns {Promise<{user:string, session:string, vp:string, topics:Array<{scope:string, summary:string}>}>}
    */
-  async #loadLayerASummaries({ sessionId, vpId, language } = {}) {
-    if (!this.#yeaftDir) return { user: '', session: '', vp: '' };
+  async #loadLayerASummaries({ sessionId, vpId, language, topicScopes } = {}) {
+    if (!this.#yeaftDir) return { user: '', session: '', vp: '', topics: [] };
     const memoryRoot = `${this.#yeaftDir}/memory`;
+    const topicScopeList = Array.isArray(topicScopes) ? topicScopes.slice(0, 12) : [];
     const tasks = [
       readScopeSummary({ kind: 'user' }, { root: memoryRoot, language }).catch(() => ''),
       sessionId
@@ -797,17 +858,24 @@ export class Engine {
       vpId && sessionId
         ? readScopeSummary({ kind: 'session-vp', sessionId, id: vpId }, { root: memoryRoot, language }).catch(() => '')
         : Promise.resolve(''),
+      Promise.all(topicScopeList.map(scope => readTopicSummary(scope, { root: memoryRoot, language }))),
     ];
-    const [user, session, vp] = await Promise.all(tasks);
-    return { user: user || '', session: session || '', vp: vp || '' };
+    const [user, session, vp, topicsRaw] = await Promise.all(tasks);
+    const topics = (topicsRaw || []).filter(t => t && t.summary);
+    return { user: user || '', session: session || '', vp: vp || '', topics };
   }
 
   async #loadSessionTopicLabels(sessionId, limit = 8) {
+    return (await this.#loadSessionTopicScopes(sessionId, limit))
+      .map(scope => scope.replace(/^sessions\/[^/]+\/topic\//, ''));
+  }
+
+  async #loadSessionTopicScopes(sessionId, limit = 24) {
     if (!this.#yeaftDir || !sessionId) return [];
     const topicRoot = join(this.#yeaftDir, 'memory', 'sessions', sessionId, 'topic');
     const labels = [];
     await collectTopicLabels(topicRoot, '', labels, limit).catch(() => {});
-    return labels;
+    return labels.map(label => `sessions/${sessionId}/topic/${label}`);
   }
 
   /**
@@ -819,6 +887,7 @@ export class Engine {
    *   ownVpId?: string|null,
    *   summaries: { user?: string, session?: string, vp?: string },
    *   recallEntries: object[],
+   *   userMsg?: string,
    * }} args
    * @returns {{
    *   ams: import('./memory/ams.js').ActiveMemorySet,
@@ -858,7 +927,7 @@ export class Engine {
     ams.setOnDemand(segs);
 
     // (c) Snapshot — render the AMS layers as a single prompt block.
-    const snapshotBlock = this.#renderAmsSnapshot(ams, this.#config.language || 'en');
+    const snapshotBlock = this.#renderAmsSnapshot(ams, this.#config.language || 'en', args.userMsg || '');
 
     const scopes = buildRelevantScopes({
       sessionId: args.sessionId,
@@ -875,10 +944,11 @@ export class Engine {
    *
    * @param {import('./memory/ams.js').ActiveMemorySet} ams
    * @param {string} [language]
+   * @param {string} [userMsg]
    * @returns {string}
    */
-  #renderAmsSnapshot(ams, language = 'en') {
-    const snap = ams.snapshot();
+  #renderAmsSnapshot(ams, language = 'en', userMsg = '') {
+    const snap = ams.snapshot({ userMsg });
     if (!snap) return '';
     const parts = [];
     if (snap.resident.length === 0 && snap.recent.length === 0 && snap.onDemand.length === 0) {
@@ -892,19 +962,19 @@ export class Engine {
     if (snap.resident.length > 0) {
       parts.push(zh ? '### 常驻记忆' : '### Resident');
       for (const r of snap.resident) {
-        parts.push(`- **${r.scope}**: ${r.summary}`);
+        parts.push(`- **${memoryScopeLabel(r.scope)}**: ${r.summary}`);
       }
     }
     if (snap.recent.length > 0) {
       parts.push(zh ? '### 最近记忆' : '### Recent');
       for (const s of snap.recent) {
-        parts.push(`- (${s.scope}) ${(s.body || '').trim()}`);
+        parts.push(`- (${memoryScopeLabel(s.scope)}) ${(s.body || '').trim()}`);
       }
     }
     if (snap.onDemand.length > 0) {
       parts.push(zh ? '### 按需记忆' : '### OnDemand');
       for (const s of snap.onDemand) {
-        parts.push(`- (${s.scope}) ${(s.body || '').trim()}`);
+        parts.push(`- (${memoryScopeLabel(s.scope)}) ${(s.body || '').trim()}`);
       }
     }
     return parts.join('\n');
@@ -948,15 +1018,30 @@ export class Engine {
         userMsg: args.userMsg,
         assistantReply: args.assistantReply,
         runLLM: async (prompt) => {
-          const out = await this.#adapter.call({
-            model: this.#fastConfig.model,
-            system: (String(this.#config?.language || '').toLowerCase().startsWith('zh')
-          ? '你是记忆管理子程序。请按要求只回复一个 JSON 对象，不要输出额外说明。'
-          : 'You are a memory-management subroutine. Reply with a single JSON object as instructed.'),
-            messages: [{ role: 'user', content: prompt }],
-            maxTokens: 1024,
+          const maintenanceCtrl = new AbortController();
+          let timeout = null;
+          const timedOut = new Promise((_, reject) => {
+            timeout = setTimeout(() => {
+              maintenanceCtrl.abort('ams_adjust_timeout');
+              reject(new LLMAbortError());
+            }, AMS_ADJUST_TIMEOUT_MS);
+            if (timeout && typeof timeout.unref === 'function') timeout.unref();
           });
-          return out?.text || '';
+          try {
+            const request = this.#adapter.call({
+              model: this.#fastConfig.model,
+              system: (String(this.#config?.language || '').toLowerCase().startsWith('zh')
+            ? '你是记忆管理子程序。请按要求只回复一个 JSON 对象，不要输出额外说明。'
+            : 'You are a memory-management subroutine. Reply with a single JSON object as instructed.'),
+              messages: [{ role: 'user', content: prompt }],
+              maxTokens: 1024,
+              signal: maintenanceCtrl.signal,
+            });
+            const out = await Promise.race([request, timedOut]);
+            return out?.text || '';
+          } finally {
+            if (timeout) clearTimeout(timeout);
+          }
         },
       });
       if (result?.ran) {
@@ -995,17 +1080,18 @@ export class Engine {
    * @param {object} [args.vpPersona]
    * @param {object} [args.activeScope] — DESIGN-PROMPT §3 ④ structured scope summary
    * @param {string} [args.sessionAnnouncement]
+   * @param {string} [args.workCenterInstructions] — frozen Agent-level Work Center policy
    * @param {string} [args.projectDoc] — resolved CLAUDE.md / AGENTS.md text (already truncated)
    * @param {object} [args.taskCtx] — legacy task-context sub-block (optional)
    * @param {string} [args.explicitSkillName] — leading /skill:<name> command, if present
    * @returns {string}
    */
-  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, projectDoc, taskCtx, activeTasks, explicitSkillName } = {}) {
-    // Get relevant skill content if SkillManager is wired. A leading
-    // /skill:<name> is explicit, not relevance matching: load that skill by
-    // name or inject a visible prompt warning when the command is unknown.
-    let skillContent = '';
-    if (this.#skillManager) {
+  #buildSystemPrompt({ prompt, memoryInjection, vpPersona, activeScope, sessionAnnouncement, workCenterInstructions, projectDoc, taskCtx, activeTasks, explicitSkillName, resolvedSkillContent = null } = {}) {
+    // Skill selection is normally resolved once by #runQuery so the prompt and
+    // emitted protocol events describe the exact same skills. Keep the local
+    // fallback for internal callers that do not need selection events.
+    let skillContent = typeof resolvedSkillContent === 'string' ? resolvedSkillContent : '';
+    if (resolvedSkillContent === null && this.#skillManager) {
       if (explicitSkillName) {
         skillContent = this.#skillManager.getPromptContent(explicitSkillName)
           || `## Skill command error\n\nRequested skill "${explicitSkillName}" was not found. Continue without that skill and tell the user it is unavailable.`;
@@ -1027,6 +1113,7 @@ export class Engine {
       vpPersona,
       activeScope,
       sessionAnnouncement,
+      workCenterInstructions,
       projectDoc,
       runtimePlatform: getRuntimePlatformInfo(),
       taskCtx,
@@ -1074,7 +1161,8 @@ export class Engine {
 
     // Step 1 — stat-only check. Cheap (two `statSync` calls) and lets
     // us short-circuit the read when the file hasn't moved.
-    const picked = pickProjectDocFile(workDir);
+    const secureWorkspace = this.#config?.secureProjectFiles === true;
+    const picked = pickProjectDocFile(workDir, { secureWorkspace });
     if (!picked) {
       this.#projectDocCache = null;
       return '';
@@ -1094,7 +1182,7 @@ export class Engine {
     }
 
     // Step 3 — cache miss. Read + decode, then refresh the cache.
-    const doc = readProjectDoc(workDir, { maxBytes });
+    const doc = readProjectDoc(workDir, { maxBytes, secureWorkspace });
     if (!doc) {
       this.#projectDocCache = null;
       return '';
@@ -1170,6 +1258,9 @@ export class Engine {
       // Null in non-VP / test contexts — tools tolerate missing slots.
       getCurrentTodos: vpCtx?.getCurrentTodos || null,
       setCurrentTodos: vpCtx?.setCurrentTodos || null,
+      askUser: typeof vpCtx?.askUser === 'function'
+        ? input => vpCtx.askUser(input, typeof vpCtx?.currentToolCall === 'function' ? vpCtx.currentToolCall() : null)
+        : null,
       // task-707: tool-callable end-turn signal. The engine threads this
       // setter when constructing toolCtx so a tool (e.g. route_forward)
       // can mark "after this batch, end the turn — do NOT call adapter
@@ -1240,7 +1331,7 @@ export class Engine {
    * without injection.
    *
    * @param {string} prompt
-   * @param {{ sessionId?: string, vpId?: string }} [ctx]
+   * @param {{ sessionId?: string, vpId?: string, extraScopes?: string[] }} [ctx]
    * @returns {Promise<{ profile: string, entries: object[], formatted: string }|null>}
    */
   async #recallMemory(prompt, ctx = {}) {
@@ -1252,6 +1343,8 @@ export class Engine {
         sessionId: ctx.sessionId,
         chatId: ctx.chatId || this.#chatId,
         vpId: ctx.vpId,
+        extraScopes: ctx.extraScopes,
+        fallbackOnEmpty: true,
       });
       memory.profile = result.profile || '';
       memory.entries = result.entries || [];
@@ -1560,12 +1653,44 @@ export class Engine {
         : this.#formatTaskResultUpdateContent(toolMsg.content);
       toolMsg.content = `${prior}\n\n${appendText}`;
       applied.push(update);
+      if (this.#acceptedAsyncTaskResults.has(update.taskId)) {
+        this.#pendingAsyncTaskConfirmIds.add(update.taskId);
+      }
     }
     return applied;
   }
 
+  #confirmAsyncTaskResults(taskIds) {
+    if (!Array.isArray(taskIds) || taskIds.length === 0) return;
+    for (const taskId of taskIds) {
+      this.#pendingAsyncTaskConfirmIds.delete(taskId);
+      if (!this.#acceptedAsyncTaskResults.delete(taskId)) continue;
+      try {
+        if (typeof this.#asyncTaskCoordinator?.onConsumed === 'function') {
+          this.#asyncTaskCoordinator.onConsumed(taskId, this);
+        } else {
+          this.#asyncTaskCoordinator?.onUnregister?.(taskId, this);
+        }
+      } catch { /* best-effort */ }
+    }
+  }
+
+  #releaseUndeliveredAsyncTaskResults(reason = 'query_closed') {
+    if (this.#acceptedAsyncTaskResults.size === 0) return 0;
+    const deliveries = Array.from(this.#acceptedAsyncTaskResults.entries());
+    this.#acceptedAsyncTaskResults.clear();
+    this.#pendingAsyncTaskConfirmIds.clear();
+    for (const [taskId, delivery] of deliveries) {
+      try {
+        this.#asyncTaskCoordinator?.onUndelivered?.(taskId, { ...delivery, reason }, this);
+      } catch { /* rescue plumbing must not break query teardown */ }
+    }
+    return deliveries.length;
+  }
+
   #drainPendingUserMessages(drainPendingUserMessages) {
     const pending = [];
+    this.#externalUserWakePending = false;
     if (typeof drainPendingUserMessages === 'function') {
       try {
         const drained = drainPendingUserMessages();
@@ -1593,11 +1718,15 @@ export class Engine {
         const preview = typeof item.preview === 'string'
           ? item.preview
           : (typeof content === 'string' ? content : '[content blocks]');
+        const taskId = typeof item.taskId === 'string' ? item.taskId : undefined;
+        if (taskId && this.#acceptedAsyncTaskResults.has(taskId)) {
+          this.#pendingAsyncTaskConfirmIds.add(taskId);
+        }
         return {
           content,
           preview,
           internal: Boolean(item.internal),
-          taskId: typeof item.taskId === 'string' ? item.taskId : undefined,
+          taskId,
         };
       })
       .filter(Boolean);
@@ -1632,7 +1761,7 @@ export class Engine {
    *   string-prompt shape (no regression for existing callers).
    * @yields {EngineEvent}
    */
-  async *query({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null } = {}) {
+  async *query({ prompt, promptParts = null, messages = [], signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, closePendingUserInput = null, collabToolPolicy = null } = {}) {
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
       yield {
         type: 'error',
@@ -1677,6 +1806,9 @@ export class Engine {
     const abortCtrl = new AbortController();
     this.#currentAbortCtrl = abortCtrl;
     this.#abortReason = null;
+    this.#asyncTaskDeliveryClosed = false;
+    this.#acceptedAsyncTaskResults.clear();
+    this.#pendingAsyncTaskConfirmIds.clear();
 
     const onExternalAbort = () => {
       if (!abortCtrl.signal.aborted) {
@@ -1684,12 +1816,14 @@ export class Engine {
         // external trigger. Callers that pass a signal without invoking
         // engine.abort() get the neutral tag 'external'.
         if (!this.#abortReason) this.#abortReason = 'external';
+        this.retireAsyncTasks('query_external');
         try { abortCtrl.abort(); } catch { /* ignore */ }
       }
     };
     if (signal) {
       if (signal.aborted) {
         this.#abortReason = 'external';
+        this.retireAsyncTasks('query_external');
         try { abortCtrl.abort(); } catch { /* ignore */ }
       } else {
         signal.addEventListener('abort', onExternalAbort, { once: true });
@@ -1700,29 +1834,19 @@ export class Engine {
 
     try {
       this.#currentThreadId = threadId || MAIN_THREAD_ID;
-      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics, vpPlan, sessionAnnouncement, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName });
+      yield* this.#runQuery({ prompt: effectivePrompt, promptParts: effectivePromptParts, messages, signal: runSignal, userEffort: effectiveUserEffort, scenario, vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted, getCurrentTodos, setCurrentTodos, askUser, threadId: this.#currentThreadId, vpTurnId, drainPendingUserMessages, closePendingUserInput, collabToolPolicy: effectiveCollabToolPolicy, explicitSkillName: parsedSkill.skillName });
     } finally {
       if (signal) {
         try { signal.removeEventListener('abort', onExternalAbort); } catch { /* ignore */ }
       }
+      this.retireAsyncTasks(abortCtrl.signal.aborted ? 'query_aborted' : 'query_closed');
       // Clear current-run state so engine.isRunning flips back to false
       // and a subsequent query() starts with a clean slate.
       this.#currentAbortCtrl = null;
       this.#abortReason = null;
       this.#currentThreadId = MAIN_THREAD_ID;
       this.#pendingUserMessages.length = 0;
-      // Hand back any async tasks still on the books to the coordinator so
-      // a late terminal event falls through to the legacy rescue path
-      // (new turn) instead of being silently swallowed. The coordinator
-      // is responsible for keeping its owner map in sync.
-      if (this.#pendingAsyncTaskIds.size > 0) {
-        const leftover = Array.from(this.#pendingAsyncTaskIds);
-        this.#pendingAsyncTaskIds.clear();
-        for (const tid of leftover) {
-          this.#asyncTaskToolMeta.delete(tid);
-          try { this.#asyncTaskCoordinator?.onUnregister?.(tid); } catch { /* ignore */ }
-        }
-      }
+      this.#externalUserWakePending = false;
       this.#asyncTaskToolMeta.clear();
       this.#pendingTaskResultMessages.length = 0;
       this.#pendingTaskResultUpdates.length = 0;
@@ -1744,7 +1868,7 @@ export class Engine {
    * in a try/finally without indenting the whole loop.
    * @private
    */
-  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, collabToolPolicy = null, explicitSkillName = null }) {
+  async *#runQuery({ prompt, promptParts = null, messages, signal, userEffort = null, scenario = 'chat', vpPersona, router, senderVpId, inboundEnvelope, taskId, taskMembers, sessionId, sessionMembers, sessionTopics = null, vpPlan, sessionAnnouncement, workCenterInstructions, workDir, userAlreadyPersisted = false, getCurrentTodos = null, setCurrentTodos = null, askUser = null, threadId = MAIN_THREAD_ID, vpTurnId = null, drainPendingUserMessages = null, closePendingUserInput = null, collabToolPolicy = null, explicitSkillName = null }) {
 
     const effectiveCollabToolPolicy = collabToolPolicy === COLLAB_TOOL_POLICY.SINGLE_VP || collabToolPolicy === COLLAB_TOOL_POLICY.MULTI_VP
       ? collabToolPolicy
@@ -1784,11 +1908,13 @@ export class Engine {
     let memoryInjection = '';
     let recallEntryCount = 0;
 
+    const topicScopesForMemory = await this.#loadSessionTopicScopes(sessionId);
     const recallResult = await this.#recallMemory(prompt, {
       sessionId,
       vpId: vpPersona && typeof vpPersona === 'object' && typeof vpPersona.vpId === 'string'
         ? vpPersona.vpId
         : (typeof senderVpId === 'string' ? senderVpId : undefined),
+      extraScopes: topicScopesForMemory,
     });
     recallEntryCount = recallResult && Array.isArray(recallResult.entries)
       ? recallResult.entries.length
@@ -1796,6 +1922,11 @@ export class Engine {
     if (recallEntryCount > 0) {
       yield { type: 'recall', entryCount: recallEntryCount, cached: false, threadId };
     }
+    const topicScopesForResident = selectResidentTopicScopes(
+      topicScopesForMemory,
+      recallResult?.entries || [],
+      prompt,
+    );
 
     // Layer-A summaries — same scopes AMS Resident will surface, loaded
     // here so we can pass them into #prepareAms. (Rolling per-scope
@@ -1806,6 +1937,7 @@ export class Engine {
         ? vpPersona.vpId
         : (typeof senderVpId === 'string' ? senderVpId : undefined),
       language: this.#config.language || 'en',
+      topicScopes: topicScopesForResident,
     });
 
     // ─── AMS: populate + snapshot ───────────────────────────────
@@ -1824,6 +1956,7 @@ export class Engine {
       ownVpId: ownVpIdForAms,
       summaries,
       recallEntries: recallResult ? (recallResult.entries || []) : [],
+      userMsg: prompt,
     });
     if (amsContext && amsContext.snapshotBlock) {
       memoryInjection = amsContext.snapshotBlock;
@@ -1837,13 +1970,17 @@ export class Engine {
     // frontend state. The full system prompt remains visible in the existing
     // debug-only system-prompt panel.
     const activeGroupDreamScope = sessionId ? `sessions/${sessionId}` : null;
+    const activeTopicDreamPrefix = sessionId ? `sessions/${sessionId}/topic/` : null;
     const dreamResidentLoaded = amsContext && Array.isArray(amsContext.residentEntries)
       ? amsContext.residentEntries
-        .filter(e => e && e.scope === activeGroupDreamScope && e.summary)
+        .filter(e => e && e.summary && (
+          e.scope === activeGroupDreamScope
+          || (activeTopicDreamPrefix && e.scope?.startsWith(activeTopicDreamPrefix))
+        ))
         .map(e => ({
           scope: e.scope,
-          summary: String(e.summary).slice(0, 4000),
-          truncated: String(e.summary).length > 4000,
+          summary: String(e.summary),
+          truncated: false,
           source: 'resident-summary',
         }))
       : [];
@@ -1854,7 +1991,7 @@ export class Engine {
     // only IDs + tiny labels. (Feature scope retired 2026-05-13.)
     const activeSessionTopics = Array.isArray(sessionTopics)
       ? sessionTopics
-      : await this.#loadSessionTopicLabels(sessionId);
+      : topicScopesForMemory.slice(0, 8).map(scope => scope.replace(/^sessions\/[^/]+\/topic\//, ''));
     const activeScope = {
       sessionId: sessionId || '',
       sessionMember: ownVpIdForAms || '',
@@ -1867,6 +2004,32 @@ export class Engine {
     const activeTasks = this.#taskManager
       ? this.#taskManager.renderActiveTasksForPrompt(runtimeSessionId)
       : '';
+    let resolvedSkillContent = '';
+    let resolvedSkills = [];
+    let skillResolutionError = null;
+    if (this.#skillManager) {
+      if (explicitSkillName) {
+        resolvedSkillContent = this.#skillManager.getPromptContent(explicitSkillName);
+        const skill = this.#skillManager.list?.().find(item => item.name === explicitSkillName)
+          || (resolvedSkillContent ? { name: explicitSkillName } : null);
+        if (resolvedSkillContent && skill) {
+          resolvedSkills = [{ ...skill, explicit: true }];
+        } else {
+          skillResolutionError = `Requested skill "${explicitSkillName}" was not found.`;
+          resolvedSkillContent = `## Skill command error\n\n${skillResolutionError} Continue without that skill and tell the user it is unavailable.`;
+        }
+      } else if (prompt && typeof this.#skillManager.findRelevant === 'function') {
+        resolvedSkills = this.#skillManager.findRelevant(prompt).map(skill => ({
+          name: skill.name,
+          description: skill.description || '',
+          trigger: skill.trigger || '',
+          category: skill.category,
+          tier: skill._tier,
+          explicit: false,
+        }));
+        resolvedSkillContent = resolvedSkills.map(skill => this.#skillManager.getPromptContent(skill.name)).join('\n\n');
+      }
+    }
 
     const systemPrompt = this.#buildSystemPrompt({
       prompt,
@@ -1874,9 +2037,11 @@ export class Engine {
       vpPersona,
       activeScope,
       sessionAnnouncement,
+      workCenterInstructions,
       projectDoc,
       activeTasks,
       explicitSkillName,
+      resolvedSkillContent,
     });
 
     // ─── HARD INVARIANT: Compact ≠ Dream (read DESIGN-COMPACT-VS-DREAM.md) ─
@@ -2046,6 +2211,12 @@ export class Engine {
       sessionId: sessionId || null,
       at: queryStartedAt,
     };
+    for (const skill of resolvedSkills) {
+      yield { type: 'skill_loaded', turnId: queryTurnId, skill };
+    }
+    if (skillResolutionError) {
+      yield { type: 'skill_error', turnId: queryTurnId, skillName: explicitSkillName, message: skillResolutionError };
+    }
 
     // Surface memory recall to the debug panel right after turn_open.
     // recallResult was loaded above; emit a structured `memory_used`
@@ -2079,6 +2250,7 @@ export class Engine {
     let continueTurns = 0; // auto-continue counter
     let toolLoopTurns = 0; // task-327b: tool-use turns for long-loop auto-bump
     let fullResponseText = '';
+    let hasDisplayImageAnchor = false;
     let currentModel = this.#config.model;
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
@@ -2256,7 +2428,7 @@ export class Engine {
         // OpenAI/Anthropic toolCallId pairing intact.
         let wireMessages = stripMetaForWire([...conversationMessages]);
 
-        if (this.#yeaftDir && (this.#config?.archive?.toolResults !== false)) {
+        if (scenario !== 'work-item' && this.#yeaftDir && (this.#config?.archive?.toolResults !== false)) {
           try {
             const swept = await archiveToolResults({
               root: `${this.#yeaftDir}/memory`,
@@ -2293,7 +2465,7 @@ export class Engine {
         // The estimator (`estimateMessagesTokens`) is approxTokens
         // (char/4 with CJK weighting) — good enough for a guard rail; a
         // real tokenizer would be exact but adds a heavy dep.
-        if (this.#yeaftDir && (this.#config?.archive?.toolResults !== false)) {
+        if (scenario !== 'work-item' && this.#yeaftDir && (this.#config?.archive?.toolResults !== false)) {
           const PREFLIGHT_RATIO = 0.85;
           const threshold = Math.floor(currentContextWindow * PREFLIGHT_RATIO);
           const estimate = estimateMessagesTokens(systemPrompt, wireMessages);
@@ -2323,7 +2495,12 @@ export class Engine {
           }
         }
 
-        // Stream from adapter
+        // Snapshot task results carried by this exact request. Request start
+        // is not delivery: fetch may remain pending and then be aborted before
+        // the provider processes anything. Ack only after a normal stream end
+        // that included the provider's terminal stop event.
+        const requestAsyncTaskIds = Array.from(this.#pendingAsyncTaskConfirmIds);
+        let sawProviderStop = false;
         for await (const event of this.#adapter.stream({
           model: currentModel,
           system: systemPrompt,
@@ -2402,6 +2579,7 @@ export class Engine {
               break;
             }
             case 'stop':
+              sawProviderStop = true;
               stopReason = event.stopReason;
               yield event;
               break;
@@ -2427,6 +2605,19 @@ export class Engine {
               throw adapterError;
             }
           }
+        }
+        // Some proxies resolve the SSE body cleanly after AbortSignal instead
+        // of throwing. Do not treat that truncated stream as a successful
+        // model response or let it reach stop hooks/persistence.
+        if (signal?.aborted) {
+          throw new LLMAbortError();
+        }
+        // A provider terminal stop plus normal stream completion proves that
+        // the request containing these task results completed successfully.
+        // Retryable errors, aborts, idle timeouts, and truncated streams keep
+        // escrow so retry or final rescue can deliver the payload.
+        if (sawProviderStop) {
+          this.#confirmAsyncTaskResults(requestAsyncTaskIds);
         }
         traceRequest('llm.request_complete', {
           durationMs: perfNowMs() - requestPerfStart,
@@ -2842,7 +3033,8 @@ export class Engine {
         while (!signal?.aborted
                && this.#pendingTaskResultMessages.length === 0
                && this.#pendingTaskResultUpdates.length === 0
-               && this.#pendingUserMessages.length === 0) {
+               && this.#pendingUserMessages.length === 0
+               && !this.#externalUserWakePending) {
           if (this.#pendingAsyncTaskIds.size === 0) break;
           await this.#waitForAsyncWake(signal);
         }
@@ -2854,6 +3046,11 @@ export class Engine {
           aborted: Boolean(signal?.aborted),
           remainingTaskIds: Array.from(this.#pendingAsyncTaskIds),
         };
+        if (signal?.aborted) {
+          yield { type: 'aborted', reason: this.#abortReason || 'external', turnNumber, threadId };
+          yield { type: 'turn_end', turnNumber, stopReason: 'aborted', threadId };
+          break;
+        }
         if (!signal?.aborted) {
           const taskResultUpdatesAfterAsyncWait = this.#drainPendingTaskResultUpdates(conversationMessages);
           if (taskResultUpdatesAfterAsyncWait.length > 0) {
@@ -2890,18 +3087,38 @@ export class Engine {
             continue;
           }
         }
-        // If we fall through here, either abort fired or the wait
-        // exited with no payload (all tasks released themselves via
-        // engine teardown / unregister with no notification). Drop into
-        // the regular end_turn path.
+        // If we fall through here, task ownership was released without a
+        // payload (engine teardown / unregister with no notification). Drop
+        // into the regular end_turn path.
       }
 
-      // If no tool calls, we're done
+      // If no tool calls, we're done. Callers with a durable append queue may
+      // atomically close it here. A failed close means input won the race with
+      // terminal completion, so drain it and keep this same Engine query alive.
       if (stopReason !== 'tool_use' || toolCalls.length === 0) {
+        if (typeof closePendingUserInput === 'function' && !closePendingUserInput()) {
+          const appendedBeforeClose = this.#drainPendingUserMessages(drainPendingUserMessages);
+          if (appendedBeforeClose.length === 0) {
+            throw new Error('Could not close pending user input for terminal completion');
+          }
+          for (const item of appendedBeforeClose) {
+            conversationMessages.push({ role: 'user', content: item.content });
+            yield {
+              type: 'user_append',
+              turnId: queryTurnId,
+              loopNumber: turnNumber,
+              threadId,
+              preview: String(item.preview || '').slice(0, 200),
+              internal: Boolean(item.internal),
+            };
+          }
+          yield { type: 'turn_end', turnNumber, stopReason: 'user_append_continue', threadId };
+          continue;
+        }
         if (pendingSubAgentNotifs.length > 0) {
           acknowledgePendingNotifications(notifScope, pendingSubAgentNotifs.map(n => n.id));
         }
-        yield { type: 'turn_end', turnNumber, stopReason, threadId };
+        yield { type: 'turn_end', turnNumber, stopReason, threadId, terminal: true };
 
         // ─── Post-query: StopHooks or Legacy ─────────────
         if (this.#config._readOnly) {
@@ -2940,6 +3157,7 @@ export class Engine {
             // for this turn. The hook still persists assistant + tool
             // rows for THIS VP's contribution.
             userAlreadyPersisted,
+            hasDisplayImageAnchor,
           });
 
           if (hookResult.consolidated) {
@@ -3061,6 +3279,7 @@ export class Engine {
         contextWindow: currentContextWindow,
         getCurrentTodos,
         setCurrentTodos,
+        askUser,
         workDir,
         currentToolCall: () => currentToolCallForAsyncTask ? { ...currentToolCallForAsyncTask } : null,
         requestEndTurn: (reason) => {
@@ -3123,7 +3342,9 @@ export class Engine {
         }
 
         let output;
+        let displayImages = [];
         let isError = false;
+        let toolErrorOutput = null;
         currentToolCallForAsyncTask = {
           id: tc.id,
           name: tc.name,
@@ -3143,9 +3364,11 @@ export class Engine {
           try {
             yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId };
             if (this.#toolRegistry) {
+              toolErrorOutput = this.#toolRegistry.get(tc.name)?.errorOutput || null;
               output = await this.#toolRegistry.execute(tc.name, tc.input, toolCtx);
             } else {
               const tool = this.#tools.get(tc.name);
+              toolErrorOutput = tool.errorOutput || null;
               // Pass the full toolCtx (cwd, workDir, signal, …) — not just
               // `{ signal }`. Legacy registerTool() callers historically got
               // a 1-field ctx, but that means tools like bash/file-read run
@@ -3156,7 +3379,13 @@ export class Engine {
               const rawOutput = await tool.execute(tc.input, toolCtx);
               output = normalizeToolOutput(rawOutput);
             }
-            yield { type: 'tool_end', id: tc.id, name: tc.name, output, isError: false, threadId: this.currentThreadId };
+            displayImages = extractDisplayImages(tc.name, output);
+            if (displayImages.length > 0) {
+              output = stripDisplayImageData(output, displayImages);
+            }
+            isError = toolErrorOutput === 'json-error-envelope' && isToolErrorOutput(output);
+            yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError, threadId: this.currentThreadId };
+            if (displayImages.some(image => image.deliveryQueued === true)) hasDisplayImageAnchor = true;
           } catch (err) {
             output = `Error: ${err.message}`;
             isError = true;
@@ -3181,6 +3410,7 @@ export class Engine {
           durationMs: toolDurationMs,
           isError,
           toolOutput: output,
+          ...(displayImages.length > 0 ? { displayImageCount: displayImages.length } : {}),
         };
 
         // 2026-05-13: feed the per-tool counters. Stays best-effort — a
@@ -3205,7 +3435,6 @@ export class Engine {
           toolOutput: output,
           durationMs: toolDurationMs,
           isError,
-          toolOutput: output,
         });
 
         // Append only the bounded copy to the model message history. Raw
@@ -3563,13 +3792,59 @@ export class Engine {
   }
 
   /**
+   * Wake a query whose external pending-message hook has received input.
+   * The bridge keeps the full message (attachments and provenance included)
+   * in its thread queue; this method only releases an async-task wait so the
+   * normal drain callback can consume it at the next safe adapter boundary.
+   * @returns {boolean}
+   */
+  wakeForPendingUserMessage() {
+    if (!this.isRunning) return false;
+    this.#externalUserWakePending = true;
+    this.#wakeAsyncTaskWaiters();
+    return true;
+  }
+
+  /**
    * Install the coordinator that lets an external dispatcher (web-bridge)
    * route a background task's terminal event back to THIS engine while
    * its query() is still running. Pass `null` to detach.
-   * @param {{ onRegister?: (taskId:string, engine:Engine) => void, onUnregister?: (taskId:string) => void } | null} coord
+   * @param {{ onRegister?: (taskId:string, engine:Engine) => void, onUnregister?: (taskId:string, engine:Engine) => void, onConsumed?: (taskId:string, engine:Engine) => void, onUndelivered?: (taskId:string, delivery:object, engine:Engine) => void } | null} coord
    */
   setAsyncTaskCoordinator(coord) {
     this.#asyncTaskCoordinator = (coord && typeof coord === 'object') ? coord : null;
+  }
+
+  /**
+   * Close same-turn task delivery for this Engine. Accepted-but-undrained
+   * results are handed to the coordinator for exactly-once rescue; tasks that
+   * have not completed are merely unregistered so a future terminal event
+   * falls through to the bridge rescue path.
+   *
+   * @param {string} [reason]
+   * @param {{ rescue?: boolean }} [opts]
+   * @returns {number} number of accepted results released or discarded
+   */
+  retireAsyncTasks(reason = 'engine_retired', { rescue = true } = {}) {
+    this.#asyncTaskDeliveryClosed = true;
+    const released = rescue
+      ? this.#releaseUndeliveredAsyncTaskResults(reason)
+      : (() => {
+        const dropped = this.#acceptedAsyncTaskResults.size;
+        this.#acceptedAsyncTaskResults.clear();
+        this.#pendingAsyncTaskConfirmIds.clear();
+        return dropped;
+      })();
+    if (this.#pendingAsyncTaskIds.size > 0) {
+      const pending = Array.from(this.#pendingAsyncTaskIds);
+      this.#pendingAsyncTaskIds.clear();
+      for (const taskId of pending) {
+        this.#asyncTaskToolMeta.delete(taskId);
+        try { this.#asyncTaskCoordinator?.onUnregister?.(taskId, this); } catch { /* best-effort */ }
+      }
+    }
+    this.#wakeAsyncTaskWaiters();
+    return released;
   }
 
   /**
@@ -3606,11 +3881,12 @@ export class Engine {
    *
    * @param {string} taskId
    * @param {string|Array} content — pre-formatted task result body
-   * @param {{ preview?: string }} [opts]
+   * @param {{ preview?: string, sessionId?: string, vpId?: string, threadId?: string, taskKind?: string, taskStatus?: string }} [opts]
    * @returns {boolean}
    */
   notifyAsyncTaskCompleted(taskId, content, opts = {}) {
     if (!this.ownsPendingAsyncTask(taskId)) return false;
+    if (this.#asyncTaskDeliveryClosed || !this.#currentAbortCtrl || this.#currentAbortCtrl.signal.aborted) return false;
     if (typeof content !== 'string' && !Array.isArray(content)) return false;
     if (typeof content === 'string' && !content.trim()) return false;
     // Defensive: an empty content-block array would splice as a wire-valid
@@ -3619,11 +3895,20 @@ export class Engine {
     // always emit a non-empty string today; this guards future refactors.
     if (Array.isArray(content) && content.length === 0) return false;
     this.#pendingAsyncTaskIds.delete(taskId);
-    try { this.#asyncTaskCoordinator?.onUnregister?.(taskId); } catch { /* coord must not throw into engine */ }
     const preview = typeof opts.preview === 'string'
       ? opts.preview
       : (typeof content === 'string' ? content.slice(0, 200) : '[task result]');
     const meta = this.#asyncTaskToolMeta.get(taskId) || {};
+    const delivery = {
+      content,
+      preview,
+      sessionId: opts.sessionId,
+      vpId: opts.vpId,
+      threadId: opts.threadId || meta.threadId,
+      taskKind: opts.taskKind,
+      taskStatus: opts.taskStatus,
+    };
+    this.#acceptedAsyncTaskResults.set(taskId, delivery);
     this.#asyncTaskToolMeta.delete(taskId);
     if (typeof meta.toolCallId === 'string' && meta.toolCallId) {
       this.#pendingTaskResultUpdates.push({
@@ -3691,6 +3976,7 @@ export class Engine {
       if (this.#pendingTaskResultMessages.length > 0) return resolve();
       if (this.#pendingTaskResultUpdates.length > 0) return resolve();
       if (this.#pendingUserMessages.length > 0) return resolve();
+      if (this.#externalUserWakePending) return resolve();
       if (signal?.aborted) return resolve();
       this.#asyncTaskWaiters.push(resolve);
       if (signal && typeof signal.addEventListener === 'function') {
@@ -3736,6 +4022,18 @@ export class Engine {
       return '';
     }
   }
+}
+
+async function readTopicSummary(scope, opts) {
+  const m = /^sessions\/([^/]+)\/topic\/(.+)$/.exec(String(scope || ''));
+  if (!m) return null;
+  const path = m[2].split('/').filter(Boolean);
+  if (path.length === 0) return null;
+  const summary = await readScopeSummary(
+    { kind: 'session-topic', sessionId: m[1], path },
+    opts,
+  ).catch(() => '');
+  return summary ? { scope, summary } : null;
 }
 
 async function collectTopicLabels(dir, prefix, labels, limit) {

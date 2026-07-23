@@ -57,51 +57,14 @@
   box-shadow: inset 3px 0 0 var(--accent-blue);
 }
 
-/* Bottom settings row ------------------------------------------------------ */
-.yeaft-sidebar .sidebar-bottom {
-  padding: 8px;
-  background: var(--sidebar-bg, transparent);
-}
-
-.yeaft-sidebar .sidebar-bottom .sidebar-nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 10px;
-  border: 0;
-  background: transparent;
-  color: var(--text-secondary, #6e6e73);
-  border-radius: 8px;
-  cursor: pointer;
-  font: inherit;
-}
-
-.yeaft-sidebar .sidebar-bottom .sidebar-nav-item:hover {
-  background: var(--sidebar-hover, rgba(0, 0, 0, 0.05));
-  color: var(--text-primary, #1d1d1f);
-}
-
-.yeaft-sidebar .sidebar-version-badge {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-tertiary, #86868b);
-  font-variant-numeric: tabular-nums;
-}
-
-/* Mobile: support collapsed slide-away. Desktop width remains owned by shared
-   .sidebar / layout rules. */
+/* Mobile slide-away behavior. Width is owned exclusively by the shared
+   SessionSidebarShell token so Chat and Yeaft stay identical. */
 @media (max-width: 768px) {
   .yeaft-sidebar {
-    width: 85vw;
-    max-width: 320px;
-    min-width: 240px;
     box-shadow: 4px 0 16px rgba(0, 0, 0, 0.2);
-    transition: transform 0.2s ease, width 0.2s ease;
+    transition: transform 0.2s ease;
   }
   .yeaft-sidebar.collapsed {
-    width: 0;
-    min-width: 0;
     box-shadow: none;
     transform: translateX(-100%);
     pointer-events: none;

@@ -422,22 +422,25 @@ export function handleAgentSelected(store, msg) {
   console.log('[agent_selected] Switching to agent:', msg.agentId);
   store.agentSwitching = false;
   const isSameAgent = store.currentAgent === msg.agentId;
-  store.currentAgent = msg.agentId;
-  store.currentAgentInfo = {
+  const agentInfo = {
     id: msg.agentId,
     name: msg.agentName,
     workDir: msg.workDir,
-    capabilities: msg.capabilities || ['terminal', 'file_editor', 'background_tasks']
+    capabilities: msg.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+    version: msg.version || null,
   };
+  if (typeof store.activateYeaftAgent === 'function') {
+    store.activateYeaftAgent(msg.agentId, agentInfo);
+  } else {
+    store.currentAgent = msg.agentId;
+    store.currentAgentInfo = agentInfo;
+  }
 
-  if (msg.slashCommands && msg.slashCommands.length > 0) {
-    // Store as agent-level default, used as fallback when a conversation
-    // hasn't reported its own slashCommands yet
+  if (Array.isArray(msg.slashCommands)) {
+    // Store as the Claude Chat agent-level fallback. Yeaft command snapshots
+    // are delivered separately and must not be overwritten during selection.
     const slashCommands = [...new Set(msg.slashCommands)];
     store.slashCommandsMap[`agent:${msg.agentId}`] = slashCommands;
-    if (store.currentView === 'yeaft' && store.yeaftConversationId) {
-      store.slashCommandsMap[store.yeaftConversationId] = slashCommands;
-    }
   }
   // Merge command descriptions
   if (msg.slashCommandDescriptions) {

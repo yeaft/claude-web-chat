@@ -9,7 +9,9 @@ const __dirname = dirname(__filename);
 const MAX_QUEUE_SIZE = 5000;
 const MAX_STRING_LENGTH = 512;
 const DEFAULT_FLUSH_INTERVAL_MS = 1000;
-const DEFAULT_TRACE_DIR = join(__dirname, 'data', 'perf-traces');
+const DEFAULT_TRACE_DIR = process.env.SERVER_DATA_DIR
+  ? join(process.env.SERVER_DATA_DIR, 'perf-traces')
+  : join(__dirname, 'data', 'perf-traces');
 const DEFAULT_RETENTION_DAYS = 3;
 let lastCleanupDay = null;
 

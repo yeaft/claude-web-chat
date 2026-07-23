@@ -2,8 +2,10 @@ import ToolLine from './ToolLine.js';
 import AskCard from './AskCard.js';
 import VpSpeakerHeader from './VpSpeakerHeader.js';
 import { normalizeTerminalOutput } from '../utils/terminal-output.js';
+import { normalizeRouteForwardDisplay } from '../utils/route-forward-display.js';
 import { getTodoDisplayState } from '../utils/todo-display-state.js';
 import { renderMermaidIn } from '../utils/markdown.js';
+import { openImagePreview } from '../utils/imagePreview.js';
 
 export default {
   name: 'AssistantTurn',
@@ -37,9 +39,21 @@ export default {
     toolStatePrefix: {
       type: String,
       default: ''
+    },
+    responseCollapsible: {
+      type: Boolean,
+      default: false
+    },
+    responseCollapsed: {
+      type: Boolean,
+      default: false
+    },
+    responseToggleLabel: {
+      type: String,
+      default: ''
     }
   },
-  emits: ['update-actions-expanded', 'update-tool-expanded'],
+  emits: ['update-actions-expanded', 'update-tool-expanded', 'toggle-response-collapse'],
   template: `
     <div class="assistant-turn" ref="turnRef" :class="{ streaming: turn.isStreaming, 'has-vp-speaker': !!turn.speakerVpId }">
       <!-- 0. task-334-ui-b: VP speaker header — only when a speakerVpId is
@@ -74,7 +88,18 @@ export default {
         <span v-if="turn.isStreaming" class="cursor-blink"></span>
       </div>
 
-      <!-- 2. Todo progress (TodoWrite) -->
+      <!-- 2. VP hand-off messages (RouteForward) -->
+      <div v-if="routeMessages.length > 0" class="turn-route-messages">
+        <div v-for="(route, i) in routeMessages" :key="route.key || i" class="turn-route-message">
+          <div class="turn-route-body">
+            <div class="turn-route-target">{{ route.target }}</div>
+            <div v-if="route.text" class="turn-route-text">{{ route.text }}</div>
+            <div v-if="route.reason" class="turn-route-reason">{{ route.reason }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. Todo progress (TodoWrite) -->
       <div v-if="turn.todoMsg" class="turn-todos">
         <div v-for="todo in displayedTodos" :key="todo.content"
              class="todo-item" :class="todo.displayStatus">
@@ -105,12 +130,12 @@ export default {
           </template>
         </div>
         <div v-if="latestTool" class="turn-actions-latest">
-          <button v-if="turn.toolMsgs.length > 1" class="turn-expand-btn" @click="toggleExpand">
+          <button v-if="actionTools.length > 1" class="turn-expand-btn" @click="toggleExpand">
             <svg viewBox="0 0 24 24" width="12" height="12">
               <path v-if="expanded" fill="currentColor" d="M7 14l5-5 5 5z"/>
               <path v-else fill="currentColor" d="M7 10l5 5 5-5z"/>
             </svg>
-            <span>{{ turn.toolMsgs.length - 1 }} more</span>
+            <span>{{ actionTools.length - 1 }} more</span>
           </button>
           <ToolLine
             :tool-name="latestTool.toolName"
@@ -126,11 +151,17 @@ export default {
 
       <!-- 4. Images from Claude response (screenshots, etc.) -->
       <div v-if="turn.imageMsgs && turn.imageMsgs.length > 0" class="turn-images">
-        <div v-for="img in turn.imageMsgs" :key="img.id" class="turn-image-item">
-          <img v-if="img.fileId" :src="getImageUrl(img)" class="chat-screenshot"
-               @error="handleImageError($event)"
-               @click="openImagePreview(getImageUrl(img))" />
-        </div>
+        <button v-for="img in turn.imageMsgs" :key="img.assetId || img.id" type="button"
+                class="turn-image-item" @click="imageSrc(img) && openImagePreview(imageSrc(img))">
+          <img v-if="imageSrc(img) && !failedImages.has(img.assetId || img.id)"
+               :src="imageSrc(img)" :alt="img.filename || $t('message.imagePreview')"
+               class="chat-screenshot" loading="lazy" decoding="async"
+               @error="handleImageError(img)" />
+          <span v-else class="turn-image-fallback">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+            <span>{{ $t('message.imageUnavailable') }}</span>
+          </span>
+        </button>
       </div>
 
       <!-- 5. AskUserQuestion interactive card -->
@@ -140,15 +171,15 @@ export default {
 
       </div>
 
-      <!-- 6. Copy full response button (visible on hover) -->
-      <div class="turn-footer" v-if="turn.textContent && !turn.isStreaming">
+      <!-- 6. Response footer actions (visible on hover) -->
+      <div class="turn-footer" v-if="(turn.textContent || responseCollapsible) && !turn.isStreaming">
         <span
           v-if="turnTime"
           class="turn-time"
           :title="turnTimeFull"
           :aria-label="$t('yeaft.message.timeAria', { time: turnTimeFull })"
         >{{ turnTime }}</span>
-        <button class="screenshot-btn" @click="screenshotContent" :title="screenshotting ? $t('message.screenshotting') : $t('message.screenshot')">
+        <button v-if="turn.textContent" class="screenshot-btn" @click="screenshotContent" :title="screenshotting ? $t('message.screenshotting') : $t('message.screenshot')">
           <svg v-if="!screenshotting" viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>
           </svg>
@@ -157,13 +188,13 @@ export default {
           </svg>
           <span class="screenshot-label">{{ screenshotting ? $t('message.screenshotting') : $t('message.screenshot') }}</span>
         </button>
-        <button class="export-md-btn" @click="exportMarkdown" :title="$t('message.exportMd')">
+        <button v-if="turn.textContent" class="export-md-btn" @click="exportMarkdown" :title="$t('message.exportMd')">
           <svg viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
           </svg>
           <span class="export-md-label">{{ $t('message.exportMd') }}</span>
         </button>
-        <button class="copy-full-btn" @click="copyFullResponse" :title="fullCopied ? $t('message.copied') : $t('message.copyAll')">
+        <button v-if="turn.textContent" class="copy-full-btn" @click="copyFullResponse" :title="fullCopied ? $t('message.copied') : $t('message.copyAll')">
           <svg v-if="!fullCopied" viewBox="0 0 24 24" width="14" height="14">
             <path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
           </svg>
@@ -171,6 +202,21 @@ export default {
             <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
           </svg>
           <span class="copy-full-label">{{ fullCopied ? $t('message.copied') : $t('message.copyAll') }}</span>
+        </button>
+        <button
+          v-if="responseCollapsible"
+          class="response-collapse-btn"
+          :class="{ 'is-collapsed': responseCollapsed }"
+          @click="$emit('toggle-response-collapse')"
+          :title="responseToggleLabel"
+          :aria-label="responseToggleLabel"
+          :aria-expanded="String(!responseCollapsed)"
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+            <path v-if="responseCollapsed" fill="currentColor" d="M7 10l5 5 5-5z"/>
+            <path v-else fill="currentColor" d="M7 14l5-5 5 5z"/>
+          </svg>
+          <span class="response-collapse-label">{{ responseToggleLabel }}</span>
         </button>
         <!-- H2.f.6: Fork-from-here button removed (single-conversation model). -->
       </div>
@@ -188,6 +234,7 @@ export default {
     };
     const screenshotting = Vue.ref(false);
     const turnRef = Vue.ref(null);
+    const failedImages = Vue.reactive(new Set());
     const t = Vue.inject('t');
 
     // AskUserQuestion — delegate to AskCard component
@@ -195,18 +242,35 @@ export default {
       store.answerUserQuestion(requestId, answers, props.conversationId || undefined);
     };
 
+    const routeMessages = Vue.computed(() => {
+      const tools = Array.isArray(props.turn?.toolMsgs) ? props.turn.toolMsgs : [];
+      return tools
+        .filter(tool => tool?.toolName === 'RouteForward')
+        .map((tool, index) => ({
+          ...normalizeRouteForwardDisplay(tool.toolInput || {}),
+          key: tool.toolId || `${tool.startTime || 0}:${index}`,
+        }));
+    });
+
+    const actionTools = Vue.computed(() => {
+      const tools = Array.isArray(props.turn?.toolMsgs) ? props.turn.toolMsgs : [];
+      return tools.filter(tool => tool?.toolName !== 'RouteForward');
+    });
+
     const showToolActions = Vue.computed(() => {
-      return props.turn.toolMsgs.length > 0 || Number(props.turn.toolSummaryCount || 0) > 0;
+      return actionTools.value.length > 0 || Number(props.turn.toolSummaryCount || 0) > 0;
     });
 
     const latestTool = Vue.computed(() => {
-      const tools = props.turn.toolMsgs;
+      const tools = actionTools.value;
       return tools[tools.length - 1];
     });
 
     const historyTools = Vue.computed(() => {
-      return props.turn.toolMsgs.slice(0, -1);
+      return actionTools.value.slice(0, -1);
     });
+
+    const latestToolIndex = Vue.computed(() => Math.max(0, actionTools.value.length - 1));
 
     const toolSummaryLabel = Vue.computed(() => {
       const count = Number(props.turn.toolSummaryCount || 0);
@@ -448,18 +512,15 @@ export default {
     });
 
     // Image helpers
-    const getImageUrl = (msg) => {
-      if (!msg.fileId) return '';
+    const imageSrc = (msg) => {
+      if (msg?.src) return msg.src;
+      if (!msg?.fileId) return '';
       const token = msg.previewToken || '';
       return `/api/preview/${msg.fileId}?token=${token}`;
     };
 
-    const handleImageError = (event) => {
-      event.target.style.display = 'none';
-    };
-
-    const openImagePreview = (url) => {
-      window.open(url, '_blank');
+    const handleImageError = (image) => {
+      failedImages.add(image?.assetId || image?.id);
     };
 
 
@@ -510,6 +571,9 @@ export default {
       showToolActions,
       latestTool,
       historyTools,
+      latestToolIndex,
+      actionTools,
+      routeMessages,
       toolSummaryLabel,
       toggleExpand,
       toolExpandedValue,
@@ -520,7 +584,8 @@ export default {
       exportMarkdown,
       screenshotContent,
       onAskSubmit,
-      getImageUrl,
+      imageSrc,
+      failedImages,
       handleImageError,
       openImagePreview,
       displayedTodos

@@ -93,9 +93,13 @@ export function normalizeKnownProviderForRuntime(provider) {
 
 export function serializeKnownProviderForPersistence(provider) {
   if (!isGitHubCopilotProvider(provider)) return null;
+  const models = Array.isArray(provider.models) && provider.models.length
+    ? githubCopilotModelEntries(provider.models)
+    : [];
   return {
     name: provider.name || GITHUB_COPILOT_PROVIDER_NAME,
     credentialProvider: GITHUB_COPILOT_CREDENTIAL_PROVIDER,
     managed: provider.managed || GITHUB_COPILOT_CREDENTIAL_PROVIDER,
+    ...(models.length ? { models } : {}),
   };
 }

@@ -9,12 +9,22 @@ import WorkbenchPanel from './WorkbenchPanel.js';
 import YeaftDebugPanel from './YeaftDebugPanel.js';
 import VpTimelinePane from './VpTimelinePane.js';
 import YeaftSessionActions from './YeaftSessionActions.js';
+import YeaftConversationOutline from './YeaftConversationOutline.js';
 import LlmTab from './LlmTab.js';
+import WorkCenterPage from './WorkCenterPage.js';
 import { parseMentions } from '../utils/parseMentions.js';
-import { buildTimelineRows, selectGroupRosterVpList } from '../stores/helpers/vp-timeline.js';
+import { buildTimelineRows, resolveTimelineSession, selectGroupRosterVpList } from '../stores/helpers/vp-timeline.js';
 import { buildModelSelectionRows, getDefaultModelEffort, getSelectableModelEfforts, modelOptionMatchesRef, modelOptionRef, resolveSessionModelEffort, resolveSessionModelRef } from '../utils/modelRefs.js';
+import {
+  clearOverlayPointerGesture,
+  shouldDismissFromOverlayClick,
+  trackOverlayPointerDown,
+  trackOverlayPointerUp,
+} from '../utils/overlay-dismiss.js';
 import { shouldShowYeaftOnboardingGuide } from '../utils/yeaftOnboarding.js';
 import { hasUsableYeaftAgent, resolveActiveSessionIdForSettings } from '../utils/yeaftSessionSettings.js';
+import { shouldCloseLlmConfigAfterSave } from '../utils/llm-config-save.js';
+import { revealOutlineResult } from '../utils/message-search-navigation.js';
 
 function sessionTaskSortTime(task) {
   const raw = task?.updatedAt || task?.endedAt || task?.createdAt;
@@ -34,16 +44,16 @@ export function visibleSessionStatusTasks(taskMap) {
 
 export default {
   name: 'YeaftPage',
-  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, LlmTab },
+  components: { ChatInput, MessageList, SettingsPanel, YeaftSidebar, SessionInviteModal, SessionCreateModal, SessionSettingsModal, WorkbenchPanel, WorkCenterPage, YeaftDebugPanel, VpTimelinePane, YeaftSessionActions, YeaftConversationOutline, LlmTab },
   template: `
     <div class="yeaft-page" ref="pageRef">
       <!-- Mobile sidebar overlay -->
-      <div class="yeaft-sidebar-overlay" v-if="!sidebarCollapsed && isMobile" @click="sidebarCollapsed = true"></div>
+      <div class="yeaft-sidebar-overlay" v-if="store.sessionSidebarOpen && isMobile" @click="store.closeSessionSidebar()"></div>
 
       <!-- Left Sidebar — V2 (task-341: V2 is the only sidebar now). -->
       <!-- Legacy sidebar event alias; canonical settings dialog uses session terminology. -->
       <YeaftSidebar
-        :collapsed="sidebarCollapsed"
+        :collapsed="effectiveSidebarCollapsed"
         @select-group="onSelectGroupV2"
         @select-chat="onSelectChat"
         @toggle-sidebar="toggleSidebar"
@@ -55,10 +65,12 @@ export default {
       <!-- Workbench Panel (between sidebar and main) -->
       <WorkbenchPanel v-if="canUseWorkbench" />
 
+      <WorkCenterPage v-if="store.workCenterOpen" />
+
       <!-- Center Conversation. The Session status pane is rendered as a
            sibling to the RIGHT of this main column so the visual order is
            [conversation][Session status][debug], with debug always far right. -->
-      <div class="yeaft-main" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
+      <div v-else class="yeaft-main" :class="{ 'workbench-active': canUseWorkbench && store.workbenchExpanded, 'workbench-maximized': canUseWorkbench && store.workbenchMaximized && store.workbenchExpanded }">
         <!-- Center column: topbar + (settings | empty-hero | MessageList) + ChatInput. -->
         <div class="yeaft-main-center">
         <!-- Conversation Header -->
@@ -139,16 +151,32 @@ export default {
           <YeaftSessionActions
             v-if="!showOnboardingGuide"
             class="yeaft-topbar-right"
+            :search-open="historySearchOpen"
             :loading-more-history="store.yeaftLoadingMoreHistory"
             :session-status-visible="sessionStatusVisible"
             :debug-mode="debugMode"
             :show-page-reload="isMobile"
+            @toggle-search="toggleHistorySearch"
             @reload-messages="reloadMessages"
             @toggle-session-status="toggleSessionStatus"
             @toggle-debug="toggleDebug"
             @reload-page="reloadPage"
           />
         </div>
+
+        <YeaftConversationOutline
+          v-if="historySearchOpen && !showOnboardingGuide"
+          ref="historySearchRef"
+          :outline-state="historyOutlineState"
+          :search-state="store.yeaftHistorySearchState"
+          :active-index="historySearchActiveIndex"
+          @query="onHistorySearchQuery"
+          @move="historySearchActiveIndex = $event"
+          @select="selectHistorySearchResult"
+          @load-older="loadOlderHistoryOutline"
+          @load-more-search="loadMoreHistorySearchResults"
+          @close="closeHistorySearch"
+        />
 
         <div class="yeaft-conversation-body">
         <!-- H2.f.6: YeaftFeatureDetailView removed — cross-thread aggregation
@@ -254,13 +282,17 @@ export default {
             {{ $t('yeaft.session.empty.cta') }}
           </button>
         </div>
-        <MessageList v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty" />
-
-        <!-- Settings Panel -->
-        <SettingsPanel v-if="showSettings" :visible="showSettings" :initial-tab="'yeaft'" :initial-sub-tab="settingsInitialTab" :initial-edit-vp-id="settingsInitialEditVpId" @close="showSettings = false" />
+        <MessageList ref="messageListRef" v-if="!showSettings && !showOnboardingGuide && !isActiveGroupEmpty" />
         </div>
 
-        <div v-if="showLlmConfig" class="modal-overlay yeaft-llm-config-overlay" @click.self="showLlmConfig = false">
+        <div
+          v-if="showLlmConfig"
+          class="modal-overlay yeaft-llm-config-overlay"
+          @pointerdown="trackOverlayPointerDown"
+          @pointerup="trackOverlayPointerUp"
+          @pointercancel="clearOverlayPointerGesture"
+          @click="closeLlmConfigFromOverlay"
+        >
           <div class="modal-card yeaft-llm-config-modal" role="dialog" aria-modal="true" :aria-label="$t('settings.llm.configureAgent')">
             <div class="modal-header">
               <h3>{{ $t('settings.llm.configureAgent') }}</h3>
@@ -281,6 +313,7 @@ export default {
           :send-fn="sendMessage"
           :cancel-fn="cancelYeaft"
           :show-stop="isProcessing"
+          :work-item-fn="openWorkItemDraft"
           placeholder-key="yeaft.placeholder"
         />
         </div><!-- /.yeaft-main-center -->
@@ -289,7 +322,7 @@ export default {
       <!-- Session status pane: announcement + VP roster + background tasks.
            It sits to the right of the conversation and to the left of debug. -->
       <VpTimelinePane
-        v-if="showVpTimeline"
+        v-if="!store.workCenterOpen && showVpTimeline"
         :rows="vpTimelineRows"
         :tasks="sessionStatusTasksForActiveSession"
         :announcement-text="sessionStatusAnnouncementText"
@@ -311,7 +344,7 @@ export default {
            right-pane content today, and it should not occupy layout space
            unless explicitly opened. -->
       <aside
-        v-if="debugMode"
+        v-if="!store.workCenterOpen && debugMode"
         class="yeaft-detail"
         :class="{ resizing: isResizingDetail, 'mobile-debug': isNarrowDetail }"
         :style="detailWidthStyle"
@@ -321,7 +354,16 @@ export default {
         <YeaftDebugPanel @close="closeDebug" />
       </aside>
 
-      <!-- task-343: VP library is now an in-Settings tab (initial-tab='vp'). -->
+      <!-- Keep global Settings outside the conversation/Work Center branch so
+           the shared sidebar entry works from either content surface. -->
+      <SettingsPanel
+        v-if="showSettings"
+        :visible="showSettings"
+        :initial-tab="'yeaft'"
+        :initial-sub-tab="settingsInitialTab"
+        :initial-edit-vp-id="settingsInitialEditVpId"
+        @close="showSettings = false"
+      />
 
       <!-- task-fix-group-member-editor: invite modal CTA now opens the
            group's member editor directly (the previous flow dumped the
@@ -347,6 +389,7 @@ export default {
       <SessionSettingsModal
         v-if="groupSettingsOpen && groupSettingsId"
         :group-id="groupSettingsId"
+        :agent-id="groupSettingsAgentId"
         :initial-section="groupSettingsSection"
         :initial-edit-vp-id="groupSettingsEditVpId"
         @close="closeGroupSettings"
@@ -365,7 +408,6 @@ export default {
     const inst = Vue.getCurrentInstance();
     const $t = (inst && inst.appContext.config.globalProperties.$t) || ((key) => key);
 
-    const sidebarCollapsed = Vue.ref(false);
     // task-yeaft-group-ui-cleanup: debug mode now starts OFF (was always
     // visible as a "tasks memory / coming soon" placeholder). The right
     // detail panel is only rendered when debugMode is on, so the
@@ -388,6 +430,12 @@ export default {
     // of ChatInput (review fix — Fowler C2, PR #763).
     const chatInputRef = Vue.ref(null);
     const pageRef = Vue.ref(null);
+    const messageListRef = Vue.ref(null);
+    const historySearchRef = Vue.ref(null);
+    const historySearchOpen = Vue.ref(false);
+    const historySearchActiveIndex = Vue.ref(0);
+    const historyOutlineState = Vue.computed(() => store.getYeaftHistoryOutlineState());
+    let historySearchTimer = null;
     const yeaftInputDraftKey = Vue.computed(() => {
       const agentId = store.currentAgent || 'agent';
       const gs = sessionsStore();
@@ -457,8 +505,8 @@ export default {
     const onSelectGroupV2 = (g) => {
       const id = g && g.id ? g.id : null;
       if (!id) return;
-      store.setActiveSessionFilter(id);
-      if (isMobile.value) sidebarCollapsed.value = true;
+      store.setActiveSessionFilter(id, { agentId: g.agentId || null });
+      if (isMobile.value) store.closeSessionSidebar();
     };
 
     // Yeaft Chat Mode (1:1): clicking a chat row narrows the main pane to
@@ -591,6 +639,9 @@ export default {
     const matchesMedia = (media, fallbackWidth) => media ? media.matches : window.innerWidth <= fallbackWidth;
     const isMobile = Vue.ref(matchesMedia(mobileMedia, 768));
     const isNarrowDetail = Vue.ref(matchesMedia(narrowDetailMedia, 1024));
+    const effectiveSidebarCollapsed = Vue.computed(() =>
+      isMobile.value ? !store.sessionSidebarOpen : store.sidebarCollapsed
+    );
     const syncResponsiveFlags = () => {
       isMobile.value = matchesMedia(mobileMedia, 768);
       isNarrowDetail.value = matchesMedia(narrowDetailMedia, 1024);
@@ -610,10 +661,63 @@ export default {
       else if (typeof media.removeListener === 'function') media.removeListener(onResize);
     };
 
+    const closeHistorySearch = () => {
+      if (historySearchTimer) {
+        clearTimeout(historySearchTimer);
+        historySearchTimer = null;
+      }
+      store.searchYeaftHistory('');
+      historySearchOpen.value = false;
+      historySearchActiveIndex.value = 0;
+    };
+    const openHistorySearch = () => {
+      historySearchOpen.value = true;
+      store.loadYeaftHistoryOutline();
+      Vue.nextTick(() => historySearchRef.value?.focus?.());
+    };
+    const toggleHistorySearch = () => {
+      if (historySearchOpen.value) closeHistorySearch();
+      else openHistorySearch();
+    };
+    const onHistorySearchQuery = (query) => {
+      if (historySearchTimer) clearTimeout(historySearchTimer);
+      historySearchActiveIndex.value = 0;
+      historySearchTimer = setTimeout(() => store.searchYeaftHistory(query), 220);
+    };
+    const loadOlderHistoryOutline = (scrollSnapshot) => {
+      if (!store.loadYeaftHistoryOutline({ append: true })) return;
+      const stop = Vue.watch(
+        () => historyOutlineState.value.loading,
+        loading => {
+          if (loading) return;
+          stop();
+          historySearchRef.value?.restoreOlderScroll?.(scrollSnapshot);
+        },
+      );
+    };
+    const loadMoreHistorySearchResults = () => store.searchYeaftHistory(store.yeaftHistorySearchState.query, { append: true });
+    const selectHistorySearchResult = result => revealOutlineResult({
+      result,
+      loadWindow: candidate => store.loadYeaftHistoryWindow(candidate),
+      nextTick: () => Vue.nextTick(),
+      revealMessage: messageId => messageListRef.value?.revealMessage?.(messageId),
+      isMobile: isMobile.value,
+      closeOutline: closeHistorySearch,
+    });
+
     // Esc handling — close transient controls. Detail drill-down layers were
     // removed; the center pane always stays on the Session stream.
     const onKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && String(e.key).toLowerCase() === 'f') {
+        e.preventDefault();
+        openHistorySearch();
+        return;
+      }
       if (e.key !== 'Escape') return;
+      if (historySearchOpen.value) {
+        closeHistorySearch();
+        return;
+      }
       if (modelDropdownOpen.value) {
         closeModelDropdown();
         return;
@@ -641,6 +745,7 @@ export default {
       document.removeEventListener('keydown', onKeyDown);
       if (mobileViewportRaf != null) cancelAnimationFrame(mobileViewportRaf);
       if (mobileViewportRecoverTimer) clearTimeout(mobileViewportRecoverTimer);
+      if (historySearchTimer) clearTimeout(historySearchTimer);
     });
 
     // Watch for conversationId changes (session_ready migrates local -> agent ID)
@@ -648,6 +753,20 @@ export default {
       if (newId && store.activeConversations[0] !== newId) {
         store.activeConversations = [newId];
       }
+    });
+    Vue.watch(() => [store.currentAgent, store.yeaftActiveSessionFilter], () => {
+      closeHistorySearch();
+      store.yeaftHistorySearchState = {
+        requestId: null,
+        agentId: null,
+        sessionId: null,
+        query: '',
+        loading: false,
+        results: [],
+        hasMore: false,
+        nextBeforeSeq: null,
+        error: null,
+      };
     });
 
     const goBack = () => {
@@ -689,8 +808,17 @@ export default {
       if (sessionId) store.cancelYeaftSession(sessionId);
     };
 
+    const openWorkItemDraft = (seedGoal = '') => {
+      const session = topbarGroup.value;
+      if (session) store.enterWorkCenterFromSession(session, seedGoal);
+    };
+
     const toggleSidebar = () => {
-      sidebarCollapsed.value = !sidebarCollapsed.value;
+      if (isMobile.value) {
+        store.toggleSessionSidebar();
+        return;
+      }
+      store.toggleSidebar();
     };
 
     // task-yeaft-group-ui-cleanup: toggleDetail() was wired to a topbar
@@ -732,9 +860,15 @@ export default {
       const gs = sessionsStore();
       if (!gs || !gs.sessions) return null;
       const filterId = store.yeaftActiveSessionFilter || null;
-      if (filterId && gs.sessions[filterId]) return gs.sessions[filterId];
-      if (gs.activeSessionId && gs.sessions[gs.activeSessionId]) return gs.sessions[gs.activeSessionId];
-      return gs.sessions['grp_default'] || null;
+      if (filterId && typeof gs.sessionById === 'function') {
+        const row = gs.sessionById(filterId, store.currentAgent || null);
+        if (row) return row;
+      }
+      if (gs.activeSessionId && typeof gs.sessionById === 'function') {
+        const row = gs.sessionById(gs.activeSessionId, store.currentAgent || null);
+        if (row) return row;
+      }
+      return typeof gs.sessionById === 'function' ? gs.sessionById('grp_default', store.currentAgent || null) : null;
     });
 
     const activeSessionIdForSettings = () => resolveActiveSessionIdForSettings({
@@ -879,6 +1013,10 @@ export default {
       showLlmConfig.value = true;
     };
 
+    const closeLlmConfigFromOverlay = (event) => {
+      if (shouldDismissFromOverlayClick(event)) showLlmConfig.value = false;
+    };
+
     const loadAgentSecret = async () => {
       if (agentSecret.value || agentSecretLoading.value) return;
       agentSecretLoading.value = true;
@@ -937,10 +1075,10 @@ export default {
       else console.log('[Yeaft] LLM config:', msg);
     };
 
-    const onLlmConfigSaved = () => {
-      showLlmConfig.value = false;
-      const agentId = store.currentAgent;
-      if (agentId) store.sendWsMessage({ type: 'yeaft_reset', agentId });
+    const onLlmConfigSaved = (result = {}) => {
+      // The Agent installs the persisted catalog before acknowledging the save.
+      // Keep the modal open on partial success so the warning remains visible.
+      if (shouldCloseLlmConfigAfterSave(result)) showLlmConfig.value = false;
     };
 
     // task-334m: Group invite modal wiring. The modal is shown whenever
@@ -1024,6 +1162,7 @@ export default {
     // target any Session and any pane.
     const groupSettingsOpen = Vue.ref(false);
     const groupSettingsId = Vue.ref(null);
+    const groupSettingsAgentId = Vue.ref(null);
     const groupSettingsSection = Vue.ref('session');
     const groupSettingsEditVpId = Vue.ref('');
     const openSessionSettings = (payload = {}) => {
@@ -1036,6 +1175,7 @@ export default {
       const section = editVpId ? 'members' : ((payload && payload.section) || 'session');
       if (!sessionId) return;
       groupSettingsId.value = sessionId;
+      groupSettingsAgentId.value = (payload && payload.agentId) || null;
       groupSettingsSection.value = section;
       groupSettingsEditVpId.value = editVpId;
       groupSettingsOpen.value = true;
@@ -1048,6 +1188,7 @@ export default {
     const closeGroupSettings = () => {
       groupSettingsOpen.value = false;
       groupSettingsId.value = null;
+      groupSettingsAgentId.value = null;
       groupSettingsEditVpId.value = '';
     };
     // task-vp-customize: GroupSettings → "Open VP Library" shortcut. We
@@ -1134,7 +1275,7 @@ export default {
       const filter = store.yeaftActiveSessionFilter || gs?.activeSessionId || null;
       if (!filter) return [];
 
-      const group = gs?.sessions?.[filter] ?? null;
+      const group = resolveTimelineSession(gs, filter, store.currentAgent || null);
       const roster = (group && Array.isArray(group.roster)) ? group.roster : [];
       if (roster.length === 0) return [];
       const rosterSet = new Set(roster);
@@ -1168,6 +1309,7 @@ export default {
         stoppingVpTurnIds: store.stoppingVpTurnIds || {},
         connectionState: store.connectionState,
         vpLabelOf: (id) => vpStore.vpLabel(id),
+        vpDescriptionOf: (id) => vpStore.vpDescription(id),
       });
     });
 
@@ -1211,7 +1353,7 @@ export default {
     return {
       store,
       pageRef,
-      sidebarCollapsed,
+      effectiveSidebarCollapsed,
       debugMode,
       modelDropdownOpen,
       topbarGroup,
@@ -1230,6 +1372,17 @@ export default {
       settingsInitialTab,
       settingsInitialEditVpId,
       chatInputRef,
+      messageListRef,
+      historySearchRef,
+      historySearchOpen,
+      historySearchActiveIndex,
+      historyOutlineState,
+      toggleHistorySearch,
+      closeHistorySearch,
+      onHistorySearchQuery,
+      loadOlderHistoryOutline,
+      loadMoreHistorySearchResults,
+      selectHistorySearchResult,
       yeaftInputDraftKey,
       openSettings,
       isMobile,
@@ -1242,6 +1395,7 @@ export default {
       goBack,
       sendMessage,
       cancelYeaft,
+      openWorkItemDraft,
       toggleSidebar,
       toggleDebug,
       closeDebug,
@@ -1250,6 +1404,10 @@ export default {
       toggleModelDropdown,
       selectModel,
       openLlmConfig,
+      trackOverlayPointerDown,
+      trackOverlayPointerUp,
+      clearOverlayPointerGesture,
+      closeLlmConfigFromOverlay,
       openSessionCreate,
       onSessionCreated,
       copyOnboardingCommand,
@@ -1281,6 +1439,7 @@ export default {
       // task-fix-group-member-editor → unified group settings modal.
       groupSettingsOpen,
       groupSettingsId,
+      groupSettingsAgentId,
       groupSettingsSection,
       groupSettingsEditVpId,
       openSessionSettings,

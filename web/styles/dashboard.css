@@ -2,18 +2,18 @@
 
 .db-stats-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 24px;
 }
 
 .db-stat-card {
-  flex: 1;
+  flex: 1 1 120px;
   min-width: 0;
   padding: 16px;
   background: var(--bg-sidebar);
   border: 1px solid var(--border-color);
   border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
 
 [data-theme="dark"] .db-stat-card {
@@ -45,7 +45,6 @@
   background: var(--bg-sidebar);
   border: 1px solid var(--border-color);
   border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
 
 [data-theme="dark"] .db-section {
@@ -204,7 +203,7 @@
 
 /* Latency colors */
 .db-latency-good { color: var(--success); }
-.db-latency-warn { color: #eab308; }
+.db-latency-warn { color: var(--accent-blue); }
 .db-latency-bad { color: var(--error); }
 
 /* Sortable table headers */

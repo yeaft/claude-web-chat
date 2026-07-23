@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { CONFIG } from '../config.js';
 import { sessionDb, messageDb, userDb, yeaftSessionDb } from '../database.js';
-import { agents, pendingFiles } from '../context.js';
+import { agents, pendingFiles, trackUserTurn, webClients } from '../context.js';
 import {
   sendToWebClient, forwardToAgent,
   broadcastAgentList, verifyConversationOwnership, verifyAgentOwnership
@@ -23,6 +23,25 @@ function emptyYeaftToolStats(reason = '') {
   };
   if (reason) payload.notice = reason;
   return payload;
+}
+
+async function broadcastSessionPin(userId, payload) {
+  for (const [, target] of webClients) {
+    if (!target?.authenticated) continue;
+    if (!CONFIG.skipAuth && target.userId !== userId) continue;
+    await sendToWebClient(target, payload);
+  }
+}
+
+export function groupOnlineYeaftSessions(rows, agentRegistry = agents) {
+  const byAgent = {};
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row?.agentId) continue;
+    const agent = agentRegistry.get(row.agentId);
+    if (!agent || agent.ws?.readyState !== 1) continue;
+    (byAgent[row.agentId] ||= []).push(row);
+  }
+  return byAgent;
 }
 
 /**
@@ -139,19 +158,14 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
         }
       }
       await broadcastAgentList();
-      // Yeaft sessions hydrate — send the user's full cross-agent
-      // yeaft session list before any agent comes online so the
-      // unified sidebar can render the list immediately on reload.
-      // Grouped by agentId so the web sessions store can apply each
-      // slice via its existing per-agent applySnapshot path.
+      // Yeaft session rows are only actionable while their owning Agent is
+      // connected. Keep offline rows in the DB for reconnect recovery, but do
+      // not hydrate them into the sidebar where remove/settings cannot work.
+      // Group by agentId so the web store can keep using per-agent snapshots.
       if (client.userId) {
         try {
           const allRows = yeaftSessionDb.getByUser(client.userId);
-          const byAgent = {};
-          for (const row of allRows) {
-            if (!row.agentId) continue;
-            (byAgent[row.agentId] ||= []).push(row);
-          }
+          const byAgent = groupOnlineYeaftSessions(allRows);
           for (const [agentId, sessions] of Object.entries(byAgent)) {
             await sendToWebClient(client, {
               type: 'yeaft_session_hydrate',
@@ -196,6 +210,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           agentName: agent.name,
           workDir: agent.workDir,
           capabilities: agent.capabilities || ['terminal', 'file_editor', 'background_tasks'],
+          version: agent.version || null,
           conversations: filteredConvs,
           slashCommands: agent.slashCommands || [],
           slashCommandDescriptions: agent.slashCommandDescriptions || {}
@@ -324,23 +339,33 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       break;
 
     case 'reorder_yeaft_sessions': {
+      const globalSessions = Array.isArray(msg.sessions) ? msg.sessions : null;
       const agentId = typeof msg.agentId === 'string' ? msg.agentId : '';
-      if (!agentId || !Array.isArray(msg.sessionIds)) break;
-      if (!verifyAgentOwnership(agentId, client.userId, client.role)) {
+      if (!globalSessions && (!agentId || !Array.isArray(msg.sessionIds))) break;
+      if (globalSessions) {
+        const agentIds = new Set(globalSessions.map(item => item?.agentId).filter(id => typeof id === 'string' && id));
+        const unauthorizedAgentId = [...agentIds].find(id => !verifyAgentOwnership(id, client.userId, client.role));
+        if (unauthorizedAgentId) {
+          console.warn(`[Server] Unauthorized yeaft session reorder by ${client.userId} for agent ${unauthorizedAgentId}`);
+          break;
+        }
+      } else if (!verifyAgentOwnership(agentId, client.userId, client.role)) {
         console.warn(`[Server] Unauthorized yeaft session reorder by ${client.userId} for agent ${agentId}`);
         break;
       }
       let ok = false;
       try {
-        ok = yeaftSessionDb.setOrderForAgent(client.userId, agentId, msg.sessionIds);
+        ok = globalSessions
+          ? yeaftSessionDb.setOrderForUser(client.userId, globalSessions)
+          : yeaftSessionDb.setOrderForAgent(client.userId, agentId, msg.sessionIds);
       } catch (e) {
-        console.warn(`[Server] yeaftSessionDb.setOrderForAgent failed for ${agentId}:`, e?.message || e);
+        console.warn('[Server] yeaftSessionDb reorder failed:', e?.message || e);
       }
       await sendToWebClient(client, {
         type: 'session_crud_result',
         op: 'reorder',
         requestId: msg.requestId,
-        agentId,
+        ...(agentId ? { agentId } : {}),
         ok,
       });
       break;
@@ -379,8 +404,15 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
           }
         } catch (e) {
           console.warn(`[Server] yeaftSessionDb.setPinnedForAgent failed for ${msg.conversationId}:`, e?.message || e);
+          break;
         }
-        await sendToWebClient(client, { type: 'session_pinned', conversationId: msg.conversationId, pinned: isPinned });
+        await broadcastSessionPin(client.userId, {
+          type: 'session_pinned',
+          conversationId: msg.conversationId,
+          agentId: explicitYeaftAgentId,
+          sessionKind: 'yeaft',
+          pinned: isPinned,
+        });
         break;
       }
 
@@ -540,6 +572,7 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       }
 
       if (convInfo) convInfo.processing = true;
+      trackUserTurn(client.userId, Buffer.byteLength(JSON.stringify(msg)));
 
       // 暂存 expertSelections 供 agent-output 保存 user 消息时使用
       if (msg.expertSelections?.length > 0 && convInfo) {
@@ -881,6 +914,61 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       break;
     }
 
+    case 'yeaft_load_history_outline': {
+      const outlineAgentId = msg.agentId;
+      const outlineSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+      if (!outlineAgentId || !outlineSessionId) return;
+      if (!await checkAgentAccess(outlineAgentId)) return;
+      if (!CONFIG.skipAuth && !yeaftSessionDb.getForAgent(client.userId, outlineAgentId, outlineSessionId)) return;
+      await forwardToAgent(outlineAgentId, {
+        type: 'yeaft_load_history_outline',
+        sessionId: outlineSessionId,
+        requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+        limit: typeof msg.limit === 'number' ? msg.limit : 50,
+        beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
+        includeTotal: msg.includeTotal !== false,
+        _requestClientId: clientId,
+      });
+      break;
+    }
+
+    case 'yeaft_search_history': {
+      const searchAgentId = msg.agentId;
+      const searchSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+      if (!searchAgentId || !searchSessionId) return;
+      if (!await checkAgentAccess(searchAgentId)) return;
+      if (!CONFIG.skipAuth && !yeaftSessionDb.getForAgent(client.userId, searchAgentId, searchSessionId)) return;
+      await forwardToAgent(searchAgentId, {
+        type: 'yeaft_search_history',
+        sessionId: searchSessionId,
+        requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+        query: typeof msg.query === 'string' ? msg.query.slice(0, 500) : '',
+        limit: typeof msg.limit === 'number' ? msg.limit : 20,
+        beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
+        _requestClientId: clientId,
+      });
+      break;
+    }
+
+    case 'yeaft_load_history_window': {
+      const windowAgentId = msg.agentId;
+      const windowSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+      if (!windowAgentId || !windowSessionId) return;
+      if (!await checkAgentAccess(windowAgentId)) return;
+      if (!CONFIG.skipAuth && !yeaftSessionDb.getForAgent(client.userId, windowAgentId, windowSessionId)) return;
+      await forwardToAgent(windowAgentId, {
+        type: 'yeaft_load_history_window',
+        sessionId: windowSessionId,
+        requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+        anchorMessageId: typeof msg.anchorMessageId === 'string' ? msg.anchorMessageId : null,
+        anchorSeq: typeof msg.anchorSeq === 'number' ? msg.anchorSeq : null,
+        beforeTurns: typeof msg.beforeTurns === 'number' ? msg.beforeTurns : 3,
+        afterTurns: typeof msg.afterTurns === 'number' ? msg.afterTurns : 3,
+        _requestClientId: clientId,
+      });
+      break;
+    }
+
     case 'yeaft_load_more_history':
     case 'unify_load_more_history': {
       const moreAgentId = msg.agentId || client.currentAgent;
@@ -1045,10 +1133,17 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
             return true;
           }
         }
+        if (relayType === 'yeaft_fetch_agent_metrics') {
+          await forwardToAgent(relayAgentId, { type: 'get_agent_metrics' });
+          return true;
+        }
         // Forward the entire message minus the agentId field; the agent
         // router is the authoritative consumer of the payload shape.
         const { agentId: _discard, ...rest } = msg;
         rest.type = relayType;
+        if (rest.type === 'yeaft_session_send' || rest.type === 'yeaft_session_chat') {
+          trackUserTurn(client.userId, Buffer.byteLength(JSON.stringify(msg)));
+        }
 
         if (rest.type === 'yeaft_session_chat' && !rest.id) {
           rest.id = `u_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;

@@ -1,8 +1,9 @@
 import { randomUUID } from 'crypto';
 import { messageDb, yeaftSessionDb } from '../database.js';
-import { broadcastAgentList, forwardToClients, sendToWebClient } from '../ws-utils.js';
-import { trackMessage, webClients, previewFiles } from '../context.js';
+import { broadcastAgentList, forwardToClients, sendToAgent, sendToWebClient } from '../ws-utils.js';
+import { webClients, previewFiles } from '../context.js';
 import { CONFIG } from '../config.js';
+import { yeaftAssetStore } from '../yeaft-asset-store.js';
 import { recordPerfTraceEvent } from '../perf-trace.js';
 
 
@@ -30,6 +31,55 @@ export function decorateYeaftSessionsWithPinned(agentId, sessions) {
       ...(Number.isFinite(row?.sortOrder) ? { sortOrder: row.sortOrder } : {}),
     };
   });
+}
+
+function syncYeaftSessionMetadata(agentId, agent, event) {
+  if (!event || typeof event !== 'object') return event;
+  const ownerId = agent?.ownerId || null;
+
+  if (event.type === 'session_list_updated') {
+    const rows = Array.isArray(event.sessions) ? event.sessions : [];
+    try {
+      if (ownerId) yeaftSessionDb.reconcileFromSnapshot(ownerId, agentId, rows);
+    } catch (e) {
+      console.warn(`[Server] yeaft session persist failed for agent ${agentId}:`, e?.message || e);
+    }
+    return { ...event, sessions: decorateYeaftSessionsWithPinned(agentId, rows) };
+  }
+
+  if (event.type !== 'session_crud_result') return event;
+  const op = event.op;
+  const sessionId = event.sessionId;
+  if (event.ok && op === 'list' && Array.isArray(event.sessions)) {
+    try {
+      if (ownerId) yeaftSessionDb.reconcileFromSnapshot(ownerId, agentId, event.sessions);
+    } catch (e) {
+      console.warn(`[Server] yeaft session list persist failed for agent ${agentId}:`, e?.message || e);
+    }
+    return { ...event, sessions: decorateYeaftSessionsWithPinned(agentId, event.sessions) };
+  }
+  if (!event.ok || !ownerId || !sessionId || (op !== 'archive' && op !== 'delete')) return event;
+
+  if (op === 'archive') {
+    try {
+      yeaftSessionDb.setArchivedForAgent(ownerId, agentId, sessionId, true);
+    } catch (e) {
+      console.warn('[Server] Yeaft Session metadata archive failed:', e?.message || e);
+    }
+    return event;
+  }
+
+  try {
+    yeaftSessionDb.deleteForAgent(ownerId, agentId, sessionId);
+  } catch (e) {
+    console.warn('[Server] Yeaft Session metadata cleanup failed:', e?.message || e);
+  }
+  try {
+    yeaftAssetStore.deleteScope({ ownerId, agentId, sessionId });
+  } catch (e) {
+    console.warn('[Server] Yeaft asset cleanup failed:', e?.message || e);
+  }
+  return event;
 }
 
 function hydrateMessagePreviewData(message) {
@@ -62,6 +112,22 @@ function hydrateInlinePreviewData(data) {
   if (!data?.message) return data;
   const message = hydrateMessagePreviewData(data.message);
   return message === data.message ? data : { ...data, message };
+}
+
+function projectConfirmedAssetImages(messages, { ownerId, agentId, sessionId }) {
+  const turnIds = messages
+    .filter(message => message?.role === 'assistant' && message.imageAssetAnchor === true)
+    .map(message => message.turnId || message.threadId || null)
+    .filter(Boolean);
+  const imagesByTurn = yeaftAssetStore.describeTurns({ ownerId, agentId, sessionId, turnIds });
+  return messages.map((message) => {
+    if (!message || message.role !== 'assistant') return message;
+    const { images: _pendingImages, ...rest } = message;
+    if (message.imageAssetAnchor !== true) return rest;
+    const turnId = message.turnId || message.threadId || null;
+    const images = turnId ? imagesByTurn.get(turnId) || [] : [];
+    return images.length > 0 ? { ...rest, images } : rest;
+  });
 }
 
 /**
@@ -113,8 +179,8 @@ export async function handleAgentOutput(agentId, agent, msg) {
               if (clientMessageId) {
                 msg.data.clientMessageId = clientMessageId;
               }
-              // Track user message count for stats
-              trackMessage(conv?.userId || agent?.ownerId);
+              // User-turn stats are recorded at the web send boundary so
+              // inbound payload bytes are counted exactly once.
             }
           }
           if (data.type === 'assistant' && data.message?.content) {
@@ -219,37 +285,53 @@ export async function handleAgentOutput(agentId, agent, msg) {
       await forwardToClients(agentId, msg.conversationId, msg);
       break;
 
-    case 'slash_commands_update':
-      // 缓存到 agent 对象上，供 web 端选择 agent 时立即获取
-      agent.slashCommands = msg.slashCommands || [];
-      if (msg.slashCommandDescriptions) {
-        agent.slashCommandDescriptions = { ...agent.slashCommandDescriptions, ...msg.slashCommandDescriptions };
+    case 'slash_commands_update': {
+      const isYeaftCommandSet = msg.commandSet === 'yeaft';
+      let slashCommandDescriptions;
+      if (isYeaftCommandSet) {
+        // Yeaft publishes an authoritative hot-reload snapshot. Keep it out of
+        // the Claude cache used by agent_selected and clear removed descriptions.
+        agent.yeaftSlashCommands = msg.slashCommands || [];
+        if (msg.slashCommandDescriptions) {
+          agent.yeaftSlashCommandDescriptions = { ...msg.slashCommandDescriptions };
+        }
+        slashCommandDescriptions = agent.yeaftSlashCommandDescriptions || {};
+      } else {
+        // Claude Chat remains the legacy/default command set selected clients receive.
+        agent.slashCommands = msg.slashCommands || [];
+        if (msg.slashCommandDescriptions) {
+          agent.slashCommandDescriptions = { ...agent.slashCommandDescriptions, ...msg.slashCommandDescriptions };
+        }
+        slashCommandDescriptions = agent.slashCommandDescriptions || {};
       }
+      const commandSet = msg.commandSet ? { commandSet: msg.commandSet } : {};
       if (msg.conversationId === '__preload__') {
-        // Agent-level preload: broadcast to all owner clients with agentId
+        // Agent-level preload: broadcast to all owner clients with agentId.
         for (const [, client] of webClients) {
           if (client.authenticated && (CONFIG.skipAuth || agent.ownerId === client.userId)) {
             await sendToWebClient(client, {
               type: 'slash_commands_update',
               agentId,
+              ...commandSet,
               slashCommands: msg.slashCommands,
-              slashCommandDescriptions: agent.slashCommandDescriptions || {}
+              slashCommandDescriptions,
             });
           }
         }
       } else {
-        // Per-conversation update. Stamp agentId too so
-        // Yeaft's temporary/local conversation id cannot hide the agent-level
-        // fallback command list in the web store.
+        // Per-conversation update. Preserve commandSet so the web store can
+        // isolate Yeaft snapshots from the Claude agent-level fallback.
         await forwardToClients(agentId, msg.conversationId, {
           type: 'slash_commands_update',
           agentId,
           conversationId: msg.conversationId,
+          ...commandSet,
           slashCommands: msg.slashCommands,
-          slashCommandDescriptions: agent.slashCommandDescriptions || {}
+          slashCommandDescriptions,
         });
       }
       break;
+    }
 
     case 'compact_status':
       console.log(`[Compact] Status: ${msg.status} for conversation ${msg.conversationId}`);
@@ -396,12 +478,58 @@ export async function handleAgentOutput(agentId, agent, msg) {
       break;
     }
 
+    case 'yeaft_asset_put': {
+      let ok = false;
+      let stored = false;
+      let error = null;
+      try {
+        if (!agent.ownerId || !msg.sessionId || !msg.image?.previewData?.data) {
+          throw new Error('Incomplete Yeaft asset payload');
+        }
+        const image = yeaftAssetStore.put({
+          ownerId: agent.ownerId, agentId, sessionId: msg.sessionId,
+          assetId: msg.metadata?.assetId || msg.image.assetId, data: msg.image.previewData.data,
+          mimeType: msg.metadata?.mimeType || msg.image.mimeType || msg.image.previewData.mimeType,
+          filename: msg.metadata?.filename || msg.image.filename || msg.image.previewData.filename,
+          width: msg.metadata?.width ?? msg.image.width,
+          height: msg.metadata?.height ?? msg.image.height,
+          turnId: msg.turnId || null,
+          vpId: msg.vpId || null,
+          threadId: msg.threadId || null,
+        });
+        stored = true;
+        await forwardToClients(agentId, msg.conversationId, {
+          type: 'yeaft_asset_ready', conversationId: msg.conversationId,
+          agentId, sessionId: msg.sessionId,
+          ...(msg.vpId ? { vpId: msg.vpId } : {}),
+          ...(msg.turnId ? { turnId: msg.turnId } : {}),
+          ...(msg.threadId ? { threadId: msg.threadId } : {}),
+          image, _requestUserId: agent.ownerId,
+        });
+        ok = true;
+      } catch (err) {
+        error = err?.message || String(err);
+        console.warn(`[Server] Failed to store Yeaft asset: ${error}`);
+      }
+      if (msg.deliveryId) {
+        await sendToAgent(agent, {
+          type: 'yeaft_asset_ack',
+          deliveryId: msg.deliveryId,
+          ok: ok || stored,
+          ...(!stored && /quota exceeded|invalid|unsupported|MIME|must be between|does not match|incomplete/i.test(error || '') ? { permanent: true } : {}),
+          ...(error ? { error } : {}),
+        });
+      }
+      break;
+    }
+
     case 'yeaft_output':
     case 'yeaft_session_output':
     case 'session_output': {
       const data = hydrateInlinePreviewData(msg.data);
-      if (msg.event?.type === 'yeaft_status') {
-        agent.yeaftStatus = msg.event;
+      const event = syncYeaftSessionMetadata(agentId, agent, msg.event);
+      if (event?.type === 'yeaft_status') {
+        agent.yeaftStatus = event;
         await broadcastAgentList();
       }
       if (msg.perfTraceId) {
@@ -459,7 +587,7 @@ export async function handleAgentOutput(agentId, agent, msg) {
             ...(msg.turnId != null ? { turnId: msg.turnId } : {}),
             ...(msg.threadId != null ? { threadId: msg.threadId } : {}),
             data,
-            event: msg.event,
+            event,
           });
           if (msg.perfTraceId) {
             recordPerfTraceEvent({
@@ -481,9 +609,72 @@ export async function handleAgentOutput(agentId, agent, msg) {
       break;
     }
 
+    case 'yeaft_history_outline': {
+      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
+      if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
+        await sendToWebClient(targetClient, {
+          type: 'yeaft_history_outline',
+          agentId,
+          requestId: msg.requestId ?? null,
+          sessionId: msg.sessionId ?? null,
+          results: Array.isArray(msg.results) ? msg.results : [],
+          hasMore: !!msg.hasMore,
+          nextBeforeSeq: msg.nextBeforeSeq ?? null,
+          totalCount: Number.isFinite(msg.totalCount) ? msg.totalCount : null,
+          ...(msg.error ? { error: msg.error } : {}),
+        });
+      }
+      break;
+    }
+
+    case 'yeaft_history_search_result': {
+      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
+      if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
+        await sendToWebClient(targetClient, {
+          type: 'yeaft_history_search_result',
+          agentId,
+          requestId: msg.requestId ?? null,
+          sessionId: msg.sessionId ?? null,
+          query: msg.query || '',
+          results: Array.isArray(msg.results) ? msg.results : [],
+          hasMore: !!msg.hasMore,
+          nextBeforeSeq: msg.nextBeforeSeq ?? null,
+          ...(msg.error ? { error: msg.error } : {}),
+        });
+      }
+      break;
+    }
+
+    case 'yeaft_history_window': {
+      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
+      if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
+        const messages = Array.isArray(msg.messages) ? projectConfirmedAssetImages(
+          msg.messages.map(hydrateMessagePreviewData),
+          { ownerId: agent.ownerId, agentId, sessionId: msg.sessionId },
+        ) : [];
+        await sendToWebClient(targetClient, {
+          type: 'yeaft_history_window',
+          agentId,
+          requestId: msg.requestId ?? null,
+          conversationId: msg.conversationId ?? null,
+          sessionId: msg.sessionId ?? null,
+          anchorMessageId: msg.anchorMessageId ?? null,
+          anchorSeq: msg.anchorSeq ?? null,
+          messages,
+          oldestSeq: msg.oldestSeq ?? null,
+          hasMoreBefore: !!msg.hasMoreBefore,
+          ...(msg.error ? { error: msg.error } : {}),
+        });
+      }
+      break;
+    }
+
     case 'yeaft_history_chunk': {
       const messages = Array.isArray(msg.messages)
-        ? msg.messages.map(hydrateMessagePreviewData)
+        ? projectConfirmedAssetImages(
+          msg.messages.map(hydrateMessagePreviewData),
+          { ownerId: agent.ownerId, agentId, sessionId: msg.sessionId },
+        )
         : [];
       // Forward a "load older messages" pagination chunk to the same
       // authenticated clients. Distinct from `yeaft_output` because the
@@ -507,6 +698,7 @@ export async function handleAgentOutput(agentId, agent, msg) {
         if (c.authenticated && (CONFIG.skipAuth || c.userId === agent.ownerId)) {
           await sendToWebClient(c, {
             type: 'yeaft_history_chunk',
+            agentId,
             conversationId: msg.conversationId,
             ...(msg.perfTraceId != null ? { perfTraceId: msg.perfTraceId } : {}),
             ...(msg.sessionId != null ? { sessionId: msg.sessionId } : {}),
@@ -597,14 +789,6 @@ export async function handleAgentOutput(agentId, agent, msg) {
       // their agents (online or not) and survive reload. Pure shadow
       // store — agent's on-disk `~/.yeaft/sessions/` remains canonical.
       // Forwarding to the web continues unchanged below.
-      try {
-        const rows = Array.isArray(msg.sessions) ? msg.sessions : [];
-        if (agent.ownerId) {
-          yeaftSessionDb.reconcileFromSnapshot(agent.ownerId, agentId, rows);
-        }
-      } catch (e) {
-        console.warn(`[Server] yeaft session persist failed for agent ${agentId}:`, e?.message || e);
-      }
       // fix-yeaft-session-list-and-menu: decorate the outgoing snapshot
       // with the server-side pin state. The agent has no notion of
       // pinning (pin is UI metadata that lives in the `yeaft_sessions`
@@ -615,7 +799,8 @@ export async function handleAgentOutput(agentId, agent, msg) {
       // Use one batch read (`getByAgent`) and a Set lookup instead of an
       // N+1 `get(id)` per row — relays this size hot path on every
       // snapshot per connected client.
-      const decoratedSessions = decorateYeaftSessionsWithPinned(agentId, msg.sessions);
+      const syncedEvent = syncYeaftSessionMetadata(agentId, agent, msg);
+      const decoratedSessions = syncedEvent.sessions;
       // Relay verbatim to web (agentId stamped so the web sessions store
       // can merge per-agent rosters).
       for (const [, c] of webClients) {
@@ -637,7 +822,7 @@ export async function handleAgentOutput(agentId, agent, msg) {
         if (agent.ownerId && msg) {
           const sessionId = msg.sessionId;
           if (sessionId) {
-            const existing = yeaftSessionDb.get(sessionId);
+            const existing = yeaftSessionDb.getForAgent(agent.ownerId, agentId, sessionId);
             // Roster-delta path is a cache update, not authoritative
             // creation. If we've never seen this row before, skip and
             // wait for the next full snapshot (which carries truthful
@@ -679,19 +864,7 @@ export async function handleAgentOutput(agentId, agent, msg) {
       // probes too: entering Yeaft asks each connected agent for its opened
       // sessions, and that response must carry persisted server-side pin
       // state before it hits the web store.
-      let outboundMsg = msg;
-      try {
-        const op = msg.op;
-        const sessionId = msg.sessionId;
-        if (msg.ok && op === 'list' && Array.isArray(msg.sessions)) {
-          if (agent.ownerId) yeaftSessionDb.reconcileFromSnapshot(agent.ownerId, agentId, msg.sessions);
-          outboundMsg = { ...msg, sessions: decorateYeaftSessionsWithPinned(agentId, msg.sessions) };
-        } else if (msg.ok && sessionId && (op === 'delete' || op === 'archive')) {
-          yeaftSessionDb.delete(sessionId);
-        }
-      } catch (e) {
-        console.warn(`[Server] yeaft crud-result persist failed:`, e?.message || e);
-      }
+      const outboundMsg = syncYeaftSessionMetadata(agentId, agent, msg);
       for (const [, c] of webClients) {
         if (c.authenticated && (CONFIG.skipAuth || c.userId === agent.ownerId)) {
           await sendToWebClient(c, { ...outboundMsg, agentId: agentId });

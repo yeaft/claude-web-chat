@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { CONFIG, getUserByUsername } from '../config.js';
 import { generateSessionKey } from '../encryption.js';
@@ -9,6 +10,10 @@ import { activeSessions, revokedTokens } from './session-store.js';
  * Returns `exp` (seconds since epoch, from JWT spec) so callers can decide
  * whether to issue a sliding-renewal token.
  */
+export function issueSessionToken(username) {
+  return jwt.sign({ username, jti: randomUUID() }, CONFIG.jwtSecret, { expiresIn: CONFIG.jwtExpiresIn });
+}
+
 export function verifyToken(token) {
   try {
     const decoded = jwt.verify(token, CONFIG.jwtSecret);
@@ -60,7 +65,7 @@ export function maybeRenewToken(currentToken, expSeconds, username) {
   if (remainingMs >= CONFIG.jwtRenewThresholdMs) return null;
   if (remainingMs <= 0) return null; // expired tokens shouldn't reach here
 
-  const newToken = jwt.sign({ username }, CONFIG.jwtSecret, { expiresIn: CONFIG.jwtExpiresIn });
+  const newToken = issueSessionToken(username);
   const session = activeSessions.get(currentToken);
   if (session) {
     activeSessions.set(newToken, session);

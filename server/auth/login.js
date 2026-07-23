@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { CONFIG, getUserByUsername, isEmailConfigured, isTotpEnabled } from '../config.js';
+import { issueSessionToken } from './token.js';
 import { sendVerificationCode } from '../email.js';
 import { generateSessionKey, encodeKey } from '../encryption.js';
 import { generateTotpSecret, generateTotpQRCode } from '../totp.js';
@@ -11,7 +12,7 @@ import { generateVerificationCode, maskEmail } from './utils.js';
  * Helper: complete login and return token + sessionKey + role
  */
 export function completeLogin(username, sessionKey, role) {
-  const token = jwt.sign({ username }, CONFIG.jwtSecret, { expiresIn: CONFIG.jwtExpiresIn });
+  const token = issueSessionToken(username);
   activeSessions.set(token, { username, sessionKey });
   return {
     success: true,
@@ -31,6 +32,11 @@ export async function loginStep1(username, password) {
   const user = getUserByUsername(username);
 
   if (!user) {
+    await bcrypt.compare(password, '$2b$10$invalidhashfortiminginvalidhash');
+    return { success: false, error: 'Invalid username or password' };
+  }
+
+  if (!user.passwordHash) {
     await bcrypt.compare(password, '$2b$10$invalidhashfortiminginvalidhash');
     return { success: false, error: 'Invalid username or password' };
   }

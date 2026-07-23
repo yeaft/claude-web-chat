@@ -3,9 +3,16 @@ import {
   adjustedScrollTopForMeasuredHeight,
   buildVirtualOffsets,
   computeVirtualWindow,
+  computeVirtualWindowFromLayout,
   estimateVirtualItemHeight,
   getVirtualItemKey,
+  isTranscriptScrollbarPointer,
+  isTranscriptScrollKey,
+  resolveTranscriptBottomFollow,
   shouldFollowTranscriptBottom,
+  shouldMarkTranscriptKeyScroll,
+  virtualScrollTopForIndex,
+  virtualTranscriptDefaults,
 } from '../../web/utils/virtual-transcript.js';
 
 function turns(count) {
@@ -16,6 +23,18 @@ function turns(count) {
     toolMsgs: [],
   }));
 }
+
+describe('virtual transcript targeted navigation', () => {
+  it('computes a centered offset for an unmounted item from cached heights', () => {
+    const items = turns(10);
+    const heightCache = Object.fromEntries(items.map(item => [item.id, 100]));
+    expect(virtualScrollTopForIndex(items, 5, heightCache, {
+      viewportHeight: 300,
+      itemGap: 0,
+      align: 'center',
+    })).toBe(400);
+  });
+});
 
 describe('virtual transcript range calculation', () => {
   it('renders only viewport-adjacent turns from a large transcript', () => {
@@ -54,6 +73,27 @@ describe('virtual transcript range calculation', () => {
     expect(window.items.map((entry) => entry.key)).toEqual(['turn-499', 'turn-500', 'turn-501', 'turn-502', 'turn-503']);
     expect(window.topSpacerHeight).toBe(49900);
     expect(window.bottomSpacerHeight).toBe(49600);
+  });
+
+  it('reuses precomputed offsets across scroll window updates', () => {
+    const items = turns(1000);
+    let estimateCalls = 0;
+    const estimateHeight = () => {
+      estimateCalls += 1;
+      return 100;
+    };
+    const layout = buildVirtualOffsets(items, {}, { itemGap: 0, estimateHeight });
+
+    for (let scrollTop = 0; scrollTop < 50000; scrollTop += 500) {
+      const window = computeVirtualWindowFromLayout(items, layout, {
+        scrollTop,
+        viewportHeight: 300,
+        overscan: 1,
+      });
+      expect(window.items.length).toBeLessThan(8);
+    }
+
+    expect(estimateCalls).toBe(items.length);
   });
 
   it('keeps Yeaft message-block children together as one virtual item', () => {
@@ -122,8 +162,83 @@ describe('virtual transcript range calculation', () => {
   });
 
   it('distinguishes bottom-follow from reading history', () => {
-    expect(shouldFollowTranscriptBottom({ scrollTop: 920, scrollHeight: 1000, clientHeight: 80, threshold: 80 })).toBe(true);
-    expect(shouldFollowTranscriptBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 80, threshold: 80 })).toBe(false);
+    expect(virtualTranscriptDefaults.bottomThreshold).toBe(80);
+    expect(shouldFollowTranscriptBottom({ scrollTop: 920, scrollHeight: 1000, clientHeight: 80 })).toBe(true);
+    expect(shouldFollowTranscriptBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 80 })).toBe(false);
+  });
+
+  it('keeps bottom following disabled across layout updates until the user returns', () => {
+    expect(resolveTranscriptBottomFollow({ following: false, atBottom: true })).toBe(false);
+    expect(resolveTranscriptBottomFollow({ following: true, atBottom: false })).toBe(false);
+    expect(resolveTranscriptBottomFollow({ following: true, atBottom: true })).toBe(true);
+    expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: true })).toBe(true);
+    expect(resolveTranscriptBottomFollow({ following: true, atBottom: false, userScroll: true })).toBe(false);
+  });
+
+  it('recognizes keyboard actions that explicitly scroll the transcript', () => {
+    for (const key of ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']) {
+      expect(isTranscriptScrollKey(key)).toBe(true);
+    }
+    expect(isTranscriptScrollKey('Enter')).toBe(false);
+    expect(isTranscriptScrollKey('a')).toBe(false);
+  });
+
+  it('only treats primary pointer input in the transcript scrollbar gutter as scrolling', () => {
+    const scroller = {
+      clientWidth: 780,
+      offsetWidth: 800,
+      getBoundingClientRect: () => ({ left: 0, right: 800, top: 100, bottom: 700 }),
+    };
+
+    expect(isTranscriptScrollbarPointer({ button: 0, clientX: 790, clientY: 400 }, scroller)).toBe(true);
+    expect(isTranscriptScrollbarPointer({ button: 0, clientX: 400, clientY: 400 }, scroller)).toBe(false);
+    expect(isTranscriptScrollbarPointer({ button: 1, clientX: 790, clientY: 400 }, scroller)).toBe(false);
+    expect(isTranscriptScrollbarPointer({ button: 0, clientX: 790, clientY: 50 }, scroller)).toBe(false);
+  });
+
+  it('only marks unhandled scroll keys aimed at the transcript surface', () => {
+    const body = { closest: () => null };
+    const documentElement = { closest: () => null };
+    const scroller = { closest: () => null };
+    const documentRef = { body, documentElement };
+    const button = { closest: () => button };
+    const messageChild = { closest: () => null };
+
+    expect(shouldMarkTranscriptKeyScroll({ key: 'End', target: scroller }, scroller, documentRef)).toBe(true);
+    expect(shouldMarkTranscriptKeyScroll({ key: 'PageDown', target: body }, scroller, documentRef)).toBe(true);
+    expect(shouldMarkTranscriptKeyScroll({ key: ' ', target: button }, scroller, documentRef)).toBe(false);
+    expect(shouldMarkTranscriptKeyScroll({ key: 'End', target: messageChild }, scroller, documentRef)).toBe(false);
+    expect(shouldMarkTranscriptKeyScroll({ key: 'End', target: scroller, defaultPrevented: true }, scroller, documentRef)).toBe(false);
+    expect(shouldMarkTranscriptKeyScroll({ key: 'Enter', target: scroller }, scroller, documentRef)).toBe(false);
+  });
+
+  it('does not resume paused following after non-scroll controls trigger layout work', () => {
+    const scroller = {
+      clientWidth: 780,
+      offsetWidth: 800,
+      closest: () => null,
+      getBoundingClientRect: () => ({ left: 0, right: 800, top: 0, bottom: 600 }),
+    };
+    const button = { closest: () => button };
+    const pointerQualified = isTranscriptScrollbarPointer({ button: 0, clientX: 400, clientY: 300 }, scroller);
+    const keyQualified = shouldMarkTranscriptKeyScroll({ key: ' ', target: button }, scroller, { body: {} });
+
+    expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: pointerQualified })).toBe(false);
+    expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: keyQualified })).toBe(false);
+  });
+
+  it('resumes paused following when scrollbar drag or transcript End reaches bottom', () => {
+    const scroller = {
+      clientWidth: 780,
+      offsetWidth: 800,
+      closest: () => null,
+      getBoundingClientRect: () => ({ left: 0, right: 800, top: 0, bottom: 600 }),
+    };
+    const pointerQualified = isTranscriptScrollbarPointer({ button: 0, clientX: 790, clientY: 300 }, scroller);
+    const keyQualified = shouldMarkTranscriptKeyScroll({ key: 'End', target: scroller }, scroller, { body: {} });
+
+    expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: pointerQualified })).toBe(true);
+    expect(resolveTranscriptBottomFollow({ following: false, atBottom: true, userScroll: keyQualified })).toBe(true);
   });
 
   it('keeps the current anchor stable when measured heights above the window change', () => {

@@ -9,6 +9,7 @@ import { maxDbMessageId } from '../messages.js';
 import { summarizeHistoricalToolMessages } from '../tool-window.js';
 import { t } from '../../../utils/i18n.js';
 import { recordPerfTrace, measureNextPaint } from '../perfTrace.js';
+import { yeaftHistoryIdentityKey } from '../yeaft-history-identity.js';
 
 /** Filter out empty user messages — tool_result artifacts stored as empty user records in DB */
 function filterEmptyUserMessages(messages) {
@@ -37,8 +38,9 @@ function resolveGroupDefaultVpId(groupId) {
       ? pinia.useSessionsStore()
       : null;
     if (!sessionsStore) return null;
+    const chatStore = typeof pinia.useChatStore === 'function' ? pinia.useChatStore() : null;
     const group = typeof sessionsStore.sessionById === 'function'
-      ? sessionsStore.sessionById(groupId)
+      ? sessionsStore.sessionById(groupId, chatStore?.currentAgent || null)
       : (sessionsStore.sessions && sessionsStore.sessions[groupId]);
     const vpId = group && typeof group.defaultVpId === 'string'
       ? group.defaultVpId.trim()
@@ -142,6 +144,8 @@ function replaceYeaftRecentHistoryRows(existingRows, incomingRows, sessionId) {
     if (!row) return false;
     if (sessionId != null && rowSessionId(row) !== sessionId) return true;
     if (row.isStreaming) return true;
+    if (row.type === 'tool-use' && row.toolName === 'AskUserQuestion'
+        && (row.askAnswered || row.askPending || row.askExpired)) return true;
     // A recent-history reply can race a just-sent optimistic user row. Do not
     // delete that accepted input merely because the persisted window has not
     // flushed it yet or the server clock is ahead of the browser clock.
@@ -562,47 +566,66 @@ export function handleSyncMessagesResult(store, msg) {
  * chunk — so the spinner doesn't get stuck. Always overwrites
  * `yeaftHasMoreHistory` from the server's authoritative value.
  */
-export function handleYeaftHistoryChunk(store, msg) {
-  const msgSessionId = msg.sessionId != null ? msg.sessionId : msg.groupId;
-  const mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
-  const incomingMessages = Array.isArray(msg.messages) ? msg.messages : [];
-
-  if (msg.perfTraceId) {
-    recordPerfTrace(store, {
-      traceId: msg.perfTraceId,
-      phase: 'history.chunk_received',
-      agentId: msg.agentId || null,
-      sessionId: msgSessionId || null,
-      messageType: msg.type,
-      bytes: (() => { try { return JSON.stringify(msg).length; } catch { return null; } })(),
-      detail: { mode, rawCount: incomingMessages.length },
-    });
-  }
-  const sessionAgentId = msgSessionId && store.yeaftSessionAgentById
-    ? store.yeaftSessionAgentById[msgSessionId]
-    : null;
-  const agentConversationId = sessionAgentId && store.yeaftConversationIdsByAgent
-    ? store.yeaftConversationIdsByAgent[sessionAgentId]
-    : null;
-  const convId = msg.conversationId || agentConversationId || store.yeaftConversationId;
-  if (!convId) {
-    store.yeaftLoadingMoreHistory = false;
-    return;
-  }
-  // The chunk's sessionId is authoritative — it is stamped by the agent
-  // from the request sessionId, not inferred from the currently selected row.
-  // Accept chunks even when the user has switched to another Session: rows are
-  // session-stamped below, and the global spinner/cursor mirrors only the
-  // active Session at the end of this handler. Dropping inactive chunks loses
-  // active-turn messages when their history/delta replay races a sidebar click.
+export function handleYeaftHistoryWindow(store, msg) {
+  const sessionId = msg.sessionId ?? null;
+  const sessionAgentId = msg.agentId || (sessionId && store.yeaftSessionAgentById?.[sessionId]) || null;
+  const convId = msg.conversationId
+    || (sessionAgentId && store.yeaftConversationIdsByAgent?.[sessionAgentId])
+    || store.yeaftConversationId;
+  if (!convId || !sessionId || !Array.isArray(msg.messages)) return 0;
   if (!store.messagesMap[convId]) store.messagesMap[convId] = [];
 
-  // Same visible projection as handleYeaftLoadHistory's bootstrap replay:
-  // only user / assistant text rows. Reflection, internal, and system-only
-  // records may be persisted as role=user, but they are not user-authored UI
-  // messages and must never be prepended as user bubbles.
+  const { formatted } = formatYeaftHistoryMessages(msg.messages, sessionId, 'window', store.messagesMap[convId]);
+  return upsertYeaftHistoryRows(store.messagesMap[convId], formatted);
+}
+
+function askUserHistoryIdentity(row) {
+  if (!row?.toolId) return null;
+  return [
+    rowSessionId(row) ?? '',
+    row.vpId || row.speakerVpId || '',
+    row.turnId || '',
+    row.threadId || 'main',
+    row.toolId,
+  ].join('\u0000');
+}
+
+function applyAskUserHistoryResult(row, result, questions) {
+  row.toolName = 'AskUserQuestion';
+  row.toolId = result.toolCallId;
+  row.toolInput = { questions };
+  row.askQuestions = questions;
+  row.askRequestId = null;
+  row.askPending = false;
+  row.pendingAnswers = null;
+  row.askSubmitGeneration = null;
+  row.hasResult = true;
+  row.isHistory = true;
+  if (result.status === 'answered') {
+    row.askAnswered = true;
+    row.selectedAnswers = result.answers;
+    row.askExpired = false;
+  } else {
+    row.askAnswered = false;
+    row.selectedAnswers = null;
+    row.askExpired = true;
+  }
+  return row;
+}
+
+function existingAskUserRow(existingRows, scope) {
+  return (existingRows || []).find(row => row?.type === 'tool-use'
+    && (row.toolName === 'AskUser' || row.toolName === 'AskUserQuestion')
+    && row.toolId === scope.toolCallId
+    && rowSessionId(row) === scope.sessionId
+    && (row.vpId || row.speakerVpId || '') === (scope.vpId || '')
+    && (row.turnId || '') === (scope.turnId || '')
+    && (row.threadId || 'main') === (scope.threadId || 'main')) || null;
+}
+
+function formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, existingRows) {
   const existingIds = new Set(
-    (store.messagesMap[convId] || [])
+    (existingRows || [])
       .map(m => m && (m.messageId || m.id))
       .filter(Boolean)
   );
@@ -656,10 +679,55 @@ export function handleYeaftHistoryChunk(store, msg) {
           isHistory: true,
         });
       }
+      for (const image of Array.isArray(m.images) ? m.images : []) {
+        if (!image?.assetId) continue;
+        formatted.push({
+          id: `${stableId || messageId || turnId}:image:${image.assetId}`,
+          messageId: `${stableId || messageId || turnId}:image:${image.assetId}`,
+          type: 'chat-image', ...image, timestamp, sessionId: rowSessionId, turnId,
+          ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
+          isStreaming: false, isHistory: true,
+        });
+      }
+      for (const result of Array.isArray(m.askUserResults) ? m.askUserResults : []) {
+        if (!result?.toolCallId || (result.status !== 'answered' && result.status !== 'expired')) continue;
+        const questions = [{
+          question: typeof result.question === 'string' ? result.question : '',
+          options: (Array.isArray(result.options) ? result.options : [])
+            .filter(label => typeof label === 'string')
+            .map(label => ({ label, description: '' })),
+          multiSelect: false,
+        }];
+        const scope = {
+          toolCallId: result.toolCallId,
+          sessionId: rowSessionId,
+          vpId: speakerVpId || '',
+          turnId: turnId || '',
+          threadId: m.threadId || 'main',
+        };
+        const existing = existingAskUserRow(existingRows, scope);
+        if (existing) {
+          applyAskUserHistoryResult(existing, result, questions);
+          continue;
+        }
+        const askRow = applyAskUserHistoryResult({
+          id: `${stableId || messageId || turnId}:ask:${result.toolCallId}`,
+          messageId: `${stableId || messageId || turnId}:ask:${result.toolCallId}`,
+          type: 'tool-use',
+          timestamp,
+          sessionId: rowSessionId,
+          turnId,
+          threadId: scope.threadId,
+          ...(speakerVpId ? { vpId: speakerVpId, speakerVpId } : {}),
+          isStreaming: false,
+        }, result, questions);
+        const identity = askUserHistoryIdentity(askRow);
+        if (!identity || !formatted.some(row => askUserHistoryIdentity(row) === identity)) formatted.push(askRow);
+      }
       const toolSummaryCount = Number(m.toolSummaryCount || m.toolCalls?.length || 0) || 0;
       if (toolSummaryCount > 0) {
         formatted.push({
-          ...(stableId ? { id: `${stableId}:tool-summary`, messageId: `${stableId}:tool-summary` } : {}),
+          ...(stableId ? { id: `${stableId}:tool-summary`, messageId: `${stableId}:tool-summary`, persistedMessageId: stableId } : {}),
           type: 'tool-summary',
           count: toolSummaryCount,
           omittedCount: toolSummaryCount,
@@ -674,6 +742,49 @@ export function handleYeaftHistoryChunk(store, msg) {
       }
     }
   }
+  return { formatted, acceptedHistoryMessages };
+}
+
+export function handleYeaftHistoryChunk(store, msg) {
+  const msgSessionId = msg.sessionId != null ? msg.sessionId : msg.groupId;
+  const mode = msg.mode === 'recent' || msg.mode === 'delta' ? msg.mode : 'older';
+  const incomingMessages = Array.isArray(msg.messages) ? msg.messages : [];
+
+  if (msg.perfTraceId) {
+    recordPerfTrace(store, {
+      traceId: msg.perfTraceId,
+      phase: 'history.chunk_received',
+      agentId: msg.agentId || null,
+      sessionId: msgSessionId || null,
+      messageType: msg.type,
+      bytes: (() => { try { return JSON.stringify(msg).length; } catch { return null; } })(),
+      detail: { mode, rawCount: incomingMessages.length },
+    });
+  }
+  const sessionAgentId = msg.agentId || (msgSessionId && store.yeaftSessionAgentById
+    ? store.yeaftSessionAgentById[msgSessionId]
+    : null);
+  const agentConversationId = sessionAgentId && store.yeaftConversationIdsByAgent
+    ? store.yeaftConversationIdsByAgent[sessionAgentId]
+    : null;
+  const convId = msg.conversationId || agentConversationId || store.yeaftConversationId;
+  if (!convId) {
+    store.yeaftLoadingMoreHistory = false;
+    return;
+  }
+  // The chunk's sessionId is authoritative — it is stamped by the agent
+  // from the request sessionId, not inferred from the currently selected row.
+  // Accept chunks even when the user has switched to another Session: rows are
+  // session-stamped below, and the global spinner/cursor mirrors only the
+  // active Session at the end of this handler. Dropping inactive chunks loses
+  // active-turn messages when their history/delta replay races a sidebar click.
+  if (!store.messagesMap[convId]) store.messagesMap[convId] = [];
+
+  // Same visible projection as handleYeaftLoadHistory's bootstrap replay:
+  // only user / assistant text rows. Reflection, internal, and system-only
+  // records may be persisted as role=user, but they are not user-authored UI
+  // messages and must never be prepended as user bubbles.
+  const { formatted, acceptedHistoryMessages } = formatYeaftHistoryMessages(incomingMessages, msgSessionId, mode, store.messagesMap[convId]);
 
   let insertedRows = 0;
   if (mode === 'recent') {
@@ -693,7 +804,7 @@ export function handleYeaftHistoryChunk(store, msg) {
     }
   }
 
-  const sessionKey = msgSessionId ?? '__all__';
+  const sessionKey = yeaftHistoryIdentityKey(msg.agentId || null, msgSessionId);
   const prevState = store.yeaftSessionHistoryState?.[sessionKey] || {};
   const nextLatest = (typeof msg.latestSeq === 'number') ? msg.latestSeq : (prevState.latestSeq ?? null);
   const nextState = mode === 'delta'
@@ -720,7 +831,8 @@ export function handleYeaftHistoryChunk(store, msg) {
       [sessionKey]: nextState,
     };
   }
-  const activeKey = store.yeaftActiveSessionFilter ?? '__all__';
+  const activeSessionId = store.yeaftActiveSessionFilter ?? null;
+  const activeKey = yeaftHistoryIdentityKey(msg.agentId ? store.currentAgent : null, activeSessionId);
   if (msg.perfTraceId) {
     recordPerfTrace(store, {
       traceId: msg.perfTraceId,

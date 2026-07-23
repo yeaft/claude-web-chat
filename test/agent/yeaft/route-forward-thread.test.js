@@ -1,11 +1,15 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoordinator } from '../../../agent/yeaft/sessions/coordinator.js';
 import { createRouter } from '../../../agent/yeaft/routing/router.js';
+import { createLoopGuard, MAX_CHAIN_DEPTH } from '../../../agent/yeaft/routing/loop-guard.js';
+import { NullTrace } from '../../../agent/yeaft/debug-trace.js';
+import { ToolRegistry } from '../../../agent/yeaft/tools/registry.js';
 import routeForwardTool from '../../../agent/yeaft/tools/route-forward.js';
 import {
   __testEnqueueForVp,
   __testGetVpThreads,
   __testSeedVpThread,
+  __testSetVpThreadEngine,
   __testSetSession,
   __testSetThreadClassifier,
   __testWaitForRoutePromises,
@@ -20,6 +24,30 @@ describe('route_forward thread ownership', () => {
     expect(routeForwardTool.description.en).toContain('VP-authored @mentions');
     expect(routeForwardTool.description.en).toContain('call RouteForward');
     expect(routeForwardTool.description.en).toContain('same session');
+  });
+
+  it('allows 30 causedBy hops and rejects the 31st', () => {
+    const guard = createLoopGuard();
+    const allowed = Array.from({ length: MAX_CHAIN_DEPTH }, (_, i) => `msg-${i}`);
+    const blocked = [...allowed, 'msg-overflow'];
+
+    expect(MAX_CHAIN_DEPTH).toBe(30);
+    expect(guard.check({
+      sessionId: 'session-route-depth',
+      targetVpId: 'vp-martin',
+      chain: allowed,
+    })).toEqual({ ok: true });
+    expect(guard.check({
+      sessionId: 'session-route-depth',
+      targetVpId: 'vp-martin',
+      chain: blocked,
+    })).toEqual({
+      ok: false,
+      reason: 'chain_depth_exceeded',
+      detail: { depth: 31, limit: 30 },
+    });
+    expect(routeForwardTool.description.en).toContain('deeper than 30 hops');
+    expect(routeForwardTool.description.zh).toContain('超过 30 跳');
   });
 
   afterEach(() => {
@@ -55,6 +83,28 @@ describe('route_forward thread ownership', () => {
     });
     return { coordinator, stored, delivered };
   }
+
+  it('delivers user text with unknown @ tokens to the default VP', () => {
+    const { coordinator, stored, delivered } = makeCoordinator();
+
+    const result = coordinator.ingest({
+      from: 'user',
+      role: 'user',
+      text: 'send updates to example@company.com and keep @nobody in the sample',
+    });
+
+    expect(result).toMatchObject({
+      dispatched: ['vp-linus'],
+      fallback: 'vp-linus',
+      errors: [],
+    });
+    expect(stored[0].mentions).toEqual(['nobody']);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({
+      vpId: 'vp-linus',
+      envelope: { trigger: 'fallback' },
+    });
+  });
 
   it('stamps the sender thread on synthetic route_forward messages', () => {
     const { coordinator, stored, delivered } = makeCoordinator();
@@ -119,6 +169,12 @@ describe('route_forward thread ownership', () => {
       threadId: 'thr-target',
       status: 'typing',
     });
+    __testSetVpThreadEngine({
+      sessionId,
+      vpId: targetVpId,
+      threadId: 'thr-target',
+      engine: { wakeForPendingUserMessage: () => true },
+    });
     __testSetThreadClassifier(async () => ({
       decision: 'related',
       targetThreadId: 'thr-target',
@@ -156,6 +212,90 @@ describe('route_forward thread ownership', () => {
     const targetThread = __testGetVpThreads(sessionId, targetVpId)
       .find(thread => thread.threadId === 'thr-target');
     expect(targetThread?.pendingQueries).toHaveLength(1);
+  });
+
+  it('wakes a running thread when user input arrives during a background-task wait', async () => {
+    const persisted = [];
+    const sessionId = 'session-user-append-wake';
+    const vpId = 'vp-linus';
+    const wakeForPendingUserMessage = vi.fn(() => true);
+    __testSetSession({
+      config: {},
+      conversationStore: {
+        append(record) {
+          persisted.push(record);
+          return { id: `persisted-${persisted.length}`, ...record };
+        },
+      },
+    });
+    __testSeedVpThread({ sessionId, vpId, threadId: 'thr-running', status: 'tool' });
+    __testSetVpThreadEngine({
+      sessionId,
+      vpId,
+      threadId: 'thr-running',
+      engine: { wakeForPendingUserMessage },
+    });
+    __testSetThreadClassifier(async () => ({
+      decision: 'related',
+      targetThreadId: 'thr-running',
+      title: 'background work',
+    }));
+
+    __testEnqueueForVp(sessionId, vpId, {
+      sessionId,
+      trigger: 'fallback',
+      msg: {
+        id: 'msg-user-during-task',
+        from: 'user',
+        role: 'user',
+        text: 'please answer this while the task keeps running',
+        meta: {},
+      },
+    });
+    await __testWaitForRoutePromises('msg-user-during-task');
+
+    expect(wakeForPendingUserMessage).toHaveBeenCalledTimes(1);
+    expect(__testGetVpThreads(sessionId, vpId)[0].pendingQueries).toHaveLength(1);
+    expect(persisted[0]).toMatchObject({
+      role: 'user',
+      sessionId,
+      threadId: 'thr-running',
+    });
+  });
+
+  it('falls back to a normal queued turn when a stale thread has no running engine', async () => {
+    const sessionId = 'session-stale-thread';
+    const vpId = 'vp-linus';
+    __testSetSession({
+      config: { _readOnly: true },
+      conversationStore: {
+        append: record => record,
+        loadRecentBySession: () => [],
+        readCompactSummary: () => '',
+      },
+      toolRegistry: new ToolRegistry(),
+      trace: new NullTrace(),
+      adapter: {
+        async *stream() { yield { type: 'stop', stopReason: 'end_turn' }; },
+        async call() { return { text: '', usage: {} }; },
+      },
+    });
+    __testSeedVpThread({ sessionId, vpId, threadId: 'thr-stale', status: 'tool' });
+    __testSetThreadClassifier(async () => ({
+      decision: 'related',
+      targetThreadId: 'thr-stale',
+      title: 'stale work',
+    }));
+
+    __testEnqueueForVp(sessionId, vpId, {
+      sessionId,
+      trigger: 'fallback',
+      msg: { id: 'msg-stale-fallback', from: 'user', role: 'user', text: 'new input', meta: {} },
+    });
+    await __testWaitForRoutePromises('msg-stale-fallback');
+
+    const stale = __testGetVpThreads(sessionId, vpId).find(thread => thread.threadId === 'thr-stale');
+    expect(stale?.pendingQueries).toHaveLength(0);
   });
 
   it('passes the active engine thread id into the route_forward tool context', async () => {

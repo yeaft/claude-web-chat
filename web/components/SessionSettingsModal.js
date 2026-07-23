@@ -21,6 +21,14 @@
  * changes (the modal re-derives state from the store on each render).
  */
 
+import {
+  clearOverlayPointerGesture,
+  shouldDismissFromOverlayClick,
+  trackOverlayPointerDown,
+  trackOverlayPointerUp,
+} from '../utils/overlay-dismiss.js';
+import { buildVpDomainSections } from '../utils/vp-domains.js';
+
 const SESSION_SETTINGS_SECTION = 'session';
 const LEGACY_SESSION_SETTINGS_SECTIONS = new Set(['announcement', 'rename', 'danger']);
 
@@ -35,6 +43,7 @@ export default {
   emits: ['close', 'open-vp-library'],
   props: {
     groupId: { type: String, required: true },
+    agentId: { type: String, default: null },
     initialSection: {
       type: String,
       default: SESSION_SETTINGS_SECTION,
@@ -75,7 +84,11 @@ export default {
     },
     group() {
       const gs = this.sessionsStore;
-      return gs && gs.sessions ? (gs.sessions[this.groupId] || null) : null;
+      const agentId = this.agentId || this.chat?.currentAgent || null;
+      return gs && typeof gs.sessionById === 'function' ? gs.sessionById(this.groupId, agentId) : null;
+    },
+    targetAgentId() {
+      return this.agentId || this.group?.agentId || this.chat?.currentAgent || null;
     },
     groupDisplayName() {
       const g = this.group;
@@ -95,6 +108,7 @@ export default {
       return this.group ? (this.group.defaultVpId || null) : null;
     },
     vpList() { return this.vpStore?.vpList || []; },
+    vpDomainSections() { return buildVpDomainSections(this.vpList); },
     vpLibraryEmpty() {
       const s = this.vpStore;
       if (!s) return false;
@@ -195,13 +209,18 @@ export default {
     window.removeEventListener('keydown', this.onEsc);
   },
   methods: {
+    trackOverlayPointerDown,
+    trackOverlayPointerUp,
+    clearOverlayPointerGesture,
+
     onEsc(e) {
       if (e.key !== 'Escape') return;
       // Don't close mid-busy operation.
       if (this.announcementBusy || this.renameBusy || this.membersBusy || this.deleteBusy) return;
       this.requestClose();
     },
-    onOverlayClick() {
+    onOverlayClick(event) {
+      if (!shouldDismissFromOverlayClick(event)) return;
       if (this.announcementBusy || this.renameBusy || this.membersBusy || this.deleteBusy) return;
       this.requestClose();
     },
@@ -218,7 +237,7 @@ export default {
         const res = await this.chat.sessionCrudRequest('update', {
           sessionId: this.groupId,
           patch: { announcement: this.announcementDraft },
-        });
+        }, { agentId: this.targetAgentId });
         if (!res || !res.ok) {
           const code = (res && res.error && res.error.code) || 'unknown';
           const message = (res && res.error && res.error.message) || code;
@@ -238,7 +257,7 @@ export default {
         const res = await this.chat.sessionCrudRequest('rename', {
           sessionId: this.groupId,
           name: next,
-        });
+        }, { agentId: this.targetAgentId });
         if (!res || !res.ok) {
           const code = (res && res.error && res.error.code) || 'unknown';
           const message = (res && res.error && res.error.message) || code;
@@ -254,6 +273,10 @@ export default {
       const fn = this.vpStore?.vpLabel;
       return typeof fn === 'function' ? fn(vpId) : vpId;
     },
+    vpDescriptionFor(vpId) {
+      const fn = this.vpStore?.vpDescription;
+      return typeof fn === 'function' ? fn(vpId) : '';
+    },
     vpTextColorFor(vpId) {
       const fn = this.vpStore?.vpTextColor;
       return typeof fn === 'function' ? fn(vpId) : 'var(--vp-avatar-rat-fg)';
@@ -264,7 +287,7 @@ export default {
       this.membersError = '';
       try {
         const op = checked ? 'add_member' : 'remove_member';
-        const res = await this.chat.sessionCrudRequest(op, { sessionId: this.groupId, vpId });
+        const res = await this.chat.sessionCrudRequest(op, { sessionId: this.groupId, vpId }, { agentId: this.targetAgentId });
         if (!res || !res.ok) {
           const code = (res && res.error && res.error.code) || 'unknown';
           const message = (res && res.error && res.error.message) || code;
@@ -275,7 +298,7 @@ export default {
           // retries hide bugs in the agent's roster mutator.
           const defRes = await this.chat.sessionCrudRequest('set_default_vp', {
             sessionId: this.groupId, vpId,
-          });
+          }, { agentId: this.targetAgentId });
           if (defRes && !defRes.ok) {
             const code2 = (defRes.error && defRes.error.code) || 'unknown';
             const message2 = (defRes.error && defRes.error.message) || code2;
@@ -293,7 +316,7 @@ export default {
       try {
         const res = await this.chat.sessionCrudRequest('set_default_vp', {
           sessionId: this.groupId, vpId,
-        });
+        }, { agentId: this.targetAgentId });
         if (!res || !res.ok) {
           const code = (res && res.error && res.error.code) || 'unknown';
           const message = (res && res.error && res.error.message) || code;
@@ -310,7 +333,7 @@ export default {
     // and lands in `vpStore.groupDreamStatus`.
     runDream() {
       if (!this.vpStore || this.dreamRunning) return;
-      this.vpStore.triggerGroupDream(this.groupId);
+      this.vpStore.triggerGroupDream(this.groupId, { agentId: this.targetAgentId });
     },
     formatDreamTimestamp(ms) {
       if (!ms) return '';
@@ -322,7 +345,7 @@ export default {
       this.deleteBusy = true;
       this.deleteError = '';
       try {
-        const res = await this.chat.sessionCrudRequest('delete', { sessionId: this.groupId });
+        const res = await this.chat.sessionCrudRequest('delete', { sessionId: this.groupId }, { agentId: this.targetAgentId });
         if (!res || !res.ok) {
           const code = (res && res.error && res.error.code) || 'unknown';
           const message = (res && res.error && res.error.message) || code;
@@ -341,7 +364,10 @@ export default {
     <Teleport to="body">
     <div
       class="group-settings-overlay"
-      @click.self="onOverlayClick"
+      @pointerdown="trackOverlayPointerDown"
+      @pointerup="trackOverlayPointerUp"
+      @pointercancel="clearOverlayPointerGesture"
+      @click="onOverlayClick"
       role="dialog"
       aria-modal="true"
       :aria-label="$t('yeaft.session.settings.title', { name: groupDisplayName })"
@@ -449,7 +475,7 @@ export default {
             <!-- Members -->
             <div v-else-if="section === 'members'" class="group-settings-section">
               <div class="group-settings-section-header">
-                <h3 class="group-settings-heading">{{ $t('yeaft.session.settings.members.heading') }}</h3>
+                <h3 class="group-settings-heading" id="session-settings-members-heading">{{ $t('yeaft.session.settings.members.heading') }}</h3>
                 <button
                   type="button"
                   class="group-settings-link-btn"
@@ -464,35 +490,54 @@ export default {
               <div v-else-if="vpList.length === 0" class="group-settings-empty">
                 {{ $t('yeaft.session.members.loading') }}
               </div>
-              <ul v-else class="group-settings-roster" role="listbox" aria-multiselectable="true">
-                <li
-                  v-for="vp in vpList"
-                  :key="vp.vpId"
-                  class="group-settings-roster-item"
-                  :class="{ 'is-selected': isMember(vp.vpId), 'is-default': defaultVpId === vp.vpId, 'is-edit-target': highlightedVpId === vp.vpId }"
+              <div v-else class="group-settings-roster" role="group" aria-labelledby="session-settings-members-heading">
+                <section
+                  v-for="domain in vpDomainSections"
+                  :key="domain.id"
+                  class="session-settings-roster-domain-section"
+                  :aria-labelledby="'session-settings-vp-domain-' + domain.id"
                 >
-                  <label class="group-settings-roster-row">
-                    <input
-                      type="checkbox"
-                      :value="vp.vpId"
-                      :checked="isMember(vp.vpId)"
-                      :disabled="membersBusy"
-                      @change="toggleMember(vp.vpId, $event.target.checked)"
-                    />
-                    <span class="group-settings-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
-                  </label>
-                  <button
-                    v-if="isMember(vp.vpId)"
-                    type="button"
-                    class="group-settings-default-star"
-                    :class="{ 'is-on': defaultVpId === vp.vpId }"
-                    :title="$t('yeaft.session.create.defaultVpHint')"
-                    :aria-pressed="defaultVpId === vp.vpId"
-                    :disabled="membersBusy || defaultVpId === vp.vpId"
-                    @click.stop="setDefault(vp.vpId)"
-                  ><span aria-hidden="true">{{ defaultVpId === vp.vpId ? '★' : '☆' }}</span></button>
-                </li>
-              </ul>
+                  <h4
+                    class="vp-domain-heading session-settings-roster-domain"
+                    :id="'session-settings-vp-domain-' + domain.id"
+                  >
+                    <span>{{ $t(domain.labelKey) }}</span>
+                  </h4>
+                  <ul class="session-settings-roster-domain-list">
+                    <li
+                      v-for="vp in domain.vps"
+                      :key="vp.vpId"
+                      class="group-settings-roster-item"
+                      :class="{ 'is-selected': isMember(vp.vpId), 'is-default': defaultVpId === vp.vpId, 'is-edit-target': highlightedVpId === vp.vpId }"
+                    >
+                      <label class="group-settings-roster-row">
+                        <input
+                          type="checkbox"
+                          :value="vp.vpId"
+                          :checked="isMember(vp.vpId)"
+                          :disabled="membersBusy"
+                          @change="toggleMember(vp.vpId, $event.target.checked)"
+                        />
+                        <span class="session-settings-roster-copy">
+                          <span class="session-settings-roster-name" :style="{ color: vpTextColorFor(vp.vpId) }">{{ vpLabelFor(vp.vpId) }}</span>
+                          <span v-if="vpDescriptionFor(vp.vpId)" class="session-settings-roster-description">{{ vpDescriptionFor(vp.vpId) }}</span>
+                        </span>
+                      </label>
+                      <button
+                        v-if="isMember(vp.vpId)"
+                        type="button"
+                        class="group-settings-default-star"
+                        :class="{ 'is-on': defaultVpId === vp.vpId }"
+                        :title="$t('yeaft.session.create.defaultVpHint')"
+                        :aria-label="$t('yeaft.session.create.defaultVpHint')"
+                        :aria-pressed="defaultVpId === vp.vpId"
+                        :disabled="membersBusy || defaultVpId === vp.vpId"
+                        @click.stop="setDefault(vp.vpId)"
+                      ><span aria-hidden="true">{{ defaultVpId === vp.vpId ? '★' : '☆' }}</span></button>
+                    </li>
+                  </ul>
+                </section>
+              </div>
               <p v-if="membersError" class="group-settings-error" role="alert">{{ membersError }}</p>
             </div>
 

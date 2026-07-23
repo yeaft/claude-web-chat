@@ -1,7 +1,8 @@
 export default {
   name: 'YeaftSessionActions',
-  emits: ['reload-messages', 'toggle-session-status', 'toggle-debug', 'reload-page'],
+  emits: ['toggle-search', 'reload-messages', 'toggle-session-status', 'toggle-debug', 'reload-page'],
   props: {
+    searchOpen: { type: Boolean, default: false },
     loadingMoreHistory: { type: Boolean, default: false },
     sessionStatusVisible: { type: Boolean, default: true },
     debugMode: { type: Boolean, default: false },
@@ -9,6 +10,19 @@ export default {
   },
   template: `
     <div class="yeaft-session-actions">
+      <button
+        ref="searchButtonRef"
+        type="button"
+        class="yeaft-search-btn"
+        :class="{ active: searchOpen }"
+        @click="$emit('toggle-search')"
+        :title="$t('yeaft.outline.label')"
+        :aria-label="$t('yeaft.outline.label')"
+        :aria-expanded="searchOpen ? 'true' : 'false'"
+        aria-controls="yeaft-conversation-outline"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h2"/><path d="M4 12h2"/><path d="M4 18h2"/><path d="M10 6h10"/><path d="M10 12h10"/><path d="M10 18h10"/></svg>
+      </button>
       <!-- Message refresh — replays current Yeaft session history without a full page reload. -->
       <button
         class="yeaft-reload-btn"

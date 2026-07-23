@@ -22,7 +22,8 @@
  * {profile, entries, formatted} shape the engine already consumes.
  */
 
-import { runPreflow as runFtsPreflow } from '../memory/preflow.js';
+import { runPreflow as runFtsPreflow, filterScopes } from '../memory/preflow.js';
+import { approxTokens } from '../memory/budget.js';
 import { resolveFallbackVp, resolveMemberId } from './roster.js';
 
 /** Matches `@vp-id` where id is [A-Za-z0-9_-]+. Captures the id. */
@@ -110,26 +111,29 @@ export function selectRespondingVps(input) {
     };
   }
 
-  // Explicit @-mentions
+  // Explicit @-mentions. Unknown tokens may be ordinary user text rather
+  // than VP routing, so ignore them. If none resolve to a roster member,
+  // continue to the normal default-VP fallback instead of rejecting the turn.
   if (mentions.length > 0) {
     const dispatched = [];
     const errors = [];
+    let hasRosterMention = false;
     for (const vpId of mentions) {
       const canonicalVpId = resolveMemberId(meta, vpId);
-      if (!canonicalVpId) {
-        errors.push({ vpId, error: 'not_in_roster' });
-        continue;
-      }
+      if (!canonicalVpId) continue;
+      hasRosterMention = true;
       if (taskMembers && !taskMembers.includes(canonicalVpId)) {
         errors.push({ vpId, error: 'not_in_task_members' });
         continue;
       }
       if (!dispatched.includes(canonicalVpId)) dispatched.push(canonicalVpId);
     }
-    return { dispatched, fallback: null, errors, reason: 'mention' };
+    if (hasRosterMention) {
+      return { dispatched, fallback: null, errors, reason: 'mention' };
+    }
   }
 
-  // No @-mention → fallback to defaultVpId (architecture G2)
+  // No valid @-mention → fallback to defaultVpId (architecture G2)
   const fallback = resolveFallbackVp(meta);
   if (!fallback) {
     return {
@@ -157,6 +161,24 @@ export function selectRespondingVps(input) {
 
 
 /**
+ * Turn an internal memory scope into the compact label shown to the model.
+ * The active-scope prompt already carries the current session id, so repeating
+ * the full storage path on every memory entry only wastes context. Internal
+ * entries and debug events keep the original scope for ACLs and diagnostics.
+ *
+ * @param {string} scope
+ * @returns {string}
+ */
+export function memoryScopeLabel(scope) {
+  const value = typeof scope === 'string' && scope ? scope : 'unknown';
+  const sessionTopic = /^(?:sessions|session|group)\/[^/]+\/topic\/(.+)$/.exec(value);
+  if (sessionTopic) return `topic: ${sessionTopic[1]}`;
+  if (/^(?:sessions|session|group)\/[^/]+$/.test(value)) return 'session';
+  if (value.startsWith('topic/')) return `topic: ${value.slice(6)}`;
+  return value;
+}
+
+/**
  * Build the heading for a single scope's formatted memory block.
  *
  * Heading style is the original recall-v2 format, kept so the system
@@ -166,6 +188,8 @@ export function selectRespondingVps(input) {
  * @returns {string}
  */
 function scopeHeading(scope) {
+  const label = memoryScopeLabel(scope);
+  if (label.startsWith('topic: ')) return `## Memory: Topic ${label.slice(7)}`;
   if (scope === 'user') return '## Memory: User';
   // Nested chat scopes first.
   let m = /^chat\/([^/]+)\/vp\/(.+)$/.exec(scope);
@@ -179,8 +203,6 @@ function scopeHeading(scope) {
   if (m) return `## Memory: Session ${m[1]} (user)`;
   m = /^session\/([^/]+)\/feature\/(.+)$/.exec(scope);
   if (m) return `## Memory: Feature ${m[2]}`;
-  m = /^session\/([^/]+)\/topic\/(.+)$/.exec(scope);
-  if (m) return `## Memory: Topic ${m[2]}`;
   // Legacy nested group scopes (un-migrated data).
   m = /^group\/([^/]+)\/vp\/(.+)$/.exec(scope);
   if (m) return `## Memory: VP ${m[2]}`;
@@ -188,8 +210,6 @@ function scopeHeading(scope) {
   if (m) return `## Memory: Session ${m[1]} (user)`;
   m = /^group\/([^/]+)\/feature\/(.+)$/.exec(scope);
   if (m) return `## Memory: Feature ${m[2]}`;
-  m = /^group\/([^/]+)\/topic\/(.+)$/.exec(scope);
-  if (m) return `## Memory: Topic ${m[2]}`;
   if (scope.startsWith('session/')) return `## Memory: Session ${scope.slice(8)}`;
   if (scope.startsWith('group/')) return `## Memory: Session ${scope.slice(6)}`;
   if (scope.startsWith('vp/')) return `## Memory: VP ${scope.slice(3)}`;
@@ -239,6 +259,8 @@ export function formatPickedForInjection(picked) {
  * @property {string[]}       [currentTags]        Contextual tags for rerank
  * @property {number}         [topK]               Max FTS rows fetched (default 50)
  * @property {number}         [budgetTokens]       Token budget for picked segments
+ * @property {boolean}        [fallbackOnEmpty]    Include bounded recent scoped segments when FTS has no hits
+ * @property {number}         [fallbackPerScope]   Max fallback segments per scope
  */
 
 /**
@@ -282,12 +304,15 @@ export function buildRelevantScopes({ sessionId, chatId, vpId, extra } = {}) {
       scopes.push(`group/${sessionId}/vp/${vpId}`);
     }
   }
-  if (Array.isArray(extra)) {
-    for (const s of extra) {
-      if (s && !scopes.includes(s)) scopes.push(s);
-    }
-  }
+  appendUniqueScopes(scopes, extra);
   return scopes;
+}
+
+function appendUniqueScopes(scopes, extra) {
+  if (!Array.isArray(extra)) return;
+  for (const s of extra) {
+    if (s && !scopes.includes(s)) scopes.push(s);
+  }
 }
 
 /**
@@ -321,7 +346,7 @@ export function runMemoryPreflow(index, opts) {
     extra: opts.extraScopes,
   });
 
-  const result = runFtsPreflow(index, {
+  let result = runFtsPreflow(index, {
     userMsg,
     relevantScopes,
     ownVpId: opts.vpId || null,
@@ -329,6 +354,25 @@ export function runMemoryPreflow(index, opts) {
     topK: opts.topK,
     budgetTokens: opts.budgetTokens,
   });
+
+  let fallbackUsed = false;
+  if ((result.picked || []).length === 0 && opts.fallbackOnEmpty) {
+    const fallback = fallbackScopedSegments(index, {
+      relevantScopes,
+      ownVpId: opts.vpId || null,
+      budgetTokens: opts.budgetTokens,
+      perScope: opts.fallbackPerScope,
+    });
+    if (fallback.length > 0) {
+      fallbackUsed = true;
+      result = {
+        ...result,
+        picked: fallback,
+        pickedTokens: estimatePickedTokens(fallback),
+        droppedCount: result.droppedCount || 0,
+      };
+    }
+  }
 
   // Best-effort profile: pick any user-scope segment body.
   const userSeg = (result.picked || []).find(p => p.scope === 'user');
@@ -346,6 +390,61 @@ export function runMemoryPreflow(index, opts) {
       pickedTokens: result.pickedTokens,
       droppedCount: result.droppedCount,
       hitCount: (result.hits || []).length,
+      fallbackUsed,
     },
   };
+}
+
+function fallbackScopedSegments(index, opts) {
+  if (!index || typeof index.listByScope !== 'function') return [];
+  const scopes = prioritizeFallbackScopes(filterScopes(opts.relevantScopes || [], opts.ownVpId || null));
+  const perScope = Number.isFinite(opts.perScope) && opts.perScope > 0 ? Math.floor(opts.perScope) : 2;
+  const budgetTokens = Number.isFinite(opts.budgetTokens) && opts.budgetTokens > 0 ? opts.budgetTokens : 1200;
+  const buckets = [];
+  for (const scope of scopes) {
+    let segs = [];
+    try { segs = index.listByScope(scope) || []; } catch { continue; }
+    segs = [...segs]
+      .filter(seg => (seg?.body || '').trim())
+      .sort(compareSegmentRecency)
+      .slice(0, perScope);
+    if (segs.length > 0) buckets.push(segs);
+  }
+
+  const out = [];
+  let cost = 0;
+  for (let i = 0; i < perScope; i += 1) {
+    for (const bucket of buckets) {
+      const seg = bucket[i];
+      if (!seg) continue;
+      const tk = approxTokens(seg.body || '');
+      if (tk <= 0 || cost + tk > budgetTokens) continue;
+      out.push(seg);
+      cost += tk;
+    }
+  }
+  return out;
+}
+
+function prioritizeFallbackScopes(scopes) {
+  const topic = [];
+  const rest = [];
+  for (const scope of scopes) {
+    if (/^(?:sessions|session|group)\/[^/]+\/topic\//.test(scope)) topic.push(scope);
+    else rest.push(scope);
+  }
+  return [...topic, ...rest];
+}
+
+function compareSegmentRecency(a, b) {
+  return timestampOf(b) - timestampOf(a);
+}
+
+function timestampOf(seg) {
+  const t = Date.parse(seg?.updatedAt || seg?.createdAt || '');
+  return Number.isFinite(t) ? t : 0;
+}
+
+function estimatePickedTokens(segments) {
+  return (segments || []).reduce((sum, seg) => sum + approxTokens(seg?.body || ''), 0);
 }

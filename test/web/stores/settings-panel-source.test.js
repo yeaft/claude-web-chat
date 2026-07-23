@@ -86,7 +86,8 @@ describe('Settings panel source', () => {
     expect(settingsPanelSource).toContain('agentInstanceId()');
     expect(settingsPanelSource).toContain('getAgentServiceCommand({');
     expect(agentSetupSource).toMatch(/--server\s/);
-    expect(agentSetupSource).toContain('--instance ${agentName}');
+    expect(agentSetupSource).toContain('--name ${agentName}');
+    expect(agentSetupSource).not.toContain('--instance');
     expect(settingsPanelSource).toContain('settings.security.agentSetupCommands');
     expect(settingsPanelSource).toContain('settings.security.agentCmdInstall');
     expect(settingsPanelSource).toContain('settings.security.agentCmdService');

@@ -3,12 +3,33 @@ import multer from 'multer';
 import { CONFIG } from '../config.js';
 import { userDb } from '../database.js';
 import { pendingFiles, previewFiles } from '../context.js';
+import { yeaftAssetStore } from '../yeaft-asset-store.js';
 
 // 文件上传配置 (存储在内存中)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: CONFIG.maxFileSize }
 });
+
+export function extensionForMimeType(mimeType) {
+  const type = String(mimeType || '').toLowerCase();
+  if (type === 'image/png') return '.png';
+  if (type === 'image/jpeg') return '.jpg';
+  if (type === 'image/gif') return '.gif';
+  if (type === 'image/webp') return '.webp';
+  if (type === 'image/svg+xml') return '.svg';
+  if (type === 'text/plain') return '.txt';
+  if (type === 'application/json') return '.json';
+  return '';
+}
+
+export function fallbackUploadName(file, index) {
+  const original = typeof file?.originalname === 'string' ? file.originalname.trim() : '';
+  if (original) return original;
+  const isImage = String(file?.mimetype || '').startsWith('image/');
+  const prefix = isImage ? 'pasted-image' : 'uploaded-file';
+  return `${prefix}-${Date.now()}-${index + 1}${extensionForMimeType(file?.mimetype)}`;
+}
 
 // 定期清理超过 10 分钟的文件
 setInterval(() => {
@@ -40,10 +61,11 @@ export function registerUploadRoutes(app, { requireAuth }) {
     const user = userDb.getOrCreate(req.user.username);
     const userId = user?.id;
 
-    const uploaded = req.files.map(file => {
+    const uploaded = req.files.map((file, index) => {
       const fileId = randomUUID();
+      const name = fallbackUploadName(file, index);
       pendingFiles.set(fileId, {
-        name: file.originalname,
+        name,
         mimeType: file.mimetype,
         buffer: file.buffer,
         uploadedAt: Date.now(),
@@ -51,7 +73,7 @@ export function registerUploadRoutes(app, { requireAuth }) {
       });
       return {
         fileId,
-        name: file.originalname,
+        name,
         mimeType: file.mimetype,
         size: file.size
       };
@@ -68,8 +90,20 @@ export function registerUploadRoutes(app, { requireAuth }) {
     }
     res.setHeader('Content-Type', file.mimeType);
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.filename)}"`);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'no-store');
     res.send(file.buffer);
+  });
+
+  app.get('/api/yeaft/assets/:scopeId/:assetId', (req, res) => {
+    const asset = yeaftAssetStore.read(req.params.scopeId, req.params.assetId, req.query.token);
+    if (!asset) return res.status(404).send('Image asset not found');
+    res.setHeader('Content-Type', asset.metadata.mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(asset.metadata.filename)}"`);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('ETag', `"${asset.metadata.assetId}"`);
+    res.send(asset.buffer);
   });
 }

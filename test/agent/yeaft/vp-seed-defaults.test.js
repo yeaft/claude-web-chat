@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest';
 import { buildWorkerPrompt } from '../../../agent/yeaft/prompts.js';
 import { buildRoleMd } from '../../../agent/yeaft/vp/vp-crud.js';
 import { DEFAULT_VPS } from '../../../agent/yeaft/vp/seed-defaults.js';
-import { personaHash } from '../../../agent/yeaft/vp/vp-store.js';
-import { topUpDefaultVps } from '../../../agent/yeaft/vp/seed-topup.js';
+import { parseRoleMd, personaHash } from '../../../agent/yeaft/vp/vp-store.js';
+import { insertDescriptionLine, topUpDefaultVps } from '../../../agent/yeaft/vp/seed-topup.js';
 
 function tempDir() {
   return mkdtempSync(join(tmpdir(), 'yeaft-vp-seed-'));
@@ -51,6 +51,10 @@ describe('default VP souls', () => {
   it('ships every stock persona with bilingual natural soul sections', () => {
     expect(DEFAULT_VPS.length).toBeGreaterThan(20);
     for (const vp of DEFAULT_VPS) {
+      expect(vp.displayName).toBeTruthy();
+      expect(vp.displayNameZh).toBeTruthy();
+      expect(vp.description).toBeTruthy();
+      expect(vp.descriptionZh).toBeTruthy();
       expect(vp.roleZh).toBeTruthy();
       expect(vp.personaEn).toContain('You are');
       expect(vp.personaZh).toContain('你是');
@@ -80,6 +84,10 @@ describe('default VP souls', () => {
 
     expect(byId.linus.personaEn).toContain('sloppy engineering begins');
     expect(byId.martin.personaEn).toContain('design decay in naming');
+    expect(byId.anders.personaEn).toContain('large-scale Azure service');
+    expect(byId.anders.personaEn).toContain('safe incremental evolution');
+    expect(byId.anders.description).toContain('API compatibility');
+    expect(byId.anders.descriptionZh).toContain('云规模演进');
     expect(byId.omni.personaEn).toContain('whole session in view');
     expect(byId.linus.personaZh).toContain('系统工程判断');
     expect(byId.martin.personaZh).toContain('架构边界');
@@ -119,10 +127,22 @@ Language policy / 语言策略:
 
 Core capabilities / 核心能力:
 - Cross-domain synthesis: handle writing, coding, product thinking, research, planning, analysis, learning, translation, troubleshooting, and creative work without forcing the user to pick a specialist first.`;
-    writeFileSync(join(libDir, 'linus', 'role.md'), buildRoleMd({ ...linus, persona: linus.legacyPersonaEn, roleZh: '' }), 'utf-8');
+    writeFileSync(join(libDir, 'linus', 'role.md'), buildRoleMd({
+      ...linus,
+      description: '',
+      descriptionZh: '',
+      persona: linus.legacyPersonaEn,
+      roleZh: '',
+    }), 'utf-8');
     writeFileSync(join(libDir, 'ada', 'role.md'), buildRoleMd({ ...ada, persona: ada.legacyPersona, roleZh: '' }), 'utf-8');
     writeFileSync(join(libDir, 'omni', 'role.md'), buildRoleMd({ ...omni, persona: obsoleteOmniAssistantPersona, roleZh: '' }), 'utf-8');
-    writeFileSync(join(libDir, 'martin', 'role.md'), buildRoleMd({ ...martin, persona: `${martin.legacyPersonaEn}\n\nUser edit.`, roleZh: '' }), 'utf-8');
+    writeFileSync(join(libDir, 'martin', 'role.md'), buildRoleMd({
+      ...martin,
+      description: 'Custom review description',
+      descriptionZh: '自定义评审描述',
+      persona: `${martin.legacyPersonaEn}\n\nUser edit.`,
+      roleZh: '',
+    }), 'utf-8');
 
     const result = topUpDefaultVps(libDir);
     const linusRole = readFileSync(join(libDir, 'linus', 'role.md'), 'utf-8');
@@ -134,9 +154,13 @@ Core capabilities / 核心能力:
     expect(result.personaBackfilled).toContain('linus');
     expect(result.personaBackfilled).toContain('ada');
     expect(result.personaBackfilled).toContain('omni');
+    expect(result.descriptionBackfilled).toContain('linus');
+    expect(result.descriptionZhBackfilled).toContain('linus');
     expect(result.roleZhBackfilled).toContain('linus');
     expect(linusRole).toContain('<!-- lang:zh -->');
-    expect(linusRole).toContain('roleZh: "系统工程师"');
+    expect(linusRole).toContain('description: Implementation, root-cause debugging, performance, and reliability');
+    expect(linusRole).toContain("descriptionZh: '代码实现、根因排查、性能与可靠性'");
+    expect(linusRole).toContain("roleZh: '系统工程师'");
     expect(linusRole).toContain('你是林纳斯·托瓦兹');
     expect(linusRole).not.toContain('人物特点');
     expect(adaRole).toContain('你是阿达·洛芙莱斯');
@@ -149,6 +173,19 @@ Core capabilities / 核心能力:
     expect(omniRole).not.toContain('Core capabilities / 核心能力');
     expect(seedVersions.seeded.omni).toBe(personaHash(omni.persona));
     expect(martinRole).not.toContain('<!-- lang:zh -->');
+    expect(martinRole).toContain('description: Custom review description');
+    expect(martinRole).toContain('descriptionZh: 自定义评审描述');
     expect(martinRole).toContain('User edit.');
+  });
+
+  it('writes top-up scalars with the same reversible quoting as VP CRUD', () => {
+    const description = String.raw`Review "v1:beta" and C:\services\api's contract`;
+    const source = `---\nid: reviewer\nname: Reviewer\nrole: Reviewer\n---\n\nPersona body.\n`;
+    const patched = insertDescriptionLine(source, description);
+
+    expect(patched).not.toBeNull();
+    const parsed = parseRoleMd(patched);
+    expect(parsed.meta.description).toBe(description);
+    expect(parsed.body).toBe('Persona body.');
   });
 });

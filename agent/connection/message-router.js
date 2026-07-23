@@ -23,13 +23,61 @@ import {
   handlePingSession
 } from '../conversation.js';
 import { sendToServer, flushMessageBuffer } from './buffer.js';
+import { sendAgentMetricsSnapshot } from '../metrics.js';
 import { handleRestartAgent, handleUpgradeAgent } from './upgrade.js';
 import { loadMcpServers, updateMcpConfig } from '../mcp.js';
 import { getLlmConfig, updateLlmConfig, getYeaftSettings, updateYeaftSettings, getSearchSettings, updateSearchSettings, fetchTavilyUsage } from '../yeaft/config-api.js';
+import { loadConfig } from '../yeaft/config.js';
 import { discoverLlmModels } from '../llm-model-discovery.js';
 import { fetchModelsDev } from '../yeaft/llm/models-dev.js';
-import { handleYeaftSessionSend, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, handleYeaftLoadHistory, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
-import { startYeaftStatusRefresh, refreshYeaftStatus } from '../yeaft/status-cache.js';
+import { handleYeaftSessionSend, handleYeaftAskUserAnswer, handleYeaftSubAgentPrompt, handleYeaftTaskCancel, handleYeaftModeSwitch, handleYeaftModelSwitch, resetYeaftSession, refreshLiveSessionConfig, handleYeaftLoadHistory, handleYeaftLoadHistoryOutline, handleYeaftSearchHistory, handleYeaftLoadHistoryWindow, handleYeaftLoadMoreHistory, handleYeaftAbortThread, handleYeaftAbortAll, handleYeaftAbortTurn, handleYeaftVpSubscribe, handleYeaftVpCreate, handleYeaftVpUpdate, handleYeaftVpDelete, handleYeaftVpRead, handleYeaftListSessions, handleYeaftCreateSession, handleYeaftRenameSession, handleYeaftUpdateSession, handleYeaftUpdateSessionConfig, handleYeaftArchiveSession, handleYeaftDeleteSession, handleYeaftSessionAddMember, handleYeaftSessionRemoveMember, handleYeaftSessionSetDefaultVp, handleYeaftScanWorkdirSessions, handleYeaftRestoreSession, handleYeaftDreamTrigger, handleYeaftFetchToolStats, handleYeaftFetchDebugHistory, handleYeaftMcpList, handleYeaftMcpAdd, handleYeaftMcpRemove, handleYeaftMcpReload, broadcastLanguageChange, broadcastYeaftSessionSnapshotEager, preloadYeaftSkillSlashCommands } from '../yeaft/web-bridge.js';
+import { startYeaftStatusRefresh, forceRefreshYeaftStatus } from '../yeaft/status-cache.js';
+import { handleWorkCenterRequest } from '../yeaft/work-center/bridge.js';
+
+export async function applyLlmConfigUpdate(msg, dependencies = {}) {
+  const updateConfig = dependencies.updateLlmConfig || updateLlmConfig;
+  const broadcastLanguage = dependencies.broadcastLanguageChange || broadcastLanguageChange;
+  const forceStatusRefresh = dependencies.forceRefreshYeaftStatus || forceRefreshYeaftStatus;
+  const refreshRuntimeConfig = dependencies.refreshLiveSessionConfig || refreshLiveSessionConfig;
+  const readConfig = dependencies.loadConfig || loadConfig;
+  const send = dependencies.sendToServer || sendToServer;
+  const yeaftDir = dependencies.yeaftDir ?? ctx.CONFIG?.yeaftDir;
+  const incomingLanguage = typeof msg.config?.language === 'string' && msg.config.language
+    ? msg.config.language
+    : null;
+  let previousDefaultModel = null;
+  try {
+    const previousConfig = readConfig({ dir: yeaftDir });
+    previousDefaultModel = previousConfig?.primaryModel || previousConfig?.model || null;
+  } catch { /* updateLlmConfig will report the actual config error */ }
+  const result = updateConfig(msg.config || {}, yeaftDir);
+  if (!result.error && incomingLanguage) broadcastLanguage(result.language);
+
+  let statusRefreshError = null;
+  if (!result.error) {
+    try {
+      await refreshRuntimeConfig({ previousDefaultModel });
+    } catch (err) {
+      statusRefreshError = err?.message || String(err);
+    }
+    try {
+      const statusEvent = await forceStatusRefresh({ reason: 'llm_config_updated' });
+      statusRefreshError = statusRefreshError || statusEvent?.refreshError || null;
+    } catch (err) {
+      statusRefreshError = statusRefreshError || err?.message || String(err);
+    }
+  }
+
+  const response = {
+    type: 'llm_config_updated',
+    ...result,
+    agentId: msg.agentId ?? null,
+    requestId: msg.requestId ?? null,
+    statusRefreshError,
+  };
+  send(response);
+  return response;
+}
 
 export async function handleMessage(msg) {
   switch (msg.type) {
@@ -69,6 +117,7 @@ export async function handleMessage(msg) {
       }
 
       sendConversationList();
+      sendAgentMetricsSnapshot();
       startYeaftStatusRefresh();
 
       // fix-yeaft-session-per-agent: eagerly broadcast this agent's
@@ -83,6 +132,7 @@ export async function handleMessage(msg) {
 
       // ★ Flush 断连期间缓冲的消息
       await flushMessageBuffer();
+      await ctx.assetOutbox?.drain();
 
       // ★ Phase 1: 通知 server 同步完成
       sendToServer({ type: 'agent_sync_complete' });
@@ -98,6 +148,12 @@ export async function handleMessage(msg) {
       preloadSlashCommands()
         .catch(() => {})
         .finally(() => { preloadYeaftSkillSlashCommands(); });
+      break;
+
+    case 'yeaft_asset_ack':
+      if ((msg.ok === true || msg.permanent === true) && ctx.assetOutbox?.acknowledge(msg.deliveryId)) {
+        ctx.assetOutbox.drain().catch(err => console.warn('[AssetOutbox] drain failed:', err?.message || err));
+      }
       break;
 
     case 'create_conversation':
@@ -118,6 +174,10 @@ export async function handleMessage(msg) {
 
     case 'get_conversations':
       sendConversationList();
+      break;
+
+    case 'get_agent_metrics':
+      sendAgentMetricsSnapshot();
       break;
 
     case 'list_history_sessions':
@@ -248,6 +308,10 @@ export async function handleMessage(msg) {
       handleAskUserAnswer(msg);
       break;
 
+    case 'yeaft_ask_user_answer':
+      handleYeaftAskUserAnswer(msg);
+      break;
+
 
     // Port proxy
     case 'proxy_request':
@@ -320,32 +384,10 @@ export async function handleMessage(msg) {
     }
 
     case 'update_llm_config': {
-      // Capture the user's intent BEFORE updateLlmConfig — the return
-      // envelope ALWAYS populates `language` (falls back to 'en'), so
-      // gating on the *output* would broadcast on every provider /
-      // primaryModel / fastModel save, not just locale flips. Gate on
-      // the *input* `language` field instead.
-      const incomingLanguage = typeof msg.config?.language === 'string' && msg.config.language
-        ? msg.config.language
-        : null;
-      const result = updateLlmConfig(msg.config || {}, ctx.CONFIG?.yeaftDir);
-      // task-708: live locale propagation. When the user flips the UI
-      // language dropdown, push the new value into every cached Engine
-      // (per-VP pool + 1:1 chat session.engine) so the very next turn
-      // renders the system prompt in the chosen language without the
-      // user reloading the session.
-      if (!result.error && incomingLanguage) {
-        broadcastLanguageChange(result.language);
-      }
-      if (!result.error) {
-        refreshYeaftStatus({ reason: 'llm_config_updated' }).catch(() => {});
-        if (!incomingLanguage) {
-          resetYeaftSession().catch(err => {
-            console.error('[LLM] Failed to reload Yeaft session after local config update:', err.message);
-          });
-        }
-      }
-      sendToServer({ type: 'llm_config_updated', ...result });
+      // Saving the file and refreshing the model menu are separate outcomes.
+      // Always acknowledge the completed write; the frontend owns the single
+      // runtime reset it dispatches after a successful save.
+      await applyLlmConfigUpdate(msg);
       break;
     }
 
@@ -461,6 +503,18 @@ export async function handleMessage(msg) {
     case 'yeaft_load_history':
     case 'unify_load_history':
       await handleYeaftLoadHistory(msg);
+      break;
+
+    case 'yeaft_load_history_outline':
+      await handleYeaftLoadHistoryOutline(msg);
+      break;
+
+    case 'yeaft_search_history':
+      await handleYeaftSearchHistory(msg);
+      break;
+
+    case 'yeaft_load_history_window':
+      await handleYeaftLoadHistoryWindow(msg);
       break;
 
     case 'yeaft_load_more_history':
@@ -625,6 +679,10 @@ export async function handleMessage(msg) {
     case 'yeaft_fetch_debug_history':
     case 'unify_fetch_debug_history':
       await handleYeaftFetchDebugHistory(msg);
+      break;
+
+    case 'work_center_request':
+      await handleWorkCenterRequest(msg);
       break;
 
     // Expert roles definition (for ExpertPanel detail view)

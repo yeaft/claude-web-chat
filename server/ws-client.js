@@ -4,7 +4,7 @@ import { CONFIG } from './config.js';
 import { verifyToken, generateSkipAuthSession } from './auth.js';
 import { encodeKey } from './encryption.js';
 import { userDb } from './database.js';
-import { agents, webClients, trackRequest } from './context.js';
+import { agents, webClients, isHeartbeatMessageType, trackRequest } from './context.js';
 import {
   parseMessage, sendToWebClient, sendToAgent,
   broadcastAgentList, resolveAgentAccessError
@@ -12,6 +12,7 @@ import {
 import { handleClientConversation } from './handlers/client-conversation.js';
 import { handleClientWorkbench } from './handlers/client-workbench.js';
 import { handleClientMisc } from './handlers/client-misc.js';
+import { clearWorkCenterRequestsForClient, handleClientWorkCenter } from './handlers/client-work-center.js';
 import { recordPerfTraceEvent } from './perf-trace.js';
 
 export function handleWebConnection(ws, url) {
@@ -104,9 +105,11 @@ export function handleWebConnection(ws, url) {
     const client = webClients.get(clientId);
     const msg = await parseMessage(data, client?.sessionKey);
     if (!msg) return;
-    // Stats tracking: exclude ping heartbeats from request count
-    if (msg.type !== 'ping') {
-      trackRequest(client?.userId, data.length || 0);
+    // Stats tracking: exclude heartbeat/control frames. User-turn bytes are
+    // accounted at the send handlers, not here, so pings and dashboard polling
+    // don't inflate traffic.
+    if (!isHeartbeatMessageType(msg.type)) {
+      trackRequest(client?.userId, data.length || 0, msg.type);
     }
     if (msg.perfTraceId) {
       recordPerfTraceEvent({
@@ -149,6 +152,7 @@ export function handleWebConnection(ws, url) {
         }
       }
     }
+    clearWorkCenterRequestsForClient(client);
     webClients.delete(clientId);
     console.log(`Web client disconnected: ${clientId}`);
   });
@@ -205,5 +209,6 @@ async function handleWebMessage(clientId, msg) {
   // Dispatch to handler sub-modules
   if (await handleClientConversation(clientId, client, msg, checkAgentAccess)) return;
   if (await handleClientWorkbench(clientId, client, msg, checkAgentAccess)) return;
+  if (await handleClientWorkCenter(client, msg, checkAgentAccess)) return;
   if (await handleClientMisc(clientId, client, msg, checkAgentAccess)) return;
 }

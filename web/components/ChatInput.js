@@ -1,7 +1,13 @@
-import { DEFAULT_SLASH_COMMANDS, getCommandDescription, buildGroupedCommands, mergeSlashCommands, resolveDynamicSlashCommands } from '../utils/slash-commands.js';
+import { DEFAULT_SLASH_COMMANDS, YEAFT_DEFAULT_SLASH_COMMANDS, getCommandDescription, buildGroupedCommands, mergeSlashCommands, resolveDynamicSlashCommands } from '../utils/slash-commands.js';
 import { buildAutocompleteItems as buildExpertAutocomplete, getSelectionLabel, EXPERT_ROLES, MAX_SELECTIONS } from '../utils/expert-roles.js';
 import { parseMentions } from '../utils/parseMentions.js';
-import VpMentionAutocomplete, { filterVpMentions, applyMentionSelection, selectMentionCandidates } from './VpMentionAutocomplete.js';
+import VpMentionAutocomplete, {
+  filterVpMentions,
+  applyMentionSelection,
+  selectMentionCandidates,
+  vpMentionListboxId,
+  vpMentionOptionId,
+} from './VpMentionAutocomplete.js';
 
 export default {
   name: 'ChatInput',
@@ -18,7 +24,9 @@ export default {
     /** Explicit Chat conversation this input controls. Defaults to the active view conversation. */
     conversationId: { type: String, default: null },
     /** Explicit draft scope. Use this when one conversation contains multiple logical inputs. */
-    draftKey: { type: String, default: null }
+    draftKey: { type: String, default: null },
+    /** Optional Session-only action that opens a Work Center creation draft. */
+    workItemFn: { type: Function, default: null }
   },
   template: `
     <footer class="input-area" ref="inputAreaRef">
@@ -57,6 +65,16 @@ export default {
             <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
           </svg>
         </label>
+        <button
+          v-if="workItemFn && !store.btwMode"
+          class="work-item-draft-btn"
+          type="button"
+          @click="workItemFn(inputText.trim())"
+          :title="$t('workCenter.fromSession')"
+          :aria-label="$t('workCenter.fromSession')"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 5v2h10V8H7zm0 4v2h7v-2H7zm0 4v2h5v-2H7z"/></svg>
+        </button>
         <span v-if="store.btwMode" class="btw-input-tag">BTW</span>
         <div class="textarea-wrapper">
           <!-- Slash command autocomplete -->
@@ -94,10 +112,11 @@ export default {
           </div>
           <!-- task-334j: VP @ autocomplete (mutually exclusive with expert) -->
           <VpMentionAutocomplete
-            v-if="!store.btwMode && showVpAutocomplete && !showExpertAutocomplete"
+            v-if="vpMentionPopupOpen"
             :vps="mentionVpCandidates"
             :query="vpMentionQuery"
             :selected-index="vpSelectedIndex"
+            :input-id="inputElementId"
             @select="selectVpMention"
             @hover-index="vpSelectedIndex = $event"
           />
@@ -108,6 +127,11 @@ export default {
             @keydown="handleKeydown"
             @paste="handlePaste"
             @blur="onBlur"
+            :id="inputElementId"
+            aria-autocomplete="list"
+            aria-haspopup="listbox"
+            :aria-controls="vpMentionPopupOpen ? vpMentionPopupId : null"
+            :aria-activedescendant="vpMentionActiveOptionId"
             :placeholder="store.btwMode ? $t('btw.placeholder') : (isCompacting ? $t('chatHeader.compacting') : $t(effectivePlaceholderKey))"
             :disabled="isCompacting"
             rows="1"
@@ -140,6 +164,8 @@ export default {
     const sessionsStore = (Pinia.useSessionsStore ? Pinia.useSessionsStore() : null);
     const inputText = Vue.ref('');
     const inputRef = Vue.ref(null);
+    const componentUid = Vue.getCurrentInstance()?.uid ?? 0;
+    const inputElementId = `chat-input-${componentUid}`;
     const fileInput = Vue.ref(null);
     const attachments = Vue.ref([]); // { file, name, preview?, uploading, fileId? }
     const uploading = Vue.ref(false);
@@ -244,7 +270,25 @@ export default {
     const mentionVpCandidates = Vue.computed(() => {
       if (!sessionsStore) return vpStore.vpList || [];
       const activeSessionId = store.yeaftActiveSessionFilter || sessionsStore.activeSessionId || null;
-      return selectMentionCandidates(vpStore.vpList, sessionsStore.sessions?.[activeSessionId]);
+      const activeSession = typeof sessionsStore.sessionById === 'function'
+        ? sessionsStore.sessionById(activeSessionId, store.currentAgent || null)
+        : sessionsStore.sessions?.[activeSessionId];
+      return selectMentionCandidates(vpStore.vpList, activeSession);
+    });
+    const filteredVpMentions = Vue.computed(() => (
+      filterVpMentions(mentionVpCandidates.value, vpMentionQuery.value)
+    ));
+    const vpMentionPopupOpen = Vue.computed(() => (
+      !store.btwMode
+      && showVpAutocomplete.value
+      && !showExpertAutocomplete.value
+      && filteredVpMentions.value.length > 0
+    ));
+    const vpMentionPopupId = vpMentionListboxId(inputElementId);
+    const vpMentionActiveOptionId = Vue.computed(() => {
+      if (!vpMentionPopupOpen.value) return null;
+      const activeVp = filteredVpMentions.value[vpSelectedIndex.value];
+      return activeVp ? vpMentionOptionId(inputElementId, activeVp.vpId) : null;
     });
 
     const selectVpMention = (vp) => {
@@ -274,6 +318,13 @@ export default {
           delete store.inputDrafts[key];
         }
       }
+    });
+    Vue.watch(filteredVpMentions, (list) => {
+      if (list.length === 0) {
+        vpSelectedIndex.value = 0;
+        return;
+      }
+      if (vpSelectedIndex.value >= list.length) vpSelectedIndex.value = list.length - 1;
     });
 
     // 切换会话时恢复/保存草稿
@@ -324,7 +375,10 @@ export default {
       const convId = props.conversationId || store.activeConversationId || store.currentConversation;
       const agentId = store.currentAgent;
       const dynamic = resolveDynamicSlashCommands(store, convId, agentId);
-      const commands = mergeSlashCommands(DEFAULT_SLASH_COMMANDS, dynamic);
+      const defaults = store.currentView === 'yeaft'
+        ? YEAFT_DEFAULT_SLASH_COMMANDS
+        : DEFAULT_SLASH_COMMANDS;
+      const commands = mergeSlashCommands(defaults, dynamic);
       return commands.map(cmd => cmd.startsWith('/') ? cmd : '/' + cmd);
     });
 
@@ -465,11 +519,34 @@ export default {
       }
     };
 
+    const extensionForMimeType = (mimeType) => {
+      const type = String(mimeType || '').toLowerCase();
+      if (type === 'image/png') return '.png';
+      if (type === 'image/jpeg') return '.jpg';
+      if (type === 'image/gif') return '.gif';
+      if (type === 'image/webp') return '.webp';
+      if (type === 'image/svg+xml') return '.svg';
+      if (type === 'text/plain') return '.txt';
+      if (type === 'application/json') return '.json';
+      return '';
+    };
+
+    const uploadNameForFile = (file, index) => {
+      const existing = typeof file?.name === 'string' ? file.name.trim() : '';
+      if (existing) return existing;
+      const isImage = String(file?.type || '').startsWith('image/');
+      const prefix = isImage ? 'pasted-image' : 'pasted-file';
+      return `${prefix}-${Date.now()}-${index + 1}${extensionForMimeType(file?.type)}`;
+    };
+
     const addFiles = async (files) => {
-      for (const file of files) {
+      const pendingAttachments = [];
+      for (const [index, file] of files.entries()) {
+        const uploadName = uploadNameForFile(file, index);
         const attachment = {
           file,
-          name: file.name,
+          name: uploadName,
+          uploadName,
           preview: null,
           uploading: true,
           fileId: null
@@ -480,24 +557,31 @@ export default {
         }
 
         attachments.value.push(attachment);
+        pendingAttachments.push(attachment);
       }
 
       uploading.value = true;
       try {
         const formData = new FormData();
-        for (const file of files) {
-          formData.append('files', file);
+        for (const attachment of pendingAttachments) {
+          formData.append('files', attachment.file, attachment.uploadName);
         }
 
         const headers = {};
-        if (authStore.token) {
-          headers['Authorization'] = `Bearer ${authStore.token}`;
+        const requestToken = authStore.getActiveToken?.() || authStore.token || null;
+        if (requestToken) {
+          headers['Authorization'] = `Bearer ${requestToken}`;
         }
         const response = await fetch('/api/upload', {
           method: 'POST',
           headers,
           body: formData
         });
+
+        if (response.status === 401 || response.status === 403) {
+          authStore.handleAuthFailure?.(undefined, requestToken);
+          throw new Error('Upload failed: authentication required');
+        }
 
         if (!response.ok) {
           throw new Error('Upload failed');
@@ -506,11 +590,12 @@ export default {
         const result = await response.json();
 
         let resultIndex = 0;
-        for (const attachment of attachments.value) {
+        for (const attachment of pendingAttachments) {
           if (attachment.uploading && !attachment.fileId) {
             if (resultIndex < result.files.length) {
               attachment.fileId = result.files[resultIndex].fileId;
               attachment.uploading = false;
+              delete attachment.uploadName;
               resultIndex++;
             }
           }
@@ -649,6 +734,10 @@ export default {
     };
 
     const handleKeydown = (e) => {
+      // IME owns every key while composing. Safari can report isComposing=false
+      // for the confirmation keydown but keeps the standard process keyCode.
+      if (e.isComposing || e.keyCode === 229) return;
+
       // Esc exits btw mode
       if (e.key === 'Escape' && store.btwMode) {
         e.preventDefault();
@@ -657,7 +746,7 @@ export default {
       }
       // ★ task-334j: VP autocomplete keyboard nav (before expert, same contract)
       if (showVpAutocomplete.value) {
-        const vpList = filterVpMentions(mentionVpCandidates.value, vpMentionQuery.value);
+        const vpList = filteredVpMentions.value;
         if (vpList.length > 0) {
           if (e.key === 'ArrowDown') {
             e.preventDefault();
@@ -785,7 +874,11 @@ export default {
       cancelExecution,
       // task-334j: VP autocomplete + reply-to
       vpStore,
+      inputElementId,
       showVpAutocomplete,
+      vpMentionPopupOpen,
+      vpMentionPopupId,
+      vpMentionActiveOptionId,
       vpSelectedIndex,
       vpMentionQuery,
       mentionVpCandidates,

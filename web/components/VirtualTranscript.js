@@ -1,12 +1,13 @@
 import {
-  computeVirtualWindow,
+  buildVirtualOffsets,
+  computeVirtualWindowFromLayout,
   estimateVirtualItemHeight,
   getVirtualItemKey,
   shouldFollowTranscriptBottom,
+  virtualScrollTopForIndex,
   virtualTranscriptDefaults,
 } from '../utils/virtual-transcript.js';
 
-const BOTTOM_THRESHOLD = 80;
 const HEIGHT_CHANGE_THRESHOLD = 2;
 
 export default {
@@ -16,6 +17,7 @@ export default {
     overscan: { type: Number, default: virtualTranscriptDefaults.overscan },
     itemGap: { type: Number, default: virtualTranscriptDefaults.itemGap },
     estimateHeight: { type: Function, default: estimateVirtualItemHeight },
+    initialAlign: { type: String, default: 'start' },
   },
   emits: ['scroll-state'],
   template: `
@@ -46,10 +48,11 @@ export default {
       ></div>
     </div>
   `,
-  setup(props, { emit }) {
+  setup(props, { emit, expose }) {
     const rootRef = Vue.ref(null);
     const scrollEl = Vue.ref(null);
-    const scrollTop = Vue.ref(0);
+    let initialEndPending = props.initialAlign === 'end';
+    const scrollTop = Vue.ref(initialEndPending ? Number.MAX_SAFE_INTEGER : 0);
     const viewportHeight = Vue.ref(virtualTranscriptDefaults.viewportHeight);
     const heightCache = Vue.reactive({});
     const itemIndexByKey = new Map();
@@ -62,13 +65,17 @@ export default {
     let pendingScrollDelta = 0;
     let pendingScrollToBottom = false;
 
-    const virtualWindow = Vue.computed(() => computeVirtualWindow(props.items, {
-      scrollTop: scrollTop.value,
-      viewportHeight: viewportHeight.value,
-      heightCache,
-      overscan: props.overscan,
+    // Item offsets only change when the items, estimates, or measured heights
+    // change. Keep them out of the scroll-dependent computed so wheel/touch
+    // events only do binary range lookup plus a small visible slice.
+    const virtualLayout = Vue.computed(() => buildVirtualOffsets(props.items, heightCache, {
       itemGap: props.itemGap,
       estimateHeight: props.estimateHeight,
+    }));
+    const virtualWindow = Vue.computed(() => computeVirtualWindowFromLayout(props.items, virtualLayout.value, {
+      scrollTop: scrollTop.value,
+      viewportHeight: viewportHeight.value,
+      overscan: props.overscan,
     }));
 
     const visibleEntries = Vue.computed(() => virtualWindow.value.items);
@@ -87,9 +94,29 @@ export default {
     function readScrollState() {
       const el = scrollEl.value;
       if (!el) return;
-      scrollTop.value = Math.max(0, el.scrollTop || 0);
       viewportHeight.value = Math.max(1, el.clientHeight || virtualTranscriptDefaults.viewportHeight);
+      // Preserve the synthetic tail position until the first non-empty item
+      // set is mounted. Otherwise an async history response briefly mounts the
+      // oldest Markdown/Mermaid rows before MessageList scrolls to the latest.
+      if (!(initialEndPending && props.items.length === 0)) {
+        scrollTop.value = Math.max(0, el.scrollTop || 0);
+      }
       emitScrollState(el);
+    }
+
+    function alignInitialEnd() {
+      const el = scrollEl.value;
+      if (!initialEndPending || props.initialAlign !== 'end' || props.items.length === 0 || !el) {
+        return false;
+      }
+      el.scrollTop = el.scrollHeight;
+      initialEndPending = false;
+      readScrollState();
+      return true;
+    }
+
+    function syncInitialPosition() {
+      if (!alignInitialEnd()) readScrollState();
     }
 
     function scheduleReadScrollState() {
@@ -106,7 +133,7 @@ export default {
         scrollTop: el.scrollTop,
         scrollHeight: el.scrollHeight,
         clientHeight: el.clientHeight,
-        threshold: BOTTOM_THRESHOLD,
+        threshold: virtualTranscriptDefaults.bottomThreshold,
       });
     }
 
@@ -141,34 +168,66 @@ export default {
         measureRafId = null;
         const entries = Array.from(pendingMeasurements.entries());
         pendingMeasurements.clear();
-        for (const [entryKey, entry] of entries) {
-          measureElement(entryKey, entry.index, entry.el);
-        }
+        commitMeasurements(entries);
       });
     }
 
-    function measureElement(key, index, el) {
-      if (!el) return;
-      const nextHeight = Math.ceil(el.getBoundingClientRect?.().height || el.offsetHeight || 0);
-      if (!Number.isFinite(nextHeight) || nextHeight <= 0) return;
-
-      const previousHeight = heightCache[key];
-      if (previousHeight === nextHeight) return;
+    function commitMeasurements(entries) {
+      // Read every DOM height before touching reactive state. Each cache write
+      // invalidates virtualLayout, so reading virtualWindow between writes would
+      // rebuild all offsets once per mounted row.
+      const measurements = [];
+      for (const [key, entry] of entries) {
+        const el = entry?.el;
+        if (!el) continue;
+        const nextHeight = Math.ceil(el.getBoundingClientRect?.().height || el.offsetHeight || 0);
+        if (!Number.isFinite(nextHeight) || nextHeight <= 0) continue;
+        const previousHeight = heightCache[key];
+        if (previousHeight === nextHeight) continue;
+        const mappedIndex = itemIndexByKey.get(key);
+        measurements.push({
+          key,
+          nextHeight,
+          previousHeight,
+          itemIndex: Number.isFinite(mappedIndex) ? mappedIndex : entry.index,
+        });
+      }
+      if (!measurements.length) return;
 
       const scroller = scrollEl.value;
       const wasNearBottom = isNearBottom(scroller);
-      const previousIndex = itemIndexByKey.get(key);
-      const changedBeforeWindow = Number.isFinite(previousIndex) && previousIndex < virtualWindow.value.visibleStart;
-      heightCache[key] = nextHeight;
+      const windowStart = virtualWindow.value.visibleStart;
+      let anchorDelta = 0;
+      let shouldScrollToBottom = false;
 
-      if (scroller && Number.isFinite(previousHeight)) {
+      // Do not read virtualWindow or virtualLayout in this loop. Vue can then
+      // collapse all cache invalidations into one render/layout recomputation.
+      for (const measurement of measurements) {
+        const {
+          key,
+          nextHeight,
+          previousHeight,
+          itemIndex,
+        } = measurement;
+        heightCache[key] = nextHeight;
+        if (!scroller || !Number.isFinite(previousHeight)) continue;
+
         const delta = nextHeight - previousHeight;
-        if (Math.abs(delta) < HEIGHT_CHANGE_THRESHOLD) return;
-        if (changedBeforeWindow) {
-          scheduleScrollAdjustment({ delta });
+        if (Math.abs(delta) < HEIGHT_CHANGE_THRESHOLD) continue;
+        if (Number.isFinite(itemIndex) && itemIndex < windowStart) {
+          anchorDelta += delta;
         } else if (wasNearBottom) {
-          Vue.nextTick(() => scheduleScrollAdjustment({ toBottom: true }));
+          shouldScrollToBottom = true;
         }
+      }
+
+      const hasAnchorAdjustment = Math.abs(anchorDelta) >= HEIGHT_CHANGE_THRESHOLD;
+      if (!hasAnchorAdjustment && !shouldScrollToBottom) return;
+      const adjustment = { delta: anchorDelta, toBottom: shouldScrollToBottom };
+      if (shouldScrollToBottom) {
+        Vue.nextTick(() => scheduleScrollAdjustment(adjustment));
+      } else {
+        scheduleScrollAdjustment(adjustment);
       }
     }
 
@@ -191,19 +250,45 @@ export default {
       observeItem(key, index, el);
     }
 
+    async function scrollToIndex(index, { align = 'center' } = {}) {
+      const safeIndex = Number.isFinite(index) ? Math.floor(index) : -1;
+      const scroller = scrollEl.value;
+      if (!scroller || safeIndex < 0 || safeIndex >= props.items.length) return false;
+      const key = getVirtualItemKey(props.items[safeIndex], safeIndex);
+      scroller.scrollTop = virtualScrollTopForIndex(props.items, safeIndex, heightCache, {
+        itemGap: props.itemGap,
+        estimateHeight: props.estimateHeight,
+        viewportHeight: scroller.clientHeight || viewportHeight.value,
+        align,
+      });
+      readScrollState();
+      await Vue.nextTick();
+      const target = itemEls.get(key);
+      if (target?.scrollIntoView) target.scrollIntoView({ block: align, inline: 'nearest' });
+      readScrollState();
+      return true;
+    }
+
+    function scrollToKey(key, options = {}) {
+      const index = itemIndexByKey.get(String(key));
+      return Number.isFinite(index) ? scrollToIndex(index, options) : Promise.resolve(false);
+    }
+
+    expose({ scrollToKey, scrollToIndex });
+
     Vue.watch(
       () => props.items.map((item, index) => getVirtualItemKey(item, index)).join('\n'),
       () => {
         itemIndexByKey.clear();
         props.items.forEach((item, index) => itemIndexByKey.set(getVirtualItemKey(item, index), index));
-        Vue.nextTick(readScrollState);
+        Vue.nextTick(syncInitialPosition);
       },
       { immediate: true },
     );
 
     Vue.onMounted(() => {
       scrollEl.value = rootRef.value?.closest?.('.chat-container') || rootRef.value?.parentElement || null;
-      readScrollState();
+      syncInitialPosition();
       scrollEl.value?.addEventListener('scroll', scheduleReadScrollState, { passive: true });
       window.addEventListener('resize', scheduleReadScrollState);
 

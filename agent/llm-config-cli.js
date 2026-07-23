@@ -5,6 +5,7 @@ import {
   discoverGitHubCopilotModels,
   discoverOpenAICompatibleModels,
   GITHUB_COPILOT_PROVIDER,
+  modelEntryForGitHubCopilotProvider,
   modelIdsFromProviderModels,
 } from './llm-model-discovery.js';
 
@@ -217,9 +218,22 @@ export async function useGitHubCopilot(config, options = {}) {
     }
   }
 
+  const providerModels = [...discovery.providerModels];
+  if (allowUnknown) {
+    const known = new Set(discoveredIds);
+    for (const model of [primaryModel, fastModel].filter(Boolean)) {
+      if (known.has(model)) continue;
+      providerModels.push(modelEntryForGitHubCopilotProvider(model));
+      known.add(model);
+    }
+  }
+
   const next = { ...config };
   const providers = Array.isArray(config.providers) ? [...config.providers] : [];
-  const provider = { ...GITHUB_COPILOT_PROVIDER };
+  const provider = {
+    ...GITHUB_COPILOT_PROVIDER,
+    models: providerModels,
+  };
   const index = providers.findIndex(p => p && p.name === provider.name);
   if (index >= 0) providers[index] = provider;
   else providers.push(provider);

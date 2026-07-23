@@ -3,6 +3,7 @@ const DEFAULT_VIEWPORT_HEIGHT = 720;
 const DEFAULT_OVERSCAN = 1;
 const DEFAULT_ITEM_GAP = 18;
 const MAX_ESTIMATED_HEIGHT = 1400;
+const DEFAULT_BOTTOM_THRESHOLD = 80;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -96,7 +97,7 @@ function findEndIndex(offsets, viewportBottom, itemCount) {
   return clamp(index, 0, itemCount);
 }
 
-export function computeVirtualWindow(items, params = {}) {
+export function computeVirtualWindowFromLayout(items, layout, params = {}) {
   const list = Array.isArray(items) ? items : [];
   const itemCount = list.length;
   if (!itemCount) {
@@ -115,7 +116,8 @@ export function computeVirtualWindow(items, params = {}) {
   const scrollTop = Math.max(0, Number(params.scrollTop || 0));
   const viewportHeight = Math.max(1, Number(params.viewportHeight || DEFAULT_VIEWPORT_HEIGHT));
   const overscan = Math.max(0, Number(params.overscan ?? DEFAULT_OVERSCAN));
-  const { offsets, totalHeight } = buildVirtualOffsets(list, params.heightCache || {}, params);
+  const offsets = Array.isArray(layout?.offsets) ? layout.offsets : [0];
+  const totalHeight = Number.isFinite(layout?.totalHeight) ? layout.totalHeight : 0;
   const viewportBottom = scrollTop + viewportHeight;
   const visibleStart = clamp(findStartIndex(offsets, scrollTop), 0, itemCount - 1);
   const visibleEnd = clamp(findEndIndex(offsets, viewportBottom, itemCount), visibleStart + 1, itemCount);
@@ -142,8 +144,58 @@ export function computeVirtualWindow(items, params = {}) {
   };
 }
 
-export function shouldFollowTranscriptBottom({ scrollTop = 0, scrollHeight = 0, clientHeight = 0, threshold = 80 } = {}) {
+export function computeVirtualWindow(items, params = {}) {
+  const layout = buildVirtualOffsets(items, params.heightCache || {}, params);
+  return computeVirtualWindowFromLayout(items, layout, params);
+}
+
+export function virtualScrollTopForIndex(items, index, heightCache = {}, options = {}) {
+  const list = Array.isArray(items) ? items : [];
+  const safeIndex = Math.max(0, Math.min(list.length - 1, Number.isFinite(index) ? Math.floor(index) : 0));
+  if (list.length === 0) return 0;
+  const { offsets, heights, totalHeight } = buildVirtualOffsets(list, heightCache, options);
+  const viewportHeight = Math.max(1, Number(options.viewportHeight || DEFAULT_VIEWPORT_HEIGHT));
+  const align = options.align === 'start' || options.align === 'end' ? options.align : 'center';
+  const top = offsets[safeIndex] || 0;
+  const height = heights[safeIndex] || DEFAULT_ITEM_HEIGHT;
+  if (align === 'start') return Math.max(0, Math.min(top, totalHeight - viewportHeight));
+  if (align === 'end') return Math.max(0, Math.min(top + height - viewportHeight, totalHeight - viewportHeight));
+  return Math.max(0, Math.min(top - (viewportHeight - height) / 2, totalHeight - viewportHeight));
+}
+
+export function shouldFollowTranscriptBottom({ scrollTop = 0, scrollHeight = 0, clientHeight = 0, threshold = DEFAULT_BOTTOM_THRESHOLD } = {}) {
   return Math.max(0, Number(scrollHeight) - Number(scrollTop) - Number(clientHeight)) <= Math.max(0, Number(threshold));
+}
+
+export function resolveTranscriptBottomFollow({ following = true, atBottom = false, userScroll = false } = {}) {
+  if (userScroll) return !!atBottom;
+  return !!following && !!atBottom;
+}
+
+const TRANSCRIPT_SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+const INTERACTIVE_TARGET_SELECTOR = 'input, textarea, select, button, a, [contenteditable], [role="button"], [role="link"]';
+
+export function isTranscriptScrollKey(key) {
+  return TRANSCRIPT_SCROLL_KEYS.has(String(key || ''));
+}
+
+export function isTranscriptScrollbarPointer(event, scroller) {
+  if (!event || !scroller || event.button !== 0) return false;
+  const rect = scroller.getBoundingClientRect?.();
+  const scrollbarWidth = Math.max(0, Number(scroller.offsetWidth || 0) - Number(scroller.clientWidth || 0));
+  if (!rect || scrollbarWidth <= 0) return false;
+  return Number(event.clientX) >= Number(rect.right) - scrollbarWidth
+    && Number(event.clientX) <= Number(rect.right)
+    && Number(event.clientY) >= Number(rect.top)
+    && Number(event.clientY) <= Number(rect.bottom);
+}
+
+export function shouldMarkTranscriptKeyScroll(event, scroller, documentRef = globalThis.document) {
+  if (!event || event.defaultPrevented || !scroller || !isTranscriptScrollKey(event.key)) return false;
+  const target = event.target;
+  if (!target) return false;
+  if (target.closest?.(INTERACTIVE_TARGET_SELECTOR)) return false;
+  return target === scroller || target === documentRef?.body || target === documentRef?.documentElement;
 }
 
 export function adjustedScrollTopForMeasuredHeight({
@@ -167,4 +219,5 @@ export const virtualTranscriptDefaults = Object.freeze({
   viewportHeight: DEFAULT_VIEWPORT_HEIGHT,
   overscan: DEFAULT_OVERSCAN,
   itemGap: DEFAULT_ITEM_GAP,
+  bottomThreshold: DEFAULT_BOTTOM_THRESHOLD,
 });
