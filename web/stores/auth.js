@@ -507,12 +507,11 @@ export const useAuthStore = defineStore('auth', {
       try {
         const params = new URLSearchParams();
         if (intent === 'bind') {
-          if (!this.token) {
+          if (!this.isAuthenticated) {
             this.error = 'You must be logged in to bind an identity';
             return false;
           }
           params.set('intent', 'bind');
-          params.set('token', this.token);
         }
         const qs = params.toString();
         const url = `/api/auth/sso/${encodeURIComponent(provider)}/start-qr${qs ? '?' + qs : ''}`;
@@ -625,15 +624,14 @@ export const useAuthStore = defineStore('auth', {
 
     /**
      * Bind an additional SSO identity to the currently logged-in user.
-     * Requires an existing token (passed via query param so the redirect
-     * endpoint can verify the user without an Authorization header).
+     * The same-origin navigation carries the browser session cookie.
      */
     bindSso(provider) {
-      if (!this.token) {
+      if (!this.isAuthenticated) {
         this.error = 'You must be logged in to bind an identity';
         return;
       }
-      const params = new URLSearchParams({ intent: 'bind', token: this.token });
+      const params = new URLSearchParams({ intent: 'bind' });
       window.location.href = `/api/auth/sso/${encodeURIComponent(provider)}/start?${params.toString()}`;
     },
 
@@ -667,13 +665,11 @@ export const useAuthStore = defineStore('auth', {
      * Load the current user's bound identities. Used by the Settings → Account tab.
      */
     async loadIdentities() {
-      if (!this.token) return;
+      if (!this.isAuthenticated) return;
       this.identitiesLoading = true;
       this.identitiesError = null;
       try {
-        const res = await fetch('/api/auth/identities', {
-          headers: { 'Authorization': `Bearer ${this.token}` }
-        });
+        const res = await fetch('/api/auth/identities');
         const data = await res.json();
         if (!res.ok || !data.success) {
           this.identitiesError = data.error || 'Failed to load identities';
@@ -692,12 +688,11 @@ export const useAuthStore = defineStore('auth', {
      * Unbind an SSO identity for the current user.
      */
     async unbindIdentity(provider) {
-      if (!this.token) return false;
+      if (!this.isAuthenticated) return false;
       this.identitiesError = null;
       try {
         const res = await fetch(`/api/auth/identities/${encodeURIComponent(provider)}`, {
-          method: 'DELETE',
-          headers: { 'Authorization': `Bearer ${this.token}` }
+          method: 'DELETE'
         });
         const data = await res.json();
         if (!res.ok || !data.success) {
@@ -950,13 +945,12 @@ export const useAuthStore = defineStore('auth', {
      * For SSO-only users: pass confirm: 'DELETE'.
      */
     async deleteAccount({ currentPassword, confirm } = {}) {
-      if (!this.token) return { success: false, error: 'Not authenticated' };
+      if (!this.isAuthenticated) return { success: false, error: 'Not authenticated' };
       try {
         const res = await fetch('/api/user/me', {
           method: 'DELETE',
           headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.token}`
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify({ currentPassword, confirm })
         });
@@ -964,7 +958,7 @@ export const useAuthStore = defineStore('auth', {
         if (!res.ok || !data.success) {
           return { success: false, error: data.error || 'Failed to delete account' };
         }
-        // Clear local state — server already revoked the JWT.
+        // Clear local state — server already revoked the browser session.
         this.clearStoredSession();
         return { success: true };
       } catch (err) {

@@ -234,6 +234,71 @@ describe('auth store session restore and refresh', () => {
     expect(globalThis.localStorage.removeItem).toHaveBeenCalledWith('authToken');
   });
 
+  it('loads and unbinds identities for an authenticated cookie-only session', async () => {
+    globalThis.localStorage = createLocalStorage();
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url === '/api/auth/identities') {
+        return jsonResponse({
+          body: {
+            success: true,
+            identities: [{ provider: 'github' }],
+            hasPassword: true,
+          },
+        });
+      }
+      if (url === '/api/auth/identities/github') {
+        return jsonResponse({ body: { success: true } });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+
+    await auth.loadIdentities();
+    const unbound = await auth.unbindIdentity('github');
+
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(1, '/api/auth/identities');
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(2, '/api/auth/identities/github', {
+      method: 'DELETE',
+    });
+    expect(unbound).toBe(true);
+    expect(auth.hasPassword).toBe(true);
+    expect(auth.linkedIdentities).toEqual([]);
+  });
+
+  it('deletes an account for an authenticated cookie-only session', async () => {
+    globalThis.localStorage = createLocalStorage();
+    globalThis.fetch = vi.fn(async () => jsonResponse({ body: { success: true } }));
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+
+    const result = await auth.deleteAccount({ confirm: 'DELETE' });
+
+    expect(result).toEqual({ success: true });
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/user/me', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword: undefined, confirm: 'DELETE' }),
+    });
+    expect(auth.isAuthenticated).toBe(false);
+  });
+
+  it('starts SSO binding for a cookie-only session without putting a token in the URL', async () => {
+    globalThis.localStorage = createLocalStorage();
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      body: { success: true, authorizeUrl: 'https://provider.test/auth', state: 'state-1' },
+    }));
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+
+    const started = await auth.startSsoQr('github', { intent: 'bind' });
+
+    expect(started).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/auth/sso/github/start-qr?intent=bind');
+    expect(globalThis.fetch.mock.calls[0][0]).not.toContain('token=');
+    auth.cancelSsoQr();
+  });
+
   it('hydrates the active token from storage before authenticated requests', async () => {
     globalThis.localStorage = createLocalStorage({ authToken: 'stored-token' });
     const auth = await loadAuthStore();
