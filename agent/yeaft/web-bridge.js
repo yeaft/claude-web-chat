@@ -5079,7 +5079,7 @@ async function runVpTurn({ prompt, promptParts = null, sessionId, vpId, threadId
         vpTurnId: turnId,
         drainPendingUserMessages: () => {
           if (!thread || !Array.isArray(thread.pendingQueries) || thread.pendingQueries.length === 0) return [];
-          return thread.pendingQueries.splice(0);
+          return thread.pendingQueries.splice(0).map(item => ({ ...item, persisted: true }));
         },
         ...queryOpts,
       })) {

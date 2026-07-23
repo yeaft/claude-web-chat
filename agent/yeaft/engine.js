@@ -7,7 +7,7 @@
  *   3. Call adapter.stream()
  *   4. Collect text + tool_calls from stream events
  *   5. If tool_calls → execute tools → append results → goto 3
- *   6. If end_turn → persist messages → check consolidation → done
+ *   6. Persist each completed message at its durability boundary; end_turn runs maintenance
  *   7. If max_tokens → auto-continue (up to maxContinueTurns)
  *   8. On LLMContextError → force compact → retry
  *   9. On retryable error with fallbackModel → switch model → retry
@@ -34,7 +34,6 @@ import { readSummary as readScopeSummary } from './memory/store.js';
 import { runAdjust } from './memory/adjust.js';
 import { cleanMemoryPromptText, isMemoryPromptRelevant } from './memory/prompt-cleanup.js';
 import { isVpSeedBackfillStub } from './memory/seed-backfill.js';
-import { runStopHooks } from './stop-hooks.js';
 import { perfNowMs, recordAgentPerfTrace } from './perf-trace.js';
 // Default thread marker for legacy / non-group flows. Group VP runtime may
 // pass a real threadId per (sessionId, vpId, threadId) engine instance.
@@ -512,7 +511,8 @@ export class Engine {
    * LLMAbortError (or a synthetic abort check) and yields exactly one pair
    * of events — `{type:'aborted', reason}` followed by
    * `{type:'turn_end', stopReason:'aborted'}` — then returns without
-   * persisting partial tool calls, consolidation, or stop-hook side-effects.
+   * running consolidation or other terminal maintenance. Any assistant text
+   * already streamed is durably recorded as an incomplete response.
    *
    * @type {AbortController|null}
    */
@@ -585,6 +585,9 @@ export class Engine {
 
   /** Task results already spliced into conversationMessages for the next request. */
   #pendingAsyncTaskConfirmIds = new Set();
+
+  /** Persisted tool rows that may receive a same-turn background-task update. */
+  #persistedToolMessages = new Map();
 
   /** Reject new same-turn deliveries once the current query starts closing. */
   #asyncTaskDeliveryClosed = true;
@@ -1377,57 +1380,42 @@ export class Engine {
     return this.#conversationStore.readCompactSummary();
   }
 
-  /**
-   * Persist user message and assistant response to conversation store.
-   * Skipped in read-only mode (config._readOnly).
-   *
-   * Multi-VP fan-out (Bug 1): when several engines run the same user
-   * prompt in parallel, we must NOT each write our own copy of the user
-   * message — `coord.ingest`/the orchestrator already wrote it once. Pass
-   * `userAlreadyPersisted: true` from the caller to skip the user-row
-   * append while still persisting the assistant + tool rows.
-   *
-   * @param {string} userContent
-   * @param {string} assistantContent
-   * @param {object[]} [toolCalls]
-   * @param {string} [sessionId]
-   * @param {boolean} [userAlreadyPersisted]
-   */
-  #persistMessages(userContent, assistantContent, toolCalls, sessionId, userAlreadyPersisted = false) {
-    if (!this.#conversationStore) return;
-    if (this.#config._readOnly) return;
+  #canPersistConversation() {
+    return Boolean(this.#conversationStore) && !this.#config._readOnly;
+  }
 
-    // Persist with the active runtime thread. Legacy / non-group flows use
-    // MAIN_THREAD_ID; group VP flows pass their classified threadId.
-    const threadId = this.#currentThreadId || MAIN_THREAD_ID;
-
-    // Persist user message — unless an upstream caller (e.g. the group
-    // coordinator) has already done so for this turn.
-    if (!userAlreadyPersisted) {
-      this.#conversationStore.append({
-        role: 'user',
-        content: userContent,
-        threadId,
-        // Bug 6: stamp sessionId/chatId so history replay can route by container.
-        ...(sessionId ? { sessionId } : {}),
-        ...(this.#chatId ? { chatId: this.#chatId } : {}),
-      });
-    }
-
-    // Persist assistant message
-    const assistantMsg = {
-      role: 'assistant',
-      content: assistantContent,
-      model: this.#config.model,
-      threadId,
+  #conversationRecord(message, { sessionId, turnId, model, incomplete = false, stopReason = null } = {}) {
+    const record = {
+      role: message.role,
+      content: typeof message.content === 'string'
+        ? message.content
+        : JSON.stringify(message.content ?? ''),
+      model: model || this.#config.model,
+      threadId: this.#currentThreadId || MAIN_THREAD_ID,
       ...(sessionId ? { sessionId } : {}),
       ...(this.#chatId ? { chatId: this.#chatId } : {}),
-      ...(this.#vpId ? { speakerVpId: this.#vpId } : {}),
     };
-    if (toolCalls && toolCalls.length > 0) {
-      assistantMsg.toolCalls = toolCalls;
-    }
-    this.#conversationStore.append(assistantMsg);
+    if (message.toolCallId) record.toolCallId = message.toolCallId;
+    if (Array.isArray(message.toolCalls) && message.toolCalls.length > 0) record.toolCalls = message.toolCalls;
+    if (Array.isArray(message.thinkingBlocks) && message.thinkingBlocks.length > 0) record.thinkingBlocks = message.thinkingBlocks;
+    if (message.isError) record.isError = true;
+    if (message.imageAssetAnchor) record.imageAssetAnchor = true;
+    if (turnId && (message.role === 'assistant' || message.role === 'tool')) record.turnId = turnId;
+    if (this.#vpId && (message.role === 'assistant' || message.role === 'tool')) record.speakerVpId = this.#vpId;
+    if (incomplete) record.incomplete = true;
+    if (stopReason) record.stopReason = stopReason;
+    return record;
+  }
+
+  #persistConversationMessage(message, context = {}) {
+    if (!this.#canPersistConversation() || !message?.role) return null;
+    const hasContent = typeof message.content === 'string'
+      ? message.content.length > 0
+      : message.content != null;
+    const hasToolCalls = Array.isArray(message.toolCalls) && message.toolCalls.length > 0;
+    const hasThinking = Array.isArray(message.thinkingBlocks) && message.thinkingBlocks.length > 0;
+    if (!hasContent && !hasToolCalls && !hasThinking && message.role !== 'tool') return null;
+    return this.#conversationStore.append(this.#conversationRecord(message, context));
   }
 
   /**
@@ -1652,6 +1640,15 @@ export class Engine {
         ? toolMsg.content
         : this.#formatTaskResultUpdateContent(toolMsg.content);
       toolMsg.content = `${prior}\n\n${appendText}`;
+      const persistedTool = this.#persistedToolMessages.get(update.toolCallId);
+      if (persistedTool && typeof this.#conversationStore?.update === 'function') {
+        const durablePrior = typeof persistedTool.content === 'string'
+          ? persistedTool.content
+          : this.#formatTaskResultUpdateContent(persistedTool.content);
+        const durableContent = `${durablePrior}\n\n${appendText}`;
+        const updated = this.#conversationStore.update(persistedTool, { content: durableContent });
+        if (updated) this.#persistedToolMessages.set(update.toolCallId, updated);
+      }
       applied.push(update);
       if (this.#acceptedAsyncTaskResults.has(update.taskId)) {
         this.#pendingAsyncTaskConfirmIds.add(update.taskId);
@@ -1686,6 +1683,12 @@ export class Engine {
       } catch { /* rescue plumbing must not break query teardown */ }
     }
     return deliveries.length;
+  }
+
+  #persistAppendedUserMessage(item, sessionId) {
+    if (!item || item.persisted || item.internal) return;
+    this.#persistConversationMessage({ role: 'user', content: item.content }, { sessionId });
+    item.persisted = true;
   }
 
   #drainPendingUserMessages(drainPendingUserMessages) {
@@ -1726,6 +1729,7 @@ export class Engine {
           content,
           preview,
           internal: Boolean(item.internal),
+          persisted: Boolean(item.persisted),
           taskId,
         };
       })
@@ -1850,6 +1854,7 @@ export class Engine {
       this.#asyncTaskToolMeta.clear();
       this.#pendingTaskResultMessages.length = 0;
       this.#pendingTaskResultUpdates.length = 0;
+      this.#persistedToolMessages.clear();
       // Release any parked waiters so they don't pin a microtask after
       // query() returns. The loop has already exited so they're harmless,
       // but cleanup keeps the promise graph tight.
@@ -1879,6 +1884,24 @@ export class Engine {
     const runtimeThreadId = (typeof threadId === 'string' && threadId.trim())
       ? threadId.trim()
       : MAIN_THREAD_ID;
+    const queryTurnId = randomUUID();
+    const queryStartedAt = Date.now();
+    const userQuestionPreview = String(prompt || '').slice(0, 200);
+    const queryVpId = vpPersona && typeof vpPersona === 'object'
+      && typeof vpPersona.vpId === 'string'
+      ? vpPersona.vpId
+      : (typeof senderVpId === 'string' ? senderVpId : null);
+
+    // Durability boundary: a valid user turn must exist on disk before any
+    // memory pre-flow or provider request can fail. The Web Session bridge
+    // already writes one shared user row before multi-VP fan-out, so those
+    // callers set userAlreadyPersisted and every VP skips this append.
+    if (!userAlreadyPersisted) {
+      this.#persistConversationMessage({ role: 'user', content: prompt }, {
+        sessionId: runtimeSessionId,
+      });
+    }
+
     const perfTraceId = typeof inboundEnvelope?._perfTraceId === 'string' && inboundEnvelope._perfTraceId.trim()
       ? inboundEnvelope._perfTraceId.trim()
       : (typeof inboundEnvelope?.perfTraceId === 'string' && inboundEnvelope.perfTraceId.trim() ? inboundEnvelope.perfTraceId.trim() : null);
@@ -2194,13 +2217,6 @@ export class Engine {
     // `queryTurnId` is the wire-level turn identifier; every event emitted
     // during this query() carries it as `turnId`. Each LLM call inside
     // the loop is a `loopNumber` (was wire field `turnNumber`).
-    const queryTurnId = randomUUID();
-    const queryStartedAt = Date.now();
-    const userQuestionPreview = String(prompt || '').slice(0, 200);
-    const queryVpId = vpPersona && typeof vpPersona === 'object'
-      && typeof vpPersona.vpId === 'string'
-      ? vpPersona.vpId
-      : (typeof senderVpId === 'string' ? senderVpId : null);
 
     yield {
       type: 'turn_open',
@@ -2250,7 +2266,8 @@ export class Engine {
     let continueTurns = 0; // auto-continue counter
     let toolLoopTurns = 0; // task-327b: tool-use turns for long-loop auto-bump
     let fullResponseText = '';
-    let hasDisplayImageAnchor = false;
+    let displayImageAnchorMessage = null;
+    let lastPersistedAssistantMessage = null;
     let currentModel = this.#config.model;
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
@@ -2351,6 +2368,7 @@ export class Engine {
       const appendedBeforeStream = this.#drainPendingUserMessages(drainPendingUserMessages);
       if (appendedBeforeStream.length > 0) {
         for (const item of appendedBeforeStream) {
+          this.#persistAppendedUserMessage(item, runtimeSessionId);
           conversationMessages.push({ role: 'user', content: item.content });
           yield {
             type: 'user_append',
@@ -2671,6 +2689,15 @@ export class Engine {
           || err?.name === 'LLMAbortError'
           || (signal?.aborted && /abort/i.test(err?.message || ''));
         if (earlyIsAbort || signal?.aborted) {
+          if (responseText) {
+            this.#persistConversationMessage({ role: 'assistant', content: responseText }, {
+              sessionId: runtimeSessionId,
+              turnId: vpTurnId || queryTurnId,
+              model: currentModel,
+              incomplete: true,
+              stopReason: 'aborted',
+            });
+          }
           traceRequest('llm.request_abort', {
             durationMs: perfNowMs() - requestPerfStart,
             ok: false,
@@ -2759,6 +2786,16 @@ export class Engine {
           consecutiveRetryableErrors = 0;
           yield { type: 'turn_end', turnNumber, stopReason: 'fallback_retry', threadId };
           continue;
+        }
+
+        if (responseText) {
+          this.#persistConversationMessage({ role: 'assistant', content: responseText }, {
+            sessionId: runtimeSessionId,
+            turnId: vpTurnId || queryTurnId,
+            model: currentModel,
+            incomplete: true,
+            stopReason: 'error',
+          });
         }
 
         this.#trace.endTurn(turnId, {
@@ -2873,6 +2910,61 @@ export class Engine {
         rawResponse,
       });
 
+      // Build and durably append this completed provider response before
+      // yielding any post-stream diagnostics. A consumer may stop iterating at
+      // any yield; persistence therefore cannot wait for turn_end or even the
+      // debug `loop` event below.
+      const assistantMsg = { role: 'assistant', content: responseText };
+      if (toolCalls.length > 0) {
+        assistantMsg.toolCalls = toolCalls.map(tc => ({
+          id: tc.id,
+          name: tc.name,
+          input: tc.input,
+        }));
+      }
+      if (thinkingBlocks.length > 0) {
+        assistantMsg.thinkingBlocks = thinkingBlocks.map(tb => (
+          tb.redacted
+            ? { redacted: true, data: tb.data, signature: tb.signature }
+            : { thinking: tb.thinking, signature: tb.signature }
+        ));
+      }
+      if (vpPersona && vpPersona.vpId) {
+        const planForThisVp = (vpPlan && typeof vpPlan === 'object'
+          && typeof vpPlan.vpId === 'string' && vpPlan.vpId === vpPersona.vpId)
+          ? vpPlan
+          : null;
+        attachRouterPlan(assistantMsg, {
+          vpId: vpPersona.vpId,
+          forwardQuery: planForThisVp && planForThisVp.forwardQuery
+            ? planForThisVp.forwardQuery
+            : { userOriginal: prompt || '', intent: '' },
+          preselect: planForThisVp && planForThisVp.preselect
+            ? planForThisVp.preselect
+            : undefined,
+          thinking: planForThisVp && (planForThisVp.thinking === 'high' || planForThisVp.thinking === 'max')
+            ? planForThisVp.thinking
+            : null,
+          thinkingReason: planForThisVp && typeof planForThisVp.thinkingReason === 'string'
+            ? planForThisVp.thinkingReason
+            : '',
+        });
+      }
+      if (displayImageAnchorMessage) assistantMsg.imageAssetAnchor = true;
+      const persistedAssistantMessage = this.#persistConversationMessage(assistantMsg, {
+        sessionId: runtimeSessionId,
+        turnId: vpTurnId || queryTurnId,
+        model: currentModel,
+      });
+      if (persistedAssistantMessage) {
+        if (displayImageAnchorMessage && displayImageAnchorMessage.id !== persistedAssistantMessage.id
+            && typeof this.#conversationStore?.update === 'function') {
+          this.#conversationStore.update(displayImageAnchorMessage, { imageAssetAnchor: false });
+        }
+        if (assistantMsg.imageAssetAnchor) displayImageAnchorMessage = persistedAssistantMessage;
+        lastPersistedAssistantMessage = persistedAssistantMessage;
+      }
+
       // Emit `loop` event for the debug panel.
       // feat-6af5f9f1 PR B: a Loop is one LLM call inside a Turn. The wire
       // event was historically named `debug_turn` and carried `turnNumber`,
@@ -2913,63 +3005,20 @@ export class Engine {
         rawResponse,
       };
 
-      // Append assistant message to conversation
-      const assistantMsg = { role: 'assistant', content: responseText };
-      if (toolCalls.length > 0) {
-        assistantMsg.toolCalls = toolCalls.map(tc => ({
-          id: tc.id,
-          name: tc.name,
-          input: tc.input,
-        }));
-      }
-      // task-327d: persist thinking blocks for the next turn's replay.
-      // Anthropic requires assistant.thinking blocks to be echoed back
-      // verbatim (text + signature) when the previous turn used extended
-      // thinking — see translateMessages in anthropic.js.
-      if (thinkingBlocks.length > 0) {
-        assistantMsg.thinkingBlocks = thinkingBlocks.map(tb => (
-          tb.redacted
-            ? { redacted: true, data: tb.data, signature: tb.signature }
-            : { thinking: tb.thinking, signature: tb.signature }
-        ));
-      }
-      // Phase 8 (DESIGN.md §9.15): carry the router plan back on the
-      // assistant message that produced it. Stripped at the wire by
-      // stripMetaForWire — pure bookkeeping for priorPlan continuity.
-      if (vpPersona && vpPersona.vpId) {
-        // PR-I: when the dispatcher hands us a per-VP plan whose vpId matches
-        // the active persona, persist its `forwardQuery`, `preselect`, and
-        // `thinking` on the assistant message so the next turn's
-        // priorPlan continuity (DESIGN.md §9.15) sees the live router's
-        // decision — not a synthetic stub.
-        const planForThisVp = (vpPlan && typeof vpPlan === 'object'
-          && typeof vpPlan.vpId === 'string' && vpPlan.vpId === vpPersona.vpId)
-          ? vpPlan
-          : null;
-        attachRouterPlan(assistantMsg, {
-          vpId: vpPersona.vpId,
-          forwardQuery: planForThisVp && planForThisVp.forwardQuery
-            ? planForThisVp.forwardQuery
-            : { userOriginal: prompt || '', intent: '' },
-          preselect: planForThisVp && planForThisVp.preselect
-            ? planForThisVp.preselect
-            : undefined,
-          thinking: planForThisVp && (planForThisVp.thinking === 'high' || planForThisVp.thinking === 'max')
-            ? planForThisVp.thinking
-            : null,
-          thinkingReason: planForThisVp && typeof planForThisVp.thinkingReason === 'string'
-            ? planForThisVp.thinkingReason
-            : '',
-        });
-      }
+      // Keep the same durable assistant object in the live model history.
+      // Private router metadata is stripped only at the next wire boundary.
       conversationMessages.push(assistantMsg);
       fullResponseText += responseText;
 
       // ─── Handle max_tokens → auto-continue ────────────
       if (stopReason === 'max_tokens' && continueTurns < MAX_CONTINUE_TURNS) {
         continueTurns++;
-        // Append a "Continue" user message
-        conversationMessages.push({ role: 'user', content: 'Continue' });
+        // This synthetic continuation is part of the model-visible protocol.
+        // Persist it before the next provider request so a crash does not leave
+        // the completed assistant row without its following user boundary.
+        const continueMessage = { role: 'user', content: 'Continue' };
+        this.#persistConversationMessage(continueMessage, { sessionId: runtimeSessionId });
+        conversationMessages.push(continueMessage);
         yield { type: 'turn_end', turnNumber, stopReason: 'max_tokens_continue', threadId };
         continue; // loop back to call adapter again
       }
@@ -2981,6 +3030,7 @@ export class Engine {
       const appendedAfterAssistant = this.#drainPendingUserMessages(drainPendingUserMessages);
       if (appendedAfterAssistant.length > 0) {
         for (const item of appendedAfterAssistant) {
+          this.#persistAppendedUserMessage(item, runtimeSessionId);
           conversationMessages.push({ role: 'user', content: item.content });
           yield {
             type: 'user_append',
@@ -3072,6 +3122,7 @@ export class Engine {
           const appendedAfterAsyncWait = this.#drainPendingUserMessages(drainPendingUserMessages);
           if (appendedAfterAsyncWait.length > 0) {
             for (const item of appendedAfterAsyncWait) {
+              this.#persistAppendedUserMessage(item, runtimeSessionId);
               conversationMessages.push({ role: 'user', content: item.content });
               yield {
                 type: 'user_append',
@@ -3102,6 +3153,7 @@ export class Engine {
             throw new Error('Could not close pending user input for terminal completion');
           }
           for (const item of appendedBeforeClose) {
+            this.#persistAppendedUserMessage(item, runtimeSessionId);
             conversationMessages.push({ role: 'user', content: item.content });
             yield {
               type: 'user_append',
@@ -3120,57 +3172,12 @@ export class Engine {
         }
         yield { type: 'turn_end', turnNumber, stopReason, threadId, terminal: true };
 
-        // ─── Post-query: StopHooks or Legacy ─────────────
-        if (this.#config._readOnly) {
-          // Read-only mode: skip all persistence operations
-        } else if (this.#yeaftDir && this.#conversationStore) {
-          // Full pipeline: persist + consolidate + dream gate
-          // Note: stopHooks uses fastConfig for consolidation/dream (cheaper internal tasks)
-          // but receives both configs — messages are persisted with primary model name
-          const hookResult = await runStopHooks({
-            yeaftDir: this.#yeaftDir,
-            conversationStore: this.#conversationStore,
-            adapter: this.#adapter,
-            config: this.#fastConfig,
-            primaryModel: this.#config.model,
-            messages: conversationMessages,
-            // Reflect-persist fix: tell stop-hooks the EXACT turn boundary
-            // instead of letting it heuristically scan back to the last
-            // role:'user'. With T1/T2 reflection collapse, the last
-            // role:'user' is the synthetic reflection message — not the
-            // original user prompt — so the heuristic was dropping
-            // earlier reflection messages and the original prompt off
-            // the persistence window. `turnStartIdx` is the index of
-            // the original user prompt (set at query() entry); slicing
-            // from there persists the full collapsed turn including all
-            // reflection messages and the trailing assistant response.
-            turnStartIdx,
-            trace: this.#trace,
-            // Bug 6: tag persisted messages with the originating group so
-            // history replay can re-stamp them on reload.
-            sessionId,
-            threadId,
-            turnId: vpTurnId || queryTurnId,
-            vpId: this.#vpId,
-            // Multi-VP fan-out (history-dedup): skip the user-row append
-            // in stop-hooks when the orchestrator already wrote it once
-            // for this turn. The hook still persists assistant + tool
-            // rows for THIS VP's contribution.
-            userAlreadyPersisted,
-            hasDisplayImageAnchor,
-          });
-
-          if (hookResult.consolidated) {
-            yield { type: 'consolidate', archivedCount: 0, extractedCount: 0 };
-          }
-        } else {
-          // Legacy path (no yeaftDir → use old behavior)
-          this.#persistMessages(prompt, fullResponseText, assistantMsg.toolCalls, sessionId, userAlreadyPersisted);
-
-          const consolidated = await this.#maybeConsolidate();
-          if (consolidated && consolidated.archivedCount > 0) {
-            yield { type: 'consolidate', archivedCount: consolidated.archivedCount, extractedCount: consolidated.extractedCount };
-          }
+        // Message durability is handled incrementally before this terminal
+        // branch. End-of-turn owns maintenance only; re-appending the whole
+        // turn here would duplicate rows and reintroduce the crash window.
+        const consolidated = await this.#maybeConsolidate();
+        if (consolidated && consolidated.archivedCount > 0) {
+          yield { type: 'consolidate', archivedCount: consolidated.archivedCount, extractedCount: consolidated.extractedCount };
         }
 
         // ─── Post-turn AMS adjust ────────────────────────────────
@@ -3385,7 +3392,21 @@ export class Engine {
             }
             isError = toolErrorOutput === 'json-error-envelope' && isToolErrorOutput(output);
             yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError, threadId: this.currentThreadId };
-            if (displayImages.some(image => image.deliveryQueued === true)) hasDisplayImageAnchor = true;
+            if (displayImages.some(image => image.deliveryQueued === true)
+                && lastPersistedAssistantMessage
+                && typeof this.#conversationStore?.update === 'function') {
+              if (displayImageAnchorMessage
+                  && displayImageAnchorMessage.id !== lastPersistedAssistantMessage.id) {
+                this.#conversationStore.update(displayImageAnchorMessage, { imageAssetAnchor: false });
+              }
+              const anchored = this.#conversationStore.update(lastPersistedAssistantMessage, {
+                imageAssetAnchor: true,
+              });
+              if (anchored) {
+                displayImageAnchorMessage = anchored;
+                lastPersistedAssistantMessage = anchored;
+              }
+            }
           } catch (err) {
             output = `Error: ${err.message}`;
             isError = true;
@@ -3444,12 +3465,21 @@ export class Engine {
           toolName: tc.name,
           language: this.#config?.language,
         });
-        conversationMessages.push({
+        const toolMessage = {
           role: 'tool',
           toolCallId: tc.id,
           content: contextOutput,
           isError,
+        };
+        conversationMessages.push(toolMessage);
+        // Model context may use a bounded copy, but durable conversation
+        // history keeps the raw normalized tool output for recovery/debug.
+        const persistedToolMessage = this.#persistConversationMessage({ ...toolMessage, content: output }, {
+          sessionId: runtimeSessionId,
+          turnId: vpTurnId || queryTurnId,
+          model: currentModel,
         });
+        if (persistedToolMessage) this.#persistedToolMessages.set(tc.id, persistedToolMessage);
 
         // PR-L: persist this execution to the exec-log for fallback-stub
         // and duplicate-call detection. Best-effort — disk failures are

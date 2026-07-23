@@ -20,6 +20,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, unlinkSync, statSync, appendFileSync } from 'fs';
 import { join, basename } from 'path';
 import { isPermissionError } from '../init.js';
+import { writeAtomic } from '../storage/atomic.js';
 import { pairSanitize } from '../pair-sanitize.js';
 import { sliceLastNTurns, stripVpMentionPrefix } from '../turn-utils.js';
 import { isHiddenConversationRow } from './internal-control.js';
@@ -363,6 +364,8 @@ function serializeMessage(msg) {
   if (msg.sessionId) fm.push(`sessionId: ${msg.sessionId}`);
   if (msg.chatId) fm.push(`chatId: ${msg.chatId}`);
   if (msg.clientMessageId) fm.push(`clientMessageId: ${msg.clientMessageId}`);
+  if (msg.incomplete) fm.push('incomplete: true');
+  if (msg.stopReason) fm.push(`stopReason: ${msg.stopReason}`);
   // Session attribution: when a VP authors an assistant turn (either
   // its own reply or a route_forward injection from another VP), stamp
   // the speaker so the UI can render the message on the correct VP track.
@@ -492,6 +495,8 @@ export function parseMessage(raw) {
       case 'sessionId': msg.sessionId = value; break;
       case 'chatId': msg.chatId = value; break;
       case 'clientMessageId': msg.clientMessageId = value; break;
+      case 'incomplete': msg.incomplete = value === 'true'; break;
+      case 'stopReason': msg.stopReason = value; break;
       case 'speakerVpId': msg.speakerVpId = value; break;
       case 'attachmentsB64':
         try {
@@ -705,18 +710,39 @@ class SegmentStore {
     for (const msg of (rows || []).filter(Boolean).sort(compareMessagesBySeq)) this.append(msg);
   }
 
+  updateById(id, updater) {
+    if (!id || typeof updater !== 'function' || !this.hasData()) return null;
+    const targetSeq = parseSeqFromId(id);
+    const idx = this.loadIndex();
+    const segment = (idx.segments || []).find((candidate) => {
+      const first = Number(candidate.firstSeq);
+      const last = Number(candidate.lastSeq);
+      return Number.isFinite(targetSeq)
+        && Number.isFinite(first)
+        && Number.isFinite(last)
+        && targetSeq >= first
+        && targetSeq <= last;
+    });
+    if (!segment?.file) return null;
+
+    const path = join(this.segmentDir, segment.file);
+    const rows = this.#readSegment(segment.file, { includeCold: true });
+    const rowIndex = rows.findIndex(row => row?.id === id);
+    if (rowIndex < 0) return null;
+    const next = updater({ ...rows[rowIndex] });
+    if (!next || typeof next !== 'object') return null;
+    const updated = { ...next, id: rows[rowIndex].id };
+    rows[rowIndex] = updated;
+
+    const body = rows.map(row => JSON.stringify(row)).join('\n') + (rows.length > 0 ? '\n' : '');
+    writeAtomic(path, body);
+    segment.bytes = Buffer.byteLength(body);
+    this.saveIndex();
+    return updated;
+  }
+
   markCold(id) {
-    if (!id || !this.hasData()) return 0;
-    const rows = this.readAll({ includeCold: true });
-    let changed = 0;
-    for (const msg of rows) {
-      if (msg?.id === id && msg.cold !== true) {
-        msg.cold = true;
-        changed += 1;
-      }
-    }
-    if (changed > 0) this.replaceAll(rows);
-    return changed;
+    return this.updateById(id, msg => ({ ...msg, cold: true })) ? 1 : 0;
   }
 
   clear() {
@@ -929,6 +955,32 @@ export class ConversationStore {
    */
   appendBatch(messages) {
     return messages.map(m => this.append(m));
+  }
+
+  /**
+   * Replace fields on one persisted message while preserving its id/order.
+   * Rewrites only the owning conversation segment set; used for async tool
+   * results that complete after their initial tool row was appended.
+   *
+   * @param {object} message — persisted row returned by append()
+   * @param {object} patch — fields to merge into the row
+   * @returns {object|null}
+   */
+  update(message, patch) {
+    if (!message?.id || !patch || typeof patch !== 'object') return null;
+    try {
+      const store = this.#segmentStoreFor(message, { create: false });
+      return store.updateById(message.id, current => ({ ...current, ...patch }));
+    } catch (err) {
+      if (isPermissionError(err)) {
+        if (!_permissionWarned) {
+          console.warn(`[Yeaft] Cannot update message ${message.id}: ${err.code}`);
+          _permissionWarned = true;
+        }
+        return null;
+      }
+      throw err;
+    }
   }
 
   /**

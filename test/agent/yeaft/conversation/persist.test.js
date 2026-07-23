@@ -316,6 +316,64 @@ describe('ConversationStore', () => {
     });
   });
 
+  describe('update', () => {
+    it('updates one durable row without changing neighboring messages or order', () => {
+      const user = store.append({
+        role: 'user',
+        content: 'run it',
+        sessionId: 'session_update',
+      });
+      const tool = store.append({
+        role: 'tool',
+        content: 'started',
+        sessionId: 'session_update',
+        toolCallId: 'call_update',
+      });
+      const assistant = store.append({
+        role: 'assistant',
+        content: 'waiting',
+        sessionId: 'session_update',
+      });
+
+      const conversationDir = join(TEST_DIR, 'sessions', 'session_update', 'conversation');
+      const untouchedIndex = readFileSync(join(conversationDir, 'index.json'), 'utf8');
+      const updated = store.update(tool, { content: 'started\n\nfinished' });
+
+      expect(updated).toMatchObject({
+        id: tool.id,
+        role: 'tool',
+        content: 'started\n\nfinished',
+        toolCallId: 'call_update',
+      });
+      const durableRows = readFileSync(
+        join(TEST_DIR, 'sessions', 'session_update', 'conversation', 'segments', '000001.jsonl'),
+        'utf8',
+      ).trim().split('\n').map(line => JSON.parse(line));
+      expect(durableRows.map(message => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+      }))).toEqual([
+        { id: user.id, role: 'user', content: 'run it' },
+        { id: tool.id, role: 'tool', content: 'started\n\nfinished' },
+        { id: assistant.id, role: 'assistant', content: 'waiting' },
+      ]);
+      const updatedIndex = JSON.parse(readFileSync(join(conversationDir, 'index.json'), 'utf8'));
+      const originalIndex = JSON.parse(untouchedIndex);
+      expect(updatedIndex).toMatchObject({
+        nextSeq: originalIndex.nextSeq,
+        totalMessages: originalIndex.totalMessages,
+        lastMessageId: originalIndex.lastMessageId,
+      });
+      expect(readdirSync(join(conversationDir, 'segments')).filter(name => name.includes('.tmp.'))).toEqual([]);
+      expect(store.append({
+        role: 'assistant',
+        content: 'done',
+        sessionId: 'session_update',
+      }).id).toBe('m0004');
+    });
+  });
+
 
     it("should write session messages under that session's conversation history", () => {
       const msg = store.append({ role: 'user', content: 'Hello session', sessionId: 's_fun' });

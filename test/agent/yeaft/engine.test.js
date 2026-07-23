@@ -444,6 +444,258 @@ describe('Engine', () => {
       expect(turnEnd.turnNumber).toBe(1);
     });
 
+    it('persists the user row before starting the LLM request', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-user-prewrite-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = {
+          async *stream() {
+            const persisted = conversationStore.loadRecentBySession('session-prewrite', 10);
+            expect(persisted).toHaveLength(1);
+            expect(persisted[0]).toMatchObject({
+              role: 'user',
+              content: 'persist before request',
+              sessionId: 'session-prewrite',
+              threadId: 'main',
+            });
+            throw new Error('provider failed before replying');
+          },
+        };
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'persist before request',
+          sessionId: 'session-prewrite',
+        })) events.push(event);
+
+        expect(events.find(event => event.type === 'error')).toBeTruthy();
+        expect(conversationStore.loadRecentBySession('session-prewrite', 10)).toHaveLength(1);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists partial assistant text when the provider fails mid-stream', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-partial-persist-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const adapter = {
+          async *stream() {
+            yield { type: 'text_delta', text: 'partial reply' };
+            throw new Error('stream disconnected');
+          },
+        };
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-linus',
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'hello',
+          sessionId: 'session-partial',
+          vpTurnId: 'vp-turn-partial',
+        })) {
+          // consume
+        }
+
+        expect(conversationStore.loadRecentBySession('session-partial', 10)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'hello' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'partial reply',
+            turnId: 'vp-turn-partial',
+            speakerVpId: 'vp-linus',
+            incomplete: true,
+            stopReason: 'error',
+          }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists partial assistant text when the user aborts mid-stream', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-partial-abort-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        const controller = new AbortController();
+        const adapter = {
+          async *stream() {
+            yield { type: 'text_delta', text: 'partial before stop' };
+            controller.abort('user');
+          },
+        };
+        const engine = new Engine({
+          adapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-linus',
+        });
+
+        const events = [];
+        for await (const event of engine.query({
+          prompt: 'stop this',
+          signal: controller.signal,
+          sessionId: 'session-partial-abort',
+          vpTurnId: 'vp-turn-abort',
+        })) events.push(event);
+
+        expect(events.filter(event => event.type === 'aborted')).toHaveLength(1);
+        expect(conversationStore.loadRecentBySession('session-partial-abort', 10)).toEqual([
+          expect.objectContaining({ role: 'user', content: 'stop this' }),
+          expect.objectContaining({
+            role: 'assistant',
+            content: 'partial before stop',
+            turnId: 'vp-turn-abort',
+            speakerVpId: 'vp-linus',
+            incomplete: true,
+            stopReason: 'aborted',
+          }),
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists completed assistant and tool records before a later LLM loop fails', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-tool-incremental-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        mockAdapter.pushResponse([
+          { type: 'tool_call', id: 'call_incremental', name: 'durable_tool', input: {} },
+          { type: 'stop', stopReason: 'tool_use' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'error', error: new Error('second request failed'), retryable: false },
+        ]);
+        const rawToolOutput = 'tool output that must survive';
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+          vpId: 'vp-linus',
+        });
+        engine.registerTool({
+          name: 'durable_tool',
+          description: 'returns durable output',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => rawToolOutput,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'use the tool',
+          sessionId: 'session-tool-incremental',
+          vpTurnId: 'vp-turn-tool',
+        })) {
+          // consume
+        }
+
+        const persisted = conversationStore.loadRecentBySession('session-tool-incremental', 10);
+        expect(persisted.map(message => message.role)).toEqual(['user', 'assistant', 'tool']);
+        expect(persisted[1]).toMatchObject({
+          toolCalls: [expect.objectContaining({ id: 'call_incremental', name: 'durable_tool' })],
+          turnId: 'vp-turn-tool',
+        });
+        expect(persisted[2]).toMatchObject({
+          toolCallId: 'call_incremental',
+          content: rawToolOutput,
+          turnId: 'vp-turn-tool',
+          speakerVpId: 'vp-linus',
+        });
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists a normal turn once without end-of-turn duplicates', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-no-persist-duplicates-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'one reply' },
+          { type: 'stop', stopReason: 'end_turn' },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'one prompt',
+          sessionId: 'session-no-duplicates',
+        })) {
+          // consume
+        }
+
+        expect(conversationStore.loadRecentBySession('session-no-duplicates', 10).map(message => ({
+          role: message.role,
+          content: message.content,
+        }))).toEqual([
+          { role: 'user', content: 'one prompt' },
+          { role: 'assistant', content: 'one reply' },
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
+    it('persists the max-token continuation boundary before the next request fails', async () => {
+      const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-continue-persist-'));
+      try {
+        const conversationStore = new ConversationStore(yeaftDir);
+        mockAdapter.pushResponse([
+          { type: 'text_delta', text: 'first part' },
+          { type: 'stop', stopReason: 'max_tokens' },
+        ]);
+        mockAdapter.pushResponse([
+          { type: 'error', error: new Error('continuation request failed'), retryable: false },
+        ]);
+        const engine = new Engine({
+          adapter: mockAdapter,
+          trace,
+          config: { model: 'test-model', maxOutputTokens: 1024 },
+          conversationStore,
+          yeaftDir,
+        });
+
+        for await (const _event of engine.query({
+          prompt: 'write a long answer',
+          sessionId: 'session-continue-persist',
+        })) {
+          // consume
+        }
+
+        expect(conversationStore.loadRecentBySession('session-continue-persist', 10).map(message => ({
+          role: message.role,
+          content: message.content,
+        }))).toEqual([
+          { role: 'user', content: 'write a long answer' },
+          { role: 'assistant', content: 'first part' },
+          { role: 'user', content: 'Continue' },
+        ]);
+      } finally {
+        rmSync(yeaftDir, { recursive: true, force: true });
+      }
+    });
+
     it('persists assistant rows with the caller-provided VP turn id', async () => {
       const yeaftDir = mkdtempSync(join(tmpdir(), 'yeaft-engine-vp-turn-id-'));
       try {

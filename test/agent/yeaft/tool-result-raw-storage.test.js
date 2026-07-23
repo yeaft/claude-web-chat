@@ -140,6 +140,50 @@ describe('tool result raw storage boundaries', () => {
     expect(secondCallToolMessage.content.length).toBeLessThan(raw.length);
   });
 
+  it('keeps a durable image anchor on the tool-call assistant when the next loop fails', async () => {
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    const raw = JSON.stringify({ success: true, image: `data:image/png;base64,${png}`, filename: 'pixel.png' });
+    const adapter = new MockAdapter();
+    adapter.pushResponse([
+      { type: 'tool_call', id: 'call_image_failure', name: 'ViewImage', input: {} },
+      { type: 'stop', stopReason: 'tool_use' },
+    ]);
+    adapter.pushResponse([
+      { type: 'error', error: new Error('reply request failed'), retryable: false },
+    ]);
+    const dir = join(tmpdir(), `yeaft-image-anchor-failure-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const engine = new Engine({
+      adapter,
+      trace: new CapturingTrace(),
+      yeaftDir: dir,
+      conversationStore: new ConversationStore(dir),
+      config: { model: 'test-model', language: 'en' },
+    });
+    engine.registerTool({
+      name: 'ViewImage',
+      description: 'returns an image',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => raw,
+    });
+
+    for await (const event of engine.query({ prompt: 'show image', sessionId: 's1' })) {
+      if (event.type === 'tool_end' && event.displayImages?.length > 0) {
+        event.displayImages[0].deliveryQueued = true;
+      }
+    }
+
+    const persisted = readJsonl(join(dir, 'sessions', 's1', 'conversation', 'segments'));
+    expect(persisted.filter(message => message.imageAssetAnchor)).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        content: '',
+        toolCalls: [expect.objectContaining({ id: 'call_image_failure' })],
+      }),
+    ]);
+    expect(JSON.stringify(persisted)).not.toContain(png);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it('extracts display images before tool output reaches model context or debug storage', async () => {
     const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
     const raw = JSON.stringify({ success: true, image: `data:image/png;base64,${png}`, filename: 'pixel.png' });
