@@ -79,6 +79,47 @@ describe('Work Center Action composer scope', () => {
     expect(loadWorkItemActionMessages).toHaveBeenCalledWith('wi-1', 'action-2', null, 'agent-1');
   });
 
+  it('loads and opens Run diagnostics only while the full Action scope remains current', async () => {
+    const request = { id: 'request-1', runId: 'run-1' };
+    const loadWorkItemActionRequests = vi.fn().mockResolvedValue([request]);
+    const loadWorkItemActionRequest = vi.fn().mockResolvedValue({ request });
+    const context = {
+      agentId: 'agent-1', selected: { id: 'wi-1' },
+      selectedAction: { id: 'action-1', generation: 2 },
+      store: { loadWorkItemActionRequests, loadWorkItemActionRequest },
+    };
+    const resolved = vi.fn();
+
+    await WorkCenterPage.methods.openActionRun.call(context, { id: 'run-1' }, resolved);
+
+    expect(loadWorkItemActionRequests).toHaveBeenCalledWith('wi-1', 'action-1', 'agent-1');
+    expect(loadWorkItemActionRequest).toHaveBeenCalledWith(
+      'wi-1', 'action-1', 'run-1', 'request-1', 'agent-1',
+    );
+    expect(resolved).toHaveBeenCalledWith(request);
+  });
+
+  it('does not open late Run diagnostics after the selected Action changes', async () => {
+    const pending = deferred();
+    const context = {
+      agentId: 'agent-1', selected: { id: 'wi-1' },
+      selectedAction: { id: 'action-1', generation: 2 },
+      store: {
+        loadWorkItemActionRequests: vi.fn(() => pending.promise),
+        loadWorkItemActionRequest: vi.fn(),
+      },
+    };
+    const resolved = vi.fn();
+    const opening = WorkCenterPage.methods.openActionRun.call(context, { id: 'run-1' }, resolved);
+    context.selectedAction = { id: 'action-2', generation: 1 };
+    pending.resolve([{ id: 'request-1', runId: 'run-1' }]);
+
+    await opening;
+
+    expect(context.store.loadWorkItemActionRequest).not.toHaveBeenCalled();
+    expect(resolved).toHaveBeenCalledWith(null);
+  });
+
   it('does not refetch a cached Action message page', () => {
     const loadWorkItemActionMessages = vi.fn();
     const context = {

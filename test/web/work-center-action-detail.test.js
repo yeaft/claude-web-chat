@@ -192,6 +192,7 @@ describe('Work Center Action detail tabs', () => {
   it('renders generation history as one Action thread and opens run diagnostics lazily', async () => {
     const request = { id: 'request-2', runId: 'run-2', model: 'model-2' };
     const wrapper = mountDetail({
+      onOpenRun: (_run, resolve) => resolve(request),
       action: {
         id: 'action-1', type: 'implement', status: 'running', generation: 2,
         executionStats: {},
@@ -223,7 +224,7 @@ describe('Work Center Action detail tabs', () => {
     await generations[1].get('.work-center-action-run').trigger('click');
     expect(wrapper.vm.activeTab).toBe('requests');
     expect(wrapper.vm.expandedRequestKey).toBe('run-2:request-2');
-    expect(wrapper.emitted('select-request')[0][0]).toEqual(request);
+    expect(wrapper.emitted('open-run')[0][0]).toEqual(expect.objectContaining({ id: 'run-2' }));
   });
 
   it('opens persisted message attachments with an accessible, loading-aware button', async () => {

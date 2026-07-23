@@ -25,7 +25,7 @@ export default {
     previewingAttachmentId: { type: String, default: null },
     attachmentError: { type: String, default: '' },
   },
-  emits: ['back', 'update:composerText', 'load-earlier-messages', 'select-request', 'refresh-requests', 'attachment-input', 'remove-attachment', 'open-attachment', 'send', 'retry'],
+  emits: ['back', 'update:composerText', 'load-earlier-messages', 'select-request', 'refresh-requests', 'open-run', 'attachment-input', 'remove-attachment', 'open-attachment', 'send', 'retry'],
   data() {
     return {
       activeTab: 'messages',
@@ -134,15 +134,13 @@ export default {
       const detail = this.requestDetails[this.requestKey(request)] || null;
       return detail?.request || detail;
     },
-    requestForRun(run) {
-      return this.requests.find(request => request.runId === run.id) || null;
-    },
     async openRun(run) {
-      const request = this.requestForRun(run);
+      const actionId = this.action?.id;
+      const generation = this.action?.generation;
+      const request = await new Promise(resolve => this.$emit('open-run', run, resolve));
+      if (!request || this.action?.id !== actionId || this.action?.generation !== generation) return;
       this.switchTab('requests');
-      if (!request) return;
       this.expandedRequestKey = this.requestKey(request);
-      if (!this.requestDetail(request)) this.$emit('select-request', request);
     },
     async toggleRequest(request) {
       const key = this.requestKey(request);

@@ -366,6 +366,10 @@ describe('Work Center event projection', () => {
     const detail = internalDetail();
     detail.actions[0].generation = 2;
     detail.actions[0].specHash = 'review-v2';
+    detail.actions[0].identityHistory = [
+      { generation: 1, specHash: 'review-v1' },
+      { generation: 2, specHash: 'review-v2' },
+    ];
     detail.runs = [{
       ...detail.runs[0], id: 'current-run', actionGeneration: 2, actionSpecHash: 'review-v2', actionAttempt: 1,
       response: 'Current generation response', loopCount: 2, toolCount: 3,
@@ -416,6 +420,10 @@ describe('Work Center event projection', () => {
     const detail = internalDetail();
     detail.actions[0].generation = 2;
     detail.actions[0].specHash = 'review-v2';
+    detail.actions[0].identityHistory = [
+      { generation: 1, specHash: 'review-v1' },
+      { generation: 2, specHash: 'review-v2' },
+    ];
     detail.runs = [{
       ...detail.runs[0], id: 'current-run', status: 'running', actionGeneration: 2,
       actionSpecHash: 'review-v2', actionAttempt: 1, response: 'Current response', startedAt: 20,
@@ -455,6 +463,20 @@ describe('Work Center event projection', () => {
     ]);
     expect(JSON.stringify(projected.thread)).not.toContain('Wrong spec response');
     expect(projected.response).toBe('Current response');
+
+    detail.runs[1] = {
+      ...detail.runs[1], actionAttempt: 99, startedAt: 999,
+    };
+    detail.runs.push({
+      ...detail.runs[1], id: 'wrong-old-spec', actionSpecHash: 'evil-v1',
+      response: 'Newest wrong historical response', actionAttempt: 100, startedAt: 1000,
+    });
+    const fenced = projectWorkItemDetail(detail).actions[0];
+    expect(fenced.thread[0].runs.map(run => run.id)).toEqual(['old-run']);
+    expect(JSON.stringify(fenced.thread)).not.toContain('Newest wrong historical response');
+    expect(projectActionRequestIndex(detail.actions[0], detail.runs.map(run => ({
+      run, turn: { turnId: `request-${run.id}`, startedAt: run.startedAt, endedAt: run.endedAt },
+    }))).requests.map(request => request.runId)).toEqual(['old-run', 'current-run']);
   });
 
   it('merges user Action input and assistant Run responses without exposing event data generally', () => {
@@ -550,7 +572,15 @@ describe('Work Center event projection', () => {
       turns: [{ ...turn, tools: [] }], loops: [],
     })).toBeNull();
 
-    const currentAction = { ...strictAction, generation: 2, specHash: 'current-v2' };
+    const currentAction = {
+      ...strictAction,
+      generation: 2,
+      specHash: 'current-v2',
+      identityHistory: [
+        { generation: 1, specHash: 'current-spec' },
+        { generation: 2, specHash: 'current-v2' },
+      ],
+    };
     const historicalRun = { ...run, actionGeneration: 1, actionSpecHash: 'current-spec' };
     expect(projectActionRequestIndex(currentAction, [{ run: historicalRun, turn }]).requests)
       .toEqual([expect.objectContaining({ runId: historicalRun.id, generation: 1 })]);

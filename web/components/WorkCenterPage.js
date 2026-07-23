@@ -448,6 +448,37 @@ export default {
         this.agentId,
       ).catch(() => null);
     },
+    async openActionRun(run, resolve) {
+      const scope = {
+        agentId: this.agentId,
+        workItemId: this.selected?.id,
+        actionId: this.selectedAction?.id,
+        generation: this.selectedAction?.generation,
+        runId: run?.id,
+      };
+      if (!scope.workItemId || !scope.actionId || !scope.runId) return resolve?.(null);
+      const requests = await this.store.loadWorkItemActionRequests(
+        scope.workItemId,
+        scope.actionId,
+        scope.agentId,
+      ).catch(() => []);
+      if (this.agentId !== scope.agentId || this.selected?.id !== scope.workItemId
+        || this.selectedAction?.id !== scope.actionId
+        || this.selectedAction?.generation !== scope.generation) return resolve?.(null);
+      const request = requests.find(candidate => candidate.runId === scope.runId) || null;
+      if (!request) return resolve?.(null);
+      const detail = await this.store.loadWorkItemActionRequest(
+        scope.workItemId,
+        scope.actionId,
+        request.runId,
+        request.id,
+        scope.agentId,
+      ).catch(() => null);
+      if (!detail || this.agentId !== scope.agentId || this.selected?.id !== scope.workItemId
+        || this.selectedAction?.id !== scope.actionId
+        || this.selectedAction?.generation !== scope.generation) return resolve?.(null);
+      return resolve?.(request);
+    },
     actionHasDetail(action) {
       return !!action?.brief || (Array.isArray(action?.messages) && action.messages.length > 0)
         || !!String(action?.response || '').trim() || !!String(action?.failureReason || '').trim();
@@ -1078,6 +1109,7 @@ export default {
               @load-earlier-messages="loadEarlierActionMessages"
               @refresh-requests="refreshActionRequests"
               @select-request="loadActionRequest"
+              @open-run="openActionRun"
               @attachment-input="onGuidanceAttachmentInput"
               @remove-attachment="removeGuidanceAttachment"
               @open-attachment="previewAttachment"

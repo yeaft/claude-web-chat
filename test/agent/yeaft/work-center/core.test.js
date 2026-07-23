@@ -1907,7 +1907,14 @@ describe('Work Center core', () => {
     )).toBe(true);
 
     const changedAction = store.setActionWorkspace(firstClaim.action.id, null, 'read');
-    expect(changedAction).toMatchObject({ generation: 2, workspaceMode: 'read' });
+    expect(changedAction).toMatchObject({
+      generation: 2,
+      workspaceMode: 'read',
+      identityHistory: [
+        { generation: 1, specHash: firstClaim.action.specHash },
+        { generation: 2, specHash: changedAction.specHash },
+      ],
+    });
     expect(changedAction.specHash).not.toBe(firstClaim.action.specHash);
     const secondClaim = store.claimReadyAction('boot-a', 5_000);
     expect(secondClaim.action).toMatchObject({

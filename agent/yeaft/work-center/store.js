@@ -158,6 +158,7 @@ function mapAction(row) {
     contractRevision: row.contract_revision,
     generation: Math.max(1, Number(row.generation) || 1),
     specHash: row.spec_hash || '',
+    identityHistory: parseJson(row.identity_history, []),
     resultRunId: row.result_run_id || null,
     status: row.status,
     attempt: row.attempt,
@@ -168,6 +169,19 @@ function mapAction(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function actionIdentityHistory(action, generation = action?.generation, specHash = action?.specHash) {
+  const byGeneration = new Map();
+  for (const identity of Array.isArray(action?.identityHistory) ? action.identityHistory : []) {
+    const value = Math.max(1, Number(identity?.generation) || 1);
+    if (typeof identity?.specHash === 'string' && identity.specHash) {
+      byGeneration.set(value, { generation: value, specHash: identity.specHash });
+    }
+  }
+  const value = Math.max(1, Number(generation) || 1);
+  if (typeof specHash === 'string' && specHash) byGeneration.set(value, { generation: value, specHash });
+  return [...byGeneration.values()].sort((left, right) => left.generation - right.generation).slice(-100);
 }
 
 function mapRun(row) {
@@ -324,6 +338,7 @@ export class WorkItemStore {
         contract_revision INTEGER NOT NULL DEFAULT 1,
         generation INTEGER NOT NULL DEFAULT 1,
         spec_hash TEXT NOT NULL DEFAULT '',
+        identity_history TEXT NOT NULL DEFAULT '[]',
         result_run_id TEXT,
         status TEXT NOT NULL,
         attempt INTEGER NOT NULL DEFAULT 0,
@@ -548,6 +563,16 @@ export class WorkItemStore {
     }
     if (!hasColumn(this.db, 'actions', 'spec_hash')) {
       this.db.exec("ALTER TABLE actions ADD COLUMN spec_hash TEXT NOT NULL DEFAULT ''");
+    }
+    if (!hasColumn(this.db, 'actions', 'identity_history')) {
+      this.db.exec("ALTER TABLE actions ADD COLUMN identity_history TEXT NOT NULL DEFAULT '[]'");
+      const seedIdentity = this.db.prepare('UPDATE actions SET identity_history = ? WHERE id = ?');
+      for (const row of this.db.prepare('SELECT id, generation, spec_hash FROM actions').all()) {
+        seedIdentity.run(stringify(actionIdentityHistory({
+          generation: row.generation,
+          specHash: row.spec_hash,
+        })), row.id);
+      }
     }
     if (!hasColumn(this.db, 'actions', 'result_run_id')) {
       this.db.exec('ALTER TABLE actions ADD COLUMN result_run_id TEXT');
@@ -838,12 +863,13 @@ export class WorkItemStore {
       updatedAt: now,
     };
     action.specHash = actionSpecHash(action);
+    action.identityHistory = actionIdentityHistory(action);
     this.db.prepare(`INSERT INTO actions
       (id, work_item_id, sequence, type, required_role, stage_id, assignment_policy, model_policy,
        depends_on_stage_ids, workspace_mode, changes_requested_stage_id, workspace, instruction, brief, context, contract_revision,
-       generation, spec_hash, result_run_id, status, attempt, max_attempts, current_run_id, lease_epoch,
+       generation, spec_hash, identity_history, result_run_id, status, attempt, max_attempts, current_run_id, lease_epoch,
        replaces_action_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)`).run(
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)`).run(
       action.id,
       workItemId,
       action.sequence,
@@ -862,6 +888,7 @@ export class WorkItemStore {
       action.contractRevision,
       action.generation,
       action.specHash,
+      stringify(action.identityHistory),
       action.resultRunId,
       action.status,
       action.attempt,
@@ -926,10 +953,13 @@ export class WorkItemStore {
         const nextAction = action.id === target.id && replacement
           ? { ...action, ...replacement, generation: action.generation + 1 }
           : { ...action, generation: action.generation + 1 };
+        const nextSpecHash = actionSpecHash(nextAction);
         this.db.prepare(`UPDATE actions SET status = 'ready', attempt = 0, current_run_id = NULL,
-          lease_epoch = ?, generation = generation + 1, spec_hash = ?, result_run_id = NULL,
+          lease_epoch = ?, generation = generation + 1, spec_hash = ?, identity_history = ?, result_run_id = NULL,
           workspace = ?, updated_at = ? WHERE id = ?`).run(
-          nextEpoch.get(action.id), actionSpecHash(nextAction), stringify(workspace), now, action.id,
+          nextEpoch.get(action.id), nextSpecHash,
+          stringify(actionIdentityHistory(action, nextAction.generation, nextSpecHash)),
+          stringify(workspace), now, action.id,
         );
       }
     }
@@ -976,13 +1006,18 @@ export class WorkItemStore {
       const nextWorkspaceMode = workspaceMode || action.workspaceMode;
       const specChanged = nextWorkspaceMode !== action.workspaceMode;
       const nextAction = { ...action, workspaceMode: nextWorkspaceMode };
+      const nextSpecHash = specChanged ? actionSpecHash(nextAction) : action.specHash;
       const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?,
-        generation = generation + ?, spec_hash = ?, result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
+        generation = generation + ?, spec_hash = ?, identity_history = ?,
+        result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
         updated_at = ? WHERE id = ? AND generation = ?`).run(
         stringify(workspace),
         nextWorkspaceMode,
         specChanged ? 1 : 0,
-        specChanged ? actionSpecHash(nextAction) : action.specHash,
+        nextSpecHash,
+        stringify(specChanged
+          ? actionIdentityHistory(action, action.generation + 1, nextSpecHash)
+          : action.identityHistory),
         specChanged ? 1 : 0,
         this.now(),
         actionId,
@@ -1027,13 +1062,17 @@ export class WorkItemStore {
         }
       }
       const changed = this.db.prepare(`UPDATE actions SET workspace = ?, workspace_mode = ?,
-        generation = generation + ?, spec_hash = ?, result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
+        generation = generation + ?, spec_hash = ?, identity_history = ?,
+        result_run_id = CASE WHEN ? = 1 THEN NULL ELSE result_run_id END,
         updated_at = ? WHERE id = ? AND status = 'running' AND current_run_id = ?
         AND lease_epoch = ? AND generation = ?`).run(
         stringify(workspace),
         nextWorkspaceMode,
         specChanged ? 1 : 0,
         nextSpecHash,
+        stringify(specChanged
+          ? actionIdentityHistory(action, nextGeneration, nextSpecHash)
+          : action.identityHistory),
         specChanged ? 1 : 0,
         now,
         actionId,
@@ -1067,11 +1106,13 @@ export class WorkItemStore {
         for (const row of pendingRows) {
           const pending = mapAction(row);
           const fallback = { ...pending, workspaceMode: 'shared', workspace: null };
+          const fallbackSpecHash = actionSpecHash(fallback);
           const repaired = this.db.prepare(`UPDATE actions SET workspace = NULL, workspace_mode = 'shared',
-            generation = generation + 1, spec_hash = ?, result_run_id = NULL, updated_at = ?
+            generation = generation + 1, spec_hash = ?, identity_history = ?, result_run_id = NULL, updated_at = ?
             WHERE id = ? AND status = 'ready' AND current_run_id IS NULL
             AND generation = ? AND workspace_mode = ?`).run(
-            actionSpecHash(fallback),
+            fallbackSpecHash,
+            stringify(actionIdentityHistory(pending, pending.generation + 1, fallbackSpecHash)),
             now,
             pending.id,
             pending.generation,
@@ -2210,10 +2251,11 @@ export class WorkItemStore {
             resultRunId: null,
             contractRevision: nextWorkItem.revision,
           };
+          const candidateSpecHash = actionSpecHash(candidate);
           const changed = this.db.prepare(`UPDATE actions SET type = ?, required_role = ?, stage_id = ?,
             assignment_policy = ?, model_policy = ?, depends_on_stage_ids = ?, workspace_mode = ?,
             changes_requested_stage_id = ?, workspace = NULL, instruction = ?, brief = ?, context = ?,
-            contract_revision = ?, generation = ?, spec_hash = ?, result_run_id = NULL, status = 'ready',
+            contract_revision = ?, generation = ?, spec_hash = ?, identity_history = ?, result_run_id = NULL, status = 'ready',
             attempt = 0, max_attempts = ?, current_run_id = NULL, lease_epoch = lease_epoch + 1,
             updated_at = ? WHERE id = ? AND work_item_id = ? AND status = 'superseded' AND generation = ?`).run(
             candidate.type, candidate.requiredRole || '', candidate.stageId,
@@ -2221,7 +2263,8 @@ export class WorkItemStore {
             stringify(candidate.dependsOnStageIds || []), candidate.workspaceMode || 'shared',
             candidate.changesRequestedStageId || null, candidate.instruction || '', stringify(candidate.brief || null),
             stringify(candidate.context || []), candidate.contractRevision, candidate.generation,
-            actionSpecHash(candidate), candidate.maxAttempts || 2, now,
+            candidateSpecHash, stringify(actionIdentityHistory(prior, candidate.generation, candidateSpecHash)),
+            candidate.maxAttempts || 2, now,
             prior.id, workItem.id, prior.generation,
           );
           if (Number(changed.changes) !== 1) throw new Error('Work Center retained Action lost its superseded identity fence');

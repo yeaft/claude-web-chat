@@ -166,17 +166,12 @@ function runSpecHash(run) {
 
 function threadRuns(action, runs) {
   const source = (Array.isArray(runs) ? runs : []).filter(run => run?.actionId === action?.id);
-  const selectedSpecByGeneration = new Map();
+  const selectedSpecByGeneration = new Map((Array.isArray(action?.identityHistory) ? action.identityHistory : [])
+    .filter(identity => typeof identity?.specHash === 'string' && identity.specHash)
+    .map(identity => [actionGeneration(identity.generation), identity.specHash]));
   const currentGeneration = actionGeneration(action?.generation);
   if (typeof action?.specHash === 'string' && action.specHash) {
     selectedSpecByGeneration.set(currentGeneration, action.specHash);
-  }
-  for (const run of [...source].sort((left, right) => (
-    count(right.actionAttempt) - count(left.actionAttempt)
-      || count(right.startedAt) - count(left.startedAt)
-  ))) {
-    const generation = runGeneration(run);
-    if (!selectedSpecByGeneration.has(generation)) selectedSpecByGeneration.set(generation, runSpecHash(run));
   }
   return source.filter(run => {
     const generation = runGeneration(run);
