@@ -22,8 +22,10 @@ export default {
     sending: { type: Boolean, default: false },
     composerError: { type: String, default: '' },
     attachmentsSupported: { type: Boolean, default: false },
+    previewingAttachmentId: { type: String, default: null },
+    attachmentError: { type: String, default: '' },
   },
-  emits: ['back', 'update:composerText', 'load-earlier-messages', 'select-request', 'refresh-requests', 'attachment-input', 'remove-attachment', 'send', 'retry'],
+  emits: ['back', 'update:composerText', 'load-earlier-messages', 'select-request', 'refresh-requests', 'attachment-input', 'remove-attachment', 'open-attachment', 'send', 'retry'],
   data() {
     return {
       activeTab: 'messages',
@@ -234,11 +236,16 @@ export default {
             </header>
             <div v-if="message.text" class="markdown-body" v-html="messageHtml(message.text)"></div>
             <div v-if="message.attachments?.length" class="work-center-attachment-list">
-              <span v-for="attachment in message.attachments" :key="attachment.id" class="work-center-attachment-chip">
-                <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
-              </span>
+              <button v-for="attachment in message.attachments" :key="attachment.id" type="button"
+                      class="work-center-attachment-chip work-center-attachment-preview"
+                      :disabled="previewingAttachmentId === attachment.id"
+                      :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })"
+                      @click="$emit('open-attachment', attachment)">
+                <span>{{ attachment.name }}</span><small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
+              </button>
             </div>
           </article>
+          <p v-if="attachmentError" class="work-center-error" role="alert">{{ attachmentError }}</p>
           <p v-if="messages.length === 0" class="work-center-action-empty">{{ tr('workCenter.noActionMessages', 'No execution messages yet.') }}</p>
         </div>
 

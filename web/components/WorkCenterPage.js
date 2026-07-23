@@ -52,6 +52,7 @@ export default {
       attachmentsUploading: false,
       guidanceAttachmentsUploading: false,
       previewingAttachmentId: null,
+      attachmentPreviewError: '',
       form: {
         title: '',
         goal: '',
@@ -209,6 +210,8 @@ export default {
         this.resetActionComposer?.();
         this.resetWorkItemComposer?.();
         this.narrowPane = 'items';
+        this.previewingAttachmentId = null;
+        this.attachmentPreviewError = '';
         if (previousId && id !== previousId) {
           this.closeFolderPicker();
           this.resetCreateExecutionContext(id);
@@ -365,6 +368,8 @@ export default {
       this.actionsExpanded = false;
       this.detailError = '';
       this.detailLoading = false;
+      this.previewingAttachmentId = null;
+      this.attachmentPreviewError = '';
     },
     async selectItem(item) {
       this.openWorkItem(item.id);
@@ -381,7 +386,11 @@ export default {
       }
     },
     selectAction(action) {
-      if (this.selectedActionId !== action.id) this.resetActionComposer();
+      if (this.selectedActionId !== action.id) {
+        this.resetActionComposer();
+        this.previewingAttachmentId = null;
+        this.attachmentPreviewError = '';
+      }
       this.selectedActionId = action.id;
       this.narrowPane = 'action';
       this.loadLatestActionMessages(action);
@@ -584,19 +593,32 @@ export default {
     },
     async previewAttachment(attachment) {
       if (!this.selected?.id || !attachment?.id || this.previewingAttachmentId) return;
+      const scope = `${this.agentId}:${this.selected.id}`;
       const previewWindow = attachment.isImage ? null : window.open('', '_blank');
+      if (!attachment.isImage && !previewWindow) {
+        this.attachmentPreviewError = this.tr('workCenter.attachmentOpenBlocked', 'The browser blocked the attachment window. Allow pop-ups and try again.');
+        return;
+      }
       if (previewWindow) previewWindow.opener = null;
       this.previewingAttachmentId = attachment.id;
+      this.attachmentPreviewError = '';
       try {
         const data = await this.store.previewWorkItemAttachment(this.selected.id, attachment.id, this.agentId);
+        if (`${this.agentId}:${this.selected?.id}` !== scope) {
+          previewWindow?.close();
+          return;
+        }
         if (data?.preview && data.attachment?.isImage) openImagePreview(data.preview);
         else if (data?.preview && previewWindow) previewWindow.location.replace(data.preview);
         else previewWindow?.close();
       } catch (error) {
         previewWindow?.close();
-        throw error;
+        if (`${this.agentId}:${this.selected?.id}` === scope) {
+          this.attachmentPreviewError = error?.message
+            || this.tr('workCenter.attachmentPreviewFailed', 'Could not open the attachment. Try again.');
+        }
       } finally {
-        this.previewingAttachmentId = null;
+        if (`${this.agentId}:${this.selected?.id}` === scope) this.previewingAttachmentId = null;
       }
     },
     formatAttachmentSize(value) {
@@ -951,11 +973,12 @@ export default {
                     <button v-for="attachment in selected.attachments" :key="attachment.id" type="button"
                             class="work-center-attachment-chip work-center-attachment-preview"
                             @click="previewAttachment(attachment)" :disabled="previewingAttachmentId === attachment.id"
-                            :title="tr('workCenter.previewAttachment', 'Preview attachment')">
+                            :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })">
                       <span>{{ attachment.name }}</span>
-                      <small>{{ formatAttachmentSize(attachment.size) }}</small>
+                      <small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
                     </button>
                   </div>
+                  <p v-if="attachmentPreviewError" class="work-center-error" role="alert">{{ attachmentPreviewError }}</p>
                 </div>
                 <div class="work-center-section work-center-workflow" v-if="selected.actions?.length">
                   <div v-if="selected.mainline?.progress" class="work-center-mainline-progress" :data-attention="selected.mainline.progress.attentionState">
@@ -1021,6 +1044,8 @@ export default {
               :sending="actionInputSending"
               :composer-error="actionInputError"
               :attachments-supported="workItemAttachmentsSupported"
+              :previewing-attachment-id="previewingAttachmentId"
+              :attachment-error="attachmentPreviewError"
               @back="showActionsPane"
               @update:composer-text="actionGuidance = $event"
               @load-earlier-messages="loadEarlierActionMessages"
@@ -1028,6 +1053,7 @@ export default {
               @select-request="loadActionRequest"
               @attachment-input="onGuidanceAttachmentInput"
               @remove-attachment="removeGuidanceAttachment"
+              @open-attachment="previewAttachment"
               @send="guideSelectedAction"
               @retry="retrySelectedAction"
             />
