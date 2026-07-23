@@ -9,12 +9,23 @@ export function persistedMessageIdsForRenderedItem(item) {
   for (const message of Array.isArray(item.messages) ? item.messages : []) {
     addPersistedMessageId(ids, message?.id);
     addPersistedMessageId(ids, message?.messageId);
+    addPersistedMessageId(ids, message?.persistedMessageId);
   }
   addPersistedMessageId(ids, item.message?.id);
   addPersistedMessageId(ids, item.messageId);
   addPersistedMessageId(ids, item.atMessageId);
   if (item.type !== 'assistant-turn') addPersistedMessageId(ids, item.id);
   return ids;
+}
+
+export async function revealOutlineResult({ result, loadWindow, nextTick, revealMessage, isMobile, closeOutline }) {
+  if (!result) return false;
+  const loaded = await loadWindow?.(result);
+  if (!loaded) return false;
+  await nextTick?.();
+  const revealed = await revealMessage?.(result.messageId);
+  if (revealed && isMobile) closeOutline?.();
+  return !!revealed;
 }
 
 export function resolvePersistedMessageTarget(blocks, messageId) {

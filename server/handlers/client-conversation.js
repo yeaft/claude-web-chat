@@ -914,6 +914,24 @@ export async function handleClientConversation(clientId, client, msg, checkAgent
       break;
     }
 
+    case 'yeaft_load_history_outline': {
+      const outlineAgentId = msg.agentId;
+      const outlineSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+      if (!outlineAgentId || !outlineSessionId) return;
+      if (!await checkAgentAccess(outlineAgentId)) return;
+      if (!CONFIG.skipAuth && !yeaftSessionDb.getForAgent(client.userId, outlineAgentId, outlineSessionId)) return;
+      await forwardToAgent(outlineAgentId, {
+        type: 'yeaft_load_history_outline',
+        sessionId: outlineSessionId,
+        requestId: typeof msg.requestId === 'string' ? msg.requestId : null,
+        limit: typeof msg.limit === 'number' ? msg.limit : 50,
+        beforeSeq: typeof msg.beforeSeq === 'number' ? msg.beforeSeq : null,
+        includeTotal: msg.includeTotal !== false,
+        _requestClientId: clientId,
+      });
+      break;
+    }
+
     case 'yeaft_search_history': {
       const searchAgentId = msg.agentId;
       const searchSessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';

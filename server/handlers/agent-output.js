@@ -609,6 +609,24 @@ export async function handleAgentOutput(agentId, agent, msg) {
       break;
     }
 
+    case 'yeaft_history_outline': {
+      const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
+      if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {
+        await sendToWebClient(targetClient, {
+          type: 'yeaft_history_outline',
+          agentId,
+          requestId: msg.requestId ?? null,
+          sessionId: msg.sessionId ?? null,
+          results: Array.isArray(msg.results) ? msg.results : [],
+          hasMore: !!msg.hasMore,
+          nextBeforeSeq: msg.nextBeforeSeq ?? null,
+          totalCount: Number.isFinite(msg.totalCount) ? msg.totalCount : null,
+          ...(msg.error ? { error: msg.error } : {}),
+        });
+      }
+      break;
+    }
+
     case 'yeaft_history_search_result': {
       const targetClient = msg._requestClientId ? webClients.get(msg._requestClientId) : null;
       if (targetClient?.authenticated && (CONFIG.skipAuth || targetClient.userId === agent.ownerId)) {

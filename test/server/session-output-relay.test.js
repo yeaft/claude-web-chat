@@ -204,6 +204,17 @@ describe('Yeaft Session output relay aliases', () => {
     ]);
 
     await handleAgentOutput('agent-1', agent, {
+      type: 'yeaft_history_outline', _requestClientId: 'owner-client', requestId: 'outline-1',
+      sessionId, results: [{ messageId: 'm1', role: 'assistant', snippet: 'Here is the image.', seq: 1 }],
+      totalCount: 1, hasMore: false,
+    });
+    expect(client.sent.at(-1)).toMatchObject({
+      type: 'yeaft_history_outline', agentId: 'agent-1', sessionId, requestId: 'outline-1',
+      totalCount: 1, results: [{ messageId: 'm1', role: 'assistant', snippet: 'Here is the image.', seq: 1 }],
+    });
+    expect(client.sent.at(-1).results[0]).not.toHaveProperty('images');
+
+    await handleAgentOutput('agent-1', agent, {
       type: 'yeaft_history_window', _requestClientId: 'owner-client', requestId: 'window-1',
       sessionId, messages: [...projectedToolPage, ...projectedFinalPage],
     });
