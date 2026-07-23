@@ -54,10 +54,12 @@ function installFakeWebSocket() {
 function createRaceAuthStore() {
   return {
     token: 'old-token',
+    authGeneration: 1,
     getActiveToken: vi.fn(function getActiveToken() { return this.token; }),
-    handleAuthFailure: vi.fn(function handleAuthFailure(_, failedToken) {
-      if (failedToken !== this.token) return false;
+    handleAuthFailure: vi.fn(function handleAuthFailure(_, failedToken, failedGeneration = this.authGeneration) {
+      if (failedToken !== this.token || failedGeneration !== this.authGeneration) return false;
       this.token = null;
+      this.authGeneration += 1;
       return false;
     }),
   };
@@ -81,10 +83,11 @@ describe('websocket auth token races', () => {
 
     connect(store);
     authStore.token = 'new-token';
+    authStore.authGeneration = 2;
     sockets[0].onclose({ code: 1008, reason: 'Authentication required' });
 
     expect(sockets[0].url).toContain('token=old-token');
-    expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token');
+    expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token', 1);
     expect(authStore.token).toBe('new-token');
   });
 
@@ -96,7 +99,7 @@ describe('websocket auth token races', () => {
     const store = createStore();
     store.handleMessage = vi.fn(msg => {
       if (msg.type === 'auth_result' && msg.success === false) {
-        authStore.handleAuthFailure(undefined, msg._wsAuthToken);
+        authStore.handleAuthFailure(undefined, msg._wsAuthToken, msg._wsAuthGeneration);
       }
     });
 
@@ -122,7 +125,7 @@ describe('websocket auth token races', () => {
     const store = createStore();
     store.handleMessage = vi.fn(msg => {
       if (msg.type === 'auth_result' && msg.success === false) {
-        authStore.handleAuthFailure(undefined, msg._wsAuthToken);
+        authStore.handleAuthFailure(undefined, msg._wsAuthToken, msg._wsAuthGeneration);
       }
     });
 
@@ -134,7 +137,7 @@ describe('websocket auth token races', () => {
       success: false,
       _wsAuthToken: 'old-token',
     }));
-    expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token');
+    expect(authStore.handleAuthFailure).toHaveBeenCalledWith(undefined, 'old-token', 1);
     expect(authStore.token).toBe(null);
   });
 });

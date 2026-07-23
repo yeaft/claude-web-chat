@@ -29,6 +29,7 @@ export const useAuthStore = defineStore('auth', {
 
     // Current auth state
     initialized: false,
+    authGeneration: 0,
     isAuthenticated: false,
     token: null,
     sessionKey: null, // Uint8Array for encryption
@@ -98,6 +99,7 @@ export const useAuthStore = defineStore('auth', {
 
         if (this.skipAuth) {
           // In skip auth mode, we're automatically authenticated
+          this.authGeneration += 1;
           this.isAuthenticated = true;
           this.loginStep = 'authenticated';
         }
@@ -155,6 +157,7 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
 
@@ -235,6 +238,7 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
 
@@ -289,6 +293,7 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
         this.tempToken = null;
@@ -343,6 +348,7 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
 
@@ -382,6 +388,7 @@ export const useAuthStore = defineStore('auth', {
         this.token = data.token;
         this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
         this.role = data.role || 'pro';
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
         this.tempToken = null;
@@ -546,6 +553,7 @@ export const useAuthStore = defineStore('auth', {
             this.token = data.token;
             this.sessionKey = data.sessionKey ? decodeKey(data.sessionKey) : null;
             this.role = data.role || 'pro';
+            this.authGeneration += 1;
             this.isAuthenticated = true;
             this.loginStep = 'authenticated';
             localStorage.setItem('authToken', data.token);
@@ -645,6 +653,7 @@ export const useAuthStore = defineStore('auth', {
       this.token = token;
       this.sessionKey = sessionKey ? decodeKey(sessionKey) : null;
       this.role = role || 'pro';
+      this.authGeneration += 1;
       this.isAuthenticated = true;
       this.loginStep = 'authenticated';
       localStorage.setItem('authToken', token);
@@ -704,14 +713,15 @@ export const useAuthStore = defineStore('auth', {
     },
 
     async refreshSession() {
-      if (!this.token) return false;
       const requestToken = this.token;
+      const requestGeneration = this.authGeneration;
+      const requestWasAuthenticated = this.isAuthenticated;
       try {
         const res = await fetch('/api/user/profile', {
-          headers: { 'Authorization': `Bearer ${requestToken}` }
+          headers: requestToken ? { 'Authorization': `Bearer ${requestToken}` } : {}
         });
 
-        if (this.handleAuthResponse(res, requestToken)) {
+        if (this.handleAuthResponse(res, requestToken, requestGeneration, requestWasAuthenticated)) {
           return false;
         }
 
@@ -734,7 +744,7 @@ export const useAuthStore = defineStore('auth', {
 
     startSessionRefresh() {
       this.stopSessionRefresh();
-      if (!this.token || this.skipAuth) return;
+      if (!this.isAuthenticated || this.skipAuth) return;
       const refreshIfVisible = () => {
         if (typeof document !== 'undefined' && document.visibilityState && document.visibilityState !== 'visible') return;
         this.refreshSession();
@@ -770,15 +780,9 @@ export const useAuthStore = defineStore('auth', {
      */
     async logout() {
       try {
-        if (this.token) {
-          await fetch('/api/auth/logout', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${this.token}`
-            }
-          });
-        }
+        const headers = { 'Content-Type': 'application/json' };
+        if (this.token) headers.Authorization = `Bearer ${this.token}`;
+        await fetch('/api/auth/logout', { method: 'POST', headers });
       } catch (err) {
         console.error('Logout error:', err);
       }
@@ -799,24 +803,31 @@ export const useAuthStore = defineStore('auth', {
       return this.token;
     },
 
-    /** Only authentication failures invalidate login; authorization failures do not. */
-    handleAuthResponse(response, failedToken = undefined, error = undefined) {
+    /** Only current-session authentication failures invalidate login. */
+    handleAuthResponse(
+      response,
+      failedToken = null,
+      failedGeneration = this.authGeneration,
+      requestWasAuthenticated = this.isAuthenticated,
+      error = undefined,
+    ) {
       if (!response || response.status !== 401) return false;
-      if (failedToken === undefined) return false;
+      if (!requestWasAuthenticated || failedGeneration !== this.authGeneration) return false;
       const activeToken = this.token || localStorage.getItem('authToken') || null;
       if (failedToken !== activeToken) return false;
-      this.handleAuthFailure(error, failedToken);
+      this.handleAuthFailure(error, failedToken, failedGeneration);
       return true;
     },
 
-    handleAuthFailure(error = 'Session expired. Please log in again.', failedToken = undefined) {
-      // Auth failures are asynchronous: an old WebSocket or fetch request can
-      // fail after the user has already logged in again. Only clear the current
-      // session if the failed request used the token that is still active.
+    handleAuthFailure(
+      error = 'Session expired. Please log in again.',
+      failedToken = null,
+      failedGeneration = this.authGeneration,
+    ) {
+      // Old WebSocket or fetch failures must not clear a newer login.
+      if (failedGeneration !== this.authGeneration) return false;
       const activeToken = this.token || localStorage.getItem('authToken') || null;
-      if (failedToken !== undefined && failedToken !== activeToken) {
-        return false;
-      }
+      if (failedToken !== activeToken) return false;
       this.clearStoredSession(error);
       return false;
     },
@@ -826,15 +837,16 @@ export const useAuthStore = defineStore('auth', {
      */
     async restoreSession() {
       const token = localStorage.getItem('authToken');
+      const requestGeneration = this.authGeneration;
+      const requestWasAuthenticated = this.isAuthenticated || !!token;
       console.log('[Auth] Restoring session, token exists:', !!token);
-      if (!token) return false;
 
       try {
         const res = await fetch('/api/user/profile', {
           headers: token ? { 'Authorization': `Bearer ${token}` } : {}
         });
 
-        if (this.handleAuthResponse(res, token || undefined)) {
+        if (this.handleAuthResponse(res, token, requestGeneration, requestWasAuthenticated)) {
           return false;
         }
 
@@ -844,12 +856,14 @@ export const useAuthStore = defineStore('auth', {
         }
 
         const profile = await res.json();
+        if (requestGeneration !== this.authGeneration) return this.isAuthenticated;
         const headerToken = res.headers?.get?.('X-New-Token');
         const activeToken = this.getActiveToken();
         const freshToken = headerToken && (!activeToken || activeToken === token) ? headerToken : activeToken || token;
         this.token = freshToken;
         if (freshToken && freshToken !== token) localStorage.setItem('authToken', freshToken);
         this.role = profile?.role || 'pro';
+        this.authGeneration += 1;
         this.isAuthenticated = true;
         this.loginStep = 'authenticated';
         this.startSessionRefresh();
@@ -962,6 +976,7 @@ export const useAuthStore = defineStore('auth', {
      * Reset state
      */
     reset() {
+      this.authGeneration += 1;
       this.stopSessionRefresh();
       this.isAuthenticated = false;
       this.token = null;

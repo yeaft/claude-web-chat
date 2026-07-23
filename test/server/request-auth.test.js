@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { completeLogin } from '../../server/auth/login.js';
 import { activeSessions, revokedTokens } from '../../server/auth/session-store.js';
+import { registerAuthRoutes } from '../../server/routes/auth-routes.js';
 import {
   SESSION_COOKIE_NAME,
   authenticateRequest,
@@ -61,5 +62,34 @@ describe('request authentication', () => {
       SESSION_COOKIE_NAME,
       { httpOnly: true, sameSite: 'lax', secure: true, path: '/' },
     ]);
+  });
+
+  it('revokes and clears a cookie-only session through the logout route', () => {
+    const token = issue('logout-user');
+    const routes = new Map();
+    const app = {
+      get() {},
+      delete() {},
+      post(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+    };
+    registerAuthRoutes(app, { requireAuth() {}, checkRateLimit: () => true });
+    const req = {
+      secure: true,
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    };
+    const res = {
+      clearCookie: (...args) => { res.cleared = args; },
+      json: body => { res.body = body; return res; },
+    };
+
+    routes.get('/api/auth/logout')(req, res);
+
+    expect(revokedTokens.has(token)).toBe(true);
+    expect(activeSessions.has(token)).toBe(false);
+    expect(res.cleared).toEqual([
+      SESSION_COOKIE_NAME,
+      { httpOnly: true, sameSite: 'lax', secure: true, path: '/' },
+    ]);
+    expect(res.body).toEqual({ success: true });
   });
 });

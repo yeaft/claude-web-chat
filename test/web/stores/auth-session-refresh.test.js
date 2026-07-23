@@ -164,6 +164,76 @@ describe('auth store session restore and refresh', () => {
     expect(globalThis.localStorage.removeItem).not.toHaveBeenCalledWith('authToken');
   });
 
+  it('restores a cookie-only browser session without a local token', async () => {
+    globalThis.localStorage = createLocalStorage();
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      body: { username: 'mobile-user', role: 'pro' },
+    }));
+    const auth = await loadAuthStore();
+
+    const restored = await auth.restoreSession();
+
+    expect(restored).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/user/profile', { headers: {} });
+    expect(auth.isAuthenticated).toBe(true);
+    expect(auth.token).toBe(null);
+    expect(auth.role).toBe('pro');
+  });
+
+  it('clears an authenticated cookie-only session on a current 401', async () => {
+    globalThis.localStorage = createLocalStorage();
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+    auth.authGeneration = 4;
+
+    const handled = auth.handleAuthResponse(
+      jsonResponse({ ok: false, status: 401 }),
+      null,
+      4,
+      true,
+    );
+
+    expect(handled).toBe(true);
+    expect(auth.isAuthenticated).toBe(false);
+    expect(auth.authGeneration).toBe(5);
+    expect(globalThis.localStorage.removeItem).toHaveBeenCalledWith('authToken');
+  });
+
+  it('ignores a cookie-only 401 from an older auth generation', async () => {
+    globalThis.localStorage = createLocalStorage();
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+    auth.authGeneration = 8;
+
+    const handled = auth.handleAuthResponse(
+      jsonResponse({ ok: false, status: 401 }),
+      null,
+      7,
+      true,
+    );
+
+    expect(handled).toBe(false);
+    expect(auth.isAuthenticated).toBe(true);
+    expect(auth.authGeneration).toBe(8);
+    expect(globalThis.localStorage.removeItem).not.toHaveBeenCalled();
+  });
+
+  it('always posts logout so the server can revoke a cookie-only session', async () => {
+    globalThis.localStorage = createLocalStorage();
+    globalThis.fetch = vi.fn(async () => jsonResponse());
+    const auth = await loadAuthStore();
+    auth.isAuthenticated = true;
+
+    await auth.logout();
+
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    expect(auth.isAuthenticated).toBe(false);
+    expect(globalThis.localStorage.removeItem).toHaveBeenCalledWith('authToken');
+  });
+
   it('hydrates the active token from storage before authenticated requests', async () => {
     globalThis.localStorage = createLocalStorage({ authToken: 'stored-token' });
     const auth = await loadAuthStore();

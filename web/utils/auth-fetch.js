@@ -103,13 +103,12 @@ function withHeaders(init, headers) {
   return { ...(init || {}), headers };
 }
 
-function handleUnauthorized(response, requestToken) {
-  if (!requestToken) return;
+function handleUnauthorized(response, requestToken, requestGeneration, requestWasAuthenticated) {
   const store = getAuthStore();
   if (store && typeof store.handleAuthResponse === 'function') {
-    store.handleAuthResponse(response, requestToken);
-  } else if (store && typeof store.handleAuthFailure === 'function') {
-    store.handleAuthFailure(undefined, requestToken);
+    store.handleAuthResponse(response, requestToken, requestGeneration, requestWasAuthenticated);
+  } else if (store && typeof store.handleAuthFailure === 'function' && requestWasAuthenticated) {
+    store.handleAuthFailure(undefined, requestToken, requestGeneration);
   }
 }
 
@@ -124,6 +123,9 @@ export function installAuthFetch() {
     const shouldAuth = isSameOriginApi(url) && !isPublicAuthEndpoint(url);
     let nextInit = isSameOriginApi(url) ? { ...(init || {}), credentials: 'same-origin' } : init;
     let requestToken = null;
+    const authStore = shouldAuth ? getAuthStore() : null;
+    const requestGeneration = authStore?.authGeneration;
+    const requestWasAuthenticated = !!authStore?.isAuthenticated;
 
     if (shouldAuth) {
       const headers = headersFrom(input, init);
@@ -143,7 +145,7 @@ export function installAuthFetch() {
       if (fresh) applyFreshToken(fresh, requestToken);
 
       if (shouldAuth && response.status === 401) {
-        handleUnauthorized(response, requestToken);
+        handleUnauthorized(response, requestToken, requestGeneration, requestWasAuthenticated);
       }
     } catch {
       /* never let auth bookkeeping break fetch semantics */

@@ -137,6 +137,8 @@ describe('auth fetch interceptor', () => {
   it('reports protected API 401 failures through the shared auth policy', async () => {
     const authStore = {
       token: 'old-token',
+      authGeneration: 3,
+      isAuthenticated: true,
       getActiveToken: vi.fn(() => 'old-token'),
       handleAuthResponse: vi.fn(),
       handleAuthFailure: vi.fn(),
@@ -146,13 +148,20 @@ describe('auth fetch interceptor', () => {
 
     await fetch('/api/user/profile');
 
-    expect(authStore.handleAuthResponse).toHaveBeenCalledWith(expect.objectContaining({ status: 401 }), 'old-token');
+    expect(authStore.handleAuthResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 401 }),
+      'old-token',
+      3,
+      true,
+    );
     expect(authStore.handleAuthFailure).not.toHaveBeenCalled();
   });
 
   it('routes a file upload 401 through the same auth policy', async () => {
     const authStore = {
       token: 'store-token',
+      authGeneration: 5,
+      isAuthenticated: true,
       getActiveToken: vi.fn(() => 'store-token'),
       handleAuthResponse: vi.fn(),
       handleAuthFailure: vi.fn(),
@@ -165,13 +174,21 @@ describe('auth fetch interceptor', () => {
     const request = originalFetch.mock.calls[0][1];
     expect(request.credentials).toBe('same-origin');
     expect(request.headers.get('Authorization')).toBe('Bearer store-token');
-    expect(authStore.handleAuthResponse).toHaveBeenCalledWith(expect.objectContaining({ status: 401 }), 'store-token');
+    expect(authStore.handleAuthResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 401 }),
+      'store-token',
+      5,
+      true,
+    );
   });
 
   it('does not clear a newer login when an old no-token request later returns 401', async () => {
     const authStore = {
       token: null,
+      authGeneration: 1,
+      isAuthenticated: false,
       getActiveToken: vi.fn(() => null),
+      handleAuthResponse: vi.fn(),
       handleAuthFailure: vi.fn(),
     };
     globalThis.localStorage = createLocalStorage();
@@ -186,6 +203,7 @@ describe('auth fetch interceptor', () => {
     await fetch('/api/user/profile');
 
     expect(originalFetch.mock.calls[0][1]).toEqual({ credentials: 'same-origin' });
+    expect(authStore.handleAuthResponse).toHaveBeenCalledWith(expect.anything(), null, 1, false);
     expect(authStore.handleAuthFailure).not.toHaveBeenCalled();
     expect(authStore.token).toBe('new-token');
     expect(globalThis.localStorage.getItem('authToken')).toBe('new-token');
