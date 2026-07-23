@@ -34,6 +34,7 @@ export default {
       createOpen: false,
       settingsOpen: false,
       saving: false,
+      createGeneration: 0,
       llmConfigOpen: false,
       filter: 'attention',
       search: '',
@@ -217,6 +218,8 @@ export default {
     agentId: {
       immediate: true,
       handler(id, previousId) {
+        this.createGeneration = (Number(this.createGeneration) || 0) + 1;
+        this.saving = false;
         this.selectedId = null;
         this.selectedActionId = null;
         this.resetActionComposer?.();
@@ -586,10 +589,13 @@ export default {
     },
     async submitCreate() {
       if (!this.form.title.trim() || !this.form.goal.trim() || !this.form.workDir.trim()) return;
+      const requestAgentId = this.agentId;
+      const requestGeneration = (Number(this.createGeneration) || 0) + 1;
+      this.createGeneration = requestGeneration;
       this.saving = true;
       try {
         const draft = this.store.workCenterCreateDraft;
-        const draftOwnedByAgent = draft?.sourceAgentId === this.agentId;
+        const draftOwnedByAgent = draft?.sourceAgentId === requestAgentId;
         const detail = await this.store.createWorkItem({
           title: this.form.title.trim(),
           goal: this.form.goal.trim(),
@@ -609,7 +615,8 @@ export default {
             : [],
           reuseMemory: this.form.reuseMemory,
           start: this.form.start,
-        }, this.agentId);
+        }, requestAgentId);
+        if (this.agentId !== requestAgentId || this.createGeneration !== requestGeneration) return;
         this.openWorkItem(detail.id);
         this.selectedActionId = detail.currentActionId || detail.actions?.[0]?.id || null;
         this.form = {
@@ -627,7 +634,9 @@ export default {
         this.startTouched = false;
         this.createOpen = false;
       } finally {
-        this.saving = false;
+        if (this.agentId === requestAgentId && this.createGeneration === requestGeneration) {
+          this.saving = false;
+        }
       }
     },
     async startSelected() {
