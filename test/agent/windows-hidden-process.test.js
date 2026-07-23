@@ -12,6 +12,7 @@ class FakeWritable extends EventEmitter {
   write(chunk) {
     const msg = JSON.parse(String(chunk));
     const child = spawns[spawns.length - 1];
+    if (child.command === 'never-ready') return true;
     queueMicrotask(() => {
       let result = {};
       if (msg.method === 'session/new') {
@@ -181,6 +182,24 @@ describe('Windows hidden non-interactive process launches', () => {
     await second.disconnectAll();
     expect(spawns[0].kill).toHaveBeenCalledWith('SIGTERM');
     expect(__mcpConnectionPoolSizeForTests()).toBe(0);
+  });
+
+  it('stops an MCP server when startup times out', async () => {
+    vi.useFakeTimers();
+    try {
+      const managerPromise = createMCPManager({
+        mcp_servers: [{ name: 'stuck', command: 'never-ready' }],
+      });
+      await vi.advanceTimersByTimeAsync(10000);
+      const manager = await managerPromise;
+
+      expect(manager.status()).toEqual([]);
+      expect(spawns).toHaveLength(1);
+      expect(spawns[0].kill).toHaveBeenCalledWith('SIGTERM');
+      expect(__mcpConnectionPoolSizeForTests()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not crash the agent when an MCP server writes stderr without an error listener', async () => {

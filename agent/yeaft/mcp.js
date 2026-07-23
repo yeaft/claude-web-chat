@@ -141,8 +141,17 @@ class MCPServerConnection extends EventEmitter {
    */
   async start() {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`MCP server "${this.#name}" startup timeout (${STARTUP_TIMEOUT_MS}ms)`));
+      let settled = false;
+      let timer = null;
+      const failStart = async (err) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        await this.stop();
+        reject(err);
+      };
+      timer = setTimeout(() => {
+        void failStart(new Error(`MCP server "${this.#name}" startup timeout (${STARTUP_TIMEOUT_MS}ms)`));
       }, STARTUP_TIMEOUT_MS);
 
       try {
@@ -181,23 +190,22 @@ class MCPServerConnection extends EventEmitter {
         });
 
         this.#process.on('error', (err) => {
-          clearTimeout(timer);
-          reject(err);
+          void failStart(err);
         });
 
         // Initialize MCP protocol
         this.#initialize().then(() => {
+          if (settled) return;
+          settled = true;
           clearTimeout(timer);
           this.#ready = true;
           resolve();
         }).catch((err) => {
-          clearTimeout(timer);
-          reject(err);
+          void failStart(err);
         });
 
       } catch (err) {
-        clearTimeout(timer);
-        reject(err);
+        void failStart(err);
       }
     });
   }
