@@ -1219,9 +1219,10 @@ export class WorkItemStore {
     if (filters.lane === 'closed') {
       where.push("w.status IN ('done', 'cancelled')");
     } else if (filters.lane === 'needs_attention') {
-      where.push(`(w.status IN ('draft', 'waiting', 'needs_attention') OR EXISTS (
-        SELECT 1 FROM actions attention_action WHERE attention_action.work_item_id = w.id
-          AND attention_action.status IN ('waiting', 'failed')))`);
+      where.push(`w.status NOT IN ('done', 'cancelled') AND (
+        w.status IN ('draft', 'waiting', 'needs_attention') OR EXISTS (
+          SELECT 1 FROM actions attention_action WHERE attention_action.work_item_id = w.id
+            AND attention_action.status IN ('waiting', 'failed')))`);
     } else if (filters.lane === 'active') {
       where.push(`w.status NOT IN ('done', 'cancelled', 'draft', 'waiting', 'needs_attention')
         AND NOT EXISTS (SELECT 1 FROM actions attention_action WHERE attention_action.work_item_id = w.id

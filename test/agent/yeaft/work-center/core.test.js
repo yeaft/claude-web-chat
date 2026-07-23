@@ -108,6 +108,11 @@ describe('Work Center core', () => {
       .toEqual(['wi-b', 'wi-a']);
     expect(store.listWorkItems({ lane: 'active' }).map(item => item.id)).toEqual(['wi-b', 'wi-a']);
     expect(store.listWorkItems({ lane: 'closed' })).toEqual([]);
+
+    store.db.prepare("UPDATE work_items SET status = 'done' WHERE id = ?").run(first.id);
+    store.db.prepare("UPDATE actions SET status = 'failed' WHERE work_item_id = ?").run(first.id);
+    expect(store.listWorkItems({ lane: 'closed' }).map(item => item.id)).toEqual([first.id]);
+    expect(store.listWorkItems({ lane: 'needs_attention' }).map(item => item.id)).not.toContain(first.id);
   });
 
   it('persists, filters, resolves, and deletes plan conflicts', () => {
