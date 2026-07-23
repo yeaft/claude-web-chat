@@ -2365,7 +2365,7 @@ export const useChatStore = defineStore('chat', {
       const agentId = resolveAgentIdForSession(this, sessionId);
       const key = yeaftHistoryIdentityKey(agentId, sessionId);
       const state = this.yeaftHistoryOutlineBySession[key];
-      if (!sessionId || !agentId || !state?.loaded) return false;
+      if (!sessionId || !agentId || !state?.loaded || state.loading) return false;
       const role = row?.type;
       if (role !== 'user' && role !== 'assistant') return false;
       const messageId = row.dbMessageId || row.messageId || row.id || null;
@@ -2436,10 +2436,17 @@ export const useChatStore = defineStore('chat', {
       const agentId = resolveAgentIdForSession(this, sessionId);
       const key = yeaftHistoryIdentityKey(agentId, sessionId);
       const state = this.yeaftHistoryOutlineBySession[key];
-      if (!sessionId || !agentId || !state?.loaded) return false;
+      if (!sessionId || !agentId || !state) return false;
+      if (state.loading) {
+        this.yeaftHistoryOutlineBySession = {
+          ...this.yeaftHistoryOutlineBySession,
+          [key]: { ...state, refreshPending: true },
+        };
+        return true;
+      }
       this.yeaftHistoryOutlineBySession = {
         ...this.yeaftHistoryOutlineBySession,
-        [key]: { ...state, loaded: false },
+        [key]: { ...state, loaded: false, refreshPending: false },
       };
       if (this.currentView === 'yeaft' && this.yeaftActiveSessionFilter === sessionId) {
         return this.loadYeaftHistoryOutline({ force: true });
@@ -2447,10 +2454,15 @@ export const useChatStore = defineStore('chat', {
       return true;
     },
 
-    loadYeaftHistoryOutline({ append = false, force = false } = {}) {
-      if (this.currentView !== 'yeaft') return false;
-      const sessionId = this.yeaftActiveSessionFilter || null;
-      const agentId = resolveAgentIdForSession(this, sessionId);
+    loadYeaftHistoryOutline({
+      append = false,
+      force = false,
+      targetSessionId = null,
+      targetAgentId = null,
+    } = {}) {
+      if (this.currentView !== 'yeaft' && !targetSessionId) return false;
+      const sessionId = targetSessionId || this.yeaftActiveSessionFilter || null;
+      const agentId = targetAgentId || resolveAgentIdForSession(this, sessionId);
       if (!sessionId || !agentId) return false;
       const key = yeaftHistoryIdentityKey(agentId, sessionId);
       const previous = this.getYeaftHistoryOutlineState(sessionId, agentId);
@@ -2472,6 +2484,8 @@ export const useChatStore = defineStore('chat', {
         agentId,
         sessionId,
         loading: true,
+        requestAppend: append,
+        refreshPending: false,
         error: null,
       };
       this.yeaftHistoryOutlineBySession = { ...this.yeaftHistoryOutlineBySession, [key]: nextState };
@@ -2483,10 +2497,26 @@ export const useChatStore = defineStore('chat', {
         const nextTimeouts = { ...this._yeaftHistoryOutlineTimeouts };
         delete nextTimeouts[key];
         this._yeaftHistoryOutlineTimeouts = nextTimeouts;
+        const refreshPending = current.refreshPending === true;
         this.yeaftHistoryOutlineBySession = {
           ...this.yeaftHistoryOutlineBySession,
-          [key]: { ...current, loading: false, error: 'timeout' },
+          [key]: {
+            ...current,
+            requestId: null,
+            loading: false,
+            requestAppend: false,
+            loaded: refreshPending ? false : current.loaded,
+            refreshPending: false,
+            error: refreshPending ? null : 'timeout',
+          },
         };
+        if (refreshPending) {
+          this.loadYeaftHistoryOutline({
+            force: true,
+            targetSessionId: sessionId,
+            targetAgentId: agentId,
+          });
+        }
       }, 10000);
       this._yeaftHistoryOutlineTimeouts = { ...this._yeaftHistoryOutlineTimeouts, [key]: timeout };
       this.sendWsMessage({
@@ -2512,24 +2542,35 @@ export const useChatStore = defineStore('chat', {
       delete nextTimeouts[key];
       this._yeaftHistoryOutlineTimeouts = nextTimeouts;
       const incoming = Array.isArray(msg.results) ? msg.results : [];
-      const byId = new Map([...(state.results || []), ...incoming]
+      const sourceResults = state.requestAppend ? [...(state.results || []), ...incoming] : incoming;
+      const byId = new Map(sourceResults
         .filter(result => result?.messageId)
         .map(result => [outlineResultIdentity(result), result]));
       const results = Array.from(byId.values()).sort((a, b) => (a.seq || 0) - (b.seq || 0));
+      const refreshPending = state.refreshPending === true;
       this.yeaftHistoryOutlineBySession = {
         ...this.yeaftHistoryOutlineBySession,
         [key]: {
           ...state,
           requestId: null,
           loading: false,
-          loaded: !msg.error,
+          requestAppend: false,
+          refreshPending: false,
+          loaded: refreshPending ? false : !msg.error,
           results,
           hasMore: !!msg.hasMore,
           nextBeforeSeq: Number.isFinite(msg.nextBeforeSeq) ? msg.nextBeforeSeq : null,
           totalCount: Number.isFinite(msg.totalCount) ? msg.totalCount : state.totalCount,
-          error: msg.error || null,
+          error: refreshPending ? null : (msg.error || null),
         },
       };
+      if (refreshPending) {
+        this.loadYeaftHistoryOutline({
+          force: true,
+          targetSessionId: msg.sessionId,
+          targetAgentId: msg.agentId,
+        });
+      }
       return true;
     },
 

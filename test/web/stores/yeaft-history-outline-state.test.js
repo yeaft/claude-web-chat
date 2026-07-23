@@ -206,6 +206,183 @@ describe('Yeaft history outline state', () => {
     expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({ loaded: false, loading: true });
   });
 
+  it('queues one fresh first-page request after an older-page request settles', () => {
+    const store = primeStore();
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    store.messagesMap['conv-a'] = [{
+      id: 'local-answer', messageId: 'local-answer', type: 'assistant', content: 'finished answer',
+      sessionId: 'same', turnId: 'response-local', speakerVpId: 'maker', isStreaming: true, status: 'pending',
+    }];
+    store.yeaftHistoryOutlineBySession[key] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: true,
+      requestId: 'older-request', requestAppend: true, refreshPending: false,
+      results: [{ messageId: 'm50', seq: 50, role: 'user', snippet: 'cached row' }],
+      hasMore: true, nextBeforeSeq: 50, totalCount: 75, error: null,
+    };
+    store._currentYeaftSessionId = 'same';
+    store._currentYeaftTurnId = 'response-local';
+    store._currentYeaftVpId = 'maker';
+    store.processingConversations = { 'conv-a': true };
+    store.activeVpTurns = {};
+    store.executionStatusMap = {};
+    store.conversations = [];
+    store.vpStatuses = {};
+    store._turnCompletedConvs = new Set();
+
+    handleAssistantOutputFrame(store, 'conv-a', { type: 'result', result_text: '' });
+
+    expect(store._sent).toHaveLength(0);
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      loaded: true, loading: true, refreshPending: true, requestId: 'older-request',
+    });
+
+    expect(store.handleYeaftHistoryOutline({
+      agentId: 'agent-a', sessionId: 'same', requestId: 'older-request',
+      results: [{ messageId: 'm25', seq: 25, role: 'user', snippet: 'older row' }],
+      hasMore: false, nextBeforeSeq: null,
+    })).toBe(true);
+
+    expect(store._sent).toHaveLength(1);
+    expect(store._sent[0]).toMatchObject({
+      type: 'yeaft_load_history_outline', agentId: 'agent-a', sessionId: 'same', includeTotal: true,
+    });
+    expect(store._sent[0]).not.toHaveProperty('beforeSeq');
+    const freshRequestId = store._sent[0].requestId;
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      loaded: false, loading: true, refreshPending: false, requestId: freshRequestId,
+    });
+
+    expect(store.handleYeaftHistoryOutline({
+      agentId: 'agent-a', sessionId: 'same', requestId: freshRequestId,
+      results: [{ messageId: 'm51', seq: 51, role: 'assistant', turnId: 'response-local', snippet: 'finished answer' }],
+      hasMore: false, nextBeforeSeq: null, totalCount: 76,
+    })).toBe(true);
+
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      loaded: true, loading: false, refreshPending: false, totalCount: 76,
+    });
+    expect(store.yeaftHistoryOutlineBySession[key].results).toEqual([
+      expect.objectContaining({ messageId: 'm51', turnId: 'response-local' }),
+    ]);
+    expect(store.loadYeaftHistoryOutline()).toBe(true);
+    expect(store._sent).toHaveLength(1);
+  });
+
+  it('marks an in-flight outline dirty when a durable user echo cannot promote immediately', () => {
+    const store = primeStore();
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    store.messagesMap['conv-a'] = [{
+      id: 'client-1', messageId: 'client-1', clientMessageId: 'client-1', type: 'user', content: 'hello',
+      sessionId: 'same', turnId: 'client-1', timestamp: 100,
+    }];
+    store.yeaftHistoryOutlineBySession[key] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: true,
+      requestId: 'older-request', requestAppend: true, refreshPending: false,
+      results: [], hasMore: true, nextBeforeSeq: 50, totalCount: 75, error: null,
+    };
+    store.executionStatusMap = {};
+    store.conversations = [];
+    store.processingConversations = {};
+
+    handleAssistantOutputFrame(store, 'conv-a', {
+      type: 'user',
+      message: { id: 'm76', clientMessageId: 'client-1', content: 'hello' },
+      dbMessageId: 'm76',
+      clientMessageId: 'client-1',
+      ts: '2026-07-23T00:00:00Z',
+    });
+
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      loading: true, refreshPending: true, requestId: 'older-request',
+    });
+    expect(store._sent).toHaveLength(0);
+  });
+
+  it('queues a refresh during the initial in-flight load without looping', () => {
+    const store = primeStore();
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    store.yeaftHistoryOutlineBySession[key] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: false, loading: true,
+      requestId: 'initial-request', requestAppend: false, refreshPending: false,
+      results: [], hasMore: false, nextBeforeSeq: null, totalCount: null, error: null,
+    };
+
+    expect(store.invalidateYeaftHistoryOutline('same')).toBe(true);
+    expect(store.yeaftHistoryOutlineBySession[key].refreshPending).toBe(true);
+    expect(store._sent).toHaveLength(0);
+
+    expect(store.handleYeaftHistoryOutline({
+      agentId: 'agent-a', sessionId: 'same', requestId: 'initial-request',
+      results: [{ messageId: 'm40', seq: 40, role: 'user', snippet: 'stale initial row' }],
+      hasMore: false, nextBeforeSeq: null, totalCount: 1,
+    })).toBe(true);
+
+    expect(store._sent).toHaveLength(1);
+    const freshRequestId = store._sent[0].requestId;
+    expect(store.handleYeaftHistoryOutline({
+      agentId: 'agent-a', sessionId: 'same', requestId: freshRequestId,
+      results: [{ messageId: 'm41', seq: 41, role: 'user', snippet: 'fresh row' }],
+      hasMore: false, nextBeforeSeq: null, totalCount: 1,
+    })).toBe(true);
+    expect(store._sent).toHaveLength(1);
+    expect(store.yeaftHistoryOutlineBySession[key].results).toEqual([
+      expect.objectContaining({ messageId: 'm41' }),
+    ]);
+  });
+
+  it('keeps pending refresh state isolated by agent and Session identity', () => {
+    const store = primeStore();
+    const keyA = yeaftHistoryIdentityKey('agent-a', 'same');
+    const keyB = yeaftHistoryIdentityKey('agent-b', 'other');
+    store.agents.push({ id: 'agent-b', version: '1.0.201', capabilities: ['session_history_outline'] });
+    store.yeaftSessionAgentById.other = 'agent-b';
+    store.yeaftHistoryOutlineBySession[keyA] = {
+      agentId: 'agent-a', sessionId: 'same', loaded: true, loading: true,
+      requestId: 'request-a', requestAppend: true, refreshPending: false,
+      results: [], hasMore: false, nextBeforeSeq: null, totalCount: 0, error: null,
+    };
+    store.yeaftHistoryOutlineBySession[keyB] = {
+      agentId: 'agent-b', sessionId: 'other', loaded: true, loading: true,
+      requestId: 'request-b', requestAppend: true, refreshPending: false,
+      results: [], hasMore: false, nextBeforeSeq: null, totalCount: 0, error: null,
+    };
+
+    expect(store.invalidateYeaftHistoryOutline('same')).toBe(true);
+    expect(store.yeaftHistoryOutlineBySession[keyA].refreshPending).toBe(true);
+    expect(store.yeaftHistoryOutlineBySession[keyB].refreshPending).toBe(false);
+
+    expect(store.handleYeaftHistoryOutline({
+      agentId: 'agent-b', sessionId: 'other', requestId: 'request-b', results: [],
+      hasMore: false, nextBeforeSeq: null,
+    })).toBe(true);
+    expect(store._sent).toHaveLength(0);
+
+    expect(store.handleYeaftHistoryOutline({
+      agentId: 'agent-a', sessionId: 'same', requestId: 'request-a', results: [],
+      hasMore: false, nextBeforeSeq: null,
+    })).toBe(true);
+    expect(store._sent).toHaveLength(1);
+    expect(store._sent[0]).toMatchObject({ agentId: 'agent-a', sessionId: 'same' });
+  });
+
+  it('consumes one pending refresh after the in-flight request times out', () => {
+    const store = primeStore();
+    const key = yeaftHistoryIdentityKey('agent-a', 'same');
+    expect(store.loadYeaftHistoryOutline()).toBe(true);
+    expect(store.invalidateYeaftHistoryOutline('same')).toBe(true);
+    expect(store.yeaftHistoryOutlineBySession[key].refreshPending).toBe(true);
+
+    vi.advanceTimersByTime(10000);
+
+    expect(store._sent).toHaveLength(2);
+    expect(store._sent[1]).toMatchObject({
+      type: 'yeaft_load_history_outline', agentId: 'agent-a', sessionId: 'same', includeTotal: true,
+    });
+    expect(store.yeaftHistoryOutlineBySession[key]).toMatchObject({
+      loaded: false, loading: true, refreshPending: false, error: null,
+    });
+  });
+
   it('keeps the promoted recent page bounded and exposes the displaced older cursor', () => {
     const store = primeStore();
     const key = yeaftHistoryIdentityKey('agent-a', 'same');

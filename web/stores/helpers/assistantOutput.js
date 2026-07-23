@@ -4,6 +4,12 @@ import { resetProcessingWatchdog, stopProcessingWatchdog } from './watchdog.js';
 import { markAllToolsCompleted } from './handlers/conversationHandler.js';
 import { sameUserMessage } from './dedup.js';
 
+function promoteOrInvalidateOutline(store, row) {
+  if (store.promoteYeaftHistoryOutlineRow?.(row)) return;
+  const sessionId = row?.sessionId ?? row?.groupId ?? store._currentYeaftSessionId ?? null;
+  if (sessionId) store.invalidateYeaftHistoryOutline?.(sessionId);
+}
+
 function normalizeUserVisibleContent(content) {
   let value = content;
   if (typeof value === 'string') {
@@ -292,7 +298,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
           // Bug 1: forward original ts so history messages keep their real
           // timestamp instead of using arrival time.
         });
-        store.promoteYeaftHistoryOutlineRow?.(persistedUserRow);
+        promoteOrInvalidateOutline(store, persistedUserRow);
       } else if (echoClientMsgId) {
         // Common live-send path (NOT a rare race): the dedup gate above
         // already collapsed the echo's row onto the optimistic row by
@@ -312,7 +318,7 @@ export function handleAssistantOutputFrame(store, conversationId, data) {
               msgs[i].messageId = data.message.id;
             }
             if (data.ts && !msgs[i].ts) msgs[i].ts = data.ts;
-            store.promoteYeaftHistoryOutlineRow?.(msgs[i]);
+            promoteOrInvalidateOutline(store, msgs[i]);
             break;
           }
         }
