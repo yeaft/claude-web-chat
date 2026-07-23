@@ -704,12 +704,11 @@ describe('Bash tool', () => {
     expect(result.includes('timed out') || result.includes('Exit code')).toBe(true);
   }, 10000);
 
-  it('returns error when command is missing', async () => {
+  it('throws when command is missing', async () => {
     const mod = await import(`${TOOLS_DIR}/bash.js`);
     const tool = mod.default;
 
-    const result = JSON.parse(await tool.execute({}, { cwd: '/tmp' }));
-    expect(result.error).toBeTruthy();
+    await expect(tool.execute({}, { cwd: '/tmp' })).rejects.toThrow('command is required');
   });
 
   it('isDestructive detects dangerous commands', async () => {

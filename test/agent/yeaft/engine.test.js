@@ -715,6 +715,7 @@ describe('Engine', () => {
         name: 'structured_error_tool',
         description: 'Returns a structured failure',
         parameters: {},
+        errorOutput: 'json-error-envelope',
         execute: async () => JSON.stringify({ error: 'Path not found' }),
       });
 

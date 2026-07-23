@@ -111,6 +111,7 @@ export function buildMcpFlattenedTools(mcpManager) {
         t.description || `MCP tool ${fullName.split('__').slice(1).join('__')} from server ${t.server}`
       ),
       parameters: t.inputSchema || { type: 'object', properties: {} },
+      errorOutput: null,
       async execute(input = {}, _ctx) {
         // Look up the manager fresh on each call. We deliberately don't
         // close over a server reference — hot-reload may have replaced

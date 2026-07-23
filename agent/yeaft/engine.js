@@ -3311,6 +3311,7 @@ export class Engine {
         let output;
         let displayImages = [];
         let isError = false;
+        let toolErrorOutput = null;
         currentToolCallForAsyncTask = {
           id: tc.id,
           name: tc.name,
@@ -3330,9 +3331,11 @@ export class Engine {
           try {
             yield { type: 'tool_start', id: tc.id, name: tc.name, input: tc.input, threadId: this.currentThreadId };
             if (this.#toolRegistry) {
+              toolErrorOutput = this.#toolRegistry.get(tc.name)?.errorOutput || null;
               output = await this.#toolRegistry.execute(tc.name, tc.input, toolCtx);
             } else {
               const tool = this.#tools.get(tc.name);
+              toolErrorOutput = tool.errorOutput || null;
               // Pass the full toolCtx (cwd, workDir, signal, …) — not just
               // `{ signal }`. Legacy registerTool() callers historically got
               // a 1-field ctx, but that means tools like bash/file-read run
@@ -3347,7 +3350,7 @@ export class Engine {
             if (displayImages.length > 0) {
               output = stripDisplayImageData(output, displayImages);
             }
-            isError = isToolErrorOutput(output);
+            isError = toolErrorOutput === 'json-error-envelope' && isToolErrorOutput(output);
             yield { type: 'tool_end', id: tc.id, name: tc.name, output, displayImages, isError, threadId: this.currentThreadId };
             if (displayImages.some(image => image.deliveryQueued === true)) hasDisplayImageAnchor = true;
           } catch (err) {

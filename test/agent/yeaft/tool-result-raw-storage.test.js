@@ -70,12 +70,31 @@ describe('tool result raw storage boundaries', () => {
     expect(truncated).not.toContain('\ufffd');
   });
 
+  it('keeps the truncation marker inside the cap for an untrusted long tool name', () => {
+    const truncated = truncateToolResultIfNeeded('x'.repeat(40 * 1024), { toolName: '工具'.repeat(20_000), language: 'zh' });
+    expect(Buffer.byteLength(truncated, 'utf8')).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
+    expect(truncated).not.toContain('\ufffd');
+    expect(truncated.endsWith(']')).toBe(true);
+  });
+
   it('only treats a top-level non-empty JSON error string as a tool failure', () => {
     expect(isToolErrorOutput('{"error":"Path not found"}')).toBe(true);
     expect(isToolErrorOutput('{"error":""}')).toBe(false);
     expect(isToolErrorOutput('{"message":"error in source text"}')).toBe(false);
     expect(isToolErrorOutput('plain error prose')).toBe(false);
     expect(isToolErrorOutput('{not json')).toBe(false);
+  });
+
+  it.each(['Bash', 'mcp__external__domain'])('does not infer %s failures from valid business JSON', async (name) => {
+    const adapter = new MockAdapter();
+    adapter.pushResponse([{ type: 'tool_call', id: 'call_business', name, input: {} }, { type: 'stop', stopReason: 'tool_use' }]);
+    adapter.pushResponse([{ type: 'text_delta', text: 'done' }, { type: 'stop', stopReason: 'end_turn' }]);
+    const engine = new Engine({ adapter, trace: new CapturingTrace(), config: { model: 'test-model' } });
+    engine.registerTool({ name, description: 'returns domain JSON', parameters: { type: 'object', properties: {} }, errorOutput: null, execute: async () => '{"error":"business-domain-value"}' });
+    const events = [];
+    for await (const event of engine.query({ prompt: 'run it' })) events.push(event);
+    expect(events.find(event => event.type === 'tool_end')).toMatchObject({ output: '{"error":"business-domain-value"}', isError: false });
+    expect(adapter.callLog[1].messages.find(message => message.role === 'tool')).toMatchObject({ content: '{"error":"business-domain-value"}', isError: false });
   });
 
   it('keeps tool_end/debug raw while truncating only the model tool message', async () => {

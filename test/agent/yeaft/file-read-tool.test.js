@@ -31,7 +31,26 @@ describe('FileRead output budget', () => {
     const result = await fileRead.execute({ file_path: 'large.txt' }, { cwd: dir });
 
     expect(Buffer.byteLength(result, 'utf8')).toBeLessThan(32 * 1024);
-    expect(result).toMatch(/\[Showing lines 1-\d+ of 200 total\]$/);
+    expect(result).toMatch(/\[Showing lines 1-\d+ of 200 total\. Continue with offset=\d+(?:, column_offset=\d+)?\.\]$/);
     expect(result).not.toContain('\ufffd');
   });
+
+  it.each([
+    ['ASCII', 'x'.repeat(40 * 1024) + 'END'],
+    ['multibyte', '界'.repeat(14 * 1024) + 'END'],
+  ])('continues within one oversized %s line without skipping content', async (_kind, line) => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-file-read-'));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, 'oversized.txt'), `${line}\nSECOND`);
+
+    const first = await fileRead.execute({ file_path: 'oversized.txt' }, { cwd: dir });
+    const match = first.match(/Continue with offset=(\d+), column_offset=(\d+)\./);
+    expect(match).not.toBeNull();
+    expect(first).not.toContain('END');
+    const second = await fileRead.execute({ file_path: 'oversized.txt', offset: Number(match[1]), column_offset: Number(match[2]) }, { cwd: dir });
+    expect(second).toContain('END');
+    expect(second).toContain('2\tSECOND');
+    expect(first + second).not.toContain('\ufffd');
+  });
+
 });

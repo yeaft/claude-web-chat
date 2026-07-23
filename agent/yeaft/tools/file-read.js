@@ -12,7 +12,6 @@ import { defineTool } from './types.js';
 import { readFile, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve, extname } from 'path';
-import { StringDecoder } from 'string_decoder';
 
 /** Binary file extensions that shouldn't be read as text. */
 const BINARY_EXTS = new Set([
@@ -39,29 +38,44 @@ const DEFAULT_LIMIT = 3000;
  * room for line metadata and the Registry's localized truncation marker. */
 const DEFAULT_OUTPUT_BYTES = 30 * 1024;
 
-function truncateUtf8(text, maxBytes) {
-  const buffer = Buffer.from(text, 'utf8');
-  if (buffer.length <= maxBytes) return text;
-  return new StringDecoder('utf8').write(buffer.subarray(0, maxBytes));
+function takeUtf8(text, maxBytes) {
+  const chars = [];
+  let bytes = 0;
+  for (const char of text) {
+    const size = Buffer.byteLength(char, 'utf8');
+    if (bytes + size > maxBytes) break;
+    chars.push(char);
+    bytes += size;
+  }
+  return { text: chars.join(''), charCount: chars.length, bytes };
 }
 
-function formatLinesWithinBudget(allLines, startLine, endLine, maxBytes = DEFAULT_OUTPUT_BYTES) {
+function formatLinesWithinBudget(allLines, startLine, endLine, startColumn = 0, maxBytes = DEFAULT_OUTPUT_BYTES) {
   const parts = [];
   let usedBytes = 0;
   let nextLine = startLine;
+  let nextColumn = startColumn;
   for (let i = startLine; i < endLine; i += 1) {
     const prefix = parts.length > 0 ? '\n' : '';
-    const formatted = `${i + 1}\t${allLines[i]}`;
+    const lineChars = Array.from(allLines[i]);
+    const column = i === startLine ? Math.min(startColumn, lineChars.length) : 0;
+    const linePrefix = `${i + 1}\t${column > 0 ? `[column ${column}] ` : ''}`;
+    const formatted = linePrefix + lineChars.slice(column).join('');
     const remaining = maxBytes - usedBytes - Buffer.byteLength(prefix, 'utf8');
     if (remaining <= 0) break;
-    const bounded = truncateUtf8(formatted, remaining);
-    if (!bounded) break;
-    parts.push(prefix + bounded);
-    usedBytes += Buffer.byteLength(prefix + bounded, 'utf8');
+    const bounded = takeUtf8(formatted, remaining);
+    if (!bounded.text) break;
+    parts.push(prefix + bounded.text);
+    usedBytes += Buffer.byteLength(prefix, 'utf8') + bounded.bytes;
+    if (bounded.text !== formatted) {
+      nextLine = i;
+      nextColumn = column + Math.max(0, bounded.charCount - Array.from(linePrefix).length);
+      break;
+    }
     nextLine = i + 1;
-    if (bounded !== formatted) break;
+    nextColumn = 0;
   }
-  return { text: parts.join(''), nextLine };
+  return { text: parts.join(''), nextLine, nextColumn };
 }
 
 export default defineTool({
@@ -106,6 +120,10 @@ Guidelines:
           zh: '起始行号（从 0 开始计数，默认 0）',
         },
       },
+      column_offset: {
+        type: 'number',
+        description: { en: 'Unicode character offset within the first requested line (0-based, default: 0)', zh: '首个待读行内的 Unicode 字符偏移量（从 0 开始，默认 0）' },
+      },
       limit: {
         type: 'number',
         description: {
@@ -119,7 +137,7 @@ Guidelines:
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
   async execute(input, ctx) {
-    const { file_path, offset = 0, limit = DEFAULT_LIMIT } = input;
+    const { file_path, offset = 0, column_offset = 0, limit = DEFAULT_LIMIT } = input;
     if (!file_path) return JSON.stringify({ error: 'file_path is required' });
 
     const cwd = ctx?.cwd || process.cwd();
@@ -159,12 +177,15 @@ Guidelines:
       // Apply offset and limit
       const startLine = Math.max(0, Math.min(offset, totalLines));
       const endLine = Math.min(startLine + limit, totalLines);
-      const { text: numbered, nextLine } = formatLinesWithinBudget(allLines, startLine, endLine);
+      const startColumn = Math.max(0, Number.isFinite(column_offset) ? Math.floor(column_offset) : 0);
+      const { text: numbered, nextLine, nextColumn } = formatLinesWithinBudget(allLines, startLine, endLine, startColumn);
 
-      // Add metadata if partial. `nextLine` is also the next zero-based offset,
-      // so the model can continue without rereading or skipping content.
-      if (startLine > 0 || nextLine < totalLines) {
-        return `${numbered}\n\n[Showing lines ${startLine + 1}-${nextLine} of ${totalLines} total]`;
+      if (startLine > 0 || startColumn > 0 || nextLine < totalLines) {
+        const continuation = nextColumn > 0
+          ? `Continue with offset=${nextLine}, column_offset=${nextColumn}.`
+          : `Continue with offset=${nextLine}.`;
+        const shownEnd = nextColumn > 0 ? nextLine + 1 : nextLine;
+        return `${numbered}\n\n[Showing lines ${startLine + 1}-${shownEnd} of ${totalLines} total. ${continuation}]`;
       }
 
       return numbered;
