@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { mount } from '@vue/test-utils';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import WorkCenterActionDetail from '../../web/components/WorkCenterActionDetail.js';
 import WorkCenterPage from '../../web/components/WorkCenterPage.js';
 
@@ -17,13 +17,20 @@ function mountDetail(props = {}) {
       ...props,
     },
     global: {
-      mocks: { $t: key => key },
+      mocks: {
+        $t: (key, values = {}) => key === 'workCenter.openAttachmentNamed'
+          ? `Open attachment ${values.name}`
+          : key,
+      },
     },
   });
 }
 
 describe('Work Center Action detail tabs', () => {
-  afterEach(() => document.body.replaceChildren());
+  afterEach(() => {
+    document.body.replaceChildren();
+    vi.restoreAllMocks();
+  });
 
   it('resets the composer height when a send or Action switch clears its text', async () => {
     const wrapper = mountDetail({ composerText: 'line one\nline two' });
@@ -180,6 +187,216 @@ describe('Work Center Action detail tabs', () => {
     await wrapper.get('.work-center-request-summary').trigger('click');
 
     expect(wrapper.get('.work-center-request-detail').text()).toContain('This request has no retained loop details.');
+  });
+
+  it('opens persisted message attachments with an accessible, loading-aware button', async () => {
+    const attachment = { id: 'file-1', name: 'report.pdf', size: 2048, isImage: false };
+    const wrapper = mountDetail({
+      messages: [{ id: 'message-1', role: 'user', text: 'See report', attachments: [attachment] }],
+    });
+
+    const button = wrapper.get('.work-center-attachment-preview');
+    expect(button.attributes('aria-label')).toBe('Open attachment report.pdf');
+    expect(button.text()).toContain('2.0 KB');
+    await button.trigger('click');
+    const [[emittedAttachment, trigger]] = wrapper.emitted('open-attachment');
+    expect(emittedAttachment).toEqual(attachment);
+    expect(trigger).toBe(button.element);
+
+    await wrapper.setProps({ previewingAttachmentId: attachment.id });
+    expect(button.attributes()).toHaveProperty('disabled');
+    expect(button.text()).toContain('Opening attachment');
+  });
+
+  it('renders one transcript-level attachment error instead of repeating it per message', () => {
+    const wrapper = mountDetail({
+      messages: [
+        { id: 'message-1', role: 'user', attachments: [{ id: 'file-1', name: 'one.txt', size: 1 }] },
+        { id: 'message-2', role: 'assistant', attachments: [{ id: 'file-2', name: 'two.txt', size: 2 }] },
+      ],
+      attachmentError: 'Could not open the attachment.',
+    });
+
+    expect(wrapper.findAll('[role="alert"]')).toHaveLength(1);
+    expect(wrapper.get('[role="alert"]').text()).toBe('Could not open the attachment.');
+  });
+
+  it('keeps attachment preview completion scoped to the selected Work Item', async () => {
+    let resolvePreview;
+    const preview = new Promise(resolve => { resolvePreview = resolve; });
+    const context = {
+      selected: { id: 'wi-1' },
+      agentId: 'agent-1',
+      previewingAttachmentId: null,
+      attachmentPreviewError: '',
+      store: { previewWorkItemAttachment: vi.fn(() => preview) },
+      tr: (_key, fallback) => fallback,
+      selectedId: 'wi-1',
+      selectedActionId: 'action-1',
+      narrowPane: 'action',
+      resetActionComposer: vi.fn(),
+      resetWorkItemComposer: vi.fn(),
+      expandedActions: {},
+      actionsExpanded: false,
+      detailError: '',
+      detailLoading: false,
+    };
+    const opened = { opener: {}, location: { replace: vi.fn() }, close: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValue(opened);
+
+    const pending = WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-1', name: 'report.pdf', isImage: false,
+    });
+    context.selected = { id: 'wi-2' };
+    WorkCenterPage.methods.openWorkItem.call(context, 'wi-2');
+    resolvePreview({ preview: '/download-token', attachment: { isImage: false } });
+    await pending;
+
+    expect(opened.close).toHaveBeenCalledOnce();
+    expect(opened.location.replace).not.toHaveBeenCalled();
+    expect(context.previewingAttachmentId).toBeNull();
+    expect(context.attachmentPreviewError).toBe('');
+  });
+
+  it('does not let an old Action preview clear a newer Action preview', async () => {
+    let resolveOld;
+    let resolveCurrent;
+    const oldPreview = new Promise(resolve => { resolveOld = resolve; });
+    const currentPreview = new Promise(resolve => { resolveCurrent = resolve; });
+    const context = {
+      selected: { id: 'wi-1' },
+      selectedActionId: 'action-1',
+      agentId: 'agent-1',
+      previewingAttachmentId: null,
+      attachmentPreviewError: '',
+      store: {
+        previewWorkItemAttachment: vi.fn()
+          .mockReturnValueOnce(oldPreview)
+          .mockReturnValueOnce(currentPreview),
+      },
+      tr: (_key, fallback) => fallback,
+    };
+    const oldWindow = { opener: {}, location: { replace: vi.fn() }, close: vi.fn() };
+    const currentWindow = { opener: {}, location: { replace: vi.fn() }, close: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValueOnce(oldWindow).mockReturnValueOnce(currentWindow);
+
+    const oldPending = WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-old', name: 'old.pdf', isImage: false,
+    });
+    context.selectedActionId = 'action-2';
+    context.previewingAttachmentId = null;
+    context.attachmentPreviewError = '';
+    const currentPending = WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-current', name: 'current.pdf', isImage: false,
+    });
+
+    resolveOld({ preview: '/old-token', attachment: { isImage: false } });
+    await oldPending;
+    expect(oldWindow.close).toHaveBeenCalledOnce();
+    expect(context.previewingAttachmentId).toBe('file-current');
+    expect(context.attachmentPreviewError).toBe('');
+
+    resolveCurrent({ preview: '/current-token', attachment: { isImage: false } });
+    await currentPending;
+    expect(currentWindow.location.replace).toHaveBeenCalledWith('/current-token');
+    expect(context.previewingAttachmentId).toBeNull();
+  });
+
+  it('rejects an old preview after returning to the same Action', async () => {
+    let resolveOld;
+    const oldPreview = new Promise(resolve => { resolveOld = resolve; });
+    const context = {
+      selected: { id: 'wi-1' },
+      selectedActionId: 'action-1',
+      agentId: 'agent-1',
+      previewingAttachmentId: null,
+      attachmentPreviewError: '',
+      attachmentPreviewGeneration: 0,
+      store: { previewWorkItemAttachment: vi.fn(() => oldPreview) },
+      tr: (_key, fallback) => fallback,
+    };
+    const opened = { opener: {}, location: { replace: vi.fn() }, close: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValue(opened);
+
+    const pending = WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-old', name: 'old.pdf', isImage: false,
+    });
+    context.selectedActionId = 'action-2';
+    context.attachmentPreviewGeneration += 1;
+    context.selectedActionId = 'action-1';
+    context.attachmentPreviewGeneration += 1;
+    resolveOld({ preview: '/stale-token', attachment: { isImage: false } });
+    await pending;
+
+    expect(opened.close).toHaveBeenCalledOnce();
+    expect(opened.location.replace).not.toHaveBeenCalled();
+    expect(context.attachmentPreviewError).toBe('');
+  });
+
+  it('does not let a stale failure overwrite a newer preview in the same Action', async () => {
+    let rejectOld;
+    let resolveCurrent;
+    const oldPreview = new Promise((_resolve, reject) => { rejectOld = reject; });
+    const currentPreview = new Promise(resolve => { resolveCurrent = resolve; });
+    const context = {
+      selected: { id: 'wi-1' },
+      selectedActionId: 'action-1',
+      agentId: 'agent-1',
+      previewingAttachmentId: null,
+      attachmentPreviewError: '',
+      attachmentPreviewGeneration: 0,
+      store: {
+        previewWorkItemAttachment: vi.fn()
+          .mockReturnValueOnce(oldPreview)
+          .mockReturnValueOnce(currentPreview),
+      },
+      tr: (_key, fallback) => fallback,
+    };
+    const oldWindow = { opener: {}, location: { replace: vi.fn() }, close: vi.fn() };
+    const currentWindow = { opener: {}, location: { replace: vi.fn() }, close: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValueOnce(oldWindow).mockReturnValueOnce(currentWindow);
+
+    const oldPending = WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-old', name: 'old.pdf', isImage: false,
+    });
+    context.selectedActionId = 'action-2';
+    context.previewingAttachmentId = null;
+    context.attachmentPreviewGeneration += 1;
+    context.selectedActionId = 'action-1';
+    context.attachmentPreviewGeneration += 1;
+    const currentPending = WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-current', name: 'current.pdf', isImage: false,
+    });
+
+    rejectOld(new Error('stale preview failure'));
+    await oldPending;
+    expect(context.attachmentPreviewError).toBe('');
+    expect(context.previewingAttachmentId).toBe('file-current');
+
+    resolveCurrent({ preview: '/current-token', attachment: { isImage: false } });
+    await currentPending;
+    expect(currentWindow.location.replace).toHaveBeenCalledWith('/current-token');
+    expect(context.previewingAttachmentId).toBeNull();
+  });
+
+  it('reports blocked attachment windows without starting a preview request', async () => {
+    const context = {
+      selected: { id: 'wi-1' },
+      agentId: 'agent-1',
+      previewingAttachmentId: null,
+      attachmentPreviewError: '',
+      store: { previewWorkItemAttachment: vi.fn() },
+      tr: (_key, fallback) => fallback,
+    };
+    vi.spyOn(window, 'open').mockReturnValue(null);
+
+    await WorkCenterPage.methods.previewAttachment.call(context, {
+      id: 'file-1', name: 'report.pdf', isImage: false,
+    });
+
+    expect(context.store.previewWorkItemAttachment).not.toHaveBeenCalled();
+    expect(context.attachmentPreviewError).toContain('blocked');
+    expect(context.previewingAttachmentId).toBeNull();
   });
 
   it('projects page request caches with the same run-scoped identity as the detail pane', () => {

@@ -52,6 +52,8 @@ export default {
       attachmentsUploading: false,
       guidanceAttachmentsUploading: false,
       previewingAttachmentId: null,
+      attachmentPreviewError: '',
+      attachmentPreviewGeneration: 0,
       form: {
         title: '',
         goal: '',
@@ -209,6 +211,9 @@ export default {
         this.resetActionComposer?.();
         this.resetWorkItemComposer?.();
         this.narrowPane = 'items';
+        this.previewingAttachmentId = null;
+        this.attachmentPreviewError = '';
+        this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
         if (previousId && id !== previousId) {
           this.closeFolderPicker();
           this.resetCreateExecutionContext(id);
@@ -239,7 +244,12 @@ export default {
         const actions = Array.isArray(detail.actions) ? detail.actions : [];
         if (!actions.some(action => action.id === this.selectedActionId)) {
           const nextActionId = detail.currentActionId || actions[0]?.id || null;
-          if (nextActionId !== this.selectedActionId) this.resetActionComposer();
+          if (nextActionId !== this.selectedActionId) {
+            this.resetActionComposer();
+            this.previewingAttachmentId = null;
+            this.attachmentPreviewError = '';
+            this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+          }
           this.selectedActionId = nextActionId;
         }
       },
@@ -365,6 +375,9 @@ export default {
       this.actionsExpanded = false;
       this.detailError = '';
       this.detailLoading = false;
+      this.previewingAttachmentId = null;
+      this.attachmentPreviewError = '';
+      this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
     },
     async selectItem(item) {
       this.openWorkItem(item.id);
@@ -381,7 +394,12 @@ export default {
       }
     },
     selectAction(action) {
-      if (this.selectedActionId !== action.id) this.resetActionComposer();
+      if (this.selectedActionId !== action.id) {
+        this.resetActionComposer();
+        this.previewingAttachmentId = null;
+        this.attachmentPreviewError = '';
+        this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+      }
       this.selectedActionId = action.id;
       this.narrowPane = 'action';
       this.loadLatestActionMessages(action);
@@ -582,21 +600,47 @@ export default {
     removeGuidanceAttachment(index) {
       this.guidanceAttachments = this.guidanceAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
     },
-    async previewAttachment(attachment) {
+    async previewAttachment(attachment, trigger = null) {
       if (!this.selected?.id || !attachment?.id || this.previewingAttachmentId) return;
+      const agentId = this.agentId;
+      const workItemId = this.selected.id;
+      const actionId = this.selectedActionId || '';
+      const scope = `${agentId}:${workItemId}:${actionId}`;
+      const requestGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+      this.attachmentPreviewGeneration = requestGeneration;
+      const requestIsCurrent = () => this.attachmentPreviewGeneration === requestGeneration
+        && `${this.agentId}:${this.selected?.id || ''}:${this.selectedActionId || ''}` === scope;
       const previewWindow = attachment.isImage ? null : window.open('', '_blank');
+      if (!attachment.isImage && !previewWindow) {
+        this.attachmentPreviewError = this.tr('workCenter.attachmentOpenBlocked', 'The browser blocked the attachment window. Allow pop-ups and try again.');
+        return;
+      }
       if (previewWindow) previewWindow.opener = null;
       this.previewingAttachmentId = attachment.id;
+      this.attachmentPreviewError = '';
       try {
-        const data = await this.store.previewWorkItemAttachment(this.selected.id, attachment.id, this.agentId);
-        if (data?.preview && data.attachment?.isImage) openImagePreview(data.preview);
+        const data = await this.store.previewWorkItemAttachment(workItemId, attachment.id, agentId);
+        if (!requestIsCurrent()) {
+          previewWindow?.close();
+          return;
+        }
+        if (data?.preview && data.attachment?.isImage) {
+          openImagePreview(data.preview, {
+            alt: attachment.name || this.tr('workCenter.previewAttachment', 'Open attachment'),
+            closeLabel: this.tr('common.close', 'Close'),
+            trigger,
+          });
+        }
         else if (data?.preview && previewWindow) previewWindow.location.replace(data.preview);
         else previewWindow?.close();
       } catch (error) {
         previewWindow?.close();
-        throw error;
+        if (requestIsCurrent()) {
+          this.attachmentPreviewError = error?.message
+            || this.tr('workCenter.attachmentPreviewFailed', 'Could not open the attachment. Try again.');
+        }
       } finally {
-        this.previewingAttachmentId = null;
+        if (requestIsCurrent()) this.previewingAttachmentId = null;
       }
     },
     formatAttachmentSize(value) {
@@ -739,7 +783,12 @@ export default {
         this.guidanceAttachments = [];
         const targetStillExists = next?.actions?.some(action => action?.id === actionId);
         const nextActionId = targetStillExists ? actionId : (next?.currentActionId || this.selectedActionId);
-        if (nextActionId !== this.selectedActionId) this.resetActionComposer();
+        if (nextActionId !== this.selectedActionId) {
+          this.resetActionComposer();
+          this.previewingAttachmentId = null;
+          this.attachmentPreviewError = '';
+          this.attachmentPreviewGeneration = (Number(this.attachmentPreviewGeneration) || 0) + 1;
+        }
         this.selectedActionId = nextActionId;
       } catch (error) {
         if (this.actionComposerScope === scope) this.actionInputError = error?.message || String(error);
@@ -950,12 +999,13 @@ export default {
                   <div class="work-center-attachment-list">
                     <button v-for="attachment in selected.attachments" :key="attachment.id" type="button"
                             class="work-center-attachment-chip work-center-attachment-preview"
-                            @click="previewAttachment(attachment)" :disabled="previewingAttachmentId === attachment.id"
-                            :title="tr('workCenter.previewAttachment', 'Preview attachment')">
+                            @click="previewAttachment(attachment, $event.currentTarget)" :disabled="previewingAttachmentId === attachment.id"
+                            :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })">
                       <span>{{ attachment.name }}</span>
-                      <small>{{ formatAttachmentSize(attachment.size) }}</small>
+                      <small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
                     </button>
                   </div>
+                  <p v-if="attachmentPreviewError" class="work-center-error" role="alert">{{ attachmentPreviewError }}</p>
                 </div>
                 <div class="work-center-section work-center-workflow" v-if="selected.actions?.length">
                   <div v-if="selected.mainline?.progress" class="work-center-mainline-progress" :data-attention="selected.mainline.progress.attentionState">
@@ -1021,6 +1071,8 @@ export default {
               :sending="actionInputSending"
               :composer-error="actionInputError"
               :attachments-supported="workItemAttachmentsSupported"
+              :previewing-attachment-id="previewingAttachmentId"
+              :attachment-error="attachmentPreviewError"
               @back="showActionsPane"
               @update:composer-text="actionGuidance = $event"
               @load-earlier-messages="loadEarlierActionMessages"
@@ -1028,6 +1080,7 @@ export default {
               @select-request="loadActionRequest"
               @attachment-input="onGuidanceAttachmentInput"
               @remove-attachment="removeGuidanceAttachment"
+              @open-attachment="previewAttachment"
               @send="guideSelectedAction"
               @retry="retrySelectedAction"
             />
@@ -1091,7 +1144,7 @@ export default {
                 <span v-for="(attachment, index) in createAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
                   <span>{{ attachment.name }}</span>
                   <small>{{ formatAttachmentSize(attachment.size) }}</small>
-                  <button type="button" @click="removeCreateAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove attachment')">×</button>
+                  <button type="button" @click="removeCreateAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove from draft')">×</button>
                 </span>
               </div>
             </section>
