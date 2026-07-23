@@ -70,12 +70,21 @@ function mapWorkItem(row) {
     workflowSnapshot: parseJson(row.workflow_snapshot, null),
     status: row.status,
     currentActionId: row.current_action_id || null,
+    currentAction: row.current_action_type ? {
+      id: row.current_action_id,
+      type: row.current_action_type,
+      stageId: row.current_action_stage_id || row.current_action_type,
+      status: row.current_action_status || null,
+      brief: parseJson(row.current_action_brief, null),
+    } : null,
     currentRunId: row.current_run_id || null,
     workDir: row.work_dir || '',
     workspaceKey: row.workspace_key || '',
     reuseMemory: row.reuse_memory !== 0,
     origin: parseJson(row.origin, null),
     linkedSessionIds: parseJson(row.linked_session_ids, []),
+    actionCount: Math.max(0, Number(row.action_count) || 0),
+    completedActionCount: Math.max(0, Number(row.completed_action_count) || 0),
     sessionContext: parseJson(row.session_context, []),
     messages: parseJson(row.messages, []),
     attachments: parseJson(row.attachments, []),
@@ -1190,6 +1199,14 @@ export class WorkItemStore {
     }
     const limit = Math.min(Math.max(Number(filters.limit) || 100, 1), 500);
     const sql = `SELECT w.*,
+        current_action.type AS current_action_type,
+        current_action.stage_id AS current_action_stage_id,
+        current_action.status AS current_action_status,
+        current_action.brief AS current_action_brief,
+        (SELECT COUNT(*) FROM actions a WHERE a.work_item_id = w.id
+          AND a.status NOT IN ('superseded', 'cancelled')) AS action_count,
+        (SELECT COUNT(*) FROM actions a WHERE a.work_item_id = w.id
+          AND a.status = 'completed') AS completed_action_count,
         COALESCE(SUM(r.llm_request_count), 0) AS usage_llm_request_count,
         COALESCE(SUM(r.loop_count), 0) AS usage_loop_count,
         COALESCE(SUM(r.tool_count), 0) AS usage_tool_count,
@@ -1198,7 +1215,9 @@ export class WorkItemStore {
         COALESCE(SUM(r.cache_read_tokens), 0) AS usage_cache_read_tokens,
         COALESCE(SUM(r.cache_write_tokens), 0) AS usage_cache_write_tokens,
         COALESCE(SUM(r.total_tokens), 0) AS usage_total_tokens
-      FROM work_items w LEFT JOIN runs r ON r.work_item_id = w.id
+      FROM work_items w
+      LEFT JOIN actions current_action ON current_action.id = w.current_action_id
+      LEFT JOIN runs r ON r.work_item_id = w.id
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       GROUP BY w.id ORDER BY w.updated_at DESC LIMIT ?`;
     return this.db.prepare(sql).all(...values, limit).map(mapWorkItem).map(workItem => {

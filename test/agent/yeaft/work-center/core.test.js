@@ -81,7 +81,18 @@ describe('Work Center core', () => {
     });
     expect(detail.origin).toEqual({ sessionId: 'session-1', messageId: 'message-1', createdBy: 'user' });
     expect(detail.linkedSessionIds).toEqual(['session-1']);
-    expect(store.listWorkItems({ sessionId: 'session-1' }).map(row => row.id)).toEqual([item.id]);
+    const summary = store.listWorkItems({ sessionId: 'session-1' });
+    expect(summary.map(row => row.id)).toEqual([item.id]);
+    expect(summary[0]).toMatchObject({
+      actionCount: 1,
+      completedActionCount: 0,
+      currentAction: {
+        id: detail.actions[0].id,
+        type: 'triage',
+        status: 'ready',
+        brief: detail.actions[0].brief,
+      },
+    });
   });
 
   it('persists, filters, resolves, and deletes plan conflicts', () => {

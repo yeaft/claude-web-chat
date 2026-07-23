@@ -5,6 +5,7 @@ import {
   projectActionRequestIndex,
   projectWorkCenterEvent,
   projectWorkItemDetail,
+  projectWorkItemSummary,
   MAX_WORK_ITEM_BROWSER_DTO_BYTES,
 } from '../../../../agent/yeaft/work-center/projection.js';
 import {
@@ -64,6 +65,22 @@ function internalDetail() {
 }
 
 describe('Work Center event projection', () => {
+  it('projects list Action progress without exposing execution detail', () => {
+    const detail = internalDetail();
+    detail.actions.push({
+      id: 'a-2', workItemId: 'wi-1', sequence: 2, type: 'implement', stageId: 'implement',
+      status: 'running', createdAt: 2, updatedAt: 3,
+    });
+    detail.currentActionId = 'a-2';
+
+    expect(projectWorkItemSummary(detail)).toMatchObject({
+      id: 'wi-1',
+      actionCount: 2,
+      completedActionCount: 1,
+      currentAction: { id: 'a-2', type: 'implement', status: 'running' },
+    });
+  });
+
   it('broadcasts list state plus safe live Action response and aggregate counts', () => {
     const detail = internalDetail();
     const projected = projectWorkCenterEvent({ type: 'run.finished', workItem: detail });

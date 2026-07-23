@@ -652,7 +652,15 @@ export function projectWorkItemSummary(detail) {
       activeActionIds: Array.isArray(detail.activeActionIds) ? detail.activeActionIds : undefined,
       attentionActionIds: Array.isArray(detail.attentionActionIds) ? detail.attentionActionIds : undefined,
       currentActionId: detail.currentActionId || null,
-      currentAction: null,
+      currentAction: detail.currentAction?.id ? {
+        id: detail.currentAction.id,
+        type: detail.currentAction.type,
+        stageId: detail.currentAction.stageId,
+        status: detail.currentAction.status,
+        objective: truncateUtf8(detail.currentAction.brief?.objective, 1_000) || null,
+      } : null,
+      actionCount: count(detail.actionCount),
+      completedActionCount: count(detail.completedActionCount),
       executionStats: executionStats(detail.executionStats),
       origin: detail.origin?.sessionId ? { sessionId: detail.origin.sessionId } : null,
       linkedSessionIds: Array.isArray(detail.linkedSessionIds) ? detail.linkedSessionIds : [],
@@ -677,6 +685,8 @@ export function projectWorkItemSummary(detail) {
     activeActionIds: Array.isArray(detail.activeActionIds) ? detail.activeActionIds : undefined,
     attentionActionIds: Array.isArray(detail.attentionActionIds) ? detail.attentionActionIds : undefined,
     currentActionId: detail.currentActionId || null,
+    actionCount: detail.actions.filter(item => !['superseded', 'cancelled'].includes(item?.status)).length,
+    completedActionCount: detail.actions.filter(item => item?.status === 'completed').length,
     executionStats: Array.isArray(detail.runs)
       ? sumExecutionStats(detail.runs)
       : executionStats(detail.executionStats),

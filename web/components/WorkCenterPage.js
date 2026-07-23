@@ -35,7 +35,7 @@ export default {
       settingsOpen: false,
       saving: false,
       llmConfigOpen: false,
-      filter: 'open',
+      filter: 'attention',
       search: '',
       actionGuidance: '',
       expandedActions: {},
@@ -163,7 +163,8 @@ export default {
     visibleItems() {
       const q = this.search.trim().toLowerCase();
       return this.items.filter(item => {
-        if (this.filter === 'open' && ['done', 'cancelled'].includes(item.status)) return false;
+        if (this.filter === 'attention' && !['waiting', 'needs_attention'].includes(item.status)) return false;
+        if (this.filter === 'active' && !['draft', 'ready', 'running'].includes(item.status)) return false;
         if (this.filter === 'done' && item.status !== 'done') return false;
         if (!q) return true;
         return String(item.title || '').toLowerCase().includes(q)
@@ -171,9 +172,10 @@ export default {
       });
     },
     listHeading() {
+      if (this.filter === 'attention') return this.tr('workCenter.attentionItems', 'Needs attention');
+      if (this.filter === 'active') return this.tr('workCenter.activeItems', 'Active work');
       if (this.filter === 'done') return this.tr('workCenter.completedItems', 'Completed');
-      if (this.filter === 'all') return this.tr('workCenter.allItems', 'All work items');
-      return this.tr('workCenter.activeItems', 'Active work');
+      return this.tr('workCenter.allItems', 'All work items');
     },
     emptyState() {
       if (this.search.trim()) {
@@ -190,10 +192,17 @@ export default {
           canCreate: false,
         };
       }
-      if (this.filter === 'open' && this.items.length > 0) {
+      if (this.filter === 'attention') {
         return {
-          title: this.tr('workCenter.noOpenTitle', 'No open work items'),
-          body: this.tr('workCenter.noOpenBody', 'Open work items will appear here.'),
+          title: this.tr('workCenter.noAttentionTitle', 'Nothing needs attention'),
+          body: this.tr('workCenter.noAttentionBody', 'Work Items waiting for you or needing recovery will appear here.'),
+          canCreate: this.items.length === 0,
+        };
+      }
+      if (this.filter === 'active') {
+        return {
+          title: this.tr('workCenter.noActiveTitle', 'No active work items'),
+          body: this.tr('workCenter.noActiveBody', 'Draft, ready, and running Work Items will appear here.'),
           canCreate: true,
         };
       }
@@ -281,6 +290,11 @@ export default {
     },
     actionLabel(type) {
       return this.tr(`workCenter.action.${type}`, type || '—');
+    },
+    itemActionProgress(item) {
+      const total = Math.max(0, Number(item?.actionCount) || 0);
+      const completed = Math.min(total, Math.max(0, Number(item?.completedActionCount) || 0));
+      return this.$t('workCenter.actionProgress', { completed, total });
     },
     time(value) {
       if (!value) return '';
@@ -721,9 +735,10 @@ export default {
             </div>
           </header>
 
-          <div class="work-center-toolbar">
+          <div v-if="narrowPane === 'items'" class="work-center-toolbar">
             <div class="work-center-filter" role="group" :aria-label="tr('workCenter.filter', 'Filter')">
-              <button type="button" :class="{ active: filter === 'open' }" @click="filter = 'open'">{{ tr('workCenter.filterOpen', 'Open') }}</button>
+              <button type="button" :class="{ active: filter === 'attention' }" @click="filter = 'attention'">{{ tr('workCenter.filterAttention', 'Needs attention') }}</button>
+              <button type="button" :class="{ active: filter === 'active' }" @click="filter = 'active'">{{ tr('workCenter.filterActive', 'Active') }}</button>
               <button type="button" :class="{ active: filter === 'all' }" @click="filter = 'all'">{{ tr('workCenter.filterAll', 'All') }}</button>
               <button type="button" :class="{ active: filter === 'done' }" @click="filter = 'done'">{{ tr('workCenter.filterDone', 'Done') }}</button>
             </div>
@@ -750,15 +765,19 @@ export default {
                       class="work-center-card" :class="{ active: selectedId === item.id }"
                       :aria-label="item.title || tr('workCenter.workItem', 'Work item')"
                       @click="selectItem(item)">
-                <span class="work-center-card-topline">
-                  <span class="work-center-card-title">{{ item.title }}</span>
+                <span class="work-center-card-state">
                   <span class="work-center-status" :data-status="item.status"><span aria-hidden="true"></span>{{ statusLabel(item.status) }}</span>
                 </span>
-                <span class="work-center-card-goal">{{ item.goal }}</span>
-                <span class="work-center-card-meta">
-                  <span v-if="item.currentAction">{{ actionLabel(item.currentAction.type) }} · {{ item.currentAction.assignmentMode || tr('workCenter.assignment.auto', 'Auto') }}</span>
-                  <span>{{ time(item.updatedAt) || tr('workCenter.noTimestamp', 'No timestamp') }}</span>
+                <span class="work-center-card-content">
+                  <span class="work-center-card-title">{{ item.title }}</span>
+                  <span class="work-center-card-goal">{{ item.goal }}</span>
+                  <span v-if="item.currentAction" class="work-center-card-current-action">
+                    {{ tr('workCenter.currentAction', 'Current Action') }}: {{ item.currentAction.objective || actionLabel(item.currentAction.type) }}
+                  </span>
                 </span>
+                <span class="work-center-card-progress">{{ itemActionProgress(item) }}</span>
+                <span class="work-center-card-updated">{{ time(item.updatedAt) || tr('workCenter.noTimestamp', 'No timestamp') }}</span>
+                <span class="work-center-card-chevron" aria-hidden="true">›</span>
               </button>
               <div v-if="loading" class="work-center-loading">{{ tr('workCenter.loading', 'Loading work items…') }}</div>
               <div v-if="loaded && !loading && visibleItems.length === 0" class="work-center-empty-state">
