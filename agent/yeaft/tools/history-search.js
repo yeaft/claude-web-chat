@@ -21,6 +21,14 @@ function truncateUtf8(text, maxBytes) {
   return buffer.subarray(0, end).toString('utf8');
 }
 
+function isHighSurrogate(codeUnit) {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function isLowSurrogate(codeUnit) {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
+
 function buildSnippet(content, keyword, maxChars = MAX_SNIPPET_CHARS) {
   const text = String(content || '');
   if (text.length <= maxChars) return text;
@@ -29,8 +37,16 @@ function buildSnippet(content, keyword, maxChars = MAX_SNIPPET_CHARS) {
   const lower = text.toLocaleLowerCase();
   const positions = terms.map(term => lower.indexOf(term)).filter(pos => pos >= 0);
   const matchAt = positions.length > 0 ? Math.min(...positions) : 0;
-  const start = Math.max(0, Math.min(matchAt - Math.floor(maxChars / 3), text.length - maxChars));
-  const end = Math.min(text.length, start + maxChars);
+  let start = Math.max(0, Math.min(matchAt - Math.floor(maxChars / 3), text.length - maxChars));
+  let end = Math.min(text.length, start + maxChars);
+
+  if (start > 0 && isLowSurrogate(text.charCodeAt(start)) && isHighSurrogate(text.charCodeAt(start - 1))) {
+    start -= 1;
+  }
+  if (end < text.length && isLowSurrogate(text.charCodeAt(end)) && isHighSurrogate(text.charCodeAt(end - 1))) {
+    end -= 1;
+  }
+
   return `${start > 0 ? '...' : ''}${text.slice(start, end)}${end < text.length ? '...' : ''}`;
 }
 

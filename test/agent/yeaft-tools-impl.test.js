@@ -455,6 +455,51 @@ describe('HistorySearch tool', () => {
     }
   });
 
+  it('keeps surrogate pairs intact at both snippet boundaries', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'yeaft-history-search-'));
+    const hasLoneSurrogate = text => {
+      for (let i = 0; i < text.length; i += 1) {
+        const codeUnit = text.charCodeAt(i);
+        if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+          const next = text.charCodeAt(i + 1);
+          if (next < 0xdc00 || next > 0xdfff) return true;
+          i += 1;
+        } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    try {
+      const { ConversationStore } = await import('../../agent/yeaft/conversation/persist.js');
+      const mod = await import(`${TOOLS_DIR}/history-search.js`);
+      const store = new ConversationStore(tmpDir);
+      store.append({
+        role: 'assistant',
+        content: `needle${'a'.repeat(993)}😀tail`,
+        sessionId: 'session_search',
+      });
+      store.append({
+        role: 'developer',
+        content: `${'a'.repeat(100)}😀${'b'.repeat(332)}needle${'c'.repeat(1000)}`,
+        sessionId: 'session_search',
+      });
+
+      for (const keyword of ['needle', 'NEEDLE']) {
+        const output = await mod.default.execute({ keyword, limit: 2 }, { yeaftDir: tmpDir });
+        const result = JSON.parse(output);
+        expect(result.results).toHaveLength(2);
+        for (const message of result.results) {
+          expect(hasLoneSurrogate(message.content)).toBe(false);
+          expect(Buffer.from(message.content, 'utf8').toString('utf8')).not.toContain('\ufffd');
+        }
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps an exact-budget JSON payload intact and bounds budget+1', async () => {
     const mod = await import(`${TOOLS_DIR}/history-search.js`);
     const makePayload = content => ({
