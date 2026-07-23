@@ -93,6 +93,16 @@ describe('Grep tool', () => {
 });
 
 describe('Glob tool', () => {
+  it('rejects invalid limits and declares the public integer bound', async () => {
+    writeFileSync(join(dir, 'match.js'), 'x');
+
+    expect(globTool.parameters.properties.limit).toMatchObject({ type: 'integer', minimum: 1 });
+    for (const limit of [-1, 0, 1.5]) {
+      const result = await globTool.execute({ pattern: '*.js', limit }, { cwd: dir });
+      expect(JSON.parse(result)).toEqual({ error: 'limit must be a positive integer' });
+    }
+  });
+
   it('sorts all matches by mtime and skips .yeaft/worktrees', async () => {
     mkdirSync(join(dir, 'src'));
     mkdirSync(join(dir, '.yeaft', 'worktrees', 'other'), { recursive: true });

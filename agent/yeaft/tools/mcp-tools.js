@@ -126,7 +126,11 @@ export function buildMcpFlattenedTools(mcpManager) {
           throw new Error(`MCP manager not available for ${flattenedName}`);
         }
         const result = await mcpManager.callTool(fullName, input || {});
-        return formatMcpResult(result);
+        const output = formatMcpResult(result);
+        if (result && typeof result === 'object' && result.isError === true) {
+          throw new Error(output || `MCP tool ${fullName} failed`);
+        }
+        return output;
       },
     });
   });
@@ -263,7 +267,11 @@ Usage guidelines:
 
     try {
       const result = await mcpManager.callTool(tool_name, args, timeout_ms || 30000);
-      return formatMcpResult(result);
+      const output = formatMcpResult(result);
+      if (result && typeof result === 'object' && result.isError === true) {
+        throw new Error(output || `MCP tool ${tool_name} failed`);
+      }
+      return output;
     } catch (err) {
       return JSON.stringify({
         error: err.message,

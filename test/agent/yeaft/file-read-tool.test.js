@@ -36,6 +36,41 @@ describe('FileRead output budget', () => {
   });
 
   it.each([
+    ['offset', { offset: 0.5 }, 'offset must be a non-negative integer'],
+    ['negative offset', { offset: -1 }, 'offset must be a non-negative integer'],
+    ['column offset', { column_offset: 0.5 }, 'column_offset must be a non-negative integer'],
+    ['negative column offset', { column_offset: -1 }, 'column_offset must be a non-negative integer'],
+    ['zero limit', { limit: 0 }, 'limit must be a positive integer'],
+    ['negative limit', { limit: -1 }, 'limit must be a positive integer'],
+    ['fractional limit', { limit: 1.5 }, 'limit must be a positive integer'],
+  ])('rejects invalid %s values', async (_kind, input, message) => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-file-read-'));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, 'small.txt'), 'alpha\nbeta');
+
+    const result = await fileRead.execute({ file_path: 'small.txt', ...input }, { cwd: dir });
+
+    expect(JSON.parse(result)).toEqual({ error: message });
+  });
+
+  it('defines stable at-EOF and beyond-EOF results', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yeaft-file-read-'));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, 'small.txt'), 'alpha\nbeta');
+
+    await expect(fileRead.execute({ file_path: 'small.txt', offset: 2 }, { cwd: dir }))
+      .resolves.toBe('[Offset 2 is at end of file (2 lines total).]');
+    const beyond = await fileRead.execute({ file_path: 'small.txt', offset: 3 }, { cwd: dir });
+    expect(JSON.parse(beyond)).toEqual({ error: 'offset 3 exceeds file length (2 lines)' });
+  });
+
+  it('declares integer parameter bounds in its public schema', () => {
+    expect(fileRead.parameters.properties.offset).toMatchObject({ type: 'integer', minimum: 0 });
+    expect(fileRead.parameters.properties.column_offset).toMatchObject({ type: 'integer', minimum: 0 });
+    expect(fileRead.parameters.properties.limit).toMatchObject({ type: 'integer', minimum: 1 });
+  });
+
+  it.each([
     ['ASCII', 'x'.repeat(40 * 1024) + 'END'],
     ['multibyte', '界'.repeat(14 * 1024) + 'END'],
   ])('continues within one oversized %s line without skipping content', async (_kind, line) => {

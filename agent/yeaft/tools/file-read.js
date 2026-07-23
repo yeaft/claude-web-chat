@@ -114,18 +114,21 @@ Guidelines:
         },
       },
       offset: {
-        type: 'number',
+        type: 'integer',
+        minimum: 0,
         description: {
           en: 'Line number to start reading from (0-based, default: 0)',
           zh: '起始行号（从 0 开始计数，默认 0）',
         },
       },
       column_offset: {
-        type: 'number',
+        type: 'integer',
+        minimum: 0,
         description: { en: 'Unicode character offset within the first requested line (0-based, default: 0)', zh: '首个待读行内的 Unicode 字符偏移量（从 0 开始，默认 0）' },
       },
       limit: {
-        type: 'number',
+        type: 'integer',
+        minimum: 1,
         description: {
           en: `Maximum number of lines to read (default: ${DEFAULT_LIMIT})`,
           zh: `最多读取行数（默认 ${DEFAULT_LIMIT} 行）`,
@@ -139,6 +142,15 @@ Guidelines:
   async execute(input, ctx) {
     const { file_path, offset = 0, column_offset = 0, limit = DEFAULT_LIMIT } = input;
     if (!file_path) return JSON.stringify({ error: 'file_path is required' });
+    if (!Number.isInteger(offset) || offset < 0) {
+      return JSON.stringify({ error: 'offset must be a non-negative integer' });
+    }
+    if (!Number.isInteger(column_offset) || column_offset < 0) {
+      return JSON.stringify({ error: 'column_offset must be a non-negative integer' });
+    }
+    if (!Number.isInteger(limit) || limit < 1) {
+      return JSON.stringify({ error: 'limit must be a positive integer' });
+    }
 
     const cwd = ctx?.cwd || process.cwd();
     const absPath = resolve(cwd, file_path);
@@ -174,10 +186,17 @@ Guidelines:
       const allLines = content.split('\n');
       const totalLines = allLines.length;
 
+      if (offset > totalLines) {
+        return JSON.stringify({ error: `offset ${offset} exceeds file length (${totalLines} lines)` });
+      }
+      if (offset === totalLines) {
+        return `[Offset ${offset} is at end of file (${totalLines} lines total).]`;
+      }
+
       // Apply offset and limit
-      const startLine = Math.max(0, Math.min(offset, totalLines));
+      const startLine = offset;
       const endLine = Math.min(startLine + limit, totalLines);
-      const startColumn = Math.max(0, Number.isFinite(column_offset) ? Math.floor(column_offset) : 0);
+      const startColumn = column_offset;
       const { text: numbered, nextLine, nextColumn } = formatLinesWithinBudget(allLines, startLine, endLine, startColumn);
 
       const hasMoreContent = nextColumn > 0 || nextLine < totalLines;

@@ -107,7 +107,8 @@ Guidelines:
         },
       },
       limit: {
-        type: 'number',
+        type: 'integer',
+        minimum: 1,
         description: {
           en: 'Maximum number of results (default: 500)',
           zh: '最多返回结果数（默认 500）',
@@ -121,6 +122,9 @@ Guidelines:
   async execute(input, ctx) {
     const { pattern, path: searchPath, limit = 500 } = input;
     if (!pattern) return JSON.stringify({ error: 'pattern is required' });
+    if (!Number.isInteger(limit) || limit < 1) {
+      return JSON.stringify({ error: 'limit must be a positive integer' });
+    }
 
     const cwd = ctx?.cwd || process.cwd();
     const baseDir = searchPath ? resolve(cwd, searchPath) : cwd;
