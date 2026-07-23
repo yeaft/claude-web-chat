@@ -370,9 +370,11 @@ describe('Work Center UI contract', () => {
     expect(read('web/components/WorkCenterActionDetail.js')).toContain('v-if="attachmentsSupported" class="attach-btn work-center-attachment-picker"');
     expect(page).toContain('@attachment-input="onGuidanceAttachmentInput"');
     expect(page).toContain('guidanceAttachments.map(attachment => ({');
-    expect(page).toContain('@click="previewAttachment(attachment)"');
+    expect(page).toContain('@click="previewAttachment(attachment, $event.currentTarget)"');
     expect(page).toContain('previewWorkItemAttachment(workItemId, attachment.id, agentId)');
     expect(page).toContain("const scope = `${agentId}:${workItemId}:${actionId}`");
+    expect(page).toContain("alt: attachment.name || this.tr('workCenter.previewAttachment', 'Open attachment')");
+    expect(page).toContain("closeLabel: this.tr('common.close', 'Close')");
     expect(page).toContain("tr('workCenter.attachmentsUnsupported'");
     expect(page).toContain('attachments: this.workItemAttachmentsSupported');
   });

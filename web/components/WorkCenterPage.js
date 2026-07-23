@@ -591,7 +591,7 @@ export default {
     removeGuidanceAttachment(index) {
       this.guidanceAttachments = this.guidanceAttachments.filter((_attachment, itemIndex) => itemIndex !== index);
     },
-    async previewAttachment(attachment) {
+    async previewAttachment(attachment, trigger = null) {
       if (!this.selected?.id || !attachment?.id || this.previewingAttachmentId) return;
       const agentId = this.agentId;
       const workItemId = this.selected.id;
@@ -612,7 +612,13 @@ export default {
           previewWindow?.close();
           return;
         }
-        if (data?.preview && data.attachment?.isImage) openImagePreview(data.preview);
+        if (data?.preview && data.attachment?.isImage) {
+          openImagePreview(data.preview, {
+            alt: attachment.name || this.tr('workCenter.previewAttachment', 'Open attachment'),
+            closeLabel: this.tr('common.close', 'Close'),
+            trigger,
+          });
+        }
         else if (data?.preview && previewWindow) previewWindow.location.replace(data.preview);
         else previewWindow?.close();
       } catch (error) {
@@ -976,7 +982,7 @@ export default {
                   <div class="work-center-attachment-list">
                     <button v-for="attachment in selected.attachments" :key="attachment.id" type="button"
                             class="work-center-attachment-chip work-center-attachment-preview"
-                            @click="previewAttachment(attachment)" :disabled="previewingAttachmentId === attachment.id"
+                            @click="previewAttachment(attachment, $event.currentTarget)" :disabled="previewingAttachmentId === attachment.id"
                             :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })">
                       <span>{{ attachment.name }}</span>
                       <small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
@@ -1121,7 +1127,7 @@ export default {
                 <span v-for="(attachment, index) in createAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
                   <span>{{ attachment.name }}</span>
                   <small>{{ formatAttachmentSize(attachment.size) }}</small>
-                  <button type="button" @click="removeCreateAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove attachment')">×</button>
+                  <button type="button" @click="removeCreateAttachment(index)" :aria-label="tr('workCenter.removeAttachment', 'Remove from draft')">×</button>
                 </span>
               </div>
             </section>

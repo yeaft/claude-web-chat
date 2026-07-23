@@ -240,7 +240,7 @@ export default {
                       class="work-center-attachment-chip work-center-attachment-preview"
                       :disabled="previewingAttachmentId === attachment.id"
                       :aria-label="$t('workCenter.openAttachmentNamed', { name: attachment.name })"
-                      @click="$emit('open-attachment', attachment)">
+                      @click="$emit('open-attachment', attachment, $event.currentTarget)">
                 <span>{{ attachment.name }}</span><small>{{ previewingAttachmentId === attachment.id ? tr('workCenter.openingAttachment', 'Opening attachment…') : formatAttachmentSize(attachment.size) }}</small>
               </button>
             </div>
@@ -289,7 +289,7 @@ export default {
         <div v-if="composerAttachments.length" class="work-center-attachment-list">
           <span v-for="(attachment, index) in composerAttachments" :key="attachment.fileId" class="work-center-attachment-chip">
             <span>{{ attachment.name }}</span><small>{{ formatAttachmentSize(attachment.size) }}</small>
-            <button type="button" @click="$emit('remove-attachment', index)" :aria-label="tr('workCenter.removeAttachment', 'Remove attachment')">×</button>
+            <button type="button" @click="$emit('remove-attachment', index)" :aria-label="tr('workCenter.removeAttachment', 'Remove from draft')">×</button>
           </span>
         </div>
         <div class="input-wrapper work-center-action-input-wrapper">

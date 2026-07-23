@@ -199,7 +199,9 @@ describe('Work Center Action detail tabs', () => {
     expect(button.attributes('aria-label')).toBe('Open attachment report.pdf');
     expect(button.text()).toContain('2.0 KB');
     await button.trigger('click');
-    expect(wrapper.emitted('open-attachment')).toEqual([[attachment]]);
+    const [[emittedAttachment, trigger]] = wrapper.emitted('open-attachment');
+    expect(emittedAttachment).toEqual(attachment);
+    expect(trigger).toBe(button.element);
 
     await wrapper.setProps({ previewingAttachmentId: attachment.id });
     expect(button.attributes()).toHaveProperty('disabled');

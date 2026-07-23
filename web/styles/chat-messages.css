@@ -1801,7 +1801,26 @@
   object-fit: contain;
   border-radius: 8px;
   cursor: default;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--modal-shadow);
+}
+
+.image-preview-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: 24px;
+  cursor: pointer;
+}
+
+.image-preview-close:hover,
+.image-preview-close:focus-visible {
+  background: var(--sidebar-hover);
 }
 
 .user-attachment-file {
