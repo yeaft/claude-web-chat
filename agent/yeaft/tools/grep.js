@@ -153,7 +153,6 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
       ? Math.min(requestedBudget, MAX_OUTPUT_BYTES)
       : MAX_OUTPUT_BYTES;
     const stdoutMarker = truncateUtf8(OUTPUT_TRUNCATED_MARKER, stdoutBudget);
-    const stdoutCaptureLimit = Math.max(0, stdoutBudget - Buffer.byteLength(stdoutMarker, 'utf8'));
     const stdoutChunks = [];
     const stderrChunks = [];
     let stdoutBytes = 0;
@@ -162,9 +161,12 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
     let stderrTruncated = false;
     let stdoutLines = 0;
     let stoppedForLimit = false;
+    let stopRequested = false;
     let settled = false;
 
     function stop() {
+      if (stopRequested) return;
+      stopRequested = true;
       try { proc.kill(); } catch {}
     }
 
@@ -184,10 +186,10 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
         stoppedForLimit = true;
       }
 
-      const remaining = stdoutCaptureLimit - stdoutBytes;
-      if (buffer.length >= remaining) {
+      const remaining = stdoutBudget - stdoutBytes;
+      if (buffer.length > remaining) {
         if (remaining > 0) stdoutChunks.push(buffer.subarray(0, remaining));
-        stdoutBytes = stdoutCaptureLimit;
+        stdoutBytes = stdoutBudget;
         stdoutTruncated = true;
       } else {
         stdoutChunks.push(buffer);
@@ -199,10 +201,10 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
     function captureStderr(chunk) {
       if (stderrTruncated) return;
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      const remaining = MAX_CAPTURE_BYTES - stderrBytes;
-      if (buffer.length >= remaining) {
+      const remaining = MAX_OUTPUT_BYTES - stderrBytes;
+      if (buffer.length > remaining) {
         if (remaining > 0) stderrChunks.push(buffer.subarray(0, remaining));
-        stderrBytes = MAX_CAPTURE_BYTES;
+        stderrBytes = MAX_OUTPUT_BYTES;
         stderrTruncated = true;
         stop();
         return;
@@ -229,7 +231,7 @@ export function runRipgrep(pattern, searchPath, options, spawnProcess = spawn) {
       else reject(new Error(stderr || `rg exited with code ${code}`));
     });
     proc.on('error', (err) => {
-      if (settled || stdoutTruncated || stoppedForLimit) return;
+      if (settled || stopRequested) return;
       settled = true;
       reject(err);
     });

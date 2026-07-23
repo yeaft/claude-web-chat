@@ -96,6 +96,33 @@ describe('Grep tool output safety', () => {
     expect(result).toContain('[Output truncated]');
   });
 
+  it.each([
+    ['marker capture boundary', 32 * 1024 - Buffer.byteLength('\n\n[Output truncated]', 'utf8')],
+    ['exact public budget', 32 * 1024],
+  ])('does not truncate stdout at the %s', async (_kind, size) => {
+    const { spawnProcess, state } = fakeRipgrepChunks([Buffer.alloc(size, 0x61)]);
+    const result = await runRipgrep('needle', '.', {
+      maxResults: 10000,
+      byteBudget: 32 * 1024,
+    }, spawnProcess);
+
+    expect(state.kills).toBe(0);
+    expect(Buffer.byteLength(result, 'utf8')).toBe(size);
+    expect(result).not.toContain('[Output truncated]');
+  });
+
+  it('truncates stdout only after observing one byte beyond the public budget', async () => {
+    const { spawnProcess, state } = fakeRipgrepChunks([Buffer.alloc(32 * 1024 + 1, 0x61)]);
+    const result = await runRipgrep('needle', '.', {
+      maxResults: 10000,
+      byteBudget: 32 * 1024,
+    }, spawnProcess);
+
+    expect(state.kills).toBe(1);
+    expect(Buffer.byteLength(result, 'utf8')).toBe(32 * 1024);
+    expect(result).toContain('[Output truncated]');
+  });
+
   it('truncates ripgrep stdout on a UTF-8 boundary within the 32 KiB budget', async () => {
     const { spawnProcess, state } = fakeRipgrepChunks([Buffer.from('界'.repeat(12 * 1024))]);
     const result = await runRipgrep('needle', '.', {
@@ -137,6 +164,44 @@ describe('Grep tool output safety', () => {
     expect(Buffer.byteLength(error.message, 'utf8')).toBe(100 * 1024);
   });
 
+  it.each([
+    ['marker capture boundary', 512 * 1024 - Buffer.byteLength('\n\n[Output truncated]', 'utf8')],
+    ['exact public budget', 512 * 1024],
+  ])('does not truncate stderr at the %s', async (_kind, size) => {
+    const { spawnProcess, state } = fakeRipgrepChunks([], {
+      stderr: Buffer.alloc(size, 0x65),
+      exitCode: 2,
+    });
+    const error = await runRipgrep('needle', '.', {
+      maxResults: 10000,
+      byteBudget: 32 * 1024,
+    }, spawnProcess).catch(err => err);
+
+    expect(state.kills).toBe(0);
+    expect(error).toBeInstanceOf(Error);
+    expect(Buffer.byteLength(error.message, 'utf8')).toBe(size);
+    expect(error.message).not.toContain('[Output truncated]');
+  });
+
+  it('truncates stderr after one extra byte and waits for close after the budget kill', async () => {
+    const { spawnProcess, state } = fakeRipgrepChunks([], {
+      stderr: Buffer.alloc(512 * 1024 + 1, 0x65),
+      exitCode: 2,
+      emitErrorAfterKill: true,
+    });
+    const error = await runRipgrep('needle', '.', {
+      maxResults: 10000,
+      byteBudget: 32 * 1024,
+    }, spawnProcess).catch(err => err);
+
+    expect(state.kills).toBe(1);
+    expect(state.closes).toBe(1);
+    expect(error).toBeInstanceOf(Error);
+    expect(Buffer.byteLength(error.message, 'utf8')).toBe(512 * 1024);
+    expect(error.message).toContain('[Output truncated]');
+    expect(error.message).not.toContain('late kill error');
+  });
+
   it('drops an incomplete UTF-8 code point when ripgrep output is truncated', async () => {
     const output = Buffer.concat([
       Buffer.alloc(512 * 1024 - 1, 0x61),
@@ -169,7 +234,7 @@ describe('Grep tool output safety', () => {
   });
 
   it('bounds invalid ripgrep stderr after UTF-8 decoding', async () => {
-    const stderr = Buffer.alloc(512 * 1024, 0xff);
+    const stderr = Buffer.alloc(512 * 1024 + 1, 0xff);
 
     const error = await runRipgrep('needle', '.', {
       maxResults: 500,
@@ -203,7 +268,7 @@ process.exitCode = 2;
   });
 
   it('bounds invalid ripgrep stdout after UTF-8 decoding', async () => {
-    const stdout = Buffer.alloc(512 * 1024, 0xff);
+    const stdout = Buffer.alloc(512 * 1024 + 1, 0xff);
 
     const result = await runRipgrep('needle', '.', {
       maxResults: 500,
