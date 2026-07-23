@@ -1,21 +1,28 @@
-// glob.js — Find files by glob pattern, sorted newest first.
+/**
+ * glob.js — Find files by pattern matching.
+ *
+ * Uses Node.js glob patterns to find files matching a pattern.
+ * Results are sorted by modification time (newest first).
+ */
 
 import { defineTool } from './types.js';
 import { readdir, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve, join, relative } from 'path';
 
-const STAT_CONCURRENCY = 32;
-const SKIP = new Set([
-  'node_modules', '.git', '__pycache__', '.next', '.nuxt',
-  'dist', 'build', '.cache', '.venv', 'venv', '.tox',
-  'vendor', 'target', '.gradle', '.idea', '.vscode',
-]);
-
+/**
+ * Simple glob pattern matcher (supports * and **).
+ * @param {string} pattern
+ * @param {string} str
+ * @returns {boolean}
+ */
 function matchGlob(pattern, str) {
+  // Convert glob pattern to regex
+  // IMPORTANT: escape dots FIRST before replacing glob chars to avoid
+  // corrupting regex tokens like [^/]* and .*
   let regex = pattern
     .replace(/\\/g, '/')
-    .replace(/\./g, '\\.')
+    .replace(/\./g, '\\.')     // Escape dots first (before glob replacements)
     .replace(/\*\*/g, '<<<GLOBSTAR>>>')
     .replace(/\*/g, '[^/]*')
     .replace(/<<<GLOBSTAR>>>/g, '.*')
@@ -24,17 +31,32 @@ function matchGlob(pattern, str) {
   return new RegExp(regex).test(str.replace(/\\/g, '/'));
 }
 
+/**
+ * Recursively walk a directory, yielding relative paths.
+ */
 async function* walkDir(dir, baseDir, maxDepth = 10, depth = 0) {
   if (depth > maxDepth) return;
+
   let entries;
-  try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  // Skip common large/irrelevant directories
+  const SKIP = new Set([
+    'node_modules', '.git', '__pycache__', '.next', '.nuxt',
+    'dist', 'build', '.cache', '.venv', 'venv', '.tox',
+    'vendor', 'target', '.gradle', '.idea', '.vscode',
+  ]);
 
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
     const relPath = relative(baseDir, fullPath);
+
     if (entry.isDirectory()) {
-      const normalized = relPath.replace(/\\/g, '/');
-      if (SKIP.has(entry.name) || normalized === '.yeaft/worktrees' || normalized.startsWith('.yeaft/worktrees/')) continue;
+      if (SKIP.has(entry.name)) continue;
       yield { path: relPath, isDir: true };
       yield* walkDir(fullPath, baseDir, maxDepth, depth + 1);
     } else {
@@ -46,15 +68,50 @@ async function* walkDir(dir, baseDir, maxDepth = 10, depth = 0) {
 export default defineTool({
   name: 'Glob',
   description: {
-    en: 'Find files matching a glob pattern. Results are sorted by modification time (newest first).',
-    zh: '查找匹配 glob 模式的文件。结果按修改时间排序（最新优先）。',
+    en: `Find files matching a glob pattern.
+
+Supports glob patterns like "**/*.js", "src/**/*.ts", "*.md".
+Results are sorted by modification time (newest first).
+
+Guidelines:
+- Use "**/" for recursive directory matching
+- Common directories (node_modules, .git, etc.) are skipped
+- Returns file paths relative to the search directory
+- Limited to 500 results by default`,
+    zh: `查找匹配 glob 模式的文件。
+
+支持如 "**/*.js"、"src/**/*.ts"、"*.md" 等 glob 模式。结果按修改时间排序（最新优先）。
+
+使用指南：
+- 用 "**/" 进行递归目录匹配
+- 常见目录（node_modules、.git 等）被跳过
+- 返回相对于搜索目录的文件路径
+- 默认限制 500 条结果`
   },
   parameters: {
     type: 'object',
     properties: {
-      pattern: { type: 'string', description: { en: 'Glob pattern to match files', zh: '匹配文件的 glob 模式' } },
-      path: { type: 'string', description: { en: 'Directory to search in (default: cwd)', zh: '搜索目录（默认当前工作目录）' } },
-      limit: { type: 'number', description: { en: 'Maximum number of results (default: 500)', zh: '最多返回结果数（默认 500）' } },
+      pattern: {
+        type: 'string',
+        description: {
+          en: 'Glob pattern to match files (e.g. "**/*.js")',
+          zh: '匹配文件的 glob 模式（如 "**/*.js"）',
+        },
+      },
+      path: {
+        type: 'string',
+        description: {
+          en: 'Directory to search in (default: cwd)',
+          zh: '搜索目录（默认当前工作目录）',
+        },
+      },
+      limit: {
+        type: 'number',
+        description: {
+          en: 'Maximum number of results (default: 500)',
+          zh: '最多返回结果数（默认 500）',
+        },
+      },
     },
     required: ['pattern'],
   },
@@ -63,31 +120,41 @@ export default defineTool({
   async execute(input, ctx) {
     const { pattern, path: searchPath, limit = 500 } = input;
     if (!pattern) return JSON.stringify({ error: 'pattern is required' });
+
     const cwd = ctx?.cwd || process.cwd();
     const baseDir = searchPath ? resolve(cwd, searchPath) : cwd;
-    if (!existsSync(baseDir)) return JSON.stringify({ error: `Directory not found: ${baseDir}` });
+
+    if (!existsSync(baseDir)) {
+      return JSON.stringify({ error: `Directory not found: ${baseDir}` });
+    }
 
     try {
-      const paths = [];
+      const matches = [];
+
       for await (const entry of walkDir(baseDir, baseDir)) {
-        if (!entry.isDir && matchGlob(pattern, entry.path)) paths.push(entry.path);
+        if (matches.length >= limit * 2) break; // over-fetch for sorting
+
+        if (!entry.isDir && matchGlob(pattern, entry.path)) {
+          // Get mtime for sorting
+          try {
+            const fileStat = await stat(join(baseDir, entry.path));
+            matches.push({
+              path: entry.path,
+              mtime: fileStat.mtimeMs,
+            });
+          } catch {
+            matches.push({ path: entry.path, mtime: 0 });
+          }
+        }
       }
 
-      // Exact newest-first semantics require all matching mtimes. The expensive
-      // metadata reads are bounded and parallel rather than one syscall at a time.
-      const matches = [];
-      for (let i = 0; i < paths.length; i += STAT_CONCURRENCY) {
-        matches.push(...await Promise.all(paths.slice(i, i + STAT_CONCURRENCY).map(async (path) => {
-          try {
-            const fileStat = await stat(join(baseDir, path));
-            return { path, mtime: fileStat.mtimeMs };
-          } catch {
-            return { path, mtime: 0 };
-          }
-        })));
-      }
+      // Sort by mtime (newest first)
       matches.sort((a, b) => b.mtime - a.mtime);
-      return matches.slice(0, limit).map(match => match.path).join('\n') || '(no matches)';
+
+      // Trim to limit
+      const trimmed = matches.slice(0, limit);
+
+      return trimmed.map(m => m.path).join('\n') || '(no matches)';
     } catch (err) {
       return JSON.stringify({ error: `Glob search failed: ${err.message}` });
     }
